@@ -33,14 +33,14 @@ impl Poster {
                 let size = fitted_size(&formula, size, width);
                 Word {
                     text: String::new(), style, w: formula.width * size, gap: 0.0,
-                    formula: Some(MathRun { formula, size }), warning: None,
+                    formula: Some(MathRun { formula, size }), image: None, warning: None,
                 }
             }
             Err(warning) => {
                 let style = RStyle { mono: true, ..style };
                 Word {
                     text: source.to_string(), style, w: self.measure(source, style, size),
-                    gap: 0.0, formula: None, warning: Some(warning),
+                    gap: 0.0, formula: None, image: None, warning: Some(warning),
                 }
             }
         }
@@ -186,7 +186,7 @@ impl Poster {
     /// Keep historical prose baselines unchanged; grow only lines whose math
     /// ink needs more ascent or descent than the normal text line provides.
     pub(super) fn line_metrics(&self, words: &[Word], ascent: f64, leading: f64) -> (f64, f64) {
-        if !words.iter().any(|word| word.formula.is_some()) {
+        if !words.iter().any(|word| word.formula.is_some() || word.image.is_some()) {
             return (ascent, leading);
         }
         let mut above = ascent;
@@ -194,6 +194,9 @@ impl Poster {
         for run in words.iter().filter_map(|word| word.formula.as_ref()) {
             above = above.max(run.formula.ascent * run.size);
             below = below.max(run.formula.descent * run.size);
+        }
+        for run in words.iter().filter_map(|word| word.image.as_ref()) {
+            above = above.max(run.height);
         }
         (above, above + below)
     }

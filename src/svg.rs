@@ -2,9 +2,9 @@
 //!
 //! Renders a parsed Markdown document to a single vertical-flow SVG page of
 //! fixed width ([`SvgOptions::max_width_pt`]) whose height grows to fit the
-//! content. Every glyph is real vector outline data — the output contains no
-//! `<text>` elements — so it is resolution-independent, needs no fonts at
-//! view time, and is byte-identical for a fixed input.
+//! content. Renderer-generated glyphs are vector outlines with no `<text>`
+//! elements or view-time fonts. Supplied images are embedded subresources;
+//! their own raster resolution or SVG text/font behavior is retained.
 //!
 //! Glyph strategy: each unique `(face, glyph id)` outline is emitted once in
 //! `<defs>` as `<path id="gN" d="…">`, normalized to a 100 pt em with the
@@ -26,7 +26,8 @@
 //! kerning, no ligatures); inline links are coloured but not underlined;
 //! mathematics uses the shared TeX layout engine and vector outlines. Raw HTML
 //! is preserved as inert vector text; footnote definitions are skipped in flow
-//! (matching the AST contract); images render their alt text.
+//! (matching the AST contract). PNG/JPEG/SVG images use embedded data or explicit
+//! caller assets; unresolved images retain their alt text with diagnostics.
 //!
 //! Light palette only: a standalone vector artifact cannot honour the
 //! `prefers-color-scheme` policy behind [`Theme::dark_mode`], so the poster
@@ -57,6 +58,13 @@ const SLOT_COUNT: usize = 6;
 mod text;
 #[path = "svg/math.rs"]
 mod math;
+#[path = "svg/images.rs"]
+mod images;
+#[path = "svg/image_source.rs"]
+mod image_source;
+#[cfg(test)]
+#[path = "svg/image_tests.rs"]
+mod image_tests;
 #[cfg(test)]
 #[path = "svg/math_tests.rs"]
 mod math_tests;
@@ -124,6 +132,25 @@ pub fn render_svg_with_diagnostics(
     opts: &SvgOptions,
 ) -> (Vec<u8>, SvgReport, Vec<SvgWarning>) {
     Poster::new(opts).render(doc)
+}
+
+/// Render with explicit host-owned font/image bytes, using the same slots as
+/// HTML and PDF. No file or URL is resolved by the rendering core. Image keys
+/// are trimmed, first-match wins, and data URIs work without supplied assets.
+/// Missing/malformed images keep their alt text and return stable warnings.
+///
+/// # Errors
+/// Invalid font data/instances or oversized resource collections fail before
+/// output. Per-image input is bounded to 32 MiB; input/encoded image budgets
+/// and aggregate supplied fonts are bounded to 128 MiB each. At most 4096
+/// images are admitted. Existing option/report structures stay unchanged.
+pub fn render_svg_with_resources(
+    doc: &Document,
+    opts: &SvgOptions,
+    fonts: &franken_markdown::FontAssets,
+    images: &[franken_markdown::PdfImageAsset],
+) -> franken_markdown::Result<(Vec<u8>, SvgReport, Vec<SvgWarning>)> {
+    Ok(Poster::new(opts).with_resources(fonts, images)?.render(doc))
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +294,7 @@ impl Ink {
 /// One paint operation, in document (painter's) order.
 #[derive(Debug, Clone, PartialEq)]
 enum Op {
+    Image { run: images::ImageRun, x: f64, y: f64 },
     Path {
         data: String,
         ink: Ink,
@@ -330,6 +358,7 @@ impl RStyle {
 enum Piece {
     Text(String, RStyle),
     Math(String, bool, RStyle),
+    Image(String, String, RStyle),
     Break,
 }
 
@@ -342,6 +371,7 @@ struct Word {
     /// Actual source whitespace before this run; zero across style boundaries.
     gap: f64,
     formula: Option<math::MathRun>,
+    image: Option<images::ImageRun>,
     warning: Option<SvgWarning>,
 }
 
@@ -355,6 +385,7 @@ struct Poster {
     /// unreachable in practice); unresolvable glyphs count as missing.
     faces: [Option<Font>; SLOT_COUNT],
     math_engine: OnceCell<Option<franken_markdown::math::Engine>>,
+    images: images::ImageStore,
     warnings: Vec<SvgWarning>,
     colors: ThemeColors,
     scale: TypeScale,
@@ -388,6 +419,7 @@ impl Poster {
                 fonts::load_symbol().ok(),
             ],
             math_engine: OnceCell::new(),
+            images: images::ImageStore::default(),
             warnings: Vec::new(),
             colors: theme.colors.clone(),
             scale: TypeScale::default(),
@@ -524,19 +556,8 @@ impl Poster {
                         out,
                     );
                 }
-                Inline::Image { alt, .. } => {
-                    let label = if alt.is_empty() {
-                        "[image]".to_string()
-                    } else {
-                        format!("[{alt}]")
-                    };
-                    out.push(Piece::Text(
-                        label,
-                        RStyle {
-                            ink: Ink::FgMuted,
-                            ..st
-                        },
-                    ));
+                Inline::Image { alt, dest, .. } => {
+                    out.push(Piece::Image(dest.clone(), alt.clone(), st));
                 }
                 Inline::SoftBreak => out.push(Piece::Text(" ".to_string(), st)),
                 Inline::HardBreak => out.push(Piece::Break),
@@ -661,8 +682,8 @@ impl Poster {
             self.y += height;
         }
         if level == 1 {
-            let has_math = lines.iter().flatten().any(|word| word.formula.is_some());
-            let rule_y = if has_math {
+            let has_replaced = lines.iter().flatten().any(|word| word.formula.is_some() || word.image.is_some());
+            let rule_y = if has_replaced {
                 // A tall formula can occupy its entire line box. Put the
                 // heading rule below that ink, never through a denominator.
                 self.y += size * 0.2;
@@ -1012,6 +1033,17 @@ impl Poster {
             .map(|(i, (key, _))| (*key, i))
             .collect();
 
+        // Deduplicate identical encoded resources even when callers used
+        // different destination keys. IDs follow first paint occurrence.
+        let mut image_ids = BTreeMap::new();
+        for op in &self.ops {
+            if let Op::Image { run, .. } = op {
+                let next = image_ids.len();
+                image_ids.entry(run.image.uri.as_str())
+                    .or_insert((next, run.image.width, run.image.height));
+            }
+        }
+
         let mut out = String::with_capacity(64 * 1024);
         out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
@@ -1043,11 +1075,49 @@ impl Poster {
                 out.push_str("\"/>\n");
             }
         }
+        for (uri, (id, width, height)) in &image_ids {
+            out.push_str("<symbol id=\"i");
+            push_u64_fast(&mut out, *id as u64);
+            out.push_str("\" viewBox=\"0 0 ");
+            push_q2(&mut out, *width);
+            out.push(' ');
+            push_q2(&mut out, *height);
+            out.push_str("\" preserveAspectRatio=\"xMinYMin meet\"><image width=\"");
+            push_q2(&mut out, *width);
+            out.push_str("\" height=\"");
+            push_q2(&mut out, *height);
+            out.push_str("\" href=\"");
+            esc_attr(uri, &mut out);
+            out.push_str("\"/></symbol>\n");
+        }
         out.push_str("</defs>\n");
 
         let mut drawn = 0;
         for op in &self.ops {
             match op {
+                Op::Image { run, x, y } => {
+                    let Some((id, _, _)) = image_ids.get(run.image.uri.as_str()) else { continue; };
+                    out.push_str("<use href=\"#i");
+                    push_u64_fast(&mut out, *id as u64);
+                    out.push_str("\" x=\"");
+                    push_q2(&mut out, *x);
+                    out.push_str("\" y=\"");
+                    push_q2(&mut out, *y);
+                    out.push_str("\" width=\"");
+                    push_q2(&mut out, run.width);
+                    out.push_str("\" height=\"");
+                    push_q2(&mut out, run.height);
+                    if run.alt.is_empty() {
+                        out.push_str("\" aria-hidden=\"true\"/>\n");
+                    } else {
+                        out.push_str("\" role=\"img\" aria-label=\"");
+                        let alt: String = run.alt.chars().map(|ch| {
+                            if ch.is_control() { ' ' } else if ch == '\u{fffe}' || ch == '\u{ffff}' { '\u{fffd}' } else { ch }
+                        }).collect();
+                        esc_attr(&alt, &mut out);
+                        out.push_str("\"/>\n");
+                    }
+                }
                 Op::Path { data, ink } => {
                     out.push_str("<path d=\"");
                     out.push_str(data);

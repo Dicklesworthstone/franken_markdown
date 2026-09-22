@@ -17,6 +17,12 @@ impl Poster {
                     flow.gap = 0.0;
                     flow.trailing_break = true;
                 }
+                Piece::Image(destination, alt, style) => {
+                    let run = self.image_word(destination, alt, *style, size, width);
+                    flow.word_width += run.w;
+                    flow.word.push(run);
+                    flow.trailing_break = false;
+                }
                 Piece::Math(source, display, style) => {
                     let run = self.math_word(source, *display, *style, size, width);
                     flow.word_width += run.w;
@@ -55,7 +61,7 @@ impl Poster {
         let w = self.measure(text, style, size);
         flow.word_width += w;
         flow.trailing_break = false;
-        if let Some(last) = flow.word.last_mut().filter(|run| run.style == style && run.formula.is_none() && run.warning.is_none()) {
+        if let Some(last) = flow.word.last_mut().filter(|run| run.style == style && run.formula.is_none() && run.image.is_none() && run.warning.is_none()) {
             last.text.push_str(text);
             last.w += w;
         } else {
@@ -65,6 +71,7 @@ impl Poster {
                 w,
                 gap: 0.0,
                 formula: None,
+                image: None,
                 warning: None,
             });
         }
@@ -90,7 +97,7 @@ impl Poster {
             // The entire word exceeds the measure: consume each scalar once.
             // Zero-advance combining characters stay on their preceding line.
             for run in word {
-                if run.formula.is_some() {
+                if run.formula.is_some() || run.image.is_some() {
                     if !flow.line.is_empty() && flow.line_width + run.w > width {
                         flow.new_line();
                     }
@@ -127,7 +134,10 @@ impl Poster {
             if let Some(warning) = &word.warning {
                 self.warnings.push(warning.clone());
             }
-            if let Some(run) = &word.formula {
+            if let Some(run) = &word.image {
+                self.draw_image(run, pen, baseline);
+                pen += word.w;
+            } else if let Some(run) = &word.formula {
                 self.draw_math(run, pen, baseline, word.style.ink);
                 if word.style.strike && word.w > 0.0 {
                     self.ops.push(Op::Rule {
@@ -212,6 +222,7 @@ fn push_chunk(flow: &mut TextFlow, text: &mut String, width: &mut f64, style: RS
             w: *width,
             gap: 0.0,
             formula: None,
+                image: None,
             warning: warning.take(),
         });
         *width = 0.0;

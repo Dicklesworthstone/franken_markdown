@@ -304,18 +304,143 @@ export async function renderSemanticDiff(oldMarkdown, newMarkdown, options = {})
 }
 
 export async function renderBookSite(files, options = {}) {
+  // Capture the complete publication before initialization can yield to edits.
+  const prepared = bookSiteArguments(files, options);
+  const render = wasmBindings.renderBookSitePublication;
+  if (typeof render !== "function" && prepared.requiresPublication) {
+    throw Object.assign(new Error(
+      "Book site assets, includes, CSS, language and navigation require a WASM package rebuilt from matching source",
+    ), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  }
   await init();
-  const normalized = bookFilesOption(files);
-  return normalizeResult(
-    wasmRenderBookSite(
-      normalized.map((file) => file.path),
-      normalized.map((file) => file.source),
-      verbatimOption(options.title),
-      stringOption(options.font),
-      darkModeOption(options.darkMode),
-      fontScaleOption(options.fontScale ?? options.typeSize),
-    ),
-  );
+  try {
+    if (typeof render !== "function") {
+      const legacy = normalizeResult(wasmRenderBookSite(...prepared.legacyArgs));
+      // Preserve old packages for basic exports, but never claim they gained
+      // canonical cross-chapter navigation/search merely by replacing JS.
+      return Object.freeze({ ...legacy, diagnostics: [...legacy.diagnostics, {
+        severity: "warning", start: 0, end: 0,
+        message: "Legacy book site renderer: rebuild the matching WASM package for canonical chapter navigation and offline search.",
+      }] });
+    }
+    let bytes = render(...prepared.args);
+    if (!(bytes instanceof Uint8Array)
+        || Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]"
+        || bytes.byteLength < 4 || bytes.byteLength > 272 * 1024 * 1024
+        || bytes[0] !== 80 || bytes[1] !== 75 || bytes[2] !== 3 || bytes[3] !== 4) {
+      throw Object.assign(new Error("Book site renderer returned an invalid ZIP payload"), {
+        code: "INVALID_SITE_OUTPUT",
+      });
+    }
+    // A generated binding normally returns an owned array. Never retain an
+    // unrelated backing allocation if an adapter instead returns a subview.
+    if (bytes.byteOffset !== 0 || bytes.byteLength !== bytes.buffer.byteLength) bytes = bytes.slice();
+    return normalizeResult({
+      bytes, format: "book-site", mimeType: "application/zip", extension: "zip",
+      sourceLength: prepared.sourceLength, diagnosticsJson: () => "[]",
+    });
+  } catch (error) {
+    if (typeof error === "string") throw new Error(error.slice(0, 2048));
+    throw error;
+  }
+}
+
+function bookSiteArguments(files, options) {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("book site options must be an object");
+  }
+  const allowed = ["font", "darkMode", "title", "customCss", "fontScale", "typeSize",
+    "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "includeSources", "expandIncludes",
+    "allowRawHtml"];
+  for (const key of Reflect.ownKeys(options)) {
+    if (!allowed.includes(key)) {
+      const field = Object.getOwnPropertyDescriptor(options, key);
+      if (field && Object.hasOwn(field, "value") && field.value === undefined) continue;
+      throw Object.assign(new TypeError(`Unsupported book site option: ${String(key)}`), {
+        code: "UNSUPPORTED_SITE_OPTION",
+      });
+    }
+  }
+  // Read each caller-owned option once, including getters. All further work
+  // uses the captured values and private arrays, never the live options object.
+  const { font, darkMode, title, customCss, fontScale, typeSize, lang, toc = false,
+    tocDepth, pdfImages, fontAssets, includeSources = [], expandIncludes = true,
+    allowRawHtml = false } = options;
+  if (allowRawHtml !== false) {
+    throw Object.assign(new TypeError("Book site parsing is safe-only; allowRawHtml must be false"), {
+      code: "UNSUPPORTED_SITE_OPTION",
+    });
+  }
+  if (typeof toc !== "boolean" || typeof expandIncludes !== "boolean") {
+    throw new TypeError("toc and expandIncludes must be booleans");
+  }
+  if (!Array.isArray(files) || files.length === 0 || files.length > 4096
+      || !Array.isArray(includeSources) || includeSources.length > 4096 - files.length) {
+    throw new RangeError("book needs 1..=4096 chapters and include sources combined");
+  }
+  if (!expandIncludes && includeSources.length) {
+    throw new TypeError("includeSources requires expandIncludes");
+  }
+  const chapters = bookFilesOption(files);
+  const resources = includeSources.length ? bookFilesOption(includeSources) : [];
+  let total = 0, sourceLength = 0;
+  for (const file of [...chapters, ...resources]) {
+    total += bookPdfTextBytes(file.path, 64 * 1024 * 1024 - total);
+    const length = bookPdfTextBytes(file.source, 64 * 1024 * 1024 - total);
+    total += length;
+    sourceLength += length;
+  }
+  const family = stringOption(font), dark = darkModeOption(darkMode);
+  const heading = verbatimOption(title), language = stringOption(lang);
+  const css = customCss == null ? undefined : String(customCss);
+  const scale = fontScaleOption(fontScale ?? typeSize), depth = integerOption(tocDepth, "tocDepth");
+  if (depth !== undefined && depth > 6) throw new RangeError("tocDepth must be 1..6");
+  let metadata = 0;
+  for (const text of [family, dark, heading, language, css]) {
+    if (text !== undefined) metadata += bookPdfTextBytes(text, 4 * 1024 * 1024 - metadata);
+  }
+  for (const [input, maximum, label] of [[pdfImages, 4096, "pdfImages"], [fontAssets, 5, "fontAssets"]]) {
+    if (input != null && (!Array.isArray(input) || input.length > maximum)) {
+      throw new RangeError(`${label} must be an array with at most ${maximum} entries`);
+    }
+  }
+  const images = pdfImagesOption(pdfImages), fonts = fontAssetsOption(fontAssets);
+  const names = new Set();
+  let imageBytes = 0, nameBytes = 0, fontBytes = 0;
+  for (const image of images) {
+    nameBytes += bookPdfTextBytes(image.destination, 8192);
+    if (nameBytes > 65536) throw new RangeError("book image destinations exceed 64 KiB");
+    if (names.has(image.destination)) throw new TypeError("book image destinations must be unique");
+    names.add(image.destination);
+    imageBytes += bookPdfAssetLength(image.bytes);
+    if (imageBytes > 128 * 1024 * 1024) throw new RangeError("book images exceed 128 MiB");
+  }
+  for (const asset of fonts) {
+    fontBytes += bookPdfAssetLength(asset.bytes);
+    if (fontBytes > 128 * 1024 * 1024) throw new RangeError("book fonts exceed 128 MiB");
+  }
+  // All budgets are admitted before any payload cloning or WASM initialization.
+  const flat = new Uint8Array(imageBytes), lengths = new Uint32Array(images.length);
+  let offset = 0;
+  for (let i = 0; i < images.length; i++) {
+    flat.set(images[i].bytes, offset);
+    lengths[i] = images[i].bytes.byteLength;
+    offset += lengths[i];
+  }
+  const ownedFonts = fonts.map(asset => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
+  const paths = chapters.map(file => file.path), sources = chapters.map(file => file.source);
+  return {
+    sourceLength,
+    requiresPublication: resources.length > 0 || !expandIncludes || css !== undefined
+      || language !== undefined || toc || depth !== undefined || images.length > 0 || fonts.length > 0,
+    legacyArgs: [paths, sources, heading, family, dark, scale],
+    args: [paths, sources, resources.map(file => file.path), resources.map(file => file.source),
+      expandIncludes, heading, family, dark, scale, language, css, toc, depth,
+      images.map(image => image.destination), flat, lengths,
+      fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
+      fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
+      fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts)],
+  };
 }
 
 export async function renderBookPdf(files, options = {}) {

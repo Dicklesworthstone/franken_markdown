@@ -112,6 +112,26 @@ export interface FmdRenderOutput {
   filename(baseName?: string): string;
 }
 
+/** Canonical offline HTML-site options. PDF-only settings are rejected rather
+ * than silently discarded. Parsing remains safe; raw HTML is not passed through.
+ */
+export interface FmdBookSiteOptions extends Pick<FmdRenderOptions,
+  "font" | "darkMode" | "title" | "customCss" | "fontScale" | "typeSize" |
+  "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets"> {
+  /** Expand selected sources in Rust (default true); never read external files. */
+  expandIncludes?: boolean;
+  /** Additional UTF-8 include resources. These never become chapter pages.
+   * Chapters/resources share the 4096-source and 64 MiB text/path budget.
+   */
+  includeSources?: readonly FmdBookFile[];
+  allowRawHtml?: false;
+}
+export interface FmdBookSiteOutput extends Omit<FmdRenderOutput, "format" | "mimeType" | "extension"> {
+  format: "book-site";
+  mimeType: "application/zip";
+  extension: "zip";
+}
+
 export interface FmdCapabilities {
   schema: "fmd-wasm-capabilities-v1";
   outputs: FmdOutputFormat[];
@@ -149,7 +169,7 @@ export interface FmdRenderer {
   accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
   documentStats(markdown: string): Promise<FmdDocumentStats>;
   renderBookPdf(files: FmdBookFile[], options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
-  renderBookSite(files: FmdBookFile[], options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+  renderBookSite(files: readonly FmdBookFile[], options?: FmdBookSiteOptions): Promise<FmdBookSiteOutput>;
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderInteractiveHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
@@ -236,9 +256,9 @@ export function renderBookPdf(
   options?: FmdPdfRenderOptions,
 ): Promise<FmdRenderOutput>;
 export function renderBookSite(
-  files: FmdBookFile[],
-  options?: FmdRenderOptions,
-): Promise<FmdRenderOutput>;
+  files: readonly FmdBookFile[],
+  options?: FmdBookSiteOptions,
+): Promise<FmdBookSiteOutput>;
 export function renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
 export function renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
 export function renderInteractiveHtml(

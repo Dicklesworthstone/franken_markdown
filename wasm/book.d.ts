@@ -1,3 +1,5 @@
+import type { FmdPdfPage } from "./franken_markdown.js";
+
 /** One chapter. Array order is reading order; paths are book-relative. */
 export interface BookFile {
   path: string;
@@ -46,6 +48,13 @@ export interface BookOptions {
   fontScale?: number;
   toc?: boolean;
   pageNumbers?: boolean;
+  /** Default paper/margins for PDF exports only; HTML/EPUB are unaffected.
+   * Uses the single-document point-based geometry contract. Captured before
+   * asynchronous initialization or worker transfer, with no host references.
+   * An explicit page requires FmdBook.renderPdfWithPage in the WASM package;
+   * unsupported packages fail rather than silently using the wrong paper.
+   */
+  page?: FmdPdfPage;
   images?: readonly BookImage[];
   /** Explicit host faces apply to PDF/HTML and opt EPUB into shared TrueType
    * subsets across all chapters. Missing slots then use bundled faces.
@@ -75,8 +84,12 @@ export interface BookSession {
   readonly sourceLength: number;
   setImage(destination: string, bytes: BookAssetBytes): BookSession;
   setFont(slot: BookFontSlot, bytes: BookAssetBytes, weight?: number): BookSession;
-  /** Synchronous rendering after asynchronous session creation. */
-  renderPdf(): BookOutput;
+  /** Synchronous rendering after asynchronous session creation. An optional
+   * page overrides only this export, without reparsing or changing defaults.
+   * Omitted/undefined page uses BookOptions.page; page: {} requests Letter
+   * with 72-point margins. No other per-export option is accepted.
+   */
+  renderPdf(options?: Pick<BookOptions, "page">): BookOutput;
   renderEpub(): BookOutput;
   renderSite(): BookOutput;
   /** Check local HTML navigation on the retained AST without rendering pages. */

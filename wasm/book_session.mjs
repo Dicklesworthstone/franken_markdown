@@ -1,5 +1,7 @@
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
 // can be tested without replacing the production renderer or its WASM binary.
+import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
+
 const MAX_CHAPTERS = 4096;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES = 32 * 1024 * 1024;
@@ -94,6 +96,7 @@ function fontAsset(value) {
 
 function normalizeOptions(value) {
   const options = record(value, "options");
+  const page = normalizePdfPage(options.page);
   const font = options.font ?? "sans";
   const darkMode = options.darkMode ?? "auto";
   if (font !== "sans" && font !== "serif") throw new TypeError("font must be sans or serif");
@@ -132,6 +135,7 @@ function normalizeOptions(value) {
     customCss: optionalString(options.customCss, "customCss"),
     toc: boolean(options.toc, "toc"),
     pageNumbers: boolean(options.pageNumbers, "pageNumbers"),
+    page,
     font,
     darkMode,
     fontScale,
@@ -231,11 +235,31 @@ function output(bytes, kind, sourceLength) {
   });
 }
 
+// Export-local options deliberately cannot reset metadata, replace assets, or
+// silently accept misspelled geometry fields. Do not invoke host accessors.
+function exportPage(value, fallback) {
+  const invalid = () => Object.assign(
+    new TypeError("book PDF export options must be a plain data object containing only page"),
+    { code: "INVALID_OPTIONS" },
+  );
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw invalid();
+  let page;
+  for (const key of Reflect.ownKeys(value)) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (key !== "page" || !field || !Object.hasOwn(field, "value")) throw invalid();
+    page = field.value;
+  }
+  return page === undefined ? fallback : normalizePdfPage(page);
+}
+
 export function createBookBindings(loadBookClass) {
   class BookSession {
     #raw;
-    constructor(raw) {
+    #page;
+    constructor(raw, page) {
       this.#raw = raw;
+      this.#page = page;
     }
     #live() {
       if (this.#raw === null) throw new Error("book session has been disposed");
@@ -260,9 +284,26 @@ export function createBookBindings(loadBookClass) {
       if (asset.weight !== undefined) raw.setFontWeight(asset.slot, asset.weight);
       return this;
     }
-    renderPdf() {
+    renderPdf(options = {}) {
+      this.#live();
+      const page = exportPage(options, this.#page);
+      // A Proxy trap may dispose the session during admission. Never retain a
+      // pre-validation raw handle across caller-controlled object inspection.
       const raw = this.#live();
-      return output(raw.renderPdf(), "pdf", raw.sourceLength);
+      if (page === undefined) return output(raw.renderPdf(), "pdf", raw.sourceLength);
+      if (typeof raw.renderPdfWithPage !== "function") {
+        throw Object.assign(new Error(
+          "this WASM build lacks FmdBook.renderPdfWithPage; rebuild the matching package for book PDF page geometry",
+        ), { code: "UNSUPPORTED_PDF_PAGE" });
+      }
+      let bytes;
+      try {
+        bytes = raw.renderPdfWithPage(pdfPageGeometry(page));
+      } catch (error) {
+        if (typeof error === "string") throw new Error(error.slice(0, 2048));
+        throw error;
+      }
+      return output(bytes, "pdf", raw.sourceLength);
     }
     renderEpub() {
       const raw = this.#live();
@@ -361,7 +402,7 @@ export function createBookBindings(loadBookClass) {
         raw.setFont(font.slot, font.bytes);
         if (font.weight !== undefined) raw.setFontWeight(font.slot, font.weight);
       }
-      return new BookSession(raw);
+      return new BookSession(raw, settings.page);
     } catch (error) {
       raw.free();
       throw error;

@@ -147,13 +147,13 @@ fn svg_recoverable_diagnostics_are_returned_with_saved_and_inline_output() {
 }
 
 #[test]
-fn discovery_exposes_nested_resource_fields_only_on_render_tools() {
+fn discovery_exposes_nested_resource_fields_on_render_and_verify_tools() {
     let list = tools_list_result();
     let JsonValue::Array(tools) = list.get("tools").unwrap() else { panic!("tools array") };
     for tool in tools {
         let name = tool.get("name").unwrap().as_str().unwrap();
         let properties = tool.get("inputSchema").unwrap().get("properties").unwrap();
-        if name.starts_with("fmd.render_") {
+        if name.starts_with("fmd.render_") || name == "fmd.verify" {
             for field in ["images", "fonts"] {
                 let schema = properties.get(field).unwrap();
                 assert_eq!(schema.get("type").unwrap().as_str(), Some("array"));

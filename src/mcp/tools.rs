@@ -19,6 +19,9 @@ pub(super) mod resources;
 #[path = "file_options.rs"]
 pub(super) mod file_options;
 
+#[path = "page.rs"]
+mod page;
+
 pub(super) type ToolError = (i32, String, &'static str);
 type Field = (&'static str, &'static str, &'static str);
 type ToolSpec = (&'static str, &'static str, &'static [Field], &'static [&'static str]);
@@ -41,6 +44,10 @@ const HTML_FIELDS: &[Field] = &[
     ("fontScale", "string", "Typographic scale preset or multiplier ('sm', '125%')"),
 ];
 const PDF_FIELDS: &[Field] = &[
+    ("page", "object", "PDF paper, orientation and margins in points"),
+    ("baseFontSize", "number", "Base PDF text size in points (6..24)"),
+    ("headingScale", "number", "Per-step heading ratio (1.05..2)"),
+    ("tableFontSize", "number", "Nominal table size in points (5..24), capped by the renderer to the body size"),
     ("images", "array", "Explicit image bytes keyed by Markdown destination; never fetched"),
     ("fonts", "array", "Explicit TrueType bytes and optional weights for canonical font slots"),
     ("markdown", "string", "Markdown source text to render"),
@@ -74,7 +81,7 @@ const FILE_FIELDS: &[Field] = &[
 const TOOLS: &[ToolSpec] = &[
     ("fmd.render_html", "Render Markdown to self-contained HTML with inlined fonts and styles.", HTML_FIELDS, &["markdown"]),
     ("fmd.render_pdf", "Render Markdown to deterministic PDF with embedded subsets, returned as base64.", PDF_FIELDS, &["markdown"]),
-    ("fmd.verify", "Audit text, internal anchors, accessibility, and horizontal overflow.", VERIFY_FIELDS, &["markdown"]),
+    ("fmd.verify", "Audit configured PDF layout, text, anchors, accessibility, and overflow; not a PDF/A conformance validator.", VERIFY_FIELDS, &["markdown"]),
     ("fmd.capabilities", "Discover the stable feature contract and theme model.", &[], &[]),
     ("fmd.render_file", "Render a local Markdown file. HTML/SVG return text; PDF/EPUB return base64. Without out, both returns a JSON outputs array with format, mimeType, encoding and data. With out, all artifacts are rendered and staged before replacement; the source is protected.", FILE_FIELDS, &["path"]),
 ];
@@ -87,14 +94,39 @@ fn integer_bounds(name: &str) -> (u64, u64) {
     }
 }
 
+fn number_bounds(name: &str) -> Option<(f64, f64)> {
+    match name {
+        "maxWidthPt" => Some((144.0, 14400.0)),
+        "baseFontSize" => Some((6.0, 24.0)),
+        "headingScale" => Some((1.05, 2.0)),
+        "tableFontSize" => Some((5.0, 24.0)),
+        _ => None,
+    }
+}
+
+fn fields_for(name: &str, base: &[Field]) -> Vec<Field> {
+    if name == "fmd.render_file" { return file_options::fields(); }
+    if name != "fmd.verify" { return base.to_vec(); }
+    // Verification uses the PDF layout settings and explicit byte resources.
+    // PDF/A is serialization/conformance, not a claim the verifier can make.
+    let mut fields = BTreeMap::new();
+    for &field in base.iter().chain(PDF_FIELDS) {
+        if !matches!(field.0, "pdfA" | "pdfAStrict") {
+            fields.entry(field.0).or_insert(field);
+        }
+    }
+    fields.into_values().collect()
+}
+
 pub fn tools_list_result() -> JsonValue {
     let tools = TOOLS.iter().map(|(name, description, fields, required)| {
-        let fields = if *name == "fmd.render_file" { file_options::fields() } else { fields.to_vec() };
+        let fields = fields_for(name, fields);
         let file_tool = *name == "fmd.render_file";
         let properties = fields.iter().map(|(name, kind, description)| {
             if matches!(*name, "images" | "fonts") {
                 return ((*name).to_owned(), resources::schema(name));
             }
+            if *name == "page" { return ((*name).to_owned(), page::schema()); }
             let mut property = BTreeMap::from([
                 ("type".to_string(), JsonValue::String((*kind).to_string())),
                 ("description".to_string(), JsonValue::String((*description).to_string())),
@@ -104,9 +136,9 @@ pub fn tools_list_result() -> JsonValue {
                     "{description}. Supported targets: {}", file_options::supported_targets(name),
                 )));
             }
-            if *name == "maxWidthPt" {
-                property.insert("minimum".to_string(), JsonValue::Number(144.0));
-                property.insert("maximum".to_string(), JsonValue::Number(14400.0));
+            if let Some((min, max)) = number_bounds(name) {
+                property.insert("minimum".to_string(), JsonValue::Number(min));
+                property.insert("maximum".to_string(), JsonValue::Number(max));
             }
             if *kind == "integer" {
                 let (min, max) = integer_bounds(name);
@@ -149,8 +181,9 @@ fn validate_arguments(args: &JsonValue, fields: &[Field], required: &[&str]) -> 
             "string" => matches!(value, JsonValue::String(_)),
             "boolean" => matches!(value, JsonValue::Bool(_)),
             "array" => matches!(value, JsonValue::Array(_)),
+            "object" => matches!(value, JsonValue::Object(_)),
             "number" => value.as_f64().is_some_and(|number| number.is_finite()
-                && (name != "maxWidthPt" || (144.0..=14400.0).contains(&number))),
+                && number_bounds(name).is_none_or(|(min, max)| (min..=max).contains(&number))),
             "integer" => {
                 let (min, max) = integer_bounds(name);
                 value.as_u64().is_some_and(|value| (min..=max).contains(&value))
@@ -246,8 +279,13 @@ fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError
     if strict && mode == PdfAMode::Off {
         return Err(invalid_options("pdfAStrict requires pdfA='2b'", "invalid_pdf_a"));
     }
+    let mut theme = theme(args)?;
+    if let Some(page) = page::parse(args.get("page"))? { theme.page = page; }
     Ok((PdfOptions {
-        theme: theme(args)?,
+        theme,
+        base_font_size: args.get("baseFontSize").and_then(JsonValue::as_f64).map(|n| n as f32),
+        heading_scale: args.get("headingScale").and_then(JsonValue::as_f64).map(|n| n as f32),
+        table_font_size: args.get("tableFontSize").and_then(JsonValue::as_f64).map(|n| n as f32),
         title: string(args, "title").map(str::to_string),
         author: string(args, "author").map(str::to_string),
         lang: string(args, "lang").map(str::to_string),
@@ -284,7 +322,7 @@ pub fn handle_tool_call(params: Option<&JsonValue>, max_input_bytes: u64) -> Res
     ))?;
     let default_args = JsonValue::Object(BTreeMap::new());
     let args = params.get("arguments").unwrap_or(&default_args);
-    let fields = if name == "fmd.render_file" { file_options::fields() } else { fields.to_vec() };
+    let fields = fields_for(name, fields);
     validate_arguments(args, &fields, required)?;
     let started = Instant::now();
     let result = execute(name, args, max_input_bytes);
@@ -327,8 +365,12 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
         }
         "fmd.verify" => {
             let source = markdown(args, limit)?;
+            let (mut options, _) = pdf_options(args)?;
+            let assets = resources::parse(args)?;
+            options.font_assets = assets.fonts;
+            options.image_assets = assets.images;
             let doc = crate::parse_markdown(source);
-            let report = crate::verify::verify_pdf(&doc, &PdfOptions::default()).ok_or_else(|| (
+            let report = crate::verify::verify_pdf(&doc, &options).ok_or_else(|| (
                 ERROR_RENDER_FAILED, "Verification failed: cannot load fonts".to_string(), "verify_failed",
             ))?;
             let report = if boolean(args, "a11y") { crate::verify::filter_a11y(report) } else { report };

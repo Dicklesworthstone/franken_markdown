@@ -4,6 +4,8 @@ import { createBookWorkerClient } from "./book_worker.mjs";
 export function createBookWorker(options = {}) {
   return createBookWorkerClient({
     ...options,
-    workerFactory: options.workerFactory ?? (() => new Worker(new URL("./book_worker_entry.js", import.meta.url), { type: "module" }))
+    workerFactory:
+      options.workerFactory ??
+      (() => new Worker(new URL("./book_worker_entry.js", import.meta.url), { type: "module" })),
   });
 }

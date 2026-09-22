@@ -1,4 +1,4 @@
-import { createRenderer } from "../franken_markdown.js";
+import { createWorkerRenderer } from "../document_worker.mjs";
 
 const sampleMarkdown = `# franken_markdown demo
 
@@ -23,193 +23,209 @@ fn main() {
 - Download a PDF generated from the same Markdown source.
 `;
 
-const els = {
-  markdown: requiredElement("#markdown"),
-  render: requiredElement("#render"),
-  downloadPdf: requiredElement("#download-pdf"),
-  preview: requiredElement("#preview"),
-  diagnostics: requiredElement("#diagnostics"),
-  status: requiredElement("#status"),
-  sourceSize: requiredElement("#source-size"),
-  previewMeta: requiredElement("#preview-meta"),
-  font: requiredElement("#font"),
-  darkMode: requiredElement("#dark-mode"),
-  title: requiredElement("#title"),
-  author: requiredElement("#author"),
-  customCss: requiredElement("#custom-css"),
-  allowHtml: requiredElement("#allow-html"),
-  lineNumbers: requiredElement("#line-numbers")
-};
-
-let renderer = null;
-let renderTimer = 0;
-let lastPdfUrl = null;
-
-function requiredElement(selector) {
-  const element = document.querySelector(selector);
-  if (element === null) {
-    throw new Error(`franken_markdown demo is missing required element ${selector}`);
+// The factory seam is for host integration and controller tests, not a renderer
+// selected by page content. The production default only starts module workers.
+export function createDemoController(doc, win, factory = createWorkerRenderer) {
+  const els = {};
+  for (const [key, selector] of Object.entries({
+    markdown: "#markdown", render: "#render", downloadPdf: "#download-pdf",
+    preview: "#preview", diagnostics: "#diagnostics", status: "#status",
+    sourceSize: "#source-size", previewMeta: "#preview-meta", font: "#font",
+    darkMode: "#dark-mode", title: "#title", author: "#author", customCss: "#custom-css",
+    allowHtml: "#allow-html", lineNumbers: "#line-numbers",
+  })) {
+    els[key] = doc.querySelector(selector);
+    if (!els[key]) throw new Error(`franken_markdown demo is missing required element ${selector}`);
   }
-  return element;
-}
-
-els.markdown.value = sampleMarkdown;
-setBusy(true, "loading wasm package");
-createRenderer()
-  .then((created) => {
-    renderer = created;
-    setBusy(false, "ready");
-    schedulePreview();
-  })
-  .catch((error) => {
-    setBusy(false, "wasm load failed");
-    showError(error);
-  });
-
-els.render.addEventListener("click", () => {
-  void renderPreview();
-});
-
-els.downloadPdf.addEventListener("click", () => {
-  void downloadPdf();
-});
-
-for (const input of [
-  els.markdown,
-  els.font,
-  els.darkMode,
-  els.title,
-  els.author,
-  els.customCss,
-  els.allowHtml,
-  els.lineNumbers
-]) {
-  input.addEventListener("input", schedulePreview);
-  input.addEventListener("change", schedulePreview);
-}
-
-function schedulePreview() {
-  window.clearTimeout(renderTimer);
-  updateSourceSize();
-  renderTimer = window.setTimeout(() => {
-    void renderPreview();
-  }, 180);
-}
-
-async function renderPreview() {
-  if (renderer === null) {
-    return;
-  }
-  const markdown = els.markdown.value;
-  const options = renderOptions();
-  if (markdown.trim() === "") {
-    els.preview.srcdoc = "";
-    els.previewMeta.textContent = "empty source";
-    renderDiagnostics([]);
-    return;
-  }
-  setBusy(true, "rendering html");
-  try {
-    const output = await renderer.renderHtml(markdown, options);
-    els.preview.srcdoc = output.text();
-    els.previewMeta.textContent = `${output.sourceLength} source bytes -> ${output.bytes.byteLength} html bytes`;
-    renderDiagnostics(output.diagnostics);
-    setBusy(false, "ready");
-  } catch (error) {
-    setBusy(false, "render failed");
-    showError(error);
-  }
-}
-
-async function downloadPdf() {
-  if (renderer === null) {
-    return;
-  }
-  const markdown = els.markdown.value;
-  if (markdown.trim() === "") {
-    showError(new Error("Markdown input is empty; add content before downloading PDF."));
-    return;
-  }
-  setBusy(true, "rendering pdf");
-  try {
-    const output = await renderer.renderPdf(markdown, renderOptions());
-    if (lastPdfUrl !== null) {
-      URL.revokeObjectURL(lastPdfUrl);
-    }
-    lastPdfUrl = URL.createObjectURL(output.blob());
-    const link = document.createElement("a");
-    link.href = lastPdfUrl;
-    link.download = output.filename(filenameBase());
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    els.previewMeta.textContent = `${output.sourceLength} source bytes -> ${output.bytes.byteLength} pdf bytes`;
-    renderDiagnostics(output.diagnostics);
-    setBusy(false, "pdf ready");
-  } catch (error) {
-    setBusy(false, "pdf failed");
-    showError(error);
-  }
-}
-
-function renderOptions() {
-  const customCss = els.customCss.value.trim() === "" ? undefined : els.customCss.value;
-  return {
-    font: els.font.value,
-    darkMode: els.darkMode.value,
-    title: textOrUndefined(els.title.value),
-    author: textOrUndefined(els.author.value),
-    customCss,
-    allowRawHtml: els.allowHtml.checked,
-    codeLineNumbers: els.lineNumbers.checked,
-    metadataEpochSeconds: 1700000000
+  let alive = true, suspended = false, composing = false, generation = 0;
+  let timer = null, lastPdfUrl = null;
+  const clients = { html: null, pdf: null }, jobs = { html: null, pdf: null }, listeners = [];
+  const fields = ["markdown", "font", "darkMode", "title", "author", "customCss", "allowHtml", "lineNumbers"];
+  const raw = () => Object.fromEntries(fields.map(key =>
+    [key, key === "allowHtml" || key === "lineNumbers" ? els[key].checked : els[key].value]));
+  const unchanged = expected => {
+    const current = raw();
+    return fields.every(key => current[key] === expected[key]);
   };
-}
-
-function textOrUndefined(value) {
-  const text = String(value).trim();
-  return text === "" ? undefined : text;
-}
-
-function filenameBase() {
-  return textOrUndefined(els.title.value)
-    ?.toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    || "franken-markdown";
-}
-
-function renderDiagnostics(diagnostics) {
-  els.diagnostics.replaceChildren();
-  if (diagnostics.length === 0) {
-    const item = document.createElement("li");
-    item.className = "empty";
-    item.textContent = "No diagnostics.";
-    els.diagnostics.appendChild(item);
-    return;
+  const current = (kind, job) => alive && !suspended && !composing && jobs[kind] === job
+    && generation === job.generation && unchanged(job.raw);
+  const listen = (target, event, handler) => {
+    target.addEventListener(event, handler);
+    listeners.push([target, event, handler]);
+  };
+  function status(message) {
+    els.render.textContent = jobs.html ? "Cancel render" : "Render";
+    els.downloadPdf.textContent = jobs.pdf ? "Cancel PDF" : "Download PDF";
+    els.render.disabled = els.downloadPdf.disabled = !alive || suspended || composing;
+    els.status.textContent = jobs.html && jobs.pdf ? "rendering HTML and PDF in workers"
+      : jobs.html ? "rendering HTML in worker" : jobs.pdf ? "rendering PDF in worker" : message;
   }
-  for (const diagnostic of diagnostics) {
-    const item = document.createElement("li");
-    item.className = diagnostic.severity === "error" ? "error" : "";
-    item.textContent = `${diagnostic.severity} ${diagnostic.start}-${diagnostic.end}: ${diagnostic.message}`;
+  function diagnostics(items) {
+    els.diagnostics.replaceChildren();
+    for (const diagnostic of items.length ? items : [{ severity: "empty", message: "No diagnostics." }]) {
+      const item = doc.createElement("li");
+      item.className = diagnostic.severity === "empty" ? "empty" : diagnostic.severity === "error" ? "error" : "";
+      item.textContent = diagnostic.severity === "empty" ? diagnostic.message
+        : `${diagnostic.severity} ${diagnostic.start}-${diagnostic.end}: ${diagnostic.message}`;
+      els.diagnostics.appendChild(item);
+    }
+  }
+  function errorMessage(error) {
+    els.diagnostics.replaceChildren();
+    const item = doc.createElement("li");
+    item.className = "error";
+    item.textContent = `${error?.code ? `${error.code}: ` : ""}${error instanceof Error ? error.message : String(error)}`;
     els.diagnostics.appendChild(item);
   }
+  function clearTimer() {
+    if (timer !== null) win.clearTimeout(timer);
+    timer = null;
+  }
+  function revokePdf() {
+    if (lastPdfUrl !== null) win.URL.revokeObjectURL(lastPdfUrl);
+    lastPdfUrl = null;
+  }
+  function cancel(kind) {
+    const job = jobs[kind];
+    jobs[kind] = null; // Fence publication before abort listeners can settle work.
+    if (job) {
+      job.abort.abort();
+      clients[kind]?.dispose();
+      clients[kind] = null;
+    }
+  }
+  function invalidate() {
+    generation++;
+    clearTimer();
+    cancel("html");
+    cancel("pdf");
+    revokePdf();
+    els.preview.srcdoc = "";
+    els.previewMeta.textContent = "preview out of date";
+  }
+  function options(kind, snapshot) {
+    const common = { font: snapshot.font, darkMode: snapshot.darkMode,
+      title: snapshot.title.trim() || undefined, allowRawHtml: snapshot.allowHtml };
+    return kind === "html" ? { ...common,
+      customCss: snapshot.customCss.trim() ? snapshot.customCss : undefined }
+      : { ...common, author: snapshot.author.trim() || undefined,
+        codeLineNumbers: snapshot.lineNumbers, metadataEpochSeconds: 1700000000 };
+  }
+  async function run(kind) {
+    if (!alive || suspended || composing) return false;
+    if (kind === "html") clearTimer();
+    cancel(kind);
+    const captured = raw();
+    if (!captured.markdown.trim()) {
+      invalidate();
+      els.previewMeta.textContent = "empty source";
+      diagnostics([]);
+      status("empty source");
+      return false;
+    }
+    const job = { raw: captured, generation, abort: new AbortController() };
+    jobs[kind] = job;
+    if (kind === "html") {
+      els.preview.srcdoc = "";
+      els.previewMeta.textContent = "rendering";
+    }
+    status("");
+    let completion = "render failed";
+    try {
+      if (!clients[kind] || clients[kind].disposed)
+        clients[kind] = factory({ maxPendingOperations: 1 });
+      const output = await clients[kind].render(kind, captured.markdown, options(kind, captured), { signal: job.abort.signal });
+      if (!current(kind, job)) {
+        if (jobs[kind] === job) {
+          els.preview.srcdoc = "";
+          els.previewMeta.textContent = "source or settings changed; render again";
+        }
+        return false;
+      }
+      if (kind === "html") {
+        // The existing preview iframe remains sandboxed. Worker output is not
+        // inserted into the host DOM, and exporting does not grant raw HTML trust.
+        els.preview.srcdoc = output.text();
+      } else {
+        revokePdf();
+        const url = win.URL.createObjectURL(output.blob());
+        if (!current(kind, job)) { win.URL.revokeObjectURL(url); return false; }
+        lastPdfUrl = url;
+        const link = doc.createElement("a");
+        link.href = url;
+        const base = captured.title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "franken-markdown";
+        link.download = output.filename(base);
+        try {
+          doc.body.appendChild(link);
+          if (!current(kind, job)) { revokePdf(); return false; }
+          link.click();
+        } finally { link.remove(); }
+      }
+      els.previewMeta.textContent = `${output.sourceLength} source bytes -> ${output.bytes.byteLength} ${kind} bytes`;
+      diagnostics(output.diagnostics);
+      completion = kind === "pdf" ? "PDF ready" : "ready";
+      return true;
+    } catch (error) {
+      if (current(kind, job)) errorMessage(error);
+      return false;
+    } finally {
+      if (jobs[kind] === job) {
+        jobs[kind] = null;
+        status(unchanged(captured) ? completion : "source or settings changed; render again");
+      }
+    }
+  }
+  function schedulePreview() {
+    if (!alive || suspended) return;
+    invalidate();
+    els.sourceSize.textContent = `${new TextEncoder().encode(els.markdown.value).byteLength} bytes`;
+    status(composing ? "composing text" : "waiting for edits");
+    if (!composing) timer = win.setTimeout(() => { timer = null; void run("html"); }, 180);
+  }
+  for (const key of fields) {
+    listen(els[key], "input", schedulePreview);
+    listen(els[key], "change", schedulePreview);
+  }
+  listen(els.markdown, "compositionstart", () => {
+    composing = true;
+    invalidate();
+    status("composing text");
+  });
+  listen(els.markdown, "compositionend", () => { composing = false; schedulePreview(); });
+  listen(els.render, "click", () => {
+    if (jobs.html) { cancel("html"); status("render cancelled"); }
+    else void run("html");
+  });
+  listen(els.downloadPdf, "click", () => {
+    if (jobs.pdf) { cancel("pdf"); status("PDF cancelled"); }
+    else void run("pdf");
+  });
+  listen(win, "pagehide", () => {
+    suspended = true;
+    composing = false;
+    invalidate();
+    for (const kind of ["html", "pdf"]) { clients[kind]?.dispose(); clients[kind] = null; }
+    els.allowHtml.checked = false;
+    status("paused; source retained");
+  });
+  listen(win, "pageshow", event => {
+    if (event.persisted) { suspended = false; schedulePreview(); }
+  });
+  if (!els.markdown.value) els.markdown.value = sampleMarkdown;
+  schedulePreview();
+  return Object.freeze({
+    renderPreview: () => run("html"), downloadPdf: () => run("pdf"),
+    dispose() {
+      if (!alive) return;
+      alive = false;
+      invalidate();
+      for (const kind of ["html", "pdf"]) { clients[kind]?.dispose(); clients[kind] = null; }
+      for (const [target, event, handler] of listeners) target.removeEventListener(event, handler);
+      status("demo disposed; source retained");
+    },
+  });
 }
 
-function showError(error) {
-  els.diagnostics.replaceChildren();
-  const item = document.createElement("li");
-  item.className = "error";
-  item.textContent = error instanceof Error ? error.message : String(error);
-  els.diagnostics.appendChild(item);
-}
-
-function updateSourceSize() {
-  els.sourceSize.textContent = `${new TextEncoder().encode(els.markdown.value).byteLength} bytes`;
-}
-
-function setBusy(busy, message) {
-  els.status.textContent = message;
-  els.render.disabled = busy;
-  els.downloadPdf.disabled = busy;
+if (typeof document !== "undefined" && typeof window !== "undefined") {
+  createDemoController(document, window);
 }

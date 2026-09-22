@@ -1,20 +1,37 @@
-import type { FlowGlyphOutlines, FlowHit, FlowIdentity, FlowLayoutOptions, FlowRect,
-  FlowSnapshot, FlowSnapshotOptions, FlowToken, FlowTokenInput } from "./flow.js";
+import type {
+  FlowGlyphOutlines,
+  FlowHit,
+  FlowIdentity,
+  FlowLayoutOptions,
+  FlowRect,
+  FlowSnapshot,
+  FlowSnapshotOptions,
+  FlowToken,
+  FlowTokenInput,
+  FlowViewportOptions,
+  FlowViewportPage,
+} from "./flow.js";
 
 /** Structural subset satisfied by both synchronous and worker flow sessions. */
 export interface CanvasFlowSession {
   readonly disposed: boolean;
   readonly token: FlowToken;
   readonly layoutOptions: Required<FlowLayoutOptions>;
+  /** Only true enables indexed reads; missing/false preserves legacy snapshots. */
+  readonly supportsViewport?: boolean;
+  viewport?(options: FlowViewportOptions): FlowViewportPage | Promise<FlowViewportPage>;
   snapshot(options?: FlowSnapshotOptions): FlowSnapshot | Promise<FlowSnapshot>;
-  glyphOutlines(fontId: FlowIdentity, glyphIds: readonly number[] | Uint16Array): FlowGlyphOutlines | Promise<FlowGlyphOutlines>;
+  glyphOutlines(
+    fontId: FlowIdentity,
+    glyphIds: readonly number[] | Uint16Array,
+  ): FlowGlyphOutlines | Promise<FlowGlyphOutlines>;
   hitTest(x: number, y: number, token: FlowTokenInput): FlowHit | Promise<FlowHit>;
 }
 /** May lower the defaults, never raise them. Counts bound retained/processed
  * structures, not exact browser allocator overhead or GPU memory. */
 export interface FlowCanvasLimits {
   maxPixels?: number; // 16,777,216 pixels per surface; staging and target coexist.
-  maxScannedItems?: number; // 500,000: the complete inventory is still scanned.
+  maxScannedItems?: number; // 500,000 candidate visits across indexed pages, or the full legacy inventory.
   maxVisibleItems?: number; // 10,000
   maxGlyphs?: number; // 50,000
   maxDrawCommands?: number; // 2,000,000 including repeated glyph drawing.
@@ -22,8 +39,19 @@ export interface FlowCanvasLimits {
   maxCachedCommands?: number; // 262,144
   maxFrameCommands?: number; // 1,048,576 distinct visible path commands.
 }
-export type FlowCanvasColor = "background" | "text" | "heading" | "code" | "link"
-  | "border" | "table-border" | "accent" | "quote" | "muted" | "strikethrough" | "selection";
+export type FlowCanvasColor =
+  | "background"
+  | "text"
+  | "heading"
+  | "code"
+  | "link"
+  | "border"
+  | "table-border"
+  | "accent"
+  | "quote"
+  | "muted"
+  | "strikethrough"
+  | "selection";
 export interface FlowCanvasOptions {
   /** Must return a fresh surface of exactly the requested pixel size, never
    * the target. Defaults to OffscreenCanvas, then a detached HTML canvas. */
@@ -47,12 +75,15 @@ export interface FlowCanvasPaintOptions {
   /** Explicit device-pixel ratio in (0, 8]; default 1, never read from ambient state. */
   pixelRatio?: number;
   token?: FlowTokenInput;
-  /** Cancels paint waiting only; never terminates the worker/editing session. */
+  /** Cancels paint waits and cooperative work; never terminates the worker/session. */
   signal?: AbortSignal;
   /** Called only for resolved image descriptors. Return an already-authorized,
    * decoded image or null for a placeholder. No fetching/decoding is implicit.
    * The renderer never closes returned caller-owned ImageBitmaps. */
-  resolveImage?: (image: FlowCanvasImage, token: FlowToken) => CanvasImageSource | null | Promise<CanvasImageSource | null>;
+  resolveImage?: (
+    image: FlowCanvasImage,
+    token: FlowToken,
+  ) => CanvasImageSource | null | Promise<CanvasImageSource | null>;
   selection?: FlowTokenInput & { readonly rectangles: readonly FlowRect[] };
 }
 export interface FlowCanvasFrame extends FlowToken {
@@ -62,7 +93,14 @@ export interface FlowCanvasFrame extends FlowToken {
   readonly scrollX: number;
   readonly scrollY: number;
   readonly totalBounds: FlowRect;
+  /** Full inventory, including clips omitted by indexed viewport queries. */
+  readonly totalItems: number;
+  readonly queryMode: "indexed-viewport" | "snapshot";
+  /** Native leaf visits across queries, or all legacy items. Excludes the
+   * native index's initial construction and is not a timing measurement. */
   readonly scannedItems: number;
+  /** Items actually returned to JavaScript, including non-ink context. */
+  readonly receivedItems: number;
   readonly visibleItems: number;
   readonly glyphs: number;
   readonly missingImages: number;

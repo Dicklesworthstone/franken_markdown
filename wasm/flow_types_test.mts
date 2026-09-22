@@ -1,6 +1,7 @@
 // Compile-only contract test: tsc --noEmit --strict --target ES2022
 // --module NodeNext --moduleResolution NodeNext wasm/flow_types_test.mts
-import { createFlowSession, type FlowItem, type FlowToken, FlowError } from "./flow.js";
+import { createFlowSession, FlowError, type FlowItem, type FlowToken } from "./flow.js";
+
 const session = await createFlowSession("# Guide", { font: "sans", viewportWidth: 360 });
 const token: FlowToken = session.token;
 session.edit(0, 0, "Intro\n\n", { expectedRevision: token.revision });

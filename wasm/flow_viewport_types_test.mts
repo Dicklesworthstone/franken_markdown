@@ -1,12 +1,19 @@
 import type { FlowSession, FlowViewportOptions, FlowViewportPage } from "./flow.js";
-import type { WorkerFlowSession } from "./flow-worker.js";
 import type { CanvasFlowSession } from "./flow-canvas.js";
+import type { WorkerFlowSession } from "./flow-worker.js";
 
 declare const direct: FlowSession;
 declare const worker: WorkerFlowSession;
-declare const legacy: Pick<CanvasFlowSession, "disposed" | "token" | "layoutOptions" | "snapshot" | "glyphOutlines" | "hitTest">;
+declare const legacy: Pick<
+  CanvasFlowSession,
+  "disposed" | "token" | "layoutOptions" | "snapshot" | "glyphOutlines" | "hitTest"
+>;
 const clients: CanvasFlowSession[] = [direct, worker, legacy];
-const query: FlowViewportOptions = { viewport: { x: 0, y: 0, width: 600, height: 400 }, token: direct.token, glyphs: true };
+const query: FlowViewportOptions = {
+  viewport: { x: 0, y: 0, width: 600, height: 400 },
+  token: direct.token,
+  glyphs: true,
+};
 const immediate: FlowViewportPage = direct.viewport(query);
 const pending: Promise<FlowViewportPage> = worker.viewport(query, { timeoutMs: 5000 });
 const capability: boolean = direct.supportsViewport && worker.supportsViewport;

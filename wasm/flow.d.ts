@@ -1,24 +1,52 @@
 /** u64 wire values are lossless decimal strings. Number is never an identity. */
 export type FlowIdentity = string | bigint;
-export interface FlowToken { readonly revision: string; readonly layoutRevision: string; }
-export interface FlowTokenInput { readonly revision: FlowIdentity; readonly layoutRevision: FlowIdentity; }
-export interface FlowRect { readonly x: number; readonly y: number; readonly width: number; readonly height: number; }
+export interface FlowToken {
+  readonly revision: string;
+  readonly layoutRevision: string;
+}
+export interface FlowTokenInput {
+  readonly revision: FlowIdentity;
+  readonly layoutRevision: FlowIdentity;
+}
+export interface FlowRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
 /** Enclosing original Markdown bytes, not an exact inline selection map. */
-export interface FlowSourceSpan { readonly startByte: number; readonly endByte: number; }
+export interface FlowSourceSpan {
+  readonly startByte: number;
+  readonly endByte: number;
+}
 export interface FlowLayoutOptions {
   viewportWidth?: number;
   bodySize?: number;
   codeSize?: number;
   lineHeight?: number;
 }
-export interface FlowCreateOptions extends FlowLayoutOptions { font?: "sans" | "serif"; }
+export interface FlowCreateOptions extends FlowLayoutOptions {
+  font?: "sans" | "serif";
+}
+/** One edit in original source UTF-16 coordinates; end is exclusive. */
+export interface FlowBatchEdit {
+  readonly start: number;
+  readonly end: number;
+  readonly replacement: string;
+}
 export interface FlowEditOptions {
   expectedRevision: FlowIdentity;
   /** Explicitly attest external bytes, base URI and authorization are unchanged. Defaults false. */
   reuseAssets?: boolean;
 }
-export interface FlowPageOptions { offset?: number; limit?: number; token?: FlowTokenInput; }
-export interface FlowSnapshotOptions extends FlowPageOptions { glyphs?: boolean; }
+export interface FlowPageOptions {
+  offset?: number;
+  limit?: number;
+  token?: FlowTokenInput;
+}
+export interface FlowSnapshotOptions extends FlowPageOptions {
+  glyphs?: boolean;
+}
 /** Spatial cursor, not a snapshot offset. Reuse viewport/token until nextIndex is null. */
 export interface FlowViewportOptions {
   viewport: FlowRect;
@@ -27,7 +55,9 @@ export interface FlowViewportOptions {
   glyphs?: boolean;
   token?: FlowTokenInput;
 }
-export type FlowViewportItem = Exclude<FlowItem, FlowClipItem> & { readonly effectiveClip: FlowRect };
+export type FlowViewportItem = Exclude<FlowItem, FlowClipItem> & {
+  readonly effectiveClip: FlowRect;
+};
 export interface FlowViewportPage extends FlowToken {
   readonly schemaVersion: 1;
   readonly queryKind: "viewport-v1";
@@ -108,13 +138,28 @@ export interface FlowAnchorItem extends FlowItemBase {
 }
 export interface FlowVectorItem extends FlowItemBase {
   readonly kind: "vector";
-  readonly shape: "horizontal-rule" | "table-border" | "callout-accent-bar" | "checkbox-outline"
-    | "checkbox-check" | "diagram-box" | "diagram-arrow" | "diagram-connector";
+  readonly shape:
+    | "horizontal-rule"
+    | "table-border"
+    | "callout-accent-bar"
+    | "checkbox-outline"
+    | "checkbox-check"
+    | "diagram-box"
+    | "diagram-arrow"
+    | "diagram-connector";
   readonly strokeWidth: number;
   readonly colorRole: string;
 }
-export interface FlowClipItem extends FlowItemBase { readonly kind: "clip"; readonly childCount: number; }
-export type FlowItem = FlowTextItem | FlowImageItem | FlowAnchorItem | FlowVectorItem | FlowClipItem;
+export interface FlowClipItem extends FlowItemBase {
+  readonly kind: "clip";
+  readonly childCount: number;
+}
+export type FlowItem =
+  | FlowTextItem
+  | FlowImageItem
+  | FlowAnchorItem
+  | FlowVectorItem
+  | FlowClipItem;
 export interface FlowSnapshot extends FlowPage {
   readonly sourceLengthBytes: number;
   readonly sourceLengthUtf16: number;
@@ -135,14 +180,21 @@ export interface FlowSnapshot extends FlowPage {
 }
 /** Retained destination plus the core's conservative activation decision.
  * An activeTarget is not host authorization to navigate or fetch. */
-export interface FlowReadingLink { readonly target: string; readonly activeTarget: string | null; }
+export interface FlowReadingLink {
+  readonly target: string;
+  readonly activeTarget: string | null;
+}
 export interface FlowReadingInlineStyle {
-  readonly bold: boolean; readonly italic: boolean; readonly code: boolean; readonly strikethrough: boolean;
+  readonly bold: boolean;
+  readonly italic: boolean;
+  readonly code: boolean;
+  readonly strikethrough: boolean;
 }
 /** Ordered, non-overlapping UTF-8 ranges in this node's unsplit reading text.
  * These are not source offsets or shaped Canvas fragment coordinates. */
 export interface FlowReadingInlineRun {
-  readonly startByte: number; readonly endByte: number;
+  readonly startByte: number;
+  readonly endByte: number;
   readonly style: FlowReadingInlineStyle;
   readonly link: FlowReadingLink | null;
 }
@@ -160,9 +212,21 @@ export interface FlowReadingNode {
   /** Engine-assigned heading/note destination, including collision suffixes.
    * Absent on other roles and legacy producers; never infer from reading text. */
   readonly anchorId?: string | null;
-  readonly role: "document" | "heading" | "paragraph" | "code-block" | "list" | "list-item"
-    | "table" | "table-header-row" | "table-row" | "table-header-cell" | "table-cell"
-    | "blockquote" | "thematic-break" | "image";
+  readonly role:
+    | "document"
+    | "heading"
+    | "paragraph"
+    | "code-block"
+    | "list"
+    | "list-item"
+    | "table"
+    | "table-header-row"
+    | "table-row"
+    | "table-header-cell"
+    | "table-cell"
+    | "blockquote"
+    | "thematic-break"
+    | "image";
   readonly level?: number;
   readonly text: string;
   readonly bounds: FlowRect;
@@ -176,7 +240,9 @@ export interface FlowReadingNode {
    * means outside a list; absent means legacy unknown. Cells inherit the row. */
   readonly listPath?: readonly FlowReadingListItem[];
 }
-export interface FlowReadingPage extends FlowPage { readonly nodes: readonly FlowReadingNode[]; }
+export interface FlowReadingPage extends FlowPage {
+  readonly nodes: readonly FlowReadingNode[];
+}
 export interface FlowAssetRequest {
   readonly id: string;
   readonly generation: string;
@@ -187,7 +253,9 @@ export interface FlowAssetRequest {
   readonly estimatedWidth: number;
   readonly estimatedHeight: number;
 }
-export interface FlowAssetPage extends FlowPage { readonly requests: readonly FlowAssetRequest[]; }
+export interface FlowAssetPage extends FlowPage {
+  readonly requests: readonly FlowAssetRequest[];
+}
 export interface FlowAssetResult {
   requestId: FlowIdentity;
   generation: FlowIdentity;
@@ -228,17 +296,42 @@ export interface FlowSession {
   readonly disposed: boolean;
   /** False with older native binaries; snapshot remains usable. */
   readonly supportsViewport: boolean;
+  /** False for older native packages; batching never falls back to partial writes. */
+  readonly supportsAssetBatches: boolean;
+  /** False for legacy native packages; atomic edits never fall back to partial writes. */
+  readonly supportsEditBatches: boolean;
   readonly revision: string;
   readonly layoutRevision: string;
   readonly token: FlowToken;
   readonly source: string;
   readonly layoutOptions: Required<FlowLayoutOptions>;
   /** Offsets refer to the original source in UTF-16 units, as textarea uses. */
-  edit(startUtf16: number, endUtf16: number, replacement: string, options: FlowEditOptions): FlowToken;
-  editBytes(startByte: number, endByte: number, replacement: string, options: FlowEditOptions): FlowToken;
+  edit(
+    startUtf16: number,
+    endUtf16: number,
+    replacement: string,
+    options: FlowEditOptions,
+  ): FlowToken;
+  editBytes(
+    startByte: number,
+    endByte: number,
+    replacement: string,
+    options: FlowEditOptions,
+  ): FlowToken;
+  /** Up to 4,096 unordered, non-overlapping edits against one source revision.
+   * Same-position insertions retain caller order. A changed batch publishes one
+   * source/layout revision; empty/identity input publishes none. Combined UTF-8
+   * replacement bytes and final source are bounded to 4 MiB. Requires
+   * supportsEditBatches; a failed batch leaves the prior snapshot intact. */
+  editMany(edits: readonly FlowBatchEdit[], options: FlowEditOptions): FlowToken;
   replaceSource(source: string, options: FlowEditOptions): FlowToken;
   reflow(options: FlowLayoutOptions, token: FlowTokenInput): FlowToken;
   provideAsset(result: FlowAssetResult): FlowToken;
+  /** One atomic parse/reflow and layout revision for up to 1,024 pending images.
+   * At most 8 MiB per payload and 32 MiB combined, including retained assets.
+   * Empty input is a no-op; any rejected result consumes no requests.
+   * Caller buffers are copied, never detached. Requires supportsAssetBatches. */
+  provideAssets(results: readonly FlowAssetResult[]): FlowToken;
   reloadAssets(expectedRevision: FlowIdentity): FlowToken;
   snapshot(options?: FlowSnapshotOptions): FlowSnapshot;
   viewport(options: FlowViewportOptions): FlowViewportPage;
@@ -248,7 +341,12 @@ export interface FlowSession {
   pages(options?: Omit<FlowSnapshotOptions, "offset">): IterableIterator<FlowSnapshot>;
   hitTest(x: number, y: number, token: FlowTokenInput): FlowHit;
   /** Selects fragment-local reading text, not original Markdown offsets. */
-  selectText(itemIndex: number, startUtf16: number, endUtf16: number, token: FlowTokenInput): FlowSelection;
+  selectText(
+    itemIndex: number,
+    startUtf16: number,
+    endUtf16: number,
+    token: FlowTokenInput,
+  ): FlowSelection;
   copySource(startByte: number, endByte: number, expectedRevision: FlowIdentity): string;
   fontBytes(fontId: FlowIdentity): Uint8Array;
   /** Exact immutable-font paths. At most 256 glyph IDs; empty requests return metrics only. */
@@ -256,8 +354,11 @@ export interface FlowSession {
   assetBytes(requestId: FlowIdentity, expectedRevision: FlowIdentity): Uint8Array | null;
   /** Shared document renderer, not Canvas capture. Requires encoded bytes for
    * every image. Rejects if source/assets change while the export is awaited. */
-  exportDocument<F extends FlowExportFormat>(format: F, options: FlowExportOptionsByFormat[F] | undefined,
-    token: FlowTokenInput): Promise<FlowExportResult>;
+  exportDocument<F extends FlowExportFormat>(
+    format: F,
+    options: FlowExportOptionsByFormat[F] | undefined,
+    token: FlowTokenInput,
+  ): Promise<FlowExportResult>;
   /** Idempotent; releases Rust-owned source, display and font-run cache. */
   dispose(): void;
 }
@@ -265,17 +366,28 @@ export class FlowError extends Error {
   readonly code: string;
   constructor(code: string, message: string, options?: ErrorOptions);
 }
-export function init(input?: string | URL | Request | Response | BufferSource | WebAssembly.Module): Promise<void>;
+export function init(
+  input?: string | URL | Request | Response | BufferSource | WebAssembly.Module,
+): Promise<void>;
 /** Shares the package's initialized WASM instance. Enforces 4 MiB UTF-8 source
  * admission before WASM ingress; rejects unpaired JS surrogates instead of
  * silently replacing source text. No network/image loading is performed.
  */
-export function createFlowSession(markdown: string, options?: FlowCreateOptions): Promise<FlowSession>;
+export function createFlowSession(
+  markdown: string,
+  options?: FlowCreateOptions,
+): Promise<FlowSession>;
 
 /** Baseline-relative y-up font design units, filled with nonzero winding. */
-export type FlowPathCommand = readonly ["M", number, number] | readonly ["L", number, number]
-  | readonly ["Q", number, number, number, number] | readonly ["Z"];
-export interface FlowGlyphOutline { readonly glyphId: number; readonly commands: readonly FlowPathCommand[]; }
+export type FlowPathCommand =
+  | readonly ["M", number, number]
+  | readonly ["L", number, number]
+  | readonly ["Q", number, number, number, number]
+  | readonly ["Z"];
+export interface FlowGlyphOutline {
+  readonly glyphId: number;
+  readonly commands: readonly FlowPathCommand[];
+}
 export interface FlowGlyphOutlines {
   readonly schemaVersion: 1;
   readonly fontId: string;
@@ -295,7 +407,9 @@ export interface FlowExportOptions {
   /** Published bytes only, not a WASM-heap ceiling. Default/max 64 MiB. */
   maxOutputBytes?: number;
 }
-export interface FlowHtmlExportOptions extends FlowExportOptions { darkMode?: "auto" | "disabled"; }
+export interface FlowHtmlExportOptions extends FlowExportOptions {
+  darkMode?: "auto" | "disabled";
+}
 export interface FlowPdfExportOptions extends FlowExportOptions {
   author?: string;
   /** Deterministic default 0; nonnegative safe integer seconds. */
@@ -308,7 +422,10 @@ export interface FlowPdfExportOptions extends FlowExportOptions {
   fitToPages?: number;
   microtype?: "disabled" | "protrusion";
 }
-export interface FlowExportOptionsByFormat { html: FlowHtmlExportOptions; pdf: FlowPdfExportOptions; }
+export interface FlowExportOptionsByFormat {
+  html: FlowHtmlExportOptions;
+  pdf: FlowPdfExportOptions;
+}
 export interface FlowExportDiagnostic {
   readonly severity: "warning" | "error";
   /** Original source UTF-8 byte offsets, not Canvas fragment coordinates. */

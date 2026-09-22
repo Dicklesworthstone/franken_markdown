@@ -8,7 +8,9 @@
     "./flow_worker.js",
     "./demo/flow-source.js",
     "./book_worker_entry.js",
-    "./demo/book.js"
+    "./demo/book.js",
+    "./document_worker_entry.js",
+    "./demo/demo.js"
   ],
   "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
   "author": "Jeffrey Emanuel",
@@ -75,7 +77,12 @@
       "types": "./book-worker.d.ts",
       "import": "./book-worker.js"
     },
-    "./book-worker/worker": "./book_worker_entry.js"
+    "./book-worker/worker": "./book_worker_entry.js",
+    "./document-worker": {
+      "types": "./document-worker.d.ts",
+      "import": "./document_worker.mjs"
+    },
+    "./document-worker/worker": "./document_worker_entry.js"
   },
   "files": [
     "franken_markdown.js",
@@ -94,6 +101,8 @@
     "flow.js",
     "flow.d.ts",
     "flow_session.mjs",
+    "flow_asset_batch.mjs",
+    "ASSET_BATCHES.md",
     "flow_export.mjs",
     "EXPORT.md",
     "FLOW.md",
@@ -156,6 +165,10 @@
     "demo/flow_file_controls.mjs",
     "FILES.md",
     "demo/flow_render_settings.mjs",
-    "SETTINGS.md"
+    "SETTINGS.md",
+    "document_worker.mjs",
+    "document_worker_entry.js",
+    "document-worker.d.ts",
+    "DOCUMENT_WORKER.md"
   ]
 }

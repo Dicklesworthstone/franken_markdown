@@ -1,4 +1,15 @@
-import type { FlowPageOptions, FlowReadingInlineRun, FlowReadingLink, FlowReadingListItem, FlowReadingNode, FlowReadingPage, FlowRect, FlowSourceSpan, FlowToken, FlowTokenInput } from "./flow.js";
+import type {
+  FlowPageOptions,
+  FlowReadingInlineRun,
+  FlowReadingLink,
+  FlowReadingListItem,
+  FlowReadingNode,
+  FlowReadingPage,
+  FlowRect,
+  FlowSourceSpan,
+  FlowToken,
+  FlowTokenInput,
+} from "./flow.js";
 export interface ReadingFlowSession {
   readonly disposed: boolean;
   readonly token: FlowToken;
@@ -28,9 +39,11 @@ export interface FlowReadOptions {
 }
 export interface FlowReadingInlineEntry extends FlowReadingInlineRun {
   /** Validated UTF-16 coordinates in this node's reading text, not Markdown. */
-  readonly startUtf16: number; readonly endUtf16: number;
+  readonly startUtf16: number;
+  readonly endUtf16: number;
 }
-export interface FlowReadingEntry extends Omit<FlowReadingNode, "children" | "inlineRuns" | "imageLink" | "listPath" | "anchorId"> {
+export interface FlowReadingEntry
+  extends Omit<FlowReadingNode, "children" | "inlineRuns" | "imageLink" | "listPath" | "anchorId"> {
   /** Preorder index, scoped to this exact snapshot, not a persistent node ID. */
   readonly index: number;
   /** Exact engine-assigned destination, null when absent or legacy-unknown. */
@@ -57,8 +70,21 @@ export interface FlowReadingMatch extends FlowToken {
 export interface FlowReadingSearchOptions {
   /** Default false. Folds A-Z only; no locale, normalization or Unicode folding. */
   asciiCaseInsensitive?: boolean;
+  /** Default false. Frozen Unicode 15.1 default full case folding, non-Turkic.
+   * Mutually exclusive with asciiCaseInsensitive:true. No normalization or
+   * accent removal. Expansions must match whole source scalars (ss finds ß;
+   * s does not match half of ß). Original selectable UTF-16 ranges are retained. */
+  caseInsensitive?: boolean;
+  /** Default false. Adjacent Unicode letters/marks/numbers/connectors/joiners
+   * prevent a match. Not locale-sensitive or UAX #29 word segmentation. */
+  wholeWord?: boolean;
   /** Default and maximum 1,000. Results report whether additional matches exist. */
   maxMatches?: number;
+}
+export interface FlowReadingAsyncSearchOptions extends FlowReadingSearchOptions {
+  /** Cancels local cooperative search; never sends a worker RPC or terminates
+   * the session. Source edits, reflows and disposal invalidate pending work. */
+  signal?: AbortSignal;
 }
 export interface FlowReadingSearchResult {
   readonly matches: readonly FlowReadingMatch[];
@@ -92,13 +118,22 @@ export class FlowReadingDocument {
   /** Literal, non-overlapping matches within a leaf, not across semantic blocks.
    * Exact Unicode scalar boundaries; offsets remain UTF-16. Query <=1,024 units. */
   find(query: string, options?: FlowReadingSearchOptions): FlowReadingSearchResult;
+  /** Same matching and bounds as find, but yields real event-loop turns during
+   * large scans. No partial results. Auxiliary scanning memory is query-sized. */
+  findAsync(query: string, options?: FlowReadingAsyncSearchOptions): Promise<FlowReadingSearchResult>;
   /** Accepts only genuine matches returned by this snapshot; fences revisions. */
   matchText(match: FlowReadingMatch): string;
 }
-export function readFlowDocument(session: ReadingFlowSession, options?: FlowReadOptions): Promise<FlowReadingDocument>;
+export function readFlowDocument(
+  session: ReadingFlowSession,
+  options?: FlowReadOptions,
+): Promise<FlowReadingDocument>;
 /** Host must fence the source revision first. Validates Unicode and UTF-8 bounds;
  * source is limited to 4 MiB UTF-8, matching the browser flow admission limit. */
-export function sourceSpanToUtf16(source: string, span: FlowSourceSpan): Readonly<{ start: number; end: number }>;
+export function sourceSpanToUtf16(
+  source: string,
+  span: FlowSourceSpan,
+): Readonly<{ start: number; end: number }>;
 export interface FlowReadingLinkActivation {
   /** Passed the conservative scheme filter; the host must still authorize it. */
   readonly target: string;
@@ -115,6 +150,10 @@ export interface FlowReaderViewOptions {
    * activation. Adjacent style runs in the same link share one Tab stop. */
   onLink?: (activation: FlowReadingLinkActivation) => void;
 }
+export interface FlowReaderRenderOptions {
+  /** Cancels local DOM preparation, not the native session or worker. */
+  signal?: AbortSignal;
+}
 export class FlowReaderView {
   constructor(container: HTMLElement, options?: FlowReaderViewOptions);
   readonly disposed: boolean;
@@ -123,6 +162,12 @@ export class FlowReaderView {
    * children. Preparation failures retain prior DOM. The same snapshot is a
    * no-op, preserving native focus/selection while the Canvas merely scrolls. */
   render(document: FlowReadingDocument): void;
+  /** Same semantic DOM as render, with event-loop yields during large builds.
+   * Publishes once, only when complete and current. New sync/async renders,
+   * clear and dispose supersede pending work. Rejection keeps prior DOM and
+   * selection; no clipboard writes, native requests or automatic retry.
+   * Individual DOM operations and the final replacement are synchronous. */
+  renderAsync(document: FlowReadingDocument, options?: FlowReaderRenderOptions): Promise<void>;
   /** Focus without automatically scrolling the page or navigating a URL. */
   focusNode(index: number): FlowReadingLocation;
   /** Uses native DOM Range selection across styled text segments. Refuses

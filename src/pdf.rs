@@ -27264,7 +27264,209 @@ impl PageBreakPlan {
     }
 }
 
+
+fn pdf_height_block_end(lines: &[Line], start: usize) -> usize {
+    let Some(first) = lines.get(start) else {
+        return start;
+    };
+    let group = first.flow.group;
+    if group == 0 {
+        return (start + 1).min(lines.len());
+    }
+    let mut end = start + 1;
+    while end < lines.len()
+        && !lines[end].page_break_before
+        && lines[end].flow.group == group
+    {
+        end += 1;
+    }
+    end
+}
+
+fn pdf_split_is_hard_forbidden(lines: &[Line], candidate: usize) -> bool {
+    if candidate == 0 || candidate >= lines.len() {
+        return false;
+    }
+    let before = &lines[candidate - 1];
+    let after = &lines[candidate];
+
+    if before.flow.group == after.flow.group {
+        // Table header/rule material is inseparable from the first body row.
+        if matches!(before.flow.kind, FlowKind::TableHeader | FlowKind::TableRule)
+            && matches!(after.flow.kind, FlowKind::TableRule | FlowKind::TableRow)
+        {
+            return true;
+        }
+        // A wrapped logical table row/header must never be cut between its
+        // physical lines.
+        if matches!(before.flow.kind, FlowKind::TableRow | FlowKind::TableHeader)
+            && before.flow.index + 1 < before.flow.count
+        {
+            return true;
+        }
+    }
+
+    // A discretionary hyphen joins the two physical lines into one word. The
+    // exact planner treats this as structural; if no legal partition exists,
+    // the wrapper falls back to the legacy guaranteed-progress DP.
+    before
+        .segs
+        .last()
+        .is_some_and(|seg| {
+            seg.text.ends_with('-')
+                || seg.text.ends_with('\u{AD}')
+                || seg.text.ends_with('\u{2010}')
+        })
+}
+
+fn pdf_table_continuation_prefix(lines: &[Line], start: usize, end: usize) -> LayoutUnit {
+    if start >= end
+        || !matches!(
+            lines[start].flow.kind,
+            FlowKind::TableHeader | FlowKind::TableRule
+        )
+    {
+        return LayoutUnit::ZERO;
+    }
+    let mut height = 0.0f32;
+    let mut saw_row = false;
+    for line in &lines[start..end] {
+        match line.flow.kind {
+            FlowKind::TableHeader | FlowKind::TableRule if !saw_row => {
+                height += line_leading(line) + line.gap_after;
+            }
+            FlowKind::TableRow => {
+                saw_row = true;
+                break;
+            }
+            _ => break,
+        }
+    }
+    if saw_row {
+        lu_from_points_f32(height.max(0.0))
+    } else {
+        LayoutUnit::ZERO
+    }
+}
+
+fn exact_height_page_breaks(lines: &[Line], page: PageGeom) -> Option<PageBreakPlan> {
+    use crate::pagination::height::{
+        BlockCandidates, BlockPolicy, BlockVariant, HeightPaginationOptions, plan_blocks,
+    };
+
+    if lines.is_empty() {
+        return Some(PageBreakPlan { ends: Vec::new() });
+    }
+
+    let mut spans = Vec::<(usize, usize)>::new();
+    let mut blocks = Vec::<BlockCandidates>::new();
+    let mut policies = Vec::<BlockPolicy>::new();
+    let mut start = 0usize;
+
+    while start < lines.len() {
+        let end = pdf_height_block_end(lines, start);
+        if end <= start {
+            return None;
+        }
+        let mut fragment_heights = Vec::with_capacity(end - start);
+        for line in &lines[start..end] {
+            let points = (line_leading(line) + line.gap_after).max(0.001);
+            fragment_heights.push(lu_from_points_f32(points));
+        }
+
+        let mut split_costs = Vec::with_capacity(end.saturating_sub(start + 1));
+        for candidate in (start + 1)..end {
+            if pdf_split_is_hard_forbidden(lines, candidate) {
+                split_costs.push(None);
+            } else {
+                split_costs.push(Some(break_penalty(lines, candidate).round() as i64));
+            }
+        }
+
+        blocks.push(BlockCandidates {
+            variants: vec![BlockVariant {
+                demerits: 0,
+                fragment_heights,
+                continuation_prefix: pdf_table_continuation_prefix(lines, start, end),
+                fragment_reservations: Vec::new(),
+                split_costs,
+            }],
+        });
+
+        let first = &lines[start];
+        let mut policy = if first.flow.kind == FlowKind::Paragraph {
+            BlockPolicy::paragraph()
+        } else {
+            BlockPolicy::default()
+        };
+        policy.break_before = first.page_break_before;
+        policy.break_before_cost = if start == 0 || first.page_break_before {
+            0
+        } else {
+            break_penalty(lines, start).round() as i64
+        };
+        if first.flow.kind == FlowKind::Heading {
+            policy.keep_together = true;
+            policy.keep_with_next = true;
+        }
+
+        spans.push((start, end));
+        policies.push(policy);
+        start = end;
+    }
+
+    let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
+    let plan = plan_blocks(
+        &blocks,
+        &policies,
+        HeightPaginationOptions {
+            page_capacity: lu_from_points_f32(full_capacity),
+            page_cost: PAGE_COUNT_DEMERITS.round() as u64,
+            unused_height_cost: 10_000,
+            penalize_last_page: false,
+            ..HeightPaginationOptions::default()
+        },
+    )
+    .ok()?;
+
+    let mut ends = Vec::with_capacity(plan.page_count);
+    for (index, fragment) in plan.fragments.iter().enumerate() {
+        let (_, block_end) = *spans.get(fragment.block_index)?;
+        let (block_start, _) = spans[fragment.block_index];
+        let global_end = block_start.checked_add(fragment.fragment_end)?;
+        if global_end > block_end {
+            return None;
+        }
+        let page_ends_here = plan
+            .fragments
+            .get(index + 1)
+            .is_none_or(|next| next.page_index != fragment.page_index);
+        if page_ends_here {
+            if ends.last().is_some_and(|&previous| global_end <= previous) {
+                return None;
+            }
+            ends.push(global_end);
+        }
+    }
+
+    if ends.last().copied() != Some(lines.len()) {
+        return None;
+    }
+    Some(PageBreakPlan { ends })
+}
+
+/// Production optimal pagination now uses the exact fixed-point mixed-height
+/// planner first. It preserves the existing flattened-Line writer contract:
+/// only page-end indices escape this bridge, so page placement, repeated table
+/// header drawing, tagging, annotations, and streaming serialization remain
+/// unchanged. The legacy Plass DP remains the guaranteed-progress fallback for
+/// an oversized first line or any future flow shape the stricter planner
+/// deliberately rejects.
 fn optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
+    exact_height_page_breaks(lines, page).unwrap_or_else(|| legacy_optimal_page_breaks(lines, page))
+}
+
+fn legacy_optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
     let n = lines.len();
     let mut ends = Vec::new();
     if n == 0 {
@@ -40307,6 +40509,57 @@ mod plass_pagination_tests {
             cd < cg - 1e3,
             "DP should beat greedy on the myopia fixture (dp {cd} vs greedy {cg})"
         );
+    }
+
+    #[test]
+    fn exact_bridge_enforces_two_line_paragraph_fragments() {
+        let pg = page(60.0);
+        let lines: Vec<Line> = (0..10)
+            .map(|i| line(FlowKind::Paragraph, 41, i, 10))
+            .collect();
+        let plan = exact_height_page_breaks(&lines, pg).expect("exact plan");
+        let mut start = 0usize;
+        for &end in &plan.ends {
+            let count = end - start;
+            assert!(
+                count >= 2,
+                "hard widow/orphan policy emitted a {count}-line page fragment"
+            );
+            start = end;
+        }
+        assert_eq!(start, lines.len());
+    }
+
+    #[test]
+    fn exact_bridge_never_splits_a_wrapped_table_row() {
+        let pg = page(75.0);
+        let mut lines = vec![
+            line(FlowKind::TableHeader, 77, 0, 1),
+            line(FlowKind::TableRule, 77, 0, 1),
+            line(FlowKind::TableRow, 77, 0, 2),
+            line(FlowKind::TableRow, 77, 1, 2),
+            line(FlowKind::TableRow, 77, 0, 1),
+        ];
+        // Body before the table makes a tempting but structurally illegal
+        // first-row split in a local fill strategy.
+        lines.splice(
+            0..0,
+            (0..3).map(|i| line(FlowKind::Paragraph, 12, i, 3)),
+        );
+        let plan = exact_height_page_breaks(&lines, pg).expect("exact plan");
+        for &end in &plan.ends {
+            if end == 0 || end >= lines.len() {
+                continue;
+            }
+            let before = &lines[end - 1];
+            let after = &lines[end];
+            assert!(
+                !(before.flow.group == after.flow.group
+                    && before.flow.kind == FlowKind::TableRow
+                    && before.flow.index + 1 < before.flow.count),
+                "page boundary {end} split a logical table row"
+            );
+        }
     }
 
     #[test]

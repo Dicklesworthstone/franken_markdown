@@ -86,6 +86,20 @@ export interface FmdRenderOptions {
   fontAssets?: FmdFontAsset[];
 }
 
+/** PDF paper dimensions/margins are points, never CSS pixels. */
+export interface FmdPdfPage {
+  /** Omitted size is Letter. Custom dimensions must each be 144..14400 points. */
+  size?: "letter" | "a4" | { widthPt: number; heightPt: number };
+  /** Rotate only paper; omitted orientation preserves custom width/height order. */
+  orientation?: "portrait" | "landscape";
+  /** Uniform points or independent sides, each defaulting to 72 points. */
+  margins?: number | { topPt?: number; rightPt?: number; bottomPt?: number; leftPt?: number };
+}
+export interface FmdPdfRenderOptions extends FmdRenderOptions {
+  /** Single-document PDF layout; margins must leave a 72-point content rectangle. */
+  page?: FmdPdfPage;
+}
+
 export interface FmdRenderOutput {
   format: FmdOutputFormat;
   mimeType: string;
@@ -139,7 +153,7 @@ export interface FmdRenderer {
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderInteractiveHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
-  renderPdf(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+  renderPdf(markdown: string, options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
   renderSemanticDiff(
     oldMarkdown: string,
     newMarkdown: string,
@@ -231,7 +245,7 @@ export function renderInteractiveHtml(
   markdown: string,
   options?: FmdRenderOptions,
 ): Promise<FmdRenderOutput>;
-export function renderPdf(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+export function renderPdf(markdown: string, options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
 export function renderSemanticDiff(
   oldMarkdown: string,
   newMarkdown: string,

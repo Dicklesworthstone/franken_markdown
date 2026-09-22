@@ -1,4 +1,5 @@
-import * as epubBindings from "./pkg/franken_markdown.js";
+import { pdfPageGeometry } from "./pdf_page.mjs";
+import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
   renderHtmlConfiguredAdvanced,
@@ -74,9 +75,18 @@ export async function renderHtml(markdown, options = {}) {
 }
 
 export async function renderPdf(markdown, options = {}) {
-  await init();
+  // Admit and capture geometry before initializing WASM or copying assets.
+  const geometry = pdfPageGeometry(options.page);
+  const render = geometry.length ? wasmBindings.renderPdfConfiguredPage : renderPdfConfiguredMulti;
+  if (typeof render !== "function") {
+    const error = new Error("PDF paper and margins require a WASM package rebuilt from matching source");
+    error.code = "UNSUPPORTED_WASM_PACKAGE";
+    throw error;
+  }
   const pdfImages = pdfImagesOption(options.pdfImages);
-  const fontAssets = fontAssetsOption(options.fontAssets);
+  const fontAssets = fontAssetsOption(options.fontAssets).map(asset => ({
+    ...asset, bytes: new Uint8Array(asset.bytes),
+  }));
   const fontScale = fontScaleOption(options.fontScale ?? options.typeSize);
   const baseFontSize =
     numberOption(options.baseFontSize) ?? (fontScale !== undefined ? 11 * fontScale : undefined);
@@ -94,37 +104,39 @@ export async function renderPdf(markdown, options = {}) {
     offset += image.bytes.length;
   }
 
-  return normalizeResult(
-    renderPdfConfiguredMulti(
-      String(markdown),
-      stringOption(options.font),
-      darkModeOption(options.darkMode),
-      verbatimOption(options.title),
-      verbatimOption(options.author),
-      epochOption(options.metadataEpochSeconds),
-      Boolean(options.allowRawHtml),
-      Boolean(options.codeLineNumbers),
-      destinations,
-      flatBytes,
-      lengths,
-      fontBytesForSlot(fontAssets, "body-regular"),
-      fontBytesForSlot(fontAssets, "body-bold"),
-      fontBytesForSlot(fontAssets, "body-italic"),
-      fontBytesForSlot(fontAssets, "body-bold-italic"),
-      fontBytesForSlot(fontAssets, "mono-regular"),
-      fontWeightsForSlots(fontAssets),
-      baseFontSize,
-      numberOption(options.headingScale),
-      numberOption(options.tableFontSize),
-      Boolean(options.pageNumbers),
-      fontScale,
-      stringOption(options.lang),
-      Boolean(options.toc),
-      integerOption(options.tocDepth, "tocDepth"),
-      integerOption(options.fitToPages, "fitToPages"),
-      options.microtype === "protrusion" || options.microtypeProtrusion === true,
-    ),
-  );
+  const args = [
+    String(markdown),
+    stringOption(options.font),
+    darkModeOption(options.darkMode),
+    verbatimOption(options.title),
+    verbatimOption(options.author),
+    epochOption(options.metadataEpochSeconds),
+    Boolean(options.allowRawHtml),
+    Boolean(options.codeLineNumbers),
+    destinations,
+    flatBytes,
+    lengths,
+    fontBytesForSlot(fontAssets, "body-regular"),
+    fontBytesForSlot(fontAssets, "body-bold"),
+    fontBytesForSlot(fontAssets, "body-italic"),
+    fontBytesForSlot(fontAssets, "body-bold-italic"),
+    fontBytesForSlot(fontAssets, "mono-regular"),
+    fontWeightsForSlots(fontAssets),
+    baseFontSize,
+    numberOption(options.headingScale),
+    numberOption(options.tableFontSize),
+    Boolean(options.pageNumbers),
+    fontScale,
+    stringOption(options.lang),
+    Boolean(options.toc),
+    integerOption(options.tocDepth, "tocDepth"),
+    integerOption(options.fitToPages, "fitToPages"),
+    options.microtype === "protrusion" || options.microtypeProtrusion === true,
+  ];
+  // Source, primitive settings, image bytes and font bytes now belong to this
+  // request. Asynchronous initialization cannot retarget its page or contents.
+  await init();
+  return normalizeResult(geometry.length ? render(...args, geometry) : render(...args));
 }
 
 export async function renderSvg(markdown, options = {}) {
@@ -145,8 +157,8 @@ export async function renderEpub(markdown, options = {}) {
   // await. Later host edits cannot silently change the publication being built.
   const prepared = epubArguments(markdown, options);
   await init();
-  if (typeof epubBindings.renderEpubConfiguredAdvanced === "function") {
-    return normalizeResult(epubBindings.renderEpubConfiguredAdvanced(...prepared.args));
+  if (typeof wasmBindings.renderEpubConfiguredAdvanced === "function") {
+    return normalizeResult(wasmBindings.renderEpubConfiguredAdvanced(...prepared.args));
   }
   if (prepared.requiresAdvanced) {
     const error = new Error("EPUB assets, CSS and navigation require a WASM package rebuilt from matching source");

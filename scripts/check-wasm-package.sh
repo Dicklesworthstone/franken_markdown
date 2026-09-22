@@ -113,7 +113,7 @@ for file in book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts b
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
-  document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md; do
+  document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs; do
   cp "wasm/$file" "$package_dir/$file"
 done
 cp wasm/package.json "$package_dir/package.json"
@@ -243,7 +243,7 @@ log "headless node: revision-fenced HTML/PDF exports against generated WASM"
 node wasm/flow_export_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 log "headless node: cancellable document workers and demo lifecycle"
-node --test wasm/document_worker.test.mjs wasm/demo_worker.test.mjs 2>&1 | tee -a "$LEDGER"
+node --test wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs 2>&1 | tee -a "$LEDGER"
 node wasm/document_worker_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 # Native side + byte parity.

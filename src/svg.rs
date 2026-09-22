@@ -29,14 +29,15 @@
 //! PNG/JPEG/SVG images use embedded data or explicit
 //! caller assets; unresolved images retain their alt text with diagnostics.
 //!
-//! Light palette only: a standalone vector artifact cannot honour the
-//! `prefers-color-scheme` policy behind [`Theme::dark_mode`], so the poster
-//! always uses [`Theme::colors`].
+//! Appearance is host-independent: Auto chooses light, while explicit theme
+//! appearances use their selected palette. No system preference is queried.
+//! Typography and all four margins are resolved before layout, not as a final
+//! scale transform; see `geometry` for bounded fallbacks.
 
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
 
-use franken_markdown::ast::{Align, Block, Document, Inline, List, Table};
+use franken_markdown::ast::{Align, Block, Document, Inline, Table};
 use franken_markdown::fonts::{self, FontStyle};
 use franken_markdown::text::Font;
 use franken_markdown::text::outline::Segment;
@@ -56,6 +57,13 @@ const SLOT_COUNT: usize = 6;
 // Explicit paths also support the standalone #[path] SVG integration harness.
 #[path = "svg/text.rs"]
 mod text;
+#[path = "svg/geometry.rs"]
+mod geometry;
+#[path = "svg/lists.rs"]
+mod lists;
+#[cfg(test)]
+#[path = "svg/geometry_tests.rs"]
+mod geometry_tests;
 #[path = "svg/math.rs"]
 mod math;
 #[path = "svg/images.rs"]
@@ -78,7 +86,8 @@ pub struct SvgOptions {
     /// Visual theme (palette, page margins, font family).
     pub theme: Theme,
     /// Page width in points; the height grows to fit the content.
-    /// Non-finite or absurdly narrow values fall back to US Letter width.
+    /// Values outside 144..=14400 points fall back to US Letter width, with
+    /// an `svg_layout_adjusted` diagnostic from the diagnostic APIs.
     pub max_width_pt: f32,
 }
 
@@ -392,6 +401,10 @@ struct Poster {
     line_height: f64,
     width: f64,
     margin_bottom: f64,
+    margin_left: f64,
+    margin_right: f64,
+    table_pad_x: f64,
+    table_pad_y: f64,
     ops: Vec<Op>,
     /// Top of the next block, in pt from the page top.
     y: f64,
@@ -402,11 +415,7 @@ struct Poster {
 impl Poster {
     fn new(opts: &SvgOptions) -> Self {
         let theme = &opts.theme;
-        let width = if opts.max_width_pt.is_finite() && opts.max_width_pt >= 144.0 {
-            f64::from(opts.max_width_pt)
-        } else {
-            612.0
-        };
+        let geometry = geometry::resolve(opts);
         let family = theme.font;
         let load = |style: FontStyle| fonts::load_body(family, style).ok();
         Self {
@@ -420,27 +429,38 @@ impl Poster {
             ],
             math_engine: OnceCell::new(),
             images: images::ImageStore::default(),
-            warnings: Vec::new(),
-            colors: theme.colors.clone(),
-            scale: TypeScale::default(),
-            line_height: f64::from(theme.spacing.line_height),
-            width,
-            margin_bottom: f64::from(theme.page.margins.bottom_pt),
+            warnings: geometry.warnings,
+            colors: theme.effective_colors(false, false).clone(),
+            scale: geometry.scale,
+            line_height: geometry.line_height,
+            width: geometry.width,
+            margin_bottom: geometry.bottom,
+            margin_left: geometry.left,
+            margin_right: geometry.right,
+            table_pad_x: geometry.table_pad_x,
+            table_pad_y: geometry.table_pad_y,
             ops: Vec::new(),
-            y: f64::from(theme.page.margins.top_pt),
-            top: f64::from(theme.page.margins.top_pt),
+            y: geometry.top,
+            top: geometry.top,
             missing: 0,
         }
     }
 
     fn content_left(&self) -> f64 {
-        // Margins come from the theme page contract, clamped so a narrow
-        // poster keeps a usable measure.
-        72.0_f64.min(self.width / 4.0)
+        self.margin_left
     }
 
     fn content_right(&self) -> f64 {
-        self.width - self.content_left()
+        self.width - self.margin_right
+    }
+
+    fn unit_scale(&self) -> f64 {
+        f64::from(self.scale.body) / f64::from(TypeScale::default().body)
+    }
+
+    /// Nested containers stop consuming indentation when one body em remains.
+    fn inset(&self, l: f64, r: f64, requested: f64) -> f64 {
+        requested.min((r - l - f64::from(self.scale.body)).max(0.0))
     }
 
     fn render(mut self, doc: &Document) -> (Vec<u8>, SvgReport, Vec<SvgWarning>) {
@@ -452,7 +472,7 @@ impl Poster {
         for block in &prepared.blocks {
             self.block(block, l, r, false);
         }
-        let height = self.y + self.margin_bottom;
+        let height = (self.y + self.margin_bottom).max(1.0);
         self.emit(height)
     }
 
@@ -592,7 +612,7 @@ impl Poster {
             Block::List(list) => self.list(list, l, r, quote),
             Block::Table(table) => self.table(table, l, r),
             Block::ThematicBreak => {
-                self.y += 4.0;
+                self.y += 4.0 * self.unit_scale();
                 self.ops.push(Op::Rule {
                     x1: l,
                     y1: self.y,
@@ -601,7 +621,7 @@ impl Poster {
                     ink: Ink::Border,
                     w: 0.75,
                 });
-                self.y += 12.0;
+                self.y += 12.0 * self.unit_scale();
             }
             // Never execute raw HTML, but do not silently discard its source.
             Block::HtmlBlock(source) => self.code_panel(source, l, r),
@@ -624,7 +644,8 @@ impl Poster {
                     for def in &item.definitions {
                         let mut pieces = Vec::new();
                         self.flatten(def, RStyle::BODY, &mut pieces);
-                        self.text_lines(&pieces, body_size, l + 18.0, r, quote, body_size * 0.4);
+                        let inset = self.inset(l, r, 18.0 * self.unit_scale());
+                        self.text_lines(&pieces, body_size, l + inset, r, quote, body_size * 0.4);
                     }
                 }
                 self.y += body_size * 0.4;
@@ -725,8 +746,8 @@ impl Poster {
     fn code_panel(&mut self, code: &str, l: f64, r: f64) {
         let size = f64::from(self.scale.code);
         let leading = size * 1.45;
-        let pad = 8.0;
-        let inset = 12.0;
+        let pad = 8.0 * self.unit_scale();
+        let inset = (12.0 * self.unit_scale()).min((r - l).max(0.0) * 0.25);
         let lines = self.code_lines(code, size, r - l - 2.0 * inset);
         let h = lines.len() as f64 * leading + 2.0 * pad;
         self.ops.push(Op::Rect {
@@ -752,66 +773,23 @@ impl Poster {
 
     fn blockquote(&mut self, inner: &[Block], l: f64, r: f64) {
         let start = self.y;
-        let inner_l = l + 14.0;
+        let inset = self.inset(l, r, 14.0 * self.unit_scale());
+        let inner_l = l + inset;
         for block in inner {
             self.block(block, inner_l, r, true);
         }
         let h = (self.y - start).max(f64::from(self.scale.body));
-        self.ops.push(Op::Rect {
-            x: l,
-            y: start,
-            w: 3.0,
-            h,
-            fill: Ink::QuoteBar,
-            stroke: None,
-        });
-        self.y += f64::from(self.scale.body) * 0.3;
-    }
-
-    fn list(&mut self, list: &List, l: f64, r: f64, quote: bool) {
-        let size = f64::from(self.scale.body);
-        let marker_w = 18.0;
-        // Plex/CM both map U+2022; fall back to '-' if a face ever does not.
-        let bullet = self.faces[SLOT_BODY].as_ref().map_or("-", |f| {
-            if f.glyph_index('•') != 0 {
-                "•"
-            } else {
-                "-"
-            }
-        });
-        let ink = Self::default_ink(quote);
-        for (i, item) in list.items.iter().enumerate() {
-            let marker = if let Some(checked) = item.task {
-                if checked {
-                    "[x]".to_string()
-                } else {
-                    "[ ]".to_string()
-                }
-            } else if list.ordered {
-                format!("{}.", list.start + i as u64)
-            } else {
-                bullet.to_string()
-            };
-            let mark_top = self.y;
-            for block in &item.blocks {
-                self.block(block, l + marker_w, r, quote);
-            }
-            let baseline = mark_top + size * 0.85;
-            self.draw_text(
-                l,
-                baseline,
-                &marker,
-                RStyle {
-                    ink,
-                    ..RStyle::BODY
-                },
-                size,
-            );
-            if !list.tight {
-                self.y += 4.0;
-            }
+        if inset > 0.0 {
+            self.ops.push(Op::Rect {
+                x: l,
+                y: start,
+                w: (3.0 * self.unit_scale()).min(inset / 3.0),
+                h,
+                fill: Ink::QuoteBar,
+                stroke: None,
+            });
         }
-        self.y += size * 0.3;
+        self.y += f64::from(self.scale.body) * 0.3;
     }
 
     fn table(&mut self, table: &Table, l: f64, r: f64) {
@@ -825,8 +803,8 @@ impl Poster {
         }
         let size = f64::from(self.scale.table);
         let leading = size * 1.35;
-        let pad_x = 6.0;
-        let pad_y = 4.0;
+        let pad_x = self.table_pad_x;
+        let pad_y = self.table_pad_y;
         let avail = r - l;
 
         // Column widths: natural single-line width (capped), scaled down

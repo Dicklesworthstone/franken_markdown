@@ -78,12 +78,50 @@ are borrowed, so explicit preparation followed by SVG/PDF rendering neither
 clones a note-free AST nor creates a second Notes section. Resources and
 recoverable warnings inside notes use the ordinary SVG rendering path.
 
+## Typography and page geometry
+
+The shared theme is resolved before layout. Its integral `spacing.base_px` maps
+16 CSS pixels to the existing 11-point body baseline; the shared `TypeScale`
+resolves the complete heading/body/code/table ladder with a 6..24-point body
+range. All named font-scale presets therefore affect actual glyph sizes, line
+breaks and poster height. Custom factors inherit the theme's whole-pixel root
+rounding; this is not a final transform of a fixed-size rendering.
+
+`max_width_pt` remains a physical poster width in points. All four page margins
+come from `theme.page.margins`. Asymmetric margins are retained when they fit;
+if necessary, left/right margins are reduced proportionally to preserve 72
+points of content width. Negative, non-finite or over-limit numeric values
+receive deterministic defaults and `svg_layout_adjusted` warnings. Supported
+width is 144..14400 points, individual margins are 0..14400 points, body leading
+is 1..4, and table padding is 0..8 em. A zero-margin empty poster still has a
+positive one-point height.
+
+Table padding is measured in ems of the effective table size. This intentionally
+changes the historical fixed 6/4-point padding: default theme values now control
+table density. Code panel padding and quote/definition spacing scale with the
+body. Nested containers stop consuming indentation when one body em remains.
+List items share a gutter measured from their actual font and largest marker;
+when a usable hanging layout cannot fit, the complete marker wraps above the
+item rather than overlapping it. Empty items still receive a line. Ordered
+list ordinals continue past a host-supplied `u64::MAX` start without overflow.
+
+Mathematics scales with text; image dimensions retain their intrinsic point
+size, subject to fitting the available measure. Explicit theme appearance uses
+its selected palette. Auto is deterministic light, with no system appearance
+lookup or media-query behavior. The CSS readable-measure/radius tokens, PDF
+paper height, and code-ligature policy are not implemented by this poster path.
+
+Default-size prose retains its historical metrics. Tables, invalid geometry,
+wide list markers and explicitly scaled or appearance-configured documents have
+intentional output changes. Existing SVG option/report structures are unchanged.
+
 ## Remaining scope
 
 Prose remains greedily wrapped using advances, without the PDF renderer's
 Knuth–Plass optimization or complex-script shaping. Emergency token wrapping
 is not a full Unicode grapheme/line-break implementation. Unresolved images
-retain alt-text placeholders. The poster is light-only and single-page.
+retain alt-text placeholders. The poster is single-page with deterministic
+explicit appearance selection.
 SVG changes do not change the HTML or PDF rendering algorithms.
 
 ## Verification
@@ -94,6 +132,9 @@ vertical clearance, width fitting, fallback diagnostics, and determinism. They
 run both in library tests and the existing `tests/svg_test.rs` standalone path.
 `tests/svg_endnotes_test.rs` checks complete SVG output against explicitly
 prepared documents, resource-bearing notes, cycles and PDF preparation parity.
+`src/svg/geometry_tests.rs` checks real painter placement and sizing, and
+`tests/mcp_svg_geometry_test.rs` compares configured file responses and saved
+artifacts against the native core.
 
 The implementation session checked source hashes and `git diff --check` but
 had no Rust toolchain or DSR runner. Compilation, tests, Clippy, rustfmt and

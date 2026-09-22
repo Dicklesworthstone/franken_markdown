@@ -48,9 +48,8 @@ fn supports(target: &str, name: &str) -> bool {
         // EPUB is safe XHTML with its own font container. These HTML switches
         // have no effect there and must not masquerade as publication options.
         "epub" => html && !matches!(name, "allowRawHtml" | "interactiveHtml" | "htmlFontFormat"),
-        // The poster presently uses a fixed type ladder; do not claim that a
-        // Theme fontScale field changes that ladder merely by passing it on.
-        "svg" => matches!(name, "font" | "maxWidthPt"),
+        // SVG resolves the shared font scale before measurement and painting.
+        "svg" => matches!(name, "font" | "fontScale" | "maxWidthPt"),
         _ => false,
     }
 }
@@ -143,7 +142,7 @@ mod tests {
     fn options_without_a_target_consumer_are_refused_even_when_false() {
         for (target, field) in [("pdf", "customCss"), ("html", "author"),
             ("epub", "interactiveHtml"), ("epub", "allowRawHtml"),
-            ("svg", "fontScale"), ("svg", "toc"), ("html", "maxWidthPt")] {
+            ("svg", "title"), ("svg", "toc"), ("html", "maxWidthPt")] {
             let value = match field { "toc" | "allowRawHtml" | "interactiveHtml" => "false", "maxWidthPt" => "612", _ => "\"value\"" };
             let args = parse_json(&format!("{{\"path\":\"missing.md\",\"to\":\"{target}\",\"{field}\":{value}}}")).unwrap();
             let error = prepare(&args).err().unwrap();

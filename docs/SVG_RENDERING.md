@@ -1,8 +1,9 @@
 # SVG poster rendering
 
-SVG is a standalone, single-page vector export. It uses outlined bundled
-fonts, deterministic glyph definitions, and no `<text>`, `foreignObject`,
-JavaScript, external fonts, or browser math dependency.
+SVG is a standalone, single-page export. Renderer-generated text uses
+outlined fonts and deterministic glyph definitions, without `<text>`,
+`foreignObject`, JavaScript or a browser math dependency. Explicit PNG/JPEG/SVG
+image resources retain their own content; see `SVG_RESOURCES.md`.
 
 ## Mathematics
 
@@ -58,13 +59,32 @@ wraps with measured advances, preserves spaces, and expands tabs to four-column
 source stops. Its panel height includes every wrapped line. Raw HTML is drawn
 as inert source text, never executed or silently discarded.
 
+## Endnotes
+
+All SVG entry points prepare complete numbered endnotes using the same AST
+pass as PDF. References become `[n]`, and a Notes section follows the document.
+Code, lists, quotes, tables, equations, images, headings and inline formatting
+inside notes keep their structure instead of being flattened or omitted.
+
+Numbering follows first use in the main body, then references found in those
+notes. Cycles do not expand recursively: each definition is emitted once.
+Unreferenced definitions follow in source order; duplicate identifiers use the
+first definition. Undefined references remain visible as `[^id]`. These are
+endnotes, not page-bottom footnotes or clickable superscripts.
+
+`Document::with_endnotes()` exposes the shared preparation for other hosts.
+It never mutates the source. Ordinary documents and already-prepared documents
+are borrowed, so explicit preparation followed by SVG/PDF rendering neither
+clones a note-free AST nor creates a second Notes section. Resources and
+recoverable warnings inside notes use the ordinary SVG rendering path.
+
 ## Remaining scope
 
 Prose remains greedily wrapped using advances, without the PDF renderer's
 Knuth–Plass optimization or complex-script shaping. Emergency token wrapping
-is not a full Unicode grapheme/line-break implementation. Footnote definitions
-are still omitted; images use alt-text placeholders. The poster is light-only
-and single-page. The new math/text paths do not change HTML or PDF output.
+is not a full Unicode grapheme/line-break implementation. Unresolved images
+retain alt-text placeholders. The poster is light-only and single-page.
+SVG changes do not change the HTML or PDF rendering algorithms.
 
 ## Verification
 
@@ -72,6 +92,8 @@ and single-page. The new math/text paths do not change HTML or PDF output.
 including direct comparisons to the shared TeX engine's glyph/rule geometry,
 vertical clearance, width fitting, fallback diagnostics, and determinism. They
 run both in library tests and the existing `tests/svg_test.rs` standalone path.
+`tests/svg_endnotes_test.rs` checks complete SVG output against explicitly
+prepared documents, resource-bearing notes, cycles and PDF preparation parity.
 
 The implementation session checked source hashes and `git diff --check` but
 had no Rust toolchain or DSR runner. Compilation, tests, Clippy, rustfmt and

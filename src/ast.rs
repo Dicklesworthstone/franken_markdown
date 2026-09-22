@@ -12,6 +12,26 @@ pub struct Document {
     pub blocks: Vec<Block>,
 }
 
+impl Document {
+    /// Resolve footnotes into ordinary blocks followed by a numbered Notes section.
+    ///
+    /// This is the same lossless endnote preparation used by PDF and SVG. Note
+    /// bodies retain their block structure, images, mathematics and inline styles.
+    /// Body references determine first-use order, then note-to-note references
+    /// are followed in that order. Unreferenced definitions follow in source order.
+    /// Each definition is emitted once, even when references form a cycle.
+    ///
+    /// Duplicate identifiers use the first definition. Undefined references remain
+    /// visible as `[^id]`. Citations are ordinary `[n]` text, not linked superscripts
+    /// or page-bottom footnotes. The source AST is never modified. Documents without
+    /// footnote syntax (including already prepared documents) are borrowed, so hosts
+    /// can prepare once without cloning an ordinary document or duplicating notes.
+    #[must_use]
+    pub fn with_endnotes(&self) -> std::borrow::Cow<'_, Self> {
+        crate::footnotes::for_pdf(self)
+    }
+}
+
 /// A block-level element.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {

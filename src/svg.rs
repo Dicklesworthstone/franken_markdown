@@ -25,8 +25,8 @@
 //! engine): greedy word wrap on raw `hmtx` advances (no Knuth-Plass, no
 //! kerning, no ligatures); inline links are coloured but not underlined;
 //! mathematics uses the shared TeX layout engine and vector outlines. Raw HTML
-//! is preserved as inert vector text; footnote definitions are skipped in flow
-//! (matching the AST contract). PNG/JPEG/SVG images use embedded data or explicit
+//! is preserved as inert vector text; complete numbered endnotes follow the body.
+//! PNG/JPEG/SVG images use embedded data or explicit
 //! caller assets; unresolved images retain their alt text with diagnostics.
 //!
 //! Light palette only: a standalone vector artifact cannot honour the
@@ -446,7 +446,10 @@ impl Poster {
     fn render(mut self, doc: &Document) -> (Vec<u8>, SvgReport, Vec<SvgWarning>) {
         let l = self.content_left();
         let r = self.content_right();
-        for block in &doc.blocks {
+        // Share PDF's cycle-safe numbering and lossless rich-note preparation.
+        // With no footnote syntax this borrows the source rather than cloning it.
+        let prepared = doc.with_endnotes();
+        for block in &prepared.blocks {
             self.block(block, l, r, false);
         }
         let height = self.y + self.margin_bottom;

@@ -3016,6 +3016,276 @@ pub fn break_paragraph_into(
     out.reverse();
 }
 
+
+#[derive(Debug, Clone, Copy)]
+struct CountedBreakState {
+    prev: Option<(usize, usize)>,
+    line: LineBreak,
+    flagged: bool,
+    fitness: FitnessClass,
+}
+
+/// Maximum state cells retained by adjacent-line-count candidate generation.
+///
+/// This API is a pagination quality refinement, never a reason to make an
+/// otherwise renderable paragraph fail. Larger paragraphs keep the ordinary
+/// production optimum only. 262k cells is enough for hundreds of candidates
+/// across normal publication line counts while bounding adversarial memory.
+const PARAGRAPH_VARIANT_STATE_CELL_LIMIT: usize = 262_144;
+
+/// Generate measured paragraph variants at the SAME line measure.
+///
+/// The ordinary production optimum is always present. For the classic
+/// Knuth-Plass state model, the function also searches for the minimum-demerit
+/// feasible layouts at the adjacent line counts L-1 and L+1. These are genuine
+/// same-measure paths through the existing breakpoint graph — no width
+/// perturbation, scaling, or approximate reflow is used.
+///
+/// Gradual-adjacent, river, and Pareto modes carry additional predecessor state.
+/// Until the counted DP represents those dimensions exactly, those opt-in modes
+/// intentionally return only the production optimum rather than manufacture
+/// approximate alternatives.
+///
+/// Candidate generation is bounded by PARAGRAPH_VARIANT_STATE_CELL_LIMIT.
+/// Hitting that bound is a quality fallback, not an error: the baseline variant
+/// is returned unchanged.
+#[must_use]
+pub fn break_paragraph_candidates(
+    items: &[ParagraphItem],
+    line_width: LayoutUnit,
+    scratch: &mut ParagraphLayoutScratch,
+) -> ParagraphCandidates {
+    let mut baseline = Vec::new();
+    break_paragraph_into(items, line_width, scratch, &mut baseline);
+    if baseline.is_empty() {
+        return ParagraphCandidates { variants: Vec::new() };
+    }
+
+    let baseline_count = baseline.len();
+    let baseline_demerits = baseline.last().map_or(0, |line| line.demerits);
+    let baseline_variant = ParagraphVariant {
+        line_count: baseline_count,
+        demerits: baseline_demerits,
+        lines: baseline.clone(),
+    };
+
+    if scratch.gradual_demerits()
+        || scratch.river_penalty()
+        || scratch.pareto_breaking()
+        || baseline_count >= usize::MAX - 1
+    {
+        return ParagraphCandidates {
+            variants: vec![baseline_variant],
+        };
+    }
+
+    let candidate_stats = break_candidates_into(items, &mut scratch.candidates);
+    if scratch.candidates.is_empty() {
+        return ParagraphCandidates {
+            variants: vec![baseline_variant],
+        };
+    }
+    scratch
+        .metrics
+        .rebuild_from_items(items, scratch.expansion_permilli());
+    if candidate_stats.has_interior_forced_break {
+        forced_break_prefixes_into(items, &mut scratch.forced_prefix);
+    } else {
+        scratch.forced_prefix.clear();
+    }
+
+    let max_lines = baseline_count.saturating_add(1);
+    let cell_count = scratch
+        .candidates
+        .len()
+        .saturating_mul(max_lines.saturating_add(1));
+    if cell_count > PARAGRAPH_VARIANT_STATE_CELL_LIMIT {
+        return ParagraphCandidates {
+            variants: vec![baseline_variant],
+        };
+    }
+
+    let candidates = &scratch.candidates;
+    let mut states = vec![vec![None::<CountedBreakState>; max_lines + 1]; candidates.len()];
+
+    for (j, candidate) in candidates.iter().enumerate() {
+        for prev_idx in (0..=j).rev() {
+            let start = if prev_idx == j {
+                0
+            } else {
+                candidates[prev_idx].next
+            };
+            if start > candidate.item_index {
+                continue;
+            }
+            if candidate_stats.has_interior_forced_break
+                && forced_break_between(&scratch.forced_prefix, start, candidate.item_index)
+            {
+                continue;
+            }
+
+            let include_box_elasticity = candidate.next != items.len();
+            let segment = scratch
+                .metrics
+                .segment_metrics(start, *candidate, include_box_elasticity);
+            let eff_line_width = line_width
+                + LayoutUnit(clamp_i64_to_i32(
+                    scratch
+                        .metrics
+                        .segment_protrusion(start, candidate.item_index),
+                ));
+            let is_overfull =
+                segment.width.saturating_sub(segment.shrink) > eff_line_width;
+            if prev_idx == j && j > 0 && is_overfull {
+                continue;
+            }
+            let badness = candidate_badness(*candidate, segment, eff_line_width);
+            if badness >= INF_PENALTY && !is_overfull {
+                continue;
+            }
+            let fitness = candidate_fitness(*candidate, segment, eff_line_width);
+            let fitness_milli = fitness_ratio_milli(segment, eff_line_width);
+            let overfull_cost = if is_overfull {
+                let overflow =
+                    segment.width.saturating_sub(eff_line_width).milli_points() as i64;
+                1_000_000_000i64
+                    .saturating_add(overflow.saturating_mul(100_000))
+            } else {
+                0
+            };
+
+            if prev_idx == j {
+                let demerits = line_demerits(
+                    badness,
+                    candidate.penalty,
+                    false,
+                    candidate.flagged,
+                    None,
+                    fitness,
+                    None,
+                    fitness_milli,
+                )
+                .saturating_add(overfull_cost);
+                let state = CountedBreakState {
+                    prev: None,
+                    line: LineBreak {
+                        start,
+                        end: candidate.item_index,
+                        next: candidate.next,
+                        natural_width: segment.width,
+                        badness,
+                        fitness,
+                        demerits,
+                        fitness_milli,
+                    },
+                    flagged: candidate.flagged,
+                    fitness,
+                };
+                if states[j][1]
+                    .is_none_or(|old| demerits <= old.line.demerits)
+                {
+                    states[j][1] = Some(state);
+                }
+                continue;
+            }
+
+            for previous_count in 1..max_lines {
+                let Some(previous) = states[prev_idx][previous_count] else {
+                    continue;
+                };
+                let line_count = previous_count + 1;
+                let demerits = previous
+                    .line
+                    .demerits
+                    .saturating_add(line_demerits(
+                        badness,
+                        candidate.penalty,
+                        previous.flagged,
+                        candidate.flagged,
+                        Some(previous.fitness),
+                        fitness,
+                        None,
+                        fitness_milli,
+                    ))
+                    .saturating_add(overfull_cost);
+                let state = CountedBreakState {
+                    prev: Some((prev_idx, previous_count)),
+                    line: LineBreak {
+                        start,
+                        end: candidate.item_index,
+                        next: candidate.next,
+                        natural_width: segment.width,
+                        badness,
+                        fitness,
+                        demerits,
+                        fitness_milli,
+                    },
+                    flagged: candidate.flagged,
+                    fitness,
+                };
+                if states[j][line_count]
+                    .is_none_or(|old| demerits <= old.line.demerits)
+                {
+                    states[j][line_count] = Some(state);
+                }
+            }
+        }
+    }
+
+    let Some(last_index) = candidates.len().checked_sub(1) else {
+        return ParagraphCandidates {
+            variants: vec![baseline_variant],
+        };
+    };
+    let min_lines = baseline_count.saturating_sub(1).max(1);
+    let mut variants = Vec::with_capacity(3);
+    for line_count in min_lines..=max_lines {
+        let Some(final_state) = states[last_index][line_count] else {
+            if line_count == baseline_count {
+                variants.push(baseline_variant.clone());
+            }
+            continue;
+        };
+        let mut lines = Vec::with_capacity(line_count);
+        let mut cursor = Some((last_index, line_count));
+        while let Some((candidate_index, count)) = cursor {
+            let Some(state) = states[candidate_index][count] else {
+                lines.clear();
+                break;
+            };
+            lines.push(state.line);
+            cursor = state.prev;
+        }
+        if lines.len() != line_count {
+            if line_count == baseline_count
+                && !variants
+                    .iter()
+                    .any(|variant: &ParagraphVariant| {
+                        variant.line_count == baseline_count
+                    })
+            {
+                variants.push(baseline_variant.clone());
+            }
+            continue;
+        }
+        lines.reverse();
+        variants.push(ParagraphVariant {
+            line_count,
+            demerits: final_state.line.demerits,
+            lines,
+        });
+    }
+
+    if !variants
+        .iter()
+        .any(|variant| variant.line_count == baseline_count)
+    {
+        variants.push(baseline_variant);
+    }
+    variants.sort_by_key(|variant| variant.line_count);
+    ParagraphCandidates { variants }
+}
+
 /// Paragraph edge protrusion (left of first box, right of last box) in
 /// milli-points — the whole-paragraph fast path's share of the microtype
 /// optical-margin credit. Zero when microtype is disabled (boxes carry zero).
@@ -3553,6 +3823,91 @@ const fn clamp_usize_to_u8(value: usize) -> u8 {
         u8::MAX
     } else {
         value as u8
+    }
+}
+
+
+#[cfg(test)]
+mod paragraph_candidate_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    fn zero_box() -> ParagraphItem {
+        ParagraphItem::Box(TextBox {
+            text: String::new(),
+            runs: StyledText::default(),
+            width: LayoutUnit::ZERO,
+            protrusion: Protrusion::default(),
+        })
+    }
+
+    fn optional_break() -> ParagraphItem {
+        ParagraphItem::Penalty(Penalty {
+            width: LayoutUnit::ZERO,
+            penalty: 0,
+            flagged: false,
+        })
+    }
+
+    #[test]
+    fn same_measure_candidates_retain_adjacent_line_count() {
+        let items = vec![
+            zero_box(),
+            optional_break(),
+            zero_box(),
+            optional_break(),
+            zero_box(),
+            ParagraphItem::Penalty(Penalty {
+                width: LayoutUnit::ZERO,
+                penalty: FORCED_BREAK_PENALTY,
+                flagged: false,
+            }),
+        ];
+        let mut scratch = ParagraphLayoutScratch::new();
+        scratch.set_expansion_permilli(0);
+        let candidates =
+            break_paragraph_candidates(&items, LayoutUnit::ZERO, &mut scratch);
+        let counts: Vec<_> = candidates
+            .variants
+            .iter()
+            .map(|variant| variant.line_count)
+            .collect();
+        assert_eq!(counts, vec![1, 2]);
+        for variant in &candidates.variants {
+            assert_eq!(variant.lines.len(), variant.line_count);
+            assert_eq!(variant.lines.last().unwrap().next, items.len());
+        }
+    }
+
+    #[test]
+    fn advanced_state_modes_do_not_receive_approximate_variants() {
+        let items = vec![
+            zero_box(),
+            optional_break(),
+            zero_box(),
+            ParagraphItem::Penalty(Penalty {
+                width: LayoutUnit::ZERO,
+                penalty: FORCED_BREAK_PENALTY,
+                flagged: false,
+            }),
+        ];
+        for mode in 0..3 {
+            let mut scratch = ParagraphLayoutScratch::new();
+            scratch.set_expansion_permilli(0);
+            match mode {
+                0 => scratch.set_gradual_demerits(true),
+                1 => scratch.set_river_penalty(true),
+                _ => scratch.set_pareto_breaking(true),
+            }
+            let candidates =
+                break_paragraph_candidates(&items, LayoutUnit::ZERO, &mut scratch);
+            assert_eq!(candidates.variants.len(), 1);
+            assert_eq!(
+                candidates.variants[0].lines.len(),
+                candidates.variants[0].line_count
+            );
+        }
     }
 }
 

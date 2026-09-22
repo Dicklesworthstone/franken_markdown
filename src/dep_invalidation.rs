@@ -17,6 +17,8 @@ pub use browser::{BrowserFlowError, BrowserFlowSession};
 pub mod cache;
 pub use cache::{FlowShapeCache, FlowShapeCacheLimits, FlowShapeCacheStats};
 
+mod matching;
+
 pub mod session;
 pub use session::{FlowAssetRemap, FlowAssetReuse, FlowSession, FlowSessionError, FlowUpdate};
 
@@ -187,38 +189,38 @@ impl DependencyGraph {
     }
 
     /// Compare exact parsed snapshots, including resolved reference destinations.
-    /// Reuse an unchanged prefix/suffix; ambiguous/reordered middle blocks are
-    /// deliberately dirty. Heading and footnote context changes invalidate all
-    /// blocks. External resources behind unchanged URLs are NOT verified here.
+    /// Reuse common edges and a deterministic, monotone chain of verified middle
+    /// anchors. Ambiguous unmatched occurrences remain dirty. Heading and footnote
+    /// context changes invalidate all blocks. External resources behind unchanged
+    /// URLs are NOT verified here; every reused block still needs layout context.
     #[must_use]
     pub fn compare(&self, next: &Self) -> DocumentChangeSet {
         let old = self.document.blocks();
         let new = next.document.blocks();
         let global_context_changed = self.context != next.context;
-        let mut prefix = 0;
-        let mut suffix = 0;
-        if !global_context_changed {
-            let equal = |a: usize, b: usize| {
-                old[a].node == new[b].node
-                    && old[a].span.slice(&self.source).is_some()
-                    && old[a].span.slice(&self.source) == new[b].span.slice(&next.source)
-            };
-            while prefix < old.len().min(new.len()) && equal(prefix, prefix) { prefix += 1; }
-            while suffix < old.len() - prefix && suffix < new.len() - prefix
-                && equal(old.len() - suffix - 1, new.len() - suffix - 1)
-            { suffix += 1; }
+        let pairs = if global_context_changed {
+            Vec::new()
+        } else {
+            matching::reusable_indices(self, next)
+        };
+        let mut reusable = Vec::with_capacity(pairs.len());
+        let mut dirty_blocks = Vec::new();
+        let mut removed_blocks = Vec::new();
+        let mut old_cursor = 0;
+        let mut new_cursor = 0;
+        for (a, b) in pairs {
+            removed_blocks.extend(old_cursor..a);
+            dirty_blocks.extend(new_cursor..b);
+            reusable.push(ReusableBlock {
+                old_index: a, new_index: b, old_span: old[a].span, new_span: new[b].span,
+            });
+            old_cursor = a + 1;
+            new_cursor = b + 1;
         }
-        let mut reusable = Vec::with_capacity(prefix + suffix);
-        let mut record = |a: usize, b: usize| reusable.push(ReusableBlock {
-            old_index: a, new_index: b, old_span: old[a].span, new_span: new[b].span,
-        });
-        for i in 0..prefix { record(i, i); }
-        for i in 0..suffix { record(old.len() - suffix + i, new.len() - suffix + i); }
+        removed_blocks.extend(old_cursor..old.len());
+        dirty_blocks.extend(new_cursor..new.len());
         DocumentChangeSet {
-            reusable,
-            dirty_blocks: (prefix..new.len() - suffix).collect(),
-            removed_blocks: (prefix..old.len() - suffix).collect(),
-            global_context_changed,
+            reusable, dirty_blocks, removed_blocks, global_context_changed,
         }
     }
 }

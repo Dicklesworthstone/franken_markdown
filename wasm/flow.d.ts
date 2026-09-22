@@ -398,7 +398,7 @@ export interface FlowGlyphOutlines {
   readonly glyphs: readonly FlowGlyphOutline[];
 }
 
-export type FlowExportFormat = "html" | "pdf";
+export type FlowExportFormat = "html" | "pdf" | "epub";
 export interface FlowExportOptions {
   title?: string;
   lang?: string;
@@ -409,6 +409,12 @@ export interface FlowExportOptions {
 }
 export interface FlowHtmlExportOptions extends FlowExportOptions {
   darkMode?: "auto" | "disabled";
+}
+/** Reflowable native EPUB output, not a capture of editor geometry. */
+export interface FlowEpubExportOptions extends FlowExportOptions {
+  darkMode?: "auto" | "disabled";
+  /** Verbatim EPUB stylesheet, at most 4 MiB UTF-8. Empty explicitly disables defaults. */
+  customCss?: string;
 }
 export interface FlowPdfExportOptions extends FlowExportOptions {
   author?: string;
@@ -425,6 +431,7 @@ export interface FlowPdfExportOptions extends FlowExportOptions {
 export interface FlowExportOptionsByFormat {
   html: FlowHtmlExportOptions;
   pdf: FlowPdfExportOptions;
+  epub: FlowEpubExportOptions;
 }
 export interface FlowExportDiagnostic {
   readonly severity: "warning" | "error";
@@ -436,7 +443,7 @@ export interface FlowExportDiagnostic {
 export interface FlowExportResult extends FlowToken {
   readonly schemaVersion: 1;
   readonly format: FlowExportFormat;
-  readonly mimeType: "text/html; charset=utf-8" | "application/pdf";
+  readonly mimeType: "text/html; charset=utf-8" | "application/pdf" | "application/epub+zip";
   readonly font: "sans" | "serif";
   readonly sourceLengthBytes: number;
   readonly assetCount: number;

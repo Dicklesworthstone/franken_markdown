@@ -108,11 +108,12 @@ cp wasm/franken_markdown.d.ts "$package_dir/franken_markdown.d.ts"
 cp wasm/fmd-view.js "$package_dir/fmd-view.js"
 cp wasm/fmd-view.d.ts "$package_dir/fmd-view.d.ts"
 # Copy every hand-written subpath entry and its runtime dependencies.
-for file in book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
+for file in book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
   flow_export.mjs EXPORT.md SOURCE.md FILES.md SETTINGS.md \
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
-  flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md; do
+  flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
+  document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md; do
   cp "wasm/$file" "$package_dir/$file"
 done
 cp wasm/package.json "$package_dir/package.json"
@@ -240,6 +241,10 @@ node wasm/flow_outlines_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 log "headless node: revision-fenced HTML/PDF exports against generated WASM"
 node wasm/flow_export_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
+
+log "headless node: cancellable document workers and demo lifecycle"
+node --test wasm/document_worker.test.mjs wasm/demo_worker.test.mjs 2>&1 | tee -a "$LEDGER"
+node wasm/document_worker_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 # Native side + byte parity.
 log "native<->WASM byte parity:"

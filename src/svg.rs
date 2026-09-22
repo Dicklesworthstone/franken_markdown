@@ -24,7 +24,7 @@
 //! Deliberate scope cuts (the poster is a display artifact, not a print
 //! engine): greedy word wrap on raw `hmtx` advances (no Knuth-Plass, no
 //! kerning, no ligatures); inline links are coloured but not underlined;
-//! inline/display math renders its TeX source in the mono face; raw HTML
+//! mathematics uses the shared TeX layout engine and vector outlines. Raw HTML
 //! is preserved as inert vector text; footnote definitions are skipped in flow
 //! (matching the AST contract); images render their alt text.
 //!
@@ -32,6 +32,7 @@
 //! `prefers-color-scheme` policy behind [`Theme::dark_mode`], so the poster
 //! always uses [`Theme::colors`].
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 
 use franken_markdown::ast::{Align, Block, Document, Inline, List, Table};
@@ -54,6 +55,11 @@ const SLOT_COUNT: usize = 6;
 // Explicit paths also support the standalone #[path] SVG integration harness.
 #[path = "svg/text.rs"]
 mod text;
+#[path = "svg/math.rs"]
+mod math;
+#[cfg(test)]
+#[path = "svg/math_tests.rs"]
+mod math_tests;
 #[cfg(test)]
 #[path = "svg/text_tests.rs"]
 mod text_tests;
@@ -88,6 +94,15 @@ pub struct SvgReport {
     pub paths_emitted: usize,
 }
 
+/// A recoverable SVG export problem. Unsupported mathematics stays visible as
+/// inert source text; callers can inspect the stable code instead of guessing
+/// whether a source-looking formula was successfully typeset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SvgWarning {
+    pub code: &'static str,
+    pub message: String,
+}
+
 /// Render `doc` to a standalone vector-SVG poster, discarding statistics.
 #[must_use]
 pub fn render_svg(doc: &Document, opts: &SvgOptions) -> Vec<u8> {
@@ -97,6 +112,17 @@ pub fn render_svg(doc: &Document, opts: &SvgOptions) -> Vec<u8> {
 /// Render `doc` to a standalone vector-SVG poster plus render statistics.
 #[must_use]
 pub fn render_svg_with_report(doc: &Document, opts: &SvgOptions) -> (Vec<u8>, SvgReport) {
+    let (bytes, report, _) = render_svg_with_diagnostics(doc, opts);
+    (bytes, report)
+}
+
+/// Render a poster with deterministic, per-occurrence recoverable diagnostics.
+/// This additive API leaves the existing report and option structs unchanged.
+#[must_use]
+pub fn render_svg_with_diagnostics(
+    doc: &Document,
+    opts: &SvgOptions,
+) -> (Vec<u8>, SvgReport, Vec<SvgWarning>) {
     Poster::new(opts).render(doc)
 }
 
@@ -239,8 +265,12 @@ impl Ink {
 }
 
 /// One paint operation, in document (painter's) order.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Op {
+    Path {
+        data: String,
+        ink: Ink,
+    },
     Rect {
         x: f64,
         y: f64,
@@ -299,6 +329,7 @@ impl RStyle {
 #[derive(Debug, Clone, PartialEq)]
 enum Piece {
     Text(String, RStyle),
+    Math(String, bool, RStyle),
     Break,
 }
 
@@ -310,6 +341,8 @@ struct Word {
     w: f64,
     /// Actual source whitespace before this run; zero across style boundaries.
     gap: f64,
+    formula: Option<math::MathRun>,
+    warning: Option<SvgWarning>,
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +354,8 @@ struct Poster {
     /// only if a bundled face failed to parse (the registry tests make that
     /// unreachable in practice); unresolvable glyphs count as missing.
     faces: [Option<Font>; SLOT_COUNT],
+    math_engine: OnceCell<Option<franken_markdown::math::Engine>>,
+    warnings: Vec<SvgWarning>,
     colors: ThemeColors,
     scale: TypeScale,
     line_height: f64,
@@ -352,6 +387,8 @@ impl Poster {
                 fonts::load_mono(FontStyle::Regular).ok(),
                 fonts::load_symbol().ok(),
             ],
+            math_engine: OnceCell::new(),
+            warnings: Vec::new(),
             colors: theme.colors.clone(),
             scale: TypeScale::default(),
             line_height: f64::from(theme.spacing.line_height),
@@ -374,7 +411,7 @@ impl Poster {
         self.width - self.content_left()
     }
 
-    fn render(mut self, doc: &Document) -> (Vec<u8>, SvgReport) {
+    fn render(mut self, doc: &Document) -> (Vec<u8>, SvgReport, Vec<SvgWarning>) {
         let l = self.content_left();
         let r = self.content_right();
         for block in &doc.blocks {
@@ -513,14 +550,8 @@ impl Poster {
                         ..st
                     },
                 )),
-                Inline::Math(s) | Inline::DisplayMath(s) => out.push(Piece::Text(
-                    s.clone(),
-                    RStyle {
-                        mono: true,
-                        ink: Ink::FgMuted,
-                        ..st
-                    },
-                )),
+                Inline::Math(s) => out.push(Piece::Math(s.clone(), false, st)),
+                Inline::DisplayMath(s) => out.push(Piece::Math(s.clone(), true, st)),
             }
         }
     }
@@ -532,7 +563,7 @@ impl Poster {
             Block::Heading { level, inlines } => self.heading(*level, inlines, l, r, quote),
             Block::Paragraph(inlines) => self.paragraph(inlines, l, r, quote),
             Block::CodeBlock { code, .. } => self.code_panel(code, l, r),
-            Block::MathBlock(src) => self.code_panel(src, l, r),
+            Block::MathBlock(src) => self.math_block(src, l, r, quote),
             Block::BlockQuote(inner) => self.blockquote(inner, l, r),
             Block::List(list) => self.list(list, l, r, quote),
             Block::Table(table) => self.table(table, l, r),
@@ -596,9 +627,10 @@ impl Poster {
         let leading = size * self.line_height;
         let lines = self.wrap(pieces, size, r - l);
         for line in &lines {
-            let baseline = self.y + size * 0.85;
+            let (ascent, height) = self.line_metrics(line, size * 0.85, leading);
+            let baseline = self.y + ascent;
             self.draw_words(line, l, baseline, size);
-            self.y += leading;
+            self.y += height;
         }
         self.y += gap_after;
     }
@@ -623,12 +655,21 @@ impl Poster {
         let leading = size * 1.3;
         let lines = self.wrap(&pieces, size, r - l);
         for line in &lines {
-            let baseline = self.y + size * 0.85;
+            let (ascent, height) = self.line_metrics(line, size * 0.85, leading);
+            let baseline = self.y + ascent;
             self.draw_words(line, l, baseline, size);
-            self.y += leading;
+            self.y += height;
         }
         if level == 1 {
-            let rule_y = self.y - leading * 0.35;
+            let has_math = lines.iter().flatten().any(|word| word.formula.is_some());
+            let rule_y = if has_math {
+                // A tall formula can occupy its entire line box. Put the
+                // heading rule below that ink, never through a denominator.
+                self.y += size * 0.2;
+                self.y - size * 0.1
+            } else {
+                self.y - leading * 0.35
+            };
             self.ops.push(Op::Rule {
                 x1: l,
                 y1: rule_y,
@@ -656,7 +697,7 @@ impl Poster {
         self.text_lines(&pieces, size, l, r, quote, size * 0.7);
     }
 
-    /// Fenced code and math blocks: mono face on a themed panel.
+    /// Fenced code and unsupported math: mono face on a themed panel.
     fn code_panel(&mut self, code: &str, l: f64, r: f64) {
         let size = f64::from(self.scale.code);
         let leading = size * 1.45;
@@ -813,23 +854,29 @@ impl Poster {
                     if let Some(cell) = cells.get(c) {
                         poster.flatten(cell, st, &mut pieces);
                     }
-                    poster.wrap(&pieces, size, (widths[c] - 2.0 * pad_x).max(size))
+                    let padding = pad_x.min(widths[c] * 0.25);
+                    poster.wrap(&pieces, size, (widths[c] - 2.0 * padding).max(1.0))
                 })
                 .collect();
-            let max_lines = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
-            let row_h = max_lines as f64 * leading + 2.0 * pad_y;
+            let row_h = wrapped.iter().map(|lines| {
+                lines.iter().map(|line| poster.line_metrics(line, size * 0.8, leading).1)
+                    .sum::<f64>()
+            }).fold(leading, f64::max) + 2.0 * pad_y;
             let mut cx = l;
             for (c, cell_lines) in wrapped.iter().enumerate() {
-                let cell_w = widths[c] - 2.0 * pad_x;
-                for (li, line) in cell_lines.iter().enumerate() {
+                let padding = pad_x.min(widths[c] * 0.25);
+                let cell_w = widths[c] - 2.0 * padding;
+                let mut line_top = top + pad_y;
+                for line in cell_lines {
                     let line_w = poster.words_width(line, size);
                     let x = match aligns[c] {
-                        Align::Center => cx + pad_x + (cell_w - line_w) / 2.0,
-                        Align::Right => cx + pad_x + (cell_w - line_w),
-                        Align::None | Align::Left => cx + pad_x,
+                        Align::Center => cx + padding + (cell_w - line_w) / 2.0,
+                        Align::Right => cx + padding + (cell_w - line_w),
+                        Align::None | Align::Left => cx + padding,
                     };
-                    let baseline = top + pad_y + li as f64 * leading + size * 0.8;
-                    poster.draw_words(line, x, baseline, size);
+                    let (ascent, height) = poster.line_metrics(line, size * 0.8, leading);
+                    poster.draw_words(line, x, line_top + ascent, size);
+                    line_top += height;
                 }
                 cx += widths[c];
             }
@@ -946,15 +993,14 @@ impl Poster {
         Some(d)
     }
 
-    fn emit(self, height: f64) -> (Vec<u8>, SvgReport) {
+    fn emit(self, height: f64) -> (Vec<u8>, SvgReport, Vec<SvgWarning>) {
         // Collect unique glyph defs in sorted (slot, gid) order: BTreeMap
         // iteration keeps def ids stable for a fixed input.
         let mut defs: BTreeMap<(usize, u16), Option<String>> = BTreeMap::new();
         for op in &self.ops {
             if let Op::Glyph { slot, gid, .. } = op {
                 defs.entry((*slot, *gid)).or_insert_with(|| {
-                    self.faces[*slot]
-                        .as_ref()
+                    self.font_for_slot(*slot)
                         .and_then(|font| Self::glyph_path(font, *gid))
                 });
             }
@@ -1002,6 +1048,13 @@ impl Poster {
         let mut drawn = 0;
         for op in &self.ops {
             match op {
+                Op::Path { data, ink } => {
+                    out.push_str("<path d=\"");
+                    out.push_str(data);
+                    out.push_str("\" fill=\"");
+                    esc_attr(ink.hex(&self.colors), &mut out);
+                    out.push_str("\"/>\n");
+                }
                 Op::Rect {
                     x,
                     y,
@@ -1084,7 +1137,7 @@ impl Poster {
             glyphs_drawn: drawn,
             paths_emitted: ids.len(),
         };
-        (out.into_bytes(), report)
+        (out.into_bytes(), report, self.warnings)
     }
 }
 

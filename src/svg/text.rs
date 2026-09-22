@@ -1,6 +1,6 @@
 //! Whitespace-aware poster text flow. Style boundaries are not word boundaries.
 
-use super::{Piece, Poster, RStyle, Word};
+use super::{Op, Piece, Poster, RStyle, SvgWarning, Word};
 
 impl Poster {
     /// Greedy word wrapping with explicit gaps. A word can span any number of
@@ -16,6 +16,12 @@ impl Poster {
                     flow.new_line();
                     flow.gap = 0.0;
                     flow.trailing_break = true;
+                }
+                Piece::Math(source, display, style) => {
+                    let run = self.math_word(source, *display, *style, size, width);
+                    flow.word_width += run.w;
+                    flow.word.push(run);
+                    flow.trailing_break = false;
                 }
                 Piece::Text(text, style) => {
                     let mut start = 0;
@@ -49,7 +55,7 @@ impl Poster {
         let w = self.measure(text, style, size);
         flow.word_width += w;
         flow.trailing_break = false;
-        if let Some(last) = flow.word.last_mut().filter(|run| run.style == style) {
+        if let Some(last) = flow.word.last_mut().filter(|run| run.style == style && run.formula.is_none() && run.warning.is_none()) {
             last.text.push_str(text);
             last.w += w;
         } else {
@@ -58,6 +64,8 @@ impl Poster {
                 style,
                 w,
                 gap: 0.0,
+                formula: None,
+                warning: None,
             });
         }
     }
@@ -82,6 +90,15 @@ impl Poster {
             // The entire word exceeds the measure: consume each scalar once.
             // Zero-advance combining characters stay on their preceding line.
             for run in word {
+                if run.formula.is_some() {
+                    if !flow.line.is_empty() && flow.line_width + run.w > width {
+                        flow.new_line();
+                    }
+                    flow.line_width += run.w;
+                    flow.line.push(run);
+                    continue;
+                }
+                let mut warning = run.warning;
                 let mut chunk = String::new();
                 let mut chunk_width = 0.0;
                 for ch in run.text.chars() {
@@ -89,14 +106,14 @@ impl Poster {
                     if advance > 0.0 && flow.line_width > 0.0
                         && flow.line_width + advance > width
                     {
-                        push_chunk(flow, &mut chunk, &mut chunk_width, run.style);
+                        push_chunk(flow, &mut chunk, &mut chunk_width, run.style, &mut warning);
                         flow.new_line();
                     }
                     chunk.push(ch);
                     chunk_width += advance;
                     flow.line_width += advance;
                 }
-                push_chunk(flow, &mut chunk, &mut chunk_width, run.style);
+                push_chunk(flow, &mut chunk, &mut chunk_width, run.style, &mut warning);
             }
         }
         flow.word_width = 0.0;
@@ -107,7 +124,22 @@ impl Poster {
         let mut pen = x;
         for word in words {
             pen += word.gap;
-            pen = self.draw_text(pen, baseline, &word.text, word.style, size);
+            if let Some(warning) = &word.warning {
+                self.warnings.push(warning.clone());
+            }
+            if let Some(run) = &word.formula {
+                self.draw_math(run, pen, baseline, word.style.ink);
+                if word.style.strike && word.w > 0.0 {
+                    self.ops.push(Op::Rule {
+                        x1: pen, y1: baseline - size * 0.28,
+                        x2: pen + word.w, y2: baseline - size * 0.28,
+                        ink: word.style.ink, w: (size * 0.05).max(0.5),
+                    });
+                }
+                pen += word.w;
+            } else {
+                pen = self.draw_text(pen, baseline, &word.text, word.style, size);
+            }
         }
     }
 
@@ -170,13 +202,17 @@ impl TextFlow {
     }
 }
 
-fn push_chunk(flow: &mut TextFlow, text: &mut String, width: &mut f64, style: RStyle) {
+fn push_chunk(flow: &mut TextFlow, text: &mut String, width: &mut f64, style: RStyle,
+    warning: &mut Option<SvgWarning>)
+{
     if !text.is_empty() {
         flow.line.push(Word {
             text: std::mem::take(text),
             style,
             w: *width,
             gap: 0.0,
+            formula: None,
+            warning: warning.take(),
         });
         *width = 0.0;
     }

@@ -21,7 +21,7 @@ function element() {
     }
   };
 }
-function setup({source = '# Original', title = 'Document', scale = '', read = false, fail = '', normalizeTextarea = false} = {}) {
+function setup({source = '# Original', title = 'Document', scale = '', read = false, fail = '', normalizeTextarea = false, native = null} = {}) {
   const elements = new Map(ids.map(id => [id, element()]));
   // The JSON script's id is in an escaped Rust string, rather than a raw literal.
   elements.set('fmd-raw-source', {...element(), textContent: JSON.stringify(source)});
@@ -75,6 +75,7 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
     }
   };
   const window = {...element(), print() { printed.push(get('fmd-content').innerHTML); }};
+  if (native) Object.defineProperty(window, '__fmdNativeRuntime', {value: native});
   const context = vm.createContext({document, window, Blob,
     URL: {
       createObjectURL(blob) { if (failure === 'url') throw Error('URL failed'); const url = 'blob:test-' + ++next; blobs.set(url, blob); return url; },
@@ -250,4 +251,79 @@ test('browser newline normalization never dirties or rewrites untouched source b
   s.click('btn-save-markdown');
   assert.equal(await s.downloads[2].blob.text(), original);
   assert.match(s.get('fmd-content').innerHTML, /native-diagram/);
+});
+
+function nativeAdapter() {
+  const calls = [];
+  const native = {version:1, diagnostics:[], failure:'',
+    render(source, preview, display) {
+      if (this.failure) throw Error(this.failure);
+      calls.push({kind:'html', source, display});
+      preview.innerHTML = '<p data-native="true">' + escape(source) + '</p>';
+    },
+    pdf(source) {
+      if (this.failure) throw Error(this.failure);
+      calls.push({kind:'pdf', source});
+      return new TextEncoder().encode('%PDF-1.7\n' + source);
+    }
+  };
+  return {native, calls};
+}
+
+test('native readiness renders current source and never calls the reduced parser, including undo', () => {
+  const {native,calls}=nativeAdapter(); const s=setup({native});
+  s.edit('typed while loading'); s.fire('fmd-native-ready');
+  assert.equal(calls[0].source,'typed while loading'); assert.deepEqual(s.renders,[]);
+  s.edit('# Original'); s.tick(150);
+  assert.equal(calls[1].source,'# Original'); assert.match(s.get('fmd-content').innerHTML,/data-native/);
+  assert.deepEqual(s.renders,[]);
+});
+
+test('native startup failure preserves source and preview, blocks stale exports, and leaves Markdown downloadable', async () => {
+  const {native}=nativeAdapter();native.failure='Native renderer is loading';const s=setup({native});
+  s.edit('never lose me');s.tick(150);s.click('btn-save-html');s.click('btn-export-pdf');
+  assert.match(s.get('fmd-save-status').textContent,/loading/);assert.deepEqual(s.downloads,[]);
+  assert.match(s.get('fmd-content').innerHTML,/native-diagram/);assert.deepEqual(s.printed,[]);assert.deepEqual(s.renders,[]);
+  s.click('btn-save-markdown');assert.equal(await s.downloads[0].blob.text(),'never lose me');
+  native.failure='';s.fire('fmd-native-ready');assert.match(s.get('fmd-content').innerHTML,/never lose me/);
+  assert.ok(s.fire('beforeunload').prevented);
+});
+
+test('native PDF downloads contain the latest source before debounce, without browser printing', async () => {
+  const {native,calls}=nativeAdapter();const s=setup({native});
+  s.edit('superseded');s.edit('current PDF');s.click('btn-export-pdf');
+  assert.deepEqual(calls,[{kind:'pdf',source:'current PDF'}]);
+  assert.equal(s.downloads[0].filename,'Document.pdf');assert.equal(s.downloads[0].blob.type,'application/pdf');
+  assert.equal(await s.downloads[0].blob.text(),'%PDF-1.7\ncurrent PDF');
+  assert.deepEqual(s.printed,[]);assert.deepEqual(s.renders,[]);
+});
+
+test('native Ctrl/Cmd P uses the core exporter and suppresses repeated print requests', () => {
+  const {native,calls}=nativeAdapter();const s=setup({native});
+  assert.ok(s.fire('keydown',{key:'p',ctrlKey:true}).prevented);
+  assert.ok(s.fire('keydown',{key:'P',metaKey:true,repeat:true}).prevented);
+  assert.equal(calls.length,1);assert.equal(s.downloads[0].filename,'Document.pdf');assert.deepEqual(s.printed,[]);
+});
+
+test('native zoom and theme changes re-render unchanged source with explicit view settings', () => {
+  const {native,calls}=nativeAdapter();const s=setup({native});s.fire('fmd-native-ready');
+  s.click('btn-zoom-in');assert.equal(calls.at(-1).display.scale,1.1);
+  s.click('btn-theme-toggle');assert.equal(calls.at(-1).display.theme,'dark');
+  s.click('btn-theme-toggle');assert.equal(calls.at(-1).display.theme,'light');
+  s.click('btn-zoom-reset');assert.equal(calls.at(-1).display.scale,1);
+  assert.ok(calls.every(call=>call.source==='# Original'));assert.deepEqual(s.renders,[]);
+});
+
+test('native warnings remain visible after preview and PDF export, while runtime errors do not masquerade as fallback success', () => {
+  const {native}=nativeAdapter();native.diagnostics=[{message:'Missing supplied image'}];const s=setup({native});
+  s.fire('fmd-native-ready');assert.match(s.get('fmd-save-status').textContent,/Missing supplied image/);
+  s.click('btn-export-pdf');assert.match(s.get('fmd-save-status').textContent,/Download started.*Missing supplied image/);
+  s.fire('fmd-native-error',{detail:'Native runtime failed: bad binary'});
+  assert.match(s.get('fmd-save-status').textContent,/bad binary/);assert.deepEqual(s.renders,[]);
+});
+
+test('readiness already settled before controller registration still renders edits made during startup', async () => {
+  const {native,calls}=nativeAdapter();native.ready=Promise.resolve(true);const s=setup({native});
+  s.edit('newest startup source');await native.ready;await Promise.resolve();
+  assert.equal(calls[0].source,'newest startup source');assert.deepEqual(s.renders,[]);
 });

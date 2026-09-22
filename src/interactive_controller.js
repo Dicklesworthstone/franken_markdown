@@ -22,6 +22,9 @@
   const currentSource = () => editor.value === originalEditorValue ? originalSource : editor.value;
   const preview = document.getElementById('fmd-content');
   const body = document.getElementById('fmd-app-body');
+  const candidate = Object.getOwnPropertyDescriptor(window, '__fmdNativeRuntime')?.value;
+  const native = candidate?.version === 1 && typeof candidate.render === 'function'
+    && typeof candidate.pdf === 'function' ? candidate : null;
   const lineCountBadge = document.getElementById('source-line-count');
   const statsDrawer = document.querySelector('body > #stats-drawer');
 
@@ -35,7 +38,7 @@
   // Keep the full initial renderer output available for exact undo, including
   // diagrams and other features outside the offline JavaScript subset.
   const originalRendered = preview.innerHTML;
-  let lastRenderedSource = originalSource;
+  let lastRenderedSource = native ? null : originalSource;
   const storedScale = parseFloat(document.documentElement.style.getPropertyValue('--fmd-base')) / 16;
   let currentScale = Number.isFinite(storedScale) ? Math.min(2, Math.max(0.7, storedScale)) : 1;
   let viewMode = body.classList.contains('view-read') ? 'read' : 'split';
@@ -77,8 +80,18 @@
     debounceTimer = null;
     const source = currentSource();
     if (source !== lastRenderedSource) {
-      const html = source === originalSource ? originalRendered : parseMarkdownClient(source, imageAssets);
-      preview.innerHTML = html;
+      if (native) {
+        native.render(source, preview, {
+          scale: currentScale,
+          theme: document.body.classList.contains('theme-dark') ? 'dark'
+            : document.body.classList.contains('theme-light') ? 'light' : undefined,
+        });
+        saveStatus.textContent = nativeNotice() || (editor.value === originalEditorValue
+          ? '' : 'Modified — download to keep changes');
+      } else {
+        const html = source === originalSource ? originalRendered : parseMarkdownClient(source, imageAssets);
+        preview.innerHTML = html;
+      }
       lastRenderedSource = source;
     }
     updateStats();
@@ -87,6 +100,23 @@
     try { action(); }
     catch (error) { saveStatus.textContent = 'Unable to complete: ' + String(error?.message || error); }
   }
+  function nativeNotice() {
+    const findings = native?.diagnostics ?? [];
+    return findings.length ? `Renderer diagnostics (${findings.length}): `
+      + findings.slice(0, 3).map(item => String(item?.message ?? item).slice(0, 300)).join('; ') : '';
+  }
+  function refreshNative() {
+    if (!native) return;
+    lastRenderedSource = null;
+    attempt(renderCurrent);
+  }
+  window.addEventListener('fmd-native-ready', refreshNative);
+  window.addEventListener('fmd-native-error', event => {
+    if (native) saveStatus.textContent = String(event.detail).slice(0, 2048);
+  });
+  // Also handle an engine that settled before this controller was evaluated.
+  // Read currentSource at completion: typing during startup is never lost.
+  if (native?.ready) native.ready.then(() => attempt(renderCurrent));
   editor.addEventListener('input', () => {
     updateStats();
     saveStatus.textContent = editor.value === originalEditorValue ? '' : 'Modified — download to keep changes';
@@ -128,6 +158,19 @@
       if (url) URL.revokeObjectURL(url);
     }
   }
+  function exportPdf() {
+    if (native) {
+      // Export current source through the shared PDF engine, not a print of
+      // the iframe's last loaded revision. Viewing zoom is not PDF typography.
+      const bytes = native.pdf(currentSource());
+      download(bytes, 'application/pdf', 'pdf');
+      const notice = nativeNotice();
+      if (notice) saveStatus.textContent += ' — ' + notice;
+    } else {
+      renderCurrent();
+      window.print();
+    }
+  }
   function saveMarkdown() {
     download(currentSource(), 'text/markdown;charset=utf-8', 'md');
   }
@@ -149,7 +192,14 @@
   document.getElementById('btn-save-markdown').addEventListener('click', () => attempt(saveMarkdown));
   document.getElementById('btn-save-html').addEventListener('click', () => attempt(saveHtml));
   document.addEventListener('keydown', event => {
-    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 's') return;
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (native && key === 'p') {
+      event.preventDefault();
+      if (!event.repeat) attempt(exportPdf);
+      return;
+    }
+    if (key !== 's') return;
     event.preventDefault();
     if (!event.repeat) attempt(event.shiftKey ? saveHtml : saveMarkdown);
   });
@@ -167,7 +217,9 @@
     downloadUrls.clear();
   });
   // Also cover the browser's own Print menu / keyboard shortcut.
-  window.addEventListener('beforeprint', () => attempt(renderCurrent));
+  window.addEventListener('beforeprint', () => {
+    if (!native) attempt(renderCurrent);
+  });
 
   // Toolbar actions
   document.getElementById('btn-toggle-view').addEventListener('click', () => {
@@ -190,18 +242,21 @@
     currentScale = Math.min(2.0, currentScale + 0.1);
     document.documentElement.style.setProperty('--fmd-base', (16 * currentScale) + 'px');
     document.getElementById('btn-zoom-reset').textContent = Math.round(currentScale * 100) + '%';
+    refreshNative();
   });
 
   document.getElementById('btn-zoom-out').addEventListener('click', () => {
     currentScale = Math.max(0.7, currentScale - 0.1);
     document.documentElement.style.setProperty('--fmd-base', (16 * currentScale) + 'px');
     document.getElementById('btn-zoom-reset').textContent = Math.round(currentScale * 100) + '%';
+    refreshNative();
   });
 
   document.getElementById('btn-zoom-reset').addEventListener('click', () => {
     currentScale = 1.0;
     document.documentElement.style.setProperty('--fmd-base', '16px');
     document.getElementById('btn-zoom-reset').textContent = '100%';
+    refreshNative();
   });
 
   document.getElementById('btn-theme-toggle').addEventListener('click', () => {
@@ -212,6 +267,7 @@
       document.body.classList.remove('theme-light');
       document.body.classList.add('theme-dark');
     }
+    refreshNative();
   });
 
   document.getElementById('btn-stats-toggle').addEventListener('click', () => {
@@ -223,10 +279,7 @@
     statsDrawer.classList.remove('open');
   });
 
-  document.getElementById('btn-export-pdf').addEventListener('click', () => attempt(() => {
-    renderCurrent();
-    window.print();
-  }));
+  document.getElementById('btn-export-pdf').addEventListener('click', () => attempt(exportPdf));
 
   // Initial stats calculation
   updateStats();

@@ -16,6 +16,9 @@ use crate::{
 #[path = "resources.rs"]
 pub(super) mod resources;
 
+#[path = "file_options.rs"]
+pub(super) mod file_options;
+
 pub(super) type ToolError = (i32, String, &'static str);
 type Field = (&'static str, &'static str, &'static str);
 type ToolSpec = (&'static str, &'static str, &'static [Field], &'static [&'static str]);
@@ -86,6 +89,8 @@ fn integer_bounds(name: &str) -> (u64, u64) {
 
 pub fn tools_list_result() -> JsonValue {
     let tools = TOOLS.iter().map(|(name, description, fields, required)| {
+        let fields = if *name == "fmd.render_file" { file_options::fields() } else { fields.to_vec() };
+        let file_tool = *name == "fmd.render_file";
         let properties = fields.iter().map(|(name, kind, description)| {
             if matches!(*name, "images" | "fonts") {
                 return ((*name).to_owned(), resources::schema(name));
@@ -94,6 +99,15 @@ pub fn tools_list_result() -> JsonValue {
                 ("type".to_string(), JsonValue::String((*kind).to_string())),
                 ("description".to_string(), JsonValue::String((*description).to_string())),
             ]);
+            if file_tool {
+                property.insert("description".to_string(), JsonValue::String(format!(
+                    "{description}. Supported targets: {}", file_options::supported_targets(name),
+                )));
+            }
+            if *name == "maxWidthPt" {
+                property.insert("minimum".to_string(), JsonValue::Number(144.0));
+                property.insert("maximum".to_string(), JsonValue::Number(14400.0));
+            }
             if *kind == "integer" {
                 let (min, max) = integer_bounds(name);
                 property.insert("minimum".to_string(), JsonValue::Number(min as f64));
@@ -135,6 +149,8 @@ fn validate_arguments(args: &JsonValue, fields: &[Field], required: &[&str]) -> 
             "string" => matches!(value, JsonValue::String(_)),
             "boolean" => matches!(value, JsonValue::Bool(_)),
             "array" => matches!(value, JsonValue::Array(_)),
+            "number" => value.as_f64().is_some_and(|number| number.is_finite()
+                && (name != "maxWidthPt" || (144.0..=14400.0).contains(&number))),
             "integer" => {
                 let (min, max) = integer_bounds(name);
                 value.as_u64().is_some_and(|value| (min..=max).contains(&value))
@@ -268,7 +284,8 @@ pub fn handle_tool_call(params: Option<&JsonValue>, max_input_bytes: u64) -> Res
     ))?;
     let default_args = JsonValue::Object(BTreeMap::new());
     let args = params.get("arguments").unwrap_or(&default_args);
-    validate_arguments(args, fields, required)?;
+    let fields = if name == "fmd.render_file" { file_options::fields() } else { fields.to_vec() };
+    validate_arguments(args, &fields, required)?;
     let started = Instant::now();
     let result = execute(name, args, max_input_bytes);
     eprintln!("fmd mcp tool '{name}' completed in {:?}", started.elapsed());

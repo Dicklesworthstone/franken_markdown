@@ -10,7 +10,7 @@ use super::tools::resources::{self, with_svg_warnings};
 use super::{ERROR_INPUT_ERROR, ERROR_INPUT_TOO_LARGE, ERROR_INVALID_OPTIONS, ERROR_RENDER_FAILED};
 use super::{JsonValue, base64_encode};
 use crate::file_write::{OutputFile, write_outputs_staged};
-use crate::{HtmlOptions, PdfOptions, SvgOptions};
+use crate::PdfAMode;
 
 struct Source {
     text: String,
@@ -133,11 +133,10 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
     if path.is_empty() {
         return Err((ERROR_INVALID_OPTIONS, "Input path must not be empty".to_string(), "missing_path"));
     }
-    let target = args.get("to").and_then(JsonValue::as_str)
-        .unwrap_or("html").trim().to_ascii_lowercase();
-    if !matches!(target.as_str(), "html" | "pdf" | "both" | "epub" | "svg") {
-        return Err((ERROR_INVALID_OPTIONS, format!("Unsupported output target: '{target}'"), "unsupported_target"));
-    }
+    let prepared = super::tools::file_options::prepare(args)?;
+    let target = prepared.target;
+    let mut html_options = prepared.html;
+    let mut pdf_options = prepared.pdf;
     let out = args.get("out").and_then(JsonValue::as_str);
     if out == Some("") {
         return Err((ERROR_INVALID_OPTIONS, "Output path must not be empty".to_string(), "invalid_output_path"));
@@ -155,14 +154,15 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
     }
     let assets = resources::parse(args)?;
     let title = Path::new(path).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut html_options = HtmlOptions { title: Some(title.clone()), ..Default::default() };
-    let mut pdf_options = PdfOptions { title: Some(title), ..Default::default() };
+    // Explicit empty or whitespace-padded titles are caller data, not defaults.
+    if html_options.title.is_none() { html_options.title = Some(title.clone()); }
+    if pdf_options.title.is_none() { pdf_options.title = Some(title); }
     if target == "both" {
         html_options.font_assets = assets.fonts.clone();
         html_options.image_assets = assets.images.clone();
         pdf_options.font_assets = assets.fonts;
         pdf_options.image_assets = assets.images;
-    } else if matches!(target.as_str(), "html" | "epub") {
+    } else if matches!(target, "html" | "epub") {
         html_options.font_assets = assets.fonts;
         html_options.image_assets = assets.images;
     } else {
@@ -174,18 +174,28 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
     let render_error = |error: crate::RenderError| (ERROR_RENDER_FAILED, format!("Render failed: {error}"), "render_failed");
     let mut artifacts = Vec::new();
     let mut svg_warnings = Vec::new();
-    if matches!(target.as_str(), "html" | "both") {
-        artifacts.push(Artifact { format: "html", mime: "text/html", bytes: crate::render_html_document(&document, &html_options).map_err(render_error)?.into_bytes(), binary: false });
+    if matches!(target, "html" | "both") {
+        let html = if prepared.interactive {
+            crate::interactive::render_interactive_html(&document, &source.text, &html_options)
+        } else {
+            crate::render_html_document(&document, &html_options).map_err(render_error)?
+        };
+        artifacts.push(Artifact { format: "html", mime: "text/html", bytes: html.into_bytes(), binary: false });
     }
-    if matches!(target.as_str(), "pdf" | "both") {
-        artifacts.push(Artifact { format: "pdf", mime: "application/pdf", bytes: crate::render_pdf_document(&document, &pdf_options).map_err(render_error)?, binary: true });
+    if matches!(target, "pdf" | "both") {
+        let pdf = if prepared.pdf_a.mode == PdfAMode::Off {
+            crate::render_pdf_document(&document, &pdf_options)
+        } else {
+            crate::render_pdf_document_pdfa(&document, &pdf_options, prepared.pdf_a)
+        }.map_err(render_error)?;
+        artifacts.push(Artifact { format: "pdf", mime: "application/pdf", bytes: pdf, binary: true });
     }
     if target == "epub" {
         artifacts.push(Artifact { format: "epub", mime: "application/epub+zip", bytes: crate::render_epub(&document, &html_options).map_err(render_error)?, binary: true });
     }
     if target == "svg" {
         let (bytes, _, warnings) = crate::svg::render_svg_with_resources(
-            &document, &SvgOptions::default(), &pdf_options.font_assets, &pdf_options.image_assets,
+            &document, &prepared.svg, &pdf_options.font_assets, &pdf_options.image_assets,
         ).map_err(render_error)?;
         svg_warnings = warnings;
         artifacts.push(Artifact { format: "svg", mime: "image/svg+xml", bytes, binary: false });

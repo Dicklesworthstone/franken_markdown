@@ -49,6 +49,11 @@ creating them repairs the render. Editing an included file also refreshes its
 image dependencies. A failed include save retains the previous asset edges;
 successful recovery replaces them. Include contents and their expanded output
 both honor the render input limit, with a 64 MiB expanded-output ceiling.
+Include aliases are tracked separately from their allowed canonical contents:
+retargeting a file or directory symlink refreshes nested include origins even
+when the target files have identical text. An alias that currently escapes the
+input directory is observed through its link entry without reading the external
+target, so an in-root repair can recover the render.
 
 Graphs are cached by root and included-file content fingerprints. Unchanged inputs do not reparse
 on each tick. Refresh reads at most 64 MiB plus an overflow sentinel and checks
@@ -56,8 +61,10 @@ that the captured UTF-8 source matches the polling fingerprint. An unstable,
 missing, oversized or invalid UTF-8 source retains its last successful graph;
 `dependency_failures()` exposes affected explicit roots, and subsequent polls
 retry. The CLI does not yet print this new accessor as a separate diagnostic.
-The limit applies to graph discovery, not all fingerprint I/O. The configured
-stylesheet is watched when `--css` does not override it.
+Fingerprint reads are also capped at 64 MiB. Larger files use a metadata-only
+length sentinel; same-size edits to an oversized file do not cause work while
+it remains inadmissible, and shrinking/replacing it triggers recovery. The
+configured stylesheet is watched when `--css` does not override it.
 
 ## Served preview and export parity
 
@@ -71,6 +78,27 @@ PDF, SVG and EPUB watches build their companion HTML preview from the same
 bounded source/include loader, local image loader, config and frontmatter.
 The loopback server serves self-contained HTML, so local image display does not
 need additional filesystem-serving routes.
+
+## Directory authoring
+
+`fmd watch ./docs --out ./preview --serve` renders every discovered Markdown
+file before reporting readiness. The output directory must already exist.
+Nested paths are preserved relative to the input directory, including when
+the input is absolute: `/project/docs/guide/start.md` writes
+`./preview/guide/start.html`. The target controls each extension; PDF watches
+write `.pdf` files and `--to both` writes both sibling formats.
+
+Each change batch rebuilds every affected document. Shared includes and images
+invalidate all documents that use them, and a stylesheet change rebuilds the
+whole watched tree. Newly created Markdown files join automatically; removed
+sources leave the watch set while their previous exports remain on disk.
+Restoring a source renders it again. Filename collisions such as `guide.md`
+and `guide.markdown` are rejected before publication can overwrite either
+document's output. `--measure` applies only to single-file watches.
+
+Directory preview starts with the first successful render and publishes its
+loopback URL immediately after initialization. Later successful rebuilds update
+the preview; a failed rebuild preserves its working document.
 
 ## Debounce correctness
 
@@ -95,11 +123,14 @@ racing save, bounded reads, invalid UTF-8 and retry without poisoning the cache.
 `tests/watch_preview.rs` exercises a running CLI and loopback server: exact
 HTML export parity, included-text and image changes, invalid-save recovery,
 PDF-preview metadata/assets, and per-file/expanded include budgets.
+`tests/watch_directory.rs` runs the CLI against complete/nested directories,
+simultaneous changes, shared dependencies/stylesheets, source creation/removal,
+PDF filenames, initial preview and collision admission.
 
 Run:
 
 ```sh
-cargo test --test watch --test watch_dependencies --test watch_preview
+cargo test --test watch --test watch_dependencies --test watch_preview --test watch_directory
 cargo test --lib watch::
 cargo clippy --all-targets --features cli -- -D warnings
 cargo fmt --check

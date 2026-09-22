@@ -10,6 +10,7 @@ use super::Fingerprint;
 pub(crate) struct Expansion {
     pub result: Result<String, String>,
     pub(super) dependencies: BTreeMap<PathBuf, Option<Fingerprint>>,
+    pub(super) entries: BTreeMap<PathBuf, Option<Fingerprint>>,
 }
 
 /// Resolve through the same include engine used for rendering, including code
@@ -17,6 +18,7 @@ pub(crate) struct Expansion {
 /// discovered before an error remain available so watch can recover on save.
 pub(crate) fn expand_file_includes(src: &str, input: &Path, max_bytes: u64) -> Expansion {
     let dependencies = RefCell::new(BTreeMap::new());
+    let entries = RefCell::new(BTreeMap::new());
     let result = (|| {
         if !crate::transclude::has_includes(src) {
             return Ok(src.to_owned());
@@ -35,6 +37,7 @@ pub(crate) fn expand_file_includes(src: &str, input: &Path, max_bytes: u64) -> E
                 Path::new(origin).parent().unwrap_or(&root)
             };
             let candidate = base.join(requested);
+            observe_aliases(&candidate, &root, &entries);
             let canonical = match candidate.canonicalize() {
                 Ok(path) => path,
                 Err(_) => {
@@ -51,9 +54,10 @@ pub(crate) fn expand_file_includes(src: &str, input: &Path, max_bytes: u64) -> E
                     root.display()
                 ));
             }
-            // Observe the requested path too: replacing an in-root symlink
-            // must not leave the watcher attached only to its old target.
-            dependencies.borrow_mut().insert(candidate.clone(), None);
+            // Content and alias identity are separate dependencies. Replacing
+            // a symlink can change nested include origins even when the two
+            // target files have identical content.
+            dependencies.borrow_mut().insert(canonical.clone(), None);
             let metadata = std::fs::metadata(&canonical)
                 .map_err(|e| format!("include_read: {}: {e}", candidate.display()))?;
             if !metadata.is_file() {
@@ -105,7 +109,7 @@ pub(crate) fn expand_file_includes(src: &str, input: &Path, max_bytes: u64) -> E
             };
             dependencies
                 .borrow_mut()
-                .insert(candidate, Some(fingerprint));
+                .insert(canonical.clone(), Some(fingerprint));
             let source = String::from_utf8(bytes).map_err(|_| {
                 format!("include_invalid_utf8: {} is not UTF-8", canonical.display())
             })?;
@@ -120,6 +124,32 @@ pub(crate) fn expand_file_includes(src: &str, input: &Path, max_bytes: u64) -> E
     Expansion {
         result,
         dependencies: dependencies.into_inner(),
+        entries: entries.into_inner(),
+    }
+}
+
+fn observe_aliases(
+    candidate: &Path,
+    root: &Path,
+    entries: &RefCell<BTreeMap<PathBuf, Option<Fingerprint>>>,
+) {
+    let Ok(relative) = candidate.strip_prefix(root) else {
+        return;
+    };
+    let mut prefix = root.to_path_buf();
+    for component in relative.components() {
+        prefix.push(component);
+        if std::fs::symlink_metadata(&prefix).is_ok_and(|metadata| metadata.is_symlink()) {
+            entries
+                .borrow_mut()
+                .insert(prefix.clone(), super::fingerprint_entry(&prefix));
+        }
+        // Stop before inspecting descendants through an escaping alias. The
+        // symlink entry itself is sufficient to notice an in-root repair.
+        match prefix.canonicalize() {
+            Ok(path) if path.starts_with(root) => {}
+            _ => break,
+        }
     }
 }
 

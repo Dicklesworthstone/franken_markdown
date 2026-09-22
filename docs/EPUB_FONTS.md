@@ -7,6 +7,20 @@ paths. There is no new dependency, filesystem lookup, or network font fetch.
 
 ## Opt in with the existing font API
 
+Native single-document exports accept the same font slots, custom stylesheet,
+and local image assets as the library:
+
+```bash
+fmd manual.md --to epub --out manual.epub --css publication.css \
+  --pdf-font body-regular=Book-Regular.ttf \
+  --pdf-image diagrams/overview.svg=assets/overview.svg
+```
+
+Relative local images are loaded automatically from the Markdown directory;
+explicit `--pdf-image` mappings override them. EPUB does not fetch remote images.
+The existing `--max-pdf-image-bytes` limit applies before an export is written.
+With no supplied font face, the default EPUB remains free of embedded fonts.
+
 For Rust callers, populate `HtmlOptions.font_assets` before calling an EPUB
 renderer. The bytes must be supported TrueType/sfnt with `glyf` outlines:
 

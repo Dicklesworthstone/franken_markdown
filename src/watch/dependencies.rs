@@ -146,6 +146,7 @@ struct Snapshot {
     fingerprint: super::Fingerprint,
     paths: Vec<PathBuf>,
     includes: std::collections::BTreeMap<PathBuf, Option<super::Fingerprint>>,
+    entries: BTreeSet<PathBuf>,
     complete: bool,
 }
 
@@ -158,6 +159,24 @@ impl Graph {
 
     pub(super) fn add_root(&mut self, path: PathBuf) {
         self.roots.insert(path);
+    }
+
+    pub(super) fn replace_roots(&mut self, paths: &[PathBuf]) {
+        self.roots = paths.iter().cloned().collect();
+        self.documents.retain(|path, _| self.roots.contains(path));
+        self.failures.retain(|path| self.roots.contains(path));
+    }
+
+    pub(super) fn affected_roots(&self, changed: &Path) -> Vec<PathBuf> {
+        self.roots.iter().filter(|root| is_markdown(root) && (
+            root.as_path() == changed || self.documents.get(*root)
+                .is_some_and(|snapshot| snapshot.paths.iter().any(|path| path == changed))
+        )).cloned().collect()
+    }
+
+    pub(super) fn entry_only(&self, path: &Path) -> bool {
+        !self.roots.contains(path)
+            && self.documents.values().any(|snapshot| snapshot.entries.contains(path))
     }
 
     pub(super) fn failures(&self) -> &BTreeSet<PathBuf> {
@@ -195,20 +214,30 @@ impl Graph {
                 continue;
             };
             let base = root.parent().unwrap_or_else(|| Path::new("."));
-            let expansion = super::expand_file_includes(&source, root, MAX_DISCOVERY_BYTES);
+            let mut expansion = super::expand_file_includes(&source, root, MAX_DISCOVERY_BYTES);
+            let mut entries: BTreeSet<_> = expansion.entries.keys().cloned().collect();
+            expansion.dependencies.extend(expansion.entries);
             let complete = expansion.result.is_ok();
             let mut paths = paths(expansion.result.as_deref().unwrap_or(&source), base);
             if !complete {
                 // Retain working asset edges during a missing include or bad
                 // save, but also watch newly discovered include destinations.
-                if let Some(old) = old { paths.extend(old.paths.iter().cloned()); }
+                if let Some(old) = old {
+                    paths.extend(old.paths.iter().cloned());
+                    entries.extend(old.entries.iter().cloned());
+                    for (path, fingerprint) in &old.includes {
+                        expansion.dependencies.entry(path.clone()).or_insert(*fingerprint);
+                    }
+                }
                 self.failures.insert(root.clone());
             } else {
                 self.failures.remove(root);
             }
             paths.extend(expansion.dependencies.keys().cloned());
+            let mut unique = BTreeSet::new();
+            paths.retain(|path| unique.insert(path.clone()));
             self.documents.insert(root.clone(), Snapshot {
-                fingerprint: expected, paths, includes: expansion.dependencies, complete,
+                fingerprint: expected, paths, includes: expansion.dependencies, entries, complete,
             });
         }
         let mut needed = self.roots.clone();

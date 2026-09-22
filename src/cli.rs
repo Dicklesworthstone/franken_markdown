@@ -17,7 +17,7 @@ use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::watch::{
     DEFAULT_INTERVAL_MS, PollWatcher, Route, SystemClock, bind_loopback, collect_watch_paths,
-    expand_md_directory, referenced_local_paths, render_response, route_for, sse_preamble,
+    expand_md_directory, render_response, route_for, sse_preamble,
     sse_reload_event,
 };
 use crate::{
@@ -409,8 +409,8 @@ struct RenderArgs {
     /// Nominal table cell font size override in points (clamped to [5, base_font_size]).
     #[arg(long)]
     pdf_table_font_size: Option<f32>,
-    /// Provide or override a local PDF image asset as MARKDOWN_DEST=PATH.
-    /// File-based HTML/PDF renders also auto-load relative local PNG/SVG/JPEG
+    /// Provide or override a local PDF/EPUB image asset as MARKDOWN_DEST=PATH.
+    /// File-based HTML/PDF/EPUB renders also auto-load relative local PNG/SVG/JPEG
     /// image destinations, and PDF renders fetch remote http(s) destinations
     /// unless --no-remote-images is set; the render core itself never fetches
     /// or reads files.
@@ -419,7 +419,7 @@ struct RenderArgs {
     pdf_images: Vec<String>,
     /// Host TrueType face for a renderer slot as SLOT=PATH. Repeatable.
     /// SLOT is body-regular, body-bold, body-italic, body-bold-italic, or
-    /// mono-regular. Applies to both HTML and PDF so the two stay coherent.
+    /// mono-regular. Applies to HTML, PDF and EPUB for consistent typography.
     /// Variable `wght` faces instance at the slot's pinned weight (see
     /// `--pdf-font-weight`); static faces ignore the pin. When body-bold is
     /// omitted and body-regular is a variable face, bold instances from that
@@ -773,7 +773,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
                 json,
             );
         }
-        return run_watch_directory(args, md_files, interval, json, no_config);
+        return run_watch_directory(args, md_files, extras, interval, json, no_config);
     }
     let paths = collect_watch_paths(&args.input, &extras);
     let debounce = if args.measure.is_some() {
@@ -801,26 +801,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     if rendered && let Some(preview) = preview.as_ref() {
         refresh_watch_preview(preview, &args, no_config);
     }
-    if json {
-        eprint!(
-            "{{\"ok\":true,\"event\":\"watching\",\"paths\":{},\"interval_ms\":{}",
-            watcher.paths().len(),
-            interval_ms
-        );
-        if let Some(preview) = preview.as_ref() {
-            eprint!(",\"preview\":\"http://127.0.0.1:{}/\"", preview.port);
-        }
-        eprintln!("}}");
-    } else {
-        eprint!(
-            "fmd watch: {} path(s), interval {interval_ms}ms",
-            watcher.paths().len()
-        );
-        if let Some(preview) = preview.as_ref() {
-            eprint!("; preview http://127.0.0.1:{}/", preview.port);
-        }
-        eprintln!("; Ctrl-C to stop");
-    }
+    report_watch_started(watcher.paths().len(), interval_ms, preview.as_ref(), json);
     if let Some(samples) = args.measure {
         return run_watch_measure(
             &args,
@@ -871,19 +852,25 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     }
 }
 
-/// xjld: handle `fmd watch <dir>` — a directory of Markdown files. Every
-/// `*.md` file under `args.input` is watched; on a change, the file is
-/// rendered individually to a sibling output path (under `args.out`,
-/// which must be a directory in this mode). The first file (lex order)
-/// is the "primary" input used for the initial render and for the
-/// loopback preview.
+/// Render a complete directory tree, then rebuild every root affected by a
+/// source, include, image or shared stylesheet change. Outputs retain paths
+/// relative to the input directory, for both absolute and relative inputs.
 fn run_watch_directory(
     args: WatchArgs,
-    md_files: Vec<PathBuf>,
+    mut md_files: Vec<PathBuf>,
+    extras: Vec<PathBuf>,
     interval: Duration,
     json: bool,
     no_config: bool,
 ) -> ExitCode {
+    if args.measure.is_some() {
+        return fail_json(
+            64,
+            "usage_error",
+            "--measure requires a single Markdown file, not a directory",
+            json,
+        );
+    }
     if !args.out.is_dir() {
         return fail_json(
             64,
@@ -892,25 +879,19 @@ fn run_watch_directory(
             json,
         );
     }
-    let primary = md_files[0].clone();
-    let primary_args = WatchArgs {
-        input: primary.clone(),
-        out: args.out.join(derive_sibling_html(&primary)),
-        ..args.clone()
-    };
-    let _ = run_render(watch_to_render(&primary_args), json, no_config);
-    // Build the watch set: primary + every other `.md` file + CSS
-    // (deduplicated by collect_watch_paths).
-    let mut others: Vec<PathBuf> = md_files.iter().skip(1).cloned().collect();
-    if let Some(css) = &primary_args.css {
-        others.push(css.clone());
+    if let Err(error) = validate_watch_directory_outputs(&args, &md_files) {
+        return fail_json(64, "usage_error", &error, json);
     }
-    if let Ok(src) = std::fs::read_to_string(&primary) {
-        let base = primary.parent().unwrap_or_else(|| Path::new("."));
-        others.extend(referenced_local_paths(&src, base));
-    }
-    let paths = collect_watch_paths(&primary, &others);
+    let paths = md_files.iter().chain(&extras).cloned().collect();
     let mut watcher = PollWatcher::new(paths, interval, SystemClock);
+    let mut first_rendered = None;
+    for input in &md_files {
+        if let Some(per_file) = render_watched_directory_file(&args, input, json, no_config)
+            && first_rendered.is_none()
+        {
+            first_rendered = Some(per_file);
+        }
+    }
     let preview = if args.serve {
         match start_watch_preview() {
             Ok(preview) => Some(preview),
@@ -926,54 +907,171 @@ fn run_watch_directory(
     } else {
         None
     };
+    if let (Some(preview), Some(per_file)) = (preview.as_ref(), first_rendered.as_ref()) {
+        refresh_watch_preview(preview, per_file, no_config);
+    }
+    report_watch_started(
+        watcher.paths().len(),
+        args.interval.max(1),
+        preview.as_ref(),
+        json,
+    );
     loop {
+        std::thread::sleep(interval);
         let events = watcher.poll();
-        if events.is_empty() {
-            std::thread::sleep(interval);
-            continue;
+        let mut rebuild = std::collections::BTreeSet::new();
+        for event in &events {
+            let affected = watcher.affected_roots(&event.path);
+            if extras.contains(&event.path) || affected.is_empty() {
+                rebuild.extend(md_files.iter().cloned());
+            } else {
+                rebuild.extend(affected);
+            }
         }
-        // Render the most recently changed `.md` file in the
-        // directory; other changes (e.g. CSS) are picked up by the
-        // watcher but do not dispatch a per-file render.
-        let changed = events
-            .iter()
-            .rev()
-            .map(|e| e.path.clone())
-            .find(|p| md_files.iter().any(|m| m == p))
-            .unwrap_or(primary.clone());
-        let per_file_args = WatchArgs {
-            input: changed.clone(),
-            out: args.out.join(derive_sibling_html(&changed)),
-            ..primary_args.clone()
-        };
-        let _ = run_render(watch_to_render(&per_file_args), json, no_config);
-        if let Some(preview) = preview.as_ref() {
-            refresh_watch_preview(preview, &per_file_args, no_config);
+        let discovered = expand_md_directory(&args.input);
+        if discovered != md_files {
+            if let Err(error) = validate_watch_directory_outputs(&args, &discovered) {
+                return fail_json(64, "usage_error", &error, json);
+            }
+            for input in &discovered {
+                if !md_files.contains(input) {
+                    rebuild.insert(input.clone());
+                }
+            }
+            for removed in &md_files {
+                if !discovered.contains(removed) {
+                    if json {
+                        eprintln!(
+                            "{{\"ok\":true,\"event\":\"watch_source_removed\",\"path\":\"{}\",\"output_retained\":true}}",
+                            json_escape(&removed.display().to_string())
+                        );
+                    } else {
+                        eprintln!(
+                            "fmd watch: source removed {}; retaining its previous output",
+                            removed.display()
+                        );
+                    }
+                }
+            }
+            md_files = discovered;
+            watcher.replace_paths(md_files.iter().chain(&extras).cloned().collect());
         }
-        if json {
-            eprintln!(
-                "{{\"ok\":true,\"event\":\"watched_rebuild\",\"path\":\"{}\",\"out\":\"{}\"}}",
-                changed.display(),
-                per_file_args.out.display()
-            );
-        } else if args.verbose {
-            eprintln!(
-                "fmd: re-rendered {} -> {} ({} files watched)",
-                changed.display(),
-                per_file_args.out.display(),
-                md_files.len()
-            );
-        } else {
-            eprintln!("fmd: re-rendered {}", changed.display());
+        for input in rebuild {
+            if !md_files.contains(&input) {
+                continue;
+            }
+            if let Some(per_file) = render_watched_directory_file(&args, &input, json, no_config) {
+                if let Some(preview) = preview.as_ref() {
+                    refresh_watch_preview(preview, &per_file, no_config);
+                }
+                if json {
+                    eprintln!(
+                        "{{\"ok\":true,\"event\":\"watched_rebuild\",\"path\":\"{}\",\"out\":\"{}\"}}",
+                        json_escape(&input.display().to_string()),
+                        json_escape(&per_file.out.display().to_string())
+                    );
+                } else if args.verbose {
+                    eprintln!(
+                        "fmd: re-rendered {} -> {} ({} files watched)",
+                        input.display(),
+                        per_file.out.display(),
+                        md_files.len()
+                    );
+                } else {
+                    eprintln!("fmd: re-rendered {}", input.display());
+                }
+            }
         }
     }
 }
 
-/// Derive a sibling `.html` path for a `.md` input: `foo/bar.md` ->
-/// `foo/bar.html`. Used by `fmd watch <dir>` to compute the per-file
-/// output under the user-supplied `--out` directory.
-fn derive_sibling_html(md_path: &Path) -> PathBuf {
-    md_path.with_extension("html")
+fn watch_directory_args(args: &WatchArgs, input: &Path) -> Result<WatchArgs, String> {
+    let relative = input.strip_prefix(&args.input).map_err(|_| {
+        format!(
+            "watch input {} is outside {}",
+            input.display(),
+            args.input.display()
+        )
+    })?;
+    let extension = match args.to {
+        Target::Html | Target::Both | Target::InteractiveHtml => "html",
+        Target::Pdf => "pdf",
+        Target::Epub => "epub",
+        Target::Svg => "svg",
+    };
+    Ok(WatchArgs {
+        input: input.to_path_buf(),
+        out: args.out.join(relative.with_extension(extension)),
+        ..args.clone()
+    })
+}
+
+fn validate_watch_directory_outputs(args: &WatchArgs, inputs: &[PathBuf]) -> Result<(), String> {
+    let mut destinations = std::collections::BTreeMap::new();
+    for input in inputs {
+        let per_file = watch_directory_args(args, input)?;
+        let key = per_file.out.to_string_lossy().to_lowercase();
+        if let Some(previous) = destinations.insert(key, input) {
+            return Err(format!(
+                "{} and {} map to the same output {}; rename one source before watching",
+                previous.display(),
+                input.display(),
+                per_file.out.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn render_watched_directory_file(
+    args: &WatchArgs,
+    input: &Path,
+    json: bool,
+    no_config: bool,
+) -> Option<WatchArgs> {
+    let per_file = match watch_directory_args(args, input) {
+        Ok(args) => args,
+        Err(error) => {
+            let _ = fail_json(64, "usage_error", &error, json);
+            return None;
+        }
+    };
+    if let Some(parent) = per_file.out.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        let _ = fail_json(
+            73,
+            "output_error",
+            &format!("creating {}: {error}", parent.display()),
+            json,
+        );
+        return None;
+    }
+    (run_render(watch_to_render(&per_file), json, no_config) == ExitCode::SUCCESS)
+        .then_some(per_file)
+}
+
+fn report_watch_started(
+    path_count: usize,
+    interval_ms: u64,
+    preview: Option<&WatchPreview>,
+    json: bool,
+) {
+    if json {
+        eprint!(
+            "{{\"ok\":true,\"event\":\"watching\",\"paths\":{path_count},\"interval_ms\":{interval_ms}"
+        );
+        if let Some(preview) = preview {
+            eprint!(",\"preview\":\"http://127.0.0.1:{}/\"", preview.port);
+        }
+        eprintln!("}}");
+    } else {
+        eprint!("fmd watch: {path_count} path(s), interval {interval_ms}ms");
+        if let Some(preview) = preview {
+            eprint!("; preview http://127.0.0.1:{}/", preview.port);
+        }
+        eprintln!("; Ctrl-C to stop");
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -1436,15 +1534,27 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let mut image_destinations = Vec::new();
     collect_image_destinations(&doc.blocks, &mut image_destinations);
     let base_image_dir = auto_pdf_image_base_dir(args.input.as_deref(), args.text.as_deref());
-    let html_image_assets = if want_html {
-        let mut assets = Vec::new();
+    let html_image_assets = if want_html || want_epub {
+        let mut assets = if want_epub {
+            match read_pdf_image_assets(
+                &args.pdf_images,
+                args.max_pdf_image_bytes,
+                &image_destinations,
+            ) {
+                Ok(assets) => assets,
+                Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+                Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
+            }
+        } else {
+            Vec::new()
+        };
         if let Some(base_dir) = base_image_dir.as_deref()
             && let Err(e) = append_auto_image_assets(
                 &doc,
                 base_dir,
                 &mut assets,
                 args.max_pdf_image_bytes,
-                "HTML",
+                if want_epub { "EPUB" } else { "HTML" },
             )
         {
             return fail_json(66, "input_error", &e, json);
@@ -1517,7 +1627,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             custom_css: custom_css.clone(),
             allow_raw_html: args.allow_html,
             font_assets: font_assets.clone(),
-            image_assets: html_image_assets,
+            image_assets: html_image_assets.clone(),
             lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
             toc: args.toc || frontmatter_toc.unwrap_or(false),
@@ -1584,10 +1694,10 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         let opts = HtmlOptions {
             theme: theme.clone(),
             title: args.title.clone().or_else(|| frontmatter_title.clone()),
-            custom_css: None,
+            custom_css,
             allow_raw_html: args.allow_html,
-            font_assets: FontAssets::default(),
-            image_assets: Vec::new(),
+            font_assets: font_assets.clone(),
+            image_assets: html_image_assets,
             lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
             toc: args.toc || frontmatter_toc.unwrap_or(false),

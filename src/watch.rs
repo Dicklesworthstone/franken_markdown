@@ -25,6 +25,7 @@ pub const DEFAULT_INTERVAL_MS: u64 = 300;
 
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
+const MAX_FINGERPRINT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Source of "now" so tests can drive debounce without sleeping.
 pub trait Clock {
@@ -151,6 +152,31 @@ impl<C: Clock> PollWatcher<C> {
         }
     }
 
+    /// Replace a directory watch's explicit roots after discovery changes.
+    /// Surviving paths keep their fingerprints and debounce history; callers
+    /// render newly discovered roots themselves after this initial snapshot.
+    pub(crate) fn replace_paths(&mut self, paths: Vec<PathBuf>) {
+        self.dependencies.replace_roots(&paths);
+        for path in paths {
+            if !self.fingerprints.contains_key(&path) {
+                let fingerprint = self.observe(&path);
+                if fingerprint.is_some() { self.ever_seen.insert(path.clone()); }
+                self.paths.push(path.clone());
+                self.fingerprints.insert(path, fingerprint);
+            }
+        }
+        self.refresh_dependencies(self.clock.now());
+    }
+
+    /// Explicit Markdown roots whose source or expanded dependencies changed.
+    pub(crate) fn affected_roots(&self, changed: &Path) -> Vec<PathBuf> {
+        self.dependencies.affected_roots(changed)
+    }
+
+    fn observe(&self, path: &Path) -> Option<Fingerprint> {
+        if self.dependencies.entry_only(path) { fingerprint_entry(path) } else { fingerprint(path) }
+    }
+
     /// Explicit Markdown roots whose dependency graph could not be refreshed.
     /// Missing, invalid UTF-8, unstable reads and sources over 64 MiB retain
     /// their last successful graph and are retried on subsequent polls.
@@ -182,7 +208,7 @@ impl<C: Clock> PollWatcher<C> {
         let now = self.clock.now();
         let paths = self.paths.clone();
         for path in &paths {
-            let fp = fingerprint(path);
+            let fp = self.observe(path);
             let prev = self.fingerprints.get(path).copied().flatten();
             let had_file = self.ever_seen.contains(path);
             self.fingerprints.insert(path.clone(), fp);
@@ -246,7 +272,7 @@ impl<C: Clock> PollWatcher<C> {
         self.pending.retain(|path, _| needed.contains(path));
         for path in needed {
             if !self.fingerprints.contains_key(&path) {
-                let fp = fingerprint(&path);
+                let fp = self.observe(&path);
                 if fp.is_some() {
                     self.ever_seen.insert(path.clone());
                 }
@@ -327,26 +353,54 @@ fn push_unique(out: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 fn fingerprint(path: &Path) -> Option<Fingerprint> {
-    if !std::fs::metadata(path).ok()?.is_file() {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() {
         return None;
+    }
+    // No renderable source or include can exceed this cap. A metadata-only
+    // sentinel observes shrink/replacement without hashing rejected gigabytes
+    // on every polling interval. Growing files are bounded by the same limit.
+    if metadata.len() > MAX_FINGERPRINT_BYTES {
+        return Some(Fingerprint { len: metadata.len(), hash: 0 });
     }
     let mut file = std::fs::File::open(path).ok()?;
     let mut buf = [0u8; 8192];
     let mut hash = FNV_OFFSET;
     let mut len = 0u64;
     loop {
-        let n = match file.read(&mut buf) {
+        let remaining = (MAX_FINGERPRINT_BYTES + 1 - len).min(buf.len() as u64) as usize;
+        let n = match file.read(&mut buf[..remaining]) {
             Ok(0) => break,
             Ok(n) => n,
             Err(_) => return None,
         };
         len = len.saturating_add(n as u64);
+        if len > MAX_FINGERPRINT_BYTES { return Some(Fingerprint { len, hash: 0 }); }
         for &b in &buf[..n] {
             hash ^= u64::from(b);
             hash = hash.wrapping_mul(FNV_PRIME);
         }
     }
     Some(Fingerprint { len, hash })
+}
+
+/// Observe an include alias without reading its target. Directory aliases and
+/// aliases currently escaping the include sandbox must remain repairable.
+fn fingerprint_entry(path: &Path) -> Option<Fingerprint> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    let identity = if metadata.is_symlink() {
+        format!("symlink:{}", std::fs::read_link(path).ok()?.to_string_lossy())
+    } else if metadata.is_file() {
+        "regular-file".to_owned()
+    } else if metadata.is_dir() {
+        "directory".to_owned()
+    } else {
+        return None;
+    };
+    let hash = identity.bytes().fold(FNV_OFFSET, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
+    });
+    Some(Fingerprint { len: metadata.len(), hash })
 }
 
 // =====================================================================
@@ -541,6 +595,23 @@ mod tests {
 
     fn primed(path: &Path, debounce: Duration, clock: ManualClock) -> PollWatcher<ManualClock> {
         PollWatcher::new(vec![path.to_path_buf()], debounce, clock)
+    }
+
+    #[test]
+    fn oversized_files_use_metadata_fingerprints_and_recover_after_shrinking() {
+        let dir = fresh_dir("oversized-include");
+        let input = dir.join("doc.md");
+        let included = dir.join("large.txt");
+        std::fs::write(&input, "{{#include large.txt}}\n").unwrap();
+        std::fs::File::create(&included).unwrap().set_len(MAX_FINGERPRINT_BYTES + 1).unwrap();
+        assert_eq!(fingerprint(&included), Some(Fingerprint { len: MAX_FINGERPRINT_BYTES + 1, hash: 0 }));
+        let mut watcher = primed(&input, Duration::ZERO, ManualClock::new());
+        assert!(watcher.dependency_failures().contains(&input));
+        assert!(watcher.poll().is_empty());
+        std::fs::write(&included, "Now small enough.\n").unwrap();
+        assert!(watcher.poll().iter().any(|event| event.path == included));
+        assert!(watcher.dependency_failures().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -86,6 +86,10 @@
     "./interactive": {
       "types": "./interactive.d.ts",
       "import": "./interactive.js"
+    },
+    "./interactive/exporter": {
+      "types": "./native_workspace.d.ts",
+      "import": "./native_workspace.js"
     }
   },
   "files": [
@@ -178,6 +182,10 @@
     "interactive.js",
     "interactive.d.ts",
     "interactive_runtime.mjs",
-    "INTERACTIVE.md"
+    "INTERACTIVE.md",
+    "native_workspace.js",
+    "native_workspace.d.ts",
+    "interactive_export.mjs",
+    "NATIVE_WORKSPACE.md"
   ]
 }

@@ -15,12 +15,16 @@ export interface FmdDiagnostic {
   start: number;
   end: number;
   message: string;
+  /** Stable renderer reason code when supplied (for example svg_image_missing). */
+  code?: string;
+  /** Document-level findings use start=end=0, not an inferred source position. */
+  scope?: "document";
 }
 
 export interface FmdPdfImageAsset {
   /** Markdown image destination, for example `images/chart.png` from `![Chart](images/chart.png)`. */
   destination: string;
-  /** Browser-supplied image bytes. PNG and SVG are supported in HTML and PDF output. */
+  /** Host-owned bytes; SVG supports PNG/JPEG/SVG, HTML/PDF support depends on their decoder. */
   bytes: Uint8Array | ArrayBuffer | ArrayBufferView;
 }
 
@@ -78,9 +82,9 @@ export interface FmdRenderOptions {
   microtype?: "disabled" | "protrusion";
   /** Boolean alias for microtype: "protrusion". */
   microtypeProtrusion?: boolean;
-  /** Standalone SVG poster width in points. */
+  /** Standalone SVG poster width in points (144..14400; default 612). */
   maxWidthPt?: number;
-  /** Host-supplied image bytes (HTML data URIs and PDF embedding); any number per render. */
+  /** Host-supplied image bytes for HTML, PDF, EPUB and SVG; each export enforces resource limits. */
   pdfImages?: FmdPdfImageAsset[];
   /** Host-supplied TrueType font bytes by renderer slot. */
   fontAssets?: FmdFontAsset[];
@@ -103,13 +107,25 @@ export interface FmdPdfRenderOptions extends FmdRenderOptions {
 export interface FmdRenderOutput {
   format: FmdOutputFormat;
   mimeType: string;
-  extension: "html" | "pdf";
+  extension: "html" | "pdf" | "svg" | "epub" | "zip";
   sourceLength: number;
   bytes: Uint8Array;
   diagnostics: FmdDiagnostic[];
   text(): string;
   blob(): Blob;
   filename(baseName?: string): string;
+}
+
+/** Single-page SVG options. Assets are snapshotted before asynchronous init;
+ * a matching resource-capable WASM binary is required when assets are supplied.
+ * SVG remains light-only; darkMode is retained for shared option compatibility.
+ */
+export interface FmdSvgRenderOptions extends Pick<FmdRenderOptions,
+  "font" | "darkMode" | "fontScale" | "typeSize" | "maxWidthPt" | "pdfImages" | "fontAssets"> {}
+export interface FmdSvgRenderOutput extends FmdRenderOutput {
+  format: "svg";
+  mimeType: "image/svg+xml";
+  extension: "svg";
 }
 
 /** Canonical offline HTML-site options. PDF-only settings are rejected rather
@@ -179,7 +195,7 @@ export interface FmdRenderer {
     newMarkdown: string,
     options?: FmdDiffOptions,
   ): Promise<FmdRenderOutput>;
-  renderSvg(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+  renderSvg(markdown: string, options?: FmdSvgRenderOptions): Promise<FmdSvgRenderOutput>;
   searchIndex(markdown: string): Promise<FmdSearchIndex>;
   semanticDiff(
     oldMarkdown: string,
@@ -271,7 +287,7 @@ export function renderSemanticDiff(
   newMarkdown: string,
   options?: FmdDiffOptions,
 ): Promise<FmdRenderOutput>;
-export function renderSvg(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+export function renderSvg(markdown: string, options?: FmdSvgRenderOptions): Promise<FmdSvgRenderOutput>;
 export function searchIndex(markdown: string): Promise<FmdSearchIndex>;
 export function semanticDiff(
   oldMarkdown: string,

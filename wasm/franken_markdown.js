@@ -140,16 +140,117 @@ export async function renderPdf(markdown, options = {}) {
 }
 
 export async function renderSvg(markdown, options = {}) {
+  const render = wasmBindings.renderSvgConfiguredResources;
+  // Capture options and exact owned byte views before initialization yields.
+  const prepared = svgArguments(markdown, options, typeof render === "function");
   await init();
-  return normalizeResult(
-    renderSvgConfigured(
-      String(markdown),
-      stringOption(options.font),
-      darkModeOption(options.darkMode),
-      fontScaleOption(options.fontScale ?? options.typeSize),
-      numberOption(options.maxWidthPt),
-    ),
-  );
+  try {
+    if (typeof render === "function") return normalizeResult(render(...prepared.args));
+    const legacy = normalizeResult(renderSvgConfigured(...prepared.args.slice(0, 5)));
+    // New JavaScript cannot give an older binary complete renderer diagnostics.
+    return Object.freeze({ ...legacy, diagnostics: [...legacy.diagnostics, {
+      severity: "warning", start: 0, end: 0, scope: "document", code: "svg_legacy_package",
+      message: "Legacy SVG renderer: rebuild the matching WASM package for image/font resources and complete export diagnostics.",
+    }] });
+  } catch (error) {
+    if (typeof error === "string") throw new Error(error.slice(0, 2048));
+    throw error;
+  }
+}
+
+function svgArguments(markdown, options, supportsResources) {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("SVG options must be an object");
+  }
+  const source = String(markdown);
+  const { font, darkMode, fontScale, typeSize, maxWidthPt, pdfImages, fontAssets } = options;
+  const family = stringOption(font), dark = darkModeOption(darkMode);
+  const scale = fontScaleOption(fontScale ?? typeSize), width = numberOption(maxWidthPt);
+  svgTextBytes(source, 32 * 1024 * 1024, "source");
+  svgTextBytes(family ?? "", 1024, "font name");
+  if (width !== undefined && (width < 144 || width > 14400)) {
+    throw new RangeError("SVG maxWidthPt must be from 144 through 14400");
+  }
+  // Counts precede entry access and payload allocation, including sparse arrays.
+  for (const [input, maximum, label] of [[pdfImages, 4096, "pdfImages"], [fontAssets, 5, "fontAssets"]]) {
+    if (input != null && (!Array.isArray(input) || input.length > maximum)) {
+      throw new RangeError(`${label} must be an array with at most ${maximum} entries`);
+    }
+  }
+  const images = pdfImagesOption(pdfImages), fonts = fontAssetsOption(fontAssets);
+  const destinations = new Set();
+  const imageViews = [], fontViews = [];
+  let imageBytes = 0, nameBytes = 0, fontBytes = 0;
+  for (const image of images) {
+    nameBytes += svgTextBytes(image.destination, 8192, "image destination");
+    if (nameBytes > 65536) throw new RangeError("SVG image destinations exceed 64 KiB");
+    if (/[\u0000-\u001f\u007f-\u009f]/u.test(image.destination)) {
+      throw new TypeError("SVG image destinations must not contain controls");
+    }
+    if (destinations.has(image.destination)) throw new TypeError("SVG image destinations must be unique after trimming");
+    destinations.add(image.destination);
+    const view = svgAssetView(image.bytes);
+    imageBytes += view.byteLength;
+    if (imageBytes > 128 * 1024 * 1024) throw new RangeError("SVG images exceed 128 MiB");
+    imageViews.push(view);
+  }
+  for (const asset of fonts) {
+    const view = svgAssetView(asset.bytes);
+    fontBytes += view.byteLength;
+    if (fontBytes > 128 * 1024 * 1024) throw new RangeError("SVG fonts exceed 128 MiB");
+    fontViews.push(view);
+  }
+  if (!supportsResources && (images.length || fonts.length)) {
+    throw Object.assign(new Error(
+      "SVG image/font resources require a WASM package rebuilt from matching source",
+    ), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  }
+  // Every source/count/view/total passed. Only now copy caller-owned bytes.
+  const flat = new Uint8Array(imageBytes), lengths = new Uint32Array(images.length);
+  let offset = 0;
+  for (let index = 0; index < imageViews.length; index++) {
+    flat.set(imageViews[index], offset);
+    lengths[index] = imageViews[index].byteLength;
+    offset += lengths[index];
+  }
+  const ownedFonts = fonts.map((asset, index) => ({ ...asset, bytes: new Uint8Array(fontViews[index]) }));
+  return { args: [source, family, dark, scale, width,
+    images.map(image => image.destination), flat, lengths,
+    fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
+    fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
+    fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts)],
+  };
+}
+
+function svgAssetView(bytes) {
+  // The intrinsic brand check cannot be spoofed by Symbol.toStringTag and
+  // rejects SharedArrayBuffer, whose bytes could change during our copy.
+  const buffer = bytes.buffer, offset = bytes.byteOffset, length = bytes.byteLength;
+  Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(buffer);
+  const view = new Uint8Array(buffer, offset, length); // rejects detached buffers
+  if (view.byteLength === 0 || view.byteLength > 32 * 1024 * 1024) {
+    throw new RangeError("SVG assets must contain 1 byte through 32 MiB");
+  }
+  return view;
+}
+
+function svgTextBytes(text, maximum, label) {
+  if (text.length > maximum) throw new RangeError(`SVG ${label} exceeds its UTF-8 byte limit`);
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const low = text.charCodeAt(++index);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) throw new TypeError(`SVG ${label} contains an unpaired surrogate`);
+      bytes += 4;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw new TypeError(`SVG ${label} contains an unpaired surrogate`);
+    } else {
+      bytes += unit < 0x80 ? 1 : unit < 0x800 ? 2 : 3;
+    }
+    if (bytes > maximum) throw new RangeError(`SVG ${label} exceeds its UTF-8 byte limit`);
+  }
+  return bytes;
 }
 
 export async function renderEpub(markdown, options = {}) {

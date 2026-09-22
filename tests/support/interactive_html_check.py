@@ -120,7 +120,7 @@ edit('# Edited\n\n**strong** and *emphasis* with [link](https://example.com).\n-
 for (const fn of timers.values()) fn();
 timers.clear();
 const normal = elements.get('fmd-content').innerHTML;
-assert.ok(normal.includes('<h1>Edited</h1>'));
+assert.ok(normal.includes('<h1 id="edited">Edited</h1>'));
 assert.ok(normal.includes('<strong>strong</strong>'));
 assert.ok(normal.includes('<em>emphasis</em>'));
 assert.ok(normal.includes('<a href="https://example.com">link</a>'));
@@ -173,5 +173,5 @@ for key in ["normal", "hostile"]:
     parsed.assert_safe_attributes()
     assert not parsed.scripts, "Live preview emitted an executable script"
 code_attrs = [attrs for tag, attrs in Document(rendered["hostile"]).elements if tag == "code"]
-assert code_attrs == [{"class": "language-" + rendered["hostileLanguage"]}]
+assert code_attrs == [{"class": "language-" + rendered["hostileLanguage"].split()[0]}]
 print("PASS HTML tokenization + lossless source + JS editor/toolbar + safe live code attributes")

@@ -11,10 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::wasm::{self, WasmRenderOptions};
 use crate::{
-    BookInput, DarkModePolicy, FontAssetSlot, SvgOptions, Theme, ZipWriter, book_pdf_document,
+    BookInput, DarkModePolicy, FontAssetSlot, Theme, ZipWriter, book_pdf_document,
     build_book, build_search_index, compute_diff, compute_doc_stats, inject_book_nav,
     parse_markdown, render_epub, render_html_document, render_interactive_html,
-    render_pdf_document, render_svg_with_report, rewrite_links_for_site, search_index_json,
+    render_pdf_document, rewrite_links_for_site, search_index_json,
 };
 
 mod pdf_page;
@@ -22,6 +22,9 @@ pub use pdf_page::render_pdf_configured_page;
 
 mod epub;
 pub use epub::render_epub_configured_advanced;
+
+mod svg;
+pub use svg::render_svg_configured_resources;
 
 /// Render output object exposed to JavaScript.
 #[wasm_bindgen]
@@ -173,30 +176,9 @@ pub fn render_svg_configured(
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
     options.font_scale = positive_f32(font_scale, "fontScale")?;
-    let document = parse_markdown(markdown);
-    let (bytes, report) = render_svg_with_report(
-        &document,
-        &SvgOptions {
-            theme: options.html_options().theme,
-            max_width_pt: finite_f32(max_width_pt).unwrap_or(612.0),
-        },
-    );
-    let diagnostics = format!(
-        "[{{\"severity\":\"warning\",\"start\":0,\"end\":0,\"message\":\"SVG omitted {} unmapped glyph(s)\"}}]",
-        report.glyphs_missing
-    );
-    Ok(artifact_result(
-        "svg",
-        "image/svg+xml",
-        "svg",
-        bytes,
-        markdown.len(),
-        if report.glyphs_missing == 0 {
-            "[]".to_string()
-        } else {
-            diagnostics
-        },
-    ))
+    svg::render_with_options(
+        markdown, &options, finite_f32(max_width_pt).unwrap_or(612.0),
+    ).map_err(render_error_to_js)
 }
 
 /// Render an EPUB 3 e-book through the same parser and HTML theme model.

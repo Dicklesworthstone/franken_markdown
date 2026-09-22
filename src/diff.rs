@@ -7,6 +7,8 @@
 use crate::ast::{Block, Document, Inline};
 use crate::theme::Theme;
 
+mod html;
+
 /// High-level change metrics between two Markdown documents.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DiffStats {
@@ -462,213 +464,21 @@ fn count_inline_words(inline: &Inline, count: &mut usize) {
 }
 
 impl DocumentDiff {
-    /// Render visual diff document to standalone HTML with custom styles.
+    /// Render both revisions with highlighted changes and complete document context.
     #[must_use]
     pub fn to_html(&self, theme: &Theme) -> String {
-        let mut out = String::with_capacity(16384);
-        out.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
-        out.push_str("<meta charset=\"utf-8\">\n");
-        out.push_str(
-            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n",
-        );
-        out.push_str(&format!(
-            "<title>Diff: {} vs {}</title>\n",
-            html_escape(&self.old_name),
-            html_escape(&self.new_name)
-        ));
-        out.push_str("<style>\n");
-        out.push_str(
-            r#"
-:root {
-  --diff-bg: #ffffff;
-  --diff-text: #1f2328;
-  --ins-bg: #dafbe1;
-  --ins-text: #1a7f37;
-  --ins-border: #4ac26b;
-  --del-bg: #ffebe9;
-  --del-text: #cf222e;
-  --del-border: #ff8182;
-  --header-bg: #f6f8fa;
-  --header-border: #d0d7de;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --diff-bg: #0d1117;
-    --diff-text: #e6edf3;
-    --ins-bg: #033a16;
-    --ins-text: #3fb950;
-    --ins-border: #238636;
-    --del-bg: #490202;
-    --del-text: #ff7b72;
-    --del-border: #da3633;
-    --header-bg: #161b22;
-    --header-border: #30363d;
-  }
-}
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  background: var(--diff-bg);
-  color: var(--diff-text);
-  margin: 0;
-  padding: 24px;
-  line-height: 1.6;
-}
-.diff-container {
-  max-width: 960px;
-  margin: 0 auto;
-}
-.diff-header {
-  background: var(--header-bg);
-  border: 1px solid var(--header-border);
-  border-radius: 6px;
-  padding: 16px 20px;
-  margin-bottom: 24px;
-}
-.diff-header h1 {
-  font-size: 18px;
-  margin: 0 0 12px 0;
-}
-.diff-stats-bar {
-  display: flex;
-  gap: 16px;
-  font-size: 14px;
-  font-weight: 500;
-}
-.diff-badge-ins {
-  color: var(--ins-text);
-  background: var(--ins-bg);
-  padding: 2px 8px;
-  border-radius: 12px;
-}
-.diff-badge-del {
-  color: var(--del-text);
-  background: var(--del-bg);
-  padding: 2px 8px;
-  border-radius: 12px;
-}
-.diff-block-ins {
-  background: var(--ins-bg);
-  border-left: 4px solid var(--ins-border);
-  padding: 8px 16px;
-  margin: 12px 0;
-  border-radius: 0 4px 4px 0;
-}
-.diff-block-del {
-  background: var(--del-bg);
-  border-left: 4px solid var(--del-border);
-  padding: 8px 16px;
-  margin: 12px 0;
-  text-decoration: line-through;
-  opacity: 0.85;
-  border-radius: 0 4px 4px 0;
-}
-.diff-block-mod {
-  margin: 12px 0;
-}
-ins.diff-inline {
-  background: var(--ins-bg);
-  color: var(--ins-text);
-  text-decoration: none;
-  font-weight: 600;
-  padding: 1px 3px;
-  border-radius: 3px;
-}
-del.diff-inline {
-  background: var(--del-bg);
-  color: var(--del-text);
-  text-decoration: line-through;
-  opacity: 0.8;
-  padding: 1px 3px;
-  border-radius: 3px;
-}
-"#,
-        );
-        out.push_str("</style>\n</head>\n<body>\n");
-        out.push_str("<div class=\"diff-container\">\n");
-
-        // Header summary
-        out.push_str("<div class=\"diff-header\">\n");
-        out.push_str(&format!(
-            "<h1>Comparing <code>{}</code> &rarr; <code>{}</code></h1>\n",
-            html_escape(&self.old_name),
-            html_escape(&self.new_name)
-        ));
-        out.push_str("<div class=\"diff-stats-bar\">\n");
-        out.push_str(&format!(
-            "<span class=\"diff-badge-ins\">+{} blocks (+{} words)</span>\n",
-            self.stats.inserted_blocks + self.stats.modified_blocks,
-            self.stats.words_inserted
-        ));
-        out.push_str(&format!(
-            "<span class=\"diff-badge-del\">&minus;{} blocks (&minus;{} words)</span>\n",
-            self.stats.deleted_blocks + self.stats.modified_blocks,
-            self.stats.words_deleted
-        ));
-        out.push_str(&format!(
-            "<span>Similarity: {:.1}%</span>\n",
-            self.stats.similarity_ratio * 100.0
-        ));
-        out.push_str("</div>\n</div>\n\n");
-
-        let html_opts = crate::HtmlOptions {
+        self.to_html_with_options(&crate::HtmlOptions {
             theme: theme.clone(),
             ..Default::default()
-        };
+        })
+    }
 
-        // Body blocks
-        for block in &self.blocks {
-            match block {
-                DiffBlock::Unchanged(b) => {
-                    let blocks = [b.clone()];
-                    out.push_str(&crate::html::render_fragment(&blocks, &html_opts));
-                }
-                DiffBlock::Inserted(b) => {
-                    out.push_str("<div class=\"diff-block-ins\">\n");
-                    let blocks = [b.clone()];
-                    out.push_str(&crate::html::render_fragment(&blocks, &html_opts));
-                    out.push_str("</div>\n");
-                }
-                DiffBlock::Deleted(b) => {
-                    out.push_str("<div class=\"diff-block-del\">\n");
-                    let blocks = [b.clone()];
-                    out.push_str(&crate::html::render_fragment(&blocks, &html_opts));
-                    out.push_str("</div>\n");
-                }
-                DiffBlock::Modified {
-                    inline_diff, new, ..
-                } => {
-                    out.push_str("<div class=\"diff-block-mod\">\n");
-                    if inline_diff.is_empty() {
-                        let blocks = [(**new).clone()];
-                        out.push_str(&crate::html::render_fragment(&blocks, &html_opts));
-                    } else {
-                        out.push_str("<p>");
-                        for inl in inline_diff {
-                            match inl {
-                                DiffInline::Unchanged(i) => {
-                                    render_diff_inline(i, &mut out);
-                                }
-                                DiffInline::Inserted(i) => {
-                                    out.push_str("<ins class=\"diff-inline\">");
-                                    render_diff_inline(i, &mut out);
-                                    out.push_str("</ins>");
-                                }
-                                DiffInline::Deleted(i) => {
-                                    out.push_str("<del class=\"diff-inline\">");
-                                    render_diff_inline(i, &mut out);
-                                    out.push_str("</del>");
-                                }
-                            }
-                        }
-                        out.push_str("</p>\n");
-                    }
-                    out.push_str("</div>\n");
-                }
-            }
-        }
-
-        out.push_str("</div>\n</body>\n</html>\n");
-        out
+    /// Render a self-contained comparison using the ordinary HTML renderer's
+    /// styles, host-supplied image/font assets, language, and trust policy.
+    /// Each revision retains its own heading and footnote namespace.
+    #[must_use]
+    pub fn to_html_with_options(&self, options: &crate::HtmlOptions) -> String {
+        html::render(self, options)
     }
 
     /// Render machine-readable JSON representation of diff.
@@ -716,73 +526,6 @@ del.diff-inline {
         out.push('}');
         out
     }
-}
-
-fn render_diff_inline(inline: &Inline, out: &mut String) {
-    match inline {
-        Inline::Text(t) => out.push_str(&html_escape(t)),
-        Inline::Code(c) => {
-            out.push_str("<code>");
-            out.push_str(&html_escape(c));
-            out.push_str("</code>");
-        }
-        Inline::Emphasis(inner) => {
-            out.push_str("<em>");
-            for i in inner {
-                render_diff_inline(i, out);
-            }
-            out.push_str("</em>");
-        }
-        Inline::Strong(inner) => {
-            out.push_str("<strong>");
-            for i in inner {
-                render_diff_inline(i, out);
-            }
-            out.push_str("</strong>");
-        }
-        Inline::Strikethrough(inner) => {
-            out.push_str("<del>");
-            for i in inner {
-                render_diff_inline(i, out);
-            }
-            out.push_str("</del>");
-        }
-        Inline::Link { dest, content, .. } => {
-            if is_safe_href(dest) {
-                out.push_str(&format!("<a href=\"{}\">", html_escape(dest)));
-                for i in content {
-                    render_diff_inline(i, out);
-                }
-                out.push_str("</a>");
-            } else {
-                for i in content {
-                    render_diff_inline(i, out);
-                }
-            }
-        }
-        Inline::Image { alt, .. } => {
-            out.push_str(&format!("[Image: {}]", html_escape(alt)));
-        }
-        Inline::SoftBreak | Inline::HardBreak => out.push(' '),
-        Inline::Html(h) => out.push_str(&html_escape(h)),
-        Inline::FootnoteRef { id } => out.push_str(&format!("[^{}]", html_escape(id))),
-        Inline::Math(m) => out.push_str(&format!("${}$", html_escape(m))),
-        Inline::DisplayMath(m) => out.push_str(&format!("$${}$$", html_escape(m))),
-    }
-}
-
-#[inline(always)]
-fn is_safe_href(url: &str) -> bool {
-    let trimmed = url.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
-    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('/') {
-        return true;
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("mailto:")
-        || lower.starts_with("tel:")
-        || !lower.contains(':')
 }
 
 fn html_escape(s: &str) -> String {

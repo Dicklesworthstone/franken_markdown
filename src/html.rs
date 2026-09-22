@@ -76,6 +76,93 @@ pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
     html
 }
 
+/// A document-scoped renderer for hosts which place blocks in their own
+/// layout. Keeping the state alive preserves heading collisions, references,
+/// and notes across separately rendered blocks. The prefix isolates anchors
+/// when two revisions share one HTML document.
+pub(crate) struct FragmentRenderer<'a> {
+    opts: &'a HtmlOptions,
+    state: RenderState<'a>,
+    automatic_toc: bool,
+}
+
+impl<'a> FragmentRenderer<'a> {
+    pub(crate) fn new(blocks: &'a [Block], opts: &'a HtmlOptions, prefix: &'a str) -> Self {
+        let marker = has_toc_marker(blocks);
+        let mut entries = if opts.toc || marker {
+            collect_toc_entries(blocks)
+        } else {
+            Vec::new()
+        };
+        for entry in &mut entries {
+            entry.id.insert_str(0, prefix);
+        }
+        Self {
+            opts,
+            state: RenderState {
+                root_blocks: blocks,
+                id_prefix: prefix,
+                toc_entries: entries,
+                ..RenderState::default()
+            },
+            automatic_toc: opts.toc && !marker,
+        }
+    }
+
+    fn before_block(&mut self, block: &Block, out: &mut String) {
+        if self.automatic_toc && matches!(block, Block::Heading { .. }) {
+            self.automatic_toc = false;
+            push_toc_nav(&self.state.toc_entries, self.opts.toc_depth, out);
+        }
+    }
+
+    pub(crate) fn block(&mut self, block: &Block, out: &mut String) {
+        self.before_block(block, out);
+        render_block(block, out, self.opts, &mut self.state);
+    }
+
+    pub(crate) fn start_inline_block(&mut self, block: &Block, out: &mut String) {
+        self.before_block(block, out);
+        if let Block::Heading { level, inlines } = block {
+            out.push_str("<h");
+            push_u64(out, u64::from(*level));
+            out.push_str(" id=\"");
+            self.state.push_heading_id_from_inlines(inlines, out);
+            out.push_str("\">");
+        } else {
+            out.push_str("<p>");
+        }
+    }
+
+    pub(crate) fn inline(&mut self, inline: &Inline, out: &mut String) {
+        render_inlines(std::slice::from_ref(inline), out, self.opts, &mut self.state);
+    }
+
+    pub(crate) fn end_inline_block(&self, block: &Block, out: &mut String) {
+        if let Block::Heading { level, .. } = block {
+            out.push_str("</h");
+            push_u64(out, u64::from(*level));
+            out.push_str(">\n");
+        } else {
+            out.push_str("</p>\n");
+        }
+    }
+
+    pub(crate) fn has_note_reference(&self, id: &str) -> bool {
+        self.state.footnote_numbers.contains_key(id)
+    }
+
+    pub(crate) fn finish(mut self, out: &mut String) {
+        push_footnotes_section(&mut self.state, out, self.opts);
+    }
+}
+
+pub(crate) fn stylesheet(doc: &Document, opts: &HtmlOptions) -> String {
+    opts.custom_css
+        .as_deref()
+        .map_or_else(|| default_css(doc, opts), sanitize_custom_css)
+}
+
 /// Make caller-supplied CSS safe to inline in a raw-text `<style>` element.
 ///
 /// The HTML tokenizer ends a `<style>` element at the first case-insensitive
@@ -134,6 +221,8 @@ pub(crate) struct TocEntry {
 
 #[derive(Default)]
 struct RenderState<'a> {
+    /// Namespace for renderer-owned anchors when composing complete documents.
+    id_prefix: &'a str,
     /// Keys are every emitted heading id. Values are the next suffix to try
     /// when that same id text later appears as a heading's base slug.
     heading_id_suffixes: HashMap<String, usize>,
@@ -213,6 +302,7 @@ impl<'a> RenderState<'a> {
     }
 
     fn push_heading_id_from_inlines(&mut self, inlines: &[Inline], out: &mut String) {
+        out.push_str(self.id_prefix);
         let mut base = slug_inlines(inlines);
         if base.is_empty() {
             base.push_str("section");
@@ -684,9 +774,16 @@ fn render_inlines(
                 title,
                 content,
             } => {
+                let prefix = state.id_prefix;
                 if let Some(href) = state.safe_url_cached(dest, UrlContext::Link) {
                     out.push_str("<a href=\"");
-                    push_escaped_url(href, out);
+                    if let Some(anchor) = href.strip_prefix('#').filter(|s| !s.is_empty()) {
+                        out.push('#');
+                        push_escaped_attr(prefix, out);
+                        push_escaped_url(anchor, out);
+                    } else {
+                        push_escaped_url(href, out);
+                    }
                     out.push('"');
                     if let Some(title) = title.as_deref() {
                         out.push_str(" title=\"");
@@ -748,7 +845,7 @@ fn render_inlines(
     }
 }
 
-fn push_html_image_asset_data_uri(dest: &str, opts: &HtmlOptions, out: &mut String) -> bool {
+pub(crate) fn push_html_image_asset_data_uri(dest: &str, opts: &HtmlOptions, out: &mut String) -> bool {
     let Some((mime, bytes)) = html_image_asset(dest, opts) else {
         return false;
     };
@@ -1386,11 +1483,15 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
         let Some((_, blocks)) = defs.iter().find(|(def_id, _)| *def_id == id.as_str()) else {
             continue;
         };
-        out.push_str("<li id=\"fn-");
+        out.push_str("<li id=\"");
+        push_escaped_attr(state.id_prefix, out);
+        out.push_str("fn-");
         push_escaped_attr(&id, out);
         out.push_str("\">");
         render_blocks(blocks, out, opts, state);
-        out.push_str(" <a class=\"footnote-backref\" href=\"#fnref-");
+        out.push_str(" <a class=\"footnote-backref\" href=\"#");
+        push_escaped_attr(state.id_prefix, out);
+        out.push_str("fnref-");
         push_u64(out, number as u64);
         out.push_str("\">\u{21a9}</a>\n</li>\n");
     }
@@ -1421,11 +1522,15 @@ fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) 
     }
     out.push_str("<sup class=\"footnote-ref\"");
     if first {
-        out.push_str(" id=\"fnref-");
+        out.push_str(" id=\"");
+        push_escaped_attr(state.id_prefix, out);
+        out.push_str("fnref-");
         push_u64(out, number as u64);
         out.push('"');
     }
-    out.push_str("><a href=\"#fn-");
+    out.push_str("><a href=\"#");
+    push_escaped_attr(state.id_prefix, out);
+    out.push_str("fn-");
     push_escaped_attr(id, out);
     out.push_str("\">");
     push_u64(out, number as u64);

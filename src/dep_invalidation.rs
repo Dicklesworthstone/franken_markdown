@@ -18,6 +18,8 @@ pub mod cache;
 pub use cache::{FlowShapeCache, FlowShapeCacheLimits, FlowShapeCacheStats};
 
 mod matching;
+mod edits;
+pub use edits::{FlowEdit, FlowEditBatchError, MAX_FLOW_EDITS};
 
 pub mod session;
 pub use session::{FlowAssetRemap, FlowAssetReuse, FlowSession, FlowSessionError, FlowUpdate};

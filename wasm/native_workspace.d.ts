@@ -1,4 +1,4 @@
-import type {FmdRenderOptions, FmdRenderOutput} from './franken_markdown.js';
+import type {FmdRenderOptions, FmdRenderOutput, FmdPdfPage} from './franken_markdown.js';
 
 /** Trusted artifacts from ONE matching wasm-bindgen --target web build.
  * Supply file contents, never URLs. Byte views are snapshotted before loading.
@@ -10,7 +10,7 @@ export interface FmdNativeWorkspaceRuntime {
 }
 
 /** Settings supported by both the saved workspace and its native render backend.
- * Unsupported settings throw, including customCss, page and raw HTML passthrough.
+ * Unsupported settings throw, including customCss and raw HTML passthrough.
  */
 export interface FmdNativeWorkspaceOptions extends Pick<FmdRenderOptions,
   'font' | 'darkMode' | 'title' | 'author' | 'lang' | 'metadataEpochSeconds' |
@@ -18,6 +18,10 @@ export interface FmdNativeWorkspaceOptions extends Pick<FmdRenderOptions,
   /** Numeric uniform scale from 0.5 through 3; view zoom remains independent. */
   fontScale?: number;
   allowRawHtml?: false;
+  /** Paper dimensions, orientation and margins in PDF points. Requires matching
+   * renderPdfConfiguredPage bindings; settings survive saving and reopening.
+   */
+  page?: FmdPdfPage;
 }
 
 export interface FmdNativeWorkspaceOutput extends FmdRenderOutput {

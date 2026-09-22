@@ -25,6 +25,7 @@ const exporter = await createNativeWorkspaceExporter({
 const output = exporter.render(await readFile('./article.md', 'utf8'), {
   font: 'serif', fontScale: 1.125, title: 'Article', lang: 'en',
   toc: true, tocDepth: 3, pageNumbers: true, metadataEpochSeconds: 0,
+  page: {size: 'a4', orientation: 'landscape', margins: 36},
   pdfImages: [{destination: 'chart.svg', bytes: await readFile('./chart.svg')}],
 });
 await writeFile('./article.workspace.html', output.bytes);
@@ -79,9 +80,19 @@ are not translated into native image bindings by this packaging API.
 
 Supported options are `font`, `darkMode`, numeric `fontScale` (0.5..3), `title`,
 `author`, `lang`, `metadataEpochSeconds`, `pageNumbers`, `codeLineNumbers`, `toc`,
-`tocDepth`, `pdfImages` and `fontAssets`. `allowRawHtml` may only be false. Other
-options, including custom CSS and custom PDF paper, are rejected rather than
+`tocDepth`, `pdfImages`, `fontAssets` and `page`. `allowRawHtml` may only be false. Other
+options, including custom CSS, are rejected rather than
 silently lost on saving. Viewing zoom is distinct from PDF typography.
+
+`page` uses the same contract as direct, worker and flow PDF exports: Letter,
+A4 or explicit width/height in points, portrait/landscape orientation, and
+uniform or per-side margins. The shared normalizer validates plain data (no
+accessors), bounds and the 72-point minimum content rectangle, including native
+f32 rounding. The saved payload carries the exact six-number ABI representation.
+The offline renderer revalidates it, snapshots it, and dispatches to
+`renderPdfConfiguredPage`. A binary missing that function is rejected for an
+explicit page request; omitted `page` retains the existing PDF ABI and defaults.
+Paper and margins survive save/reopen and do not change with display zoom.
 
 Admission limits are 32 MiB source, 64 MiB WASM, 4 MiB binding JavaScript,
 32 MiB per resource, 128 MiB image/font resources combined, 4096 images, five
@@ -100,3 +111,15 @@ browser verification. The DSR package gate includes the new entry, its runtime,
 declarations, documentation, unit checks and generated-package smoke test.
 These proof classes are distinct: passing adapter tests does not prove rebuilt
 Rust/WASM rendering or a browser save/reopen lifecycle.
+
+`node --test wasm/native_workspace_page.test.mjs` covers geometry admission,
+ABI selection, exact argument order, old-package behavior and damaged saved
+payloads. `node wasm/native_workspace_fixture.mjs NEW_OUTPUT.html` builds an
+explicit ABI-adapter fixture using the shipped exporter, controller and runtime
+with a real tiny WASM module. `python wasm/native_workspace_browser_check.py
+OUTPUT.html` then checks downloads, startup edits, iframe isolation, resource
+retention, paper/margins, repeated reopening and source recovery after failure.
+Its default mode attempts actual file navigation. Use `--mode content` explicitly
+on hosts whose browser policy blocks `file://`; that mode reparses downloaded
+bytes in fresh pages and does not prove file-navigation compatibility. It tests
+browser plumbing, not Rust parsing/layout, font embedding or PDF conformance.

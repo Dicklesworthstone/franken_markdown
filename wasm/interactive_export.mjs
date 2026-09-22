@@ -1,6 +1,7 @@
 // Packaging is independent of the generated package URL. Hosts explicitly supply
 // one trusted, matching wasm-bindgen --target web JavaScript/WASM pair.
 import {bootNativeWorkspace, createNativeWorkspaceRenderer} from './interactive_runtime.mjs';
+import {pdfPageGeometry} from './pdf_page.mjs';
 
 const MiB = 1024 * 1024;
 const SLOTS = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
@@ -77,14 +78,15 @@ function captureRuntime(input) {
 function captureOptions(input) {
   const allowed = new Set(['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth',
-    'pdfImages', 'fontAssets', 'allowRawHtml']);
+    'pdfImages', 'fontAssets', 'allowRawHtml', 'page']);
   record(input, 'workspace options');
   for (const key of Object.keys(input)) if (!allowed.has(key)) {
     throw new TypeError(`Unsupported native workspace option: ${key}`);
   }
   const {font = 'sans', darkMode = 'auto', fontScale = 1, title, author, lang,
     metadataEpochSeconds, pageNumbers = false, codeLineNumbers = false,
-    toc = false, tocDepth, pdfImages = [], fontAssets = [], allowRawHtml = false} = input;
+    toc = false, tocDepth, pdfImages = [], fontAssets = [], allowRawHtml = false, page} = input;
+  const geometry = pdfPageGeometry(page);
   if (!['sans', 'serif'].includes(font)) throw new TypeError('font must be sans or serif');
   if (!['auto', 'disabled'].includes(darkMode)) throw new TypeError('darkMode must be auto or disabled');
   if (!Number.isFinite(fontScale) || fontScale < 0.5 || fontScale > 3) throw new RangeError('fontScale must be from 0.5 through 3');
@@ -129,7 +131,8 @@ function captureOptions(input) {
   }
   return {
     options: {font, darkMode, fontScale, title, author, lang, metadataEpochSeconds,
-      pageNumbers, codeLineNumbers, toc, tocDepth},
+      pageNumbers, codeLineNumbers, toc, tocDepth,
+      ...(geometry.length ? {pageGeometry: Array.from(geometry)} : {})},
     // All admission has finished. Serialize exact views now, never caller buffers
     // or remote URLs. Stable font-slot order avoids incidental input-order drift.
     images: images.map(({destination, view}) => ({destination, bytes: base64(view)})),
@@ -209,9 +212,9 @@ export async function createWorkspaceExporterWithLoader(runtime, load) {
       const prepared = captureOptions(options);
       const payload = {version: 1, wasm: encodedWasm, bindings: bindingSource, ...prepared};
       const opts = prepared.options;
+      const renderer = createNativeWorkspaceRenderer(engine, payload);
       const shell = takeShell(engine.renderInteractiveHtmlConfigured(markdown,
         opts.font, opts.darkMode, opts.title, opts.lang, opts.fontScale));
-      const renderer = createNativeWorkspaceRenderer(engine, payload);
       const preview = renderer.html(markdown);
       const html = assemble(shell.html, preview, payload, markdown);
       textSize(html, NATIVE_WORKSPACE_LIMITS.outputBytes, 'native workspace output');
@@ -225,15 +228,17 @@ export async function createWorkspaceExporterWithLoader(runtime, load) {
   });
 }
 
-let moduleSequence = 0;
 async function loadRuntime(owned) {
   let url, revoke = false;
   try {
-    // Node's module loader does not support blob: imports. The fragment makes
-    // separate factories independent even for identical JS with different WASM.
-    // Reuse a factory for many documents instead of repeatedly loading modules.
+    // Node cannot import blob: modules, but Blob URL identities are unique even
+    // across multiple loaded copies of this exporter. A per-module counter is
+    // insufficient: two package copies could otherwise reuse the same JS module
+    // and silently change each other's initialized WASM instance.
     if (typeof process !== 'undefined' && process.versions?.node) {
-      url = 'data:text/javascript;base64,' + base64(new TextEncoder().encode(owned.bindings)) + '#fmd-workspace-' + (++moduleSequence);
+      const identity = URL.createObjectURL(new Blob());
+      URL.revokeObjectURL(identity);
+      url = 'data:text/javascript;base64,' + base64(new TextEncoder().encode(owned.bindings)) + '#' + identity;
     } else {
       url = URL.createObjectURL(new Blob([owned.bindings], {type: 'text/javascript'}));
       revoke = true;

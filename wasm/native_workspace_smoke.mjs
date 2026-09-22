@@ -15,6 +15,7 @@ const exporter = await createNativeWorkspaceExporter({wasm, bindings});
 const source = '# Native standalone\n\nMath $x^2$ and **bold**.\n\n![Chart](chart.svg)\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nNote[^n].\n\n[^n]: Preserved footnote.\n';
 const asset = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>');
 const options = {font:'serif', title:'Native standalone', toc:true, pageNumbers:true, metadataEpochSeconds:0,
+  page:{size:'a4',orientation:'landscape',margins:36},
   pdfImages:[{destination:'chart.svg', bytes:asset}]};
 const first = exporter.render(source, options), again = exporter.render(source, options);
 assert.deepEqual(first.bytes, again.bytes);
@@ -30,6 +31,7 @@ assert.equal(payload.bindings, bindings);
 assert.equal(payload.images[0].destination,'chart.svg');
 assert.deepEqual(Buffer.from(payload.images[0].bytes,'base64'), Buffer.from(asset));
 assert.equal(payload.options.metadataEpochSeconds,0);
+assert.deepEqual(payload.options.pageGeometry,[297*72/25.4,210*72/25.4,36,36,36,36]);
 await writeFile(path.resolve(output), first.bytes, {flag:'wx'});
 console.log(JSON.stringify({proof:'built-Rust-WASM-native-workspace', bytes:first.bytes.length,
   deterministic:true, diagnostics:first.diagnostics, output:path.resolve(output)}));

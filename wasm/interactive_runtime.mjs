@@ -9,6 +9,24 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   }
   if (payload.version !== 1) throw new Error('Unsupported native workspace version');
   const options = payload.options;
+  // Page settings were normalized by the host's shared PDF geometry contract.
+  // Revalidate the saved six-number representation before allocation/dispatch.
+  let pageGeometry = null;
+  if (options.pageGeometry !== undefined) {
+    const input = options.pageGeometry;
+    const g = Array.isArray(input) && input.length === 6 ? Array.from(input) : null;
+    const extent = (size, first, second) => Math.fround(Math.fround(Math.fround(size) - Math.fround(first)) - Math.fround(second));
+    if (!g || !g.every(Number.isFinite)
+        || g[0] < 144 || g[1] < 144 || g.some(value => value < 0 || value > 14400)
+        || g[0] - g[5] - g[3] < 72 || g[1] - g[2] - g[4] < 72
+        || extent(g[0], g[5], g[3]) < 72 || extent(g[1], g[2], g[4]) < 72) {
+      throw new RangeError('Invalid saved PDF page geometry');
+    }
+    if (typeof bindings.renderPdfConfiguredPage !== 'function') {
+      throw Object.assign(new Error('PDF paper and margins require matching page-capable WASM bindings'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    }
+    pageGeometry = new Float64Array(g);
+  }
   function decode(text) {
     const binary = atob(text);
     const bytes = new Uint8Array(binary.length);
@@ -80,13 +98,16 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       return html.replace(head, match => match + '<meta http-equiv="Content-Security-Policy" content="' + policy + '">');
     },
     pdf(markdown) {
-      const bytes = take(bindings.renderPdfConfiguredMulti(
+      const args = [
         source(markdown), options.font, options.darkMode, options.title, options.author,
         options.metadataEpochSeconds, false, options.codeLineNumbers,
         destinations, flat, lengths, ...fontBytes, weights,
         undefined, undefined, undefined, options.pageNumbers,
         options.fontScale, options.lang, options.toc, options.tocDepth, undefined, false,
-      ), 'application/pdf');
+      ];
+      const result = pageGeometry ? bindings.renderPdfConfiguredPage(...args, pageGeometry)
+        : bindings.renderPdfConfiguredMulti(...args);
+      const bytes = take(result, 'application/pdf');
       if (String.fromCharCode(...bytes.subarray(0, 5)) !== '%PDF-') throw new Error('Native renderer returned invalid PDF bytes');
       return bytes;
     },

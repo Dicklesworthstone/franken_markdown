@@ -68,6 +68,7 @@ fn audit(input: &[ParagraphCandidates], policies: &[ParagraphPolicy], opts: Pagi
         page += 1;
     }
     assert_eq!(plan.page_count, page);
+    if let Some(limit) = opts.max_pages { assert!(page <= limit); }
     assert_eq!(plan.total_demerits, cost);
 }
 
@@ -212,6 +213,7 @@ fn oracle(input: &[ParagraphCandidates], policies: &[ParagraphPolicy], opts: Pag
         p: usize, variant: Option<usize>, start: usize, used: usize, pages: usize, cost: i128,
         best: &mut Option<(i128, usize)>,
     ) {
+        if opts.max_pages.is_some_and(|limit| pages + usize::from(used > 0) > limit) { return; }
         let page_cost = |used: usize, last: bool| {
             let gap = (opts.page_capacity_lines - used) as i128;
             i128::from(opts.page_cost) + if !last || opts.penalize_last_page {
@@ -280,6 +282,58 @@ fn exhaustive_small_inputs_match_an_unpruned_oracle() {
                         (Some(rank), Ok(plan)) => { assert_eq!((plan.total_demerits, plan.page_count), rank); audit(&input, &policies, opts, &plan); }
                         (None, Err(PaginationError::NoFeasibleLayout { .. })) => {}
                         other => panic!("oracle mismatch for capacity {capacity}, lines {first}/{second}, flags {flags}: {other:?}"),
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+#[test]
+fn hard_page_limit_retains_costlier_paths_with_fewer_used_pages() {
+    // Both alternatives finish with a full page. Occupancy-only dominance would
+    // throw away the costlier 5-line path and incorrectly report infeasibility.
+    let input = [paragraph(&[(10, 0), (5, 200)]), paragraph(&[(5, 0)])];
+    let unconstrained = plan_pagination(&input, &[], options(5)).unwrap();
+    assert_eq!(unconstrained.variants, vec![0, 0]);
+    assert_eq!(unconstrained.page_count, 3);
+    let opts = PaginationOptions { max_pages: Some(2), ..options(5) };
+    let bounded = plan_pagination(&input, &[], opts).unwrap();
+    assert_eq!(bounded.variants, vec![1, 0]);
+    assert_eq!(bounded.page_count, 2);
+    assert_eq!(bounded.total_demerits, 400);
+    audit(&input, &[], opts, &bounded);
+}
+
+#[test]
+fn hard_page_limit_counts_initial_content_and_rejects_impossible_books() {
+    let input = [paragraph(&[(6, 0)])];
+    let opts = PaginationOptions { max_pages: Some(1), ..options(5) };
+    assert!(matches!(plan_pagination(&input, &[], opts), Err(PaginationError::NoFeasibleLayout { .. })));
+    let input = [paragraph(&[(2, 0)])];
+    let opts = PaginationOptions { initial_used_lines: 5, ..opts };
+    assert!(matches!(plan_pagination(&input, &[], opts), Err(PaginationError::NoFeasibleLayout { .. })));
+    assert_eq!(plan_pagination(&[], &[], opts).unwrap().page_count, 1);
+    let invalid = PaginationOptions { max_pages: Some(0), ..options(5) };
+    assert!(matches!(plan_pagination(&[], &[], invalid), Err(PaginationError::InvalidOptions(_))));
+}
+
+#[test]
+fn page_bounded_search_matches_exhaustive_enumeration() {
+    for capacity in 2..=5 {
+        for first in 1..=6 {
+            for second in 1..=5 {
+                for limit in 1..=3 {
+                    let input = [paragraph(&[(first, -3), (first + 2, -100)]), paragraph(&[(second, 0)])];
+                    let opts = PaginationOptions { max_pages: Some(limit), orphan_penalty: Some(4),
+                        widow_penalty: Some(9), initial_used_lines: 1, ..options(capacity) };
+                    let expected = oracle(&input, &[], opts);
+                    let actual = plan_pagination(&input, &[], opts);
+                    match (expected, actual) {
+                        (Some(rank), Ok(plan)) => { assert_eq!((plan.total_demerits, plan.page_count), rank); audit(&input, &[], opts, &plan); }
+                        (None, Err(PaginationError::NoFeasibleLayout { .. })) => {}
+                        other => panic!("bounded oracle mismatch: {capacity}/{first}/{second}/{limit}: {other:?}"),
                     }
                 }
             }

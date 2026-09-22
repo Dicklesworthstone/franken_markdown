@@ -60,6 +60,9 @@ pub struct PaginationOptions {
     /// Already occupied lines on the first page. No synthetic fragment is
     /// returned for this content, but its page and unused space are costed.
     pub initial_used_lines: usize,
+    /// Optional hard publication limit, including an occupied initial page.
+    /// Unlike page_cost, this can never be traded for better line demerits.
+    pub max_pages: Option<usize>,
     /// Minimum lines in a fragment before an internal paragraph break.
     pub orphans: usize,
     /// Minimum lines in a fragment continuing after an internal break.
@@ -79,6 +82,7 @@ impl Default for PaginationOptions {
         Self {
             page_capacity_lines: 48,
             initial_used_lines: 0,
+            max_pages: None,
             orphans: 2,
             widows: 2,
             orphan_penalty: None,
@@ -153,6 +157,10 @@ impl State {
     fn rank(self) -> (i128, usize) { (self.cost, self.closed_pages) }
 }
 
+// A hard page budget makes used page count part of future feasibility.
+// Without it, collapse that dimension to zero and retain the cheaper state.
+type StateKey = (usize, usize);
+
 struct Node {
     previous: Option<usize>,
     fragment: PageFragment,
@@ -164,6 +172,10 @@ struct Search {
 }
 
 impl Search {
+    fn key(&self, progress: usize, state: State) -> StateKey {
+        (progress, if self.options.max_pages.is_some() { state.closed_pages } else { 0 })
+    }
+
     fn charge(&mut self) -> Result<(), PaginationError> {
         if self.transitions >= self.options.limits.max_transitions {
             return Err(PaginationError::BudgetExceeded("transitions"));
@@ -192,9 +204,10 @@ impl Search {
     // Only improving states receive backpointers. Discarded nodes are retained
     // because later tails can still refer to them; max_nodes bounds the arena.
     fn retain(
-        &mut self, frontier: &mut BTreeMap<usize, State>, key: usize,
+        &mut self, frontier: &mut BTreeMap<StateKey, State>, progress: usize,
         mut candidate: State, fragment: PageFragment,
     ) -> Result<(), PaginationError> {
+        let key = self.key(progress, candidate);
         if frontier.get(&key).is_some_and(|old| old.rank() <= candidate.rank()) {
             return Ok(());
         }
@@ -212,8 +225,11 @@ impl Search {
     fn place(
         &mut self, state: State, paragraph: usize, variant: usize, start: usize,
         lines: usize, policy: ParagraphPolicy,
-        completed: &mut BTreeMap<usize, State>, pending: &mut BTreeMap<usize, State>,
+        completed: &mut BTreeMap<StateKey, State>, pending: &mut BTreeMap<StateKey, State>,
     ) -> Result<(), PaginationError> {
+        if self.options.max_pages.is_some_and(|limit| state.closed_pages >= limit) {
+            return Ok(()); // There is no permitted page on which to place a line.
+        }
         let capacity = self.options.page_capacity_lines - state.used;
         let remaining = lines - start;
         let available = remaining.min(capacity);
@@ -268,6 +284,9 @@ fn validate(
     if options.page_capacity_lines == 0 || options.initial_used_lines > options.page_capacity_lines {
         return Err(PaginationError::InvalidOptions("capacity must be positive and contain the initial occupied lines"));
     }
+    if options.max_pages == Some(0) {
+        return Err(PaginationError::InvalidOptions("max_pages must be positive when supplied"));
+    }
     if !policies.is_empty() && policies.len() != paragraphs.len() {
         return Err(PaginationError::InvalidOptions("policies must be empty or have one entry per paragraph"));
     }
@@ -304,6 +323,8 @@ fn validate(
 ///
 /// At paragraph boundaries, future costs depend only on occupied lines (and
 /// fixed adjacent policies), so only the best state per occupancy is retained.
+/// With a hard page limit, used page count is an additional state dimension:
+/// a cheaper path using more pages must not dominate a feasible shorter path.
 /// Within one selected variant, continuation states depend only on the next
 /// unplaced line and start on an empty page. Both are acyclic shortest paths;
 /// dominance never discards a state with a different future constraint context.
@@ -324,7 +345,7 @@ pub fn plan_pagination(
     let policy_at = |index| policies.get(index).copied().unwrap_or_default();
     let mut search = Search { options, nodes: Vec::new(), transitions: 0 };
     let initial = State { cost: 0, closed_pages: 0, used: options.initial_used_lines, tail: None };
-    let mut frontier = BTreeMap::from([(initial.used, initial)]);
+    let mut frontier = BTreeMap::from([(search.key(initial.used, initial), initial)]);
     for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
         let policy = policy_at(paragraph_index);
         let keep_previous = paragraph_index > 0 && policy_at(paragraph_index - 1).keep_with_next;
@@ -349,7 +370,7 @@ pub fn plan_pagination(
                         policy, &mut completed, &mut pending)?;
                 }
             }
-            while let Some((start, state)) = pending.pop_first() {
+            while let Some(((start, _), state)) = pending.pop_first() {
                 search.place(state, paragraph_index, variant_index, start, variant.line_count,
                     policy, &mut completed, &mut pending)?;
             }

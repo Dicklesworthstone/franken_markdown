@@ -52,7 +52,7 @@ pub fn render_pdf_configured_page(
     microtype_protrusion: bool,
     page_geometry: Vec<f64>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
-    let page = page_style(&page_geometry).map_err(JsValue::from_str)?;
+    let page = PageStyle::from_browser_geometry(&page_geometry).map_err(JsValue::from_str)?;
     let mut options = pdf_options_configured(
         font,
         dark_mode,
@@ -100,6 +100,15 @@ pub fn render_pdf_configured_page(
     wasm::render_pdf(markdown, &options)
         .map(render_result)
         .map_err(render_error_to_js)
+}
+
+impl PageStyle {
+    /// One admission policy for single-document and retained-book WASM exports.
+    /// Empty geometry preserves the caller's existing theme. This constructor
+    /// is crate-private and available only with the browser adapter feature.
+    pub(crate) fn from_browser_geometry(values: &[f64]) -> Result<Option<Self>, &'static str> {
+        page_style(values)
+    }
 }
 
 /// Browser admission policy, deliberately narrower than arbitrary native theme

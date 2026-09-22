@@ -180,6 +180,20 @@ impl FmdBook {
         self.renderer.render_pdf().map_err(to_js)
     }
 
+    /// Render the retained book with export-local paper geometry in points:
+    /// width, height, top, right, bottom, left. An empty vector uses the stored
+    /// theme. No chapter is reparsed and no retained option or asset is changed,
+    /// including when validation or rendering fails. The ordinary book pipeline
+    /// still binds chapter links, isolates citations, and resolves image paths.
+    ///
+    /// # Errors
+    /// Rejects invalid geometry using the single-document browser policy, or
+    /// returns book, asset-budget, and PDF rendering errors.
+    #[wasm_bindgen(js_name = renderPdfWithPage)]
+    pub fn render_pdf_with_page(&self, page_geometry: Vec<f64>) -> Result<Vec<u8>, JsValue> {
+        render_pdf_with_geometry(&self.renderer, &page_geometry).map_err(to_js)
+    }
+
     /// Export a multi-chapter EPUB with ordered spine and packaged images.
     ///
     /// # Errors
@@ -208,6 +222,19 @@ impl FmdBook {
     pub fn validate_links(&self) -> Result<String, JsValue> {
         self.renderer.validate_links().and_then(|report| report.to_json()).map_err(to_js)
     }
+}
+
+// Keep rejection paths independent of JsValue so native tests can exercise
+// the same transaction boundary without invoking a browser-only error import.
+fn render_pdf_with_geometry(renderer: &BookRenderer, geometry: &[f64]) -> crate::Result<Vec<u8>> {
+    let page = crate::PageStyle::from_browser_geometry(geometry)
+        .map_err(|message| RenderError::InvalidInput(message.to_string()))?;
+    let Some(page) = page else {
+        return renderer.render_pdf();
+    };
+    let mut options = renderer.options().pdf_options();
+    options.theme.page = page;
+    super::render_book_pdf(renderer.book(), &options)
 }
 
 fn to_js(error: RenderError) -> JsValue {
@@ -257,6 +284,83 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    fn paper_book() -> BookRenderer {
+        let mut renderer = BookRenderer::new(&[
+            BookInput {
+                path: "guide/one.md".into(),
+                source: "# One\n\n[Next](../two.md#two) and a citation[^1].\n\n[^1]: First note.\n".into(),
+            },
+            BookInput {
+                path: "two.md".into(),
+                source: "# Two\n\n[Back](guide/one.md#one) and another[^1].\n\n| Name | Value |\n| --- | --- |\n| Alpha | Beta |\n\n[^1]: Second note.\n".into(),
+            },
+        ])
+        .unwrap();
+        let options = renderer.options_mut();
+        options.metadata_epoch_seconds = Some(0);
+        options.title = Some("Paper and navigation".into());
+        options.author = Some("Book host".into());
+        options.toc = true;
+        options.page_numbers = true;
+        renderer
+    }
+
+    #[test]
+    fn book_empty_and_explicit_default_geometry_preserve_pdf_bytes() {
+        let renderer = paper_book();
+        let before = renderer.render_pdf().unwrap();
+        assert_eq!(render_pdf_with_geometry(&renderer, &[]).unwrap(), before);
+        assert_eq!(
+            render_pdf_with_geometry(&renderer, &[612.0, 792.0, 72.0, 72.0, 72.0, 72.0]).unwrap(),
+            before,
+        );
+    }
+
+    #[test]
+    fn book_paper_override_uses_native_layout_without_changing_retained_state() {
+        let renderer = paper_book();
+        let original_page = renderer.options().theme.page;
+        let original_source_length = renderer.source_length();
+        let before = renderer.render_pdf().unwrap();
+        for geometry in [
+            [720.0, 540.0, 18.0, 24.0, 30.0, 36.0],
+            [540.0, 720.0, 36.0, 30.0, 24.0, 18.0],
+        ] {
+            let actual = render_pdf_with_geometry(&renderer, &geometry).unwrap();
+            let mut expected_options = renderer.options().pdf_options();
+            expected_options.theme.page = crate::PageStyle::from_browser_geometry(&geometry)
+                .unwrap().unwrap();
+            let expected = crate::book::render_book_pdf(renderer.book(), &expected_options).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual, render_pdf_with_geometry(&renderer, &geometry).unwrap());
+            assert!(String::from_utf8_lossy(&actual).contains(&format!(
+                "/MediaBox [0 0 {} {}]", geometry[0], geometry[1],
+            )));
+            assert_eq!(renderer.options().theme.page, original_page);
+            assert_eq!(renderer.source_length(), original_source_length);
+            assert_eq!(renderer.book().chapters.len(), 2);
+        }
+        assert_eq!(renderer.render_pdf().unwrap(), before);
+    }
+
+    #[test]
+    fn book_bad_geometry_is_rejected_without_poisoning_later_exports() {
+        let renderer = paper_book();
+        let before = renderer.render_pdf().unwrap();
+        for geometry in [
+            vec![612.0],
+            vec![f64::NAN, 792.0, 72.0, 72.0, 72.0, 72.0],
+            vec![612.0, 792.0, 72.0, 270.000001, 72.0, 270.0],
+            vec![14_401.0, 792.0, 72.0, 72.0, 72.0, 72.0],
+        ] {
+            assert!(matches!(
+                render_pdf_with_geometry(&renderer, &geometry),
+                Err(RenderError::InvalidInput(_)),
+            ));
+        }
+        assert_eq!(renderer.render_pdf().unwrap(), before);
+    }
 
     #[test]
     fn input_arrays_preserve_order_and_reject_mismatches() {

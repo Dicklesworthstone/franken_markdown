@@ -9,6 +9,7 @@ import {
   validateCreation,
 } from "./flow_session.mjs";
 import { init, renderHtml, renderPdf } from "./franken_markdown.js";
+import * as publicationRenderers from "./franken_markdown.js";
 
 export { FlowError, init };
 
@@ -49,7 +50,7 @@ export async function createFlowSession(markdown, options = {}) {
     });
     return withFlowExports(
       withAssetBatches(session, () => raw),
-      { html: renderHtml, pdf: renderPdf },
+      { html: renderHtml, pdf: renderPdf, epub: publicationRenderers.renderEpub },
       prepared.font,
     );
   } catch (error) {

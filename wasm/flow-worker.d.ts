@@ -28,6 +28,7 @@ export type {
   FlowBatchEdit,
   FlowCreateOptions,
   FlowEditOptions,
+  FlowEpubExportOptions,
   FlowExportDiagnostic,
   FlowExportFormat,
   FlowExportOptions,

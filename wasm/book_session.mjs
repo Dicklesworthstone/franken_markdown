@@ -1,5 +1,7 @@
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
 // can be tested without replacing the production renderer or its WASM binary.
+import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
+
 const MAX_CHAPTERS = 4096;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES = 32 * 1024 * 1024;
@@ -94,6 +96,7 @@ function fontAsset(value) {
 
 function normalizeOptions(value) {
   const options = record(value, "options");
+  const page = normalizePdfPage(options.page);
   const font = options.font ?? "sans";
   const darkMode = options.darkMode ?? "auto";
   if (font !== "sans" && font !== "serif") throw new TypeError("font must be sans or serif");
@@ -132,6 +135,7 @@ function normalizeOptions(value) {
     customCss: optionalString(options.customCss, "customCss"),
     toc: boolean(options.toc, "toc"),
     pageNumbers: boolean(options.pageNumbers, "pageNumbers"),
+    page,
     font,
     darkMode,
     fontScale,
@@ -143,7 +147,8 @@ function normalizeOptions(value) {
 }
 
 function normalizeFiles(files, minimum = 1, maxCount = MAX_CHAPTERS, maxBytes = MAX_SOURCE_BYTES) {
-  if (!Array.isArray(files) || files.length < minimum || files.length > maxCount) {
+  const count = Array.isArray(files) ? files.length : -1;
+  if (!Number.isInteger(count) || count < minimum || count > maxCount) {
     throw new RangeError(
       "book needs at least one chapter and at most 4096 chapter/include sources combined",
     );
@@ -151,7 +156,10 @@ function normalizeFiles(files, minimum = 1, maxCount = MAX_CHAPTERS, maxBytes = 
   const paths = [],
     sources = [];
   let total = 0;
-  for (const file of files) {
+  // Array admission must bound actual traversal, not trust a custom iterator
+  // or a length getter that changes after the count check.
+  for (let index = 0; index < count; index++) {
+    const file = files[index];
     record(file, "book source");
     // Capture getters once: the validated strings are the strings sent to Rust.
     const path = file.path,
@@ -231,11 +239,98 @@ function output(bytes, kind, sourceLength) {
   });
 }
 
+// Export-local options deliberately cannot reset metadata, replace assets, or
+// silently accept misspelled geometry fields. Do not invoke host accessors.
+function exportPage(value, fallback) {
+  const invalid = () => Object.assign(
+    new TypeError("book PDF export options must be a plain data object containing only page"),
+    { code: "INVALID_OPTIONS" },
+  );
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw invalid();
+  let page;
+  for (const key of Reflect.ownKeys(value)) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (key !== "page" || !field || !Object.hasOwn(field, "value")) throw invalid();
+    page = field.value;
+  }
+  return page === undefined ? fallback : normalizePdfPage(page);
+}
+
+function updateError(code, message) {
+  return Object.assign(new Error(message), { code });
+}
+function isRevision(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+}
+function currentSourceRevision(raw) {
+  if (typeof raw.updateSources !== "function") {
+    throw updateError("UNSUPPORTED_BOOK_UPDATE",
+      "this WASM build lacks FmdBook.updateSources; rebuild the matching package for source editing");
+  }
+  const revision = raw.sourceRevision;
+  if (!isRevision(revision)) {
+    throw updateError("INVALID_BOOK_UPDATE_REPORT", "Book source revision is invalid.");
+  }
+  return revision;
+}
+function expectedSourceRevision(options, fallback) {
+  const invalid = () => updateError("INVALID_OPTIONS",
+    "Source update options must contain only an integer expectedRevision in 0..=4294967295.");
+  if (!options || typeof options !== "object" || Array.isArray(options)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(options))) throw invalid();
+  let expected = fallback;
+  for (const key of Reflect.ownKeys(options)) {
+    const field = Object.getOwnPropertyDescriptor(options, key);
+    if (key !== "expectedRevision" || !field || !Object.hasOwn(field, "value")) throw invalid();
+    if (field.value !== undefined) expected = field.value;
+  }
+  if (!isRevision(expected)) throw invalid();
+  return expected;
+}
+
+// This is a wire-contract check, not a second Markdown/include implementation.
+// Validate after native success against the actual post-update renderer state.
+function sourceUpdateReport(json, before, submittedCount, raw) {
+  const invalid = () => updateError("INVALID_BOOK_UPDATE_REPORT",
+    "The source update result is invalid or mismatched; the book session was disposed. Recreate it from your source capture.");
+  let report;
+  try {
+    bookTextBytes(json, 64 * 1024);
+    report = JSON.parse(json);
+  } catch { throw invalid(); }
+  const count = report?.changed_sources, reparsed = report?.reparsed_chapters;
+  if (!report || report.schema !== "fmd-book-source-update-v1"
+      || !isRevision(report.revision) || !Number.isInteger(count) || count < 0 || count > submittedCount
+      || report.revision !== before.revision + (count > 0 ? 1 : 0)
+      || report.chapter_count !== before.chapters || report.chapter_count !== raw.chapterCount
+      || !Number.isInteger(report.source_length) || report.source_length < 0
+      || report.source_length > MAX_SOURCE_BYTES || report.source_length !== raw.sourceLength
+      || report.revision !== raw.sourceRevision
+      || !Array.isArray(reparsed) || reparsed.length > before.chapters
+      || (count === 0 && (reparsed.length !== 0 || report.source_length !== before.bytes))) throw invalid();
+  let previous = -1;
+  for (const index of reparsed) {
+    if (!Number.isInteger(index) || index <= previous || index >= before.chapters) throw invalid();
+    previous = index;
+  }
+  return Object.freeze({
+    revision: report.revision,
+    sourceLength: report.source_length,
+    chapterCount: report.chapter_count,
+    changedSources: count,
+    reparsedChapters: Object.freeze(reparsed),
+  });
+}
+
 export function createBookBindings(loadBookClass) {
   class BookSession {
     #raw;
-    constructor(raw) {
+    #page;
+    #updating = false;
+    constructor(raw, page) {
       this.#raw = raw;
+      this.#page = page;
     }
     #live() {
       if (this.#raw === null) throw new Error("book session has been disposed");
@@ -246,6 +341,45 @@ export function createBookBindings(loadBookClass) {
     }
     get sourceLength() {
       return this.#live().sourceLength;
+    }
+    get sourceRevision() {
+      return currentSourceRevision(this.#live());
+    }
+    updateSources(files, options = {}) {
+      this.#live();
+      if (this.#updating) throw updateError("BOOK_BUSY", "A book source update is already being admitted.");
+      // Hold the admission slot before inspecting host getters or Proxy traps.
+      this.#updating = true;
+      try {
+        const raw = this.#live();
+        const before = { revision: currentSourceRevision(raw), chapters: raw.chapterCount, bytes: raw.sourceLength };
+        const expected = expectedSourceRevision(options, before.revision);
+        const stale = () => updateError("STALE_BOOK_REVISION", "Book source changed; refresh the capture before applying this update.");
+        if (expected !== before.revision) throw stale();
+        const normalized = normalizeFiles(files);
+        // Admission may run user code. Never call an old/freed handle after it.
+        const live = this.#live();
+        if (currentSourceRevision(live) !== expected) throw stale();
+        let json;
+        try {
+          json = live.updateSources(normalized.paths, normalized.sources, expected);
+        } catch (error) {
+          if (typeof error === "string") throw new Error(error.slice(0, 2048));
+          throw error;
+        }
+        try {
+          return sourceUpdateReport(json, before, normalized.paths.length, this.#live());
+        } catch (error) {
+          // Native success may already have changed source. Quarantine a bad
+          // report; never pretend that protocol validation rolled the edit back.
+          try { this.dispose(); } catch { /* The raw handle remains retired. */ }
+          if (error?.code === "INVALID_BOOK_UPDATE_REPORT") throw error;
+          throw updateError("INVALID_BOOK_UPDATE_REPORT",
+            "Cannot verify the source update; the book session was disposed. Recreate it from your source capture.");
+        }
+      } finally {
+        this.#updating = false;
+      }
     }
     setImage(destination, bytes) {
       const raw = this.#live();
@@ -260,9 +394,26 @@ export function createBookBindings(loadBookClass) {
       if (asset.weight !== undefined) raw.setFontWeight(asset.slot, asset.weight);
       return this;
     }
-    renderPdf() {
+    renderPdf(options = {}) {
+      this.#live();
+      const page = exportPage(options, this.#page);
+      // A Proxy trap may dispose the session during admission. Never retain a
+      // pre-validation raw handle across caller-controlled object inspection.
       const raw = this.#live();
-      return output(raw.renderPdf(), "pdf", raw.sourceLength);
+      if (page === undefined) return output(raw.renderPdf(), "pdf", raw.sourceLength);
+      if (typeof raw.renderPdfWithPage !== "function") {
+        throw Object.assign(new Error(
+          "this WASM build lacks FmdBook.renderPdfWithPage; rebuild the matching package for book PDF page geometry",
+        ), { code: "UNSUPPORTED_PDF_PAGE" });
+      }
+      let bytes;
+      try {
+        bytes = raw.renderPdfWithPage(pdfPageGeometry(page));
+      } catch (error) {
+        if (typeof error === "string") throw new Error(error.slice(0, 2048));
+        throw error;
+      }
+      return output(bytes, "pdf", raw.sourceLength);
     }
     renderEpub() {
       const raw = this.#live();
@@ -320,11 +471,13 @@ export function createBookBindings(loadBookClass) {
         "this WASM build lacks FmdBook; rebuild the browser package with the updated Rust source",
       );
     }
-    // This is a capability gate, not an include parser. Rust alone decides
-    // whether a marker is an active directive, a selector, or a code example.
+    // Editable books must retain expansion policy even before their first
+    // include is authored. Old render-only packages keep their original gate.
+    // Rust alone interprets directives; JavaScript never parses Markdown.
     const expand =
       settings.expandIncludes &&
-      (settings.includeSources.length > 0 ||
+      (typeof BookClass.prototype?.updateSources === "function" ||
+        settings.includeSources.length > 0 ||
         normalized.sources.some((source) => source.includes("{{#include")));
     let raw;
     try {
@@ -361,7 +514,7 @@ export function createBookBindings(loadBookClass) {
         raw.setFont(font.slot, font.bytes);
         if (font.weight !== undefined) raw.setFontWeight(font.slot, font.weight);
       }
-      return new BookSession(raw);
+      return new BookSession(raw, settings.page);
     } catch (error) {
       raw.free();
       throw error;

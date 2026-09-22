@@ -86,6 +86,20 @@ export interface FmdRenderOptions {
   fontAssets?: FmdFontAsset[];
 }
 
+/** PDF paper dimensions/margins are points, never CSS pixels. */
+export interface FmdPdfPage {
+  /** Omitted size is Letter. Custom dimensions must each be 144..14400 points. */
+  size?: "letter" | "a4" | { widthPt: number; heightPt: number };
+  /** Rotate only paper; omitted orientation preserves custom width/height order. */
+  orientation?: "portrait" | "landscape";
+  /** Uniform points or independent sides, each defaulting to 72 points. */
+  margins?: number | { topPt?: number; rightPt?: number; bottomPt?: number; leftPt?: number };
+}
+export interface FmdPdfRenderOptions extends FmdRenderOptions {
+  /** PDF layout for single documents and books; margins must leave a 72-point content rectangle. */
+  page?: FmdPdfPage;
+}
+
 export interface FmdRenderOutput {
   format: FmdOutputFormat;
   mimeType: string;
@@ -96,6 +110,26 @@ export interface FmdRenderOutput {
   text(): string;
   blob(): Blob;
   filename(baseName?: string): string;
+}
+
+/** Canonical offline HTML-site options. PDF-only settings are rejected rather
+ * than silently discarded. Parsing remains safe; raw HTML is not passed through.
+ */
+export interface FmdBookSiteOptions extends Pick<FmdRenderOptions,
+  "font" | "darkMode" | "title" | "customCss" | "fontScale" | "typeSize" |
+  "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets"> {
+  /** Expand selected sources in Rust (default true); never read external files. */
+  expandIncludes?: boolean;
+  /** Additional UTF-8 include resources. These never become chapter pages.
+   * Chapters/resources share the 4096-source and 64 MiB text/path budget.
+   */
+  includeSources?: readonly FmdBookFile[];
+  allowRawHtml?: false;
+}
+export interface FmdBookSiteOutput extends Omit<FmdRenderOutput, "format" | "mimeType" | "extension"> {
+  format: "book-site";
+  mimeType: "application/zip";
+  extension: "zip";
 }
 
 export interface FmdCapabilities {
@@ -134,12 +168,12 @@ export interface FmdRenderer {
   capabilities(): Promise<FmdCapabilities>;
   accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
   documentStats(markdown: string): Promise<FmdDocumentStats>;
-  renderBookPdf(files: FmdBookFile[], options?: FmdRenderOptions): Promise<FmdRenderOutput>;
-  renderBookSite(files: FmdBookFile[], options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+  renderBookPdf(files: FmdBookFile[], options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
+  renderBookSite(files: readonly FmdBookFile[], options?: FmdBookSiteOptions): Promise<FmdBookSiteOutput>;
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderInteractiveHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
-  renderPdf(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+  renderPdf(markdown: string, options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
   renderSemanticDiff(
     oldMarkdown: string,
     newMarkdown: string,
@@ -219,19 +253,19 @@ export function accessibilityAudit(markdown: string): Promise<FmdAccessibilityRe
 export function documentStats(markdown: string): Promise<FmdDocumentStats>;
 export function renderBookPdf(
   files: FmdBookFile[],
-  options?: FmdRenderOptions,
+  options?: FmdPdfRenderOptions,
 ): Promise<FmdRenderOutput>;
 export function renderBookSite(
-  files: FmdBookFile[],
-  options?: FmdRenderOptions,
-): Promise<FmdRenderOutput>;
+  files: readonly FmdBookFile[],
+  options?: FmdBookSiteOptions,
+): Promise<FmdBookSiteOutput>;
 export function renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
 export function renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
 export function renderInteractiveHtml(
   markdown: string,
   options?: FmdRenderOptions,
 ): Promise<FmdRenderOutput>;
-export function renderPdf(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+export function renderPdf(markdown: string, options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
 export function renderSemanticDiff(
   oldMarkdown: string,
   newMarkdown: string,

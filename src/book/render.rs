@@ -15,6 +15,8 @@ mod pdf_links;
 pub(crate) mod site_search;
 #[path = "source_bundle.rs"]
 mod source_bundle;
+#[path = "site_publication.rs"]
+mod site_publication;
 
 const MAX_CHAPTERS: usize = 4096;
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
@@ -205,6 +207,14 @@ pub(super) fn render_book_pdf_counted(book: &Book, options: &PdfOptions) -> Resu
 /// than 256 MiB of uncompressed site content. `BookChapter.out_name` must agree
 /// with the generated name used by `build_book`.
 pub fn render_book_site(book: &Book, options: &HtmlOptions) -> Result<Vec<u8>> {
+    let (archive, _) = site_archive(book, options)?;
+    Ok(archive.finish())
+}
+
+// One canonical emitter for plain site ZIPs and publication ZIPs with receipts.
+// Keep the writer open so callers can add bounded metadata without parsing,
+// copying, or regenerating a finished archive.
+fn site_archive(book: &Book, options: &HtmlOptions) -> Result<(ZipWriter, usize)> {
     let sources = checked_paths(book)?;
     validate_assets(&options.image_assets)?;
     let mut output_names = BTreeSet::new();
@@ -260,7 +270,7 @@ pub fn render_book_site(book: &Book, options: &HtmlOptions) -> Result<Vec<u8>> {
     );
     add_site_bytes(&mut total, landing.len())?;
     archive.add_deflated("index.html", landing.as_bytes());
-    Ok(archive.finish())
+    Ok((archive, total))
 }
 
 fn invalid(message: &str) -> RenderError {

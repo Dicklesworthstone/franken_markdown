@@ -20,6 +20,10 @@ mod merge;
 mod paths;
 #[path = "book/render.rs"]
 mod render;
+#[path = "book/workspace.rs"]
+mod workspace;
+pub use workspace::{BookSourceUpdate, BookWorkspace};
+
 #[path = "book/validation.rs"]
 pub mod validation;
 

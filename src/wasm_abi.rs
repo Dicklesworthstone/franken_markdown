@@ -20,6 +20,9 @@ use crate::{
 mod pdf_page;
 pub use pdf_page::render_pdf_configured_page;
 
+mod epub;
+pub use epub::render_epub_configured_advanced;
+
 /// Render output object exposed to JavaScript.
 #[wasm_bindgen]
 pub struct FmdRenderResult {

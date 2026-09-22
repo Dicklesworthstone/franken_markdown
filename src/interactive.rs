@@ -35,6 +35,32 @@ fn escape_html_to(s: &str, out: &mut String) {
     }
 }
 
+/// Encode source as a JSON string inside an HTML script data block. Escaping
+/// every `<` prevents both case-insensitive closing tags and the HTML script
+/// tokenizer's comment/double-escaped states. JSON also preserves controls and
+/// line endings that the HTML parser would otherwise normalize or discard.
+fn push_source_json(s: &str, out: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '<' => out.push_str("\\u003c"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            '\0'..='\u{1f}' => {
+                let byte = ch as u8;
+                out.push_str("\\u00");
+                out.push(char::from(HEX[usize::from(byte >> 4)]));
+                out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+}
+
 /// Render an interactive self-hosting single-file HTML workspace.
 #[must_use]
 pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOptions) -> String {
@@ -44,7 +70,7 @@ pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOp
     let mut out = String::with_capacity(initial_rendered.len() + markdown_src.len() + 16384);
 
     out.push_str("<!DOCTYPE html>\n<html lang=\"");
-    out.push_str(opts.lang.as_deref().unwrap_or("en"));
+    escape_html_to(opts.lang.as_deref().unwrap_or("en"), &mut out);
     out.push_str("\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>");
     escape_html_to(title, &mut out);
     out.push_str("</title>\n<style>\n");
@@ -118,10 +144,11 @@ pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOp
 </div>
 "#);
 
-    // Initial source storage for reset
-    out.push_str("<script type=\"text/markdown\" id=\"fmd-raw-source\">\n");
-    out.push_str(&markdown_src.replace("</script", "<\\/script"));
-    out.push_str("\n</script>\n");
+    // Lossless source storage; script data is decoded with JSON.parse, never
+    // treated as executable JavaScript or reparsed as HTML.
+    out.push_str("<script type=\"application/json\" id=\"fmd-raw-source\">");
+    push_source_json(markdown_src, &mut out);
+    out.push_str("</script>\n");
 
     // Client-side JavaScript
     out.push_str("<script>\n");
@@ -433,6 +460,10 @@ aside.callout-caution { border-left-color: #cf222e; }
 const INTERACTIVE_JS: &str = r#"
 (function() {
   const editor = document.getElementById('fmd-editor');
+  const originalSource = JSON.parse(document.getElementById('fmd-raw-source').textContent);
+  // Textarea markup loses an initial newline and normalizes HTML controls.
+  // Initialize from the lossless data block before computing editor statistics.
+  editor.value = originalSource;
   const preview = document.getElementById('fmd-content');
   const body = document.getElementById('fmd-app-body');
   const lineCountBadge = document.getElementById('source-line-count');
@@ -506,7 +537,7 @@ const INTERACTIVE_JS: &str = r#"
       if (line.startsWith('```')) {
         flushAll();
         if (inCode) {
-          out += `<pre><code class="language-${codeLang}">${escapeHtml(codeBuf.join('\n'))}</code></pre>\n`;
+          out += `<pre><code class="language-${escapeHtml(codeLang)}">${escapeHtml(codeBuf.join('\n'))}</code></pre>\n`;
           inCode = false;
           codeBuf = [];
         } else {

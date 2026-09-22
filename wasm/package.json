@@ -169,6 +169,7 @@
     "document_worker.mjs",
     "document_worker_entry.js",
     "document-worker.d.ts",
-    "DOCUMENT_WORKER.md"
+    "DOCUMENT_WORKER.md",
+    "pdf_page.mjs"
   ]
 }

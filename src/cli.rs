@@ -751,9 +751,11 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     if let Some(css) = &args.css {
         extras.push(css.clone());
     }
-    if let Ok(src) = std::fs::read_to_string(&args.input) {
-        let base = args.input.parent().unwrap_or_else(|| Path::new("."));
-        extras.extend(referenced_local_paths(&src, base));
+    if let Ok(config) = load_config(no_config)
+        && let Some(css) = config.custom_css
+        && args.css.is_none()
+    {
+        extras.push(css);
     }
     // xjld: a directory input expands to every `*.md` file under it.
     // A directory with no `*.md` is a usage error (silent no-watch
@@ -780,7 +782,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         interval
     };
     let mut watcher = PollWatcher::new(paths, debounce, SystemClock);
-    let _ = run_render(watch_to_render(&args), json, no_config);
+    let rendered = run_render(watch_to_render(&args), json, no_config) == ExitCode::SUCCESS;
     let preview = if args.serve {
         match start_watch_preview() {
             Ok(preview) => Some(preview),
@@ -796,7 +798,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     } else {
         None
     };
-    if let Some(preview) = preview.as_ref() {
+    if rendered && let Some(preview) = preview.as_ref() {
         refresh_watch_preview(preview, &args, no_config);
     }
     if json {
@@ -862,15 +864,9 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
                 events[0].path.display()
             );
         }
-        let _ = run_render(watch_to_render(&args), json, no_config);
-        if let Some(preview) = preview.as_ref() {
+        let rendered = run_render(watch_to_render(&args), json, no_config) == ExitCode::SUCCESS;
+        if rendered && let Some(preview) = preview.as_ref() {
             refresh_watch_preview(preview, &args, no_config);
-        }
-        if let Ok(src) = std::fs::read_to_string(&args.input) {
-            let base = args.input.parent().unwrap_or_else(|| Path::new("."));
-            for path in referenced_local_paths(&src, base) {
-                watcher.add_path(path);
-            }
         }
     }
 }
@@ -1158,7 +1154,26 @@ fn retain_watch_clients<T>(clients: &Mutex<Vec<T>>, mut keep: impl FnMut(&mut T)
 }
 
 fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, String> {
-    let src = std::fs::read_to_string(&args.input).map_err(|e| e.to_string())?;
+    // For HTML exports, publish precisely the successful on-disk render. This
+    // carries includes, frontmatter, assets and every renderer option without
+    // parsing a second, possibly newer source snapshot during an atomic save.
+    if matches!(args.to, Target::Html | Target::Both | Target::InteractiveHtml) {
+        let path = if matches!(args.to, Target::Both) {
+            args.out.with_extension("html")
+        } else {
+            args.out.clone()
+        };
+        let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        let bytes = read_limited(file, 256 * 1024 * 1024, "watch HTML output")
+            .map_err(|e| e.to_string())?;
+        return string_from_input_bytes(bytes).map_err(|e| e.to_string());
+    }
+    // PDF/SVG/EPUB watches still provide an HTML preview, using the same
+    // bounded source expansion, local images and metadata as ordinary HTML.
+    let input = args.input.to_string_lossy();
+    let src = read_input(Some(&input), None, DEFAULT_MAX_INPUT_BYTES)
+        .map_err(|e| e.to_string())?;
+    let src = expand_file_includes(&src, &input, DEFAULT_MAX_INPUT_BYTES)?;
     let config = load_config(no_config).map_err(|e| e.to_string())?;
     let mut theme = config.to_theme();
     if let Some(font) = args.font {
@@ -1168,19 +1183,20 @@ fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, Strin
         Some(path) => Some(read_stylesheet(path).map_err(|e| e.to_string())?),
         None => None,
     };
+    let frontmatter = crate::parse::split_frontmatter(&src).0;
     let doc = parse_markdown(&src);
+    let mut image_assets = Vec::new();
+    let base = args.input.parent().unwrap_or_else(|| Path::new("."));
+    append_auto_image_assets(&doc, base, &mut image_assets, DEFAULT_MAX_PDF_IMAGE_BYTES, "HTML")?;
     let opts = HtmlOptions {
         theme,
-        title: None,
+        title: frontmatter.as_ref().and_then(|fm| fm.title.clone()),
         custom_css,
-        allow_raw_html: false,
-        font_assets: FontAssets::default(),
-        image_assets: Vec::new(),
-        lang: None,
-        profile: None,
-        toc: false,
-        toc_depth: None,
-        html_font_format: HtmlFontFormat::default(),
+        image_assets,
+        lang: frontmatter.as_ref().and_then(|fm| fm.lang.clone()),
+        toc: frontmatter.as_ref().and_then(|fm| fm.toc).unwrap_or(false),
+        toc_depth: frontmatter.as_ref().and_then(|fm| fm.toc_depth),
+        ..HtmlOptions::default()
     };
     render_html_document(&doc, &opts).map_err(|e| e.to_string())
 }
@@ -3186,55 +3202,7 @@ fn expand_file_includes(
     input_path: &str,
     max_input_bytes: u64,
 ) -> std::result::Result<String, String> {
-    let input_p = Path::new(input_path);
-    let base_dir = input_p.parent().unwrap_or_else(|| Path::new("."));
-    // Sandbox root: the canonical directory of the TOP input. Every include
-    // (including nested ones, which carry the including file's path as origin)
-    // must canonicalize inside it — `..` escapes are refused with a stable
-    // include_escape detail instead of being silently read.
-    let root = std::fs::canonicalize(base_dir)
-        .map_err(|e| format!("include sandbox root {}: {e}", base_dir.display()))?;
-    crate::transclude::expand_includes(src, &|rel_path, origin| {
-        let path = if origin == "<input>" {
-            base_dir.join(rel_path)
-        } else {
-            Path::new(origin)
-                .parent()
-                .unwrap_or(base_dir)
-                .join(rel_path)
-        };
-        let canon = match std::fs::canonicalize(&path) {
-            Ok(c) => c,
-            Err(_) => return Ok(None), // missing: core reports include_missing
-        };
-        if !canon.starts_with(&root) {
-            return Err(format!(
-                "include_escape: {} leaves the document root {}",
-                path.display(),
-                root.display()
-            ));
-        }
-        let bytes = match std::fs::read(&canon) {
-            Ok(bytes) => bytes,
-            Err(_) => return Ok(None),
-        };
-        if (bytes.len() as u64) > max_input_bytes {
-            return Err(format!(
-                "include_oversize: {} is {} bytes, over the {}-byte input cap",
-                path.display(),
-                bytes.len(),
-                max_input_bytes
-            ));
-        }
-        match String::from_utf8(bytes) {
-            Ok(text) => Ok(Some((text, canon.to_string_lossy().into_owned()))),
-            Err(_) => Err(format!(
-                "include_invalid_utf8: {} is not UTF-8",
-                path.display()
-            )),
-        }
-    })
-    .map_err(|e| e.to_string())
+    crate::watch::expand_file_includes(src, Path::new(input_path), max_input_bytes).result
 }
 
 /// Compute the output path for a given extension, or `None` to mean stdout

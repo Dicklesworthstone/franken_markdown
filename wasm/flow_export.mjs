@@ -1,4 +1,4 @@
-// Revision-fenced document export through the existing HTML/PDF core. This is
+// Revision-fenced document export through the existing HTML/PDF/EPUB core. This is
 // not a Canvas screenshot or a second Markdown renderer. The injected renderers
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
 import {
@@ -15,7 +15,11 @@ const IMAGE_BYTES = 32 * 1024 * 1024,
   DISPLAY_ITEMS = 500000;
 const DIAGNOSTICS = 1024,
   DIAGNOSTIC_TEXT = 64 * 1024;
-const MIME = Object.freeze({ html: "text/html; charset=utf-8", pdf: "application/pdf" });
+const MIME = Object.freeze({
+  html: "text/html; charset=utf-8",
+  pdf: "application/pdf",
+  epub: "application/epub+zip",
+});
 const COMMON = ["title", "lang", "toc", "tocDepth", "maxOutputBytes"];
 const PDF = [
   "author",
@@ -61,10 +65,14 @@ function fence(session, expected) {
 // arrays, buffers, arbitrary renderer settings or ambient asset loaders enter it.
 export function normalizeFlowExport(format, options = {}, expectedToken) {
   if (typeof format !== "string" || !Object.hasOwn(MIME, format))
-    fail("INVALID_OPTIONS", "export format must be html or pdf");
+    fail("INVALID_OPTIONS", "export format must be html, pdf or epub");
   if (!options || typeof options !== "object" || Array.isArray(options))
     fail("INVALID_OPTIONS", "export options must be an object");
-  const allowed = [...COMMON, ...(format === "pdf" ? PDF : ["darkMode"])];
+  const allowed = [
+    ...COMMON,
+    ...(format === "pdf" ? PDF : ["darkMode"]),
+    ...(format === "epub" ? ["customCss"] : []),
+  ];
   for (const key of Object.keys(options)) {
     if (!allowed.includes(key))
       fail("INVALID_OPTIONS", `unsupported ${format} export option: ${key}`);
@@ -92,10 +100,14 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
     result[key] = options[key];
   }
   if (options.tocDepth !== undefined) result.tocDepth = uint(options.tocDepth, "tocDepth", 1, 6);
-  if (format === "html") {
+  if (format !== "pdf") {
     const darkMode = options.darkMode ?? "auto";
     if (darkMode !== "auto" && darkMode !== "disabled") fail("INVALID_OPTIONS", "invalid darkMode");
     result.darkMode = darkMode;
+    if (format === "epub" && options.customCss !== undefined) {
+      // EPUB stores this stylesheet verbatim; an empty override is meaningful.
+      result.customCss = text(options.customCss, "customCss", FLOW_SOURCE_LIMIT);
+    }
   } else {
     // Deterministic by default. A host can supply a chosen timestamp explicitly.
     result.metadataEpochSeconds = uint(
@@ -288,6 +300,10 @@ export function withFlowExports(session, renderers, font = "sans") {
       const [kind, normalized, expected] = normalizeFlowExport(format, options, expectedToken);
       fence(session, expected);
       if (busy) fail("EXPORT_BUSY", "one physical document export is already in progress");
+      const render = renderers[kind];
+      if (typeof render !== "function") {
+        fail("UNSUPPORTED_WASM_PACKAGE", `this session does not expose ${kind} document export`);
+      }
       busy = true;
       try {
         const source = sourceText(session.source);
@@ -297,7 +313,7 @@ export function withFlowExports(session, renderers, font = "sans") {
         const { maxOutputBytes, ...settings } = normalized;
         // Own the complete input before the renderer's initialization await. Edits
         // during that await cannot alter captured source, options or asset payloads.
-        const output = await renderers[kind](source, {
+        const output = await render(source, {
           ...settings,
           font,
           allowRawHtml: false,
@@ -332,6 +348,11 @@ export function withFlowExports(session, renderers, font = "sans") {
         return Object.freeze(validateFlowExportResult(result, expected, maxOutputBytes));
       } catch (error) {
         if (error instanceof FlowError) throw error;
+        // The public publication wrapper detects a legacy generated package.
+        // Preserve that actionable refusal rather than disguising asset loss.
+        if (error instanceof Error && error.code === "UNSUPPORTED_WASM_PACKAGE") {
+          throw new FlowError(error.code, error.message, { cause: error });
+        }
         if (typeof WebAssembly !== "undefined" && error instanceof WebAssembly.RuntimeError) {
           throw new FlowError("WASM_ERROR", "document export trapped; discard this session", {
             cause: error,

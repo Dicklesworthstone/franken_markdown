@@ -6,10 +6,11 @@
 
 use wasm_bindgen::prelude::*;
 
-use super::{BookInput, BookRenderer};
+use super::{BookInput, BookRenderer, BookWorkspace};
 use crate::{DarkModePolicy, FontAssetSlot, FontFamily, RenderError};
 
-/// A parsed book retained across browser exports.
+/// A parsed book and bounded source capture retained across browser exports.
+/// Source edits are transactional and preserve render options and assets.
 ///
 /// Construct with parallel arrays of book-relative paths and Markdown sources
 /// in reading order. Call `free()` when the book is no longer needed, as with
@@ -18,7 +19,7 @@ use crate::{DarkModePolicy, FontAssetSlot, FontFamily, RenderError};
 /// (`application/zip`).
 #[wasm_bindgen]
 pub struct FmdBook {
-    renderer: BookRenderer,
+    renderer: BookWorkspace,
 }
 
 #[wasm_bindgen]
@@ -31,7 +32,7 @@ impl FmdBook {
     #[wasm_bindgen(constructor)]
     pub fn new(paths: Vec<String>, sources: Vec<String>) -> Result<FmdBook, JsValue> {
         let inputs = book_inputs(paths, sources).map_err(JsValue::from_str)?;
-        let renderer = BookRenderer::new(&inputs).map_err(to_js)?;
+        let renderer = BookWorkspace::new(&inputs).map_err(to_js)?;
         Ok(Self { renderer })
     }
 
@@ -56,7 +57,7 @@ impl FmdBook {
         } else {
             book_inputs(include_paths, include_sources).map_err(JsValue::from_str)?
         };
-        let renderer = BookRenderer::from_sources(&chapters, &resources).map_err(to_js)?;
+        let renderer = BookWorkspace::from_sources(&chapters, &resources).map_err(to_js)?;
         Ok(Self { renderer })
     }
 
@@ -73,6 +74,36 @@ impl FmdBook {
     #[must_use]
     pub fn source_length(&self) -> usize {
         self.renderer.source_length()
+    }
+
+    /// Committed source revision, independent of presentation and asset edits.
+    #[wasm_bindgen(getter, js_name = sourceRevision)]
+    #[must_use]
+    pub fn source_revision(&self) -> u32 {
+        self.renderer.source_revision()
+    }
+
+    /// Atomically replace selected chapter/include sources at an expected
+    /// revision, without recreating the renderer or reparsing unchanged chapters.
+    /// Source membership, reading order and expansion mode remain fixed.
+    /// Returns bounded fmd-book-source-update-v1 JSON; an unchanged batch keeps
+    /// its revision. Existing render settings and image/font assets survive.
+    ///
+    /// # Errors
+    /// Rejects invalid/stale revisions, mismatched arrays, unknown/duplicate
+    /// source keys, source/expansion limits and include failures. The last
+    /// successful source capture remains usable after every rejected update.
+    #[wasm_bindgen(js_name = updateSources)]
+    pub fn update_sources(
+        &mut self,
+        paths: Vec<String>,
+        sources: Vec<String>,
+        expected_revision: f64,
+    ) -> Result<String, JsValue> {
+        let expected = checked_source_revision(expected_revision).map_err(JsValue::from_str)?;
+        let updates = book_inputs(paths, sources).map_err(JsValue::from_str)?;
+        self.renderer.update_sources_at_revision(&updates, expected)
+            .map(|report| report.to_json()).map_err(to_js)
     }
 
     /// Set shared metadata. Absent or blank values restore renderer defaults.
@@ -180,6 +211,20 @@ impl FmdBook {
         self.renderer.render_pdf().map_err(to_js)
     }
 
+    /// Render the retained book with export-local paper geometry in points:
+    /// width, height, top, right, bottom, left. An empty vector uses the stored
+    /// theme. No chapter is reparsed and no retained option or asset is changed,
+    /// including when validation or rendering fails. The ordinary book pipeline
+    /// still binds chapter links, isolates citations, and resolves image paths.
+    ///
+    /// # Errors
+    /// Rejects invalid geometry using the single-document browser policy, or
+    /// returns book, asset-budget, and PDF rendering errors.
+    #[wasm_bindgen(js_name = renderPdfWithPage)]
+    pub fn render_pdf_with_page(&self, page_geometry: Vec<f64>) -> Result<Vec<u8>, JsValue> {
+        render_pdf_with_geometry(&self.renderer, &page_geometry).map_err(to_js)
+    }
+
     /// Export a multi-chapter EPUB with ordered spine and packaged images.
     ///
     /// # Errors
@@ -210,6 +255,19 @@ impl FmdBook {
     }
 }
 
+// Keep rejection paths independent of JsValue so native tests can exercise
+// the same transaction boundary without invoking a browser-only error import.
+fn render_pdf_with_geometry(renderer: &BookRenderer, geometry: &[f64]) -> crate::Result<Vec<u8>> {
+    let page = crate::PageStyle::from_browser_geometry(geometry)
+        .map_err(|message| RenderError::InvalidInput(message.to_string()))?;
+    let Some(page) = page else {
+        return renderer.render_pdf();
+    };
+    let mut options = renderer.options().pdf_options();
+    options.theme.page = page;
+    super::render_book_pdf(renderer.book(), &options)
+}
+
 fn to_js(error: RenderError) -> JsValue {
     JsValue::from_str(&error.to_string())
 }
@@ -222,6 +280,15 @@ fn book_inputs(paths: Vec<String>, sources: Vec<String>) -> Result<Vec<BookInput
         return Err("expected between 1 and 4096 book chapters");
     }
     Ok(paths.into_iter().zip(sources).map(|(path, source)| BookInput { path, source }).collect())
+}
+
+// Accept f64 at the raw JS boundary: a u32 ABI parameter would silently wrap
+// fractions/out-of-range numbers before the optimistic revision check sees them.
+fn checked_source_revision(value: f64) -> Result<u32, &'static str> {
+    if !value.is_finite() || value < 0.0 || value > f64::from(u32::MAX) || value.fract() != 0.0 {
+        return Err("expected source revision must be an integer in 0..=4294967295");
+    }
+    Ok(value as u32)
 }
 
 fn nonblank(value: Option<String>) -> Option<String> {
@@ -257,6 +324,92 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    #[test]
+    fn source_revisions_reject_lossy_javascript_numeric_narrowing() {
+        assert_eq!(checked_source_revision(0.0), Ok(0));
+        assert_eq!(checked_source_revision(f64::from(u32::MAX)), Ok(u32::MAX));
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.5, 4_294_967_296.0] {
+            assert!(checked_source_revision(value).is_err());
+        }
+    }
+
+    fn paper_book() -> BookRenderer {
+        let mut renderer = BookRenderer::new(&[
+            BookInput {
+                path: "guide/one.md".into(),
+                source: "# One\n\n[Next](../two.md#two) and a citation[^1].\n\n[^1]: First note.\n".into(),
+            },
+            BookInput {
+                path: "two.md".into(),
+                source: "# Two\n\n[Back](guide/one.md#one) and another[^1].\n\n| Name | Value |\n| --- | --- |\n| Alpha | Beta |\n\n[^1]: Second note.\n".into(),
+            },
+        ])
+        .unwrap();
+        let options = renderer.options_mut();
+        options.metadata_epoch_seconds = Some(0);
+        options.title = Some("Paper and navigation".into());
+        options.author = Some("Book host".into());
+        options.toc = true;
+        options.page_numbers = true;
+        renderer
+    }
+
+    #[test]
+    fn book_empty_and_explicit_default_geometry_preserve_pdf_bytes() {
+        let renderer = paper_book();
+        let before = renderer.render_pdf().unwrap();
+        assert_eq!(render_pdf_with_geometry(&renderer, &[]).unwrap(), before);
+        assert_eq!(
+            render_pdf_with_geometry(&renderer, &[612.0, 792.0, 72.0, 72.0, 72.0, 72.0]).unwrap(),
+            before,
+        );
+    }
+
+    #[test]
+    fn book_paper_override_uses_native_layout_without_changing_retained_state() {
+        let renderer = paper_book();
+        let original_page = renderer.options().theme.page;
+        let original_source_length = renderer.source_length();
+        let before = renderer.render_pdf().unwrap();
+        for geometry in [
+            [720.0, 540.0, 18.0, 24.0, 30.0, 36.0],
+            [540.0, 720.0, 36.0, 30.0, 24.0, 18.0],
+        ] {
+            let actual = render_pdf_with_geometry(&renderer, &geometry).unwrap();
+            let mut expected_options = renderer.options().pdf_options();
+            expected_options.theme.page = crate::PageStyle::from_browser_geometry(&geometry)
+                .unwrap().unwrap();
+            let expected = crate::book::render_book_pdf(renderer.book(), &expected_options).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual, render_pdf_with_geometry(&renderer, &geometry).unwrap());
+            assert!(String::from_utf8_lossy(&actual).contains(&format!(
+                "/MediaBox [0 0 {} {}]", geometry[0], geometry[1],
+            )));
+            assert_eq!(renderer.options().theme.page, original_page);
+            assert_eq!(renderer.source_length(), original_source_length);
+            assert_eq!(renderer.book().chapters.len(), 2);
+        }
+        assert_eq!(renderer.render_pdf().unwrap(), before);
+    }
+
+    #[test]
+    fn book_bad_geometry_is_rejected_without_poisoning_later_exports() {
+        let renderer = paper_book();
+        let before = renderer.render_pdf().unwrap();
+        for geometry in [
+            vec![612.0],
+            vec![f64::NAN, 792.0, 72.0, 72.0, 72.0, 72.0],
+            vec![612.0, 792.0, 72.0, 270.000001, 72.0, 270.0],
+            vec![14_401.0, 792.0, 72.0, 72.0, 72.0, 72.0],
+        ] {
+            assert!(matches!(
+                render_pdf_with_geometry(&renderer, &geometry),
+                Err(RenderError::InvalidInput(_)),
+            ));
+        }
+        assert_eq!(renderer.render_pdf().unwrap(), before);
+    }
 
     #[test]
     fn input_arrays_preserve_order_and_reject_mismatches() {

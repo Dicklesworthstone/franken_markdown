@@ -145,6 +145,8 @@ pub(super) struct Graph {
 struct Snapshot {
     fingerprint: super::Fingerprint,
     paths: Vec<PathBuf>,
+    includes: std::collections::BTreeMap<PathBuf, Option<super::Fingerprint>>,
+    complete: bool,
 }
 
 const MAX_DISCOVERY_BYTES: u64 = 64 * 1024 * 1024;
@@ -168,7 +170,10 @@ impl Graph {
         settling: &BTreeSet<PathBuf>,
     ) -> BTreeSet<PathBuf> {
         for root in &self.roots {
-            if !is_markdown(root) || settling.contains(root) {
+            let old = self.documents.get(root);
+            if !is_markdown(root) || settling.contains(root)
+                || old.is_some_and(|old| old.includes.keys().any(|path| settling.contains(path)))
+            {
                 // Do not drop old edges during an unsettled edit. If the edit
                 // is undone, changed assets must still have their old baseline.
                 continue;
@@ -177,8 +182,10 @@ impl Graph {
                 self.failures.insert(root.clone());
                 continue;
             };
-            if self.documents.get(root).is_some_and(|old| old.fingerprint == expected) {
-                self.failures.remove(root);
+            if old.is_some_and(|old| old.fingerprint == expected
+                && old.includes.iter().all(|(path, expected)| observed.get(path) == Some(expected)))
+            {
+                if old.is_some_and(|old| old.complete) { self.failures.remove(root); }
                 continue;
             }
             let Some(source) = read_source(root, expected, MAX_DISCOVERY_BYTES) else {
@@ -188,9 +195,21 @@ impl Graph {
                 continue;
             };
             let base = root.parent().unwrap_or_else(|| Path::new("."));
-            let paths = paths(&source, base);
-            self.documents.insert(root.clone(), Snapshot { fingerprint: expected, paths });
-            self.failures.remove(root);
+            let expansion = super::expand_file_includes(&source, root, MAX_DISCOVERY_BYTES);
+            let complete = expansion.result.is_ok();
+            let mut paths = paths(expansion.result.as_deref().unwrap_or(&source), base);
+            if !complete {
+                // Retain working asset edges during a missing include or bad
+                // save, but also watch newly discovered include destinations.
+                if let Some(old) = old { paths.extend(old.paths.iter().cloned()); }
+                self.failures.insert(root.clone());
+            } else {
+                self.failures.remove(root);
+            }
+            paths.extend(expansion.dependencies.keys().cloned());
+            self.documents.insert(root.clone(), Snapshot {
+                fingerprint: expected, paths, includes: expansion.dependencies, complete,
+            });
         }
         let mut needed = self.roots.clone();
         for snapshot in self.documents.values() {

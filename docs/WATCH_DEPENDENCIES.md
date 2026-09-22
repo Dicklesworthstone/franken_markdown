@@ -35,19 +35,42 @@ removed. Caller-supplied paths remain pinned even when not referenced; adding
 an already watched path remains a no-op. `paths()` includes the active implicit
 paths and retains insertion order for surviving entries.
 
-Only explicit Markdown roots are parsed. A linked Markdown file is watched as
-a file, not recursively crawled for more links or images. Directory discovery,
-include expansion, raw-HTML dependencies and CSS `@import` graphs are not added
-by this change. No renderer options, output-file policy, preview HTTP routes,
-SSE wire format or browser/WASM code is changed.
+Only explicit Markdown roots and their selected `{{#include}}` content are
+parsed. A linked Markdown file is watched as a file, without recursively
+crawling its links or images. Includes use the renderer's own expansion engine:
+nested includes, line ranges and named anchors work, while fenced/indented code
+examples and content outside a selected snippet stay literal. Included files
+need not have a Markdown extension. Raw HTML and CSS `@import` dependencies
+are outside this graph.
 
-Graphs are cached by the content fingerprint. Unchanged inputs do not reparse
+Includes resolve within the top input's canonical directory, using bounded
+regular-file reads. Missing includes inside that directory remain watched so
+creating them repairs the render. Editing an included file also refreshes its
+image dependencies. A failed include save retains the previous asset edges;
+successful recovery replaces them. Include contents and their expanded output
+both honor the render input limit, with a 64 MiB expanded-output ceiling.
+
+Graphs are cached by root and included-file content fingerprints. Unchanged inputs do not reparse
 on each tick. Refresh reads at most 64 MiB plus an overflow sentinel and checks
 that the captured UTF-8 source matches the polling fingerprint. An unstable,
 missing, oversized or invalid UTF-8 source retains its last successful graph;
 `dependency_failures()` exposes affected explicit roots, and subsequent polls
 retry. The CLI does not yet print this new accessor as a separate diagnostic.
-The limit applies to graph discovery, not all fingerprint I/O or renderer work.
+The limit applies to graph discovery, not all fingerprint I/O. The configured
+stylesheet is watched when `--css` does not override it.
+
+## Served preview and export parity
+
+For HTML and combined HTML/PDF watches, `--serve` reads the successful HTML
+export into memory. The served document therefore has exactly the exported
+content, including expanded includes, frontmatter metadata, a table of contents,
+stylesheet and embedded local images. The reload snippet is the only addition;
+it never enters the output file. A failed rebuild retains the last valid preview.
+
+PDF, SVG and EPUB watches build their companion HTML preview from the same
+bounded source/include loader, local image loader, config and frontmatter.
+The loopback server serves self-contained HTML, so local image display does not
+need additional filesystem-serving routes.
 
 ## Debounce correctness
 
@@ -65,22 +88,19 @@ a debounce deadline.
 
 ## Regression coverage
 
-`tests/watch_dependencies.rs` has 18 real-parser/filesystem cases, using the
+`tests/watch_dependencies.rs` has real-parser/filesystem cases, using the
 existing manual clock to drive the actual watcher without timing sleeps.
 `src/watch/dependencies.rs` adds five URL/snapshot tests, including a same-size
 racing save, bounded reads, invalid UTF-8 and retry without poisoning the cache.
-The prior watch and preview-server tests remain intact.
+`tests/watch_preview.rs` exercises a running CLI and loopback server: exact
+HTML export parity, included-text and image changes, invalid-save recovery,
+PDF-preview metadata/assets, and per-file/expanded include budgets.
 
-Run in the repository's configured remote Rust environment:
+Run:
 
 ```sh
-rch exec -- cargo test --features cli --test watch_dependencies
-rch exec -- cargo test --features cli --lib watch::
-rch exec -- cargo clippy --all-targets --features cli -- -D warnings
+cargo test --test watch --test watch_dependencies --test watch_preview
+cargo test --lib watch::
+cargo clippy --all-targets --features cli -- -D warnings
 cargo fmt --check
 ```
-
-These Rust tests were added but not run in the authoring environment: `cargo`,
-`rustc` and `rch` are absent. Lexical checks and GitHub diff review are not
-compilation or runtime verification. The existing CLI rendering integration
-still needs execution against a built binary.

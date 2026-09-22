@@ -72,6 +72,7 @@ pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
         ..RenderState::default()
     };
     render_blocks(blocks, &mut html, opts, &mut state);
+    push_footnotes_section(&mut state, &mut html, opts);
     html
 }
 

@@ -15,11 +15,12 @@ cargo build --no-default-features --target wasm32-unknown-unknown --lib
 cargo build --release --no-default-features --features wasm-bindgen --target wasm32-unknown-unknown --lib
 wasm-bindgen "$TARGET_DIR/wasm32-unknown-unknown/release/franken_markdown.wasm" --target web --out-dir "$PACKAGE/pkg"
 for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts \
-  book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
+  book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
   flow_export.mjs EXPORT.md SOURCE.md FILES.md SETTINGS.md \
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
+  document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md \
   package.json README.md; do
   cp "wasm/$file" "$PACKAGE/$file"
 done
@@ -30,6 +31,8 @@ for file in book.html book.js book_collection.mjs book_controls.mjs book_library
 done
 cp examples/showcase.md "$ART/parity/showcase.md"
 node wasm/smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm" "$ART/parity" 1700000000 "$ART/parity/showcase.md"
+node --test wasm/document_worker.test.mjs wasm/demo_worker.test.mjs
+node wasm/document_worker_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_worker_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_outlines_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"

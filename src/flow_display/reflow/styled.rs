@@ -100,7 +100,11 @@ where
                         }
                         break;
                     }
-                    if end < clusters.len() { end = word_break.unwrap_or(end); }
+                    // Code keeps the existing cluster-wrap policy; spaces must
+                    // not become preferred breaks just because a line is long.
+                    if end < clusters.len() && role != FlowTextRole::Code {
+                        end = word_break.unwrap_or(end);
+                    }
                     // Re-shape every final fragment. Kerning/ligatures may change
                     // at a line boundary; never trust only the full-run measurement.
                     let (fragments, final_width) = loop {
@@ -210,7 +214,7 @@ where
 // only one window's clusters bounds scratch space even for millions of tiny
 // style spans. Words/lines too large for the window still fail explicitly;
 // silently splitting unknown shaper clusters or inventing breaks is not safe.
-fn measurement_window_end(text: &str, start: usize, end: usize, limit: usize)
+pub(super) fn measurement_window_end(text: &str, start: usize, end: usize, limit: usize)
     -> Result<usize, FlowLayoutError>
 {
     if end - start <= limit { return Ok(end); }
@@ -221,7 +225,7 @@ fn measurement_window_end(text: &str, start: usize, end: usize, limit: usize)
         .ok_or(FlowLayoutError::BudgetExceeded("word exceeds shaping window"))
 }
 
-fn validate_ranges(text: &str, runs: &[FlowInlineRun]) -> Result<(), FlowLayoutError> {
+pub(super) fn validate_ranges(text: &str, runs: &[FlowInlineRun]) -> Result<(), FlowLayoutError> {
     let mut end = 0;
     for run in runs {
         if run.range.start != end || run.range.start >= run.range.end || text.get(run.range.clone()).is_none() {

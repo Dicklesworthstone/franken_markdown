@@ -17,6 +17,9 @@ use crate::{
     render_pdf_document, render_svg_with_report, rewrite_links_for_site, search_index_json,
 };
 
+mod pdf_page;
+pub use pdf_page::render_pdf_configured_page;
+
 /// Render output object exposed to JavaScript.
 #[wasm_bindgen]
 pub struct FmdRenderResult {
@@ -707,7 +710,8 @@ pub fn render_pdf_configured_multi(
     fit_to_pages: Option<u32>,
     microtype_protrusion: bool,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
-    let mut options = pdf_options_configured(
+    render_pdf_configured_page(
+        markdown,
         font,
         dark_mode,
         title,
@@ -715,42 +719,27 @@ pub fn render_pdf_configured_multi(
         metadata_epoch_seconds,
         allow_raw_html,
         code_line_numbers,
-        base_font_size,
-        heading_scale,
-        table_font_size,
-    )?;
-    options.page_numbers = page_numbers;
-    options.font_scale = positive_f32(font_scale, "fontScale")?;
-    options.lang = empty_to_none(lang);
-    options.toc = toc;
-    options.toc_depth = heading_depth(toc_depth)?;
-    options.fit_to_pages = optional_positive_usize(fit_to_pages, "fitToPages")?;
-    options.microtype = if microtype_protrusion {
-        crate::layout::MicrotypeOptions::CONSERVATIVE
-    } else {
-        crate::layout::MicrotypeOptions::DISABLED
-    };
-    for (destination, bytes) in
-        split_nonempty_image_assets(&image_destinations, &image_bytes_flat, &image_bytes_lengths)
-            .map_err(JsValue::from_str)?
-    {
-        options = options
-            .with_pdf_image_asset(destination.to_string(), bytes.to_vec())
-            .map_err(render_error_to_js)?;
-    }
-
-    apply_font_assets(
-        &mut options,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
         body_regular,
         body_bold,
         body_italic,
         body_bold_italic,
         mono_regular,
-    )?;
-    apply_font_weights(&mut options, &font_weights)?;
-    wasm::render_pdf(markdown, &options)
-        .map(render_result)
-        .map_err(render_error_to_js)
+        font_weights,
+        base_font_size,
+        heading_scale,
+        table_font_size,
+        page_numbers,
+        font_scale,
+        lang,
+        toc,
+        toc_depth,
+        fit_to_pages,
+        microtype_protrusion,
+        Vec::new(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

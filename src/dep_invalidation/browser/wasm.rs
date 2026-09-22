@@ -53,6 +53,15 @@ impl FmdFlowSession {
             reuse(verified_asset_reuse)).map_err(js_error)
     }
 
+    /// One atomic editor transaction in original UTF-16 coordinates.
+    #[wasm_bindgen(js_name = editManyUtf16Packed)]
+    pub fn edit_many_utf16_packed(&mut self, revision: &str, ranges: &[u32],
+        lengths: &[u32], replacements: &str, verified_asset_reuse: bool) -> Result<(), JsValue>
+    {
+        self.inner.edit_many_utf16_packed(id(revision)?, ranges, lengths, replacements,
+            reuse(verified_asset_reuse)).map_err(js_error)
+    }
+
     #[wasm_bindgen(js_name = replaceSource)]
     pub fn replace_source(&mut self, revision: &str, source: &str, verified_asset_reuse: bool) -> Result<(), JsValue> {
         self.inner.replace_source(id(revision)?, source, reuse(verified_asset_reuse)).map_err(js_error)
@@ -70,6 +79,12 @@ impl FmdFlowSession {
     {
         self.inner.provide_asset(AssetResult { request_id: AssetRequestId(id(request_id)?),
             generation: id(generation)?, width, height, bytes }).map_err(js_error)
+    }
+
+    /// One data-only batch, one native parse/reflow, no partial publication.
+    #[wasm_bindgen(js_name = provideAssetsPacked)]
+    pub fn provide_assets_packed(&mut self, metadata: &str, payload: &[u8]) -> Result<(), JsValue> {
+        self.inner.provide_assets_packed(metadata, payload).map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = reloadAssets)]

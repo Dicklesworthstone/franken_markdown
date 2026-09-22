@@ -5,7 +5,7 @@
 //! display/asset inventories, and explicit source-byte versus fragment-local
 //! reading-text coordinates. Nothing in this module fetches or opens a URL.
 
-use super::{FlowAssetReuse, FlowSession, FlowSessionError, FlowShapeCache, FlowShapeCacheLimits};
+use super::{FlowAssetReuse, FlowEditBatchError, FlowSession, FlowSessionError, FlowShapeCache, FlowShapeCacheLimits};
 use crate::display::DisplayItem;
 use crate::flow_display::{AssetRequestId, AssetResult, FlowDisplayError, FlowDisplayLimits, FlowLayoutError, FlowLayoutOptions};
 use crate::text::{FontId, utf16_to_byte};
@@ -14,6 +14,9 @@ use std::fmt;
 
 mod wire;
 mod outlines;
+mod asset_batch;
+mod edit_batch;
+pub use edit_batch::Utf16Edit;
 #[cfg(feature = "wasm-bindgen")]
 mod wasm;
 
@@ -28,9 +31,12 @@ pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq)]
 pub enum BrowserFlowError {
     Session(FlowSessionError),
+    EditBatch(FlowEditBatchError),
+    InvalidEditBatch,
     InvalidFont,
     InvalidIdentity,
     InvalidSelection,
+    InvalidAssetBatch,
     StaleLayout { expected: u64, actual: u64 },
     InvalidPage,
     UnknownFont,
@@ -54,6 +60,11 @@ impl BrowserFlowError {
             Self::Session(FlowSessionError::Layout(_)) => "LAYOUT_ERROR",
             Self::Session(FlowSessionError::RevisionExhausted) => "REVISION_EXHAUSTED",
             Self::Session(_) => "FLOW_ERROR",
+            Self::EditBatch(FlowEditBatchError::Session(error)) => Self::Session(error.clone()).code(),
+            Self::EditBatch(FlowEditBatchError::OverlappingEdits { .. }) => "OVERLAPPING_EDITS",
+            Self::EditBatch(FlowEditBatchError::TooManyEdits { .. }) => "BUDGET_EXCEEDED",
+            Self::InvalidEditBatch => "INVALID_EDIT_BATCH",
+            Self::InvalidAssetBatch => "INVALID_ASSET_BATCH",
             Self::InvalidFont => "INVALID_FONT",
             Self::InvalidIdentity => "INVALID_IDENTITY",
             Self::StaleLayout { .. } => "STALE_LAYOUT",
@@ -68,6 +79,9 @@ impl fmt::Display for BrowserFlowError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Session(error) => write!(f, "{error}"),
+            Self::EditBatch(error) => write!(f, "{error}"),
+            Self::InvalidEditBatch => f.write_str("edit ranges, replacement byte lengths and packed text are inconsistent"),
+            Self::InvalidAssetBatch => f.write_str("asset batch metadata or packed payload is inconsistent"),
             Self::InvalidFont => f.write_str("font must be sans or serif"),
             Self::InvalidIdentity => f.write_str("identity must be a canonical unsigned 64-bit decimal string"),
             Self::InvalidSelection => f.write_str("selection is outside its text or splits a Unicode scalar"),
@@ -82,6 +96,14 @@ impl fmt::Display for BrowserFlowError {
 impl std::error::Error for BrowserFlowError {}
 impl From<FlowSessionError> for BrowserFlowError {
     fn from(error: FlowSessionError) -> Self { Self::Session(error) }
+}
+impl From<FlowEditBatchError> for BrowserFlowError {
+    fn from(error: FlowEditBatchError) -> Self {
+        match error {
+            FlowEditBatchError::Session(error) => Self::Session(error),
+            error => Self::EditBatch(error),
+        }
+    }
 }
 impl From<FlowLayoutError> for BrowserFlowError {
     fn from(error: FlowLayoutError) -> Self { Self::Session(FlowSessionError::Layout(error)) }

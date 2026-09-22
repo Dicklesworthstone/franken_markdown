@@ -93,6 +93,68 @@ pub(super) fn destination(source: &str, dest: &str) -> Option<(String, String)> 
     Some((normalize(&joined)?, dest[end..].to_string()))
 }
 
+/// Resolve a chapter without assuming that every local URL names Markdown.
+/// Exact source paths win. Otherwise an extensionless URL may name a .md or
+/// .markdown file, or a directory containing index/README in either spelling.
+/// An explicit directory URL considers only its index/README candidates.
+/// More than one candidate is ambiguous and is deliberately left unchanged.
+///
+/// The membership callback always receives a decoded, normalized source path.
+/// Each candidate passes through the same URL and root-containment policy as
+/// an exact link; suffixes are opaque and percent escapes are not decoded twice.
+pub(super) fn chapter_destination(
+    source: &str,
+    dest: &str,
+    mut contains: impl FnMut(&str) -> bool,
+) -> Option<(String, String)> {
+    let dest = dest.trim();
+    let end = dest.find(['#', '?']).unwrap_or(dest.len());
+    let raw_path = &dest[..end];
+    let decoded = decode(raw_path)?;
+    let directory = decoded.ends_with('/')
+        || matches!(decoded.as_str(), "." | "..")
+        || decoded.ends_with("/.")
+        || decoded.ends_with("/..");
+    let (base, suffix) = if directory {
+        // Resolving an actual candidate also handles root and dot-directory
+        // links, which cannot be normalized as standalone source filenames.
+        let separator = if decoded.ends_with('/') { "" } else { "/" };
+        let candidate = format!("{raw_path}{separator}index.md{}", &dest[end..]);
+        let (path, suffix) = destination(source, &candidate)?;
+        (path.strip_suffix("index.md")?.to_string(), suffix)
+    } else {
+        let (path, suffix) = destination(source, dest)?;
+        if contains(&path) {
+            return Some((path, suffix));
+        }
+        // Do not capture an unknown image, archive, or explicitly named file
+        // just because a similarly named Markdown chapter exists.
+        if path.rsplit('/').next()?.contains('.') {
+            return None;
+        }
+        (path, suffix)
+    };
+    let mut candidates = Vec::with_capacity(6);
+    if !directory {
+        candidates.push(format!("{base}.md"));
+        candidates.push(format!("{base}.markdown"));
+    }
+    let separator = if directory { "" } else { "/" };
+    for name in ["index.md", "index.markdown", "README.md", "README.markdown"] {
+        candidates.push(format!("{base}{separator}{name}"));
+    }
+    let mut found = None;
+    for candidate in candidates {
+        if contains(&candidate) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(candidate);
+        }
+    }
+    found.map(|path| (path, suffix))
+}
+
 fn decode(path: &str) -> Option<String> {
     fn hex(byte: u8) -> Option<u8> {
         match byte {
@@ -193,8 +255,8 @@ pub(super) fn canonicalize(chapters: &mut [BookChapter]) {
     for chapter in chapters {
         let source = &chapter.path;
         rewrite_blocks(&mut chapter.doc.blocks, &mut |dest| {
-            let (target, suffix) = destination(source, dest)?;
-            known.contains(&target).then(|| format!("/{}{suffix}", encode_path(&target)))
+            let (target, suffix) = chapter_destination(source, dest, |path| known.contains(path))?;
+            Some(format!("/{}{suffix}", encode_path(&target)))
         });
     }
 }
@@ -226,7 +288,7 @@ pub(super) fn rewrite_from(doc: &mut Document, source: &str, book: &Book) -> Res
         }
     }
     Ok(rewrite_blocks(&mut doc.blocks, &mut |dest| {
-        let (target, suffix) = destination(&source, dest)?;
+        let (target, suffix) = chapter_destination(&source, dest, |path| known.contains_key(path))?;
         known.get(&target).map(|output| format!("{output}{suffix}"))
     }))
 }
@@ -344,5 +406,119 @@ mod tests {
         for path in ["guide/hello world.md", "中.md", "a%20b.md", "a#b?c.md"] {
             assert_eq!(decode(&encode_path(path)).as_deref(), Some(path));
         }
+    }
+
+    #[test]
+    fn chapter_aliases_resolve_relative_rooted_and_encoded_urls() {
+        let known: BTreeSet<_> = [
+            "install.md", "guide/next.markdown", "docs/index.md",
+            "manual/README.markdown", "中.md", "percent%20.md",
+        ].into_iter().map(String::from).collect();
+        for (url, path, suffix) in [
+            ("../install#setup", "install.md", "#setup"),
+            ("next?print#part", "guide/next.markdown", "?print#part"),
+            ("/docs/", "docs/index.md", ""),
+            ("../docs", "docs/index.md", ""),
+            ("/manual%2F#intro", "manual/README.markdown", "#intro"),
+            ("../%E4%B8%AD#标题", "中.md", "#标题"),
+            ("../percent%2520", "percent%20.md", ""),
+        ] {
+            assert_eq!(
+                chapter_destination("guide/start.md", url, |path| known.contains(path)),
+                Some((path.into(), suffix.into())),
+                "failed to resolve {url:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn directory_links_include_root_and_dot_directories() {
+        let known: BTreeSet<_> = ["index.md", "guide/index.markdown"]
+            .into_iter().map(String::from).collect();
+        for (url, path) in [
+            ("/", "index.md"), ("..", "index.md"), ("../", "index.md"),
+            (".", "guide/index.markdown"), ("./", "guide/index.markdown"),
+            ("/guide/.", "guide/index.markdown"),
+        ] {
+            assert_eq!(
+                chapter_destination("guide/start.md", url, |path| known.contains(path)),
+                Some((path.into(), String::new())),
+            );
+        }
+    }
+
+    #[test]
+    fn exact_chapters_win_and_ambiguous_aliases_are_not_guessed() {
+        let known: BTreeSet<_> = [
+            "guide", "guide/index.md", "manual.md", "manual/README.md",
+            "docs/index.md", "docs/README.md", "asset.pdf.md",
+        ].into_iter().map(String::from).collect();
+        assert_eq!(
+            chapter_destination("start.md", "guide", |path| known.contains(path)),
+            Some(("guide".into(), String::new())),
+        );
+        for url in ["manual", "docs/", "asset.pdf", "absent"] {
+            assert!(chapter_destination("start.md", url, |path| known.contains(path)).is_none());
+        }
+        assert_eq!(
+            chapter_destination("start.md", "manual/", |path| known.contains(path)),
+            Some(("manual/README.md".into(), String::new())),
+        );
+    }
+
+    #[test]
+    fn aliases_do_not_weaken_url_or_root_containment_policy() {
+        for url in [
+            "#local", "?print", "//host/", "https://host/", "mailto:user",
+            "../../", "%2e%2e/%2e%2e/", "%2f%2fhost/", "%68ttps%3a/",
+            "bad%ZZ/", "%FF/", "a%00/", "..\\guide/", "../%252e%252e/",
+        ] {
+            assert!(
+                chapter_destination("guide/start.md", url, |path| {
+                    matches!(path, "index.md" | "guide/index.md")
+                }).is_none(),
+                "accepted {url:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn build_book_canonicalizes_aliases_once_for_every_export() {
+        let inputs = [
+            ("guide/start.md", "[Install](../install#setup) [Docs](/docs/?print#intro)"),
+            ("install.md", "# Setup"),
+            ("docs/index.md", "# Intro"),
+        ].map(|(path, source)| BookInput { path: path.into(), source: source.into() });
+        let mut book = crate::book::build_book(&inputs).expect("build aliased book");
+        let first = book.chapters[0].doc.clone();
+        let mut destinations = Vec::new();
+        rewrite_blocks(&mut book.chapters[0].doc.blocks, &mut |dest| {
+            destinations.push(dest.to_string());
+            None
+        });
+        assert_eq!(destinations, ["/install.md#setup", "/docs/index.md?print#intro"]);
+        canonicalize(&mut book.chapters);
+        assert_eq!(book.chapters[0].doc, first, "canonicalization must be idempotent");
+    }
+
+    #[test]
+    fn source_context_rewriting_uses_the_same_alias_policy() {
+        let inputs = [
+            ("guide/start.md", "# Start"), ("docs/README.md", "# Docs"),
+        ].map(|(path, source)| BookInput { path: path.into(), source: source.into() });
+        let book = crate::book::build_book(&inputs).expect("build book");
+        let mut doc = Document {
+            blocks: vec![Block::Paragraph(vec![Inline::Strong(vec![Inline::Link {
+                dest: "../docs/#intro".into(), title: None,
+                content: vec![Inline::Text("Docs".into())],
+            }])])],
+        };
+        assert_eq!(rewrite_from(&mut doc, "guide/start.md", &book).unwrap(), 1);
+        let mut destinations = Vec::new();
+        rewrite_blocks(&mut doc.blocks, &mut |dest| {
+            destinations.push(dest.to_string());
+            None
+        });
+        assert_eq!(destinations, ["docs__README.html#intro"]);
     }
 }

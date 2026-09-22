@@ -23,6 +23,9 @@ pub struct BlockVariant {
     pub demerits: i64,
     /// Positive heights of indivisible fragments, in reading order.
     pub fragment_heights: Vec<LayoutUnit>,
+    /// Extra vertical material repeated before every continuation fragment
+    /// after an internal page break, e.g. a repeated table header.
+    pub continuation_prefix: LayoutUnit,
 }
 
 /// Measured alternatives for one logical block.
@@ -46,6 +49,7 @@ impl BlockCandidates {
                 .map(|variant| BlockVariant {
                     demerits: variant.demerits,
                     fragment_heights: vec![line_height; variant.line_count],
+                    continuation_prefix: LayoutUnit::ZERO,
                 })
                 .collect(),
         }
@@ -161,7 +165,12 @@ pub struct HeightPageFragment {
     pub fragment_start: usize,
     pub fragment_end: usize,
     pub page_index: usize,
+    /// Height inserted immediately before this fragment on its page, such as
+    /// a repeated table header. Zero on a block's first fragment.
+    pub prefix_height: LayoutUnit,
+    /// Offset where the fragment's own content starts (after prefix_height).
     pub page_offset: LayoutUnit,
+    /// Content height only; prefix_height is reported separately.
     pub height: LayoutUnit,
 }
 
@@ -331,6 +340,7 @@ impl Search {
         block: usize,
         variant_index: usize,
         heights: &[usize],
+        continuation_prefix: usize,
         start: usize,
         policy: BlockPolicy,
         completed: &mut BTreeMap<StateKey, State>,
@@ -344,7 +354,14 @@ impl Search {
             return Ok(());
         }
 
-        let free = self.capacity - state.used;
+        let prefix = if start > 0 { continuation_prefix } else { 0 };
+        let Some(content_start) = state.used.checked_add(prefix) else {
+            return Err(HeightPaginationError::CostOverflow);
+        };
+        if content_start > self.capacity {
+            return Ok(());
+        }
+        let free = self.capacity - content_start;
         let mut choices = Vec::new();
         let mut height = 0usize;
         let mut end = start;
@@ -400,8 +417,7 @@ impl Search {
                     .cost
                     .checked_add(penalty)
                     .ok_or(HeightPaginationError::CostOverflow)?,
-                used: state
-                    .used
+                used: content_start
                     .checked_add(fragment_height)
                     .ok_or(HeightPaginationError::CostOverflow)?,
                 ..state
@@ -412,8 +428,12 @@ impl Search {
                 fragment_start: start,
                 fragment_end: end,
                 page_index: state.closed_pages,
+                prefix_height: LayoutUnit::from_milli_points(
+                    i32::try_from(prefix).map_err(|_| HeightPaginationError::CostOverflow)?,
+                ),
                 page_offset: LayoutUnit::from_milli_points(
-                    i32::try_from(state.used).map_err(|_| HeightPaginationError::CostOverflow)?,
+                    i32::try_from(content_start)
+                        .map_err(|_| HeightPaginationError::CostOverflow)?,
                 ),
                 height: LayoutUnit::from_milli_points(
                     i32::try_from(fragment_height)
@@ -509,6 +529,12 @@ fn validate(
                     reason: "variant has no fragments",
                 });
             }
+            if variant.continuation_prefix.milli_points() < 0 {
+                return Err(HeightPaginationError::InvalidBlock {
+                    block_index,
+                    reason: "continuation prefix height must be nonnegative",
+                });
+            }
             for &height in &variant.fragment_heights {
                 if height.milli_points() <= 0 {
                     return Err(HeightPaginationError::InvalidBlock {
@@ -576,6 +602,10 @@ pub fn plan_blocks(
                         .map_err(|_| HeightPaginationError::CostOverflow)?,
                 );
             }
+            let continuation_prefix = usize::try_from(
+                variant.continuation_prefix.milli_points(),
+            )
+            .map_err(|_| HeightPaginationError::CostOverflow)?;
             let mut pending = BTreeMap::new();
 
             for &previous in frontier.values() {
@@ -594,6 +624,7 @@ pub fn plan_blocks(
                         block_index,
                         variant_index,
                         &heights,
+                        continuation_prefix,
                         0,
                         policy,
                         &mut completed,
@@ -608,6 +639,7 @@ pub fn plan_blocks(
                         block_index,
                         variant_index,
                         &heights,
+                        continuation_prefix,
                         0,
                         policy,
                         &mut completed,
@@ -622,6 +654,7 @@ pub fn plan_blocks(
                     block_index,
                     variant_index,
                     &heights,
+                    continuation_prefix,
                     start,
                     policy,
                     &mut completed,
@@ -671,6 +704,8 @@ pub fn plan_blocks(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
     use crate::layout::{ParagraphVariant, LineBreak};
 
@@ -685,8 +720,23 @@ mod tests {
                 .map(|(demerits, heights)| BlockVariant {
                     demerits: *demerits,
                     fragment_heights: heights.iter().copied().map(u).collect(),
+                    continuation_prefix: LayoutUnit::ZERO,
                 })
                 .collect(),
+        }
+    }
+
+    fn block_with_prefix(
+        demerits: i64,
+        heights: &[i32],
+        prefix: i32,
+    ) -> BlockCandidates {
+        BlockCandidates {
+            variants: vec![BlockVariant {
+                demerits,
+                fragment_heights: heights.iter().copied().map(u).collect(),
+                continuation_prefix: u(prefix),
+            }],
         }
     }
 
@@ -738,6 +788,24 @@ mod tests {
             .map(|f| (f.fragment_start, f.fragment_end, f.height.milli_points()))
             .collect();
         assert_eq!(ranges, vec![(0, 2, 60), (2, 4, 60)]);
+        assert_eq!(plan.page_count, 2);
+    }
+
+    #[test]
+    fn continuation_prefix_consumes_capacity_and_is_reconstructed() {
+        let blocks = [block_with_prefix(0, &[40, 40, 40, 40], 20)];
+        let plan = plan_blocks(&blocks, &[], options(100)).unwrap();
+        assert_eq!(plan.fragments.len(), 2);
+        assert_eq!(plan.fragments[0].fragment_start, 0);
+        assert_eq!(plan.fragments[0].fragment_end, 2);
+        assert_eq!(plan.fragments[0].prefix_height, LayoutUnit::ZERO);
+        assert_eq!(plan.fragments[0].page_offset, LayoutUnit::ZERO);
+        assert_eq!(plan.fragments[0].height, u(80));
+        assert_eq!(plan.fragments[1].fragment_start, 2);
+        assert_eq!(plan.fragments[1].fragment_end, 4);
+        assert_eq!(plan.fragments[1].prefix_height, u(20));
+        assert_eq!(plan.fragments[1].page_offset, u(20));
+        assert_eq!(plan.fragments[1].height, u(80));
         assert_eq!(plan.page_count, 2);
     }
 
@@ -931,10 +999,19 @@ mod tests {
 
             let variant_index = variant.unwrap();
             let variant = &input[block_index].variants[variant_index];
+            let prefix = if start > 0 {
+                variant.continuation_prefix.milli_points() as usize
+            } else {
+                0
+            };
+            if used + prefix > capacity {
+                return;
+            }
+            let content_start = used + prefix;
             let mut height = 0usize;
             for end in start..variant.fragment_heights.len() {
                 let next = variant.fragment_heights[end].milli_points() as usize;
-                if height + next > capacity - used {
+                if height + next > capacity - content_start {
                     break;
                 }
                 height += next;
@@ -971,7 +1048,7 @@ mod tests {
                         end + 1,
                         0,
                         pages + 1,
-                        cost + penalty + page_cost(opts, used + height, false),
+                        cost + penalty + page_cost(opts, content_start + height, false),
                         best,
                     );
                 } else {
@@ -982,7 +1059,7 @@ mod tests {
                         block_index + 1,
                         None,
                         0,
-                        used + height,
+                        content_start + height,
                         pages,
                         cost + penalty,
                         best,

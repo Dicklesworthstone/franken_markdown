@@ -121,7 +121,7 @@ fn author_css_keeps_precedence_and_exact_bytes_across_the_whole_book() {
             assert_eq!(font < style, css.is_some());
         }
         let output = render_book_epub(&book, &opts).unwrap();
-        assert_payload(&entries(&output), "OEBPS/style.css", css.unwrap_or(STYLE_CSS).as_bytes());
+        assert_payload(&entries(&output), "OEBPS/style.css", prepared.css.as_bytes());
     }
 }
 
@@ -184,7 +184,7 @@ fn default_book_archive_and_identity_remain_on_the_font_free_path() {
     old.add_deflated("META-INF/container.xml", CONTAINER_XML.as_bytes());
     old.add_deflated("OEBPS/content.opf", prepared.opf.as_bytes());
     old.add_deflated("OEBPS/nav.xhtml", prepared.nav.as_bytes());
-    old.add_deflated("OEBPS/style.css", STYLE_CSS.as_bytes());
+    old.add_deflated("OEBPS/style.css", prepared.css.as_bytes());
     for chapter in &prepared.chapters { old.add_deflated(&format!("OEBPS/{}", chapter.file), chapter.xhtml.as_bytes()); }
     assert_eq!(old.finish(), render_book_epub(&book, &opts).unwrap());
     let mut bad = opts; bad.font_assets.body_bold_weight = Some(1001);

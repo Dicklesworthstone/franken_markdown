@@ -52,6 +52,8 @@ mod book;
 mod resources;
 #[path = "epub/fonts.rs"]
 mod embedded_fonts;
+#[path = "epub/theme.rs"]
+mod theme;
 #[cfg(test)]
 #[path = "epub/archive_tests.rs"]
 mod archive_tests;
@@ -73,16 +75,6 @@ const CONTAINER_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
   </rootfiles>\n\
 </container>\n";
 
-/// Minimal deterministic stylesheet for the chapter and nav documents.
-const STYLE_CSS: &str = "body{font-family:serif;line-height:1.6;margin:5%;}\n\
-h1,h2,h3,h4,h5,h6{line-height:1.25;}\n\
-pre,code{font-family:monospace;}\n\
-pre{overflow-x:auto;border:1px solid #ccc;padding:0.5em;}\n\
-table{border-collapse:collapse;}\n\
-th,td{border:1px solid #ccc;padding:0.25em 0.5em;}\n\
-blockquote{margin-left:0;padding-left:1em;border-left:0.25em solid #ccc;}\n\
-img{max-width:100%;}\n";
-
 /// Render `doc` as a complete EPUB 3 archive.
 ///
 /// The archive is byte-deterministic for a given `(doc, opts)` pair: ZIP
@@ -91,15 +83,17 @@ img{max-width:100%;}\n";
 /// GIF and SVG images become deduplicated archive resources. The core never
 /// fetches missing images from the network or filesystem.
 ///
-/// `opts.custom_css` replaces the default stylesheet. A `.fmd` wrapper is
-/// retained for custom styles, and the stylesheet contributes to the book's
-/// identifier. Default styling preserves the existing document body format.
+/// The default stylesheet follows `opts.theme`: body family, relative text
+/// scale, heading/code/table hierarchy, spacing, light/dark palettes and code
+/// ligatures. Navigation uses the same stylesheet. `opts.custom_css` replaces
+/// it verbatim; a `.fmd` wrapper is retained for custom styles. The effective
+/// stylesheet contributes to the publication's deterministic identifier.
 ///
 /// Supplying any `opts.font_assets` face embeds publication-wide TrueType
 /// subsets. Missing faces use the shared bundled font registry. Custom CSS
 /// remains verbatim and can override the generated font-family rules. Font
 /// bytes and their CSS mapping contribute to the deterministic identifier;
-/// no supplied faces preserves the historical font-free archive.
+/// no supplied faces keeps the archive font-free and uses reader font families.
 ///
 /// # Errors
 /// Returns [`RenderError::InvalidInput`] if the HTML renderer's fixed
@@ -116,7 +110,7 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
         .or_else(|| first_heading_text(doc))
         .unwrap_or_else(|| "Document".to_string());
     let lang = opts.lang.clone().unwrap_or_else(|| "en".to_string());
-    let css = opts.custom_css.as_deref().unwrap_or(STYLE_CSS);
+    let css = theme::stylesheet(opts);
 
     // Render once through the crate HTML renderer with the stylesheet slot
     // blanked (EPUB carries its own style.css, and this skips the font
@@ -134,17 +128,16 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
         .map_err(|message| RenderError::InvalidInput(message.to_string()))?;
 
     repertoire.add(&title)?;
-    repertoire.add(css)?;
+    repertoire.add(&css)?;
     repertoire.add(&prepared.body)?;
     let fonts = repertoire.finish(opts)?;
 
     // Hash before replacing data URLs: different image bytes must produce
     // different identifiers even when both receive the same archive path.
-    // Keeping this input preserves identifiers under the default stylesheet.
+    // Include the effective stylesheet: otherwise theme-only changes can be
+    // mistaken for the same edition by reading systems that cache identifiers.
     let mut identifier = content_identifier(&title, &lang, &chapter_body);
-    if opts.custom_css.is_some() {
-        identifier = content_identifier(&identifier, "epub-stylesheet-v1", css);
-    }
+    identifier = content_identifier(&identifier, "epub-stylesheet-v1", &css);
 
     if let Some(fingerprint) = fonts.fingerprint() {
         identifier = content_identifier(&identifier, "epub-fonts-v1", &fingerprint);
@@ -374,7 +367,7 @@ fn nav_xhtml(title: &str, lang: &str, doc: &Document) -> String {
     escape_xml_attr(lang, &mut s);
     s.push_str("\">\n<head>\n<meta charset=\"utf-8\"/>\n<title>");
     escape_xml_text(title, &mut s);
-    s.push_str("</title>\n</head>\n<body>\n<nav epub:type=\"toc\" id=\"toc\">\n<h1>");
+    s.push_str("</title>\n<link rel=\"stylesheet\" type=\"text/css\" href=\"style.css\"/>\n</head>\n<body>\n<nav epub:type=\"toc\" id=\"toc\">\n<h1>");
     escape_xml_text(title, &mut s);
     s.push_str("</h1>\n<ol>\n");
     if headings.is_empty() {

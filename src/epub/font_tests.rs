@@ -33,13 +33,13 @@ fn for_document(doc: &Document, opts: &HtmlOptions) -> Package {
     let body = epub::resources::prepare(&body).unwrap();
     let mut repertoire = Repertoire::new(enabled(opts).unwrap());
     repertoire.add(opts.title.as_deref().unwrap()).unwrap();
-    repertoire.add(opts.custom_css.as_deref().unwrap_or(epub::STYLE_CSS)).unwrap();
+    repertoire.add(&epub::theme::stylesheet(opts)).unwrap();
     repertoire.add(&body.body).unwrap();
     repertoire.finish(opts).unwrap()
 }
 
 #[test]
-fn no_explicit_fonts_keeps_the_historical_archive_byte_for_byte() {
+fn no_explicit_fonts_keeps_the_archive_font_free_with_themed_css() {
     let opts = HtmlOptions { title: Some("Legacy".into()), ..HtmlOptions::default() };
     let doc = parse_markdown("# Legacy\n\nUnchanged text.\n");
     let mut html_opts = opts.clone();
@@ -48,13 +48,15 @@ fn no_explicit_fonts_keeps_the_historical_archive_byte_for_byte() {
     let body = epub::html_fragment_to_xhtml(epub::extract_main_body(&html).unwrap());
     let prepared = epub::resources::prepare(&body).unwrap();
     let id = epub::content_identifier("Legacy", "en", &body);
+    let css = epub::theme::stylesheet(&opts);
+    let id = epub::content_identifier(&id, "epub-stylesheet-v1", &css);
     let mut old = ZipWriter::new();
     old.add_stored("mimetype", epub::MIMETYPE);
     old.add_deflated("META-INF/container.xml", epub::CONTAINER_XML.as_bytes());
     old.add_deflated("OEBPS/content.opf", epub::content_opf("Legacy", "en", &id, &prepared).as_bytes());
     old.add_deflated("OEBPS/nav.xhtml", epub::nav_xhtml("Legacy", "en", &doc).as_bytes());
     old.add_deflated("OEBPS/chapter-1.xhtml", epub::chapter_xhtml("Legacy", "en", &prepared.body).as_bytes());
-    old.add_deflated("OEBPS/style.css", epub::STYLE_CSS.as_bytes());
+    old.add_deflated("OEBPS/style.css", css.as_bytes());
     assert_eq!(epub::render_epub(&doc, &opts).unwrap(), old.finish());
     assert!(!enabled(&opts).unwrap());
 }
@@ -230,7 +232,7 @@ fn single_document_writes_actual_subsets_css_and_manifest_into_the_archive() {
     let output = epub::render_epub(&doc, &opts).unwrap();
     let entries = entries(&output);
     assert_payload(&entries, "OEBPS/embedded-fonts.css", package.css.as_bytes());
-    assert_payload(&entries, "OEBPS/style.css", epub::STYLE_CSS.as_bytes());
+    assert_payload(&entries, "OEBPS/style.css", epub::theme::stylesheet(&opts).as_bytes());
     for resource in &package.resources {
         assert_payload(&entries, &format!("OEBPS/{}", resource.href), &resource.bytes);
     }
@@ -239,6 +241,7 @@ fn single_document_writes_actual_subsets_css_and_manifest_into_the_archive() {
     let original = epub::html_fragment_to_xhtml(epub::extract_main_body(&html).unwrap());
     let prepared = epub::resources::prepare(&original).unwrap();
     let base_id = epub::content_identifier("Résumé", "en", &original);
+    let base_id = epub::content_identifier(&base_id, "epub-stylesheet-v1", &epub::theme::stylesheet(&opts));
     let id = epub::content_identifier(&base_id, "epub-fonts-v1", &package.fingerprint().unwrap());
     let mut opf = epub::content_opf("Résumé", "en", &id, &prepared);
     package.manifest(&mut opf).unwrap();

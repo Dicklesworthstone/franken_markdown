@@ -120,6 +120,7 @@ fn single_document_packages_host_png_once_with_matching_manifest() {
     assert_entry(&records, "OEBPS/assets/image-1.png", RED_PNG);
     assert_entry(&records, "OEBPS/chapter-1.xhtml", chapter_xhtml("Pictures", "en", &prepared.body).as_bytes());
     let id = content_identifier("Pictures", "en", &body);
+    let id = content_identifier(&id, "epub-stylesheet-v1", &theme::stylesheet(&opts));
     assert_entry(&records, "OEBPS/content.opf", content_opf("Pictures", "en", &id, &prepared).as_bytes());
     assert_eq!(archive, render_epub(&doc, &opts).expect("repeat EPUB"));
 }

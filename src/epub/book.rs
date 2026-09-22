@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use franken_markdown::{Book, HtmlOptions, PdfImageAsset, RenderError, Result};
 
 use super::{
-    Block, CONTAINER_XML, DCTERMS_MODIFIED, Inline, MIMETYPE, NavHeading, STYLE_CSS,
+    Block, CONTAINER_XML, DCTERMS_MODIFIED, Inline, MIMETYPE, NavHeading,
     ZipWriter, chapter_xhtml, collect_headings, escape_xml_attr, escape_xml_text,
-    extract_main_body, fnv1a64, html_fragment_to_xhtml, push_nav_headings, resources, embedded_fonts,
+    extract_main_body, fnv1a64, html_fragment_to_xhtml, push_nav_headings, resources, embedded_fonts, theme,
 };
 
 const MAX_CHAPTERS: usize = 4096;
@@ -28,6 +28,7 @@ struct PreparedBook {
     opf: String,
     nav: String,
     fonts: embedded_fonts::Package,
+    css: String,
 }
 
 /// Render a parsed [`Book`] as one EPUB with a separate XHTML spine item per
@@ -44,7 +45,9 @@ struct PreparedBook {
 ///
 /// `opts.title` and `opts.lang` describe the book. Chapter titles and language
 /// overrides come from the book model. `opts.custom_css` replaces the default
-/// EPUB stylesheet. Raw HTML is escaped regardless of the pass-through option.
+/// EPUB stylesheet; otherwise chapters and navigation share `opts.theme`'s
+/// typography, spacing and appearance. Raw HTML is escaped regardless of the
+/// pass-through option.
 ///
 /// # Errors
 /// Rejects empty books, duplicate or invalid source paths, more than 4096
@@ -62,10 +65,7 @@ pub fn render_book_epub(book: &Book, opts: &HtmlOptions) -> Result<Vec<u8>> {
     zip.add_deflated("META-INF/container.xml", CONTAINER_XML.as_bytes());
     zip.add_deflated("OEBPS/content.opf", prepared.opf.as_bytes());
     zip.add_deflated("OEBPS/nav.xhtml", prepared.nav.as_bytes());
-    zip.add_deflated(
-        "OEBPS/style.css",
-        opts.custom_css.as_deref().unwrap_or(STYLE_CSS).as_bytes(),
-    );
+    zip.add_deflated("OEBPS/style.css", prepared.css.as_bytes());
     prepared.fonts.write(&mut zip);
     for chapter in &prepared.chapters {
         zip.add_deflated(&format!("OEBPS/{}", chapter.file), chapter.xhtml.as_bytes());
@@ -106,15 +106,15 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
 
     let title = opts.title.as_deref().unwrap_or("Book");
     let lang = opts.lang.as_deref().unwrap_or("en");
-    let css = opts.custom_css.as_deref().unwrap_or(STYLE_CSS);
+    let css = theme::stylesheet(opts);
     repertoire.add(title)?;
-    repertoire.add(css)?;
+    repertoire.add(&css)?;
     let mut byte_count = 0;
-    for text in [title, lang, css] {
+    for text in [title, lang, css.as_ref()] {
         add_bytes(&mut byte_count, text.len())?;
     }
     let mut identity = Identity::new();
-    for text in ["franken_markdown/epub-book/v1", title, lang, css] {
+    for text in ["franken_markdown/epub-book/v1", title, lang, css.as_ref()] {
         identity.part(text);
     }
     let mut image_bytes = 0usize;
@@ -184,7 +184,7 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
             .chain(chapters.iter().flat_map(|chapter| chapter.content.resources.iter()
                 .map(|resource| resource.bytes.len()))),
     )?;
-    Ok(PreparedBook { chapters, opf, nav, fonts })
+    Ok(PreparedBook { chapters, opf, nav, fonts, css: css.into_owned() })
 }
 
 fn add_bytes(total: &mut usize, count: usize) -> Result<()> {
@@ -413,7 +413,7 @@ fn navigation(title: &str, lang: &str, chapters: &[Chapter]) -> String {
     escape_xml_attr(lang, &mut out);
     out.push_str("\"><head><title>");
     escape_xml_text(title, &mut out);
-    out.push_str("</title></head><body><nav epub:type=\"toc\" id=\"toc\"><h1>");
+    out.push_str("</title>\n<link rel=\"stylesheet\" type=\"text/css\" href=\"style.css\"/>\n</head><body><nav epub:type=\"toc\" id=\"toc\"><h1>");
     escape_xml_text(title, &mut out);
     out.push_str("</h1>\n<ol>\n");
     for chapter in chapters {

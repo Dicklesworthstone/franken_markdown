@@ -98,6 +98,8 @@ pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOp
     </div>
     <button class="fmd-btn" id="btn-theme-toggle" title="Toggle Dark / Light Mode">🌓 Theme</button>
     <button class="fmd-btn" id="btn-stats-toggle" title="Toggle Document Statistics">📊 Stats</button>
+    <button class="fmd-btn" id="btn-save-markdown" title="Download current Markdown (Ctrl/Cmd+S)">Save Markdown</button>
+    <button class="fmd-btn" id="btn-save-html" title="Download editable HTML workspace (Ctrl/Cmd+Shift+S)">Save HTML</button>
     <button class="fmd-btn fmd-btn-primary" id="btn-export-pdf" title="Export Clean Vector PDF">📄 Export PDF</button>
   </div>
 </header>
@@ -110,6 +112,7 @@ pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOp
     <div class="fmd-pane-header">
       <span>Markdown Source</span>
       <span class="fmd-pane-badge" id="source-line-count">Lines: 0</span>
+      <span class="fmd-pane-badge" id="fmd-save-status" role="status" aria-live="polite"></span>
     </div>
     <textarea id="fmd-editor" spellcheck="false" placeholder="Type Markdown here...">"#,
     );
@@ -229,9 +232,11 @@ html, body {
   justify-content: space-between;
   padding: 0 16px;
   user-select: none;
+  gap: 12px;
 }
 
 .fmd-brand {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -239,17 +244,22 @@ html, body {
   font-size: 14px;
 }
 
+.fmd-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .fmd-logo-icon {
   font-size: 16px;
 }
 
 .fmd-toolbar {
+  overflow-x: auto;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
 .fmd-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: 6px;
@@ -284,6 +294,8 @@ html, body {
 }
 
 .fmd-btn-group .fmd-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
   border-radius: 0;
   margin-left: -1px;
 }
@@ -315,7 +327,9 @@ html, body {
 }
 
 .fmd-pane-header {
-  height: 32px;
+  min-height: 32px;
+  flex-wrap: wrap;
+  gap: 6px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   display: flex;
@@ -383,6 +397,9 @@ html, body {
 .fmd-content th { background: var(--bg-secondary); }
 .fmd-content ul, .fmd-content ol { padding-left: 2em; margin: 0 0 1em; }
 .fmd-content li { margin: 0.25em 0; }
+.fmd-content img { max-width: 100%; height: auto; }
+.fmd-content .table-wrap { overflow-x: auto; }
+.fmd-content .footnotes { font-size: 0.9em; margin-top: 2em; }
 
 /* Callout Styling */
 aside.callout { border: 1px solid var(--border-color); border-left-width: 4px; border-radius: 6px; padding: 0.75em 1em; margin: 1em 0; }

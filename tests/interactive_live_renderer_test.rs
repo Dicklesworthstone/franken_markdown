@@ -10,7 +10,11 @@ fn interactive_live_renderer_behavior() {
         return;
     }
     let output = Command::new("node")
-        .args(["--test", "tests/interactive_renderer.test.mjs"])
+        .args([
+            "--test",
+            "tests/interactive_renderer.test.mjs",
+            "tests/interactive_controller.test.mjs",
+        ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output();
     match output {

@@ -1,22 +1,32 @@
 (function() {
   const editor = document.getElementById('fmd-editor');
-  const originalSource = JSON.parse(document.getElementById('fmd-raw-source').textContent);
+  const originalSource = JSON.parse(document.querySelector('body > script#fmd-raw-source[type="application/json"]').textContent);
   // Textarea markup loses an initial newline and normalizes HTML controls.
   // Initialize from the lossless data block before computing editor statistics.
   editor.value = originalSource;
+  // The textarea API itself normalizes CR and CRLF to LF. Keep untouched
+  // source bytes (and exact undo) separate from that normalized editing view.
+  const originalEditorValue = editor.value;
+  const currentSource = () => editor.value === originalEditorValue ? originalSource : editor.value;
   const preview = document.getElementById('fmd-content');
   const body = document.getElementById('fmd-app-body');
   const lineCountBadge = document.getElementById('source-line-count');
-  const statsDrawer = document.getElementById('stats-drawer');
+  const statsDrawer = document.querySelector('body > #stats-drawer');
 
   // Stats elements
-  const statWords = document.getElementById('stat-words');
-  const statChars = document.getElementById('stat-chars');
-  const statReadTime = document.getElementById('stat-read-time');
-  const statReadability = document.getElementById('stat-readability');
+  const statWords = statsDrawer.querySelector('#stat-words');
+  const statChars = statsDrawer.querySelector('#stat-chars');
+  const statReadTime = statsDrawer.querySelector('#stat-read-time');
+  const statReadability = statsDrawer.querySelector('#stat-readability');
 
-  let currentScale = 1.0;
-  let viewMode = 'split'; // 'split' | 'read'
+  const saveStatus = document.getElementById('fmd-save-status');
+  // Keep the full initial renderer output available for exact undo, including
+  // diagrams and other features outside the offline JavaScript subset.
+  const originalRendered = preview.innerHTML;
+  let lastRenderedSource = originalSource;
+  const storedScale = parseFloat(document.documentElement.style.getPropertyValue('--fmd-base')) / 16;
+  let currentScale = Number.isFinite(storedScale) ? Math.min(2, Math.max(0.7, storedScale)) : 1;
+  let viewMode = body.classList.contains('view-read') ? 'read' : 'split';
 
   // Update line count and stats
   function updateStats() {
@@ -46,15 +56,106 @@
     statReadability.textContent = `${clampedFlesch}/100`;
   }
 
-  // Live editor input debounce
+  // One synchronous path is used by debounce, print and workspace export.
+  // Do not replace native output until source changes, or publish a source
+  // revision as rendered before the parser and DOM update both succeed.
   let debounceTimer = null;
+  function renderCurrent() {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+    const source = currentSource();
+    if (source !== lastRenderedSource) {
+      const html = source === originalSource ? originalRendered : parseMarkdownClient(source);
+      preview.innerHTML = html;
+      lastRenderedSource = source;
+    }
+    updateStats();
+  }
+  function attempt(action) {
+    try { action(); }
+    catch (error) { saveStatus.textContent = 'Unable to complete: ' + String(error?.message || error); }
+  }
   editor.addEventListener('input', () => {
     updateStats();
+    saveStatus.textContent = editor.value === originalEditorValue ? '' : 'Modified — download to keep changes';
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      preview.innerHTML = parseMarkdownClient(editor.value);
-    }, 150);
+    debounceTimer = setTimeout(() => attempt(renderCurrent), 150);
   });
+
+  // These are explicit local downloads, never a network upload or an implicit
+  // write to browser storage. A download request is not proof the user saved it.
+  const downloadUrls = new Map();
+  function filename(extension) {
+    let stem = Array.from(document.title || 'document').slice(0, 80).join('')
+      .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').trim().replace(/[. ]+$/, '');
+    if (!stem || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(stem)) stem = 'document';
+    return stem + '.' + extension;
+  }
+  function download(content, mime, extension) {
+    let url = null, anchor = null;
+    try {
+      const blob = new Blob([content], {type: mime, endings: 'transparent'});
+      url = URL.createObjectURL(blob);
+      anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename(extension);
+      anchor.hidden = true;
+      document.body.appendChild(anchor);
+      anchor.click();
+      // Defer revocation until the browser has consumed the navigation. Keep
+      // multiple downloads independent and also clean them up on page exit.
+      const pendingUrl = url;
+      downloadUrls.set(pendingUrl, setTimeout(() => {
+        URL.revokeObjectURL(pendingUrl);
+        downloadUrls.delete(pendingUrl);
+      }, 30000));
+      url = null;
+      saveStatus.textContent = 'Download started — check your downloads';
+    } finally {
+      if (anchor) anchor.remove();
+      if (url) URL.revokeObjectURL(url);
+    }
+  }
+  function saveMarkdown() {
+    download(currentSource(), 'text/markdown;charset=utf-8', 'md');
+  }
+  function saveHtml() {
+    renderCurrent();
+    const source = currentSource();
+    const copy = document.documentElement.cloneNode(true);
+    // Select application-owned elements, not similarly named headings in the
+    // preview. Mutate only the detached copy, leaving the live source intact.
+    const data = copy.querySelector('body > script#fmd-raw-source[type="application/json"]');
+    const textarea = copy.querySelector('body > #fmd-app-body > #editor-pane > textarea#fmd-editor');
+    data.textContent = JSON.stringify(source).replace(/</g, '\\u003c')
+      .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+    textarea.textContent = source;
+    copy.querySelector('body > #stats-drawer').classList.remove('open');
+    copy.querySelector('#editor-pane > .fmd-pane-header > #fmd-save-status').textContent = '';
+    download('<!DOCTYPE html>\n' + copy.outerHTML, 'text/html;charset=utf-8', 'html');
+  }
+  document.getElementById('btn-save-markdown').addEventListener('click', () => attempt(saveMarkdown));
+  document.getElementById('btn-save-html').addEventListener('click', () => attempt(saveHtml));
+  document.addEventListener('keydown', event => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 's') return;
+    event.preventDefault();
+    if (!event.repeat) attempt(event.shiftKey ? saveHtml : saveMarkdown);
+  });
+  window.addEventListener('beforeunload', event => {
+    if (editor.value !== originalEditorValue) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
+  window.addEventListener('pagehide', () => {
+    for (const [url, timer] of downloadUrls) {
+      clearTimeout(timer);
+      URL.revokeObjectURL(url);
+    }
+    downloadUrls.clear();
+  });
+  // Also cover the browser's own Print menu / keyboard shortcut.
+  window.addEventListener('beforeprint', () => attempt(renderCurrent));
 
   // Toolbar actions
   document.getElementById('btn-toggle-view').addEventListener('click', () => {
@@ -106,13 +207,14 @@
     updateStats();
   });
 
-  document.getElementById('btn-stats-close').addEventListener('click', () => {
+  statsDrawer.querySelector('#btn-stats-close').addEventListener('click', () => {
     statsDrawer.classList.remove('open');
   });
 
-  document.getElementById('btn-export-pdf').addEventListener('click', () => {
+  document.getElementById('btn-export-pdf').addEventListener('click', () => attempt(() => {
+    renderCurrent();
     window.print();
-  });
+  }));
 
   // Initial stats calculation
   updateStats();

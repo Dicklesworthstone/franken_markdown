@@ -87,20 +87,31 @@ function element() {
 }
 for (const id of input.ids) elements.set(id, element());
 elements.get('fmd-raw-source').textContent = input.data;
+elements.get('stats-drawer').querySelector = selector => elements.get(selector.slice(1));
 const styles = new Map();
 const timers = new Map();
 let nextTimer = 0;
 let prints = 0;
+const documentEvents = {}, windowEvents = {};
 const document = {
+  addEventListener(name, handler) { documentEvents[name] = handler; },
+  querySelector(selector) {
+    const ids = {
+      'body > script#fmd-raw-source[type="application/json"]': 'fmd-raw-source',
+      'body > #stats-drawer': 'stats-drawer'
+    };
+    assert.ok(ids[selector], `Unexpected selector: ${selector}`);
+    return elements.get(ids[selector]);
+  },
   getElementById(id) {
     assert.ok(elements.has(id), `Missing DOM element: ${id}`);
     return elements.get(id);
   },
   body: element(),
-  documentElement: {style: {setProperty(key, value) { styles.set(key, value); }}}
+  documentElement: {style: {setProperty(key, value) { styles.set(key, value); }, getPropertyValue(key) { return styles.get(key) || ''; }}}
 };
 const context = vm.createContext({
-  document, window: {print() { prints++; }},
+  document, window: {print() { prints++; }, addEventListener(name, handler) { windowEvents[name] = handler; }},
   setTimeout(fn, delay) { assert.equal(delay, 150); const id = ++nextTimer; timers.set(id, fn); return id; },
   clearTimeout(id) { timers.delete(id); }
 });

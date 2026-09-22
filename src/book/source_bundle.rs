@@ -11,6 +11,40 @@ use crate::{RenderError, Result};
 const MAX_BOOK_RESOLUTIONS: usize = 4096;
 
 impl BookRenderer {
+    // Crate-internal transactions for BookWorkspace. Keep expansion policy in
+    // this module instead of building a second include resolver in the editor.
+    pub(crate) fn prepare_workspace_sources(
+        chapters: &[BookInput],
+        resources: &[BookInput],
+    ) -> Result<(Vec<BookInput>, usize)> {
+        prepare(chapters, resources, MAX_SOURCE_BYTES, MAX_BOOK_RESOLUTIONS)
+    }
+
+    pub(crate) fn from_workspace_sources(
+        expanded: &[BookInput],
+        source_length: usize,
+    ) -> Result<Self> {
+        let mut renderer = Self::new(expanded)?;
+        renderer.source_length = source_length;
+        Ok(renderer)
+    }
+
+    pub(crate) fn commit_workspace_sources(
+        &mut self,
+        replacements: Vec<Option<crate::book::BookChapter>>,
+        source_length: usize,
+    ) {
+        debug_assert_eq!(replacements.len(), self.book.chapters.len());
+        for (chapter, replacement) in self.book.chapters.iter_mut().zip(replacements) {
+            if let Some(replacement) = replacement {
+                *chapter = replacement;
+            }
+        }
+        // The selected path set is unchanged. Canonicalization is idempotent
+        // for retained chapters, and binds newly parsed links against ALL pages.
+        paths::canonicalize(&mut self.book.chapters);
+        self.source_length = source_length;
+    }
     /// Expand an explicitly supplied source collection, then parse once.
     ///
     /// `chapters` fixes the reading order. `include_sources` supplies additional

@@ -3,6 +3,7 @@
 //! Generates a standalone HTML file with a self-contained editing runtime:
 //! - An interactive split-view live editor + preview.
 //! - Offline live markdown parsing & rendering.
+//! - Explicit local PNG/JPEG insertion with portable image data in source.
 //! - Document intelligence stats panel (words, reading time, readability score).
 //! - Clean typography & theme toggle (Light, Dark, Sans, Serif, Type Scales).
 //! - Client-side vector PDF / Print export with print-perfect page pagination.
@@ -100,6 +101,8 @@ pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOp
     </div>
     <button class="fmd-btn" id="btn-theme-toggle" title="Toggle Dark / Light Mode">🌓 Theme</button>
     <button class="fmd-btn" id="btn-stats-toggle" title="Toggle Document Statistics">📊 Stats</button>
+    <button class="fmd-btn" id="btn-insert-image" title="Insert local PNG/JPEG images into the Markdown source">Insert image</button>
+    <input type="file" id="fmd-image-picker" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple hidden>
     <button class="fmd-btn" id="btn-save-markdown" title="Download current Markdown (Ctrl/Cmd+S)">Save Markdown</button>
     <button class="fmd-btn" id="btn-save-html" title="Download editable HTML workspace (Ctrl/Cmd+Shift+S)">Save HTML</button>
     <button class="fmd-btn fmd-btn-primary" id="btn-export-pdf" title="Export Clean Vector PDF">📄 Export PDF</button>
@@ -479,12 +482,14 @@ aside.callout-caution { border-left-color: #cf222e; }
 }
 "#;
 
-// Compile both assets into the existing single script element: no fetches,
+// Compile the runtime assets into the existing single script element: no fetches,
 // package installation, generated WASM or external scripts are needed offline.
 const INTERACTIVE_JS: &str = concat!(
     include_str!("interactive_renderer.js"),
     "\n",
     include_str!("interactive_controller.js"),
+    "\n",
+    include_str!("interactive_import.js"),
 );
 
 #[cfg(test)]
@@ -508,5 +513,8 @@ mod tests {
         assert!(html.contains("id=\"btn-export-pdf\""));
         assert!(html.contains("This is live editable text."));
         assert!(html.contains("parseMarkdownClient"));
+        assert!(html.contains("id=\"btn-insert-image\""));
+        assert!(html.contains("id=\"fmd-image-picker\""));
+        assert!(html.contains("fmdPrepareImageImport"));
     }
 }

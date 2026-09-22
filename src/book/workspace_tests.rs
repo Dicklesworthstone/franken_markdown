@@ -268,3 +268,22 @@ fn seeded_edit_sequences_match_fresh_full_book_parsing() {
         assert_book_eq(&workspace, &BookRenderer::new(&sources).unwrap());
     }
 }
+
+#[test]
+fn stale_revision_rejects_changes_and_noops_without_touching_the_capture() {
+    let mut workspace = BookWorkspace::new(&[file("a.md", "Old")]).unwrap();
+    let accepted = workspace.update_sources_at_revision(&[file("a.md", "New")], 0).unwrap();
+    assert_eq!(accepted.revision, 1);
+    let pointer = workspace.book().chapters[0].doc.blocks.as_ptr();
+    for source in ["Stale replacement", "New"] {
+        let error = workspace.update_sources_at_revision(&[file("a.md", source)], 0).unwrap_err();
+        assert!(error.to_string().contains("stale source revision"));
+        assert_eq!(workspace.source_revision(), 1);
+        assert_eq!(workspace.chapters[0].source, "New");
+        assert_eq!(workspace.book().chapters[0].doc.blocks.as_ptr(), pointer);
+    }
+    let noop = workspace.update_sources_at_revision(&[file("a.md", "New")], 1).unwrap();
+    assert_eq!(noop.revision, 1);
+    assert_eq!(noop.changed_sources, 0);
+    assert_eq!(workspace.update_sources_at_revision(&[file("a.md", "Latest")], 1).unwrap().revision, 2);
+}

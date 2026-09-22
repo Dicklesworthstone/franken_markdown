@@ -77,11 +77,41 @@ export interface BookOutput {
   filename(baseName?: string): string;
 }
 
+/** A committed source transaction. Counts describe native parser work, not
+ * rendered-output invalidations. Source changes may reparse no chapters when
+ * only unused resources or unselected include ranges change. */
+export interface BookSourceUpdate {
+  readonly revision: number;
+  readonly sourceLength: number;
+  readonly chapterCount: number;
+  readonly changedSources: number;
+  /** Strictly increasing, zero-based indexes in the unchanged reading order. */
+  readonly reparsedChapters: readonly number[];
+}
+export interface BookSourceUpdateOptions {
+  /** Expected source revision, integer 0..=4294967295. Omitted means capture the
+   * current revision at call entry. Supply explicitly for asynchronously
+   * prepared edits; stale requests fail without replacing any source. */
+  expectedRevision?: number;
+}
+
 /** Parsed WASM book. Dispose in a finally block when repeated exports finish. */
 export interface BookSession {
   readonly chapterCount: number;
   /** Original chapter plus include-source UTF-8 bytes, counted once each. */
   readonly sourceLength: number;
+  /** Starts at zero; advances once per changed source batch. Exact no-ops,
+   * assets and presentation edits do not advance it. Throws on old WASM. */
+  readonly sourceRevision: number;
+  /** Atomically replace existing chapter/include sources, preserving all render
+   * settings/assets and unchanged parsed chapters. No source is added, removed,
+   * renamed or reordered. Expansion policy is fixed by createBook options.
+   * Synchronous: no Promise, worker queue or cancellation is implied.
+   * Rejects bad input/stale revisions/includes while preserving the last book.
+   * A malformed successful native report instead disposes the session because
+   * its committed source state cannot safely be verified.
+   */
+  updateSources(files: readonly BookFile[], options?: BookSourceUpdateOptions): BookSourceUpdate;
   setImage(destination: string, bytes: BookAssetBytes): BookSession;
   setFont(slot: BookFontSlot, bytes: BookAssetBytes, weight?: number): BookSession;
   /** Synchronous rendering after asynchronous session creation. An optional

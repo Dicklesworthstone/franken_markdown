@@ -153,6 +153,24 @@ impl BookWorkspace {
         self.update_with_limit(updates, MAX_SOURCE_BYTES)
     }
 
+    /// Replace source only when the caller still owns the expected revision.
+    /// This check happens before update admission, copying, expansion or parsing.
+    /// A stale no-op batch is rejected as well: equality is not permission to
+    /// publish an operation prepared against another source capture.
+    ///
+    /// # Errors
+    /// Rejects a stale revision, or any error from [`Self::update_sources`].
+    pub fn update_sources_at_revision(
+        &mut self,
+        updates: &[BookInput],
+        expected_revision: u32,
+    ) -> Result<BookSourceUpdate> {
+        if expected_revision != self.revision {
+            return Err(invalid("stale source revision; refresh the source capture before editing"));
+        }
+        self.update_sources(updates)
+    }
+
     fn update_with_limit(&mut self, updates: &[BookInput], limit: usize) -> Result<BookSourceUpdate> {
         if updates.is_empty() || updates.len() > MAX_SOURCES {
             return Err(invalid("expected 1..=4096 source replacements"));

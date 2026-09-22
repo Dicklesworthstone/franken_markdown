@@ -26,6 +26,10 @@ pub struct BlockVariant {
     /// Extra vertical material repeated before every continuation fragment
     /// after an internal page break, e.g. a repeated table header.
     pub continuation_prefix: LayoutUnit,
+    /// Bottom-of-page reservations introduced by each fragment, e.g. footnote
+    /// bodies anchored by text in that fragment. Empty means all zero; otherwise
+    /// this must have exactly one entry per fragment.
+    pub fragment_reservations: Vec<LayoutUnit>,
 }
 
 /// Measured alternatives for one logical block.
@@ -50,6 +54,7 @@ impl BlockCandidates {
                     demerits: variant.demerits,
                     fragment_heights: vec![line_height; variant.line_count],
                     continuation_prefix: LayoutUnit::ZERO,
+                    fragment_reservations: Vec::new(),
                 })
                 .collect(),
         }
@@ -172,6 +177,9 @@ pub struct HeightPageFragment {
     pub page_offset: LayoutUnit,
     /// Content height only; prefix_height is reported separately.
     pub height: LayoutUnit,
+    /// Bottom reservation contributed by this fragment range. This consumes
+    /// page capacity but does not move subsequent body baselines downward.
+    pub reservation_height: LayoutUnit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -225,7 +233,8 @@ impl std::error::Error for HeightPaginationError {}
 struct State {
     cost: i128,
     closed_pages: usize,
-    used: usize,
+    body_used: usize,
+    reserved: usize,
     tail: Option<usize>,
 }
 
@@ -235,7 +244,7 @@ impl State {
     }
 }
 
-type StateKey = (usize, usize);
+type StateKey = (usize, usize, usize, usize);
 
 struct Node {
     previous: Option<usize>,
@@ -253,12 +262,21 @@ impl Search {
     fn key(&self, progress: usize, state: State) -> StateKey {
         (
             progress,
+            state.body_used,
+            state.reserved,
             if self.options.max_pages.is_some() {
                 state.closed_pages
             } else {
                 0
             },
         )
+    }
+
+    fn occupied(&self, state: State) -> Result<usize, HeightPaginationError> {
+        state
+            .body_used
+            .checked_add(state.reserved)
+            .ok_or(HeightPaginationError::CostOverflow)
     }
 
     fn charge(&mut self) -> Result<(), HeightPaginationError> {
@@ -285,13 +303,14 @@ impl Search {
         mut state: State,
         last: bool,
     ) -> Result<State, HeightPaginationError> {
-        if state.used == 0 {
+        let occupied = self.occupied(state)?;
+        if occupied == 0 {
             return Ok(state);
         }
         let mut cost = i128::from(self.options.page_cost);
         if !last || self.options.penalize_last_page {
             cost = cost
-                .checked_add(self.ragged_cost(state.used)?)
+                .checked_add(self.ragged_cost(occupied)?)
                 .ok_or(HeightPaginationError::CostOverflow)?;
         }
         state.cost = state
@@ -302,7 +321,8 @@ impl Search {
             .closed_pages
             .checked_add(1)
             .ok_or(HeightPaginationError::CostOverflow)?;
-        state.used = 0;
+        state.body_used = 0;
+        state.reserved = 0;
         Ok(state)
     }
 
@@ -340,6 +360,7 @@ impl Search {
         block: usize,
         variant_index: usize,
         heights: &[usize],
+        reservations: &[usize],
         continuation_prefix: usize,
         start: usize,
         policy: BlockPolicy,
@@ -355,30 +376,34 @@ impl Search {
         }
 
         let prefix = if start > 0 { continuation_prefix } else { 0 };
-        let Some(content_start) = state.used.checked_add(prefix) else {
+        let Some(content_start) = state.body_used.checked_add(prefix) else {
             return Err(HeightPaginationError::CostOverflow);
         };
-        if content_start > self.capacity {
-            return Ok(());
-        }
-        let free = self.capacity - content_start;
         let mut choices = Vec::new();
         let mut height = 0usize;
+        let mut reservation = 0usize;
         let mut end = start;
         while end < heights.len() {
-            let next = heights[end];
-            if next > free.saturating_sub(height) {
+            height = height
+                .checked_add(heights[end])
+                .ok_or(HeightPaginationError::CostOverflow)?;
+            reservation = reservation
+                .checked_add(reservations[end])
+                .ok_or(HeightPaginationError::CostOverflow)?;
+            let occupied = content_start
+                .checked_add(height)
+                .and_then(|n| n.checked_add(state.reserved))
+                .and_then(|n| n.checked_add(reservation))
+                .ok_or(HeightPaginationError::CostOverflow)?;
+            if occupied > self.capacity {
                 break;
             }
-            height = height
-                .checked_add(next)
-                .ok_or(HeightPaginationError::CostOverflow)?;
             end += 1;
-            choices.push((end, height));
+            choices.push((end, height, reservation));
         }
 
         // Longest legal fragments first make equal-cost ties prefer page fill.
-        for &(end, fragment_height) in choices.iter().rev() {
+        for &(end, fragment_height, fragment_reservation) in choices.iter().rev() {
             self.charge()?;
             let count = end - start;
             let split = end < heights.len();
@@ -417,8 +442,12 @@ impl Search {
                     .cost
                     .checked_add(penalty)
                     .ok_or(HeightPaginationError::CostOverflow)?,
-                used: content_start
+                body_used: content_start
                     .checked_add(fragment_height)
+                    .ok_or(HeightPaginationError::CostOverflow)?,
+                reserved: state
+                    .reserved
+                    .checked_add(fragment_reservation)
                     .ok_or(HeightPaginationError::CostOverflow)?,
                 ..state
             };
@@ -439,13 +468,18 @@ impl Search {
                     i32::try_from(fragment_height)
                         .map_err(|_| HeightPaginationError::CostOverflow)?,
                 ),
+                reservation_height: LayoutUnit::from_milli_points(
+                    i32::try_from(fragment_reservation)
+                        .map_err(|_| HeightPaginationError::CostOverflow)?,
+                ),
             };
 
             if split {
                 candidate = self.close_page(candidate, false)?;
                 self.retain(pending, end, candidate, fragment)?;
             } else {
-                self.retain(completed, candidate.used, candidate, fragment)?;
+                let occupied = self.occupied(candidate)?;
+                self.retain(completed, occupied, candidate, fragment)?;
             }
         }
         Ok(())
@@ -535,6 +569,22 @@ fn validate(
                     reason: "continuation prefix height must be nonnegative",
                 });
             }
+            if !variant.fragment_reservations.is_empty()
+                && variant.fragment_reservations.len() != variant.fragment_heights.len()
+            {
+                return Err(HeightPaginationError::InvalidBlock {
+                    block_index,
+                    reason: "fragment reservation count must match fragment count",
+                });
+            }
+            for &reservation in &variant.fragment_reservations {
+                if reservation.milli_points() < 0 {
+                    return Err(HeightPaginationError::InvalidBlock {
+                        block_index,
+                        reason: "fragment reservation height must be nonnegative",
+                    });
+                }
+            }
             for &height in &variant.fragment_heights {
                 if height.milli_points() <= 0 {
                     return Err(HeightPaginationError::InvalidBlock {
@@ -583,10 +633,11 @@ pub fn plan_blocks(
     let initial = State {
         cost: 0,
         closed_pages: 0,
-        used: initial_used,
+        body_used: initial_used,
+        reserved: 0,
         tail: None,
     };
-    let mut frontier = BTreeMap::from([(search.key(initial.used, initial), initial)]);
+    let mut frontier = BTreeMap::from([(search.key(initial_used, initial), initial)]);
 
     for (block_index, block) in blocks.iter().enumerate() {
         let policy = policy_at(block_index);
@@ -606,6 +657,18 @@ pub fn plan_blocks(
                 variant.continuation_prefix.milli_points(),
             )
             .map_err(|_| HeightPaginationError::CostOverflow)?;
+            let reservations = if variant.fragment_reservations.is_empty() {
+                vec![0usize; heights.len()]
+            } else {
+                variant
+                    .fragment_reservations
+                    .iter()
+                    .map(|reservation| {
+                        usize::try_from(reservation.milli_points())
+                            .map_err(|_| HeightPaginationError::CostOverflow)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            };
             let mut pending = BTreeMap::new();
 
             for &previous in frontier.values() {
@@ -618,12 +681,14 @@ pub fn plan_blocks(
                     ..previous
                 };
 
-                if !policy.break_before || state.used == 0 {
+                let occupied = search.occupied(state)?;
+                if !policy.break_before || occupied == 0 {
                     search.place(
                         state,
                         block_index,
                         variant_index,
                         &heights,
+                        &reservations,
                         continuation_prefix,
                         0,
                         policy,
@@ -632,13 +697,14 @@ pub fn plan_blocks(
                     )?;
                 }
 
-                if state.used > 0 && !keep_previous {
+                if occupied > 0 && !keep_previous {
                     let state = search.close_page(state, false)?;
                     search.place(
                         state,
                         block_index,
                         variant_index,
                         &heights,
+                        &reservations,
                         continuation_prefix,
                         0,
                         policy,
@@ -648,12 +714,13 @@ pub fn plan_blocks(
                 }
             }
 
-            while let Some(((start, _), state)) = pending.pop_first() {
+            while let Some(((start, _, _, _), state)) = pending.pop_first() {
                 search.place(
                     state,
                     block_index,
                     variant_index,
                     &heights,
+                    &reservations,
                     continuation_prefix,
                     start,
                     policy,
@@ -721,6 +788,7 @@ mod tests {
                     demerits: *demerits,
                     fragment_heights: heights.iter().copied().map(u).collect(),
                     continuation_prefix: LayoutUnit::ZERO,
+                    fragment_reservations: Vec::new(),
                 })
                 .collect(),
         }
@@ -736,6 +804,22 @@ mod tests {
                 demerits,
                 fragment_heights: heights.iter().copied().map(u).collect(),
                 continuation_prefix: u(prefix),
+                fragment_reservations: Vec::new(),
+            }],
+        }
+    }
+
+    fn block_with_reservations(
+        demerits: i64,
+        heights: &[i32],
+        reservations: &[i32],
+    ) -> BlockCandidates {
+        BlockCandidates {
+            variants: vec![BlockVariant {
+                demerits,
+                fragment_heights: heights.iter().copied().map(u).collect(),
+                continuation_prefix: LayoutUnit::ZERO,
+                fragment_reservations: reservations.iter().copied().map(u).collect(),
             }],
         }
     }
@@ -807,6 +891,29 @@ mod tests {
         assert_eq!(plan.fragments[1].page_offset, u(20));
         assert_eq!(plan.fragments[1].height, u(80));
         assert_eq!(plan.page_count, 2);
+    }
+
+    #[test]
+    fn bottom_reservations_consume_capacity_without_shifting_body_offsets() {
+        let blocks = [
+            block_with_reservations(0, &[30], &[20]),
+            block(&[(0, &[30])]),
+        ];
+        let plan = plan_blocks(&blocks, &[], options(100)).unwrap();
+        assert_eq!(plan.page_count, 1);
+        assert_eq!(plan.fragments[0].page_offset, u(0));
+        assert_eq!(plan.fragments[0].reservation_height, u(20));
+        assert_eq!(plan.fragments[1].page_offset, u(30));
+        assert_eq!(plan.fragments[1].reservation_height, LayoutUnit::ZERO);
+
+        let forced = [
+            block_with_reservations(0, &[60], &[30]),
+            block(&[(0, &[20])]),
+        ];
+        let plan = plan_blocks(&forced, &[], options(100)).unwrap();
+        assert_eq!(plan.page_count, 2, "reservation must reduce usable body capacity");
+        assert_eq!(plan.fragments[1].page_index, 1);
+        assert_eq!(plan.fragments[1].page_offset, LayoutUnit::ZERO);
     }
 
     #[test]
@@ -931,19 +1038,26 @@ mod tests {
             block_index: usize,
             variant: Option<usize>,
             start: usize,
-            used: usize,
+            body_used: usize,
+            reserved: usize,
             pages: usize,
             cost: i128,
             best: &mut Option<(i128, usize)>,
         ) {
             let capacity = opts.page_capacity.milli_points() as usize;
+            let occupied = body_used + reserved;
             if block_index == input.len() {
-                let page_count = pages + usize::from(used > 0);
+                let page_count = pages + usize::from(occupied > 0);
                 if opts.max_pages.is_some_and(|limit| page_count > limit) {
                     return;
                 }
                 let rank = (
-                    cost + if used > 0 { page_cost(opts, used, true) } else { 0 },
+                    cost
+                        + if occupied > 0 {
+                            page_cost(opts, occupied, true)
+                        } else {
+                            0
+                        },
                     page_count,
                 );
                 if best.is_none_or(|old| rank < old) {
@@ -951,7 +1065,10 @@ mod tests {
                 }
                 return;
             }
-            if opts.max_pages.is_some_and(|limit| pages >= limit && used == 0) {
+            if opts
+                .max_pages
+                .is_some_and(|limit| pages >= limit && occupied == 0)
+            {
                 return;
             }
 
@@ -965,7 +1082,7 @@ mod tests {
                 for variant_index in 0..input[block_index].variants.len() {
                     let next_cost =
                         cost + i128::from(input[block_index].variants[variant_index].demerits);
-                    if !policy.break_before || used == 0 {
+                    if !policy.break_before || occupied == 0 {
                         visit(
                             input,
                             policies,
@@ -973,13 +1090,14 @@ mod tests {
                             block_index,
                             Some(variant_index),
                             0,
-                            used,
+                            body_used,
+                            reserved,
                             pages,
                             next_cost,
                             best,
                         );
                     }
-                    if used > 0 && !keep_previous {
+                    if occupied > 0 && !keep_previous {
                         visit(
                             input,
                             policies,
@@ -988,8 +1106,9 @@ mod tests {
                             Some(variant_index),
                             0,
                             0,
+                            0,
                             pages + 1,
-                            next_cost + page_cost(opts, used, false),
+                            next_cost + page_cost(opts, occupied, false),
                             best,
                         );
                     }
@@ -1004,17 +1123,25 @@ mod tests {
             } else {
                 0
             };
-            if used + prefix > capacity {
+            let content_start = body_used + prefix;
+            if content_start + reserved > capacity {
                 return;
             }
-            let content_start = used + prefix;
-            let mut height = 0usize;
+
+            let mut body_height = 0usize;
+            let mut reservation_height = 0usize;
             for end in start..variant.fragment_heights.len() {
-                let next = variant.fragment_heights[end].milli_points() as usize;
-                if height + next > capacity - content_start {
+                body_height += variant.fragment_heights[end].milli_points() as usize;
+                if !variant.fragment_reservations.is_empty() {
+                    reservation_height +=
+                        variant.fragment_reservations[end].milli_points() as usize;
+                }
+                let occupied_after =
+                    content_start + body_height + reserved + reservation_height;
+                if occupied_after > capacity {
                     break;
                 }
-                height += next;
+
                 let count = end + 1 - start;
                 let split = end + 1 < variant.fragment_heights.len();
                 if policy.keep_together && split {
@@ -1038,6 +1165,9 @@ mod tests {
                 if !legal {
                     continue;
                 }
+
+                let next_body = content_start + body_height;
+                let next_reserved = reserved + reservation_height;
                 if split {
                     visit(
                         input,
@@ -1047,8 +1177,9 @@ mod tests {
                         Some(variant_index),
                         end + 1,
                         0,
+                        0,
                         pages + 1,
-                        cost + penalty + page_cost(opts, content_start + height, false),
+                        cost + penalty + page_cost(opts, next_body + next_reserved, false),
                         best,
                     );
                 } else {
@@ -1059,7 +1190,8 @@ mod tests {
                         block_index + 1,
                         None,
                         0,
-                        content_start + height,
+                        next_body,
+                        next_reserved,
                         pages,
                         cost + penalty,
                         best,
@@ -1079,6 +1211,7 @@ mod tests {
             opts.initial_used.milli_points() as usize,
             0,
             0,
+            0,
             &mut best,
         );
         best
@@ -1090,13 +1223,27 @@ mod tests {
             for a in 1..=4 {
                 for b in 1..=4 {
                     for limit in 1..=3 {
-                        let input = [
-                            block(&[
-                                (-3, &[a, b]),
-                                (2, &[a + 1]),
-                            ]),
-                            block(&[(0, &[b])]),
-                        ];
+                        let first = if (a + b + limit) % 2 == 0 {
+                            BlockCandidates {
+                                variants: vec![
+                                    BlockVariant {
+                                        demerits: -3,
+                                        fragment_heights: vec![u(a), u(b)],
+                                        continuation_prefix: LayoutUnit::ZERO,
+                                        fragment_reservations: vec![u(1), LayoutUnit::ZERO],
+                                    },
+                                    BlockVariant {
+                                        demerits: 2,
+                                        fragment_heights: vec![u(a + 1)],
+                                        continuation_prefix: LayoutUnit::ZERO,
+                                        fragment_reservations: Vec::new(),
+                                    },
+                                ],
+                            }
+                        } else {
+                            block(&[(-3, &[a, b]), (2, &[a + 1])])
+                        };
+                        let input = [first, block(&[(0, &[b])])];
                         let opts = HeightPaginationOptions {
                             max_pages: Some(limit),
                             initial_used: u(1),

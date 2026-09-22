@@ -96,7 +96,7 @@ export interface FmdPdfPage {
   margins?: number | { topPt?: number; rightPt?: number; bottomPt?: number; leftPt?: number };
 }
 export interface FmdPdfRenderOptions extends FmdRenderOptions {
-  /** Single-document PDF layout; margins must leave a 72-point content rectangle. */
+  /** PDF layout for single documents and books; margins must leave a 72-point content rectangle. */
   page?: FmdPdfPage;
 }
 
@@ -148,7 +148,7 @@ export interface FmdRenderer {
   capabilities(): Promise<FmdCapabilities>;
   accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
   documentStats(markdown: string): Promise<FmdDocumentStats>;
-  renderBookPdf(files: FmdBookFile[], options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+  renderBookPdf(files: FmdBookFile[], options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
   renderBookSite(files: FmdBookFile[], options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
@@ -233,7 +233,7 @@ export function accessibilityAudit(markdown: string): Promise<FmdAccessibilityRe
 export function documentStats(markdown: string): Promise<FmdDocumentStats>;
 export function renderBookPdf(
   files: FmdBookFile[],
-  options?: FmdRenderOptions,
+  options?: FmdPdfRenderOptions,
 ): Promise<FmdRenderOutput>;
 export function renderBookSite(
   files: FmdBookFile[],

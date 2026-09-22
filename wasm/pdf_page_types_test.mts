@@ -16,5 +16,7 @@ await renderPdf("x", { page: { margins: "36" } });
 await renderHtml("x", { page });
 // @ts-expect-error EPUB has no PDF paper geometry.
 await renderEpub("x", { page });
-// @ts-expect-error The book PDF binding has not yet gained this option.
 await renderBookPdf([{ path: "one.md", source: "# One" }], { page });
+await (await createRenderer()).renderBookPdf([{ path: "one.md", source: "# One" }], options);
+// @ts-expect-error Book custom dimensions also require both axes.
+await renderBookPdf([{ path: "one.md", source: "# One" }], { page: { size: { heightPt: 792 } } });

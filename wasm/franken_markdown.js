@@ -319,20 +319,124 @@ export async function renderBookSite(files, options = {}) {
 }
 
 export async function renderBookPdf(files, options = {}) {
+  // Capture source, primitive settings, geometry and owned assets before init.
+  const prepared = bookPdfArguments(files, options);
+  const render = prepared.advanced ? wasmBindings.renderBookPdfConfiguredPage : wasmRenderBookPdf;
+  if (typeof render !== "function") {
+    const error = new Error("Book PDF assets, typography, navigation and paper require a WASM package rebuilt from matching source");
+    error.code = "UNSUPPORTED_WASM_PACKAGE";
+    throw error;
+  }
   await init();
+  return normalizeResult(render(...prepared.args));
+}
+
+// Keep the old root entry point's coercions, scale presets, result envelope,
+// TOC/page-number defaults and narrow ABI. Only configured requests need the
+// additive ABI; neither images nor newer options may silently disappear.
+function bookPdfArguments(files, options) {
+  const {
+    page, font, darkMode, title, author, metadataEpochSeconds,
+    allowRawHtml, codeLineNumbers, pdfImages, fontAssets,
+    baseFontSize, headingScale, tableFontSize, pageNumbers,
+    fontScale, typeSize, lang, toc = true, tocDepth, fitToPages,
+    microtype, microtypeProtrusion,
+  } = options;
+  const geometry = pdfPageGeometry(page);
+  if (!Array.isArray(files) || files.length === 0 || files.length > 4096) {
+    throw new RangeError("book needs 1..=4096 source files");
+  }
   const normalized = bookFilesOption(files);
-  return normalizeResult(
-    wasmRenderBookPdf(
-      normalized.map((file) => file.path),
-      normalized.map((file) => file.source),
-      verbatimOption(options.title),
-      verbatimOption(options.author),
-      stringOption(options.font),
-      darkModeOption(options.darkMode),
-      fontScaleOption(options.fontScale ?? options.typeSize),
-      options.pageNumbers !== false,
-    ),
-  );
+  let sourceBytes = 0;
+  for (const file of normalized) {
+    for (const text of [file.path, file.source]) {
+      sourceBytes += bookPdfTextBytes(text, 64 * 1024 * 1024 - sourceBytes);
+    }
+  }
+  const paths = normalized.map(file => file.path), sources = normalized.map(file => file.source);
+  const family = stringOption(font), dark = darkModeOption(darkMode);
+  const heading = verbatimOption(title), writer = verbatimOption(author);
+  const scale = fontScaleOption(fontScale ?? typeSize), language = stringOption(lang);
+  for (const text of [family, dark, heading, writer, language]) {
+    if (text !== undefined) bookPdfTextBytes(text, 4 * 1024 * 1024);
+  }
+  const epoch = epochOption(metadataEpochSeconds), raw = Boolean(allowRawHtml);
+  const lineNumbers = Boolean(codeLineNumbers), numbers = pageNumbers !== false;
+  const base = numberOption(baseFontSize), ratio = numberOption(headingScale);
+  const table = numberOption(tableFontSize), depth = integerOption(tocDepth, "tocDepth");
+  const target = integerOption(fitToPages, "fitToPages");
+  if (typeof toc !== "boolean") throw new TypeError("toc must be a boolean");
+  if (depth !== undefined && depth > 6) throw new RangeError("tocDepth must be 1..6");
+  if (target !== undefined && target > 0xffffffff) throw new RangeError("fitToPages exceeds the u32 ABI limit");
+  const protrusion = microtype === "protrusion" || microtypeProtrusion === true;
+  for (const [input, maximum, label] of [[pdfImages, 4096, "pdfImages"], [fontAssets, 5, "fontAssets"]]) {
+    if (input != null && (!Array.isArray(input) || input.length > maximum)) {
+      throw new RangeError(`${label} must be an array with at most ${maximum} entries`);
+    }
+  }
+  const images = pdfImagesOption(pdfImages), fonts = fontAssetsOption(fontAssets);
+  const destinations = new Set();
+  let imageBytes = 0, destinationBytes = 0, fontBytes = 0;
+  for (const image of images) {
+    destinationBytes += bookPdfTextBytes(image.destination, 8192);
+    if (destinationBytes > 65536) throw new RangeError("book image destinations exceed 64 KiB");
+    if (destinations.has(image.destination)) throw new TypeError("book image destinations must be unique");
+    destinations.add(image.destination);
+    imageBytes += bookPdfAssetLength(image.bytes);
+    if (imageBytes > 128 * 1024 * 1024) throw new RangeError("book images exceed 128 MiB");
+  }
+  for (const asset of fonts) {
+    fontBytes += bookPdfAssetLength(asset.bytes);
+    if (fontBytes > 128 * 1024 * 1024) throw new RangeError("book fonts exceed 128 MiB");
+  }
+  const advanced = geometry.length > 0 || images.length > 0 || fonts.length > 0
+    || epoch !== undefined || raw || lineNumbers || base !== undefined || ratio !== undefined
+    || table !== undefined || language !== undefined || !toc || depth !== undefined
+    || target !== undefined || protrusion;
+  if (!advanced) {
+    return { advanced, args: [paths, sources, heading, writer, family, dark, scale, numbers] };
+  }
+  // Validate all counts, exact view bounds and totals before copying payloads.
+  const flat = new Uint8Array(imageBytes), lengths = new Uint32Array(images.length);
+  let offset = 0;
+  images.forEach((image, index) => {
+    flat.set(image.bytes, offset);
+    lengths[index] = image.bytes.byteLength;
+    offset += image.bytes.byteLength;
+  });
+  const ownedFonts = fonts.map(asset => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
+  return {
+    advanced,
+    args: [paths, sources, family, dark, heading, writer, epoch, raw, lineNumbers,
+      images.map(image => image.destination), flat, lengths,
+      fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
+      fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
+      fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts),
+      base, ratio, table, numbers, scale, language, toc, depth, target, protrusion, geometry],
+  };
+}
+
+function bookPdfTextBytes(text, maximum) {
+  if (text.length > maximum) throw new RangeError("book text exceeds its UTF-8 byte limit");
+  let bytes = 0;
+  for (const character of text) {
+    const cp = character.codePointAt(0);
+    if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError("book text contains an unpaired surrogate");
+    bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    if (bytes > maximum) throw new RangeError("book text exceeds its UTF-8 byte limit");
+  }
+  return bytes;
+}
+
+function bookPdfAssetLength(bytes) {
+  if (Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]") {
+    throw new TypeError("book asset buffers must not use shared memory");
+  }
+  new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength === 0 || bytes.byteLength > 32 * 1024 * 1024) {
+    throw new RangeError("book assets must contain 1 byte through 32 MiB");
+  }
+  return bytes.byteLength;
 }
 
 export async function createRenderer(input) {

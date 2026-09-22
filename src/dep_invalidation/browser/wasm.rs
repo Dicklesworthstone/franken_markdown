@@ -53,6 +53,15 @@ impl FmdFlowSession {
             reuse(verified_asset_reuse)).map_err(js_error)
     }
 
+    /// One atomic editor transaction in original UTF-16 coordinates.
+    #[wasm_bindgen(js_name = editManyUtf16Packed)]
+    pub fn edit_many_utf16_packed(&mut self, revision: &str, ranges: &[u32],
+        lengths: &[u32], replacements: &str, verified_asset_reuse: bool) -> Result<(), JsValue>
+    {
+        self.inner.edit_many_utf16_packed(id(revision)?, ranges, lengths, replacements,
+            reuse(verified_asset_reuse)).map_err(js_error)
+    }
+
     #[wasm_bindgen(js_name = replaceSource)]
     pub fn replace_source(&mut self, revision: &str, source: &str, verified_asset_reuse: bool) -> Result<(), JsValue> {
         self.inner.replace_source(id(revision)?, source, reuse(verified_asset_reuse)).map_err(js_error)

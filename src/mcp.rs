@@ -4,11 +4,12 @@
 //! exposing `franken_markdown` render, verify, and capabilities as tools
 //! callable directly by AI coding agents.
 //!
-//! Framing adheres to the MCP / LSP standard (`Content-Length: <n>\r\n\r\n`).
+//! Uses standard MCP newline-delimited JSON. Legacy Content-Length clients are
+//! accepted with matching replies, without confusing MCP stdio with LSP.
 //! Frame size is capped at 72 MiB (64 MiB input payload + envelope headroom).
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::time::Instant;
 
@@ -22,6 +23,8 @@ use crate::{
 
 /// Default maximum frame bytes (72 MiB).
 pub const MAX_FRAME_BYTES: usize = 72 * 1024 * 1024;
+/// Maximum nested JSON containers accepted from an untrusted peer.
+pub const MAX_JSON_DEPTH: usize = 128;
 /// Default maximum input Markdown bytes (64 MiB).
 pub const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -78,7 +81,11 @@ impl JsonValue {
     #[must_use]
     pub fn as_u64(&self) -> Option<u64> {
         match self {
-            Self::Number(n) if *n >= 0.0 && n.fract() == 0.0 => Some(*n as u64),
+            Self::Number(n)
+                if n.is_finite() && *n >= 0.0 && *n < (u64::MAX as f64) && n.fract() == 0.0 =>
+            {
+                Some(*n as u64)
+            }
             _ => None,
         }
     }
@@ -122,7 +129,7 @@ impl JsonValue {
             Self::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             Self::Number(n) => {
                 if n.is_finite() {
-                    if n.fract() == 0.0 && *n >= (i64::MIN as f64) && *n <= (i64::MAX as f64) {
+                    if n.fract() == 0.0 && *n >= (i64::MIN as f64) && *n < (i64::MAX as f64) {
                         out.push_str(&format!("{}", *n as i64));
                     } else {
                         out.push_str(&format!("{n}"));
@@ -182,7 +189,7 @@ pub fn parse_json(input: &str) -> Result<JsonValue, String> {
     let chars: Vec<char> = input.chars().collect();
     let mut idx = 0;
     skip_whitespace(&chars, &mut idx);
-    let val = parse_value(&chars, &mut idx)?;
+    let val = parse_value(&chars, &mut idx, 0)?;
     skip_whitespace(&chars, &mut idx);
     if idx < chars.len() {
         return Err(format!("unexpected trailing data at index {idx}"));
@@ -191,22 +198,25 @@ pub fn parse_json(input: &str) -> Result<JsonValue, String> {
 }
 
 fn skip_whitespace(chars: &[char], idx: &mut usize) {
-    while *idx < chars.len() && chars[*idx].is_whitespace() {
+    while *idx < chars.len() && matches!(chars[*idx], ' ' | '\t' | '\r' | '\n') {
         *idx += 1;
     }
 }
 
-fn parse_value(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
+fn parse_value(chars: &[char], idx: &mut usize, depth: usize) -> Result<JsonValue, String> {
     skip_whitespace(chars, idx);
     if *idx >= chars.len() {
         return Err("unexpected end of JSON input".to_string());
+    }
+    if depth >= MAX_JSON_DEPTH && matches!(chars[*idx], '[' | '{') {
+        return Err(format!("JSON nesting exceeds maximum {MAX_JSON_DEPTH}"));
     }
     match chars[*idx] {
         'n' => parse_null(chars, idx),
         't' | 'f' => parse_bool(chars, idx),
         '"' => parse_string_val(chars, idx),
-        '[' => parse_array(chars, idx),
-        '{' => parse_object(chars, idx),
+        '[' => parse_array(chars, idx, depth + 1),
+        '{' => parse_object(chars, idx, depth + 1),
         '-' | '0'..='9' => parse_number(chars, idx),
         c => Err(format!("unexpected character '{c}' at index {idx}")),
     }
@@ -263,6 +273,9 @@ fn parse_string_raw(chars: &[char], idx: &mut usize) -> Result<String, String> {
                         if *idx + 4 > chars.len() {
                             return Err("truncated unicode escape".to_string());
                         }
+                        if !chars[*idx..*idx + 4].iter().all(char::is_ascii_hexdigit) {
+                            return Err("invalid hex in unicode escape".to_string());
+                        }
                         let hex: String = chars[*idx..*idx + 4].iter().collect();
                         *idx += 4;
                         let code = u32::from_str_radix(&hex, 16)
@@ -293,8 +306,11 @@ fn parse_string_raw(chars: &[char], idx: &mut usize) -> Result<String, String> {
                             s.push(ch);
                         }
                     }
-                    _ => s.push(esc),
+                    _ => return Err("invalid JSON string escape".to_string()),
                 }
+            }
+            c if c <= '\u{1f}' => {
+                return Err("unescaped control character in JSON string".to_string());
             }
             _ => s.push(c),
         }
@@ -308,35 +324,57 @@ fn parse_string_val(chars: &[char], idx: &mut usize) -> Result<JsonValue, String
 
 fn parse_number(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
     let start = *idx;
-    if *idx < chars.len() && chars[*idx] == '-' {
+    if chars.get(*idx) == Some(&'-') {
         *idx += 1;
     }
-    while *idx < chars.len() && chars[*idx].is_ascii_digit() {
-        *idx += 1;
+    match chars.get(*idx) {
+        Some('0') => {
+            *idx += 1;
+            if chars.get(*idx).is_some_and(char::is_ascii_digit) {
+                return Err("leading zero in JSON number".to_string());
+            }
+        }
+        Some('1'..='9') => {
+            while chars.get(*idx).is_some_and(char::is_ascii_digit) {
+                *idx += 1;
+            }
+        }
+        _ => return Err("missing integer part in JSON number".to_string()),
     }
-    if *idx < chars.len() && chars[*idx] == '.' {
+    if chars.get(*idx) == Some(&'.') {
         *idx += 1;
-        while *idx < chars.len() && chars[*idx].is_ascii_digit() {
+        let digits = *idx;
+        while chars.get(*idx).is_some_and(char::is_ascii_digit) {
             *idx += 1;
         }
+        if *idx == digits {
+            return Err("missing fractional digits in JSON number".to_string());
+        }
     }
-    if *idx < chars.len() && (chars[*idx] == 'e' || chars[*idx] == 'E') {
+    if matches!(chars.get(*idx), Some('e' | 'E')) {
         *idx += 1;
-        if *idx < chars.len() && (chars[*idx] == '+' || chars[*idx] == '-') {
+        if matches!(chars.get(*idx), Some('+' | '-')) {
             *idx += 1;
         }
-        while *idx < chars.len() && chars[*idx].is_ascii_digit() {
+        let digits = *idx;
+        while chars.get(*idx).is_some_and(char::is_ascii_digit) {
             *idx += 1;
+        }
+        if *idx == digits {
+            return Err("missing exponent digits in JSON number".to_string());
         }
     }
     let num_str: String = chars[start..*idx].iter().collect();
     let num = num_str
         .parse::<f64>()
-        .map_err(|e| format!("invalid number '{num_str}': {e}"))?;
+        .map_err(|_| "invalid JSON number".to_string())?;
+    if !num.is_finite() {
+        return Err("JSON number is outside the supported finite range".to_string());
+    }
     Ok(JsonValue::Number(num))
 }
 
-fn parse_array(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
+fn parse_array(chars: &[char], idx: &mut usize, depth: usize) -> Result<JsonValue, String> {
     *idx += 1; // skip '['
     let mut arr = Vec::new();
     skip_whitespace(chars, idx);
@@ -345,7 +383,7 @@ fn parse_array(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
         return Ok(JsonValue::Array(arr));
     }
     loop {
-        let val = parse_value(chars, idx)?;
+        let val = parse_value(chars, idx, depth)?;
         arr.push(val);
         skip_whitespace(chars, idx);
         if *idx >= chars.len() {
@@ -365,7 +403,7 @@ fn parse_array(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
     }
 }
 
-fn parse_object(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
+fn parse_object(chars: &[char], idx: &mut usize, depth: usize) -> Result<JsonValue, String> {
     *idx += 1; // skip '{'
     let mut map = BTreeMap::new();
     skip_whitespace(chars, idx);
@@ -381,7 +419,7 @@ fn parse_object(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
             return Err("expected ':' after object key".to_string());
         }
         *idx += 1; // skip ':'
-        let val = parse_value(chars, idx)?;
+        let val = parse_value(chars, idx, depth)?;
         map.insert(key, val);
         skip_whitespace(chars, idx);
         if *idx >= chars.len() {
@@ -401,71 +439,10 @@ fn parse_object(chars: &[char], idx: &mut usize) -> Result<JsonValue, String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Framing Transport: read_frame / write_frame
-// ---------------------------------------------------------------------------
+mod transport;
 
-/// Read one Content-Length framed JSON-RPC message from `reader`.
-///
-/// If input starts with `{` or `[`, raw newline-delimited JSON is accepted as a fallback.
-pub fn read_frame<R: BufRead>(
-    reader: &mut R,
-    max_frame_bytes: usize,
-) -> std::io::Result<Option<String>> {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line)?;
-        if bytes_read == 0 {
-            return Ok(None);
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if let Some(len) = content_length {
-                if len > max_frame_bytes {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("frame length {len} exceeds maximum {max_frame_bytes}"),
-                    ));
-                }
-                let mut buf = vec![0u8; len];
-                reader.read_exact(&mut buf)?;
-                let text = String::from_utf8(buf).map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("invalid UTF-8: {e}"),
-                    )
-                })?;
-                return Ok(Some(text));
-            }
-            continue;
-        }
-
-        // Direct JSON fallback (if no Content-Length header was sent)
-        if trimmed.starts_with('{') || trimmed.starts_with('[') {
-            return Ok(Some(trimmed.to_string()));
-        }
-
-        if trimmed.len() >= 15 && trimmed[..15].eq_ignore_ascii_case("content-length:") {
-            let len_str = trimmed[15..].trim();
-            let len = len_str.parse::<usize>().map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("invalid Content-Length '{len_str}': {e}"),
-                )
-            })?;
-            content_length = Some(len);
-        }
-    }
-}
-
-/// Write one Content-Length framed JSON-RPC message to `writer`.
-pub fn write_frame<W: Write>(writer: &mut W, body: &str) -> std::io::Result<()> {
-    write!(writer, "Content-Length: {}\r\n\r\n{}", body.len(), body)?;
-    writer.flush()
-}
+pub use transport::{read_frame, write_frame};
+use transport::{Framing, read_message, write_message};
 
 // ---------------------------------------------------------------------------
 // JSON-RPC Request / Response & MCP Dispatch
@@ -499,6 +476,31 @@ pub fn parse_jsonrpc_request(
     })?;
 
     let id = obj.get("id").cloned();
+    let valid_id = match &id {
+        None | Some(JsonValue::Null | JsonValue::String(_)) => true,
+        // The JSON model stores f64. Refuse IDs it cannot echo exactly rather
+        // than replying with a different request ID after numeric rounding.
+        Some(JsonValue::Number(number)) => {
+            number.is_finite() && number.fract() == 0.0 && number.abs() <= 9_007_199_254_740_991.0
+        }
+        _ => false,
+    };
+    if !valid_id {
+        return Err((
+            None,
+            INVALID_REQUEST,
+            "Invalid Request: id must be a string, null, or safe integer".to_string(),
+            "invalid_request",
+        ));
+    }
+    if obj.get("jsonrpc").and_then(JsonValue::as_str) != Some("2.0") {
+        return Err((
+            id,
+            INVALID_REQUEST,
+            "Invalid Request: jsonrpc must be '2.0'".to_string(),
+            "invalid_request",
+        ));
+    }
     let method = obj
         .get("method")
         .and_then(|m| m.as_str())
@@ -513,6 +515,16 @@ pub fn parse_jsonrpc_request(
         .to_string();
 
     let params = obj.get("params").cloned();
+    if params.as_ref().is_some_and(|value| {
+        !matches!(value, JsonValue::Object(_) | JsonValue::Array(_))
+    }) {
+        return Err((
+            id,
+            INVALID_PARAMS,
+            "Invalid params: expected object or array".to_string(),
+            "invalid_params",
+        ));
+    }
     Ok(JsonRpcRequest { id, method, params })
 }
 
@@ -1308,96 +1320,95 @@ pub fn run_stdio_server(max_input_bytes: u64) -> Result<(), RenderError> {
         MCP_PROTOCOL_VERSION
     );
     let mut reader = BufReader::new(std::io::stdin());
-    let mut stdout = std::io::stdout();
-    let mut request_count = 0usize;
+    let stdout = std::io::stdout();
+    match serve_stdio(&mut reader, &mut stdout.lock(), max_input_bytes, MAX_FRAME_BYTES) {
+        Ok(count) => {
+            eprintln!("fmd mcp stdio server closed cleanly (handled {count} requests)");
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
 
+/// Run one MCP connection over caller-provided streams. This is the same loop
+/// used by the CLI, allowing hosts and tests to exercise complete transcripts.
+/// Framing failures terminate the connection; JSON/request errors are isolated
+/// to their message and do not prevent the next well-framed request succeeding.
+pub fn serve_stdio<R: BufRead, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    max_input_bytes: u64,
+    max_frame_bytes: usize,
+) -> io::Result<usize> {
+    let mut framing = None;
+    let mut request_count = 0usize;
     loop {
-        let frame = match read_frame(&mut reader, MAX_FRAME_BYTES) {
-            Ok(Some(f)) => f,
-            Ok(None) => break, // EOF reached cleanly
-            Err(e) => {
-                eprintln!("fmd mcp frame read error: {e}");
-                let err_resp = jsonrpc_error(
+        let frame = match read_message(reader, &mut framing, max_frame_bytes) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return Ok(request_count),
+            Err(error) => {
+                let response = jsonrpc_error(
                     None,
                     PARSE_ERROR,
-                    &format!("Frame read error: {e}"),
+                    &format!("Frame read error: {error}"),
                     "frame_error",
                 );
-                let _ = write_frame(&mut stdout, &err_resp);
-                continue;
+                write_message(writer, framing.unwrap_or(Framing::JsonLines), &response)?;
+                // Never interpret an unread oversized body as a new request.
+                return Err(error);
             }
         };
-
         request_count += 1;
-        let response_str = match parse_jsonrpc_request(&frame) {
-            Ok(req) => {
-                match req.method.as_str() {
-                    "initialize" => {
-                        let mut res = BTreeMap::new();
-                        res.insert(
-                            "protocolVersion".to_string(),
-                            JsonValue::String(MCP_PROTOCOL_VERSION.to_string()),
-                        );
-                        let mut cap = BTreeMap::new();
-                        cap.insert("tools".to_string(), JsonValue::Object(BTreeMap::new()));
-                        res.insert("capabilities".to_string(), JsonValue::Object(cap));
-                        let mut server_info = BTreeMap::new();
-                        server_info
-                            .insert("name".to_string(), JsonValue::String("fmd".to_string()));
-                        server_info.insert(
-                            "version".to_string(),
-                            JsonValue::String(env!("CARGO_PKG_VERSION").to_string()),
-                        );
-                        res.insert("serverInfo".to_string(), JsonValue::Object(server_info));
-
-                        let id = req.id.as_ref().unwrap_or(&JsonValue::Null);
-                        Some(jsonrpc_success(id, JsonValue::Object(res)))
-                    }
-                    "notifications/initialized" | "initialized" => {
-                        // Handshake notification - no response required
-                        None
-                    }
-                    "ping" => {
-                        let id = req.id.as_ref().unwrap_or(&JsonValue::Null);
-                        Some(jsonrpc_success(id, JsonValue::Object(BTreeMap::new())))
-                    }
-                    "tools/list" => {
-                        let id = req.id.as_ref().unwrap_or(&JsonValue::Null);
-                        Some(jsonrpc_success(id, tools_list_result()))
-                    }
-                    "tools/call" => {
-                        let id = req.id.as_ref().unwrap_or(&JsonValue::Null);
-                        match handle_tool_call(req.params.as_ref(), max_input_bytes) {
-                            Ok(tool_res) => Some(jsonrpc_success(id, tool_res)),
-                            Err((code, msg, reason)) => {
-                                Some(jsonrpc_error(Some(id), code, &msg, reason))
-                            }
-                        }
-                    }
-                    _ => {
-                        let id = req.id.as_ref();
-                        Some(jsonrpc_error(
-                            id,
-                            METHOD_NOT_FOUND,
-                            &format!("Method not found: '{}'", req.method),
-                            "method_not_found",
-                        ))
-                    }
-                }
-            }
-            Err((id, code, msg, reason)) => Some(jsonrpc_error(id.as_ref(), code, &msg, reason)),
-        };
-
-        if let Some(resp) = response_str {
-            if let Err(e) = write_frame(&mut stdout, &resp) {
-                eprintln!("fmd mcp frame write error: {e}");
-                break;
-            }
+        if let Some(response) = dispatch_message(&frame, max_input_bytes) {
+            write_message(writer, framing.unwrap_or(Framing::JsonLines), &response)?;
         }
     }
+}
 
-    eprintln!("fmd mcp stdio server closed cleanly (handled {request_count} requests)");
-    Ok(())
+fn dispatch_message(frame: &str, max_input_bytes: u64) -> Option<String> {
+    let request = match parse_jsonrpc_request(frame) {
+        Ok(request) => request,
+        Err((None, INVALID_PARAMS, _, _)) => return None,
+        Err((id, code, message, reason)) => {
+            return Some(jsonrpc_error(id.as_ref(), code, &message, reason));
+        }
+    };
+    // Notifications, including unknown notification methods, never receive a
+    // response. MCP tool invocations require an id and are not notifications.
+    let id = request.id.as_ref()?;
+    let result = match request.method.as_str() {
+        "initialize" => {
+            let mut result = BTreeMap::new();
+            result.insert(
+                "protocolVersion".to_string(),
+                JsonValue::String(MCP_PROTOCOL_VERSION.to_string()),
+            );
+            let mut capabilities = BTreeMap::new();
+            capabilities.insert("tools".to_string(), JsonValue::Object(BTreeMap::new()));
+            result.insert("capabilities".to_string(), JsonValue::Object(capabilities));
+            let mut info = BTreeMap::new();
+            info.insert("name".to_string(), JsonValue::String("fmd".to_string()));
+            info.insert(
+                "version".to_string(),
+                JsonValue::String(env!("CARGO_PKG_VERSION").to_string()),
+            );
+            result.insert("serverInfo".to_string(), JsonValue::Object(info));
+            Ok(JsonValue::Object(result))
+        }
+        "ping" => Ok(JsonValue::Object(BTreeMap::new())),
+        "tools/list" => Ok(tools_list_result()),
+        "tools/call" => handle_tool_call(request.params.as_ref(), max_input_bytes),
+        _ => Err((
+            METHOD_NOT_FOUND,
+            format!("Method not found: '{}'", request.method),
+            "method_not_found",
+        )),
+    };
+    Some(match result {
+        Ok(result) => jsonrpc_success(id, result),
+        Err((code, message, reason)) => jsonrpc_error(Some(id), code, &message, reason),
+    })
 }
 
 // ---------------------------------------------------------------------------

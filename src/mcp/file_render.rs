@@ -6,6 +6,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::tools::{ToolError, wrap_text_content};
+use super::tools::resources::{self, with_svg_warnings};
 use super::{ERROR_INPUT_ERROR, ERROR_INPUT_TOO_LARGE, ERROR_INVALID_OPTIONS, ERROR_RENDER_FAILED};
 use super::{JsonValue, base64_encode};
 use crate::file_write::{OutputFile, write_outputs_staged};
@@ -152,13 +153,27 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
             return Err((ERROR_INVALID_OPTIONS, format!("Output '{}' would overwrite the Markdown source", destination.display()), "output_overwrites_input"));
         }
     }
+    let assets = resources::parse(args)?;
     let title = Path::new(path).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
-    let html_options = HtmlOptions { title: Some(title.clone()), ..Default::default() };
-    let pdf_options = PdfOptions { title: Some(title), ..Default::default() };
+    let mut html_options = HtmlOptions { title: Some(title.clone()), ..Default::default() };
+    let mut pdf_options = PdfOptions { title: Some(title), ..Default::default() };
+    if target == "both" {
+        html_options.font_assets = assets.fonts.clone();
+        html_options.image_assets = assets.images.clone();
+        pdf_options.font_assets = assets.fonts;
+        pdf_options.image_assets = assets.images;
+    } else if matches!(target.as_str(), "html" | "epub") {
+        html_options.font_assets = assets.fonts;
+        html_options.image_assets = assets.images;
+    } else {
+        pdf_options.font_assets = assets.fonts;
+        pdf_options.image_assets = assets.images;
+    }
     // Parse once, including for paired HTML/PDF output.
     let document = crate::parse_markdown(&source.text);
     let render_error = |error: crate::RenderError| (ERROR_RENDER_FAILED, format!("Render failed: {error}"), "render_failed");
     let mut artifacts = Vec::new();
+    let mut svg_warnings = Vec::new();
     if matches!(target.as_str(), "html" | "both") {
         artifacts.push(Artifact { format: "html", mime: "text/html", bytes: crate::render_html_document(&document, &html_options).map_err(render_error)?.into_bytes(), binary: false });
     }
@@ -169,7 +184,11 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
         artifacts.push(Artifact { format: "epub", mime: "application/epub+zip", bytes: crate::render_epub(&document, &html_options).map_err(render_error)?, binary: true });
     }
     if target == "svg" {
-        artifacts.push(Artifact { format: "svg", mime: "image/svg+xml", bytes: crate::render_svg(&document, &SvgOptions::default()), binary: false });
+        let (bytes, _, warnings) = crate::svg::render_svg_with_resources(
+            &document, &SvgOptions::default(), &pdf_options.font_assets, &pdf_options.image_assets,
+        ).map_err(render_error)?;
+        svg_warnings = warnings;
+        artifacts.push(Artifact { format: "svg", mime: "image/svg+xml", bytes, binary: false });
     }
     if !destinations.is_empty() {
         // Every render and source-identity check finishes before any file write.
@@ -180,10 +199,10 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
         ))?;
         let written: Vec<_> = artifacts.iter().zip(&destinations)
             .map(|(artifact, path)| format!("Rendered {} written to {}", artifact.format.to_ascii_uppercase(), path.display())).collect();
-        return Ok(wrap_text_content(&written.join("\n")));
+        return Ok(with_svg_warnings(wrap_text_content(&written.join("\n")), svg_warnings));
     }
     if let [artifact] = artifacts.as_slice() {
-        return Ok(wrap_text_content(&artifact.text()?));
+        return Ok(with_svg_warnings(wrap_text_content(&artifact.text()?), svg_warnings));
     }
     // Existing single-format responses stay unchanged. The new paired response
     // carries both payloads with explicit format, media type and encoding.

@@ -13,12 +13,17 @@ use crate::{
     PdfASettings, PdfOptions, Theme,
 };
 
+#[path = "resources.rs"]
+pub(super) mod resources;
+
 pub(super) type ToolError = (i32, String, &'static str);
 type Field = (&'static str, &'static str, &'static str);
 type ToolSpec = (&'static str, &'static str, &'static [Field], &'static [&'static str]);
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 const HTML_FIELDS: &[Field] = &[
+    ("images", "array", "Explicit image bytes keyed by Markdown destination; never fetched"),
+    ("fonts", "array", "Explicit TrueType bytes and optional weights for canonical font slots"),
     ("markdown", "string", "Markdown source text to render"),
     ("font", "string", "Body font family ('sans' or 'serif')"),
     ("darkMode", "string", "Dark mode policy ('auto' or 'disabled')"),
@@ -33,6 +38,8 @@ const HTML_FIELDS: &[Field] = &[
     ("fontScale", "string", "Typographic scale preset or multiplier ('sm', '125%')"),
 ];
 const PDF_FIELDS: &[Field] = &[
+    ("images", "array", "Explicit image bytes keyed by Markdown destination; never fetched"),
+    ("fonts", "array", "Explicit TrueType bytes and optional weights for canonical font slots"),
     ("markdown", "string", "Markdown source text to render"),
     ("font", "string", "Body font family ('sans' or 'serif')"),
     ("title", "string", "Document title metadata"),
@@ -55,6 +62,8 @@ const VERIFY_FIELDS: &[Field] = &[
     ("a11y", "boolean", "Restrict findings to the accessibility audit"),
 ];
 const FILE_FIELDS: &[Field] = &[
+    ("images", "array", "Explicit image bytes keyed by Markdown destination; never fetched"),
+    ("fonts", "array", "Explicit TrueType bytes and optional weights for canonical font slots"),
     ("path", "string", "Local path to a UTF-8 Markdown regular file"),
     ("to", "string", "Output format ('html', 'pdf', 'both', 'epub', 'svg')"),
     ("out", "string", "Optional output path; 'both' replaces its extension with .html and .pdf"),
@@ -78,6 +87,9 @@ fn integer_bounds(name: &str) -> (u64, u64) {
 pub fn tools_list_result() -> JsonValue {
     let tools = TOOLS.iter().map(|(name, description, fields, required)| {
         let properties = fields.iter().map(|(name, kind, description)| {
+            if matches!(*name, "images" | "fonts") {
+                return ((*name).to_owned(), resources::schema(name));
+            }
             let mut property = BTreeMap::from([
                 ("type".to_string(), JsonValue::String((*kind).to_string())),
                 ("description".to_string(), JsonValue::String((*description).to_string())),
@@ -122,6 +134,7 @@ fn validate_arguments(args: &JsonValue, fields: &[Field], required: &[&str]) -> 
         let valid = match *kind {
             "string" => matches!(value, JsonValue::String(_)),
             "boolean" => matches!(value, JsonValue::Bool(_)),
+            "array" => matches!(value, JsonValue::Array(_)),
             "integer" => {
                 let (min, max) = integer_bounds(name);
                 value.as_u64().is_some_and(|value| (min..=max).contains(&value))
@@ -269,7 +282,10 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
     match name {
         "fmd.render_html" => {
             let source = markdown(args, limit)?;
-            let options = html_options(args)?;
+            let mut options = html_options(args)?;
+            let assets = resources::parse(args)?;
+            options.font_assets = assets.fonts;
+            options.image_assets = assets.images;
             let doc = crate::parse_markdown(source);
             let html = if boolean(args, "interactiveHtml") {
                 crate::interactive::render_interactive_html(&doc, source, &options)
@@ -280,7 +296,10 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
         }
         "fmd.render_pdf" => {
             let source = markdown(args, limit)?;
-            let (options, settings) = pdf_options(args)?;
+            let (mut options, settings) = pdf_options(args)?;
+            let assets = resources::parse(args)?;
+            options.font_assets = assets.fonts;
+            options.image_assets = assets.images;
             let doc = crate::parse_markdown(source);
             let pdf = if settings.mode == PdfAMode::Off {
                 crate::render_pdf_document(&doc, &options)
@@ -300,7 +319,7 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
         }
         "fmd.capabilities" => {
             let json = format!(
-                "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"mcp\":\"available_stdio_jsonrpc\"}}}}",
+                "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"mcp\":\"available_stdio_jsonrpc\",\"mcp_resources\":\"available_explicit_base64_bytes\"}}}}",
                 env!("CARGO_PKG_VERSION"), Theme::default().to_config_json()
             );
             Ok(wrap_text_content(&json))

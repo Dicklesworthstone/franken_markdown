@@ -446,3 +446,176 @@ export function serveOwnedWorker(endpoint, dispatch) {
     endpoint.removeEventListener("message", receive);
   };
 }
+
+// Snapshot-item deltas are a transport optimization, not incremental typesetting.
+// Keep ONE owned baseline per endpoint; never retain pages returned to callers.
+// The limit charges UTF-16 JSON text, not the native heap or full response size.
+export const SNAPSHOT_DELTA_CACHE_BYTES = 2 * 1024 * 1024;
+const SNAPSHOT_DELTA_MAX_ITEMS = 2048;
+const deltaFailure = () => failure("WORKER_PROTOCOL_ERROR", "invalid snapshot delta");
+const deltaId = (id) => id === null || (Number.isSafeInteger(id) && id > 0);
+const deltaObject = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+function snapshotItemText(item) {
+  // These items originate in the native JSON facade. Refuse lossy JSON
+  // coercions rather than accidentally equate NaN/null or undefined/omitted.
+  let text;
+  let negativeZero = false;
+  try {
+    text = JSON.stringify(item, function (key, value) {
+      if (this[key] !== value && this[key] && typeof this[key] === "object")
+        throw deltaFailure();
+      if (Object.is(value, -0)) negativeZero = true;
+      if (
+        value === undefined ||
+        typeof value === "bigint" ||
+        typeof value === "function" ||
+        typeof value === "symbol" ||
+        (typeof value === "number" && !Number.isFinite(value)) ||
+        (value && typeof value === "object" &&
+          !Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype)
+      ) throw deltaFailure();
+      return value;
+    });
+  } catch {
+    throw deltaFailure();
+  }
+  if (typeof text !== "string") throw deltaFailure();
+  // JSON.parse can produce -0 from native JSON, but JSON.stringify loses
+  // its sign. Preserve those legitimate pages through full structured clone.
+  return negativeZero ? null : text;
+}
+
+function snapshotItemTexts(items) {
+  if (!Array.isArray(items) || items.length > SNAPSHOT_DELTA_MAX_ITEMS) throw deltaFailure();
+  const texts = [];
+  let bytes = 0;
+  for (const item of items) {
+    const text = snapshotItemText(item);
+    if (text === null) return null;
+    bytes += text.length * 2;
+    if (bytes > SNAPSHOT_DELTA_CACHE_BYTES) return null;
+    texts.push(text);
+  }
+  return texts;
+}
+
+/** Internal, negotiated worker transport. Full replies remain available when
+ * a queued request names an old baseline or when a page is too large to retain.
+ * Equality is exact JSON text, never a collision-prone content hash. */
+export class SnapshotDeltaEncoder {
+  #sequence = 0;
+  #id = null;
+  #texts = null;
+
+  clear() {
+    this.#id = null;
+    this.#texts = null;
+  }
+
+  encode(page, baseId) {
+    if (!deltaObject(page) || !deltaId(baseId)) throw deltaFailure();
+    const texts = snapshotItemTexts(page.items);
+    if (texts === null) {
+      this.clear();
+      return { kind: "full", id: null, page };
+    }
+    if (this.#sequence === Number.MAX_SAFE_INTEGER) throw deltaFailure();
+    const id = this.#sequence + 1;
+    let packet = { kind: "full", id, page };
+    if (baseId !== null && baseId === this.#id && this.#texts !== null) {
+      const changes = [];
+      let changeSize = 64;
+      let fullSize = 0;
+      for (let index = 0; index < texts.length; index += 1) {
+        fullSize += texts[index].length + 1;
+        if (texts[index] !== this.#texts[index]) {
+          changes.push([index, page.items[index]]);
+          changeSize += texts[index].length + String(index).length + 4;
+        }
+      }
+      if (changeSize < fullSize) {
+        const { items: _items, ...metadata } = page;
+        packet = { kind: "delta", id, baseId, page: metadata, length: texts.length, changes };
+      }
+    }
+    this.#sequence = id;
+    this.#id = id;
+    this.#texts = texts;
+    return packet;
+  }
+}
+
+/** Reconstruct privately, validate all replacements, and only then advance the
+ * baseline. Public page mutation cannot change this immutable-text cache. */
+export class SnapshotDeltaDecoder {
+  #id = null;
+  #sequence = 0;
+  #texts = null;
+
+  get baseId() {
+    return this.#id;
+  }
+
+  clear() {
+    this.#id = null;
+    this.#texts = null;
+  }
+
+  decode(packet) {
+    if (
+      !deltaObject(packet) || !deltaObject(packet.page) || !deltaId(packet.id) ||
+      (packet.id !== null && packet.id <= this.#sequence)
+    ) throw deltaFailure();
+    let items;
+    let texts;
+    if (packet.kind === "full") {
+      texts = snapshotItemTexts(packet.page.items);
+      if (packet.id !== null && texts === null) throw deltaFailure();
+      items = packet.page.items;
+      if (packet.id === null) texts = null;
+    } else if (packet.kind === "delta") {
+      if (
+        packet.id === null || this.#id === null || packet.baseId !== this.#id ||
+        this.#texts === null || Object.hasOwn(packet.page, "items") ||
+        !Number.isSafeInteger(packet.length) || packet.length < 0 ||
+        packet.length > SNAPSHOT_DELTA_MAX_ITEMS || !Array.isArray(packet.changes) ||
+        packet.changes.length > packet.length
+      ) throw deltaFailure();
+      texts = this.#texts.slice(0, packet.length);
+      let previous = -1;
+      let replacementBytes = 0;
+      let bytes = texts.reduce((sum, text) => sum + text.length * 2, 0);
+      for (const change of packet.changes) {
+        if (
+          !Array.isArray(change) || change.length !== 2 || !Number.isSafeInteger(change[0]) ||
+          change[0] <= previous || change[0] >= packet.length
+        ) throw deltaFailure();
+        const [index, item] = change;
+        const text = snapshotItemText(item);
+        if (text === null) throw deltaFailure();
+        replacementBytes += text.length * 2;
+        if (replacementBytes > SNAPSHOT_DELTA_CACHE_BYTES) throw deltaFailure();
+        bytes += (text.length - (texts[index]?.length ?? 0)) * 2;
+        // Count the final cache below as well: later replacements can shrink
+        // earlier data, so do not reject an otherwise bounded final page here.
+        texts[index] = text;
+        previous = index;
+      }
+      if (bytes > SNAPSHOT_DELTA_CACHE_BYTES || texts.length !== packet.length)
+        throw deltaFailure();
+      items = [];
+      for (let index = 0; index < packet.length; index += 1) {
+        if (typeof texts[index] !== "string") throw deltaFailure();
+        items.push(JSON.parse(texts[index]));
+      }
+    } else {
+      throw deltaFailure();
+    }
+    this.#id = packet.id;
+    if (packet.id !== null) this.#sequence = packet.id;
+    this.#texts = texts;
+    return { ...packet.page, items };
+  }
+}

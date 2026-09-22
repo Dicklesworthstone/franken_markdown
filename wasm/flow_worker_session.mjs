@@ -11,6 +11,8 @@ import {
 import {
   FlowWorkerError,
   OwnedWorkerRpc,
+  SnapshotDeltaDecoder,
+  SnapshotDeltaEncoder,
   serveOwnedWorker,
   workerLimits,
 } from "./worker_transport.mjs";
@@ -29,6 +31,7 @@ const convert = (error) =>
 export async function createWorkerFlowSessionWith(factory, source, options = {}, runtime = {}) {
   let rpc;
   let worker;
+  const snapshotDeltas = new SnapshotDeltaDecoder();
   try {
     fields(
       runtime,
@@ -61,11 +64,21 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     if (typeof factory !== "function")
       throw new FlowWorkerError("INVALID_WORKER", "workerFactory must be a function");
     let state = null;
+    let supportsSnapshotDeltas = false;
+    let supportsViewportDeltas = false;
     let supportsViewport = false;
     let supportsAssetBatches = false;
     worker = factory();
     rpc = new OwnedWorkerRpc(worker, limits, (value, method, result) => {
       const next = acknowledgedState(value);
+      if (method === "snapshotDelta" || method === "viewportDelta") {
+        const page = snapshotDeltas.decode(result);
+        // OwnedWorkerRpc validates before resolving this same message value.
+        // Define own data properties, never invoke a __proto__ setter.
+        for (const key of Object.keys(result)) delete result[key];
+        Object.defineProperties(result, Object.getOwnPropertyDescriptors(page));
+        method = method === "snapshotDelta" ? "snapshot" : "viewport";
+      }
       if (method === "create") {
         // Legacy workers returned null. Capabilities travel in the creation
         // VALUE, not state, so older clients retain their strict state schema.
@@ -84,6 +97,20 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
             "invalid asset-batch capability acknowledgment",
           );
         }
+        if (
+          result?.supportsSnapshotDeltas !== undefined &&
+          typeof result.supportsSnapshotDeltas !== "boolean"
+        ) {
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid snapshot-delta capability");
+        }
+        if (
+          result?.supportsViewportDeltas !== undefined &&
+          typeof result.supportsViewportDeltas !== "boolean"
+        ) {
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid viewport-delta capability");
+        }
+        supportsViewportDeltas = result?.supportsViewportDeltas === true;
+        supportsSnapshotDeltas = result?.supportsSnapshotDeltas === true;
         supportsAssetBatches = result?.supportsAssetBatches === true;
         supportsViewport = result?.supportsViewport === true;
       }
@@ -184,10 +211,17 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         // eventually reads it behind an edit or reflow.
         if (method === "viewport" && normalized[0].token === undefined)
           normalized[0].token = { ...state.token };
+        // Negotiate each private wire method; old workers receive full pages.
+        // Capture the acknowledged baseline at enqueue. A superseded baseline
+        // costs a full reply, never an implicit rebase or an incorrect page.
+        const wireMethod = method === "snapshot" && supportsSnapshotDeltas ? "snapshotDelta"
+          : method === "viewport" && supportsViewportDeltas ? "viewportDelta" : method;
+        const wireArgs = wireMethod !== method
+          ? [normalized[0], snapshotDeltas.baseId] : normalized;
         const pending = rpc.request(
-          method,
-          requestWeight(normalized),
-          () => snapshotArguments(method, normalized),
+          wireMethod,
+          requestWeight(wireArgs),
+          () => snapshotArguments(wireMethod, wireArgs),
           controls,
         );
         if (method === "viewport")
@@ -331,11 +365,13 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         })();
       },
       dispose() {
+        snapshotDeltas.clear();
         rpc.dispose();
       },
     };
     return Object.freeze(api);
   } catch (error) {
+    snapshotDeltas.clear();
     if (rpc) rpc.dispose();
     else if (worker && typeof worker.terminate === "function") {
       try {
@@ -353,9 +389,21 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
  * before acknowledging state or admitting another operation. */
 export function installFlowWorker(endpoint, createSession) {
   let session = null;
+  const snapshotDeltas = new SnapshotDeltaEncoder();
   const stop = serveOwnedWorker(endpoint, async (method, args) => {
     try {
-      const normalized = normalizeFlowRequest(method, args);
+      const pageMethod = method === "snapshotDelta" ? "snapshot"
+        : method === "viewportDelta" ? "viewport" : null;
+      const delta = pageMethod !== null;
+      if (delta && (
+        !Array.isArray(args) || args.length !== 2 ||
+        (args[1] !== null && (!Number.isSafeInteger(args[1]) || args[1] <= 0))
+      )) {
+        throw new FlowWorkerError("INVALID_ARGUMENT", "invalid snapshot delta request");
+      }
+      // Private transport methods use the unchanged public page validators.
+      // Their baseline is not an option passed into the native core.
+      const normalized = normalizeFlowRequest(pageMethod ?? method, delta ? [args[0]] : args);
       let value;
       if (method === "create") {
         if (session)
@@ -364,6 +412,8 @@ export function installFlowWorker(endpoint, createSession) {
         value = {
           supportsViewport: session.supportsViewport === true,
           supportsAssetBatches: session.supportsAssetBatches === true,
+          supportsSnapshotDeltas: true,
+          supportsViewportDeltas: session.supportsViewport === true,
         };
       } else {
         if (!session)
@@ -376,7 +426,15 @@ export function installFlowWorker(endpoint, createSession) {
         }
         // normalizeFlowRequest is an own-key allowlist. Neither constructors,
         // arbitrary property paths, eval, imports nor dispose are remotely callable.
-        value = method === "getSource" ? session.source : await session[method](...normalized);
+        if (delta) {
+          if (pageMethod === "viewport" && session.supportsViewport !== true) {
+            throw new FlowWorkerError("UNSUPPORTED_WASM_PACKAGE", "indexed viewport unavailable");
+          }
+          const page = await session[pageMethod](normalized[0]);
+          value = snapshotDeltas.encode(page, args[1]);
+        } else {
+          value = method === "getSource" ? session.source : await session[method](...normalized);
+        }
       }
       const state = { token: session.token, layout: session.layoutOptions };
       let transfer = [];
@@ -405,7 +463,7 @@ export function installFlowWorker(endpoint, createSession) {
       const converted = convert(error);
       if (
         method === "create" ||
-        ["WASM_ERROR", "INVALID_WASM_RESPONSE", "WORKER_OPERATION_FAILED"].includes(converted.code)
+        ["WASM_ERROR", "INVALID_WASM_RESPONSE", "WORKER_OPERATION_FAILED", "WORKER_PROTOCOL_ERROR"].includes(converted.code)
       ) {
         converted.fatal = true;
       }
@@ -414,6 +472,7 @@ export function installFlowWorker(endpoint, createSession) {
   });
   return () => {
     stop();
+    snapshotDeltas.clear();
     session?.dispose();
     session = null;
   };

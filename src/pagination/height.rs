@@ -30,6 +30,11 @@ pub struct BlockVariant {
     /// bodies anchored by text in that fragment. Empty means all zero; otherwise
     /// this must have exactly one entry per fragment.
     pub fragment_reservations: Vec<LayoutUnit>,
+    /// Policy for each internal boundary after fragment i. Empty means every
+    /// boundary is allowed at zero cost. Otherwise length must be
+    /// fragment_heights.len() - 1; None forbids that split, Some(cost) allows
+    /// it and adds the signed cost to the objective.
+    pub split_costs: Vec<Option<i64>>,
 }
 
 /// Measured alternatives for one logical block.
@@ -55,6 +60,7 @@ impl BlockCandidates {
                     fragment_heights: vec![line_height; variant.line_count],
                     continuation_prefix: LayoutUnit::ZERO,
                     fragment_reservations: Vec::new(),
+                    split_costs: Vec::new(),
                 })
                 .collect(),
         }
@@ -361,6 +367,7 @@ impl Search {
         variant_index: usize,
         heights: &[usize],
         reservations: &[usize],
+        split_costs: &[Option<i64>],
         continuation_prefix: usize,
         start: usize,
         policy: BlockPolicy,
@@ -413,6 +420,14 @@ impl Search {
 
             let mut penalty = 0_i128;
             if split {
+                if !split_costs.is_empty() {
+                    let Some(boundary_cost) = split_costs[end - 1] else {
+                        continue;
+                    };
+                    penalty = penalty
+                        .checked_add(i128::from(boundary_cost))
+                        .ok_or(HeightPaginationError::CostOverflow)?;
+                }
                 let Some(cost) = violation(
                     count,
                     policy.min_before_break,
@@ -421,7 +436,9 @@ impl Search {
                 else {
                     continue;
                 };
-                penalty = cost;
+                penalty = penalty
+                    .checked_add(cost)
+                    .ok_or(HeightPaginationError::CostOverflow)?;
             }
             if start > 0 {
                 let Some(cost) = violation(
@@ -577,6 +594,14 @@ fn validate(
                     reason: "fragment reservation count must match fragment count",
                 });
             }
+            if !variant.split_costs.is_empty()
+                && variant.split_costs.len() + 1 != variant.fragment_heights.len()
+            {
+                return Err(HeightPaginationError::InvalidBlock {
+                    block_index,
+                    reason: "split policy count must be one less than fragment count",
+                });
+            }
             for &reservation in &variant.fragment_reservations {
                 if reservation.milli_points() < 0 {
                     return Err(HeightPaginationError::InvalidBlock {
@@ -689,6 +714,7 @@ pub fn plan_blocks(
                         variant_index,
                         &heights,
                         &reservations,
+                        &variant.split_costs,
                         continuation_prefix,
                         0,
                         policy,
@@ -705,6 +731,7 @@ pub fn plan_blocks(
                         variant_index,
                         &heights,
                         &reservations,
+                        &variant.split_costs,
                         continuation_prefix,
                         0,
                         policy,
@@ -721,6 +748,7 @@ pub fn plan_blocks(
                     variant_index,
                     &heights,
                     &reservations,
+                    &variant.split_costs,
                     continuation_prefix,
                     start,
                     policy,
@@ -789,6 +817,7 @@ mod tests {
                     fragment_heights: heights.iter().copied().map(u).collect(),
                     continuation_prefix: LayoutUnit::ZERO,
                     fragment_reservations: Vec::new(),
+                    split_costs: Vec::new(),
                 })
                 .collect(),
         }
@@ -805,6 +834,7 @@ mod tests {
                 fragment_heights: heights.iter().copied().map(u).collect(),
                 continuation_prefix: u(prefix),
                 fragment_reservations: Vec::new(),
+                split_costs: Vec::new(),
             }],
         }
     }
@@ -820,6 +850,23 @@ mod tests {
                 fragment_heights: heights.iter().copied().map(u).collect(),
                 continuation_prefix: LayoutUnit::ZERO,
                 fragment_reservations: reservations.iter().copied().map(u).collect(),
+                split_costs: Vec::new(),
+            }],
+        }
+    }
+
+    fn block_with_splits(
+        demerits: i64,
+        heights: &[i32],
+        split_costs: Vec<Option<i64>>,
+    ) -> BlockCandidates {
+        BlockCandidates {
+            variants: vec![BlockVariant {
+                demerits,
+                fragment_heights: heights.iter().copied().map(u).collect(),
+                continuation_prefix: LayoutUnit::ZERO,
+                fragment_reservations: Vec::new(),
+                split_costs,
             }],
         }
     }
@@ -914,6 +961,35 @@ mod tests {
         assert_eq!(plan.page_count, 2, "reservation must reduce usable body capacity");
         assert_eq!(plan.fragments[1].page_index, 1);
         assert_eq!(plan.fragments[1].page_offset, LayoutUnit::ZERO);
+    }
+
+    #[test]
+    fn per_boundary_policy_forbids_and_prices_splits() {
+        let hard = [block_with_splits(
+            0,
+            &[40, 40],
+            vec![None],
+        )];
+        assert!(matches!(
+            plan_blocks(&hard, &[], options(60)),
+            Err(HeightPaginationError::NoFeasibleLayout { .. })
+        ));
+
+        let priced = [block_with_splits(
+            0,
+            &[40, 40, 40],
+            vec![Some(500), Some(0)],
+        )];
+        let priced_plan = plan_blocks(&priced, &[], options(100)).unwrap();
+        assert_eq!(
+            priced_plan
+                .fragments
+                .iter()
+                .map(|f| (f.fragment_start, f.fragment_end))
+                .collect::<Vec<_>>(),
+            vec![(0, 2), (2, 3)],
+            "boundary-specific cost should steer the exact plan"
+        );
     }
 
     #[test]
@@ -1148,6 +1224,12 @@ mod tests {
                     continue;
                 }
                 let mut penalty = 0i128;
+                if split && !variant.split_costs.is_empty() {
+                    let Some(boundary_cost) = variant.split_costs[end] else {
+                        continue;
+                    };
+                    penalty += i128::from(boundary_cost);
+                }
                 let mut legal = true;
                 for (active, minimum, weight) in [
                     (split, policy.min_before_break, policy.before_break_penalty),
@@ -1231,12 +1313,14 @@ mod tests {
                                         fragment_heights: vec![u(a), u(b)],
                                         continuation_prefix: LayoutUnit::ZERO,
                                         fragment_reservations: vec![u(1), LayoutUnit::ZERO],
+                                        split_costs: vec![Some(1)],
                                     },
                                     BlockVariant {
                                         demerits: 2,
                                         fragment_heights: vec![u(a + 1)],
                                         continuation_prefix: LayoutUnit::ZERO,
                                         fragment_reservations: Vec::new(),
+                                        split_costs: Vec::new(),
                                     },
                                 ],
                             }

@@ -95,8 +95,12 @@ pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedB
                 Ok(Some((content, requested)))
             };
             let remaining = (MAX_TOTAL_SOURCE_BYTES - expanded_bytes).min(per_file) as usize;
-            crate::transclude::expand_includes_with_limit(&raw, &resolve, remaining)
-                .map_err(|error| format!("{relative}: {error}"))?
+            let expanded = crate::transclude::expand_includes_mapped_with_limit(
+                &raw, &relative, &resolve, remaining,
+            ).map_err(|error| format!("{relative}: {error}"))?;
+            crate::cli::source_origins::rebase_destinations(
+                expanded, &relative, |origin| Some(origin.to_owned()), remaining,
+            ).map_err(|error| format!("{relative}: {error}"))?
         } else {
             raw
         };

@@ -43,6 +43,15 @@ examples and content outside a selected snippet stay literal. Included files
 need not have a Markdown extension. Raw HTML and CSS `@import` dependencies
 are outside this graph.
 
+Relative Markdown destinations in included content use their defining file's
+directory. If `document.md` includes `parts/chapter.md`, then that snippet's
+`![Chart](chart.svg)` watches and embeds `parts/chart.svg`. Nested includes,
+selected fragments and reference definitions retain their own origins. The
+same resolved source drives rendering and dependency discovery, so changing or
+creating the actual included asset refreshes the export and served preview.
+Code examples and raw HTML remain literal; URI paths are decoded exactly once
+when loading assets, including encoded directory names, spaces and `#`.
+
 Includes resolve within the top input's canonical directory, using bounded
 regular-file reads. Missing includes inside that directory remain watched so
 creating them repairs the render. Editing an included file also refreshes its
@@ -126,6 +135,8 @@ PDF-preview metadata/assets, and per-file/expanded include budgets.
 `tests/watch_directory.rs` runs the CLI against complete/nested directories,
 simultaneous changes, shared dependencies/stylesheets, source creation/removal,
 PDF filenames, initial preview and collision admission.
+`tests/transclusion_origins.rs` checks included assets and link origins across
+HTML/EPUB export, selected/nested sources, native book checks and watch refresh.
 
 Run:
 

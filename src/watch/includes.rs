@@ -118,8 +118,25 @@ pub(crate) fn expand_file_includes(src: &str, input: &Path, max_bytes: u64) -> E
         let budget = usize::try_from(max_bytes)
             .unwrap_or(usize::MAX)
             .min(crate::transclude::DEFAULT_MAX_EXPANDED_BYTES);
-        crate::transclude::expand_includes_with_limit(src, &resolver, budget)
-            .map_err(|e| e.to_string())
+        let expanded =
+            crate::transclude::expand_includes_mapped_with_limit(src, "<input>", &resolver, budget)
+                .map_err(|e| e.to_string())?;
+        crate::cli::source_origins::rebase_destinations(
+            expanded,
+            "__fmd_input__.md",
+            |origin| {
+                if origin == "<input>" {
+                    return Some("__fmd_input__.md".into());
+                }
+                let relative = Path::new(origin).strip_prefix(&root).ok()?;
+                relative
+                    .components()
+                    .map(|component| component.as_os_str().to_str())
+                    .collect::<Option<Vec<_>>>()
+                    .map(|parts| parts.join("/"))
+            },
+            budget,
+        )
     })();
     Expansion {
         result,

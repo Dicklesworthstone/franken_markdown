@@ -22,6 +22,13 @@ mod unicode_punct;
 
 pub use frontmatter::{Frontmatter, split_frontmatter};
 
+mod destinations;
+pub(crate) use destinations::DestinationSpan;
+
+pub(crate) fn destination_spans(source: &str) -> Vec<DestinationSpan> {
+    destinations::destination_spans(source)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 type ParseStageStart = std::time::Instant;
 #[cfg(target_arch = "wasm32")]
@@ -170,6 +177,7 @@ struct ParseProfiler {
     /// the stack (a DoS). Threaded for free since the profiler is already `&mut`
     /// through every block-parsing call.
     block_depth: usize,
+    destinations: Option<destinations::DestinationTracker>,
 }
 
 impl ParseProfiler {
@@ -180,6 +188,7 @@ impl ParseProfiler {
             inline_cache: InlineParseCache::default(),
             inline_parse_depth: 0,
             block_depth: 0,
+            destinations: None,
         }
     }
 
@@ -190,6 +199,7 @@ impl ParseProfiler {
             inline_cache: InlineParseCache::default(),
             inline_parse_depth: 0,
             block_depth: 0,
+            destinations: None,
         }
     }
 
@@ -335,6 +345,11 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     } else {
         None
     };
+    if let Some(storage) = &tab_storage {
+        for (copied, original) in storage.iter().zip(src.lines()) {
+            profiler.destination_suffix(copied, original);
+        }
+    }
     let lines = profiler.measure(
         "line_split",
         "strip UTF-8 BOM if present and split source into logical lines",
@@ -351,7 +366,7 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     let has_reference_candidate = src.contains("]:");
     let (lines, mut refs, kept_reference_candidate, rebuilt_reference_lines) =
         if has_reference_candidate {
-            collect_link_references(lines)
+            collect_link_references_tracked(lines, profiler.destinations.as_mut())
         } else {
             (lines, ReferenceMap::new(), false, false)
         };
@@ -365,7 +380,7 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // with no references — including a pathologically deep nested list — never
     // pays for the extra structural walk.
     if kept_reference_candidate {
-        collect_nested_references(&lines, &mut refs, 0);
+        collect_nested_references_tracked(&lines, &mut refs, 0, profiler.destinations.as_mut());
     }
     let reference_allocations = if has_reference_candidate {
         refs.len()
@@ -652,11 +667,18 @@ fn looks_like_reference_definition(line: &str) -> bool {
     t.starts_with('[') && t.contains("]:")
 }
 
+#[cfg(test)]
 fn collect_link_references(lines: Vec<&str>) -> (Vec<&str>, ReferenceMap, bool, bool) {
+    collect_link_references_tracked(lines, None)
+}
+
+fn collect_link_references_tracked<'a>(
+    lines: Vec<&'a str>, tracker: Option<&mut destinations::DestinationTracker>,
+) -> (Vec<&'a str>, ReferenceMap, bool, bool) {
     let mut consumed = ConsumedReferenceLines::new();
     let mut refs = ReferenceMap::new();
     let kept_reference_candidate =
-        collect_link_reference_metadata_into(&lines, Some(&mut consumed), &mut refs);
+        collect_link_reference_metadata_into_tracked(&lines, Some(&mut consumed), &mut refs, tracker);
     let rebuilt_lines = !consumed.is_empty();
     let kept = if rebuilt_lines {
         strip_consumed_references(&lines, &consumed)
@@ -806,9 +828,16 @@ fn is_safe_footnote_id_char(c: char) -> bool {
 }
 
 fn collect_link_reference_metadata_into(
+    lines: &[&str], consumed: Option<&mut ConsumedReferenceLines>, refs: &mut ReferenceMap,
+) -> bool {
+    collect_link_reference_metadata_into_tracked(lines, consumed, refs, None)
+}
+
+fn collect_link_reference_metadata_into_tracked(
     lines: &[&str],
     mut consumed: Option<&mut ConsumedReferenceLines>,
     refs: &mut ReferenceMap,
+    mut tracker: Option<&mut destinations::DestinationTracker>,
 ) -> bool {
     let mut i = 0usize;
     // Whether the current position is a lazy continuation of an open top-level
@@ -932,6 +961,9 @@ fn collect_link_reference_metadata_into(
                 && let Some((label, reference, used)) =
                     parse_multiline_reference_definition(&lines[i..])
             {
+                if let Some(tracker) = &mut tracker {
+                    tracker.reference(&lines[i..i + used], &reference.dest);
+                }
                 refs.entry(label).or_insert(reference);
                 if let Some(consumed) = consumed.as_mut() {
                     push_consumed_reference_range(consumed, i..i + used);
@@ -1119,7 +1151,10 @@ fn line_is_plain_paragraph_fast_path(line: &str, scan: ParserLineScan) -> bool {
 /// treated as a definition. Bounded by [`MAX_BLOCK_NESTING_DEPTH`] against
 /// adversarial nesting. (List-item bodies are a separate, deliberately-scoped
 /// follow-up.)
-fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usize) {
+fn collect_nested_references_tracked(
+    lines: &[&str], refs: &mut ReferenceMap, depth: usize,
+    mut tracker: Option<&mut destinations::DestinationTracker>,
+) {
     if depth >= MAX_BLOCK_NESTING_DEPTH {
         return;
     }
@@ -1175,10 +1210,15 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
             continue;
         }
         if scan.maybe_blockquote && blockquote_marker_start(line) {
+            let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
             let mut inner: Vec<std::borrow::Cow<'_, str>> = Vec::new();
             while i < lines.len() {
                 if blockquote_marker_start(lines[i]) {
-                    inner.push(strip_blockquote_marker(lines[i]));
+                    let stripped = strip_blockquote_marker(lines[i]);
+                    if let std::borrow::Cow::Owned(copied) = &stripped {
+                        if let Some(tracker) = &mut tracker { tracker.map_suffix(copied, lines[i]); }
+                    }
+                    inner.push(stripped);
                     i += 1;
                 } else if blockquote_lazy_continuation(inner.last().map(|c| c.as_ref()), lines[i]) {
                     inner.push(std::borrow::Cow::Borrowed(trim_start_space_tab(lines[i])));
@@ -1188,8 +1228,9 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
                 }
             }
             let inner_borrowed: Vec<&str> = inner.iter().map(|c| c.as_ref()).collect();
-            collect_link_reference_metadata_into(&inner_borrowed, None, refs);
-            collect_nested_references(&inner_borrowed, refs, depth + 1);
+            collect_link_reference_metadata_into_tracked(&inner_borrowed, None, refs, tracker.as_deref_mut());
+            collect_nested_references_tracked(&inner_borrowed, refs, depth + 1, tracker.as_deref_mut());
+            if let Some(tracker) = &mut tracker { tracker.restore(checkpoint); }
             in_paragraph = false;
             continue;
         }
@@ -1218,12 +1259,14 @@ fn collect_nested_references(lines: &[&str], refs: &mut ReferenceMap, depth: usi
                 i += 1;
                 continue;
             }
-            let split = split_list_items_with_first_marker(&lines[i..], marker);
+            let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
+            let split = split_list_items_with_first_marker_tracked(&lines[i..], marker, tracker.as_deref_mut());
             for (_, body) in &split.items {
                 let str_refs: Vec<&str> = body.iter().map(|s| s.as_ref()).collect();
-                collect_link_reference_metadata_into(&str_refs, None, refs);
-                collect_nested_references(&str_refs, refs, depth + 1);
+                collect_link_reference_metadata_into_tracked(&str_refs, None, refs, tracker.as_deref_mut());
+                collect_nested_references_tracked(&str_refs, refs, depth + 1, tracker.as_deref_mut());
             }
+            if let Some(tracker) = &mut tracker { tracker.restore(checkpoint); }
             i += split.used.max(1);
             in_paragraph = false;
             continue;
@@ -1557,6 +1600,8 @@ fn parse_blocks_with_refs_profiled(
         // footnote content is a documented follow-up).
         if let Some((id, content)) = scan_footnote_definition(line) {
             let started = profiler.checkpoint();
+            let checkpoint = profiler.destination_checkpoint();
+            let mut parts = profiler.destinations.is_some().then(|| vec![(0, content)]);
             let mut text = content.to_string();
             let mut used = 1usize;
             while i + used < lines.len() {
@@ -1568,9 +1613,12 @@ fn parse_blocks_with_refs_profiled(
                 // Strip the 4-column continuation indent, not every leading
                 // whitespace — extra spaces are content (a nested code span,
                 // etc.), not padding.
-                text.push_str(strip_n(cont, 4));
+                let continuation = strip_n(cont, 4);
+                if let Some(parts) = &mut parts { parts.push((text.len(), continuation)); }
+                text.push_str(continuation);
                 used += 1;
             }
+            if let Some(parts) = parts { profiler.destination_parts(&text, &parts); }
             let inner_lines: Vec<&str> = text.lines().collect();
             let parsed_inner = parse_blocks_with_refs_profiled(&inner_lines, refs, profiler);
             let inner_blocks = if parsed_inner.is_empty() {
@@ -1591,15 +1639,21 @@ fn parse_blocks_with_refs_profiled(
                 id,
                 blocks: inner_blocks,
             });
+            profiler.destination_restore(checkpoint);
             i += used;
             continue;
         }
         if scanned_blockquote_start(scan) {
             let started = profiler.checkpoint();
+            let checkpoint = profiler.destination_checkpoint();
             let mut inner: Vec<std::borrow::Cow<'_, str>> = Vec::new();
             while i < lines.len() {
                 if blockquote_marker_start(lines[i]) {
-                    inner.push(strip_blockquote_marker(lines[i]));
+                    let stripped = strip_blockquote_marker(lines[i]);
+                    if let std::borrow::Cow::Owned(copied) = &stripped {
+                        profiler.destination_suffix(copied, lines[i]);
+                    }
+                    inner.push(stripped);
                     i += 1;
                 } else if blockquote_lazy_continuation(inner.last().map(|s| s.as_ref()), lines[i]) {
                     // CommonMark lazy continuation: a non-blank, non-`>` line that
@@ -1611,7 +1665,9 @@ fn parse_blocks_with_refs_profiled(
                         || (list_marker(trimmed).is_some()
                             && (leading_spaces(lines[i]) >= 4 || list_marker(lines[i]).is_none()))
                     {
-                        inner.push(std::borrow::Cow::Owned(format!("\\{trimmed}")));
+                        let copied = format!("\\{trimmed}");
+                        profiler.destination_suffix(&copied, trimmed);
+                        inner.push(std::borrow::Cow::Owned(copied));
                     } else {
                         inner.push(std::borrow::Cow::Borrowed(trimmed));
                     }
@@ -1646,6 +1702,7 @@ fn parse_blocks_with_refs_profiled(
                 started,
             );
             blocks.push(Block::BlockQuote(inner_blocks));
+            profiler.destination_restore(checkpoint);
             continue;
         }
         if let Some(end_cond) = scanned_html_block_kind(scan) {
@@ -1852,17 +1909,12 @@ fn parse_lines_as_inlines(
                 return (inlines, scan.byte_len, 0);
             }
             let chars = collect_inline_chars_from_lines(lines, scan.byte_len);
-            (
-                parse_inlines_chars_with_refs_profiled(
-                    &chars,
-                    scan.byte_len,
-                    refs,
-                    profiler,
-                    started,
-                ),
-                scan.byte_len,
-                0,
-            )
+            if let Some(tracker) = &mut profiler.destinations { tracker.push_chars_lines(&chars, lines); }
+            let parsed = parse_inlines_chars_with_refs_profiled(
+                &chars, scan.byte_len, refs, profiler, started,
+            );
+            if let Some(tracker) = &mut profiler.destinations { tracker.pop_chars(); }
+            (parsed, scan.byte_len, 0)
         }
     }
 }
@@ -2895,6 +2947,8 @@ fn parse_definition_list_profiled(
         let mut definitions: Vec<Vec<crate::ast::Inline>> = Vec::new();
         while i < lines.len() && is_definition_marker(lines[i]) {
             let first_def = strip_definition_marker(lines[i]);
+            let checkpoint = profiler.destination_checkpoint();
+            let mut parts = profiler.destinations.is_some().then(|| vec![(0, first_def)]);
             let mut def_text = first_def.to_string();
             i += 1;
             while i < lines.len() {
@@ -2916,10 +2970,13 @@ fn parse_definition_list_profiled(
                 if !def_text.is_empty() {
                     def_text.push(' ');
                 }
+                if let Some(parts) = &mut parts { parts.push((def_text.len(), trimmed)); }
                 def_text.push_str(trimmed);
                 i += 1;
             }
+            if let Some(parts) = parts { profiler.destination_parts(&def_text, &parts); }
             definitions.push(parse_inlines_with_refs_profiled(&def_text, refs, profiler));
+            profiler.destination_restore(checkpoint);
         }
 
         if definitions.is_empty() {
@@ -3216,6 +3273,13 @@ fn split_list_items<'a>(lines: &[&'a str]) -> ListSplit<'a> {
 }
 
 fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) -> ListSplit<'a> {
+    split_list_items_with_first_marker_tracked(lines, first, None)
+}
+
+fn split_list_items_with_first_marker_tracked<'a>(
+    lines: &[&'a str], first: Marker<'a>,
+    mut tracker: Option<&mut destinations::DestinationTracker>,
+) -> ListSplit<'a> {
     let ordered = first.ordered;
     let start = first.start;
     let mut items: Vec<(Option<bool>, Vec<std::borrow::Cow<'a, str>>)> = Vec::new();
@@ -3231,6 +3295,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
         else {
             break;
         };
+        let item_origin = lines[i];
         let mut item_lines: Vec<std::borrow::Cow<'a, str>> = vec![m.rest.clone()];
         let mut open_fence_state: Option<(char, usize)> =
             open_fence(m.rest.as_ref()).map(|(ch, len, _)| (ch, len));
@@ -3243,6 +3308,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
         {
             let (task, first_body) = split_task_marker(item_lines[0].as_ref());
             item_lines[0] = std::borrow::Cow::Owned(first_body.to_string());
+            if let Some(tracker) = &mut tracker { tracker.map_suffix(item_lines[0].as_ref(), item_origin); }
             items.push((task, item_lines));
             break;
         }
@@ -3367,7 +3433,9 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
                     || (list_marker(lazy).is_some()
                         && (leading_spaces(lines[i]) >= 4 || list_marker(lines[i]).is_none()))
                 {
-                    item_lines.push(std::borrow::Cow::Owned(format!("\\{lazy}")));
+                    let copied = format!("\\{lazy}");
+                    if let Some(tracker) = &mut tracker { tracker.map_suffix(&copied, lazy); }
+                    item_lines.push(std::borrow::Cow::Owned(copied));
                 } else {
                     item_lines.push(std::borrow::Cow::Borrowed(lazy));
                 }
@@ -3377,6 +3445,7 @@ fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) 
 
         let (task, first_body) = split_task_marker(item_lines[0].as_ref());
         item_lines[0] = std::borrow::Cow::Owned(first_body.to_string());
+        if let Some(tracker) = &mut tracker { tracker.map_suffix(item_lines[0].as_ref(), item_origin); }
         items.push((task, item_lines));
     }
     ListSplit {
@@ -3393,8 +3462,13 @@ fn parse_list_profiled(
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
 ) -> (List, usize) {
-    let split = split_list_items(lines);
-    parse_list_split(split, refs, profiler)
+    let checkpoint = profiler.destination_checkpoint();
+    let split = if let Some(first) = list_marker(lines[0]) {
+        split_list_items_with_first_marker_tracked(lines, first, profiler.destinations.as_mut())
+    } else { split_list_items(lines) };
+    let parsed = parse_list_split(split, refs, profiler);
+    profiler.destination_restore(checkpoint);
+    parsed
 }
 
 fn parse_list_profiled_with_first_marker(
@@ -3403,8 +3477,11 @@ fn parse_list_profiled_with_first_marker(
     profiler: &mut ParseProfiler,
     first: Marker<'_>,
 ) -> (List, usize) {
-    let split = split_list_items_with_first_marker(lines, first);
-    parse_list_split(split, refs, profiler)
+    let checkpoint = profiler.destination_checkpoint();
+    let split = split_list_items_with_first_marker_tracked(lines, first, profiler.destinations.as_mut());
+    let parsed = parse_list_split(split, refs, profiler);
+    profiler.destination_restore(checkpoint);
+    parsed
 }
 
 fn parse_list_split(
@@ -3694,7 +3771,8 @@ fn parse_inlines_with_refs_profiled(
     profiler: &mut ParseProfiler,
 ) -> Vec<Inline> {
     let started = profiler.checkpoint();
-    let maybe_cacheable = profiler.inline_parse_depth == 0 && inline_cache_size_allows(text);
+    let maybe_cacheable = profiler.destinations.is_none()
+        && profiler.inline_parse_depth == 0 && inline_cache_size_allows(text);
     let needs_full_parse = maybe_cacheable.then(|| inline_text_needs_full_parse(text));
     let cacheable = maybe_cacheable && needs_full_parse == Some(true);
     if cacheable && let Some(inlines) = profiler.inline_cache.get(text) {
@@ -3742,7 +3820,10 @@ fn parse_inlines_with_refs_profiled_uncached(
         return record_plain_inline_parse(text, profiler, started);
     }
     let bytes = collect_inline_chars_from_text(text);
-    parse_inlines_chars_with_refs_profiled(&bytes, text.len(), refs, profiler, started)
+    if let Some(tracker) = &mut profiler.destinations { tracker.push_chars_text(&bytes, text); }
+    let parsed = parse_inlines_chars_with_refs_profiled(&bytes, text.len(), refs, profiler, started);
+    if let Some(tracker) = &mut profiler.destinations { tracker.pop_chars(); }
+    parsed
 }
 
 fn record_plain_inline_parse(
@@ -4008,9 +4089,10 @@ fn parse_inlines_chars_with_refs_profiled(
             }
             '!' if i + 1 < bytes.len() && bytes[i + 1] == '[' => {
                 let pairs = bracket_pairs.get_or_insert_with(|| compute_bracket_pairs(bytes));
-                if let Some((alt, dest, title, next)) =
-                    parse_link_like(bytes, i + 1, pairs, refs, profiler)
+                if let Some((alt, dest, title, next, token)) =
+                    parse_link_like(bytes, i + 1, pairs, refs, profiler, true)
                 {
+                    if let Some(tracker) = &mut profiler.destinations { tracker.record(bytes, token, &dest); }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Image {
                         dest,
@@ -4019,7 +4101,7 @@ fn parse_inlines_chars_with_refs_profiled(
                     }));
                     i = next;
                 } else if let Some((alt, dest, title, next)) =
-                    parse_reference_link_like(bytes, i + 1, pairs, refs, profiler)
+                    parse_reference_link_like(bytes, i + 1, pairs, refs, profiler, true)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Image {
@@ -4056,10 +4138,10 @@ fn parse_inlines_chars_with_refs_profiled(
                 // guard applies only to the link-forming paths, not the `!` image
                 // path above. Without it, `[a [b](/u)](/u)` emits nested <a>.
                 let pairs = bracket_pairs.get_or_insert_with(|| compute_bracket_pairs(bytes));
-                if let Some((content, dest, title, next)) =
-                    parse_link_like(bytes, i, pairs, refs, profiler)
-                        .filter(|(content, ..)| !contains_link(content))
+                if let Some((content, dest, title, next, token)) =
+                    parse_link_like(bytes, i, pairs, refs, profiler, false)
                 {
+                    if let Some(tracker) = &mut profiler.destinations { tracker.record(bytes, token, &dest); }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
                         dest,
@@ -4068,8 +4150,7 @@ fn parse_inlines_chars_with_refs_profiled(
                     }));
                     i = next;
                 } else if let Some((content, dest, title, next)) =
-                    parse_reference_link_like(bytes, i, pairs, refs, profiler)
-                        .filter(|(content, ..)| !contains_link(content))
+                    parse_reference_link_like(bytes, i, pairs, refs, profiler, false)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
@@ -4766,7 +4847,8 @@ fn parse_link_like(
     bracket_pairs: &BracketPairs,
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
-) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
+    image: bool,
+) -> Option<(Vec<Inline>, String, Option<String>, usize, Range<usize>)> {
     if chars.get(i) != Some(&'[') {
         return None;
     }
@@ -4777,10 +4859,13 @@ fn parse_link_like(
     let mut k = j + 2;
 
     skip_link_whitespace(chars, &mut k);
+    let destination_start = k;
+    let mut destination_end = k;
     let (dest, title) = if chars.get(k) == Some(&')') {
         (String::new(), None)
     } else {
         let dest = parse_link_destination(chars, &mut k)?;
+        destination_end = k;
         let spaces_start = k;
         skip_link_whitespace(chars, &mut k);
 
@@ -4800,12 +4885,12 @@ fn parse_link_like(
     if chars.get(k) != Some(&')') {
         return None;
     }
-    Some((
-        parse_inlines_chars_nested(&chars[i + 1..j], refs, profiler),
-        dest,
-        title,
-        k + 1,
-    ))
+    let mark = profiler.destination_mark();
+    let content = parse_inlines_chars_nested(&chars[i + 1..j], refs, profiler);
+    let nested_link = !image && contains_link(&content);
+    if image || nested_link { profiler.destination_rollback(mark); }
+    if nested_link { return None; }
+    Some((content, dest, title, k + 1, destination_start..destination_end))
 }
 
 fn parse_link_destination(chars: &[char], i: &mut usize) -> Option<String> {
@@ -4965,6 +5050,7 @@ fn parse_reference_link_like(
     bracket_pairs: &BracketPairs,
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
+    image: bool,
 ) -> Option<(Vec<Inline>, String, Option<String>, usize)> {
     if chars.get(i) != Some(&'[') {
         return None;
@@ -5010,8 +5096,13 @@ fn parse_reference_link_like(
 
     let reference = refs.get(&label)?;
     // Only now, with a real reference, parse the link text in place as content.
+    let mark = profiler.destination_mark();
+    let content = parse_inlines_chars_nested(&chars[i + 1..close], refs, profiler);
+    let nested_link = !image && contains_link(&content);
+    if image || nested_link { profiler.destination_rollback(mark); }
+    if nested_link { return None; }
     Some((
-        parse_inlines_chars_nested(&chars[i + 1..close], refs, profiler),
+        content,
         reference.dest.clone(),
         reference.title.clone(),
         next,

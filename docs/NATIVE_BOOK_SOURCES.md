@@ -19,9 +19,20 @@ The shared source expands into that chapter using the existing bounded include
 resolver. It does not become a separate HTML page, search chapter, PDF chapter,
 or EPUB spine item. The manifest changes only chapter membership; it does not
 rewrite any source file or move an include's contents to another location.
-Relative links and images inside expanded snippets retain the existing native
-expander's semantics. Use book-root destinations when sharing a snippet across
-chapters in different directories.
+Relative links and images inside a snippet resolve from the file that defines
+them. For example, `parts/shared.md` can use `![Chart](chart.svg)` and
+`[Next](next.md#setup)` when included by either `start.md` or
+`guide/install.md`: the asset remains `parts/chart.svg`, and the chapter link
+still names `parts/next.md#setup`. Nested includes and line/anchor selectors
+retain that same origin. A reference-style link uses the origin of its
+destination definition, even when the link itself appears in another file.
+
+The native loader rebases actual Markdown destination tokens after expansion.
+Code examples, raw HTML, labels and titles keep their source text; URL queries
+and fragments remain attached. The resulting input is shared by publication
+and `--check-links`, so checks resolve against the same published chapter
+paths. Local resources remain subject to the existing book-root and regular-file
+policies; expansion does not authorize external filesystem or network access.
 
 ## Selection rules
 

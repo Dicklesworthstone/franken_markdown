@@ -81,7 +81,7 @@ fn identical_file_alias_targets_refresh_nested_origins_after_debounce() {
     assert!(watcher.dependency_failures().is_empty());
     assert!(watcher.paths().contains(&alias));
     assert!(watcher.paths().contains(&dir.path("a/body.txt")));
-    assert!(watcher.paths().contains(&dir.path("first.png")));
+    assert!(watcher.paths().contains(&dir.path("a/first.png")));
     assert!(watcher.poll().is_empty());
 
     dir.replace_alias("selected.txt", "b/chapter.txt");
@@ -91,9 +91,9 @@ fn identical_file_alias_targets_refresh_nested_origins_after_debounce() {
     assert_modified(&watcher.poll(), &alias);
     assert!(watcher.dependency_failures().is_empty());
     assert!(watcher.paths().contains(&dir.path("b/body.txt")));
-    assert!(watcher.paths().contains(&dir.path("second.png")));
+    assert!(watcher.paths().contains(&dir.path("b/second.png")));
     assert!(!watcher.paths().contains(&dir.path("a/body.txt")));
-    assert!(!watcher.paths().contains(&dir.path("first.png")));
+    assert!(!watcher.paths().contains(&dir.path("a/first.png")));
 
     dir.write("a/body.txt", "![unused](unused.png)\n");
     assert!(watcher.poll().is_empty());
@@ -101,8 +101,8 @@ fn identical_file_alias_targets_refresh_nested_origins_after_debounce() {
     assert!(watcher.poll().is_empty());
     clock.advance(debounce);
     assert_modified(&watcher.poll(), &body);
-    assert!(watcher.paths().contains(&dir.path("third.png")));
-    assert!(!watcher.paths().contains(&dir.path("second.png")));
+    assert!(watcher.paths().contains(&dir.path("b/third.png")));
+    assert!(!watcher.paths().contains(&dir.path("b/second.png")));
     assert_eq!(std::fs::read_to_string(input).unwrap(), source);
 }
 
@@ -121,9 +121,9 @@ fn retargeting_a_parent_directory_alias_refreshes_included_assets() {
     assert_modified(&watcher.poll(), &alias);
     assert!(watcher.dependency_failures().is_empty());
     assert!(watcher.paths().contains(&dir.path("b/body.txt")));
-    assert!(watcher.paths().contains(&dir.path("second.png")));
+    assert!(watcher.paths().contains(&dir.path("b/second.png")));
     assert!(!watcher.paths().contains(&dir.path("a/body.txt")));
-    assert!(!watcher.paths().contains(&dir.path("first.png")));
+    assert!(!watcher.paths().contains(&dir.path("a/first.png")));
     assert!(watcher.poll().is_empty());
 }
 

@@ -193,13 +193,13 @@ fn nested_selected_includes_refresh_assets_without_editing_the_root() {
     let mut watcher = PollWatcher::new(vec![input], Duration::ZERO, ManualClock::new());
     assert!(watcher.dependency_failures().is_empty());
     assert!(watcher.paths().contains(&body));
-    assert!(watcher.paths().contains(&dir.path("first.png")));
+    assert!(watcher.paths().contains(&dir.path("parts/first.png")));
     assert!(!watcher.paths().contains(&dir.path("parts/ignored.md")));
     std::fs::write(&body, "![picture](second.png)\n").unwrap();
     assert_eq!(watcher.poll(), [ChangeEvent { path: body, kind: ChangeKind::Modified }]);
-    assert!(!watcher.paths().contains(&dir.path("first.png")));
-    assert!(watcher.paths().contains(&dir.path("second.png")));
-    let image = dir.write("second.png", b"new image");
+    assert!(!watcher.paths().contains(&dir.path("parts/first.png")));
+    assert!(watcher.paths().contains(&dir.path("parts/second.png")));
+    let image = dir.write("parts/second.png", b"new image");
     assert_eq!(watcher.poll(), [ChangeEvent { path: image, kind: ChangeKind::Created }]);
 }
 

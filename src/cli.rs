@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
 mod font_coverage;
+pub(crate) mod source_origins;
 
 use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
@@ -2978,14 +2979,20 @@ fn auto_pdf_image_path(destination: &str, base_dir: &Path) -> Option<PathBuf> {
         .next()
         .unwrap_or_default()
         .trim();
-    if path_part.is_empty()
-        || path_part.starts_with("//")
-        || path_part.contains('\\')
+    // Split the URL suffix before decoding, so an encoded '#' remains part
+    // of the filename. Apply the same relative-path policy to decoded bytes;
+    // percent escapes cannot bypass the scheme or parent-component checks.
+    let decoded = source_origins::decode_path(path_part)?;
+    if decoded.is_empty()
+        || decoded.starts_with("//")
+        || decoded.contains('\\')
+        || decoded.chars().any(char::is_control)
         || has_uri_scheme(path_part)
+        || has_uri_scheme(&decoded)
     {
         return None;
     }
-    let relative = Path::new(path_part);
+    let relative = Path::new(&decoded);
     if relative.is_absolute() || !has_supported_pdf_image_extension(relative) {
         return None;
     }
@@ -4495,6 +4502,10 @@ mod helper_tests {
             auto_pdf_image_path("img.png?x=1#f", base),
             Some(PathBuf::from("/base/img.png"))
         );
+        assert_eq!(
+            auto_pdf_image_path("parts%20%23%E4%B8%AD/plot%2520%23one.svg?x=1#view", base),
+            Some(base.join("parts #中/plot%20#one.svg"))
+        );
         // Rejected shapes.
         for dest in [
             "",                   // empty
@@ -4508,6 +4519,13 @@ mod helper_tests {
             "noext",              // no extension
             "../up.png",          // parent-dir escape
             "a/../up.png",        // embedded parent-dir escape
+            "%2e%2e/up.png",      // encoded parent-dir escape
+            "a/%2e%2e/up.png",    // encoded embedded parent component
+            "%2fabsolute.png",   // encoded absolute path
+            "%2f%2fhost/a.png",   // encoded network path
+            "%68ttps%3a/x.png",   // encoded scheme
+            "nul%00.svg",         // encoded control
+            "bad%ZZ.svg",         // malformed encoding
             ".",                  // no file component
         ] {
             assert_eq!(auto_pdf_image_path(dest, base), None, "dest: {dest:?}");

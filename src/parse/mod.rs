@@ -567,6 +567,13 @@ fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
             continue;
         }
 
+        if footnote_definition_marker(line) {
+            let used = footnote_extent(&lines[i..], |line| line.text);
+            spans.push(span_for_lines(&lines, i, i + used));
+            i += used;
+            continue;
+        }
+
         if blockquote_marker_start(line) {
             let start = i;
             while i < lines.len() && blockquote_marker_start(lines[i].text) {
@@ -821,6 +828,55 @@ fn footnote_definition_marker(line: &str) -> bool {
     is_safe_footnote_id(id) && rest[close + 1..].starts_with(':')
 }
 
+/// A note owns four-column-indented continuations, including intervening blank
+/// lines. A blank followed by unindented content ends the note. Share this
+/// boundary between AST parsing, reference collection, and source spans.
+fn footnote_extent<T>(lines: &[T], text: impl Fn(&T) -> &str) -> usize {
+    let mut used = 1;
+    while used < lines.len() {
+        let line = text(&lines[used]);
+        if is_blank_line(line) {
+            let mut next = used + 1;
+            while next < lines.len() && is_blank_line(text(&lines[next])) {
+                next += 1;
+            }
+            if next == lines.len() || leading_spaces(text(&lines[next])) < 4 {
+                break;
+            }
+            used = next;
+        } else if leading_spaces(line) >= 4 {
+            used += 1;
+        } else {
+            break;
+        }
+    }
+    used
+}
+
+fn footnote_body_lines<'a>(lines: &[&'a str], content: &'a str) -> (Vec<&'a str>, usize) {
+    let used = footnote_extent(lines, |line| *line);
+    let mut body = Vec::with_capacity(used);
+    body.push(content);
+    body.extend(lines[1..used].iter().map(|line| strip_n(line, 4)));
+    (body, used)
+}
+
+/// Preserve the established whitespace of plain, single-paragraph notes. Rich
+/// bodies keep their physical lines so fences, tables, lists, and paragraph
+/// boundaries reach the block parser intact.
+fn footnote_body_is_plain_paragraph(lines: &[&str]) -> bool {
+    table_extent(lines).is_none()
+        && lines.iter().all(|line| {
+            let trimmed = trim_start_space_tab(line);
+            !trimmed.contains("]:")
+                && !trimmed.starts_with("$$")
+                && !is_definition_marker(trimmed)
+                && list_marker(trimmed).is_none()
+                && setext_underline(trimmed).is_none()
+                && line_is_paragraph_text_with_scan(trimmed, scan_markdown_line(trimmed))
+        })
+}
+
 /// GFM footnote ids: non-empty, no whitespace, no brackets.
 ///
 /// ASCII controls are also rejected (they are never useful ids). Length is
@@ -949,11 +1005,13 @@ fn collect_link_reference_metadata_into_tracked(
 
         // GFM footnote definitions (`[^id]: content`) are NOT link reference
         // definitions: the footnote block parser consumes them later. Skip the
-        // marker line here so it is not extracted as a `[label]: dest` link ref
-        // (which would silently delete the footnote). Continuation lines are
-        // indented, so the indented-code branch below passes them through.
-        if footnote_definition_marker(line) {
-            i += 1;
+        // whole body here so it is not extracted as a `[label]: dest` link ref
+        // (which would silently delete the footnote). The nested collector
+        // resolves real reference definitions after removing the note indent.
+        if !in_paragraph && footnote_definition_marker(line) {
+            let used = footnote_extent(&lines[i..], |line| *line);
+            kept_reference_candidate |= lines[i..i + used].iter().any(|line| line.contains("]:"));
+            i += used;
             in_paragraph = false;
             continue;
         }
@@ -1223,6 +1281,16 @@ fn collect_nested_references_tracked(
             && let Some(end_cond) = html_block_kind(line)
         {
             i = html_block_end(lines, i, end_cond, |l| *l);
+            in_paragraph = false;
+            continue;
+        }
+        if !in_paragraph
+            && let Some((_id, content)) = scan_footnote_definition(line)
+        {
+            let (body, used) = footnote_body_lines(&lines[i..], content);
+            collect_link_reference_metadata_into_tracked(&body, None, refs, tracker.as_deref_mut());
+            collect_nested_references_tracked(&body, refs, depth + 1, tracker.as_deref_mut());
+            i += used;
             in_paragraph = false;
             continue;
         }
@@ -1612,42 +1680,33 @@ fn parse_blocks_with_refs_profiled(
             i += used;
             continue;
         }
-        // GFM footnote definition: `[^id]: content` plus 4-space-indented
-        // continuation lines (v1: single-paragraph bodies — multi-block
-        // footnote content is a documented follow-up).
+        // GFM footnote definition with a bounded sequence of semantic blocks.
+        // Keep blank-separated continuations inside the note and remove only
+        // its four-column container indent before parsing the nested blocks.
         if let Some((id, content)) = scan_footnote_definition(line) {
             let started = profiler.checkpoint();
             let checkpoint = profiler.destination_checkpoint();
-            let mut parts = profiler.destinations.is_some().then(|| vec![(0, content)]);
-            let mut text = content.to_string();
-            let mut used = 1usize;
-            while i + used < lines.len() {
-                let cont = lines[i + used];
-                if is_blank_line(cont) || leading_spaces(cont) < 4 {
-                    break;
+            let (body, used) = footnote_body_lines(&lines[i..], content);
+            let byte_len = body.iter().map(|line| line.len()).sum();
+            let inner_blocks = if footnote_body_is_plain_paragraph(&body) {
+                let mut text = String::new();
+                let mut parts = profiler.destinations.is_some().then(Vec::new);
+                for (index, line) in body.iter().enumerate() {
+                    if index > 0 { text.push(' '); }
+                    if let Some(parts) = &mut parts { parts.push((text.len(), *line)); }
+                    text.push_str(line);
                 }
-                text.push(' ');
-                // Strip the 4-column continuation indent, not every leading
-                // whitespace — extra spaces are content (a nested code span,
-                // etc.), not padding.
-                let continuation = strip_n(cont, 4);
-                if let Some(parts) = &mut parts { parts.push((text.len(), continuation)); }
-                text.push_str(continuation);
-                used += 1;
-            }
-            if let Some(parts) = parts { profiler.destination_parts(&text, &parts); }
-            let inner_lines: Vec<&str> = text.lines().collect();
-            let parsed_inner = parse_blocks_with_refs_profiled(&inner_lines, refs, profiler);
-            let inner_blocks = if parsed_inner.is_empty() {
-                let inlines = parse_inlines_with_refs_profiled(&text, refs, profiler);
-                vec![Block::Paragraph(inlines)]
+                if let Some(parts) = parts { profiler.destination_parts(&text, &parts); }
+                vec![Block::Paragraph(parse_inlines_with_refs_profiled(&text, refs, profiler))]
             } else {
-                parsed_inner
+                let (consumed, _) = collect_link_reference_metadata(&body);
+                let kept = strip_consumed_references(&body, &consumed);
+                parse_blocks_bounded(&kept, refs, profiler)
             };
             profiler.record_since(
                 "footnote_definition",
                 used,
-                text.len(),
+                byte_len,
                 inner_blocks.len(),
                 "parse one GFM footnote definition and its block content",
                 started,
@@ -8120,7 +8179,7 @@ mod table_row_split_tests {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod footnote_tests {
     use super::*;
 
@@ -8205,6 +8264,35 @@ mod footnote_tests {
             ["a\"b"],
             "def must not be ingested as a link ref: {doc:?}"
         );
+    }
+
+    #[test]
+    fn footnote_reference_tokens_preserve_source_ranges_and_paragraph_scope() {
+        let source = "[first] [guide] [fake]\n\n[^note]: [first]: /first\n\n    [guide]: /guide\n\n    ```text\n    [fake]: /fake\n    ```";
+        let spans = super::destination_spans(source);
+        let spans: Vec<_> = spans.iter().map(|span| (&source[span.range.clone()], span.dest.as_str())).collect();
+        assert_eq!(spans, [("/first", "/first"), ("/guide", "/guide")]);
+        assert!(super::destination_spans("ordinary paragraph\n[^n]: [ref]: /secret\n\n[ref]").is_empty());
+    }
+
+    #[test]
+    fn nested_footnote_definitions_use_the_block_depth_bound() {
+        let source = format!("{}leaf", "[^a]: ".repeat(1024));
+        let mut document = crate::parse_markdown(&source);
+        let mut depth = 0;
+        while let Some(block) = document.blocks.pop() {
+            match block {
+                Block::FootnoteDefinition { blocks, .. } => {
+                    depth += 1;
+                    document.blocks = blocks;
+                }
+                Block::Paragraph(inlines) => {
+                    assert!(inlines.iter().any(|inline| matches!(inline, Inline::Text(text) if text.contains("leaf"))));
+                }
+                other => panic!("unexpected nested note content: {other:?}"),
+            }
+        }
+        assert_eq!(depth, MAX_BLOCK_NESTING_DEPTH + 1);
     }
 }
 

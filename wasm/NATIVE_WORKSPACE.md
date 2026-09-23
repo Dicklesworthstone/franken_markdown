@@ -116,6 +116,49 @@ embedded editor scripts. Existing exported documents do not upgrade themselves.
 A new editor paired with an old native runtime rejects unsupported imports
 explicitly instead of silently selecting the lightweight parser.
 
+## Change typography, navigation and PDF paper in the editor
+
+Native workspaces expose **Document settings** after engine initialization.
+Choose sans/serif, a document type scale, automatic/light document color mode,
+title, author and language. Enable a table of contents with depth 1..6, PDF page
+numbers or PDF code line numbers. Existing embedded font assets and weight pins
+remain in use; changing settings does not replace fonts or image resources.
+The creation-time `metadataEpochSeconds`, including zero, is preserved.
+
+Select Letter, A4 or custom dimensions, rotate portrait/landscape, and edit each
+margin in PDF points (72 points per inch). Saved fractional dimensions remain
+exact, without display rounding. Orientation changes width/height, not margin
+sides. **Renderer default (no override)** removes the explicit geometry and uses
+the original PDF ABI. Typography changes still work with older binaries lacking
+the page export; an explicit paper request reports a capability error instead
+of silently using default paper. The HTML preview remains continuous rather
+than paginated; paper geometry applies to PDF. View zoom and theme are separate
+from document export settings.
+
+**Apply settings** validates an owned snapshot and renders current source with
+the native engine before publishing saved JSON and replacing the preview.
+Invalid geometry, rendering failures and publication failures preserve committed
+settings; a failed preview replacement restores the previous preview. Source is
+not rewritten, normalized or inserted into the textarea's undo history. Settings
+and image transactions share a generation so an older operation cannot overwrite
+new resources or settings. Stale open forms are rejected rather than replacing
+newer applied settings. No network or browser-storage writes are introduced.
+
+**Cancel** and Escape discard the draft. An unchanged Apply does not materialize
+omitted metadata, TOC depth or default paper. Unedited metadata stays exact even
+when a text control displays a newline-normalized value. Settings-only changes
+activate the unsaved-work warning; restoring source alone does not clear it.
+Restoring all original settings and source clears that warning. A download
+request is not treated as proof of saving. Save HTML retains committed settings
+through repeated reopenings, but never applies an unfinished form draft. The
+controls are recreated rather than duplicated during reopening. Save Markdown
+contains source only, not document settings or separately supplied resources.
+
+The controls require a WASM build containing the updated embedded controller and
+the matching workspace runtime. Existing standalone files do not self-upgrade.
+A failed native startup leaves settings unavailable and source downloadable.
+Lightweight workspaces do not show controls for unsupported native settings.
+
 ## Settings and limits
 
 Supported options are `font`, `darkMode`, numeric `fontScale` (0.5..3), `title`,
@@ -180,3 +223,21 @@ doubles, and an empty real WASM module. Adapter PDF bytes are not PDF conformanc
 or native layout evidence. As with the existing browser probe, `--mode content`
 is an explicit alternative on hosts blocking `file://`, not file-navigation
 proof. No dependencies or browser binaries are downloaded by the probe.
+
+`node --test wasm/interactive_runtime.test.mjs wasm/native_workspace_settings.test.mjs`
+checks owned settings, full HTML/PDF argument propagation, unchanged resource
+buffers, saved-data revalidation, staged rendering, failure rollback, stale
+settings/image transactions and publication reentrancy. It executes production
+runtime/boot code with explicit ABI/DOM adapters and real empty WASM startup.
+
+`python wasm/native_workspace_settings_browser.py` exercises the actual
+controller and runtime in locally installed Chromium: modal controls, Cancel
+and Escape, exact paper geometry, settings-only modification warnings, immediate
+PDF dispatch, source recovery, and repeated HTML downloads/reopening. It retains
+screenshots and all downloaded bytes. The initial shell and renderer are explicit
+adapters, not rebuilt Rust/WASM output; its PDF bytes are not valid PDF layout
+proof. The default mode attempts file navigation; use `--mode content` explicitly
+where browser policy blocks it. That alternative reparses saved bytes in fresh
+pages and does not establish file-navigation compatibility. Use `--browser PATH`
+for an existing Chromium executable or `--output NEW_DIRECTORY` for retained
+artifacts. The probe never downloads dependencies or removes artifacts.

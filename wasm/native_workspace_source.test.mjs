@@ -10,7 +10,7 @@ const original = '\r\n# Original\r\n\r\n![retained](chart.png)\r\n';
 const imported = '\ufeff\r\n# Imported é中😀\rline\n\0</script><script>bad()</script>\r\n';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture({source = original, native = true, readerAvailable = true} = {}) {
+function fixture({source = original, native = true, readerAvailable = true, publishing = null, ready} = {}) {
   const downloads = [], objects = new Map(), revoked = [], readers = [], timers = new Map(), confirmations = [], calls = [];
   let timerId = 0, urlId = 0, autoRead = true, confirm = () => true, previewFailure = null, acceptWrite = null;
   const doc = new EventTarget(), win = new EventTarget();
@@ -78,7 +78,7 @@ function fixture({source = original, native = true, readerAvailable = true} = {}
   win.confirm = text => { confirmations.push(text); return confirm(text); };
   win.print = () => { calls.push(['print']); };
   if (native) Object.defineProperty(win, '__fmdNativeRuntime', {value: {
-    version: 1, diagnostics: [],
+    version: 1, diagnostics: [], ...(publishing ? {html: publishing, ready} : {}),
     render(source, _preview, display) { if (previewFailure) throw previewFailure; calls.push(['render', source, display]); },
     pdf(source) { calls.push(['pdf', source]); return new TextEncoder().encode('%PDF-ADAPTER\n' + source); },
   }});
@@ -294,4 +294,61 @@ test('Save HTML serializes current exact source and excludes transient file cont
 test('absent FileReader keeps established editing and downloads without misleading file controls', async () => {
   const f = fixture({readerAvailable: false}); assert.equal(f.el('btn-open-markdown'), null);
   f.type('ordinary edits'); assert.deepEqual(await f.markdown(), Buffer.from('ordinary edits'));
+});
+
+
+test('plain HTML publication uses current exact source without flushing preview or consuming source undo', async () => {
+  const seen = [], html = '<!DOCTYPE html><html><head></head><body>Native publication</body></html>';
+  const f = fixture({publishing: (...args) => { seen.push(args); return html; }});
+  await f.open(file()); const timers = f.timers.size;
+  f.el('btn-publish-html').click();
+  assert.deepEqual(seen, [[imported]]); assert.equal(f.calls.length, 0); assert.equal(f.timers.size, timers + 1);
+  assert.equal(await f.downloads[0].blob.text(), html); assert.equal(f.downloads[0].filename, 'Document.published.html');
+  assert.equal(f.downloads[0].blob.type, 'text/html;charset=utf-8'); assert.equal(f.dirty(), true);
+  assert.equal(f.el('btn-undo-source-open').disabled, false);
+  f.el('btn-undo-source-open').click(); assert.deepEqual(await f.markdown(), Buffer.from(original));
+});
+
+test('publication reads undispatched current edits and does not pass preview zoom or theme', () => {
+  const seen = [], f = fixture({publishing: (...args) => { seen.push(args); return '<html><head></head></html>'; }});
+  f.el('btn-zoom-in').click(); f.el('btn-theme-toggle').click();
+  f.type('new source before debounce', false); f.el('btn-publish-html').click();
+  assert.deepEqual(seen, [['new source before debounce']]); assert.equal(f.downloads.length, 1);
+  assert.equal(f.calls.at(-1)[1], original, 'Publication did not refresh the older zoomed preview');
+});
+
+test('plain publication is capability-gated and readiness failure never enables a false fallback', async () => {
+  assert.equal(fixture({native: false}).el('btn-publish-html'), null);
+  assert.equal(fixture().el('btn-publish-html'), null);
+  for (const makeReady of [() => Promise.resolve(false), () => Promise.reject(Error('init failed'))]) {
+    const f = fixture({publishing: () => { throw Error('must not run'); }, ready: makeReady()});
+    assert.equal(f.el('btn-publish-html').disabled, true); await tick();
+    f.el('btn-publish-html').click(); assert.equal(f.downloads.length, 0); assert.equal(f.el('btn-publish-html').disabled, true);
+  }
+  let resolve;
+  const ready = new Promise(done => { resolve = done; });
+  const f = fixture({publishing: () => '<html><head></head></html>', ready});
+  assert.equal(f.el('btn-publish-html').disabled, true); resolve(true); await tick();
+  f.el('btn-publish-html').click(); assert.equal(f.downloads.length, 1);
+});
+
+test('publication failures and invalid output cannot download stale preview content', () => {
+  for (const publishing of [() => { throw Error('native failed'); }, () => '', () => undefined, () => Promise.resolve('not synchronous')]) {
+    const f = fixture({publishing}); f.type('preserve source'); f.el('btn-publish-html').click();
+    assert.equal(f.downloads.length, 0); assert.equal(f.editor.value, 'preserve source');
+    assert.equal(f.preview.innerHTML, 'ORIGINAL RENDER'); assert.match(f.status, /Unable to complete/);
+  }
+});
+
+test('reentrant source changes prevent publication of an obsolete rendered revision', () => {
+  let f;
+  f = fixture({publishing: () => { f.type('newer source'); return '<html><head></head></html>'; }});
+  f.el('btn-publish-html').click(); assert.equal(f.downloads.length, 0);
+  assert.equal(f.editor.value, 'newer source'); assert.match(f.status, /changed during HTML publishing/);
+});
+
+test('Save HTML omits the transient publication control while retaining it in the live editor', () => {
+  const f = fixture({publishing: () => '<html><head></head></html>'}); f.el('btn-save-html').click();
+  assert.equal(f.clone.nodes.get('body > .fmd-app-header #btn-publish-html').removed, true);
+  assert.ok(f.el('btn-publish-html')); assert.equal(f.dirty(), false);
 });

@@ -262,9 +262,18 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   const decoder = new TextDecoder('utf-8', {fatal: true});
   let diagnostics = [];
   function source(text) {
-    if (typeof text !== 'string' || text.length > 32 * 1024 * 1024
-        || new TextEncoder().encode(text).length > 32 * 1024 * 1024) {
+    const maximum = 32 * 1024 * 1024;
+    if (typeof text !== 'string' || text.length > maximum) {
       throw new RangeError('Workspace source exceeds 32 MiB');
+    }
+    // Never let a native ABI/TextEncoder silently replace malformed editor
+    // Unicode. Count before allocating and keep imported BOM/newlines exact.
+    let size = 0;
+    for (const character of text) {
+      const cp = character.codePointAt(0);
+      if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError('Workspace source contains an unpaired surrogate');
+      size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+      if (size > maximum) throw new RangeError('Workspace source exceeds 32 MiB');
     }
     return text;
   }
@@ -416,6 +425,13 @@ export function bootNativeWorkspace(factory) {
       const next = makeFrame(html);
       preview.replaceChildren(next);
       observer?.disconnect(); observer = null; frame = next;
+    },
+    html(markdown) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; retry HTML publishing after initialization.');
+      // A publication is a new complete native document, not a snapshot of the
+      // editor or its iframe. Use committed document settings, never view zoom
+      // or a forced view theme, and retain the renderer's script-free CSP.
+      return renderer.html(markdown);
     },
     pdf(markdown) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; retry PDF export after initialization.');

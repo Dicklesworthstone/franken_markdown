@@ -119,7 +119,9 @@
   });
   // Also handle an engine that settled before this controller was evaluated.
   // Read currentSource at completion: typing during startup is never lost.
-  if (native?.ready) native.ready.then(() => attempt(renderCurrent));
+  if (native?.ready) native.ready.then(() => attempt(renderCurrent), error => {
+    saveStatus.textContent = 'Native runtime failed: ' + String(error?.message ?? error).slice(0, 2048);
+  });
   editor.addEventListener('input', () => {
     updateStats();
     saveStatus.textContent = modifiedNotice();
@@ -194,6 +196,7 @@
     copy.querySelector('body > dialog#fmd-document-settings')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-document-settings')?.remove();
     copy.querySelector('body > .fmd-app-header #fmd-source-controls')?.remove();
+    copy.querySelector('body > .fmd-app-header #btn-publish-html')?.remove();
     copy.querySelector('#editor-pane > .fmd-pane-header > #fmd-save-status').textContent = '';
     download('<!DOCTYPE html>\n' + copy.outerHTML, 'text/html;charset=utf-8', 'html');
   }
@@ -383,7 +386,7 @@
       button.disabled = false;
     }
     enable();
-    if (native.ready) native.ready.then(enable);
+    if (native.ready) native.ready.then(enable, () => {});
     button.addEventListener('click', () => attempt(() => {
       opened = native.settings;
       if (!opened) throw Error('Native renderer is not ready');
@@ -434,6 +437,36 @@
         status.focus();
       }
     });
+  }
+
+  function installPublishing() {
+    if (!native || typeof native.html !== 'function') return;
+    const header = document.querySelector('body > .fmd-app-header');
+    const exportButton = header?.querySelector('#btn-export-pdf');
+    if (!exportButton) return;
+    let button = header.querySelector('#btn-publish-html');
+    if (!button) {
+      button = document.createElement('button'); button.id = 'btn-publish-html';
+      button.type = 'button'; button.className = 'fmd-btn'; button.textContent = 'Publish HTML';
+      button.title = 'Download a native HTML document without the editor or WASM runtime; use Save HTML to keep an editable workspace';
+      exportButton.parentNode.insertBefore(button, exportButton);
+    }
+    button.disabled = !!native.ready;
+    if (native.ready) native.ready.then(ready => { button.disabled = ready !== true; }, () => {});
+    button.addEventListener('click', () => attempt(() => {
+      if (button.disabled) return;
+      const source = currentSource(), settings = native.settings;
+      // Do not flush or scrape the preview. Publication renders current source
+      // independently, so pending edits, view zoom and draft controls cannot
+      // silently publish an old revision or a different document configuration.
+      const html = native.html(source);
+      if (typeof html !== 'string' || html.length === 0) throw Error('Native HTML publishing returned an invalid document');
+      if (currentSource() !== source || native.settings !== settings) {
+        throw Error('Document changed during HTML publishing; publish the current revision again');
+      }
+      download(html, 'text/html;charset=utf-8', 'published.html');
+      const notice = nativeNotice(); if (notice) saveStatus.textContent += ' — ' + notice;
+    }));
   }
 
   function installSourceFiles() {
@@ -616,6 +649,7 @@
 
   installSettings();
   installSourceFiles();
+  installPublishing();
 
   // Initial stats calculation
   updateStats();

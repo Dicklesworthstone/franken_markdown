@@ -117,6 +117,36 @@ The compiled WASM must contain the updated controller; existing exported files
 do not upgrade themselves. Browsers without FileReader keep the existing editor
 and downloads without offering a nonfunctional Open control.
 
+## Publish a plain native HTML document
+
+**Publish HTML** downloads a complete rendered document as
+`TITLE.published.html`, separate from the editable workspace produced by
+**Save HTML**. It contains native-rendered content and the resources that the
+native renderer embeds, not the editor, source JSON, binding JavaScript, WASM
+binary, or a saved iframe. Unused resource bindings remain in the workspace;
+they are not packaged separately with a publication.
+
+Publication uses the latest source directly, even before preview debounce. It
+uses committed document typography, title, language and TOC settings. View zoom,
+a forced preview theme and unapplied settings fields do not affect the published
+document. It does not replace the preview, rewrite source, consume source-open
+undo, or treat a requested download as proof of saving. A publication is not an
+editable-workspace backup; keep **Save HTML** for that purpose.
+
+The native renderer's offline policy is retained in the published document:
+embedded data images/fonts and inline styles are allowed, but scripts and remote
+resource loads are denied. Source remains safely parsed by the native engine.
+Unsupported native syntax/assets still produce that engine's diagnostics; this
+operation adds no new parser or rendering fallback. Errors preserve the live
+workspace and do not download its stale preview. Malformed editor Unicode is
+rejected before HTML/PDF dispatch rather than silently replaced during encoding.
+
+The button is available only with a publishing-capable native workspace runtime
+and waits for initialization. Lightweight workspaces and older runtimes without
+the capability do not offer a misleading substitute. The compiled WASM must
+also contain the updated controller; existing standalone files do not upgrade
+themselves. This is a local download, not uploading or deploying a website.
+
 ## Scope and limits
 
 The API accepts `font`, `darkMode` (`auto`/`disabled`), `title`, `lang`, numeric
@@ -180,3 +210,21 @@ probe mode is `file`; use `--mode content` explicitly on hosts that block file
 navigation. Content mode and synthetic lifecycle events do not establish native
 file-navigation or actual back/forward-cache acceptance. Both modes retain test
 artifacts and require already-installed Playwright and Chromium.
+
+Native publication checks:
+
+```sh
+node --test wasm/interactive_runtime.test.mjs wasm/native_workspace_source.test.mjs wasm/native_workspace_publishing.test.mjs
+python wasm/native_workspace_publishing_browser.py --mode content
+```
+
+These tests cover committed settings/resource propagation, current source,
+preview independence, failed output ownership, Unicode admission, readiness,
+diagnostics and repeated publishing after workspace reopening. The browser
+probe runs the production bootstrap, runtime and controller with an actual empty
+WASM module and explicit shell/native-ABI adapters. It loads the published PNG
+and checks the exported content policy against an inserted script. It does not
+prove native parsing, font embedding or PDF layout. File/content navigation
+modes have the same boundaries described for the source probe above; it reuses
+that probe's retained fixture shell and requires both Python files in the repo.
+The existing DSR Node selection includes both source and publishing suites.

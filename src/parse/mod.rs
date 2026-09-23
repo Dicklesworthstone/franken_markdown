@@ -55,6 +55,20 @@ const INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES: usize = 128 * 1024;
 /// can still qualify after a fresh pair of sightings.
 const INLINE_PARSE_CACHE_MAX_TRACKED_HASHES: usize = INLINE_PARSE_CACHE_MAX_ENTRIES;
 
+/// Link/image labels and strikethrough recurse during tokenization, before the
+/// separate emphasis-tree depth limit can apply. Bound that recursion and the
+/// total amount of reparsed label text within one inline run. Rejected outer
+/// links can otherwise reparse their inner links exponentially.
+const MAX_INLINE_PARSE_RECURSION: usize = 64;
+const INLINE_NESTED_WORK_MULTIPLIER: usize = 64;
+
+#[derive(Default)]
+struct InlineWorkBudget {
+    depth: usize,
+    remaining: usize,
+    exhausted: bool,
+}
+
 #[derive(Default)]
 struct InlineParseCache {
     entries: BTreeMap<String, Vec<Inline>>,
@@ -172,6 +186,7 @@ struct ParseProfiler {
     // cache (admission stays depth-0 only).
     inline_cache: InlineParseCache,
     inline_parse_depth: usize,
+    inline_work: InlineWorkBudget,
     /// Current block-nesting recursion depth, used to bound deeply-nested
     /// blockquote/list input so pathological untrusted documents cannot overflow
     /// the stack (a DoS). Threaded for free since the profiler is already `&mut`
@@ -187,6 +202,7 @@ impl ParseProfiler {
             stages: Vec::new(),
             inline_cache: InlineParseCache::default(),
             inline_parse_depth: 0,
+            inline_work: InlineWorkBudget::default(),
             block_depth: 0,
             destinations: None,
         }
@@ -198,6 +214,7 @@ impl ParseProfiler {
             stages: Vec::new(),
             inline_cache: InlineParseCache::default(),
             inline_parse_depth: 0,
+            inline_work: InlineWorkBudget::default(),
             block_depth: 0,
             destinations: None,
         }
@@ -3863,6 +3880,17 @@ fn parse_inlines_chars_nested(
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
 ) -> Vec<Inline> {
+    if profiler.inline_work.exhausted
+        || profiler.inline_work.depth >= MAX_INLINE_PARSE_RECURSION
+        || chars.len() > profiler.inline_work.remaining
+    {
+        // Abandon speculative work without collecting another potentially large
+        // label. The outermost run preserves the complete source as literal text
+        // and rolls back any destination spans from its discarded parse.
+        profiler.inline_work.exhausted = true;
+        return Vec::new();
+    }
+    profiler.inline_work.remaining -= chars.len();
     let started = profiler.checkpoint();
     profiler.inline_parse_depth += 1;
     let inlines = if !inline_chars_needs_full_parse(chars) {
@@ -4015,6 +4043,16 @@ fn parse_inlines_chars_with_refs_profiled(
     profiler: &mut ParseProfiler,
     started: Option<ParseStageStart>,
 ) -> Vec<Inline> {
+    let outermost = profiler.inline_work.depth == 0;
+    if outermost {
+        profiler.inline_work.remaining = bytes
+            .len()
+            .saturating_mul(INLINE_NESTED_WORK_MULTIPLIER)
+            .max(4096);
+        profiler.inline_work.exhausted = false;
+    }
+    let destination_mark = profiler.destination_mark();
+    profiler.inline_work.depth += 1;
     // Inline parsing is two phases. Phase 1 (this loop) tokenizes the text into a
     // flat list of `InlineEl` nodes: finalized inlines (code, links, images,
     // autolinks, raw HTML, breaks) interleaved with raw `*`/`_` emphasis
@@ -4036,6 +4074,9 @@ fn parse_inlines_chars_with_refs_profiled(
         }
     };
     while i < bytes.len() {
+        if profiler.inline_work.exhausted {
+            break;
+        }
         let c = bytes[i];
         match c {
             '\\' if i + 1 < bytes.len() && is_ascii_punct(bytes[i + 1]) => {
@@ -4281,6 +4322,14 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
         }
+    }
+    profiler.inline_work.depth -= 1;
+    if profiler.inline_work.exhausted {
+        if outermost {
+            profiler.destination_rollback(destination_mark);
+            return record_plain_inline_chars_parse(bytes, profiler, started);
+        }
+        return Vec::new();
     }
     // Trim only trailing source spaces, preserving decoded character references
     // at paragraph ends and inside nested link/strikethrough content.
@@ -6338,6 +6387,24 @@ mod inline_autolink_candidate_tests {
                     assert!(gates_agree(&sub), "gate mismatch on {sub:?} ({src:?})");
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod inline_recursion_tests {
+    #[test]
+    fn abandoned_inline_parse_rolls_back_only_its_own_destinations() {
+        let hostile = format!("{}leaf{}", "[".repeat(32), "](/nested)".repeat(32));
+        let source = format!(
+            "[before](/before)\n\n[discard](/discard) {hostile}\n\n[after](/after)"
+        );
+        let spans = super::destination_spans(&source);
+        let destinations: Vec<_> = spans.iter().map(|span| span.dest.as_str()).collect();
+        assert_eq!(destinations, ["/before", "/after"]);
+        for span in spans {
+            assert_eq!(&source[span.range], span.dest);
         }
     }
 }

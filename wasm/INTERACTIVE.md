@@ -77,6 +77,46 @@ additional script-free policy and sandbox. **The supplied bindings are executabl
 trusted application code**; never accept them from Markdown or an untrusted user.
 The source is safe-parsed; raw HTML and caller CSS options are rejected here.
 
+## Open existing Markdown source
+
+**Open Markdown** selects one local `.md`, `.markdown` or `.txt` file in both
+native and lightweight workspaces. It replaces source only, after confirmation:
+**document settings, titles and explicitly embedded images/fonts are retained**.
+The selected filename does not authorize relative image loading, access to other
+files, a disk write, or evaluation of any script in the source. Existing resource
+bindings may be referenced by the new source. Save HTML retains those resources;
+Save Markdown contains only source and does not copy image files beside it.
+
+Files are limited to 32 MiB and decoded as strict UTF-8. Invalid bytes are refused
+rather than replaced. A UTF-8 BOM, mixed LF/CRLF/CR line endings, and other valid
+source characters survive exact source downloads and HTML save/reopen while the
+imported textarea view is unchanged. Ordinary edits use the textarea's LF view;
+returning to that exact imported view recovers the imported string. Selecting an
+empty file is a valid, confirmed replacement. Selecting identical source is a
+no-op, not a new history entry or implicit save.
+
+Only one picker/read is active. FileReader is aborted after ten seconds, on
+intervening source input or composition, or when the page is suspended. Exact
+source-view and revision checks before and after confirmation prevent late reads
+from replacing newer typing, including edits that did not dispatch an input
+event. Opening and source downloads do not require a working renderer. A failed
+preview reports its error without discarding the imported source. The initial
+workspace is still the unsaved-work baseline until a saved HTML file is reopened.
+
+**Undo source replacement** restores the preceding exact source and selection.
+This is one session-only replacement snapshot, not the textarea's native typing
+history or a persistent backup. Each side is bounded to 32 MiB of UTF-8 source;
+these logical bounds are not physical browser heap guarantees. A subsequent
+source edit, composition, or page suspension retires it. A second successful
+Open replaces it with the immediately preceding source. Cancelled/failed reads,
+view changes and downloads leave it available. History and selected file objects
+are not serialized; saving HTML recreates clean controls on reopening. Important
+edits should still be downloaded before replacing source.
+
+The compiled WASM must contain the updated controller; existing exported files
+do not upgrade themselves. Browsers without FileReader keep the existing editor
+and downloads without offering a nonfunctional Open control.
+
 ## Scope and limits
 
 The API accepts `font`, `darkMode` (`auto`/`disabled`), `title`, `lang`, numeric
@@ -123,3 +163,20 @@ prove Rust compilation, PDF quality, or native/WASM output parity.
 A release/verification host must additionally rebuild the matching package,
 generate a real document with fonts/images/math/diagrams, reopen it offline, and
 compare native renderer outputs. Use the project's DSR workflow, not Actions.
+
+The source-file checks run the whole shipped controller:
+
+```sh
+node --test wasm/native_workspace_source.test.mjs
+python wasm/native_workspace_source_browser.py --mode content
+```
+
+Node uses explicit DOM, clock, FileReader and renderer adapters with real File,
+Blob and UTF-8 codecs. The browser probe uses actual Chromium file selection,
+FileReader, textarea normalization, confirmation dialogs, downloads and repeated
+HTML reparsing. Its initial shell and render functions are adapters, not rebuilt
+Rust/WASM; adapter PDF bytes are not PDF-layout evidence. The default browser
+probe mode is `file`; use `--mode content` explicitly on hosts that block file
+navigation. Content mode and synthetic lifecycle events do not establish native
+file-navigation or actual back/forward-cache acceptance. Both modes retain test
+artifacts and require already-installed Playwright and Chromium.

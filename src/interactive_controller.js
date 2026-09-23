@@ -19,7 +19,8 @@
     }
   }
   const originalEditorValue = editor.value;
-  const currentSource = () => editor.value === originalEditorValue ? originalSource : editor.value;
+  let sourceAnchor = {source: originalSource, view: originalEditorValue};
+  const currentSource = () => editor.value === sourceAnchor.view ? sourceAnchor.source : editor.value;
   const preview = document.getElementById('fmd-content');
   const body = document.getElementById('fmd-app-body');
   const candidate = Object.getOwnPropertyDescriptor(window, '__fmdNativeRuntime')?.value;
@@ -43,7 +44,7 @@
   let currentScale = Number.isFinite(storedScale) ? Math.min(2, Math.max(0.7, storedScale)) : 1;
   let viewMode = body.classList.contains('view-read') ? 'read' : 'split';
   let settingsBaseline = null;
-  const isModified = () => editor.value !== originalEditorValue
+  const isModified = () => currentSource() !== originalSource
     || (settingsBaseline !== null && JSON.stringify(native.settings) !== settingsBaseline);
   const modifiedNotice = () => isModified() ? 'Modified — download to keep changes' : '';
   const displaySettings = () => ({scale: currentScale,
@@ -192,6 +193,7 @@
     // Persist settings JSON, not transient controls or unapplied form drafts.
     copy.querySelector('body > dialog#fmd-document-settings')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-document-settings')?.remove();
+    copy.querySelector('body > .fmd-app-header #fmd-source-controls')?.remove();
     copy.querySelector('#editor-pane > .fmd-pane-header > #fmd-save-status').textContent = '';
     download('<!DOCTYPE html>\n' + copy.outerHTML, 'text/html;charset=utf-8', 'html');
   }
@@ -434,7 +436,186 @@
     });
   }
 
+  function installSourceFiles() {
+    if (typeof FileReader !== 'function') return;
+    const header = document.querySelector('body > .fmd-app-header');
+    const saveButton = header?.querySelector('#btn-save-markdown');
+    if (!saveButton) return;
+    // Source-only replacement deliberately retains this workspace's settings
+    // and explicitly embedded resources. A filename grants no asset/file access.
+    let controls = header.querySelector('#fmd-source-controls');
+    if (!controls) {
+      controls = document.createElement('span'); controls.id = 'fmd-source-controls';
+      saveButton.parentNode.insertBefore(controls, saveButton);
+    }
+    controls.style.cssText = 'display:inline-flex;gap:8px;flex-shrink:0';
+    controls.replaceChildren();
+    const open = document.createElement('button'), undo = document.createElement('button');
+    for (const button of [open, undo]) { button.className = 'fmd-btn'; button.type = 'button'; controls.appendChild(button); }
+    open.id = 'btn-open-markdown'; open.textContent = 'Open Markdown';
+    open.title = 'Replace source from a UTF-8 Markdown file; retain document settings and embedded resources';
+    undo.id = 'btn-undo-source-open'; undo.textContent = 'Undo source replacement';
+    undo.title = 'Restore the preceding source, before further source edits'; undo.disabled = true;
+    const picker = document.createElement('input'); picker.id = 'fmd-source-picker';
+    picker.type = 'file'; picker.accept = '.md,.markdown,.txt,text/markdown,text/plain'; picker.hidden = true;
+    controls.appendChild(picker);
+    const maximum = 32 * 1024 * 1024;
+    let revision = 0, composing = false, suspended = false, pending = null, previous = null, ownInput = null;
+    function updateButtons() { open.disabled = suspended || composing || pending !== null; undo.disabled = open.disabled || previous === null; }
+    function finish(operation) {
+      if (pending !== operation) return;
+      pending = null; picker.value = ''; updateButtons();
+    }
+    function cancel() {
+      const operation = pending;
+      if (!operation) return;
+      // Invalidate first: abort events and late picker/read callbacks cannot
+      // release or publish a newer operation started by another user gesture.
+      pending = null;
+      operation.cancelRead?.();
+      picker.value = ''; updateButtons();
+      saveStatus.textContent = modifiedNotice() || 'Source opening cancelled';
+    }
+    function check(operation) {
+      if (pending !== operation || suspended || composing || revision !== operation.revision
+          || editor.value !== operation.view || sourceAnchor !== operation.anchor) {
+        throw Error('Source changed while opening the file; select it again to replace the current source');
+      }
+    }
+    function boundedSource(text) {
+      if (typeof text !== 'string' || text.length > maximum) throw Error('Source exceeds 32 MiB');
+      let size = 0;
+      for (const char of text) {
+        const cp = char.codePointAt(0);
+        if (cp >= 0xd800 && cp <= 0xdfff) throw Error('Source contains invalid Unicode');
+        size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+        if (size > maximum) throw Error('Source exceeds 32 MiB');
+      }
+    }
+    function read(file, operation) {
+      if (!file || typeof file.name !== 'string' || file.name.length > 1024
+          || /[\u0000-\u001f\u007f]/u.test(file.name) || !/\.(md|markdown|txt)$/i.test(file.name)) {
+        throw Error('Select one .md, .markdown or .txt UTF-8 file');
+      }
+      if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > maximum) throw Error('Markdown file exceeds 32 MiB');
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader(); let done = false, timer;
+        const settle = (error, result) => {
+          if (done) return;
+          done = true; clearTimeout(timer); operation.cancelRead = null;
+          reader.onload = reader.onerror = reader.onabort = null;
+          if (error) { if (reader.readyState === 1) reader.abort(); reject(error); }
+          else resolve(result);
+        };
+        operation.cancelRead = () => settle(Error('Source opening cancelled'));
+        reader.onerror = () => settle(Error('Unable to read the selected Markdown file'));
+        reader.onabort = () => settle(Error('Source opening cancelled'));
+        reader.onload = () => {
+          try {
+            check(operation);
+            const buffer = reader.result;
+            const length = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(buffer);
+            if (length !== file.size || length > maximum) throw Error('Selected file size changed during reading');
+            // ignoreBOM means retain the BOM as a source character, not discard
+            // it. Fatal decoding refuses corrupt UTF-8 instead of replacing it.
+            const source = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(buffer);
+            settle(null, source);
+          } catch (error) { settle(error); }
+        };
+        timer = setTimeout(() => settle(Error('Reading Markdown exceeded ten seconds; select the file again')), 10000);
+        try { reader.readAsArrayBuffer(file); } catch (error) { settle(error); }
+      });
+    }
+    function install(source, selection) {
+      const beforeView = editor.value, beforeAnchor = sourceAnchor;
+      try {
+        editor.value = source;
+        const view = editor.value;
+        if (view !== source.replace(/\r\n?/g, '\n')) throw Error('Editor could not accept the complete source');
+        sourceAnchor = {source, view};
+      } catch (error) {
+        editor.value = beforeView; sourceAnchor = beforeAnchor;
+        throw error;
+      }
+      // Publish the lossless anchor before synchronous subscribers run. This
+      // invalidates in-flight image insertions through their normal input path.
+      const event = new Event('input', {bubbles: true});
+      const expectedRevision = revision + 1;
+      ownInput = event;
+      try { editor.dispatchEvent(event); } finally { ownInput = null; }
+      if (revision !== expectedRevision || currentSource() !== source) previous = null;
+      if (viewMode === 'read') document.getElementById('btn-toggle-view').click();
+      editor.focus();
+      if (selection) {
+        editor.setSelectionRange(selection.start, selection.end, selection.direction);
+        editor.scrollTop = selection.scrollTop;
+      } else { editor.setSelectionRange(0, 0); editor.scrollTop = 0; }
+      updateButtons();
+    }
+    open.addEventListener('click', () => attempt(() => {
+      if (suspended || composing || pending) return;
+      const operation = {revision, view: editor.value, anchor: sourceAnchor, cancelRead: null};
+      pending = operation; updateButtons();
+      try { picker.value = ''; picker.click(); }
+      catch (error) { finish(operation); throw error; }
+    }));
+    picker.addEventListener('cancel', cancel);
+    picker.addEventListener('change', () => {
+      const operation = pending;
+      if (!operation || operation.reading) return;
+      const files = picker.files;
+      if (!files || files.length === 0) { finish(operation); return; }
+      operation.reading = true;
+      const run = async () => {
+        if (files.length !== 1) throw Error('Select one Markdown source file at a time');
+        check(operation);
+        // One reversible replacement retains at most 32 MiB on each side.
+        // Validate the old source too, without allocating another UTF-8 copy.
+        const beforeSource = currentSource(); boundedSource(beforeSource);
+        saveStatus.textContent = 'Reading Markdown source…';
+        const source = await read(files[0], operation);
+        check(operation);
+        if (source === beforeSource) { saveStatus.textContent = 'Selected file already matches the current source'; return; }
+        const name = Array.from(files[0].name).slice(0, 160).join('');
+        const accepted = window.confirm(`Replace the current Markdown source with “${name}”?\n\nDocument settings and embedded images/fonts are retained. No other files or image paths are opened. Undo source replacement is available until the next source edit; Save HTML keeps the workspace.`);
+        check(operation); // Recheck even changes that did not dispatch input.
+        if (!accepted) { saveStatus.textContent = modifiedNotice(); return; }
+        const backup = {source: beforeSource, selection: {start: editor.selectionStart, end: editor.selectionEnd,
+          direction: editor.selectionDirection, scrollTop: editor.scrollTop}};
+        // No async boundary separates this final check, anchor publication and
+        // input dispatch. Rendering may fail afterward; source remains saveable.
+        previous = backup;
+        try { install(source); } catch (error) { previous = null; throw error; }
+        if (previous) { previous.view = editor.value; previous.anchor = sourceAnchor; previous.revision = revision; }
+        saveStatus.textContent = 'Markdown source opened — Save HTML to keep this workspace';
+      };
+      run().catch(error => {
+        if (pending === operation) saveStatus.textContent = 'Source not opened: ' + String(error?.message ?? error).slice(0, 2048);
+      }).finally(() => finish(operation));
+    });
+    undo.addEventListener('click', () => attempt(() => {
+      if (!previous || pending || composing || suspended) return;
+      const backup = previous;
+      previous = null; updateButtons();
+      if (revision !== backup.revision || editor.value !== backup.view || sourceAnchor !== backup.anchor) {
+        throw Error('Source changed after opening; undo would discard newer edits');
+      }
+      install(backup.source, backup.selection);
+      saveStatus.textContent = modifiedNotice() || 'Previous source restored';
+    }));
+    editor.addEventListener('input', event => {
+      revision++;
+      if (event !== ownInput) { previous = null; cancel(); }
+      updateButtons();
+    });
+    editor.addEventListener('compositionstart', () => { composing = true; revision++; previous = null; cancel(); updateButtons(); });
+    editor.addEventListener('compositionend', () => { composing = false; revision++; updateButtons(); });
+    window.addEventListener('pagehide', () => { suspended = true; revision++; previous = null; cancel(); updateButtons(); });
+    window.addEventListener('pageshow', () => { suspended = false; composing = false; revision++; updateButtons(); });
+  }
+
   installSettings();
+  installSourceFiles();
 
   // Initial stats calculation
   updateStats();

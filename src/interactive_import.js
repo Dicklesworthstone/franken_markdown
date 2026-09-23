@@ -180,12 +180,8 @@ if (typeof document !== 'undefined') (function() {
     }
   }
 
-  picker.addEventListener('change', async () => {
-    if (busy) return;
-    const files = Array.from(picker.files || []);
-    const before = selection || snapshot();
-    selection = null;
-    picker.value = ''; // Allow retrying the exact same selection.
+  async function importFiles(files, before) {
+    if (busy) { status.textContent = 'An image import is already in progress'; return; }
     if (!files.length) return;
     busy = true; button.disabled = true; picker.disabled = true;
     status.textContent = 'Reading selected images…';
@@ -241,5 +237,33 @@ if (typeof document !== 'undefined') (function() {
     } finally {
       busy = false; button.disabled = false; picker.disabled = false;
     }
+  }
+
+  picker.addEventListener('change', () => {
+    // Capture file handles and selection before the browser resets its picker.
+    const files = Array.from(picker.files || []), before = selection || snapshot();
+    selection = null;
+    picker.value = ''; // Allow retrying the exact same selection.
+    return importFiles(files, before);
+  });
+  editor.addEventListener('paste', event => {
+    // Never read HTML, URLs, paths or ambient clipboard contents. Only File
+    // objects explicitly delivered with this paste can become image resources.
+    const files = Array.from(event.clipboardData?.files || []);
+    if (!files.length) return; // Let the browser handle ordinary text normally.
+    event.preventDefault();
+    return importFiles(files, snapshot());
+  });
+  editor.addEventListener('dragover', event => {
+    if (!Array.from(event.dataTransfer?.types || []).includes('Files')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  });
+  editor.addEventListener('drop', event => {
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (!files.length) return; // Do not turn dropped URLs into network requests.
+    event.preventDefault(); // A rejected file must not navigate away from source.
+    event.dataTransfer.dropEffect = 'copy'; // Never request a move of the original file.
+    return importFiles(files, snapshot());
   });
 })();

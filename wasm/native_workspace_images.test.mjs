@@ -178,7 +178,7 @@ function target() {
   const listeners=new Map();
   return {value:'',disabled:false,addEventListener(type,fn){if(!listeners.has(type)) listeners.set(type,[]);listeners.get(type).push(fn);},
     dispatchEvent(event){for(const fn of listeners.get(event.type)||[]) fn(event);},
-    async fire(type){await Promise.all((listeners.get(type)||[]).map(fn=>fn({type})));},click(){this.dispatchEvent({type:'click'});}};
+    async fire(type, event={}){await Promise.all((listeners.get(type)||[]).map(fn=>fn({type,...event})));},click(){this.dispatchEvent({type:'click'});}};
 }
 function dom({native=true, mode='command', decode=async()=>{}, initial='# Before'}={}) {
   const s=setup(), editor=target(), button=target(), picker=target(), status=target(), window=target();
@@ -265,4 +265,53 @@ test('native imports enforce UTF-8 bytes, not only the textarea UTF-16 length', 
 test('the lightweight picker remains portable without a native engine', async () => {
   const s=dom({native:false});await s.choose();assert.match(s.editor.value,/data:image\/png;base64,/);
   assert.equal(s.assets().length,1);assert.match(s.status.textContent,/download to keep changes/);
+});
+
+
+test('clipboard-delivered files use the same verified native resources without ambient clipboard reads', async () => {
+  const s=dom();let prevented=false;
+  await s.editor.fire('paste',{clipboardData:{files:[file()]},preventDefault(){prevented=true;}});
+  assert.equal(prevented,true);assert.equal(s.assets().length,2);assert.match(s.editor.value,/fmd-import\//);
+});
+
+test('file drag/drop targets the editor selection and prevents file navigation', async () => {
+  const s=dom({initial:'replace keep'});s.editor.setSelectionRange(0,7);
+  let dragged=false,dropped=false;const dataTransfer={files:[file()],types:['Files'],dropEffect:'none'};
+  await s.editor.fire('dragover',{dataTransfer,preventDefault(){dragged=true;}});
+  assert.equal(dataTransfer.dropEffect,'copy');dataTransfer.dropEffect='none';
+  await s.editor.fire('drop',{dataTransfer,preventDefault(){dropped=true;}});
+  assert.equal(dragged,true);assert.equal(dataTransfer.dropEffect,'copy');assert.equal(dropped,true);
+  assert.equal(s.assets().length,2);assert.doesNotMatch(s.editor.value,/replace/);assert.match(s.editor.value,/keep$/);
+});
+
+test('ordinary text, HTML-only pastes and URL drags keep their browser defaults and never fetch resources', async () => {
+  const s=dom();let prevented=0,reads=0;
+  const data={files:[],types:['text/plain','text/html','text/uri-list'],getData(){reads++;throw Error('must not read URLs');}};
+  for(const type of ['paste','dragover','drop']) await s.editor.fire(type,{clipboardData:data,dataTransfer:data,preventDefault(){prevented++;}});
+  assert.equal(prevented,0);assert.equal(reads,0);assert.equal(s.editor.value,'# Before');assert.equal(s.assets().length,1);
+});
+
+test('oversized paste batches are refused before file reads and invalid drops remain source-preserving', async () => {
+  const s=dom();let reads=0;const f=file();f.arrayBuffer=async()=>{reads++;return png.buffer;};
+  await s.editor.fire('paste',{clipboardData:{files:Array(9).fill(f)},preventDefault(){}});
+  assert.equal(reads,0);assert.match(s.status.textContent,/between 1 and 8/);
+  let prevented=false;
+  await s.editor.fire('drop',{dataTransfer:{files:[file('claimed.png',Buffer.from('<svg/>'))]},preventDefault(){prevented=true;}});
+  assert.equal(prevented,true);assert.equal(s.editor.value,'# Before');assert.equal(s.assets().length,1);
+});
+
+test('picker, paste and drop share one in-flight import, not competing source/resource transactions', async () => {
+  let release;const gate=new Promise(resolve=>{release=resolve;});const s=dom({decode:()=>gate});
+  const pending=s.choose();await new Promise(resolve=>setImmediate(resolve));let reads=0;
+  const f=file();f.arrayBuffer=async()=>{reads++;throw Error('competing import');};
+  for(const type of ['paste','drop']) await s.editor.fire(type,{clipboardData:{files:[f]},dataTransfer:{files:[f]},preventDefault(){}});
+  assert.equal(reads,0);assert.match(s.status.textContent,/already in progress/);
+  release();await pending;assert.equal(s.assets().length,2);assert.equal((s.editor.value.match(/fmd-import\//g)||[]).length,1);
+});
+
+test('lightweight paste and drop preserve their portable data-URI Markdown behavior', async () => {
+  for(const type of ['paste','drop']) {
+    const s=dom({native:false});await s.editor.fire(type,{clipboardData:{files:[file()]},dataTransfer:{files:[file()]},preventDefault(){}});
+    assert.match(s.editor.value,/data:image\/png;base64,/);assert.equal(s.assets().length,1);
+  }
 });

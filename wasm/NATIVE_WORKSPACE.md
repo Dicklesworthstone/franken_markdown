@@ -70,11 +70,51 @@ permits embedded images/fonts and inline styles, but no scripts, remote assets,
 forms, or nested frames. This preview policy is not a sandbox for malicious
 caller-supplied binding JavaScript.
 
-**Save Markdown** saves exact source, not a package of separately supplied image
-or font resources. Native rendering has the selected engine's image/syntax
-support; this exporter does not add a second Markdown parser or extend native
-image-decoder support. The lightweight editor's direct data-URI image imports
-are not translated into native image bindings by this packaging API.
+**Save Markdown** saves exact source, not an image/font resource package.
+Native image imports use short resource references: **Save HTML** retains their
+bytes along with the editor and engine. Markdown alone retains those references
+but does not copy the resources beside it. Native rendering still has the
+selected engine's image/syntax support; this exporter does not add a second
+Markdown parser or extend native image-decoder support.
+
+## Author images without leaving the document
+
+Use **Insert image**, paste clipboard-delivered image files into the source
+editor, or drop local image files onto its current selection. All three entry
+points share the same PNG/JPEG admission, browser decoding, source-revision
+checks and resource transaction. Plain text and HTML-only pastes retain their
+normal browser behavior. URL drags are not image imports; the editor does not
+fetch those URLs or read ambient clipboard contents. File drops request a copy,
+never a move of the original file.
+
+In native workspaces, imported bytes enter the same resource arrays used by
+both full HTML preview and PDF export, including export before the preview
+refreshes. Short `fmd-import/<random-id>.png` or `.jpg` references keep base64 out
+of the editing buffer. File contents determine the image format; escaped file
+names are only alt text. Importing another image with the same name cannot
+replace the earlier resource. The lightweight editor continues to embed data
+URIs directly into Markdown for its portable-source workflow.
+
+The complete batch is read and verified before any insertion. Packed native
+buffers and escaped saved-runtime JSON are staged together and published before
+synchronous editor input handlers run. A decoding error or intervening source
+edit cancels the batch. If editing fails without changing source, publication
+is rolled back; unexpected partial host edits retain resources and report the
+problem rather than leave inserted references broken. Source undo keeps unused
+resources available for redo, including across Save HTML/reopen cycles. Only
+one picker, paste or drop import is in flight at a time.
+
+Imports admit up to eight static PNG/JPEG files, 8 MiB each and 16 MiB per batch,
+with at most 16,384 pixels per side and 24 million pixels per image. The native
+workspace's lifetime image/font byte budget, resource count and destination-text
+limits still apply, including retained unused resources. Decoding has a ten-second
+deadline. Leaving/restoring the page invalidates an unfinished import. Source
+admission checks native UTF-8 bytes as well as textarea length.
+
+The supplied WASM must be rebuilt from matching sources to include the updated
+embedded editor scripts. Existing exported documents do not upgrade themselves.
+A new editor paired with an old native runtime rejects unsupported imports
+explicitly instead of silently selecting the lightweight parser.
 
 ## Settings and limits
 
@@ -123,3 +163,20 @@ Its default mode attempts actual file navigation. Use `--mode content` explicitl
 on hosts whose browser policy blocks `file://`; that mode reparses downloaded
 bytes in fresh pages and does not prove file-navigation compatibility. It tests
 browser plumbing, not Rust parsing/layout, font embedding or PDF conformance.
+
+`node --test wasm/interactive_runtime.test.mjs wasm/native_workspace_images.test.mjs`
+executes the actual runtime and importer with explicit ABI/DOM adapters. It
+covers image ownership, budget admission, transactional publication/rollback,
+PDF dispatch, clipboard/drop entry points and lightweight compatibility.
+
+`python wasm/native_workspace_images_browser.py` creates a retained fixture and
+checks it in locally installed Chromium using Playwright. It exercises real
+image decoding, the file picker, browser undo/redo, downloads and repeated
+save/reopen cycles. File drops use Chromium's trusted input protocol; clipboard
+image events use synthetic File/DataTransfer payloads, not operating-system
+clipboard gestures. Non-file events remain browser-owned. The fixture uses the
+shipped runtime/controller/importer, explicit native renderer and initial-shell
+doubles, and an empty real WASM module. Adapter PDF bytes are not PDF conformance
+or native layout evidence. As with the existing browser probe, `--mode content`
+is an explicit alternative on hosts blocking `file://`, not file-navigation
+proof. No dependencies or browser binaries are downloaded by the probe.

@@ -40,6 +40,8 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
+mod math;
+
 #[cfg(not(target_arch = "wasm32"))]
 type PdfStageStart = std::time::Instant;
 #[cfg(target_arch = "wasm32")]
@@ -315,6 +317,8 @@ struct Line {
 struct ImageLine {
     image: PdfImageData,
     alt: String,
+    /// True for a typeset equation, tagged with its source as `/ActualText`.
+    formula: bool,
     /// Safe destination from a Markdown link enclosing this standalone image.
     link: Option<LinkTarget>,
     /// List-marker text shares this image's row but keeps its own font size.
@@ -2216,6 +2220,8 @@ pub enum RenderWarning {
     /// A CSS `font-weight` pin was set for a slot whose face has no `wght`
     /// axis. The static outlines were used unchanged.
     FontWeightIgnoredStatic { slot: String, weight: u16 },
+    /// An unsupported or excessive display equation retained its visible TeX.
+    MathFallback { source: String, reason: String },
 }
 
 impl RenderWarning {
@@ -2227,6 +2233,7 @@ impl RenderWarning {
             Self::UnsupportedImage(_) => "unsupported_image",
             Self::MissingGlyphs { .. } => "missing_glyphs",
             Self::FontWeightIgnoredStatic { .. } => "font_weight_ignored_static",
+            Self::MathFallback { .. } => "math_fallback",
         }
     }
 
@@ -2250,6 +2257,9 @@ impl RenderWarning {
                  or instancing failed and default outlines were kept \
                  (pin a variable font, or drop --pdf-font-weight)"
             ),
+            Self::MathFallback { source, reason } => format!(
+                "display equation {source:?} could not be typeset: {reason}; rendered as TeX source"
+            ),
         }
     }
 }
@@ -2261,6 +2271,7 @@ impl RenderWarning {
 #[must_use]
 pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> {
     let mut warnings = Vec::new();
+    let supported_math = math::collect_warnings(&doc.blocks, &mut warnings);
     let mut image_text = String::new();
 
     let mut dests = Vec::new();
@@ -2287,7 +2298,7 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
 
     if let Ok(faces) = Faces::load(opts) {
         let mut text = String::new();
-        collect_text(&doc.blocks, &mut text);
+        collect_text(&doc.blocks, &mut text, &supported_math);
         let mut missing = 0usize;
         let mut seen = BTreeSet::new();
         let mut sample = String::new();
@@ -2432,18 +2443,25 @@ fn collect_image_dests_inlines(inlines: &[Inline], out: &mut Vec<String>) {
     }
 }
 
-fn collect_text(blocks: &[Block], out: &mut String) {
+fn collect_text(blocks: &[Block], out: &mut String, supported_math: &BTreeSet<&str>) {
     for block in blocks {
         match block {
             Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
                 collect_text_inlines(inlines, out);
             }
-            Block::CodeBlock { code, .. } | Block::MathBlock(code) => out.push_str(code),
-            Block::BlockQuote(inner) => collect_text(inner, out),
-            Block::FootnoteDefinition { blocks: inner, .. } => collect_text(inner, out),
+            Block::CodeBlock { code, .. } => out.push_str(code),
+            Block::MathBlock(code) => {
+                if !supported_math.contains(code.as_str()) {
+                    out.push_str(code);
+                }
+            }
+            Block::BlockQuote(inner) => collect_text(inner, out, supported_math),
+            Block::FootnoteDefinition { blocks: inner, .. } => {
+                collect_text(inner, out, supported_math);
+            }
             Block::List(list) => {
                 for item in &list.items {
-                    collect_text(&item.blocks, out);
+                    collect_text(&item.blocks, out, supported_math);
                 }
             }
             Block::DefinitionList(items) => {
@@ -2900,9 +2918,11 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
         return;
     }
 
-    let font_size = cx.type_scale.body;
+    // Keep enough horizontal room for a title and its page-number column even
+    // with a narrow page or a large user-selected body size.
+    let available = (cx.page.content_w - indent).max(MIN_CONTENT_DIM);
+    let font_size = cx.type_scale.body.min(available / 4.0);
     let fs = font_size_of(font_size);
-    let dot_w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, ".", fs).to_points_f32();
     let space_w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, " ", fs).to_points_f32();
 
     gap(out, 6.0);
@@ -2912,90 +2932,127 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
         let page_str = format!("{page_num}");
         let page_w =
             cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, &page_str, fs).to_points_f32();
-        let title_w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, &entry.title, fs)
-            .to_points_f32();
-
-        let left_x = cx.page.left + indent + level_indent;
         let right_x = cx.page.right_x();
-        let avail_dots = (right_x - left_x - title_w - page_w - 2.0 * space_w).max(0.0);
-
-        let (dots_str, dots_w) = if avail_dots > (dot_w + space_w) * 2.0 {
-            let step = (dot_w + space_w).max(1.0);
-            let count = ((avail_dots / step).floor() as usize).max(2);
-            let s = " .".repeat(count);
-            let w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, &s, fs).to_points_f32();
-            (s, w)
-        } else {
-            (String::new(), 0.0)
-        };
-
-        let title_seg = Seg {
-            x: left_x,
-            slot: F_BODY,
-            text_hash: seg_text_hash(&entry.title),
-            text: entry.title.clone(),
-            link: Some(LinkTarget::Fragment(entry.id.clone())),
-            fill: Fill::Black,
-            strike: false,
-            task: None,
-            width: title_w,
-            expansion_permille: 0,
-        };
-
-        let mut segs = vec![title_seg];
-        if !dots_str.is_empty() {
-            let dots_seg = Seg {
-                x: left_x + title_w + space_w,
-                slot: F_BODY,
-                text_hash: seg_text_hash(&dots_str),
-                text: dots_str,
-                link: Some(LinkTarget::Fragment(entry.id.clone())),
-                fill: Fill::Muted,
-                strike: false,
-                task: None,
-                width: dots_w,
-                expansion_permille: 0,
-            };
-            segs.push(dots_seg);
+        let base_x = cx.page.left + indent;
+        let title_right = right_x - page_w - 2.0 * space_w;
+        let max_indent = (title_right - base_x - 2.0 * font_size).max(0.0);
+        let left_x = base_x + level_indent.min(max_indent);
+        let title_width = (title_right - left_x).max(1.0);
+        let mut toks = Vec::new();
+        push_text_tokens(&entry.title, F_BODY, false, None, &mut toks);
+        apply_symbol_fallback(&mut toks, cx.faces);
+        let wrapped = wrap_cell_styled(&toks, title_width, font_size, cx.faces, &cx.width_cache);
+        let count = wrapped.len();
+        let group = cx.alloc_flow();
+        for (index, row) in wrapped.into_iter().enumerate() {
+            let last = index + 1 == count;
+            let mut x = left_x;
+            let mut segs = Vec::with_capacity(row.runs.len() + 2);
+            for run in row.runs {
+                segs.push(Seg {
+                    x,
+                    slot: run.slot,
+                    text_hash: seg_text_hash(&run.text),
+                    text: run.text,
+                    link: Some(LinkTarget::Fragment(entry.id.clone())),
+                    fill: Fill::Black,
+                    strike: false,
+                    task: None,
+                    width: run.width,
+                    expansion_permille: 0,
+                });
+                x += run.width;
+            }
+            if last {
+                append_pdf_toc_page(&mut segs, &entry.id, x, right_x, &page_str, font_size, cx);
+            }
+            out.push(Line {
+                size: font_size,
+                gap_after: if last { 4.0 } else { 0.0 },
+                rule: false,
+                rule_x: 0.0,
+                quote_bars: Vec::new(),
+                bg: 0,
+                shade: false,
+                flow: FlowMark {
+                    group,
+                    index,
+                    count,
+                    kind: FlowKind::Paragraph,
+                    list_start: false,
+                },
+                list_path: Vec::new(),
+                table_cols: Vec::new(),
+                segs,
+                page_break_before: false,
+                image: None,
+            });
         }
-
-        let page_seg = Seg {
-            x: right_x - page_w,
-            slot: F_BODY,
-            text_hash: seg_text_hash(&page_str),
-            text: page_str,
-            link: Some(LinkTarget::Fragment(entry.id.clone())),
-            fill: Fill::Black,
-            strike: false,
-            task: None,
-            width: page_w,
-            expansion_permille: 0,
-        };
-        segs.push(page_seg);
-
-        out.push(Line {
-            size: font_size,
-            gap_after: 4.0,
-            rule: false,
-            rule_x: 0.0,
-            quote_bars: Vec::new(),
-            bg: 0,
-            shade: false,
-            flow: FlowMark {
-                group: cx.alloc_flow(),
-                index: 0,
-                count: 1,
-                kind: FlowKind::Paragraph,
-                list_start: false,
-            },
-            list_path: Vec::new(),
-            table_cols: Vec::new(),
-            segs,
-            page_break_before: false,
-            image: None,
-        });
     }
     gap(out, 10.0);
+}
+
+#[cfg(test)]
+#[path = "pdf/toc_tests.rs"]
+mod toc_tests;
+
+/// Dot leaders and the page number belong to the last physical title line.
+/// Every component points at the same heading, including continuation lines.
+fn append_pdf_toc_page(
+    segs: &mut Vec<Seg>,
+    id: &str,
+    title_end: f32,
+    right_x: f32,
+    page_str: &str,
+    font_size: f32,
+    cx: &LayoutCx<'_>,
+) {
+    let fs = font_size_of(font_size);
+    let dot_w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, ".", fs).to_points_f32();
+    let space_w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, " ", fs).to_points_f32();
+    let page_w =
+        cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, page_str, fs).to_points_f32();
+    let avail_dots = (right_x - title_end - page_w - 2.0 * space_w).max(0.0);
+
+    let (dots_str, dots_w) = if avail_dots > (dot_w + space_w) * 2.0 {
+        let step = (dot_w + space_w).max(1.0);
+        let count = ((avail_dots / step).floor() as usize).max(2);
+        let s = " .".repeat(count);
+        let w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, &s, fs).to_points_f32();
+        (s, w)
+    } else {
+        (String::new(), 0.0)
+    };
+
+    if !dots_str.is_empty() {
+        let dots_seg = Seg {
+            x: title_end + space_w,
+            slot: F_BODY,
+            text_hash: seg_text_hash(&dots_str),
+            text: dots_str,
+            link: Some(LinkTarget::Fragment(id.to_string())),
+            fill: Fill::Muted,
+            strike: false,
+            task: None,
+            width: dots_w,
+            expansion_permille: 0,
+        };
+        segs.push(dots_seg);
+    }
+
+    let page_seg = Seg {
+        x: right_x - page_w,
+        slot: F_BODY,
+        text_hash: seg_text_hash(page_str),
+        text: page_str.to_string(),
+        link: Some(LinkTarget::Fragment(id.to_string())),
+        fill: Fill::Black,
+        strike: false,
+        task: None,
+        width: page_w,
+        expansion_permille: 0,
+    };
+    segs.push(page_seg);
 }
 
 // ---- layout -----------------------------------------------------------------
@@ -3017,6 +3074,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
             width_cache: RefCell::new(WidthCache::default()),
             simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
             table_layout_cache: TableLayoutCache::default(),
+            math_renderer: crate::pdf::math::MathRenderer::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
@@ -3076,6 +3134,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         width_cache: RefCell::new(WidthCache::default()),
         simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
         table_layout_cache: TableLayoutCache::default(),
+        math_renderer: crate::pdf::math::MathRenderer::default(),
         paragraph_scratch: ParagraphLayoutScratch::new(),
         line_breaks: Vec::new(),
         line_toks: Vec::new(),
@@ -3738,6 +3797,8 @@ struct LayoutCx<'a> {
     /// row/header flow shape but scrub the table group; cache hits stamp the
     /// occurrence's fresh group so tagged-PDF table structure remains distinct.
     table_layout_cache: TableLayoutCache,
+    /// Bundled math faces are loaded only when this document has an equation.
+    math_renderer: math::MathRenderer,
     /// Reused workspace for the paragraph optimizer. This avoids the allocating
     /// `break_paragraph` wrapper on every PDF paragraph while keeping all state
     /// render-call-local and deterministic.
@@ -4081,6 +4142,9 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             });
         }
         Block::MathBlock(math_text) => {
+            if math::layout_block(math_text, indent, out, cx) {
+                return;
+            }
             let mut toks = Vec::new();
             push_text_tokens(math_text, F_MONO, false, None, &mut toks);
             apply_symbol_fallback(&mut toks, cx.faces);
@@ -4317,6 +4381,7 @@ fn layout_standalone_image(
             alt: alt.to_string(),
             link,
             marker_size: None,
+            formula: false,
             width_pt,
             height_pt,
         }),
@@ -21530,6 +21595,11 @@ fn generate_page_content(
                         y,
                     );
                 }
+                if image.formula {
+                    math::append_text_anchor(
+                        &mut body, image, line.rule_x, y, subsets, subset_lookup, faces,
+                    );
+                }
             }
             if let Some(seg_start) = first_visible_seg {
                 for seg in &line.segs[seg_start..] {
@@ -22232,6 +22302,9 @@ fn collect_font_slot_text_refs(lines: &[Line]) -> [FontSlotTextRefs<'_>; SLOTS.l
     let mut refs: [FontSlotTextRefs<'_>; SLOTS.len()] =
         std::array::from_fn(|_| FontSlotTextRefs { texts: Vec::new() });
     for line in lines {
+        if line.image.as_ref().is_some_and(|image| image.formula) {
+            refs[0].texts.push(math::TEXT_ANCHOR);
+        }
         for seg in &line.segs {
             if seg.text.is_empty() {
                 continue;
@@ -22369,6 +22442,7 @@ mod font_slot_text_refs_tests {
             alt: String::new(),
             link: None,
             marker_size: None,
+            formula: false,
             width_pt: 1.0,
             height_pt: 1.0,
         });
@@ -27141,10 +27215,10 @@ fn heading_tag(size: f32) -> &'static str {
 /// `Figure`/`Link` are detected first (image, then any link run); headings keep
 /// their heading semantics even when they contain a link.
 fn leaf_elem(line: &Line) -> SElem {
-    if line.image.is_some() {
+    if let Some(image) = &line.image {
         return SElem {
             key: SKey::Figure(line.flow.group),
-            tag: "Figure",
+            tag: if image.formula { "Formula" } else { "Figure" },
         };
     }
     match line.flow.kind {
@@ -31548,6 +31622,7 @@ mod pdf_writer_tests {
             width_cache: std::cell::RefCell::new(WidthCache::default()),
             simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
             table_layout_cache: TableLayoutCache::default(),
+            math_renderer: crate::pdf::math::MathRenderer::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
@@ -35243,6 +35318,7 @@ mod pdf_writer_tests {
             alt: String::new(),
             link: None,
             marker_size: None,
+            formula: false,
             width_pt: 320.5,
             height_pt: 180.25,
         };
@@ -37868,6 +37944,7 @@ mod table_wrap_tests {
             width_cache: width_cache(),
             simple_paragraph_cache: super::SimpleParagraphLayoutCache::default(),
             table_layout_cache: super::TableLayoutCache::default(),
+            math_renderer: crate::pdf::math::MathRenderer::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
@@ -39876,6 +39953,7 @@ mod coverage_gap_tests {
             width_cache: RefCell::new(WidthCache::default()),
             simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
             table_layout_cache: TableLayoutCache::default(),
+            math_renderer: crate::pdf::math::MathRenderer::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
@@ -40269,6 +40347,8 @@ pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<Veri
             let line = p.line;
             let (text, x, overshoot) = if line.rule {
                 (String::new(), line.rule_x, None)
+            } else if let Some(image) = line.image.as_ref().filter(|image| image.formula) {
+                (image.alt.clone(), line.rule_x, None)
             } else {
                 let text = line
                     .segs

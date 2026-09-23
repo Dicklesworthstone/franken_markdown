@@ -101,6 +101,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
 | PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, UAX #14 CJK line breaking, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
+| PDF display mathematics | The shared math engine draws native vector equations from dollar blocks and math fences, with measured fitting, theme colors, `/Formula` tags, extractable TeX source, and explicit fallback warnings; see [PDF mathematics](docs/PDF_MATHEMATICS.md) |
 | Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, Markdown, and Mermaid/MMD. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
@@ -835,6 +836,9 @@ Honest about what the renderer does not do yet.
   auto-loads relative local image destinations for file-input HTML/PDF renders,
   HTML embeds supported assets as data URIs, and `--pdf-image` can provide or
   override PDF assets explicitly.
+- **PDF mathematics.** Display equations use real math glyphs and geometry.
+  Inline formulas within running prose still render as literal TeX; unsupported
+  display commands preserve their source and report `math_fallback`.
 - **SVG support is practical, not browser-complete.** The PDF renderer covers
   the shapes, gradients, masks, clips, markers, CSS variables/selectors,
   embedded PNGs, marker view boxes/orientation/units, and `paint-order` behavior

@@ -23,6 +23,8 @@ mod manifest;
 mod inputs;
 #[path = "native_check.rs"]
 mod preflight;
+#[path = "native/options.rs"]
+mod options;
 
 const MAX_STYLESHEET_BYTES: u64 = 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
@@ -63,7 +65,7 @@ struct BookArgs {
     #[arg(long, value_enum, default_value_t = BookTarget::Both)]
     to: BookTarget,
     /// Check expanded HTML navigation only; write no publications. Exit 65 for findings.
-    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage"])]
+    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage", "pdf_fonts", "pdf_font_weights", "font_scale", "page_size", "margin_top_pt", "margin_right_pt", "margin_bottom_pt", "margin_left_pt", "pdf_line_numbers", "toc_depth"])]
     check_links: bool,
     /// Refuse publication on expanded-navigation findings before rendering or writes.
     #[arg(long, conflicts_with = "robot_triage")]
@@ -83,6 +85,38 @@ struct BookArgs {
     /// Override the configured body font for HTML/PDF.
     #[arg(long, value_parser = ["sans", "serif"])]
     font: Option<String>,
+    /// Host TrueType font as SLOT=PATH, applied to HTML, PDF and EPUB. Repeatable.
+    /// Slots: body-regular, body-bold, body-italic, body-bold-italic, mono-regular.
+    #[arg(long = "pdf-font", value_name = "SLOT=PATH")]
+    pdf_fonts: Vec<String>,
+    /// Host font weight: WEIGHT for body-regular, or SLOT=WEIGHT (1..=1000).
+    /// Variable fonts are instanced; static fonts report an ignored-weight warning.
+    #[arg(long = "pdf-font-weight", value_name = "WEIGHT|SLOT=WEIGHT")]
+    pdf_font_weights: Vec<String>,
+    /// Uniform typography scale for HTML/PDF/EPUB: lg, 125%, 1.2, 18px or 12pt.
+    #[arg(long, visible_alias = "type-size", value_name = "SCALE|PRESET")]
+    font_scale: Option<String>,
+    /// PDF paper: letter, a4, a5, legal, tabloid, or WIDTHxHEIGHT in points.
+    #[arg(long, value_name = "SIZE")]
+    page_size: Option<String>,
+    /// PDF top margin in points; overrides the configured value.
+    #[arg(long)]
+    margin_top_pt: Option<f64>,
+    /// PDF right margin in points; overrides the configured value.
+    #[arg(long)]
+    margin_right_pt: Option<f64>,
+    /// PDF bottom margin in points; overrides the configured value.
+    #[arg(long)]
+    margin_bottom_pt: Option<f64>,
+    /// PDF left margin in points; overrides the configured value.
+    #[arg(long)]
+    margin_left_pt: Option<f64>,
+    /// Render line numbers in the PDF book's fenced code blocks.
+    #[arg(long)]
+    pdf_line_numbers: bool,
+    /// Maximum heading depth in the generated PDF contents (1..=6).
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=6))]
+    toc_depth: Option<u8>,
     /// Maximum bytes per Markdown file and expanded chapter (book cap: 64 MiB).
     #[arg(long, default_value_t = 64 * 1024 * 1024)]
     max_input_bytes: u64,
@@ -197,6 +231,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         theme = theme.with_font(FontFamily::parse(font)
             .ok_or_else(|| error(64, "usage_error", "font must be sans or serif"))?);
     }
+    let typography = options::prepare(&args, theme)?;
     let (mut loaded, link_check) = if args.deny_broken_links {
         let mut loaded = inputs::load_sources(&args.input, args.max_input_bytes)
             .map_err(|e| error(66, "book_error", e))?;
@@ -222,12 +257,17 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         String::from_utf8(bytes).map_err(|_| error(66, "stylesheet_error", "stylesheet must be UTF-8"))
     }).transpose()?;
     let image_count = loaded.images.len();
+    let font_assets = typography.load_fonts(&mut loaded.protected_paths)?;
+    if !matches!(args.to, BookTarget::Pdf | BookTarget::Both) {
+        loaded.warnings.extend(options::font_warnings(&font_assets));
+    }
     let mut html_options = HtmlOptions {
-        theme,
+        theme: typography.theme,
         title,
         lang,
         custom_css: css,
         image_assets: std::mem::take(&mut loaded.images),
+        font_assets,
         ..HtmlOptions::default()
     };
     let paths = output_paths(&args)?;
@@ -280,13 +320,18 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             author,
             lang: html_options.lang.clone(),
             toc: true,
+            toc_depth: args.toc_depth,
             page_numbers: true,
+            code_line_numbers: args.pdf_line_numbers,
+            base_font_size: typography.font_scale.map(|scale| scale.pdf_base_pt()),
             metadata_epoch_seconds: metadata_epoch()?,
             image_assets: std::mem::take(&mut html_options.image_assets),
+            font_assets: std::mem::take(&mut html_options.font_assets),
             ..PdfOptions::default()
         };
-        let (bytes, emitted_pages) = super::render::render_book_pdf_counted(&loaded.book, &pdf_options)
+        let (bytes, emitted_pages, warnings) = super::render::render_book_pdf_counted(&loaded.book, &pdf_options)
             .map_err(|e| error(70, "pdf_render_error", e))?;
+        loaded.warnings.extend(warnings.iter().map(options::warning_text));
         pages = emitted_pages;
         add_output(&mut rendered, &mut output_bytes, paths.pdf, bytes)?;
     }
@@ -536,7 +581,7 @@ mod tests {
             image_assets: loaded.images.clone(),
             ..PdfOptions::default()
         };
-        let (expected, page_count) = super::super::render::render_book_pdf_counted(&loaded.book, &options).unwrap();
+        let (expected, page_count, _) = super::super::render::render_book_pdf_counted(&loaded.book, &options).unwrap();
         let cli = BookCli::try_parse_from([
             "fmd", "book", input.to_str().unwrap(), "--to", "pdf", "--title", "Test book",
             "--out", output.to_str().unwrap(),
@@ -562,6 +607,11 @@ mod tests {
             vec!["--css", "missing.css"], vec!["--font", "serif"], vec!["--title", "Title"],
             vec!["--author", "Ada"], vec!["--lang", "fr"], vec!["--max-pdf-image-bytes", "1"],
             vec!["--deny-broken-links"], vec!["--robot-triage"],
+            vec!["--pdf-font", "body-regular=missing.ttf"], vec!["--pdf-font-weight", "500"],
+            vec!["--font-scale", "lg"], vec!["--page-size", "a4"],
+            vec!["--margin-top-pt", "36"], vec!["--margin-right-pt", "36"],
+            vec!["--margin-bottom-pt", "36"], vec!["--margin-left-pt", "36"],
+            vec!["--pdf-line-numbers"], vec!["--toc-depth", "2"],
         ] {
             let mut args = vec!["fmd", "book", "missing", "--check-links"];
             args.extend(extra);

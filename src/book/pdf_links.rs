@@ -26,6 +26,23 @@ pub(super) fn page_count(bytes: &[u8]) -> Option<u64> {
 
 pub(super) fn render(book: &Book, document: Document, options: &PdfOptions) -> Result<Vec<u8>> {
     let plan = prepare(book, document, options)?;
+    render_plan(plan, options)
+}
+
+/// Inspect the same assembled, navigation-prepared document that is rendered.
+/// Chapter-relative images, synthesized chapter landings and moved note bodies
+/// must all use their actual rendering context when diagnosing fallbacks.
+#[cfg(feature = "cli")]
+pub(super) fn render_report(
+    book: &Book, document: Document, options: &PdfOptions,
+) -> Result<(Vec<u8>, Vec<crate::RenderWarning>)> {
+    let plan = prepare(book, document, options)?;
+    let warnings = crate::render_warnings(&crate::footnotes::for_pdf(&plan.document), options);
+    let bytes = render_plan(plan, options)?;
+    Ok((bytes, warnings))
+}
+
+fn render_plan(plan: Plan, options: &PdfOptions) -> Result<Vec<u8>> {
     if plan.targets.is_empty() {
         return render_pdf_document(&plan.document, options);
     }

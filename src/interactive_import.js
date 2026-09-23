@@ -83,33 +83,61 @@ function fmdImportAlt(name) {
     .replace(/&/g, '&amp;').replace(/[\\[\]!*_`<>]/g, '\\$&');
 }
 
-async function fmdPrepareImageImport(files, verify, current) {
+async function fmdReadImageImport(files, verify, current) {
   const limit = FMD_IMAGE_IMPORT_LIMITS;
-  if (!files.length || files.length > limit.files) throw Error('Choose between 1 and 8 images');
+  if (!files || !Number.isSafeInteger(files.length) || !files.length || files.length > limit.files) {
+    throw Error('Choose between 1 and 8 images');
+  }
   let total = 0;
-  for (const file of files) {
-    if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > limit.fileBytes) {
+  const selected = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i], size = file?.size;
+    if (typeof file?.arrayBuffer !== 'function' || !Number.isSafeInteger(size) || size < 1 || size > limit.fileBytes) {
       throw Error('Each image must contain 1 byte to 8 MiB');
     }
-    total += file.size;
+    total += size;
+    selected.push({file, size, alt: fmdImportAlt(file.name)});
   }
   if (total > limit.batchBytes) throw Error('Selected images exceed the 16 MiB batch limit');
   const checkCurrent = () => {
     if (!current()) throw Error('The document changed while images were being read; select the images again');
   };
-  const markdown = [];
-  for (const file of files) {
+  const images = [];
+  for (const {file, size, alt} of selected) {
     checkCurrent();
-    const bytes = new Uint8Array(await file.arrayBuffer());
+    const buffer = await file.arrayBuffer();
     checkCurrent();
-    if (bytes.length !== file.size) throw Error('Image size changed while reading');
+    const length = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(buffer);
+    if (length !== size) throw Error('Image size changed while reading');
+    // Own the verified bytes before decoding yields; shared/detached buffers
+    // cannot retarget the asset between validation and native publication.
+    const bytes = new Uint8Array(buffer).slice();
     const info = fmdImportImageInfo(bytes);
     const uri = 'data:' + info.mime + ';base64,' + fmdImportBase64(bytes);
     await verify(uri, info);
     checkCurrent();
-    markdown.push('![' + fmdImportAlt(file.name) + '](' + uri + ')');
+    images.push({alt, bytes, uri, mime: info.mime});
   }
-  return markdown.join('\n\n');
+  return images;
+}
+
+// Preserve the lightweight editor's portable data-URI Markdown contract.
+async function fmdPrepareImageImport(files, verify, current) {
+  const images = await fmdReadImageImport(files, verify, current);
+  return images.map(image => '![' + image.alt + '](' + image.uri + ')').join('\n\n');
+}
+
+function fmdNativeImageImport(images, native) {
+  // Resource identities belong to this insertion, not filenames or mutable
+  // paths. Random 128-bit names avoid accidentally binding existing unresolved
+  // source references. The native store additionally rejects any duplicate key.
+  const assets = images.map(image => {
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+    return {destination: 'fmd-import/' + id + (image.mime === 'image/png' ? '.png' : '.jpg'), bytes: image.bytes};
+  });
+  const transaction = native.stageImages(assets);
+  const markdown = images.map((image, i) => '![' + image.alt + '](' + assets[i].destination + ')').join('\n\n');
+  return {transaction, markdown};
 }
 
 // Keep pure admission helpers executable by the Node regression harness.
@@ -120,7 +148,9 @@ if (typeof document !== 'undefined') (function() {
   const picker = document.querySelector('body > .fmd-app-header #fmd-image-picker');
   const status = document.querySelector('#editor-pane > .fmd-pane-header > #fmd-save-status');
   if (!editor || !button || !picker || !status) return;
-  let revision = 0, busy = false, selection = null;
+  let revision = 0, busy = false, selection = null, active = true;
+  window.addEventListener('pagehide', () => { active = false; revision++; selection = null; });
+  window.addEventListener('pageshow', () => { active = true; revision++; selection = null; });
   editor.addEventListener('input', () => { revision++; });
   const snapshot = () => ({source: editor.value, revision, start: editor.selectionStart, end: editor.selectionEnd});
   button.addEventListener('click', () => {
@@ -132,9 +162,12 @@ if (typeof document !== 'undefined') (function() {
 
   async function verify(uri, info) {
     const image = new Image();
+    let timer;
     try {
       image.src = uri;
-      await image.decode();
+      await Promise.race([image.decode(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Error('Image decoding timed out')), 10000);
+      })]);
       const width = image.naturalWidth, height = image.naturalHeight;
       fmdImportDimensions(width, height);
       // JPEG EXIF orientation may exchange the two axes.
@@ -142,6 +175,7 @@ if (typeof document !== 'undefined') (function() {
         throw Error('Decoded image dimensions do not match its header');
       }
     } finally {
+      clearTimeout(timer);
       image.removeAttribute('src');
     }
   }
@@ -155,28 +189,55 @@ if (typeof document !== 'undefined') (function() {
     if (!files.length) return;
     busy = true; button.disabled = true; picker.disabled = true;
     status.textContent = 'Reading selected images…';
+    let transaction = null, committed = false;
     try {
       if (before.source.length > FMD_IMAGE_IMPORT_LIMITS.sourceUnits) throw Error('Document exceeds the 32 Mi-character import limit');
-      const current = () => revision === before.revision && editor.value === before.source;
-      const markdown = await fmdPrepareImageImport(files, verify, current);
+      const current = () => active && revision === before.revision && editor.value === before.source;
+      const candidate = Object.getOwnPropertyDescriptor(window, '__fmdNativeRuntime')?.value;
+      const native = candidate?.version === 1 && typeof candidate.render === 'function'
+        && typeof candidate.pdf === 'function' ? candidate : null;
+      if (native && typeof native.stageImages !== 'function') {
+        throw Error('Rebuild the matching workspace runtime to import native image resources');
+      }
+      const images = await fmdReadImageImport(files, verify, current);
+      let markdown;
+      if (native) ({transaction, markdown} = fmdNativeImageImport(images, native));
+      else markdown = images.map(image => '![' + image.alt + '](' + image.uri + ')').join('\n\n');
       const prefix = before.source.slice(0, before.start), suffix = before.source.slice(before.end);
       const insertion = (prefix && !prefix.endsWith('\n\n') ? '\n\n' : '') + markdown + (suffix && !suffix.startsWith('\n\n') ? '\n\n' : '');
       const expected = prefix + insertion + suffix;
       if (expected.length > FMD_IMAGE_IMPORT_LIMITS.sourceUnits) throw Error('Insertion would exceed the 32 Mi-character document limit');
+      if (native && new TextEncoder().encode(expected).length > 32 * 1024 * 1024) {
+        throw Error('Insertion would exceed the native 32 MiB UTF-8 source limit');
+      }
       if (!current()) throw Error('The document changed; select the images again');
       const app = document.querySelector('body > #fmd-app-body');
       if (app.classList.contains('view-read')) document.querySelector('body > .fmd-app-header #btn-toggle-view').click();
       editor.focus();
       editor.setSelectionRange(before.start, before.end);
+      if (!current()) throw Error('The document changed; select the images again');
+      // Publish before insertText can emit a synchronous input event. On an
+      // unchanged-source editing failure, roll back both ABI buffers and saved
+      // JSON. If a host partially edits, keep resources so references stay valid.
+      if (transaction) { transaction.commit(); committed = true; }
       // On browsers supporting insertText, one insertion keeps native undo.
       // setRangeText is the non-undo-preserving fallback, never a full rewrite.
-      if (typeof document.execCommand === 'function') document.execCommand('insertText', false, insertion);
+      if (typeof document.execCommand === 'function') {
+        try { document.execCommand('insertText', false, insertion); }
+        catch (error) { if (editor.value !== before.source) throw error; }
+      }
       if (editor.value === before.source) editor.setRangeText(insertion, before.start, before.end, 'end');
       if (editor.value !== expected) throw Error('The editor changed during insertion; inspect the document before retrying');
       if (revision === before.revision) editor.dispatchEvent(new Event('input', {bubbles: true}));
-      status.textContent = 'Inserted ' + files.length + (files.length === 1 ? ' image' : ' images') + ' — download to keep changes';
+      status.textContent = 'Inserted ' + files.length + (files.length === 1 ? ' image' : ' images')
+        + (native ? ' — Save HTML to keep image resources; Markdown alone contains references' : ' — download to keep changes');
     } catch (error) {
-      status.textContent = 'Image insertion failed: ' + String(error?.message || error);
+      let rollbackError = '';
+      if (committed && editor.value === before.source) {
+        try { transaction.rollback(); }
+        catch (failure) { rollbackError = '; resource rollback failed: ' + String(failure?.message || failure); }
+      }
+      status.textContent = 'Image insertion failed: ' + String(error?.message || error) + rollbackError;
     } finally {
       busy = false; button.disabled = false; picker.disabled = false;
     }

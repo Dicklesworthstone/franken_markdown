@@ -27,22 +27,139 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     }
     pageGeometry = new Float64Array(g);
   }
+  const MiB = 1024 * 1024;
+  function textBytes(text) {
+    if (typeof text !== 'string' || text.length > 8192) throw new TypeError('Invalid image destination');
+    let count = 0;
+    for (const character of text) {
+      const cp = character.codePointAt(0);
+      if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError('Invalid image destination Unicode');
+      count += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+    }
+    if (count > 8192) throw new RangeError('Image destination exceeds 8 KiB');
+    return count;
+  }
+  function destination(value, seen) {
+    if (typeof value !== 'string') throw new TypeError('Invalid image destination');
+    const key = value.trim();
+    const size = textBytes(key);
+    if (!key || /[\u0000-\u001f\u007f-\u009f]/u.test(key) || seen.has(key)) {
+      throw new TypeError('Image destinations must be nonempty, control-free and unique');
+    }
+    seen.add(key);
+    return {key, size};
+  }
+  function encodedLength(text) {
+    if (typeof text !== 'string' || !text.length || text.length % 4 || text.length > Math.ceil(32 * MiB / 3) * 4) {
+      throw new RangeError('Invalid saved resource size');
+    }
+    const length = text.length / 4 * 3 - (text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0);
+    if (length > 32 * MiB) throw new RangeError('Saved resource exceeds 32 MiB');
+    return length;
+  }
   function decode(text) {
     const binary = atob(text);
+    if (binary.length !== encodedLength(text)) throw new TypeError('Invalid saved resource encoding');
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes;
   }
-  const images = payload.images.map(image => ({destination: image.destination, bytes: decode(image.bytes)}));
-  const lengths = Uint32Array.from(images, image => image.bytes.length);
-  const flat = new Uint8Array(lengths.reduce((total, length) => total + length, 0));
-  let offset = 0;
-  for (const image of images) { flat.set(image.bytes, offset); offset += image.bytes.length; }
+  function encode(bytes) {
+    const chunks = [];
+    // Each chunk has a multiple of three bytes, so base64 concatenates exactly.
+    for (let start = 0; start < bytes.length; start += 24576) {
+      chunks.push(btoa(String.fromCharCode(...bytes.subarray(start, start + 24576))));
+    }
+    return chunks.join('');
+  }
   const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
+  if (!Array.isArray(payload.images) || payload.images.length > 4096
+      || !Array.isArray(payload.fonts) || payload.fonts.length > slots.length) {
+    throw new RangeError('Workspace exceeds 4096 images or five font slots');
+  }
+  // Admit the saved resource totals before decoding or allocating packed ABI
+  // buffers. Imported resources are subject to the same lifetime budget.
+  const keys = new Set(), fontSlots = new Set();
+  let nameBytes = 0, imageBytes = 0, fontTotal = 0;
+  const encodedImages = payload.images.map(image => {
+    const {key, size} = destination(image.destination, keys);
+    nameBytes += size; imageBytes += encodedLength(image.bytes);
+    return Object.freeze({destination: key, bytes: image.bytes});
+  });
+  for (const font of payload.fonts) {
+    if (!slots.includes(font.slot) || fontSlots.has(font.slot)) throw new TypeError('Invalid or duplicate saved font slot');
+    fontSlots.add(font.slot); fontTotal += encodedLength(font.bytes);
+  }
+  if (nameBytes > 65536 || imageBytes + fontTotal > 128 * MiB) throw new RangeError('Workspace resource budget exceeded');
+  function pack(encoded, views, byteLength, names) {
+    const flat = new Uint8Array(byteLength), lengths = Uint32Array.from(views, view => view.length);
+    let offset = 0;
+    for (const bytes of views) { flat.set(bytes, offset); offset += bytes.length; }
+    return {encoded: Object.freeze(encoded), flat, lengths, names,
+      destinations: encoded.map(image => image.destination)};
+  }
+  let images = pack(encodedImages, encodedImages.map(image => decode(image.bytes)), imageBytes, nameBytes);
   const fonts = slots.map(slot => payload.fonts.find(font => font.slot === slot));
   const fontBytes = fonts.map(font => font ? decode(font.bytes) : new Uint8Array());
   const weights = Uint32Array.from(fonts, font => font?.weight ?? 0);
-  const destinations = images.map(image => image.destination);
+  let generation = 0;
+  function stageImages(additions) {
+    if (!Array.isArray(additions) || !additions.length || additions.length > 8
+        || images.encoded.length + additions.length > 4096) {
+      throw new RangeError('Import supports 1..8 images within the 4096-image workspace limit');
+    }
+    const seen = new Set(images.destinations), admitted = [];
+    let batch = 0, names = images.names;
+    for (const image of additions) {
+      const {key, size} = destination(image.destination, seen);
+      names += size;
+      const value = image.bytes, isView = ArrayBuffer.isView(value);
+      const buffer = isView ? value.buffer : value;
+      // Intrinsic branding rejects shared memory and spoofed buffers. Respect
+      // DataView, typed-array and pooled Buffer offsets, including detachment.
+      const length = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(buffer);
+      const bytes = new Uint8Array(buffer, isView ? value.byteOffset : 0, isView ? value.byteLength : length);
+      if (!bytes.length || bytes.length > 8 * MiB) throw new RangeError('Each imported image must contain 1 byte through 8 MiB');
+      batch += bytes.length;
+      if (names > 65536 || batch > 16 * MiB || images.flat.length + batch + fontTotal > 128 * MiB) {
+        throw new RangeError('Imported images exceed the workspace resource budget');
+      }
+      admitted.push({destination: key, bytes});
+    }
+    const previous = images, revision = generation;
+    // All admission passed. Copy once into the next ABI buffer; encoding from
+    // its owned views prevents later caller mutations from changing saved data.
+    const flat = new Uint8Array(previous.flat.length + batch);
+    flat.set(previous.flat);
+    const lengths = new Uint32Array(previous.lengths.length + admitted.length);
+    lengths.set(previous.lengths);
+    let offset = previous.flat.length;
+    const encoded = previous.encoded.slice();
+    for (let i = 0; i < admitted.length; i++) {
+      const {destination, bytes} = admitted[i];
+      flat.set(bytes, offset); lengths[previous.lengths.length + i] = bytes.length;
+      encoded.push(Object.freeze({destination, bytes: encode(flat.subarray(offset, offset + bytes.length))}));
+      offset += bytes.length;
+    }
+    const next = {encoded: Object.freeze(encoded), flat, lengths, names,
+      destinations: encoded.map(image => image.destination)};
+    let committed = null, ended = false;
+    return Object.freeze({
+      images: next.encoded,
+      // The optional synchronous publisher writes inert JSON before the state
+      // switch. If persistence throws, neither the renderer nor source changes.
+      commit(publish) {
+        if (ended || committed !== null || revision !== generation) throw new Error('Stale image import transaction');
+        if (publish) publish();
+        images = next; payload.images = next.encoded; committed = ++generation;
+      },
+      rollback(publish) {
+        if (ended || committed === null || committed !== generation) throw new Error('Stale image import rollback');
+        if (publish) publish();
+        images = previous; payload.images = previous.encoded; generation++; ended = true;
+      },
+    });
+  }
   const decoder = new TextDecoder('utf-8', {fatal: true});
   let diagnostics = [];
   function source(text) {
@@ -73,13 +190,14 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   }
   return {
     get diagnostics() { return diagnostics; },
+    stageImages,
     html(markdown, display = {}) {
       const scale = Math.min(3, Math.max(0.5, options.fontScale * (display.scale ?? 1)));
       const mode = display.theme === 'light' ? 'disabled'
         : display.theme === 'dark' ? 'auto' : options.darkMode;
       const bytes = take(bindings.renderHtmlConfiguredAdvanced(
         source(markdown), options.font, mode, options.title, undefined, false, scale,
-        ...fontBytes, weights, destinations, flat, lengths,
+        ...fontBytes, weights, images.destinations, images.flat, images.lengths,
         options.lang, options.toc, options.tocDepth,
       ), 'text/html');
       let html = decoder.decode(bytes);
@@ -101,7 +219,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       const args = [
         source(markdown), options.font, options.darkMode, options.title, options.author,
         options.metadataEpochSeconds, false, options.codeLineNumbers,
-        destinations, flat, lengths, ...fontBytes, weights,
+        images.destinations, images.flat, images.lengths, ...fontBytes, weights,
         undefined, undefined, undefined, options.pageNumbers,
         options.fontScale, options.lang, options.toc, options.tocDepth, undefined, false,
       ];
@@ -121,6 +239,20 @@ export function bootNativeWorkspace(factory) {
   const engine = {
     version: 1,
     get diagnostics() { return renderer?.diagnostics ?? []; },
+    stageImages(additions) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; retry image insertion after initialization.');
+      const transaction = renderer.stageImages(additions);
+      const previous = data.textContent;
+      const next = JSON.stringify({...payload, images: transaction.images}).replace(/</g, '\\u003c')
+        .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+      if (next.length > 256 * 1024 * 1024 || new TextEncoder().encode(next).length > 256 * 1024 * 1024) {
+        throw new RangeError('Saved workspace resources exceed 256 MiB');
+      }
+      return Object.freeze({
+        commit() { transaction.commit(() => { data.textContent = next; }); },
+        rollback() { transaction.rollback(() => { data.textContent = previous; }); },
+      });
+    },
     render(markdown, preview, display) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; source is safe. Retry after initialization.');
       const html = renderer.html(markdown, display);

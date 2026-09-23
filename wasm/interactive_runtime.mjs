@@ -343,10 +343,21 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   };
 }
 
-export function bootNativeWorkspace(factory) {
+export function bootNativeWorkspace(factory, createPreview) {
   const data = document.querySelector('body > script#fmd-native-runtime[type="application/json"]');
   const payload = JSON.parse(data.textContent);
   let renderer = null, failure = null, observer = null, frame = null;
+  let worker = null, previewRevision = 0, previewDiagnostics = null, suspended = false;
+  const background = typeof createPreview === 'function';
+  function invalidatePreview() {
+    previewRevision++;
+    worker?.invalidate();
+  }
+  function replacePreview(html, preview) {
+    const next = makeFrame(html);
+    preview.replaceChildren(next);
+    observer?.disconnect(); observer = null; frame = next;
+  }
   function savedData(patch) {
     const next = JSON.stringify({...payload, ...patch}).replace(/</g, '\\u003c')
       .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
@@ -387,7 +398,14 @@ export function bootNativeWorkspace(factory) {
   }
   const engine = {
     version: 1,
-    get diagnostics() { return renderer?.diagnostics ?? []; },
+    previewMode: background ? 'worker' : 'synchronous',
+    invalidatePreview,
+    restartPreview() {
+      if (suspended) throw new Error('Preview is suspended');
+      invalidatePreview();
+      worker?.dispose(); worker = null;
+    },
+    get diagnostics() { return previewDiagnostics ?? renderer?.diagnostics ?? []; },
     get settings() { return renderer?.settings ?? null; },
     applySettings(patch, markdown, preview, display) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; retry settings after initialization.');
@@ -406,6 +424,7 @@ export function bootNativeWorkspace(factory) {
           throw error;
         }
       });
+      invalidatePreview(); previewDiagnostics = null;
       observer?.disconnect(); observer = null; frame = next;
       return renderer.settings;
     },
@@ -415,26 +434,56 @@ export function bootNativeWorkspace(factory) {
       const previous = data.textContent;
       const next = savedData({images: transaction.images});
       return Object.freeze({
-        commit() { transaction.commit(() => { data.textContent = next; }); },
-        rollback() { transaction.rollback(() => { data.textContent = previous; }); },
+        commit() {
+          transaction.commit(() => { data.textContent = next; });
+          invalidatePreview(); previewDiagnostics = null;
+        },
+        rollback() {
+          transaction.rollback(() => { data.textContent = previous; });
+          invalidatePreview(); previewDiagnostics = null;
+        },
       });
     },
-    render(markdown, preview, display) {
+    render(markdown, preview, display, isCurrent = () => true) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; source is safe. Retry after initialization.');
-      const html = renderer.html(markdown, display);
-      const next = makeFrame(html);
-      preview.replaceChildren(next);
-      observer?.disconnect(); observer = null; frame = next;
+      if (suspended) return false;
+      if (!background) {
+        replacePreview(renderer.html(markdown, display), preview);
+        previewDiagnostics = null;
+        return true;
+      }
+      // Only immutable committed snapshots enter the worker. Settings and image
+      // transactions update payload in place; do not reparse/copy its WASM or
+      // resources on each keystroke. The worker caches unchanged revisions.
+      if (!worker) worker = createPreview(factory, payload);
+      const revision = ++previewRevision, options = renderer.settings, images = payload.images;
+      const current = () => !suspended && revision === previewRevision
+        && options === renderer.settings && images === payload.images && isCurrent();
+      return worker.render(markdown, display, {options, images}).then(result => {
+        // Check editor state again *before* DOM publication, including edits
+        // made without an input event and a source replacement/undo round trip.
+        if (!current()) return false;
+        replacePreview(result.html, preview);
+        previewDiagnostics = result.diagnostics;
+        return true;
+      }, error => {
+        if (!current() || error?.code === 'PREVIEW_SUPERSEDED') return false;
+        // No automatic main-thread fallback or unbounded restart loop. Explicit
+        // Restart preview disposes the failed worker and captures current state.
+        throw error;
+      });
     },
     html(markdown) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; retry HTML publishing after initialization.');
       // A publication is a new complete native document, not a snapshot of the
       // editor or its iframe. Use committed document settings, never view zoom
       // or a forced view theme, and retain the renderer's script-free CSP.
+      previewDiagnostics = null;
       return renderer.html(markdown);
     },
     pdf(markdown) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; retry PDF export after initialization.');
+      previewDiagnostics = null;
       return renderer.pdf(markdown);
     },
   };
@@ -460,5 +509,10 @@ export function bootNativeWorkspace(factory) {
       if (moduleUrl) URL.revokeObjectURL(moduleUrl);
     }
   })();
-  window.addEventListener('pagehide', () => observer?.disconnect());
+  window.addEventListener('pagehide', () => {
+    suspended = true; invalidatePreview();
+    worker?.dispose(); worker = null;
+    observer?.disconnect(); observer = null; frame = null;
+  });
+  window.addEventListener('pageshow', () => { suspended = false; });
 }

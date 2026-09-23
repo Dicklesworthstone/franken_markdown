@@ -79,29 +79,67 @@
     statReadability.textContent = `${clampedFlesch}/100`;
   }
 
-  // One synchronous path is used by debounce, print and workspace export.
-  // Do not replace native output until source changes, or publish a source
-  // revision as rendered before the parser and DOM update both succeed.
-  let debounceTimer = null;
+  // fmd-async-preview-v1: one revision-aware path for debounce and Save HTML.
+  // Lightweight previews remain synchronous. Native worker results must commit
+  // before a revision is considered rendered or an editable file is exported.
+  let debounceTimer = null, renderRevision = 0, pendingRender = null;
+  let previewSuspended = false, previewComposing = false, pendingSave = null;
+  function invalidatePreview() {
+    renderRevision++;
+    pendingRender = null;
+    native?.invalidatePreview?.();
+    preview.setAttribute?.('aria-busy', 'false');
+    if (native?.previewMode === 'worker') lastRenderedSource = null;
+  }
   function renderCurrent() {
-    clearTimeout(debounceTimer);
-    debounceTimer = null;
-    const source = currentSource();
-    if (source !== lastRenderedSource) {
-      if (native) {
-        native.render(source, preview, displaySettings());
-        saveStatus.textContent = nativeNotice() || modifiedNotice();
-      } else {
-        const html = source === originalSource ? originalRendered : parseMarkdownClient(source, imageAssets);
-        preview.innerHTML = html;
-      }
-      lastRenderedSource = source;
-    }
+    clearTimeout(debounceTimer); debounceTimer = null;
     updateStats();
+    if (previewSuspended || previewComposing) return false;
+    const source = currentSource(), display = displaySettings(), settings = native?.settings;
+    const view = JSON.stringify(display);
+    if (pendingRender?.source === source && pendingRender.view === view && pendingRender.settings === settings) {
+      return pendingRender.promise;
+    }
+    if (source === lastRenderedSource) return true;
+    const revision = ++renderRevision;
+    const current = () => revision === renderRevision && !previewSuspended && !previewComposing
+      && currentSource() === source && JSON.stringify(displaySettings()) === view && native?.settings === settings;
+    const complete = committed => {
+      if (committed === false || !current()) return false;
+      lastRenderedSource = source;
+      if (native) saveStatus.textContent = nativeNotice() || modifiedNotice();
+      return true;
+    };
+    if (!native) {
+      preview.innerHTML = source === originalSource ? originalRendered : parseMarkdownClient(source, imageAssets);
+      return complete(true);
+    }
+    const result = native.render(source, preview, display, current);
+    if (!result || typeof result.then !== 'function') return complete(result);
+    const operation = {source, view, settings, promise: null};
+    pendingRender = operation;
+    preview.setAttribute?.('aria-busy', 'true');
+    saveStatus.textContent = 'Rendering preview in background…';
+    operation.promise = Promise.resolve(result).then(complete, error => {
+      if (!current() || error?.code === 'PREVIEW_SUPERSEDED') return false;
+      throw error;
+    }).finally(() => {
+      if (pendingRender === operation) {
+        pendingRender = null;
+        preview.setAttribute?.('aria-busy', 'false');
+      }
+    });
+    return operation.promise;
   }
   function attempt(action) {
-    try { action(); }
-    catch (error) { saveStatus.textContent = 'Unable to complete: ' + String(error?.message || error); }
+    const report = error => {
+      saveStatus.textContent = 'Unable to complete: ' + String(error?.message || error).slice(0, 2048);
+      if (native?.previewMode === 'worker') saveStatus.textContent += ' — Restart preview to retry; Markdown remains downloadable.';
+    };
+    try {
+      const result = action();
+      if (result && typeof result.then === 'function') result.catch(report);
+    } catch (error) { report(error); }
   }
   function nativeNotice() {
     const findings = native?.diagnostics ?? [];
@@ -110,6 +148,7 @@
   }
   function refreshNative() {
     if (!native) return;
+    invalidatePreview();
     lastRenderedSource = null;
     attempt(renderCurrent);
   }
@@ -123,10 +162,20 @@
     saveStatus.textContent = 'Native runtime failed: ' + String(error?.message ?? error).slice(0, 2048);
   });
   editor.addEventListener('input', () => {
+    invalidatePreview();
     updateStats();
     saveStatus.textContent = modifiedNotice();
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => attempt(renderCurrent), 150);
+    if (!previewComposing && !previewSuspended) debounceTimer = setTimeout(() => attempt(renderCurrent), 150);
+  });
+
+  editor.addEventListener('compositionstart', () => {
+    previewComposing = true; invalidatePreview();
+    clearTimeout(debounceTimer); debounceTimer = null;
+  });
+  editor.addEventListener('compositionend', () => {
+    previewComposing = false; invalidatePreview();
+    if (!previewSuspended) debounceTimer = setTimeout(() => attempt(renderCurrent), 150);
   });
 
   // These are explicit local downloads, never a network upload or an implicit
@@ -180,8 +229,21 @@
     download(currentSource(), 'text/markdown;charset=utf-8', 'md');
   }
   function saveHtml() {
-    renderCurrent();
-    const source = currentSource();
+    if (pendingSave?.revision === renderRevision) return pendingSave.promise;
+    const source = currentSource(), rendered = renderCurrent(), revision = renderRevision;
+    const save = committed => {
+      if (committed === false || revision !== renderRevision || currentSource() !== source) return;
+      serializeWorkspace(source);
+    };
+    if (!rendered || typeof rendered.then !== 'function') return save(rendered);
+    const operation = {revision, promise: null};
+    pendingSave = operation;
+    operation.promise = rendered.then(save).finally(() => {
+      if (pendingSave === operation) pendingSave = null;
+    });
+    return operation.promise;
+  }
+  function serializeWorkspace(source) {
     const copy = document.documentElement.cloneNode(true);
     // Select application-owned elements, not similarly named headings in the
     // preview. Mutate only the detached copy, leaving the live source intact.
@@ -197,13 +259,14 @@
     copy.querySelector('body > .fmd-app-header #btn-document-settings')?.remove();
     copy.querySelector('body > .fmd-app-header #fmd-source-controls')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-publish-html')?.remove();
+    copy.querySelector('body > .fmd-app-header #btn-restart-preview')?.remove();
     copy.querySelector('#editor-pane > .fmd-pane-header > #fmd-save-status').textContent = '';
     download('<!DOCTYPE html>\n' + copy.outerHTML, 'text/html;charset=utf-8', 'html');
   }
   document.getElementById('btn-save-markdown').addEventListener('click', () => attempt(saveMarkdown));
   document.getElementById('btn-save-html').addEventListener('click', () => attempt(saveHtml));
   document.addEventListener('keydown', event => {
-    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.isComposing || previewComposing) return;
     const key = event.key.toLowerCase();
     if (native && key === 'p') {
       event.preventDefault();
@@ -221,11 +284,18 @@
     }
   });
   window.addEventListener('pagehide', () => {
+    previewSuspended = true; invalidatePreview();
+    clearTimeout(debounceTimer); debounceTimer = null;
     for (const [url, timer] of downloadUrls) {
       clearTimeout(timer);
       URL.revokeObjectURL(url);
     }
     downloadUrls.clear();
+  });
+  window.addEventListener('pageshow', () => {
+    const resume = previewSuspended;
+    previewSuspended = false; previewComposing = false;
+    if (resume) refreshNative();
   });
   // Also cover the browser's own Print menu / keyboard shortcut.
   window.addEventListener('beforeprint', () => {
@@ -418,6 +488,7 @@
         if (JSON.stringify(geometry) !== JSON.stringify(opened.pageGeometry)) patch.pageGeometry = geometry;
         if (Object.keys(patch).length) {
           const source = currentSource();
+          invalidatePreview();
           native.applySettings(patch, source, preview, displaySettings());
           clearTimeout(debounceTimer); debounceTimer = null;
           lastRenderedSource = currentSource() === source ? source : null;
@@ -437,6 +508,27 @@
         status.focus();
       }
     });
+  }
+
+  function installPreviewControls() {
+    if (native?.previewMode !== 'worker' || typeof native.restartPreview !== 'function') return;
+    const header = document.querySelector('body > .fmd-app-header');
+    const exportButton = header?.querySelector('#btn-export-pdf');
+    if (!exportButton) return;
+    let button = header.querySelector('#btn-restart-preview');
+    if (!button) {
+      button = document.createElement('button'); button.id = 'btn-restart-preview';
+      button.type = 'button'; button.className = 'fmd-btn'; button.textContent = 'Restart preview';
+      button.title = 'Stop background rendering and retry the current source; edits and resources are preserved';
+      exportButton.parentNode.insertBefore(button, exportButton);
+    }
+    button.disabled = !!native.ready;
+    if (native.ready) native.ready.then(ready => { button.disabled = ready !== true; }, () => {});
+    button.addEventListener('click', () => attempt(() => {
+      if (button.disabled || previewSuspended || previewComposing) return;
+      native.restartPreview();
+      refreshNative();
+    }));
   }
 
   function installPublishing() {
@@ -650,6 +742,7 @@
   installSettings();
   installSourceFiles();
   installPublishing();
+  installPreviewControls();
 
   // Initial stats calculation
   updateStats();

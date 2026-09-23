@@ -142,9 +142,12 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
     try {
       if (configuration.workerFactory) worker = configuration.workerFactory(source);
       else {
-        if (typeof Worker !== 'function') throw new Error('Module workers are unavailable');
+        if (typeof Worker !== 'function') throw new Error('Workers are unavailable');
         moduleUrl = URL.createObjectURL(new Blob([source], {type: 'text/javascript'}));
-        worker = new Worker(moduleUrl, {type: 'module', name: 'franken-markdown-preview'});
+        // The bootstrap has no static imports. A classic worker can dynamically
+        // import the embedded bindings too, and works in portable/opaque-origin
+        // contexts where module-worker startup is refused by some browsers.
+        worker = new Worker(moduleUrl, {name: 'franken-markdown-preview'});
       }
       worker.addEventListener('message', receive);
       worker.addEventListener('error', failed);

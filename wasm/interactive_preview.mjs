@@ -2,6 +2,8 @@
 // and bindings are trusted application code, never Markdown-controlled imports.
 export function createWorkspacePreviewWorker(factory, payload, configuration = {}) {
   const MiB = 1024 * 1024;
+  const exportTypes = {html: 'text/html;charset=utf-8', pdf: 'application/pdf',
+    epub: 'application/epub+zip', svg: 'image/svg+xml'};
   const timeoutMs = configuration.timeoutMs ?? 30000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000) {
     throw new RangeError('Preview timeout must be 1..120000 milliseconds');
@@ -17,11 +19,28 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       if (length > limit) throw error('PREVIEW_LIMIT', name + ' exceeds its byte limit');
     }
   }
+  function validatePublication(bytes, format) {
+    if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > 256 * 1024 * 1024
+        || !(bytes.buffer instanceof ArrayBuffer)) throw new Error('Invalid or oversized publication bytes');
+    if (format === 'pdf' && String.fromCharCode(...bytes.subarray(0, 5)) !== '%PDF-') {
+      throw new Error('Invalid PDF signature');
+    }
+    if (format === 'epub' && (bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 3 || bytes[3] !== 4)) {
+      throw new Error('Invalid EPUB ZIP signature');
+    }
+    if (format === 'svg') {
+      // Check the native XML envelope, not document-supplied markup or a second
+      // SVG parser. The core remains responsible for safe SVG serialization.
+      const header = new TextDecoder().decode(bytes.subarray(0, 1024));
+      if (!/^\s*(?:<\?xml\s[^?]*\?>\s*)?<svg(?:\s|>)/u.test(header)) throw new Error('Invalid SVG signature');
+    }
+  }
   // Worker-owned WASM and resource cache. No URLs or functions arrive in render
   // requests. A state revision replaces the renderer only after validation.
-  async function serve(makeRenderer) {
+  async function serve(makeRenderer, validatePublication, exportTypes) {
     let bindings = null, data = null, renderer = null, initialized = false;
     const report = (id, err) => self.postMessage({type: 'error', id,
+      code: err?.code === 'UNSUPPORTED_WASM_PACKAGE' ? err.code : undefined,
       message: String(err?.message ?? err).slice(0, 2048)});
     self.onmessage = async ({data: request}) => {
       const id = request?.id;
@@ -47,6 +66,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
           }
           if (request.type === 'export') {
             const format = request.format;
+            if (typeof format !== 'string' || !Object.hasOwn(exportTypes, format)) throw new Error('Unsupported export format');
             let bytes;
             if (format === 'html') {
               // Publication uses committed document settings, never viewing zoom.
@@ -62,15 +82,14 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
                 if (length > 256 * 1024 * 1024) throw new Error('Publication HTML exceeds its byte limit');
               }
               bytes = new TextEncoder().encode(html);
-            } else if (format === 'pdf') {
-              const value = renderer.pdf(request.markdown);
-              if (!(value instanceof Uint8Array) || !value.length || value.length > 256 * 1024 * 1024) {
-                throw new Error('Invalid or oversized PDF bytes');
-              }
+            } else {
+              if (typeof renderer[format] !== 'function') throw Object.assign(
+                new Error('Publication requires a matching native workspace runtime'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+              const value = renderer[format](request.markdown);
+              validatePublication(value, format);
               // Never transfer a borrowed/pool/WASM buffer. Own the exact view.
-              bytes = value.slice();
-              if (String.fromCharCode(...bytes.subarray(0, 5)) !== '%PDF-') throw new Error('Invalid PDF signature');
-            } else throw new Error('Unsupported export format');
+              bytes = new Uint8Array(value);
+            }
             const findings = renderer.diagnostics;
             if (!Array.isArray(findings) || findings.length > 4096
                 || findings.some(item => !item || typeof item.message !== 'string')) {
@@ -81,7 +100,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
               throw new Error('Export diagnostics exceed their byte limit');
             }
             self.postMessage({type: 'result', id, format, bytes,
-              mimeType: format === 'pdf' ? 'application/pdf' : 'text/html;charset=utf-8',
+              mimeType: exportTypes[format],
               diagnostics: JSON.parse(json)}, [bytes.buffer]);
           } else {
             const html = renderer.html(request.markdown, request.display);
@@ -95,7 +114,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       } catch (err) { report(id, err); }
     };
   }
-  const source = `(${serve.toString()})(${factory.toString()});`;
+  const source = `(${serve.toString()})(${factory.toString()}, ${validatePublication.toString()}, ${JSON.stringify(exportTypes)});`;
   let worker = null, moduleUrl = null, timer = null, started = false, closed = false;
   let active = null, queued = null, sequence = 0;
   let lastOptions = null, lastImages = null;
@@ -164,20 +183,20 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
     if (result.type === 'error') {
       // Do not reuse a resource cache whose attempted revision was rejected.
       lastOptions = null; lastImages = null;
-      settle(job, null, error('PREVIEW_RENDER_FAILED', String(result.message).slice(0, 2048)));
+      settle(job, null, error(result.code === 'UNSUPPORTED_WASM_PACKAGE' ? result.code : 'PREVIEW_RENDER_FAILED',
+        String(result.message).slice(0, 2048)));
     } else if (!job.settled) {
       try {
         if (job.format) {
-          const mime = job.format === 'pdf' ? 'application/pdf' : 'text/html;charset=utf-8';
+          const mime = exportTypes[job.format];
           if (result.format !== job.format || result.mimeType !== mime
               || !(result.bytes instanceof Uint8Array) || !result.bytes.length || result.bytes.length > 256 * MiB
               || !(result.bytes.buffer instanceof ArrayBuffer)
               || result.bytes.byteOffset !== 0 || result.bytes.byteLength !== result.bytes.buffer.byteLength) {
             throw error('EXPORT_PROTOCOL', 'Invalid background export result');
           }
-          if (job.format === 'pdf' && String.fromCharCode(...result.bytes.subarray(0, 5)) !== '%PDF-') {
-            throw error('EXPORT_PROTOCOL', 'Invalid background PDF signature');
-          }
+          try { validatePublication(result.bytes, job.format); }
+          catch (failure) { throw error('EXPORT_PROTOCOL', failure.message); }
           text(JSON.stringify(result.diagnostics), MiB, 'Export diagnostics');
         } else {
           text(result.html, 256 * MiB, 'Preview HTML');
@@ -245,7 +264,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       return new Promise((resolve, reject) => {
         try {
           if (closed) throw error('EXPORT_CLOSED', 'Background export is closed');
-          if (!['html', 'pdf'].includes(format) || !state?.options || !Array.isArray(state.images)) {
+          if (typeof format !== 'string' || !Object.hasOwn(exportTypes, format) || !state?.options || !Array.isArray(state.images)) {
             throw error('EXPORT_OPTIONS', 'Invalid background export options');
           }
           text(markdown, 32 * MiB, 'Workspace source');

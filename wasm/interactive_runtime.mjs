@@ -8,6 +8,20 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     }
   }
   if (payload.version !== 1) throw new Error('Unsupported native workspace version');
+  // Optional publication bindings must not make older HTML/PDF workspaces
+  // unopenable. Require the resource-capable ABI: never drop embedded assets.
+  const publications = {
+    epub: 'renderEpubConfiguredAdvanced', svg: 'renderSvgConfiguredResources',
+  };
+  const exportFormats = Object.freeze(['html', 'pdf', ...Object.keys(publications)
+    .filter(format => typeof bindings[publications[format]] === 'function')]);
+  function publicationBinding(format) {
+    const render = bindings[publications[format]];
+    if (typeof render !== 'function') throw Object.assign(new Error(
+      format.toUpperCase() + ' publication requires matching resource-capable WASM bindings',
+    ), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    return render;
+  }
   const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry'];
   function settingData(value) {
@@ -323,9 +337,27 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   return {
     get diagnostics() { return diagnostics; },
     get settings() { return options; },
+    get exportFormats() { return exportFormats; },
     stageSettings,
     stageImages,
     html(markdown, display) { return renderHtml(markdown, display); },
+    epub(markdown) {
+      const render = publicationBinding('epub');
+      return take(render(
+        source(markdown), options.font, options.darkMode, options.title, options.lang,
+        options.fontScale, undefined, options.toc, options.tocDepth,
+        images.destinations, images.flat, images.lengths, ...fontBytes, weights,
+      ), 'application/epub+zip');
+    },
+    svg(markdown) {
+      const render = publicationBinding('svg');
+      // SVG is a continuous poster, not a PDF paper layout. Use its native
+      // default width and document scale, never viewing zoom or PDF margins.
+      return take(render(
+        source(markdown), options.font, options.darkMode, options.fontScale, undefined,
+        images.destinations, images.flat, images.lengths, ...fontBytes, weights,
+      ), 'image/svg+xml');
+    },
     pdf(markdown) {
       const args = [
         source(markdown), options.font, options.darkMode, options.title, options.author,
@@ -483,13 +515,17 @@ export function bootNativeWorkspace(factory, createPreview) {
     previewMode: background ? 'worker' : 'synchronous',
     exportMode: background ? 'worker' : 'synchronous',
     get exportPending() { return pendingExport !== null; },
+    get exportFormats() { return renderer?.exportFormats ?? []; },
     cancelExport,
     exportDocument(format, markdown, isCurrent = () => true) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; retry export after initialization.');
       if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Background exports require the matching worker runtime');
       if (suspended) throw exportError('EXPORT_SUSPENDED', 'Document exports are suspended');
-      if (!['pdf', 'html'].includes(format) || typeof isCurrent !== 'function') {
-        throw exportError('EXPORT_OPTIONS', 'Choose PDF or HTML export');
+      if (!['pdf', 'html', 'epub', 'svg'].includes(format) || typeof isCurrent !== 'function') {
+        throw exportError('EXPORT_OPTIONS', 'Choose PDF, HTML, EPUB or SVG export');
+      }
+      if (!['pdf', 'html'].includes(format) && !renderer.exportFormats?.includes(format)) {
+        throw exportError('UNSUPPORTED_WASM_PACKAGE', format.toUpperCase() + ' publication requires matching resource-capable WASM bindings');
       }
       if (pendingExport || pendingSettings) throw exportError('EXPORT_BUSY', 'A document export or settings preflight is already running');
       const options = renderer.settings, images = payload.images;

@@ -51,7 +51,7 @@
   const storedScale = parseFloat(document.documentElement.style.getPropertyValue('--fmd-base')) / 16;
   let currentScale = Number.isFinite(storedScale) ? Math.min(2, Math.max(0.7, storedScale)) : 1;
   let viewMode = body.classList.contains('view-read') ? 'read' : 'split';
-  let settingsBaseline = null;
+  let settingsBaseline = null, documentLab = null;
   const isModified = () => currentSource() !== originalSource
     || (settingsBaseline !== null && JSON.stringify(native.settings) !== settingsBaseline);
   const modifiedNotice = () => isModified() ? 'Modified — download to keep changes' : '';
@@ -170,6 +170,7 @@
   });
   editor.addEventListener('input', () => {
     cancelDocumentExport('Export cancelled: source changed');
+    documentLab?.invalidate();
     invalidatePreview();
     updateStats();
     saveStatus.textContent = modifiedNotice();
@@ -179,11 +180,14 @@
 
   editor.addEventListener('compositionstart', () => {
     cancelDocumentExport('Export cancelled: text composition started');
-    previewComposing = true; invalidatePreview();
+    previewComposing = true;
+    documentLab?.invalidate('Text composition started — analyze again when finished.');
+    invalidatePreview();
     clearTimeout(debounceTimer); debounceTimer = null;
   });
   editor.addEventListener('compositionend', () => {
     previewComposing = false; invalidatePreview();
+    documentLab?.refresh();
     if (!previewSuspended) debounceTimer = setTimeout(() => attempt(renderCurrent), 150);
   });
 
@@ -265,6 +269,8 @@
     copy.querySelector('body > #stats-drawer').classList.remove('open');
     // The controller runs before dynamically appended dialogs are reparsed.
     // Persist settings JSON, not transient controls or unapplied form drafts.
+    copy.querySelector('body > aside#fmd-document-lab')?.remove();
+    copy.querySelector('body > .fmd-app-header #btn-document-lab')?.remove();
     copy.querySelector('body > dialog#fmd-document-settings')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-document-settings')?.remove();
     copy.querySelector('body > .fmd-app-header #fmd-source-controls')?.remove();
@@ -299,6 +305,7 @@
   window.addEventListener('pagehide', () => {
     cancelDocumentExport('Export cancelled: workspace suspended');
     previewSuspended = true; invalidatePreview();
+    documentLab?.invalidate('Workspace suspended — run analysis again after restoring.');
     clearTimeout(debounceTimer); debounceTimer = null;
     for (const [url, timer] of downloadUrls) {
       clearTimeout(timer);
@@ -310,6 +317,7 @@
     const resume = previewSuspended;
     previewSuspended = false; previewComposing = false;
     if (resume) refreshNative();
+    documentLab?.refresh();
   });
   // Also cover the browser's own Print menu / keyboard shortcut.
   window.addEventListener('beforeprint', () => {
@@ -490,6 +498,7 @@
       event.preventDefault();
       if (!form.reportValidity()) return;
       try {
+        if (documentLab?.busy) throw Error('Finish or cancel Document Lab analysis before applying settings');
         if (!opened || native.settings !== opened) throw Error('Document settings changed while this panel was open; reopen it before applying');
         const patch = {};
         // Compare actual displayed values. Unedited metadata remains byte-exact
@@ -504,6 +513,7 @@
           const source = currentSource();
           invalidatePreview();
           native.applySettings(patch, source, preview, displaySettings());
+          documentLab?.invalidate('Document settings changed — run analysis again.');
           clearTimeout(debounceTimer); debounceTimer = null;
           lastRenderedSource = currentSource() === source ? source : null;
           if (Object.hasOwn(patch, 'title')) {
@@ -620,6 +630,7 @@
   function releaseExportControls(operation) {
     for (const [button, disabled] of operation.buttons) button.disabled = disabled;
     if (exportControls) { exportControls.cancel.hidden = true; exportControls.cancel.style.display = 'none'; }
+    documentLab?.refresh();
   }
   function cancelDocumentExport(message) {
     exportRevision++;
@@ -632,11 +643,13 @@
   }
   function exportDocument(format) {
     if (!Object.hasOwn(publicationFormats, format)) throw Error('Unsupported publication format');
+    if (documentLab?.busy) throw Error('Finish or cancel Document Lab analysis before exporting');
     if (previewSuspended || previewComposing) return;
     if (pendingExport) return pendingExport.promise;
     const source = currentSource(), settings = native.settings, revision = exportRevision;
     const operation = {buttons: [], promise: null};
     pendingExport = operation;
+    documentLab?.refresh();
     const current = () => pendingExport === operation && revision === exportRevision
       && !previewSuspended && !previewComposing && currentSource() === source && native.settings === settings;
     const {extension, mime} = publicationFormats[format], name = filename(extension);
@@ -878,12 +891,218 @@
     window.addEventListener('pageshow', () => { suspended = false; composing = false; revision++; updateButtons(); });
   }
 
+  // fmd-document-lab-v1: native, explicit authoring reports. No timer-driven
+  // reparsing, browser storage, inferred source positions or report HTML.
+  function installDocumentLab() {
+    if (!workerExports || typeof native.analyzeDocument !== 'function') return;
+    const install = () => {
+      if (documentLab || !native.analysisFormats?.length) return;
+      const header = document.querySelector('body > .fmd-app-header');
+      const pdf = header?.querySelector('#btn-export-pdf');
+      if (!pdf) return;
+      const make = (tag, text, parent) => {
+        const node = document.createElement(tag);
+        if (text !== undefined) node.textContent = text;
+        if (parent) parent.appendChild(node);
+        return node;
+      };
+      const button = make('button', 'Document Lab');
+      button.id = 'btn-document-lab'; button.type = 'button'; button.className = 'fmd-btn';
+      button.setAttribute('aria-controls', 'fmd-document-lab'); button.setAttribute('aria-expanded', 'false');
+      pdf.parentNode.insertBefore(button, pdf);
+      const panel = make('aside', undefined, document.body);
+      panel.id = 'fmd-document-lab'; panel.hidden = true;
+      panel.setAttribute('role', 'region'); panel.setAttribute('aria-labelledby', 'fmd-lab-title');
+      panel.style.cssText = 'position:fixed;z-index:1000;right:16px;bottom:16px;width:min(38rem,calc(100vw - 32px));max-height:75vh;overflow:auto;box-sizing:border-box;padding:20px;border:1px solid var(--border-color,#aaa);border-radius:8px;background:var(--bg-primary,#fff);color:var(--fg-primary,#222);box-shadow:0 4px 24px #0003;overflow-wrap:anywhere';
+      make('h2', 'Document Lab', panel).id = 'fmd-lab-title';
+      make('p', 'Analyze the current Markdown with the embedded Rust engine. Reports are read-only and never change source, settings or resources.', panel);
+      make('p', 'Accessibility uses engine-default PDF options, not this workspace’s configured paper, fonts or images. It is an authoring audit, not PDF/UA certification.', panel).id = 'fmd-lab-scope';
+      const actions = make('div', undefined, panel);
+      actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px';
+      const action = (id, label) => {
+        const node = make('button', label, actions);
+        node.id = id; node.type = 'button'; node.className = 'fmd-btn'; return node;
+      };
+      const stats = action('btn-lab-stats', 'Analyze document');
+      const audit = action('btn-lab-audit', 'Audit accessibility');
+      const save = action('btn-lab-download', 'Download report JSON');
+      const cancel = action('btn-lab-cancel', 'Cancel analysis');
+      const close = action('btn-lab-close', 'Close');
+      const status = make('p', 'Choose an analysis. Readability scores are estimates, not language-independent measurements.', panel);
+      status.id = 'fmd-lab-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+      const output = make('div', undefined, panel); output.id = 'fmd-lab-output';
+      let pending = null, latest = null, revision = 0;
+      const current = snapshot => snapshot && snapshot.revision === revision
+        && snapshot.source === currentSource() && snapshot.settings === native.settings
+        && !previewSuspended && !previewComposing;
+      function refresh() {
+        const busy = pending !== null || pendingExport !== null || native.exportPending || native.settingsPending;
+        const paused = previewSuspended || previewComposing;
+        stats.hidden = !native.analysisFormats.includes('stats');
+        audit.hidden = !native.analysisFormats.includes('accessibility');
+        stats.disabled = audit.disabled = busy || paused;
+        save.disabled = busy || !current(latest);
+        cancel.hidden = pending === null;
+        panel.setAttribute('aria-busy', String(pending !== null));
+      }
+      function release(operation) {
+        for (const [node, disabled] of operation.buttons) node.disabled = disabled;
+      }
+      function cancelPending(message) {
+        const operation = pending;
+        if (!operation) return;
+        pending = null;
+        native.cancelAnalysis();
+        release(operation); status.textContent = message; refresh();
+      }
+      function invalidate(message = 'Source changed — run analysis again.') {
+        revision++; latest = null;
+        cancelPending(message); output.replaceChildren();
+        status.textContent = message; refresh();
+      }
+      function show(result, snapshot) {
+        const report = result.report;
+        const content = document.createDocumentFragment();
+        const short = text => text.length > 1200 ? text.slice(0, 1200) + '…' : text;
+        make('h3', result.kind === 'stats' ? 'Document intelligence' : 'Accessibility — engine defaults', content);
+        if (result.kind === 'stats') {
+          const metrics = make('dl', undefined, content);
+          const values = [['Words', report.words], ['Characters (excluding whitespace)', report.characters],
+            ['Source bytes', report.bytes], ['Source lines', report.lines],
+            ['Reading time (seconds)', report.reading_time_secs], ['Speaking time (seconds)', report.speaking_time_secs],
+            ['Flesch reading ease', report.flesch_reading_ease + ' — ' + short(report.reading_ease_label)],
+            ['Flesch–Kincaid grade', report.flesch_kincaid_grade]];
+          for (const [label, value] of values) { make('dt', label, metrics); make('dd', String(value), metrics); }
+          make('h4', 'Structure', content);
+          const inventory = make('p', undefined, content), counts = [];
+          for (const [key, label] of [['headings_total', 'headings'], ['paragraphs', 'paragraphs'],
+            ['code_blocks', 'code blocks'], ['tables', 'tables'], ['lists', 'lists'], ['images', 'images'], ['links_total', 'links']]) {
+            const value = report.structure[key];
+            if (Number.isSafeInteger(value) && value >= 0) counts.push(value + ' ' + label);
+          }
+          inventory.textContent = counts.join(' · ');
+          make('h4', 'Outline — jump to preview', content);
+          const outline = make('ol', undefined, content); outline.id = 'fmd-lab-outline';
+          for (const heading of report.outline.slice(0, 200)) {
+            const row = make('li', undefined, outline);
+            row.style.marginLeft = (heading.level - 1) * 10 + 'px';
+            const link = make('button', 'H' + heading.level + ' ' + short(heading.text), row);
+            link.type = 'button'; link.className = 'fmd-btn';
+            link.addEventListener('click', () => navigate(heading, snapshot));
+          }
+          if (!report.outline.length) make('p', 'No headings found.', content);
+          if (report.outline.length > 200) make('p', 'Showing the first 200 headings; the JSON report contains all ' + report.outline.length + '.', content);
+        }
+        make('h4', 'Findings (' + report.findings.length + ')', content);
+        const findings = make('ul', undefined, content); findings.id = 'fmd-lab-findings';
+        for (const finding of report.findings.slice(0, 200)) {
+          make('li', short((finding.severity ? finding.severity + ' · ' : '') + finding.code
+            + ': ' + (finding.message ?? finding.detail ?? 'No further detail supplied.')), findings);
+        }
+        if (!report.findings.length) make('p', 'No findings returned by this check. This is not a certification of the exported document.', content);
+        if (report.findings.length > 200) make('p', 'Showing the first 200 findings; download JSON for all ' + report.findings.length + '.', content);
+        make('p', 'Findings have no source spans in this native contract; no line numbers are inferred. Long display text is abbreviated; JSON retains the full report.', content);
+        output.replaceChildren(content);
+      }
+      async function navigate(heading, snapshot) {
+        try {
+          if (latest !== snapshot || !current(snapshot)) throw Error('Source or settings changed — analyze again before navigating.');
+          status.textContent = 'Preparing the current preview…';
+          const committed = await Promise.resolve(renderCurrent());
+          if (committed === false || latest !== snapshot || !current(snapshot) || lastRenderedSource !== snapshot.source) {
+            throw Error('Preview or source changed — analyze again.');
+          }
+          const frame = preview.querySelector(':scope > iframe');
+          if (!frame) throw Error('The native preview is unavailable. Restart preview and try again.');
+          if (frame.contentDocument?.URL !== 'about:srcdoc' || frame.contentDocument?.readyState !== 'complete') {
+            await new Promise((resolve, reject) => {
+              const done = error => {
+                clearTimeout(timer); frame.removeEventListener('load', loaded);
+                if (error) reject(error); else resolve();
+              };
+              const loaded = () => done();
+              const timer = setTimeout(() => done(Error('Preview is still loading; try the heading again.')), 10000);
+              frame.addEventListener('load', loaded, {once: true});
+            });
+          }
+          if (latest !== snapshot || !current(snapshot) || frame !== preview.querySelector(':scope > iframe')
+              || lastRenderedSource !== snapshot.source) throw Error('Preview changed — try the current outline again.');
+          // Native slugs are opaque identities, never selectors or URLs. Resolve
+          // only a heading inside the current sandboxed preview, not the app DOM.
+          const target = frame.contentDocument?.getElementById(heading.slug);
+          if (!target || target.tagName !== 'H' + heading.level) throw Error('This heading is not available in the current preview.');
+          target.setAttribute('tabindex', '-1'); target.scrollIntoView({block: 'center'}); target.focus({preventScroll: true});
+          status.textContent = 'Preview heading: ' + heading.text.slice(0, 200);
+        } catch (error) {
+          if (latest === snapshot) status.textContent = String(error?.message ?? error).slice(0, 2048);
+          refresh();
+        }
+      }
+      function run(kind) {
+        if (pending || pendingExport || native.exportPending || native.settingsPending) {
+          status.textContent = 'Finish or cancel the current document operation first.'; return;
+        }
+        if (previewSuspended || previewComposing) return;
+        const operation = {source: currentSource(), settings: native.settings, revision: ++revision, buttons: []};
+        pending = operation; latest = null; output.replaceChildren();
+        for (const id of [...Object.values(publicationFormats).map(spec => spec.button), 'btn-document-settings']) {
+          const node = header.querySelector('#' + id);
+          if (node) { operation.buttons.push([node, node.disabled]); node.disabled = true; }
+        }
+        status.textContent = kind === 'stats' ? 'Analyzing document in background…' : 'Auditing accessibility in background with engine-default PDF options…';
+        refresh();
+        Promise.resolve().then(() => {
+          if (pending !== operation || !current(operation)) throw Object.assign(Error('Document changed'), {code: 'ANALYSIS_CANCELLED'});
+          return native.analyzeDocument(kind, operation.source, () => pending === operation && current(operation));
+        }).then(result => {
+          if (pending !== operation || !current(operation)) throw Object.assign(Error('Document changed'), {code: 'ANALYSIS_CANCELLED'});
+          if (result?.kind !== kind || result.mimeType !== 'application/json' || !(result.bytes instanceof Uint8Array)
+              || !result.report || !Array.isArray(result.report.findings)) throw Error('Invalid native analysis result');
+          latest = {...operation, result};
+          show(result, latest);
+          status.textContent = 'Analysis complete for the captured source. Download JSON to keep the report.';
+        }).catch(error => {
+          if (pending !== operation) return;
+          status.textContent = !current(operation) || error?.code === 'ANALYSIS_CANCELLED'
+            ? 'Analysis cancelled: document changed — run analysis again.'
+            : 'Analysis failed: ' + String(error?.message ?? error).slice(0, 2048) + ' — source is unchanged; retry explicitly.';
+        }).finally(() => {
+          if (pending === operation) { pending = null; release(operation); refresh(); }
+        });
+      }
+      button.addEventListener('click', () => {
+        panel.hidden = !panel.hidden; button.setAttribute('aria-expanded', String(!panel.hidden));
+        if (panel.hidden) cancelPending('Analysis cancelled: Document Lab closed.');
+        else { refresh(); (stats.hidden ? audit : stats).focus(); }
+      });
+      stats.addEventListener('click', () => run('stats'));
+      audit.addEventListener('click', () => run('accessibility'));
+      cancel.addEventListener('click', () => cancelPending('Analysis cancelled — source and resources are unchanged.'));
+      close.addEventListener('click', () => {
+        cancelPending('Analysis cancelled: Document Lab closed.');
+        panel.hidden = true; button.setAttribute('aria-expanded', 'false'); button.focus();
+      });
+      panel.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !event.isComposing) { event.preventDefault(); close.click(); }
+      });
+      save.addEventListener('click', () => {
+        if (!current(latest)) { invalidate('Source or settings changed — analyze again before downloading.'); return; }
+        attempt(() => download(latest.result.bytes, 'application/json', latest.result.kind + '.json'));
+      });
+      documentLab = {invalidate, refresh, get busy() { return pending !== null; }};
+      refresh();
+    };
+    if (native.ready) native.ready.then(ready => { if (ready === true) install(); }, () => {});
+    else install();
+  }
+
   installSettings();
   installSourceFiles();
   installPublishing();
   installPublicationFormats();
   installPreviewControls();
   installExportControls();
+  installDocumentLab();
 
   // Initial stats calculation
   updateStats();

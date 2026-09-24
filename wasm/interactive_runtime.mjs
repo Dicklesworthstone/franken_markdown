@@ -22,6 +22,22 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     ), {code: 'UNSUPPORTED_WASM_PACKAGE'});
     return render;
   }
+  const analyses = {stats: 'documentStats', accessibility: 'accessibilityAudit'};
+  const analysisFormats = Object.freeze(Object.keys(analyses)
+    .filter(kind => typeof bindings[analyses[kind]] === 'function'));
+  function analyze(kind, markdown) {
+    if (!Object.hasOwn(analyses, kind) || !analysisFormats.includes(kind)) {
+      throw Object.assign(new Error('Document analysis requires matching native WASM bindings'),
+        {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    }
+    // The existing audit ABI uses engine-default PDF options. It is an authoring
+    // check, not a certification of the workspace's configured PDF or assets.
+    // Keep reports separate from render diagnostics and from saved document data.
+    const json = bindings[analyses[kind]](source(markdown));
+    if (typeof json !== 'string' || !json.length) throw new TypeError('Invalid native analysis report');
+    settingsText(json, 8 * 1024 * 1024, 'analysis report');
+    return json;
+  }
   const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry'];
   function settingData(value) {
@@ -338,6 +354,8 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     get diagnostics() { return diagnostics; },
     get settings() { return options; },
     get exportFormats() { return exportFormats; },
+    get analysisFormats() { return analysisFormats; },
+    analyze,
     stageSettings,
     stageImages,
     html(markdown, display) { return renderHtml(markdown, display); },
@@ -516,6 +534,45 @@ export function bootNativeWorkspace(factory, createPreview) {
     exportMode: background ? 'worker' : 'synchronous',
     get exportPending() { return pendingExport !== null; },
     get exportFormats() { return renderer?.exportFormats ?? []; },
+    get analysisFormats() { return renderer?.analysisFormats ?? []; },
+    get analysisPending() { return Boolean(pendingExport?.kind); },
+    cancelAnalysis() { if (pendingExport?.kind) cancelExport(); },
+    analyzeDocument(kind, markdown, isCurrent = () => true) {
+      if (!renderer) throw failure ?? exportError('ANALYSIS_NOT_READY', 'Native renderer is loading');
+      if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Document analysis requires the matching worker runtime');
+      if (suspended) throw exportError('ANALYSIS_SUSPENDED', 'Document analysis is suspended');
+      if (!['stats', 'accessibility'].includes(kind) || typeof isCurrent !== 'function') {
+        throw exportError('ANALYSIS_OPTIONS', 'Choose document stats or accessibility analysis');
+      }
+      if (!renderer.analysisFormats?.includes(kind)) {
+        throw exportError('UNSUPPORTED_WASM_PACKAGE', 'This embedded engine does not support the requested document analysis');
+      }
+      if (pendingExport || pendingSettings) throw exportError('ANALYSIS_BUSY', 'Finish or cancel the current document operation first');
+      const options = renderer.settings, images = payload.images;
+      const operation = {kind, worker: null, cancelled: false};
+      const current = () => !operation.cancelled && !suspended && pendingExport === operation
+        && options === renderer.settings && images === payload.images && isCurrent();
+      const check = () => {
+        if (!current()) throw exportError('ANALYSIS_CANCELLED', 'Document analysis was cancelled or the document changed');
+      };
+      // Analyses occupy the same disposable slot as exports/settings. They do
+      // not create a fourth engine, queue work or stall the live preview worker.
+      pendingExport = operation;
+      return Promise.resolve().then(() => {
+        check();
+        operation.worker = createPreview(factory, {...payload, options, images});
+        if (typeof operation.worker?.analyzeDocument !== 'function') {
+          throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Rebuild the matching workspace analysis worker');
+        }
+        return operation.worker.analyzeDocument(kind, markdown, {options, images});
+      }).then(result => {
+        check();
+        return result;
+      }, error => { check(); throw error; }).finally(() => {
+        operation.worker?.dispose();
+        if (pendingExport === operation) pendingExport = null;
+      });
+    },
     cancelExport,
     exportDocument(format, markdown, isCurrent = () => true) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; retry export after initialization.');

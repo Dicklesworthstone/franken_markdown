@@ -13,7 +13,8 @@ const renderer = createWorkerRenderer();
 const abort = new AbortController();
 try {
   const pdf = await renderer.renderPdf("# Report\n\nOriginal Markdown.", {
-    title: "Report", pageNumbers: true, metadataEpochSeconds: 0
+    title: "Report", pageNumbers: true, metadataEpochSeconds: 0,
+    page: { size: "a4", orientation: "landscape", margins: 36 }
   }, { signal: abort.signal, timeoutMs: 30000 });
   const blob = pdf.blob();
   // The host decides how to save this Blob and when to revoke any object URL.
@@ -59,12 +60,42 @@ Back/forward-cache restoration starts a fresh preview, not a stale worker result
 
 Source must be valid Unicode within 4 MiB of UTF-8. Options are plain data, not
 accessors or silently coerced values; unknown and wrong-format fields reject.
-HTML and PDF accept supplied images and TrueType font slots, including variable
-font weight pins. The existing SVG/EPUB/interactive-HTML ABI does not accept those
-asset arguments, so this entry rejects them rather than silently losing assets.
-Format-specific TypeScript declarations describe the actual option allowlists.
+HTML, PDF, SVG and EPUB accept supplied images (`pdfImages`) and TrueType font
+slots (`fontAssets`), including variable font weight pins. Interactive HTML
+retains its narrower options and rejects those assets rather than silently
+losing them. Format-specific TypeScript declarations describe the allowlists.
 Raw HTML is escaped by default; `allowRawHtml` is an explicit HTML/PDF option.
 Worker rendering is not a sandbox for subsequently displaying or opening output.
+
+PDF accepts `page` with `size: "letter"`, `size: "a4"`, or explicit
+`size: { widthPt, heightPt }`, optional `orientation`, and uniform or per-side
+`margins`. Units are PDF points, not CSS pixels. Dimensions must be 144..14400;
+margins must leave at least a 72-point content rectangle in both dimensions.
+An explicit page defaults to Letter and 72-point margins. Omitting `page` preserves
+the original renderer defaults. Nested geometry is validated and deeply captured
+before dispatch using the same normalization and f32 bounds as the direct API.
+
+SVG accepts `maxWidthPt` in 144..14400 and the same owned image/font inputs.
+EPUB also accepts `customCss`, `toc`, and `tocDepth` (1..6) for styled publications
+with navigation. Custom CSS is limited to 1 MiB of UTF-8 in the worker entry.
+For example, with host-selected image and font byte arrays:
+
+```js
+async function exportBook(renderer, markdown, imageBytes, fontBytes) {
+  return renderer.renderEpub(markdown, {
+    title: "Field guide", lang: "en", toc: true, tocDepth: 2,
+    customCss: "p { color: navy; }",
+    pdfImages: [{ destination: "cover.png", bytes: imageBytes }],
+    fontAssets: [{ slot: "body-regular", bytes: fontBytes, weight: 450 }]
+  });
+}
+```
+
+Advanced options require a generated WASM package built from matching source.
+When the direct renderer reports `UNSUPPORTED_WASM_PACKAGE`, that code and its
+rebuild explanation survive the worker boundary; the worker closes and queued
+requests are not replayed. Options are never silently downgraded to fit an older
+binary. The synchronous renderer APIs themselves are unchanged.
 
 Input image/font views are copied only after queue admission, and only those owned
 copies are transferred. Caller buffers are never detached; edits to options or
@@ -75,7 +106,11 @@ requests and 64 MiB). Images are at most 8 MiB each and 1,024 per request; fonts
 are at most 32 MiB each and five slots. The aggregate ingress budget applies too.
 
 Output is checked before transfer, default/maximum 64 MiB. Diagnostics are limited
-to 1,024 records and 64 Ki UTF-16 message units, with source-bound byte ranges.
+to 1,024 records and 64 Ki UTF-16 units of combined message/reason-code text.
+Optional reason `code` strings (1..128 UTF-16 units) and `scope: "document"` are
+preserved. Document-scoped findings must use `start=end=0`; other findings retain
+their source-bound byte ranges. Legacy diagnostics keep their original shape.
+Malformed metadata closes the worker instead of silently dropping its meaning.
 These limits bound ingress, copying and publication, not every temporary native
 allocation or the entire WASM heap. Host-side source validation, binary copying
 and rendering the resulting HTML still do work; expensive Rust rendering moves
@@ -93,12 +128,19 @@ its dependencies without changing WASM size budgets.
 ```sh
 node --test wasm/document_worker.test.mjs wasm/demo_worker.test.mjs
 node wasm/document_worker_smoke.mjs <assembled-package> <generated.wasm>
+# With TypeScript installed: validate accepted and rejected public option shapes.
+tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext \
+  --lib es2022,dom wasm/document_worker_options.typecheck.mts
 ```
 
 The first command exercises actual Node worker threads and structured-clone
 transfers with an explicitly identified native renderer double, plus production
-demo lifecycle code with DOM/renderer doubles. It is not typography or browser
+demo lifecycle code with DOM/renderer doubles. Worker regressions cover geometry,
+EPUB publication settings, exact-view resource ownership, cancellation, diagnostic
+metadata and package-mismatch errors. They do not prove typography or browser
 acceptance. The separate smoke gate loads the production worker entry and actual
 generated WASM and compares all five formats against the existing direct API,
-including host-supplied image bytes for HTML/PDF. Both build routes run that gate.
-Native-browser iframe/CSP/download and visual acceptance remain separate checks.
+including supplied images for HTML/PDF/SVG/EPUB, named/custom PDF geometry, EPUB
+CSS/navigation, and document-scoped SVG export diagnostics. Both build routes run
+that gate. Native-browser iframe/CSP/download and visual acceptance remain
+separate checks.

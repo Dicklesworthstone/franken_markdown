@@ -57,7 +57,7 @@ if (!isMainThread) {
     }
     // A deterministic, 1x1 RGB PNG; both paths receive precisely the same bytes.
     const png = new Uint8Array(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC", "base64"));
-    for (const method of ["renderHtml", "renderPdf"]) {
+    for (const method of ["renderHtml", "renderPdf", "renderSvg", "renderEpub"]) {
       const options = { pdfImages: [{ destination: "pixel.png", bytes: png }],
         ...(method === "renderPdf" ? { metadataEpochSeconds: 0 } : {}) };
       const source = "# Assets\n\n![Pixel](pixel.png)\n";
@@ -68,5 +68,41 @@ if (!isMainThread) {
       assert.ok(png.length > 0, "caller image bytes remain owned");
       console.log(`document-worker: ${method} explicit-image parity PASS`);
     }
+    const defaultPdf = await direct.renderPdf(source, { metadataEpochSeconds: 0 });
+    for (const page of [
+      { size: "a4", orientation: "landscape", margins: 36 },
+      { size: { widthPt: 480, heightPt: 720 },
+        margins: { topPt: 24, rightPt: 18, bottomPt: 36, leftPt: 30 } },
+    ]) {
+      const options = { metadataEpochSeconds: 0, page };
+      const expected = await direct.renderPdf(source, options);
+      const actual = await worker.renderPdf(source, options);
+      assert.deepEqual(actual.bytes, expected.bytes, "PDF page geometry parity");
+      assert.deepEqual(actual.diagnostics, expected.diagnostics);
+      assert.notDeepEqual(actual.bytes, defaultPdf.bytes, "explicit paper geometry must affect the PDF");
+      console.log("document-worker: configured PDF paper/margins parity PASS");
+    }
+    const publication = "# Field guide\n\n![Pixel](pixel.png)\n\n## Chapter\n\nBook text.\n\n### Detail\n";
+    const epubOptions = { title: "Field guide", lang: "en", customCss: "p { color: navy; }",
+      toc: true, tocDepth: 2, pdfImages: [{ destination: "pixel.png", bytes: png }] };
+    const expectedEpub = await direct.renderEpub(publication, epubOptions);
+    const actualEpub = await worker.renderEpub(publication, epubOptions);
+    assert.deepEqual(actualEpub.bytes, expectedEpub.bytes, "EPUB publication options parity");
+    assert.deepEqual(actualEpub.diagnostics, expectedEpub.diagnostics);
+    // Hold all other settings fixed so CSS and navigation cannot both be ignored.
+    const plainEpub = await direct.renderEpub(publication, {
+      title: epubOptions.title, lang: epubOptions.lang, pdfImages: epubOptions.pdfImages,
+    });
+    assert.notDeepEqual(actualEpub.bytes, plainEpub.bytes, "EPUB stylesheet/navigation must affect the archive");
+    console.log("document-worker: EPUB stylesheet/navigation/image parity PASS");
+
+    const missingImage = "# Missing resource\n\n![Missing](not-supplied.png)\n";
+    const expectedSvg = await direct.renderSvg(missingImage);
+    const actualSvg = await worker.renderSvg(missingImage);
+    assert.deepEqual(actualSvg.bytes, expectedSvg.bytes, "SVG missing-resource output parity");
+    assert.deepEqual(actualSvg.diagnostics, expectedSvg.diagnostics, "SVG structured diagnostic parity");
+    assert.ok(expectedSvg.diagnostics.some(item => item.scope === "document" && typeof item.code === "string"),
+      "missing SVG resources must produce a document-scoped reason code");
+    console.log("document-worker: SVG structured export diagnostics parity PASS");
   } finally { worker.dispose(); }
 }

@@ -349,7 +349,7 @@ export function bootNativeWorkspace(factory, createPreview) {
   let renderer = null, failure = null, observer = null, frame = null;
   let worker = null, previewRevision = 0, previewDiagnostics = null, suspended = false;
   const background = typeof createPreview === 'function';
-  let pendingExport = null;
+  let pendingExport = null, pendingSettings = null;
   const exportError = (code, message) => Object.assign(new Error(message), {code});
   function cancelExport() {
     const operation = pendingExport;
@@ -358,7 +358,17 @@ export function bootNativeWorkspace(factory, createPreview) {
     operation.cancelled = true;
     operation.worker?.dispose();
   }
+  function cancelSettings() {
+    const operation = pendingSettings;
+    if (!operation) return;
+    pendingSettings = null;
+    operation.cancelled = true;
+    operation.worker?.dispose();
+  }
   function invalidatePreview() {
+    // Source, view, resource and lifecycle invalidation also retires a staged
+    // settings render. Cancelling never publishes the staged options.
+    cancelSettings();
     previewRevision++;
     worker?.invalidate();
   }
@@ -405,8 +415,71 @@ export function bootNativeWorkspace(factory, createPreview) {
     next.srcdoc = html;
     return next;
   }
+  function publishSettings(transaction, html, preview, findings, check = () => {}, operation = null) {
+    check();
+    const next = makeFrame(html);
+    const previousData = data.textContent, nextData = savedData({options: transaction.settings});
+    const previousChildren = Array.from(preview.childNodes);
+    transaction.commit(() => {
+      check(); // No asynchronous boundary separates this check and publication.
+      try {
+        data.textContent = nextData;
+        preview.replaceChildren(next);
+      } catch (error) {
+        data.textContent = previousData;
+        preview.replaceChildren(...previousChildren);
+        throw error;
+      }
+    });
+    if (operation && pendingSettings === operation) pendingSettings = null;
+    cancelExport(); invalidatePreview(); previewDiagnostics = findings;
+    observer?.disconnect(); observer = null; frame = next;
+    return renderer.settings;
+  }
   const engine = {
     version: 1,
+    settingsMode: background ? 'worker' : 'synchronous',
+    get settingsPending() { return pendingSettings !== null; },
+    cancelSettings,
+    applySettingsAsync(patch, markdown, preview, display = {scale: 1}, isCurrent = () => true) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; retry settings after initialization.');
+      if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Background settings require the matching worker runtime');
+      if (suspended) throw exportError('SETTINGS_SUSPENDED', 'Document settings are suspended');
+      if (typeof isCurrent !== 'function' || !display || !Number.isFinite(display.scale)
+          || display.scale < 0.7 || display.scale > 2 || ![undefined, 'light', 'dark'].includes(display.theme)) {
+        throw exportError('SETTINGS_OPTIONS', 'Invalid settings preview options');
+      }
+      // Settings and explicit exports share one document-operation slot. Live
+      // previews are independent; there is no fourth WASM instance or job queue.
+      if (pendingSettings || pendingExport) throw exportError('SETTINGS_BUSY', 'Finish or cancel the current document operation before applying settings');
+      const transaction = renderer.stageSettings(patch);
+      const options = renderer.settings, images = payload.images;
+      const view = {scale: display.scale, theme: display.theme};
+      const operation = {worker: null, cancelled: false};
+      const current = () => !operation.cancelled && !suspended && pendingSettings === operation
+        && options === renderer.settings && images === payload.images && isCurrent();
+      const check = () => {
+        if (!current()) throw exportError('SETTINGS_CANCELLED', 'Document or settings draft changed; apply the current revision again');
+      };
+      pendingSettings = operation;
+      return Promise.resolve().then(() => {
+        check();
+        // Only validated immutable settings enter this disposable preflight.
+        // Never call transaction.html here: that would render on the UI thread.
+        const state = {options: transaction.settings, images};
+        operation.worker = createPreview(factory, {...payload, ...state});
+        return operation.worker.render(markdown, view, state);
+      }).then(result => {
+        check();
+        return publishSettings(transaction, result.html, preview, result.diagnostics, check, operation);
+      }, error => {
+        check();
+        throw error;
+      }).finally(() => {
+        operation.worker?.dispose();
+        if (pendingSettings === operation) pendingSettings = null;
+      });
+    },
     previewMode: background ? 'worker' : 'synchronous',
     exportMode: background ? 'worker' : 'synchronous',
     get exportPending() { return pendingExport !== null; },
@@ -418,7 +491,7 @@ export function bootNativeWorkspace(factory, createPreview) {
       if (!['pdf', 'html'].includes(format) || typeof isCurrent !== 'function') {
         throw exportError('EXPORT_OPTIONS', 'Choose PDF or HTML export');
       }
-      if (pendingExport) throw exportError('EXPORT_BUSY', 'A document export is already running');
+      if (pendingExport || pendingSettings) throw exportError('EXPORT_BUSY', 'A document export or settings preflight is already running');
       const options = renderer.settings, images = payload.images;
       const operation = {worker: null, cancelled: false};
       const current = () => !operation.cancelled && !suspended && pendingExport === operation
@@ -458,23 +531,9 @@ export function bootNativeWorkspace(factory, createPreview) {
     applySettings(patch, markdown, preview, display) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; retry settings after initialization.');
       const transaction = renderer.stageSettings(patch);
-      // Full native HTML must succeed before changing either persistent settings
-      // or the visible preview. Images/fonts are reused, not decoded or repacked.
-      const next = makeFrame(transaction.html(markdown, display));
-      const previousData = data.textContent, nextData = savedData({options: transaction.settings});
-      const previousChildren = Array.from(preview.childNodes);
-      transaction.commit(() => {
-        data.textContent = nextData;
-        try { preview.replaceChildren(next); }
-        catch (error) {
-          data.textContent = previousData;
-          preview.replaceChildren(...previousChildren);
-          throw error;
-        }
-      });
-      cancelExport(); invalidatePreview(); previewDiagnostics = null;
-      observer?.disconnect(); observer = null; frame = next;
-      return renderer.settings;
+      // Legacy callers explicitly retain synchronous preflight. The rebuilt
+      // controller uses applySettingsAsync instead, with no implicit fallback.
+      return publishSettings(transaction, transaction.html(markdown, display), preview, null);
     },
     stageImages(additions) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; retry image insertion after initialization.');

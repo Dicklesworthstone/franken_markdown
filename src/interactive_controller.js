@@ -36,6 +36,8 @@
   const statReadability = statsDrawer.querySelector('#stat-readability');
 
   const saveStatus = document.getElementById('fmd-save-status');
+  const workerExports = native?.exportMode === 'worker' && typeof native.exportDocument === 'function';
+  let pendingExport = null, exportRevision = 0, exportControls = null;
   // Keep the full initial renderer output available for exact undo, including
   // diagrams and other features outside the offline JavaScript subset.
   const originalRendered = preview.innerHTML;
@@ -141,8 +143,7 @@
       if (result && typeof result.then === 'function') result.catch(report);
     } catch (error) { report(error); }
   }
-  function nativeNotice() {
-    const findings = native?.diagnostics ?? [];
+  function nativeNotice(findings = native?.diagnostics ?? []) {
     return findings.length ? `Renderer diagnostics (${findings.length}): `
       + findings.slice(0, 3).map(item => String(item?.message ?? item).slice(0, 300)).join('; ') : '';
   }
@@ -162,6 +163,7 @@
     saveStatus.textContent = 'Native runtime failed: ' + String(error?.message ?? error).slice(0, 2048);
   });
   editor.addEventListener('input', () => {
+    cancelDocumentExport('Export cancelled: source changed');
     invalidatePreview();
     updateStats();
     saveStatus.textContent = modifiedNotice();
@@ -170,6 +172,7 @@
   });
 
   editor.addEventListener('compositionstart', () => {
+    cancelDocumentExport('Export cancelled: text composition started');
     previewComposing = true; invalidatePreview();
     clearTimeout(debounceTimer); debounceTimer = null;
   });
@@ -187,14 +190,14 @@
     if (!stem || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(stem)) stem = 'document';
     return stem + '.' + extension;
   }
-  function download(content, mime, extension) {
+  function download(content, mime, extension, name = filename(extension)) {
     let url = null, anchor = null;
     try {
       const blob = new Blob([content], {type: mime, endings: 'transparent'});
       url = URL.createObjectURL(blob);
       anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = filename(extension);
+      anchor.download = name;
       anchor.hidden = true;
       document.body.appendChild(anchor);
       anchor.click();
@@ -213,6 +216,7 @@
     }
   }
   function exportPdf() {
+    if (workerExports) return exportDocument('pdf');
     if (native) {
       // Export current source through the shared PDF engine, not a print of
       // the iframe's last loaded revision. Viewing zoom is not PDF typography.
@@ -260,6 +264,8 @@
     copy.querySelector('body > .fmd-app-header #fmd-source-controls')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-publish-html')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-restart-preview')?.remove();
+    copy.querySelector('body > .fmd-app-header #fmd-export-controls')?.remove();
+    if (workerExports) copy.querySelector('body > .fmd-app-header #btn-export-pdf')?.removeAttribute('disabled');
     copy.querySelector('#editor-pane > .fmd-pane-header > #fmd-save-status').textContent = '';
     download('<!DOCTYPE html>\n' + copy.outerHTML, 'text/html;charset=utf-8', 'html');
   }
@@ -284,6 +290,7 @@
     }
   });
   window.addEventListener('pagehide', () => {
+    cancelDocumentExport('Export cancelled: workspace suspended');
     previewSuspended = true; invalidatePreview();
     clearTimeout(debounceTimer); debounceTimer = null;
     for (const [url, timer] of downloadUrls) {
@@ -547,6 +554,7 @@
     if (native.ready) native.ready.then(ready => { button.disabled = ready !== true; }, () => {});
     button.addEventListener('click', () => attempt(() => {
       if (button.disabled) return;
+      if (workerExports) return exportDocument('html');
       const source = currentSource(), settings = native.settings;
       // Do not flush or scrape the preview. Publication renders current source
       // independently, so pending edits, view zoom and draft controls cannot
@@ -559,6 +567,92 @@
       download(html, 'text/html;charset=utf-8', 'published.html');
       const notice = nativeNotice(); if (notice) saveStatus.textContent += ' — ' + notice;
     }));
+  }
+
+  // fmd-async-export-v1: current-revision publications never wait for or scrape
+  // the preview. Capture source and settings, then recheck immediately before
+  // downloading. Viewing zoom/theme does not change an export request.
+  function releaseExportControls(operation) {
+    for (const [button, disabled] of operation.buttons) button.disabled = disabled;
+    if (exportControls) { exportControls.cancel.hidden = true; exportControls.cancel.style.display = 'none'; }
+  }
+  function cancelDocumentExport(message) {
+    exportRevision++;
+    const operation = pendingExport;
+    if (!operation) return;
+    pendingExport = null;
+    native.cancelExport();
+    releaseExportControls(operation);
+    if (exportControls) exportControls.status.textContent = message;
+  }
+  function exportDocument(format) {
+    if (previewSuspended || previewComposing) return;
+    if (pendingExport) return pendingExport.promise;
+    const source = currentSource(), settings = native.settings, revision = exportRevision;
+    const operation = {buttons: [], promise: null};
+    pendingExport = operation;
+    const current = () => pendingExport === operation && revision === exportRevision
+      && !previewSuspended && !previewComposing && currentSource() === source && native.settings === settings;
+    const extension = format === 'pdf' ? 'pdf' : 'published.html', name = filename(extension);
+    const label = format === 'pdf' ? 'PDF' : 'HTML';
+    const header = document.querySelector('body > .fmd-app-header');
+    for (const id of ['btn-export-pdf', 'btn-publish-html']) {
+      const button = header?.querySelector('#' + id);
+      if (button) { operation.buttons.push([button, button.disabled]); button.disabled = true; }
+    }
+    if (exportControls) {
+      exportControls.cancel.hidden = false; exportControls.cancel.style.display = '';
+      exportControls.status.textContent = 'Preparing ' + label + ' in background…';
+    }
+    operation.promise = Promise.resolve().then(() => {
+      if (!current()) return null;
+      return native.exportDocument(format, source, current);
+    }).then(result => {
+      if (!current()) throw Object.assign(Error('Document changed during export'), {code: 'EXPORT_CANCELLED'});
+      const mime = format === 'pdf' ? 'application/pdf' : 'text/html;charset=utf-8';
+      if (!result || result.format !== format || result.mimeType !== mime || !(result.bytes instanceof Uint8Array) || !result.bytes.length) {
+        throw Error('Native export returned an invalid document');
+      }
+      download(result.bytes, mime, extension, name);
+      if (exportControls) {
+        exportControls.status.textContent = label + ' download started — check your downloads';
+        const notice = nativeNotice(result.diagnostics);
+        if (notice) exportControls.status.textContent += ' — ' + notice;
+      }
+    }).catch(error => {
+      if (pendingExport !== operation) return; // A cancelled job cannot replace newer status.
+      if (exportControls) exportControls.status.textContent = !current() || error?.code === 'EXPORT_CANCELLED'
+        ? 'Export cancelled: document changed; export the current revision again'
+        : 'Export failed: ' + String(error?.message ?? error).slice(0, 2048) + ' — retry export; source is unchanged';
+    }).finally(() => {
+      if (pendingExport === operation) {
+        pendingExport = null;
+        releaseExportControls(operation);
+      }
+    });
+    return operation.promise;
+  }
+  function installExportControls() {
+    if (!workerExports) return;
+    const header = document.querySelector('body > .fmd-app-header');
+    const pdf = header?.querySelector('#btn-export-pdf');
+    if (!pdf) return;
+    let controls = header.querySelector('#fmd-export-controls');
+    if (!controls) {
+      controls = document.createElement('span'); controls.id = 'fmd-export-controls';
+      pdf.parentNode.insertBefore(controls, pdf.nextSibling);
+    }
+    controls.style.cssText = 'display:inline-flex;align-items:center;gap:8px;flex-shrink:0';
+    controls.replaceChildren();
+    const cancel = document.createElement('button'), status = document.createElement('span');
+    cancel.id = 'btn-cancel-export'; cancel.type = 'button'; cancel.className = 'fmd-btn';
+    cancel.textContent = 'Cancel export'; cancel.hidden = true; cancel.style.display = 'none';
+    cancel.title = 'Stop the export worker without changing source, settings, resources or preview';
+    status.id = 'fmd-export-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+    status.style.cssText = 'max-width:26em;white-space:normal;font-size:12px';
+    controls.appendChild(cancel); controls.appendChild(status);
+    exportControls = {cancel, status};
+    cancel.addEventListener('click', () => cancelDocumentExport('Export cancelled — source and resources are unchanged'));
   }
 
   function installSourceFiles() {
@@ -743,6 +837,7 @@
   installSourceFiles();
   installPublishing();
   installPreviewControls();
+  installExportControls();
 
   // Initial stats calculation
   updateStats();

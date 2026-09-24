@@ -51,20 +51,55 @@ a newer source edit cancels the stale download. Saving does not fall back to a
 synchronous HTML render. The saved file contains a reusable worker bootstrap,
 not a live worker, pending request, restart control, or extra runtime payload.
 
-**Publish HTML**, **Export PDF**, and **Apply settings** continue to use the
-existing synchronous native renderer and transactional settings path. They do
-not wait for or scrape a stale background preview. They may still occupy the
-main thread. A second main-thread WASM instance remains initialized for these
-operations; this change is not an all-rendering-off-thread or reduced-memory
-claim.
+**Publish HTML** and **Export PDF** now use a separate worker when the rebuilt
+controller is paired with the matching background-capable runtime. A complete
+snapshot of current source, committed settings, image resources and fonts reaches
+the shared native renderer without waiting for or scraping the preview. Published
+HTML uses document typography/color settings, not viewing zoom or a forced view
+theme. PDF paper, margins, metadata, font-weight pins and navigation settings are
+preserved. The export worker transfers an exact owned UTF-8/PDF byte buffer;
+borrowed native or pooled memory is never transferred or exposed.
+
+There is one explicit export at a time, with no unbounded queue. Repeated keyboard
+requests for that job produce one download. Preview rendering runs independently,
+so heavy PDF computation cannot starve ongoing editing/preview work. A separate
+status and **Cancel export** control remain visible while computation runs.
+Cancellation terminates that worker without changing source, settings, resources
+or the preview. Source changes, composition, successful settings/resource changes,
+and page suspension cancel a pending export. A final revision check catches edits
+made without an input event. A source edit followed by undo cannot resurrect a
+cancelled download. View zoom/theme changes do not invalidate a document export.
+
+Exports have the existing 30-second initialization/render deadlines. Invalid or
+oversized results, diagnostics, PDF signatures and Unicode are rejected. Failure
+or timeout restores the controls and offers an explicit retry; it never invokes
+the synchronous renderer as a hidden fallback. Export diagnostics remain attached
+to their output instead of replacing newer preview findings. Each export worker
+is released after completion or failure rather than retaining another idle WASM
+instance. Suspension never automatically replays an export on resume.
+
+Source downloads and Save HTML remain available during exports. Save HTML waits
+only for its own matching preview, removes transient export controls/state from
+the detached copy, and does not persist the temporarily disabled PDF button.
+Repeated reopening creates one idle control set. A download request is not proof
+of saving and does not clear the existing unsaved-work warning.
+
+**Apply settings** still uses its synchronous native preflight and transactional
+publication path. Main-thread initialization, resource preparation and explicit
+legacy `html()`/`pdf()` calls also remain synchronous. The new toolbar path is not
+an all-rendering-off-thread or reduced-peak-memory claim. At peak, the editor,
+preview and export can each hold a WASM/resource instance.
 
 Rebuild the embedded controller and use the matching package adapters together.
 Updating package JavaScript alone cannot update a previously compiled controller.
 Both exporters reject a pre-worker controller with `UNSUPPORTED_WASM_PACKAGE`,
 even if the Markdown contains the protocol marker: old Save HTML code does not
 await background rendering and cannot be paired safely with this bootstrap.
-Existing exported workspaces do not self-upgrade. Legacy bootstrap callers that
-do not supply a preview worker factory keep their synchronous API contract.
+Existing exported workspaces do not self-upgrade. Exporter checks for the earlier
+asynchronous-preview protocol remain unchanged; an older compiled controller may
+still expose synchronous exports. Rebuild the controller to obtain the new export
+UI. Legacy bootstrap callers that do not supply a preview worker factory keep
+their synchronous API contract and do not advertise unsupported cancellation.
 
 ## Verification
 
@@ -92,3 +127,33 @@ are retained. `--mode file` separately attempts actual file navigation; a passin
 content-mode run is not file-navigation acceptance or real back/forward-cache
 proof. Native Rust rendering, full-suite/build gates, package size and real
 native/WASM parity still require the project's DSR verification host.
+
+
+For cancellable document exports:
+
+```sh
+node --test wasm/interactive_preview.test.mjs \
+  wasm/native_workspace_export_worker.test.mjs \
+  wasm/native_workspace_exports.test.mjs
+python wasm/native_workspace_exports_browser.py --mode content
+```
+
+The export Node suites execute the actual transport, boot and renderer adapter
+with real worker threads and empty WASM initialization. They cover byte transfer
+ownership, independent previews, cancellation, hung-renderer termination,
+settings/resource revisions, retries, diagnostics and legacy compatibility.
+Both export suites are selected by the existing DSR package gate; its build,
+size and parity checks are unchanged.
+
+The retained browser probe runs the shipped controller, runtime and workers in
+locally installed Chromium. Its shell and HTML/PDF ABI are explicit fixtures,
+not Rust-generated output; the PDF envelope is labeled `%PDF-ADAPTER` and is not
+valid PDF layout proof. Real Blob workers, image decoding, keyboard/button
+interaction, cancellation, downloads, and repeated saved-byte reparsing execute
+under the existing offline policy. The fixture explicitly shortens the worker
+deadline to 1.4 seconds for the stuck-computation test; production keeps its
+30-second default. Synthetic suspension events are not back/forward-cache proof.
+Use `--browser PATH` for an installed Chromium executable and `--output NEW_DIR`
+for create-only retained artifacts. The probe installs nothing and deletes no
+artifacts. File-navigation and genuine Rust/WASM rendering still require their
+separate verification gates.

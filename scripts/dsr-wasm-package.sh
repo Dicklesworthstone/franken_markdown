@@ -36,6 +36,7 @@ node wasm/smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm" "$ART/par
 node --test wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs
 node --test wasm/interactive.test.mjs wasm/interactive_runtime.test.mjs wasm/interactive_export.test.mjs wasm/native_workspace_page.test.mjs wasm/native_workspace_images.test.mjs wasm/native_workspace_settings.test.mjs wasm/native_workspace_source.test.mjs wasm/native_workspace_publishing.test.mjs
 node --test wasm/interactive_preview.test.mjs wasm/native_workspace_preview.test.mjs wasm/native_workspace_preview_package.test.mjs
+node --test wasm/native_workspace_export_worker.test.mjs wasm/native_workspace_exports.test.mjs
 node wasm/native_workspace_smoke.mjs "$PACKAGE" "$ART/parity/native-workspace.html"
 node wasm/document_worker_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"

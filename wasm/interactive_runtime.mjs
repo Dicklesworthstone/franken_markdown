@@ -349,6 +349,15 @@ export function bootNativeWorkspace(factory, createPreview) {
   let renderer = null, failure = null, observer = null, frame = null;
   let worker = null, previewRevision = 0, previewDiagnostics = null, suspended = false;
   const background = typeof createPreview === 'function';
+  let pendingExport = null;
+  const exportError = (code, message) => Object.assign(new Error(message), {code});
+  function cancelExport() {
+    const operation = pendingExport;
+    if (!operation) return;
+    pendingExport = null;
+    operation.cancelled = true;
+    operation.worker?.dispose();
+  }
   function invalidatePreview() {
     previewRevision++;
     worker?.invalidate();
@@ -399,6 +408,45 @@ export function bootNativeWorkspace(factory, createPreview) {
   const engine = {
     version: 1,
     previewMode: background ? 'worker' : 'synchronous',
+    exportMode: background ? 'worker' : 'synchronous',
+    get exportPending() { return pendingExport !== null; },
+    cancelExport,
+    exportDocument(format, markdown, isCurrent = () => true) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; retry export after initialization.');
+      if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Background exports require the matching worker runtime');
+      if (suspended) throw exportError('EXPORT_SUSPENDED', 'Document exports are suspended');
+      if (!['pdf', 'html'].includes(format) || typeof isCurrent !== 'function') {
+        throw exportError('EXPORT_OPTIONS', 'Choose PDF or HTML export');
+      }
+      if (pendingExport) throw exportError('EXPORT_BUSY', 'A document export is already running');
+      const options = renderer.settings, images = payload.images;
+      const operation = {worker: null, cancelled: false};
+      const current = () => !operation.cancelled && !suspended && pendingExport === operation
+        && options === renderer.settings && images === payload.images && isCurrent();
+      pendingExport = operation;
+      return Promise.resolve().then(() => {
+        if (!current()) throw exportError('EXPORT_CANCELLED', 'Document changed before export started');
+        // A separate lazy worker means heavy PDF layout cannot starve previews.
+        // It is released after completion, not retained as a third WASM/resource
+        // copy while idle. Never use the main-thread renderer as a fallback.
+        operation.worker = createPreview(factory, {...payload, options, images});
+        if (typeof operation.worker?.exportDocument !== 'function') {
+          throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Rebuild matching bindings with background export support');
+        }
+        return operation.worker.exportDocument(format, markdown, {options, images});
+      }).then(result => {
+        if (!current()) throw exportError('EXPORT_CANCELLED', 'Document changed during export; export the current revision again');
+        // Export findings travel with this result, not the preview diagnostic
+        // slot. A late export must not overwrite a newer preview's findings.
+        return result;
+      }, error => {
+        if (!current()) throw exportError('EXPORT_CANCELLED', 'Document export was cancelled or superseded');
+        throw error;
+      }).finally(() => {
+        operation.worker?.dispose();
+        if (pendingExport === operation) pendingExport = null;
+      });
+    },
     invalidatePreview,
     restartPreview() {
       if (suspended) throw new Error('Preview is suspended');
@@ -424,7 +472,7 @@ export function bootNativeWorkspace(factory, createPreview) {
           throw error;
         }
       });
-      invalidatePreview(); previewDiagnostics = null;
+      cancelExport(); invalidatePreview(); previewDiagnostics = null;
       observer?.disconnect(); observer = null; frame = next;
       return renderer.settings;
     },
@@ -436,11 +484,11 @@ export function bootNativeWorkspace(factory, createPreview) {
       return Object.freeze({
         commit() {
           transaction.commit(() => { data.textContent = next; });
-          invalidatePreview(); previewDiagnostics = null;
+          cancelExport(); invalidatePreview(); previewDiagnostics = null;
         },
         rollback() {
           transaction.rollback(() => { data.textContent = previous; });
-          invalidatePreview(); previewDiagnostics = null;
+          cancelExport(); invalidatePreview(); previewDiagnostics = null;
         },
       });
     },
@@ -510,7 +558,7 @@ export function bootNativeWorkspace(factory, createPreview) {
     }
   })();
   window.addEventListener('pagehide', () => {
-    suspended = true; invalidatePreview();
+    suspended = true; cancelExport(); invalidatePreview();
     worker?.dispose(); worker = null;
     observer?.disconnect(); observer = null; frame = null;
   });

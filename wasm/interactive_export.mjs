@@ -1,6 +1,7 @@
 // Packaging is independent of the generated package URL. Hosts explicitly supply
 // one trusted, matching wasm-bindgen --target web JavaScript/WASM pair.
 import {bootNativeWorkspace, createNativeWorkspaceRenderer} from './interactive_runtime.mjs';
+import {createWorkspacePreviewWorker} from './interactive_preview.mjs';
 import {pdfPageGeometry} from './pdf_page.mjs';
 
 const MiB = 1024 * 1024;
@@ -162,13 +163,16 @@ function assemble(shell, preview, payload, source) {
   const appStart = '<div class="fmd-content" id="fmd-content">';
   const appEnd = '</div>\n  </main>\n</div>\n';
   const previewStart = shell.indexOf(appStart), previewEnd = shell.lastIndexOf(appEnd, sourceStart);
+  // The controller must await Promise-returning previews before Save HTML.
+  // A marker appearing in Markdown/initial output cannot supply that capability.
   const scriptStart = shell.indexOf('<script>\n', sourceEnd + 9);
   const scriptEnd = shell.indexOf('</script>', scriptStart + 9);
   if (sourceStart < 0 || sourceEnd < 0 || previewStart < 0 || previewEnd < previewStart
       || scriptStart < sourceEnd || scriptEnd < scriptStart
       || !shell.slice(scriptStart, scriptEnd).includes('__fmdNativeRuntime')
+      || !shell.slice(scriptStart, scriptEnd).includes('fmd-async-preview-v1')
       || JSON.parse(shell.slice(sourceStart + sourceOpen.length, sourceEnd)) !== source) {
-    throw Object.assign(new Error('Native workspace requires a rebuilt matching WASM package with the native editor controller'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    throw Object.assign(new Error('Native workspace requires a rebuilt matching WASM package with the background preview editor controller'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
   }
   // Replace, do not append to, the initial unsandboxed fragment. Even before
   // initialization the complete native preview gets the iframe resource policy.
@@ -176,7 +180,7 @@ function assemble(shell, preview, payload, source) {
     + 'style="display:block;width:100%;border:0;min-height:320px;height:320px" srcdoc="' + attribute(preview) + '"></iframe>';
   const bootstrap = '<script type="application/json" id="fmd-native-runtime">' + jsonData(payload) + '</script>\n'
     + '<script id="fmd-native-bootstrap">\n;(' + bootNativeWorkspace.toString() + ')('
-    + createNativeWorkspaceRenderer.toString() + ');\n</script>\n';
+    + createNativeWorkspaceRenderer.toString() + ', ' + createWorkspacePreviewWorker.toString() + ');\n</script>\n';
   // These offsets refer to the original shell. Assembly never searches the
   // newly injected source, binary, binding text or rendered document for tags.
   const output = shell.slice(0, previewStart + appStart.length) + frame
@@ -185,7 +189,7 @@ function assemble(shell, preview, payload, source) {
   if (!head.test(output)) throw new Error('Native workspace shell is missing its document head');
   // Allow only the embedded application, Blob module and WASM compilation.
   // The separate iframe policy remains stricter: no script execution at all.
-  const policy = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; frame-src 'self' about:; base-uri 'none'; form-action 'none'";
+  const policy = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; frame-src 'self' about:; base-uri 'none'; form-action 'none'";
   return output.replace(head, match => match + '\n<meta http-equiv="Content-Security-Policy" content="' + policy + '">');
 }
 

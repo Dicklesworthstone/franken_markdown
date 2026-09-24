@@ -90,7 +90,7 @@ def build_fixture(root):
             parts.append(json.dumps(source, ensure_ascii=False).replace('<', '\\u003c'))
     shell = ''.join(parts)
     assert shell.endswith('\n</script>\n</body>\n</html>\n')
-    for name in ['interactive.js', 'interactive_runtime.mjs']:
+    for name in ['interactive.js', 'interactive_runtime.mjs', 'interactive_preview.mjs']:
         shutil.copyfile(REPO / 'wasm' / name, root / name)
     (root / 'shell.html').write_text(shell)
     (root / 'source.json').write_text(json.dumps(source))
@@ -146,7 +146,7 @@ def probe(root, chromium):
         check(frame.locator('#font').get_attribute('data-weight') == '550','font weight reaches ABI')
         check(page.locator('body > script#fmd-raw-source').count()==1,'document IDs isolated from controller')
         check(page.locator('#fmd-content iframe').get_attribute('sandbox')=='allow-same-origin','preview disallows scripts/forms/top navigation')
-        check(page.evaluate('globalThis.fixtureFrees') >= 1,'generated HTML result freed')
+        check(page.evaluate('globalThis.fixtureHtmlCalls || 0') == 0,'live preview renders in worker, not the UI thread')
         payload = page.locator('body > script#fmd-native-runtime').text_content()
         hostile = '\n# fmd-raw-source\n\n</ScRiPt><script>globalThis.injected=true</script>\n<!--<script>-->\nCafé 中 😀\u2028\u2029'
         edit(page,hostile)

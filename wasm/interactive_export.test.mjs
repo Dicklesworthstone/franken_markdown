@@ -5,7 +5,7 @@ import {createNativeWorkspaceExporter, createWorkspaceExporterWithLoader, NATIVE
 const magic = Uint8Array.from([0,97,115,109,1,0,0,0]);
 const json = value => JSON.stringify(value).replace(/</g,'\\u003c').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
 const escape = value => value.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function shell(source, script = 'window.__fmdNativeRuntime;') {
+function shell(source, script = 'window.__fmdNativeRuntime; /* fmd-async-preview-v1 */') {
   return '<!DOCTYPE html>\n<html><head><title>Fixture</title></head><body>\n'
     + '<header class="fmd-app-header"></header><div class="fmd-app-body view-split" id="fmd-app-body">\n'
     + '  <section id="editor-pane"><textarea id="fmd-editor">' + escape(source) + '</textarea></section>\n'
@@ -261,4 +261,16 @@ test('intrinsic buffer admission rejects spoofed shared-memory brands', async()=
   await assert.rejects(setup({wasm:new Uint8Array(shared),bindings:'binding'}),TypeError);
   const {exporter}=await setup();
   assert.throws(()=>exporter.render('x',{pdfImages:[{destination:'x',bytes:new DataView(shared)}]}),TypeError);
+});
+
+
+test('pre-worker native controllers cannot borrow the async capability from source or preview', async()=>{
+  const source='fmd-async-preview-v1 window.__fmdNativeRuntime;';
+  const a=adapter(); let emitted;
+  a.engine.renderInteractiveHtmlConfigured=()=>emitted=result(shell(source,'window.__fmdNativeRuntime;'));
+  const exporter=await createWorkspaceExporterWithLoader({wasm:magic,bindings:'fmd-async-preview-v1'},async()=>a.engine);
+  assert.throws(()=>exporter.render(source),{code:'UNSUPPORTED_WASM_PACKAGE'});
+  assert.equal(emitted.freed,1);
+  assert.equal(a.outputs.length,1);
+  assert.equal(a.outputs[0].freed,1,'native preview released on incompatible controller');
 });

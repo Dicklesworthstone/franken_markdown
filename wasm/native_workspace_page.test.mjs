@@ -13,7 +13,7 @@ function output(text,mimeType='text/html') {
 function adapter() {
   const calls=[];
   const engine={
-    renderInteractiveHtmlConfigured(source){calls.push(['shell']);return output('<html><head></head><body><div class="fmd-content" id="fmd-content"></div>\n  </main>\n</div>\n<script type="application/json" id="fmd-raw-source">'+JSON.stringify(source)+'</script>\n<script>\nwindow.__fmdNativeRuntime;\n</script></body></html>');},
+    renderInteractiveHtmlConfigured(source){calls.push(['shell']);return output('<html><head></head><body><div class="fmd-content" id="fmd-content"></div>\n  </main>\n</div>\n<script type="application/json" id="fmd-raw-source">'+JSON.stringify(source)+'</script>\n<script>\nwindow.__fmdNativeRuntime; /* fmd-async-preview-v1 */\n</script></body></html>');},
     renderHtmlConfiguredAdvanced(...args){calls.push(['html',args]);return output('<html><head></head><body>Preview</body></html>');},
     renderPdfConfiguredMulti(...args){calls.push(['default',args]);return output('%PDF-default','application/pdf');},
     renderPdfConfiguredPage(...args){calls.push(['page',args]);return output('%PDF-page','application/pdf');},
@@ -114,7 +114,7 @@ test('independently imported exporter copies cannot reuse another factory runtim
   const bindings = `let answer;
     export default async function({module_or_path}){answer=(await WebAssembly.instantiate(module_or_path)).instance.exports.answer();}
     const output=${output.toString()};
-    export function renderInteractiveHtmlConfigured(source){return output('<html><head></head><body><div class="fmd-content" id="fmd-content"></div>\\n  </main>\\n</div>\\n<script type="application/json" id="fmd-raw-source">'+JSON.stringify(source)+'</script>\\n<script>\\nwindow.__fmdNativeRuntime;\\n</script></body></html>');}
+    export function renderInteractiveHtmlConfigured(source){return output('<html><head></head><body><div class="fmd-content" id="fmd-content"></div>\\n  </main>\\n</div>\\n<script type="application/json" id="fmd-raw-source">'+JSON.stringify(source)+'</script>\\n<script>\\nwindow.__fmdNativeRuntime; /* fmd-async-preview-v1 */\\n</script></body></html>');}
     export function renderHtmlConfiguredAdvanced(){return output('<html><head></head><body>Runtime '+answer+'</body></html>');}
     export function renderPdfConfiguredMulti(){return output('%PDF-adapter','application/pdf');}`;
   const a=await firstModule.createNativeWorkspaceExporter({wasm:wasm(7),bindings});

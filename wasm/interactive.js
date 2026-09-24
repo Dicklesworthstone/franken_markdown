@@ -1,5 +1,6 @@
 import { init, renderInteractiveHtml } from './franken_markdown.js';
 import { bootNativeWorkspace, createNativeWorkspaceRenderer } from './interactive_runtime.mjs';
+import {createWorkspacePreviewWorker} from './interactive_preview.mjs';
 
 const MiB = 1024 * 1024;
 const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
@@ -137,22 +138,26 @@ export async function renderOfflineWorkspace(markdown, runtime, options = {}) {
   await init(prepared.wasmBytes);
   const shell = await renderInteractiveHtml(prepared.source, prepared.payload.options);
   const html = shell.text();
+  // Inspect only the compiled controller, never user source or preview text.
+  // A pre-worker controller treats render() as synchronous and can save stale
+  // HTML when paired with this Promise-returning preview bootstrap.
   const appStart = html.lastIndexOf('<script>\n');
   const footer = '\n</script>\n</body>\n</html>\n';
   if (appStart < 0 || !html.endsWith(footer)
-      || !html.slice(appStart).includes("window.addEventListener('fmd-native-ready'")) {
-    throw Object.assign(new Error('Rebuild the matching WASM package: its interactive controller lacks native workspace support'),
+      || !html.slice(appStart).includes("window.addEventListener('fmd-native-ready'")
+      || !html.slice(appStart).includes('fmd-async-preview-v1')) {
+    throw Object.assign(new Error('Rebuild the matching WASM package: its interactive controller lacks background preview support'),
       {code: 'UNSUPPORTED_WASM_PACKAGE'});
   }
   const json = JSON.stringify(prepared.payload).replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-  const bootstrap = `(${bootNativeWorkspace.toString()})(${createNativeWorkspaceRenderer.toString()});`;
+  const bootstrap = `(${bootNativeWorkspace.toString()})(${createNativeWorkspaceRenderer.toString()}, ${createWorkspacePreviewWorker.toString()});`;
   if (/<\/script/i.test(bootstrap)) throw new Error('Unsafe native workspace bootstrap serialization');
   const extra = '<script type="application/json" id="fmd-native-runtime">' + json + '</script>\n'
     + '<script>\n' + bootstrap + '\n</script>\n';
   // Permit the bundled app/module and WASM compilation, not JavaScript eval,
   // network requests, remote fonts/images, object plugins or form submissions.
-  const policy = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; frame-src 'self' about:; base-uri 'none'; form-action 'none'";
+  const policy = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; frame-src 'self' about:; base-uri 'none'; form-action 'none'";
   let document = html.slice(0, appStart) + extra + html.slice(appStart);
   if (!document.includes('<head>')) throw new Error('Interactive HTML is missing its document head');
   document = document.replace('<head>', '<head>\n<meta http-equiv="Content-Security-Policy" content="' + policy + '">');

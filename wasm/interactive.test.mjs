@@ -9,15 +9,15 @@ import {pathToFileURL} from 'node:url';
 const dir = await mkdtemp(join(tmpdir(),'fmd-offline-contract-'));
 after(() => rm(dir,{recursive:true,force:true}));
 await writeFile(join(dir,'package.json'),'{"type":"module"}');
-for(const file of ['interactive.js','interactive_runtime.mjs']) await copyFile(new URL(file,import.meta.url),join(dir,file));
+for(const file of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs']) await copyFile(new URL(file,import.meta.url),join(dir,file));
 await writeFile(join(dir,'franken_markdown.js'),`
-export const state={calls:[], gate:null,legacy:false};
+export const state={calls:[], gate:null,legacy:false,preWorker:false};
 export async function init(bytes) { state.calls.push({kind:'init',bytes}); if(state.gate) await state.gate; }
 export async function renderInteractiveHtml(source,options) {
   state.calls.push({kind:'render',source,options});
   const text='<!DOCTYPE html>\\n<html><head></head><body><script type="application/json" id="fmd-raw-source">'
     +JSON.stringify(source).replace(/</g,'\\\\u003c')+'</script>\\n<script>\\n'
-    +(state.legacy?'/* old app */':"window.addEventListener('fmd-native-ready', () => {});")
+    +(state.legacy?'/* old app */':"window.addEventListener('fmd-native-ready', () => {});" + (state.preWorker ? '' : '/* fmd-async-preview-v1 */'))
     +'\\n</script>\\n</body>\\n</html>\\n';
   return {format:'interactive-html',mimeType:'text/html; charset=utf-8',extension:'html',
     bytes:new TextEncoder().encode(text),sourceLength:0,diagnostics:[{message:'initial diagnostic'}],
@@ -31,7 +31,7 @@ const runtime=()=>({bindings:'export default async function() {}',wasm:wasm()});
 function payload(output) {
   return JSON.parse(output.text().split('<script type="application/json" id="fmd-native-runtime">')[1].split('</script>')[0]);
 }
-function reset() {state.calls=[];state.gate=null;state.legacy=false;}
+function reset() {state.calls=[];state.gate=null;state.legacy=false;state.preWorker=false;}
 
 test('public output contains runtime/assets, enforces offline CSP and preserves result helpers',async()=>{
   reset();
@@ -132,4 +132,13 @@ test('aggregate limits reject before initialization and separate calls never sha
   assert.equal(state.calls.length,0);
   const outputs=await Promise.all([1,2].map(value=>renderOfflineWorkspace(String(value),runtime(),{pdfImages:[{destination:'x',bytes:Uint8Array.of(value)}]})));
   assert.equal(payload(outputs[0]).images[0].bytes,'AQ=='); assert.equal(payload(outputs[1]).images[0].bytes,'Ag==');
+});
+
+
+test('native but pre-worker controllers are refused even when source advertises the marker', async()=>{
+  reset(); state.preWorker=true;
+  const source="fmd-async-preview-v1 window.addEventListener('fmd-native-ready'";
+  await assert.rejects(renderOfflineWorkspace(source,runtime()), {code:'UNSUPPORTED_WASM_PACKAGE'});
+  assert.equal(state.calls.filter(call=>call.kind==='render').length,1);
+  reset();
 });

@@ -39,18 +39,58 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
             renderer = makeRenderer(bindings, data);
           } finally { URL.revokeObjectURL(url); }
           self.postMessage({type: 'ready'});
-        } else if (request?.type === 'render' && renderer && Number.isSafeInteger(id) && id > 0) {
+        } else if (['render', 'export'].includes(request?.type) && renderer && Number.isSafeInteger(id) && id > 0) {
           if (request.state) {
             const next = {...data, options: request.state.options, images: request.state.images};
             const staged = makeRenderer(bindings, next);
             renderer = staged; data = next;
           }
-          const html = renderer.html(request.markdown, request.display);
-          if (typeof html !== 'string' || !html.length || html.length > 256 * 1024 * 1024) {
-            throw new Error('Invalid or oversized preview HTML');
+          if (request.type === 'export') {
+            const format = request.format;
+            let bytes;
+            if (format === 'html') {
+              // Publication uses committed document settings, never viewing zoom.
+              const html = renderer.html(request.markdown);
+              if (typeof html !== 'string' || !html.length || html.length > 256 * 1024 * 1024) {
+                throw new Error('Invalid or oversized publication HTML');
+              }
+              let length = 0;
+              for (const character of html) {
+                const cp = character.codePointAt(0);
+                if (cp >= 0xd800 && cp <= 0xdfff) throw new Error('Invalid publication Unicode');
+                length += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+                if (length > 256 * 1024 * 1024) throw new Error('Publication HTML exceeds its byte limit');
+              }
+              bytes = new TextEncoder().encode(html);
+            } else if (format === 'pdf') {
+              const value = renderer.pdf(request.markdown);
+              if (!(value instanceof Uint8Array) || !value.length || value.length > 256 * 1024 * 1024) {
+                throw new Error('Invalid or oversized PDF bytes');
+              }
+              // Never transfer a borrowed/pool/WASM buffer. Own the exact view.
+              bytes = value.slice();
+              if (String.fromCharCode(...bytes.subarray(0, 5)) !== '%PDF-') throw new Error('Invalid PDF signature');
+            } else throw new Error('Unsupported export format');
+            const findings = renderer.diagnostics;
+            if (!Array.isArray(findings) || findings.length > 4096
+                || findings.some(item => !item || typeof item.message !== 'string')) {
+              throw new Error('Invalid export diagnostics');
+            }
+            const json = JSON.stringify(findings);
+            if (json.length > 1024 * 1024 || new TextEncoder().encode(json).length > 1024 * 1024) {
+              throw new Error('Export diagnostics exceed their byte limit');
+            }
+            self.postMessage({type: 'result', id, format, bytes,
+              mimeType: format === 'pdf' ? 'application/pdf' : 'text/html;charset=utf-8',
+              diagnostics: JSON.parse(json)}, [bytes.buffer]);
+          } else {
+            const html = renderer.html(request.markdown, request.display);
+            if (typeof html !== 'string' || !html.length || html.length > 256 * 1024 * 1024) {
+              throw new Error('Invalid or oversized preview HTML');
+            }
+            // The result owns ordinary data, not a borrowed native result handle.
+            self.postMessage({type: 'result', id, html, diagnostics: renderer.diagnostics});
           }
-          // The result owns ordinary data, not a borrowed native result handle.
-          self.postMessage({type: 'result', id, html, diagnostics: renderer.diagnostics});
         } else throw new Error('Invalid preview worker request');
       } catch (err) { report(id, err); }
     };
@@ -63,7 +103,11 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
   function settle(job, value, failure) {
     if (!job || job.settled) return;
     job.settled = true;
-    if (failure) job.reject(failure); else job.resolve(value);
+    if (failure) job.reject(job.format ? exportError(failure) : failure); else job.resolve(value);
+  }
+  function exportError(reason) {
+    return error(String(reason?.code || 'EXPORT_FAILED').replace(/^PREVIEW_/, 'EXPORT_'),
+      String(reason?.message || reason).replace(/preview/gi, 'export').slice(0, 2048));
   }
   function revoke() {
     if (moduleUrl !== null) { URL.revokeObjectURL(moduleUrl); moduleUrl = null; }
@@ -98,7 +142,8 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       ? null : {options: active.options, images: active.images};
     deadline();
     try {
-      worker.postMessage({type: 'render', id: active.id, markdown: active.markdown, display: active.display, state});
+      worker.postMessage({type: active.format ? 'export' : 'render', format: active.format,
+        id: active.id, markdown: active.markdown, display: active.display, state});
       lastOptions = active.options; lastImages = active.images;
     } catch (err) { stop(error('PREVIEW_SEND_FAILED', String(err?.message ?? err).slice(0, 2048))); }
   }
@@ -122,8 +167,23 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       settle(job, null, error('PREVIEW_RENDER_FAILED', String(result.message).slice(0, 2048)));
     } else if (!job.settled) {
       try {
-        text(result.html, 256 * MiB, 'Preview HTML');
-        if (!result.html.length || !Array.isArray(result.diagnostics) || result.diagnostics.length > 4096) {
+        if (job.format) {
+          const mime = job.format === 'pdf' ? 'application/pdf' : 'text/html;charset=utf-8';
+          if (result.format !== job.format || result.mimeType !== mime
+              || !(result.bytes instanceof Uint8Array) || !result.bytes.length || result.bytes.length > 256 * MiB
+              || !(result.bytes.buffer instanceof ArrayBuffer)
+              || result.bytes.byteOffset !== 0 || result.bytes.byteLength !== result.bytes.buffer.byteLength) {
+            throw error('EXPORT_PROTOCOL', 'Invalid background export result');
+          }
+          if (job.format === 'pdf' && String.fromCharCode(...result.bytes.subarray(0, 5)) !== '%PDF-') {
+            throw error('EXPORT_PROTOCOL', 'Invalid background PDF signature');
+          }
+          text(JSON.stringify(result.diagnostics), MiB, 'Export diagnostics');
+        } else {
+          text(result.html, 256 * MiB, 'Preview HTML');
+          if (!result.html.length) throw error('PREVIEW_PROTOCOL', 'Empty background preview result');
+        }
+        if (!Array.isArray(result.diagnostics) || result.diagnostics.length > 4096) {
           throw error('PREVIEW_PROTOCOL', 'Invalid background preview result');
         }
         let length = 0;
@@ -132,7 +192,8 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
           length += item.message.length;
           if (length > 1024 * 1024) throw error('PREVIEW_LIMIT', 'Preview diagnostics exceed their limit');
         }
-        settle(job, {html: result.html, diagnostics: result.diagnostics});
+        settle(job, job.format ? {format: job.format, bytes: result.bytes, mimeType: result.mimeType,
+          diagnostics: result.diagnostics} : {html: result.html, diagnostics: result.diagnostics});
       } catch (err) { settle(job, null, err); stop(err); return; }
     }
     dispatch();
@@ -168,6 +229,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
               || ![undefined, 'light', 'dark'].includes(display.theme) || !state?.options || !Array.isArray(state.images)) {
             throw error('PREVIEW_OPTIONS', 'Invalid background preview options');
           }
+          if (active?.format || queued?.format) throw error('EXPORT_BUSY', 'A document export is already running');
           // Admit before superseding a valid request. Resource records are private
           // committed immutable snapshots supplied by the owning workspace.
           const view = {scale: display.scale, theme: display.theme};
@@ -177,7 +239,27 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
         } catch (err) { reject(err); }
       });
     },
+    // Use a separate client for exports so editing cannot starve an explicit
+    // export. This lane has no queue: a second operation is refused, not hidden.
+    exportDocument(format, markdown, state) {
+      return new Promise((resolve, reject) => {
+        try {
+          if (closed) throw error('EXPORT_CLOSED', 'Background export is closed');
+          if (!['html', 'pdf'].includes(format) || !state?.options || !Array.isArray(state.images)) {
+            throw error('EXPORT_OPTIONS', 'Invalid background export options');
+          }
+          text(markdown, 32 * MiB, 'Workspace source');
+          if (active || queued) throw error('EXPORT_BUSY', 'A document operation is already running');
+          queued = {id: ++sequence, format, markdown, options: state.options, images: state.images,
+            resolve, reject, settled: false};
+          start(); dispatch();
+        } catch (err) { reject(exportError(err)); }
+      });
+    },
     invalidate() {
+      if (active?.format || queued?.format) {
+        stop(error('EXPORT_CANCELLED', 'Background export was cancelled')); return;
+      }
       settle(active, null, superseded()); settle(queued, null, superseded()); queued = null;
     },
     dispose() { stop(error('PREVIEW_CLOSED', 'Background preview was stopped')); },

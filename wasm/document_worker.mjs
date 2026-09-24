@@ -19,7 +19,7 @@ const SETTINGS = {
   html: [...SHARED, "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets"],
   pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "pdfImages", "fontAssets", "page"],
   svg: [...SHARED, "maxWidthPt", "pdfImages", "fontAssets"],
-  epub: [...SHARED, "title", "lang"],
+  epub: [...SHARED, "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets"],
   "interactive-html": [...SHARED, "title", "lang"],
 };
 const SLOTS = ["body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"];
@@ -163,7 +163,12 @@ function result(value, format, max, expectedLength) {
         || !Number.isInteger(item.start) || !Number.isInteger(item.end)
         || item.start < 0 || item.end < item.start || item.end > value.sourceLength)
       fail("WORKER_PROTOCOL_ERROR", "invalid document diagnostic");
-    size += item.message.length;
+    // Preserve renderer reason codes and document scope without inventing a
+    // source location. Optional metadata shares the diagnostic payload budget.
+    if ((item.scope !== undefined && (item.scope !== "document" || item.start !== 0 || item.end !== 0))
+        || (item.code !== undefined && (typeof item.code !== "string" || !item.code.length || item.code.length > 128)))
+      fail("WORKER_PROTOCOL_ERROR", "invalid document diagnostic metadata");
+    size += item.message.length + (item.code?.length ?? 0);
     if (size > 65536) fail("BUDGET_EXCEEDED", "diagnostic text limit exceeded");
   }
   return value;
@@ -256,11 +261,18 @@ export function installDocumentWorker(endpoint, loadRenderer) {
       // helper functions in the public render result are deliberately not cloned.
       const value = { format: output.format, mimeType: output.mimeType, extension: output.extension,
         sourceLength: output.sourceLength, bytes: new Uint8Array(output.bytes),
-        diagnostics: output.diagnostics.map(({ severity, start, end, message }) => ({ severity, start, end, message })) };
+        diagnostics: output.diagnostics.map(({ severity, start, end, message, code, scope }) => ({
+          severity, start, end, message,
+          ...(code === undefined ? {} : { code }),
+          ...(scope === undefined ? {} : { scope }),
+        })) };
       return { state: null, value, transfer: [value.bytes.buffer] };
     } catch (error) {
+      // Preserve the direct API's actionable package-mismatch signal. All
+      // other renderer exceptions still fail closed as RENDER_FAILED.
+      const code = error?.code === "UNSUPPORTED_WASM_PACKAGE" ? error.code : "RENDER_FAILED";
       const fatal = error instanceof FlowWorkerError ? error
-        : new FlowWorkerError("RENDER_FAILED", error instanceof Error ? error.message : String(error));
+        : new FlowWorkerError(code, error instanceof Error ? error.message : String(error));
       fatal.fatal = true;
       throw fatal;
     }

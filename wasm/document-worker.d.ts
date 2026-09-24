@@ -1,12 +1,12 @@
-import type { FmdDiagnostic, FmdRenderOptions } from "./franken_markdown.js";
+import type { FmdDiagnostic, FmdRenderOptions, FmdPdfRenderOptions } from "./franken_markdown.js";
 
 export type DocumentFormat = "html" | "pdf" | "svg" | "epub" | "interactive-html";
 type Shared = Pick<FmdRenderOptions, "font" | "darkMode" | "fontScale" | "typeSize">;
 export interface DocumentOptions {
   html: Shared & Pick<FmdRenderOptions, "title" | "customCss" | "allowRawHtml" | "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets">;
-  pdf: Shared & Pick<FmdRenderOptions, "title" | "author" | "metadataEpochSeconds" | "allowRawHtml" | "codeLineNumbers" | "pageNumbers" | "baseFontSize" | "headingScale" | "tableFontSize" | "lang" | "toc" | "tocDepth" | "fitToPages" | "microtype" | "microtypeProtrusion" | "pdfImages" | "fontAssets">;
-  svg: Shared & Pick<FmdRenderOptions, "maxWidthPt">;
-  epub: Shared & Pick<FmdRenderOptions, "title" | "lang">;
+  pdf: Shared & Pick<FmdPdfRenderOptions, "title" | "author" | "metadataEpochSeconds" | "allowRawHtml" | "codeLineNumbers" | "pageNumbers" | "baseFontSize" | "headingScale" | "tableFontSize" | "lang" | "toc" | "tocDepth" | "fitToPages" | "microtype" | "microtypeProtrusion" | "pdfImages" | "fontAssets" | "page">;
+  svg: Shared & Pick<FmdRenderOptions, "maxWidthPt" | "pdfImages" | "fontAssets">;
+  epub: Shared & Pick<FmdRenderOptions, "title" | "lang" | "customCss" | "toc" | "tocDepth" | "pdfImages" | "fontAssets">;
   "interactive-html": Shared & Pick<FmdRenderOptions, "title" | "lang">;
 }
 export interface DocumentOutput<K extends DocumentFormat = DocumentFormat> {
@@ -15,6 +15,7 @@ export interface DocumentOutput<K extends DocumentFormat = DocumentFormat> {
   readonly extension: K extends "pdf" ? "pdf" : K extends "svg" ? "svg" : K extends "epub" ? "epub" : "html";
   readonly sourceLength: number;
   readonly bytes: Uint8Array;
+  /** Source-byte findings and optional document scope/reason codes are preserved. */
   readonly diagnostics: FmdDiagnostic[];
   text(): string;
   blob(): Blob;

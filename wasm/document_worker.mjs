@@ -2,6 +2,8 @@
 // no worker and loads no WASM. The renderer itself is an explicit worker import.
 import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker, workerLimits } from "./worker_transport.mjs";
 
+import { normalizePdfPage } from "./pdf_page.mjs";
+
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const DOCUMENT_SOURCE_LIMIT = 4 * 1024 * 1024;
 export const DOCUMENT_OUTPUT_LIMIT = 64 * 1024 * 1024;
@@ -15,8 +17,8 @@ const FORMATS = Object.freeze({
 const SHARED = ["font", "darkMode", "fontScale", "typeSize"];
 const SETTINGS = {
   html: [...SHARED, "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets"],
-  pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "pdfImages", "fontAssets"],
-  svg: [...SHARED, "maxWidthPt"],
+  pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "pdfImages", "fontAssets", "page"],
+  svg: [...SHARED, "maxWidthPt", "pdfImages", "fontAssets"],
   epub: [...SHARED, "title", "lang"],
   "interactive-html": [...SHARED, "title", "lang"],
 };
@@ -95,13 +97,21 @@ function normalize(format, source, options) {
   const out = record(options, SETTINGS[format], "render option");
   for (const [key, value] of Object.entries(out)) {
     if (key === "pdfImages" || key === "fontAssets") out[key] = assets(value, key === "fontAssets");
-    else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion"].includes(key)) {
+    else if (key === "page") {
+      // Reuse the direct API's deeply owned geometry, including its f32 bounds.
+      // Invalid pages never reach the worker, and later host edits cannot retarget them.
+      try { out.page = normalizePdfPage(value); }
+      catch (error) { fail("INVALID_OPTIONS", error.message); }
+    } else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion"].includes(key)) {
       if (typeof value !== "boolean") fail("INVALID_OPTIONS", `${key} must be boolean`);
     } else if (["fontScale", "typeSize"].includes(key)) {
       if (typeof value === "string") text(value, 64, key);
       else if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
         fail("INVALID_OPTIONS", `invalid ${key}`);
-    } else if (["baseFontSize", "headingScale", "tableFontSize", "maxWidthPt"].includes(key)) {
+    } else if (key === "maxWidthPt") {
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 144 || value > 14400)
+        fail("INVALID_OPTIONS", "SVG maxWidthPt must be from 144 through 14400");
+    } else if (["baseFontSize", "headingScale", "tableFontSize"].includes(key)) {
       if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 1000000)
         fail("INVALID_OPTIONS", `invalid ${key}`);
     } else if (key === "metadataEpochSeconds") integer(value, 0, Number.MAX_SAFE_INTEGER, key);
@@ -115,7 +125,8 @@ function normalize(format, source, options) {
   }
   // Charge the retained input graph before allocating binary snapshots. This is
   // ingress accounting, not a promise about the renderer's temporary WASM heap.
-  let charge = 512 + 2 * source.length;
+  // A canonical page retains three records and six numeric fields.
+  let charge = 512 + 2 * source.length + (out.page === undefined ? 0 : 512);
   for (const value of Object.values(out)) {
     if (typeof value === "string") charge += 64 + value.length * 2;
     else if (Array.isArray(value)) {

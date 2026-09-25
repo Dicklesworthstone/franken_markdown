@@ -51,7 +51,7 @@
   const storedScale = parseFloat(document.documentElement.style.getPropertyValue('--fmd-base')) / 16;
   let currentScale = Number.isFinite(storedScale) ? Math.min(2, Math.max(0.7, storedScale)) : 1;
   let viewMode = body.classList.contains('view-read') ? 'read' : 'split';
-  let settingsBaseline = null, documentLab = null;
+  let settingsBaseline = null, documentLab = null, settingsController = null;
   const isModified = () => currentSource() !== originalSource
     || (settingsBaseline !== null && JSON.stringify(native.settings) !== settingsBaseline);
   const modifiedNotice = () => isModified() ? 'Modified — download to keep changes' : '';
@@ -93,6 +93,7 @@
   let debounceTimer = null, renderRevision = 0, pendingRender = null;
   let previewSuspended = false, previewComposing = false, pendingSave = null;
   function invalidatePreview() {
+    settingsController?.cancel('Settings preflight cancelled: source or view changed; apply the current draft again.');
     renderRevision++;
     pendingRender = null;
     native?.invalidatePreview?.();
@@ -385,7 +386,7 @@
   document.getElementById('btn-export-pdf').addEventListener('click', () => attempt(exportPdf));
 
   function installSettings() {
-    if (!native || typeof native.applySettings !== 'function') return;
+    if (!native || (typeof native.applySettings !== 'function' && typeof native.applySettingsAsync !== 'function')) return;
     const header = document.querySelector('body > .fmd-app-header');
     const exportButton = header?.querySelector('#btn-export-pdf');
     if (!exportButton) return;
@@ -448,7 +449,27 @@
     const settingsFields = [...flags, ...numbers, ...texts];
     const geometryFields = ['width', 'height', 'top', 'right', 'bottom', 'left'];
     const raw = name => flags.includes(name) ? field(name).checked : field(name).value;
-    let opened = null, initial = null;
+    let opened = null, initial = null, applying = null, panelRevision = 0;
+    const asynchronous = native.settingsMode === 'worker';
+    const submit = form.querySelector('button[type="submit"]');
+    const draft = () => JSON.stringify([...settingsFields, 'paper', 'orientation', ...geometryFields].map(raw));
+    function release(operation) {
+      for (const [node, disabled] of operation.buttons) node.disabled = disabled;
+      submit.disabled = false; submit.textContent = 'Apply settings';
+      form.setAttribute('aria-busy', 'false');
+      documentLab?.refresh();
+    }
+    function cancelApply(message = 'Settings preflight cancelled; committed settings are unchanged.') {
+      const operation = applying;
+      if (!operation) return;
+      // Retire ownership before terminating: late promise handlers cannot close
+      // a reopened panel, clear a newer draft or restore another job's controls.
+      applying = null;
+      native.cancelSettings?.();
+      release(operation);
+      if (dialog.open) status.textContent = message;
+    }
+    settingsController = {cancel: cancelApply, get busy() { return applying !== null; }};
     const pageEnabled = () => {
       for (const input of form.querySelectorAll('[data-page]')) input.disabled = field('paper').value === 'default';
     };
@@ -480,6 +501,8 @@
     enable();
     if (native.ready) native.ready.then(enable, () => {});
     button.addEventListener('click', () => attempt(() => {
+      if (button.disabled || dialog.open || previewSuspended || previewComposing) return;
+      panelRevision++;
       opened = native.settings;
       if (!opened) throw Error('Native renderer is not ready');
       for (const name of flags) field(name).checked = opened[name];
@@ -492,13 +515,51 @@
       field('orientation').value = geometry[0] > geometry[1] ? 'landscape' : 'portrait';
       pageEnabled(); status.textContent = ''; dialog.showModal();
     }));
-    form.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
-    form.addEventListener('input', () => { status.textContent = ''; });
+    form.querySelector('[data-cancel]').addEventListener('click', () => {
+      cancelApply(); dialog.close();
+    });
+    dialog.addEventListener('cancel', () => cancelApply());
+    dialog.addEventListener('close', () => {
+      // A close event is queued. It may arrive after a new showModal().
+      if (!dialog.open) cancelApply();
+    });
+    for (const event of ['input', 'change']) form.addEventListener(event, () => {
+      if (applying) cancelApply('Settings draft changed; apply again to render the new draft.');
+      else status.textContent = '';
+    });
+    function applied(patch, source, display) {
+      documentLab?.invalidate('Document settings changed — run analysis again.');
+      // The runtime already atomically published the preview and saved options.
+      // Retire old preview continuations without cancelling this completed job.
+      renderRevision++; pendingRender = null;
+      preview.setAttribute?.('aria-busy', 'false');
+      clearTimeout(debounceTimer); debounceTimer = null;
+      lastRenderedSource = currentSource() === source && JSON.stringify(displaySettings()) === display ? source : null;
+      if (Object.hasOwn(patch, 'title')) {
+        document.title = native.settings.title ?? 'FrankenMarkdown Document';
+        const title = header.querySelector('.fmd-title'); if (title) title.textContent = document.title;
+      }
+      if (Object.hasOwn(patch, 'lang')) document.documentElement.lang = native.settings.lang ?? 'en';
+      saveStatus.textContent = 'Settings applied — Save HTML to keep document settings';
+      const notice = nativeNotice(); if (notice) saveStatus.textContent += ' — ' + notice;
+      updateStats();
+      if (lastRenderedSource === null) attempt(renderCurrent);
+      dialog.close();
+    }
+    function failed(error) {
+      if (!dialog.open) return;
+      status.textContent = 'Settings not applied: ' + String(error?.message ?? error).slice(0, 2048);
+      status.focus();
+    }
     form.addEventListener('submit', event => {
       event.preventDefault();
-      if (!form.reportValidity()) return;
+      if (applying || !form.reportValidity()) return;
+      let operation = null;
       try {
-        if (documentLab?.busy) throw Error('Finish or cancel Document Lab analysis before applying settings');
+        if (!dialog.open || previewSuspended || previewComposing) throw Error('Settings are suspended; retry after returning to the document');
+        if (pendingExport || documentLab?.busy || native.exportPending || native.settingsPending) {
+          throw Error('Finish or cancel the current document operation before applying settings');
+        }
         if (!opened || native.settings !== opened) throw Error('Document settings changed while this panel was open; reopen it before applying');
         const patch = {};
         // Compare actual displayed values. Unedited metadata remains byte-exact
@@ -509,27 +570,58 @@
         }
         const geometry = field('paper').value === 'default' ? undefined : geometryFields.map(name => field(name).valueAsNumber);
         if (JSON.stringify(geometry) !== JSON.stringify(opened.pageGeometry)) patch.pageGeometry = geometry;
-        if (Object.keys(patch).length) {
-          const source = currentSource();
-          invalidatePreview();
-          native.applySettings(patch, source, preview, displaySettings());
-          documentLab?.invalidate('Document settings changed — run analysis again.');
-          clearTimeout(debounceTimer); debounceTimer = null;
-          lastRenderedSource = currentSource() === source ? source : null;
-          if (Object.hasOwn(patch, 'title')) {
-            document.title = native.settings.title ?? 'FrankenMarkdown Document';
-            const title = header.querySelector('.fmd-title'); if (title) title.textContent = document.title;
-          }
-          if (Object.hasOwn(patch, 'lang')) document.documentElement.lang = native.settings.lang ?? 'en';
-          saveStatus.textContent = 'Settings applied — Save HTML to keep document settings';
-          const notice = nativeNotice(); if (notice) saveStatus.textContent += ' — ' + notice;
-          updateStats();
-          if (lastRenderedSource === null) attempt(renderCurrent);
+        if (!Object.keys(patch).length) { dialog.close(); return; }
+        if (asynchronous && (typeof native.applySettingsAsync !== 'function' || typeof native.cancelSettings !== 'function')) {
+          throw Object.assign(Error('Background settings require a matching workspace runtime; rebuild the embedded package'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
         }
-        dialog.close();
+        const source = currentSource(), view = displaySettings(), display = JSON.stringify(view);
+        invalidatePreview();
+        clearTimeout(debounceTimer); debounceTimer = null;
+        if (!asynchronous) {
+          // Only explicitly synchronous/legacy runtimes use this path. A worker
+          // failure must never retry the same heavy render on the UI thread.
+          native.applySettings(patch, source, preview, view);
+          applied(patch, source, display);
+          return;
+        }
+        // fmd-async-settings-v1: capture both values and event revisions. Silent
+        // form/source mutations and edit/undo round trips cannot retarget a job.
+        operation = {source, anchor: sourceAnchor, draft: draft(), display,
+          panel: panelRevision, settings: opened, buttons: []};
+        applying = operation;
+        for (const id of [button.id, ...Object.values(publicationFormats).map(spec => spec.button)]) {
+          const node = header.querySelector('#' + id);
+          if (node) { operation.buttons.push([node, node.disabled]); node.disabled = true; }
+        }
+        submit.disabled = true; submit.textContent = 'Checking settings…';
+        form.setAttribute('aria-busy', 'true');
+        status.textContent = 'Rendering settings in background… Cancel or edit the draft to stop; committed settings are unchanged.';
+        const current = () => applying === operation && dialog.open && panelRevision === operation.panel
+          && !previewSuspended && !previewComposing
+          && sourceAnchor === operation.anchor && currentSource() === source
+          && draft() === operation.draft && JSON.stringify(displaySettings()) === display;
+        // Call now, not from a later microtask: the runtime reserves its shared
+        // export/settings/analysis slot before another action can be admitted.
+        const result = native.applySettingsAsync(patch, source, preview, view,
+          () => current() && native.settings === operation.settings);
+        if (!result || typeof result.then !== 'function') throw Error('Background settings returned no completion promise');
+        documentLab?.refresh();
+        Promise.resolve(result).then(committed => {
+          if (!current() || native.settings !== committed) {
+            throw Error('Source, view or draft changed; apply the current settings again');
+          }
+          applying = null; release(operation);
+          applied(patch, source, display);
+        }).catch(error => {
+          if (applying !== operation) return;
+          applying = null;
+          native.cancelSettings(); release(operation); failed(error);
+        });
       } catch (error) {
-        status.textContent = 'Settings not applied: ' + String(error?.message ?? error).slice(0, 2048);
-        status.focus();
+        if (operation && applying === operation) {
+          applying = null; native.cancelSettings?.(); release(operation);
+        }
+        failed(error);
       }
     });
   }
@@ -643,7 +735,7 @@
   }
   function exportDocument(format) {
     if (!Object.hasOwn(publicationFormats, format)) throw Error('Unsupported publication format');
-    if (documentLab?.busy) throw Error('Finish or cancel Document Lab analysis before exporting');
+    if (documentLab?.busy || settingsController?.busy || native.settingsPending) throw Error('Finish or cancel document analysis or settings before exporting');
     if (previewSuspended || previewComposing) return;
     if (pendingExport) return pendingExport.promise;
     const source = currentSource(), settings = native.settings, revision = exportRevision;
@@ -936,7 +1028,7 @@
         && snapshot.source === currentSource() && snapshot.settings === native.settings
         && !previewSuspended && !previewComposing;
       function refresh() {
-        const busy = pending !== null || pendingExport !== null || native.exportPending || native.settingsPending;
+        const busy = pending !== null || pendingExport !== null || settingsController?.busy || native.exportPending || native.settingsPending;
         const paused = previewSuspended || previewComposing;
         stats.hidden = !native.analysisFormats.includes('stats');
         audit.hidden = !native.analysisFormats.includes('accessibility');
@@ -1039,7 +1131,7 @@
         }
       }
       function run(kind) {
-        if (pending || pendingExport || native.exportPending || native.settingsPending) {
+        if (pending || pendingExport || settingsController?.busy || native.exportPending || native.settingsPending) {
           status.textContent = 'Finish or cancel the current document operation first.'; return;
         }
         if (previewSuspended || previewComposing) return;

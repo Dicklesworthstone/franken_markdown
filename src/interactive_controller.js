@@ -23,6 +23,8 @@
   const currentSource = () => editor.value === sourceAnchor.view ? sourceAnchor.source : editor.value;
   const preview = document.getElementById('fmd-content');
   const body = document.getElementById('fmd-app-body');
+  const nativePayload = document.querySelector('body > script#fmd-native-runtime[type="application/json"]');
+  const recoveryHint = nativePayload ? ' — Save recovery copy retains source, settings and embedded resources without rendering.' : '';
   const candidate = Object.getOwnPropertyDescriptor(window, '__fmdNativeRuntime')?.value;
   const native = candidate?.version === 1 && typeof candidate.render === 'function'
     && typeof candidate.pdf === 'function' ? candidate : null;
@@ -91,7 +93,7 @@
   // Lightweight previews remain synchronous. Native worker results must commit
   // before a revision is considered rendered or an editable file is exported.
   let debounceTimer = null, renderRevision = 0, pendingRender = null;
-  let previewSuspended = false, previewComposing = false, pendingSave = null;
+  let previewSuspended = false, previewComposing = false, pendingSave = null, workspaceSaveRevision = 0;
   function invalidatePreview() {
     settingsController?.cancel('Settings preflight cancelled: source or view changed; apply the current draft again.');
     renderRevision++;
@@ -116,10 +118,12 @@
     const complete = committed => {
       if (committed === false || !current()) return false;
       lastRenderedSource = source;
+      document.documentElement.removeAttribute('data-fmd-recovery');
       if (native) saveStatus.textContent = nativeNotice() || modifiedNotice();
       return true;
     };
     if (!native) {
+      if (nativePayload) throw Error('Embedded native renderer is unavailable; the reduced parser will not be used');
       preview.innerHTML = source === originalSource ? originalRendered : parseMarkdownClient(source, imageAssets);
       return complete(true);
     }
@@ -144,6 +148,7 @@
     const report = error => {
       saveStatus.textContent = 'Unable to complete: ' + String(error?.message || error).slice(0, 2048);
       if (native?.previewMode === 'worker') saveStatus.textContent += ' — Restart preview to retry; Markdown remains downloadable.';
+      saveStatus.textContent += recoveryHint;
     };
     try {
       const result = action();
@@ -162,12 +167,12 @@
   }
   window.addEventListener('fmd-native-ready', refreshNative);
   window.addEventListener('fmd-native-error', event => {
-    if (native) saveStatus.textContent = String(event.detail).slice(0, 2048);
+    if (native || nativePayload) saveStatus.textContent = String(event.detail).slice(0, 2048) + recoveryHint;
   });
   // Also handle an engine that settled before this controller was evaluated.
   // Read currentSource at completion: typing during startup is never lost.
   if (native?.ready) native.ready.then(() => attempt(renderCurrent), error => {
-    saveStatus.textContent = 'Native runtime failed: ' + String(error?.message ?? error).slice(0, 2048);
+    saveStatus.textContent = 'Native runtime failed: ' + String(error?.message ?? error).slice(0, 2048) + recoveryHint;
   });
   editor.addEventListener('input', () => {
     cancelDocumentExport('Export cancelled: source changed');
@@ -236,6 +241,7 @@
       const notice = nativeNotice();
       if (notice) saveStatus.textContent += ' — ' + notice;
     } else {
+      if (nativePayload) throw Error('Embedded native renderer is unavailable; browser print is not a native PDF export');
       renderCurrent();
       window.print();
     }
@@ -244,21 +250,51 @@
     download(currentSource(), 'text/markdown;charset=utf-8', 'md');
   }
   function saveHtml() {
-    if (pendingSave?.revision === renderRevision) return pendingSave.promise;
+    if (pendingSave?.revision === renderRevision && pendingSave.saveRevision === workspaceSaveRevision) return pendingSave.promise;
+    const saveRevision = ++workspaceSaveRevision;
     const source = currentSource(), rendered = renderCurrent(), revision = renderRevision;
     const save = committed => {
-      if (committed === false || revision !== renderRevision || currentSource() !== source) return;
+      if (committed === false || saveRevision !== workspaceSaveRevision || revision !== renderRevision || currentSource() !== source) return;
       serializeWorkspace(source);
     };
     if (!rendered || typeof rendered.then !== 'function') return save(rendered);
-    const operation = {revision, promise: null};
+    const operation = {revision, saveRevision, promise: null};
     pendingSave = operation;
     operation.promise = rendered.then(save).finally(() => {
       if (pendingSave === operation) pendingSave = null;
     });
     return operation.promise;
   }
-  function serializeWorkspace(source) {
+  // Validate before Blob/TextEncoder can replace lone surrogates. No secondary
+  // UTF-8 allocation is needed to enforce the retained workspace limits.
+  function workspaceTextSize(text, limit, label) {
+    if (typeof text !== 'string' || text.length > limit) throw Error(label + ' exceeds its byte limit');
+    let bytes = 0;
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if (c >= 0xd800 && c <= 0xdbff) {
+        const low = text.charCodeAt(++i);
+        if (!(low >= 0xdc00 && low <= 0xdfff)) throw Error(label + ' contains invalid Unicode');
+        bytes += 4;
+      } else if (c >= 0xdc00 && c <= 0xdfff) throw Error(label + ' contains invalid Unicode');
+      else bytes += c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
+      if (bytes > limit) throw Error(label + ' exceeds its byte limit');
+    }
+    return bytes;
+  }
+  function saveRecoveryCopy() {
+    if (!nativePayload) throw Error('This workspace has no embedded native runtime to recover');
+    if (previewSuspended || previewComposing) throw Error('Finish composition or return to the document before making a recovery copy');
+    // This path must not call, await or cancel the failed/uninitialized renderer.
+    // It snapshots committed inert data; unfinished settings stay unapplied.
+    serializeWorkspace(currentSource(), true);
+  }
+  function serializeWorkspace(source, recovery = false) {
+    const payload = nativePayload?.textContent, anchor = sourceAnchor;
+    if (nativePayload) {
+      workspaceTextSize(source, 32 * 1024 * 1024, 'Workspace source');
+      workspaceTextSize(payload, 256 * 1024 * 1024, 'Embedded runtime');
+    }
     const copy = document.documentElement.cloneNode(true);
     // Select application-owned elements, not similarly named headings in the
     // preview. Mutate only the detached copy, leaving the live source intact.
@@ -267,6 +303,21 @@
     data.textContent = JSON.stringify(source).replace(/</g, '\\u003c')
       .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
     textarea.textContent = source;
+    if (nativePayload) {
+      // Do not parse or rebuild a damaged payload. Escape HTML tokenizer tokens
+      // even if a host supplied unescaped JSON through textContent. For valid
+      // JSON this changes encoding only, not the embedded engine/resource values.
+      copy.querySelector('body > script#fmd-native-runtime[type="application/json"]').textContent = payload
+        .replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+    }
+    if (recovery) {
+      const target = copy.querySelector('body > #fmd-app-body #fmd-content');
+      if (!target) throw Error('Workspace preview container is missing');
+      const notice = document.createElement('p'); notice.setAttribute('role', 'status');
+      notice.textContent = 'Recovery copy: preview intentionally omitted. Source, committed settings and embedded resources are retained. The native engine must regenerate the preview; its previous failure may still need repair.';
+      target.replaceChildren(notice); target.setAttribute('aria-busy', 'false');
+      copy.setAttribute('data-fmd-recovery', '1');
+    } else copy.removeAttribute('data-fmd-recovery');
     copy.querySelector('body > #stats-drawer').classList.remove('open');
     // The controller runs before dynamically appended dialogs are reparsed.
     // Persist settings JSON, not transient controls or unapplied form drafts.
@@ -276,19 +327,31 @@
     copy.querySelector('body > .fmd-app-header #btn-document-settings')?.remove();
     copy.querySelector('body > .fmd-app-header #fmd-source-controls')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-publish-html')?.remove();
+    copy.querySelector('body > .fmd-app-header #btn-save-recovery')?.remove();
     copy.querySelector('body > .fmd-app-header #fmd-publication-formats')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-restart-preview')?.remove();
     copy.querySelector('body > .fmd-app-header #fmd-export-controls')?.remove();
     if (workerExports) copy.querySelector('body > .fmd-app-header #btn-export-pdf')?.removeAttribute('disabled');
     copy.querySelector('#editor-pane > .fmd-pane-header > #fmd-save-status').textContent = '';
-    download('<!DOCTYPE html>\n' + copy.outerHTML, 'text/html;charset=utf-8', 'html');
+    const html = '<!DOCTYPE html>\n' + copy.outerHTML;
+    workspaceTextSize(html, 256 * 1024 * 1024, 'Workspace HTML');
+    if (currentSource() !== source || sourceAnchor !== anchor || nativePayload?.textContent !== payload) {
+      throw Error('Workspace changed during serialization; save the current revision again');
+    }
+    if (recovery) {
+      // Supersede an earlier Save HTML waiting on a stalled preview, without
+      // invoking that renderer or letting it cause a surprise later download.
+      workspaceSaveRevision++; pendingSave = null;
+    }
+    download(html, 'text/html;charset=utf-8', recovery ? 'recovery.html' : 'html');
+    if (recovery) saveStatus.textContent = 'Recovery copy download started — source and embedded resources retained; preview must be regenerated';
   }
   document.getElementById('btn-save-markdown').addEventListener('click', () => attempt(saveMarkdown));
   document.getElementById('btn-save-html').addEventListener('click', () => attempt(saveHtml));
   document.addEventListener('keydown', event => {
     if (!(event.ctrlKey || event.metaKey) || event.altKey || event.isComposing || previewComposing) return;
     const key = event.key.toLowerCase();
-    if (native && key === 'p') {
+    if ((native || nativePayload) && key === 'p') {
       event.preventDefault();
       if (!event.repeat) attempt(exportPdf);
       return;
@@ -384,6 +447,26 @@
   });
 
   document.getElementById('btn-export-pdf').addEventListener('click', () => attempt(exportPdf));
+
+  function installRecoveryControls() {
+    if (!nativePayload) return;
+    const header = document.querySelector('body > .fmd-app-header');
+    const save = header?.querySelector('#btn-save-html');
+    if (!save) return;
+    let button = header.querySelector('#btn-save-recovery');
+    if (!button) {
+      button = document.createElement('button'); button.id = 'btn-save-recovery';
+      button.type = 'button'; button.className = 'fmd-btn';
+      button.textContent = 'Save recovery copy';
+      button.title = 'Retain editable source, committed settings, images, fonts and embedded engine without rendering; the preview is intentionally omitted';
+      save.parentNode.insertBefore(button, save.nextSibling);
+    }
+    button.disabled = false; // Available before initialization and after failure.
+    button.addEventListener('click', () => attempt(saveRecoveryCopy));
+    if (document.documentElement.getAttribute('data-fmd-recovery') === '1') {
+      saveStatus.textContent = 'Recovery copy opened — source and embedded resources are retained; native preview is not yet generated';
+    } else if (!native) saveStatus.textContent = 'Embedded native runtime is unavailable' + recoveryHint;
+  }
 
   function installSettings() {
     if (!native || (typeof native.applySettings !== 'function' && typeof native.applySettingsAsync !== 'function')) return;
@@ -1189,6 +1272,7 @@
   }
 
   installSettings();
+  installRecoveryControls();
   installSourceFiles();
   installPublishing();
   installPublicationFormats();

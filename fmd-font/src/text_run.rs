@@ -11,6 +11,7 @@
 use crate::shaping::{Direction, ShapedRun};
 use std::ops::Range;
 
+mod interaction;
 mod shaped;
 
 /// Unique identifier for an immutable font face.
@@ -211,217 +212,34 @@ impl OwnedTextRun {
 
     /// Perform CPU line-level hit testing against visual X position.
     ///
-    /// Plan §13.6: "Retain cluster advance arrays and a line-level hit-test index.
-    /// Text hit testing uses those arrays on the CPU."
+    /// Resolves to an actual atomic cluster edge. Exterior coordinates and
+    /// gaps produce inexact nearest-edge hits. NaN produces an inexact logical
+    /// start; infinities clamp to the corresponding visual extreme. Empty runs
+    /// have an inexact zero caret. Glyph positions and cluster geometry must
+    /// come from the same layout snapshot.
     #[must_use]
     pub fn hit_test(&self, visual_x: f32) -> HitTestResult {
-        if self.clusters.is_empty() {
-            return HitTestResult {
-                cluster_index: 0,
-                caret: CaretPosition {
-                    byte_offset: 0,
-                    utf16_offset: 0,
-                    visual_x: 0.0,
-                    affinity: CaretAffinity::Leading,
-                },
-                is_exact: true,
-            };
-        }
-
-        let is_rtl = self.context.direction == Direction::RightToLeft;
-
-        // Before left boundary (x <= 0.0)
-        if visual_x <= 0.0 {
-            if is_rtl {
-                let last = &self.clusters[self.clusters.len() - 1];
-                return HitTestResult {
-                    cluster_index: last.cluster_index,
-                    caret: CaretPosition {
-                        byte_offset: last.byte_range.end,
-                        utf16_offset: last.utf16_range.end,
-                        visual_x: 0.0,
-                        affinity: CaretAffinity::Trailing,
-                    },
-                    is_exact: false,
-                };
-            } else {
-                let first = &self.clusters[0];
-                return HitTestResult {
-                    cluster_index: first.cluster_index,
-                    caret: CaretPosition {
-                        byte_offset: first.byte_range.start,
-                        utf16_offset: first.utf16_range.start,
-                        visual_x: 0.0,
-                        affinity: CaretAffinity::Leading,
-                    },
-                    is_exact: false,
-                };
-            }
-        }
-
-        // Beyond right boundary (x >= total_advance)
-        if visual_x >= self.total_advance {
-            if is_rtl {
-                let first = &self.clusters[0];
-                return HitTestResult {
-                    cluster_index: first.cluster_index,
-                    caret: CaretPosition {
-                        byte_offset: first.byte_range.start,
-                        utf16_offset: first.utf16_range.start,
-                        visual_x: self.total_advance,
-                        affinity: CaretAffinity::Leading,
-                    },
-                    is_exact: false,
-                };
-            } else {
-                let last = &self.clusters[self.clusters.len() - 1];
-                return HitTestResult {
-                    cluster_index: last.cluster_index,
-                    caret: CaretPosition {
-                        byte_offset: last.byte_range.end,
-                        utf16_offset: last.utf16_range.end,
-                        visual_x: self.total_advance,
-                        affinity: CaretAffinity::Trailing,
-                    },
-                    is_exact: false,
-                };
-            }
-        }
-
-        // Search through clusters
-        for cluster in &self.clusters {
-            let (min_x, max_x) = if cluster.x_start <= cluster.x_end {
-                (cluster.x_start, cluster.x_end)
-            } else {
-                (cluster.x_end, cluster.x_start)
-            };
-
-            if visual_x >= min_x && visual_x <= max_x {
-                let mid_x = (min_x + max_x) / 2.0;
-                let (byte_offset, utf16_offset, visual_caret, affinity) = if is_rtl {
-                    if visual_x > mid_x {
-                        // Closer to visual right = logical start of RTL cluster
-                        (
-                            cluster.byte_range.start,
-                            cluster.utf16_range.start,
-                            cluster.x_end,
-                            CaretAffinity::Leading,
-                        )
-                    } else {
-                        // Closer to visual left = logical end of RTL cluster
-                        (
-                            cluster.byte_range.end,
-                            cluster.utf16_range.end,
-                            cluster.x_start,
-                            CaretAffinity::Trailing,
-                        )
-                    }
-                } else if visual_x < mid_x {
-                    (
-                        cluster.byte_range.start,
-                        cluster.utf16_range.start,
-                        cluster.x_start,
-                        CaretAffinity::Leading,
-                    )
-                } else {
-                    (
-                        cluster.byte_range.end,
-                        cluster.utf16_range.end,
-                        cluster.x_end,
-                        CaretAffinity::Trailing,
-                    )
-                };
-
-                return HitTestResult {
-                    cluster_index: cluster.cluster_index,
-                    caret: CaretPosition {
-                        byte_offset,
-                        utf16_offset,
-                        visual_x: visual_caret,
-                        affinity,
-                    },
-                    is_exact: true,
-                };
-            }
-        }
-
-        // Fallback to end of run
-        let last = &self.clusters[self.clusters.len() - 1];
-        HitTestResult {
-            cluster_index: last.cluster_index,
-            caret: CaretPosition {
-                byte_offset: last.byte_range.end,
-                utf16_offset: last.utf16_range.end,
-                visual_x: self.total_advance,
-                affinity: CaretAffinity::Trailing,
-            },
-            is_exact: false,
-        }
+        interaction::hit_test(self, visual_x)
     }
 
-    /// Resolve the visual caret position for a logical UTF-8 byte offset.
+    /// Resolve a logical UTF-8 position to an atomic source-cluster caret.
+    ///
+    /// At an interior scalar boundary of a ligature or combining cluster,
+    /// `Leading` snaps to the cluster's logical start and `Trailing` to its
+    /// logical end. The returned byte and UTF-16 offsets identify that real
+    /// edge, not the requested interior position. No glyph-internal caret is
+    /// invented. Mid-scalar and out-of-range offsets return `None`.
+    ///
+    /// At a shared boundary, `Leading` chooses the following cluster's leading
+    /// edge; `Trailing` chooses the preceding cluster's trailing edge. At the
+    /// document endpoints only the existing inward cluster edge is available.
     #[must_use]
     pub fn caret_at_byte(&self, byte_offset: usize, affinity: CaretAffinity) -> Option<CaretPosition> {
-        if self.clusters.is_empty() {
-            if byte_offset == 0 {
-                return Some(CaretPosition {
-                    byte_offset: 0,
-                    utf16_offset: 0,
-                    visual_x: 0.0,
-                    affinity,
-                });
-            }
-            return None;
-        }
-
-        let is_rtl = self.context.direction == Direction::RightToLeft;
-
-        // Exact boundary at end of text
-        if byte_offset == self.logical_text.len() {
-            let last = &self.clusters[self.clusters.len() - 1];
-            let visual_x = if is_rtl { 0.0 } else { self.total_advance };
-            return Some(CaretPosition {
-                byte_offset,
-                utf16_offset: last.utf16_range.end,
-                visual_x,
-                affinity: CaretAffinity::Trailing,
-            });
-        }
-
-        for cluster in &self.clusters {
-            if cluster.byte_range.contains(&byte_offset) || cluster.byte_range.start == byte_offset {
-                let utf16_offset = byte_to_utf16(&self.logical_text, byte_offset)?;
-
-                let visual_x = match affinity {
-                    CaretAffinity::Leading => {
-                        if is_rtl {
-                            cluster.x_end
-                        } else {
-                            cluster.x_start
-                        }
-                    }
-                    CaretAffinity::Trailing => {
-                        if is_rtl {
-                            cluster.x_start
-                        } else {
-                            cluster.x_end
-                        }
-                    }
-                };
-
-                return Some(CaretPosition {
-                    byte_offset,
-                    utf16_offset,
-                    visual_x,
-                    affinity,
-                });
-            }
-        }
-
-        None
+        interaction::caret_at_byte(self, byte_offset, affinity)
     }
 
-    /// Resolve the visual caret position for a native UTF-16 code unit offset.
+    /// Resolve a native UTF-16 position using the same cluster-snapping policy.
+    /// Surrogate-pair interiors and out-of-range offsets return `None`.
     #[must_use]
     pub fn caret_at_utf16(
         &self,
@@ -432,9 +250,13 @@ impl OwnedTextRun {
         self.caret_at_byte(byte_offset, affinity)
     }
 
-    /// Compute selection rectangles for a logical source byte range.
+    /// Compute visual-order selection rectangles for a logical source range.
     ///
-    /// Plan §13.6: "Selection rectangles may cover discontiguous visual runs for one logical range."
+    /// Partial cluster selections cover the complete cluster. Adjacent and
+    /// overlapping visual intervals are unioned in either direction; separated
+    /// intervals remain separate. Ranges must be in bounds at UTF-8 scalar
+    /// boundaries. Invalid ranges, non-finite coordinates, or non-positive heights return
+    /// no rectangles, rather than publishing a partial selection.
     #[must_use]
     pub fn selection_rects(
         &self,
@@ -442,42 +264,9 @@ impl OwnedTextRun {
         y: f32,
         height: f32,
     ) -> Vec<SelectionRect> {
-        if range.start >= range.end || range.start > self.logical_text.len() {
-            return Vec::new();
-        }
-
-        let mut rects: Vec<SelectionRect> = Vec::new();
-
-        for cluster in &self.clusters {
-            // Check intersection between [range.start, range.end) and [cluster.byte_range)
-            let inter_start = cluster.byte_range.start.max(range.start);
-            let inter_end = cluster.byte_range.end.min(range.end);
-
-            if inter_start < inter_end {
-                let x_min = cluster.x_start.min(cluster.x_end);
-                let width = (cluster.x_end - cluster.x_start).abs();
-
-                let new_rect = SelectionRect {
-                    x: x_min,
-                    y,
-                    width,
-                    height,
-                };
-
-                // Merge with preceding rect if contiguous horizontally
-                if let Some(prev) = rects.last_mut() {
-                    if (prev.x + prev.width - new_rect.x).abs() < 0.01 {
-                        prev.width += new_rect.width;
-                        continue;
-                    }
-                }
-
-                rects.push(new_rect);
-            }
-        }
-
-        rects
+        interaction::selection_rects(self, range, y, height)
     }
+
 }
 
 /// Convert a UTF-8 byte offset to a native UTF-16 code unit offset.

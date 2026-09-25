@@ -92,3 +92,50 @@ fn warm_engine_memo_matches_cold_engine_byte_for_byte() {
         assert_eq!(cold, hot, "`{src}` differs between cold and warm engine");
     }
 }
+
+#[test]
+fn one_engine_shared_across_threads_matches_a_cold_engine() {
+    // Engine is Send + Sync: consumers (franken_manim's TeX engine) share one
+    // across parallel layout threads. Concurrent memo fills must stay
+    // invisible: every thread's output equals a fresh single-threaded engine.
+    fn shareable<T: Send + Sync>() {}
+    shareable::<Engine>();
+    let srcs = [
+        r"\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}",
+        r"\int_0^1 \sqrt{1 - x^2} \, dx + 42 x_i^2 \cdot y'_j",
+        r"e^{i\pi} + 1 = 0 \qquad \left( a + b \right)^n",
+        r"\alpha\beta\gamma \ne \sqrt[3]{\frac{x^2 y'}{z_{ij}}}",
+    ];
+    let dump =
+        |engine: &Engine, src: &str| layout_dump(&engine.typeset(src, Style::Display).unwrap());
+    let cold: Vec<String> = srcs
+        .iter()
+        .map(|src| dump(&Engine::bundled().unwrap(), src))
+        .collect();
+    let shared = Engine::bundled().unwrap();
+    let per_thread: Vec<Vec<String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|offset| {
+                let shared = &shared;
+                scope.spawn(move || {
+                    (0..srcs.len())
+                        .map(|i| {
+                            let index = (i + offset) % srcs.len();
+                            (index, dump(shared, srcs[index]))
+                        })
+                        .fold(vec![String::new(); srcs.len()], |mut out, (index, text)| {
+                            out[index] = text;
+                            out
+                        })
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    for outputs in per_thread {
+        assert_eq!(outputs, cold);
+    }
+}

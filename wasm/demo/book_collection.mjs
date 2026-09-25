@@ -1,6 +1,7 @@
 // Source/asset ownership for the publishing workbench, not a Markdown renderer.
 import { bookTextBytes, prepareBookInput } from "../book_session.mjs";
 import { bookError } from "../book_worker.mjs";
+import { createBookFontStore } from "./book_font_assets.mjs";
 
 const MIB = 1024 * 1024;
 export const BOOK_WORKBENCH_LIMITS = Object.freeze({
@@ -175,6 +176,7 @@ export function createBookCollection() {
     options = settings(),
     revision = 0,
     disposed = false;
+  const fonts = createBookFontStore();
   const listeners = new Set();
   const alive = () => {
     if (disposed) throw bookError("SESSION_DISPOSED", "Book collection is disposed.");
@@ -217,6 +219,30 @@ export function createBookCollection() {
     get images() {
       alive();
       return images.map(({ destination, bytes }) => ({ destination, size: bytes.byteLength }));
+    },
+    get fonts() {
+      alive();
+      return fonts.list();
+    },
+    setFonts(assets, expectedRevision) {
+      alive();
+      const fence = () => {
+        alive();
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== revision) {
+          throw bookError("STALE_SOURCE", "The book changed; font assignments were not replaced.");
+        }
+      };
+      fence();
+      fonts.set(assets, fence);
+      changed();
+    },
+    revokeFont(slot) {
+      alive();
+      if (fonts.remove(slot)) changed();
+    },
+    revokeFonts() {
+      alive();
+      if (fonts.clear()) changed();
     },
     subscribe(listener) {
       alive();
@@ -269,7 +295,7 @@ export function createBookCollection() {
         throw bookError("INVALID_ROLE", "Choose chapter or include-only source.");
       if ((file.role ?? "chapter") === role) return;
       const next = sources();
-      next[index] = { ...next[index], role };
+      next[index] = { ...file, role };
       // Validate before mutation, preserving the imported bytes/view relation.
       const validated = sourceFiles(next);
       files[index] = { ...file, role: validated[index].role };
@@ -311,7 +337,9 @@ export function createBookCollection() {
         .map(({ path, source }) => ({ path, source }));
       if (!ordered.length)
         throw bookError("EMPTY_BOOK", "Add at least one chapter before exporting.");
-      return prepareBookInput(ordered, { ...settings(options), images, includeSources });
+      return prepareBookInput(ordered, {
+        ...settings(options), images, includeSources, fontAssets: fonts.snapshot(),
+      });
     },
     chapterDownload(index) {
       alive();
@@ -378,6 +406,7 @@ export function createBookCollection() {
       files = value.files.map(remember);
       options = value.options;
       images = [];
+      fonts.clear();
       changed();
     },
     dispose() {
@@ -385,6 +414,7 @@ export function createBookCollection() {
       disposed = true;
       files = [];
       images = [];
+      fonts.dispose();
       listeners.clear();
     },
   });

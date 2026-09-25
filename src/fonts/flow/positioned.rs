@@ -1,8 +1,11 @@
 //! Bridge positioned Latin combining sequences into the reader's owned runs.
 //!
 //! Ordinary text keeps the established bundled-font path. Only a word carrying
-//! U+0300..U+036F marks uses the strict OpenType shaper. Marks never move to a
-//! different face from their base, and source text is never normalized away.
+//! U+0300..U+036F marks uses canonical glyph composition or the strict OpenType
+//! shaper. Marks never move to a different face from their base, and source
+//! text is never normalized away.
+
+mod composition;
 
 use super::{BundledFlowFonts, Face, FlowInlineStyle, FlowTextRole, MAX_RUN_SCALARS, MONO, SYMBOL};
 use crate::text::shaping::{Feature, ShapeOptions};
@@ -41,6 +44,11 @@ impl BundledFlowFonts {
         let bold = style.bold
             || matches!(role, FlowTextRole::Heading(_) | FlowTextRole::TableHeader);
         let primary = if code { MONO } else { usize::from(bold) + 2 * usize::from(style.italic) };
+        // Prefer whole-run composition so kerning and ligatures across normal
+        // whitespace and punctuation retain exactly the established geometry.
+        if let Some(run) = composition::shape(self, primary, text, size, role, style)? {
+            return Ok(run);
+        }
         let mut output = OwnedTextRun {
             context: TextRunContext {
                 font_id: self.faces[primary].id,
@@ -65,7 +73,12 @@ impl BundledFlowFonts {
             }
             let end = chars.peek().map_or(text.len(), |(offset, _)| *offset);
             let source = &text[start..end];
-            let part = if source.chars().any(is_mark) {
+            let part = if let Some(part) = source.chars().any(is_mark)
+                .then(|| composition::shape(self, primary, source, size, role, style))
+                .transpose()?.flatten()
+            {
+                part
+            } else if source.chars().any(is_mark) {
                 // Whole-sequence fallback only: attaching a mark using another
                 // font's anchors would invent invalid geometry and identities.
                 let covers = |face: Face| source.chars().all(|ch| {

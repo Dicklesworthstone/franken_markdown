@@ -104,5 +104,32 @@ if (!isMainThread) {
     assert.ok(expectedSvg.diagnostics.some(item => item.scope === "document" && typeof item.code === "string"),
       "missing SVG resources must produce a document-scoped reason code");
     console.log("document-worker: SVG structured export diagnostics parity PASS");
+
+    // One request captures both revisions. Prove the actual generated native
+    // JSON and visual HTML match the direct APIs, not just renderer doubles.
+    const richBefore = "# Review\n\nA **bold** paragraph with [link](#review).\n\n| A | B |\n|---|---|\n| old | cell |\n\n```rust\nlet value = 1;\n```\n\nNote[^n].\n\n[^n]: Original note.\n";
+    const richAfter = richBefore.replace("bold", "new bold").replace("| old |", "| new |").replace("value = 1", "value = 2");
+    for (const [oldMarkdown, newMarkdown] of [
+      ["", ""], [source, source], ["", source], [source, ""],
+      ["\ufeff# Avant 中𝄞\r\n", "# Après 中𝄞\r\n"], [richBefore, richAfter],
+    ]) {
+      const options = { oldName: "  Earlier\nrevision  ", newName: "Current <revision>" };
+      const expectedReport = await direct.semanticDiff(oldMarkdown, newMarkdown, options);
+      const expectedHtml = await direct.renderSemanticDiff(oldMarkdown, newMarkdown, options);
+      const actual = await worker.compare(oldMarkdown, newMarkdown, options);
+      assert.deepEqual(actual.report, expectedReport, "semantic comparison JSON parity");
+      assert.deepEqual(JSON.parse(actual.json.text()), expectedReport, "downloadable comparison JSON parity");
+      for (const key of ["bytes", "diagnostics", "format", "mimeType", "extension", "sourceLength"])
+        assert.deepEqual(actual.html[key], expectedHtml[key], `comparison HTML ${key} parity`);
+      assert.equal(actual.oldSourceLength, Buffer.byteLength(oldMarkdown));
+      assert.equal(actual.newSourceLength, Buffer.byteLength(newMarkdown));
+      if (oldMarkdown === newMarkdown) assert.equal(actual.report.stats.similarity_ratio, 1);
+      else assert.ok(actual.report.stats.inserted_blocks + actual.report.stats.deleted_blocks
+        + actual.report.stats.modified_blocks > 0, "changed revisions cannot be silently ignored");
+      const repeated = await worker.compare(oldMarkdown, newMarkdown, options);
+      assert.deepEqual(repeated.html.bytes, actual.html.bytes, "comparison HTML determinism");
+      assert.deepEqual(repeated.json.bytes, actual.json.bytes, "comparison JSON determinism");
+      console.log("document-worker: semantic revision comparison generated-WASM parity PASS");
+    }
   } finally { worker.dispose(); }
 }

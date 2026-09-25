@@ -121,6 +121,7 @@ done
 cp wasm/package.json "$package_dir/package.json"
 cp wasm/README.md "$package_dir/README.md"
 mkdir -p "$package_dir/demo"
+cp wasm/demo/review.html wasm/demo/revision_review.mjs wasm/demo/REVISION_REVIEW.md "$package_dir/demo/"
 cp wasm/demo/index.html "$package_dir/demo/index.html"
 cp wasm/demo/demo.js "$package_dir/demo/demo.js"
 cp wasm/demo/web-component.html "$package_dir/demo/web-component.html"
@@ -245,7 +246,7 @@ log "headless node: revision-fenced HTML/PDF exports against generated WASM"
 node wasm/flow_export_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 log "headless node: cancellable document workers and demo lifecycle"
-node --test wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs 2>&1 | tee -a "$LEDGER"
+node --test wasm/document_comparison.test.mjs wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs 2>&1 | tee -a "$LEDGER"
 node wasm/document_worker_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 # Native side + byte parity.

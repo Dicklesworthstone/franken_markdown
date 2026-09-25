@@ -26,6 +26,7 @@ for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts 
   package.json README.md; do
   cp "wasm/$file" "$PACKAGE/$file"
 done
+cp wasm/demo/review.html wasm/demo/revision_review.mjs wasm/demo/REVISION_REVIEW.md "$PACKAGE/demo/"
 cp wasm/demo/index.html wasm/demo/demo.js wasm/demo/web-component.html wasm/demo/sample.md "$PACKAGE/demo/"
 cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs wasm/demo/flow_reading_controls.mjs wasm/demo/flow_preview_export.mjs wasm/demo/flow_export_controls.mjs "$PACKAGE/demo/"
 for file in book.html book.js book_collection.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_source_search.mjs book_search_controls.mjs book_inspection_controls.mjs flow-source.js flow_document.mjs flow_file_session.mjs flow_file_controls.mjs flow_render_settings.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
@@ -33,7 +34,7 @@ for file in book.html book.js book_collection.mjs book_controls.mjs book_library
 done
 cp examples/showcase.md "$ART/parity/showcase.md"
 node wasm/smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm" "$ART/parity" 1700000000 "$ART/parity/showcase.md"
-node --test wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs
+node --test wasm/document_comparison.test.mjs wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs
 node --test wasm/interactive.test.mjs wasm/interactive_runtime.test.mjs wasm/interactive_export.test.mjs wasm/native_workspace_page.test.mjs wasm/native_workspace_images.test.mjs wasm/native_workspace_settings.test.mjs wasm/native_workspace_source.test.mjs wasm/native_workspace_publishing.test.mjs
 node --test wasm/interactive_preview.test.mjs wasm/native_workspace_preview.test.mjs wasm/native_workspace_preview_package.test.mjs
 node --test wasm/native_workspace_export_worker.test.mjs wasm/native_workspace_exports.test.mjs

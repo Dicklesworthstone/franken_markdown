@@ -188,6 +188,9 @@
     "native_workspace.js",
     "native_workspace.d.ts",
     "interactive_export.mjs",
-    "NATIVE_WORKSPACE.md"
+    "NATIVE_WORKSPACE.md",
+    "demo/review.html",
+    "demo/revision_review.mjs",
+    "demo/REVISION_REVIEW.md"
   ]
 }

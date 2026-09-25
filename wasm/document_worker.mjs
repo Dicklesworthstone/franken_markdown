@@ -7,6 +7,7 @@ import { normalizePdfPage } from "./pdf_page.mjs";
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const DOCUMENT_SOURCE_LIMIT = 4 * 1024 * 1024;
 export const DOCUMENT_OUTPUT_LIMIT = 64 * 1024 * 1024;
+export const COMPARISON_REPORT_LIMIT = 8 * 1024 * 1024;
 const FORMATS = Object.freeze({
   html: ["renderHtml", "text/html; charset=utf-8", "html"],
   pdf: ["renderPdf", "application/pdf", "pdf"],
@@ -148,10 +149,10 @@ function snapshot(input, maxOutputBytes) {
   return { args: [input.format, input.source, options, maxOutputBytes], transfer };
 }
 function result(value, format, max, expectedLength) {
-  const spec = FORMATS[format];
+  const spec = format === "diff-html" ? ["renderSemanticDiff", "text/html; charset=utf-8", "html"] : FORMATS[format];
   if (!value || value.format !== format || value.mimeType !== spec[1] || value.extension !== spec[2]
       || !Number.isSafeInteger(value.sourceLength) || value.sourceLength < 0
-      || value.sourceLength > DOCUMENT_SOURCE_LIMIT
+      || value.sourceLength > DOCUMENT_SOURCE_LIMIT * (format === "diff-html" ? 2 : 1)
       || (expectedLength !== undefined && value.sourceLength !== expectedLength)
       || !(value.bytes instanceof Uint8Array) || !Array.isArray(value.diagnostics)
       || value.diagnostics.length > 1024)
@@ -181,6 +182,92 @@ function helpers(value) {
   });
 }
 
+// A comparison is a single admitted operation over two immutable sources.
+// The native JSON and HTML APIs remain the only differ and visual renderer.
+function comparisonInput(oldMarkdown, newMarkdown, options) {
+  const oldSourceLength = text(oldMarkdown, DOCUMENT_SOURCE_LIMIT, "old Markdown");
+  const newSourceLength = text(newMarkdown, DOCUMENT_SOURCE_LIMIT, "new Markdown");
+  const owned = record(options, ["oldName", "newName"], "comparison option");
+  for (const [key, value] of Object.entries(owned)) text(value, 4096, key);
+  const charge = 768 + 2 * (oldMarkdown.length + newMarkdown.length)
+    + Object.values(owned).reduce((total, value) => total + 64 + 2 * value.length, 0);
+  return { oldMarkdown, newMarkdown, options: owned, oldSourceLength, newSourceLength, charge };
+}
+function comparisonReport(report) {
+  const object = value => value && typeof value === "object" && !Array.isArray(value);
+  if (!object(report) || report.schema !== "fmd-diff-v1" || !object(report.stats))
+    fail("WORKER_PROTOCOL_ERROR", "invalid semantic comparison report");
+  text(report.old_name, 4096, "old comparison name");
+  text(report.new_name, 4096, "new comparison name");
+  for (const key of ["unchanged_blocks", "inserted_blocks", "deleted_blocks", "modified_blocks", "words_inserted", "words_deleted"]) {
+    if (!Number.isSafeInteger(report.stats[key]) || report.stats[key] < 0)
+      fail("WORKER_PROTOCOL_ERROR", "invalid semantic comparison counts");
+  }
+  const ratio = report.stats.similarity_ratio;
+  if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1)
+    fail("WORKER_PROTOCOL_ERROR", "invalid semantic comparison similarity");
+  return report;
+}
+function comparisonEnvelope(value, max, expected) {
+  if (!value || value.format !== "revision-comparison")
+    fail("WORKER_PROTOCOL_ERROR", "invalid comparison envelope");
+  for (const key of ["oldSourceLength", "newSourceLength"]) {
+    if (!Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > DOCUMENT_SOURCE_LIMIT
+        || (expected !== undefined && value[key] !== expected[key]))
+      fail("WORKER_PROTOCOL_ERROR", "comparison source identity mismatch");
+  }
+  // Intrinsic branding rejects shared memory even with a spoofed toStringTag.
+  // Publication owns exact buffers; never retain unrelated native allocations.
+  for (const buffer of [value.json, value.html?.bytes]) {
+    if (!(buffer instanceof Uint8Array)) fail("WORKER_PROTOCOL_ERROR", "invalid comparison bytes");
+    let size;
+    try { size = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(buffer.buffer); }
+    catch { fail("WORKER_PROTOCOL_ERROR", "comparison bytes must not be shared"); }
+    if (!size || buffer.byteOffset !== 0 || buffer.byteLength !== size)
+      fail("WORKER_PROTOCOL_ERROR", "comparison requires exact owned buffers");
+  }
+  if (value.json.byteLength > COMPARISON_REPORT_LIMIT || value.json.byteLength + value.html.bytes.byteLength > max)
+    fail("BUDGET_EXCEEDED", "combined comparison output limit exceeded");
+  result(value.html, "diff-html", max, value.oldSourceLength + value.newSourceLength);
+  return value;
+}
+function comparisonHelpers(value, max, expected) {
+  comparisonEnvelope(value, max, expected);
+  let report;
+  try { report = comparisonReport(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(value.json))); }
+  catch { fail("WORKER_PROTOCOL_ERROR", "invalid comparison JSON"); }
+  return Object.freeze({
+    oldSourceLength: value.oldSourceLength, newSourceLength: value.newSourceLength,
+    report, html: helpers(value.html),
+    json: helpers({ bytes: value.json, mimeType: "application/json", extension: "json" }),
+  });
+}
+function ownedOutput(output) {
+  return { format: output.format, mimeType: output.mimeType, extension: output.extension,
+    sourceLength: output.sourceLength, bytes: new Uint8Array(output.bytes),
+    diagnostics: output.diagnostics.map(({ severity, start, end, message, code, scope }) => ({
+      severity, start, end, message,
+      ...(code === undefined ? {} : { code }),
+      ...(scope === undefined ? {} : { scope }),
+    })) };
+}
+async function compareInWorker(engine, input, max) {
+  if (typeof engine.semanticDiff !== "function" || typeof engine.renderSemanticDiff !== "function")
+    fail("UNSUPPORTED_WASM_PACKAGE", "Revision comparison requires matching semantic-diff WASM bindings");
+  // These are two existing native passes, not a new JS diff algorithm or a
+  // promise of shared AST caching. Admit the report before rendering HTML.
+  const report = comparisonReport(await engine.semanticDiff(input.oldMarkdown, input.newMarkdown, input.options));
+  const jsonText = JSON.stringify(report);
+  text(jsonText, Math.min(COMPARISON_REPORT_LIMIT, max), "comparison report");
+  const json = new TextEncoder().encode(jsonText);
+  const output = await engine.renderSemanticDiff(input.oldMarkdown, input.newMarkdown, input.options);
+  result(output, "diff-html", max - json.byteLength, input.oldSourceLength + input.newSourceLength);
+  const value = { format: "revision-comparison", oldSourceLength: input.oldSourceLength,
+    newSourceLength: input.newSourceLength, json, html: ownedOutput(output) };
+  comparisonEnvelope(value, max, input);
+  return { state: null, value, transfer: [value.json.buffer, value.html.bytes.buffer] };
+}
+
 /** A lazy, reusable worker per renderer. Methods accept a final {signal,
  * timeoutMs}. Cancellation in flight closes this renderer; create a new one.
  * Requests queued but not dispatched can be cancelled independently. */
@@ -196,12 +283,12 @@ export function createWorkerRenderer(options = {}) {
     return new Worker(new URL("./document_worker_entry.js", import.meta.url), { type: "module", name: "franken-markdown-document" });
   });
   let rpc = null, disposed = false, starting = false;
-  const render = (format, source, options = {}, controls = {}) => {
+  const execute = (format, prepareInput, controls = {}) => {
     try {
       if (disposed || rpc?.closed) fail("SESSION_DISPOSED", "document worker is closed");
       if (starting) fail("WORKER_STARTING", "workerFactory cannot reenter this renderer");
       if (controls?.signal?.aborted) fail("ABORTED", "document render was aborted before dispatch");
-      const input = normalize(format, source, options);
+      const input = prepareInput();
       if (input.charge > limits.maxPendingBytes) fail("WORKER_QUEUE_FULL", "document exceeds worker ingress budget");
       // Reuse the existing owned transport's admission, deadlines and termination
       // protocol, rather than implementing a second cancellation mechanism.
@@ -213,7 +300,8 @@ export function createWorkerRenderer(options = {}) {
           if (disposed) fail("SESSION_DISPOSED", "document worker was disposed during creation");
           rpc = new OwnedWorkerRpc(worker, limits, (state, method, value) => {
             if (state !== null) fail("WORKER_PROTOCOL_ERROR", "unexpected document state");
-            result(value, method, maxOutputBytes);
+            if (method === "compare") comparisonEnvelope(value, maxOutputBytes);
+            else result(value, method, maxOutputBytes);
           });
         } catch (error) {
           try { worker?.terminate()?.catch?.(() => {}); } catch { /* already stopped */ }
@@ -222,14 +310,26 @@ export function createWorkerRenderer(options = {}) {
           starting = false;
         }
       }
-      const expectedLength = input.sourceLength;
-      return rpc.request(format, input.charge, () => snapshot(input, maxOutputBytes), controls).then(value => {
-        try { return helpers(result(value, format, maxOutputBytes, expectedLength)); }
+      const expected = format === "compare"
+        ? { oldSourceLength: input.oldSourceLength, newSourceLength: input.newSourceLength } : input.sourceLength;
+      const prepare = () => format === "compare"
+        ? { args: [input.oldMarkdown, input.newMarkdown, input.options, maxOutputBytes] }
+        : snapshot(input, maxOutputBytes);
+      return rpc.request(format, input.charge, prepare, controls).then(value => {
+        try {
+          return format === "compare" ? comparisonHelpers(value, maxOutputBytes, expected)
+            : helpers(result(value, format, maxOutputBytes, expected));
+        }
         catch (error) { rpc.dispose(); throw error; }
       });
     } catch (error) { return Promise.reject(error); }
   };
+  const render = (format, source, options = {}, controls = {}) =>
+    execute(format, () => normalize(format, source, options), controls);
   const api = {
+    compare(oldMarkdown, newMarkdown, options = {}, controls = {}) {
+      return execute("compare", () => comparisonInput(oldMarkdown, newMarkdown, options), controls);
+    },
     get disposed() { return disposed || (rpc?.closed ?? false); },
     get pendingOperations() { return rpc?.pendingOperations ?? 0; },
     get pendingBytes() { return rpc?.pendingBytes ?? 0; },
@@ -247,25 +347,20 @@ export function createWorkerRenderer(options = {}) {
 export function installDocumentWorker(endpoint, loadRenderer) {
   let renderer = null;
   return serveOwnedWorker(endpoint, async (method, args) => {
-    if (!Array.isArray(args) || args.length !== 4 || method !== args[0])
+    if (!Array.isArray(args) || args.length !== 4 || (method !== "compare" && method !== args[0]))
       fail("WORKER_PROTOCOL_ERROR", "invalid document request");
-    const input = normalize(args[0], args[1], args[2]);
+    const input = method === "compare" ? comparisonInput(args[0], args[1], args[2]) : normalize(args[0], args[1], args[2]);
     if (input.charge > 64 * 1024 * 1024) fail("BUDGET_EXCEEDED", "document ingress limit exceeded");
     const max = integer(args[3], 1, DOCUMENT_OUTPUT_LIMIT, "maxOutputBytes");
     try {
       renderer ??= Promise.resolve().then(loadRenderer);
       const engine = await renderer;
+      if (method === "compare") return await compareInWorker(engine, input, max);
       const output = await engine[FORMATS[method][0]](input.source, input.options);
       result(output, method, max, input.sourceLength);
       // Never detach a binding's storage. Only transfer the owned boundary copy;
       // helper functions in the public render result are deliberately not cloned.
-      const value = { format: output.format, mimeType: output.mimeType, extension: output.extension,
-        sourceLength: output.sourceLength, bytes: new Uint8Array(output.bytes),
-        diagnostics: output.diagnostics.map(({ severity, start, end, message, code, scope }) => ({
-          severity, start, end, message,
-          ...(code === undefined ? {} : { code }),
-          ...(scope === undefined ? {} : { scope }),
-        })) };
+      const value = ownedOutput(output);
       return { state: null, value, transfer: [value.bytes.buffer] };
     } catch (error) {
       // Preserve the direct API's actionable package-mismatch signal. All

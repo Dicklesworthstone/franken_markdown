@@ -1,42 +1,58 @@
-//! Cluster-boundary emergency wrapping and literal code-line wrapping.
+//! Cluster-boundary emergency wrapping, including contextual boundary repair.
 
-use super::{Poster, RStyle, ShapedText, SvgWarning, TextFlow, Word};
+use super::{Poster, RStyle, ShapedText, Shaper, SvgWarning, TextFlow, Word};
+use std::ops::Range;
 
 impl Poster {
-    /// Wrap code without collapsing indentation or dropping spaces. Tabs use
-    /// four-column stops in the source line, independent of visual wrapping.
-    pub(in super::super) fn code_lines(&self, code: &str, size: f64, width: f64) -> Vec<String> {
+    /// Preserve code whitespace and four-column source tab stops, while keeping
+    /// combining clusters intact and reserving their actual positioned ink.
+    pub(in super::super) fn code_words(&self, code: &str, size: f64, width: f64) -> Vec<Word> {
         let style = RStyle { mono: true, ..RStyle::BODY };
         let width = width.max(1.0);
+        let shaper = Shaper::new(self);
         let mut lines = Vec::new();
         for source in code.lines() {
-            let mut line = String::new();
-            let mut used = 0.0;
+            let mut expanded = String::new();
             let mut column = 0usize;
             for ch in source.chars() {
                 let count = if ch == '\t' { 4 - column % 4 } else { 1 };
                 let ch = if ch == '\t' { ' ' } else { ch };
-                let advance = self.advance(self.resolve(ch, style).0, ch, size);
-                for _ in 0..count {
-                    if advance > 0.0 && used > 0.0 && used + advance > width {
-                        lines.push(std::mem::take(&mut line));
-                        used = 0.0;
-                    }
-                    line.push(ch);
-                    used += advance;
-                }
+                for _ in 0..count { expanded.push(ch); }
                 column = column.saturating_add(count);
             }
-            lines.push(line);
+            let prepared = shaper.shape(&expanded, style, size);
+            let word = text_word(expanded, style, None, prepared);
+            if word.w <= width {
+                lines.push(word);
+            } else {
+                let mut flow = TextFlow::default();
+                let mut word = word;
+                if let Some(prepared) = word.shaped.take() {
+                    place_shaped(&mut flow, word, &prepared, &shaper, size, width);
+                }
+                if !flow.line.is_empty() { flow.new_line(); }
+                lines.extend(flow.lines.into_iter().flatten());
+            }
         }
         if lines.is_empty() {
-            lines.push(String::new());
+            lines.push(text_word(String::new(), style, None, ShapedText::default()));
         }
         lines
     }
+
+    #[cfg(test)]
+    pub(in super::super) fn code_lines(&self, code: &str, size: f64, width: f64) -> Vec<String> {
+        self.code_words(code, size, width).into_iter().map(|word| word.text).collect()
+    }
 }
 
-pub(super) fn place_shaped(flow: &mut TextFlow, run: Word, shaped: &ShapedText, width: f64) {
+pub(super) fn place_shaped(
+    flow: &mut TextFlow, run: Word, shaped: &ShapedText, shaper: &Shaper<'_>, size: f64, width: f64,
+) {
+    if shaped.contextual {
+        place_contextual(flow, run, shaped, shaper, size, width);
+        return;
+    }
     let mut start = 0;
     let mut end = 0;
     let mut used = 0.0;
@@ -44,33 +60,93 @@ pub(super) fn place_shaped(flow: &mut TextFlow, run: Word, shaped: &ShapedText, 
     while end < shaped.clusters.len() {
         let next = shaped.extend_width(start, end, used);
         if flow.line_width + next > width && (end > start || !flow.line.is_empty()) {
-            push_chunk(flow, &run.text, shaped, start..end, used, run.style, &mut warning);
+            if start < end {
+                let bytes = source_range(shaped, start..end);
+                push_prepared(flow, run.text[bytes].to_owned(), run.style,
+                    warning.take(), shaped.slice(start..end));
+            }
             flow.new_line();
             start = end;
             used = 0.0;
             continue;
         }
-        // A single indivisible glyph cluster may exceed a very narrow measure,
-        // just as a single scalar did before. Preserve it rather than truncate
-        // source or split a ligature/zero-advance mark away from its base.
+        // Preserve a single overwide cluster rather than truncating source.
         used = next;
         end += 1;
     }
-    push_chunk(flow, &run.text, shaped, start..end, used, run.style, &mut warning);
+    if start < end {
+        let bytes = source_range(shaped, start..end);
+        push_prepared(flow, run.text[bytes].to_owned(), run.style,
+            warning.take(), shaped.slice(start..end));
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn push_chunk(
-    flow: &mut TextFlow, source: &str, shaped: &ShapedText, clusters: std::ops::Range<usize>,
-    width: f64, style: RStyle, warning: &mut Option<SvgWarning>,
+fn source_range(shaped: &ShapedText, range: Range<usize>) -> Range<usize> {
+    shaped.clusters[range.start].bytes.start..shaped.clusters[range.end - 1].bytes.end
+}
+
+/// A GPOS boundary can change advances/offsets in both adjacent glyphs. Prepare
+/// the actual isolated source substring instead of subtracting a guessed pair.
+/// Backtracking has a separate ceiling; exhausted repair retains the remainder
+/// as one explicitly diagnosed overwide run, never as incomplete text.
+fn place_contextual(
+    flow: &mut TextFlow, run: Word, shaped: &ShapedText, shaper: &Shaper<'_>, size: f64, width: f64,
 ) {
-    if clusters.is_empty() { return; }
-    let bytes = shaped.clusters[clusters.start].bytes.start
-        ..shaped.clusters[clusters.end - 1].bytes.end;
-    flow.line.push(Word {
-        text: source[bytes].to_owned(), style, w: width, gap: 0.0,
-        formula: None, image: None, warning: warning.take(),
-    });
-    flow.line_width += width;
+    const MAX_REPAIRS: usize = 64;
+    let mut repairs = 0;
+    let mut start = 0;
+    let mut warning = run.warning;
+    while start < shaped.clusters.len() {
+        let mut end = start;
+        let mut used = 0.0;
+        while end < shaped.clusters.len() {
+            let next = shaped.extend_width(start, end, used);
+            if end > start && flow.line_width + next > width { break; }
+            used = next;
+            end += 1;
+        }
+        loop {
+            let bytes = source_range(shaped, start..end);
+            let prepared = shaper.shape(&run.text[bytes.clone()], run.style, size);
+            if flow.line_width + prepared.width() <= width || end == start + 1 {
+                if flow.line_width + prepared.width() > width && !flow.line.is_empty() {
+                    flow.new_line();
+                    // A fresh line has more room: choose its provisional end
+                    // again, rather than strand a single glyph on that line.
+                    break;
+                }
+                push_prepared(flow, run.text[bytes].to_owned(), run.style, warning.take(), prepared);
+                start = end;
+                if start < shaped.clusters.len() { flow.new_line(); }
+                break;
+            }
+            if repairs >= MAX_REPAIRS {
+                if !flow.line.is_empty() { flow.new_line(); }
+                let bytes = source_range(shaped, start..shaped.clusters.len());
+                let prepared = shaper.shape(&run.text[bytes.clone()], run.style, size);
+                // Keep a prior resource warning as well as the wrapping warning.
+                let mut prepared = prepared;
+                prepared.add_wrap_warning();
+                push_prepared(flow, run.text[bytes].to_owned(), run.style, warning.take(), prepared);
+                return;
+            }
+            repairs += 1;
+            end -= 1;
+        }
+    }
 }
 
+fn text_word(text: String, style: RStyle, warning: Option<SvgWarning>, prepared: ShapedText) -> Word {
+    Word {
+        text, style, w: prepared.width(), gap: 0.0,
+        formula: None, image: None, warning, shaped: Some(prepared),
+    }
+}
+
+fn push_prepared(
+    flow: &mut TextFlow, text: String, style: RStyle, warning: Option<SvgWarning>, prepared: ShapedText,
+) {
+    let word = text_word(text, style, warning, prepared);
+    flow.line_width += word.w;
+    flow.line.push(word);
+}

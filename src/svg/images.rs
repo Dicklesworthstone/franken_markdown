@@ -137,7 +137,7 @@ impl Poster {
                 let width = image.width.min(width.max(1.0));
                 let height = image.height * (width / image.width);
                 Word {
-                    text: String::new(), style, w: width, gap: 0.0, formula: None, warning: None,
+                    text: String::new(), style, w: width, gap: 0.0, formula: None, warning: None, shaped: None,
                     image: Some(ImageRun { image, width, height, alt: alt.to_owned() }),
                 }
             }
@@ -145,7 +145,7 @@ impl Poster {
                 let text = if alt.is_empty() { "[image]".to_owned() } else { format!("[{alt}]") };
                 let style = RStyle { ink: Ink::FgMuted, ..style };
                 Word { w: self.measure(&text, style, size), text, style, gap: 0.0,
-                    formula: None, image: None, warning: Some(warning) }
+                    formula: None, image: None, warning: Some(warning), shaped: None }
             }
         }
     }

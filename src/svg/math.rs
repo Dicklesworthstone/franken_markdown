@@ -33,14 +33,14 @@ impl Poster {
                 let size = fitted_size(&formula, size, width);
                 Word {
                     text: String::new(), style, w: formula.width * size, gap: 0.0,
-                    formula: Some(MathRun { formula, size }), image: None, warning: None,
+                    formula: Some(MathRun { formula, size }), image: None, warning: None, shaped: None,
                 }
             }
             Err(warning) => {
                 let style = RStyle { mono: true, ..style };
                 Word {
                     text: source.to_string(), style, w: self.measure(source, style, size),
-                    gap: 0.0, formula: None, image: None, warning: Some(warning),
+                    gap: 0.0, formula: None, image: None, warning: Some(warning), shaped: None,
                 }
             }
         }
@@ -183,14 +183,15 @@ impl Poster {
         }
     }
 
-    /// Keep historical prose baselines unchanged; grow only lines whose math
-    /// ink needs more ascent or descent than the normal text line provides.
+    /// Preserve the nominal baseline where it contains the ink. Grow line boxes
+    /// for positioned glyph bounds, math and images using the data we paint.
     pub(super) fn line_metrics(&self, words: &[Word], ascent: f64, leading: f64) -> (f64, f64) {
-        if !words.iter().any(|word| word.formula.is_some() || word.image.is_some()) {
-            return (ascent, leading);
-        }
         let mut above = ascent;
         let mut below = (leading - ascent).max(0.0);
+        for run in words.iter().filter_map(|word| word.shaped.as_ref()) {
+            above = above.max(run.ink_ascent());
+            below = below.max(run.ink_descent());
+        }
         for run in words.iter().filter_map(|word| word.formula.as_ref()) {
             above = above.max(run.formula.ascent * run.size);
             below = below.max(run.formula.descent * run.size);

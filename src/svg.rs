@@ -22,8 +22,9 @@
 //! quad → `Q`, close → `Z`.
 //!
 //! Deliberate scope cuts (the poster is a display artifact, not a print
-//! engine): greedy word wrap on raw `hmtx` advances (no Knuth-Plass, no
-//! kerning, no ligatures); inline links are coloured but not underlined;
+//! engine): greedy wrapping, not Knuth-Plass or pagination. Text uses actual
+//! GSUB/GPOS glyphs and bounded Latin mark positioning; inline links are coloured
+//! but not underlined;
 //! mathematics uses the shared TeX layout engine and vector outlines. Raw HTML
 //! is preserved as inert vector text; complete numbered endnotes follow the body.
 //! PNG/JPEG/SVG images use embedded data or explicit
@@ -382,6 +383,9 @@ struct Word {
     formula: Option<math::MathRun>,
     image: Option<images::ImageRun>,
     warning: Option<SvgWarning>,
+    /// Exact prepared text used by wrapping, vertical layout and painting.
+    /// Images and formulas carry their independent prepared data above.
+    shaped: Option<text::ShapedText>,
 }
 
 // ---------------------------------------------------------------------------
@@ -564,7 +568,7 @@ impl Poster {
             match inline {
                 Inline::Text(s) => out.push(Piece::Text(s.clone(), st)),
                 Inline::Emphasis(inner) => self.flatten(inner, RStyle { italic: true, ..st }, out),
-                Inline::Strong(inner) => self.flatten(inner, RStyle { bold: true, ..st }, out),
+                Inline::Strong(content) => self.flatten(content, RStyle { bold: true, ..st }, out),
                 Inline::Strikethrough(inner) => {
                     self.flatten(inner, RStyle { strike: true, ..st }, out);
                 }
@@ -707,14 +711,20 @@ impl Poster {
         }
         if level == 1 {
             let has_replaced = lines.iter().flatten().any(|word| word.formula.is_some() || word.image.is_some());
-            let rule_y = if has_replaced {
-                // A tall formula can occupy its entire line box. Put the
-                // heading rule below that ink, never through a denominator.
-                self.y += size * 0.2;
-                self.y - size * 0.1
+            let nominal_rule = if has_replaced {
+                self.y + size * 0.1
             } else {
                 self.y - leading * 0.35
             };
+            let ink_bottom = lines.last().map_or(self.y, |line| {
+                let (ascent, height) = self.line_metrics(line, size * 0.85, leading);
+                let (ink_ascent, ink_height) = self.line_metrics(line, 0.0, 0.0);
+                self.y - height + ascent + (ink_height - ink_ascent)
+            });
+            // Even a normal descender can cross the old baseline-level rule.
+            // Include half the stroke and padding after the deepest actual ink.
+            let rule_y = nominal_rule.max(ink_bottom + size * 0.1 + 0.375);
+            self.y = self.y.max(rule_y + size * 0.1);
             self.ops.push(Op::Rule {
                 x1: l,
                 y1: rule_y,
@@ -748,8 +758,10 @@ impl Poster {
         let leading = size * 1.45;
         let pad = 8.0 * self.unit_scale();
         let inset = (12.0 * self.unit_scale()).min((r - l).max(0.0) * 0.25);
-        let lines = self.code_lines(code, size, r - l - 2.0 * inset);
-        let h = lines.len() as f64 * leading + 2.0 * pad;
+        let lines = self.code_words(code, size, r - l - 2.0 * inset);
+        let h = lines.iter().map(|line| {
+            self.line_metrics(std::slice::from_ref(line), size * 0.8, leading).1
+        }).sum::<f64>() + 2.0 * pad;
         self.ops.push(Op::Rect {
             x: l,
             y: self.y,
@@ -758,15 +770,12 @@ impl Poster {
             fill: Ink::CodeBg,
             stroke: Some(Ink::BorderMuted),
         });
-        let st = RStyle {
-            mono: true,
-            ..RStyle::BODY
-        };
         let mut ly = self.y + pad;
-        for line in lines {
-            let baseline = ly + size * 0.8;
-            self.draw_text(l + inset, baseline, &line, st, size);
-            ly += leading;
+        for line in &lines {
+            let row = std::slice::from_ref(line);
+            let (ascent, height) = self.line_metrics(row, size * 0.8, leading);
+            self.draw_words(row, l + inset, ly + ascent, size);
+            ly += height;
         }
         self.y += h + f64::from(self.scale.body) * 0.7;
     }

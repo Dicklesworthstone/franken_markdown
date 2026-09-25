@@ -4,7 +4,8 @@ use super::{Op, Piece, Poster, RStyle, SvgWarning, Word};
 
 #[path = "text_shaping.rs"]
 mod shaping;
-use shaping::{ShapedText, Shaper};
+pub(super) use shaping::ShapedText;
+use shaping::Shaper;
 
 #[path = "text_wrapping.rs"]
 mod wrapping;
@@ -12,8 +13,8 @@ use wrapping::place_shaped;
 
 impl Poster {
     /// Greedy wrapping of shaped text. Style boundaries do not introduce spaces
-    /// or break opportunities. Emergency breaks retain complete glyph clusters
-    /// and discard kerning to a glyph that moved onto the following line.
+    /// or break opportunities. Emergency breaks retain complete glyph clusters;
+    /// contextual fragments are reshaped at their actual visual line boundary.
     pub(super) fn wrap(&self, pieces: &[Piece], size: f64, width: f64) -> Vec<Vec<Word>> {
         let width = width.max(1.0);
         let shaper = Shaper::new(self);
@@ -64,17 +65,15 @@ impl Poster {
             return;
         }
         let mut word = std::mem::take(&mut flow.word);
-        // Shape after equal-style pieces have coalesced. Adding separately
-        // measured widths would miss both ligatures and pairs at their join.
-        let shaped: Vec<_> = word.iter_mut().map(|run| {
-            if run.formula.is_some() || run.image.is_some() {
-                None
-            } else {
-                let text = shaper.shape(&run.text, run.style, size);
-                run.w = text.width();
-                Some(text)
+        // Shape after equal-style pieces have coalesced. Retain that exact
+        // result so sizing and painting cannot disagree or repeat mark work.
+        for run in &mut word {
+            if run.formula.is_none() && run.image.is_none() {
+                let prepared = shaper.shape(&run.text, run.style, size);
+                run.w = prepared.width();
+                run.shaped = Some(prepared);
             }
-        }).collect();
+        }
         let word_width: f64 = word.iter().map(|run| run.w).sum();
         let mut gap = if flow.line.is_empty() { 0.0 } else { flow.gap };
         if !flow.line.is_empty() && flow.line_width + gap + word_width > width {
@@ -88,9 +87,9 @@ impl Poster {
                 flow.line.push(run);
             }
         } else {
-            for (run, shaped) in word.into_iter().zip(shaped) {
-                if let Some(shaped) = shaped {
-                    place_shaped(flow, run, &shaped, width);
+            for mut run in word {
+                if let Some(prepared) = run.shaped.take() {
+                    place_shaped(flow, run, &prepared, shaper, size, width);
                 } else {
                     if !flow.line.is_empty() && flow.line_width + run.w > width {
                         flow.new_line();
@@ -104,17 +103,8 @@ impl Poster {
     }
 
     pub(super) fn draw_words(&mut self, words: &[Word], x: f64, baseline: f64, size: f64) {
-        // Resolve all text against these exact faces before mutably drawing
-        // images/math. One pass-local table cache serves every styled fragment.
-        let shaped: Vec<_> = {
-            let shaper = Shaper::new(self);
-            words.iter().map(|word| {
-                (word.image.is_none() && word.formula.is_none())
-                    .then(|| shaper.shape(&word.text, word.style, size))
-            }).collect()
-        };
         let mut pen = x;
-        for (word, shaped) in words.iter().zip(shaped) {
+        for word in words {
             pen += word.gap;
             if let Some(warning) = &word.warning {
                 self.warnings.push(warning.clone());
@@ -132,8 +122,13 @@ impl Poster {
                     });
                 }
                 pen += word.w;
-            } else if let Some(shaped) = shaped {
-                pen = shaped.paint(self, pen, baseline, word.style, size);
+            } else if let Some(prepared) = &word.shaped {
+                pen = prepared.paint(self, pen, baseline, word.style, size);
+            } else if !word.text.is_empty() {
+                // Compatibility for internal callers constructing a fallback
+                // word directly; normal wrapped/code lines always retain it.
+                let prepared = Shaper::new(self).shape(&word.text, word.style, size);
+                pen = prepared.paint(self, pen, baseline, word.style, size);
             }
         }
     }
@@ -141,8 +136,6 @@ impl Poster {
     pub(super) fn words_width(&self, words: &[Word], _size: f64) -> f64 {
         words.iter().map(|word| word.gap + word.w).sum()
     }
-
-
 }
 
 fn append_run(flow: &mut TextFlow, text: &str, style: RStyle) {
@@ -155,11 +148,10 @@ fn append_run(flow: &mut TextFlow, text: &str, style: RStyle) {
     } else {
         flow.word.push(Word {
             text: text.to_owned(), style, w: 0.0, gap: 0.0,
-            formula: None, image: None, warning: None,
+            formula: None, image: None, warning: None, shaped: None,
         });
     }
 }
-
 
 fn breakable_space(ch: char) -> bool {
     ch.is_whitespace() && !matches!(ch, '\u{00a0}' | '\u{202f}')
@@ -185,3 +177,6 @@ impl TextFlow {
 #[cfg(test)]
 #[path = "text_shaping_tests.rs"]
 mod shaping_tests;
+#[cfg(test)]
+#[path = "text_positioning_tests.rs"]
+mod positioning_tests;

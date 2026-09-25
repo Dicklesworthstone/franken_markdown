@@ -12,6 +12,8 @@ use super::{Op, Poster, RStyle, SvgWarning};
 
 #[path = "text_composition.rs"]
 mod composition;
+#[path = "text_positioning.rs"]
+mod positioning;
 
 struct Tables {
     ligatures: Ligatures,
@@ -23,7 +25,7 @@ pub(super) struct Shaper<'a> {
     tables: [OnceCell<Tables>; 6],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct Glyph {
     pub(super) slot: usize,
     pub(super) id: u16,
@@ -33,11 +35,16 @@ pub(super) struct Glyph {
     kern_after: f64,
     visible: bool,
     missing: usize,
+    offset_x: f64,
+    offset_y: f64,
+    above: f64,
+    below: f64,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct Cluster {
     pub(super) bytes: Range<usize>,
+    glyphs: Range<usize>,
     advance: f64,
     trailing_kern: f64,
 }
@@ -48,13 +55,53 @@ impl Cluster {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct ShapedText {
+pub(in super::super) struct ShapedText {
     pub(super) clusters: Vec<Cluster>,
     pub(super) glyphs: Vec<Glyph>,
     adjusted: bool,
+    pub(super) contextual: bool,
+    warning: Option<SvgWarning>,
+    wrap_limited: bool,
 }
 
 impl ShapedText {
+    pub(super) fn add_wrap_warning(&mut self) {
+        self.wrap_limited = true;
+    }
+
+    pub(in super::super) fn ink_ascent(&self) -> f64 {
+        self.glyphs.iter().map(|glyph| glyph.above).fold(0.0, f64::max)
+    }
+
+    pub(in super::super) fn ink_descent(&self) -> f64 {
+        self.glyphs.iter().map(|glyph| glyph.below).fold(0.0, f64::max)
+    }
+
+    /// Isolate a non-contextual cluster slice and remove its outgoing pair.
+    /// Contextual runs are reshaped at the actual cut by the wrapping module.
+    pub(super) fn slice(&self, range: Range<usize>) -> Self {
+        if range.is_empty() { return Self::default(); }
+        let first = &self.clusters[range.start];
+        let last = &self.clusters[range.end - 1];
+        let mut glyphs = self.glyphs[first.glyphs.start..last.glyphs.end].to_vec();
+        let mut clusters: Vec<_> = self.clusters[range.clone()].iter().map(|cluster| Cluster {
+            bytes: cluster.bytes.start - first.bytes.start..cluster.bytes.end - first.bytes.start,
+            glyphs: cluster.glyphs.start - first.glyphs.start..cluster.glyphs.end - first.glyphs.start,
+            advance: cluster.advance,
+            trailing_kern: cluster.trailing_kern,
+        }).collect();
+        if let Some(glyph) = glyphs.last_mut() { glyph.kern_after = 0.0; }
+        if let Some(cluster) = clusters.last_mut() {
+            cluster.advance -= cluster.trailing_kern;
+            cluster.trailing_kern = 0.0;
+        }
+        Self {
+            glyphs, clusters, adjusted: self.adjusted, contextual: self.contextual,
+            warning: if range.start == 0 { self.warning.clone() } else { None },
+            wrap_limited: self.wrap_limited && range.start == 0,
+        }
+    }
+
     pub(super) fn width(&self) -> f64 {
         self.width_of(0..self.clusters.len())
     }
@@ -73,6 +120,15 @@ impl ShapedText {
     }
 
     pub(super) fn paint(&self, poster: &mut Poster, x: f64, baseline: f64, style: RStyle, size: f64) -> f64 {
+        if self.wrap_limited {
+            poster.warnings.push(SvgWarning {
+                code: "svg_text_wrap_limit",
+                message: "contextual line-boundary repair budget exceeded; retained the complete remainder as an indivisible run".to_owned(),
+            });
+        }
+        if let Some(warning) = &self.warning {
+            poster.warnings.push(warning.clone());
+        }
         if self.adjusted {
             poster.warnings.push(SvgWarning {
                 code: "svg_shaping_adjusted",
@@ -84,7 +140,7 @@ impl ShapedText {
             poster.missing += glyph.missing;
             if glyph.visible && glyph.id != 0 {
                 poster.ops.push(Op::Glyph {
-                    slot: glyph.slot, gid: glyph.id, x: pen, y: baseline,
+                    slot: glyph.slot, gid: glyph.id, x: pen + glyph.offset_x, y: baseline - glyph.offset_y,
                     size, ink: style.ink,
                 });
             }
@@ -108,8 +164,34 @@ impl<'a> Shaper<'a> {
     }
 
     pub(super) fn shape(&self, text: &str, style: RStyle, size: f64) -> ShapedText {
-        composition::shape(self, text, style, size)
-            .unwrap_or_else(|| self.shape_uncomposed(text, style, size))
+        let mut shaped = if let Some(composed) = composition::shape(self, text, style, size) {
+            composed
+        } else if text.chars().any(composition::is_mark) {
+            match positioning::shape(self, text, style, size) {
+                Ok(positioned) => positioned,
+                Err(warning) => {
+                    let mut literal = self.shape_uncomposed(text, style, size);
+                    literal.warning = Some(warning);
+                    literal
+                }
+            }
+        } else {
+            self.shape_uncomposed(text, style, size)
+        };
+        // The exact data retained by Word drives both vertical layout and ink.
+        // Bounds use the producing face and the same y-up positioning offsets
+        // later applied by the SVG painter, including zero-advance marks.
+        for glyph in &mut shaped.glyphs {
+            if !glyph.visible || glyph.id == 0 { continue; }
+            if let Some(font) = self.poster.faces[glyph.slot].as_ref() {
+                if let Some(bounds) = font.glyph_bbox(glyph.id) {
+                    let factor = size / f64::from(font.units_per_em.max(1));
+                    glyph.above = (glyph.offset_y + f64::from(bounds[3]) * factor).max(0.0);
+                    glyph.below = (-glyph.offset_y - f64::from(bounds[1]) * factor).max(0.0);
+                }
+            }
+        }
+        shaped
     }
 
     fn shape_uncomposed(&self, text: &str, style: RStyle, size: f64) -> ShapedText {
@@ -130,6 +212,7 @@ impl<'a> Shaper<'a> {
                     slot, id, advance: self.poster.advance(slot, ch, size),
                     kern_after: 0.0, visible: !ch.is_whitespace(),
                     missing: usize::from(id == 0 && !ch.is_whitespace()),
+                    ..Glyph::default()
                 });
                 cursor += 1;
                 continue;
@@ -156,6 +239,7 @@ impl<'a> Shaper<'a> {
                     push_cluster(&mut shaped, byte..byte + ch.len_utf8(), Glyph {
                         slot, id, advance: self.poster.advance(slot, ch, size),
                         kern_after: 0.0, visible: true, missing: 0,
+                        ..Glyph::default()
                     });
                 }
                 cursor = end;
@@ -174,6 +258,7 @@ impl<'a> Shaper<'a> {
                 shaped.adjusted |= kern_after != pair;
                 push_cluster(&mut shaped, range, Glyph {
                     slot, id: gid, advance, kern_after, visible: true, missing: 0,
+                    ..Glyph::default()
                 });
                 consumed = next;
             }
@@ -187,16 +272,18 @@ fn push_cluster(shaped: &mut ShapedText, bytes: Range<usize>, glyph: Glyph) {
     let advance = glyph.advance + glyph.kern_after;
     let trailing_kern = glyph.kern_after;
     let zero = glyph.advance == 0.0;
+    let first_glyph = shaped.glyphs.len();
     shaped.glyphs.push(glyph);
     // Zero-advance marks stay with their predecessor in emergency wrapping.
     // This is not a general mark-positioning or bidirectional shaping engine.
     if zero {
         if let Some(previous) = shaped.clusters.last_mut() {
             previous.bytes.end = bytes.end;
+            previous.glyphs.end = shaped.glyphs.len();
             previous.advance += advance;
             previous.trailing_kern = trailing_kern;
             return;
         }
     }
-    shaped.clusters.push(Cluster { bytes, advance, trailing_kern });
+    shaped.clusters.push(Cluster { bytes, glyphs: first_glyph..shaped.glyphs.len(), advance, trailing_kern });
 }

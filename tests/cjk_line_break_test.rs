@@ -489,6 +489,12 @@ fn ascii_line_shape(runs: &[PdfTextRun]) -> Vec<(f32, usize, f32)> {
 #[test]
 fn pdf_ascii_paragraph_geometry_is_unchanged() {
     // Recorded from the pre-CJK renderer: Latin wrapping must not move.
+    // Breaks and glyph counts are the pre-CJK originals. The last-run x
+    // positions were re-pinned by the flush-justification fix: the old pins
+    // (222.15, 221.10, 222.98) left each justified line 1.5–2.2 pt short of
+    // the measure because the glyph-expansion share of the adjustment was
+    // dropped; the current values put every justified line's right edge
+    // exactly at x = 240 (60 pt margin + 180 pt measure).
     let opts = narrow_page_options(300.0, 60.0);
     let md = "the quick brown fox jumps over the lazy dog while the \
               hyphenation engine keeps working exactly as it did before\n";
@@ -496,9 +502,9 @@ fn pdf_ascii_paragraph_geometry_is_unchanged() {
     assert_eq!(
         ascii_line_shape(&runs),
         vec![
-            (60.0, 34, 222.15),
-            (60.0, 34, 221.10),
-            (60.0, 36, 222.98),
+            (60.0, 34, 223.85),
+            (60.0, 34, 223.32),
+            (60.0, 36, 224.49),
             (60.0, 6, 60.0),
         ],
         "Latin wrapping, justification, and hyphenation must not move"

@@ -2141,13 +2141,21 @@ impl ParagraphPolicy {
     };
 
     /// Glyph-expansion credit the line breaker may assume (±permilli of box
-    /// width). Only justified emitters actually compress/stretch glyphs to
-    /// honor the credit, so ragged flows get zero: the solver must never
-    /// produce a line whose fit depends on compression nothing will apply.
-    /// (The final line of even a justified paragraph never leans on it — the
-    /// breaker excludes the credit there unconditionally.)
+    /// width). Only a justified flow whose emitter actually scales glyphs
+    /// (`Tz`, i.e. microtype expansion enabled) can honor the credit, so every
+    /// other flow gets zero: the solver must never produce a line whose fit
+    /// depends on compression nothing will apply. The same value sizes the
+    /// word-box capacity in [`glue_adjustments_into`], keeping breaker,
+    /// justifier and emitter in lockstep. (The final line of even a justified
+    /// paragraph never leans on it — the breaker excludes the credit there
+    /// unconditionally.)
     const fn expansion_permilli(self) -> u16 {
-        if self.justify { 15 } else { 0 }
+        if !self.justify {
+            return 0;
+        }
+        // Same sanity cap the `Tz` emitter applies (see `build_segs_adjusted`).
+        let budget = self.microtype.max_expansion_per_mille;
+        if budget > 100 { 100 } else { budget }
     }
 
     const fn for_flow(kind: FlowKind) -> Self {
@@ -18760,63 +18768,57 @@ fn layout_inlines(
     let n = cx.line_breaks.len();
     for i in 0..n {
         let lb = cx.line_breaks[i];
-        // Microtype: the justifier must target the same effective width the
-        // breaker used (content + protrusion credit) — otherwise a line the
-        // breaker admitted via right-edge protrusion reads as overfull to the
-        // justifier and gets wrongly compressed, negating the optical margin.
-        let line_protrusion = if policy.microtype.protrusion {
-            let left = built.items[lb.start..]
-                .iter()
-                .find_map(|item| match item {
-                    ParagraphItem::Box(b) => Some(b.protrusion.left),
-                    _ => None,
-                })
-                .unwrap_or(crate::layout::LayoutUnit::ZERO);
-            let right = built.items[..lb.end]
+        // Justifier target = measure + right optical-margin credit + left
+        // hang. Microtype protrusion: the breaker admitted the line against
+        // content + protrusion credit, so the justifier must target the same
+        // right-edge credit — otherwise a line admitted via right protrusion
+        // reads as overfull and gets wrongly compressed. Left hang: the
+        // segment builder is the single owner of the left shift (it hangs a
+        // line opening with a quote/bracket/dash by `line_left_hang`, with or
+        // without microtype, and that equals the breaker's left protrusion
+        // credit for every character the breaker credits), so the line is
+        // justified to measure + hang and the right edge lands flush. Shifting
+        // here as well would hang the line twice.
+        let right_protrusion = if policy.microtype.protrusion {
+            built.items[..lb.end]
                 .iter()
                 .rev()
                 .find_map(|item| match item {
                     ParagraphItem::Box(b) => Some(b.protrusion.right),
                     _ => None,
                 })
-                .unwrap_or(crate::layout::LayoutUnit::ZERO);
-            left + right
+                .unwrap_or(crate::layout::LayoutUnit::ZERO)
         } else {
             crate::layout::LayoutUnit::ZERO
         };
+        let hang = lu_from_points_f32(line_left_hang(&built, &lb, size));
         line_tokens_for_break_into(
             &built,
             &lb,
-            content_w + line_protrusion,
+            content_w + right_protrusion + hang,
             policy.justify && i + 1 < n,
+            policy.expansion_permilli(),
             &mut cx.glue_adjustments,
             &mut cx.line_toks,
         );
-        // Microtype (opt-in): when the breaker admitted this line partly on the
-        // first box's left optical-margin protrusion, the emitter must actually
-        // hang it — shift the line start left by that protrusion so the drawn
-        // result matches the fit decision.
-        let line_left = if policy.microtype.protrusion {
-            let first_box_left = built.items[lb.start..]
-                .iter()
-                .find_map(|item| match item {
-                    ParagraphItem::Box(b) => Some(b.protrusion.left),
-                    _ => None,
-                })
-                .unwrap_or(crate::layout::LayoutUnit::ZERO);
-            left - first_box_left.to_points_f32()
-        } else {
-            left
-        };
-        let segs = build_segs_adjusted(
+        let mut segs = build_segs_adjusted(
             &cx.line_toks,
-            line_left,
+            left,
             size,
             cx.faces,
             Some(&cx.width_cache),
             policy.microtype.max_expansion_per_mille,
             &cx.links.targets,
         );
+        if policy.justify && i + 1 < n && !chosen_forced_break(&built.items, &lb) {
+            true_up_justified_line(
+                &mut segs,
+                left + (content_w + right_protrusion).to_points_f32(),
+                size,
+                cx.faces,
+                Some(&cx.width_cache),
+            );
+        }
         out.push(Line {
             size,
             gap_after: if i + 1 == n { gap_after } else { 0.0 },
@@ -18917,11 +18919,16 @@ fn layout_prefixed_inlines(
     let mut marker = Some(marker);
     for i in 0..n {
         let lb = cx.line_breaks[i];
+        // Justify to measure + the left hang the segment builder applies (see
+        // `layout_inlines`), so a line opening with a quote/bracket/dash still
+        // ends flush.
+        let hang = lu_from_points_f32(line_left_hang(&built, &lb, spec.size));
         line_tokens_for_break_into(
             &built,
             &lb,
-            content_w,
+            content_w + hang,
             policy.justify && i + 1 < n,
+            policy.expansion_permilli(),
             &mut cx.glue_adjustments,
             &mut cx.line_toks,
         );
@@ -18934,6 +18941,15 @@ fn layout_prefixed_inlines(
             policy.microtype.max_expansion_per_mille,
             &cx.links.targets,
         );
+        if policy.justify && i + 1 < n && !chosen_forced_break(&built.items, &lb) {
+            true_up_justified_line(
+                &mut segs,
+                left + content_w.to_points_f32(),
+                spec.size,
+                cx.faces,
+                Some(&cx.width_cache),
+            );
+        }
         if i == 0 {
             if let Some(marker) = marker.take() {
                 segs.insert(0, marker);
@@ -19036,11 +19052,19 @@ fn line_tokens_for_break_into(
     lb: &crate::layout::LineBreak,
     line_width: LayoutUnit,
     justify: bool,
+    expansion_permilli: u16,
     adjustments: &mut Vec<(usize, f32, bool)>,
     line: &mut Vec<LineTok>,
 ) {
     line.clear();
-    glue_adjustments_into(&built.items, lb, line_width, justify, adjustments);
+    glue_adjustments_into(
+        &built.items,
+        lb,
+        line_width,
+        justify,
+        expansion_permilli,
+        adjustments,
+    );
     if adjustments.is_empty() {
         for idx in lb.start..lb.end {
             if let Some(group) = built.item_toks.get(idx) {
@@ -19089,25 +19113,25 @@ fn push_tok_group_line_toks(
     applies_to_words: bool,
     line: &mut Vec<LineTok>,
 ) {
-    if let Some(tok) = &group.first {
+    let start = line.len();
+    for tok in group.first.iter().chain(&group.rest) {
         line.push(LineTok {
             tok: tok.clone(),
-            extra_advance: if tok.space || applies_to_words {
+            // Glue extras ride the space tokens they widen.
+            extra_advance: if tok.space && !applies_to_words {
                 extra
             } else {
                 0.0
             },
         });
     }
-    for tok in &group.rest {
-        line.push(LineTok {
-            tok: tok.clone(),
-            extra_advance: if tok.space || applies_to_words {
-                extra
-            } else {
-                0.0
-            },
-        });
+    // A word box's glyph-expansion share belongs to the whole box, not to each
+    // of its tokens: book it exactly once (on the last visible token) so the
+    // segment builder, which accumulates word extras, counts it once.
+    if applies_to_words {
+        if let Some(last) = line[start..].iter_mut().rev().find(|t| !t.tok.space) {
+            last.extra_advance = extra;
+        }
     }
 }
 fn glue_adjustments_into(
@@ -19115,6 +19139,7 @@ fn glue_adjustments_into(
     lb: &crate::layout::LineBreak,
     line_width: LayoutUnit,
     justify: bool,
+    expansion_permilli: u16,
     out: &mut Vec<(usize, f32, bool)>,
 ) {
     out.clear();
@@ -19126,12 +19151,14 @@ fn glue_adjustments_into(
         return;
     }
     // Collect per-item elastic capacity in one pass: interword glue
-    // contributes its directional flex; word boxes contribute the ±1.5
-    // permilli glyph elasticity (Hàn Thế Thành microtype) that
-    // MetricPrefixes::rebuild_from_items credits the breaker. The two sides
-    // must stay in lockstep, or a justified line chosen with expansion
-    // elasticity renders short/long by exactly the unapplied remainder.
-    const FONT_EXPANSION_PERMILLI: i64 = 15;
+    // contributes its directional flex; word boxes contribute the
+    // ±`expansion_permilli` glyph elasticity (Hàn Thế Thành microtype) that
+    // MetricPrefixes::rebuild_from_items credits the breaker. The caller
+    // passes the same `ParagraphPolicy::expansion_permilli()` the breaker
+    // used, so the two sides stay in lockstep — otherwise a justified line
+    // chosen with expansion elasticity renders short/long by exactly the
+    // unapplied remainder. Zero (microtype off) means glue-only justification.
+    let font_expansion_permilli = i64::from(expansion_permilli);
     let mut capacities: Vec<(usize, i64, bool)> = Vec::with_capacity(8);
     let mut box_total_width = 0i64;
     for (idx, item) in items.iter().enumerate().take(lb.end).skip(lb.start) {
@@ -19148,10 +19175,10 @@ fn glue_adjustments_into(
             ParagraphItem::Penalty(_) => {}
         }
     }
-    if box_total_width > 0 {
+    if box_total_width > 0 && font_expansion_permilli > 0 {
         for (idx, item) in items.iter().enumerate().take(lb.end).skip(lb.start) {
             if let ParagraphItem::Box(tb) = item {
-                let cap = tb.width.milli_points() as i64 * FONT_EXPANSION_PERMILLI / 1000;
+                let cap = tb.width.milli_points() as i64 * font_expansion_permilli / 1000;
                 if cap > 0 {
                     capacities.push((idx, cap, true));
                 }
@@ -19170,17 +19197,49 @@ fn glue_adjustments_into(
     } else {
         delta
     };
-    let mut assigned = 0i64;
-    let last = capacities.len() - 1;
     let mut entries: Vec<(usize, i64, bool)> = Vec::with_capacity(capacities.len());
-    for (pos, (idx, cap, words)) in capacities.iter().enumerate() {
-        let extra = if pos == last {
-            effective_delta - assigned
-        } else {
-            effective_delta * cap / total_cap
-        };
-        assigned += extra;
-        entries.push((*idx, extra, *words));
+    // Glyph elasticity is bounded — the `Tz` emitter clamps scaling to the
+    // expansion budget — while glue stretch is not (TeX: an underfull line
+    // stretches its glue past the nominal stretch). When a line needs more
+    // stretch than the combined capacity, fill every box exactly to its cap
+    // and give the remainder to the glue, so the drawn glyphs never need
+    // more scaling than the emitter will apply (otherwise the line would end
+    // short by the clamped excess).
+    let glue_cap: i64 = capacities
+        .iter()
+        .filter(|(_, _, words)| !*words)
+        .map(|(_, cap, _)| *cap)
+        .sum();
+    let box_cap = total_cap - glue_cap;
+    let last_glue = capacities.iter().rposition(|(_, _, words)| !*words);
+    if let Some(last_glue) = last_glue.filter(|_| effective_delta > total_cap && box_cap > 0) {
+        let glue_delta = effective_delta - box_cap;
+        let mut glue_assigned = 0i64;
+        for (pos, (idx, cap, words)) in capacities.iter().enumerate() {
+            let extra = if *words {
+                *cap
+            } else if pos == last_glue {
+                glue_delta - glue_assigned
+            } else {
+                glue_delta * cap / glue_cap
+            };
+            if !*words {
+                glue_assigned += extra;
+            }
+            entries.push((*idx, extra, *words));
+        }
+    } else {
+        let mut assigned = 0i64;
+        let last = capacities.len() - 1;
+        for (pos, (idx, cap, words)) in capacities.iter().enumerate() {
+            let extra = if pos == last {
+                effective_delta - assigned
+            } else {
+                effective_delta * cap / total_cap
+            };
+            assigned += extra;
+            entries.push((*idx, extra, *words));
+        }
     }
     // The consumer walks item indices ascending; merge orderings explicitly.
     entries.sort_by_key(|(idx, _, _)| *idx);
@@ -19235,11 +19294,15 @@ fn build_segs(toks: &[Tok], left: f32, size: f32, faces: &Faces, links: &[LinkTa
 }
 
 fn left_protrusion_hang(toks: &[LineTok], size: f32) -> f32 {
-    let Some(first) = toks.first() else {
-        return 0.0;
-    };
-    let text = token_visible_text(&first.tok);
-    let Some(ch) = text.chars().next() else {
+    toks.first()
+        .map_or(0.0, |first| left_hang_for_tok(&first.tok, size))
+}
+
+/// Optical left hang (points) of a line whose first token is `tok`: opening
+/// quotes, brackets and dashes sit partly in the margin. The segment builder
+/// is the single place that applies it.
+fn left_hang_for_tok(tok: &Tok, size: f32) -> f32 {
+    let Some(ch) = token_visible_text(tok).chars().next() else {
         return 0.0;
     };
     let per_mille = match ch {
@@ -19249,6 +19312,18 @@ fn left_protrusion_hang(toks: &[LineTok], size: f32) -> f32 {
         _ => 0.0,
     };
     (size * per_mille) / 1000.0
+}
+
+/// The left hang the segment builder will apply to the line `lb` (its first
+/// token is the first token of the first non-empty item group, exactly as
+/// `line_tokens_for_break_into` emits it). A justified line must target the
+/// measure *plus* this hang: the builder shifts the line left by it, so
+/// justifying to the bare measure would leave the right edge short.
+fn line_left_hang(built: &BuiltParagraph, lb: &crate::layout::LineBreak, size: f32) -> f32 {
+    (lb.start..lb.end)
+        .filter_map(|idx| built.item_toks.get(idx))
+        .find_map(|group| group.first.as_ref().or_else(|| group.rest.first()))
+        .map_or(0.0, |tok| left_hang_for_tok(tok, size))
 }
 
 /// Incremental shaped-width accumulator for one growing same-face text run.
@@ -19475,6 +19550,54 @@ fn ensure_width_cached(
     cache.borrow_mut().insert_if_room(key, text, computed);
 }
 
+/// Land a justified line's right edge exactly on `target_right`.
+///
+/// The justifier distributes `line_width - natural_width` from the breaker's
+/// per-item widths, but segments are drawn as merged shaped runs ("word ",
+/// "infor-"): kerning across item boundaries (a word's last glyph against its
+/// trailing space or a discretionary hyphen) and `Tz` rounding leave a small
+/// residual between the drawn edge and the measure. Spread it evenly over the
+/// line's word gaps (segment boundaries that follow a space) so the edge is
+/// flush without ever opening a gap inside a word. A residual larger than
+/// shaping drift (> 0.05 em per gap) is left alone: it is an over/underfull
+/// line the solver accepted, and forcing it would crush or balloon spaces.
+fn true_up_justified_line(
+    segs: &mut [Seg],
+    target_right: f32,
+    size: f32,
+    faces: &Faces,
+    width_cache: Option<&RefCell<WidthCache>>,
+) {
+    let Some(last) = segs.last() else {
+        return;
+    };
+    let text = last.text.trim_end();
+    if text.is_empty() {
+        return;
+    }
+    let natural =
+        shaped_width_points_for_layout(faces, width_cache, last.slot, text, font_size_of(size));
+    let scale = 1.0 + f32::from(last.expansion_permille) / 1000.0;
+    let residual = target_right - (last.x + natural * scale);
+    let gaps = segs.windows(2).filter(|w| w[0].text.ends_with(' ')).count();
+    if gaps == 0 || residual == 0.0 {
+        return;
+    }
+    let step = residual / gaps as f32;
+    if step.abs() > 0.05 * size {
+        return;
+    }
+    let mut shift = 0.0f32;
+    for k in 1..segs.len() {
+        if segs[k - 1].text.ends_with(' ') {
+            shift += step;
+            // Keep the space-ending run spanning up to the next run.
+            segs[k - 1].width += step;
+        }
+        segs[k].x += shift;
+    }
+}
+
 fn build_segs_adjusted(
     toks: &[LineTok],
     left: f32,
@@ -19531,31 +19654,40 @@ fn build_segs_adjusted(
         let mut text = String::with_capacity(text_len);
         let mut shaper = SegRunShaper::new(faces.face(slot), fs);
         // Width is the running max over the run of (natural prefix width +
-        // effective extra) — the same maximum the per-token emitter folded
-        // via `(natural + extra).max(old_width)`. The per-token advance
-        // `(new - old).max(0.0)` is reproduced step for step so the running
-        // f32 sum behind `x` stays bit-identical to the per-token emitter.
+        // the run's accumulated word extras + this token's space extra); the
+        // per-token advance `(new - old).max(0.0)` feeds `x`. A space extra
+        // closes its run (see the run-extent scan above), so at most one is
+        // live per run. Word extras (a box's glyph-expansion share, booked
+        // once per box by `push_tok_group_line_toks`) must ACCUMULATE: a run
+        // is typically "word + trailing space", and folding only the current
+        // token's extra would let the space overwrite the word's share,
+        // leaving the justified line short/long by exactly that share. With
+        // `Tz` expansion the same accumulated extras position the next run
+        // where the scaled glyphs end.
         let mut width = 0.0f32;
+        let mut natural_max = 0.0f32;
+        let mut run_word_extra = 0.0f32;
         for line_tok in &toks[i..end] {
             let tok = &line_tok.tok;
             let visible = token_visible_text(tok);
             text.push_str(visible);
             shaper.append(visible, &text);
             let natural = shaper.current_width().to_points_f32();
-            let extra = if use_expansion && !tok.space {
-                // Defer word extras to the uniform Tz factor below.
-                word_extra_milli += f64::from(line_tok.extra_advance) * 1000.0;
-                0.0
-            } else {
+            let space_extra = if tok.space {
                 line_tok.extra_advance
+            } else {
+                run_word_extra += line_tok.extra_advance;
+                if use_expansion {
+                    word_extra_milli += f64::from(line_tok.extra_advance) * 1000.0;
+                    // This token's natural-width delta, so the uniform `Tz`
+                    // factor below is (word extras) / (natural word width).
+                    box_width_milli += f64::from((natural - natural_max).max(0.0)) * 1000.0;
+                }
+                0.0
             };
-            let new_width = width.max(natural + extra);
+            natural_max = natural_max.max(natural);
+            let new_width = width.max(natural + run_word_extra + space_extra);
             let advance = (new_width - width).max(0.0);
-            if use_expansion && !tok.space {
-                // `advance` is this token's natural-width delta (word
-                // extras were deferred), so the accumulation stays O(n).
-                box_width_milli += f64::from(advance) * 1000.0;
-            }
             x += advance;
             width = new_width;
         }
@@ -31035,6 +31167,11 @@ fn append_text_segment_operator_with_render_mode(
     if render_mode.is_some() {
         body.push_str(" 0 Tr");
     }
+    // Horizontal scaling is text state, which persists across BT/ET: restore
+    // it so one justified line's scaling never leaks into later text.
+    if expansion_permille != 0 {
+        body.push_str(" 100 Tz");
+    }
     body.push_str(" ET\n");
 }
 
@@ -31650,6 +31787,100 @@ mod pdf_writer_tests {
                 kind: FlowKind::Paragraph,
             },
         );
+    }
+
+    /// Justification fixture: plain prose (no real hyphens, so a trailing `-`
+    /// is always a discretionary break) with quoted words sprinkled in, and a
+    /// leading opening quote so the first justified line also exercises the
+    /// left punctuation hang.
+    const FLUSH_FIXTURE: &str = "\"Liquidity\" remained tight while the company reported revenue, \
+        margin and cash flow as the court weighed the appeal and analysts debated the \
+        refinancing. The lithium price, concentrate production and quarterly guidance moved \
+        together; \"consensus\" lagged the licence news by several weeks. Management said the \
+        restart would come \"within days\", yet the regulator suspended five licences and the \
+        prosecutor sought penalties. Investors weighed the refinancing, the offtake prepayments \
+        and the court calendar, and the analyst community revised its quarterly estimates \
+        downward again. (Concentrate) inventory, customer receipts and trade finance proceeds \
+        explained most of the quarter's external cash inflows, not the promised offtake money.";
+
+    /// Rendered right edge of a line's final segment (start + shaped width of
+    /// its visible text, scaled by any `Tz` expansion) and the character that
+    /// determines its right-margin protrusion credit.
+    fn rendered_right_edge(line: &Line, faces: &Faces) -> Option<(f32, char)> {
+        let seg = line.segs.last()?;
+        let text = seg.text.trim_end();
+        let natural = faces.shaped_width_points(seg.slot, text, line.size);
+        let scale = 1.0 + f32::from(seg.expansion_permille) / 1000.0;
+        // The breaker credits right protrusion from the last *box*; at a
+        // discretionary break the drawn hyphen follows that box.
+        let credit_char = text.strip_suffix('-').unwrap_or(text).chars().next_back()?;
+        Some((seg.x + natural * scale, credit_char))
+    }
+
+    /// Lay out [`FLUSH_FIXTURE`] and assert every justified (non-final) line
+    /// ends exactly at the measure, plus any right-protrusion credit.
+    fn assert_justified_lines_flush(opts: &PdfOptions) -> crate::Result<()> {
+        let faces = Faces::load(opts)?;
+        let mut page = test_page_geom();
+        page.content_w = 300.0;
+        let mut cx = test_layout_cx(opts, &faces, page);
+        let mut out = Vec::new();
+        push_uncached_simple_paragraph(FLUSH_FIXTURE, &mut out, &mut cx);
+        let lines: Vec<&Line> = out.iter().filter(|line| !line.segs.is_empty()).collect();
+        assert!(lines.len() >= 6, "fixture must wrap into several lines");
+        let first_text: String = lines[0].segs.iter().map(|s| s.text.as_str()).collect();
+        assert!(
+            first_text.starts_with('"'),
+            "fixture's first line must start with a hanging quote: {first_text:?}"
+        );
+        let measure_end = page.left + page.content_w;
+        for line in &lines[..lines.len() - 1] {
+            let (edge, credit_char) =
+                rendered_right_edge(line, &faces).expect("justified line has text");
+            let credit = crate::layout::protrusion_for_boundary_chars(
+                None,
+                Some(credit_char),
+                font_size_of(line.size),
+                opts.microtype,
+            )
+            .right
+            .to_points_f32();
+            let err = edge - (measure_end + credit);
+            let text: String = line.segs.iter().map(|s| s.text.as_str()).collect();
+            assert!(
+                err.abs() < 0.05,
+                "justified line must end flush at the measure: edge {edge:.3} vs {:.3} \
+                 (err {err:+.3}pt) in {text:?}",
+                measure_end + credit
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn justified_lines_end_flush_at_the_measure_by_default() -> crate::Result<()> {
+        assert_justified_lines_flush(&PdfOptions::default())
+    }
+
+    #[test]
+    fn justified_lines_end_flush_with_glyph_expansion() -> crate::Result<()> {
+        let opts = PdfOptions {
+            microtype: crate::layout::MicrotypeOptions {
+                protrusion: false,
+                max_expansion_per_mille: 15,
+            },
+            ..PdfOptions::default()
+        };
+        assert_justified_lines_flush(&opts)
+    }
+
+    #[test]
+    fn justified_lines_end_flush_with_protrusion_and_expansion() -> crate::Result<()> {
+        let opts = PdfOptions {
+            microtype: crate::layout::MicrotypeOptions::CONSERVATIVE,
+            ..PdfOptions::default()
+        };
+        assert_justified_lines_flush(&opts)
     }
 
     #[test]
@@ -34477,6 +34708,10 @@ mod pdf_writer_tests {
         let mut x = left - hang;
         let mut cur: Option<Seg> = None;
         let fs = font_size_of(size);
+        // Same fold as `build_segs_adjusted` (word extras accumulate across a
+        // run; one space extra closes it), recomputed by per-prefix reshaping.
+        let mut run_word_extra = 0.0f32;
+        let mut natural_max = 0.0f32;
         for line_tok in toks {
             let tok = &line_tok.tok;
             let text = token_visible_text(tok);
@@ -34488,19 +34723,19 @@ mod pdf_writer_tests {
                     s.text.push_str(text);
                     let natural =
                         shaped_width_points_for_layout(faces, width_cache, s.slot, &s.text, fs);
-                    let extra = if use_expansion && !tok.space {
-                        word_extra_milli += f64::from(line_tok.extra_advance) * 1000.0;
-                        0.0
-                    } else {
+                    let space_extra = if tok.space {
                         line_tok.extra_advance
+                    } else {
+                        run_word_extra += line_tok.extra_advance;
+                        if use_expansion {
+                            word_extra_milli += f64::from(line_tok.extra_advance) * 1000.0;
+                            box_width_milli += f64::from((natural - natural_max).max(0.0)) * 1000.0;
+                        }
+                        0.0
                     };
-                    s.width = (natural + extra).max(old_width);
+                    natural_max = natural_max.max(natural);
+                    s.width = (natural + run_word_extra + space_extra).max(old_width);
                     advance = (s.width - old_width).max(0.0);
-                    if use_expansion && !tok.space {
-                        // `advance` is this token's natural-width delta (word
-                        // extras were deferred), so the accumulation stays O(n).
-                        box_width_milli += f64::from(advance) * 1000.0;
-                    }
                 }
                 _ => {
                     if let Some(s) = cur.take() {
@@ -34508,16 +34743,19 @@ mod pdf_writer_tests {
                     }
                     let natural =
                         shaped_width_points_for_layout(faces, width_cache, tok.slot, text, fs);
-                    let extra = if use_expansion && !tok.space {
-                        word_extra_milli += f64::from(line_tok.extra_advance) * 1000.0;
-                        0.0
-                    } else {
+                    run_word_extra = 0.0;
+                    let space_extra = if tok.space {
                         line_tok.extra_advance
+                    } else {
+                        run_word_extra += line_tok.extra_advance;
+                        if use_expansion {
+                            word_extra_milli += f64::from(line_tok.extra_advance) * 1000.0;
+                            box_width_milli += f64::from(natural.max(0.0)) * 1000.0;
+                        }
+                        0.0
                     };
-                    advance = (natural + extra).max(0.0);
-                    if use_expansion && !tok.space {
-                        box_width_milli += f64::from(advance) * 1000.0;
-                    }
+                    natural_max = natural;
+                    advance = (natural + run_word_extra + space_extra).max(0.0);
                     cur = Some(Seg {
                         x,
                         slot: tok.slot,
@@ -40197,6 +40435,7 @@ mod coverage_gap_tests {
             &lb,
             LayoutUnit::from_milli_points(52800),
             true,
+            15,
             &mut out,
         );
         assert_eq!(out.len(), 3, "glue plus both word boxes adjust");
@@ -40225,6 +40464,7 @@ mod coverage_gap_tests {
             &lb,
             LayoutUnit::from_milli_points(44000),
             true,
+            15,
             &mut out,
         );
         let total_milli: i64 = out.iter().map(|e| (e.1 * 1000.0).round() as i64).sum();
@@ -40255,9 +40495,84 @@ mod coverage_gap_tests {
             &lb,
             LayoutUnit::from_milli_points(52000),
             false,
+            15,
             &mut out,
         );
         assert!(out.is_empty(), "ragged lines never justify");
+    }
+
+    #[test]
+    fn without_glyph_expansion_the_glue_absorbs_the_whole_delta() {
+        // Microtype off: no box capacity exists, so the interword glue takes
+        // the full +1800mp (nothing is booked on glyphs no emitter would
+        // scale — the bug that left justified lines short/long).
+        let items = justified_line_items();
+        let lb = LineBreak {
+            start: 0,
+            end: 3,
+            next: 3,
+            natural_width: LayoutUnit::from_milli_points(51000),
+            badness: 0,
+            fitness: crate::layout::FitnessClass::Decent,
+            demerits: 0,
+            fitness_milli: 0,
+        };
+        let mut out = Vec::new();
+        glue_adjustments_into(
+            &items,
+            &lb,
+            LayoutUnit::from_milli_points(52800),
+            true,
+            0,
+            &mut out,
+        );
+        assert_eq!(out.len(), 1, "only the glue adjusts: {out:?}");
+        assert_eq!(out[0].0, 1, "the entry is the interword glue");
+        assert!(!out[0].2, "glue entries never apply to words");
+        assert_eq!(
+            (out[0].1 * 1000.0).round() as i64,
+            1800,
+            "glue takes the full delta"
+        );
+    }
+
+    #[test]
+    fn stretch_beyond_capacity_fills_boxes_to_their_cap_and_glue_takes_the_rest() {
+        // delta = +1800mp exceeds combined capacity 850 (glue stretch 100 +
+        // boxes 300 + 450). Glyphs may scale only up to their ±15 permilli
+        // cap (the Tz emitter clamps to the budget), so each box gets exactly
+        // its cap and the glue absorbs the remaining 1050mp.
+        let items = justified_line_items();
+        let lb = LineBreak {
+            start: 0,
+            end: 3,
+            next: 3,
+            natural_width: LayoutUnit::from_milli_points(51000),
+            badness: 0,
+            fitness: crate::layout::FitnessClass::Decent,
+            demerits: 0,
+            fitness_milli: 0,
+        };
+        let mut out = Vec::new();
+        glue_adjustments_into(
+            &items,
+            &lb,
+            LayoutUnit::from_milli_points(52800),
+            true,
+            15,
+            &mut out,
+        );
+        let milli: Vec<i64> = out.iter().map(|e| (e.1 * 1000.0).round() as i64).collect();
+        assert_eq!(
+            milli,
+            vec![300, 1050, 450],
+            "boxes capped, glue takes the rest"
+        );
+        assert_eq!(
+            milli.iter().sum::<i64>(),
+            1800,
+            "the full delta is distributed"
+        );
     }
 }
 

@@ -29,7 +29,7 @@
 //! row stacking (`\jot`-opened for `align`), `\vcenter` axis centering,
 //! and the rule-19 delimiter wrap for the delimited matrices.
 
-use std::cell::RefCell;
+use std::sync::{PoisonError, RwLock};
 
 use crate::atom::{AtomClass, classify_list, spacing_in_style};
 use crate::error::MathError;
@@ -56,8 +56,10 @@ pub struct Engine {
     /// bit-identical metrics to a cold computation (pinned by the
     /// warm-engine determinism test). Math documents resolve to few
     /// distinct glyphs repeated across many spans, so the memo turns each
-    /// repeat from a `hmtx` + `glyf` re-decode into one Vec read.
-    glyph_memo: RefCell<Vec<Vec<Option<GlyphMetrics>>>>,
+    /// repeat from a `hmtx` + `glyf` re-decode into one Vec read. An
+    /// `RwLock`, not a `RefCell`, so one `Engine` stays `Send + Sync` and
+    /// can be shared by threads laying out in parallel.
+    glyph_memo: RwLock<Vec<Vec<Option<GlyphMetrics>>>>,
 }
 
 impl Engine {
@@ -67,7 +69,7 @@ impl Engine {
         Self {
             faces,
             consts: crate::metrics::CM,
-            glyph_memo: RefCell::new(Vec::new()),
+            glyph_memo: RwLock::new(Vec::new()),
         }
     }
 
@@ -844,13 +846,14 @@ impl Engine {
 
     #[inline(always)]
     fn metrics_of(&self, face: FaceId, gid: u16) -> GlyphMetrics {
-        // Hot path: one RefCell read + two Vec reads. Misses and the
+        // Hot path: one uncontended read lock + two Vec reads. Misses and the
         // table decodes live out of line in `metrics_of_miss` so the
         // inlined body at every glyph site stays as small as the
         // unmemoized call it replaced.
         if let Some(hit) = self
             .glyph_memo
-            .borrow()
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(face.0)
             .and_then(|per_face| per_face.get(usize::from(gid)))
             .and_then(|slot| *slot)
@@ -867,7 +870,11 @@ impl Engine {
             return GlyphMetrics::default();
         };
         let m = glyph_metrics(font, gid);
-        let mut memo = self.glyph_memo.borrow_mut();
+        // Every slot holds a constant, so a poisoned memo is still valid.
+        let mut memo = self
+            .glyph_memo
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
         if memo.len() <= face.0 {
             memo.resize(face.0 + 1, Vec::new());
         }

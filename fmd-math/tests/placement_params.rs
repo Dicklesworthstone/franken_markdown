@@ -371,3 +371,46 @@ fn formerly_pending_constructs_now_lay_out() {
     let err = e.typeset(r"\dx", Style::Display).unwrap_err();
     assert_eq!(err.unsupported_construct(), Some(r"\dx"));
 }
+
+#[test]
+fn a_line_break_unskips_the_space_before_it() {
+    // LaTeX's `\\` begins with `\unskip`, so a space before the break does
+    // not widen the line it ends: every glyph of a centered block sits
+    // exactly where it would without that space. (A space after `\\` is
+    // already swallowed, as LaTeX's star/option look-ahead swallows it.)
+    let e = engine();
+    let positions = |source: &str| -> Vec<(char, f64, f64)> {
+        e.typeset_text(source)
+            .unwrap()
+            .glyphs
+            .iter()
+            .map(|g| (g.ch, g.x, g.y))
+            .collect()
+    };
+    let bare = positions(r"\begin{center}ab\\cd\end{center}");
+    for spaced in [
+        r"\begin{center}ab \\cd\end{center}",
+        r"\begin{center}ab \\ cd\end{center}",
+        r"\begin{flushright}ab \\cd\end{flushright}",
+    ] {
+        let expected = if spaced.contains("flushright") {
+            positions(r"\begin{flushright}ab\\cd\end{flushright}")
+        } else {
+            bare.clone()
+        };
+        let got = positions(spaced);
+        assert_eq!(got.len(), expected.len(), "{spaced}");
+        for (g, want) in got.iter().zip(&expected) {
+            assert_eq!(g.0, want.0, "{spaced}");
+            assert!(
+                (g.1 - want.1).abs() < EPS && (g.2 - want.2).abs() < EPS,
+                "{spaced}: {g:?} vs {want:?}"
+            );
+        }
+    }
+    // Prose line breaks outside an environment unskip too.
+    let prose = e.typeset_text(r"ab \\cd").unwrap();
+    let plain = e.typeset_text(r"ab\\cd").unwrap();
+    let xs = |l: &Layout| l.glyphs.iter().map(|g| g.x).collect::<Vec<_>>();
+    assert_eq!(xs(&prose), xs(&plain));
+}

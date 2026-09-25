@@ -1547,6 +1547,14 @@ impl<'s> Parser<'s> {
                         }
                         _ => {}
                     }
+                    // LaTeX's `\\` begins with `\unskip`: the interword
+                    // space before a line break is not part of the line it
+                    // ends, so a centered or flush-right line does not
+                    // carry half a space of offset.
+                    if c == '\\' && run.ends_with(' ') {
+                        run.pop();
+                        run_spans.pop();
+                    }
                     flush_run(&mut items, &mut run, &mut run_spans);
                     match c {
                         '\\' => {

@@ -2745,11 +2745,18 @@ pub fn break_paragraph_into(
             let overfull = is_overfull;
 
             let badness = candidate_badness(*candidate, segment, eff_line_width);
-            // Underfull-past-stretch lines (INF badness, not overfull) stay illegal
-            // — keep scanning toward wider segments.
-            if badness >= INF_PENALTY && !overfull {
-                continue;
-            }
+            // An underfull line that needs more stretch than its glue offers
+            // (INF badness, not overfull) is a last resort — but it never
+            // bleeds into the margin, so it must beat every overfull
+            // alternative (TeX's final pass likewise accepts badness-10000
+            // underfull boxes rather than overfull ones). It stays SELECTABLE
+            // at a cost below the overfull base (see `overfull_cost` below),
+            // far above any feasible line, and scanning continues toward
+            // wider, possibly feasible, segments. Making it illegal forced the
+            // solver to overflow the margin whenever the only alternative to
+            // an overfull line was a very loose one — e.g. a hard break
+            // followed by a single long unbreakable token.
+            let underfull_past_stretch = badness >= INF_PENALTY && !overfull;
 
             let fitness = candidate_fitness(*candidate, segment, eff_line_width);
             let fitness_milli = fitness_ratio_milli(segment, eff_line_width);
@@ -2757,9 +2764,20 @@ pub fn break_paragraph_into(
             // stretchable underfull line strictly wins over bleeding into the margin.
             // Scale by overflow amount so an overfull token is isolated to its own line
             // rather than greedily dragging subsequent feasible words into the overflow.
+            // Past-stretch underfull lines pay a base just under the overfull one
+            // plus a STRONG shortfall term (1e5 per point). Badness caps at
+            // INF_PENALTY, so without it every past-stretch line would look
+            // equally bad and the DP would happily pick a stub line ("Expert 2:
+            // Former") to polish the next line's spacing; with it the
+            // least-underfull break wins, as a first-fit layout would choose.
+            // Bounded: 9e8 + 100 * (a full 1e6 mpt measure) stays below the
+            // 1e9 overfull base, so no underfull line ever loses to overflow.
             let overfull_cost = if overfull {
                 let overflow = segment.width.saturating_sub(eff_line_width).milli_points() as i64;
                 1_000_000_000i64.saturating_add(overflow.saturating_mul(100_000))
+            } else if underfull_past_stretch {
+                let shortfall = eff_line_width.saturating_sub(segment.width).milli_points() as i64;
+                900_000_000i64.saturating_add(shortfall.clamp(0, 999_999).saturating_mul(100))
             } else {
                 0i64
             };
@@ -3140,6 +3158,11 @@ pub fn break_paragraph_candidates(
                 continue;
             }
             let badness = candidate_badness(*candidate, segment, eff_line_width);
+            // Line-count variants exist so pagination can trade a line for
+            // better page breaks; they must stay good alternatives, so a
+            // past-stretch underfull line stays illegal here (unlike the
+            // baseline solver, where it is the last resort against overflow —
+            // the baseline variant above already carries that choice).
             if badness >= INF_PENALTY && !is_overfull {
                 continue;
             }
@@ -3981,6 +4004,59 @@ mod overfull_selectability_tests {
         let items = paragraph_items_from_text(&font, &format!("a {token} b"), size);
         let breaks = break_paragraph(&items, width);
         assert!(!breaks.is_empty(), "must still produce a layout");
+    }
+
+    #[test]
+    fn past_stretch_underfull_line_beats_bleeding_into_the_margin() {
+        // "Companion: TOKEN" fits the measure only as a very loose line (more
+        // stretch than its single space and glyph credit offer: INF badness),
+        // while pulling the next word up overflows the margin. The loose line
+        // must win: no break may be overfull when a non-overfull one exists.
+        // (Regression: past-stretch underfull lines were illegal, so the
+        // solver chose "Companion: TOKEN (management" and bled into the margin.)
+        let font = body();
+        let size = FontSize::from_points(10);
+        let width = LayoutUnit::from_points(200);
+        let token = "W".repeat(13);
+        let text = format!("Companion: {token} (management and expert-call agenda)");
+        let pulled = super::measure_text_with_pairs(
+            &font,
+            &format!("Companion: {token} (management"),
+            size,
+        );
+        assert!(pulled > width, "fixture: pulling the next word up must overflow");
+        // A lead-in line ending in a hard break (each item stream ends with
+        // fill + forced break) puts "Companion: …" on an inter-candidate
+        // segment — the case where the overfull alternative is selectable.
+        let mut items = paragraph_items_from_text(&font, "Analyst (internal)", size);
+        items.extend(paragraph_items_from_text(&font, &text, size));
+        let breaks = break_paragraph(&items, width);
+        let dbg: Vec<(i32, i32)> = breaks
+            .iter()
+            .map(|b| (b.badness, b.natural_width.milli_points()))
+            .collect();
+        assert!(
+            breaks.iter().all(|b| b.natural_width <= width),
+            "no line may bleed into the margin; breaks {dbg:?}"
+        );
+        let line_start = |i: usize| {
+            breaks.get(i).and_then(|b| match items.get(b.start) {
+                Some(super::ParagraphItem::Box(tb)) => Some(tb.text.clone()),
+                _ => None,
+            })
+        };
+        assert!(
+            line_start(1).as_deref() == Some("Companion:")
+                && line_start(2).as_deref().is_some_and(|t| t.starts_with("(man")),
+            "expected lines [lead-in] [Companion: TOKEN] [(management …]; starts \
+             {:?} {:?}; breaks {dbg:?}",
+            line_start(1),
+            line_start(2)
+        );
+        assert!(
+            breaks[1].badness >= INF_PENALTY,
+            "fixture must exercise a past-stretch (INF) underfull line; breaks {dbg:?}"
+        );
     }
 
     #[test]

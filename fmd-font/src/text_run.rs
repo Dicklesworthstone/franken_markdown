@@ -11,6 +11,8 @@
 use crate::shaping::{Direction, ShapedRun};
 use std::ops::Range;
 
+mod shaped;
+
 /// Unique identifier for an immutable font face.
 ///
 /// Plan §13.1: "Cache font data once per font identity, not per file or pane."
@@ -189,103 +191,22 @@ pub struct OwnedTextRun {
 impl OwnedTextRun {
     /// Construct an `OwnedTextRun` from a shaped run and layout scale.
     ///
-    /// The `scale` converts font design units into user coordinates (`font_size / units_per_em`).
+    /// The `scale` converts font design units into user coordinates
+    /// (`font_size / units_per_em`). Glyphs retain the shaper's visual order;
+    /// clusters are stored in logical source order in both directions. In RTL
+    /// runs their visual positions therefore descend through the cluster array.
+    ///
+    /// # Errors
+    /// Rejects a direction mismatch, non-positive/non-finite size or scale,
+    /// incomplete or non-monotone source coverage, invalid scalar boundaries,
+    /// missing glyphs, negative horizontal advances, or non-finite positioning.
+    /// Repeated cluster ranges must be consecutive, as for a base and its marks.
     pub fn from_shaped_run(
         context: TextRunContext,
         shaped: &ShapedRun,
         scale: f32,
     ) -> Result<Self, String> {
-        let logical_text = shaped.logical_text().to_string();
-        let is_rtl = context.direction == Direction::RightToLeft;
-
-        // Group shaped glyphs by distinct cluster ranges
-        let mut clusters: Vec<TextCluster> = Vec::new();
-        let mut run_glyphs: Vec<RunGlyph> = Vec::with_capacity(shaped.glyphs.len());
-
-        let mut cur_x = 0.0f32;
-        let mut glyph_idx = 0usize;
-
-        // Map glyphs to clusters while computing advances
-        let mut i = 0;
-        while i < shaped.glyphs.len() {
-            let cluster_byte_range = shaped.glyphs[i].cluster.clone();
-            let cluster_start_glyph = glyph_idx;
-            let cluster_x_start = cur_x;
-
-            // Gather all consecutive glyphs sharing this cluster byte range
-            while i < shaped.glyphs.len() && shaped.glyphs[i].cluster == cluster_byte_range {
-                let g = &shaped.glyphs[i];
-                let x_adv = (g.x_advance as f32) * scale;
-                let y_adv = (g.y_advance as f32) * scale;
-                let x_off = (g.x_offset as f32) * scale;
-                let y_off = (g.y_offset as f32) * scale;
-
-                run_glyphs.push(RunGlyph {
-                    glyph_id: g.glyph_id,
-                    font_id: context.font_id,
-                    cluster_index: clusters.len(),
-                    x_advance: x_adv,
-                    y_advance: y_adv,
-                    x_offset: x_off,
-                    y_offset: y_off,
-                });
-
-                cur_x += x_adv;
-                glyph_idx += 1;
-                i += 1;
-            }
-
-            let cluster_x_end = cur_x;
-
-            let utf16_start = match byte_to_utf16(&logical_text, cluster_byte_range.start) {
-                Some(off) => off,
-                None => {
-                    return Err(format!(
-                        "invalid cluster byte start: {}",
-                        cluster_byte_range.start
-                    ));
-                }
-            };
-            let utf16_end = match byte_to_utf16(&logical_text, cluster_byte_range.end) {
-                Some(off) => off,
-                None => {
-                    return Err(format!(
-                        "invalid cluster byte end: {}",
-                        cluster_byte_range.end
-                    ));
-                }
-            };
-
-            clusters.push(TextCluster {
-                cluster_index: clusters.len(),
-                byte_range: cluster_byte_range,
-                utf16_range: utf16_start..utf16_end,
-                glyph_range: cluster_start_glyph..glyph_idx,
-                x_start: cluster_x_start,
-                x_end: cluster_x_end,
-                font_id: context.font_id,
-            });
-        }
-
-        let total_advance = cur_x;
-
-        // If RTL, flip visual coordinates so clusters read right-to-left
-        if is_rtl {
-            for cluster in &mut clusters {
-                let old_start = cluster.x_start;
-                let old_end = cluster.x_end;
-                cluster.x_start = total_advance - old_end;
-                cluster.x_end = total_advance - old_start;
-            }
-        }
-
-        Ok(Self {
-            context,
-            logical_text,
-            clusters,
-            glyphs: run_glyphs,
-            total_advance,
-        })
+        shaped::build(context, shaped, scale)
     }
 
     /// Perform CPU line-level hit testing against visual X position.

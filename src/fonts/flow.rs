@@ -1,11 +1,13 @@
 //! Ready-to-use, deterministic bundled-face shaping for continuous-flow output.
 //!
-//! This is a simple left-to-right profile: precomposed Latin/Greek/Cyrillic,
-//! common punctuation and standalone symbols, real GSUB ligatures and GPOS pair
-//! kerning. Combining marks, bidi/joining scripts and emoji sequences require
-//! a host shaper and are refused, not emitted as unpositioned or missing glyphs.
-//! Tabs retain their logical byte and occupy four space advances. Code uses the
-//! bundled single upright mono face without ligature/kerning substitutions.
+//! This is a left-to-right profile: Latin/Greek/Cyrillic, common punctuation
+//! and standalone symbols, real GSUB ligatures and GPOS pair kerning. Latin
+//! combining sequences use the strict OpenType mark-positioning engine, retain
+//! exact source clusters, and require a face covering the whole sequence.
+//! Unsupported marks, bidi/joining scripts and emoji sequences still require
+//! a host shaper and are refused, never emitted unpositioned or missing.
+//! Tabs retain their logical byte and occupy four space advances. Code disables
+//! discretionary ligature/kerning substitutions but still positions marks.
 
 use super::{FontStyle, OpenTypeLayoutTables};
 use crate::display::DisplayList;
@@ -17,6 +19,8 @@ use crate::text::{
 };
 use crate::theme::FontFamily;
 use std::ops::Range;
+
+mod positioned;
 
 const MAX_RUN_BYTES: usize = 64 * 1024;
 const MAX_RUN_SCALARS: usize = 16 * 1024;
@@ -111,7 +115,8 @@ impl BundledFlowFonts {
     /// Shape one explicitly left-to-right fragment using the bundled profile.
     /// Can also be used as the callback to `to_styled_display_list`. Missing
     /// glyphs and unsupported sequences return errors with codepoint/byte
-    /// locations, without echoing the original document.
+    /// locations, without echoing the original document. Combining words use
+    /// the strict shaper's additional 4096-scalar/64-consecutive-mark limits.
     pub fn shape(
         &self, text: &str, size: f32, role: FlowTextRole, style: FlowInlineStyle,
     ) -> Result<OwnedTextRun, String> {
@@ -120,6 +125,9 @@ impl BundledFlowFonts {
         }
         if text.len() > MAX_RUN_BYTES {
             return Err("bundled flow shaping byte budget exceeded".to_owned());
+        }
+        if text.chars().any(positioned::is_mark) {
+            return self.shape_positioned(text, size, role, style);
         }
         let code = style.code || role == FlowTextRole::Code;
         let bold = style.bold || matches!(role, FlowTextRole::Heading(_) | FlowTextRole::TableHeader);
@@ -232,9 +240,9 @@ fn push_glyph(
     Ok(())
 }
 
-// Explicitly a simple LTR profile, not a Unicode bidi or mark-positioning
-// implementation. Independent mathematical symbols are safe only when mapped
-// by a supplied bundled face; unsupported scripts/sequences never get .notdef.
+// Explicitly a simple LTR profile, not a Unicode bidi implementation.
+// Combining sequences are routed separately through the strict OpenType
+// adapter; unsupported scripts/sequences never get .notdef glyphs.
 fn simple_ltr_scalar(ch: char) -> bool {
     if ch == '\t' { return true; }
     if ch.is_control() { return false; }
@@ -326,7 +334,7 @@ mod tests {
     #[test]
     fn complex_sequences_invalid_sizes_and_budget_excess_are_explicit_errors() {
         let fonts = BundledFlowFonts::new(FontFamily::Sans).unwrap();
-        for text in ["a\u{0301}", "אב", "العربية", "東京", "😀", "a\u{200d}b", "x\u{202e}y"] {
+        for text in ["\u{0301}a", "אב", "العربية", "東京", "😀", "a\u{200d}b", "x\u{202e}y"] {
             assert!(fonts.shape(text, 14.0, FlowTextRole::Body, FlowInlineStyle::default()).is_err(), "{text:?}");
         }
         for size in [0.0, -1.0, f32::NAN, f32::INFINITY] {

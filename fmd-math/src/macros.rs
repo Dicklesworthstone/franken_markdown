@@ -267,7 +267,10 @@ fn optional_group(
 }
 
 fn skip_spaces(toks: &[Tok<'_>], index: &mut usize) {
-    while toks.get(*index).is_some_and(|token| matches!(token.kind, TokKind::Space)) {
+    while toks
+        .get(*index)
+        .is_some_and(|token| matches!(token.kind, TokKind::Space))
+    {
         *index += 1;
     }
 }
@@ -464,7 +467,14 @@ impl<'a> Expansion<'a> {
         validate_body_tokens(name, params, &toks[body_start..k], cw_span.start)?;
         self.charge(k - body_start, cw_span)?;
         let body = toks[body_start..k].to_vec();
-        self.table.insert(name, Live { params, body, default });
+        self.table.insert(
+            name,
+            Live {
+                params,
+                body,
+                default,
+            },
+        );
         Ok(k + 1)
     }
 
@@ -498,7 +508,10 @@ impl<'a> Expansion<'a> {
         }
         self.charge(1, call_start)?;
         let params = self.table.get(name).map(|live| live.params).unwrap_or(0);
-        let optional = self.table.get(name).is_some_and(|live| live.default.is_some());
+        let optional = self
+            .table
+            .get(name)
+            .is_some_and(|live| live.default.is_some());
         let mut j = i + 1;
         // Borrow explicit arguments. None marks an omitted optional argument;
         // only that case clones the definition's default token sequence.
@@ -507,7 +520,10 @@ impl<'a> Expansion<'a> {
         let mut use_default = false;
         if optional {
             skip_spaces(toks, &mut j);
-            if matches!(toks.get(j).map(|token| &token.kind), Some(TokKind::Char('['))) {
+            if matches!(
+                toks.get(j).map(|token| &token.kind),
+                Some(TokKind::Char('['))
+            ) {
                 let (start, end) = optional_group(toks, j, self.src_len, name)?;
                 arguments.push(Some(&toks[start..end]));
                 end_span = toks[end].span;
@@ -565,17 +581,25 @@ impl<'a> Expansion<'a> {
         let call_span = call_start.union(end_span);
         let mut default = Vec::new();
         if use_default {
-            let count = self.table.get(name)
-                .and_then(|live| live.default.as_ref()).map_or(0, Vec::len);
+            let count = self
+                .table
+                .get(name)
+                .and_then(|live| live.default.as_ref())
+                .map_or(0, Vec::len);
             self.charge(count, call_span)?;
-            default = self.table.get(name)
-                .and_then(|live| live.default.clone()).unwrap_or_default();
+            default = self
+                .table
+                .get(name)
+                .and_then(|live| live.default.clone())
+                .unwrap_or_default();
             for token in &mut default {
                 token.span = call_span;
             }
         }
-        let args: Vec<&[Tok<'a>]> = arguments.iter()
-            .map(|argument| argument.unwrap_or(default.as_slice())).collect();
+        let args: Vec<&[Tok<'a>]> = arguments
+            .iter()
+            .map(|argument| argument.unwrap_or(default.as_slice()))
+            .collect();
         self.splice(name, &args, call_span, active, depth, out)?;
         Ok(j)
     }
@@ -597,7 +621,11 @@ impl<'a> Expansion<'a> {
         // Charge traversal/copy work even when every parameter is empty and
         // the complete body subsequently disappears during substitution.
         self.charge(count, call_span)?;
-        let body = self.table.get(name).map(|live| live.body.clone()).unwrap_or_default();
+        let body = self
+            .table
+            .get(name)
+            .map(|live| live.body.clone())
+            .unwrap_or_default();
         let mut replacement = Vec::new();
         let mut j = 0;
         while j < body.len() {
@@ -658,7 +686,10 @@ impl<'a> Expansion<'a> {
     /// consumed by a nested macro. Counting final output alone leaves
     /// exponential empty-output expansions effectively unbounded.
     fn charge(&mut self, units: usize, span: Span) -> Result<(), MathError> {
-        self.budget = self.budget.checked_sub(units).ok_or_else(|| Self::budget_error(span))?;
+        self.budget = self
+            .budget
+            .checked_sub(units)
+            .ok_or_else(|| Self::budget_error(span))?;
         Ok(())
     }
 }
@@ -792,17 +823,33 @@ mod tests {
         let mut set = MacroSet::new();
         set.define("a", 0, "xx").unwrap();
         for (prev, name) in [
-            ("a", "b"), ("b", "c"), ("c", "d"), ("d", "e"),
-            ("e", "f"), ("f", "g"), ("g", "h"), ("h", "i"),
-            ("i", "j"), ("j", "k"), ("k", "l"), ("l", "m"),
-            ("m", "n"), ("n", "o"), ("o", "p"), ("p", "q"), ("q", "r"),
+            ("a", "b"),
+            ("b", "c"),
+            ("c", "d"),
+            ("d", "e"),
+            ("e", "f"),
+            ("f", "g"),
+            ("g", "h"),
+            ("h", "i"),
+            ("i", "j"),
+            ("j", "k"),
+            ("k", "l"),
+            ("l", "m"),
+            ("m", "n"),
+            ("n", "o"),
+            ("o", "p"),
+            ("p", "q"),
+            ("q", "r"),
         ] {
             let body = format!("\\{prev}\\{prev}");
             set.define(name, 0, &body).unwrap();
         }
         let err = expand_str(r"\r", &set).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("more than") || msg.contains("nests deeper"), "{msg}");
+        assert!(
+            msg.contains("more than") || msg.contains("nests deeper"),
+            "{msg}"
+        );
     }
 
     #[test]
@@ -869,8 +916,12 @@ mod tests {
     #[test]
     fn packs_exist_by_content_id_and_name() {
         for id in [
-            "fmd-math/pack/default", "default", "fmd-math/pack/basic",
-            "basic", "fmd-math/pack/empty", "empty",
+            "fmd-math/pack/default",
+            "default",
+            "fmd-math/pack/basic",
+            "basic",
+            "fmd-math/pack/empty",
+            "empty",
         ] {
             assert!(MacroSet::pack(id).is_some(), "{id}");
         }
@@ -884,7 +935,8 @@ mod tests {
         let mut set = MacroSet::new();
         set.define("ratio", 2, r"\frac{#1}{#2}").unwrap();
         set.define("inverse", 2, r"\ratio{#2}{#1}").unwrap();
-        set.define("twice", 1, r"\inverse{2}{#1}+\inverse{2}{#1}").unwrap();
+        set.define("twice", 1, r"\inverse{2}{#1}+\inverse{2}{#1}")
+            .unwrap();
         assert_eq!(
             expand_str(r"\twice{x+y}", &set).unwrap(),
             r"\frac {x+y}{2}+\frac {x+y}{2}",
@@ -919,7 +971,11 @@ mod tests {
                 _ => {}
             }
         }
-        assert!(tokens.iter().any(|token| matches!(token.kind, TokKind::Char('中'))));
+        assert!(
+            tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokKind::Char('中')))
+        );
     }
 
     #[test]
@@ -927,12 +983,26 @@ mod tests {
         let mut set = MacroSet::new();
         set.define("a", 0, "").unwrap();
         for (previous, name) in [
-            ("a", "b"), ("b", "c"), ("c", "d"), ("d", "e"),
-            ("e", "f"), ("f", "g"), ("g", "h"), ("h", "i"),
-            ("i", "j"), ("j", "k"), ("k", "l"), ("l", "m"),
-            ("m", "n"), ("n", "o"), ("o", "p"), ("p", "q"), ("q", "r"),
+            ("a", "b"),
+            ("b", "c"),
+            ("c", "d"),
+            ("d", "e"),
+            ("e", "f"),
+            ("f", "g"),
+            ("g", "h"),
+            ("h", "i"),
+            ("i", "j"),
+            ("j", "k"),
+            ("k", "l"),
+            ("l", "m"),
+            ("m", "n"),
+            ("n", "o"),
+            ("o", "p"),
+            ("p", "q"),
+            ("q", "r"),
         ] {
-            set.define(name, 0, &format!("\\{previous}\\{previous}")).unwrap();
+            set.define(name, 0, &format!("\\{previous}\\{previous}"))
+                .unwrap();
         }
         let error = expand_str(r"\r", &set).unwrap_err();
         assert!(error.to_string().contains("token work units"), "{error}");
@@ -942,7 +1012,8 @@ mod tests {
     fn discarded_intermediate_replacements_still_consume_budget() {
         let mut set = MacroSet::new();
         set.define("discard", 1, "").unwrap();
-        set.define("large", 1, r"\discard{#1#1#1#1#1#1#1#1#1}").unwrap();
+        set.define("large", 1, r"\discard{#1#1#1#1#1#1#1#1#1}")
+            .unwrap();
         let source = format!("\\large{{{}}}", "x".repeat(8192));
         let error = expand_str(&source, &set).unwrap_err();
         assert!(error.to_string().contains("token work units"), "{error}");
@@ -1006,7 +1077,10 @@ mod tests {
             r"\newcommand{\third}[1]{\ratio[3]{#1}}",
             r"\ratio{x}+\third{y}",
         );
-        assert_eq!(expand_str(source, &set).unwrap(), r"\frac {x}{2}+\frac {y}{3}");
+        assert_eq!(
+            expand_str(source, &set).unwrap(),
+            r"\frac {x}{2}+\frac {y}{3}"
+        );
     }
 
     #[test]
@@ -1027,7 +1101,10 @@ mod tests {
         let source = format!("{prefix}\\pick");
         let tokens = expand(lex(&source), &set, source.len()).unwrap();
         assert_eq!(tokens.len(), 1);
-        assert_eq!((tokens[0].span.start, tokens[0].span.end), (prefix.len(), source.len()));
+        assert_eq!(
+            (tokens[0].span.start, tokens[0].span.end),
+            (prefix.len(), source.len())
+        );
         let source = format!("{prefix}\\pick[中]");
         let tokens = expand(lex(&source), &set, source.len()).unwrap();
         assert_eq!(tokens.len(), 1);
@@ -1040,9 +1117,18 @@ mod tests {
         for (source, message) in [
             (r"\newcommand{\pick}[1][abc", "unclosed optional argument"),
             (r"\newcommand{\pick}[1][#1]{#1}", "uses #1 but declares 0"),
-            (r"\newcommand{\pick}[1][x]{#1}\pick[a", "unclosed optional argument"),
-            (r"\newcommand{\pick}[1][x]{#1}{\pick[a}", "surrounding group"),
-            (r"\newcommand{\pick}[2][x]{#2}\pick[y]", "input ends before #2"),
+            (
+                r"\newcommand{\pick}[1][x]{#1}\pick[a",
+                "unclosed optional argument",
+            ),
+            (
+                r"\newcommand{\pick}[1][x]{#1}{\pick[a}",
+                "surrounding group",
+            ),
+            (
+                r"\newcommand{\pick}[2][x]{#2}\pick[y]",
+                "input ends before #2",
+            ),
         ] {
             let error = expand_str(source, &set).unwrap_err();
             assert!(error.to_string().contains(message), "{source}: {error}");
@@ -1052,7 +1138,8 @@ mod tests {
     #[test]
     fn optional_defaults_do_not_bypass_recursion_or_work_limits() {
         let set = MacroSet::new();
-        let error = expand_str(r"\newcommand{\selfref}[1][\selfref]{#1}\selfref", &set).unwrap_err();
+        let error =
+            expand_str(r"\newcommand{\selfref}[1][\selfref]{#1}\selfref", &set).unwrap_err();
         assert!(error.to_string().contains("recursive macro"), "{error}");
         let source = format!(
             "\\newcommand{{\\large}}[1][{}]{{#1#1#1#1#1#1#1#1#1}}\\large",

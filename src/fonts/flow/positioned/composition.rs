@@ -14,6 +14,19 @@
 use super::{BundledFlowFonts, FlowInlineStyle, FlowTextRole, OwnedTextRun, is_mark};
 use std::ops::Range;
 
+impl BundledFlowFonts {
+    /// Look up one supported canonical Latin base/mark composition.
+    ///
+    /// Shares the reader's fixed Unicode 15.1 table with other render backends.
+    /// This is not a Unicode normalizer: callers must handle complete mark
+    /// sequences, retain source ranges and verify the chosen font has the
+    /// resulting glyph. There is no font lookup or allocation in this method.
+    #[must_use]
+    pub fn canonical_latin_composite(base: char, mark: char) -> Option<char> {
+        compose_pair(base, mark)
+    }
+}
+
 struct SourceUnit {
     rendered: Range<usize>,
     source: Range<usize>,

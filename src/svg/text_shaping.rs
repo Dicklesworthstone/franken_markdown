@@ -10,6 +10,9 @@ use std::ops::Range;
 use franken_markdown::text::{Kerning, Ligatures};
 use super::{Op, Poster, RStyle, SvgWarning};
 
+#[path = "text_composition.rs"]
+mod composition;
+
 struct Tables {
     ligatures: Ligatures,
     kerning: Kerning,
@@ -105,6 +108,11 @@ impl<'a> Shaper<'a> {
     }
 
     pub(super) fn shape(&self, text: &str, style: RStyle, size: f64) -> ShapedText {
+        composition::shape(self, text, style, size)
+            .unwrap_or_else(|| self.shape_uncomposed(text, style, size))
+    }
+
+    fn shape_uncomposed(&self, text: &str, style: RStyle, size: f64) -> ShapedText {
         let source: Vec<_> = text.char_indices().map(|(byte, ch)| {
             let (slot, id) = self.poster.resolve(ch, style);
             (byte, ch, slot, id)

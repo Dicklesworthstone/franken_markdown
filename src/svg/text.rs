@@ -2,31 +2,36 @@
 
 use super::{Op, Piece, Poster, RStyle, SvgWarning, Word};
 
+#[path = "text_shaping.rs"]
+mod shaping;
+use shaping::{ShapedText, Shaper};
+
+#[path = "text_wrapping.rs"]
+mod wrapping;
+use wrapping::place_shaped;
+
 impl Poster {
-    /// Greedy word wrapping with explicit gaps. A word can span any number of
-    /// styles; only source whitespace permits a normal line break. Overlong
-    /// words are split at scalar boundaries as an emergency (no content loss).
+    /// Greedy wrapping of shaped text. Style boundaries do not introduce spaces
+    /// or break opportunities. Emergency breaks retain complete glyph clusters
+    /// and discard kerning to a glyph that moved onto the following line.
     pub(super) fn wrap(&self, pieces: &[Piece], size: f64, width: f64) -> Vec<Vec<Word>> {
         let width = width.max(1.0);
+        let shaper = Shaper::new(self);
         let mut flow = TextFlow::default();
         for piece in pieces {
             match piece {
                 Piece::Break => {
-                    self.place_word(&mut flow, size, width);
+                    self.place_word(&mut flow, &shaper, size, width);
                     flow.new_line();
                     flow.gap = 0.0;
                     flow.trailing_break = true;
                 }
                 Piece::Image(destination, alt, style) => {
-                    let run = self.image_word(destination, alt, *style, size, width);
-                    flow.word_width += run.w;
-                    flow.word.push(run);
+                    flow.word.push(self.image_word(destination, alt, *style, size, width));
                     flow.trailing_break = false;
                 }
                 Piece::Math(source, display, style) => {
-                    let run = self.math_word(source, *display, *style, size, width);
-                    flow.word_width += run.w;
-                    flow.word.push(run);
+                    flow.word.push(self.math_word(source, *display, *style, size, width));
                     flow.trailing_break = false;
                 }
                 Piece::Text(text, style) => {
@@ -35,101 +40,81 @@ impl Poster {
                         // Code spans preserve their internal whitespace. NBSP
                         // and narrow NBSP never become ordinary breakable glue.
                         if !style.mono && breakable_space(ch) {
-                            self.append_run(&mut flow, &text[start..offset], *style, size);
-                            self.place_word(&mut flow, size, width);
+                            append_run(&mut flow, &text[start..offset], *style);
+                            self.place_word(&mut flow, &shaper, size, width);
                             if flow.gap == 0.0 {
                                 flow.gap = self.space_width(*style, size);
                             }
                             start = offset + ch.len_utf8();
                         }
                     }
-                    self.append_run(&mut flow, &text[start..], *style, size);
+                    append_run(&mut flow, &text[start..], *style);
                 }
             }
         }
-        self.place_word(&mut flow, size, width);
+        self.place_word(&mut flow, &shaper, size, width);
         if !flow.line.is_empty() || flow.trailing_break {
             flow.new_line();
         }
         flow.lines
     }
 
-    fn append_run(&self, flow: &mut TextFlow, text: &str, style: RStyle, size: f64) {
-        if text.is_empty() {
-            return;
-        }
-        let w = self.measure(text, style, size);
-        flow.word_width += w;
-        flow.trailing_break = false;
-        if let Some(last) = flow.word.last_mut().filter(|run| run.style == style && run.formula.is_none() && run.image.is_none() && run.warning.is_none()) {
-            last.text.push_str(text);
-            last.w += w;
-        } else {
-            flow.word.push(Word {
-                text: text.to_string(),
-                style,
-                w,
-                gap: 0.0,
-                formula: None,
-                image: None,
-                warning: None,
-            });
-        }
-    }
-
-    fn place_word(&self, flow: &mut TextFlow, size: f64, width: f64) {
+    fn place_word(&self, flow: &mut TextFlow, shaper: &Shaper<'_>, size: f64, width: f64) {
         if flow.word.is_empty() {
             return;
         }
+        let mut word = std::mem::take(&mut flow.word);
+        // Shape after equal-style pieces have coalesced. Adding separately
+        // measured widths would miss both ligatures and pairs at their join.
+        let shaped: Vec<_> = word.iter_mut().map(|run| {
+            if run.formula.is_some() || run.image.is_some() {
+                None
+            } else {
+                let text = shaper.shape(&run.text, run.style, size);
+                run.w = text.width();
+                Some(text)
+            }
+        }).collect();
+        let word_width: f64 = word.iter().map(|run| run.w).sum();
         let mut gap = if flow.line.is_empty() { 0.0 } else { flow.gap };
-        if !flow.line.is_empty() && flow.line_width + gap + flow.word_width > width {
+        if !flow.line.is_empty() && flow.line_width + gap + word_width > width {
             flow.new_line();
             gap = 0.0;
         }
-        let word = std::mem::take(&mut flow.word);
-        if flow.word_width <= width {
-            flow.line_width += gap + flow.word_width;
+        if word_width <= width {
+            flow.line_width += gap + word_width;
             for (index, mut run) in word.into_iter().enumerate() {
                 run.gap = if index == 0 { gap } else { 0.0 };
                 flow.line.push(run);
             }
         } else {
-            // The entire word exceeds the measure: consume each scalar once.
-            // Zero-advance combining characters stay on their preceding line.
-            for run in word {
-                if run.formula.is_some() || run.image.is_some() {
+            for (run, shaped) in word.into_iter().zip(shaped) {
+                if let Some(shaped) = shaped {
+                    place_shaped(flow, run, &shaped, width);
+                } else {
                     if !flow.line.is_empty() && flow.line_width + run.w > width {
                         flow.new_line();
                     }
                     flow.line_width += run.w;
                     flow.line.push(run);
-                    continue;
                 }
-                let mut warning = run.warning;
-                let mut chunk = String::new();
-                let mut chunk_width = 0.0;
-                for ch in run.text.chars() {
-                    let advance = self.advance(self.resolve(ch, run.style).0, ch, size);
-                    if advance > 0.0 && flow.line_width > 0.0
-                        && flow.line_width + advance > width
-                    {
-                        push_chunk(flow, &mut chunk, &mut chunk_width, run.style, &mut warning);
-                        flow.new_line();
-                    }
-                    chunk.push(ch);
-                    chunk_width += advance;
-                    flow.line_width += advance;
-                }
-                push_chunk(flow, &mut chunk, &mut chunk_width, run.style, &mut warning);
             }
         }
-        flow.word_width = 0.0;
         flow.gap = 0.0;
     }
 
     pub(super) fn draw_words(&mut self, words: &[Word], x: f64, baseline: f64, size: f64) {
+        // Resolve all text against these exact faces before mutably drawing
+        // images/math. One pass-local table cache serves every styled fragment.
+        let shaped: Vec<_> = {
+            let shaper = Shaper::new(self);
+            words.iter().map(|word| {
+                (word.image.is_none() && word.formula.is_none())
+                    .then(|| shaper.shape(&word.text, word.style, size))
+            }).collect()
+        };
         let mut pen = x;
-        for word in words {
+        for (word, shaped) in words.iter().zip(shaped) {
             pen += word.gap;
             if let Some(warning) = &word.warning {
                 self.warnings.push(warning.clone());
@@ -147,8 +132,8 @@ impl Poster {
                     });
                 }
                 pen += word.w;
-            } else {
-                pen = self.draw_text(pen, baseline, &word.text, word.style, size);
+            } else if let Some(shaped) = shaped {
+                pen = shaped.paint(self, pen, baseline, word.style, size);
             }
         }
     }
@@ -157,38 +142,24 @@ impl Poster {
         words.iter().map(|word| word.gap + word.w).sum()
     }
 
-    /// Wrap code without collapsing indentation or dropping spaces. Tabs use
-    /// four-column stops in the source line, independent of visual wrapping.
-    pub(super) fn code_lines(&self, code: &str, size: f64, width: f64) -> Vec<String> {
-        let style = RStyle { mono: true, ..RStyle::BODY };
-        let width = width.max(1.0);
-        let mut lines = Vec::new();
-        for source in code.lines() {
-            let mut line = String::new();
-            let mut used = 0.0;
-            let mut column = 0usize;
-            for ch in source.chars() {
-                let count = if ch == '\t' { 4 - column % 4 } else { 1 };
-                let ch = if ch == '\t' { ' ' } else { ch };
-                let advance = self.advance(self.resolve(ch, style).0, ch, size);
-                for _ in 0..count {
-                    if advance > 0.0 && used > 0.0 && used + advance > width {
-                        lines.push(std::mem::take(&mut line));
-                        used = 0.0;
-                    }
-                    line.push(ch);
-                    used += advance;
-                }
-                column = column.saturating_add(count);
-            }
-            lines.push(line);
-        }
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
-        lines
+
+}
+
+fn append_run(flow: &mut TextFlow, text: &str, style: RStyle) {
+    if text.is_empty() { return; }
+    flow.trailing_break = false;
+    if let Some(last) = flow.word.last_mut().filter(|run| {
+        run.style == style && run.formula.is_none() && run.image.is_none() && run.warning.is_none()
+    }) {
+        last.text.push_str(text);
+    } else {
+        flow.word.push(Word {
+            text: text.to_owned(), style, w: 0.0, gap: 0.0,
+            formula: None, image: None, warning: None,
+        });
     }
 }
+
 
 fn breakable_space(ch: char) -> bool {
     ch.is_whitespace() && !matches!(ch, '\u{00a0}' | '\u{202f}')
@@ -200,7 +171,6 @@ struct TextFlow {
     line: Vec<Word>,
     line_width: f64,
     word: Vec<Word>,
-    word_width: f64,
     gap: f64,
     trailing_break: bool,
 }
@@ -212,19 +182,6 @@ impl TextFlow {
     }
 }
 
-fn push_chunk(flow: &mut TextFlow, text: &mut String, width: &mut f64, style: RStyle,
-    warning: &mut Option<SvgWarning>)
-{
-    if !text.is_empty() {
-        flow.line.push(Word {
-            text: std::mem::take(text),
-            style,
-            w: *width,
-            gap: 0.0,
-            formula: None,
-                image: None,
-            warning: warning.take(),
-        });
-        *width = 0.0;
-    }
-}
+#[cfg(test)]
+#[path = "text_shaping_tests.rs"]
+mod shaping_tests;

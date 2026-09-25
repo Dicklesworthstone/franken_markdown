@@ -5,7 +5,10 @@
 //! Heights and document totals use the entire nonnegative `u64` domain. Mutation
 //! validates every affected leaf, directory node, and the document total before
 //! publishing anything. Refinements reserve only affected leaf pages; directory
-//! updates stage only the logarithmic paths that actually change.
+//! updates stage only the logarithmic paths that actually change. Parallel
+//! height/count directories give logarithmic scroll and ordinal lookup even
+//! with zero-height blocks. Structural edits copy only the affected leaf; a
+//! split rebuilds page metadata rather than flattening the document.
 
 use crate::block_flow::{BlockFlowError, LogicalHeight, ScrollAnchor};
 use std::collections::BTreeMap;
@@ -280,6 +283,10 @@ impl Default for PagedHeightDirectory {
 pub struct PagedHeightIndex {
     pages: Vec<Page>,
     directory: PagedHeightDirectory,
+    // A second directory indexes block counts, not heights. Zero-height blocks
+    // still occupy positions and must never disappear from ordinal lookup.
+    counts: PagedHeightDirectory,
+    block_count: usize,
     page_capacity: usize,
     structural_revision: u64,
 }
@@ -288,6 +295,7 @@ pub struct PagedHeightIndex {
 impl PartialEq for PagedHeightIndex {
     fn eq(&self, other: &Self) -> bool {
         self.pages == other.pages && self.directory == other.directory
+            && self.counts == other.counts && self.block_count == other.block_count
             && self.page_capacity == other.page_capacity
     }
 }
@@ -302,6 +310,7 @@ impl PagedHeightIndex {
     #[must_use]
     pub fn with_page_capacity(capacity: usize) -> Self {
         Self { pages: Vec::new(), directory: PagedHeightDirectory::new(),
+            counts: PagedHeightDirectory::new(), block_count: 0,
             page_capacity: capacity.max(2), structural_revision: 0 }
     }
 
@@ -317,18 +326,22 @@ impl PagedHeightIndex {
         let capacity = capacity.max(2);
         let mut pages = Vec::new();
         let mut totals = Vec::new();
+        let mut lengths = Vec::new();
         for chunk in heights.chunks(capacity) {
             let page = Page::try_new(chunk)?;
             totals.push(page.total_height());
+            lengths.push(LogicalHeight::from_raw(chunk.len() as u64));
             pages.push(page);
         }
         let directory = PagedHeightDirectory::with_page_totals(&totals)?;
-        Ok(Self { pages, directory, page_capacity: capacity, structural_revision: 0 })
+        let counts = PagedHeightDirectory::with_page_totals(&lengths)?;
+        Ok(Self { pages, directory, counts, block_count: heights.len(),
+            page_capacity: capacity, structural_revision: 0 })
     }
 
-    /// Total number of blocks.
+    /// Total number of blocks, available in constant time.
     #[must_use]
-    pub fn len(&self) -> usize { self.pages.iter().map(Page::len).sum() }
+    pub fn len(&self) -> usize { self.block_count }
 
     /// Whether the index has zero blocks.
     #[must_use]
@@ -347,14 +360,15 @@ impl PagedHeightIndex {
         self.directory.prefix_height(self.pages.len())
     }
 
-    /// Locate a global block's page and local index.
+    /// Locate a global block in logarithmic page-count time, including blocks
+    /// whose measured height is zero. No preceding leaves are scanned.
     pub fn locate_block(&self, block_index: usize) -> Result<(usize, usize), BlockFlowError> {
-        let mut remaining = block_index;
-        for (page, leaf) in self.pages.iter().enumerate() {
-            if remaining < leaf.len() { return Ok((page, remaining)); }
-            remaining -= leaf.len();
+        if block_index >= self.block_count {
+            return Err(BlockFlowError::IndexOutOfBounds { index: block_index, len: self.block_count });
         }
-        Err(BlockFlowError::IndexOutOfBounds { index: block_index, len: self.len() })
+        let (page, local) = self.counts.find_page_for_scroll(LogicalHeight::from_raw(block_index as u64))?;
+        let local = usize::try_from(local.raw()).map_err(|_| BlockFlowError::ArithmeticOverflow)?;
+        Ok((page, local))
     }
 
     /// Return a block height.
@@ -379,8 +393,10 @@ impl PagedHeightIndex {
         if self.is_empty() { return Ok(ScrollAnchor::new(0, LogicalHeight::ZERO)); }
         let (page, local_y) = self.directory.find_page_for_scroll(scroll_y)?;
         let (local, offset) = self.pages[page].find_local_anchor(local_y)?;
-        let start: usize = self.pages[..page].iter().map(Page::len).sum();
-        Ok(ScrollAnchor::new(start + local, offset))
+        let start = usize::try_from(self.counts.prefix_height(page)?.raw())
+            .map_err(|_| BlockFlowError::ArithmeticOverflow)?;
+        let block = start.checked_add(local).ok_or(BlockFlowError::ArithmeticOverflow)?;
+        Ok(ScrollAnchor::new(block, offset))
     }
 
     /// Reserve old/new versions of the affected pages for background refinement.
@@ -401,15 +417,25 @@ impl PagedHeightIndex {
     // pages are published. Only touched Fenwick nodes and leaf pages are staged.
     fn replace_pages(&mut self, replacements: BTreeMap<usize, Page>) -> Result<(), BlockFlowError> {
         let mut changes = BTreeMap::new();
+        let mut count_changes = BTreeMap::new();
         for (&index, page) in &replacements {
             let old = self.pages.get(index).ok_or(BlockFlowError::IndexOutOfBounds {
                 index, len: self.pages.len(),
             })?;
-            changes.insert(index, i128::from(page.total_height.raw()) - i128::from(old.total_height.raw()));
+            if old.total_height != page.total_height {
+                changes.insert(index, i128::from(page.total_height.raw()) - i128::from(old.total_height.raw()));
+            }
+            if old.len() != page.len() {
+                count_changes.insert(index, page.len() as i128 - old.len() as i128);
+            }
         }
         let update = self.directory.prepare_adjustments(&changes)?;
+        let counts = self.counts.prepare_adjustments(&count_changes)?;
+        let block_count = usize::try_from(counts.total).map_err(|_| BlockFlowError::ArithmeticOverflow)?;
         for (index, page) in replacements { self.pages[index] = page; }
         self.directory.apply(update);
+        self.counts.apply(counts);
+        self.block_count = block_count;
         Ok(())
     }
 
@@ -435,11 +461,15 @@ impl PagedHeightIndex {
         self.replace_pages(replacements)
     }
 
-    /// Insert a new block height. Errors leave the complete index unchanged.
+    /// Insert a block, splitting only the destination leaf when it is full.
+    /// A split rebuilds page-level metadata, never a flat copy of all blocks.
+    /// Errors leave both directories and every leaf unchanged.
     pub fn insert_block(&mut self, block_index: usize, height: LogicalHeight) -> Result<(), BlockFlowError> {
         let len = self.len();
         if block_index > len { return Err(BlockFlowError::IndexOutOfBounds { index: block_index, len }); }
         let revision = self.structural_revision.checked_add(1).ok_or(BlockFlowError::ArithmeticOverflow)?;
+        let block_count = len.checked_add(1).ok_or(BlockFlowError::ArithmeticOverflow)?;
+        self.total_height()?.checked_add(height).ok_or(BlockFlowError::ArithmeticOverflow)?;
         if self.is_empty() {
             let mut next = Self::with_heights_and_capacity(&[height], self.page_capacity)?;
             next.structural_revision = revision;
@@ -456,13 +486,35 @@ impl PagedHeightIndex {
             self.replace_pages(BTreeMap::from([(page, replacement)]))?;
             self.structural_revision = revision;
         } else {
-            let capacity = len.checked_add(1).ok_or(BlockFlowError::ArithmeticOverflow)?;
-            let mut heights = Vec::with_capacity(capacity);
-            for leaf in &self.pages { heights.extend_from_slice(&leaf.heights); }
-            heights.insert(block_index, height);
-            let mut next = Self::with_heights_and_capacity(&heights, self.page_capacity)?;
-            next.structural_revision = revision;
-            *self = next;
+            // Only this leaf's height buffer is copied. Other leaf buffers
+            // retain their allocations even if the outer page vector moves.
+            let mut heights = self.pages[page].heights.clone();
+            heights.insert(local, height);
+            let middle = heights.len() / 2;
+            let left = Page::try_new(&heights[..middle])?;
+            let right = Page::try_new(&heights[middle..])?;
+            let page_count = self.pages.len().checked_add(1).ok_or(BlockFlowError::ArithmeticOverflow)?;
+            let mut totals = Vec::with_capacity(page_count);
+            let mut lengths = Vec::with_capacity(page_count);
+            for (index, leaf) in self.pages.iter().enumerate() {
+                if index == page {
+                    totals.extend([left.total_height(), right.total_height()]);
+                    lengths.extend([LogicalHeight::from_raw(left.len() as u64),
+                        LogicalHeight::from_raw(right.len() as u64)]);
+                } else {
+                    totals.push(leaf.total_height());
+                    lengths.push(LogicalHeight::from_raw(leaf.len() as u64));
+                }
+            }
+            let directory = PagedHeightDirectory::with_page_totals(&totals)?;
+            let counts = PagedHeightDirectory::with_page_totals(&lengths)?;
+            self.pages.reserve(1);
+            self.pages[page] = left;
+            self.pages.insert(page + 1, right);
+            self.directory = directory;
+            self.counts = counts;
+            self.block_count = block_count;
+            self.structural_revision = revision;
         }
         Ok(())
     }
@@ -476,9 +528,15 @@ impl PagedHeightIndex {
         if replacement.is_empty() {
             let totals: Vec<_> = self.pages.iter().enumerate()
                 .filter(|(index, _)| *index != page).map(|(_, leaf)| leaf.total_height()).collect();
+            let lengths: Vec<_> = self.pages.iter().enumerate()
+                .filter(|(index, _)| *index != page)
+                .map(|(_, leaf)| LogicalHeight::from_raw(leaf.len() as u64)).collect();
             let directory = PagedHeightDirectory::with_page_totals(&totals)?;
+            let counts = PagedHeightDirectory::with_page_totals(&lengths)?;
             self.pages.remove(page);
             self.directory = directory;
+            self.counts = counts;
+            self.block_count -= 1;
         } else {
             self.replace_pages(BTreeMap::from([(page, replacement)]))?;
         }
@@ -526,7 +584,8 @@ impl HeightRefinementTransaction {
             }
         }
         let replacements = self.reserved_pages.into_iter()
-            .filter_map(|(page, (original, staged))| (original != staged).then_some((page, staged)))
+            .filter(|(_, (original, staged))| original != staged)
+            .map(|(page, (_, staged))| (page, staged))
             .collect();
         index.replace_pages(replacements)
     }
@@ -821,5 +880,147 @@ mod atomicity_tests {
         assert_eq!(index.page_count(), 0);
         assert_contents(&index, &[]);
         assert_eq!(index.find_anchor_at_scroll(LogicalHeight::from_raw(99)).unwrap().block_id, 0);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod structural_tests {
+    use super::*;
+
+    fn h(value: u64) -> LogicalHeight { LogicalHeight::from_raw(value) }
+
+    fn check(index: &PagedHeightIndex, reference: &[LogicalHeight]) {
+        assert_eq!(index.len(), reference.len());
+        assert_eq!(index.directory.page_count(), index.pages.len());
+        assert_eq!(index.counts.page_count(), index.pages.len());
+        assert_eq!(index.counts.total, reference.len() as u64);
+        assert!(index.pages.iter().all(|page| !page.is_empty() && page.len() <= index.page_capacity()));
+        let mut prefix = 0_u64;
+        let mut page = 0;
+        let mut local = 0;
+        for (position, &height) in reference.iter().enumerate() {
+            if local == index.pages[page].len() { page += 1; local = 0; }
+            assert_eq!(index.locate_block(position).unwrap(), (page, local));
+            assert_eq!(index.block_height(position).unwrap(), height);
+            assert_eq!(index.prefix_height(position).unwrap().raw(), prefix);
+            prefix += height.raw();
+            local += 1;
+        }
+        assert_eq!(index.total_height().unwrap().raw(), prefix);
+        assert_eq!(index.prefix_height(reference.len()).unwrap().raw(), prefix);
+        assert!(index.locate_block(reference.len()).is_err());
+    }
+
+    #[test]
+    fn splitting_a_leaf_preserves_every_other_height_buffer() {
+        let capacity = 64;
+        let heights: Vec<_> = (0..2048).map(|_| h(1)).collect();
+        let mut index = PagedHeightIndex::with_heights_and_capacity(&heights, capacity).unwrap();
+        let addresses: Vec<_> = index.pages.iter().map(|page| page.heights.as_ptr()).collect();
+        let split = 9;
+        index.insert_block(split * capacity + 7, h(9)).unwrap();
+        assert_eq!(index.page_count(), addresses.len() + 1);
+        assert_eq!(index.len(), 2049);
+        assert_eq!(index.total_height().unwrap().raw(), 2057);
+        for (old, address) in addresses.into_iter().enumerate() {
+            if old != split {
+                let new = if old < split { old } else { old + 1 };
+                assert_eq!(index.pages[new].heights.as_ptr(), address,
+                    "a split must not clone an unrelated leaf buffer");
+            }
+        }
+        assert!(index.pages.iter().all(|page| page.len() <= capacity));
+        assert_eq!(index.block_height(split * capacity + 7).unwrap(), h(9));
+    }
+
+    #[test]
+    fn ordinal_directory_handles_zero_heights_and_uneven_pages() {
+        let mut reference = vec![h(0); 10];
+        let mut index = PagedHeightIndex::with_heights_and_capacity(&reference, 3).unwrap();
+        index.remove_block(0).unwrap();
+        reference.remove(0);
+        index.insert_block(8, h(0)).unwrap();
+        reference.insert(8, h(0));
+        check(&index, &reference);
+        assert_eq!(index.total_height().unwrap(), LogicalHeight::ZERO);
+        assert_eq!(index.counts.total, 10);
+    }
+
+    #[test]
+    fn mixed_structural_edits_and_refinements_match_a_flat_oracle() {
+        fn random(seed: &mut u64) -> u64 {
+            *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *seed >> 32
+        }
+        let mut seed = 32_032;
+        let mut reference = Vec::new();
+        let mut index = PagedHeightIndex::with_page_capacity(7);
+        for _ in 0..2000 {
+            match random(&mut seed) % 4 {
+                0 | 1 => {
+                    let position = random(&mut seed) as usize % (reference.len() + 1);
+                    let height = h(random(&mut seed) % 32);
+                    index.insert_block(position, height).unwrap();
+                    reference.insert(position, height);
+                }
+                2 if !reference.is_empty() => {
+                    let position = random(&mut seed) as usize % reference.len();
+                    assert_eq!(index.remove_block(position).unwrap(), reference.remove(position));
+                }
+                _ if !reference.is_empty() => {
+                    let position = random(&mut seed) as usize % reference.len();
+                    let count = (reference.len() - position).min(3);
+                    let values: Vec<_> = (0..count).map(|_| h(random(&mut seed) % 32)).collect();
+                    index.refine_heights(position, &values).unwrap();
+                    reference[position..position + count].copy_from_slice(&values);
+                }
+                _ => {}
+            }
+            check(&index, &reference);
+            if !reference.is_empty() {
+                let total: u64 = reference.iter().map(|value| value.raw()).sum();
+                let target = random(&mut seed) % (total + 1);
+                let mut offset = target;
+                let mut position = 0;
+                while position < reference.len() && offset >= reference[position].raw() {
+                    offset -= reference[position].raw();
+                    position += 1;
+                }
+                if position == reference.len() {
+                    position -= 1;
+                    offset = reference[position].raw();
+                }
+                let anchor = index.find_anchor_at_scroll(h(target)).unwrap();
+                assert_eq!((anchor.block_id, anchor.intra_block_offset.raw()), (position, offset));
+            }
+        }
+    }
+
+    #[test]
+    fn large_document_queries_use_consistent_ordinal_and_height_directories() {
+        let heights: Vec<_> = (0..100_000).map(|_| h(3)).collect();
+        let index = PagedHeightIndex::with_heights(&heights).unwrap();
+        for position in (0..100_000).step_by(7919).chain([99_999]) {
+            assert_eq!(index.locate_block(position).unwrap(), (position / 64, position % 64));
+            assert_eq!(index.prefix_height(position).unwrap().raw(), position as u64 * 3);
+            let anchor = index.find_anchor_at_scroll(h(position as u64 * 3 + 2)).unwrap();
+            assert_eq!(anchor.block_id, position);
+            assert_eq!(anchor.intra_block_offset.raw(), 2);
+        }
+        assert_eq!(index.total_height().unwrap().raw(), 300_000);
+    }
+
+    #[test]
+    fn failed_structural_edits_preserve_both_directories_and_reservations() {
+        let mut index = PagedHeightIndex::with_heights_and_capacity(&[h(1), h(0), h(u64::MAX - 1), h(0)], 2).unwrap();
+        let before = index.clone();
+        let mut transaction = index.begin_refinement(&[0]).unwrap();
+        transaction.stage_block_refinement(0, 0, h(0)).unwrap();
+        assert!(index.insert_block(0, h(1)).is_err());
+        assert!(index.remove_block(index.len()).is_err());
+        assert_eq!(index, before);
+        transaction.commit(&mut index).unwrap();
+        check(&index, &[h(0), h(0), h(u64::MAX - 1), h(0)]);
     }
 }

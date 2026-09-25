@@ -2750,8 +2750,8 @@ pub fn break_paragraph_into(
             // bleeds into the margin, so it must beat every overfull
             // alternative (TeX's final pass likewise accepts badness-10000
             // underfull boxes rather than overfull ones). It stays SELECTABLE
-            // at a cost below the overfull base (see `overfull_cost` below),
-            // far above any feasible line, and scanning continues toward
+            // at a cost below any visibly overfull line (see the cost ladder
+            // below), far above any feasible line, and scanning continues toward
             // wider, possibly feasible, segments. Making it illegal forced the
             // solver to overflow the margin whenever the only alternative to
             // an overfull line was a very loose one — e.g. a hard break
@@ -2760,24 +2760,43 @@ pub fn break_paragraph_into(
 
             let fitness = candidate_fitness(*candidate, segment, eff_line_width);
             let fitness_milli = fitness_ratio_milli(segment, eff_line_width);
-            // Overfull lines must carry a massive penalty so that any feasible or
-            // stretchable underfull line strictly wins over bleeding into the margin.
-            // Scale by overflow amount so an overfull token is isolated to its own line
-            // rather than greedily dragging subsequent feasible words into the overflow.
-            // Past-stretch underfull lines pay a base just under the overfull one
-            // plus a STRONG shortfall term (1e5 per point). Badness caps at
-            // INF_PENALTY, so without it every past-stretch line would look
-            // equally bad and the DP would happily pick a stub line ("Expert 2:
-            // Former") to polish the next line's spacing; with it the
-            // least-underfull break wins, as a first-fit layout would choose.
-            // Bounded: 9e8 + 100 * (a full 1e6 mpt measure) stays below the
-            // 1e9 overfull base, so no underfull line ever loses to overflow.
+            // Last-resort cost ladder (feasible lines stay far below ~1e8 each):
+            //   1. hfuzz-overfull — the line is overfull but its VISIBLE
+            //      overhang is <= OVERFULL_TOLERANCE_MPT (0.5 pt, below what
+            //      print or screen resolution shows; TeX's \hfuzz idea):
+            //      1e9 + overhang * 1e5 (<= 1.05e9);
+            //   2. past-stretch underfull: 1.5e9 + shortfall * 100 (1e5 per
+            //      point, so the least-underfull break wins — badness caps at
+            //      INF_PENALTY, and without this term the DP would pick a stub
+            //      line such as "Expert 2: Former" to polish the next line);
+            //   3. visibly overfull: 2e9 + natural overflow * 1e5, scaled so a
+            //      too-wide token is isolated on its own line rather than
+            //      dragging feasible words into the overflow.
+            // So an invisible sliver of overflow beats a lone-word underfull
+            // line, and a past-stretch underfull line beats any real bleed into
+            // the margin. The visible overhang of an inner (justified) line is
+            // what remains after its full shrink; a final line is drawn at its
+            // natural width, so its whole overflow shows.
+            const OVERFULL_TOLERANCE_MPT: i64 = 500;
             let overfull_cost = if overfull {
                 let overflow = segment.width.saturating_sub(eff_line_width).milli_points() as i64;
-                1_000_000_000i64.saturating_add(overflow.saturating_mul(100_000))
+                let visible = if include_box_elasticity {
+                    segment
+                        .width
+                        .saturating_sub(segment.shrink)
+                        .saturating_sub(eff_line_width)
+                        .milli_points() as i64
+                } else {
+                    overflow
+                };
+                if visible <= OVERFULL_TOLERANCE_MPT {
+                    1_000_000_000i64.saturating_add(visible.max(0).saturating_mul(100_000))
+                } else {
+                    2_000_000_000i64.saturating_add(overflow.saturating_mul(100_000))
+                }
             } else if underfull_past_stretch {
                 let shortfall = eff_line_width.saturating_sub(segment.width).milli_points() as i64;
-                900_000_000i64.saturating_add(shortfall.clamp(0, 999_999).saturating_mul(100))
+                1_500_000_000i64.saturating_add(shortfall.clamp(0, 999_999).saturating_mul(100))
             } else {
                 0i64
             };
@@ -4019,12 +4038,12 @@ mod overfull_selectability_tests {
         let width = LayoutUnit::from_points(200);
         let token = "W".repeat(13);
         let text = format!("Companion: {token} (management and expert-call agenda)");
-        let pulled = super::measure_text_with_pairs(
-            &font,
-            &format!("Companion: {token} (management"),
-            size,
+        let pulled =
+            super::measure_text_with_pairs(&font, &format!("Companion: {token} (management"), size);
+        assert!(
+            pulled > width,
+            "fixture: pulling the next word up must overflow"
         );
-        assert!(pulled > width, "fixture: pulling the next word up must overflow");
         // A lead-in line ending in a hard break (each item stream ends with
         // fill + forced break) puts "Companion: …" on an inter-candidate
         // segment — the case where the overfull alternative is selectable.
@@ -4047,7 +4066,9 @@ mod overfull_selectability_tests {
         };
         assert!(
             line_start(1).as_deref() == Some("Companion:")
-                && line_start(2).as_deref().is_some_and(|t| t.starts_with("(man")),
+                && line_start(2)
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("(man")),
             "expected lines [lead-in] [Companion: TOKEN] [(management …]; starts \
              {:?} {:?}; breaks {dbg:?}",
             line_start(1),

@@ -276,13 +276,14 @@ fn ascii_paragraph_gains_no_new_break_opportunities() {
 fn ascii_paragraph_lines_are_unchanged() {
     // Exact widths, computed from the oracle: every Latin glyph is 500 and the
     // space 250 at 10 pt, so "the quick" = 9 glyphs -> 8*5000 + 2500 mpt.
-    // Recorded from the renderer before CJK support existed; re-recorded after
-    // microtypography font expansion (45d2.1) let the breaker merge the short
-    // tail into the previous line within its new elastic budget.
+    // Recorded from the renderer before CJK support existed. (45d2.1 briefly
+    // re-recorded a merged 55_000 final line: on this 50 pt measure that line
+    // is drawn 5 pt past the margin. A past-stretch underfull line now beats
+    // any visible bleed, which restores the original five-line layout.)
     let widths = line_widths("the quick brown fox jumps over the lazy dog", 50);
     assert_eq!(
         widths.iter().map(|w| w.milli_points()).collect::<Vec<_>>(),
-        vec![42_500, 42_500, 47_500, 55_000]
+        vec![42_500, 42_500, 47_500, 37_500, 15_000]
     );
 }
 

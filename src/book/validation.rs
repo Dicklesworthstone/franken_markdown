@@ -10,6 +10,13 @@ use super::{Book, BookRenderer, paths};
 use crate::search_index::build_search_index;
 use crate::{Block, Document, Inline, RenderError, Result};
 
+#[path = "document_links.rs"]
+mod document_links;
+pub use document_links::{
+    AnchorKind, DocumentAnchor, DocumentLinkAnalysis, DocumentReference, ReferenceKind,
+    analyze_document_links,
+};
+
 const MAX_NODES: usize = 250_000;
 const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FINDINGS: usize = 4096;
@@ -145,11 +152,11 @@ pub fn check_book_links(book: &Book) -> Result<LinkReport> {
         let mut result = ChapterLinks { path: source.clone(), checked: 0, external: 0, unchecked: 0, findings: Vec::new() };
         for reference in &nav.references {
             let (destination, problem) = match reference {
-                Reference::Note(id) => {
+                Reference::Note(id, _) => {
                     result.checked += 1;
                     (*id, (!nav.definitions.contains_key(id)).then_some(("missing_footnote", "This parsed footnote reference has no definition in its chapter.")))
                 }
-                Reference::Link(destination) => {
+                Reference::Link(destination, _) => {
                     let dest = destination.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
                     if dest.starts_with("//") || scheme(dest) {
                         result.external += 1;
@@ -180,17 +187,7 @@ pub fn check_book_links(book: &Book) -> Result<LinkReport> {
                     };
                     let Some((target, suffix)) = local else { continue; };
                     result.checked += 1;
-                    let problem = match suffix.split_once('#').map(|(_, fragment)| fragment) {
-                        None | Some("") => None,
-                        Some(fragment) => match decode(fragment) {
-                            None => Some(("invalid_fragment", "This fragment is not valid percent-encoded UTF-8.")),
-                            Some(anchor) => match navigation[target].anchors.get(&anchor) {
-                                None => Some(("missing_anchor", "The target chapter has no emitted heading or referenced-footnote anchor with this ID.")),
-                                Some(&1) => None,
-                                Some(_) => Some(("ambiguous_anchor", "More than one emitted element uses this anchor; rename the colliding heading or note.")),
-                            },
-                        },
-                    };
+                    let problem = resolve_fragment(&navigation[target], &suffix).err();
                     (*destination, problem)
                 }
             };
@@ -279,61 +276,104 @@ fn admit_inlines(inlines: &[Inline], depth: usize, budget: &mut Budget) -> Resul
     Ok(())
 }
 
-enum Reference<'a> { Link(&'a str), Note(&'a str) }
+// Keep source ownership at top-level AST-block granularity. Nested and note
+// visitors retain the owning index; no substring search invents an inline span.
+enum Reference<'a> { Link(&'a str, usize), Note(&'a str, usize) }
 struct Navigation<'a> {
-    anchors: BTreeMap<String, usize>,
-    definitions: BTreeMap<&'a str, &'a [Block]>,
+    anchors: BTreeMap<String, DocumentAnchor>,
+    definitions: BTreeMap<&'a str, (&'a [Block], usize)>,
     references: Vec<Reference<'a>>,
     order: Vec<&'a str>,
+    order_blocks: Vec<usize>,
     seen: BTreeSet<&'a str>,
     headings: Vec<Block>,
+    heading_blocks: Vec<usize>,
+}
+impl Navigation<'_> {
+    fn anchor(&mut self, id: String, block_index: usize, title: String, kind: AnchorKind) {
+        self.anchors.entry(id.clone()).and_modify(|entry| entry.occurrences += 1)
+            .or_insert(DocumentAnchor { id, block_index, title, kind, occurrences: 1 });
+    }
 }
 fn navigation(doc: &Document) -> Navigation<'_> {
-    let mut nav = Navigation { anchors: BTreeMap::new(), definitions: BTreeMap::new(), references: Vec::new(), order: Vec::new(), seen: BTreeSet::new(), headings: Vec::new() };
-    definitions(&doc.blocks, &mut nav.definitions);
-    visit_blocks(&doc.blocks, &mut nav);
+    let mut nav = Navigation {
+        anchors: BTreeMap::new(), definitions: BTreeMap::new(), references: Vec::new(),
+        order: Vec::new(), order_blocks: Vec::new(), seen: BTreeSet::new(), headings: Vec::new(), heading_blocks: Vec::new(),
+    };
+    for (index, block) in doc.blocks.iter().enumerate() {
+        definitions(std::slice::from_ref(block), index, &mut nav.definitions);
+    }
+    for (index, block) in doc.blocks.iter().enumerate() {
+        visit_blocks(std::slice::from_ref(block), index, &mut nav);
+    }
     let mut cursor = 0;
     while let Some(&id) = nav.order.get(cursor) {
+        let reference_block = nav.order_blocks[cursor];
         cursor += 1;
-        *nav.anchors.entry(format!("fn-{id}")).or_default() += 1;
-        *nav.anchors.entry(format!("fnref-{cursor}")).or_default() += 1;
-        if let Some(&blocks) = nav.definitions.get(id) { visit_blocks(blocks, &mut nav); }
+        if let Some(&(blocks, definition_block)) = nav.definitions.get(id) {
+            nav.anchor(format!("fn-{id}"), definition_block, id.to_string(), AnchorKind::Footnote);
+            nav.anchor(format!("fnref-{cursor}"), reference_block, id.to_string(), AnchorKind::FootnoteBackreference);
+            visit_blocks(blocks, definition_block, &mut nav);
+        }
     }
     let headings = Document { blocks: std::mem::take(&mut nav.headings) };
-    for entry in build_search_index(&headings).entries { *nav.anchors.entry(entry.anchor).or_default() += 1; }
+    // This temporary document contains ONLY headings, so each index entry has
+    // exactly one corresponding owner. IDs use the publication algorithm.
+    let owners = std::mem::take(&mut nav.heading_blocks);
+    for (entry, block_index) in build_search_index(&headings).entries.into_iter().zip(owners) {
+        nav.anchor(entry.anchor, block_index, entry.text, AnchorKind::Heading);
+    }
     nav
 }
-fn definitions<'a>(blocks: &'a [Block], defs: &mut BTreeMap<&'a str, &'a [Block]>) {
+fn definitions<'a>(blocks: &'a [Block], owner: usize, defs: &mut BTreeMap<&'a str, (&'a [Block], usize)>) {
     for block in blocks { match block {
-        Block::FootnoteDefinition { id, blocks } => { defs.entry(id).or_insert(blocks); definitions(blocks, defs); }
-        Block::BlockQuote(blocks) => definitions(blocks, defs),
-        Block::List(list) => for item in &list.items { definitions(&item.blocks, defs); },
+        Block::FootnoteDefinition { id, blocks } => { defs.entry(id).or_insert((blocks, owner)); definitions(blocks, owner, defs); }
+        Block::BlockQuote(blocks) => definitions(blocks, owner, defs),
+        Block::List(list) => for item in &list.items { definitions(&item.blocks, owner, defs); },
         _ => {}
     } }
 }
-fn visit_blocks<'a>(blocks: &'a [Block], nav: &mut Navigation<'a>) {
+fn visit_blocks<'a>(blocks: &'a [Block], owner: usize, nav: &mut Navigation<'a>) {
     for block in blocks { match block {
-        Block::Heading { inlines, .. } => { nav.headings.push(block.clone()); visit_inlines(inlines, nav); }
-        Block::Paragraph(inlines) => visit_inlines(inlines, nav),
-        Block::BlockQuote(blocks) => visit_blocks(blocks, nav),
-        Block::List(list) => for item in &list.items { visit_blocks(&item.blocks, nav); },
-        Block::Table(table) => for cell in table.head.iter().chain(table.rows.iter().flatten()) { visit_inlines(cell, nav); },
-        Block::DefinitionList(items) => for item in items { for inlines in item.terms.iter().chain(&item.definitions) { visit_inlines(inlines, nav); } },
+        Block::Heading { inlines, .. } => {
+            nav.headings.push(block.clone()); nav.heading_blocks.push(owner);
+            visit_inlines(inlines, owner, nav);
+        }
+        Block::Paragraph(inlines) => visit_inlines(inlines, owner, nav),
+        Block::BlockQuote(blocks) => visit_blocks(blocks, owner, nav),
+        Block::List(list) => for item in &list.items { visit_blocks(&item.blocks, owner, nav); },
+        Block::Table(table) => for cell in table.head.iter().chain(table.rows.iter().flatten()) { visit_inlines(cell, owner, nav); },
+        Block::DefinitionList(items) => for item in items { for inlines in item.terms.iter().chain(&item.definitions) { visit_inlines(inlines, owner, nav); } },
         _ => {}
     } }
 }
-fn visit_inlines<'a>(inlines: &'a [Inline], nav: &mut Navigation<'a>) {
+fn visit_inlines<'a>(inlines: &'a [Inline], owner: usize, nav: &mut Navigation<'a>) {
     for inline in inlines { match inline {
-        Inline::Link { dest, content, .. } => { nav.references.push(Reference::Link(dest)); visit_inlines(content, nav); }
+        Inline::Link { dest, content, .. } => { nav.references.push(Reference::Link(dest, owner)); visit_inlines(content, owner, nav); }
         Inline::FootnoteRef { id } => {
-            nav.references.push(Reference::Note(id));
+            nav.references.push(Reference::Note(id, owner));
             if let Some((&id, _)) = nav.definitions.get_key_value(id.as_str()) {
-                if nav.seen.insert(id) { nav.order.push(id); }
+                if nav.seen.insert(id) { nav.order.push(id); nav.order_blocks.push(owner); }
             }
         }
-        Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => visit_inlines(inner, nav),
+        Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => visit_inlines(inner, owner, nav),
         _ => {}
     } }
+}
+
+// Shared by book checks and editor/document analysis. Decode exactly once;
+// empty fragments denote the document itself rather than a missing heading.
+fn resolve_fragment<'a>(nav: &'a Navigation<'_>, destination: &str)
+    -> std::result::Result<Option<&'a DocumentAnchor>, (&'static str, &'static str)>
+{
+    let Some((_, fragment)) = destination.split_once('#') else { return Ok(None); };
+    if fragment.is_empty() { return Ok(None); }
+    let id = decode(fragment).ok_or(("invalid_fragment", "This fragment is not valid percent-encoded UTF-8."))?;
+    match nav.anchors.get(&id) {
+        None => Err(("missing_anchor", "The target chapter has no emitted heading or referenced-footnote anchor with this ID.")),
+        Some(anchor) if anchor.occurrences == 1 => Ok(Some(anchor)),
+        Some(_) => Err(("ambiguous_anchor", "More than one emitted element uses this anchor; rename the colliding heading or note.")),
+    }
 }
 
 struct Json(String);

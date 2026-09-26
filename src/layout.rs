@@ -1395,7 +1395,7 @@ impl HyphenLangChoice {
 
     /// Warning code when the tag was unknown.
     #[must_use]
-    pub fn warning_code(&self) -> Option<&'static str> {
+    pub const fn warning_code(&self) -> Option<&'static str> {
         match self {
             Self::FallbackEnglish { .. } => Some(UNKNOWN_HYPHEN_LANG),
             Self::Selected(_) => None,
@@ -1987,7 +1987,7 @@ fn flatten_hyphen_trie(build_nodes: Vec<BuildHyphenNode>) -> HyphenTrie {
             first_edge: clamp_usize_to_u32(first_edge),
             edge_count: clamp_usize_to_u16(edges.len().saturating_sub(first_edge)),
             values_start: clamp_usize_to_u32(values_start),
-            values_len: clamp_usize_to_u8(values.len().saturating_sub(values_start)),
+            values_len: clamp_usize_to_u8(node.values.len()),
         });
     }
     let mut root_ascii = [u32::MAX; 128];
@@ -2329,9 +2329,18 @@ impl MetricPrefixes {
             stretch: LayoutUnit(clamp_i64_to_i32(
                 prefix_diff(&self.stretch, start, candidate.item_index) - elasticity,
             )),
-            shrink: LayoutUnit(clamp_i64_to_i32(
-                prefix_diff(&self.shrink, start, candidate.item_index) - elasticity,
-            )),
+            // Final and forced-break lines are painted without compression.
+            // Removing only box elasticity still admitted overwide lines via
+            // interword shrink that the emitter never applies (bead 4p8i).
+            // Keep ordinary inner-line flexibility unchanged; both the main
+            // and line-count DPs consult this same effective shrink budget.
+            shrink: if !include_box_elasticity || candidate.penalty == FORCED_BREAK_PENALTY {
+                LayoutUnit::ZERO
+            } else {
+                LayoutUnit(clamp_i64_to_i32(
+                    prefix_diff(&self.shrink, start, candidate.item_index) - elasticity,
+                ))
+            },
         }
     }
 }
@@ -2365,8 +2374,8 @@ struct ParetoState {
     /// Structure dimension: badness², fitness-class + gradual costs, river
     /// seeds, overflow.
     structure: i64,
-    /// Hyphenation dimension: squared break penalties + flagged-flag
-    /// adjacent demerits.
+    /// Hyphenation dimension: squared break penalties plus flagged-flag
+    /// adjacent demerits — the cost paid in hyphens.
     hyphen: i64,
 }
 
@@ -2950,9 +2959,7 @@ pub fn break_paragraph_into(
                 );
                 let line_demerit_val = line_structure.saturating_add(line_hyphen);
                 // River seeds (opt-in): penalize candidates whose previous line's
-                // last space aligns with a space in this line. prev_state's line
-                // gives the previous line's (start, end); the current line spans
-                // [start, candidate.item_index). No previous line (first line) → 0.
+                // last space aligns (within 1% of the measure) with a space in this line.
                 let river_cost = if scratch.river_penalty() {
                     river_seed_demerits(
                         items,
@@ -5403,7 +5410,7 @@ mod sota_typography_tests {
             },
         ];
         let space_l3 = vec![
-            // Aligns directly at x=50 across 3 lines
+            // Aligns directly at x=50
             SpaceCoordinate {
                 x: LayoutUnit::from_points(50),
                 width: LayoutUnit::from_points(4),

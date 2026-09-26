@@ -2438,10 +2438,12 @@ pub struct ParagraphLayoutScratch {
     forced_prefix: Vec<usize>,
     metrics: MetricPrefixes,
     states: Vec<Option<BreakState>>,
-    /// Glyph-expansion credit in permilli of box width, applied by
-    /// `break_paragraph_into` while evaluating non-final lines. Defaults to
-    /// 15 (±1.5%); justified emitters apply the matching compression, so a
-    /// caller rendering purely ragged text should set this to 0.
+    /// Whether non-final, non-forced lines will be justified by the painter.
+    /// Ragged lines must fit without either glue shrink or glyph contraction.
+    justified: bool,
+    /// Configured glyph-expansion credit in permilli of box width. The credit
+    /// is only used on lines the painter will justify; toggling the fitting
+    /// policy never destroys the caller's configured value.
     expansion_permilli: u16,
     /// Enable gradual adjacent demerits (Verna DocEng '25): replaces the
     /// coarse 4-class binary fitness check with a linear penalty proportional
@@ -2474,6 +2476,7 @@ impl Default for ParagraphLayoutScratch {
             forced_prefix: Vec::new(),
             metrics: MetricPrefixes::default(),
             states: Vec::new(),
+            justified: true,
             expansion_permilli: 15,
             gradual_demerits: false,
             river_penalty: false,
@@ -2491,7 +2494,22 @@ impl ParagraphLayoutScratch {
         Self::default()
     }
 
-    /// Set the glyph-expansion credit for subsequent paragraph breaks.
+    /// Match the fitting policy to the painter. Defaults to `true`, preserving
+    /// the existing justified-paragraph API. `false` fits every line at natural
+    /// width and scores ragged shortfall instead of hypothetical space stretch.
+    /// Final and forced-break lines are never allowed to borrow compression.
+    /// This setting survives `clear`; set it for each differently styled block
+    /// when reusing scratch across a document.
+    pub fn set_justified(&mut self, justified: bool) {
+        self.justified = justified;
+    }
+
+    #[must_use]
+    pub const fn is_justified(&self) -> bool {
+        self.justified
+    }
+
+    /// Set the glyph-expansion credit for subsequent justified paragraph breaks.
     /// `permilli` is clamped to `0..=100` (±10% is already visually extreme).
     pub fn set_expansion_permilli(&mut self, permilli: u16) {
         self.expansion_permilli = permilli.min(100);
@@ -2706,12 +2724,11 @@ pub fn break_paragraph_into(
             // segment can also be INF, and would wrongly stop the scan.) The
             // start = 0 whole-prefix segment is the widest of all, so its overflow
             // says nothing about narrower predecessors — skip it, don't stop.
-            // The FINAL line of a paragraph is never justified (no emitter
-            // applies glyph compression to it), so it must not lean on the
-            // expansion credit: evaluating it without the credit keeps the
-            // solver-emitter contract symmetric and prevents sub-1.5% margin
-            // overhangs on ragged tails.
-            let include_box_elasticity = candidate.next != items.len();
+            // Only credit adjustments that this block's painter will apply.
+            // Ragged blocks, paragraph tails and hard-break lines all use
+            // natural widths, regardless of the configured expansion limit.
+            let include_box_elasticity =
+                line_can_adjust(scratch.is_justified(), *candidate, items.len());
             let segment =
                 scratch
                     .metrics
@@ -2753,7 +2770,9 @@ pub fn break_paragraph_into(
             }
             let overfull = is_overfull;
 
-            let badness = candidate_badness(*candidate, segment, eff_line_width);
+            let (badness, fitness, fitness_milli) = candidate_quality(
+                *candidate, segment, eff_line_width, scratch.is_justified(),
+            );
             // An underfull line that needs more stretch than its glue offers
             // (INF badness, not overfull) is a last resort — but it never
             // bleeds into the margin, so it must beat every overfull
@@ -2767,8 +2786,6 @@ pub fn break_paragraph_into(
             // followed by a single long unbreakable token.
             let underfull_past_stretch = badness >= INF_PENALTY && !overfull;
 
-            let fitness = candidate_fitness(*candidate, segment, eff_line_width);
-            let fitness_milli = fitness_ratio_milli(segment, eff_line_width);
             // Last-resort cost ladder (feasible lines stay far below ~1e8 each):
             //   1. hfuzz-overfull — the line is overfull but its VISIBLE
             //      overhang is <= OVERFULL_TOLERANCE_MPT (0.5 pt, below what
@@ -3019,7 +3036,9 @@ pub fn break_paragraph_into(
             return;
         };
         if last.is_empty() {
-            greedy_break_paragraph_into(candidates, line_width, &scratch.metrics, out);
+            greedy_break_paragraph_into(
+                candidates, line_width, &scratch.metrics, scratch.is_justified(), out,
+            );
             return;
         }
         let mut best_pos = 0usize;
@@ -3047,7 +3066,9 @@ pub fn break_paragraph_into(
         // True last resort: no path exists even allowing overfull lines (e.g. a
         // forced break makes the last candidate unreachable). Fall back to greedy
         // first-fit rather than emitting nothing.
-        greedy_break_paragraph_into(candidates, line_width, &scratch.metrics, out);
+        greedy_break_paragraph_into(
+                candidates, line_width, &scratch.metrics, scratch.is_justified(), out,
+            );
         return;
     }
     while let Some(state) = scratch.states[idx] {
@@ -3168,7 +3189,8 @@ pub fn break_paragraph_candidates(
                 continue;
             }
 
-            let include_box_elasticity = candidate.next != items.len();
+            let include_box_elasticity =
+                line_can_adjust(scratch.is_justified(), *candidate, items.len());
             let segment = scratch
                 .metrics
                 .segment_metrics(start, *candidate, include_box_elasticity);
@@ -3183,7 +3205,9 @@ pub fn break_paragraph_candidates(
             if prev_idx == j && j > 0 && is_overfull {
                 continue;
             }
-            let badness = candidate_badness(*candidate, segment, eff_line_width);
+            let (badness, fitness, fitness_milli) = candidate_quality(
+                *candidate, segment, eff_line_width, scratch.is_justified(),
+            );
             // Line-count variants exist so pagination can trade a line for
             // better page breaks; they must stay good alternatives, so a
             // past-stretch underfull line stays illegal here (unlike the
@@ -3192,8 +3216,6 @@ pub fn break_paragraph_candidates(
             if badness >= INF_PENALTY && !is_overfull {
                 continue;
             }
-            let fitness = candidate_fitness(*candidate, segment, eff_line_width);
-            let fitness_milli = fitness_ratio_milli(segment, eff_line_width);
             let overfull_cost = if is_overfull {
                 let overflow =
                     segment.width.saturating_sub(eff_line_width).milli_points() as i64;
@@ -3554,6 +3576,42 @@ fn river_seed_demerits(
     0
 }
 
+fn line_can_adjust(justified: bool, candidate: BreakCandidate, item_count: usize) -> bool {
+    justified && candidate.next != item_count && candidate.penalty != FORCED_BREAK_PENALTY
+}
+
+fn candidate_quality(
+    candidate: BreakCandidate,
+    metrics: SegmentMetrics,
+    line_width: LayoutUnit,
+    justified: bool,
+) -> (i32, FitnessClass, i32) {
+    if justified {
+        return (
+            candidate_badness(candidate, metrics, line_width),
+            candidate_fitness(candidate, metrics, line_width),
+            fitness_ratio_milli(metrics, line_width),
+        );
+    }
+    let shortfall = i64::from(line_width.milli_points()) - i64::from(metrics.width.milli_points());
+    let badness = if shortfall < 0 {
+        INF_PENALTY
+    } else if candidate.penalty == FORCED_BREAK_PENALTY || shortfall == 0 {
+        0
+    } else {
+        // A ragged edge is not failed justification. Score its natural
+        // shortfall against the measure, independently of the glue budgets.
+        // Clamping the ratio keeps the cubic within i64 even for extreme
+        // public LayoutUnit values. No float or new dependency is needed.
+        let measure = i64::from(line_width.milli_points()).max(1);
+        let ratio = shortfall.min(measure) * 1000 / measure;
+        (100 * ratio * ratio * ratio / 1_000_000_000) as i32
+    };
+    // Ragged text never changes interword spacing, so adjacent-spacing
+    // fitness penalties must not be computed from fictitious adjustments.
+    (badness, FitnessClass::Decent, 0)
+}
+
 fn candidate_badness(
     candidate: BreakCandidate,
     metrics: SegmentMetrics,
@@ -3744,40 +3802,40 @@ fn greedy_break_paragraph_into(
     candidates: &[BreakCandidate],
     line_width: LayoutUnit,
     metrics: &MetricPrefixes,
+    justified: bool,
     out: &mut Vec<LineBreak>,
 ) {
+    let item_count = candidates.last().map_or(0, |candidate| candidate.next);
+    let measure = |start, candidate| {
+        metrics.segment_metrics(start, candidate, line_can_adjust(justified, candidate, item_count))
+    };
+    let emit = |out: &mut Vec<LineBreak>, start, candidate: BreakCandidate, segment: SegmentMetrics| {
+        let (badness, fitness, _) =
+            candidate_quality(candidate, segment, line_width, justified);
+        out.push(LineBreak {
+            start,
+            end: candidate.item_index,
+            next: candidate.next,
+            natural_width: segment.width,
+            badness,
+            fitness,
+            demerits: 0,
+            fitness_milli: 0,
+        });
+    };
     let mut start = 0usize;
     let mut last_candidate: Option<BreakCandidate> = None;
     for &candidate in candidates {
-        let mut segment = metrics.segment_metrics(start, candidate, true);
+        let mut segment = measure(start, candidate);
         if segment.width > line_width {
             if let Some(prev) = last_candidate {
-                let prev_metrics = metrics.segment_metrics(start, prev, true);
-                out.push(LineBreak {
-                    start,
-                    end: prev.item_index,
-                    next: prev.next,
-                    natural_width: prev_metrics.width,
-                    badness: candidate_badness(prev, prev_metrics, line_width),
-                    fitness: candidate_fitness(prev, prev_metrics, line_width),
-                    demerits: 0,
-                    fitness_milli: 0,
-                });
+                emit(out, start, prev, measure(start, prev));
                 start = prev.next;
-                segment = metrics.segment_metrics(start, candidate, true);
+                segment = measure(start, candidate);
             }
         }
         if candidate.penalty == FORCED_BREAK_PENALTY {
-            out.push(LineBreak {
-                start,
-                end: candidate.item_index,
-                next: candidate.next,
-                natural_width: segment.width,
-                badness: candidate_badness(candidate, segment, line_width),
-                fitness: candidate_fitness(candidate, segment, line_width),
-                demerits: 0,
-                fitness_milli: 0,
-            });
+            emit(out, start, candidate, segment);
             start = candidate.next;
             last_candidate = None;
             continue;
@@ -3785,17 +3843,7 @@ fn greedy_break_paragraph_into(
         last_candidate = Some(candidate);
     }
     if let Some(candidate) = last_candidate {
-        let metrics = metrics.segment_metrics(start, candidate, true);
-        out.push(LineBreak {
-            start,
-            end: candidate.item_index,
-            next: candidate.next,
-            natural_width: metrics.width,
-            badness: candidate_badness(candidate, metrics, line_width),
-            fitness: candidate_fitness(candidate, metrics, line_width),
-            demerits: 0,
-            fitness_milli: 0,
-        });
+        emit(out, start, candidate, measure(start, candidate));
     }
 }
 

@@ -60,10 +60,33 @@ an invalid position rejects the request instead of silently moving the caret.
 These are top-level, primary-source navigation features. The source map does
 not yet expose independent heading anchors inside list/quote containers, so
 the server does not invent nested source ranges or scan fence contents for
-headings. External-file navigation, completion, rename, formatting and
-workspace indexing are not advertised. Navigation requests reparse the current
+headings. External-file navigation, rename, formatting and workspace indexing
+are not advertised. Same-document fragment completion and definition navigation
+are available with the explicit scope below. Navigation requests reparse the current
 synchronized buffer on demand; requests against an unsynchronized buffer return
 `ContentModified` rather than locations from stale text.
+
+## Heading-link completion and go-to-definition
+
+`textDocument/completion` offers publication-correct heading IDs while the caret
+is inside an explicit same-document fragment, such as `[label](#par)` or the
+unfinished `[label](#par`. The advertised trigger is `#`. Text edits replace the
+whole fragment without disturbing its query, angle delimiters or title. Results
+are capped at 256 and set `isIncomplete` when more matches remain.
+
+`textDocument/definition` follows an existing fragment destination to its actual
+source block. Missing or ambiguous targets return no location. Forward and
+nested headings, percent-encoded fragments, and emitted footnote anchors use
+the same shared analyzer as diagnostics and book publication. Empty fragments
+address the document start; nested targets retain their enclosing block range.
+
+Origin tokens are supported in top-level paragraphs and headings, not inside
+list/quote/table/note containers or reference-style links. Code, image URLs,
+HTML attributes, link titles, external/file destinations and bare hashes do not
+become navigation requests. A real-parser probe validates every candidate;
+definition additionally requires exact AST equality after restoring its original
+destination. No guessed inline source map or independent Markdown grammar is
+used. See `LSP_LINK_NAVIGATION.md` for the algorithm, budgets and exclusions.
 
 ## Synchronization and limits
 

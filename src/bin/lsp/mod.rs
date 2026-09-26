@@ -2,6 +2,7 @@
 //! URIs are opaque buffer keys: no network, filesystem reads, or transclusion.
 
 mod diagnostics;
+mod links;
 mod navigation;
 mod text;
 #[cfg(test)]
@@ -103,6 +104,11 @@ impl Server {
                     ("documentSymbolProvider", Json::Bool(true)),
                     ("foldingRangeProvider", Json::Bool(true)),
                     ("selectionRangeProvider", Json::Bool(true)),
+                    ("definitionProvider", Json::Bool(true)),
+                    ("completionProvider", object([
+                        ("triggerCharacters", Json::Array(vec![string("#")])),
+                        ("resolveProvider", Json::Bool(false)),
+                    ])),
                     ("textDocumentSync", object([
                         ("openClose", Json::Bool(true)), ("change", number(2)),
                         ("save", object([("includeText", Json::Bool(false))])),
@@ -126,7 +132,7 @@ impl Server {
         let empty = object([]);
         let params = message.get("params").unwrap_or(&empty);
         if let Some(id) = id {
-            if matches!(method, "textDocument/documentSymbol" | "textDocument/foldingRange" | "textDocument/selectionRange") {
+            if matches!(method, "textDocument/documentSymbol" | "textDocument/foldingRange" | "textDocument/selectionRange" | "textDocument/completion" | "textDocument/definition") {
                 return vec![match self.navigate(method, params) {
                     Ok(result) => response(id, result),
                     Err((code, reason)) => error(id, code, reason),
@@ -152,6 +158,9 @@ impl Server {
         let buffer = self.documents.get(uri).ok_or((-32602, "document is not open"))?;
         if !buffer.synchronized {
             return Err((-32801, "document requires full-text resynchronization"));
+        }
+        if matches!(method, "textDocument/completion" | "textDocument/definition") {
+            return links::request(method, params, uri, &buffer.text);
         }
         navigation::request(method, params, uri, &buffer.text, self.hierarchical_symbols,
             self.folding_limit.unwrap_or(navigation::MAX_NAVIGATION_ITEMS))

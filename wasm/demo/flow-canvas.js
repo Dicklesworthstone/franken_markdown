@@ -1,3 +1,4 @@
+import { createCanvasNavigationControls } from "./flow_canvas_navigation.mjs";
 import { FlowImageAssets } from "../flow-assets.js";
 import { FlowCanvasRenderer } from "../flow-canvas.js";
 import { readFlowDocument } from "../flow-reader.js";
@@ -30,6 +31,20 @@ let controller = null,
 let settingsControls = null,
   retainedSettings,
   suspended = false;
+
+// One owner across worker restarts and persisted page suspension keeps hit RPCs
+// bounded and prevents stale results from acquiring a replacement document.
+const canvasNavigation = createCanvasNavigationControls({
+  canvas, viewport, sourceEditor: source,
+  sourceButton: document.querySelector("#canvas-source"),
+  followButton: document.querySelector("#canvas-follow"),
+  status: link,
+  getOwner: () => ({ controller, painter }),
+  onNavigate(location) {
+    viewport.scrollTop = Math.max(0, location.bounds.y - 16);
+    update();
+  },
+});
 
 function start() {
   if (suspended) return;
@@ -93,6 +108,7 @@ function start() {
         ? new FlowImageAssets(session, { load: localSources.load, retainSourceBytes: true })
         : null,
     onState(state) {
+      canvasNavigation.update();
       readingControls.update(state);
       exportControls.update(state);
       if (state.status === "ready") {
@@ -227,29 +243,9 @@ restart.addEventListener("click", () => {
   else controller.restart();
   update();
 });
-canvas.addEventListener("click", async (event) => {
-  const active = painter,
-    frame = active?.frame;
-  if (!frame) return;
-  const area = canvas.getBoundingClientRect();
-  if (!area.width || !area.height) return;
-  try {
-    const hit = await active.hitTest(
-      ((event.clientX - area.left) * frame.width) / area.width,
-      ((event.clientY - area.top) * frame.height) / area.height,
-    );
-    if (active !== painter) return;
-    link.textContent = hit.linkTarget
-      ? `Link target (not opened): ${hit.linkTarget}`
-      : hit.hit
-        ? `Item ${hit.hit.itemIndex}; selection offsets are fragment-local, not original Markdown.`
-        : "No text or link at this point.";
-  } catch (error) {
-    link.textContent = `${error.code ?? "HIT_ERROR"}: ${error.message}`;
-  }
-});
 window.addEventListener("pagehide", (event) => {
   suspended = true;
+  canvasNavigation.suspend();
   retainedSettings = event.persisted ? settingsControls?.settings.values : undefined;
   settingsControls?.dispose();
   settingsControls = null;
@@ -261,7 +257,7 @@ window.addEventListener("pagehide", (event) => {
   folderImages.suspend();
   insertImages.disabled = clearImages.disabled = true;
   imageStatus.textContent = "Image access revoked while the page is suspended. Select files or a folder again after returning.";
-  if (!event.persisted) folderImages.dispose();
+  if (!event.persisted) { folderImages.dispose(); canvasNavigation.dispose(); }
   if (scheduled) cancelAnimationFrame(scheduled);
   scheduled = 0;
   observer.disconnect();
@@ -269,6 +265,7 @@ window.addEventListener("pagehide", (event) => {
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
     suspended = false;
+    canvasNavigation.resume();
     folderImages.resume();
     observer.observe(viewport);
     start();

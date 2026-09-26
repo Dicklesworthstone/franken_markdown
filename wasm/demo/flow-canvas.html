@@ -82,7 +82,9 @@ The selectable reading text below comes from the same session, not a second Mark
 </section>
 <section><div class="label" id="preview-label">Canvas preview</div>
 <div id="viewport" tabindex="0" aria-labelledby="preview-label" aria-describedby="preview-help"><div id="surface"><canvas id="preview" aria-hidden="true"></canvas></div><div id="extent"></div></div>
-<p id="preview-help">Scroll to inspect the document. Clicks report link targets but never open them. The canvas has no native text selection; use the reading text below.</p>
+<p id="preview-help">Click text or an image to inspect its original source block, then use the buttons below. Follow internal link scrolls only to a heading supplied by the same engine; external links never open. After scrolling or editing, select a fresh location. Canvas has no native text selection; the selectable reading surface below also supports keyboard navigation.</p>
+<p><button id="canvas-source" type="button" disabled aria-controls="source" aria-describedby="hit">Show Canvas source</button> <button id="canvas-follow" type="button" disabled aria-controls="viewport" aria-describedby="hit">Follow internal link</button></p>
+<p id="hit" role="status">Select a location in the Canvas to inspect its enclosing source or internal link.</p>
 </section></div>
 <section id="source-controls" aria-label="Original Markdown and draft recovery">
 <h2>Open, save, and recover Markdown</h2>
@@ -115,7 +117,6 @@ The selectable reading text below comes from the same session, not a second Mark
 </section>
 <p><button id="restart" type="button">Restart preview from current source</button></p>
 <p id="status" role="status">Loading the matching WASM package. A build containing the flow and outline APIs is required.</p>
-<p id="hit" aria-live="polite"></p>
 <details id="reader-panel" open><summary>Search, outline, and selectable reading</summary>
 <p>The same engine supplies this semantic reading surface. Text can be selected and copied normally; its browser typography is independent of Canvas. Navigation selects enclosing Markdown blocks, not guessed inline offsets.</p>
 <label for="find-text">Find logical reading text</label>

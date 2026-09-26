@@ -112,6 +112,8 @@ function fixture({ folders = true } = {}) {
     createLocalImageSources, createDirectoryImageControls, createExportControls, createPreviewController,
     FlowImageAssets: class { constructor(session, options) { this.options = options; assets.push(this); } },
     FlowCanvasRenderer: class { constructor() { painters.push(this); } clear() { events.push("clear-pixels"); } },
+    // Canvas interaction is covered by flow_canvas_navigation.test.mjs.
+    createCanvasNavigationControls: () => ({ update: noop, suspend: noop, resume: noop, dispose: noop }),
     createReadingControls: () => ({ update: noop, dispose: noop }),
     createRenderSettingsControls: () => ({ settings: { values: {}, preview: {} }, dispose: noop }),
     createWorkerFlowSession: noop, readFlowDocument: noop,

@@ -134,10 +134,10 @@ impl Buffer {
         changes: &[JsonValue],
         limit: usize,
     ) -> Result<String, &'static str> {
-        if changes.is_empty() || changes.len() > MAX_CHANGES {
-            return Err("contentChanges must contain between 1 and 128 edits");
+        if changes.len() > MAX_CHANGES {
+            return Err("contentChanges exceeds the 128 edit limit");
         }
-        if !self.synchronized && changes[0].get("range").is_some() {
+        if !self.synchronized && !changes.first().is_some_and(|change| change.get("range").is_none()) {
             return Err("buffer requires a full-text replacement after a rejected edit");
         }
         let mut text = self.text.clone();
@@ -169,6 +169,9 @@ impl Buffer {
                 return Err("document or session byte budget exceeded");
             }
             text.replace_range(start..end, replacement);
+        }
+        if text.len() > limit {
+            return Err("document or session byte budget exceeded");
         }
         Ok(text)
     }

@@ -32,9 +32,35 @@ URIs are opaque in-memory document keys, including `untitled:` buffers. The
 server does not open files, follow links, resolve includes, fetch resources, or
 write editor documents. It only examines text explicitly supplied by the client.
 
+## Outlines, folding, and selection expansion
+
+`textDocument/documentSymbol` returns section outlines from the shared parser
+and source map, including setext headings and the source map's canonical IDs.
+Clients advertising hierarchical symbols receive nested sections with separate
+section and heading-selection ranges. Other clients receive flat
+`SymbolInformation` locations. Empty headings have a nonempty display label.
+
+`textDocument/foldingRange` folds heading sections and actual multiline code,
+list, quote, table, math, HTML, definition-list and footnote blocks. Exclusive
+end positions never consume the following heading. Results are ordered,
+deduplicated, line-based, and respect the client's `rangeLimit`, including zero.
+
+`textDocument/selectionRange` expands a UTF-16 caret through its enclosing block
+and heading sections to the whole document. Results preserve the input order;
+an invalid position rejects the request instead of silently moving the caret.
+
+These are top-level, primary-source navigation features. The source map does
+not yet expose independent heading anchors inside list/quote containers, so
+the server does not invent nested source ranges or scan fence contents for
+headings. External-file navigation, completion, rename, formatting and
+workspace indexing are not advertised. Navigation requests reparse the current
+synchronized buffer on demand; requests against an unsynchronized buffer return
+`ContentModified` rather than locations from stale text.
+
 ## Synchronization and limits
 
-Versions must increase; stale versions are ignored. UTF-16 ranges cannot split
+Versions must increase; stale versions are ignored. An empty change array is a
+valid version-only update on a synchronized buffer. UTF-16 ranges cannot split
 an astral character's surrogate pair. LF, CRLF, lone CR and final empty lines
 are supported. Columns past a line's end clamp to its end, as specified by LSP;
 nonexistent lines and reversed ranges are rejected. A supplied `rangeLength`
@@ -48,7 +74,8 @@ not an illegal response to a notification.
 
 Limits are 8 MiB per protocol frame, 2 MiB per document, 16 MiB total stored
 text, 64 open documents, 128 changes per notification, and 1,024 published
-parser findings per version. An oversized/truncated frame is fatal; a malformed
+parser findings per version. Navigation accepts at most 4,096 headings/folds
+and 128 requested selection positions. An oversized/truncated frame is fatal; a malformed
 JSON body returns a parse error without consuming the next frame. Work is
 synchronous and reparses an accepted document, so cancellation and incremental
 parsing are not advertised. A successful exit requires `shutdown` followed by
@@ -57,7 +84,7 @@ parsing are not advertised. A successful exit requires `shutdown` followed by
 ## Verification
 
 ```sh
-cargo test --features lsp --bin fmd-lsp
+cargo test --features lsp --bin fmd-lsp --test lsp_protocol_test
 cargo clippy --features lsp --bin fmd-lsp -- -D warnings
 cargo build --no-default-features
 ```
@@ -66,3 +93,7 @@ Tests cover real parser diagnostics, framed sessions, fragmented UTF-8 input,
 UTF-16 edits, CRLF positions, atomic failure and resynchronization, version
 ordering, resource limits, and shutdown behavior. The protocol tests exercise
 the server's real JSON codec and parser rather than mocking those components.
+
+The subprocess tests launch the actual `fmd-lsp` binary through pipes, with a
+bounded wait. They exercise incremental Unicode edits, diagnostics, negotiated
+outlines/folding, selection expansion, and clean versus abrupt process exit.

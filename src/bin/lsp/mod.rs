@@ -1,6 +1,7 @@
 //! Minimal native LSP, reusing the first-party JSON codec and Markdown parser.
 //! URIs are opaque buffer keys: no network, filesystem reads, or transclusion.
 
+mod navigation;
 mod text;
 #[cfg(test)]
 mod tests;
@@ -55,6 +56,8 @@ struct Server {
     phase: Phase,
     documents: BTreeMap<String, Buffer>,
     exit: Option<bool>,
+    hierarchical_symbols: bool,
+    folding_limit: Option<usize>,
 }
 
 impl Server {
@@ -84,10 +87,21 @@ impl Server {
             if !message.get("params").is_some_and(|p| p.as_object().is_some()) {
                 return vec![error(id, -32602, "initialize requires object params")];
             }
+            let capabilities = message.get("params").and_then(|p| p.get("capabilities"))
+                .and_then(|p| p.get("textDocument"));
+            self.hierarchical_symbols = capabilities.and_then(|c| c.get("documentSymbol"))
+                .and_then(|c| c.get("hierarchicalDocumentSymbolSupport"))
+                .and_then(Json::as_bool).unwrap_or(false);
+            self.folding_limit = capabilities.and_then(|c| c.get("foldingRange"))
+                .and_then(|c| c.get("rangeLimit")).and_then(Json::as_u64)
+                .map(|n| n.min(navigation::MAX_NAVIGATION_ITEMS as u64) as usize);
             self.phase = Phase::Running;
             return vec![response(id, object([
                 ("capabilities", object([
                     ("positionEncoding", string("utf-16")),
+                    ("documentSymbolProvider", Json::Bool(true)),
+                    ("foldingRangeProvider", Json::Bool(true)),
+                    ("selectionRangeProvider", Json::Bool(true)),
                     ("textDocumentSync", object([
                         ("openClose", Json::Bool(true)), ("change", number(2)),
                         ("save", object([("includeText", Json::Bool(false))])),
@@ -108,11 +122,17 @@ impl Server {
             }
             return Vec::new();
         }
-        if let Some(id) = id {
-            return vec![error(id, -32601, "Method not found")];
-        }
         let empty = object([]);
         let params = message.get("params").unwrap_or(&empty);
+        if let Some(id) = id {
+            if matches!(method, "textDocument/documentSymbol" | "textDocument/foldingRange" | "textDocument/selectionRange") {
+                return vec![match self.navigate(method, params) {
+                    Ok(result) => response(id, result),
+                    Err((code, reason)) => error(id, code, reason),
+                }];
+            }
+            return vec![error(id, -32601, "Method not found")];
+        }
         let result = match method {
             "textDocument/didOpen" => self.open(params),
             "textDocument/didChange" => self.change(params),
@@ -123,6 +143,18 @@ impl Server {
             _ => return Vec::new(),
         };
         result.unwrap_or_else(|reason| vec![log(reason)])
+    }
+
+    fn navigate(&self, method: &str, params: &Json) -> Result<Json, (i32, &'static str)> {
+        let document = params.get("textDocument").ok_or((-32602, "missing textDocument"))?;
+        let uri = text_field(document, "uri").map_err(|reason| (-32602, reason))?;
+        let buffer = self.documents.get(uri).ok_or((-32602, "document is not open"))?;
+        if !buffer.synchronized {
+            return Err((-32801, "document requires full-text resynchronization"));
+        }
+        navigation::request(method, params, uri, &buffer.text, self.hierarchical_symbols,
+            self.folding_limit.unwrap_or(navigation::MAX_NAVIGATION_ITEMS))
+            .map_err(|reason| (-32602, reason))
     }
 
     fn open(&mut self, params: &Json) -> Result<Vec<Json>, &'static str> {
@@ -149,9 +181,12 @@ impl Server {
         let other_bytes: usize = self.documents.iter()
             .filter(|(key, _)| key.as_str() != uri).map(|(_, doc)| doc.text.len()).sum();
         let buffer = self.documents.get_mut(uri).ok_or("change for unopened document")?;
+        // An absent/non-array update is malformed, unlike a valid empty
+        // array (a version-only update). Route it through transactional reject.
+        let malformed = [Json::Null];
         let changes = match params.get("contentChanges") {
             Some(Json::Array(changes)) => changes.as_slice(),
-            _ => &[], // A malformed update also invalidates synchronization.
+            _ => &malformed,
         };
         match buffer.change(version, changes, MAX_SESSION_BYTES.saturating_sub(other_bytes)) {
             Ok(()) => Ok(vec![diagnostics(uri, buffer)]),

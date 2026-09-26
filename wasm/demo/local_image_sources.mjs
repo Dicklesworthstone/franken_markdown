@@ -166,3 +166,96 @@ export function createDirectoryImageSources(files, { documentPath = "" } = {}) {
     load: loader(lookup),
   });
 }
+
+/** Optional demo controls. The host owns revoking pixels, native bytes and
+ * prepared exports in onChange, and calls clear when switching documents. */
+export function createDirectoryImageControls({ container, status, onChange }) {
+  const document = container.ownerDocument;
+  const panel = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = "Load nested images from a local folder";
+  const folder = document.createElement("input");
+  folder.type = "file";
+  folder.id = "image-folder";
+  folder.multiple = true;
+  const supported = "webkitdirectory" in folder;
+  if (supported) folder.webkitdirectory = true;
+  const folderLabel = document.createElement("label");
+  folderLabel.htmlFor = folder.id;
+  folderLabel.textContent = "Choose the folder containing the Markdown and its images";
+  const path = document.createElement("input");
+  path.type = "text";
+  path.id = "image-document-path";
+  path.maxLength = MAX_PATH_UNITS;
+  path.autocomplete = "off";
+  path.spellcheck = false;
+  path.placeholder = "docs/guide.md (leave blank for the folder root)";
+  const pathLabel = document.createElement("label");
+  pathLabel.htmlFor = path.id;
+  pathLabel.textContent = "Markdown file path within that folder";
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.id = "apply-image-folder";
+  apply.textContent = "Use this image folder";
+  const help = document.createElement("p");
+  help.id = "image-folder-help";
+  help.textContent = supported
+    ? "Choose a small document folder, not your home directory. Only its PNG/JPEG files are read, on demand; other file contents are ignored. At most 4096 entries and 128 images. The path is relative to the selected folder, without its name. Apply replaces image access, clears old pixels and prepared exports, and restarts preview; it does not open or edit Markdown. Nothing is uploaded."
+    : "Folder selection is unavailable in this browser. The individual-image picker above remains available.";
+  folder.setAttribute("aria-describedby", `${help.id} image-status`);
+  path.setAttribute("aria-describedby", `${help.id} image-status`);
+  panel.append(summary, folderLabel, folder, pathLabel, path, help, apply);
+  container.append(panel);
+  let disposed = false, suspended = false;
+  const enabled = () => {
+    folder.disabled = path.disabled = disposed || suspended || !supported;
+    apply.disabled = folder.disabled || !folder.files?.length;
+  };
+  const clear = () => {
+    folder.value = "";
+    path.value = "";
+    enabled();
+  };
+  const selected = () => {
+    if (disposed || suspended || !supported) {
+      clear();
+      return;
+    }
+    enabled();
+    if (folder.files?.length)
+      status.textContent = "Folder selection is pending. Set the Markdown path, then use this image folder to replace the current image grant.";
+  };
+  const activate = () => {
+    if (disposed || suspended || !supported || !folder.files?.length) return;
+    let next;
+    try {
+      next = createDirectoryImageSources(folder.files, { documentPath: path.value });
+    } catch (error) {
+      status.textContent = `${error.code ?? "IMAGE_ERROR"}: ${error.message}. The previous grant is unchanged.`;
+      return;
+    }
+    try {
+      onChange(next);
+    } catch (error) {
+      // A host may have revoked its old grant before failing to start its new
+      // renderer. Do not claim that an arbitrary host side effect rolled back.
+      status.textContent = `Could not activate the image folder: ${error.message}. Source is unchanged; revoke image access before retrying.`;
+    }
+  };
+  folder.addEventListener("change", selected);
+  apply.addEventListener("click", activate);
+  enabled();
+  return Object.freeze({
+    clear,
+    suspend() { suspended = true; clear(); },
+    resume() { if (!disposed) { suspended = false; clear(); } },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clear();
+      folder.removeEventListener("change", selected);
+      apply.removeEventListener("click", activate);
+      panel.remove();
+    },
+  });
+}

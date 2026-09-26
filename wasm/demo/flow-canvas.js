@@ -6,7 +6,7 @@ import { createExportControls } from "./flow_export_controls.mjs";
 import { createPreviewController } from "./flow_preview_controller.mjs";
 import { createReadingControls } from "./flow_reading_controls.mjs";
 import { createRenderSettingsControls } from "./flow_render_settings.mjs";
-import { createLocalImageSources } from "./local_image_sources.mjs";
+import { createDirectoryImageControls, createLocalImageSources } from "./local_image_sources.mjs";
 
 const source = document.querySelector("#source"),
   viewport = document.querySelector("#viewport");
@@ -28,9 +28,11 @@ let controller = null,
   exportControls = null;
 
 let settingsControls = null,
-  retainedSettings;
+  retainedSettings,
+  suspended = false;
 
 function start() {
+  if (suspended) return;
   if (settingsControls) retainedSettings = settingsControls.settings.values;
   settingsControls?.dispose();
   readingControls?.dispose();
@@ -136,37 +138,62 @@ function updateNow(preview = settingsControls.settings.preview) {
   }
 }
 function update() {
-  if (!controller || controller.disposed || scheduled) return;
+  if (suspended || !controller || controller.disposed || scheduled) return;
   scheduled = requestAnimationFrame(() => {
     scheduled = 0;
     updateNow();
   });
 }
+const folderImages = createDirectoryImageControls({
+  container: document.querySelector("#image-controls"),
+  status: imageStatus,
+  onChange(next) {
+    files.value = "";
+    changeImages(next);
+  },
+});
 function changeImages(next) {
   // Change the grant only after admission succeeds. Restart clears published
   // pixels before disposing bitmaps, and invalidates old worker generations.
+  exportControls?.invalidate();
   localSources = next;
   insertImages.disabled = next.count === 0;
   clearImages.disabled = next.count === 0;
   imageStatus.textContent = next.count
-    ? `${next.count} local image files authorized. Insert references or use their exact filenames. Nothing is uploaded.`
+    ? next.rootName
+      ? `${next.count} images authorized from ${next.rootName}; Markdown path: ${next.documentPath || "folder root"}. Nested references use this captured base. Nothing is uploaded.`
+      : `${next.count} local image files authorized. Insert references or use their exact filenames. Nothing is uploaded.`
     : "No local images authorized. Network image loading is disabled.";
-  if (!controller || controller.disposed) start();
-  else controller.restart();
-  update();
+  if (suspended) return;
+  try {
+    if (!controller || controller.disposed) start();
+    else controller.restart();
+    update();
+  } catch (error) {
+    // Authorization has changed even if the replacement renderer cannot start.
+    // Never leave old pixels/export bytes presented as the new grant.
+    controller?.dispose();
+    painter?.clear();
+    status.textContent = `Preview restart failed after image access changed: ${error.message}. Source remains available; restart the preview explicitly.`;
+  }
 }
 files.addEventListener("change", () => {
+  if (suspended) { files.value = ""; return; }
   try {
-    changeImages(createLocalImageSources(files.files));
+    const next = createLocalImageSources(files.files);
+    folderImages.clear();
+    changeImages(next);
   } catch (error) {
     imageStatus.textContent = `${error.code ?? "IMAGE_ERROR"}: ${error.message}. The previous grant is unchanged.`;
   }
 });
 clearImages.addEventListener("click", () => {
   files.value = "";
+  folderImages.clear();
   changeImages(createLocalImageSources([]));
 });
 insertImages.addEventListener("click", () => {
+  if (suspended || !localSources.count) return;
   source.setRangeText(
     `\n\n${localSources.references.join("\n\n")}\n`,
     source.selectionStart,
@@ -181,6 +208,7 @@ source.addEventListener("fmd-document-replaced", () => {
   // A new file or recovered draft does not inherit the previous document's
   // image authorization or retained native payloads, even for matching names.
   files.value = "";
+  folderImages.clear();
   exportControls?.invalidate();
   try {
     changeImages(createLocalImageSources([]));
@@ -194,6 +222,7 @@ viewport.addEventListener("scroll", update, { passive: true });
 const observer = new ResizeObserver(update);
 observer.observe(viewport);
 restart.addEventListener("click", () => {
+  if (suspended) return;
   if (controller?.disposed) start();
   else controller.restart();
   update();
@@ -220,18 +249,27 @@ canvas.addEventListener("click", async (event) => {
   }
 });
 window.addEventListener("pagehide", (event) => {
+  suspended = true;
   retainedSettings = event.persisted ? settingsControls?.settings.values : undefined;
   settingsControls?.dispose();
   settingsControls = null;
   controller?.dispose();
   readingControls?.dispose();
   exportControls?.dispose();
+  localSources = createLocalImageSources([]);
+  files.value = "";
+  folderImages.suspend();
+  insertImages.disabled = clearImages.disabled = true;
+  imageStatus.textContent = "Image access revoked while the page is suspended. Select files or a folder again after returning.";
+  if (!event.persisted) folderImages.dispose();
   if (scheduled) cancelAnimationFrame(scheduled);
   scheduled = 0;
   observer.disconnect();
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
+    suspended = false;
+    folderImages.resume();
     observer.observe(viewport);
     start();
   }

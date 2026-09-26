@@ -1,6 +1,7 @@
 //! Minimal native LSP, reusing the first-party JSON codec and Markdown parser.
 //! URIs are opaque buffer keys: no network, filesystem reads, or transclusion.
 
+mod diagnostics;
 mod navigation;
 mod text;
 #[cfg(test)]
@@ -10,13 +11,13 @@ use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
 use franken_markdown::mcp::{JsonValue as Json, parse_json, read_frame, write_frame};
-use franken_markdown::{DiagnosticSeverity, parse_markdown_spanned};
+#[cfg(test)]
+use franken_markdown::parse_markdown_spanned;
 use text::{Buffer, LineIndex, MAX_DOCUMENT_BYTES, Position, integer};
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SESSION_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DOCUMENTS: usize = 64;
-const MAX_DIAGNOSTICS: usize = 1024;
 
 fn object<const N: usize>(fields: [(&str, Json); N]) -> Json {
     Json::Object(fields.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
@@ -169,7 +170,7 @@ impl Server {
             || text.len() > MAX_SESSION_BYTES.saturating_sub(used)
         { return Err("open document or session budget exceeded"); }
         let buffer = Buffer { text: text.to_string(), version, synchronized: true };
-        let report = diagnostics(uri, &buffer);
+        let report = diagnostics::publish(uri, &buffer);
         self.documents.insert(uri.to_string(), buffer);
         Ok(vec![report])
     }
@@ -189,7 +190,7 @@ impl Server {
             _ => &malformed,
         };
         match buffer.change(version, changes, MAX_SESSION_BYTES.saturating_sub(other_bytes)) {
-            Ok(()) => Ok(vec![diagnostics(uri, buffer)]),
+            Ok(()) => Ok(vec![diagnostics::publish(uri, buffer)]),
             Err(reason) if !buffer.synchronized => Ok(vec![log(reason), clear_diagnostics(uri)]),
             Err(reason) => Err(reason),
         }
@@ -209,24 +210,6 @@ fn clear_diagnostics(uri: &str) -> Json {
     ]))
 }
 
-fn diagnostics(uri: &str, buffer: &Buffer) -> Json {
-    let document = parse_markdown_spanned(&buffer.text);
-    let index = LineIndex::new(&buffer.text);
-    let findings = document.diagnostics.into_iter().take(MAX_DIAGNOSTICS).map(|finding| {
-        object([
-            ("range", object([
-                ("start", position(index.position(&buffer.text, finding.span.start))),
-                ("end", position(index.position(&buffer.text, finding.span.end.max(finding.span.start)))),
-            ])),
-            ("severity", number(match finding.severity { DiagnosticSeverity::Error => 1, DiagnosticSeverity::Warning => 2 })),
-            ("source", string("fmd")), ("message", string(&finding.message)),
-        ])
-    }).collect();
-    notification("textDocument/publishDiagnostics", object([
-        ("uri", string(uri)), ("version", Json::Number(f64::from(buffer.version))),
-        ("diagnostics", Json::Array(findings)),
-    ]))
-}
 
 /// Framing failures are fatal; malformed JSON bodies receive a parse error and
 /// the next bounded frame remains readable. The existing transport accepts

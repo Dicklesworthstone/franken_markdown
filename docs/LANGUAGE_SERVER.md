@@ -24,9 +24,17 @@ mixes a partially accepted change batch with the live document.
 
 Every accepted open or change publishes the shared Rust parser's diagnostics,
 including their actual source ranges and document version. Clean documents and
-closed documents clear earlier findings. This is parser diagnostics, not the
-more expensive PDF/font verification pipeline, a second Markdown parser, or a
-promise to detect every broken link.
+closed documents clear earlier findings. The same publication also reports
+`missing_anchor`, `invalid_fragment`, `ambiguous_anchor`, and `missing_footnote`
+warnings from shared HTML/book navigation analysis.
+Resolution uses the whole parsed document, including later/nested headings and
+referenced footnotes in publication order;
+repeated missing targets are reported once per enclosing source block. The
+warning range is explicitly that original Markdown block, not a guessed inline
+match. Code-looking text, image resource paths and external links do not become
+heading diagnostics. A refused analysis emits `link_analysis_incomplete`, never
+a falsely clean result. This does not perform PDF layout, load fonts, test external
+URLs or files, expand includes, or certify every link/export format.
 
 URIs are opaque in-memory document keys, including `untitled:` buffers. The
 server does not open files, follow links, resolve includes, fetch resources, or
@@ -74,7 +82,11 @@ not an illegal response to a notification.
 
 Limits are 8 MiB per protocol frame, 2 MiB per document, 16 MiB total stored
 text, 64 open documents, 128 changes per notification, and 1,024 published
-parser findings per version. Navigation accepts at most 4,096 headings/folds
+parser/anchor findings per version. Messages are bounded to 512 Unicode scalars.
+When more findings exist, the last entry is `diagnostics_truncated`, rather than
+a silent implication that the document was fully reported. Parser findings take
+precedence over anchor warnings. The source and result bounds are not an exact
+heap or CPU-time quota. Navigation accepts at most 4,096 headings/folds
 and 128 requested selection positions. An oversized/truncated frame is fatal; a malformed
 JSON body returns a parse error without consuming the next frame. Work is
 synchronous and reparses an accepted document, so cancellation and incremental
@@ -97,3 +109,11 @@ the server's real JSON codec and parser rather than mocking those components.
 The subprocess tests launch the actual `fmd-lsp` binary through pipes, with a
 bounded wait. They exercise incremental Unicode edits, diagnostics, negotiated
 outlines/folding, selection expansion, and clean versus abrupt process exit.
+
+Eleven link regression tests cover global resolution, repeated references,
+nested containers, original Unicode/CRLF block ranges, parser-diagnostic
+preservation, encoded fragments, emitted footnote collisions, analysis/result
+limits, and live heading rename/repair/desynchronization.
+They were added but not executed in the authoring environment: Rust, Cargo,
+rustfmt and DSR are unavailable. JSON-fixture parsing and source hash checks
+are not a passing Rust build, server session, or full repository test suite.

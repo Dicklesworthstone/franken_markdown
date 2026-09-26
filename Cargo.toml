@@ -74,6 +74,11 @@ name = "fmd"
 path = "src/bin/fmd.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "fmd-lsp"
+path = "src/bin/fmd-lsp.rs"
+required-features = ["lsp"]
+
 [features]
 default = ["cli"]
 # CLI surface only. The engine library never depends on these.
@@ -91,6 +96,9 @@ batch = ["cli", "dep:asupersync"]
 # Native-only MCP stdio server (bead yjmy / jqhm / uxhr). Exposes render,
 # verify, and capabilities as Model Context Protocol (MCP) tools for agents.
 mcp = ["cli"]
+# Native editor server; reuses the first-party MCP JSON codec and transport.
+# No new dependency or core/WASM feature is introduced.
+lsp = ["mcp"]
 
 [dependencies]
 # First-party: the factored font subsystem (this repo's own workspace crate;

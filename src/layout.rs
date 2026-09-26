@@ -2656,8 +2656,9 @@ pub fn break_paragraph_into(
             // paragraph exactly at the margin would break differently depending on
             // which path ran. Zero for zero-protrusion boxes (default identical).
             let (pl, pr) = paragraph_edge_protrusion(items);
-            let width = width.saturating_sub(LayoutUnit::from_milli_points(pl + pr));
-            if let Some(line) = trailing_forced_fit_break(candidate, items.len(), width, line_width)
+            let effective_width = line_width
+                + LayoutUnit::from_milli_points(pl.saturating_add(pr));
+            if let Some(line) = trailing_forced_fit_break(candidate, items.len(), width, effective_width)
             {
                 scratch.forced_prefix.clear();
                 scratch.metrics.width.clear();
@@ -3202,7 +3203,10 @@ pub fn break_paragraph_candidates(
                 ));
             let is_overfull =
                 segment.width.saturating_sub(segment.shrink) > eff_line_width;
-            if prev_idx == j && j > 0 && is_overfull {
+            // Alternatives are a pagination-quality refinement, not another
+            // overfull fallback. The unchanged baseline already carries any
+            // unavoidable overflow. Never offer a worse-fitting L-1/L+1 path.
+            if is_overfull {
                 continue;
             }
             let (badness, fitness, fitness_milli) = candidate_quality(
@@ -3213,17 +3217,9 @@ pub fn break_paragraph_candidates(
             // past-stretch underfull line stays illegal here (unlike the
             // baseline solver, where it is the last resort against overflow —
             // the baseline variant above already carries that choice).
-            if badness >= INF_PENALTY && !is_overfull {
+            if badness >= INF_PENALTY {
                 continue;
             }
-            let overfull_cost = if is_overfull {
-                let overflow =
-                    segment.width.saturating_sub(eff_line_width).milli_points() as i64;
-                1_000_000_000i64
-                    .saturating_add(overflow.saturating_mul(100_000))
-            } else {
-                0
-            };
 
             if prev_idx == j {
                 let demerits = line_demerits(
@@ -3235,8 +3231,7 @@ pub fn break_paragraph_candidates(
                     fitness,
                     None,
                     fitness_milli,
-                )
-                .saturating_add(overfull_cost);
+                );
                 let state = CountedBreakState {
                     prev: None,
                     line: LineBreak {
@@ -3277,8 +3272,7 @@ pub fn break_paragraph_candidates(
                         fitness,
                         None,
                         fitness_milli,
-                    ))
-                    .saturating_add(overfull_cost);
+                    ));
                 let state = CountedBreakState {
                     prev: Some((prev_idx, previous_count)),
                     line: LineBreak {
@@ -3311,10 +3305,13 @@ pub fn break_paragraph_candidates(
     let min_lines = baseline_count.saturating_sub(1).max(1);
     let mut variants = Vec::with_capacity(3);
     for line_count in min_lines..=max_lines {
+        // The counted search intentionally admits fewer quality fallbacks.
+        // It must never replace the production optimum at its own line count.
+        if line_count == baseline_count {
+            variants.push(baseline_variant.clone());
+            continue;
+        }
         let Some(final_state) = states[last_index][line_count] else {
-            if line_count == baseline_count {
-                variants.push(baseline_variant.clone());
-            }
             continue;
         };
         let mut lines = Vec::with_capacity(line_count);
@@ -3328,15 +3325,6 @@ pub fn break_paragraph_candidates(
             cursor = state.prev;
         }
         if lines.len() != line_count {
-            if line_count == baseline_count
-                && !variants
-                    .iter()
-                    .any(|variant: &ParagraphVariant| {
-                        variant.line_count == baseline_count
-                    })
-            {
-                variants.push(baseline_variant.clone());
-            }
             continue;
         }
         lines.reverse();

@@ -3,6 +3,8 @@
 import {bootNativeWorkspace, createNativeWorkspaceRenderer} from './interactive_runtime.mjs';
 import {createWorkspacePreviewWorker} from './interactive_preview.mjs';
 import {pdfPageGeometry} from './pdf_page.mjs';
+import {createNativePdfProof} from './native_pdf_proof.mjs';
+import {registerNativePdfProof} from './native_pdf_proof_ui.mjs';
 
 const MiB = 1024 * 1024;
 const SLOTS = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
@@ -180,7 +182,9 @@ function assemble(shell, preview, payload, source) {
     + 'style="display:block;width:100%;border:0;min-height:320px;height:320px" srcdoc="' + attribute(preview) + '"></iframe>';
   const bootstrap = '<script type="application/json" id="fmd-native-runtime">' + jsonData(payload) + '</script>\n'
     + '<script id="fmd-native-bootstrap">\n;(' + bootNativeWorkspace.toString() + ')('
-    + createNativeWorkspaceRenderer.toString() + ', ' + createWorkspacePreviewWorker.toString() + ');\n</script>\n';
+    + createNativeWorkspaceRenderer.toString() + ', ' + createWorkspacePreviewWorker.toString() + ');\n;('
+    + registerNativePdfProof.toString() + ')(' + createNativePdfProof.toString()
+    + ', window.__fmdNativeRuntime);\n</script>\n';
   // These offsets refer to the original shell. Assembly never searches the
   // newly injected source, binary, binding text or rendered document for tags.
   const output = shell.slice(0, previewStart + appStart.length) + frame
@@ -188,8 +192,10 @@ function assemble(shell, preview, payload, source) {
   const head = /<head(?:\s[^>]*)?>/i;
   if (!head.test(output)) throw new Error('Native workspace shell is missing its document head');
   // Allow only the embedded application, Blob module and WASM compilation.
-  // The separate iframe policy remains stricter: no script execution at all.
-  const policy = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; frame-src 'self' about:; base-uri 'none'; form-action 'none'";
+  // Browser PDF viewers may use an internal Blob frame for the native proof.
+  // Permit only local Blob objects/frames here. The Markdown iframe retains its
+  // separate stricter policy: no scripts, objects, frames or remote resources.
+  const policy = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; frame-src 'self' about: blob:; object-src blob:; base-uri 'none'; form-action 'none'";
   return output.replace(head, match => match + '\n<meta http-equiv="Content-Security-Policy" content="' + policy + '">');
 }
 

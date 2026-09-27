@@ -323,6 +323,11 @@
     // Persist settings JSON, not transient controls or unapplied form drafts.
     copy.querySelector('body > aside#fmd-document-lab')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-document-lab')?.remove();
+    // Proofs are temporary native output, not editable workspace resources.
+    // Do not serialize Blob URLs, rendered PDF viewers or proof diagnostics.
+    copy.querySelector('body > dialog#fmd-pdf-proof')?.remove();
+    copy.querySelector('body > .fmd-app-header #btn-pdf-proof')?.remove();
+    copy.querySelector('head > style#fmd-pdf-proof-style')?.remove();
     copy.querySelector('body > dialog#fmd-document-settings')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-document-settings')?.remove();
     copy.querySelector('body > .fmd-app-header #fmd-source-controls')?.remove();
@@ -1279,6 +1284,14 @@
   installPreviewControls();
   installExportControls();
   installDocumentLab();
+
+  // fmd-pdf-proof-host-v1: retain the controller's exact source anchor and
+  // download path rather than reconstructing source from normalized textarea.
+  native?.installPdfProof?.({
+    source: currentSource,
+    download: blob => download(blob, 'application/pdf', 'pdf'),
+    ready: () => !previewSuspended && !previewComposing,
+  });
 
   // Initial stats calculation
   updateStats();

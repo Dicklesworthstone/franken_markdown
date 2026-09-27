@@ -172,6 +172,9 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   });
   for (const font of payload.fonts) {
     if (!slots.includes(font.slot) || fontSlots.has(font.slot)) throw new TypeError('Invalid or duplicate saved font slot');
+    if (font.weight !== undefined && (!Number.isInteger(font.weight) || font.weight < 1 || font.weight > 1000)) {
+      throw new RangeError('Font weight must be an integer from 1 through 1000');
+    }
     fontSlots.add(font.slot); fontTotal += encodedLength(font.bytes);
   }
   if (nameBytes > 65536 || imageBytes + fontTotal > 128 * MiB) throw new RangeError('Workspace resource budget exceeded');
@@ -184,8 +187,19 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   }
   let images = pack(encodedImages, encodedImages.map(image => decode(image.bytes)), imageBytes, nameBytes);
   const fonts = slots.map(slot => payload.fonts.find(font => font.slot === slot));
-  const fontBytes = fonts.map(font => font ? decode(font.bytes) : new Uint8Array());
-  const weights = Uint32Array.from(fonts, font => font?.weight ?? 0);
+  let fontBytes = fonts.map(font => font ? decode(font.bytes) : new Uint8Array());
+  let weights = Uint32Array.from(fonts, font => font?.weight ?? 0);
+  let encodedFonts = Object.freeze(fonts.filter(Boolean).map(font => Object.freeze({
+    slot: font.slot, bytes: font.bytes, ...(font.weight === undefined ? {} : {weight: font.weight}),
+  })));
+  function describeFonts(encoded) {
+    return Object.freeze(slots.map(slot => {
+      const font = encoded.find(item => item.slot === slot);
+      return Object.freeze({slot, bytes: font ? encodedLength(font.bytes) : 0,
+        ...(font?.weight === undefined ? {} : {weight: font.weight})});
+    }));
+  }
+  let fontInfo = describeFonts(encodedFonts);
   let generation = 0, publishing = false;
   function publishChange(publish, apply) {
     if (publishing) throw new Error('Workspace transaction publication is already in progress');
@@ -289,6 +303,105 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       },
     });
   }
+  // Font replacement is a resource transaction, not a source or settings edit.
+  // Only the native render preflight interprets font tables. This admission path
+  // owns exact byte views and budgets them before copying or encoding anything.
+  function stageFonts(patches) {
+    if (!Array.isArray(patches) || !patches.length || patches.length > slots.length
+        || Reflect.ownKeys(patches).length !== patches.length + 1) {
+      throw new TypeError('Provide one through five font slot changes');
+    }
+    const admitted = new Map();
+    for (let i = 0; i < patches.length; i++) {
+      const item = Object.getOwnPropertyDescriptor(patches, String(i));
+      if (!item || !Object.hasOwn(item, 'value')) throw new TypeError('Font changes must be data objects');
+      const value = item.value, fields = {};
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Font changes must be data objects');
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== null && Object.getPrototypeOf(prototype) !== null) throw new TypeError('Font changes must be plain data objects');
+      for (const key of Reflect.ownKeys(value)) {
+        const field = Object.getOwnPropertyDescriptor(value, key);
+        if (!['slot', 'bytes', 'weight', 'clear'].includes(key) || !field || !Object.hasOwn(field, 'value')) {
+          throw new TypeError('Unsupported font field or accessor');
+        }
+        fields[key] = field.value;
+      }
+      const {slot, weight} = fields;
+      if (!slots.includes(slot) || admitted.has(slot)) throw new TypeError('Font slots must be recognized and unique');
+      if (Object.hasOwn(fields, 'clear')) {
+        if (fields.clear !== true || Object.hasOwn(fields, 'bytes') || Object.hasOwn(fields, 'weight')) {
+          throw new TypeError('Clearing a font accepts only slot and clear: true');
+        }
+        admitted.set(slot, null); continue;
+      }
+      if (weight !== undefined && (!Number.isInteger(weight) || weight < 1 || weight > 1000)) {
+        throw new RangeError('Font weight must be an integer from 1 through 1000');
+      }
+      if (!Object.hasOwn(fields, 'bytes')) {
+        const previous = encodedFonts.find(font => font.slot === slot);
+        if (!previous || !Object.hasOwn(fields, 'weight')) throw new TypeError('Supply font bytes or change the weight of an embedded slot');
+        admitted.set(slot, {previous, weight, view: fontBytes[slots.indexOf(slot)]});
+        continue;
+      }
+      const valueBytes = fields.bytes;
+      let buffer = valueBytes, offset = 0, length;
+      if (ArrayBuffer.isView(valueBytes)) {
+        // Read intrinsic view properties: shadowed getters cannot substitute a
+        // different buffer/range between admission and the owned copy.
+        const typed = Object.getPrototypeOf(Uint8Array.prototype);
+        let getters = typed;
+        try { Object.getOwnPropertyDescriptor(typed, 'buffer').get.call(valueBytes); }
+        catch { getters = DataView.prototype; }
+        const read = name => Object.getOwnPropertyDescriptor(getters, name).get.call(valueBytes);
+        buffer = read('buffer'); offset = read('byteOffset'); length = read('byteLength');
+      }
+      const bufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(buffer);
+      const view = new Uint8Array(buffer, offset, length ?? bufferLength);
+      if (!view.length || view.length > 32 * MiB) throw new RangeError('Each font must contain 1 byte through 32 MiB');
+      admitted.set(slot, {view, weight});
+    }
+    let total = 0;
+    for (let i = 0; i < slots.length; i++) {
+      const change = admitted.get(slots[i]);
+      total += admitted.has(slots[i]) ? (change?.view.length ?? 0) : fontBytes[i].length;
+    }
+    if (images.flat.length + total > 128 * MiB) throw new RangeError('Workspace resource budget exceeded');
+    const nextBytes = fontBytes.slice(), nextEncoded = [];
+    for (let i = 0; i < slots.length; i++) {
+      const slot = slots[i], change = admitted.get(slot);
+      const old = encodedFonts.find(font => font.slot === slot);
+      if (!admitted.has(slot)) { if (old) nextEncoded.push(old); continue; }
+      if (!change) { nextBytes[i] = new Uint8Array(); continue; }
+      if (!change.previous) nextBytes[i] = new Uint8Array(change.view);
+      nextEncoded.push(Object.freeze({slot, bytes: change.previous?.bytes ?? encode(nextBytes[i]),
+        ...(change.weight === undefined ? {} : {weight: change.weight})}));
+    }
+    const encoded = Object.freeze(nextEncoded), info = describeFonts(encoded);
+    const nextWeights = Uint32Array.from(slots, slot => encoded.find(font => font.slot === slot)?.weight ?? 0);
+    const changed = encoded.length !== encodedFonts.length || encoded.some((font, i) =>
+      font.slot !== encodedFonts[i].slot || font.bytes !== encodedFonts[i].bytes || font.weight !== encodedFonts[i].weight);
+    const previous = {encoded: encodedFonts, bytes: fontBytes, weights, total: fontTotal, info: fontInfo};
+    const revision = generation;
+    let committed = null, ended = false;
+    return Object.freeze({
+      fonts: encoded, slots: info, changed,
+      commit(publish) {
+        if (ended || committed !== null || revision !== generation) throw new Error('Stale font transaction');
+        publishChange(publish, () => {
+          payload.fonts = encoded; encodedFonts = encoded; fontBytes = nextBytes;
+          weights = nextWeights; fontTotal = total; fontInfo = info; committed = ++generation;
+        });
+      },
+      rollback(publish) {
+        if (ended || committed === null || committed !== generation) throw new Error('Stale font rollback');
+        publishChange(publish, () => {
+          payload.fonts = previous.encoded; encodedFonts = previous.encoded; fontBytes = previous.bytes;
+          weights = previous.weights; fontTotal = previous.total; fontInfo = previous.info;
+          generation++; ended = true;
+        });
+      },
+    });
+  }
   const decoder = new TextDecoder('utf-8', {fatal: true});
   let diagnostics = [];
   function source(text) {
@@ -358,6 +471,8 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     analyze,
     stageSettings,
     stageImages,
+    stageFonts,
+    get fontSlots() { return fontInfo; },
     html(markdown, display) { return renderHtml(markdown, display); },
     epub(markdown) {
       const render = publicationBinding('epub');
@@ -488,6 +603,67 @@ export function bootNativeWorkspace(factory, createPreview) {
   }
   const engine = {
     version: 1,
+    fontMode: background ? 'worker' : 'unavailable',
+    get fontSlots() { return renderer?.fontSlots ?? null; },
+    get fontsPending() { return Boolean(pendingSettings?.fonts); },
+    cancelFonts() { if (pendingSettings?.fonts) cancelSettings(); },
+    applyFontsAsync(patches, markdown, preview, display = {scale: 1}, isCurrent = () => true) {
+      if (!renderer) throw failure ?? exportError('FONTS_NOT_READY', 'Native renderer is loading');
+      if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Font changes require the matching worker runtime');
+      if (suspended) throw exportError('FONTS_SUSPENDED', 'Font changes are suspended');
+      if (typeof isCurrent !== 'function' || !display || !Number.isFinite(display.scale)
+          || display.scale < 0.7 || display.scale > 2 || ![undefined, 'light', 'dark'].includes(display.theme)) {
+        throw exportError('FONTS_OPTIONS', 'Invalid font preview options');
+      }
+      if (pendingSettings || pendingExport) throw exportError('FONTS_BUSY', 'Finish or cancel the current document operation before changing fonts');
+      const transaction = renderer.stageFonts(patches);
+      const options = renderer.settings, images = payload.images, fonts = payload.fonts;
+      const view = {scale: display.scale, theme: display.theme};
+      const operation = {fonts: true, worker: null, cancelled: false};
+      const current = () => !operation.cancelled && !suspended && pendingSettings === operation
+        && options === renderer.settings && images === payload.images && fonts === payload.fonts && isCurrent();
+      const check = () => {
+        if (!current()) throw exportError('FONTS_CANCELLED', 'Document or font selection changed; apply the current revision again');
+      };
+      pendingSettings = operation;
+      return Promise.resolve().then(() => {
+        check();
+        if (!transaction.changed) return null;
+        // The existing native ABI validates every supplied font before rendering.
+        // No font parser, shaping, subsetting or WASM call runs on the UI thread.
+        operation.worker = createPreview(factory, {...payload, options, images, fonts: transaction.fonts});
+        return operation.worker.render(markdown, view, {options, images});
+      }).then(result => {
+        check();
+        if (result === null) return renderer.fontSlots;
+        const next = makeFrame(result.html), previousData = data.textContent;
+        const nextData = savedData({fonts: transaction.fonts});
+        const previousChildren = Array.from(preview.childNodes);
+        transaction.commit(() => {
+          check();
+          try {
+            data.textContent = nextData;
+            preview.replaceChildren(next);
+          } catch (error) {
+            data.textContent = previousData;
+            preview.replaceChildren(...previousChildren);
+            throw error;
+          }
+        });
+        pendingSettings = null;
+        cancelExport(); invalidatePreview();
+        // The worker protocol caches fonts at initialization. Retire that cache
+        // before any later edit; the replacement worker captures committed fonts.
+        worker?.dispose(); worker = null;
+        previewDiagnostics = result.diagnostics;
+        observer?.disconnect(); observer = null; frame = next;
+        window.dispatchEvent(new Event('fmd-native-fonts-changed'));
+        return renderer.fontSlots;
+      }, error => { check(); throw error; }).finally(() => {
+        operation.worker?.dispose();
+        if (pendingSettings === operation) pendingSettings = null;
+      });
+    },
     settingsMode: background ? 'worker' : 'synchronous',
     get settingsPending() { return pendingSettings !== null; },
     cancelSettings,

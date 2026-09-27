@@ -3850,6 +3850,10 @@ impl LayoutCx<'_> {
         line_width: LayoutUnit,
         policy: ParagraphPolicy,
     ) {
+        // The optimizer and painter must agree for every block. Scratch is
+        // reused across headings and body paragraphs, so zero glyph expansion
+        // alone cannot stop ragged lines from borrowing unpainted glue shrink.
+        self.paragraph_scratch.set_justified(policy.justify);
         self.paragraph_scratch
             .set_expansion_permilli(policy.expansion_permilli());
         self.paragraph_scratch
@@ -41461,3 +41465,7 @@ mod table_alloc_optimality_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pdf/ragged_fit_tests.rs"]
+mod ragged_fit_tests;

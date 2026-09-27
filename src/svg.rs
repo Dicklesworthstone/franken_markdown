@@ -22,9 +22,9 @@
 //! quad → `Q`, close → `Z`.
 //!
 //! Deliberate scope cuts (the poster is a display artifact, not a print
-//! engine): greedy wrapping, not Knuth-Plass or pagination. Text uses actual
-//! GSUB/GPOS glyphs and bounded Latin mark positioning; inline links are coloured
-//! but not underlined;
+//! engine): no pagination. Bounded paragraphs use the shared Knuth-Plass
+//! breaker. Text uses actual GSUB/GPOS glyphs and bounded Latin mark positioning.
+//! Safe links have keyboard-accessible hit regions; heading links use SVG views;
 //! mathematics uses the shared TeX layout engine and vector outlines. Raw HTML
 //! is preserved as inert vector text; complete numbered endnotes follow the body.
 //! PNG/JPEG/SVG images use embedded data or explicit
@@ -33,9 +33,10 @@
 //! Appearance is host-independent: Auto chooses light, while explicit theme
 //! appearances use their selected palette. No system preference is queried.
 //! Typography and all four margins are resolved before layout, not as a final
-//! scale transform; see `geometry` for bounded fallbacks.
+//! scale transform; see `geometry` for bounded fallbacks. Link policy and native
+//! view behavior are documented in `docs/SVG_LINKS.md`.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 
 use franken_markdown::ast::{Align, Block, Document, Inline, Table};
@@ -58,6 +59,8 @@ const SLOT_COUNT: usize = 6;
 // Explicit paths also support the standalone #[path] SVG integration harness.
 #[path = "svg/text.rs"]
 mod text;
+#[path = "svg/links.rs"]
+mod links;
 #[path = "svg/geometry.rs"]
 mod geometry;
 #[path = "svg/lists.rs"]
@@ -134,7 +137,8 @@ pub fn render_svg_with_report(doc: &Document, opts: &SvgOptions) -> (Vec<u8>, Sv
     (bytes, report)
 }
 
-/// Render a poster with deterministic, per-occurrence recoverable diagnostics.
+/// Render a poster with deterministic recoverable diagnostics. Navigation
+/// warnings are deduplicated by reason; resource warnings retain occurrence order.
 /// This additive API leaves the existing report and option structs unchanged.
 #[must_use]
 pub fn render_svg_with_diagnostics(
@@ -347,6 +351,8 @@ struct RStyle {
     mono: bool,
     strike: bool,
     ink: Ink,
+    /// Render-local navigation identity; preserved by every inline style.
+    link: Option<usize>,
 }
 
 impl RStyle {
@@ -356,6 +362,7 @@ impl RStyle {
         mono: false,
         strike: false,
         ink: Ink::Fg,
+        link: None,
     };
 
     fn font_style(self) -> FontStyle {
@@ -399,6 +406,7 @@ struct Poster {
     faces: [Option<Font>; SLOT_COUNT],
     math_engine: OnceCell<Option<franken_markdown::math::Engine>>,
     images: images::ImageStore,
+    navigation: RefCell<links::Navigation>,
     warnings: Vec<SvgWarning>,
     colors: ThemeColors,
     scale: TypeScale,
@@ -433,6 +441,7 @@ impl Poster {
             ],
             math_engine: OnceCell::new(),
             images: images::ImageStore::default(),
+            navigation: RefCell::new(links::Navigation::default()),
             warnings: geometry.warnings,
             colors: theme.effective_colors(false, false).clone(),
             scale: geometry.scale,
@@ -573,11 +582,13 @@ impl Poster {
                     self.flatten(inner, RStyle { strike: true, ..st }, out);
                 }
                 Inline::Code(s) => out.push(Piece::Text(s.clone(), RStyle { mono: true, ..st })),
-                Inline::Link { content, .. } => {
+                Inline::Link { dest, title, content } => {
+                    let link = self.navigation.borrow_mut().intern(dest, title.as_deref(), content);
                     self.flatten(
                         content,
                         RStyle {
                             ink: Ink::Accent,
+                            link: Some(link),
                             ..st
                         },
                         out,
@@ -690,6 +701,7 @@ impl Poster {
         if self.y > self.top + 0.01 {
             self.y += size * 0.8;
         }
+        self.navigation.borrow_mut().heading(inlines, self.y);
         let ink = Self::default_ink(quote);
         let mut pieces = Vec::new();
         self.flatten(
@@ -1004,7 +1016,7 @@ impl Poster {
         Some(d)
     }
 
-    fn emit(self, height: f64) -> (Vec<u8>, SvgReport, Vec<SvgWarning>) {
+    fn emit(mut self, height: f64) -> (Vec<u8>, SvgReport, Vec<SvgWarning>) {
         // Collect unique glyph defs in sorted (slot, gid) order: BTreeMap
         // iteration keeps def ids stable for a fixed input.
         let mut defs: BTreeMap<(usize, u16), Option<String>> = BTreeMap::new();
@@ -1190,6 +1202,7 @@ impl Poster {
                 }
             }
         }
+        self.navigation.into_inner().emit(&mut out, self.width, height, &mut self.warnings);
         out.push_str("</svg>\n");
 
         let report = SvgReport {

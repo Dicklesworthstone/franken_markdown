@@ -44,10 +44,24 @@ fn assert_well_formed(svg: &str) {
     let mut rest = svg;
     while let Some(open) = rest.find('<') {
         let text = &rest[..open];
-        assert!(
-            text.trim().is_empty(),
-            "unexpected text node {text:?} (poster must be elements only)"
-        );
+        if stack.last().is_some_and(|name| matches!(name.as_str(), "title" | "desc")) {
+            // Accessible link metadata is text, not visible glyph rendering.
+            // Only descriptive elements admit it, and escaping stays strict.
+            assert!(!text.contains('>'), "unescaped metadata markup");
+            for (i, _) in text.match_indices('&') {
+                let tail = &text[i..];
+                assert!(
+                    ["&amp;", "&lt;", "&gt;", "&quot;", "&apos;"]
+                        .iter().any(|entity| tail.starts_with(entity)),
+                    "unescaped metadata ampersand: {text:?}"
+                );
+            }
+        } else {
+            assert!(
+                text.trim().is_empty(),
+                "unexpected text node {text:?} (visible text must be outlined)"
+            );
+        }
         let tag_src = &rest[open..];
         // Find the tag end, honouring quoted attribute values.
         let mut in_quote = false;
@@ -297,4 +311,25 @@ fn table_header_emitted_once_and_glyphs_counted_accurately() {
         "header glyph must not be counted twice: {report:?}"
     );
     assert_eq!(count_occurrences(&out, "<use href="), 2);
+}
+
+#[test]
+fn svg_links_titles_are_escaped_metadata_not_unoutlined_body_text() {
+    let (out, _) = render_str("[go](https://example.com \"Read & <learn>\")");
+    assert!(out.contains("<title>Read &amp; &lt;learn&gt;</title>"));
+    assert!(out.contains("<a href=\"https://example.com\""));
+    assert!(!out.contains("<text"));
+    assert_well_formed(&out);
+}
+
+#[test]
+#[should_panic(expected = "unexpected text node")]
+fn svg_links_metadata_support_still_rejects_unoutlined_body_text() {
+    assert_well_formed("<svg>unoutlined body</svg>");
+}
+
+#[test]
+#[should_panic(expected = "unescaped metadata ampersand")]
+fn svg_links_metadata_support_still_rejects_invalid_xml_escaping() {
+    assert_well_formed("<svg><a><title>unsafe & input</title></a></svg>");
 }

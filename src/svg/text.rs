@@ -133,8 +133,12 @@ impl Poster {
 
     pub(super) fn draw_words(&mut self, words: &[Word], x: f64, baseline: f64, size: f64) {
         let mut pen = x;
+        // Merge hit regions only within this physical line and across adjacent
+        // runs of the same link. Never bridge unlinked text or a table cell.
+        let mut previous_link = None;
         for word in words {
             pen += word.gap;
+            let start = pen;
             if let Some(warning) = &word.warning {
                 self.warnings.push(warning.clone());
             }
@@ -158,6 +162,13 @@ impl Poster {
                 // word directly; normal wrapped/code lines always retain it.
                 let prepared = Shaper::new(self).shape(&word.text, word.style, size);
                 pen = prepared.paint(self, pen, baseline, word.style, size);
+            }
+            if word.style.link.is_some() {
+                let (ascent, height) = self.line_metrics(std::slice::from_ref(word), size * 0.85, size);
+                let bounds = (start, baseline - ascent, pen, baseline - ascent + height);
+                self.navigation.borrow_mut().record(word.style.link, Some(bounds), &mut previous_link);
+            } else {
+                previous_link = None;
             }
         }
     }

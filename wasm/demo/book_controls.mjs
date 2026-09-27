@@ -4,8 +4,12 @@ import {
   normalizeBookProject,
   readBookFiles,
   readBookProject,
+  readPortableBookProject,
+  discardPortableBookProject,
 } from "./book_collection.mjs";
 import { bookEditorOffset } from "./book_source_search.mjs";
+
+const DEFAULT_CONFIRMATION = () => true;
 
 /** UI orchestration is separately testable; the host supplies the real worker.
  * Nothing in this controller parses Markdown or inserts rendered HTML.
@@ -13,7 +17,7 @@ import { bookEditorOffset } from "./book_source_search.mjs";
 export function createBookControls({
   root,
   worker,
-  confirm = () => true,
+  confirm = DEFAULT_CONFIRMATION,
   urls = URL,
   collection = createBookCollection(),
   onProjectReplaced = () => {},
@@ -55,8 +59,12 @@ export function createBookControls({
   const el = Object.fromEntries(ids.map((id) => [id, root.querySelector(`#${id}`)]));
   if (Object.values(el).some((value) => !value))
     throw new Error("Book controls are missing required elements.");
+  installPortableBookPanel(root);
+  for (const id of ["save-portable", "open-portable", "cancel-portable", "portable-review"])
+    el[id] = root.querySelector(`#${id}`);
   const unlisten = [],
     sourceListeners = new Set();
+  let portableAbort = null;
   let lastSourceBusy = false;
   let composing = false;
   let disposed = false,
@@ -108,7 +116,10 @@ export function createBookControls({
       "open-project",
     ])
       el[kind].disabled = reading;
-    el["cancel-export"].disabled = !preparing;
+    el["cancel-export"].disabled = !preparing && !(reading && portableAbort);
+    if (el["save-portable"]) el["save-portable"].disabled = reading || composing || preparing;
+    if (el["open-portable"]) el["open-portable"].disabled = reading || composing;
+    if (el["cancel-portable"]) el["cancel-portable"].disabled = portableAbort === null;
     const nextBusy = reading || composing;
     if (lastSourceBusy !== nextBusy) {
       lastSourceBusy = nextBusy;
@@ -133,6 +144,9 @@ export function createBookControls({
     }
   }
   function invalidate() {
+    portableAbort?.abort();
+    portableAbort = null;
+    if (el["portable-review"]) el["portable-review"].textContent = "No portable restore is under review.";
     generation++;
     preparing = false;
     worker.cancel();
@@ -238,6 +252,32 @@ export function createBookControls({
     }
   }
 
+  async function preparePortable() {
+    let ticket = null, job = null;
+    try {
+      alive();
+      if (reading || composing)
+        throw bookError("BOOK_BUSY", "Finish importing or composing text before preparing a portable backup.");
+      invalidate();
+      capture();
+      const revision = collection.revision, view = signature();
+      ticket = ++generation;
+      job = new AbortController();
+      portableAbort = job;
+      preparing = true;
+      buttons();
+      el.status.textContent = "Preparing a portable backup with the current images and fonts. Nothing is uploaded or saved automatically.";
+      const output = await collection.portableDownload({ signal: job.signal });
+      publish(output, ticket, revision, view);
+    } catch (error) {
+      if (ticket === null || ticket === generation) report(error);
+      throw error;
+    } finally {
+      if (portableAbort === job) portableAbort = null;
+      if (!disposed && ticket === generation) { preparing = false; buttons(); }
+    }
+  }
+
   function prepareSource(project) {
     alive();
     invalidate();
@@ -248,36 +288,58 @@ export function createBookControls({
   async function importFiles(files, mode = "files") {
     alive();
     if (reading) throw bookError("BOOK_BUSY", "A local import is already in progress.");
+    if (mode === "portable" && (composing || files.length !== 1))
+      throw bookError("BOOK_BUSY", "Finish composing text and choose one portable book file.");
+    if (mode === "portable" && confirm === DEFAULT_CONFIRMATION)
+      throw bookError("RESOURCE_AUTHORIZATION_REQUIRED", "Portable restore requires an explicit confirmation handler.");
     capture();
     invalidate();
     const revision = collection.revision,
-      view = signature();
+      view = signature(),
+      job = mode === "portable" ? new AbortController() : null;
+    let review = null;
+    portableAbort = job;
     reading = true;
     buttons();
     const fence = () => {
       alive();
-      if (revision !== collection.revision || view !== signature())
+      if (job?.signal.aborted)
+        throw bookError("ABORTED", "Portable import cancelled; nothing was installed.");
+      if (revision !== collection.revision || view !== signature() || (job && composing))
         throw bookError(
           "STALE_SOURCE",
           "The collection changed during import; nothing was installed.",
         );
     };
     try {
-      if (mode === "project") {
-        const project = await readBookProject(files[0]);
+      if (mode === "project" || mode === "portable") {
+        const project = job
+          ? (review = await readPortableBookProject(files[0], { signal: job.signal }))
+          : await readBookProject(files[0]);
         fence();
-        const approved = await confirm(
-          "Replace this collection with the source project? Save the current project first. All current image access will be revoked.",
-        );
+        if (review && el["portable-review"]) {
+          el["portable-review"].textContent = portableReviewText(review);
+        }
+        const message = review
+          ? `Replace this entire collection with "${review.title}"? Save the current book first. Restore ${review.chapters} chapters and ${review.includeSources} include-only sources, and authorize ${review.images.length} embedded images (${review.imageBytes} bytes) and ${review.fonts.length} embedded font roles (${review.fontBytes} bytes) for this session? Current resources will be replaced. Only approve files and resource rights you trust.`
+          : "Replace this collection with the source project? Save the current project first. All current image access will be revoked.";
+        const approved = job
+          ? await portableApproval(confirm(message), job.signal)
+          : await confirm(message);
         fence();
-        if (approved !== true) return false;
-        collection.replaceProject(project);
+        if (approved !== true) {
+          if (job) el.status.textContent = "Portable restore declined. The current collection is unchanged.";
+          return false;
+        }
+        if (job) collection.replacePortableProject(project, revision, { authorizeResources: true });
+        else collection.replaceProject(project);
         active = 0;
         showOptions();
         showChapter();
         onProjectReplaced();
-        el.status.textContent =
-          "Source project reopened. Source roles, chapter order and text are restored; reauthorize its image files before exporting.";
+        el.status.textContent = job
+          ? "Portable book restored. Sources, settings, embedded images and font roles are installed. Prepare a new preview or publication to validate them with the engine."
+          : "Source project reopened. Source roles, chapter order and text are restored; reauthorize its image files before exporting.";
       } else {
         const batch = await readBookFiles(files, {
           folder: mode === "folder" || mode === "include-folder",
@@ -291,6 +353,8 @@ export function createBookControls({
       }
       return true;
     } finally {
+      discardPortableBookProject(review);
+      if (portableAbort === job) portableAbort = null;
       reading = false;
       if (!disposed) buttons();
     }
@@ -312,6 +376,7 @@ export function createBookControls({
   });
   on("chapter-source", "compositionstart", () => {
     composing = true;
+    if (portableAbort) invalidate();
     buttons();
   });
   on("chapter-source", "compositionend", () => {
@@ -433,7 +498,8 @@ export function createBookControls({
     ["import-includes", "includes"],
     ["import-include-folder", "include-folder"],
     ["open-project", "project"],
-  ])
+    ["open-portable", "portable"],
+  ].filter(([id]) => el[id]))
     on(id, "change", () => {
       const files = Array.from(el[id].files ?? []);
       if (!files.length) return;
@@ -445,6 +511,11 @@ export function createBookControls({
         }
       });
     });
+  if (el["save-portable"]) on("save-portable", "click", () => invoke(preparePortable));
+  if (el["cancel-portable"]) on("cancel-portable", "click", () => {
+    invalidate();
+    el.status.textContent = "Portable operation cancelled. Source remains editable.";
+  });
   on("save-project", "click", () => invoke(() => prepareSource(true)));
   on("save-chapter", "click", () => invoke(() => prepareSource(false)));
   for (const format of ["pdf", "epub", "site"])
@@ -474,6 +545,7 @@ export function createBookControls({
   revoke();
   return Object.freeze({
     prepare,
+    preparePortable,
     prepareSource,
     importFiles,
     checkpoint() {
@@ -566,8 +638,9 @@ export function createBookControls({
     suspend() {
       if (!disposed) {
         collection.revokeImages();
+        collection.revokeFonts();
         el.status.textContent =
-          "Source retained in memory; reauthorize images after returning to this page.";
+          "Source retained in memory; reauthorize images and fonts after returning to this page.";
       }
     },
     dispose() {
@@ -580,5 +653,58 @@ export function createBookControls({
       worker.dispose();
       collection.dispose();
     },
+  });
+}
+
+// Added to the already-packaged publisher controller: both assemblers ship this
+// path, so portable backup needs no new loader, WASM build, or renderer module.
+function installPortableBookPanel(root) {
+  const section = root.querySelector("#publish-title")?.parentElement;
+  if (!section || root.querySelector("#save-portable")) return;
+  const panel = root.createElement("div");
+  const heading = root.createElement("h3");
+  heading.textContent = "Portable backup and restore";
+  const help = root.createElement("p");
+  help.id = "portable-help";
+  help.textContent = "Unlike source-only projects and local saves, a portable backup embeds all currently authorized images and supplied fonts with the exact chapter/include source and settings. It is unencrypted JSON, not a vault. Share only resources you have permission to distribute. No URLs are fetched. A restored book must still be checked by the publishing engine. Maximum file size: 192 MiB; normal source, image and font limits still apply.";
+  const save = root.createElement("button");
+  save.id = "save-portable"; save.type = "button";
+  save.textContent = "Prepare portable backup (includes images and fonts)";
+  save.setAttribute("aria-describedby", "portable-help status");
+  const label = root.createElement("label");
+  label.setAttribute("for", "open-portable"); label.textContent = "Reopen a portable book and review resource authorization";
+  const input = root.createElement("input");
+  input.id = "open-portable"; input.type = "file"; input.accept = ".json,application/json";
+  input.setAttribute("aria-describedby", "portable-help portable-review status");
+  const cancel = root.createElement("button");
+  cancel.id = "cancel-portable"; cancel.type = "button"; cancel.disabled = true;
+  cancel.textContent = "Cancel portable operation";
+  const review = root.createElement("pre");
+  review.id = "portable-review"; review.setAttribute("aria-label", "Portable resource review");
+  review.textContent = "No portable restore is under review.";
+  panel.append(heading, help, save, label, input, cancel, review);
+  section.append(panel);
+}
+function portableReviewText(review) {
+  return [
+    `${review.title}: ${review.chapters} chapters, ${review.includeSources} include-only sources (${review.sourceBytes} source bytes).`,
+    "Sources in saved order:",
+    ...review.sources.map(source => `  [${source.role}] ${source.path}`),
+    `Images (${review.imageBytes} bytes):`,
+    ...review.images.map(image => `  ${image.destination} (${image.size} bytes)`),
+    `Font roles (${review.fontBytes} bytes):`,
+    ...review.fonts.map(font => `  ${font.slot}: ${font.name}, weight ${font.weight ?? "default"} (${font.size} bytes)`),
+    "Restoring replaces the entire collection and authorizes only these embedded resource bytes.",
+  ].join("\n");
+}
+// An asynchronous host confirmation may outlive cancellation/page disposal.
+// Reject that wait promptly, release the private review, and observe late errors.
+function portableApproval(promise, signal) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    const abort = () => { cleanup(); reject(bookError("ABORTED", "Portable restore cancelled during confirmation.")); };
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(promise).then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+    if (signal.aborted) abort();
   });
 }

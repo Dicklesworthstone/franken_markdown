@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Render supported decomposed Latin accents in native PDFs with the same glyphs
+  and geometry as precomposed text. Preserve each occurrence's original Unicode
+  through PDF ActualText, keep base/mark clusters together through paragraph,
+  table, and code wrapping, and use the same font-aware composition for embedded
+  SVG text. Missing-glyph diagnostics now inspect the face actually rendered.
+
 ### Fixed
 
 - Use the selected pagination policy consistently for PDF table-of-contents

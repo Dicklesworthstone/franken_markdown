@@ -41,6 +41,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 mod math;
+mod text_composition;
+
+#[cfg(test)]
+mod text_composition_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 type PdfStageStart = std::time::Instant;
@@ -1689,7 +1693,8 @@ impl Face {
         {
             return self.shaped_width_ascii(bytes, size, self.ascii_tables());
         }
-        let glyphs: Vec<u16> = text.chars().map(|ch| self.font.glyph_index(ch)).collect();
+        let glyph_text = text_composition::glyph_text(text, &self.font);
+        let glyphs: Vec<u16> = glyph_text.chars().map(|ch| self.font.glyph_index(ch)).collect();
         let shaped = self.lig.substitute(&glyphs);
         self.shaped_glyph_width(&shaped, size)
     }
@@ -2280,7 +2285,7 @@ impl RenderWarning {
 pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> {
     let mut warnings = Vec::new();
     let supported_math = math::collect_warnings(&doc.blocks, &mut warnings);
-    let mut image_text = String::new();
+    let mut image_text = Vec::new();
 
     let mut dests = Vec::new();
     collect_image_dests(&doc.blocks, &mut dests);
@@ -2305,39 +2310,23 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
     }
 
     if let Ok(faces) = Faces::load(opts) {
-        let mut text = String::new();
-        collect_text(&doc.blocks, &mut text, &supported_math);
+        let mut text = Vec::new();
+        collect_text(&doc.blocks, &mut text, &supported_math, &faces);
         let mut missing = 0usize;
         let mut seen = BTreeSet::new();
         let mut sample = String::new();
-        let mut scan = |chars: &str, allow_symbol_fallback: bool| {
-            for c in chars.chars() {
+        let mut scan = |source: &str, slot: u8| {
+            let face = faces.get(slot);
+            let glyph_text = text_composition::glyph_text(source, face);
+            for c in glyph_text.chars() {
                 if c.is_whitespace() || c.is_control() {
                     continue;
                 }
-                let mut mapped = faces.body.glyph_index(c) != 0
-                    || faces.bold.glyph_index(c) != 0
-                    || faces.italic.glyph_index(c) != 0
-                    || faces.bolditalic.glyph_index(c) != 0
-                    || faces.mono.glyph_index(c) != 0
-                    // Markdown text runs fall back to the bundled symbol face
-                    // (see `apply_symbol_fallback`) or optional CJK fallback; embedded
-                    // SVG text does not, so its coverage is judged on the primary faces only.
-                    || (allow_symbol_fallback && faces.symbol.glyph_index(c) != 0)
-                    || (allow_symbol_fallback
-                        && faces.cjk.as_ref().is_some_and(|f| f.glyph_index(c) != 0));
-                if !mapped && allow_symbol_fallback {
-                    if let Some(fb) = subscript_phonetic_fallback(c) {
-                        mapped = faces.body.glyph_index(fb) != 0
-                            || faces.bold.glyph_index(fb) != 0
-                            || faces.italic.glyph_index(fb) != 0
-                            || faces.bolditalic.glyph_index(fb) != 0
-                            || faces.mono.glyph_index(fb) != 0
-                            || faces.symbol.glyph_index(fb) != 0
-                            || faces.cjk.as_ref().is_some_and(|f| f.glyph_index(fb) != 0);
-                    }
-                }
-                if !mapped {
+                // These runs have already followed the renderer's fallback
+                // routing. A glyph in some unrelated style face cannot make
+                // an unmapped glyph in this selected face render correctly.
+                let glyph = face.glyph_index(c);
+                if glyph == 0 || glyph >= face.num_glyphs {
                     missing += 1;
                     if seen.insert(c) && sample.chars().count() < 8 {
                         sample.push(c);
@@ -2345,8 +2334,14 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
                 }
             }
         };
-        scan(&text, true);
-        scan(&image_text, false);
+        for (slot, source) in &text {
+            scan(source, *slot);
+        }
+        // Keep positioned SVG elements separate: an accent in a different
+        // explicitly positioned element cannot compose with a preceding base.
+        for (slot, source) in &image_text {
+            scan(source, *slot);
+        }
         if missing > 0 {
             warnings.push(RenderWarning::MissingGlyphs {
                 count: missing,
@@ -2375,17 +2370,17 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
     warnings
 }
 
-fn collect_svg_image_text(image: &PdfImageData, out: &mut String) {
+fn collect_svg_image_text(image: &PdfImageData, out: &mut Vec<(u8, String)>) {
     let Some(svg) = image.vector.as_ref() else {
         return;
     };
     collect_svg_document_text(svg, out);
 }
 
-fn collect_svg_document_text(svg: &PdfSvgImage, out: &mut String) {
+fn collect_svg_document_text(svg: &PdfSvgImage, out: &mut Vec<(u8, String)>) {
     for element in &svg.elements {
         match element {
-            SvgElement::Text(text) => out.push_str(&text.text),
+            SvgElement::Text(text) => out.push((text.slot, text.text.clone())),
             SvgElement::Image(image) => {
                 if let Some(nested_svg) = image.image.vector.as_ref() {
                     collect_svg_document_text(nested_svg, out);
@@ -2451,69 +2446,90 @@ fn collect_image_dests_inlines(inlines: &[Inline], out: &mut Vec<String>) {
     }
 }
 
-fn collect_text(blocks: &[Block], out: &mut String, supported_math: &BTreeSet<&str>) {
+fn collect_text(
+    blocks: &[Block],
+    out: &mut Vec<(u8, String)>,
+    supported_math: &BTreeSet<&str>,
+    faces: &Faces,
+) {
     for block in blocks {
         match block {
-            Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
-                collect_text_inlines(inlines, out);
+            Block::Heading { inlines, .. } => {
+                collect_text_inlines(inlines, out, faces, true);
             }
-            Block::CodeBlock { code, .. } => out.push_str(code),
+            Block::Paragraph(inlines) => collect_text_inlines(inlines, out, faces, false),
+            Block::CodeBlock { code, .. } => {
+                out.extend(
+                    split_code_slot_runs(code, faces)
+                        .into_iter()
+                        .map(|(slot, source)| (slot, source.into_owned())),
+                );
+            }
             Block::MathBlock(code) => {
                 if !supported_math.contains(code.as_str()) {
-                    out.push_str(code);
+                    let mut toks = Vec::new();
+                    push_text_tokens(code, F_MONO, false, None, &mut toks);
+                    collect_token_text(toks, out, faces);
                 }
             }
-            Block::BlockQuote(inner) => collect_text(inner, out, supported_math),
+            Block::BlockQuote(inner) => collect_text(inner, out, supported_math, faces),
             Block::FootnoteDefinition { blocks: inner, .. } => {
-                collect_text(inner, out, supported_math);
+                collect_text(inner, out, supported_math, faces);
             }
             Block::List(list) => {
                 for item in &list.items {
-                    collect_text(&item.blocks, out, supported_math);
+                    collect_text(&item.blocks, out, supported_math, faces);
                 }
             }
             Block::DefinitionList(items) => {
                 for item in items {
                     for term in &item.terms {
-                        collect_text_inlines(term, out);
+                        collect_text_inlines(term, out, faces, true);
                     }
                     for def in &item.definitions {
-                        collect_text_inlines(def, out);
+                        collect_text_inlines(def, out, faces, false);
                     }
                 }
             }
             Block::Table(table) => {
                 for cell in &table.head {
-                    collect_text_inlines(cell, out);
+                    collect_text_inlines(cell, out, faces, true);
                 }
                 for row in &table.rows {
                     for cell in row {
-                        collect_text_inlines(cell, out);
+                        collect_text_inlines(cell, out, faces, false);
                     }
                 }
             }
-            Block::HtmlBlock(html) => out.push_str(html),
+            Block::HtmlBlock(html) => {
+                let mut toks = Vec::new();
+                push_text_tokens(html, F_BODY, false, None, &mut toks);
+                collect_token_text(toks, out, faces);
+            }
             Block::ThematicBreak | Block::PageBreak => {}
         }
     }
 }
 
-fn collect_text_inlines(inlines: &[Inline], out: &mut String) {
-    for inline in inlines {
-        match inline {
-            Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::DisplayMath(t) => {
-                out.push_str(t)
-            }
-            Inline::FootnoteRef { id } => out.push_str(&format!("[^{id}]")),
-            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                collect_text_inlines(c, out);
-            }
-            Inline::Link { content, .. } => collect_text_inlines(content, out),
-            Inline::Image { alt, .. } => out.push_str(alt),
-            Inline::Html(html) => out.push_str(html),
-            Inline::SoftBreak | Inline::HardBreak => {}
-        }
-    }
+fn collect_text_inlines(
+    inlines: &[Inline],
+    out: &mut Vec<(u8, String)>,
+    faces: &Faces,
+    bold: bool,
+) {
+    let mut toks = Vec::new();
+    let mut intern = LinkIntern::default();
+    tokenize(inlines, bold, false, false, None, &mut intern, &mut toks);
+    collect_token_text(toks, out, faces);
+}
+
+fn collect_token_text(mut toks: Vec<Tok>, out: &mut Vec<(u8, String)>, faces: &Faces) {
+    apply_symbol_fallback(&mut toks, faces);
+    out.extend(
+        toks.into_iter()
+            .filter(|tok| !tok.space)
+            .map(|tok| (tok.slot, tok.text)),
+    );
 }
 
 fn fit_to_target_pages(
@@ -16498,6 +16514,41 @@ fn wrap_cell_styled(
                 cur_w = 0.0;
             }
             pending = None;
+            if !t.text.is_ascii() && t.text.chars().any(text_composition::is_mark) {
+                // Table cells have their own hard-wrap path. Keep source
+                // clusters atomic here too, and measure the complete candidate
+                // run so composition/kerning agree with the emitted glyphs.
+                let mut chunk = String::new();
+                let mut chunk_w = 0.0;
+                for cluster in text_composition::source_clusters(&t.text) {
+                    let old_len = chunk.len();
+                    chunk.push_str(cluster);
+                    let candidate_width =
+                        text_width_cached(&chunk, size, t.slot, faces, width_cache);
+                    if old_len > 0 && candidate_width > max_width {
+                        let tail = chunk.split_off(old_len);
+                        let mut tok = t.clone();
+                        tok.text = std::mem::take(&mut chunk);
+                        lines.push(build_cell_line_owned(
+                            std::iter::once(tok),
+                            size,
+                            faces,
+                            width_cache,
+                        ));
+                        chunk = tail;
+                        chunk_w = text_width_cached(&chunk, size, t.slot, faces, width_cache);
+                    } else {
+                        chunk_w = candidate_width;
+                    }
+                }
+                if !chunk.is_empty() {
+                    let mut tail = t.clone();
+                    tail.text = chunk;
+                    cur.push(tail);
+                    cur_w = chunk_w;
+                }
+                continue;
+            }
             let mut buf = [0u8; 4];
             let mut chunk = String::new();
             let mut chunk_w = 0.0;
@@ -17824,6 +17875,31 @@ fn subscript_phonetic_fallback(c: char) -> Option<char> {
 /// tokens, which the paragraph builder already measures as one unbreakable
 /// word with per-slot shaping.
 fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
+    if toks
+        .iter()
+        .any(|tok| !tok.text.is_ascii() && tok.text.chars().any(text_composition::is_mark))
+    {
+        // Parsing can produce adjacent text nodes (entities and escapes, for
+        // example). Merge equal-style pieces before selecting cluster fonts,
+        // so an accent in the next node can still compose with its own base.
+        let mut merged: Vec<Tok> = Vec::with_capacity(toks.len());
+        for tok in std::mem::take(toks) {
+            if let Some(last) = merged.last_mut()
+                && !tok.space
+                && !tok.hard_break
+                && !last.space
+                && !last.hard_break
+                && tok.slot == last.slot
+                && tok.link == last.link
+                && tok.strike == last.strike
+            {
+                last.text.push_str(&tok.text);
+            } else {
+                merged.push(tok);
+            }
+        }
+        *toks = merged;
+    }
     let mut i = 0;
     while i < toks.len() {
         let tok = &toks[i];
@@ -17836,22 +17912,36 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
         }
         let slot = tok.slot;
         let mut runs: Vec<(u8, String)> = Vec::new();
-        for mut c in tok.text.chars() {
-            let mut target = faces.fallback_slot(slot, c);
-            if target == slot
-                && faces.face(slot).glyph_index(c) == 0
-                && faces.symbol.glyph_index(c) == 0
-            {
-                if let Some(fb) = subscript_phonetic_fallback(c) {
-                    if faces.face(slot).glyph_index(fb) != 0 || faces.symbol.glyph_index(fb) != 0 {
-                        c = fb;
-                        target = faces.fallback_slot(slot, c);
+        for cluster in text_composition::source_clusters(&tok.text) {
+            if matches!(
+                text_composition::glyph_text(cluster, faces.get(slot)),
+                Cow::Owned(_)
+            ) {
+                // Retain source bytes and the requested face together. Scalar
+                // fallback before composition could route the mark away from
+                // its base even though the composite is present in this face.
+                push_slot_run(&mut runs, slot, cluster);
+                continue;
+            }
+            for mut c in cluster.chars() {
+                let mut target = faces.fallback_slot(slot, c);
+                if target == slot
+                    && faces.face(slot).glyph_index(c) == 0
+                    && faces.symbol.glyph_index(c) == 0
+                {
+                    if let Some(fb) = subscript_phonetic_fallback(c) {
+                        if faces.face(slot).glyph_index(fb) != 0
+                            || faces.symbol.glyph_index(fb) != 0
+                        {
+                            c = fb;
+                            target = faces.fallback_slot(slot, c);
+                        }
                     }
                 }
-            }
-            match runs.last_mut() {
-                Some((run_slot, buf)) if *run_slot == target => buf.push(c),
-                _ => runs.push((target, c.to_string())),
+                match runs.last_mut() {
+                    Some((run_slot, buf)) if *run_slot == target => buf.push(c),
+                    _ => runs.push((target, c.to_string())),
+                }
             }
         }
         if runs.len() <= 1
@@ -17876,6 +17966,13 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
             }),
         );
         i += replaced;
+    }
+}
+
+fn push_slot_run(runs: &mut Vec<(u8, String)>, slot: u8, source: &str) {
+    match runs.last_mut() {
+        Some((current, text)) if *current == slot => text.push_str(source),
+        _ => runs.push((slot, source.to_owned())),
     }
 }
 
@@ -18178,6 +18275,16 @@ fn pdf_word_break_points(chars: &[char], dict: &[usize]) -> Vec<PdfBreakPoint> {
         points = fill_pdf_emergency_break_points(len, points);
     }
 
+    // A base and its following marks are one source cluster, regardless of
+    // whether this bounded Latin profile can compose it. Move synthetic
+    // opportunities past the complete cluster instead of starting a line with
+    // an orphan accent (or composing different text on each side of a break).
+    for point in &mut points {
+        while point.at < len && text_composition::is_mark(chars[point.at]) {
+            point.at += 1;
+        }
+    }
+    points.retain(|point| point.at < len);
     points.sort_by_key(|p| p.at);
     points.dedup_by_key(|p| p.at);
     points
@@ -19357,6 +19464,10 @@ struct SegRunShaper<'a> {
 }
 
 enum SegRunMode<'a> {
+    /// A combining mark can revise the preceding glyph, including a base in
+    /// an earlier token. Measure the complete source prefix through the same
+    /// composition path as final painting; ordinary runs keep the fast modes.
+    Combining(LayoutUnit),
     /// Every byte so far is ASCII and none can start a ligature rule, so
     /// substitution is the identity and widths accumulate straight from the
     /// per-byte tables (mirrors `Face::shaped_width_ascii` per prefix).
@@ -19417,6 +19528,12 @@ impl<'a> SegRunShaper<'a> {
     /// accumulated run text ending with `chunk` (used once, if at all, to
     /// reseed the general path when the ASCII eligibility check first fails).
     fn append(&mut self, chunk: &str, run_text: &str) {
+        if matches!(self.mode, SegRunMode::Combining(_))
+            || (!chunk.is_ascii() && chunk.chars().any(text_composition::is_mark))
+        {
+            self.mode = SegRunMode::Combining(self.face.shaped_width(run_text, self.size));
+            return;
+        }
         if let SegRunMode::Ascii { tables, .. } = &self.mode
             && chunk
                 .as_bytes()
@@ -19430,6 +19547,7 @@ impl<'a> SegRunShaper<'a> {
             return;
         }
         match &mut self.mode {
+            SegRunMode::Combining(_) => {}
             SegRunMode::Ascii {
                 tables,
                 running,
@@ -19459,6 +19577,7 @@ impl<'a> SegRunShaper<'a> {
     /// `Face::shaped_width` on the same string, including the zero clamp.
     fn current_width(&self) -> LayoutUnit {
         match &self.mode {
+            SegRunMode::Combining(width) => *width,
             SegRunMode::Ascii { running, .. } => (*running).max(LayoutUnit::ZERO),
             SegRunMode::General {
                 out,
@@ -19515,7 +19634,7 @@ impl<'a> SegRunShaper<'a> {
                     out_width,
                     pending,
                 } => (out, out_width, pending),
-                SegRunMode::Ascii { .. } => return,
+                SegRunMode::Ascii { .. } | SegRunMode::Combining(_) => return,
             };
             if pending.len() < window {
                 return;
@@ -20124,7 +20243,43 @@ fn code_fragments(
             fill: fill_for_highlight(span.kind),
         });
     }
-    frags
+    coalesce_code_mark_clusters(frags)
+}
+
+/// Lexers classify scalars, but a mark belongs to its base's painted glyph.
+/// Retain the complete source cluster and the base's syntax color when a
+/// highlighting boundary happens to fall between them.
+fn coalesce_code_mark_clusters(frags: Vec<CodeFrag>) -> Vec<CodeFrag> {
+    if !frags
+        .iter()
+        .any(|frag| !frag.text.is_ascii() && frag.text.chars().any(text_composition::is_mark))
+    {
+        return frags;
+    }
+    let source: String = frags.iter().map(|frag| frag.text.as_str()).collect();
+    let mut output: Vec<CodeFrag> = Vec::with_capacity(frags.len());
+    let mut frag_index = 0usize;
+    let mut frag_end = frags.first().map_or(0, |frag| frag.text.len());
+    let mut offset = 0usize;
+    for cluster in text_composition::source_clusters(&source) {
+        while offset >= frag_end && frag_index + 1 < frags.len() {
+            frag_index += 1;
+            frag_end += frags[frag_index].text.len();
+        }
+        let fill = frags[frag_index].fill;
+        if let Some(last) = output.last_mut()
+            && last.fill == fill
+        {
+            last.text.push_str(cluster);
+        } else {
+            output.push(CodeFrag {
+                text: cluster.to_owned(),
+                fill,
+            });
+        }
+        offset += cluster.len();
+    }
+    output
 }
 
 fn wrap_code_fragments(
@@ -20134,6 +20289,12 @@ fn wrap_code_fragments(
     size: f32,
     faces: &Faces,
 ) -> Vec<Vec<CodeFrag>> {
+    if frags
+        .iter()
+        .any(|frag| !frag.text.is_ascii() && frag.text.chars().any(text_composition::is_mark))
+    {
+        return wrap_code_combining_fragments(frags, first_width, continuation_width, size, faces);
+    }
     let mut lines: Vec<Vec<CodeFrag>> = Vec::new();
     let mut current: Vec<CodeFrag> = Vec::new();
     let mut width = 0.0f32;
@@ -20155,6 +20316,76 @@ fn wrap_code_fragments(
         }
     }
 
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Combining code uses atomic source clusters and the same shaped run widths
+/// as final segments. Re-shaping the last fragment is confined to the current
+/// physical line; the ordinary code/ASCII wrapper stays unchanged.
+fn wrap_code_combining_fragments(
+    frags: &[CodeFrag],
+    first_width: f32,
+    continuation_width: f32,
+    size: f32,
+    faces: &Faces,
+) -> Vec<Vec<CodeFrag>> {
+    let frags = coalesce_code_mark_clusters(frags.to_vec());
+    let measured = |text: &str| -> f32 {
+        split_code_slot_runs(text, faces)
+            .iter()
+            .map(|(slot, text)| faces.shaped_width_points(*slot, text, size))
+            .sum()
+    };
+    let mut lines = Vec::new();
+    let mut current: Vec<CodeFrag> = Vec::new();
+    let mut width = 0.0;
+    let mut last_width = 0.0;
+    for frag in &frags {
+        for cluster in text_composition::source_clusters(&frag.text) {
+            let extends = current.last().is_some_and(|last| last.fill == frag.fill);
+            let mut next_text = if extends {
+                current
+                    .last()
+                    .map(|last| last.text.clone())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            next_text.push_str(cluster);
+            let next_width = measured(&next_text);
+            let combined_width = width - if extends { last_width } else { 0.0 } + next_width;
+            let limit = if lines.is_empty() {
+                first_width
+            } else {
+                continuation_width
+            };
+            if !current.is_empty() && combined_width > limit {
+                lines.push(std::mem::take(&mut current));
+                last_width = measured(cluster);
+                width = last_width;
+                current.push(CodeFrag {
+                    text: cluster.to_owned(),
+                    fill: frag.fill,
+                });
+            } else {
+                if extends {
+                    if let Some(last) = current.last_mut() {
+                        last.text = next_text;
+                    }
+                } else {
+                    current.push(CodeFrag {
+                        text: next_text,
+                        fill: frag.fill,
+                    });
+                }
+                last_width = next_width;
+                width = combined_width;
+            }
+        }
+    }
     if !current.is_empty() {
         lines.push(current);
     }
@@ -20183,11 +20414,20 @@ fn split_code_slot_runs<'a>(text: &'a str, faces: &Faces) -> Vec<(u8, Cow<'a, st
         return vec![(F_MONO, Cow::Borrowed(text))];
     }
     let mut runs: Vec<(u8, String)> = Vec::new();
-    for c in text.chars() {
-        let target = faces.fallback_slot(F_MONO, c);
-        match runs.last_mut() {
-            Some((slot, buf)) if *slot == target => buf.push(c),
-            _ => runs.push((target, c.to_string())),
+    for cluster in text_composition::source_clusters(text) {
+        if matches!(
+            text_composition::glyph_text(cluster, faces.get(F_MONO)),
+            Cow::Owned(_)
+        ) {
+            push_slot_run(&mut runs, F_MONO, cluster);
+        } else {
+            for c in cluster.chars() {
+                let target = faces.fallback_slot(F_MONO, c);
+                match runs.last_mut() {
+                    Some((slot, buf)) if *slot == target => buf.push(c),
+                    _ => runs.push((target, c.to_string())),
+                }
+            }
         }
     }
     runs.into_iter()
@@ -20505,7 +20745,9 @@ fn serialize(
                 shape_cache_hits += 1;
                 shape_cache_hit_bytes += text.len();
             } else {
-                chars.extend(text.chars());
+                // Keep canonical glyph characters in the subset cmap. The
+                // segment retains its exact spelling separately for ActualText.
+                chars.extend(text_composition::glyph_text(text, source).chars());
                 shape_cache_misses += 1;
                 shape_cache_miss_bytes += text.len();
                 let shaped = if tail {
@@ -20524,6 +20766,7 @@ fn serialize(
                         glyphs: shaped.glyphs,
                         ligatures: shaped.ligatures,
                         pdf_tj: shaped.pdf_tj,
+                        requires_actual_text: shaped.requires_actual_text,
                     });
                 }
             }
@@ -26623,12 +26866,12 @@ fn draw_svg_text(
     };
     let source = faces.get(slot);
     let fallback;
-    let shaped = match shaped_run_lookup(
+    let run = match shaped_run_lookup(
         &shaped_cache[slot_idx],
         &text.text,
         seg_text_hash(&text.text),
     ) {
-        Some(run) => run.glyphs.as_slice(),
+        Some(run) => run,
         None => {
             fallback = shape_run(
                 source,
@@ -26636,9 +26879,10 @@ fn draw_svg_text(
                 faces.face(slot).ascii_tables(),
                 &text.text,
             );
-            fallback.glyphs.as_slice()
+            &fallback
         }
     };
+    let shaped = run.glyphs.as_slice();
     let mut matrix = svg_text_pdf_matrix(text, image_transform);
     let (letter_spacing, word_spacing, width, glyph_scale) =
         svg_text_layout_adjustment(text, matrix, slot, faces, shaped);
@@ -26695,6 +26939,11 @@ fn draw_svg_text(
         .map(|_| quantize_svg_alpha(text.stroke_opacity))
         .unwrap_or(1000);
     let mut current_alpha = (1000, 1000);
+    // One replacement spans every fill/stroke replay of this text; otherwise
+    // a paint-order override could duplicate the accessible source spelling.
+    if run.requires_actual_text {
+        append_actual_text_start(body, &text.text);
+    }
     if fill.is_some() && stroke.is_some() && text.paint_order == SvgPaintOrder::NORMAL {
         append_svg_text_alpha_state_if_changed(
             body,
@@ -26773,6 +27022,9 @@ fn draw_svg_text(
                 SvgPaintLayer::Markers => {}
             }
         }
+    }
+    if run.requires_actual_text {
+        body.push_str("EMC\n");
     }
     if !text.decoration.is_empty() && width > 0.001 {
         if let Some((decoration_color, decoration_alpha)) = text
@@ -27198,9 +27450,9 @@ fn draw_seg(
     };
     let source = faces.get(seg.slot);
     let fallback;
-    let (shaped, cached_tj) =
+    let (run, cached_tj) =
         match shaped_run_lookup(&shaped_cache[slot_idx], &seg.text, seg.text_hash) {
-            Some(run) => (run.glyphs.as_slice(), Some(run.pdf_tj.as_str())),
+            Some(run) => (run, Some(run.pdf_tj.as_str())),
             None => {
                 fallback = shape_run(
                     source,
@@ -27208,9 +27460,13 @@ fn draw_seg(
                     faces.face(seg.slot).ascii_tables(),
                     &seg.text,
                 );
-                (fallback.glyphs.as_slice(), None)
+                (&fallback, None)
             }
         };
+    let shaped = run.glyphs.as_slice();
+    if run.requires_actual_text {
+        append_actual_text_start(body, &seg.text);
+    }
     if let Some(done) = seg.task {
         append_task_checkbox_marker_operator(body, seg, size, y, done, palette);
         append_text_segment_operator_with_render_mode(
@@ -27247,6 +27503,9 @@ fn draw_seg(
             None,
             seg.expansion_permille,
         );
+    }
+    if run.requires_actual_text {
+        body.push_str("EMC\n");
     }
     // Strikethrough: a thin stroke through the run's middle, in the text's own
     // color (stroke `RG`, leaving the text fill `rg` untouched).
@@ -28968,6 +29227,9 @@ struct ShapedRun {
     glyphs: Vec<u16>,
     ligatures: Vec<(u16, String)>,
     pdf_tj: String,
+    /// Glyph selection composed one or more source clusters. ToUnicode is
+    /// global per glyph, so the original spelling belongs on this occurrence.
+    requires_actual_text: bool,
 }
 
 /// [`Hasher`] for maps keyed by already-well-mixed `u64` values (FNV-1a
@@ -31012,11 +31274,14 @@ fn shape_run_with_scratch(
             glyphs,
             ligatures: Vec::new(),
             pdf_tj,
+            requires_actual_text: false,
         };
     }
+    let glyph_text = text_composition::glyph_text(text, source);
+    let requires_actual_text = matches!(&glyph_text, Cow::Owned(_));
     let ShapeScratch { chars, gids, subst } = scratch;
     chars.clear();
-    chars.extend(text.chars());
+    chars.extend(glyph_text.chars());
     gids.clear();
     if *TAIL_NOGLYPH {
         gids.resize(chars.len(), 0);
@@ -31044,6 +31309,7 @@ fn shape_run_with_scratch(
         glyphs: shaped,
         ligatures: lig_uni,
         pdf_tj,
+        requires_actual_text,
     }
 }
 
@@ -31220,6 +31486,15 @@ fn append_text_segment_operator_with_render_mode(
         body.push_str(" 100 Tz");
     }
     body.push_str(" ET\n");
+}
+
+/// Associate a composed glyph occurrence with its exact original spelling.
+/// A global ToUnicode entry cannot distinguish NFC and NFD spellings sharing
+/// the same glyph, whereas ActualText applies only to the enclosed occurrence.
+fn append_actual_text_start(out: &mut String, source: &str) {
+    out.push_str("/Span << /ActualText ");
+    out.push_str(&pdf_text_string(source));
+    out.push_str(" >> BDC\n");
 }
 
 fn append_rgb_components_fixed3(out: &mut String, color: (f32, f32, f32)) {
@@ -33133,6 +33408,7 @@ mod pdf_writer_tests {
             glyphs: shaped,
             ligatures: lig_uni,
             pdf_tj,
+            requires_actual_text: false,
         }
     }
 
@@ -41324,6 +41600,7 @@ mod shaped_cache_tests {
             glyphs: Vec::new(),
             ligatures: Vec::new(),
             pdf_tj: String::new(),
+            requires_actual_text: false,
         }
     }
 

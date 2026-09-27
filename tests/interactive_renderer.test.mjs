@@ -135,7 +135,7 @@ test('active URL schemes and obfuscated protocols cannot become links or images'
 });
 
 test('raw tags, attributes and hostile footnote labels remain inert text', () => {
-  const html = render('<img src=x onerror=alert(1)>\n\n[x](https://e.test/\"onmouseover=\"bad)\n\n![' + '" onerror="bad' + '](image.png)\n\nref[^\"><img>]\n\n[^\"><img>]: note');
+  const html = render('<img src=x onerror=alert(1)>\n\n[x](https://e.test/"onmouseover="bad)\n\n![' + '" onerror="bad' + '](image.png)\n\nref[^\"><img>]\n\n[^\"><img>]: note');
   assert.doesNotMatch(html, /<img src=x| onmouseover="| onerror="/);
   assert.match(html, /&lt;img src=x/);
   assert.doesNotMatch(html, /id="[^\"]*<img/);
@@ -159,3 +159,137 @@ test('heading and footnote IDs cannot collide', () => {
   assert.equal(new Set(ids).size, ids.length);
   for (const match of html.matchAll(/href="#([^"]+)"/g)) assert.ok(ids.includes(match[1]));
 });
+
+// Shared resource-budget regressions for the real standalone renderer.
+{
+  const source = readFileSync(new URL('../src/interactive_renderer.js', import.meta.url), 'utf8');
+  const context = vm.createContext({});
+  vm.runInContext(source, context);
+  const limits = vm.runInContext('FMD_CLIENT_RENDER_LIMITS', context);
+  const renderScript = new vm.Script('parseMarkdownClient(input, assets)');
+  function render(input, assets) {
+    context.input = input;
+    context.assets = assets;
+    // This is only a hang guard. The admission assertions below require the
+    // renderer's own typed failure, never a timeout or a generic RangeError.
+    return renderScript.runInContext(context, {timeout: 5000});
+  }
+  function limited(limit, action) {
+    assert.throws(action, error => error.code === 'FMD_RENDER_LIMIT'
+      && error.limit === limit && /unchanged.*downloadable/.test(error.message));
+  }
+
+  test('large unmatched brackets render exactly rather than rescanning every suffix', () => {
+    const text = '['.repeat(50000);
+    assert.equal(render(text), '<p>' + text + '</p>\n');
+  });
+
+  test('long interior spaces are consumed once and preserve exact literal content', () => {
+    const text = 'a' + ' '.repeat(100000) + 'b';
+    assert.equal(render(text), '<p>' + text + '</p>\n');
+  });
+
+  test('long whitespace before a newline still makes one source hard break', () => {
+    assert.equal(render('a' + ' '.repeat(100000) + '\nb'), '<p>a<br>\nb</p>\n');
+  });
+
+  test('ATX headings avoid backtracking without changing trailing hash semantics', () => {
+    const gap = ' '.repeat(100000);
+    assert.equal(render('# x' + gap + 'z'), '<h1 id="x-z">x' + gap + 'z</h1>\n');
+    assert.equal(render('# x' + gap + '### \t'), '<h1 id="x">x</h1>\n');
+    assert.equal(render('# x###\n\n# ###'), '<h1 id="x">x###</h1>\n<h1 id="section">###</h1>\n');
+  });
+
+  test('indexed brackets preserve nested pairs and escaped opening/closing delimiters', () => {
+    assert.equal(render(String.raw`[outer \[literal\] [inner]](/ok_(v2))`),
+      '<p><a href="/ok_(v2)">outer [literal] [inner]</a></p>\n');
+    assert.equal(render(String.raw`[label](/a\(b\))`), '<p><a href="/a(b)">label</a></p>\n');
+    assert.equal(render(String.raw`\[literal] [yes](/ok)`), '<p>[literal] <a href="/ok">yes</a></p>\n');
+    assert.equal(render('`[x](/hidden)` [x](/visible)'), '<p><code>[x](/hidden)</code> <a href="/visible">x</a></p>\n');
+  });
+
+  test('many short links are admitted without charging their entire remaining tails', () => {
+    const count = 6000;
+    assert.equal(render('[x](/ok) '.repeat(count)), '<p>' + '<a href="/ok">x</a> '.repeat(count) + '</p>\n');
+  });
+
+  test('dotted invalid email autolinks do not trigger regex backtracking', () => {
+    const label = 'a@' + '.'.repeat(100000) + '@';
+    assert.equal(render('<' + label + '>'), '<p>&lt;' + label + '&gt;</p>\n');
+    for (const label of ['a@b.c', 'a@b..', 'a@..b', 'a.b@c.d']) {
+      assert.equal(render('<' + label + '>'), '<p><a href="mailto:' + label + '">' + label + '</a></p>\n');
+    }
+    for (const label of ['a@.b', 'a@b.', '@b.c', 'a@@b.c', 'a @b.c']) {
+      assert.equal(render('<' + label + '>'), '<p>&lt;' + label + '&gt;</p>\n');
+    }
+  });
+
+  test('source admission runs before resource lookup and any parsing', () => {
+    const assets = {has() { assert.fail('source admission must precede resource lookup'); }};
+    limited('source', () => render('x'.repeat(limits.sourceUnits + 1), assets));
+  });
+
+  test('line-array admission accounts for LF, CR and CRLF before allocation', () => {
+    for (const newline of ['\n', '\r', '\r\n']) {
+      limited('structure', () => render(newline.repeat(limits.structures)));
+    }
+    assert.equal(render('\r\n'.repeat(10000)), '');
+  });
+
+  test('delimiter index allocation has an explicit bound', () => {
+    limited('structure', () => render('['.repeat(limits.structures)));
+  });
+
+  test('table-cell allocation cannot multiply unchecked across measurement and emission', () => {
+    limited('structure', () => render('|' + 'h|'.repeat(90000) + '\n|' + '-|'.repeat(90000)));
+  });
+
+  test('repeated unmatched autolink searches stop at the shared work budget', () => {
+    limited('work', () => render('<'.repeat(10000)));
+  });
+
+  test('emphasis searches and repeated balanced reference probes share the work budget', () => {
+    limited('work', () => render('start ' + '_x '.repeat(7000)));
+    limited('work', () => render('['.repeat(20000) + ']'.repeat(20000)));
+  });
+
+  test('blank-list runs are scanned once without losing loose-list semantics', () => {
+    assert.equal(render('- a\n' + ' \n'.repeat(10000) + '- b'),
+      '<ul>\n<li><p>a</p></li>\n<li><p>b</p></li>\n</ul>\n');
+  });
+
+  test('large blockquotes do not spread their lines onto the JavaScript call stack', () => {
+    const count = 130000;
+    assert.equal(render('> x\n'.repeat(count)), '<blockquote>\n<p>' + 'x\n'.repeat(count - 1)
+      + 'x</p>\n</blockquote>\n');
+  });
+
+  test('oversized bound images are rejected before data-URI validation or output copying', () => {
+    const value = 'data:image/png;base64,' + 'AAAA'.repeat(limits.outputUnits / 4);
+    const assets = new Map([['local.png', value]]);
+    limited('output', () => render('![x](local.png)', assets));
+    assert.equal(assets.get('local.png'), value);
+  });
+
+  test('reference expansion is bounded even when Markdown source is small', () => {
+    const url = '/' + 'a'.repeat(100000);
+    limited('work', () => render('[x][r] '.repeat(200) + '\n\n[r]: ' + url));
+  });
+
+  test('footnotes still expand once with every published backlink', () => {
+    const text = render('ref[^n] '.repeat(1800) + '\n\n[^n]: body');
+    assert.equal((text.match(/<li id="fn-1">/g) || []).length, 1);
+    assert.equal((text.match(/class="footnote-backref"/g) || []).length, 1800);
+  });
+
+  test('a failed request does not retain budget, heading IDs, resources or definitions', () => {
+    limited('work', () => render('# Same\n\n' + '<'.repeat(10000)));
+    assert.equal(render('# Same\n\n[x][missing]'), '<h1 id="same">Same</h1>\n<p>[x][missing]</p>\n');
+    assert.equal(render('# Same'), '<h1 id="same">Same</h1>\n');
+    assert.equal(render('![x](local.png)', new Map([['local.png', 'data:image/png;base64,AAAA']])),
+      '<p><img src="data:image/png;base64,AAAA" alt="x"></p>\n');
+  });
+}
+
+// Keep container/reference coverage on the established CI entry point.
+import './interactive_definitions.test.mjs';

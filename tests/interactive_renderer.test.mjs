@@ -293,3 +293,6 @@ test('heading and footnote IDs cannot collide', () => {
 
 // Keep container/reference coverage on the established CI entry point.
 import './interactive_definitions.test.mjs';
+
+// Source editing runs through the same self-contained workspace asset bundle.
+import './interactive_search.test.mjs';

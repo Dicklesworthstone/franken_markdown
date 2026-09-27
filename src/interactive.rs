@@ -475,7 +475,7 @@ aside.callout-caution { border-left-color: #cf222e; }
 /* Print / PDF Mode */
 @media print {
   body { overflow: visible; font-size: 11pt; }
-  .fmd-app-header, .fmd-editor-pane, .fmd-stats-drawer { display: none !important; }
+  .fmd-app-header, .fmd-editor-pane, .fmd-stats-drawer, #fmd-source-search { display: none !important; }
   .fmd-app-body { height: auto; display: block; }
   .fmd-preview-pane { padding: 0; overflow: visible; }
   .fmd-content { max-width: 100%; }
@@ -490,6 +490,8 @@ const INTERACTIVE_JS: &str = concat!(
     include_str!("interactive_controller.js"),
     "\n",
     include_str!("interactive_import.js"),
+    "\n",
+    include_str!("interactive_search.js"),
 );
 
 #[cfg(test)]
@@ -516,5 +518,6 @@ mod tests {
         assert!(html.contains("id=\"btn-insert-image\""));
         assert!(html.contains("id=\"fmd-image-picker\""));
         assert!(html.contains("fmdPrepareImageImport"));
+        assert!(html.contains("fmdInstallSourceSearch"));
     }
 }

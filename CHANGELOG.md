@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Key shared PDF ASCII tables by the underlying immutable font objects so
+  rendering different font families in one process cannot reuse stale glyph
+  IDs or metrics and corrupt subsequent PDFs.
 - Use the selected pagination policy consistently for PDF table-of-contents
   page numbers, page-budget fitting, and verification, including fitted font
   sizes and positions.

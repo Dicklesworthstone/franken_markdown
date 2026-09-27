@@ -1536,10 +1536,13 @@ fn ascii_tables_for_parts(
     lig: &Cow<'static, Ligatures>,
 ) -> std::sync::Arc<AsciiWidthTables> {
     if let (Cow::Borrowed(font), Cow::Borrowed(kern), Cow::Borrowed(lig)) = (font, kern, lig) {
+        // Matching through &Cow binds &&T. Key the immutable registry object,
+        // not the reference stored inside a per-render Cow: that storage can
+        // be reused for a different font on the very next render.
         let key = AsciiTableKey {
-            font: std::ptr::from_ref(font).addr(),
-            kern: std::ptr::from_ref(kern).addr(),
-            lig: std::ptr::from_ref(lig).addr(),
+            font: std::ptr::from_ref(*font).addr(),
+            kern: std::ptr::from_ref(*kern).addr(),
+            lig: std::ptr::from_ref(*lig).addr(),
         };
         if let Ok(cache) = ASCII_TABLE_CACHE.lock() {
             if let Some((_, tables)) = cache.iter().find(|&&(k, _)| k == key) {

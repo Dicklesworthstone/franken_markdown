@@ -54,10 +54,50 @@ radical/delimiter paths. `glyphs_drawn` counts emitted glyph uses, including mat
 Styling boundaries do not insert spaces or create word breaks. Source spaces
 become explicit measured gaps; consecutive hard breaks retain blank lines.
 Inline-code spacing and nonbreaking spaces are preserved. Overlong tokens use
-emergency scalar-boundary wrapping without dropping characters. Fenced code
+the existing cluster-boundary emergency wrapper without dropping characters.
+Combining clusters stay intact; contextual fragments are reshaped at their
+actual line boundaries. Fenced code
 wraps with measured advances, preserves spaces, and expands tabs to four-column
 source stops. Its panel height includes every wrapped line. Raw HTML is drawn
 as inert source text, never executed or silently discarded.
+
+### Whole-paragraph line breaking
+
+All SVG entry points now use the shared Knuth–Plass breaker for bounded ragged
+paragraphs, including headings, table cells and nested block content. Equal-style
+pieces first coalesce and are shaped once. Each source word becomes one measured
+box containing its complete styled, math and image runs. Only real source spaces
+become breakable glue. No font scaling, interword stretch, shrink, ligature
+splitting or new dictionary hyphenation is introduced by the planner.
+
+The objective is the sum of `(badness + 1)^2` over chosen lines. For non-final
+lines, badness is the shared fixed-point cubic of natural shortfall divided by
+the available width; a fitting final line has zero badness. Thus the planner can
+move a word off a crowded earlier line to avoid a short middle line. This is an
+optimization of that stated objective, not a claim of universal aesthetic
+superiority. The final line remains ragged, not stretched to the right edge.
+
+Decision boxes and gaps round outward to milli-points and the available width
+rounds inward. Painting retains the original prepared geometry. Before consuming
+any runs, the adapter verifies a complete ordered partition and checks the actual
+unrounded width of every planned line. A rejected plan never drops source or
+partially installs a new layout. Explicit hard breaks delimit independent
+paragraphs and preserve consecutive blank lines and a final empty line.
+
+An overwide source word, including attached mixed styles, returns the paragraph
+to the existing cluster-safe greedy wrapper. Fenced code retains its existing
+whitespace-preserving wrapper. The optimizer admits at most 2,048 words, 8,192
+runs and 256 KiB of prepared text per hard-break-delimited paragraph. Crossing
+one of these limits streams the complete paragraph through the old wrapper and
+emits `svg_paragraph_limit` once when painted, preserving other resource/shaping
+warnings. These are planner work/retention limits, not a whole-render heap quota.
+No output or glyph-size budget is weakened.
+
+Normal SVG exports need no new option or feature flag. Paragraph line boundaries,
+block heights and following content positions can intentionally differ from the
+previous greedy output, while prepared glyph metrics and source content remain
+unchanged. Supplied fonts, inline mathematics, image layout and endnotes continue
+through their existing render paths. HTML and PDF algorithms are unchanged.
 
 ## Endnotes
 
@@ -117,9 +157,10 @@ intentional output changes. Existing SVG option/report structures are unchanged.
 
 ## Remaining scope
 
-Prose remains greedily wrapped using advances, without the PDF renderer's
-Knuth–Plass optimization or complex-script shaping. Emergency token wrapping
-is not a full Unicode grapheme/line-break implementation. Unresolved images
+The poster does not add dictionary hyphenation, justified text, pagination or
+full complex-script shaping. Overwide-word and over-budget paragraphs retain
+greedy emergency layout. Emergency token wrapping is not a full Unicode
+grapheme/line-break implementation. Unresolved images
 retain alt-text placeholders. The poster is single-page with deterministic
 explicit appearance selection.
 SVG changes do not change the HTML or PDF rendering algorithms.
@@ -135,6 +176,18 @@ prepared documents, resource-bearing notes, cycles and PDF preparation parity.
 `src/svg/geometry_tests.rs` checks real painter placement and sizing, and
 `tests/mcp_svg_geometry_test.rs` compares configured file responses and saved
 artifacts against the native core.
+
+`src/svg/paragraph_plan_tests.rs` compares the production shared-breaker adapter
+with an independent exhaustive partition oracle and covers numeric admission,
+rounding, source-word atomicity and fallback. `src/svg/paragraph_tests.rs` exercises
+actual prepared fonts, glyph painting, math, resource warnings, hard breaks,
+long-token fallback, budget reset and complete SVG output. Run these with
+`cargo test paragraph` and the existing SVG integration suites.
+
+The paragraph implementation checked an independent executable scoring model
+against exhaustive enumeration on 5,000 cases. That model is not a Rust build,
+font-shaping test, rendered visual comparison or performance measurement. The 17
+new Rust tests were added but could not be executed on the authoring host.
 
 The implementation session checked source hashes and `git diff --check` but
 had no Rust toolchain or DSR runner. Compilation, tests, Clippy, rustfmt and

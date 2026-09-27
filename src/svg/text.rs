@@ -11,18 +11,25 @@ use shaping::Shaper;
 mod wrapping;
 use wrapping::place_shaped;
 
+#[path = "paragraph.rs"]
+mod paragraph;
+use paragraph::Paragraph;
+
 impl Poster {
-    /// Greedy wrapping of shaped text. Style boundaries do not introduce spaces
-    /// or break opportunities. Emergency breaks retain complete glyph clusters;
-    /// contextual fragments are reshaped at their actual visual line boundary.
+    /// Optimize each hard-break-delimited paragraph using its prepared widths.
+    /// Style boundaries do not introduce spaces or break opportunities. The
+    /// bounded fallback retains complete clusters and reshapes contextual text
+    /// at its actual emergency line boundaries.
     pub(super) fn wrap(&self, pieces: &[Piece], size: f64, width: f64) -> Vec<Vec<Word>> {
         let width = width.max(1.0);
         let shaper = Shaper::new(self);
         let mut flow = TextFlow::default();
+        let mut paragraph = Paragraph::default();
         for piece in pieces {
             match piece {
                 Piece::Break => {
-                    self.place_word(&mut flow, &shaper, size, width);
+                    self.collect_word(&mut flow, &mut paragraph, &shaper, size, width);
+                    paragraph.finish(self, &mut flow, &shaper, size, width);
                     flow.new_line();
                     flow.gap = 0.0;
                     flow.trailing_break = true;
@@ -42,7 +49,7 @@ impl Poster {
                         // and narrow NBSP never become ordinary breakable glue.
                         if !style.mono && breakable_space(ch) {
                             append_run(&mut flow, &text[start..offset], *style);
-                            self.place_word(&mut flow, &shaper, size, width);
+                            self.collect_word(&mut flow, &mut paragraph, &shaper, size, width);
                             if flow.gap == 0.0 {
                                 flow.gap = self.space_width(*style, size);
                             }
@@ -53,14 +60,22 @@ impl Poster {
                 }
             }
         }
-        self.place_word(&mut flow, &shaper, size, width);
+        self.collect_word(&mut flow, &mut paragraph, &shaper, size, width);
+        paragraph.finish(self, &mut flow, &shaper, size, width);
         if !flow.line.is_empty() || flow.trailing_break {
             flow.new_line();
         }
         flow.lines
     }
 
-    fn place_word(&self, flow: &mut TextFlow, shaper: &Shaper<'_>, size: f64, width: f64) {
+    fn collect_word(
+        &self,
+        flow: &mut TextFlow,
+        paragraph: &mut Paragraph,
+        shaper: &Shaper<'_>,
+        size: f64,
+        width: f64,
+    ) {
         if flow.word.is_empty() {
             return;
         }
@@ -74,8 +89,23 @@ impl Poster {
                 run.shaped = Some(prepared);
             }
         }
+        let gap = std::mem::take(&mut flow.gap);
+        paragraph.push(self, flow, shaper, word, gap, size, width);
+    }
+
+    /// Consume already-prepared runs. Both planned lines and emergency fallback
+    /// use this path; neither can accidentally reshape an ordinary word twice.
+    fn place_prepared(
+        &self,
+        flow: &mut TextFlow,
+        shaper: &Shaper<'_>,
+        word: Vec<Word>,
+        gap: f64,
+        size: f64,
+        width: f64,
+    ) {
         let word_width: f64 = word.iter().map(|run| run.w).sum();
-        let mut gap = if flow.line.is_empty() { 0.0 } else { flow.gap };
+        let mut gap = if flow.line.is_empty() { 0.0 } else { gap };
         if !flow.line.is_empty() && flow.line_width + gap + word_width > width {
             flow.new_line();
             gap = 0.0;
@@ -99,7 +129,6 @@ impl Poster {
                 }
             }
         }
-        flow.gap = 0.0;
     }
 
     pub(super) fn draw_words(&mut self, words: &[Word], x: f64, baseline: f64, size: f64) {
@@ -180,3 +209,6 @@ mod shaping_tests;
 #[cfg(test)]
 #[path = "text_positioning_tests.rs"]
 mod positioning_tests;
+#[cfg(test)]
+#[path = "paragraph_tests.rs"]
+mod paragraph_tests;

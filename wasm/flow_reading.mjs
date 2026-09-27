@@ -163,11 +163,42 @@ function wait(promise, signal) {
 
 // Mirrors the core's conservative activation filter. A target is still data;
 // passing this filter never authorizes the host to navigate or fetch anything.
+// Probe decoded spellings without rewriting the retained navigation target.
 function* activeTarget(target) {
-  let start = 0,
-    end = target.length;
-  const whitespace = /\p{White_Space}/u;
+  // Validate before trimming: a leading/trailing control must not disappear.
+  if (!(yield* activationCharacters(target))) return null;
+  const value = yield* trimActivationTarget(target);
+  if (!value) return null;
+  let probe = value;
+  for (let pass = 0; pass < 8; pass++) {
+    const decoded = yield* decodeActivationProbe(probe);
+    if (decoded === null) {
+      if (!(yield* activationCharacters(probe))) return null;
+      const candidate = yield* trimActivationTarget(probe);
+      if (!candidate) return null;
+      const prefix = candidate.split(/[/?#]/u, 1)[0], colon = prefix.indexOf(":");
+      if (colon !== -1 && !["http", "https", "mailto", "tel"].includes(prefix.slice(0, colon).toLowerCase()))
+        return null;
+      return value;
+    }
+    probe = decoded;
+  }
+  return null; // Excessively nested encodings fail closed, as in the core.
+}
+function* activationCharacters(target) {
   let work = 0;
+  for (let i = 0; i < target.length; i++) {
+    const unit = target.charCodeAt(i);
+    if (unit <= 31 || (unit >= 127 && unit <= 159) || unit === 92) return false;
+    if (++work === 4096) { yield work; work = 0; }
+  }
+  if (work) yield work;
+  return true;
+}
+function* trimActivationTarget(target) {
+  let start = 0, end = target.length, work = 0;
+  // Rust's str::trim follows White_Space; JS trim additionally removes BOM.
+  const whitespace = /\p{White_Space}/u;
   while (start < end && whitespace.test(target[start])) {
     start++;
     if (++work === 4096) { yield work; work = 0; }
@@ -177,13 +208,65 @@ function* activeTarget(target) {
     if (++work === 4096) { yield work; work = 0; }
   }
   if (work) yield work;
-  const value = target.slice(start, end);
-  if (!value || /[\u0000-\u001f\u007f-\u009f\\]/u.test(value)) return null;
-  const prefix = value.split(/[/?#]/u, 1)[0],
-    colon = prefix.indexOf(":");
-  if (colon !== -1 && !["http", "https", "mailto"].includes(prefix.slice(0, colon).toLowerCase()))
-    return null;
-  return value;
+  return target.slice(start, end);
+}
+function activationDigit(unit, radix) {
+  if (unit >= 48 && unit <= 57) return unit - 48;
+  if (radix === 16 && unit >= 65 && unit <= 70) return unit - 55;
+  if (radix === 16 && unit >= 97 && unit <= 102) return unit - 87;
+  return -1;
+}
+function* decodeActivationProbe(target) {
+  const parts = [];
+  let copied = 0, offset = 0, work = 0;
+  const named = [["&colon;", ":"], ["&Tab;", "\t"], ["&NewLine;", "\n"],
+    ["&amp;", "&"], ["&AMP;", "&"]];
+  while (offset < target.length) {
+    let decoded = null, consumed = 1;
+    const unit = target.charCodeAt(offset);
+    if (unit === 37) {
+      const high = activationDigit(target.charCodeAt(offset + 1), 16),
+        low = activationDigit(target.charCodeAt(offset + 2), 16);
+      // Preserve non-ASCII UTF-8 escapes, rather than interpreting bytes as C1.
+      if (high >= 0 && low >= 0 && high * 16 + low <= 127) {
+        decoded = String.fromCharCode(high * 16 + low);
+        consumed = 3;
+      }
+    } else if (unit === 38) {
+      for (const [reference, character] of named) {
+        if (target.startsWith(reference, offset)) {
+          decoded = character;
+          consumed = reference.length;
+          break;
+        }
+      }
+      if (decoded === null && target.startsWith("&#", offset)) {
+        let cursor = offset + 2, radix = 10;
+        if (target[cursor] === "x" || target[cursor] === "X") { radix = 16; cursor++; }
+        const first = cursor;
+        let value = 0, digit;
+        while ((digit = activationDigit(target.charCodeAt(cursor), radix)) >= 0) {
+          value = Math.min(0x110000, value * radix + digit);
+          cursor++;
+          if (++work === 4096) { yield work; work = 0; }
+        }
+        if (cursor !== first && value <= 0x10ffff && !(value >= 0xd800 && value <= 0xdfff)) {
+          decoded = String.fromCodePoint(value);
+          consumed = cursor - offset + (target[cursor] === ";" ? 1 : 0);
+        }
+      }
+    }
+    if (decoded !== null) {
+      parts.push(target.slice(copied, offset), decoded);
+      offset += consumed;
+      copied = offset;
+    } else offset++;
+    if (++work >= 4096) { yield work; work = 0; }
+  }
+  if (work) yield work;
+  if (!copied) return null;
+  parts.push(target.slice(copied));
+  return parts.join("");
 }
 function* inlineMetadata(raw, budget, retained) {
   const input = raw.inlineRuns === undefined ? [] : raw.inlineRuns;

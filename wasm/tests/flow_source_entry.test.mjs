@@ -10,6 +10,22 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 let sequence = 0;
 class Element extends EventTarget {
   #value = "";
+  style = {};
+  children = [];
+  parentNode = null;
+  setAttribute(name, value) { this[name] = value; }
+  append(...children) { for (const child of children) { child.parentNode = this; this.children.push(child); } }
+  insertBefore(child, next) {
+    child.parentNode = this;
+    const index = this.children.indexOf(next);
+    if (index < 0) this.children.push(child); else this.children.splice(index, 0, child);
+  }
+  get nextSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] ?? null; }
+  remove() {
+    if (this.parentNode) this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1);
+    this.parentNode = null;
+  }
+  setRangeText(text, start, end) { this.value = this.value.slice(0, start) + text + this.value.slice(end); }
   disabled = false;
   checked = false;
   hidden = false;
@@ -79,9 +95,16 @@ async function setup(t) {
       Object.getOwnPropertyDescriptor(globalThis, key),
     ]),
   );
+  const doc = {
+    querySelector: (query) => nodes[query.slice(1)],
+    createElement() { const element = new Element(); element.ownerDocument = doc; return element; },
+  };
+  for (const [id, node] of Object.entries(nodes)) { node.ownerDocument = doc; node.id = id; }
+  const parent = doc.createElement();
+  parent.append(nodes.source);
   Object.defineProperties(globalThis, {
     window: { configurable: true, value: host },
-    document: { configurable: true, value: { querySelector: (query) => nodes[query.slice(1)] } },
+    document: { configurable: true, value: doc },
     indexedDB: { configurable: true, value: null },
   });
   t.after(() => {
@@ -203,4 +226,23 @@ test("bfcache restarts editing once with a fresh history, not stale document tra
   assert.equal(nodes["source-undo"].disabled, true);
   nodes["source-redo"].click();
   assert.equal(nodes.source.value, "second edit");
+});
+
+test("formatting enters existing history and revokes a prepared source download", async (t) => {
+  const { nodes } = await setup(t);
+  nodes["prepare-markdown"].click();
+  const url = nodes["source-download"].href;
+  nodes.source.setSelectionRange(11, 17, "backward");
+  const key = Object.assign(new Event("keydown", { cancelable: true }), { key: "b", ctrlKey: true });
+  nodes.source.dispatchEvent(key);
+  assert(key.defaultPrevented);
+  assert.equal(nodes.source.value, "# Existing **source**");
+  assert(nodes["source-download"].hidden);
+  await assert.rejects(fetch(url));
+  nodes["source-undo"].click();
+  assert.equal(nodes.source.value, "# Existing source");
+  assert.equal(nodes.source.selectionStart, 11);
+  assert.equal(nodes.source.selectionEnd, 17);
+  assert.equal(nodes.source.selectionDirection, "backward");
+  assert(nodes["source-undo"].disabled);
 });

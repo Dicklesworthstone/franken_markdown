@@ -29,7 +29,7 @@ done
 cp wasm/demo/review.html wasm/demo/revision_review.mjs wasm/demo/REVISION_REVIEW.md "$PACKAGE/demo/"
 cp wasm/demo/index.html wasm/demo/demo.js wasm/demo/web-component.html wasm/demo/sample.md "$PACKAGE/demo/"
 cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs wasm/demo/flow_reading_controls.mjs wasm/demo/flow_preview_export.mjs wasm/demo/flow_export_controls.mjs "$PACKAGE/demo/"
-for file in book.html book.js book_collection.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_source_search.mjs book_search_controls.mjs book_inspection_controls.mjs flow-source.js flow_document.mjs flow_file_session.mjs flow_file_controls.mjs flow_render_settings.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
+for file in book.html book.js book_collection.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_source_search.mjs book_search_controls.mjs book_inspection_controls.mjs flow-source.js source_commands.mjs source_formatting.mjs SOURCE_FORMATTING.md flow_document.mjs flow_file_session.mjs flow_file_controls.mjs flow_render_settings.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
   cp "wasm/demo/$file" "$PACKAGE/demo/$file"
 done
 cp examples/showcase.md "$ART/parity/showcase.md"

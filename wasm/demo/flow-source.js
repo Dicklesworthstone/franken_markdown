@@ -3,6 +3,7 @@
 import { createSourceControls, createSourceEditingControls } from "./flow_document.mjs";
 import { createDraftControls } from "./flow_draft_controls.mjs";
 import { createFileControls } from "./flow_file_controls.mjs";
+import { createSourceFormattingControls } from "./source_formatting.mjs";
 
 const source = document.querySelector("#source"),
   filename = document.querySelector("#source-filename");
@@ -10,6 +11,7 @@ const status = document.querySelector("#source-status");
 let controls = null,
   drafts = null,
   editing = null,
+  formatting = null,
   files = null,
   retained = null;
 function start() {
@@ -17,6 +19,7 @@ function start() {
   files = null;
   controls?.dispose();
   drafts?.dispose();
+  formatting?.dispose();
   editing?.dispose();
   const initial =
     retained && retained.view === source.value && retained.document.filename === filename.value
@@ -50,6 +53,10 @@ function start() {
     replacement: document.querySelector("#source-replacement"),
     replace: document.querySelector("#source-replace"),
     replaceAll: document.querySelector("#source-replace-all"),
+    status: document.querySelector("#source-edit-status"),
+  });
+  formatting = createSourceFormattingControls({
+    sourceEditor: source,
     status: document.querySelector("#source-edit-status"),
   });
   try {
@@ -100,10 +107,12 @@ window.addEventListener("pagehide", (event) => {
   files = null;
   controls?.dispose();
   drafts?.dispose();
+  formatting?.dispose();
   editing?.dispose();
   controls = null;
   drafts = null;
   editing = null;
+  formatting = null;
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) start();

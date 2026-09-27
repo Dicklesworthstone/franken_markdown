@@ -91,11 +91,21 @@ export function planSourceCommand(source, selection, command) {
       return finish(start, end, prefix + content + pad + fence, start + prefix.length, start + prefix.length + content.length);
     }
     const marker = MARKERS[command], n = marker.length;
-    if (selected.length > 2 * n && selected.startsWith(marker) && selected.endsWith(marker)) {
+    // A two-star run is strong, not removable one-star emphasis. Three stars
+    // can carry both. Refuse ambiguous/asymmetric runs instead of stripping
+    // half of another command's delimiter when applying nested formatting.
+    const runAt = (text, at, step) => {
+      let count = 0;
+      while (text[at] === marker[0]) { count++; at += step; }
+      return count;
+    };
+    const removable = (left, right) => left === right && (command === "strike"
+      ? left === 2 : left >= n && left <= 3 && (n === 2 || left % 2 === 1));
+    if (selected.length > 2 * n && removable(runAt(selected, 0, 1), runAt(selected, selected.length - 1, -1))) {
       const content = selected.slice(n, -n);
       return finish(start, end, content, start, start + content.length);
     }
-    if (start >= n && source.slice(start - n, start) === marker && source.slice(end, end + n) === marker) {
+    if (removable(runAt(source, start - 1, -1), runAt(source, end, 1))) {
       return finish(start - n, end + n, selected, start - n, end - n);
     }
     const leading = selected.match(/^[ \t]*/u)[0];

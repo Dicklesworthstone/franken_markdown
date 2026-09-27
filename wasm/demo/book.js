@@ -8,12 +8,14 @@ import {
   createBookLinkPanel,
 } from "./book_inspection_controls.mjs";
 import { createBookLibraryControls } from "./book_library_controls.mjs";
+import { createBookPdfControls, createBookPdfPanel } from "./book_pdf_controls.mjs";
 import { createBookPreviewControls } from "./book_preview_controls.mjs";
 import { createBookSearchControls } from "./book_search_controls.mjs";
 
 const collection = createBookCollection();
 let library = null,
   preview = null,
+  pdfProof = null,
   search = null,
   inspection = null,
   links = null;
@@ -41,6 +43,19 @@ try {
 } catch {
   document.querySelector("#preview-status").textContent =
     "Preview is unavailable. Editing, local saves and publication exports remain available.";
+}
+// Native PDF proofing has a dedicated client: cancelling it cannot retire
+// publication, HTML-site preview, inspection or link checking.
+let pdfWorker = null;
+try {
+  createBookPdfPanel(document);
+  pdfWorker = createBookWorker();
+  pdfProof = createBookPdfControls({ root: document, controls, collection, worker: pdfWorker });
+} catch {
+  pdfWorker?.dispose();
+  const status = document.querySelector("#book-pdf-status");
+  if (status) status.textContent =
+    "Book PDF proofing is unavailable. Ordinary PDF/EPUB/site exports and source editing remain available.";
 }
 try {
   search = createBookSearchControls({
@@ -83,6 +98,7 @@ try {
 }
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
+    pdfProof?.suspend();
     links?.suspend();
     inspection?.suspend();
     search?.suspend();
@@ -90,6 +106,7 @@ window.addEventListener("pagehide", (event) => {
     library?.suspend();
     controls.suspend();
   } else {
+    pdfProof?.dispose();
     links?.dispose();
     inspection?.dispose();
     search?.dispose();
@@ -100,6 +117,7 @@ window.addEventListener("pagehide", (event) => {
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
+    pdfProof?.resume();
     library?.resume();
     preview?.resume();
     search?.resume();

@@ -98,7 +98,7 @@ test("safe links, intentionally inert links, and blocked targets are retained im
   nodes.push(leaf("bad", [run(0, 3, {}, link("javascript:bad", null))]));
   nodes.push(leaf("inert", [run(0, 5, {}, link("https://example.com", null))]));
   nodes.push(
-    leaf("trim", [run(0, 4, {}, link("\u0085 https://example.com \n", "https://example.com"))]),
+    leaf("trim", [run(0, 4, {}, link("\u2003 https://example.com \u00a0", "https://example.com"))]),
   );
   const document = await read(nodes);
   assert.equal(document.nodes[7].inlineRuns[0].link.target, "javascript:bad");
@@ -196,4 +196,83 @@ test("formatting never weakens source/layout identity fences", async () => {
   session.token = { revision: "1", layoutRevision: "2" };
   assert.throws(() => document.matchText(match), { code: "STALE_LAYOUT" });
   assert.throws(() => document.locate(0), { code: "STALE_LAYOUT" });
+});
+
+test("encoded dangerous destinations remain inert for prose and linked images", async () => {
+  for (const target of [
+    "%6a%61vascript%3Aalert(1)",
+    "java%09script:alert(1)",
+    "javascript&colon;alert(1)",
+    "javascript&#58;alert(1)",
+    "javascript&#x3a;alert(1)",
+    "javascript&#58alert(1)",
+    "&#106;avascript:alert(1)",
+    "java&Tab;script:alert(1)",
+    "java&NewLine;script:alert(1)",
+    "%256aavascript%253aalert(1)",
+    "javascript&amp;colon;alert(1)",
+    "data%3atext/html,payload",
+    "https:%5c%5cevil.example",
+    "https://example.com/%0d%0aheader",
+  ]) {
+    const prose = active => leaf("visible label", [run(0, 13, {}, link(target, active))]);
+    const image = active => leaf("visible alt", [], { role: "image", imageLink: link(target, active) });
+    await rejects([prose(target)]);
+    await rejects([image(target)]);
+    const document = await read([prose(null), image(null)]);
+    assert.equal(document.text, "visible label\n\nvisible alt");
+    assert.deepEqual(document.nodes[0].inlineRuns[0].link, link(target, null));
+    assert.deepEqual(document.nodes[1].imageLink, link(target, null));
+  }
+});
+
+test("trimming cannot hide edge controls in a claimed activation", async () => {
+  for (const target of [
+    "\thttps://example.com", "https://example.com\n", "\u0085 https://example.com \n",
+    "\u001f#part", "#part\u009f", "&#9;https://example.com", "%0ahttps://example.com",
+  ]) {
+    await rejects([leaf("x", [run(0, 1, {}, link(target, target.trim()))])]);
+    const document = await read([leaf("x", [run(0, 1, {}, link(target, null))])]);
+    assert.equal(document.nodes[0].inlineRuns[0].link.target, target);
+  }
+});
+
+test("safe activation keeps URL encoding, Unicode and relative-reference semantics", async () => {
+  for (const target of [
+    "https://example.com/a%20b?q=a%26b#part", "mailto:a@example.com",
+    "tel:+1-555-0100", "TEL:+1-555-0100", "../résumé%20final.md",
+    "/path/a:b", "./a:b", "?next=javascript:literal", "#javascript:literal",
+    "https://example.com/%F0%9F%98%80", "//example.com/path",
+    "https://example.com/?x=1&amp;y=2", "#日本語",
+  ]) {
+    const document = await read([
+      leaf("x", [run(0, 1, {}, link(target))]),
+      leaf("alt", [], { role: "image", imageLink: link(target) }),
+    ]);
+    assert.equal(document.nodes[0].inlineRuns[0].link.activeTarget, target);
+    assert.equal(document.nodes[1].imageLink.activeTarget, target);
+  }
+});
+
+test("excessive encoding depth is blocked without changing the retained target", async () => {
+  let target = "javascript:alert(1)";
+  for (let i = 0; i < 16; i++) target = target.replaceAll("%", "%25").replaceAll(":", "%3a");
+  await rejects([leaf("x", [run(0, 1, {}, link(target))])]);
+  const document = await read([leaf("x", [run(0, 1, {}, link(target, null))])]);
+  assert.equal(document.nodes[0].inlineRuns[0].link.target, target);
+});
+
+test("large encoded destinations remain cancellable without publishing a reading snapshot", async () => {
+  const target = "https://example.com/?q=" + "%41".repeat(40000);
+  const session = sessionFor([leaf("x", [run(0, 1, {}, link(target))])]);
+  const controller = new AbortController();
+  const pending = readFlowDocument(session, { signal: controller.signal });
+  const timer = setTimeout(() => controller.abort(), 0);
+  try {
+    await assert.rejects(pending, { code: "ABORTED" });
+    assert.equal(session.disposed, false);
+    assert.deepEqual(session.token, { revision: "1", layoutRevision: "1" });
+  } finally {
+    clearTimeout(timer);
+  }
 });

@@ -40,23 +40,125 @@ impl FlowInlineRun {
     }
 }
 
-/// Allow fragment/relative references and HTTP(S)/mailto only. Controls are
-/// rejected rather than stripped inside a target. The AST already decoded
-/// Markdown escapes/entities. This function never fetches or opens anything.
+/// Allow fragment/relative references and HTTP(S)/mailto/tel only. Controls are
+/// rejected before trimming, including controls at either edge of a target.
+///
+/// The AST already decodes Markdown escapes/entities, but callers may also
+/// construct targets directly or pass them to hosts that decode again. Inspect
+/// a bounded, decoded probe to prevent such decoding from enabling a blocked
+/// scheme. Never return the probe: accepted destinations retain their original
+/// encoding, and rejected destinations remain available in inline metadata.
+/// This function never fetches or opens anything.
 #[must_use]
 pub fn active_link_target(target: &str) -> Option<&str> {
-    let target = target.trim();
-    if target.is_empty() || target.chars().any(char::is_control) || target.contains('\\') {
+    if target.chars().any(char::is_control) {
         return None;
+    }
+    let target = target.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let mut probe = Cow::Borrowed(target);
+    // Fail closed on excessive nesting instead of permitting an unexamined
+    // destination or spending unbounded time unwrapping attacker-controlled text.
+    for _ in 0..8 {
+        let Cow::Owned(decoded) = decode_activation_probe(&probe) else {
+            return allowed_activation_probe(&probe).then_some(target);
+        };
+        probe = Cow::Owned(decoded);
+    }
+    None
+}
+
+fn allowed_activation_probe(target: &str) -> bool {
+    if target.chars().any(char::is_control) || target.contains('\\') {
+        return false;
+    }
+    let target = target.trim();
+    if target.is_empty() {
+        return false;
     }
     let prefix_end = target.find(['/', '?', '#']).unwrap_or(target.len());
     if let Some(colon) = target[..prefix_end].find(':') {
         let scheme = &target[..colon];
-        if !["https", "http", "mailto"].iter().any(|allowed| scheme.eq_ignore_ascii_case(allowed)) {
-            return None;
+        return ["https", "http", "mailto", "tel"]
+            .iter()
+            .any(|allowed| scheme.eq_ignore_ascii_case(allowed));
+    }
+    true
+}
+
+/// Decode only ASCII percent escapes and relevant HTML references for policy
+/// inspection. Non-ASCII percent-encoded UTF-8 is preserved, not interpreted as
+/// individual Latin-1 characters. Ordinary links take the allocation-free path.
+fn decode_activation_probe(target: &str) -> Cow<'_, str> {
+    if !target.contains(['%', '&']) {
+        return Cow::Borrowed(target);
+    }
+    let mut output = String::new();
+    let mut copied = 0;
+    let mut offset = 0;
+    while offset < target.len() {
+        let tail = &target[offset..];
+        let decoded = if tail.starts_with('%') {
+            tail.as_bytes().get(1..3).and_then(|digits| {
+                let high = char::from(digits[0]).to_digit(16)?;
+                let low = char::from(digits[1]).to_digit(16)?;
+                let value = high * 16 + low;
+                (value <= 0x7f).then(|| (char::from_u32(value).unwrap_or('\u{fffd}'), 3))
+            })
+        } else if tail.starts_with('&') {
+            decode_activation_reference(tail)
+        } else {
+            None
+        };
+        if let Some((ch, consumed)) = decoded {
+            output.push_str(&target[copied..offset]);
+            output.push(ch);
+            offset += consumed;
+            copied = offset;
+        } else if let Some(ch) = tail.chars().next() {
+            offset += ch.len_utf8();
+        } else {
+            break;
         }
     }
-    Some(target)
+    if copied == 0 {
+        Cow::Borrowed(target)
+    } else {
+        output.push_str(&target[copied..]);
+        Cow::Owned(output)
+    }
+}
+
+fn decode_activation_reference(tail: &str) -> Option<(char, usize)> {
+    for (reference, ch) in [
+        ("&colon;", ':'),
+        ("&Tab;", '\t'),
+        ("&NewLine;", '\n'),
+        ("&amp;", '&'),
+        ("&AMP;", '&'),
+    ] {
+        if tail.starts_with(reference) {
+            return Some((ch, reference.len()));
+        }
+    }
+    let digits = tail.strip_prefix("&#")?;
+    let (digits, radix, prefix) = match digits.strip_prefix('x').or_else(|| digits.strip_prefix('X')) {
+        Some(digits) => (digits, 16, 3),
+        None => (digits, 10, 2),
+    };
+    let count = digits.bytes().take_while(|byte| match radix {
+        16 => byte.is_ascii_hexdigit(),
+        _ => byte.is_ascii_digit(),
+    }).count();
+    if count == 0 {
+        return None;
+    }
+    let value = u32::from_str_radix(&digits[..count], radix).ok()?;
+    let ch = char::from_u32(value)?;
+    let consumed = prefix + count + usize::from(digits.as_bytes().get(count) == Some(&b';'));
+    Some((ch, consumed))
 }
 
 impl ResumableFlowDisplay {
@@ -276,6 +378,54 @@ mod tests {
         for target in ["#section", "../guide.md#part", "https://example.com", "HTTP://example.com", "mailto:a@example.com", "/path/a:b"] {
             assert_eq!(active_link_target(target), Some(target));
         }
+    }
+
+    #[test]
+    fn activation_rejects_edge_controls_and_encoded_scheme_bypasses() {
+        for target in [
+            "\thttps://example.com", "https://example.com\n", "\u{0085}#section",
+            "%6a%61vascript%3Aalert(1)", "java%09script:alert(1)",
+            "javascript&colon;alert(1)", "javascript&#58;alert(1)",
+            "javascript&#x3a;alert(1)", "javascript&#58alert(1)",
+            "&#106;avascript:alert(1)", "java&Tab;script:alert(1)",
+            "java&NewLine;script:alert(1)", "%256aavascript%253aalert(1)",
+            "javascript&amp;colon;alert(1)", "data%3atext/html,payload",
+            "https:%5c%5cevil.example", "https://example.com/%0d%0aheader",
+        ] {
+            assert_eq!(active_link_target(target), None, "{target:?}");
+        }
+    }
+
+    #[test]
+    fn activation_preserves_safe_encoding_and_relative_url_semantics() {
+        for target in [
+            "https://example.com/a%20b?q=a%26b#part", "mailto:a@example.com",
+            "tel:+1-555-0100", "TEL:+1-555-0100", "../résumé%20final.md",
+            "/path/a:b", "./a:b", "?next=javascript:literal", "#javascript:literal",
+            "https://example.com/%F0%9F%98%80", "//example.com/path",
+            "https://example.com/?x=1&amp;y=2", "#日本語",
+        ] {
+            assert_eq!(active_link_target(target), Some(target), "{target:?}");
+        }
+        assert_eq!(active_link_target("  https://example.com  "), Some("https://example.com"));
+        assert!(matches!(decode_activation_probe("https://example.com"), Cow::Borrowed(_)));
+        assert!(matches!(decode_activation_probe("résumé%F0%9F%98%80"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn activation_decoding_is_bounded_and_never_rewrites_metadata() {
+        let mut target = "javascript:alert(1)".to_owned();
+        for _ in 0..16 {
+            target = target.replace('%', "%25").replace(':', "%3a");
+        }
+        assert_eq!(active_link_target(&target), None);
+        let run = FlowInlineRun {
+            range: 0..5,
+            style: FlowInlineStyle::default(),
+            link: Some(Arc::from(target.as_str())),
+        };
+        assert_eq!(run.active_link_target(), None);
+        assert_eq!(run.link.as_deref(), Some(target.as_str()));
     }
 
     #[test]

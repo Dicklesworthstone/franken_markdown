@@ -466,6 +466,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   return {
     get diagnostics() { return diagnostics; },
     get settings() { return options; },
+    get revision() { return generation; },
     get exportFormats() { return exportFormats; },
     get analysisFormats() { return analysisFormats; },
     analyze,
@@ -750,6 +751,21 @@ export function bootNativeWorkspace(factory, createPreview) {
       });
     },
     cancelExport,
+    beginExportDocument(format, markdown, isCurrent = () => true) {
+      const promise = engine.exportDocument(format, markdown, isCurrent);
+      // exportDocument admits and owns the shared slot synchronously. Capture
+      // that identity, not just a busy flag: an old proof's cancel button must
+      // never terminate a newer export or document analysis.
+      const operation = pendingExport;
+      return Object.freeze({
+        promise,
+        cancel() {
+          if (pendingExport !== operation) return false;
+          cancelExport();
+          return true;
+        },
+      });
+    },
     exportDocument(format, markdown, isCurrent = () => true) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; retry export after initialization.');
       if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Background exports require the matching worker runtime');
@@ -797,6 +813,7 @@ export function bootNativeWorkspace(factory, createPreview) {
     },
     get diagnostics() { return previewDiagnostics ?? renderer?.diagnostics ?? []; },
     get settings() { return renderer?.settings ?? null; },
+    get documentRevision() { return renderer?.revision ?? null; },
     applySettings(patch, markdown, preview, display) {
       if (!renderer) throw failure ?? new Error('Native renderer is loading; retry settings after initialization.');
       const transaction = renderer.stageSettings(patch);

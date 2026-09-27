@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep glyph expansion and contraction contiguous across styled PDF word
+  fragments, including font changes, links, strikethrough, ligatures, and symbol
+  fallback. Position text and decoration extents from the same rounded horizontal
+  scale that the PDF paints.
 - Pass each PDF block's justification policy into the paragraph optimizer, so
   ragged headings cannot exceed the print measure by borrowing space compression
   that is never drawn. Preserve justified body text when the layout workspace

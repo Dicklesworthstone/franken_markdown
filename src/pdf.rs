@@ -19628,6 +19628,10 @@ fn build_segs_adjusted(
     let use_expansion = expansion_permille_budget > 0;
     let mut word_extra_milli: f64 = 0.0;
     let mut box_width_milli: f64 = 0.0;
+    // Preserve the final shaped advance and interword adjustment separately.
+    // A box may span several font/link/strike runs, so its expansion (booked
+    // once on the last token) cannot also determine each run's position.
+    let mut expansion_advances: Vec<(f32, f32)> = Vec::new();
 
     let hang = left_protrusion_hang(toks, size);
     let mut segs: Vec<Seg> = Vec::new();
@@ -19665,12 +19669,13 @@ fn build_segs_adjusted(
         // once per box by `push_tok_group_line_toks`) must ACCUMULATE: a run
         // is typically "word + trailing space", and folding only the current
         // token's extra would let the space overwrite the word's share,
-        // leaving the justified line short/long by exactly that share. With
-        // `Tz` expansion the same accumulated extras position the next run
-        // where the scaled glyphs end.
+        // leaving the justified line short/long by exactly that share. These
+        // are provisional positions for expansion: after selecting the Tz
+        // factor below, every run is positioned from its scaled shaped width.
         let mut width = 0.0f32;
         let mut natural_max = 0.0f32;
         let mut run_word_extra = 0.0f32;
+        let mut run_glue_extra = 0.0f32;
         for line_tok in &toks[i..end] {
             let tok = &line_tok.tok;
             let visible = token_visible_text(tok);
@@ -19678,6 +19683,7 @@ fn build_segs_adjusted(
             shaper.append(visible, &text);
             let natural = shaper.current_width().to_points_f32();
             let space_extra = if tok.space {
+                run_glue_extra += line_tok.extra_advance;
                 line_tok.extra_advance
             } else {
                 run_word_extra += line_tok.extra_advance;
@@ -19697,6 +19703,9 @@ fn build_segs_adjusted(
         }
         if let Some(cache) = width_cache {
             ensure_width_cached(cache, slot, &text, fs, shaper.current_width());
+        }
+        if use_expansion {
+            expansion_advances.push((shaper.current_width().to_points_f32(), run_glue_extra));
         }
         segs.push(Seg {
             x: seg_x,
@@ -19723,8 +19732,20 @@ fn build_segs_adjusted(
             f64::from(expansion_permille_budget),
         );
         let permille = permille_f as i16;
-        for seg in &mut segs {
+        let scale = 1.0 + f32::from(permille) / 1000.0;
+        let mut x = left - hang;
+        for (seg, (natural, glue_extra)) in segs.iter_mut().zip(expansion_advances) {
+            // PDF scales the entire shaped run with the rounded Tz factor.
+            // Position every following run using that same advance, including
+            // fragments inside one styled word. The box-level extra belongs
+            // only in the factor calculation above; adding it again would
+            // double-count expansion on the word's final fragment. Interword
+            // glue remains an independent adjustment, and the line true-up
+            // absorbs rounding/space scaling at word gaps only.
+            seg.x = x;
+            seg.width = (natural * scale + glue_extra).max(0.0);
             seg.expansion_permille = permille;
+            x += seg.width;
         }
     }
     segs
@@ -31887,6 +31908,136 @@ mod pdf_writer_tests {
         assert_justified_lines_flush(&opts)
     }
 
+    fn assert_expanded_styled_word_contiguous(permille: i16) -> crate::Result<()> {
+        let faces = Faces::load(&PdfOptions::default())?;
+        let size = 11.0;
+        let word: Vec<Tok> = [
+            ("f", F_BODY, None, false),
+            ("i", F_BODY, None, false),
+            ("AV", F_BOLD, None, false),
+            ("fi", F_BODY, Some(0), false),
+            ("ce", F_BODY, None, true),
+            ("∑", super::F_SYMBOL, None, false),
+        ]
+        .into_iter()
+        .map(|(text, slot, link, strike)| Tok {
+            text: text.to_string(),
+            slot,
+            space: false,
+            hard_break: false,
+            link,
+            strike,
+        })
+        .collect();
+        let natural = measure_word(&word, font_size_of(size), &faces).to_points_f32();
+        let extra = natural * f32::from(permille) / 1000.0;
+        let mut toks = Vec::new();
+        // Exercise the production mapping: a mixed-style word is one box,
+        // with its expansion booked once on the group's last visible token.
+        super::push_tok_group_line_toks(&TokGroup::from_vec(word), extra, true, &mut toks);
+        let links = [LinkTarget::Uri("https://example.com/office".to_string())];
+        let segs = build_segs_adjusted(&toks, 17.0, size, &faces, None, 15, &links);
+        assert_eq!(segs.len(), 5, "font, link, strike and fallback split runs");
+        for seg in &segs {
+            assert_eq!(seg.expansion_permille, permille);
+        }
+        for pair in segs.windows(2) {
+            let prev = &pair[0];
+            let drawn = faces.shaped_width_points(prev.slot, &prev.text, size)
+                * (1.0 + f32::from(prev.expansion_permille) / 1000.0);
+            let gap = pair[1].x - (prev.x + drawn);
+            assert!(
+                gap.abs() < 0.002,
+                "styled word must stay contiguous at {permille:+} permille: \
+                 {:?} -> {:?} has {gap:+.4}pt gap/overlap",
+                prev.text,
+                pair[1].text
+            );
+            assert!(
+                (prev.width - drawn).abs() < 0.002,
+                "link and strike extents must match scaled glyph advances"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn expanded_styled_word_keeps_glyph_runs_contiguous() -> crate::Result<()> {
+        assert_expanded_styled_word_contiguous(15)
+    }
+
+    #[test]
+    fn compressed_styled_word_keeps_glyph_runs_contiguous() -> crate::Result<()> {
+        assert_expanded_styled_word_contiguous(-15)
+    }
+
+    #[test]
+    fn justified_styled_paragraph_keeps_word_boundaries_and_flush_edges() -> crate::Result<()> {
+        let markdown = "The of**fi**ce reviewed cash[flow](https://example.com) and \
+            re~~vised~~ forecasts while ∑revenue grew. The team considered \
+            a**ffi**ne models and re*financing* terms before updating the report. ";
+        let doc = crate::parse_markdown(&markdown.repeat(12));
+        for microtype in [
+            crate::layout::MicrotypeOptions {
+                protrusion: false,
+                max_expansion_per_mille: 15,
+            },
+            crate::layout::MicrotypeOptions::CONSERVATIVE,
+        ] {
+            let opts = PdfOptions {
+                microtype,
+                ..PdfOptions::default()
+            };
+            let faces = Faces::load(&opts)?;
+            let page = PageGeom::from_theme(&opts.theme);
+            let lines = super::layout(&doc.blocks, &opts, &faces, page);
+            let mut checked_boundaries = 0;
+            let mut checked_lines = 0;
+            for line in &lines {
+                if line.flow.kind != FlowKind::Paragraph
+                    || line.segs.iter().all(|seg| seg.expansion_permille == 0)
+                {
+                    continue;
+                }
+                for pair in line.segs.windows(2) {
+                    let prev = &pair[0];
+                    if prev.text.ends_with(' ') || pair[1].text.starts_with(' ') {
+                        continue;
+                    }
+                    let drawn = faces.shaped_width_points(prev.slot, &prev.text, line.size)
+                        * (1.0 + f32::from(prev.expansion_permille) / 1000.0);
+                    let gap = pair[1].x - (prev.x + drawn);
+                    assert!(
+                        gap.abs() < 0.002,
+                        "production paragraph split a styled word: {:?} -> {:?}, \
+                         {gap:+.4}pt gap/overlap",
+                        prev.text,
+                        pair[1].text
+                    );
+                    checked_boundaries += 1;
+                }
+                let (edge, credit_char) = rendered_right_edge(line, &faces).expect("text line");
+                let credit = crate::layout::protrusion_for_boundary_chars(
+                    None,
+                    Some(credit_char),
+                    font_size_of(line.size),
+                    microtype,
+                )
+                .right
+                .to_points_f32();
+                assert!(
+                    (edge - page.right_x() - credit).abs() < 0.05,
+                    "styled justified line ends at {edge:.3}pt, expected {:.3}pt",
+                    page.right_x() + credit
+                );
+                checked_lines += 1;
+            }
+            assert!(checked_boundaries >= 12, "fixture must split styled words");
+            assert!(checked_lines >= 6, "fixture must justify several lines");
+        }
+        Ok(())
+    }
+
     #[test]
     fn greedy_inline_fallback_wraps_words_and_skips_leading_spaces() -> crate::Result<()> {
         let opts = PdfOptions::default();
@@ -34716,6 +34867,8 @@ mod pdf_writer_tests {
         // run; one space extra closes it), recomputed by per-prefix reshaping.
         let mut run_word_extra = 0.0f32;
         let mut natural_max = 0.0f32;
+        let mut run_glue_extra = 0.0f32;
+        let mut glue_extras = Vec::new();
         for line_tok in toks {
             let tok = &line_tok.tok;
             let text = token_visible_text(tok);
@@ -34728,6 +34881,7 @@ mod pdf_writer_tests {
                     let natural =
                         shaped_width_points_for_layout(faces, width_cache, s.slot, &s.text, fs);
                     let space_extra = if tok.space {
+                        run_glue_extra += line_tok.extra_advance;
                         line_tok.extra_advance
                     } else {
                         run_word_extra += line_tok.extra_advance;
@@ -34744,11 +34898,14 @@ mod pdf_writer_tests {
                 _ => {
                     if let Some(s) = cur.take() {
                         segs.push(s);
+                        glue_extras.push(run_glue_extra);
                     }
                     let natural =
                         shaped_width_points_for_layout(faces, width_cache, tok.slot, text, fs);
                     run_word_extra = 0.0;
+                    run_glue_extra = 0.0;
                     let space_extra = if tok.space {
+                        run_glue_extra = line_tok.extra_advance;
                         line_tok.extra_advance
                     } else {
                         run_word_extra += line_tok.extra_advance;
@@ -34784,10 +34941,12 @@ mod pdf_writer_tests {
                 && let Some(s) = cur.take()
             {
                 segs.push(s);
+                glue_extras.push(run_glue_extra);
             }
         }
         if let Some(s) = cur {
             segs.push(s);
+            glue_extras.push(run_glue_extra);
         }
         if use_expansion && box_width_milli > 0.0 {
             let factor = word_extra_milli / box_width_milli;
@@ -34796,8 +34955,17 @@ mod pdf_writer_tests {
                 f64::from(expansion_permille_budget),
             );
             let permille = permille_f as i16;
-            for seg in &mut segs {
+            let scale = 1.0 + f32::from(permille) / 1000.0;
+            let mut x = left - hang;
+            for (seg, glue_extra) in segs.iter_mut().zip(glue_extras) {
+                // Independent full-run reshaping oracle for the production
+                // incremental shaper, with the same corrected Tz geometry.
+                let natural =
+                    shaped_width_points_for_layout(faces, width_cache, seg.slot, &seg.text, fs);
+                seg.x = x;
+                seg.width = (natural * scale + glue_extra).max(0.0);
                 seg.expansion_permille = permille;
+                x += seg.width;
             }
         }
         segs

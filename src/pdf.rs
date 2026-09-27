@@ -2524,7 +2524,7 @@ fn fit_to_target_pages(
 ) -> (PdfOptions, PageGeom) {
     let base_page = PageGeom::from_theme(&opts.theme);
     let initial_lines = layout(&doc.blocks, opts, faces, base_page);
-    let initial_pages = paginate_lines(&initial_lines, base_page).len();
+    let initial_pages = paginate_lines_for_options(&initial_lines, base_page, opts).len();
 
     if initial_pages <= target_pages {
         return (opts.clone(), base_page);
@@ -2559,7 +2559,7 @@ fn fit_to_target_pages(
 
         let candidate_page = PageGeom::from_theme(&candidate_opts.theme);
         let lines = layout(&doc.blocks, &candidate_opts, faces, candidate_page);
-        let pages = paginate_lines(&lines, candidate_page).len();
+        let pages = paginate_lines_for_options(&lines, candidate_page, &candidate_opts).len();
 
         if pages <= target_pages {
             best_opts = candidate_opts;
@@ -2577,6 +2577,20 @@ fn fit_to_target_pages(
     }
 
     (best_opts, best_page)
+}
+
+/// Resolve page fitting once with the same policy used by the PDF writer and
+/// every inspection surface. A zero target retains the ordinary layout.
+fn effective_pdf_options(
+    doc: &Document,
+    opts: &PdfOptions,
+    faces: &Faces,
+) -> (PdfOptions, PageGeom) {
+    if let Some(target_pages) = opts.fit_to_pages.filter(|&target| target > 0) {
+        fit_to_target_pages(doc, opts, faces, target_pages)
+    } else {
+        (opts.clone(), PageGeom::from_theme(&opts.theme))
+    }
 }
 
 fn render_inner(
@@ -2598,15 +2612,7 @@ fn render_inner(
         || Faces::load(opts),
         |result| usize::from(result.is_ok()),
     )?;
-    let (effective_opts, page) = if let Some(target_pages) = opts.fit_to_pages {
-        if target_pages > 0 {
-            fit_to_target_pages(doc, opts, &faces, target_pages)
-        } else {
-            (opts.clone(), PageGeom::from_theme(&opts.theme))
-        }
-    } else {
-        (opts.clone(), PageGeom::from_theme(&opts.theme))
-    };
+    let (effective_opts, page) = effective_pdf_options(doc, opts, &faces);
     let lines = profiler.measure(
         "layout",
         doc.blocks.len(),
@@ -3164,7 +3170,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
 
         // Run pagination to find the resulting page of each heading
         let heading_metas = heading_metadata(&out);
-        let pages = paginate_lines(&out, page);
+        let pages = paginate_lines_for_options(&out, page, opts);
         let mut new_page_map = BTreeMap::new();
         for (page_idx, placed_page) in pages.iter().enumerate() {
             let page_num = page_idx + 1;
@@ -20939,18 +20945,12 @@ fn serialize_pages_monolithic(
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
 ) -> Result<SerializedPages> {
-    let optimal_plan;
-    let plan = if opts.optimal_pagination {
-        optimal_plan = optimal_page_breaks(lines, page);
-        Some(&optimal_plan)
-    } else {
-        None
-    };
+    let plan = page_break_plan_for_options(lines, page, opts);
     let pages_placed = profiler.measure(
         "pagination",
         lines.len(),
         "place laid-out lines onto PDF pages (greedy or Plass-optimal)",
-        || paginate_lines_with(lines, page, plan),
+        || paginate_lines_with(lines, page, plan.as_ref()),
         |_| 0,
     );
     pdf_emit_phase(
@@ -21020,14 +21020,10 @@ fn serialize_pages_chunked(
     let mut pipeline: Option<ChunkedCompressPipeline> = None;
     #[cfg(not(target_arch = "wasm32"))]
     let mut cumulative_stream_bytes = 0usize;
-    let optimal_plan;
-    let plan = if opts.optimal_pagination {
-        optimal_plan = optimal_page_breaks(lines, page);
-        Some(&optimal_plan)
-    } else {
-        None
-    };
-    while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any, plan) {
+    let plan = page_break_plan_for_options(lines, page, opts);
+    while let Some(placed) =
+        next_placed_page(lines, &mut start, page, &mut emitted_any, plan.as_ref())
+    {
         let (mut content, reserved) = generate_page_content(
             &placed,
             page_idx,
@@ -27516,9 +27512,35 @@ fn flexed_gap(gap: f32) -> f32 {
     ((gap * GAP_SHRINK_FACTOR).max(MIN_SHRUNK_GAP_PT)).min(gap)
 }
 
+#[cfg(test)]
 fn paginate_lines<'a>(lines: &'a [Line], page: PageGeom) -> Vec<Vec<Placed<'a>>> {
     paginate_lines_with(lines, page, None)
 }
+
+/// One policy selector for emission, TOC convergence, fitting, and verification.
+/// Planning a TOC or a page budget with greedy breaks while emitting optimal
+/// breaks gives the reader stale page numbers and can exceed the fitted budget.
+fn page_break_plan_for_options(
+    lines: &[Line],
+    page: PageGeom,
+    opts: &PdfOptions,
+) -> Option<PageBreakPlan> {
+    opts.optimal_pagination
+        .then(|| optimal_page_breaks(lines, page))
+}
+
+fn paginate_lines_for_options<'a>(
+    lines: &'a [Line],
+    page: PageGeom,
+    opts: &PdfOptions,
+) -> Vec<Vec<Placed<'a>>> {
+    let plan = page_break_plan_for_options(lines, page, opts);
+    paginate_lines_with(lines, page, plan.as_ref())
+}
+
+#[cfg(test)]
+#[path = "pdf/pagination_policy_tests.rs"]
+mod pagination_policy_tests;
 
 fn paginate_lines_with<'a>(
     lines: &'a [Line],
@@ -28291,13 +28313,13 @@ fn serialize_render_tree(pages: &[Vec<Placed<'_>>], page: PageGeom, palette: &Pa
 #[cfg(all(test, target_os = "linux"))]
 fn render_tree_debug(markdown: &str, opts: &PdfOptions) -> String {
     let doc = crate::parse_markdown(markdown);
-    let page = PageGeom::from_theme(&opts.theme);
     let Ok(faces) = Faces::load(opts) else {
         return "FONT LOAD ERROR\n".to_string();
     };
-    let palette = Palette::from_colors(&opts.theme.colors);
-    let lines = layout(&doc.blocks, opts, &faces, page);
-    let pages = paginate_lines(&lines, page);
+    let (effective_opts, page) = effective_pdf_options(&doc, opts, &faces);
+    let palette = Palette::from_colors(&effective_opts.theme.colors);
+    let lines = layout(&doc.blocks, &effective_opts, &faces, page);
+    let pages = paginate_lines_for_options(&lines, page, &effective_opts);
     serialize_render_tree(&pages, page, &palette)
 }
 
@@ -40823,10 +40845,10 @@ fn line_overshoot(line: &Line, page: &PageGeom) -> Option<f32> {
 /// layout + pagination pipeline the PDF writer runs. Returns `None` when font
 /// loading fails (never panics).
 pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<VerifyTextLayer> {
-    let page = PageGeom::from_theme(&opts.theme);
     let faces = Faces::load(opts).ok()?;
-    let lines = layout(&doc.blocks, opts, &faces, page);
-    let pages = paginate_lines(&lines, page);
+    let (effective_opts, page) = effective_pdf_options(doc, opts, &faces);
+    let lines = layout(&doc.blocks, &effective_opts, &faces, page);
+    let pages = paginate_lines_for_options(&lines, page, &effective_opts);
     let mut out_pages = Vec::with_capacity(pages.len());
     for (idx, placed) in pages.iter().enumerate() {
         let mut runs = Vec::with_capacity(placed.len());

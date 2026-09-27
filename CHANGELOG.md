@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Use the selected pagination policy consistently for PDF table-of-contents
+  page numbers, page-budget fitting, and verification, including fitted font
+  sizes and positions.
 - Keep glyph expansion and contraction contiguous across styled PDF word
   fragments, including font changes, links, strikethrough, ligatures, and symbol
   fallback. Position text and decoration extents from the same rounded horizontal

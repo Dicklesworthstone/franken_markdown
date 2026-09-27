@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { File } from "node:buffer";
 import {
   createBookCollection, readPortableBookProject, discardPortableBookProject,
   normalizeBookProject, PORTABLE_BOOK_FORMAT, PORTABLE_BOOK_MAX_BYTES,

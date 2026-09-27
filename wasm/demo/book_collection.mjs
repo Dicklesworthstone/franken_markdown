@@ -1,7 +1,7 @@
 // Source/asset ownership for the publishing workbench, not a Markdown renderer.
 import { bookTextBytes, prepareBookInput } from "../book_session.mjs";
 import { bookError } from "../book_worker.mjs";
-import { createBookFontStore } from "./book_font_assets.mjs";
+import { BOOK_FONT_LIMITS, BOOK_FONT_SLOTS, createBookFontStore } from "./book_font_assets.mjs";
 
 const MIB = 1024 * 1024;
 export const BOOK_WORKBENCH_LIMITS = Object.freeze({
@@ -176,7 +176,7 @@ export function createBookCollection() {
     options = settings(),
     revision = 0,
     disposed = false;
-  const fonts = createBookFontStore();
+  let fonts = createBookFontStore();
   const listeners = new Set();
   const alive = () => {
     if (disposed) throw bookError("SESSION_DISPOSED", "Book collection is disposed.");
@@ -372,6 +372,53 @@ export function createBookCollection() {
         blob: new Blob([json], { type: "application/json" }),
       };
     },
+    /** Explicit portable download. Unlike projectDownload/local-library saves,
+     * this includes the currently authorized image and font bytes. */
+    async portableDownload({ signal } = {}) {
+      alive();
+      portableSignal(signal);
+      const expected = revision;
+      const fence = () => {
+        alive();
+        portableCheck(signal);
+        if (revision !== expected)
+          throw bookError("STALE_SOURCE", "The book changed; prepare its portable copy again.");
+      };
+      // Source and resource bytes are captured before yielding; later caller
+      // mutation or collection disposal cannot retarget this snapshot.
+      const source = serializeBookProject(project());
+      const names = new Map(fonts.list().map(font => [font.slot, font.name]));
+      const faces = fonts.snapshot().map(font => ({ ...font, name: names.get(font.slot) }));
+      const assets = images.map(image => ({ destination: image.destination, bytes: new Uint8Array(image.bytes) }));
+      const output = await portableEncode(source, assets, faces, signal, fence);
+      fence();
+      return { ...output, revision: expected };
+    },
+    /** Install a privately admitted portable file as ONE source/resource
+     * revision. Reading a file is not authorization: the host must ask first. */
+    replacePortableProject(prepared, expectedRevision, { authorizeResources = false } = {}) {
+      alive();
+      if (authorizeResources !== true)
+        throw bookError("RESOURCE_AUTHORIZATION_REQUIRED", "Approve restoring the portable book's embedded resources first.");
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== revision)
+        throw bookError("STALE_SOURCE", "The book changed; no portable project was installed.");
+      const value = portablePrepared.get(prepared);
+      if (!value)
+        throw bookError("INVALID_PROJECT", "Read a portable book file before restoring it; this review is no longer available.");
+      const next = value.project.files.map(remember);
+      const installed = revision + 1;
+      // Everything, including all font resource admission/copies, has already
+      // succeeded. Transfer private ownership; observers never see half a book.
+      portablePrepared.delete(prepared);
+      const oldFonts = fonts;
+      files = next;
+      options = value.project.options;
+      images = value.images;
+      fonts = value.fonts;
+      oldFonts.dispose();
+      changed();
+      return installed;
+    },
     /** One source-only transaction: paths/order/settings/image grants cannot
      * change. Validation and optimistic revision checks precede all mutation.
      * Unchanged chapters keep their imported-byte/editor-view relationship. */
@@ -541,4 +588,182 @@ export async function readBookProject(file) {
         : "Source project is not valid UTF-8 JSON.",
     );
   }
+}
+
+// A separate, opt-in format: older/source-only readers must refuse it instead
+// of quietly dropping resources. Base64 is a byte encoding, not a ZIP parser.
+export const PORTABLE_BOOK_FORMAT = "franken-markdown-portable-book";
+export const PORTABLE_BOOK_MAX_BYTES = 192 * MIB;
+const portablePrepared = new WeakMap();
+const BASE64_CHUNK = 16 * 1024; // Multiple of four; independent of asset size.
+function portableSignal(signal) {
+  if (signal !== undefined && (!signal || typeof signal.aborted !== "boolean"
+      || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function"))
+    throw bookError("INVALID_OPTIONS", "Use an AbortSignal for portable book cancellation.");
+  portableCheck(signal);
+}
+function portableCheck(signal) {
+  if (signal?.aborted) throw bookError("ABORTED", "Portable book operation cancelled; the collection is unchanged.");
+}
+function portableWait(promise, signal) {
+  if (!signal) return Promise.resolve(promise);
+  return new Promise((resolve, reject) => {
+    const abort = () => { cleanup(); reject(bookError("ABORTED", "Portable book operation cancelled.")); };
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(promise).then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+    if (signal.aborted) abort();
+  });
+}
+async function portableTurn(signal, fence = () => {}) {
+  portableCheck(signal); fence();
+  await portableWait(new Promise(resolve => setTimeout(resolve, 0)), signal);
+  portableCheck(signal); fence();
+}
+function portableRecord(value, keys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).some(key => !keys.includes(key)))
+    throw bookError("INVALID_PROJECT", "Invalid portable book record or unsupported field.");
+}
+function portableAssetSize(asset, maximum) {
+  if (asset.encoding !== "base64" || typeof asset.data !== "string"
+      || !asset.data.length || asset.data.length % 4 !== 0)
+    throw bookError("INVALID_PROJECT", "Embedded resources require nonempty, padded base64.");
+  const padding = asset.data.endsWith("==") ? 2 : asset.data.endsWith("=") ? 1 : 0;
+  const size = asset.data.length / 4 * 3 - padding;
+  if (size < 1 || size > maximum)
+    throw bookError("BOOK_LIMIT", "An embedded resource exceeds its byte limit.");
+  return size;
+}
+async function portableDecode(asset, signal) {
+  const bytes = new Uint8Array(asset.size);
+  let written = 0;
+  for (let offset = 0; offset < asset.data.length; offset += BASE64_CHUNK) {
+    const chunk = asset.data.slice(offset, offset + BASE64_CHUNK);
+    let binary;
+    try {
+      binary = atob(chunk);
+      // atob alone accepts whitespace and nonzero padding bits. Require the
+      // canonical byte spelling and forbid padding before the final chunk.
+      if (btoa(binary) !== chunk || (offset + chunk.length < asset.data.length && chunk.includes("=")))
+        throw new Error("noncanonical base64");
+    } catch {
+      throw bookError("INVALID_PROJECT", "An embedded resource is not canonical base64.");
+    }
+    for (let i = 0; i < binary.length; i++) bytes[written++] = binary.charCodeAt(i);
+    if (offset % (BASE64_CHUNK * 16) === 0) await portableTurn(signal);
+  }
+  if (written !== bytes.length)
+    throw bookError("INVALID_PROJECT", "An embedded resource has an inconsistent byte length.");
+  portableCheck(signal);
+  return bytes;
+}
+async function portableEncode(source, images, fontAssets, signal, fence) {
+  const parts = [];
+  let total = 0;
+  const add = (text, ascii = false) => {
+    total += ascii ? text.length : bookTextBytes(text, PORTABLE_BOOK_MAX_BYTES - total);
+    if (total > PORTABLE_BOOK_MAX_BYTES)
+      throw bookError("BOOK_LIMIT", "Portable book exceeds 192 MiB; save source and resources separately.");
+    parts.push(text);
+  };
+  add(`{"format":"${PORTABLE_BOOK_FORMAT}","schemaVersion":1,"project":`);
+  add(source);
+  for (const [key, assets] of [["images", images], ["fontAssets", fontAssets]]) {
+    add(`,"${key}":[`);
+    for (let i = 0; i < assets.length; i++) {
+      const { bytes, ...metadata } = assets[i];
+      add((i ? "," : "") + JSON.stringify({ ...metadata, encoding: "base64" }).slice(0, -1) + ',"data":"');
+      const rawChunk = BASE64_CHUNK / 4 * 3;
+      for (let offset = 0; offset < bytes.length; offset += rawChunk) {
+        add(btoa(String.fromCharCode(...bytes.subarray(offset, offset + rawChunk))), true);
+        if (offset % (rawChunk * 16) === 0) await portableTurn(signal, fence);
+      }
+      add('"}');
+    }
+    add("]");
+  }
+  add("}\n");
+  fence();
+  const blob = new Blob(parts, { type: "application/json" });
+  return { filename: "book.fmdbook.bundle.json", blob };
+}
+
+/** Read/admit without touching a collection. Only frozen review metadata is
+ * exposed; decoded bytes stay private until an explicitly authorized restore.
+ * Does not fetch URLs, load fonts, parse images, or claim embedding rights. */
+export async function readPortableBookProject(file, { signal } = {}) {
+  portableSignal(signal);
+  localFile(file, PORTABLE_BOOK_MAX_BYTES);
+  const buffer = await portableWait(read(file), signal);
+  portableCheck(signal);
+  let raw;
+  try { raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer)); }
+  catch { throw bookError("INVALID_PROJECT", "Portable book is not valid UTF-8 JSON."); }
+  portableRecord(raw, ["format", "schemaVersion", "project", "images", "fontAssets"]);
+  if (raw.format !== PORTABLE_BOOK_FORMAT || raw.schemaVersion !== 1)
+    throw bookError("INVALID_PROJECT", "Unsupported portable book format or version.");
+  const project = normalizeBookProject(raw.project);
+  serializeBookProject(project); // Same escaped-source budget as source-only files.
+  if (!Array.isArray(raw.images) || raw.images.length > L.images
+      || !Array.isArray(raw.fontAssets) || raw.fontAssets.length > BOOK_FONT_SLOTS.length)
+    throw bookError("BOOK_LIMIT", "Portable book has too many image or font resources.");
+  const destinations = new Set(), slots = new Set();
+  let imageBytes = 0, fontBytes = 0;
+  const images = raw.images.map(asset => {
+    portableRecord(asset, ["destination", "encoding", "data"]);
+    const destination = bookPath(asset.destination);
+    if (!/\.(png|jpe?g|svg)$/i.test(destination))
+      throw bookError("INVALID_IMAGE", "Portable images must be PNG, JPEG or SVG.");
+    if (destinations.has(destination)) throw bookError("DUPLICATE_PATH", "Duplicate portable image path.");
+    destinations.add(destination);
+    const size = portableAssetSize(asset, L.imageBytes);
+    imageBytes += size;
+    return { destination, data: asset.data, size };
+  });
+  const fontAssets = raw.fontAssets.map(asset => {
+    portableRecord(asset, ["slot", "name", "weight", "encoding", "data"]);
+    const { slot, name, weight } = asset;
+    if (slots.has(slot)) throw bookError("INVALID_FONT_SLOT", "Duplicate portable font role.");
+    slots.add(slot);
+    // Reuse the existing metadata policy before decoding any potentially large
+    // payload. One placeholder byte is admission only, never a published font.
+    const probe = createBookFontStore();
+    try { probe.set([{ slot, name, weight, bytes: new Uint8Array([0]) }]); }
+    finally { probe.dispose(); }
+    const size = portableAssetSize(asset, BOOK_FONT_LIMITS.faceBytes);
+    fontBytes += size;
+    return { slot, name, weight, data: asset.data, size };
+  });
+  if (imageBytes > L.totalImageBytes || fontBytes > BOOK_FONT_LIMITS.totalBytes)
+    throw bookError("BOOK_LIMIT", "Portable images or fonts exceed their 32 MiB aggregate limit.");
+  // All metadata/count/decoded-size admission precedes every large decode.
+  const decoded = [], fonts = createBookFontStore();
+  try {
+    for (const asset of images)
+      decoded.push({ destination: asset.destination, bytes: await portableDecode(asset, signal) });
+    for (const asset of fontAssets) {
+      const { slot, name, weight } = asset;
+      fonts.set([{ slot, name, weight, bytes: await portableDecode(asset, signal) }]);
+    }
+    portableCheck(signal);
+    const review = Object.freeze({
+      title: project.options.title,
+      chapters: project.files.filter(file => file.role !== "include").length,
+      includeSources: project.files.filter(file => file.role === "include").length,
+      sourceBytes: project.files.reduce((sum, file) => sum + bookTextBytes(file.source), 0),
+      imageBytes, fontBytes,
+      sources: Object.freeze(project.files.map(file => Object.freeze({ path: file.path, role: file.role ?? "chapter" }))),
+      images: Object.freeze(images.map(({ destination, size }) => Object.freeze({ destination, size }))),
+      fonts: Object.freeze(fonts.list().map(font => Object.freeze(font))),
+    });
+    portablePrepared.set(review, { project, images: decoded, fonts });
+    return review;
+  } catch (error) { fonts.dispose(); throw error; }
+}
+/** Release an unused/cancelled review. Successfully restored reviews have
+ * already transferred ownership and are harmless to discard. */
+export function discardPortableBookProject(review) {
+  const value = portablePrepared.get(review);
+  if (value) { portablePrepared.delete(review); value.fonts.dispose(); }
 }

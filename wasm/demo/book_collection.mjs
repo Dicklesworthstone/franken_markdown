@@ -79,7 +79,7 @@ function settings(value = {}) {
     toc: true,
     pageNumbers: true,
   };
-  if (Object.keys(value).some((key) => !Object.hasOwn(defaults, key)))
+  if (Object.keys(value).some((key) => key !== "page" && !Object.hasOwn(defaults, key)))
     throw bookError(
       "INVALID_OPTIONS",
       "Unsupported project settings; assets cannot be restored from a source project.",
@@ -89,7 +89,11 @@ function settings(value = {}) {
   if (!Number.isFinite(next.fontScale) || next.fontScale < 0.5 || next.fontScale > 3)
     throw bookError("INVALID_OPTIONS", "Font scale must be between 0.5 and 3.");
   // Reuse the production facade's remaining option semantics without assets.
-  prepareBookInput([{ path: "validation.md", source: "" }], next);
+  const { page } = prepareBookInput([{ path: "validation.md", source: "" }], next).options;
+  // Keep the deeply owned/frozen canonical geometry, never caller-owned nested
+  // objects. Absence stays absent so old/default books keep their original ABI.
+  if (page === undefined) delete next.page;
+  else next.page = page;
   return next;
 }
 /** Validated, source-only snapshot. Copies all mutable containers and never
@@ -99,7 +103,7 @@ export function normalizeBookProject(project) {
     !project ||
     typeof project !== "object" ||
     Array.isArray(project) ||
-    ![1, 2].includes(project.schemaVersion) ||
+    ![1, 2, 3].includes(project.schemaVersion) ||
     Object.keys(project).some((key) => !["schemaVersion", "files", "options"].includes(key))
   ) {
     throw bookError("INVALID_PROJECT", "Unsupported source-project schema.");
@@ -113,10 +117,13 @@ export function normalizeBookProject(project) {
   ) {
     throw bookError("INVALID_PROJECT", "Source roles require project schema version 2.");
   }
+  const options = settings(project.options);
+  if (project.schemaVersion < 3 && options.page !== undefined)
+    throw bookError("INVALID_PROJECT", "PDF page settings require source-project schema version 3.");
   return {
     schemaVersion: project.schemaVersion,
     files: sourceFiles(project.files),
-    options: settings(project.options),
+    options,
   };
 }
 
@@ -199,7 +206,7 @@ export function createBookCollection() {
       ...(role === "include" ? { role } : {}),
     }));
   const project = () => ({
-    schemaVersion: files.some((file) => file.role === "include") ? 2 : 1,
+    schemaVersion: options.page !== undefined ? 3 : files.some((file) => file.role === "include") ? 2 : 1,
     files: sources(),
     options,
   });
@@ -322,6 +329,24 @@ export function createBookCollection() {
       const next = settings(value);
       options = next;
       changed();
+    },
+    /** Change only PDF geometry, preserving source, settings and resources.
+     * A reset to undefined restores the legacy renderer's default-page path. */
+    setPage(page, expectedRevision) {
+      alive();
+      const fence = () => {
+        alive();
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== revision)
+          throw bookError("STALE_SOURCE", "The book changed; its PDF page was not replaced.");
+      };
+      fence();
+      const next = settings({ ...options, page });
+      fence();
+      if (JSON.stringify(next.page) === JSON.stringify(options.page)) return revision;
+      const installed = revision + 1;
+      options = next;
+      changed();
+      return installed;
     },
     revokeImages() {
       alive();

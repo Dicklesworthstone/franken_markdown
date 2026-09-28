@@ -75,7 +75,7 @@ export function createBookFontAuthoring({ collection, controls, worker, timeoutM
     ready();
     if (pending !== job || job.abort.signal.aborted)
       throw failure("FONT_CANCELLED", "Font operation cancelled; previous assignments were kept.");
-    if (job.revision !== collection.revision || job.checkpoint !== controls.checkpoint())
+    if (job.revision !== collection.revision || job.checkpoint !== controls.checkpoint() || job.isCurrent() !== true)
       throw failure("STALE_SOURCE", "The book changed; review the fonts again before assigning them.");
   }
   function finish(job, error, result) {
@@ -91,10 +91,11 @@ export function createBookFontAuthoring({ collection, controls, worker, timeoutM
   function cancel(message = "Font operation cancelled; previous assignments were kept.") {
     if (pending && !pending.installing) finish(pending, failure("FONT_CANCELLED", message));
   }
-  function begin(work, { signal } = {}) {
+  function begin(work, { signal, isCurrent = () => true } = {}) {
     let job, ownsAdmission = false;
     try {
       ready(); signalValue(signal);
+      if (typeof isCurrent !== "function") throw failure("INVALID_OPTIONS", "Font selection guard must be a function.");
       if (admitting || pending) throw failure("FONT_BUSY", "Another font operation is in progress.");
       if (signal?.aborted) throw failure("FONT_CANCELLED", "Font operation cancelled before starting.");
       admitting = true; ownsAdmission = true;
@@ -102,11 +103,15 @@ export function createBookFontAuthoring({ collection, controls, worker, timeoutM
       // before reserving this operation's checkpoint, but reject reentrant starts.
       controls.captureProject();
       ready();
-      job = { revision: collection.revision, checkpoint: controls.checkpoint(), signal,
+      job = { revision: collection.revision, checkpoint: controls.checkpoint(), signal, isCurrent,
         abort: new AbortController(), phase: "preparing", done: false, installing: false, timer: null };
       const promise = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
       pending = job;
-      job.onAbort = () => finish(job, failure("FONT_CANCELLED", "Font operation cancelled; previous assignments were kept."));
+      job.onAbort = () => {
+        // A collection observer can abort while our synchronous commit notifies
+        // it. Those bytes are already installed: report success, not rollback.
+        if (!job.installing) finish(job, failure("FONT_CANCELLED", "Font operation cancelled; previous assignments were kept."));
+      };
       try {
         signal?.addEventListener("abort", job.onAbort, { once: true });
         if (signal?.aborted) job.onAbort();

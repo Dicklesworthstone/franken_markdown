@@ -215,3 +215,19 @@ test("capture fences reentrant starts before the current operation owns its chec
   f.edit("typed silently", false); await f.author.assign([selected()]); await Promise.all(pending);
   assert.equal(f.engine.jobs.length, 1); assert.equal(f.collection.files[0].source, "typed silently"); f.author.dispose();
 });
+
+test("host selection guards fence silent non-source changes and must be functions", async () => {
+  const f = fixture({ delay: true }); let current = true;
+  await assert.rejects(f.author.assign([selected()], { isCurrent: true }), { code: "INVALID_OPTIONS" });
+  const pending = f.author.assign([selected()], { isCurrent: () => current });
+  await waiting(f.engine); current = false; f.engine.jobs[0].resolve(result());
+  await assert.rejects(pending, { code: "STALE_SOURCE" }); assert.equal(f.collection.fonts.length, 0); f.author.dispose();
+});
+
+test("abort from the commit notification cannot report rollback of already installed fonts", async () => {
+  const f = fixture(), controller = new AbortController();
+  f.collection.subscribe(() => controller.abort());
+  const result = await f.author.assign([selected()], { signal: controller.signal });
+  assert.equal(controller.signal.aborted, true); assert.equal(result.revision, 1);
+  assert.equal(f.collection.fonts.length, 1); f.author.dispose();
+});

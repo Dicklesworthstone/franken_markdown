@@ -1,6 +1,7 @@
 import { createBookWorker } from "../book-worker.js";
 import { createBookCollection } from "./book_collection.mjs";
 import { createBookControls } from "./book_controls.mjs";
+import { createBookFontControls, createBookFontPanel } from "./book_font_controls.mjs";
 import {
   createBookInspectionControls,
   createBookInspectionPanel,
@@ -16,6 +17,7 @@ const collection = createBookCollection();
 let library = null,
   preview = null,
   pdfProof = null,
+  fontControls = null,
   search = null,
   inspection = null,
   links = null;
@@ -56,6 +58,21 @@ try {
   const status = document.querySelector("#book-pdf-status");
   if (status) status.textContent =
     "Book PDF proofing is unavailable. Ordinary PDF/EPUB/site exports and source editing remain available.";
+}
+// Font preflight owns its own client; it never cancels publication or proofs.
+let fontWorker = null;
+try {
+  createBookFontPanel(document);
+  fontWorker = createBookWorker();
+  fontControls = createBookFontControls({
+    root: document, controls, collection, worker: fontWorker,
+    confirm: (text) => window.confirm(text),
+  });
+} catch {
+  fontWorker?.dispose();
+  const status = document.querySelector("#book-font-status");
+  if (status) status.textContent =
+    "Font authoring is unavailable. Existing supplied fonts, source editing and publication remain available.";
 }
 try {
   search = createBookSearchControls({
@@ -98,6 +115,7 @@ try {
 }
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
+    fontControls?.suspend();
     pdfProof?.suspend();
     links?.suspend();
     inspection?.suspend();
@@ -106,6 +124,7 @@ window.addEventListener("pagehide", (event) => {
     library?.suspend();
     controls.suspend();
   } else {
+    fontControls?.dispose();
     pdfProof?.dispose();
     links?.dispose();
     inspection?.dispose();
@@ -117,6 +136,7 @@ window.addEventListener("pagehide", (event) => {
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
+    fontControls?.resume();
     pdfProof?.resume();
     library?.resume();
     preview?.resume();

@@ -1,4 +1,5 @@
 import { bookError } from "../book_worker.mjs";
+import { normalizePdfPage } from "../pdf_page.mjs";
 import {
   createBookCollection,
   normalizeBookProject,
@@ -64,6 +65,7 @@ export function createBookControls({
     el[id] = root.querySelector(`#${id}`);
   const unlisten = [],
     sourceListeners = new Set();
+  let pageSetup = null;
   let portableAbort = null;
   let lastSourceBusy = false;
   let composing = false;
@@ -78,6 +80,7 @@ export function createBookControls({
     if (disposed) throw bookError("SESSION_DISPOSED", "Book controls are disposed.");
   };
   const options = () => ({
+    ...collection.options,
     title: el.title.value,
     author: el.author.value,
     lang: el.lang.value,
@@ -120,6 +123,7 @@ export function createBookControls({
     if (el["save-portable"]) el["save-portable"].disabled = reading || composing || preparing;
     if (el["open-portable"]) el["open-portable"].disabled = reading || composing;
     if (el["cancel-portable"]) el["cancel-portable"].disabled = portableAbort === null;
+    pageSetup?.refresh();
     const nextBusy = reading || composing;
     if (lastSourceBusy !== nextBusy) {
       lastSourceBusy = nextBusy;
@@ -189,6 +193,7 @@ export function createBookControls({
     el["font-scale"].value = String(value.fontScale);
     el.toc.checked = value.toc;
     el["page-numbers"].checked = value.pageNumbers;
+    pageSetup?.discard();
   }
   function capture(configure = true) {
     alive();
@@ -543,6 +548,12 @@ export function createBookControls({
   showOptions();
   showChapter();
   revoke();
+  try {
+    pageSetup = createBookPageControls({ root, collection, capture: () => capture(),
+      isBusy: () => reading || composing });
+  } catch {
+    el.status.textContent = "PDF page setup is unavailable. Existing book settings, source editing and exports remain available.";
+  }
   return Object.freeze({
     prepare,
     preparePortable,
@@ -637,6 +648,7 @@ export function createBookControls({
     },
     suspend() {
       if (!disposed) {
+        pageSetup?.discard();
         collection.revokeImages();
         collection.revokeFonts();
         el.status.textContent =
@@ -650,6 +662,7 @@ export function createBookControls({
       unsubscribe();
       for (const remove of unlisten) remove();
       sourceListeners.clear();
+      pageSetup?.dispose();
       worker.dispose();
       collection.dispose();
     },
@@ -706,5 +719,206 @@ function portableApproval(promise, signal) {
     signal.addEventListener("abort", abort, { once: true });
     Promise.resolve(promise).then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
     if (signal.aborted) abort();
+  });
+}
+
+// Page authoring stays in the already-shipped publisher controller. Geometry
+// admission is the shared API contract; this is not a second page-layout engine.
+const PAGE_UNITS = Object.freeze({ pt: 1, in: 72, mm: 72 / 25.4 });
+const PAGE_FIELDS = ["width", "height", "top", "right", "bottom", "left"];
+const PAGE_PRESETS = Object.freeze({
+  letter: normalizePdfPage({ size: "letter" }).size,
+  a4: normalizePdfPage({ size: "a4" }).size,
+  trade: Object.freeze({ widthPt: 432, heightPt: 648 }),
+});
+const pageKey = value => JSON.stringify(value);
+const pageNumber = value => String(Number(value.toPrecision(12)));
+
+/** Optional workbench panel. The caller owns source capture and busy state.
+ * Draft controls never change exported geometry until explicit Apply succeeds. */
+export function createBookPageControls({ root, collection, capture, isBusy }) {
+  const section = root.querySelector("#publish-title")?.parentElement;
+  if (!section || root.querySelector("#book-page-settings")) return null;
+  if (typeof capture !== "function" || typeof isBusy !== "function"
+      || typeof collection?.setPage !== "function") throw new TypeError("Page setup needs a current book host.");
+  const el = {}, panel = root.createElement("fieldset");
+  panel.id = "book-page-settings";
+  panel.setAttribute("aria-describedby", "book-page-help book-page-current book-page-status");
+  const make = (tag, id, text, parent = panel) => {
+    const node = root.createElement(tag);
+    if (id) { node.id = `book-page-${id}`; el[id] = node; }
+    if (text !== undefined) node.textContent = text;
+    parent.append(node);
+    return node;
+  };
+  make("legend", null, "PDF page setup");
+  make("p", "help", "Choose paper, orientation and four margins for the actual book PDF and its proof. Drafts do not affect exports or saves until Apply page setup. HTML/EPUB reading layout is unchanged. Units change only the displayed numbers, not font scale. Reopen or page suspension discards unapplied page drafts.");
+  function select(id, label, options) {
+    make("label", null, label).setAttribute("for", `book-page-${id}`);
+    const node = make("select", id);
+    for (const [value, text] of options) make("option", null, text, node).value = value;
+    return node;
+  }
+  select("size", "Paper", [["default", "Renderer default (Letter, 72 pt margins)"],
+    ["letter", "US Letter"], ["a4", "A4"], ["trade", "6 × 9 inch book"], ["custom", "Custom dimensions"]]);
+  select("unit", "Units for dimensions and margins", [["pt", "Points"], ["in", "Inches"], ["mm", "Millimetres"]]);
+  select("orientation", "Orientation (margins keep their named sides)",
+    [["keep", "As entered"], ["portrait", "Portrait"], ["landscape", "Landscape"]]);
+  const grid = make("div"); grid.className = "grid";
+  for (const field of PAGE_FIELDS) {
+    const cell = make("div", null, undefined, grid);
+    const label = field === "width" || field === "height" ? `Paper ${field}` : `${field[0].toUpperCase() + field.slice(1)} margin`;
+    make("label", null, label, cell).setAttribute("for", `book-page-${field}`);
+    const input = make("input", field, undefined, cell);
+    input.type = "text"; input.inputMode = "decimal"; input.autocomplete = "off";
+    input.setAttribute("aria-describedby", "book-page-unit book-page-help book-page-status");
+  }
+  make("p", null, "Dimensions: 144–14,400 points. Margins must leave at least 72 points of content width and height. Use a decimal point, not a comma.");
+  make("p", "current");
+  const status = make("p", "status"); status.setAttribute("role", "status");
+  const actions = make("div");
+  for (const [id, label] of [["apply", "Apply page setup"], ["discard", "Discard page draft"]]) {
+    make("button", id, label, actions).type = "button";
+  }
+  let closed = false, unit = "pt", baseline;
+  const displayed = new Map(), listeners = [];
+  const blocked = () => closed || isBusy();
+  function check() {
+    if (closed) throw bookError("SESSION_DISPOSED", "PDF page controls are disposed.");
+    if (isBusy()) throw bookError("BOOK_BUSY", "Finish importing or composing text before applying page setup.");
+  }
+  function write(field, points, nextUnit = unit) {
+    const text = pageNumber(points / PAGE_UNITS[nextUnit]);
+    displayed.set(field, { text, points, unit: nextUnit });
+    el[field].value = text;
+  }
+  function points(field) {
+    const raw = el[field].value.trim(), known = displayed.get(field);
+    // Retain the exact original points when a formatted field is untouched.
+    // Repeated unit changes or reopening must not drift A4/custom geometry.
+    if (known && known.unit === unit && raw === known.text) return known.points;
+    if (!/^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw))
+      throw bookError("INVALID_OPTIONS", `Enter a nonnegative decimal number for ${field}.`);
+    const value = Number(raw) * PAGE_UNITS[unit];
+    if (!Number.isFinite(value)) throw bookError("INVALID_OPTIONS", `The ${field} value is too large.`);
+    return value;
+  }
+  function draft() {
+    if (el.unit.value !== unit) throw bookError("INVALID_OPTIONS", "Choose the units again before applying page setup.");
+    const size = el.size.value;
+    if (size === "default") return undefined;
+    if (size !== "custom" && !Object.hasOwn(PAGE_PRESETS, size))
+      throw bookError("INVALID_OPTIONS", "Choose a supported paper size.");
+    const orientation = el.orientation.value;
+    if (!["keep", "portrait", "landscape"].includes(orientation))
+      throw bookError("INVALID_OPTIONS", "Choose a supported orientation.");
+    return normalizePdfPage({
+      size: size === "custom" ? { widthPt: points("width"), heightPt: points("height") } : PAGE_PRESETS[size],
+      orientation: orientation === "keep" ? undefined : orientation,
+      margins: Object.fromEntries(PAGE_FIELDS.slice(2).map(side => [`${side}Pt`, points(side)])),
+    });
+  }
+  function describe(value) {
+    const page = value ?? normalizePdfPage({});
+    const { widthPt: w, heightPt: h } = page.size, m = page.margins;
+    return `${pageNumber(w)} × ${pageNumber(h)} pt; content ${pageNumber(w - m.leftPt - m.rightPt)} × ${pageNumber(h - m.topPt - m.bottomPt)} pt; margins top/right/bottom/left ${[m.topPt, m.rightPt, m.bottomPt, m.leftPt].map(pageNumber).join(" / ")} pt.`;
+  }
+  function refresh() {
+    const disabled = blocked(), automatic = el.size.value === "default";
+    for (const id of ["size", "unit", "apply", "discard"]) el[id].disabled = disabled;
+    el.orientation.disabled = disabled || automatic;
+    for (const field of PAGE_FIELDS)
+      el[field].disabled = disabled || automatic || ((field === "width" || field === "height") && el.size.value !== "custom");
+    if (!closed) el.current.textContent = `Current PDF: ${collection.options.page === undefined ? "renderer defaults; " : ""}${describe(collection.options.page)}`;
+  }
+  function review() {
+    try {
+      const value = draft();
+      status.textContent = pageKey(value) === baseline
+        ? "Page draft matches the current PDF settings. No page change is pending."
+        : `Unapplied page draft: ${describe(value)} Apply to use it for PDF proofing, exports and saved projects.`;
+    } catch (error) {
+      status.textContent = `${error.code ?? "INVALID_OPTIONS"}: ${error.message} Current PDF settings are unchanged.`;
+    }
+    refresh();
+  }
+  function discard() {
+    if (closed) return;
+    const value = collection.options.page, page = value ?? normalizePdfPage({});
+    baseline = pageKey(value); el.unit.value = unit;
+    let preset = "custom";
+    for (const [name, size] of Object.entries(PAGE_PRESETS)) {
+      if ((page.size.widthPt === size.widthPt && page.size.heightPt === size.heightPt)
+          || (page.size.widthPt === size.heightPt && page.size.heightPt === size.widthPt)) { preset = name; break; }
+    }
+    el.size.value = value === undefined ? "default" : preset;
+    el.orientation.value = preset === "custom" ? "keep" : page.size.widthPt > page.size.heightPt ? "landscape" : "portrait";
+    const size = preset === "custom" ? page.size : PAGE_PRESETS[preset];
+    write("width", size.widthPt); write("height", size.heightPt);
+    for (const side of PAGE_FIELDS.slice(2)) write(side, page.margins[`${side}Pt`]);
+    review();
+  }
+  const signature = () => JSON.stringify([el.size.value, el.unit.value, el.orientation.value, ...PAGE_FIELDS.map(field => el[field].value)]);
+  function apply() {
+    check();
+    const value = draft(), selected = signature(), previous = baseline;
+    if (pageKey(collection.options.page) !== previous)
+      throw bookError("STALE_SOURCE", "PDF settings changed; review the current page before applying.");
+    // Invalid page drafts fail above, before source capture. Valid raw editor
+    // settings remain owned by the ordinary publisher capture path.
+    capture();
+    check();
+    if (signature() !== selected || pageKey(collection.options.page) !== previous)
+      throw bookError("STALE_SOURCE", "The page draft changed during capture; nothing was applied.");
+    const before = collection.revision, installed = collection.setPage(value, before);
+    discard();
+    status.textContent = installed === before ? "PDF page settings were already current; no page change was made."
+      : "PDF page setup applied. Generate a new book PDF proof or export. Save the project to retain this setup.";
+    return installed;
+  }
+  function run(work) {
+    try { work(); }
+    catch (error) { status.textContent = `${error.code ?? "PAGE_ERROR"}: ${error.message}`; refresh(); }
+  }
+  function on(node, event, action) {
+    node.addEventListener(event, action); listeners.push(() => node.removeEventListener(event, action));
+  }
+  on(el.apply, "click", () => run(apply));
+  on(el.discard, "click", discard);
+  on(el.size, "change", () => run(() => {
+    const selected = el.size.value;
+    const size = selected === "default" ? PAGE_PRESETS.letter : PAGE_PRESETS[selected];
+    if (size) { write("width", size.widthPt); write("height", size.heightPt); }
+    if (selected === "default") {
+      el.orientation.value = "portrait";
+      for (const side of PAGE_FIELDS.slice(2)) write(side, 72);
+    }
+    review();
+  }));
+  on(el.unit, "change", () => run(() => {
+    const selected = el.unit.value;
+    try {
+      if (!Object.hasOwn(PAGE_UNITS, selected)) throw bookError("INVALID_OPTIONS", "Choose points, inches or millimetres.");
+      const values = PAGE_FIELDS.map(points); // Complete admission before any field changes.
+      PAGE_FIELDS.forEach((field, i) => write(field, values[i], selected));
+      unit = selected;
+    } catch (error) { el.unit.value = unit; throw error; }
+    review();
+  }));
+  on(el.orientation, "change", review);
+  for (const field of PAGE_FIELDS) on(el[field], "input", review);
+  discard();
+  section.append(panel);
+  const unsubscribe = collection.subscribe(() => {
+    if (pageKey(collection.options.page) !== baseline) discard();
+    else refresh();
+  });
+  return Object.freeze({ apply, discard, refresh,
+    dispose() {
+      if (closed) return;
+      closed = true; unsubscribe();
+      for (const remove of listeners) remove();
+      refresh();
+    },
   });
 }

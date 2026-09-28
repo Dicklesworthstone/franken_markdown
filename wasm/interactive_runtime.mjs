@@ -305,12 +305,15 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   }
   // Replace or remove existing bindings without rewriting Markdown destinations.
   // Keep insertion separate: a misspelled replacement must not add a new asset.
-  function stageImageChanges(patches) {
+  function stageImageChanges(patches, insertion = false) {
     if (!Array.isArray(patches) || !patches.length || patches.length > 8
         || Reflect.ownKeys(patches).length !== patches.length + 1) {
       throw new TypeError('Provide one through eight image changes');
     }
-    const seen = new Set(), changes = new Map();
+    const seen = new Set(), changes = new Map(), existing = new Set(images.destinations);
+    if (insertion && images.encoded.length + patches.length > 4096) {
+      throw new RangeError('Image bindings exceed the 4096-image workspace limit');
+    }
     let batch = 0;
     for (let i = 0; i < patches.length; i++) {
       const entry = Object.getOwnPropertyDescriptor(patches, String(i));
@@ -321,13 +324,18 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       if (prototype !== null && Object.getPrototypeOf(prototype) !== null) throw new TypeError('Image changes must be plain data objects');
       for (const key of Reflect.ownKeys(value)) {
         const field = Object.getOwnPropertyDescriptor(value, key);
-        if (!['destination', 'bytes', 'remove'].includes(key) || !field || !Object.hasOwn(field, 'value')) {
+        const allowed = insertion ? ['destination', 'bytes'] : ['destination', 'bytes', 'remove'];
+        if (!allowed.includes(key) || !field || !Object.hasOwn(field, 'value')) {
           throw new TypeError('Unsupported image field or accessor');
         }
         fields[key] = field.value;
       }
       const {key} = destination(fields.destination, seen);
-      if (!images.destinations.includes(key)) throw new TypeError('Image replacement or removal requires an existing destination');
+      if (insertion ? existing.has(key) : !existing.has(key)) {
+        throw new TypeError(insertion
+          ? 'Image binding already exists; replace it explicitly in Document images'
+          : 'Image replacement or removal requires an existing destination');
+      }
       if (Object.hasOwn(fields, 'remove')) {
         if (fields.remove !== true || Object.hasOwn(fields, 'bytes')) throw new TypeError('Remove accepts only destination and remove: true');
         changes.set(key, null); continue;
@@ -343,9 +351,9 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       }
       const bufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(buffer);
       const view = new Uint8Array(buffer, offset, length ?? bufferLength);
-      if (!view.length || view.length > 8 * MiB) throw new RangeError('Each replacement image must contain 1 byte through 8 MiB');
+      if (!view.length || view.length > 8 * MiB) throw new RangeError('Each image must contain 1 byte through 8 MiB');
       batch += view.length;
-      if (batch > 16 * MiB) throw new RangeError('Replacement images exceed the 16 MiB batch limit');
+      if (batch > 16 * MiB) throw new RangeError('Image changes exceed the 16 MiB batch limit');
       changes.set(key, view);
     }
     const previous = images, revision = generation, retained = [];
@@ -359,6 +367,15 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       total += view.length; names += textBytes(entry.destination);
       retained.push({entry, view, replaced: changes.has(entry.destination)});
     }
+    // Bindings append in caller-reviewed order. Existing keys cannot enter
+    // this branch, so no filename can silently retarget a committed resource.
+    if (insertion) {
+      for (const [destination, view] of changes) {
+        total += view.length; names += textBytes(destination);
+        retained.push({entry: {destination}, view, replaced: true});
+      }
+    }
+    if (names > 65536) throw new RangeError('Image destinations exceed the 64 KiB workspace limit');
     // Budget the final set, not old + additions: replacing at the limit and
     // removing resources must reclaim capacity for later image/font imports.
     if (total + fontTotal > 128 * MiB) throw new RangeError('Workspace resource budget exceeded');
@@ -570,7 +587,9 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     analyze,
     stageSettings,
     stageImages,
-    stageImageChanges,
+    stageImageChanges(patches) { return stageImageChanges(patches); },
+    // New destinations only; the browser preflights the complete resulting set.
+    stageImageBindings(additions) { return stageImageChanges(additions, true); },
     get imageAssets() { return imageInventory(); },
     stageFonts,
     get fontSlots() { return fontInfo; },
@@ -702,67 +721,75 @@ export function bootNativeWorkspace(factory, createPreview) {
     observer?.disconnect(); observer = null; frame = next;
     return renderer.settings;
   }
+  // All explicit image authoring uses one preflight/publication/cancellation path.
+  function beginImageOperation(patches, insertion, markdown, preview, display, isCurrent) {
+    if (!renderer) throw failure ?? exportError('IMAGES_NOT_READY', 'Native renderer is loading');
+    if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Image changes require the matching worker runtime');
+    if (suspended) throw exportError('IMAGES_SUSPENDED', 'Image changes are suspended');
+    if (typeof isCurrent !== 'function' || !display || !Number.isFinite(display.scale)
+        || display.scale < 0.7 || display.scale > 2 || ![undefined, 'light', 'dark'].includes(display.theme)) {
+      throw exportError('IMAGES_OPTIONS', 'Invalid image preview options');
+    }
+    if (pendingSettings || pendingExport) throw exportError('IMAGES_BUSY', 'Finish or cancel the current document operation before changing images');
+    const transaction = insertion ? renderer.stageImageBindings(patches) : renderer.stageImageChanges(patches);
+    const revision = renderer.revision, options = renderer.settings;
+    const view = {scale: display.scale, theme: display.theme};
+    const operation = {images: true, worker: null, cancelled: false};
+    const current = () => !operation.cancelled && !suspended && pendingSettings === operation
+      && revision === renderer.revision && isCurrent();
+    const check = () => {
+      if (!current()) throw exportError('IMAGES_CANCELLED', 'Document or image selection changed; apply the current revision again');
+    };
+    pendingSettings = operation;
+    const promise = Promise.resolve().then(() => {
+      check();
+      if (!transaction.changed) return null;
+      const state = {options, images: transaction.images};
+      operation.worker = createPreview(factory, {...payload, ...state});
+      return operation.worker.render(markdown, view, state);
+    }).then(result => {
+      check();
+      if (result === null) return renderer.imageAssets;
+      const next = makeFrame(result.html), previousData = data.textContent;
+      const nextData = savedData({images: transaction.images});
+      const previousChildren = Array.from(preview.childNodes);
+      transaction.commit(() => {
+        check();
+        try {
+          data.textContent = nextData;
+          preview.replaceChildren(next);
+        } catch (error) {
+          data.textContent = previousData;
+          preview.replaceChildren(...previousChildren);
+          throw error;
+        }
+      });
+      pendingSettings = null;
+      cancelExport(); invalidatePreview(); previewDiagnostics = result.diagnostics;
+      observer?.disconnect(); observer = null; frame = next;
+      window.dispatchEvent(new Event('fmd-native-images-changed'));
+      return renderer.imageAssets;
+    }, error => { check(); throw error; }).finally(() => {
+      operation.worker?.dispose();
+      if (pendingSettings === operation) pendingSettings = null;
+    });
+    // A retired image dialog must never cancel a newer font/settings job.
+    return Object.freeze({promise, cancel() {
+      if (pendingSettings !== operation) return false;
+      cancelSettings(); return true;
+    }});
+
+  }
   const engine = {
     version: 1,
     imageMode: background ? 'worker' : 'unavailable',
     get imageAssets() { return renderer?.imageAssets ?? null; },
     get imagesPending() { return Boolean(pendingSettings?.images); },
     beginImageChanges(patches, markdown, preview, display = {scale: 1}, isCurrent = () => true) {
-      if (!renderer) throw failure ?? exportError('IMAGES_NOT_READY', 'Native renderer is loading');
-      if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Image changes require the matching worker runtime');
-      if (suspended) throw exportError('IMAGES_SUSPENDED', 'Image changes are suspended');
-      if (typeof isCurrent !== 'function' || !display || !Number.isFinite(display.scale)
-          || display.scale < 0.7 || display.scale > 2 || ![undefined, 'light', 'dark'].includes(display.theme)) {
-        throw exportError('IMAGES_OPTIONS', 'Invalid image preview options');
-      }
-      if (pendingSettings || pendingExport) throw exportError('IMAGES_BUSY', 'Finish or cancel the current document operation before changing images');
-      const transaction = renderer.stageImageChanges(patches);
-      const revision = renderer.revision, options = renderer.settings;
-      const view = {scale: display.scale, theme: display.theme};
-      const operation = {images: true, worker: null, cancelled: false};
-      const current = () => !operation.cancelled && !suspended && pendingSettings === operation
-        && revision === renderer.revision && isCurrent();
-      const check = () => {
-        if (!current()) throw exportError('IMAGES_CANCELLED', 'Document or image selection changed; apply the current revision again');
-      };
-      pendingSettings = operation;
-      const promise = Promise.resolve().then(() => {
-        check();
-        if (!transaction.changed) return null;
-        const state = {options, images: transaction.images};
-        operation.worker = createPreview(factory, {...payload, ...state});
-        return operation.worker.render(markdown, view, state);
-      }).then(result => {
-        check();
-        if (result === null) return renderer.imageAssets;
-        const next = makeFrame(result.html), previousData = data.textContent;
-        const nextData = savedData({images: transaction.images});
-        const previousChildren = Array.from(preview.childNodes);
-        transaction.commit(() => {
-          check();
-          try {
-            data.textContent = nextData;
-            preview.replaceChildren(next);
-          } catch (error) {
-            data.textContent = previousData;
-            preview.replaceChildren(...previousChildren);
-            throw error;
-          }
-        });
-        pendingSettings = null;
-        cancelExport(); invalidatePreview(); previewDiagnostics = result.diagnostics;
-        observer?.disconnect(); observer = null; frame = next;
-        window.dispatchEvent(new Event('fmd-native-images-changed'));
-        return renderer.imageAssets;
-      }, error => { check(); throw error; }).finally(() => {
-        operation.worker?.dispose();
-        if (pendingSettings === operation) pendingSettings = null;
-      });
-      // A retired image dialog must never cancel a newer font/settings job.
-      return Object.freeze({promise, cancel() {
-        if (pendingSettings !== operation) return false;
-        cancelSettings(); return true;
-      }});
+      return beginImageOperation(patches, false, markdown, preview, display, isCurrent);
+    },
+    beginImageBindings(additions, markdown, preview, display = {scale: 1}, isCurrent = () => true) {
+      return beginImageOperation(additions, true, markdown, preview, display, isCurrent);
     },
     fontMode: background ? 'worker' : 'unavailable',
     get fontSlots() { return renderer?.fontSlots ?? null; },

@@ -64,8 +64,11 @@ export interface BookWorker {
     | BookInspectionOutput
     | Omit<BookLinksOutput, "filename">
   >;
-  /** Terminates the running worker. The client can render again afterward. */
+  /** Terminates running AND retained idle workers. The client can render again. */
   cancel(): void;
+  /** Cancel in-flight work, but keep an already-idle preview session. Hosts must
+   * use cancel() for resource revocation, suspension and explicit preview clearing. */
+  cancelPending(): void;
   /** Idempotent; also cancels the current export. */
   dispose(): void;
 }
@@ -75,4 +78,10 @@ export function createBookWorker(options?: {
   timeoutMs?: number;
   /** Default and ceiling 128 MiB. Checked again before publishing to the host. */
   maxOutputBytes?: number;
+  /** Opt in to one retained native book for preview calls only. Default false.
+   * Source-only changes use native updateSources; other changes reconstruct.
+   * Full snapshots are still admitted and transferred for every request. */
+  retainPreview?: boolean;
+  /** Release idle retained previews after this delay. Default 30000; 1..600000 ms. */
+  idleTimeoutMs?: number;
 }): BookWorker;

@@ -52,12 +52,15 @@ function diagnostic(error) {
 }
 
 /** One worker per export. Cancellation terminates synchronous Rust work, not
- * merely its Promise. Nothing is queued and no engine instance survives a job.
+ * merely its Promise. Optional preview retention keeps only one idle worker;
+ * publication exports keep the original one-job lifetime. Nothing is queued.
  */
 export function createBookWorkerClient({
   workerFactory,
   timeoutMs = 120000,
   maxOutputBytes = LIMIT,
+  retainPreview = false,
+  idleTimeoutMs = 30000,
 } = {}) {
   if (
     typeof workerFactory !== "function" ||
@@ -66,24 +69,65 @@ export function createBookWorkerClient({
     timeoutMs > 600000 ||
     !Number.isInteger(maxOutputBytes) ||
     maxOutputBytes < 1 ||
-    maxOutputBytes > LIMIT
+    maxOutputBytes > LIMIT ||
+    typeof retainPreview !== "boolean" ||
+    !Number.isInteger(idleTimeoutMs) || idleTimeoutMs < 1 || idleTimeoutMs > 600000
   ) {
     throw bookError("INVALID_OPTIONS", "Invalid worker factory, timeout or output limit.");
   }
   let disposed = false,
     active = null,
+    idle = null,
     serial = 0;
   const alive = () => {
     if (disposed) throw bookError("SESSION_DISPOSED", "Book worker is disposed.");
   };
-  function cancel() {
+  function terminate(worker) {
+    try {
+      const result = worker?.terminate();
+      if (result && typeof result.catch === "function") result.catch(() => {});
+    } catch { /* Cleanup cannot prevent settlement. */ }
+  }
+  function takeIdle() {
+    const entry = idle;
+    if (!entry) return null;
+    idle = null;
+    clearTimeout(entry.timer);
+    for (const kind of ["message", "error", "messageerror"]) {
+      try { entry.worker.removeEventListener(kind, entry.failed); }
+      catch { terminate(entry.worker); return null; }
+    }
+    return entry.worker;
+  }
+  function releaseIdle() { terminate(takeIdle()); }
+  function keepIdle(worker) {
+    if (disposed || active || idle) { terminate(worker); return; }
+    const entry = { worker, timer: null, failed: null };
+    entry.failed = () => { if (idle === entry) releaseIdle(); };
+    idle = entry;
+    try {
+      entry.timer = setTimeout(entry.failed, idleTimeoutMs);
+      // Do not keep a Node embedding alive solely to expire a warm cache.
+      entry.timer?.unref?.();
+      for (const kind of ["message", "error", "messageerror"]) {
+        worker.addEventListener(kind, entry.failed);
+        if (idle !== entry) return;
+      }
+    } catch { if (idle === entry) releaseIdle(); }
+  }
+  function cancelPending() {
     if (active)
       active.finish(bookError("EXPORT_CANCELLED", "Book export cancelled; source is unchanged."));
+  }
+  function cancel() {
+    cancelPending();
+    releaseIdle();
   }
   async function render(files, format, options = {}, { signal } = {}) {
     alive();
     if (active) throw bookError("BOOK_BUSY", "A book export is already running.");
     const [, mimeType, extension] = formatInfo(format);
+    const retaining = retainPreview && format === "preview";
     if (
       signal !== undefined &&
       (signal === null ||
@@ -103,9 +147,10 @@ export function createBookWorkerClient({
         retired = false;
       const onAbort = () =>
         finish(bookError("EXPORT_CANCELLED", "Book export cancelled; source is unchanged."));
-      function retireWorker() {
+      function retireWorker(keep = false) {
         if (!worker || retired) return;
         retired = true;
+        let detached = true;
         for (const [kind, listener] of [
           ["message", onMessage],
           ["error", onError],
@@ -114,15 +159,12 @@ export function createBookWorkerClient({
           try {
             worker.removeEventListener(kind, listener);
           } catch {
+            detached = false;
             /* Attempt every detach even when a host adapter fails. */
           }
         }
-        try {
-          const terminated = worker.terminate();
-          if (terminated && typeof terminated.catch === "function") terminated.catch(() => {});
-        } catch {
-          /* Settlement cannot depend on a dead worker's cleanup. */
-        }
+        if (keep && detached && !disposed) keepIdle(worker);
+        else terminate(worker);
       }
       function finish(error, result, failed = error !== null) {
         if (settled) return;
@@ -134,7 +176,7 @@ export function createBookWorkerClient({
         } catch {
           /* A signal adapter cannot retain the active export slot. */
         }
-        retireWorker();
+        retireWorker(!failed && retaining);
         if (failed) reject(error);
         else resolve(result);
       }
@@ -162,6 +204,8 @@ export function createBookWorkerClient({
             const detail = diagnostic(data.error);
             throw bookError(detail.code, detail.message);
           }
+          if (retaining && data.retainedPreview !== true)
+            throw bookError("WORKER_PROTOCOL_ERROR", "Rebuild the matching book worker for retained previews.");
           checkedOutput(data.bytes, data.sourceLength, maxOutputBytes);
           const bytes = data.bytes;
           finish(
@@ -184,6 +228,11 @@ export function createBookWorkerClient({
       active = { id, finish };
       let input, transfer;
       try {
+        // Claim any idle worker before input/signal adapters can reenter. A
+        // failed or cancelled admission releases only this request's endpoint.
+        if (!retaining) releaseIdle();
+        else worker = takeIdle();
+        if (settled) { retireWorker(); return; }
         signal?.addEventListener("abort", onAbort, { once: true });
         if (settled) return;
         if (signal?.aborted) {
@@ -208,7 +257,7 @@ export function createBookWorkerClient({
         return;
       }
       try {
-        worker = workerFactory();
+        worker ??= workerFactory();
         // The factory may cancel before it returns the worker we now own.
         if (settled) {
           retireWorker();
@@ -243,7 +292,8 @@ export function createBookWorkerClient({
             ),
           timeoutMs,
         );
-        worker.postMessage({ schemaVersion: 1, id, format, ...input, maxOutputBytes }, transfer);
+        worker.postMessage({ schemaVersion: 1, id, format, ...input, maxOutputBytes,
+          ...(retaining ? { retainPreview: true } : {}) }, transfer);
       } catch (error) {
         finish(bookError("WORKER_FAILED", diagnostic(error).message));
       }
@@ -252,6 +302,7 @@ export function createBookWorkerClient({
   return Object.freeze({
     render,
     cancel,
+    cancelPending,
     get busy() {
       return active !== null;
     },
@@ -275,7 +326,15 @@ export function installBookWorker(scope, engine) {
       if (!data || data.schemaVersion !== 1 || !Number.isSafeInteger(data.id) || data.id < 1) {
         throw bookError("WORKER_PROTOCOL_ERROR", "Invalid book request envelope.");
       }
-      const [method] = formatInfo(data.format);
+      let [method] = formatInfo(data.format);
+      if (data.retainPreview !== undefined && typeof data.retainPreview !== "boolean")
+        throw bookError("WORKER_PROTOCOL_ERROR", "Invalid preview retention request.");
+      if (data.retainPreview) {
+        if (data.format !== "preview" || typeof engine.renderRetainedBookPreview !== "function")
+          throw bookError("UNSUPPORTED_BOOK_PREVIEW", "Rebuild the matching worker for retained book previews.");
+        method = "renderRetainedBookPreview";
+        envelope.retainedPreview = true;
+      }
       if (busy) throw bookError("BOOK_BUSY", "A book export is already running.");
       if (
         !Number.isInteger(data.maxOutputBytes) ||
@@ -300,9 +359,101 @@ export function installBookWorker(scope, engine) {
       const bytes = result.bytes.slice();
       scope.postMessage({ ...envelope, bytes, sourceLength: result.sourceLength }, [bytes.buffer]);
     } catch (error) {
+      if (owned && data.retainPreview) {
+        try { engine.clearRetainedBookPreview?.(); } catch { /* Report the original failure. */ }
+      }
       scope.postMessage({ ...envelope, error: diagnostic(error) });
     } finally {
       if (owned) busy = false;
     }
   });
+}
+
+/** Worker-private reuse of one native book. Inputs are the privately owned,
+ * normalized snapshots admitted by installBookWorker, never host buffers.
+ * Every output still uses the complete native site exporter and preview codec.
+ * JavaScript compares captures; only Rust resolves includes or parses Markdown.
+ */
+export function createRetainedBookPreview(engine, renderPreview) {
+  if (typeof engine?.createBook !== "function" || typeof renderPreview !== "function")
+    throw new TypeError("Retained previews require the native book factory and existing preview codec.");
+  let cached = null, busy = false, generation = 0;
+  function clear() {
+    generation++;
+    const previous = cached;
+    cached = null;
+    previous?.session.dispose();
+  }
+  function compatible(input) {
+    if (!cached) return false;
+    const before = cached.input, a = before.options, b = input.options;
+    const pathsMatch = (left, right) => left.length === right.length
+      && left.every((file, index) => file.path === right[index].path);
+    if (!pathsMatch(before.files, input.files) || !pathsMatch(a.includeSources, b.includeSources))
+      return false;
+    for (const key of ["title", "author", "lang", "customCss", "toc", "pageNumbers", "font",
+      "darkMode", "fontScale", "expandIncludes"]) {
+      if (a[key] !== b[key]) return false;
+    }
+    if (JSON.stringify(a.page) !== JSON.stringify(b.page)) return false;
+    const sameAssets = (left, right, keys) => left.length === right.length && left.every((asset, i) => {
+      const other = right[i];
+      if (keys.some(key => asset[key] !== other[key]) || asset.bytes.length !== other.bytes.length)
+        return false;
+      for (let j = 0; j < asset.bytes.length; j++) if (asset.bytes[j] !== other.bytes[j]) return false;
+      return true;
+    });
+    return sameAssets(a.images, b.images, ["destination"])
+      && sameAssets(a.fontAssets, b.fontAssets, ["slot", "weight"]);
+  }
+  async function render(files, options) {
+    if (busy) throw bookError("BOOK_BUSY", "A retained preview is already rendering.");
+    busy = true;
+    let ticket = generation;
+    const input = { files, options };
+    try {
+      if (!compatible(input)) { clear(); ticket = generation; }
+      if (cached) {
+        const changes = [];
+        for (const [old, next] of [[cached.input.files, files],
+          [cached.input.options.includeSources, options.includeSources]]) {
+          for (let i = 0; i < next.length; i++) if (old[i].source !== next[i].source) changes.push(next[i]);
+        }
+        if (changes.length) {
+          let supported = typeof cached.session.updateSources === "function", revision;
+          if (supported) {
+            try { revision = cached.session.sourceRevision; }
+            catch (error) {
+              if (error?.code !== "UNSUPPORTED_BOOK_UPDATE") throw error;
+              supported = false;
+            }
+          }
+          if (supported) cached.session.updateSources(changes, { expectedRevision: revision });
+          else { clear(); ticket = generation; } // Older native builds reconstruct, never show old source.
+        }
+      }
+      if (!cached) {
+        const session = await engine.createBook(files, options);
+        if (ticket !== generation) {
+          session.dispose();
+          throw bookError("EXPORT_CANCELLED", "Retained book was released during initialization.");
+        }
+        cached = { session, input };
+      }
+      const session = cached.session;
+      // Feed the native session's complete site through the unchanged ZIP /
+      // chapter-map validator, not a second HTML preview implementation.
+      const result = await renderPreview({ renderBookSite: () => session.renderSite() }, files, options);
+      if (ticket !== generation)
+        throw bookError("EXPORT_CANCELLED", "Retained book was released during preview generation.");
+      cached.input = input;
+      return result;
+    } catch (error) {
+      // An update or export can fail after native mutation. Never keep a capture
+      // that describes a different session, or label protocol failure rollback.
+      try { clear(); } catch { /* Preserve the primary failure. */ }
+      throw error;
+    } finally { busy = false; }
+  }
+  return Object.freeze({ render, clear });
 }

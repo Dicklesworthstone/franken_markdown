@@ -5,7 +5,7 @@ const failure = (code, message) => Object.assign(new Error(message), { code });
 const blank =
   "<!doctype html><title>Book preview</title><p>Build a preview to review the current book.</p>";
 
-/** A separate disposable worker isolates preview cancellation from exports.
+/** A separate worker isolates preview cancellation and retained state from exports.
  * No automatic rendering until explicitly enabled. Source remains host-owned.
  */
 export function createBookPreviewControls({
@@ -43,6 +43,7 @@ export function createBookPreviewControls({
   let disposed = false,
     suspended = false,
     composing = false,
+    capturing = false,
     generation = 0,
     busy = false;
   let pending = null,
@@ -51,14 +52,15 @@ export function createBookPreviewControls({
     stamp = null,
     selected = 0,
     channel = null;
+  let configurationRevision = collection.renderConfigurationRevision;
   const unlisten = [];
   const alive = () => {
     if (disposed || suspended) throw failure("PREVIEW_CLOSED", "Book preview is not active.");
   };
   function buttons() {
-    const blocked = disposed || suspended || composing;
-    el["preview-build"].disabled = blocked || busy || !collection.files.length;
-    el["preview-cancel"].disabled = blocked || (!busy && pending === null && !preview);
+    const blocked = disposed || suspended || composing || controls.sourceBusy;
+    el["preview-build"].disabled = blocked || busy || !collection.files.some(file => file.role !== "include");
+    el["preview-cancel"].disabled = blocked || (!busy && pending === null && !preview && !worker.hasRetainedPreview);
     el["preview-pages"].disabled = blocked || !preview;
     el["preview-previous"].disabled = blocked || !preview || selected === 0;
     el["preview-next"].disabled = blocked || !preview || selected >= preview.pages.length - 1;
@@ -69,10 +71,11 @@ export function createBookPreviewControls({
     timers.clearTimeout(deadline);
     pending = deadline = null;
   }
-  function retire() {
+  function retire(keepIdle = false) {
     generation++;
     clearTimers();
-    worker.cancel();
+    if (keepIdle && typeof worker.cancelPending === "function") worker.cancelPending();
+    else worker.cancel();
     busy = false;
     preview = null;
     stamp = null;
@@ -126,10 +129,11 @@ export function createBookPreviewControls({
     let ticket = null;
     try {
       alive();
-      if (composing)
-        throw failure("BOOK_BUSY", "Finish composing text before rebuilding the preview.");
-      retire();
-      controls.captureProject();
+      if (composing || controls.sourceBusy)
+        throw failure("BOOK_BUSY", "Finish importing or composing text before rebuilding the preview.");
+      retire(true);
+      capturing = true;
+      try { controls.captureProject(); } finally { capturing = false; }
       const input = collection.snapshot(),
         captured = controls.checkpoint();
       ticket = ++generation;
@@ -182,12 +186,13 @@ export function createBookPreviewControls({
       }
     }
   }
-  function changed() {
+  function changed(keepIdle = false) {
     if (disposed) return;
-    retire();
+    retire(keepIdle === true);
     el["preview-status"].textContent =
       "Book changed. The previous preview was cleared; rebuild to review current source.";
-    if (!suspended && !composing && el["preview-auto"].checked && collection.files.length) {
+    if (!suspended && !composing && !capturing && !controls.sourceBusy
+        && el["preview-auto"].checked && collection.files.some(file => file.role !== "include")) {
       pending = timers.setTimeout(() => {
         pending = null;
         void build().catch(() => {});
@@ -210,7 +215,16 @@ export function createBookPreviewControls({
   el["preview-frame"].setAttribute("referrerpolicy", "no-referrer");
   el["preview-frame"].removeAttribute("src");
   el["preview-auto"].checked = false;
-  const unsubscribe = collection.subscribe(changed);
+  const unsubscribe = collection.subscribe(() => {
+    const next = collection.renderConfigurationRevision;
+    const sourceOnly = Number.isSafeInteger(next) && next === configurationRevision;
+    configurationRevision = next;
+    changed(sourceOnly);
+  });
+  const unsubscribeSource = controls.subscribeSourceState?.(() => {
+    if (controls.sourceBusy) changed();
+    else buttons();
+  });
   for (const id of [
     "chapter-source",
     "chapter-path",
@@ -225,8 +239,9 @@ export function createBookPreviewControls({
     "page-numbers",
   ]) {
     const input = root.querySelector(`#${id}`);
-    on(input, "input", changed);
-    on(input, "change", changed);
+    const listener = () => changed(["chapter-source", "chapter-path", "chapters"].includes(id));
+    on(input, "input", listener);
+    on(input, "change", listener);
   }
   on(root.querySelector("#chapter-source"), "compositionstart", () => {
     composing = true;
@@ -318,6 +333,7 @@ export function createBookPreviewControls({
       disposed = true;
       retire();
       unsubscribe();
+      unsubscribeSource?.();
       for (const remove of unlisten) remove();
       worker.dispose();
     },

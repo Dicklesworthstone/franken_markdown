@@ -303,6 +303,7 @@ export function createBookWorkerClient({
     render,
     cancel,
     cancelPending,
+    get hasRetainedPreview() { return idle !== null; },
     get busy() {
       return active !== null;
     },

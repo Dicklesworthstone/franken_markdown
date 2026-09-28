@@ -34,15 +34,18 @@ try {
   document.querySelector("#library-status").textContent =
     "Local library is unavailable. Editing, publishing and source downloads remain available; download a source project to keep your work.";
 }
+let previewWorker = null;
 try {
+  previewWorker = createBookWorker({ maxOutputBytes: 64 * 1024 * 1024, retainPreview: true });
   preview = createBookPreviewControls({
     root: document,
     controls,
     collection,
     window,
-    worker: createBookWorker({ maxOutputBytes: 64 * 1024 * 1024 }),
+    worker: previewWorker,
   });
 } catch {
+  previewWorker?.dispose();
   document.querySelector("#preview-status").textContent =
     "Preview is unavailable. Editing, local saves and publication exports remain available.";
 }

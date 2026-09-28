@@ -182,14 +182,16 @@ export function createBookCollection() {
     images = [],
     options = settings(),
     revision = 0,
+    configurationRevision = 0,
     disposed = false;
   let fonts = createBookFontStore();
   const listeners = new Set();
   const alive = () => {
     if (disposed) throw bookError("SESSION_DISPOSED", "Book collection is disposed.");
   };
-  function changed() {
+  function changed(sourceOnly = false) {
     revision++;
+    if (!sourceOnly) configurationRevision++;
     for (const listener of listeners) {
       try {
         listener();
@@ -214,6 +216,13 @@ export function createBookCollection() {
     get revision() {
       alive();
       return revision;
+    },
+    // Ephemeral identity for the paths/order/settings/resource configuration.
+    // Source-only edits keep it stable; every other transaction invalidates it.
+    // This is a lifecycle hint, never a substitute for full input validation.
+    get renderConfigurationRevision() {
+      alive();
+      return configurationRevision;
     },
     get files() {
       alive();
@@ -293,7 +302,7 @@ export function createBookCollection() {
       const source = sourceView === file.view ? file.original : sourceView;
       if (path === file.path && source === file.source) return;
       files[index] = { ...file, path, source };
-      changed();
+      changed(path === file.path);
     },
     setRole(index, role) {
       alive();
@@ -469,7 +478,7 @@ export function createBookCollection() {
       if (next.every((file, i) => file.source === files[i].source)) return revision;
       const installed = revision + 1;
       files = next.map((file, i) => (file.source === files[i].source ? files[i] : remember(file)));
-      changed();
+      changed(true);
       return installed;
     },
     replaceProject(project) {

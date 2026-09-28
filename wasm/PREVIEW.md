@@ -25,16 +25,63 @@ Each build captures the whole current book; it does not incrementally typeset
 individual chapters. Large books may be better served by explicit builds.
 
 Edits, settings, chapter changes and image revocation immediately clear the old
-reader and cancel its worker. Late results cannot republish that snapshot. Raw
+reader and cancel any in-flight preview. Late results cannot republish that snapshot. Raw
 editor/settings checkpoints are checked at publication and before navigation,
 including edits that did not dispatch input events. Invalid current inputs are
 not replaced by a preview of older valid model values.
 
-A preview owns a separate disposable worker from publication exports. Cancelling
+A preview owns a separate worker from publication exports and PDF proofing. Cancelling
 it does not cancel an export. Cancelling, failures and page suspension turn off
 automatic preview; source editing, local saves and export controls remain
 independent. Back/forward-cache return does not restore stale pages or image
 access. Source and image grants are not persisted by the preview.
+
+## Retained native books during editing
+
+The publisher now opts into one retained preview worker and native `BookSession`.
+After a successful preview, ordinary chapter or include-only source edits keep
+that idle session available for the next build. Only changed source strings are
+passed to the native revision-checked `updateSources` API, which reuses unchanged
+chapter ASTs. A true no-op does not issue a native source update. The visible
+reader is still cleared as soon as the source changes: a warm native cache is
+not permission to show an old document.
+
+Reusing a book requires identical ordered chapter/include paths, presentation
+settings and exact image/font bytes and keys, including font weight pins. Source
+renames, role/order changes, metadata, page geometry, image/font changes, imports
+and source/portable restores release the idle worker immediately. The worker
+independently compares the complete admitted input before reuse; a collection's
+configuration revision is a lifecycle hint, not a substitute for that check.
+Old native builds without source-update support reconstruct on an edit rather
+than display a stale capture. Mismatched worker-protocol versions fail explicitly.
+
+An edit while rendering terminates synchronous WASM work and loses the cache;
+it does not queue an incremental update behind obsolete work. Cancellation,
+failed input/update/export/ZIP validation, unexpected idle worker messages,
+composition, page suspension and disposal all retire the affected worker. An
+unused idle worker expires after 30 seconds. **Cancel and clear preview** also
+releases idle state when the visible reader has already been cleared by editing.
+A later explicit or opted-in automatic build recreates the renderer as needed.
+Automatic preview remains off by default, and capture-time edits do not schedule
+a second automatic build that would cancel the first.
+
+This is native session/AST reuse, not incremental typesetting, partial ZIP
+rewriting, an HTML cache, delta transfer, or a measured speedup claim. Every build
+still admits, copies and transfers the complete current source/resource capture,
+compares resource bytes, exports the full site, and applies the unchanged archive
+validator and isolated iframe policy. Retention adds the bounded native session
+and its input capture to worker memory; existing logical input/output limits are
+not a whole-process memory ceiling. Nothing is persisted to storage.
+
+Embedding hosts can opt in with `createBookWorker({ retainPreview: true,
+idleTimeoutMs: 30000 })`. The generic API defaults to one-shot workers.
+`cancelPending()` cancels only an in-flight request, `hasRetainedPreview` reports
+idle retention, and `cancel()`/`dispose()` release both running and idle state.
+Hosts must call the latter for resource revocation, suspension or explicit clear.
+Only preview calls can retain a worker; PDF/EPUB/site/inspection/link operations
+keep their one-job lifetime. The publisher releases its owned preview client if
+preview-controller initialization fails. No new runtime module or package entry
+is required; existing assemblers already ship every changed production file.
 
 ## Isolation
 
@@ -95,3 +142,25 @@ Package tests inspect source wiring and both assemblers. These checks do not pro
 native-browser template parsing, CSP enforcement, font/image rendering, visual
 fidelity, accessibility behavior or generated Rust/WASM interoperability. Run the
 project's generated-WASM and native-browser gates before making those claims.
+
+Retained-preview regressions and the optional compiled-engine smoke runner:
+
+```sh
+node --test wasm/tests/book_retained*.test.mjs
+# After building a matching package through DSR:
+node wasm/book_retained_preview_smoke.mjs /path/to/assembled/package
+```
+
+The retained tests use complete production collection, native-session facade,
+worker client/handler, ZIP codec and preview controller files. Node worker_threads
+and structured-clone transfers are real; native ABI, editor and DOM adapters are
+explicit. A same-invocation comparison produces identical preview bytes for five
+edited captures using one retained worker/native-book fixture versus five
+one-shot fixtures. This demonstrates avoided fixture reconstruction, not native
+parser throughput, latency, rendering quality or a measured performance win.
+The controller/startup regressions fail against the original publisher wiring.
+The compiled smoke runner instead requires generated WASM and performs real
+native source/include updates and fresh-export parity; it fails rather than
+substituting an engine when artifacts are missing. It was unavailable on the
+authoring host. No browser or full generated-package acceptance is implied by
+the Node results; the existing native/WASM and browser gates remain separate.

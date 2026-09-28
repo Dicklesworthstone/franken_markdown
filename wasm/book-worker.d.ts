@@ -22,6 +22,8 @@ export interface BookInspectionOutput {
 }
 export interface BookWorker {
   readonly busy: boolean;
+  /** Whether an idle native preview is currently retained. */
+  readonly hasRetainedPreview: boolean;
   /** A single export owns a worker. Concurrent calls reject with BOOK_BUSY.
    * Assets are snapshotted, never transferred out of caller-owned buffers. */
   render(

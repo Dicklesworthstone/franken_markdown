@@ -1,6 +1,7 @@
 import { createBookWorker } from "../book-worker.js";
 import { createBookCollection } from "./book_collection.mjs";
 import { createBookControls } from "./book_controls.mjs";
+import { createBookImageControls, createBookImagePanel } from "./book_image_controls.mjs";
 import { createBookFontControls, createBookFontPanel } from "./book_font_controls.mjs";
 import {
   createBookInspectionControls,
@@ -18,6 +19,7 @@ let library = null,
   preview = null,
   pdfProof = null,
   fontControls = null,
+  imageControls = null,
   search = null,
   inspection = null,
   links = null;
@@ -28,6 +30,18 @@ const controls = createBookControls({
   confirm: (text) => window.confirm(text),
   onProjectReplaced: () => library?.detach(),
 });
+// Image-byte edits reuse the collection's source/resource ownership. They do
+// not start or cancel any of the publisher's independently owned workers.
+try {
+  createBookImagePanel(document);
+  imageControls = createBookImageControls({
+    root: document, controls, collection, confirm: (text) => window.confirm(text),
+  });
+} catch {
+  const status = document.querySelector("#book-image-status");
+  if (status) status.textContent =
+    "Image management is unavailable. Existing images, ordinary imports and publication remain available.";
+}
 try {
   library = createBookLibraryControls({ root: document, controls, collection, window });
 } catch {
@@ -118,6 +132,7 @@ try {
 }
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
+    imageControls?.suspend();
     fontControls?.suspend();
     pdfProof?.suspend();
     links?.suspend();
@@ -127,6 +142,7 @@ window.addEventListener("pagehide", (event) => {
     library?.suspend();
     controls.suspend();
   } else {
+    imageControls?.dispose();
     fontControls?.dispose();
     pdfProof?.dispose();
     links?.dispose();
@@ -139,6 +155,7 @@ window.addEventListener("pagehide", (event) => {
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
+    imageControls?.resume();
     fontControls?.resume();
     pdfProof?.resume();
     library?.resume();

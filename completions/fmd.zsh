@@ -66,6 +66,15 @@ _fmd() {
                         '--typography-homogeneous[Enable gradual adjacent demerits in Knuth-Plass breaker]' \
                         '--pdf-line-numbers[Render muted line numbers in PDF fenced code blocks]' \
                         '--pdf-page-numbers[Render running page numbers in bottom margin of PDF pages]' \
+                        '--pdf-header-left=[PDF running header left slot (tokens page pages title author date)]:text:' \
+                        '--pdf-header-center=[PDF running header center slot]:text:' \
+                        '--pdf-header-right=[PDF running header right slot]:text:' \
+                        '--pdf-footer-left=[PDF running footer left slot]:text:' \
+                        '--pdf-footer-center=[PDF running footer center slot]:text:' \
+                        '--pdf-footer-right=[PDF running footer right slot]:text:' \
+                        '--pdf-header-rule[Hairline under the PDF running header]' \
+                        '--pdf-footer-rule[Hairline over the PDF running footer]' \
+                        '--pdf-running-skip-first[Leave PDF page 1 without running header/footer]' \
                         '--pdf-base-font-size=[Base body font size override in points]:points:' \
                         '--pdf-heading-scale=[Per-step heading geometric scale ratio]:ratio:' \
                         '--pdf-table-font-size=[Nominal table cell font size override in points]:points:' \

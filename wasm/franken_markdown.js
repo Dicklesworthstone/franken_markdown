@@ -77,9 +77,14 @@ export async function renderHtml(markdown, options = {}) {
 export async function renderPdf(markdown, options = {}) {
   // Admit and capture geometry before initializing WASM or copying assets.
   const geometry = pdfPageGeometry(options.page);
-  const render = geometry.length ? wasmBindings.renderPdfConfiguredPage : renderPdfConfiguredMulti;
+  const running = pdfRunningOption(options.running);
+  const render = running
+    ? wasmBindings.renderPdfConfiguredRunning
+    : geometry.length ? wasmBindings.renderPdfConfiguredPage : renderPdfConfiguredMulti;
   if (typeof render !== "function") {
-    const error = new Error("PDF paper and margins require a WASM package rebuilt from matching source");
+    const error = new Error(running
+      ? "PDF running header/footer requires a WASM package rebuilt from matching source"
+      : "PDF paper and margins require a WASM package rebuilt from matching source");
     error.code = "UNSUPPORTED_WASM_PACKAGE";
     throw error;
   }
@@ -136,7 +141,69 @@ export async function renderPdf(markdown, options = {}) {
   // Source, primitive settings, image bytes and font bytes now belong to this
   // request. Asynchronous initialization cannot retarget its page or contents.
   await init();
+  if (running) {
+    return normalizeResult(render(...args, geometry, running.slots, running.headerRule,
+      running.footerRule, running.skipFirstPage));
+  }
   return normalizeResult(geometry.length ? render(...args, geometry) : render(...args));
+}
+
+// Running header/footer (GH #13). Returns null when nothing would draw, so
+// callers without chrome keep the unchanged legacy/page ABIs byte-for-byte.
+function pdfRunningOption(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("running must be an object with header, footer and skipFirstPage");
+  }
+  for (const key of Object.keys(value)) {
+    if (!["header", "footer", "skipFirstPage"].includes(key)) {
+      throw new TypeError(`Unsupported running field: '${key}'`);
+    }
+  }
+  const band = (bandValue, label) => {
+    if (bandValue === undefined || bandValue === null) {
+      return { slots: ["", "", ""], rule: false };
+    }
+    if (typeof bandValue !== "object" || Array.isArray(bandValue)) {
+      throw new TypeError(`running.${label} must be an object`);
+    }
+    for (const key of Object.keys(bandValue)) {
+      if (!["left", "center", "right", "rule"].includes(key)) {
+        throw new TypeError(`Unsupported running.${label} field: '${key}'`);
+      }
+    }
+    const slots = ["left", "center", "right"].map((slot) => {
+      const text = bandValue[slot];
+      if (text === undefined || text === null) {
+        return "";
+      }
+      if (typeof text !== "string") {
+        throw new TypeError(`running.${label}.${slot} must be a string`);
+      }
+      return text;
+    });
+    if (bandValue.rule !== undefined && typeof bandValue.rule !== "boolean") {
+      throw new TypeError(`running.${label}.rule must be a boolean`);
+    }
+    return { slots, rule: bandValue.rule === true };
+  };
+  const header = band(value.header, "header");
+  const footer = band(value.footer, "footer");
+  if (value.skipFirstPage !== undefined && typeof value.skipFirstPage !== "boolean") {
+    throw new TypeError("running.skipFirstPage must be a boolean");
+  }
+  const slots = [...header.slots, ...footer.slots];
+  if (slots.every((slot) => slot === "") && !header.rule && !footer.rule) {
+    return null;
+  }
+  return {
+    slots,
+    headerRule: header.rule,
+    footerRule: footer.rule,
+    skipFirstPage: value.skipFirstPage === true,
+  };
 }
 
 export async function renderSvg(markdown, options = {}) {
@@ -545,6 +612,10 @@ function bookSiteArguments(files, options) {
 }
 
 export async function renderBookPdf(files, options = {}) {
+  if (options?.running != null) {
+    // Refuse rather than silently drop chrome the caller asked for.
+    throw new TypeError("running header/footer is supported by renderPdf, not renderBookPdf yet");
+  }
   // Capture source, primitive settings, geometry and owned assets before init.
   const prepared = bookPdfArguments(files, options);
   const render = prepared.advanced ? wasmBindings.renderBookPdfConfiguredPage : wasmRenderBookPdf;

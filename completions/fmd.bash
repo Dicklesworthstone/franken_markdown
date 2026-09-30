@@ -80,7 +80,7 @@ _fmd() {
             esac
             case "$cur" in
                 -*)
-                    local render_flags="--text --to --out -o --font --css --title --author --lang --profile --allow-html --toc --toc-depth --html-font-format --interactive-html --self-hosting --font-scale --type-size --search-index --fit-to-pages --target-pages --microtype --typography-homogeneous --pdf-line-numbers --pdf-page-numbers --pdf-base-font-size --pdf-heading-scale --pdf-table-font-size --pdf-image --pdf-font --pdf-font-weight --max-pdf-image-bytes --no-remote-images --pdf-a --pdf-a-strict --remote-image-timeout-secs --max-input-bytes --json --no-color --no-config --robot-triage --help -h --version -V"
+                    local render_flags="--text --to --out -o --font --css --title --author --lang --profile --allow-html --toc --toc-depth --html-font-format --interactive-html --self-hosting --font-scale --type-size --search-index --fit-to-pages --target-pages --microtype --typography-homogeneous --pdf-line-numbers --pdf-page-numbers --pdf-header-left --pdf-header-center --pdf-header-right --pdf-footer-left --pdf-footer-center --pdf-footer-right --pdf-header-rule --pdf-footer-rule --pdf-running-skip-first --pdf-base-font-size --pdf-heading-scale --pdf-table-font-size --pdf-image --pdf-font --pdf-font-weight --max-pdf-image-bytes --no-remote-images --pdf-a --pdf-a-strict --remote-image-timeout-secs --max-input-bytes --json --no-color --no-config --robot-triage --help -h --version -V"
                     COMPREPLY=($(compgen -W "$render_flags" -- "$cur"))
                     return 0
                     ;;

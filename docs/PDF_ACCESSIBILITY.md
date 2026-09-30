@@ -29,12 +29,14 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 | Image | `/Figure` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Alt text from the Markdown `![alt]`; bbox locates the image |
 | Inline / autolink link | `/Link` with `/OBJR` to its annotation, and the annotation's reverse `/StructParent` | Fully bidirectional: the element references the annotation and the annotation maps back through the parent tree (PDF/UA) |
 | Backgrounds, panels, zebra stripes, inline-code chips, rules, thematic breaks, blockquote gutter bars | `/Artifact` (BMC…EMC) | Decoration is kept out of the reading order |
+| Running header/footer and page numbers (`PdfOptions.running`, `page_numbers`) | `/Artifact <</Type /Pagination /Subtype /Header\|/Footer>> BDC … EMC` | One pagination artifact per band, text and rule together; never in the reading order and never given an `/MCID` |
 
 Cross-cutting guarantees, all asserted by tests:
 
 - **No unmarked content.** Every byte of page content is inside either a
   structure marked-content sequence (`/<Tag> <</MCID n>> BDC … EMC`) or an
-  `/Artifact BMC … EMC` span. Marked content is always balanced
+  `/Artifact BMC … EMC` span (running header/footer bands use the typed
+  `/Artifact <</Type /Pagination …>> BDC` form). Marked content is always balanced
   (`#BDC + #BMC == #EMC`). This is the PDF/UA 7.1 "all content is tagged"
   requirement.
 - **Bidirectional links.** Each OBJR-referenced link annotation carries a

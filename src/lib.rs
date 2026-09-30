@@ -722,6 +722,83 @@ pub struct PdfOptions {
     /// pick remains min-scalar, but paths that trade structure against
     /// hyphenation survive the search. Default false — byte-identical.
     pub pareto_line_breaking: bool,
+    /// Opt-in running page chrome: left/center/right text in the header and
+    /// footer margin bands, with `{page}`, `{pages}`, `{title}`, `{author}`
+    /// and `{date}` tokens. The default (all slots empty) draws nothing, so
+    /// default output stays byte-identical. See [`PdfRunningContent`].
+    pub running: PdfRunningContent,
+}
+
+/// Running page chrome for PDF output (header and footer bands).
+///
+/// Chrome is painted in the existing page margins after pagination. It never
+/// changes layout, pagination or the tagged reading order: each band is a
+/// `/Artifact` of type `/Pagination`. Text is one line in the body face at
+/// 9/11 of the body size, drawn in the muted ink; a slot that is too wide is
+/// shortened with an ellipsis. A band that does not fit inside its margin is a
+/// render error (increase the margin or drop the band) rather than overlapping
+/// body text.
+///
+/// Slot templates are plain text with a closed token set. Unknown `{tokens}`
+/// stay literal:
+///
+/// | Token | Value |
+/// |---|---|
+/// | `{page}` | 1-based physical page number |
+/// | `{pages}` | total page count |
+/// | `{title}` | [`PdfOptions::title`], else the first heading, else empty |
+/// | `{author}` | [`PdfOptions::author`], else empty |
+/// | `{date}` | [`PdfOptions::metadata_epoch_seconds`] as `YYYY-MM-DD` (UTC), else empty |
+///
+/// `{date}` never reads the clock: library and WASM callers pass the epoch
+/// explicitly and the CLI populates it only from `SOURCE_DATE_EPOCH`.
+///
+/// [`PdfOptions::page_numbers`] is sugar for `footer.center = "{page}"` when
+/// `footer.center` is empty; an explicit `footer.center` wins.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PdfRunningContent {
+    /// Band drawn in the top margin.
+    pub header: PdfRunningBand,
+    /// Band drawn in the bottom margin.
+    pub footer: PdfRunningBand,
+    /// Leave physical page 1 bare (no header, footer, rules or page-number
+    /// sugar). Default false.
+    pub skip_first_page: bool,
+}
+
+impl PdfRunningContent {
+    /// True when neither band draws anything.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.header.is_empty() && self.footer.is_empty()
+    }
+}
+
+/// One running band: three text slots and an optional hairline rule.
+///
+/// An empty string and `None` are equivalent for a slot.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PdfRunningBand {
+    /// Left-aligned slot template.
+    pub left: Option<String>,
+    /// Centered slot template.
+    pub center: Option<String>,
+    /// Right-aligned slot template.
+    pub right: Option<String>,
+    /// Hairline across the content width: under the header text, or over the
+    /// footer text. Default false.
+    pub rule: bool,
+}
+
+impl PdfRunningBand {
+    /// True when the band has no non-empty slot and no rule.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        !self.rule
+            && [&self.left, &self.center, &self.right]
+                .into_iter()
+                .all(|slot| slot.as_deref().is_none_or(str::is_empty))
+    }
 }
 
 impl PdfOptions {

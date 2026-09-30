@@ -22,6 +22,9 @@ pub(super) mod file_options;
 #[path = "page.rs"]
 mod page;
 
+#[path = "running.rs"]
+mod running;
+
 pub(super) type ToolError = (i32, String, &'static str);
 type Field = (&'static str, &'static str, &'static str);
 type ToolSpec = (&'static str, &'static str, &'static [Field], &'static [&'static str]);
@@ -61,6 +64,7 @@ const PDF_FIELDS: &[Field] = &[
     ("typographyHomogeneous", "boolean", "Gradual adjacent demerits in the line breaker"),
     ("codeLineNumbers", "boolean", "Render line numbers in code blocks"),
     ("pageNumbers", "boolean", "Render running page numbers in the bottom margin"),
+    ("running", "object", "Running header/footer text slots with {page} {pages} {title} {author} {date} tokens"),
     ("toc", "boolean", "Generate a table of contents"),
     ("tocDepth", "integer", "Maximum table-of-contents heading depth (1..6)"),
     ("pdfA", "string", "PDF/A profile ('2b' or 'off')"),
@@ -127,6 +131,7 @@ pub fn tools_list_result() -> JsonValue {
                 return ((*name).to_owned(), resources::schema(name));
             }
             if *name == "page" { return ((*name).to_owned(), page::schema()); }
+            if *name == "running" { return ((*name).to_owned(), running::schema()); }
             let mut property = BTreeMap::from([
                 ("type".to_string(), JsonValue::String((*kind).to_string())),
                 ("description".to_string(), JsonValue::String((*description).to_string())),
@@ -293,6 +298,7 @@ fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError
         gradual_demerits: boolean(args, "typographyHomogeneous"),
         code_line_numbers: boolean(args, "codeLineNumbers"),
         page_numbers: boolean(args, "pageNumbers"),
+        running: running::parse(args.get("running"))?,
         toc: boolean(args, "toc"),
         toc_depth: toc_depth(args)?,
         metadata_epoch_seconds: args.get("metadataEpochSeconds").and_then(JsonValue::as_u64),

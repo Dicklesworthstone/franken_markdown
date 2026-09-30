@@ -42,6 +42,34 @@ family, navigation, metadata and PDF/A settings remain available for rendering.
 Invalid numeric input is refused rather than silently narrowed or clamped by
 this adapter. In paired exports, PDF paper/size fields do not change HTML.
 
+## Running header and footer
+
+`fmd.render_pdf` and `fmd.render_file` (`pdf`/`both`) accept a `running` object
+that draws text in the page margins:
+
+```json
+{
+  "running": {
+    "header": {"left": "{title}", "right": "{date}", "rule": true},
+    "footer": {"left": "Confidential", "center": "{page} / {pages}", "rule": true},
+    "skipFirstPage": true
+  },
+  "metadataEpochSeconds": 1700000000
+}
+```
+
+Each band has optional `left`, `center` and `right` string templates and a
+`rule` boolean. Tokens are `{page}`, `{pages}`, `{title}` (the `title` argument,
+else the first heading), `{author}` and `{date}` (`metadataEpochSeconds` as
+`YYYY-MM-DD` UTC, empty when absent; never the clock). Unknown tokens stay
+literal. Text is one line in the body face at 9/11 of the body size; an overlong
+slot is shortened with an ellipsis. A band that does not fit its margin fails
+the call with a message naming the margin to enlarge (`page.margins.topPt` or
+`bottomPt`). `pageNumbers: true` is sugar for `footer.center: "{page}"` and
+yields to an explicit `footer.center`. Unknown fields, wrong types and templates
+over 4096 bytes are refused. Chrome is tagged as pagination artifacts and never
+changes layout or pagination. Images in bands are not supported yet.
+
 ## Audit the configuration being rendered
 
 `fmd.verify` now accepts the PDF layout options and the same explicit `images`

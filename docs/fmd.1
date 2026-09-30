@@ -116,6 +116,24 @@ Display line numbers in PDF fenced code blocks.
 .TP
 \fB\-\-pdf\-page\-numbers\fR
 Render running page numbers centered in the PDF bottom margin.
+Sugar for \fB\-\-pdf\-footer\-center\fR '{page}'; an explicit footer center wins.
+.TP
+\fB\-\-pdf\-header\-left\fR, \fB\-\-pdf\-header\-center\fR, \fB\-\-pdf\-header\-right\fR \fITEXT\fR
+Header slots; see the footer slots below.
+.TP
+\fB\-\-pdf\-footer\-left\fR, \fB\-\-pdf\-footer\-center\fR, \fB\-\-pdf\-footer\-right\fR \fITEXT\fR
+Opt-in PDF running header/footer text slots, drawn in the top/bottom margin
+in the body face at 9/11 of the body size. Tokens: {page}, {pages}, {title}
+(\-\-title, else the first heading), {author}, {date} (SOURCE_DATE_EPOCH as
+YYYY-MM-DD UTC; empty when unset, never the wall clock). Unknown tokens stay
+literal. Overlong slots are shortened with an ellipsis. A band that does not fit
+its margin fails the render (exit 70); enlarge margin_top_pt/margin_bottom_pt.
+.TP
+\fB\-\-pdf\-header\-rule\fR, \fB\-\-pdf\-footer\-rule\fR
+Draw a hairline under the header or over the footer.
+.TP
+\fB\-\-pdf\-running\-skip\-first\fR
+Leave page 1 without header, footer, rules or page number.
 .TP
 \fB\-\-pdf\-a\fR \fI2b\fR
 Produce PDF/A-2b compliant archive with embedded sRGB ICC profile and XMP metadata packet.

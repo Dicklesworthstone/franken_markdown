@@ -71,6 +71,9 @@ pub struct WasmRenderOptions {
     pub code_line_numbers: bool,
     /// Render running page numbers in the bottom margin of PDF pages.
     pub page_numbers: bool,
+    /// Opt-in running header/footer chrome for PDF output; see
+    /// [`crate::PdfRunningContent`]. Default draws nothing.
+    pub running: crate::PdfRunningContent,
     /// Optional base body size override in points; see [`crate::PdfOptions`].
     pub base_font_size: Option<f32>,
     /// Optional uniform typographic scale multiplier (e.g. 1.125 = 112.5% / Large).
@@ -314,6 +317,13 @@ impl WasmRenderOptions {
         self
     }
 
+    /// Return a copy with running PDF header/footer chrome.
+    #[must_use]
+    pub fn with_running(mut self, running: crate::PdfRunningContent) -> Self {
+        self.running = running;
+        self
+    }
+
     /// Return a copy with a base body font size override in points.
     #[must_use]
     pub fn with_base_font_size(mut self, points: f32) -> Self {
@@ -387,6 +397,7 @@ impl WasmRenderOptions {
             allow_raw_html: self.allow_raw_html,
             code_line_numbers: self.code_line_numbers,
             page_numbers: self.page_numbers,
+            running: self.running.clone(),
             base_font_size,
             heading_scale: self.heading_scale,
             table_font_size: self.table_font_size,
@@ -527,7 +538,7 @@ pub fn capabilities_json() -> String {
      \"outputs\":[\"html\",\"pdf\",\"svg\",\"epub\",\"interactive-html\",\"diff-html\",\"book-site\",\"book-pdf\"],\
      \"input\":\"markdown_utf8\",\
      \"html\":{\"mime_type\":\"text/html; charset=utf-8\",\"self_contained\":true,\"custom_css_utf8\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\"},\
-     \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\"},\
+     \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\",\"running_content\":{\"binding\":\"renderPdfConfiguredRunning\",\"slots\":[\"header.left\",\"header.center\",\"header.right\",\"footer.left\",\"footer.center\",\"footer.right\"],\"tokens\":[\"page\",\"pages\",\"title\",\"author\",\"date\"],\"rules\":true,\"skip_first_page\":true,\"images\":false}},\
      \"diagnostics\":{\"source_spans\":\"byte_offsets\",\"json\":true},\
      \"document_intelligence\":{\"stats\":true,\"readability\":true,\"structural_lint\":true,\"accessibility_audit\":true,\"search_index\":true},\
      \"workflows\":{\"semantic_ast_diff\":true,\"in_memory_book_builder\":true,\"recursive_transclusion\":true,\"mermaid_to_svg\":true},\

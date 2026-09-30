@@ -86,6 +86,126 @@ pub fn render_pdf_configured_page(
         .map_err(render_error_to_js)
 }
 
+/// [`render_pdf_configured_page`] plus running header/footer chrome (GH #13).
+///
+/// `running_slots` is empty (no chrome) or exactly six templates: header
+/// left, center, right, then footer left, center, right. Empty strings are
+/// absent slots. Tokens: `{page}`, `{pages}`, `{title}`, `{author}`,
+/// `{date}` (from `metadata_epoch_seconds`; never the clock). The existing
+/// bindings keep their signatures and output.
+///
+/// # Errors
+/// Returns an error for malformed running slots, invalid geometry, assets or
+/// options, a band that does not fit its margin, or a render failure.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderPdfConfiguredRunning)]
+pub fn render_pdf_configured_running(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    author: Option<String>,
+    metadata_epoch_seconds: Option<f64>,
+    allow_raw_html: bool,
+    code_line_numbers: bool,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    base_font_size: Option<f64>,
+    heading_scale: Option<f64>,
+    table_font_size: Option<f64>,
+    page_numbers: bool,
+    font_scale: Option<f64>,
+    lang: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    fit_to_pages: Option<u32>,
+    microtype_protrusion: bool,
+    page_geometry: Vec<f64>,
+    running_slots: Vec<String>,
+    header_rule: bool,
+    footer_rule: bool,
+    skip_first_page: bool,
+) -> std::result::Result<FmdRenderResult, JsValue> {
+    // Admit the chrome before copying any asset payloads.
+    let running = running_content(running_slots, header_rule, footer_rule, skip_first_page)
+        .map_err(JsValue::from_str)?;
+    let options = configured_pdf_options(
+        font,
+        dark_mode,
+        title,
+        author,
+        metadata_epoch_seconds,
+        allow_raw_html,
+        code_line_numbers,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        base_font_size,
+        heading_scale,
+        table_font_size,
+        page_numbers,
+        font_scale,
+        lang,
+        toc,
+        toc_depth,
+        fit_to_pages,
+        microtype_protrusion,
+        page_geometry,
+    )?
+    .with_running(running);
+    wasm::render_pdf(markdown, &options)
+        .map(render_result)
+        .map_err(render_error_to_js)
+}
+
+/// Positional running-chrome admission, independent of `JsValue` so native
+/// tests cover the rejection paths.
+fn running_content(
+    slots: Vec<String>,
+    header_rule: bool,
+    footer_rule: bool,
+    skip_first_page: bool,
+) -> Result<crate::PdfRunningContent, &'static str> {
+    const MAX_SLOT_BYTES: usize = 4096;
+    if !slots.is_empty() && slots.len() != 6 {
+        return Err(
+            "running slots must be empty or exactly six: header left, center, right, footer left, center, right",
+        );
+    }
+    if slots.iter().any(|slot| slot.len() > MAX_SLOT_BYTES) {
+        return Err("each running slot template is limited to 4096 UTF-8 bytes");
+    }
+    let mut slots = slots
+        .into_iter()
+        .map(|slot| Some(slot).filter(|slot| !slot.is_empty()));
+    let mut band = |rule| crate::PdfRunningBand {
+        left: slots.next().flatten(),
+        center: slots.next().flatten(),
+        right: slots.next().flatten(),
+        rule,
+    };
+    let header = band(header_rule);
+    let footer = band(footer_rule);
+    Ok(crate::PdfRunningContent {
+        header,
+        footer,
+        skip_first_page,
+    })
+}
+
 /// Compile selected chapters with the complete PDF configuration contract.
 /// Unlike the narrow legacy book ABI, this route retains host images and fonts,
 /// typography, metadata, navigation and optional paper geometry. Includes use
@@ -435,6 +555,51 @@ mod tests {
         });
         assert_eq!(actual.bytes(), renderer.render_pdf().unwrap());
         assert!(String::from_utf8_lossy(&actual.bytes()).contains("/MediaBox [0 0 720 540]"));
+    }
+
+    #[test]
+    fn running_slots_are_positional_and_admitted_before_rendering() {
+        assert_eq!(running_content(vec![], false, false, false).unwrap(), crate::PdfRunningContent::default());
+        let slots = ["H-L", "", "{title}", "", "{page} / {pages}", "R"].map(String::from).to_vec();
+        let running = running_content(slots, true, false, true).unwrap();
+        assert_eq!(running.header.left.as_deref(), Some("H-L"));
+        assert_eq!(running.header.center, None);
+        assert_eq!(running.header.right.as_deref(), Some("{title}"));
+        assert!(running.header.rule && !running.footer.rule && running.skip_first_page);
+        assert_eq!(running.footer.left, None);
+        assert_eq!(running.footer.center.as_deref(), Some("{page} / {pages}"));
+        assert_eq!(running.footer.right.as_deref(), Some("R"));
+        assert!(running_content(vec![String::new(); 5], false, false, false).is_err());
+        assert!(running_content(vec![String::new(); 7], false, false, false).is_err());
+        let mut long = vec![String::new(); 6];
+        long[2] = "x".repeat(4097);
+        assert!(running_content(long, false, false, false).is_err());
+    }
+
+    #[test]
+    fn running_abi_matches_native_options_byte_for_byte() {
+        let slots = ["{title}", "", "{date}", "Confidential", "{page} / {pages}", ""]
+            .map(String::from).to_vec();
+        let actual = render_pdf_configured_running(
+            "# Spec\n\nBody text.\n", None, None, Some("Widget".into()), None, Some(1_700_000_000.0),
+            false, false, vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![],
+            None, None, None, false, None, None, false, None, None, false, vec![],
+            slots, true, true, false,
+        ).unwrap();
+        let mut options = crate::PdfOptions {
+            title: Some("Widget".into()),
+            metadata_epoch_seconds: Some(1_700_000_000),
+            ..Default::default()
+        };
+        options.running.header.left = Some("{title}".into());
+        options.running.header.right = Some("{date}".into());
+        options.running.header.rule = true;
+        options.running.footer.left = Some("Confidential".into());
+        options.running.footer.center = Some("{page} / {pages}".into());
+        options.running.footer.rule = true;
+        let native = crate::render_pdf("# Spec\n\nBody text.\n", &options).unwrap();
+        assert_eq!(actual.bytes(), native);
+        assert!(String::from_utf8_lossy(&native).contains("/Subtype /Header"));
     }
 
     #[test]

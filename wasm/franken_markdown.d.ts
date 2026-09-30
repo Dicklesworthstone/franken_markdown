@@ -99,9 +99,27 @@ export interface FmdPdfPage {
   /** Uniform points or independent sides, each defaulting to 72 points. */
   margins?: number | { topPt?: number; rightPt?: number; bottomPt?: number; leftPt?: number };
 }
+/** One running band. Slot templates accept {page}, {pages}, {title}, {author}
+ * and {date} (from metadataEpochSeconds, never the clock); unknown tokens stay literal. */
+export interface FmdPdfRunningBand {
+  left?: string;
+  center?: string;
+  right?: string;
+  /** Hairline under the header / over the footer. */
+  rule?: boolean;
+}
+/** Opt-in PDF running header/footer drawn in the page margins. */
+export interface FmdPdfRunning {
+  header?: FmdPdfRunningBand;
+  footer?: FmdPdfRunningBand;
+  /** Leave page 1 bare (also suppresses pageNumbers there). */
+  skipFirstPage?: boolean;
+}
 export interface FmdPdfRenderOptions extends FmdRenderOptions {
   /** PDF layout for single documents and books; margins must leave a 72-point content rectangle. */
   page?: FmdPdfPage;
+  /** Running header/footer for single-document PDF renders. A band that does not fit its margin fails the render. */
+  running?: FmdPdfRunning;
 }
 
 export interface FmdRenderOutput {

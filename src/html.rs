@@ -203,7 +203,7 @@ fn sanitize_custom_css(css: &str) -> String {
     out
 }
 
-fn first_heading_text(doc: &Document) -> Option<String> {
+pub(crate) fn first_heading_text(doc: &Document) -> Option<String> {
     doc.blocks.iter().find_map(|b| match b {
         Block::Heading { inlines, .. } => Some(inlines_to_plain(inlines)),
         _ => None,

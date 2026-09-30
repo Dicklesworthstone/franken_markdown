@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in PDF running header and footer (#13): left/center/right text slots per
+  band with a closed token set (`{page}`, `{pages}`, `{title}`, `{author}`,
+  `{date}` from `metadata_epoch_seconds`/`SOURCE_DATE_EPOCH`, never the clock),
+  optional hairline rules, first-page skip, ellipsis on overflow, and a
+  render error when a band does not fit its margin. Available as
+  `PdfOptions.running`, `--pdf-header-*`/`--pdf-footer-*`/
+  `--pdf-running-skip-first` flags, the MCP `running` object, and the WASM
+  `renderPdf({running})` option (`renderPdfConfiguredRunning`). Default output
+  is unchanged; `page_numbers` is now sugar for `footer.center = "{page}"`.
+  Band images are not supported yet.
+
 - Render supported decomposed Latin accents in native PDFs with the same glyphs
   and geometry as precomposed text. Preserve each occurrence's original Unicode
   through PDF ActualText, keep base/mark clusters together through paragraph,
@@ -19,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tag PDF page numbers as `/Pagination` artifacts. They were previously marked
+  with an `/MCID` that no structure element owned, and the font subset carried
+  all ten digits even when a document used fewer.
 - Key shared PDF ASCII tables by the underlying immutable font objects so
   rendering different font families in one process cannot reuse stale glyph
   IDs or metrics and corrupt subsequent PDFs.

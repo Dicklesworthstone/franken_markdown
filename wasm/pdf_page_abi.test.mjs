@@ -7,7 +7,7 @@ import test from "node:test";
 
 // Execute the exact public wrapper with only the generated WASM binding doubled.
 // This tests ABI selection, argument order and ownership, not native PDF output.
-async function fixture({ pageBinding = true, blocked = false } = {}) {
+async function fixture({ pageBinding = true, blocked = false, runningBinding = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-pdf-page-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
@@ -32,6 +32,7 @@ async function fixture({ pageBinding = true, blocked = false } = {}) {
     }
     export const renderPdfConfiguredMulti = (...args) => result("legacy", args);
     ${pageBinding ? 'export const renderPdfConfiguredPage = (...args) => result("page", args);' : ""}
+    ${runningBinding ? 'export const renderPdfConfiguredRunning = (...args) => result("running", args);' : ""}
     ${unused.map(name => `export const ${name} = () => { throw new Error("unexpected ${name}"); };`).join("\n")}
   `);
   const bindings = await import(pathToFileURL(join(dir, "pkg/franken_markdown.js")));
@@ -126,4 +127,40 @@ test("A4 and landscape selections reach the geometry binding without scaling typ
   const args = bindings.calls[0].args;
   assert.equal(args[17], 12);
   assert.deepEqual([...args[27]], [297 * 72 / 25.4, 210 * 72 / 25.4, 36, 36, 36, 36]);
+});
+
+test("running chrome appends geometry, six slots and three flags; empty chrome keeps the old ABIs", async () => {
+  const { api, bindings } = await fixture();
+  const base = { title: "Spec", metadataEpochSeconds: 1700000000 };
+  await api.renderPdf("x", base);
+  await api.renderPdf("x", { ...base, running: {} });
+  await api.renderPdf("x", { ...base, running: { header: { left: "", rule: false }, skipFirstPage: true } });
+  assert.deepEqual(bindings.calls.map(call => call.kind), ["legacy", "legacy", "legacy"]);
+  await api.renderPdf("x", { ...base, running: { header: { right: "{title}", rule: true },
+    footer: { center: "{page} / {pages}" }, skipFirstPage: true } });
+  const { kind, args } = bindings.calls[3];
+  assert.equal(kind, "running"); assert.equal(args.length, 32);
+  assert.deepEqual(args.slice(0, 27), bindings.calls[0].args);
+  assert.deepEqual([...args[27]], []);
+  assert.deepEqual(args[28], ["", "", "{title}", "", "{page} / {pages}", ""]);
+  assert.deepEqual(args.slice(29), [true, false, true]);
+  await api.renderPdf("x", { ...base, page: { margins: 36 }, running: { footer: { rule: true } } });
+  const paged = bindings.calls[4].args;
+  assert.deepEqual([...paged[27]], [612, 792, 36, 36, 36, 36]);
+  assert.deepEqual(paged.slice(28), [["", "", "", "", "", ""], false, true, false]);
+});
+
+test("malformed running options fail before initialization; old packages refuse chrome", async () => {
+  const { api, bindings } = await fixture();
+  for (const running of [[], "x", { top: {} }, { header: [] }, { header: { middle: "x" } },
+    { footer: { left: 3 } }, { footer: { rule: "yes" } }, { skipFirstPage: 1 }]) {
+    await assert.rejects(api.renderPdf("x", { running }), TypeError);
+  }
+  assert.equal(bindings.initCount, 0); assert.equal(bindings.calls.length, 0);
+  await assert.rejects(api.renderBookPdf([{ path: "a.md", source: "# A" }], { running: {} }), TypeError);
+  const old = await fixture({ runningBinding: false });
+  await assert.rejects(old.api.renderPdf("x", { running: { footer: { center: "{page}" } } }),
+    { code: "UNSUPPORTED_WASM_PACKAGE" });
+  await old.api.renderPdf("x", { running: {} });
+  assert.equal(old.bindings.calls[0].kind, "legacy");
 });

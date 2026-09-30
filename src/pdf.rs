@@ -41,6 +41,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 mod math;
+mod running;
 mod text_composition;
 
 #[cfg(test)]
@@ -2632,6 +2633,9 @@ fn render_inner(
         |result| usize::from(result.is_ok()),
     )?;
     let (effective_opts, page) = effective_pdf_options(doc, opts, &faces);
+    // Running chrome is validated against the final page geometry before
+    // layout, so a band that cannot fit its margin fails fast.
+    let running = running::resolve(doc, &effective_opts, &faces, page)?;
     let lines = profiler.measure(
         "layout",
         doc.blocks.len(),
@@ -2646,6 +2650,7 @@ fn render_inner(
         &effective_opts,
         &faces,
         page,
+        running.as_ref(),
         pdf_a,
         emit,
         &mut profiler,
@@ -20661,11 +20666,13 @@ fn gap(out: &mut [Line], amount: f32) {
 
 // ---- pagination + serialization --------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn serialize(
     lines: &[Line],
     opts: &PdfOptions,
     faces: &Faces,
     page: PageGeom,
+    running: Option<&running::RunningSpec>,
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
@@ -20674,13 +20681,21 @@ fn serialize(
     // visually coherent (the one-theme-model doctrine). See `Palette`.
     let palette = Palette::from_colors(&opts.theme.colors);
 
+    // One break plan for the chrome page count and the emitter, so both see
+    // the same pages (and optimal pagination runs once).
+    let break_plan = page_break_plan_for_options(lines, page, opts);
+    // Running chrome needs `{pages}` and every page's exact text before font
+    // subsetting, so it counts pages with the emitter's own pager up front.
+    let chrome = running.map(|spec| {
+        let page_count = count_pages_with(lines, page, break_plan.as_ref());
+        spec.layout_pages(faces, page, page_count)
+    });
+
     // Which slots actually appear (skip embedding unused faces).
     let used_slot_started = profiler.checkpoint();
     let mut slot_texts = collect_font_slot_text_refs(lines);
-    if opts.page_numbers {
-        if let Some(slot_idx) = pdf_font_slot_index(F_BODY) {
-            slot_texts[slot_idx].texts.push("0123456789");
-        }
+    if let (Some(chrome), Some(slot_idx)) = (&chrome, pdf_font_slot_index(F_BODY)) {
+        slot_texts[slot_idx].texts.extend(chrome.texts());
     }
     let mut used_slots: Vec<u8> = SLOTS
         .into_iter()
@@ -20960,9 +20975,10 @@ fn serialize(
 
     let serialized = serialize_pages(
         lines,
-        opts,
         faces,
         page,
+        break_plan.as_ref(),
+        chrome.as_ref(),
         &palette,
         &subsets,
         &subset_lookup,
@@ -21128,9 +21144,10 @@ fn next_placed_page<'a>(
 #[allow(clippy::too_many_arguments)]
 fn serialize_pages(
     lines: &[Line],
-    opts: &PdfOptions,
     faces: &Faces,
     page: PageGeom,
+    plan: Option<&PageBreakPlan>,
+    chrome: Option<&running::ChromePages>,
     palette: &Palette,
     subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
@@ -21144,9 +21161,10 @@ fn serialize_pages(
     match emit.emission {
         PdfPageEmission::Monolithic => serialize_pages_monolithic(
             lines,
-            opts,
             faces,
             page,
+            plan,
+            chrome,
             palette,
             subsets,
             subset_lookup,
@@ -21159,9 +21177,10 @@ fn serialize_pages(
         ),
         PdfPageEmission::Chunked => serialize_pages_chunked(
             lines,
-            opts,
             faces,
             page,
+            plan,
+            chrome,
             palette,
             subsets,
             subset_lookup,
@@ -21178,9 +21197,10 @@ fn serialize_pages(
 #[allow(clippy::too_many_arguments)]
 fn serialize_pages_monolithic(
     lines: &[Line],
-    opts: &PdfOptions,
     faces: &Faces,
     page: PageGeom,
+    plan: Option<&PageBreakPlan>,
+    chrome: Option<&running::ChromePages>,
     palette: &Palette,
     subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
@@ -21191,12 +21211,11 @@ fn serialize_pages_monolithic(
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
 ) -> Result<SerializedPages> {
-    let plan = page_break_plan_for_options(lines, page, opts);
     let pages_placed = profiler.measure(
         "pagination",
         lines.len(),
         "place laid-out lines onto PDF pages (greedy or Plass-optimal)",
-        || paginate_lines_with(lines, page, plan.as_ref()),
+        || paginate_lines_with(lines, page, plan),
         |_| 0,
     );
     pdf_emit_phase(
@@ -21214,7 +21233,7 @@ fn serialize_pages_monolithic(
             page_idx,
             page,
             palette,
-            opts,
+            chrome,
             faces,
             subsets,
             subset_lookup,
@@ -21241,9 +21260,10 @@ fn serialize_pages_monolithic(
 #[allow(clippy::too_many_arguments)]
 fn serialize_pages_chunked(
     lines: &[Line],
-    opts: &PdfOptions,
     faces: &Faces,
     page: PageGeom,
+    plan: Option<&PageBreakPlan>,
+    chrome: Option<&running::ChromePages>,
     palette: &Palette,
     subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
@@ -21266,16 +21286,13 @@ fn serialize_pages_chunked(
     let mut pipeline: Option<ChunkedCompressPipeline> = None;
     #[cfg(not(target_arch = "wasm32"))]
     let mut cumulative_stream_bytes = 0usize;
-    let plan = page_break_plan_for_options(lines, page, opts);
-    while let Some(placed) =
-        next_placed_page(lines, &mut start, page, &mut emitted_any, plan.as_ref())
-    {
+    while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any, plan) {
         let (mut content, reserved) = generate_page_content(
             &placed,
             page_idx,
             page,
             palette,
-            opts,
+            chrome,
             faces,
             subsets,
             subset_lookup,
@@ -21663,7 +21680,7 @@ fn generate_page_content(
     page_idx: usize,
     page: PageGeom,
     palette: &Palette,
-    opts: &PdfOptions,
+    chrome: Option<&running::ChromePages>,
     faces: &Faces,
     subsets: &[EmbeddedFace<'_>],
     subset_lookup: &EmbeddedFaceLookup,
@@ -22030,40 +22047,20 @@ fn generate_page_content(
         body.push_str("EMC\n");
     }
 
-    if opts.page_numbers {
-        let footer_text = format!("{}", page_idx + 1);
-        let size = 9.0;
-        let width = faces.shaped_width_points(F_BODY, &footer_text, size);
-        let x = page.left + (page.content_w - width) / 2.0;
-        let y = (page.bottom / 2.0).max(18.0);
-        let footer_seg = Seg {
-            x,
-            slot: F_BODY,
-            text_hash: seg_text_hash(&footer_text),
-            text: footer_text,
-            link: None,
-            fill: Fill::Muted,
-            strike: false,
-            task: None,
-            width,
-            expansion_permille: 0,
-        };
-        append_marked_content_begin(&mut body, "Artifact", next_mcid);
-        draw_seg(
+    if let Some(chrome) = chrome {
+        running::draw_page(
             &mut body,
             &mut annots,
             &mut current_fill,
             next_mcid,
-            &footer_seg,
-            size,
-            y,
+            chrome,
+            page_idx,
             subsets,
             subset_lookup,
             faces,
             shaped_cache,
             palette,
         );
-        body.push_str("EMC\n");
     }
 
     (
@@ -27803,6 +27800,17 @@ fn paginate_lines_for_options<'a>(
 #[cfg(test)]
 #[path = "pdf/pagination_policy_tests.rs"]
 mod pagination_policy_tests;
+
+/// Page count the emitter will produce for `plan`, without retaining pages.
+fn count_pages_with(lines: &[Line], page: PageGeom, plan: Option<&PageBreakPlan>) -> usize {
+    let mut count = 0usize;
+    let mut start = 0usize;
+    let mut emitted_any = false;
+    while next_placed_page(lines, &mut start, page, &mut emitted_any, plan).is_some() {
+        count += 1;
+    }
+    count
+}
 
 fn paginate_lines_with<'a>(
     lines: &'a [Line],

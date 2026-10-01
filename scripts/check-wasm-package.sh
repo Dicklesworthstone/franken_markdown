@@ -111,7 +111,7 @@ cp wasm/fmd-view.d.ts "$package_dir/fmd-view.d.ts"
 for file in interactive.js interactive.d.ts interactive_runtime.mjs interactive_preview.mjs NATIVE_PREVIEW.md INTERACTIVE.md \
   native_workspace.js native_workspace.d.ts interactive_export.mjs NATIVE_WORKSPACE.md \
   native_pdf_proof.mjs native_pdf_proof_ui.mjs NATIVE_PDF_PROOF.md \
-  book_pdf_proof.mjs BOOK_PDF_PROOF.md BOOK_FONTS.md \
+  book_pdf_proof.mjs BOOK_PDF_PROOF.md BOOK_FONTS.md BOOK_IMAGES.md \
   book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md PORTABLE_BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
   flow_export.mjs EXPORT.md SOURCE.md FILES.md SETTINGS.md \
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
@@ -129,7 +129,7 @@ cp wasm/demo/demo.js "$package_dir/demo/demo.js"
 cp wasm/demo/web-component.html "$package_dir/demo/web-component.html"
 cp wasm/demo/sample.md "$package_dir/demo/sample.md"
 cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs wasm/demo/flow_reading_controls.mjs wasm/demo/flow_preview_export.mjs wasm/demo/flow_export_controls.mjs "$package_dir/demo/"
-for file in book.html book.js book_pdf_controls.mjs book_collection.mjs book_font_assets.mjs book_font_authoring.mjs book_font_controls.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_source_search.mjs book_search_controls.mjs book_inspection_controls.mjs flow-source.js source_commands.mjs source_formatting.mjs SOURCE_FORMATTING.md flow_document.mjs flow_file_session.mjs flow_file_controls.mjs flow_render_settings.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
+for file in book.html book.js book_pdf_controls.mjs book_collection.mjs book_font_assets.mjs book_font_authoring.mjs book_font_controls.mjs book_image_controls.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_source_search.mjs book_search_controls.mjs book_inspection_controls.mjs flow-source.js source_commands.mjs source_formatting.mjs SOURCE_FORMATTING.md flow_document.mjs flow_file_session.mjs flow_file_controls.mjs flow_render_settings.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
   cp "wasm/demo/$file" "$package_dir/demo/$file"
 done
 
@@ -250,6 +250,7 @@ node wasm/flow_export_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 log "headless node: cancellable document workers and demo lifecycle"
 node --test wasm/native_pdf_proof.test.mjs wasm/native_pdf_proof_package.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_font_authoring.test.mjs wasm/tests/book_font_controls.test.mjs wasm/tests/book_font_package.test.mjs 2>&1 | tee -a "$LEDGER"
+node --test wasm/tests/book_image_*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_pdf*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_portable*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/document_comparison.test.mjs wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs 2>&1 | tee -a "$LEDGER"

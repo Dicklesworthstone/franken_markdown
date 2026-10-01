@@ -172,6 +172,83 @@ function imageList(value) {
     return { destination, bytes };
   });
 }
+// Capture image changes without executing property getters, custom iterators,
+// slice overrides or typed-array species. These are byte transactions, not an
+// image decoder: publication uses the same engine admission as ordinary imports.
+function imageChanges(current, changes) {
+  const invalid = () => bookError("INVALID_IMAGE_CHANGE", "Use existing image paths with either bytes or remove: true.");
+  const data = (object, key) => {
+    const field = Object.getOwnPropertyDescriptor(object, key);
+    if (!field || !Object.hasOwn(field, "value")) throw invalid();
+    return field.value;
+  };
+  if (!Array.isArray(changes)) throw invalid();
+  const count = data(changes, "length");
+  if (!Number.isSafeInteger(count) || count < 1 || count > L.images) throw invalid();
+  const existing = new Map(current.map(image => [image.destination, image]));
+  const replacements = new Map();
+  const typed = Object.getPrototypeOf(Uint8Array.prototype);
+  const intrinsic = (key, value) => Object.getOwnPropertyDescriptor(typed, key).get.call(value);
+  for (let i = 0; i < count; i++) {
+    const value = data(changes, String(i));
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw invalid();
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== 2 || !keys.includes("destination")
+        || !(keys.includes("bytes") || keys.includes("remove"))) throw invalid();
+    const destination = bookPath(data(value, "destination"));
+    if (!existing.has(destination))
+      throw bookError("IMAGE_NOT_FOUND", "The image path is not authorized; import new images separately.");
+    if (replacements.has(destination))
+      throw bookError("DUPLICATE_PATH", "Change each image path at most once in a batch.");
+    if (keys.includes("remove")) {
+      if (data(value, "remove") !== true) throw invalid();
+      replacements.set(destination, null);
+      continue;
+    }
+    const input = data(value, "bytes");
+    let bytes;
+    try {
+      if (intrinsic(Symbol.toStringTag, input) !== "Uint8Array") throw invalid();
+      const buffer = intrinsic("buffer", input);
+      // The ArrayBuffer intrinsic rejects shared buffers even with a spoofed tag.
+      Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(buffer);
+      const resizable = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "resizable");
+      if (resizable?.get.call(buffer)) throw invalid();
+      bytes = new Uint8Array(buffer, intrinsic("byteOffset", input), intrinsic("byteLength", input));
+    } catch {
+      throw bookError("INVALID_IMAGE_CHANGE", "Replacement bytes need a live, fixed, non-shared Uint8Array.");
+    }
+    if (bytes.length < 1 || bytes.length > L.imageBytes)
+      throw bookError("BOOK_LIMIT", "Images must contain 1 byte through 8 MiB.");
+    replacements.set(destination, bytes);
+  }
+  // Admit the final set, independent of change order. A removal/shrink can fund
+  // a larger replacement, and a same-size replacement works at full capacity.
+  let total = 0;
+  for (const image of current) {
+    const bytes = replacements.has(image.destination) ? replacements.get(image.destination) : image.bytes;
+    total += bytes?.byteLength ?? 0;
+  }
+  if (total > L.totalImageBytes)
+    throw bookError("BOOK_LIMIT", "Workbench image bytes exceed 32 MiB.");
+  let different = false;
+  const next = [];
+  for (const image of current) {
+    if (!replacements.has(image.destination)) { next.push(image); continue; }
+    const bytes = replacements.get(image.destination);
+    if (bytes === null) { different = true; continue; }
+    // Copy only after complete metadata/size admission; never retain a caller's
+    // mutable view. Construction ignores overridden slice/iterator/species.
+    const owned = new Uint8Array(bytes);
+    let equal = owned.length === image.bytes.length;
+    for (let i = 0; equal && i < owned.length; i++) equal = owned[i] === image.bytes[i];
+    if (equal) next.push(image);
+    else { next.push({ destination: image.destination, bytes: owned }); different = true; }
+  }
+  return different ? next : null;
+}
+
 function indexOf(index, length) {
   if (!Number.isInteger(index) || index < 0 || index >= length)
     throw bookError("INVALID_SELECTION", "Choose a chapter first.");
@@ -354,6 +431,24 @@ export function createBookCollection() {
       if (JSON.stringify(next.page) === JSON.stringify(options.page)) return revision;
       const installed = revision + 1;
       options = next;
+      changed();
+      return installed;
+    },
+    /** Replace/remove existing image bindings in one observable revision.
+     * Source, image order, fonts and settings are untouched. No-op byte copies
+     * retain both revision counters and do not invalidate previews or proofs. */
+    changeImages(changes, expectedRevision) {
+      const fence = () => {
+        alive();
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== revision)
+          throw bookError("STALE_SOURCE", "The book changed; its images were not replaced.");
+      };
+      fence();
+      const next = imageChanges(images, changes);
+      fence(); // Proxy introspection may have run host code during admission.
+      if (next === null) return revision;
+      const installed = revision + 1;
+      images = next;
       changed();
       return installed;
     },

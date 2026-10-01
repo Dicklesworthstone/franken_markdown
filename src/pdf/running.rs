@@ -10,7 +10,8 @@
 
 use super::{
     EmbeddedFace, EmbeddedFaceLookup, F_BODY, Faces, Fill, LinkAnnotation, PageGeom, Palette, Seg,
-    ShapedRunCache, append_rgb_stroke_line_operator, civil_from_unix_days, draw_seg, seg_text_hash,
+    ShapedRunCache, append_rgb_stroke_line_operator, civil_from_unix_days, draw_seg,
+    fallback_slot_runs, seg_text_hash, text_composition,
 };
 use crate::ast::Document;
 use crate::{PdfOptions, PdfRunningBand, RenderError};
@@ -78,12 +79,16 @@ pub(super) struct RunningSpec {
     size: f32,
 }
 
-/// One drawn text run.
+/// One drawn slot: its fitted text, split into per-face pieces so glyphs
+/// the body face lacks (CJK, symbols, emoji) use the same fallback faces as
+/// body text instead of drawing `.notdef`.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ChromeRun {
     x: f32,
     width: f32,
     text: String,
+    /// `(slot, text, width)` in drawing order; concatenated texts == `text`.
+    pieces: Vec<(u8, String, f32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,12 +109,16 @@ pub(super) struct ChromePages {
 }
 
 impl ChromePages {
-    /// All text this render will draw, for font subsetting.
-    pub(super) fn texts(&self) -> impl Iterator<Item = &str> {
-        self.pages
-            .iter()
-            .flatten()
-            .flat_map(|band| band.runs.iter().map(|run| run.text.as_str()))
+    /// All text this render will draw, with the font slot carrying it, for
+    /// font subsetting.
+    pub(super) fn texts(&self) -> impl Iterator<Item = (u8, &str)> {
+        self.pages.iter().flatten().flat_map(|band| {
+            band.runs.iter().flat_map(|run| {
+                run.pieces
+                    .iter()
+                    .map(|(slot, text, _)| (*slot, text.as_str()))
+            })
+        })
     }
 }
 
@@ -382,8 +391,19 @@ struct Fitter<'a> {
 }
 
 impl Fitter<'_> {
+    /// Per-face pieces of `text` with their widths.
+    fn pieces(&self, text: &str) -> Vec<(u8, String, f32)> {
+        fallback_slot_runs(self.faces, F_BODY, text)
+            .into_iter()
+            .map(|(slot, piece)| {
+                let width = self.faces.shaped_width_points(slot, &piece, self.size);
+                (slot, piece, width)
+            })
+            .collect()
+    }
+
     fn width(&self, text: &str) -> f32 {
-        self.faces.shaped_width_points(F_BODY, text, self.size)
+        self.pieces(text).iter().map(|(_, _, width)| width).sum()
     }
 
     fn fit_band(
@@ -421,15 +441,28 @@ impl Fitter<'_> {
                 1 => page.left + (page.content_w - width) / 2.0,
                 _ => page.left + page.content_w - width,
             };
-            runs.push(ChromeRun { x, width, text });
+            let pieces = self.pieces(&text);
+            runs.push(ChromeRun {
+                x,
+                width,
+                text,
+                pieces,
+            });
         }
         runs
     }
 
-    /// Longest prefix (at a char boundary, trailing spaces trimmed) that fits
-    /// `limit` with an ellipsis appended; `None` when not even the ellipsis fits.
+    /// Longest prefix (at a cluster boundary, so a combining mark never
+    /// loses its base; trailing spaces trimmed) that fits `limit` with an
+    /// ellipsis appended; `None` when not even the ellipsis fits.
     fn truncate(&self, text: &str, limit: f32) -> Option<(String, f32)> {
-        let boundaries: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+        let boundaries: Vec<usize> = text_composition::source_clusters(text)
+            .scan(0usize, |offset, cluster| {
+                let start = *offset;
+                *offset += cluster.len();
+                Some(start)
+            })
+            .collect();
         let candidate = |chars: usize| -> String {
             let end = boundaries.get(chars).copied().unwrap_or(text.len());
             let mut out = text[..end].trim_end().to_string();
@@ -528,32 +561,36 @@ pub(super) fn draw_page(
             );
         }
         for run in &band.runs {
-            let seg = Seg {
-                x: run.x,
-                slot: F_BODY,
-                text_hash: seg_text_hash(&run.text),
-                text: run.text.clone(),
-                link: None,
-                fill: Fill::Muted,
-                strike: false,
-                task: None,
-                width: run.width,
-                expansion_permille: 0,
-            };
-            draw_seg(
-                body,
-                annots,
-                current_fill,
-                owner_mcid,
-                &seg,
-                chrome.size,
-                band.baseline,
-                subsets,
-                subset_lookup,
-                faces,
-                shaped_cache,
-                palette,
-            );
+            let mut x = run.x;
+            for (slot, text, width) in &run.pieces {
+                let seg = Seg {
+                    x,
+                    slot: *slot,
+                    text_hash: seg_text_hash(text),
+                    text: text.clone(),
+                    link: None,
+                    fill: Fill::Muted,
+                    strike: false,
+                    task: None,
+                    width: *width,
+                    expansion_permille: 0,
+                };
+                draw_seg(
+                    body,
+                    annots,
+                    current_fill,
+                    owner_mcid,
+                    &seg,
+                    chrome.size,
+                    band.baseline,
+                    subsets,
+                    subset_lookup,
+                    faces,
+                    shaped_cache,
+                    palette,
+                );
+                x += width;
+            }
         }
         body.push_str("EMC\n");
     }
@@ -673,7 +710,7 @@ mod tests {
         let pages = chrome("# H", &opts, 2);
         assert!(pages.pages[0].is_empty());
         assert_eq!(band_texts(&pages, 1, BandKind::Footer), ["2 / 2"]);
-        let texts: Vec<&str> = pages.texts().collect();
+        let texts: Vec<&str> = pages.texts().map(|(_, text)| text).collect();
         assert!(texts.contains(&"2 / 2") && !texts.contains(&"1 / 2"));
     }
 
@@ -771,6 +808,56 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn glyphs_the_body_face_lacks_use_the_fallback_faces() {
+        // The GH #3 repertoire: the body faces lack some of these, the
+        // bundled symbol face carries them.
+        let symbols =
+            "\u{2248} \u{2212} \u{2192} \u{21d2} \u{2260} \u{2264} \u{2211} \u{221a} \u{221e}";
+        let mut opts = PdfOptions::default();
+        opts.running.header.left = Some(format!("Sum {symbols} of (a\\b)"));
+        let faces = Faces::load(&opts).unwrap();
+        let fallback: Vec<char> = symbols
+            .chars()
+            .filter(|&c| faces.fallback_slot(F_BODY, c) == super::super::F_SYMBOL)
+            .collect();
+        assert!(!fallback.is_empty(), "fixture needs a fallback glyph");
+        let pages = chrome("x", &opts, 1);
+        let run = &pages.pages[0][0].runs[0];
+        let joined: String = run
+            .pieces
+            .iter()
+            .map(|(_, text, _)| text.as_str())
+            .collect();
+        assert_eq!(joined, run.text);
+        for c in fallback {
+            assert!(
+                run.pieces
+                    .iter()
+                    .any(|(slot, text, _)| { *slot == super::super::F_SYMBOL && text.contains(c) }),
+                "{c:?} not routed to the symbol face: {:?}",
+                run.pieces
+            );
+        }
+        let widths: f32 = run.pieces.iter().map(|(_, _, width)| width).sum();
+        assert!((widths - run.width).abs() < 0.01);
+        assert!(
+            pages
+                .texts()
+                .any(|(slot, _)| slot == super::super::F_SYMBOL)
+        );
+    }
+
+    #[test]
+    fn truncation_never_separates_a_combining_mark_from_its_base() {
+        let mut opts = PdfOptions::default();
+        opts.running.header.center = Some("e\u{301}".repeat(400));
+        let pages = chrome("x", &opts, 1);
+        let text = &pages.pages[0][0].runs[0].text;
+        let body = text.strip_suffix('\u{2026}').expect("ellipsized");
+        assert!(body.ends_with("e\u{301}"), "{text:?}");
     }
 
     #[test]

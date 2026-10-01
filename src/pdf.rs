@@ -17919,39 +17919,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
             continue;
         }
         let slot = tok.slot;
-        let mut runs: Vec<(u8, String)> = Vec::new();
-        for cluster in text_composition::source_clusters(&tok.text) {
-            if matches!(
-                text_composition::glyph_text(cluster, faces.get(slot)),
-                Cow::Owned(_)
-            ) {
-                // Retain source bytes and the requested face together. Scalar
-                // fallback before composition could route the mark away from
-                // its base even though the composite is present in this face.
-                push_slot_run(&mut runs, slot, cluster);
-                continue;
-            }
-            for mut c in cluster.chars() {
-                let mut target = faces.fallback_slot(slot, c);
-                if target == slot
-                    && faces.face(slot).glyph_index(c) == 0
-                    && faces.symbol.glyph_index(c) == 0
-                {
-                    if let Some(fb) = subscript_phonetic_fallback(c) {
-                        if faces.face(slot).glyph_index(fb) != 0
-                            || faces.symbol.glyph_index(fb) != 0
-                        {
-                            c = fb;
-                            target = faces.fallback_slot(slot, c);
-                        }
-                    }
-                }
-                match runs.last_mut() {
-                    Some((run_slot, buf)) if *run_slot == target => buf.push(c),
-                    _ => runs.push((target, c.to_string())),
-                }
-            }
-        }
+        let runs = fallback_slot_runs(faces, slot, &tok.text);
         if runs.len() <= 1
             && runs.first().is_none_or(|(s, _)| *s == slot)
             && runs.first().is_none_or(|(_, s)| s == &tok.text)
@@ -17975,6 +17943,46 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
         );
         i += replaced;
     }
+}
+
+/// Split `text` requested in `slot` into maximal runs, each carried by the
+/// face that maps its characters: the style slot itself, the CJK fallback,
+/// or the bundled symbol face (see [`Faces::fallback_slot`]). Clusters the
+/// requested face composes stay with it. Shared by paragraph tokens and the
+/// running page chrome so both route glyphs identically.
+fn fallback_slot_runs(faces: &Faces, slot: u8, text: &str) -> Vec<(u8, String)> {
+    let mut runs: Vec<(u8, String)> = Vec::new();
+    for cluster in text_composition::source_clusters(text) {
+        if matches!(
+            text_composition::glyph_text(cluster, faces.get(slot)),
+            Cow::Owned(_)
+        ) {
+            // Retain source bytes and the requested face together. Scalar
+            // fallback before composition could route the mark away from
+            // its base even though the composite is present in this face.
+            push_slot_run(&mut runs, slot, cluster);
+            continue;
+        }
+        for mut c in cluster.chars() {
+            let mut target = faces.fallback_slot(slot, c);
+            if target == slot
+                && faces.face(slot).glyph_index(c) == 0
+                && faces.symbol.glyph_index(c) == 0
+            {
+                if let Some(fb) = subscript_phonetic_fallback(c) {
+                    if faces.face(slot).glyph_index(fb) != 0 || faces.symbol.glyph_index(fb) != 0 {
+                        c = fb;
+                        target = faces.fallback_slot(slot, c);
+                    }
+                }
+            }
+            match runs.last_mut() {
+                Some((run_slot, buf)) if *run_slot == target => buf.push(c),
+                _ => runs.push((target, c.to_string())),
+            }
+        }
+    }
+    runs
 }
 
 fn push_slot_run(runs: &mut Vec<(u8, String)>, slot: u8, source: &str) {
@@ -20694,8 +20702,12 @@ fn serialize(
     // Which slots actually appear (skip embedding unused faces).
     let used_slot_started = profiler.checkpoint();
     let mut slot_texts = collect_font_slot_text_refs(lines);
-    if let (Some(chrome), Some(slot_idx)) = (&chrome, pdf_font_slot_index(F_BODY)) {
-        slot_texts[slot_idx].texts.extend(chrome.texts());
+    if let Some(chrome) = &chrome {
+        for (slot, text) in chrome.texts() {
+            if let Some(slot_idx) = pdf_font_slot_index(slot) {
+                slot_texts[slot_idx].texts.push(text);
+            }
+        }
     }
     let mut used_slots: Vec<u8> = SLOTS
         .into_iter()

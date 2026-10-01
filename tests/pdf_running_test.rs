@@ -360,3 +360,43 @@ fn cli_band_that_does_not_fit_exits_70_naming_the_margin() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("margin_top_pt"), "{stderr}");
 }
+
+/// Font resource names selected (`/Fn size Tf`) inside the page's header
+/// artifact.
+fn header_fonts(stream: &str) -> Vec<String> {
+    let start = stream
+        .find("/Subtype /Header>> BDC")
+        .expect("header artifact");
+    let section = &stream[start..];
+    let section = &section[..section.find("\nEMC\n").map_or(section.len(), |end| end)];
+    let tokens: Vec<&str> = section.split_whitespace().collect();
+    let mut fonts: Vec<String> = tokens
+        .windows(3)
+        .filter(|w| w[2] == "Tf" && w[0].starts_with('/'))
+        .map(|w| w[0].to_owned())
+        .collect();
+    fonts.sort();
+    fonts.dedup();
+    fonts
+}
+
+#[test]
+fn header_glyphs_missing_from_the_body_face_use_the_fallback_face_and_title_tokens_stay_literal() {
+    // An ASCII-only body, so the symbol face is embedded only if the chrome
+    // routes its glyph there; the title carries PDF string delimiters and a
+    // token that must not expand.
+    let mut opts = base();
+    opts.title =
+        Some("Sum \u{2248} \u{2192} \u{21d2} \u{2260} \u{2211} \u{221e} (a\\b) {pages}".into());
+    opts.running.header.center = Some("{title}".into());
+    let md = long_doc();
+    assert!(md.is_ascii());
+    let pdf = render_pdf(&md, &opts).unwrap();
+    let streams = content_streams(&pdf);
+    assert!(!streams.is_empty());
+    for stream in &streams {
+        let fonts = header_fonts(stream);
+        assert!(fonts.len() >= 2, "header drew with {fonts:?} only");
+    }
+    assert_eq!(render_pdf(&md, &opts).unwrap(), pdf);
+}

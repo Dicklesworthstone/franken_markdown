@@ -79,9 +79,9 @@ pub(super) struct RunningSpec {
     size: f32,
 }
 
-/// One drawn slot: its fitted text, split into per-face pieces so glyphs
-/// the body face lacks (CJK, symbols, emoji) use the same fallback faces as
-/// body text instead of drawing `.notdef`.
+/// One drawn slot: its fitted text, split into per-face pieces so glyphs the
+/// body face lacks (CJK, math and arrow symbols) use the same fallback faces
+/// as body text instead of drawing `.notdef`.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ChromeRun {
     x: f32,
@@ -471,8 +471,21 @@ impl Fitter<'_> {
         };
         // Width grows (almost) monotonically with the prefix length: binary
         // search the longest fitting prefix, then step down past any kerning
-        // wobble so the result is guaranteed to fit.
+        // wobble so the result is guaranteed to fit. Gallop first so a huge
+        // value (a long first heading as `{title}`) costs shaping in
+        // proportion to what fits the band, not to the whole value, on every
+        // page.
         let (mut lo, mut hi) = (0usize, boundaries.len().saturating_sub(1));
+        let mut probe = 1usize;
+        while probe < hi {
+            if self.width(&candidate(probe)) <= limit {
+                lo = probe;
+                probe = probe.saturating_mul(2);
+            } else {
+                hi = probe - 1;
+                break;
+            }
+        }
         while lo < hi {
             let mid = lo + (hi - lo).div_ceil(2);
             if self.width(&candidate(mid)) <= limit {
@@ -848,6 +861,26 @@ mod tests {
                 .texts()
                 .any(|(slot, _)| slot == super::super::F_SYMBOL)
         );
+    }
+
+    #[test]
+    fn a_huge_title_is_ellipsized_to_the_band() {
+        let mut opts = PdfOptions {
+            title: Some("Enormous title words ".repeat(20_000)),
+            ..Default::default()
+        };
+        opts.running.header.left = Some("{title}".into());
+        opts.running.header.right = Some("{page}".into());
+        let pages = chrome("x", &opts, 3);
+        let page = PageGeom::from_theme(&opts.theme);
+        assert_eq!(pages.pages.len(), 3);
+        for bands in &pages.pages {
+            let runs = &bands[0].runs;
+            assert!(runs[0].text.ends_with('\u{2026}'));
+            assert!(runs[0].text.len() < 1_000, "{}", runs[0].text.len());
+            assert!(runs[0].x + runs[0].width < runs[1].x);
+            assert!(runs[1].x + runs[1].width <= page.left + page.content_w + 0.01);
+        }
     }
 
     #[test]

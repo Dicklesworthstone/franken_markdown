@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--pdf-running-skip-first` flags, the MCP `running` object, and the WASM
   `renderPdf({running})` option (`renderPdfConfiguredRunning`). Default output
   is unchanged; `page_numbers` is now sugar for `footer.center = "{page}"`.
+  Slot text uses the same CJK and symbol fallback faces as body text.
   Band images are not supported yet.
 
 - Render supported decomposed Latin accents in native PDFs with the same glyphs

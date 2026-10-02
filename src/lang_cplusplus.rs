@@ -375,7 +375,14 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
         {
             let start = pos;
             let delim_start = pos + raw_prefix_len;
-            if let Some(off) = code[delim_start..].find('(') {
+            // A valid delimiter is at most 16 ASCII bytes, so `(` can only be
+            // within the next 17 bytes. Searching further made every `R"` scan
+            // the rest of the input (quadratic on `R"R"R"...`).
+            let paren = code.as_bytes()[delim_start..]
+                .iter()
+                .take(17)
+                .position(|&byte| byte == b'(');
+            if let Some(off) = paren {
                 let open_paren = delim_start + off;
                 let delim = &code[delim_start..open_paren];
                 if delim.is_empty() || valid_raw_delim(delim) {
@@ -386,7 +393,8 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
                     prev = Prev::Value;
                     continue;
                 }
-            } else {
+            } else if bytes_len - delim_start <= 16 {
+                // No `(` before end of input: an unterminated raw string.
                 let candidate_delim = &code[delim_start..];
                 if candidate_delim.is_empty() || valid_raw_delim(candidate_delim) {
                     push_tiling(spans, &mut last_end, Tok::Str, start, bytes_len);

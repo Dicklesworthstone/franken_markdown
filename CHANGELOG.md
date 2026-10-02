@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Security: highlighted code in the default (safe) HTML could contain live
+  markup. The HTML/XML/SVG lexer reports a whole `<!...>` or `<?...?>`
+  construct as one keyword token, and keyword, type, function and number
+  tokens were written without escaping, so a fence such as
+  `<?x><img src=x onerror=alert(1)>?>` produced an executing `<img>` in CLI,
+  MCP, WASM, book and EPUB output (present since 0.4.4). Every highlighted
+  token is now escaped; this also restores `<!DOCTYPE ...>`, `<?php ... ?>`
+  and JSX/TSX entities (`&amp;`) as visible text.
+- C++ raw-string highlighting no longer searches the rest of the input for
+  `(` after each `R"` (quadratic on repeated `R"`); delimiters are at most
+  16 bytes, so the search is bounded.
 - Tag PDF page numbers as `/Pagination` artifacts. They were previously marked
   with an `/MCID` that no structure element owned, and the font subset carried
   all ten digits even when a document used fewer.

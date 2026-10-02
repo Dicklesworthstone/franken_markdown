@@ -1098,3 +1098,48 @@ fn c_preprocessor_directives_are_keywords() {
     assert_eq!(tok_of("c", "#define X 1", "#define"), Some(Tok::Keyword));
     assert_spans_tile("c", "#include <stdio.h>\nint main(){ return 0; }");
 }
+
+#[test]
+fn markup_fences_never_emit_live_tags_from_highlighted_tokens() {
+    // The HTML lexer folds `<?...?>` and `<!...>` into single keyword tokens.
+    // In the default (safe) HTML those must render as text: before the fix a
+    // fence like this produced a live <img onerror> element.
+    for (lang, code) in [
+        ("html", "<?x><img src=x onerror=alert(document.domain)>?>"),
+        ("xml", "<!x \">\"<img src=x onerror=alert(1)>"),
+        ("svg", "<!DOCTYPE svg><svg onload=alert(1)>"),
+    ] {
+        let md = format!("```{lang}\n{code}\n```\n");
+        let html = render_html(&md, &HtmlOptions::default()).unwrap();
+        assert!(!html.contains("<img"), "{lang}: {html}");
+        assert!(!html.contains("<svg onload"), "{lang}: {html}");
+        assert!(!html.contains("<?x>"), "{lang}: {html}");
+    }
+    // Ordinary documents keep their visible text, e.g. a doctype.
+    let html = render_html("```html\n<!DOCTYPE html>\n```\n", &HtmlOptions::default()).unwrap();
+    assert!(html.contains("&lt;!DOCTYPE html&gt;"), "{html}");
+}
+
+#[test]
+fn cpp_raw_string_delimiter_scan_is_bounded() {
+    // Each `R"` used to search the rest of the input for `(`, so a fence of
+    // repeated `R"` took quadratic time. Delimiters are at most 16 bytes.
+    let code = "R\"".repeat(100_000);
+    let started = std::time::Instant::now();
+    assert_spans_tile("cpp", &code);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "raw-string prefix scan took {:?}",
+        started.elapsed()
+    );
+    // Valid raw strings are unaffected, including a 16-byte delimiter.
+    assert_eq!(
+        tok_of("cpp", "auto s = R\"x(a)\"b)x\";", "R\"x(a)\"b)x\""),
+        Some(Tok::Str)
+    );
+    let long = "auto s = R\"abcdefghijklmnop(z)abcdefghijklmnop\";";
+    assert_eq!(
+        tok_of("cpp", long, "R\"abcdefghijklmnop(z)abcdefghijklmnop\""),
+        Some(Tok::Str)
+    );
+}

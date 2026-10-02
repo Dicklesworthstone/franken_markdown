@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, hash_map::Entry};
 
 use crate::ast::{Align, Block, Document, Inline, List};
 use crate::fonts::{self, FontStyle};
-use crate::highlight::{Span, Tok, highlight_supported_into};
+use crate::highlight::{Span, highlight_supported_into};
 use crate::text::Font;
 use crate::theme::{DarkModePolicy, Theme, ThemeColors};
 use crate::{FontAssetSlot, FontAssets, HtmlOptions, instance_host_font};
@@ -1538,7 +1538,9 @@ fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) 
 }
 
 /// Emit highlighted code: one `<span class="tok-...">` per classified token;
-/// plain and potentially symbolic tokens are escaped text with no wrapping span.
+/// plain tokens are escaped text with no wrapping span. Every token is
+/// escaped: a token kind says nothing about its bytes (the HTML lexer reports
+/// a whole `<!...>` or `<?...?>` construct as one keyword).
 fn emit_highlighted_spans(code: &str, out: &mut String, spans: &[Span]) {
     for span in spans.iter().copied() {
         let text = code.get(span.start..span.end).unwrap_or("");
@@ -1547,20 +1549,12 @@ fn emit_highlighted_spans(code: &str, out: &mut String, spans: &[Span]) {
                 out.push_str("<span class=\"");
                 out.push_str(cls);
                 out.push_str("\">");
-                if highlighted_span_kind_is_html_safe(span.kind) {
-                    out.push_str(text);
-                } else {
-                    push_escaped_text(text, out);
-                }
+                push_escaped_text(text, out);
                 out.push_str("</span>");
             }
             None => push_escaped_text(text, out),
         }
     }
-}
-
-fn highlighted_span_kind_is_html_safe(kind: Tok) -> bool {
-    matches!(kind, Tok::Keyword | Tok::Type | Tok::Func | Tok::Number)
 }
 
 fn push_escaped_text(s: &str, out: &mut String) {
@@ -3005,10 +2999,9 @@ mod tests {
         FontCharSet, HTML_FONT_SEED, MATH_CACHE_MAX_ENTRIES, RenderState, UrlContext,
         ascii_char_mask, ascii_char_masks, base64_encode, css_num, css_token,
         css_without_remote_imports, emit_highlighted_spans, escape_attr, escape_text,
-        find_ascii_case_insensitive, highlighted_span_kind_is_html_safe, html_image_asset_mime,
-        initial_body_capacity, inlines_to_plain, push_escaped_attr, push_html_image_asset_data_uri,
-        push_u64, render, safe_url, sanitize_custom_css, slug, slug_inlines,
-        svg_without_remote_style_imports,
+        find_ascii_case_insensitive, html_image_asset_mime, initial_body_capacity,
+        inlines_to_plain, push_escaped_attr, push_html_image_asset_data_uri, push_u64, render,
+        safe_url, sanitize_custom_css, slug, slug_inlines, svg_without_remote_style_imports,
     };
 
     #[test]
@@ -3262,18 +3255,23 @@ mod tests {
     }
 
     #[test]
-    fn highlighted_safe_token_kinds_bypass_escape_scan_but_unsafe_tokens_escape() {
+    fn every_highlighted_token_kind_is_escaped() {
+        // The HTML lexer reports `<?x>...?>` as a single keyword; a keyword
+        // carrying markup must still come out as text, never as tags.
+        let code = "<?x><img src=x onerror=alert(1)>?>";
         for kind in [Tok::Keyword, Tok::Type, Tok::Func, Tok::Number] {
-            assert!(highlighted_span_kind_is_html_safe(kind), "{kind:?}");
-        }
-        for kind in [
-            Tok::Plain,
-            Tok::Str,
-            Tok::Comment,
-            Tok::Operator,
-            Tok::Punct,
-        ] {
-            assert!(!highlighted_span_kind_is_html_safe(kind), "{kind:?}");
+            let span = [Span {
+                kind,
+                start: 0,
+                end: code.len(),
+            }];
+            let mut out = String::new();
+            emit_highlighted_spans(code, &mut out, &span);
+            assert!(!out.contains("<img"), "{kind:?}: {out}");
+            assert!(
+                out.contains("&lt;img src=x onerror=alert(1)&gt;"),
+                "{kind:?}: {out}"
+            );
         }
 
         let code = "fn < &";

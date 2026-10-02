@@ -72,10 +72,15 @@ async function setup({source = '# Original', background = true} = {}) {
   };
   root.cloneNode = () => {
     const script = Object.assign(new Element(),{textContent:raw.textContent});
+    // Like the live page, the clone carries the embedded native runtime payload.
+    const runtime = Object.assign(new Element(),{textContent:data.textContent});
     const textarea = new Element(), status = new Element(), drawer = new Element();
     const html = preview.innerHTML;
-    const copy = {script,textarea,html,querySelector: selector => ({
+    const copy = {script,runtime,textarea,html,attrs:new Map(),
+      setAttribute(k,v) { this.attrs.set(k,v); },removeAttribute(k) { this.attrs.delete(k); },
+      querySelector: selector => ({
       'body > script#fmd-raw-source[type="application/json"]':script,
+      'body > script#fmd-native-runtime[type="application/json"]':runtime,
       'body > #fmd-app-body > #editor-pane > textarea#fmd-editor':textarea,
       'body > #stats-drawer':drawer,
       '#editor-pane > .fmd-pane-header > #fmd-save-status':status,
@@ -93,6 +98,8 @@ async function setup({source = '# Original', background = true} = {}) {
   const saved = Object.fromEntries(Object.keys(globals).map(k => [k,Object.getOwnPropertyDescriptor(globalThis,k)]));
   Object.assign(globalThis,globals);
   const workers = [];
+  // Worker results reach the page by structured clone, i.e. in the page realm.
+  let PageUint8Array = Uint8Array;
   const createPreview = (factory,initial) => {
     assert.equal(factory,createNativeWorkspaceRenderer);
     const jobs = [];
@@ -107,7 +114,13 @@ async function setup({source = '# Original', background = true} = {}) {
       },invalidate() {
         worker.invalidations++;
         for (const job of jobs) job.reject(Object.assign(Error('superseded'),{code:'PREVIEW_SUPERSEDED'}));
-      },dispose() { worker.invalidate(); worker.closed = true; }};
+      },dispose() { worker.invalidate(); worker.closed = true; },
+      // Since 180c3e7 PDF/HTML exports run in their own lazily created worker.
+      exportDocument(format,markdown) {
+        const text = format === 'pdf' ? '%PDF-'+markdown : '<html><head></head><body>published:'+markdown+'</body></html>';
+        const mimeType = {pdf:'application/pdf',html:'text/html;charset=utf-8'}[format];
+        return Promise.resolve({format,mimeType,bytes:new PageUint8Array(new TextEncoder().encode(text)),diagnostics:[]});
+      }};
     workers.push(worker); return worker;
   };
   try {
@@ -117,14 +130,18 @@ async function setup({source = '# Original', background = true} = {}) {
     const bindings = await import(moduleUrl);
     const timers = new Map(); let timerId = 0;
     // Form parsing is covered in the real-browser probe. Keep the full shipped
-    // controller, but omit this one optional capability in the DOM adapter.
+    // controller, but omit this one optional capability in the DOM adapter
+    // (bd0b5eb added the worker-preflight form, applySettingsAsync).
     const applySettings = engine.applySettings; engine.applySettings = undefined;
+    const applySettingsAsync = engine.applySettingsAsync; engine.applySettingsAsync = undefined;
     const context = vm.createContext({document,window,Blob,URL:urls,Event,
       setTimeout(fn,ms) { const id=++timerId;timers.set(id,{fn,ms});return id; },
       clearTimeout(id) { timers.delete(id); },
       parseMarkdownClient(text) { return 'fallback:'+text; }});
+    PageUint8Array = vm.runInContext('Uint8Array',context);
     vm.runInContext(controller,context);
     engine.applySettings = applySettings;
+    engine.applySettingsAsync = applySettingsAsync;
     await flush();
     return {engine,bindings,nodes,workers,get,document,preview,downloads,copies,data,revoked,timers,
       click(id) { (get(id) || header.querySelector('#'+id)).click(); },
@@ -249,9 +266,13 @@ test('page suspension stops work and pending saves; resumption starts one new wo
 test('native HTML publishing and PDF export remain independent of a pending preview', async () => {
   const s=await setup();
   try {
-    s.edit('export latest');s.click('btn-export-pdf');s.click('btn-publish-html');
-    assert.equal(s.downloads.length,2);assert.equal(await s.downloads[0].blob.text(),'%PDF-export latest');
-    assert.match(await s.downloads[1].blob.text(),/sync:export latest/);assert.equal(s.preview.innerHTML,'initial native preview');
+    // Exports share one background export slot (180c3e7), so the two
+    // requests run in turn; neither waits for or commits the pending preview.
+    s.edit('export latest');s.click('btn-export-pdf');await flush();await flush();
+    assert.equal(s.downloads.length,1);assert.equal(await s.downloads[0].blob.text(),'%PDF-export latest');
+    s.click('btn-publish-html');await flush();await flush();
+    assert.equal(s.downloads.length,2);assert.match(await s.downloads[1].blob.text(),/published:export latest/);
+    assert.equal(s.preview.innerHTML,'initial native preview');
   } finally {s.close();}
 });
 

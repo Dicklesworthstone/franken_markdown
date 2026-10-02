@@ -35,6 +35,8 @@ function fixture({source = original, native = true, readerAvailable = true, publ
     replaceChildren(...children) { this.children = []; for (const child of children) this.appendChild(child); }
     remove() { this.removed = true; this.parentNode?.children.splice(this.parentNode.children.indexOf(this), 1); }
     setAttribute(key, value) { this.attributes[key] = value; }
+    getAttribute(key) { return Object.hasOwn(this.attributes, key) ? this.attributes[key] : null; }
+    removeAttribute(key) { delete this.attributes[key]; }
     querySelector(selector) {
       const id = selector.match(/#([\w-]+)/)?.[1];
       return this.children.flatMap(child => [child, ...child.descendants()]).find(child => child.id === id) ?? null;
@@ -69,7 +71,7 @@ function fixture({source = original, native = true, readerAvailable = true, publ
   let clone = null;
   doc.documentElement.cloneNode = () => {
     const nodes = new Map();
-    clone = {nodes, querySelector(selector) {
+    clone = {nodes, attributes: {}, removeAttribute(key) { delete this.attributes[key]; }, querySelector(selector) {
       if (!nodes.has(selector)) nodes.set(selector, new Element());
       return nodes.get(selector);
     }, get outerHTML() { return JSON.stringify([...nodes].map(([selector, element]) => ({selector, text: element.textContent, removed: !!element.removed}))); }};

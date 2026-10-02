@@ -58,6 +58,10 @@ async function bootstrap(fail = false) {
     'demo/book_collection.mjs': 'export const createBookCollection = () => ({identity:"collection"});',
     'demo/book_controls.mjs': 'export const createBookControls = options => globalThis.__bookPdfBoot.create("controls", options);',
     'demo/book_pdf_controls.mjs': 'export const createBookPdfPanel = () => {}; export const createBookPdfControls = options => globalThis.__bookPdfBoot.create("pdf", options);',
+    // Font and image authoring joined the publisher after this stub list
+    // (d15040f, f905593); each is an independent subsystem like the others.
+    'demo/book_image_controls.mjs': 'export const createBookImagePanel = () => {}; export const createBookImageControls = options => globalThis.__bookPdfBoot.create("images", options);',
+    'demo/book_font_controls.mjs': 'export const createBookFontPanel = () => {}; export const createBookFontControls = options => globalThis.__bookPdfBoot.create("fonts", options);',
     'demo/book_inspection_controls.mjs': 'export const createBookInspectionPanel = () => {}; export const createBookLinkPanel = () => {}; export const createBookInspectionControls = options => globalThis.__bookPdfBoot.create("inspection", options); export const createBookLinkControls = options => globalThis.__bookPdfBoot.create("links", options);',
     ...Object.fromEntries(['Library', 'Preview', 'Search'].map(name => [
       `demo/book_${name.toLowerCase()}_controls.mjs`,

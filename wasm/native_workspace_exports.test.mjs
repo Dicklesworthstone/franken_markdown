@@ -205,7 +205,10 @@ test('legacy synchronous bootstrap remains explicitly synchronous with original 
 
 test('export admission rejects unsupported formats and malformed Unicode without spawning a worker',async()=>{
   await environment(async({engine,stats})=>{
-    assert.throws(()=>engine.exportDocument('epub','x'),error=>error.code==='EXPORT_OPTIONS');
+    assert.throws(()=>engine.exportDocument('docx','x'),error=>error.code==='EXPORT_OPTIONS');
+    // EPUB became a publication format in 1ec2b42; without resource-capable
+    // bindings it is refused as an unsupported package, still before any worker.
+    assert.throws(()=>engine.exportDocument('epub','x'),error=>error.code==='UNSUPPORTED_WASM_PACKAGE');
     await rejected(engine.exportDocument('pdf','\ud800'),'EXPORT_UNICODE');
     assert.equal(stats.started,0);assert.equal(engine.exportPending,false);
   });

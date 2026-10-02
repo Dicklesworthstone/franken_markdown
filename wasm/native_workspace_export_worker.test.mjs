@@ -120,7 +120,8 @@ test('an export cannot overwrite work already queued on the same client',async()
 
 test('source and format admission precede worker startup and preserve active work',async()=>{
   const s=fake();
-  for(const [format,source,code] of [['svg','x','EXPORT_OPTIONS'],['pdf','\ud800','EXPORT_UNICODE'],
+  // SVG became a publication format in 1ec2b42; use a format that never was.
+  for(const [format,source,code] of [['docx','x','EXPORT_OPTIONS'],['pdf','\ud800','EXPORT_UNICODE'],
     ['html','é'.repeat(16*1024*1024+1),'EXPORT_LIMIT']]) await reject(s.client.exportDocument(format,source,state),code);
   assert.equal(s.messages.length,0);
   const pending=s.client.exportDocument('html','valid',state);

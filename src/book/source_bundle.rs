@@ -420,7 +420,8 @@ mod tests {
         let error = prepare(&chapters, &resources, 400, 64)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("include_budget"), "{error}");
+        // The transcluder refuses in `append` before the second copy lands.
+        assert!(error.contains("include_size"), "{error}");
     }
 
     #[test]

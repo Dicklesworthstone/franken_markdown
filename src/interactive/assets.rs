@@ -87,7 +87,9 @@ mod tests {
 
     #[test]
     fn opaque_keys_cannot_close_the_data_block_or_change_json() {
-        let key = "</ScRiPt><!--\"\\\n\u{2028}\u{2029}";
+        // Ends in `.svg` so the resolver accepts it and the hostile key really
+        // reaches the manifest (keys without an image extension are skipped).
+        let key = "</ScRiPt><!--\"\\\n\u{2028}\u{2029}x.svg";
         let opts = HtmlOptions {
             image_assets: vec![PdfImageAsset::new(key, svg())],
             ..Default::default()
@@ -97,6 +99,7 @@ mod tests {
         assert!(!manifest.contains("</ScRiPt>"));
         assert!(!manifest.contains("<!--"));
         assert!(manifest.contains("\\u003c/ScRiPt>"));
+        assert!(manifest.contains("\\u2028\\u2029x.svg"));
         assert_eq!(manifest.matches("</script>").count(), 1);
     }
 

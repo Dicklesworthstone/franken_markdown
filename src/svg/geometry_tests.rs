@@ -69,10 +69,10 @@ fn default_prose_retains_the_legacy_ladder_baselines_and_page() {
     close(actual[0].1, 72.0);
     close(actual[0].2, 72.0 + 11.0 * 0.85);
     close(actual[0].3, 11.0);
-    close(
-        actual[1].1 - actual[0].1,
-        p.measure("A", RStyle::BODY, 11.0),
-    );
+    // The second glyph shares the baseline; its exact shaped pen step is
+    // pinned in text_shaping_tests (prose is shaped, not `measure`d).
+    close(actual[1].2, actual[0].2);
+    assert!(actual[1].1 > actual[0].1);
 }
 
 #[test]

@@ -263,3 +263,24 @@ fn supplied_font_shaping_reaches_the_public_svg_exporter_and_deduplicated_defs()
     assert_eq!(xml.matches("<use href=\"#g").count(), 2);
     assert!(!xml.contains("<text"));
 }
+
+/// Default prose is laid out by the shaper: the pen step after the first "A"
+/// is its shaped advance plus any pair adjustment, i.e. width("AA") - width("A").
+#[test]
+fn default_prose_pen_step_is_the_shaped_advance() {
+    let mut poster = Poster::new(&SvgOptions::default());
+    let shaper = Shaper::new(&poster);
+    let step = shaper.shape("AA", RStyle::BODY, 11.0).width()
+        - shaper.shape("A", RStyle::BODY, 11.0).width();
+    poster.paragraph(&[Inline::Text("AA".into())], 72.0, 540.0, false);
+    let xs: Vec<f64> = poster
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Glyph { x, .. } => Some(*x),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(xs.len(), 2);
+    assert!((xs[1] - xs[0] - step).abs() < 0.00001, "{xs:?} step {step}");
+}

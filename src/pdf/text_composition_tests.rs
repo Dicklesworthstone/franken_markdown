@@ -106,7 +106,26 @@ fn positioned_svg_elements_do_not_suppress_an_orphan_mark_warning() {
             RenderWarning::MissingGlyphs { count, sample } => Some((*count, sample.as_str())),
             _ => None,
         });
-        assert_eq!(missing, separate_elements.then_some((1, "\u{0301}")));
+        // A separately positioned mark never composes with the preceding base,
+        // so it is reported exactly when the selected face cannot draw it alone.
+        let faces = Faces::load(&opts).unwrap();
+        let face_lacks_mark = {
+            let image = parse_pdf_image_asset("positioned.svg", &opts.image_assets[0].bytes)
+                .expect("positioned svg parses");
+            let mut runs = Vec::new();
+            collect_svg_image_text(&image, &mut runs);
+            let (slot, _) = runs
+                .iter()
+                .find(|(_, text)| text.contains('\u{0301}'))
+                .expect("the mark is collected");
+            let face = faces.get(*slot);
+            let gid = face.glyph_index('\u{0301}');
+            gid == 0 || gid >= face.num_glyphs
+        };
+        assert_eq!(
+            missing,
+            (separate_elements && face_lacks_mark).then_some((1, "\u{0301}"))
+        );
         let pdf = crate::render_pdf_document(&doc, &opts).unwrap();
         let content = composition_page_content(&pdf);
         assert_eq!(

@@ -1,15 +1,20 @@
 //! Queries share the same atomic source-cluster edges as hit testing.
 
 use super::{
-    CaretAffinity, CaretPosition, Direction, HitTestResult, OwnedTextRun, Range,
-    SelectionRect, TextCluster,
+    CaretAffinity, CaretPosition, Direction, HitTestResult, OwnedTextRun, Range, SelectionRect,
+    TextCluster,
 };
 
-fn edge(run: &OwnedTextRun, cluster: &TextCluster, affinity: CaretAffinity) -> Option<CaretPosition> {
+fn edge(
+    run: &OwnedTextRun,
+    cluster: &TextCluster,
+    affinity: CaretAffinity,
+) -> Option<CaretPosition> {
     if cluster.byte_range.start >= cluster.byte_range.end
         || run.logical_text.get(cluster.byte_range.clone()).is_none()
         || cluster.utf16_range.start >= cluster.utf16_range.end
-        || !cluster.x_start.is_finite() || !cluster.x_end.is_finite()
+        || !cluster.x_start.is_finite()
+        || !cluster.x_end.is_finite()
     {
         return None;
     }
@@ -18,19 +23,34 @@ fn edge(run: &OwnedTextRun, cluster: &TextCluster, affinity: CaretAffinity) -> O
     let rtl = run.context.direction == Direction::RightToLeft;
     let leading = affinity == CaretAffinity::Leading;
     Some(CaretPosition {
-        byte_offset: if leading { cluster.byte_range.start } else { cluster.byte_range.end },
-        utf16_offset: if leading { cluster.utf16_range.start } else { cluster.utf16_range.end },
+        byte_offset: if leading {
+            cluster.byte_range.start
+        } else {
+            cluster.byte_range.end
+        },
+        utf16_offset: if leading {
+            cluster.utf16_range.start
+        } else {
+            cluster.utf16_range.end
+        },
         visual_x: if leading == rtl { right } else { left },
         affinity,
     })
 }
 
 fn empty_caret(affinity: CaretAffinity) -> CaretPosition {
-    CaretPosition { byte_offset: 0, utf16_offset: 0, visual_x: 0.0, affinity }
+    CaretPosition {
+        byte_offset: 0,
+        utf16_offset: 0,
+        visual_x: 0.0,
+        affinity,
+    }
 }
 
 pub(super) fn caret_at_byte(
-    run: &OwnedTextRun, byte: usize, affinity: CaretAffinity,
+    run: &OwnedTextRun,
+    byte: usize,
+    affinity: CaretAffinity,
 ) -> Option<CaretPosition> {
     if !run.logical_text.is_char_boundary(byte) {
         return None;
@@ -40,7 +60,9 @@ pub(super) fn caret_at_byte(
     }
     // The inventory is logical, including for RTL. At a shared boundary,
     // affinity chooses the preceding trailing or following leading edge.
-    let next = run.clusters.partition_point(|cluster| cluster.byte_range.start < byte);
+    let next = run
+        .clusters
+        .partition_point(|cluster| cluster.byte_range.start < byte);
     if affinity == CaretAffinity::Trailing && next > 0 {
         let previous = &run.clusters[next - 1];
         if previous.byte_range.end == byte {
@@ -67,7 +89,9 @@ pub(super) fn caret_at_byte(
 pub(super) fn hit_test(run: &OwnedTextRun, x: f32) -> HitTestResult {
     let fallback = || HitTestResult {
         cluster_index: 0,
-        caret: run.clusters.first()
+        caret: run
+            .clusters
+            .first()
             .and_then(|cluster| edge(run, cluster, CaretAffinity::Leading))
             .unwrap_or_else(|| empty_caret(CaretAffinity::Leading)),
         is_exact: false,
@@ -89,11 +113,13 @@ pub(super) fn hit_test(run: &OwnedTextRun, x: f32) -> HitTestResult {
         let right = leading.visual_x.max(trailing.visual_x);
         if x >= left && x <= right {
             // f64 differences avoid midpoint overflow for finite f32 geometry.
-            let nearer_right = f64::from(right) - f64::from(x)
-                < f64::from(x) - f64::from(left);
-            let tie = f64::from(right) - f64::from(x)
-                == f64::from(x) - f64::from(left);
-            let caret = if tie || nearer_right != rtl { trailing } else { leading };
+            let nearer_right = f64::from(right) - f64::from(x) < f64::from(x) - f64::from(left);
+            let tie = f64::from(right) - f64::from(x) == f64::from(x) - f64::from(left);
+            let caret = if tie || nearer_right != rtl {
+                trailing
+            } else {
+                leading
+            };
             return HitTestResult {
                 cluster_index: index,
                 caret,
@@ -116,7 +142,11 @@ pub(super) fn hit_test(run: &OwnedTextRun, x: f32) -> HitTestResult {
             });
             if closer {
                 distance = candidate_distance;
-                nearest = Some(HitTestResult { cluster_index: index, caret, is_exact: false });
+                nearest = Some(HitTestResult {
+                    cluster_index: index,
+                    caret,
+                    is_exact: false,
+                });
             }
         }
     }
@@ -124,10 +154,17 @@ pub(super) fn hit_test(run: &OwnedTextRun, x: f32) -> HitTestResult {
 }
 
 pub(super) fn selection_rects(
-    run: &OwnedTextRun, range: Range<usize>, y: f32, height: f32,
+    run: &OwnedTextRun,
+    range: Range<usize>,
+    y: f32,
+    height: f32,
 ) -> Vec<SelectionRect> {
-    if range.start >= range.end || run.logical_text.get(range.clone()).is_none()
-        || !y.is_finite() || !height.is_finite() || height <= 0.0 || !(y + height).is_finite()
+    if range.start >= range.end
+        || run.logical_text.get(range.clone()).is_none()
+        || !y.is_finite()
+        || !height.is_finite()
+        || height <= 0.0
+        || !(y + height).is_finite()
     {
         return Vec::new();
     }
@@ -164,10 +201,19 @@ pub(super) fn selection_rects(
         }
         merged.push((left, right));
     }
-    if merged.iter().any(|(left, right)| !(right - left).is_finite()) {
+    if merged
+        .iter()
+        .any(|(left, right)| !(right - left).is_finite())
+    {
         return Vec::new();
     }
-    merged.into_iter().map(|(left, right)| SelectionRect {
-        x: left, y, width: right - left, height,
-    }).collect()
+    merged
+        .into_iter()
+        .map(|(left, right)| SelectionRect {
+            x: left,
+            y,
+            width: right - left,
+            height,
+        })
+        .collect()
 }

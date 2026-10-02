@@ -10,7 +10,7 @@
 
 use franken_markdown::highlight::{Span, Tok};
 use franken_markdown::lang_capabilities::{
-    validate_span_tiling, CapabilityAuditError, CapabilityLevel, CapabilityMatrix,
+    CapabilityAuditError, CapabilityLevel, CapabilityMatrix, validate_span_tiling,
 };
 use franken_markdown::lang_dispatch::{
     DispatchRequest, LanguageId, LanguageRegistry, QualificationStatus,
@@ -40,18 +40,42 @@ fn capability_ladder_properties_and_permitted_claims() {
     assert!(CapabilityLevel::ExternalSemantic.allows_compiler_claim());
 
     // Permitted claim strings match Plan §11.5 definitions
-    assert!(CapabilityLevel::Bytes.permitted_claim().contains("Exact source representation"));
-    assert!(CapabilityLevel::Lexical.permitted_claim().contains("Qualified token classification"));
-    assert!(CapabilityLevel::Structural.permitted_claim().contains("Parser-supported syntax entities"));
-    assert!(CapabilityLevel::ExternalSemantic.permitted_claim().contains("independently qualified provider"));
+    assert!(
+        CapabilityLevel::Bytes
+            .permitted_claim()
+            .contains("Exact source representation")
+    );
+    assert!(
+        CapabilityLevel::Lexical
+            .permitted_claim()
+            .contains("Qualified token classification")
+    );
+    assert!(
+        CapabilityLevel::Structural
+            .permitted_claim()
+            .contains("Parser-supported syntax entities")
+    );
+    assert!(
+        CapabilityLevel::ExternalSemantic
+            .permitted_claim()
+            .contains("independently qualified provider")
+    );
 }
 
 #[test]
 fn release_matrix_covers_all_20_required_languages_as_implemented() {
     let matrix = CapabilityMatrix::release_20();
     assert_eq!(matrix.len(), 20, "Must contain exactly 20 language routes");
-    assert_eq!(matrix.implemented_count(), 20, "All 20 routes must be Implemented");
-    assert_eq!(matrix.provisional_count(), 0, "Zero routes should be Provisional");
+    assert_eq!(
+        matrix.implemented_count(),
+        20,
+        "All 20 routes must be Implemented"
+    );
+    assert_eq!(
+        matrix.provisional_count(),
+        0,
+        "Zero routes should be Provisional"
+    );
     assert_eq!(matrix.missing_count(), 0, "Zero routes should be Missing");
 
     for &id in &LanguageId::ALL {
@@ -61,11 +85,31 @@ fn release_matrix_covers_all_20_required_languages_as_implemented() {
         assert_eq!(row.version, 1);
         assert_eq!(row.status, QualificationStatus::Implemented);
         assert_eq!(row.max_level, CapabilityLevel::Lexical);
-        assert!(row.source_exact_spans, "Language {:?} must guarantee source-exact spans", id);
-        assert!(row.incremental, "Language {:?} must support incremental scanning", id);
-        assert!(row.coalesced_equivalence, "Language {:?} must have verified coalesced equivalence", id);
-        assert!(!row.provisional_choices, "Language {:?} must not rely on provisional choices", id);
-        assert!(!row.multiline_constructs.is_empty(), "Language {:?} must declare multiline constructs", id);
+        assert!(
+            row.source_exact_spans,
+            "Language {:?} must guarantee source-exact spans",
+            id
+        );
+        assert!(
+            row.incremental,
+            "Language {:?} must support incremental scanning",
+            id
+        );
+        assert!(
+            row.coalesced_equivalence,
+            "Language {:?} must have verified coalesced equivalence",
+            id
+        );
+        assert!(
+            !row.provisional_choices,
+            "Language {:?} must not rely on provisional choices",
+            id
+        );
+        assert!(
+            !row.multiline_constructs.is_empty(),
+            "Language {:?} must declare multiline constructs",
+            id
+        );
     }
 }
 
@@ -99,7 +143,9 @@ fn negative_control_audit_rejects_compiler_semantic_claim() {
 
 #[test]
 fn negative_control_audit_rejects_non_source_exact_span_claim() {
-    let mut bad_row = CapabilityMatrix::release_20().lookup_id(LanguageId::Python).unwrap();
+    let mut bad_row = CapabilityMatrix::release_20()
+        .lookup_id(LanguageId::Python)
+        .unwrap();
     bad_row.source_exact_spans = false; // ILLEGAL: must guarantee source-exact spans
     assert!(!bad_row.source_exact_spans);
 
@@ -116,17 +162,62 @@ fn conservative_ambiguities_flagged_truthfully() {
 
     // JS, TS, JSX, TSX have grammatical ambiguities without compiler AST
     // and MUST be flagged as conservative_ambiguities: true (Plan §11.7).
-    assert!(matrix.lookup_id(LanguageId::JavaScript).unwrap().conservative_ambiguities);
-    assert!(matrix.lookup_id(LanguageId::TypeScript).unwrap().conservative_ambiguities);
-    assert!(matrix.lookup_id(LanguageId::Jsx).unwrap().conservative_ambiguities);
-    assert!(matrix.lookup_id(LanguageId::Tsx).unwrap().conservative_ambiguities);
+    assert!(
+        matrix
+            .lookup_id(LanguageId::JavaScript)
+            .unwrap()
+            .conservative_ambiguities
+    );
+    assert!(
+        matrix
+            .lookup_id(LanguageId::TypeScript)
+            .unwrap()
+            .conservative_ambiguities
+    );
+    assert!(
+        matrix
+            .lookup_id(LanguageId::Jsx)
+            .unwrap()
+            .conservative_ambiguities
+    );
+    assert!(
+        matrix
+            .lookup_id(LanguageId::Tsx)
+            .unwrap()
+            .conservative_ambiguities
+    );
 
     // Languages with unambiguous lexical boundaries do not set this flag
-    assert!(!matrix.lookup_id(LanguageId::Rust).unwrap().conservative_ambiguities);
-    assert!(!matrix.lookup_id(LanguageId::Python).unwrap().conservative_ambiguities);
-    assert!(!matrix.lookup_id(LanguageId::Go).unwrap().conservative_ambiguities);
-    assert!(!matrix.lookup_id(LanguageId::Json).unwrap().conservative_ambiguities);
-    assert!(!matrix.lookup_id(LanguageId::Toml).unwrap().conservative_ambiguities);
+    assert!(
+        !matrix
+            .lookup_id(LanguageId::Rust)
+            .unwrap()
+            .conservative_ambiguities
+    );
+    assert!(
+        !matrix
+            .lookup_id(LanguageId::Python)
+            .unwrap()
+            .conservative_ambiguities
+    );
+    assert!(
+        !matrix
+            .lookup_id(LanguageId::Go)
+            .unwrap()
+            .conservative_ambiguities
+    );
+    assert!(
+        !matrix
+            .lookup_id(LanguageId::Json)
+            .unwrap()
+            .conservative_ambiguities
+    );
+    assert!(
+        !matrix
+            .lookup_id(LanguageId::Toml)
+            .unwrap()
+            .conservative_ambiguities
+    );
 }
 
 #[test]
@@ -274,29 +365,90 @@ fn source_exact_span_tiling_verified_for_all_20_languages() {
 
     // Adversarial sample snippets exercising comments, strings, operators, and multiline constructs
     let fixtures: &[(&str, &[u8])] = &[
-        ("rust", b"// comment\nfn test<'a>(x: &'a str) -> r#\"raw string\"# { 123 }\n"),
-        ("python", b"# comment\ndef test(x):\n    \"\"\"docstring\"\"\"\n    return f'{x}'\n"),
-        ("javascript", b"// js\nconst x = `template ${val}`; const r = /abc/g;\n"),
-        ("typescript", b"// ts\ninterface X<T> { a: T; }\nconst val: number = 42;\n"),
-        ("jsx", b"// jsx\nconst el = <div id=\"x\"><span>text</span><>{expr}</></div>;\n"),
-        ("tsx", b"// tsx\nconst El: React.FC<Props> = ({x}) => <div prop={...rest}>{x}</div>;\n"),
-        ("c", b"/* c */\n#define FOO \\\n  42\nint main() { return 0; }\n"),
-        ("cpp", b"/* cpp */\n#include <iostream>\nauto r = R\"(raw)\";\nint main() {}\n"),
-        ("csharp", b"// cs\nvar s = @\"verbatim\";\nvar i = $\"interpolated {1}\";\n"),
-        ("go", b"// go\nfunc test() string { return `raw backtick` }\n"),
-        ("java", b"// java\nString block = \"\"\"\n  text block\n  \"\"\";\n"),
+        (
+            "rust",
+            b"// comment\nfn test<'a>(x: &'a str) -> r#\"raw string\"# { 123 }\n",
+        ),
+        (
+            "python",
+            b"# comment\ndef test(x):\n    \"\"\"docstring\"\"\"\n    return f'{x}'\n",
+        ),
+        (
+            "javascript",
+            b"// js\nconst x = `template ${val}`; const r = /abc/g;\n",
+        ),
+        (
+            "typescript",
+            b"// ts\ninterface X<T> { a: T; }\nconst val: number = 42;\n",
+        ),
+        (
+            "jsx",
+            b"// jsx\nconst el = <div id=\"x\"><span>text</span><>{expr}</></div>;\n",
+        ),
+        (
+            "tsx",
+            b"// tsx\nconst El: React.FC<Props> = ({x}) => <div prop={...rest}>{x}</div>;\n",
+        ),
+        (
+            "c",
+            b"/* c */\n#define FOO \\\n  42\nint main() { return 0; }\n",
+        ),
+        (
+            "cpp",
+            b"/* cpp */\n#include <iostream>\nauto r = R\"(raw)\";\nint main() {}\n",
+        ),
+        (
+            "csharp",
+            b"// cs\nvar s = @\"verbatim\";\nvar i = $\"interpolated {1}\";\n",
+        ),
+        (
+            "go",
+            b"// go\nfunc test() string { return `raw backtick` }\n",
+        ),
+        (
+            "java",
+            b"// java\nString block = \"\"\"\n  text block\n  \"\"\";\n",
+        ),
         ("swift", b"/* swift /* nested */ */\nlet s = #\"raw \"#;\n"),
-        ("shell", b"# bash\nVAR=val cat << 'EOF'\nheredoc line\nEOF\n"),
-        ("json", b"{\n  \"key\": [1, 2.5, true, null, \"str\\nval\"]\n}\n"),
-        ("toml", b"# toml\n[section]\nkey = '''multiline\nliteral'''\nnum = 42\n"),
-        ("yaml", b"# yaml\nkey: |\n  literal block\n  scalar\nitem: 123\n"),
-        ("sql", b"-- sql\nSELECT a, b /* block */ FROM tbl WHERE a = 'text';\n"),
-        ("html", b"<!DOCTYPE html>\n<!-- comment -->\n<div class=\"x\">text &amp;</div>\n"),
-        ("css", b"/* css */\n@media screen {\n  .cls { color: #fff; content: 'str'; }\n}\n"),
-        ("markdown", b"# Heading\n\n> quote\n\n```rust\nfn code() {}\n```\n"),
+        (
+            "shell",
+            b"# bash\nVAR=val cat << 'EOF'\nheredoc line\nEOF\n",
+        ),
+        (
+            "json",
+            b"{\n  \"key\": [1, 2.5, true, null, \"str\\nval\"]\n}\n",
+        ),
+        (
+            "toml",
+            b"# toml\n[section]\nkey = '''multiline\nliteral'''\nnum = 42\n",
+        ),
+        (
+            "yaml",
+            b"# yaml\nkey: |\n  literal block\n  scalar\nitem: 123\n",
+        ),
+        (
+            "sql",
+            b"-- sql\nSELECT a, b /* block */ FROM tbl WHERE a = 'text';\n",
+        ),
+        (
+            "html",
+            b"<!DOCTYPE html>\n<!-- comment -->\n<div class=\"x\">text &amp;</div>\n",
+        ),
+        (
+            "css",
+            b"/* css */\n@media screen {\n  .cls { color: #fff; content: 'str'; }\n}\n",
+        ),
+        (
+            "markdown",
+            b"# Heading\n\n> quote\n\n```rust\nfn code() {}\n```\n",
+        ),
     ];
 
-    assert_eq!(fixtures.len(), 20, "All 20 languages must have an active tiling test fixture");
+    assert_eq!(
+        fixtures.len(),
+        20,
+        "All 20 languages must have an active tiling test fixture"
+    );
 
     for &(lang, code) in fixtures {
         let req = DispatchRequest {

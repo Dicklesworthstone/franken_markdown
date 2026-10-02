@@ -11,10 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::wasm::{self, WasmRenderOptions};
 use crate::{
-    BookInput, DarkModePolicy, FontAssetSlot, Theme, ZipWriter, book_pdf_document,
-    build_book, build_search_index, compute_diff, compute_doc_stats, inject_book_nav,
-    parse_markdown, render_epub, render_html_document, render_interactive_html,
-    render_pdf_document, rewrite_links_for_site, search_index_json,
+    BookInput, DarkModePolicy, FontAssetSlot, Theme, ZipWriter, book_pdf_document, build_book,
+    build_search_index, compute_diff, compute_doc_stats, inject_book_nav, parse_markdown,
+    render_epub, render_html_document, render_interactive_html, render_pdf_document,
+    rewrite_links_for_site, search_index_json,
 };
 
 mod pdf_page;
@@ -177,8 +177,11 @@ pub fn render_svg_configured(
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
     options.font_scale = positive_f32(font_scale, "fontScale")?;
     svg::render_with_options(
-        markdown, &options, finite_f32(max_width_pt).unwrap_or(612.0),
-    ).map_err(render_error_to_js)
+        markdown,
+        &options,
+        finite_f32(max_width_pt).unwrap_or(612.0),
+    )
+    .map_err(render_error_to_js)
 }
 
 /// Render an EPUB 3 e-book through the same parser and HTML theme model.

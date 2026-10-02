@@ -4,14 +4,16 @@
 //! fields. Other exports reject fields with no consumer before reading a file.
 
 use super::{
-    FILE_FIELDS, Field, HTML_FIELDS, JsonValue, PDF_FIELDS, ToolError, boolean,
-    html_options, invalid_options, pdf_options, string, theme, validate_arguments,
+    FILE_FIELDS, Field, HTML_FIELDS, JsonValue, PDF_FIELDS, ToolError, boolean, html_options,
+    invalid_options, pdf_options, string, theme, validate_arguments,
 };
 use crate::{HtmlOptions, PdfASettings, PdfOptions, SvgOptions};
 use std::collections::BTreeMap;
 
 const SVG_WIDTH: Field = (
-    "maxWidthPt", "number", "SVG poster width in points (144..14400); SVG only",
+    "maxWidthPt",
+    "number",
+    "SVG poster width in points (144..14400); SVG only",
 );
 
 /// Both discovery and dispatch use this deduplicated union. Target-specific
@@ -28,8 +30,11 @@ pub(super) fn fields() -> Vec<Field> {
 }
 
 pub(super) fn supported_targets(name: &str) -> String {
-    ["html", "pdf", "both", "epub", "svg"].into_iter()
-        .filter(|target| supports(target, name)).collect::<Vec<_>>().join(", ")
+    ["html", "pdf", "both", "epub", "svg"]
+        .into_iter()
+        .filter(|target| supports(target, name))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn supports(target: &str, name: &str) -> bool {
@@ -67,17 +72,31 @@ pub(crate) struct PreparedOptions {
 /// The resource payloads themselves are still decoded once by file_render.
 pub(crate) fn prepare(args: &JsonValue) -> Result<PreparedOptions, ToolError> {
     validate_arguments(args, &fields(), &["path"])?;
-    let value = string(args, "to").unwrap_or("html").trim().to_ascii_lowercase();
+    let value = string(args, "to")
+        .unwrap_or("html")
+        .trim()
+        .to_ascii_lowercase();
     let target = match value.as_str() {
-        "html" => "html", "pdf" => "pdf", "both" => "both",
-        "epub" => "epub", "svg" => "svg",
-        _ => return Err(invalid_options(format!("Unsupported output target: '{value}'"), "unsupported_target")),
+        "html" => "html",
+        "pdf" => "pdf",
+        "both" => "both",
+        "epub" => "epub",
+        "svg" => "svg",
+        _ => {
+            return Err(invalid_options(
+                format!("Unsupported output target: '{value}'"),
+                "unsupported_target",
+            ));
+        }
     };
     if let Some(object) = args.as_object() {
         for name in object.keys() {
             if !supports(target, name) {
                 return Err(invalid_options(
-                    format!("'{name}' is not supported for '{target}'; supported targets: {}", supported_targets(name)),
+                    format!(
+                        "'{name}' is not supported for '{target}'; supported targets: {}",
+                        supported_targets(name)
+                    ),
                     "unsupported_target_option",
                 ));
             }
@@ -94,15 +113,31 @@ pub(crate) fn prepare(args: &JsonValue) -> Result<PreparedOptions, ToolError> {
         (PdfOptions::default(), PdfASettings::OFF)
     };
     let svg = if target == "svg" {
-        let width = args.get("maxWidthPt").and_then(JsonValue::as_f64).unwrap_or(612.0);
+        let width = args
+            .get("maxWidthPt")
+            .and_then(JsonValue::as_f64)
+            .unwrap_or(612.0);
         if !width.is_finite() || !(144.0..=14400.0).contains(&width) {
-            return Err(invalid_options("maxWidthPt must be 144..14400 finite points", "invalid_svg_width"));
+            return Err(invalid_options(
+                "maxWidthPt must be 144..14400 finite points",
+                "invalid_svg_width",
+            ));
         }
-        SvgOptions { theme: theme(args)?, max_width_pt: width as f32 }
+        SvgOptions {
+            theme: theme(args)?,
+            max_width_pt: width as f32,
+        }
     } else {
         SvgOptions::default()
     };
-    Ok(PreparedOptions { target, html, pdf, pdf_a, svg, interactive: boolean(args, "interactiveHtml") })
+    Ok(PreparedOptions {
+        target,
+        html,
+        pdf,
+        pdf_a,
+        svg,
+        interactive: boolean(args, "interactiveHtml"),
+    })
 }
 
 #[cfg(test)]
@@ -117,9 +152,13 @@ mod tests {
         let names: std::collections::BTreeSet<_> = fields.iter().map(|field| field.0).collect();
         assert_eq!(names.len(), fields.len());
         assert!(!names.contains("markdown"));
-        for name in names { assert!(!supported_targets(name).is_empty(), "{name}"); }
+        for name in names {
+            assert!(!supported_targets(name).is_empty(), "{name}");
+        }
         for field in HTML_FIELDS.iter().chain(PDF_FIELDS) {
-            if field.0 != "markdown" { assert!(supports("both", field.0), "{}", field.0); }
+            if field.0 != "markdown" {
+                assert!(supports("both", field.0), "{}", field.0);
+            }
         }
     }
 
@@ -140,11 +179,24 @@ mod tests {
 
     #[test]
     fn options_without_a_target_consumer_are_refused_even_when_false() {
-        for (target, field) in [("pdf", "customCss"), ("html", "author"),
-            ("epub", "interactiveHtml"), ("epub", "allowRawHtml"),
-            ("svg", "title"), ("svg", "toc"), ("html", "maxWidthPt")] {
-            let value = match field { "toc" | "allowRawHtml" | "interactiveHtml" => "false", "maxWidthPt" => "612", _ => "\"value\"" };
-            let args = parse_json(&format!("{{\"path\":\"missing.md\",\"to\":\"{target}\",\"{field}\":{value}}}")).unwrap();
+        for (target, field) in [
+            ("pdf", "customCss"),
+            ("html", "author"),
+            ("epub", "interactiveHtml"),
+            ("epub", "allowRawHtml"),
+            ("svg", "title"),
+            ("svg", "toc"),
+            ("html", "maxWidthPt"),
+        ] {
+            let value = match field {
+                "toc" | "allowRawHtml" | "interactiveHtml" => "false",
+                "maxWidthPt" => "612",
+                _ => "\"value\"",
+            };
+            let args = parse_json(&format!(
+                "{{\"path\":\"missing.md\",\"to\":\"{target}\",\"{field}\":{value}}}"
+            ))
+            .unwrap();
             let error = prepare(&args).err().unwrap();
             assert_eq!(error.2, "unsupported_target_option", "{field} for {target}");
         }
@@ -153,11 +205,17 @@ mod tests {
     #[test]
     fn svg_width_does_not_silently_fall_back_or_overflow() {
         for width in [144.0, 595.28, 14400.0] {
-            let args = parse_json(&format!("{{\"path\":\"doc.md\",\"to\":\"svg\",\"maxWidthPt\":{width}}}")).unwrap();
+            let args = parse_json(&format!(
+                "{{\"path\":\"doc.md\",\"to\":\"svg\",\"maxWidthPt\":{width}}}"
+            ))
+            .unwrap();
             assert_eq!(prepare(&args).unwrap().svg.max_width_pt, width as f32);
         }
         for width in [0.0, 143.99, 14400.01, f64::MAX] {
-            let args = parse_json(&format!("{{\"path\":\"doc.md\",\"to\":\"svg\",\"maxWidthPt\":{width}}}")).unwrap();
+            let args = parse_json(&format!(
+                "{{\"path\":\"doc.md\",\"to\":\"svg\",\"maxWidthPt\":{width}}}"
+            ))
+            .unwrap();
             assert!(prepare(&args).is_err());
         }
     }

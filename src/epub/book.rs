@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use franken_markdown::{Book, HtmlOptions, PdfImageAsset, RenderError, Result};
 
 use super::{
-    Block, CONTAINER_XML, DCTERMS_MODIFIED, Inline, MIMETYPE, NavHeading,
-    ZipWriter, chapter_xhtml, collect_headings, escape_xml_attr, escape_xml_text,
-    extract_main_body, fnv1a64, html_fragment_to_xhtml, push_nav_headings, resources, embedded_fonts, theme,
+    Block, CONTAINER_XML, DCTERMS_MODIFIED, Inline, MIMETYPE, NavHeading, ZipWriter, chapter_xhtml,
+    collect_headings, embedded_fonts, escape_xml_attr, escape_xml_text, extract_main_body, fnv1a64,
+    html_fragment_to_xhtml, push_nav_headings, resources, theme,
 };
 
 const MAX_CHAPTERS: usize = 4096;
@@ -140,7 +140,12 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
         let body = extract_main_body(&page)
             .ok_or_else(|| invalid("HTML renderer <main> wrapper not found"))?;
         let body = html_fragment_to_xhtml(body);
-        for text in [paths[index].as_str(), source.title.as_str(), chapter_lang, body.as_str()] {
+        for text in [
+            paths[index].as_str(),
+            source.title.as_str(),
+            chapter_lang,
+            body.as_str(),
+        ] {
             identity.part(text);
         }
         let content = resources::prepare_with_prefix(&body, &format!("chapter-{}-", index + 1))
@@ -148,9 +153,15 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
         repertoire.add(&source.title)?;
         repertoire.add(&content.body)?;
         resource_count += content.resources.len();
-        image_bytes += content.resources.iter().map(|r| r.bytes.len()).sum::<usize>();
+        image_bytes += content
+            .resources
+            .iter()
+            .map(|r| r.bytes.len())
+            .sum::<usize>();
         if resource_count > MAX_RESOURCES || image_bytes > MAX_IMAGE_BYTES {
-            return Err(invalid("book exceeds 4096 images or 128 MiB of image payloads"));
+            return Err(invalid(
+                "book exceeds 4096 images or 128 MiB of image payloads",
+            ));
         }
         let wrapped = format!("<main class=\"fmd\">\n{}</main>\n", content.body);
         chapters.push(Chapter {
@@ -178,17 +189,36 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
     fonts.link(&mut nav, opts.custom_css.is_some())?;
     add_bytes(&mut byte_count, fonts.byte_len())?;
     fonts.check_output(
-        [opf.len(), nav.len(), css.len(), CONTAINER_XML.len(), MIMETYPE.len()]
-            .into_iter()
-            .chain(chapters.iter().map(|chapter| chapter.xhtml.len()))
-            .chain(chapters.iter().flat_map(|chapter| chapter.content.resources.iter()
-                .map(|resource| resource.bytes.len()))),
+        [
+            opf.len(),
+            nav.len(),
+            css.len(),
+            CONTAINER_XML.len(),
+            MIMETYPE.len(),
+        ]
+        .into_iter()
+        .chain(chapters.iter().map(|chapter| chapter.xhtml.len()))
+        .chain(chapters.iter().flat_map(|chapter| {
+            chapter
+                .content
+                .resources
+                .iter()
+                .map(|resource| resource.bytes.len())
+        })),
     )?;
-    Ok(PreparedBook { chapters, opf, nav, fonts, css: css.into_owned() })
+    Ok(PreparedBook {
+        chapters,
+        opf,
+        nav,
+        fonts,
+        css: css.into_owned(),
+    })
 }
 
 fn add_bytes(total: &mut usize, count: usize) -> Result<()> {
-    *total = total.checked_add(count).ok_or_else(|| invalid("book size overflow"))?;
+    *total = total
+        .checked_add(count)
+        .ok_or_else(|| invalid("book size overflow"))?;
     if *total > MAX_BOOK_BYTES {
         return Err(invalid("rendered book exceeds 256 MiB"));
     }
@@ -335,7 +365,9 @@ fn rewrite_inlines(
                     }
                 }
             }
-            Inline::Emphasis(content) | Inline::Strong(content) | Inline::Strikethrough(content) => {
+            Inline::Emphasis(content)
+            | Inline::Strong(content)
+            | Inline::Strikethrough(content) => {
                 rewrite_inlines(content, source, known, assets);
             }
             _ => {}
@@ -371,7 +403,9 @@ impl Identity {
 }
 
 fn package(title: &str, lang: &str, identifier: &str, chapters: &[Chapter]) -> String {
-    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n<dc:identifier id=\"bookid\">");
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n<dc:identifier id=\"bookid\">",
+    );
     escape_xml_text(identifier, &mut out);
     out.push_str("</dc:identifier>\n<dc:title>");
     escape_xml_text(title, &mut out);
@@ -381,7 +415,11 @@ fn package(title: &str, lang: &str, identifier: &str, chapters: &[Chapter]) -> S
     out.push_str(DCTERMS_MODIFIED);
     out.push_str("</meta>\n</metadata>\n<manifest>\n<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n<item id=\"css\" href=\"style.css\" media-type=\"text/css\"/>\n");
     for (index, chapter) in chapters.iter().enumerate() {
-        out.push_str(&format!("<item id=\"chapter-{}\" href=\"{}\" media-type=\"application/xhtml+xml\"", index + 1, chapter.file));
+        out.push_str(&format!(
+            "<item id=\"chapter-{}\" href=\"{}\" media-type=\"application/xhtml+xml\"",
+            index + 1,
+            chapter.file
+        ));
         let properties = match (chapter.content.mathml, chapter.content.svg) {
             (true, true) => "mathml svg",
             (true, false) => "mathml",
@@ -393,7 +431,11 @@ fn package(title: &str, lang: &str, identifier: &str, chapters: &[Chapter]) -> S
         }
         out.push_str("/>\n");
         for (image, resource) in chapter.content.resources.iter().enumerate() {
-            out.push_str(&format!("<item id=\"chapter-{}-image-{}\" href=\"", index + 1, image + 1));
+            out.push_str(&format!(
+                "<item id=\"chapter-{}-image-{}\" href=\"",
+                index + 1,
+                image + 1
+            ));
             escape_xml_attr(&resource.href, &mut out);
             out.push_str(&format!("\" media-type=\"{}\"/>\n", resource.media_type));
         }
@@ -407,7 +449,9 @@ fn package(title: &str, lang: &str, identifier: &str, chapters: &[Chapter]) -> S
 }
 
 fn navigation(title: &str, lang: &str, chapters: &[Chapter]) -> String {
-    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" lang=\"");
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" lang=\"",
+    );
     escape_xml_attr(lang, &mut out);
     out.push_str("\" xml:lang=\"");
     escape_xml_attr(lang, &mut out);
@@ -455,24 +499,66 @@ mod tests {
     fn chapters_keep_order_links_languages_and_navigation() -> Result<()> {
         let book = sample()?;
         let prepared = prepare_book(&book, &HtmlOptions::default())?;
-        assert!(prepared.chapters[0].xhtml.contains("href=\"chapter-2.xhtml#second\""));
-        assert!(prepared.chapters[1].xhtml.contains("href=\"chapter-1.xhtml#first\""));
+        assert!(
+            prepared.chapters[0]
+                .xhtml
+                .contains("href=\"chapter-2.xhtml#second\"")
+        );
+        assert!(
+            prepared.chapters[1]
+                .xhtml
+                .contains("href=\"chapter-1.xhtml#first\"")
+        );
         assert!(prepared.chapters[1].xhtml.contains("xml:lang=\"fr\""));
-        assert!(prepared.chapters[0].xhtml.contains("https://example.com/second.md"));
-        assert!(prepared.opf.contains("<itemref idref=\"chapter-1\"/>\n<itemref idref=\"chapter-2\"/>"));
+        assert!(
+            prepared.chapters[0]
+                .xhtml
+                .contains("https://example.com/second.md")
+        );
+        assert!(
+            prepared
+                .opf
+                .contains("<itemref idref=\"chapter-1\"/>\n<itemref idref=\"chapter-2\"/>")
+        );
         assert!(prepared.nav.contains("chapter-1.xhtml#detail"));
         assert!(prepared.nav.contains("chapter-2.xhtml#second"));
-        assert_eq!(render_book_epub(&book, &HtmlOptions::default())?, render_book_epub(&book, &HtmlOptions::default())?);
+        assert_eq!(
+            render_book_epub(&book, &HtmlOptions::default())?,
+            render_book_epub(&book, &HtmlOptions::default())?
+        );
         Ok(())
     }
 
     #[test]
     fn resolves_encoded_paths_without_rewriting_external_or_escaping_links() {
-        assert_eq!(destination("guide/first.md", "../caf%C3%A9%20notes.md?q=1#part"), Some(("café notes.md".into(), "?q=1#part".into())));
-        assert_eq!(destination("guide/first.md", "/intro.md#top"), Some(("intro.md".into(), "#top".into())));
-        assert_eq!(destination("guide/first.md", "../second.md?time=12:00#part:two"), Some(("second.md".into(), "?time=12:00#part:two".into())));
-        for dest in ["#local", "?query", "https://example.com/x.md", "//host/x.md", "mailto:a@b", "../../outside.md", "%ff.md", "%zz.md", "bad%", ""] {
-            assert!(destination("guide/first.md", dest).is_none(), "rewrote {dest}");
+        assert_eq!(
+            destination("guide/first.md", "../caf%C3%A9%20notes.md?q=1#part"),
+            Some(("café notes.md".into(), "?q=1#part".into()))
+        );
+        assert_eq!(
+            destination("guide/first.md", "/intro.md#top"),
+            Some(("intro.md".into(), "#top".into()))
+        );
+        assert_eq!(
+            destination("guide/first.md", "../second.md?time=12:00#part:two"),
+            Some(("second.md".into(), "?time=12:00#part:two".into()))
+        );
+        for dest in [
+            "#local",
+            "?query",
+            "https://example.com/x.md",
+            "//host/x.md",
+            "mailto:a@b",
+            "../../outside.md",
+            "%ff.md",
+            "%zz.md",
+            "bad%",
+            "",
+        ] {
+            assert!(
+                destination("guide/first.md", dest).is_none(),
+                "rewrote {dest}"
+            );
         }
     }
 
@@ -509,9 +595,20 @@ mod tests {
         let prepared = prepare_book(&book, &opts)?;
         assert_eq!(prepared.chapters[0].content.resources.len(), 1);
         assert_eq!(prepared.chapters[1].content.resources.len(), 1);
-        assert!(prepared.chapters[0].xhtml.contains("assets/chapter-1-image-1.svg"));
-        assert!(prepared.chapters[1].xhtml.contains("assets/chapter-2-image-1.svg"));
-        assert_ne!(prepared.chapters[0].content.resources[0].bytes, prepared.chapters[1].content.resources[0].bytes);
+        assert!(
+            prepared.chapters[0]
+                .xhtml
+                .contains("assets/chapter-1-image-1.svg")
+        );
+        assert!(
+            prepared.chapters[1]
+                .xhtml
+                .contains("assets/chapter-2-image-1.svg")
+        );
+        assert_ne!(
+            prepared.chapters[0].content.resources[0].bytes,
+            prepared.chapters[1].content.resources[0].bytes
+        );
         assert_eq!(prepared.opf.matches("properties=\"svg\"").count(), 2);
         Ok(())
     }
@@ -520,13 +617,19 @@ mod tests {
     fn styles_and_chapter_order_affect_identity() -> Result<()> {
         let book = sample()?;
         let plain = prepare_book(&book, &HtmlOptions::default())?;
-        let opts = HtmlOptions { custom_css: Some(".fmd { color: navy; }".into()), ..HtmlOptions::default() };
+        let opts = HtmlOptions {
+            custom_css: Some(".fmd { color: navy; }".into()),
+            ..HtmlOptions::default()
+        };
         let styled = prepare_book(&book, &opts)?;
         assert_ne!(plain.opf, styled.opf);
         assert!(styled.chapters[0].xhtml.contains("<main class=\"fmd\">"));
         let mut reversed = book;
         reversed.chapters.reverse();
-        assert_ne!(plain.opf, prepare_book(&reversed, &HtmlOptions::default())?.opf);
+        assert_ne!(
+            plain.opf,
+            prepare_book(&reversed, &HtmlOptions::default())?.opf
+        );
         Ok(())
     }
 

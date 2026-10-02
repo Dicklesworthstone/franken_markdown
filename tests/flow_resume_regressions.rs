@@ -56,8 +56,16 @@ fn eager_and_out_of_order_assets_produce_identical_resumed_display_lists() {
         assert_eq!(stepped.blocks(), whole.blocks(), "batch={batch}");
         let actual = stepped.to_display_list();
         assert_eq!(actual.items(), expected.items(), "batch={batch}");
-        assert_eq!(actual.reading_order(), expected.reading_order(), "batch={batch}");
-        assert_eq!(actual.total_bounds(), expected.total_bounds(), "batch={batch}");
+        assert_eq!(
+            actual.reading_order(),
+            expected.reading_order(),
+            "batch={batch}"
+        );
+        assert_eq!(
+            actual.total_bounds(),
+            expected.total_bounds(),
+            "batch={batch}"
+        );
     }
 }
 
@@ -91,9 +99,11 @@ fn generation_change_during_a_buffered_fence_preserves_code_and_refreshes_assets
     );
 
     while let Some(step) = engine.step().unwrap() {
-        assert!(step.unresolved_assets.iter().all(|request| {
-            request.generation == 2 && request.url != "never-load.png"
-        }));
+        assert!(
+            step.unresolved_assets
+                .iter()
+                .all(|request| { request.generation == 2 && request.url != "never-load.png" })
+        );
     }
     let code: Vec<_> = engine
         .blocks()
@@ -111,7 +121,12 @@ fn generation_change_during_a_buffered_fence_preserves_code_and_refreshes_assets
     }
     assert!(engine.unresolved_assets().is_empty());
     assert_eq!(engine.resolved_assets().len(), 2);
-    assert!(engine.resolved_assets().iter().all(|result| result.generation == 2));
+    assert!(
+        engine
+            .resolved_assets()
+            .iter()
+            .all(|result| result.generation == 2)
+    );
 }
 
 #[test]

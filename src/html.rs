@@ -135,7 +135,12 @@ impl<'a> FragmentRenderer<'a> {
     }
 
     pub(crate) fn inline(&mut self, inline: &Inline, out: &mut String) {
-        render_inlines(std::slice::from_ref(inline), out, self.opts, &mut self.state);
+        render_inlines(
+            std::slice::from_ref(inline),
+            out,
+            self.opts,
+            &mut self.state,
+        );
     }
 
     pub(crate) fn end_inline_block(&self, block: &Block, out: &mut String) {
@@ -845,7 +850,11 @@ fn render_inlines(
     }
 }
 
-pub(crate) fn push_html_image_asset_data_uri(dest: &str, opts: &HtmlOptions, out: &mut String) -> bool {
+pub(crate) fn push_html_image_asset_data_uri(
+    dest: &str,
+    opts: &HtmlOptions,
+    out: &mut String,
+) -> bool {
     let Some((mime, bytes)) = html_image_asset(dest, opts) else {
         return false;
     };

@@ -8,9 +8,7 @@
 
 #![forbid(unsafe_code)]
 
-use franken_markdown::display::{
-    AccessibleReadingRole, DisplayItem, VectorShapeType,
-};
+use franken_markdown::display::{AccessibleReadingRole, DisplayItem, VectorShapeType};
 use franken_markdown::flow_display::{
     AssetRequestId, AssetResult, DisplayBlock, FlowDisplayError, ResumableFlowDisplay,
 };
@@ -155,7 +153,10 @@ fn unknown_asset_request_rejected() {
         bytes: None,
     };
     let err = engine.provide_asset(res).unwrap_err();
-    assert_eq!(err, FlowDisplayError::UnknownAssetRequest(AssetRequestId(9999)));
+    assert_eq!(
+        err,
+        FlowDisplayError::UnknownAssetRequest(AssetRequestId(9999))
+    );
 }
 
 #[test]
@@ -169,12 +170,24 @@ fn display_list_primitives_without_gpu() {
 
     // Verify presence of text runs, vector paths, anchors, and images.
     let has_text = dl.items().iter().any(|i| matches!(i, DisplayItem::Text(_)));
-    let has_vector = dl.items().iter().any(|i| matches!(i, DisplayItem::Vector(_)));
-    let has_anchor = dl.items().iter().any(|i| matches!(i, DisplayItem::Anchor(_)));
-    let has_image = dl.items().iter().any(|i| matches!(i, DisplayItem::Image(_)));
+    let has_vector = dl
+        .items()
+        .iter()
+        .any(|i| matches!(i, DisplayItem::Vector(_)));
+    let has_anchor = dl
+        .items()
+        .iter()
+        .any(|i| matches!(i, DisplayItem::Anchor(_)));
+    let has_image = dl
+        .items()
+        .iter()
+        .any(|i| matches!(i, DisplayItem::Image(_)));
 
     assert!(has_text, "display list contains text runs");
-    assert!(has_vector, "display list contains vector paths (rules, quotes, tables)");
+    assert!(
+        has_vector,
+        "display list contains vector paths (rules, quotes, tables)"
+    );
     assert!(has_anchor, "display list contains semantic anchors");
     assert!(has_image, "display list contains image placeholder");
 
@@ -304,7 +317,10 @@ fn finish_then_step_returns_none() {
     while engine.step().expect("step").is_some() {}
     assert!(engine.is_finished());
     let result = engine.step();
-    assert!(result.expect("no error").is_none(), "finished engine yields None");
+    assert!(
+        result.expect("no error").is_none(),
+        "finished engine yields None"
+    );
 }
 
 #[test]

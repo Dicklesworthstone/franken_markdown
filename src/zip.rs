@@ -211,14 +211,7 @@ fn write_local_entry(out: &mut Vec<u8>, entry: &Entry) -> bool {
     let name = entry.name.as_bytes();
     let compressed_size = entry.data.len() as u64;
     push_u32(out, LOCAL_HEADER_SIG);
-    push_u16(
-        out,
-        if zip64 {
-            VERSION_ZIP64
-        } else {
-            VERSION_NEEDED
-        },
-    );
+    push_u16(out, if zip64 { VERSION_ZIP64 } else { VERSION_NEEDED });
     push_u16(out, FLAG_UTF8);
     push_u16(out, entry.method);
     push_u16(out, 0); // mod time: zero for determinism
@@ -260,11 +253,7 @@ fn write_central_entry(out: &mut Vec<u8>, entry: &Entry, local_offset: u64) -> b
     let zip64_sizes = entry.needs_zip64_sizes();
     let zip64_offset = local_offset >= u64::from(u32::MAX);
     let zip64 = zip64_sizes || zip64_offset;
-    let version = if zip64 {
-        VERSION_ZIP64
-    } else {
-        VERSION_NEEDED
-    };
+    let version = if zip64 { VERSION_ZIP64 } else { VERSION_NEEDED };
     let name = entry.name.as_bytes();
     let compressed_size = entry.data.len() as u64;
     let extra_size = (if zip64_sizes { 16 } else { 0 }) + (if zip64_offset { 8 } else { 0 });
@@ -495,7 +484,13 @@ mod tests {
         let count_limit = u64::from(u16::MAX);
         let size_limit = u64::from(u32::MAX);
         for (count, size, offset, members, zip64) in [
-            (count_limit - 1, size_limit - 1, size_limit - 1, false, false),
+            (
+                count_limit - 1,
+                size_limit - 1,
+                size_limit - 1,
+                false,
+                false,
+            ),
             (count_limit, 46, 30, false, true),
             (count_limit + 1, 46, 30, false, true),
             (1, size_limit, 30, false, true),

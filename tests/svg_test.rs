@@ -44,7 +44,10 @@ fn assert_well_formed(svg: &str) {
     let mut rest = svg;
     while let Some(open) = rest.find('<') {
         let text = &rest[..open];
-        if stack.last().is_some_and(|name| matches!(name.as_str(), "title" | "desc")) {
+        if stack
+            .last()
+            .is_some_and(|name| matches!(name.as_str(), "title" | "desc"))
+        {
             // Accessible link metadata is text, not visible glyph rendering.
             // Only descriptive elements admit it, and escaping stays strict.
             assert!(!text.contains('>'), "unescaped metadata markup");
@@ -52,7 +55,8 @@ fn assert_well_formed(svg: &str) {
                 let tail = &text[i..];
                 assert!(
                     ["&amp;", "&lt;", "&gt;", "&quot;", "&apos;"]
-                        .iter().any(|entity| tail.starts_with(entity)),
+                        .iter()
+                        .any(|entity| tail.starts_with(entity)),
                     "unescaped metadata ampersand: {text:?}"
                 );
             }

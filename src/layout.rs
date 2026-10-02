@@ -2656,9 +2656,9 @@ pub fn break_paragraph_into(
             // paragraph exactly at the margin would break differently depending on
             // which path ran. Zero for zero-protrusion boxes (default identical).
             let (pl, pr) = paragraph_edge_protrusion(items);
-            let effective_width = line_width
-                + LayoutUnit::from_milli_points(pl.saturating_add(pr));
-            if let Some(line) = trailing_forced_fit_break(candidate, items.len(), width, effective_width)
+            let effective_width = line_width + LayoutUnit::from_milli_points(pl.saturating_add(pr));
+            if let Some(line) =
+                trailing_forced_fit_break(candidate, items.len(), width, effective_width)
             {
                 scratch.forced_prefix.clear();
                 scratch.metrics.width.clear();
@@ -2771,9 +2771,8 @@ pub fn break_paragraph_into(
             }
             let overfull = is_overfull;
 
-            let (badness, fitness, fitness_milli) = candidate_quality(
-                *candidate, segment, eff_line_width, scratch.is_justified(),
-            );
+            let (badness, fitness, fitness_milli) =
+                candidate_quality(*candidate, segment, eff_line_width, scratch.is_justified());
             // An underfull line that needs more stretch than its glue offers
             // (INF badness, not overfull) is a last resort — but it never
             // bleeds into the margin, so it must beat every overfull
@@ -3038,7 +3037,11 @@ pub fn break_paragraph_into(
         };
         if last.is_empty() {
             greedy_break_paragraph_into(
-                candidates, line_width, &scratch.metrics, scratch.is_justified(), out,
+                candidates,
+                line_width,
+                &scratch.metrics,
+                scratch.is_justified(),
+                out,
             );
             return;
         }
@@ -3068,8 +3071,12 @@ pub fn break_paragraph_into(
         // forced break makes the last candidate unreachable). Fall back to greedy
         // first-fit rather than emitting nothing.
         greedy_break_paragraph_into(
-                candidates, line_width, &scratch.metrics, scratch.is_justified(), out,
-            );
+            candidates,
+            line_width,
+            &scratch.metrics,
+            scratch.is_justified(),
+            out,
+        );
         return;
     }
     while let Some(state) = scratch.states[idx] {
@@ -3081,7 +3088,6 @@ pub fn break_paragraph_into(
     }
     out.reverse();
 }
-
 
 #[derive(Debug, Clone, Copy)]
 struct CountedBreakState {
@@ -3124,7 +3130,9 @@ pub fn break_paragraph_candidates(
     let mut baseline = Vec::new();
     break_paragraph_into(items, line_width, scratch, &mut baseline);
     if baseline.is_empty() {
-        return ParagraphCandidates { variants: Vec::new() };
+        return ParagraphCandidates {
+            variants: Vec::new(),
+        };
     }
 
     let baseline_count = baseline.len();
@@ -3192,26 +3200,25 @@ pub fn break_paragraph_candidates(
 
             let include_box_elasticity =
                 line_can_adjust(scratch.is_justified(), *candidate, items.len());
-            let segment = scratch
-                .metrics
-                .segment_metrics(start, *candidate, include_box_elasticity);
+            let segment =
+                scratch
+                    .metrics
+                    .segment_metrics(start, *candidate, include_box_elasticity);
             let eff_line_width = line_width
                 + LayoutUnit(clamp_i64_to_i32(
                     scratch
                         .metrics
                         .segment_protrusion(start, candidate.item_index),
                 ));
-            let is_overfull =
-                segment.width.saturating_sub(segment.shrink) > eff_line_width;
+            let is_overfull = segment.width.saturating_sub(segment.shrink) > eff_line_width;
             // Alternatives are a pagination-quality refinement, not another
             // overfull fallback. The unchanged baseline already carries any
             // unavoidable overflow. Never offer a worse-fitting L-1/L+1 path.
             if is_overfull {
                 continue;
             }
-            let (badness, fitness, fitness_milli) = candidate_quality(
-                *candidate, segment, eff_line_width, scratch.is_justified(),
-            );
+            let (badness, fitness, fitness_milli) =
+                candidate_quality(*candidate, segment, eff_line_width, scratch.is_justified());
             // Line-count variants exist so pagination can trade a line for
             // better page breaks; they must stay good alternatives, so a
             // past-stretch underfull line stays illegal here (unlike the
@@ -3247,9 +3254,7 @@ pub fn break_paragraph_candidates(
                     flagged: candidate.flagged,
                     fitness,
                 };
-                if states[j][1]
-                    .is_none_or(|old| demerits <= old.line.demerits)
-                {
+                if states[j][1].is_none_or(|old| demerits <= old.line.demerits) {
                     states[j][1] = Some(state);
                 }
                 continue;
@@ -3260,19 +3265,16 @@ pub fn break_paragraph_candidates(
                     continue;
                 };
                 let line_count = previous_count + 1;
-                let demerits = previous
-                    .line
-                    .demerits
-                    .saturating_add(line_demerits(
-                        badness,
-                        candidate.penalty,
-                        previous.flagged,
-                        candidate.flagged,
-                        Some(previous.fitness),
-                        fitness,
-                        None,
-                        fitness_milli,
-                    ));
+                let demerits = previous.line.demerits.saturating_add(line_demerits(
+                    badness,
+                    candidate.penalty,
+                    previous.flagged,
+                    candidate.flagged,
+                    Some(previous.fitness),
+                    fitness,
+                    None,
+                    fitness_milli,
+                ));
                 let state = CountedBreakState {
                     prev: Some((prev_idx, previous_count)),
                     line: LineBreak {
@@ -3288,9 +3290,7 @@ pub fn break_paragraph_candidates(
                     flagged: candidate.flagged,
                     fitness,
                 };
-                if states[j][line_count]
-                    .is_none_or(|old| demerits <= old.line.demerits)
-                {
+                if states[j][line_count].is_none_or(|old| demerits <= old.line.demerits) {
                     states[j][line_count] = Some(state);
                 }
             }
@@ -3795,22 +3795,27 @@ fn greedy_break_paragraph_into(
 ) {
     let item_count = candidates.last().map_or(0, |candidate| candidate.next);
     let measure = |start, candidate| {
-        metrics.segment_metrics(start, candidate, line_can_adjust(justified, candidate, item_count))
-    };
-    let emit = |out: &mut Vec<LineBreak>, start, candidate: BreakCandidate, segment: SegmentMetrics| {
-        let (badness, fitness, _) =
-            candidate_quality(candidate, segment, line_width, justified);
-        out.push(LineBreak {
+        metrics.segment_metrics(
             start,
-            end: candidate.item_index,
-            next: candidate.next,
-            natural_width: segment.width,
-            badness,
-            fitness,
-            demerits: 0,
-            fitness_milli: 0,
-        });
+            candidate,
+            line_can_adjust(justified, candidate, item_count),
+        )
     };
+    let emit =
+        |out: &mut Vec<LineBreak>, start, candidate: BreakCandidate, segment: SegmentMetrics| {
+            let (badness, fitness, _) =
+                candidate_quality(candidate, segment, line_width, justified);
+            out.push(LineBreak {
+                start,
+                end: candidate.item_index,
+                next: candidate.next,
+                natural_width: segment.width,
+                badness,
+                fitness,
+                demerits: 0,
+                fitness_milli: 0,
+            });
+        };
     let mut start = 0usize;
     let mut last_candidate: Option<BreakCandidate> = None;
     for &candidate in candidates {
@@ -3911,7 +3916,6 @@ const fn clamp_usize_to_u8(value: usize) -> u8 {
     }
 }
 
-
 #[cfg(test)]
 mod paragraph_candidate_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -3951,8 +3955,7 @@ mod paragraph_candidate_tests {
         ];
         let mut scratch = ParagraphLayoutScratch::new();
         scratch.set_expansion_permilli(0);
-        let candidates =
-            break_paragraph_candidates(&items, LayoutUnit::ZERO, &mut scratch);
+        let candidates = break_paragraph_candidates(&items, LayoutUnit::ZERO, &mut scratch);
         let counts: Vec<_> = candidates
             .variants
             .iter()
@@ -3985,8 +3988,7 @@ mod paragraph_candidate_tests {
                 1 => scratch.set_river_penalty(true),
                 _ => scratch.set_pareto_breaking(true),
             }
-            let candidates =
-                break_paragraph_candidates(&items, LayoutUnit::ZERO, &mut scratch);
+            let candidates = break_paragraph_candidates(&items, LayoutUnit::ZERO, &mut scratch);
             assert_eq!(candidates.variants.len(), 1);
             assert_eq!(
                 candidates.variants[0].lines.len(),

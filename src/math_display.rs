@@ -67,8 +67,8 @@ impl MathDisplay {
     /// The math is parsed eagerly to validate; parse errors are surfaced
     /// immediately rather than during rendering.
     pub fn new(source: &str, offset: usize) -> Result<Self, MathDisplayError> {
-        let _node = fmd_math::parse(source)
-            .map_err(|e| MathDisplayError::ParseError(e.to_string()))?;
+        let _node =
+            fmd_math::parse(source).map_err(|e| MathDisplayError::ParseError(e.to_string()))?;
         Ok(Self {
             source: source.to_owned(),
             source_offset: offset,
@@ -173,7 +173,9 @@ pub fn math_anchor(
     source_offset: usize,
 ) -> DisplaySemanticAnchor {
     let w = ((layout.width as f32) * font_size).round().max(1.0);
-    let total_h = (((layout.height + layout.depth) as f32) * font_size).round().max(1.0);
+    let total_h = (((layout.height + layout.depth) as f32) * font_size)
+        .round()
+        .max(1.0);
     let span = SourceSpan {
         start: source_offset,
         end: source_offset + source.len(),
@@ -375,7 +377,12 @@ pub fn diagram_to_display(
         ));
     }
 
-    let clean_lang = language.split(',').next().unwrap_or("").trim().to_ascii_lowercase();
+    let clean_lang = language
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     match clean_lang.as_str() {
         "mermaid" | "flowchart" | "graph" | "diagram" | "" => {
             parse_flowchart_vector(source, origin_x, origin_y, font_size, source_offset)
@@ -401,7 +408,14 @@ pub fn diagram_to_display_with_fallback(
     font_size: f32,
     source_offset: usize,
 ) -> Vec<DisplayItem> {
-    match diagram_to_display(language, source, origin_x, origin_y, font_size, source_offset) {
+    match diagram_to_display(
+        language,
+        source,
+        origin_x,
+        origin_y,
+        font_size,
+        source_offset,
+    ) {
         Ok(items) => items,
         Err(err) => {
             let explanation = match err {
@@ -412,7 +426,14 @@ pub fn diagram_to_display_with_fallback(
                 DiagramError::ParseError(ref msg) => msg.as_str(),
                 DiagramError::LimitExceeded(ref msg) => msg.as_str(),
             };
-            diagram_fallback(source, explanation, origin_x, origin_y, font_size, source_offset)
+            diagram_fallback(
+                source,
+                explanation,
+                origin_x,
+                origin_y,
+                font_size,
+                source_offset,
+            )
         }
     }
 }
@@ -994,7 +1015,10 @@ fn parse_node_token(token: &str, line_offset: usize) -> Option<ParsedNode> {
     }
 }
 
-fn ensure_node_registered(nodes: &mut Vec<ParsedNode>, node: ParsedNode) -> Result<(), DiagramError> {
+fn ensure_node_registered(
+    nodes: &mut Vec<ParsedNode>,
+    node: ParsedNode,
+) -> Result<(), DiagramError> {
     if let Some(existing) = nodes.iter_mut().find(|n| n.id == node.id) {
         if existing.label == existing.id && node.label != node.id {
             existing.label = node.label;
@@ -1080,8 +1104,8 @@ mod tests {
     fn simple_math_produces_display_items() {
         let engine = engine();
         let source = "x + 1";
-        let items = math_to_display(source, &engine, 0.0, 0.0, 16.0, 0)
-            .expect("simple math layouts");
+        let items =
+            math_to_display(source, &engine, 0.0, 0.0, 16.0, 0).expect("simple math layouts");
         assert!(!items.is_empty(), "display items produced");
         for item in &items {
             let b = item.bounds();
@@ -1093,8 +1117,7 @@ mod tests {
     fn source_spans_survive_the_bridge() {
         let engine = engine();
         let source = "x + y";
-        let items = math_to_display(source, &engine, 0.0, 0.0, 16.0, 0)
-            .expect("math layouts");
+        let items = math_to_display(source, &engine, 0.0, 0.0, 16.0, 0).expect("math layouts");
         for item in &items {
             let span = item.source_span();
             assert!(span.end <= source.len() + 1, "span within source");
@@ -1105,8 +1128,8 @@ mod tests {
     fn fraction_produces_rule_and_stacked_glyphs() {
         let engine = engine();
         let source = "\\frac{a}{b}";
-        let items = math_to_display(source, &engine, 10.0, 10.0, 14.0, 0)
-            .expect("fraction layouts");
+        let items =
+            math_to_display(source, &engine, 10.0, 10.0, 14.0, 0).expect("fraction layouts");
         let has_vector = items
             .iter()
             .any(|item| matches!(item, DisplayItem::Vector(_)));
@@ -1169,8 +1192,8 @@ mod tests {
     #[test]
     fn diagram_flowchart_vector_layout_produces_nodes_and_edges() {
         let source = "graph TD\n  A[Start] --> B[Process]\n  B --> C[End]";
-        let items = diagram_to_display("mermaid", source, 10.0, 10.0, 14.0, 100)
-            .expect("flowchart parses");
+        let items =
+            diagram_to_display("mermaid", source, 10.0, 10.0, 14.0, 100).expect("flowchart parses");
 
         // Must produce vector boxes, connector lines, arrowheads, and text labels
         let boxes = items
@@ -1246,12 +1269,10 @@ mod tests {
     #[test]
     fn diagram_ascii_parsing_emits_vectors_and_texts() {
         let source = "+---+    +---+\n| A | -> | B |\n+---+    +---+";
-        let items = diagram_to_display("ascii", source, 0.0, 0.0, 12.0, 0)
-            .expect("ascii diagram parses");
+        let items =
+            diagram_to_display("ascii", source, 0.0, 0.0, 12.0, 0).expect("ascii diagram parses");
         assert!(!items.is_empty());
-        let has_vector = items
-            .iter()
-            .any(|i| matches!(i, DisplayItem::Vector(_)));
+        let has_vector = items.iter().any(|i| matches!(i, DisplayItem::Vector(_)));
         assert!(has_vector, "ascii diagram emits vector shapes");
     }
 
@@ -1278,15 +1299,12 @@ mod tests {
             );
 
             // With fallback: safely renders source without execution
-            let fallback =
-                diagram_to_display_with_fallback("mermaid", hostile, 0.0, 0.0, 14.0, 0);
+            let fallback = diagram_to_display_with_fallback("mermaid", hostile, 0.0, 0.0, 14.0, 0);
             assert!(!fallback.is_empty());
-            let note = fallback
-                .iter()
-                .find(|i| match i {
-                    DisplayItem::Text(t) => t.color_role == "diagram-fallback-note",
-                    _ => false,
-                });
+            let note = fallback.iter().find(|i| match i {
+                DisplayItem::Text(t) => t.color_role == "diagram-fallback-note",
+                _ => false,
+            });
             assert!(
                 note.is_some(),
                 "fallback must include concise capability explanation"

@@ -8,8 +8,11 @@ use franken_markdown::dep_invalidation::{DependencyGraph, DependencyKind};
 fn scan_identifies_reference_links() {
     let source = "See [the docs][docs-ref] and [inline](url).";
     let graph = DependencyGraph::scan(source);
-    let refs: Vec<_> = graph.dependencies().iter()
-        .filter(|d| matches!(d.kind, DependencyKind::Reference { .. })).collect();
+    let refs: Vec<_> = graph
+        .dependencies()
+        .iter()
+        .filter(|d| matches!(d.kind, DependencyKind::Reference { .. }))
+        .collect();
     assert_eq!(refs.len(), 1, "only the reference candidate is tracked");
     assert_eq!(refs[0].start, 4);
 }
@@ -17,16 +20,22 @@ fn scan_identifies_reference_links() {
 #[test]
 fn scan_identifies_footnotes() {
     let graph = DependencyGraph::scan("Text[^1] with a note.\n\n[^1]: The note body.");
-    let footnotes: Vec<_> = graph.dependencies().iter()
-        .filter(|d| matches!(d.kind, DependencyKind::Footnote { .. })).collect();
+    let footnotes: Vec<_> = graph
+        .dependencies()
+        .iter()
+        .filter(|d| matches!(d.kind, DependencyKind::Footnote { .. }))
+        .collect();
     assert_eq!(footnotes.len(), 2);
 }
 
 #[test]
 fn scan_identifies_headings() {
     let graph = DependencyGraph::scan("# Title\n## Section\n### Sub");
-    let headings: Vec<_> = graph.dependencies().iter()
-        .filter(|d| matches!(d.kind, DependencyKind::Heading { level: 1..=3, .. })).collect();
+    let headings: Vec<_> = graph
+        .dependencies()
+        .iter()
+        .filter(|d| matches!(d.kind, DependencyKind::Heading { level: 1..=3, .. }))
+        .collect();
     assert_eq!(headings.len(), 3);
 }
 

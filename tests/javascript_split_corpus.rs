@@ -84,8 +84,7 @@ fn three_way_splits_match_whole_run() {
         let whole_coalesced = coalesced(&whole);
         for first in 0..fixture.len() {
             for second in first..=fixture.len() {
-                let mut lexer =
-                    ResumableLexer::new("javascript").expect("javascript route exists");
+                let mut lexer = ResumableLexer::new("javascript").expect("javascript route exists");
                 lexer.feed(&fixture.as_bytes()[..first]).expect("feed 1");
                 lexer
                     .feed(&fixture.as_bytes()[first..second])
@@ -104,7 +103,16 @@ fn three_way_splits_match_whole_run() {
 
 #[test]
 fn aliases_route_to_javascript_lexer() {
-    for alias in &["javascript", "js", "mjs", "cjs", "jsx", "typescript", "ts", "tsx"] {
+    for alias in &[
+        "javascript",
+        "js",
+        "mjs",
+        "cjs",
+        "jsx",
+        "typescript",
+        "ts",
+        "tsx",
+    ] {
         let routed = highlight(alias, "const x = 42;\n");
         let mut direct = Vec::new();
         lex_javascript_into("const x = 42;\n", &mut direct);
@@ -133,16 +141,7 @@ fn scanner_direct_matches_highlight_route() {
 #[test]
 fn malformed_inputs_lex_with_bounded_output() {
     for hostile in [
-        "`${`",
-        "${${${${",
-        "///",
-        "/**/",
-        "0x_G",
-        "0b_2",
-        "123n_",
-        "/[/]/",
-        "`\"'`",
-        "\\",
+        "`${`", "${${${${", "///", "/**/", "0x_G", "0b_2", "123n_", "/[/]/", "`\"'`", "\\",
     ] {
         let mut spans = Vec::new();
         lex_javascript_into(hostile, &mut spans);

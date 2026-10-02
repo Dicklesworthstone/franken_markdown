@@ -102,8 +102,10 @@ impl FmdBook {
     ) -> Result<String, JsValue> {
         let expected = checked_source_revision(expected_revision).map_err(JsValue::from_str)?;
         let updates = book_inputs(paths, sources).map_err(JsValue::from_str)?;
-        self.renderer.update_sources_at_revision(&updates, expected)
-            .map(|report| report.to_json()).map_err(to_js)
+        self.renderer
+            .update_sources_at_revision(&updates, expected)
+            .map(|report| report.to_json())
+            .map_err(to_js)
     }
 
     /// Set shared metadata. Absent or blank values restore renderer defaults.
@@ -138,8 +140,13 @@ impl FmdBook {
     #[wasm_bindgen(js_name = setTheme)]
     pub fn set_theme(&mut self, font: &str, dark_mode: &str) -> Result<(), JsValue> {
         let (font, dark) = theme_settings(font, dark_mode).map_err(JsValue::from_str)?;
-        let theme = self.renderer.options().theme.clone()
-            .with_font(font).with_dark_mode(dark);
+        let theme = self
+            .renderer
+            .options()
+            .theme
+            .clone()
+            .with_font(font)
+            .with_dark_mode(dark);
         self.renderer.options_mut().theme = theme;
         Ok(())
     }
@@ -186,7 +193,11 @@ impl FmdBook {
     #[wasm_bindgen(js_name = setFont)]
     pub fn set_font(&mut self, slot: &str, bytes: Vec<u8>) -> Result<(), JsValue> {
         let slot = font_slot(slot).map_err(JsValue::from_str)?;
-        self.renderer.options_mut().font_assets.set_slot(slot, bytes).map_err(to_js)
+        self.renderer
+            .options_mut()
+            .font_assets
+            .set_slot(slot, bytes)
+            .map_err(to_js)
     }
 
     /// Pin a variable font's CSS weight in the range 1 through 1000.
@@ -199,7 +210,11 @@ impl FmdBook {
         let slot = font_slot(slot).map_err(JsValue::from_str)?;
         let weight = u16::try_from(weight)
             .map_err(|_| JsValue::from_str("font weight must be in 1..=1000"))?;
-        self.renderer.options_mut().font_assets.set_slot_weight(slot, weight).map_err(to_js)
+        self.renderer
+            .options_mut()
+            .font_assets
+            .set_slot_weight(slot, weight)
+            .map_err(to_js)
     }
 
     /// Export a continuous PDF with isolated citations and chapter assets.
@@ -251,7 +266,10 @@ impl FmdBook {
     /// Rejects invalid books or validation/report budget overruns.
     #[wasm_bindgen(js_name = validateLinks)]
     pub fn validate_links(&self) -> Result<String, JsValue> {
-        self.renderer.validate_links().and_then(|report| report.to_json()).map_err(to_js)
+        self.renderer
+            .validate_links()
+            .and_then(|report| report.to_json())
+            .map_err(to_js)
     }
 }
 
@@ -279,7 +297,11 @@ fn book_inputs(paths: Vec<String>, sources: Vec<String>) -> Result<Vec<BookInput
     if paths.is_empty() || paths.len() > 4096 {
         return Err("expected between 1 and 4096 book chapters");
     }
-    Ok(paths.into_iter().zip(sources).map(|(path, source)| BookInput { path, source }).collect())
+    Ok(paths
+        .into_iter()
+        .zip(sources)
+        .map(|(path, source)| BookInput { path, source })
+        .collect())
 }
 
 // Accept f64 at the raw JS boundary: a u32 ABI parameter would silently wrap
@@ -295,7 +317,10 @@ fn nonblank(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
 
-fn theme_settings(font: &str, dark_mode: &str) -> Result<(FontFamily, DarkModePolicy), &'static str> {
+fn theme_settings(
+    font: &str,
+    dark_mode: &str,
+) -> Result<(FontFamily, DarkModePolicy), &'static str> {
     let font = FontFamily::parse(font).ok_or("unknown font family; use sans or serif")?;
     let dark = match dark_mode.trim().to_ascii_lowercase().as_str() {
         "auto" | "system" => DarkModePolicy::Auto,
@@ -329,7 +354,14 @@ mod tests {
     fn source_revisions_reject_lossy_javascript_numeric_narrowing() {
         assert_eq!(checked_source_revision(0.0), Ok(0));
         assert_eq!(checked_source_revision(f64::from(u32::MAX)), Ok(u32::MAX));
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.5, 4_294_967_296.0] {
+        for value in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -1.0,
+            0.5,
+            4_294_967_296.0,
+        ] {
             assert!(checked_source_revision(value).is_err());
         }
     }
@@ -379,13 +411,19 @@ mod tests {
             let actual = render_pdf_with_geometry(&renderer, &geometry).unwrap();
             let mut expected_options = renderer.options().pdf_options();
             expected_options.theme.page = crate::PageStyle::from_browser_geometry(&geometry)
-                .unwrap().unwrap();
-            let expected = crate::book::render_book_pdf(renderer.book(), &expected_options).unwrap();
+                .unwrap()
+                .unwrap();
+            let expected =
+                crate::book::render_book_pdf(renderer.book(), &expected_options).unwrap();
             assert_eq!(actual, expected);
-            assert_eq!(actual, render_pdf_with_geometry(&renderer, &geometry).unwrap());
-            assert!(String::from_utf8_lossy(&actual).contains(&format!(
-                "/MediaBox [0 0 {} {}]", geometry[0], geometry[1],
-            )));
+            assert_eq!(
+                actual,
+                render_pdf_with_geometry(&renderer, &geometry).unwrap()
+            );
+            assert!(
+                String::from_utf8_lossy(&actual)
+                    .contains(&format!("/MediaBox [0 0 {} {}]", geometry[0], geometry[1],))
+            );
             assert_eq!(renderer.options().theme.page, original_page);
             assert_eq!(renderer.source_length(), original_source_length);
             assert_eq!(renderer.book().chapters.len(), 2);
@@ -416,7 +454,8 @@ mod tests {
         let inputs = book_inputs(
             vec!["z.md".into(), "a.md".into()],
             vec!["# Z".into(), "# A".into()],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(inputs[0].path, "z.md");
         assert_eq!(inputs[1].source, "# A");
         assert!(book_inputs(vec!["one.md".into()], vec![]).is_err());
@@ -426,7 +465,15 @@ mod tests {
     #[test]
     fn scales_reject_nan_infinity_and_narrowing_overflow_or_underflow() {
         assert_eq!(font_scale(1.125), Ok(1.125));
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.0, f64::MAX, f64::MIN_POSITIVE] {
+        for value in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -1.0,
+            0.0,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+        ] {
             assert!(font_scale(value).is_err(), "accepted {value}");
         }
     }
@@ -435,15 +482,24 @@ mod tests {
     fn metadata_preserves_nonblank_values_verbatim() {
         assert_eq!(nonblank(None), None);
         assert_eq!(nonblank(Some(" \t".into())), None);
-        assert_eq!(nonblank(Some("  A title  ".into())), Some("  A title  ".into()));
+        assert_eq!(
+            nonblank(Some("  A title  ".into())),
+            Some("  A title  ".into())
+        );
         assert!(font_slot("body-regular").is_ok());
         assert!(font_slot("missing").is_err());
     }
 
     #[test]
     fn theme_names_map_only_to_supported_policies() {
-        assert_eq!(theme_settings("sans", "auto").unwrap().1, DarkModePolicy::Auto);
-        assert_eq!(theme_settings("serif", "light").unwrap().1, DarkModePolicy::Disabled);
+        assert_eq!(
+            theme_settings("sans", "auto").unwrap().1,
+            DarkModePolicy::Auto
+        );
+        assert_eq!(
+            theme_settings("serif", "light").unwrap().1,
+            DarkModePolicy::Disabled
+        );
         assert!(theme_settings("missing", "auto").is_err());
         assert!(theme_settings("sans", "missing").is_err());
     }

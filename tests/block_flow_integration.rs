@@ -15,7 +15,7 @@
 
 use franken_markdown::block_flow::{
     BlockFlowEngine, BlockFlowError, BlockHeightIndex, FlowBlockItem, ListMarker, LogicalHeight,
-    ScrollAnchor, MAX_NESTING_DEPTH, MAX_PARAGRAPH_LINES,
+    MAX_NESTING_DEPTH, MAX_PARAGRAPH_LINES, ScrollAnchor,
 };
 use franken_markdown::display::{DisplayItem, VectorShapeType};
 use franken_markdown::span::SourceSpan;
@@ -66,7 +66,10 @@ fn oracle_scroll_anchoring_never_jumps_by_scrollbar_percentage_on_resize() {
         LogicalHeight::from_points(400.0),
     ];
     let mut index = BlockHeightIndex::with_heights(&initial_heights).unwrap();
-    assert_eq!(index.total_height().unwrap(), LogicalHeight::from_points(1000.0));
+    assert_eq!(
+        index.total_height().unwrap(),
+        LogicalHeight::from_points(1000.0)
+    );
 
     // Viewport is anchored at block 2, intra_block_offset 50 pt
     // Absolute position = prefix(2) + 50 = (100 + 200) + 50 = 350 pt
@@ -85,7 +88,10 @@ fn oracle_scroll_anchoring_never_jumps_by_scrollbar_percentage_on_resize() {
     index
         .update_block_height(3, LogicalHeight::from_points(200.0))
         .unwrap();
-    assert_eq!(index.total_height().unwrap(), LogicalHeight::from_points(1200.0));
+    assert_eq!(
+        index.total_height().unwrap(),
+        LogicalHeight::from_points(1200.0)
+    );
 
     // If naive scrollbar percentage were used:
     // 35.0% of 1200 pt = 420 pt (which would show block 0 at 420 pt instead of block 2!)
@@ -98,7 +104,10 @@ fn oracle_scroll_anchoring_never_jumps_by_scrollbar_percentage_on_resize() {
     // The anchor STILL identifies Block 2 with intra-offset 50 pt exactly:
     let re_anchored = index.find_anchor_at_scroll(anchored_scroll).unwrap();
     assert_eq!(re_anchored.block_id, 2);
-    assert_eq!(re_anchored.intra_block_offset, LogicalHeight::from_points(50.0));
+    assert_eq!(
+        re_anchored.intra_block_offset,
+        LogicalHeight::from_points(50.0)
+    );
 }
 
 #[test]

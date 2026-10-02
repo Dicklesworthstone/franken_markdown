@@ -3,16 +3,24 @@ use std::io::{BufReader, Cursor};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn json(source: &str) -> Result<Json, String> { parse_json(source) }
+fn json(source: &str) -> Result<Json, String> {
+    parse_json(source)
+}
 fn initialized() -> Result<Server, String> {
     let mut server = Server::default();
-    let replies = server.handle(json(r###"{"jsonrpc":"2.0","id":"init","method":"initialize","params":{}}"###)?);
+    let replies = server.handle(json(
+        r###"{"jsonrpc":"2.0","id":"init","method":"initialize","params":{}}"###,
+    )?);
     assert_eq!(replies[0].get("id").and_then(Json::as_str), Some("init"));
     assert!(replies[0].get("result").is_some());
     Ok(server)
 }
 fn buffer(text: &str) -> Buffer {
-    Buffer { text: text.to_string(), version: 1, synchronized: true }
+    Buffer {
+        text: text.to_string(),
+        version: 1,
+        synchronized: true,
+    }
 }
 fn edits(source: &str) -> Result<Vec<Json>, String> {
     match json(source)? {
@@ -21,21 +29,89 @@ fn edits(source: &str) -> Result<Vec<Json>, String> {
     }
 }
 fn values(value: &Json) -> &[Json] {
-    match value { Json::Array(values) => values, _ => &[] }
+    match value {
+        Json::Array(values) => values,
+        _ => &[],
+    }
 }
 
 #[test]
 fn utf16_coordinates_cover_astral_crlf_lone_cr_and_empty_final_lines() -> TestResult {
     let text = "a😀b\r\n猫\r\nx\r";
     let index = LineIndex::new(text);
-    assert_eq!(index.offset(text, Position { line: 0, character: 3 })?, 5);
-    assert!(index.offset(text, Position { line: 0, character: 2 }).is_err());
-    assert_eq!(index.offset(text, Position { line: 0, character: 99 })?, 6);
-    assert_eq!(index.position(text, 6), Position { line: 0, character: 4 });
-    assert_eq!(index.position(text, 7), Position { line: 0, character: 4 });
-    assert_eq!(index.position(text, 8), Position { line: 1, character: 0 });
-    assert_eq!(index.offset(text, Position { line: 3, character: 0 })?, text.len());
-    assert!(index.offset(text, Position { line: 4, character: 0 }).is_err());
+    assert_eq!(
+        index.offset(
+            text,
+            Position {
+                line: 0,
+                character: 3
+            }
+        )?,
+        5
+    );
+    assert!(
+        index
+            .offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 2
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(
+        index.offset(
+            text,
+            Position {
+                line: 0,
+                character: 99
+            }
+        )?,
+        6
+    );
+    assert_eq!(
+        index.position(text, 6),
+        Position {
+            line: 0,
+            character: 4
+        }
+    );
+    assert_eq!(
+        index.position(text, 7),
+        Position {
+            line: 0,
+            character: 4
+        }
+    );
+    assert_eq!(
+        index.position(text, 8),
+        Position {
+            line: 1,
+            character: 0
+        }
+    );
+    assert_eq!(
+        index.offset(
+            text,
+            Position {
+                line: 3,
+                character: 0
+            }
+        )?,
+        text.len()
+    );
+    assert!(
+        index
+            .offset(
+                text,
+                Position {
+                    line: 4,
+                    character: 0
+                }
+            )
+            .is_err()
+    );
     Ok(())
 }
 
@@ -65,16 +141,24 @@ fn incremental_changes_are_sequential_and_count_utf16_not_bytes() -> TestResult 
 #[test]
 fn rejected_batch_is_atomic_and_requires_full_text_resynchronization() -> TestResult {
     let mut doc = buffer("original");
-    let changes = edits(r###"[
+    let changes = edits(
+        r###"[
         {"text":"tentative"},
         {"range":{"start":{"line":9,"character":0},"end":{"line":9,"character":0}},"text":"bad"}
-    ]"###)?;
+    ]"###,
+    )?;
     assert!(doc.change(2, &changes, MAX_DOCUMENT_BYTES).is_err());
     assert_eq!(doc.text, "original");
     assert!(!doc.synchronized);
-    let incremental = edits(r###"[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"text":"x"}]"###)?;
+    let incremental = edits(
+        r###"[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"text":"x"}]"###,
+    )?;
     assert!(doc.change(3, &incremental, MAX_DOCUMENT_BYTES).is_err());
-    doc.change(4, &edits(r###"[{"text":"recovered"}]"###)?, MAX_DOCUMENT_BYTES)?;
+    doc.change(
+        4,
+        &edits(r###"[{"text":"recovered"}]"###)?,
+        MAX_DOCUMENT_BYTES,
+    )?;
     assert!(doc.synchronized);
     assert_eq!(doc.text, "recovered");
     Ok(())
@@ -83,7 +167,10 @@ fn rejected_batch_is_atomic_and_requires_full_text_resynchronization() -> TestRe
 #[test]
 fn stale_versions_cannot_replace_current_text_or_poison_it() -> TestResult {
     let mut doc = buffer("current");
-    assert!(doc.change(1, &edits(r###"[{"text":"stale"}]"###)?, MAX_DOCUMENT_BYTES).is_err());
+    assert!(
+        doc.change(1, &edits(r###"[{"text":"stale"}]"###)?, MAX_DOCUMENT_BYTES)
+            .is_err()
+    );
     assert!(doc.synchronized);
     assert_eq!(doc.text, "current");
     Ok(())
@@ -102,28 +189,67 @@ fn edit_budgets_surrogates_lengths_and_reversed_ranges_fail_closed() -> TestResu
         assert_eq!(doc.text, "a😀b");
     }
     let mut doc = buffer("abc");
-    assert!(doc.change(2, &edits(r###"[{"text":"toolong"}]"###)?, 3).is_err());
+    assert!(
+        doc.change(2, &edits(r###"[{"text":"toolong"}]"###)?, 3)
+            .is_err()
+    );
     let mut doc = buffer("abc");
     assert!(doc.change(2, &edits(r###"[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"text":""}]"###)?, 2).is_err());
     let mut doc = buffer("abc");
-    assert!(doc.change(2, &vec![object([("text", string("x"))]); 129], MAX_DOCUMENT_BYTES).is_err());
+    assert!(
+        doc.change(
+            2,
+            &vec![object([("text", string("x"))]); 129],
+            MAX_DOCUMENT_BYTES
+        )
+        .is_err()
+    );
     Ok(())
 }
 
 #[test]
 fn lifecycle_preserves_ids_and_rejects_requests_before_initialize() -> TestResult {
     let mut server = Server::default();
-    let replies = server.handle(json(r###"{"jsonrpc":"2.0","id":7,"method":"textDocument/hover"}"###)?);
-    assert_eq!(replies[0].get("error").and_then(|e| e.get("code")).and_then(integer), Some(-32002));
-    assert!(server.handle(json(r###"{"jsonrpc":"2.0","method":"initialized","params":{}}"###)?).is_empty());
+    let replies = server.handle(json(
+        r###"{"jsonrpc":"2.0","id":7,"method":"textDocument/hover"}"###,
+    )?);
+    assert_eq!(
+        replies[0]
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(integer),
+        Some(-32002)
+    );
+    assert!(
+        server
+            .handle(json(
+                r###"{"jsonrpc":"2.0","method":"initialized","params":{}}"###
+            )?)
+            .is_empty()
+    );
     server = initialized()?;
-    let replies = server.handle(json(r###"{"jsonrpc":"2.0","id":"unicode-😀","method":"unknown"}"###)?);
-    assert_eq!(replies[0].get("id").and_then(Json::as_str), Some("unicode-😀"));
-    assert!(server.handle(json(r###"{"jsonrpc":"2.0","method":"unknown"}"###)?).is_empty());
-    let replies = server.handle(json(r###"{"jsonrpc":"2.0","id":1.5,"method":"shutdown"}"###)?);
+    let replies = server.handle(json(
+        r###"{"jsonrpc":"2.0","id":"unicode-😀","method":"unknown"}"###,
+    )?);
+    assert_eq!(
+        replies[0].get("id").and_then(Json::as_str),
+        Some("unicode-😀")
+    );
+    assert!(
+        server
+            .handle(json(r###"{"jsonrpc":"2.0","method":"unknown"}"###)?)
+            .is_empty()
+    );
+    let replies = server.handle(json(
+        r###"{"jsonrpc":"2.0","id":1.5,"method":"shutdown"}"###,
+    )?);
     assert!(replies[0].get("error").is_some());
     server.handle(json(r###"{"jsonrpc":"2.0","id":9,"method":"shutdown"}"###)?);
-    assert!(server.handle(json(r###"{"jsonrpc":"2.0","method":"exit"}"###)?).is_empty());
+    assert!(
+        server
+            .handle(json(r###"{"jsonrpc":"2.0","method":"exit"}"###)?)
+            .is_empty()
+    );
     assert_eq!(server.exit, Some(true));
     Ok(())
 }
@@ -134,16 +260,45 @@ fn diagnostics_are_real_parser_findings_and_clear_after_fix_and_close() -> TestR
     let source = "😀\n\n```rust\nlet x = 1;\n";
     let parsed = parse_markdown_spanned(source);
     assert!(!parsed.diagnostics.is_empty());
-    let report = server.open(&object([("textDocument", object([
-        ("uri", string("untitled:notes")), ("version", number(1)), ("text", string(source)),
-    ]))]))?;
-    let findings = values(report[0].get("params").and_then(|p| p.get("diagnostics")).ok_or("missing diagnostics")?);
+    let report = server.open(&object([(
+        "textDocument",
+        object([
+            ("uri", string("untitled:notes")),
+            ("version", number(1)),
+            ("text", string(source)),
+        ]),
+    )]))?;
+    let findings = values(
+        report[0]
+            .get("params")
+            .and_then(|p| p.get("diagnostics"))
+            .ok_or("missing diagnostics")?,
+    );
     assert_eq!(findings.len(), parsed.diagnostics.len());
-    assert_eq!(findings[0].get("message").and_then(Json::as_str), Some(parsed.diagnostics[0].message.as_str()));
+    assert_eq!(
+        findings[0].get("message").and_then(Json::as_str),
+        Some(parsed.diagnostics[0].message.as_str())
+    );
     let report = server.change(&json(r###"{"textDocument":{"uri":"untitled:notes","version":2},"contentChanges":[{"text":"# Fixed\n"}]}"###)?)?;
-    assert!(values(report[0].get("params").and_then(|p| p.get("diagnostics")).ok_or("missing diagnostics")?).is_empty());
+    assert!(
+        values(
+            report[0]
+                .get("params")
+                .and_then(|p| p.get("diagnostics"))
+                .ok_or("missing diagnostics")?
+        )
+        .is_empty()
+    );
     let report = server.close(&json(r###"{"textDocument":{"uri":"untitled:notes"}}"###)?)?;
-    assert!(values(report[0].get("params").and_then(|p| p.get("diagnostics")).ok_or("missing diagnostics")?).is_empty());
+    assert!(
+        values(
+            report[0]
+                .get("params")
+                .and_then(|p| p.get("diagnostics"))
+                .ok_or("missing diagnostics")?
+        )
+        .is_empty()
+    );
     assert!(server.documents.is_empty());
     Ok(())
 }
@@ -157,15 +312,34 @@ fn framed_stream_handles_fragmented_unicode_parse_errors_and_clean_exit() -> Tes
         r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:😀","version":1,"text":"# hello"}}}"###,
         r###"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"###,
         r###"{"jsonrpc":"2.0","method":"exit"}"###,
-    ] { write_frame(&mut input, message)?; }
+    ] {
+        write_frame(&mut input, message)?;
+    }
     let mut output = Vec::new();
-    assert!(run(&mut BufReader::with_capacity(1, Cursor::new(input)), &mut output)?);
+    assert!(run(
+        &mut BufReader::with_capacity(1, Cursor::new(input)),
+        &mut output
+    )?);
     let mut reader = Cursor::new(output);
     let mut replies = Vec::new();
-    while let Some(body) = read_frame(&mut reader, MAX_FRAME_BYTES)? { replies.push(json(&body)?); }
+    while let Some(body) = read_frame(&mut reader, MAX_FRAME_BYTES)? {
+        replies.push(json(&body)?);
+    }
     assert_eq!(replies.len(), 4);
-    assert_eq!(replies[1].get("error").and_then(|e| e.get("code")).and_then(integer), Some(-32700));
-    assert_eq!(replies[2].get("params").and_then(|p| p.get("uri")).and_then(Json::as_str), Some("untitled:😀"));
+    assert_eq!(
+        replies[1]
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(integer),
+        Some(-32700)
+    );
+    assert_eq!(
+        replies[2]
+            .get("params")
+            .and_then(|p| p.get("uri"))
+            .and_then(Json::as_str),
+        Some("untitled:😀")
+    );
     assert_eq!(replies[3].get("result"), Some(&Json::Null));
     Ok(())
 }
@@ -203,16 +377,24 @@ fn version_only_updates_do_not_poison_synchronized_buffers() -> TestResult {
 fn navigation_negotiates_client_capabilities_and_rejects_stale_buffers() -> TestResult {
     let mut server = Server::default();
     server.handle(json(r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"foldingRange":{"rangeLimit":0}}}}}"###)?);
-    server.open(&json(r###"{"textDocument":{"uri":"untitled:nav","version":1,"text":"# A\n\n## B\ntext\n"}}"###)?)?;
+    server.open(&json(
+        r###"{"textDocument":{"uri":"untitled:nav","version":1,"text":"# A\n\n## B\ntext\n"}}"###,
+    )?)?;
     let params = json(r###"{"textDocument":{"uri":"untitled:nav"}}"###)?;
-    let symbols = server.navigate("textDocument/documentSymbol", &params)
+    let symbols = server
+        .navigate("textDocument/documentSymbol", &params)
         .map_err(|(_, reason)| reason)?;
     assert!(values(&symbols)[0].get("children").is_some());
-    let folds = server.navigate("textDocument/foldingRange", &params)
+    let folds = server
+        .navigate("textDocument/foldingRange", &params)
         .map_err(|(_, reason)| reason)?;
     assert!(values(&folds).is_empty());
-    server.change(&json(r###"{"textDocument":{"uri":"untitled:nav","version":2},"contentChanges":null}"###)?)?;
-    assert_eq!(server.navigate("textDocument/documentSymbol", &params),
-        Err((-32801, "document requires full-text resynchronization")));
+    server.change(&json(
+        r###"{"textDocument":{"uri":"untitled:nav","version":2},"contentChanges":null}"###,
+    )?)?;
+    assert_eq!(
+        server.navigate("textDocument/documentSymbol", &params),
+        Err((-32801, "document requires full-text resynchronization"))
+    );
     Ok(())
 }

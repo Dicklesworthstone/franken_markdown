@@ -95,9 +95,7 @@ impl FallbackChain {
         if coverage(&self.primary, codepoint) {
             return Some(&self.primary);
         }
-        self.fallbacks
-            .iter()
-            .find(|f| coverage(f, codepoint))
+        self.fallbacks.iter().find(|f| coverage(f, codepoint))
     }
 }
 
@@ -210,11 +208,8 @@ pub fn classify_char(c: char) -> CharClass {
 /// Check if a byte substring starting at `offset` matches a known ligature prefix.
 fn match_ligature_len(remainder: &str) -> Option<usize> {
     const LIGATURES: &[&str] = &[
-        "===", "!==", "...",
-        "ffi", "ffl",
-        "=>", "->", "==", "!=", "<=", ">=",
-        "::", "<-", "<->", "<=>",
-        "ff", "fi", "fl",
+        "===", "!==", "...", "ffi", "ffl", "=>", "->", "==", "!=", "<=", ">=", "::", "<-", "<->",
+        "<=>", "ff", "fi", "fl",
     ];
     for &lig in LIGATURES {
         if remainder.starts_with(lig) {
@@ -241,7 +236,10 @@ pub fn segment_clusters(text: &str) -> Vec<GlyphCluster> {
 
         // 1. Check for programming/typographical ligatures
         if let Some(lig_len) = match_ligature_len(remainder) {
-            let char_count = remainder.get(..lig_len).map(|s| s.chars().count()).unwrap_or(1);
+            let char_count = remainder
+                .get(..lig_len)
+                .map(|s| s.chars().count())
+                .unwrap_or(1);
             clusters.push(GlyphCluster {
                 start: byte_idx,
                 end: byte_idx + lig_len,
@@ -531,14 +529,26 @@ pub enum ColorGlyphError {
 impl std::fmt::Display for ColorGlyphError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DimensionTooLarge { dimension, max_allowed } => {
-                write!(f, "glyph dimension ({dimension}) exceeds maximum ({max_allowed})")
+            Self::DimensionTooLarge {
+                dimension,
+                max_allowed,
+            } => {
+                write!(
+                    f,
+                    "glyph dimension ({dimension}) exceeds maximum ({max_allowed})"
+                )
             }
             Self::BytesTooLarge { bytes, max_allowed } => {
-                write!(f, "glyph buffer size ({bytes} bytes) exceeds maximum ({max_allowed} bytes)")
+                write!(
+                    f,
+                    "glyph buffer size ({bytes} bytes) exceeds maximum ({max_allowed} bytes)"
+                )
             }
             Self::BufferLengthMismatch { expected, actual } => {
-                write!(f, "glyph buffer length mismatch: expected {expected} bytes, got {actual}")
+                write!(
+                    f,
+                    "glyph buffer length mismatch: expected {expected} bytes, got {actual}"
+                )
             }
             Self::ZeroDimension => write!(f, "glyph width and height must be non-zero"),
             Self::Empty => write!(f, "glyph pixel buffer is empty"),
@@ -642,15 +652,15 @@ impl ColorGlyphResource {
                 let is_border = x == 0 || x == size - 1 || y == 0 || y == size - 1;
                 let idx = ((y as usize) * (size as usize) + (x as usize)) * 4;
                 if is_border {
-                    pixels[idx] = 220;     // R
-                    pixels[idx + 1] = 40;  // G
+                    pixels[idx] = 220; // R
+                    pixels[idx + 1] = 40; // G
                     pixels[idx + 2] = 220; // B
                     pixels[idx + 3] = 255; // A
                 } else {
-                    pixels[idx] = 120;     // R
+                    pixels[idx] = 120; // R
                     pixels[idx + 1] = 120; // G
                     pixels[idx + 2] = 120; // B
-                    pixels[idx + 3] = 80;  // A
+                    pixels[idx + 3] = 80; // A
                 }
             }
         }
@@ -705,12 +715,12 @@ impl BitmapGlyphResource {
                 max_allowed: MAX_BITMAP_GLYPH_BYTES,
             });
         }
-        let total_bits = (width as usize)
-            .checked_mul(height as usize)
-            .ok_or(ColorGlyphError::BytesTooLarge {
+        let total_bits = (width as usize).checked_mul(height as usize).ok_or(
+            ColorGlyphError::BytesTooLarge {
                 bytes: usize::MAX,
                 max_allowed: MAX_BITMAP_GLYPH_BYTES,
-            })?;
+            },
+        )?;
         let expected = (total_bits + 7) / 8;
         if bits.len() != expected {
             return Err(ColorGlyphError::BufferLengthMismatch {
@@ -735,7 +745,9 @@ impl BitmapGlyphResource {
         let bit_idx = (y as usize) * (self.width as usize) + (x as usize);
         let byte_idx = bit_idx / 8;
         let bit_pos = 7 - (bit_idx % 8);
-        self.bits.get(byte_idx).map(|byte| ((byte >> bit_pos) & 1) != 0)
+        self.bits
+            .get(byte_idx)
+            .map(|byte| ((byte >> bit_pos) & 1) != 0)
     }
 }
 
@@ -765,7 +777,10 @@ pub enum CheckpointError {
 impl std::fmt::Display for CheckpointError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TooLarge => write!(f, "checkpoint size exceeds maximum {MAX_CHECKPOINT_BYTES} bytes"),
+            Self::TooLarge => write!(
+                f,
+                "checkpoint size exceeds maximum {MAX_CHECKPOINT_BYTES} bytes"
+            ),
             Self::UnknownVersion => write!(f, "unknown checkpoint format version"),
             Self::Malformed => write!(f, "malformed checkpoint binary blob"),
         }
@@ -805,11 +820,21 @@ pub fn checkpoint_context(
         // Pack flags into single byte:
         // bit 0: is_rtl, bit 1: is_emoji, bit 2: is_cjk, bit 3: is_tab, bit 4: is_ligature
         let mut flags = 0u8;
-        if cluster.is_rtl { flags |= 1 << 0; }
-        if cluster.is_emoji { flags |= 1 << 1; }
-        if cluster.is_cjk { flags |= 1 << 2; }
-        if cluster.is_tab { flags |= 1 << 3; }
-        if cluster.is_ligature { flags |= 1 << 4; }
+        if cluster.is_rtl {
+            flags |= 1 << 0;
+        }
+        if cluster.is_emoji {
+            flags |= 1 << 1;
+        }
+        if cluster.is_cjk {
+            flags |= 1 << 2;
+        }
+        if cluster.is_tab {
+            flags |= 1 << 3;
+        }
+        if cluster.is_ligature {
+            flags |= 1 << 4;
+        }
         out.push(flags);
         let char_count_u16 = u16::try_from(cluster.char_count).unwrap_or(u16::MAX);
         out.extend_from_slice(&char_count_u16.to_le_bytes());

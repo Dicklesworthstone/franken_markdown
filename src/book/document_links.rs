@@ -3,7 +3,9 @@
 //! The parent module supplies the SAME admission, heading IDs, footnote queue,
 //! fragment decoder and ambiguity rules used to validate published books.
 
-use super::{Budget, LinkFinding, Reference, admit_blocks, invalid, navigation, resolve_fragment, scheme};
+use super::{
+    Budget, LinkFinding, Reference, admit_blocks, invalid, navigation, resolve_fragment, scheme,
+};
 use crate::{Document, Result};
 
 /// The emitted element addressed by an internal fragment.
@@ -84,12 +86,19 @@ pub fn analyze_document_links(doc: &Document) -> Result<DocumentLinkAnalysis> {
     for reference in &nav.references {
         let (destination, block_index, kind, resolved) = match reference {
             Reference::Note(id, owner) => {
-                let resolved = nav.definitions.get(id).map(|(_, index)| Some(*index))
-                    .ok_or(("missing_footnote", "This parsed footnote reference has no definition in its chapter."));
+                let resolved = nav
+                    .definitions
+                    .get(id)
+                    .map(|(_, index)| Some(*index))
+                    .ok_or((
+                        "missing_footnote",
+                        "This parsed footnote reference has no definition in its chapter.",
+                    ));
                 (*id, *owner, ReferenceKind::Footnote, resolved)
             }
             Reference::Link(destination, owner) => {
-                let dest = destination.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+                let dest =
+                    destination.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
                 if dest.starts_with("//") || scheme(dest) {
                     external += 1;
                     continue;
@@ -98,28 +107,46 @@ pub fn analyze_document_links(doc: &Document) -> Result<DocumentLinkAnalysis> {
                     unchecked += 1;
                     continue;
                 }
-                let resolved = resolve_fragment(&nav, dest).map(|anchor| anchor.map(|entry| entry.block_index));
+                let resolved = resolve_fragment(&nav, dest)
+                    .map(|anchor| anchor.map(|entry| entry.block_index));
                 (*destination, *owner, ReferenceKind::Link, resolved)
             }
         };
         let (target_block_index, finding) = match resolved {
             Ok(target) => (target, None),
             Err((code, message)) => {
-                if finding_count >= super::MAX_FINDINGS || destination.len() > 8192
+                if finding_count >= super::MAX_FINDINGS
+                    || destination.len() > 8192
                     || destination.len() > (256 * 1024usize).saturating_sub(finding_bytes)
                 {
-                    return Err(invalid("finding count or destination text exceeds the report limit"));
+                    return Err(invalid(
+                        "finding count or destination text exceeds the report limit",
+                    ));
                 }
                 finding_count += 1;
                 finding_bytes += destination.len();
-                (None, Some(LinkFinding { code, destination: destination.to_string(), message }))
+                (
+                    None,
+                    Some(LinkFinding {
+                        code,
+                        destination: destination.to_string(),
+                        message,
+                    }),
+                )
             }
         };
         references.push(DocumentReference {
-            block_index, destination: destination.to_string(), kind, target_block_index, finding,
+            block_index,
+            destination: destination.to_string(),
+            kind,
+            target_block_index,
+            finding,
         });
     }
     Ok(DocumentLinkAnalysis {
-        anchors: nav.anchors.into_values().collect(), references, external, unchecked,
+        anchors: nav.anchors.into_values().collect(),
+        references,
+        external,
+        unchecked,
     })
 }

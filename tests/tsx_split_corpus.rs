@@ -46,17 +46,50 @@ fn fixtures() -> Vec<Fixture> {
     let consumer = CONSUMER_DOCUMENT.as_bytes().to_vec();
 
     vec![
-        Fixture { name: "component", bytes: component },
-        Fixture { name: "nested", bytes: nested },
-        Fixture { name: "fragment", bytes: fragment },
-        Fixture { name: "attrs_and_expr", bytes: attrs_and_expr },
-        Fixture { name: "generics", bytes: generics },
-        Fixture { name: "casts", bytes: casts },
-        Fixture { name: "self_closing", bytes: self_closing },
-        Fixture { name: "entities", bytes: entities },
-        Fixture { name: "malformed_trunc", bytes: malformed_trunc },
-        Fixture { name: "malformed_lone_lt", bytes: malformed_lone_lt },
-        Fixture { name: "consumer", bytes: consumer },
+        Fixture {
+            name: "component",
+            bytes: component,
+        },
+        Fixture {
+            name: "nested",
+            bytes: nested,
+        },
+        Fixture {
+            name: "fragment",
+            bytes: fragment,
+        },
+        Fixture {
+            name: "attrs_and_expr",
+            bytes: attrs_and_expr,
+        },
+        Fixture {
+            name: "generics",
+            bytes: generics,
+        },
+        Fixture {
+            name: "casts",
+            bytes: casts,
+        },
+        Fixture {
+            name: "self_closing",
+            bytes: self_closing,
+        },
+        Fixture {
+            name: "entities",
+            bytes: entities,
+        },
+        Fixture {
+            name: "malformed_trunc",
+            bytes: malformed_trunc,
+        },
+        Fixture {
+            name: "malformed_lone_lt",
+            bytes: malformed_lone_lt,
+        },
+        Fixture {
+            name: "consumer",
+            bytes: consumer,
+        },
     ]
 }
 
@@ -167,15 +200,26 @@ fn every_fixture_is_split_equivalent_where_numbers_are_not_split() {
         let got0 = split_spans(&fixture.bytes, 0);
         assert_eq!(got0, expected, "{}: split at 0 diverged", fixture.name);
     }
-    scenario_receipt("split_at_zero", "all-fixtures-exact", "single-feed path exact on 11 fixtures");
+    scenario_receipt(
+        "split_at_zero",
+        "all-fixtures-exact",
+        "single-feed path exact on 11 fixtures",
+    );
 }
 
 #[test]
 fn component_fixture_is_split_equivalent_at_every_byte() {
     // A number-free fixture: EVERY byte split must be exact.
-    let fixture = fixtures().into_iter().find(|f| f.name == "component").unwrap();
+    let fixture = fixtures()
+        .into_iter()
+        .find(|f| f.name == "component")
+        .unwrap();
     assert_split_equivalence(fixture.name, &fixture.bytes);
-    scenario_receipt("component_full_split_sweep", "exact", "every byte split equivalent");
+    scenario_receipt(
+        "component_full_split_sweep",
+        "exact",
+        "every byte split equivalent",
+    );
 }
 
 #[test]
@@ -187,15 +231,26 @@ fn malformed_inputs_classify_truthfully() {
         let fixture = fixtures().into_iter().find(|f| f.name == name).unwrap();
         let spans = whole_spans(&fixture.bytes);
         assert_tile(&spans, fixture.bytes.len());
-        scenario_receipt(name, "truthful-tiling", "malformed input classified without grammar claims");
+        scenario_receipt(
+            name,
+            "truthful-tiling",
+            "malformed input classified without grammar claims",
+        );
     }
 }
 
 #[test]
 fn consumer_document_split_equivalence_at_every_byte() {
-    let fixture = fixtures().into_iter().find(|f| f.name == "consumer").unwrap();
+    let fixture = fixtures()
+        .into_iter()
+        .find(|f| f.name == "consumer")
+        .unwrap();
     assert_split_equivalence(fixture.name, &fixture.bytes);
-    scenario_receipt("consumer_full_split_sweep", "exact", "every byte split equivalent");
+    scenario_receipt(
+        "consumer_full_split_sweep",
+        "exact",
+        "every byte split equivalent",
+    );
 }
 
 #[test]
@@ -219,5 +274,9 @@ fn registry_dispatch_matches_direct_lexing() {
         coalesce(&direct),
         "dispatch must match direct lexing"
     );
-    scenario_receipt("registry_dispatch", "matches-direct", "dispatch == direct lexing");
+    scenario_receipt(
+        "registry_dispatch",
+        "matches-direct",
+        "dispatch == direct lexing",
+    );
 }

@@ -234,7 +234,11 @@ impl OwnedTextRun {
     /// edge; `Trailing` chooses the preceding cluster's trailing edge. At the
     /// document endpoints only the existing inward cluster edge is available.
     #[must_use]
-    pub fn caret_at_byte(&self, byte_offset: usize, affinity: CaretAffinity) -> Option<CaretPosition> {
+    pub fn caret_at_byte(
+        &self,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<CaretPosition> {
         interaction::caret_at_byte(self, byte_offset, affinity)
     }
 
@@ -258,15 +262,9 @@ impl OwnedTextRun {
     /// boundaries. Invalid ranges, non-finite coordinates, or non-positive heights return
     /// no rectangles, rather than publishing a partial selection.
     #[must_use]
-    pub fn selection_rects(
-        &self,
-        range: Range<usize>,
-        y: f32,
-        height: f32,
-    ) -> Vec<SelectionRect> {
+    pub fn selection_rects(&self, range: Range<usize>, y: f32, height: f32) -> Vec<SelectionRect> {
         interaction::selection_rects(self, range, y, height)
     }
-
 }
 
 /// Convert a UTF-8 byte offset to a native UTF-16 code unit offset.

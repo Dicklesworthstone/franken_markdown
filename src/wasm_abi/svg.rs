@@ -41,14 +41,31 @@ pub fn render_svg_configured_resources(
     font_weights: Vec<u32>,
 ) -> Result<FmdRenderResult, JsValue> {
     admit_assets(
-        markdown.len(), &image_destinations, image_bytes_flat.len(), &image_bytes_lengths,
-        &[body_regular.len(), body_bold.len(), body_italic.len(), body_bold_italic.len(), mono_regular.len()],
+        markdown.len(),
+        &image_destinations,
+        image_bytes_flat.len(),
+        &image_bytes_lengths,
+        &[
+            body_regular.len(),
+            body_bold.len(),
+            body_italic.len(),
+            body_bold_italic.len(),
+            mono_regular.len(),
+        ],
         &font_weights,
-    ).map_err(JsValue::from_str)?;
+    )
+    .map_err(JsValue::from_str)?;
     let width = geometry(font_scale, max_width_pt).map_err(JsValue::from_str)?;
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
     options.font_scale = positive_f32(font_scale, "fontScale")?;
-    apply_font_assets(&mut options, body_regular, body_bold, body_italic, body_bold_italic, mono_regular)?;
+    apply_font_assets(
+        &mut options,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+    )?;
     apply_font_weights(&mut options, &font_weights)?;
     // Packing has been validated completely. Keep the SVG core's recoverable
     // invalid-image behavior rather than imposing the PDF decoder's format set.
@@ -56,7 +73,8 @@ pub fn render_svg_configured_resources(
     for (destination, length) in image_destinations.iter().zip(&image_bytes_lengths) {
         let end = offset + *length as usize;
         options.pdf_image_assets.push(PdfImageAsset::new(
-            destination.trim().to_owned(), image_bytes_flat[offset..end].to_vec(),
+            destination.trim().to_owned(),
+            image_bytes_flat[offset..end].to_vec(),
         ));
         offset = end;
     }
@@ -98,17 +116,25 @@ fn admit_assets(
     for (destination, &length) in destinations.iter().zip(lengths) {
         let name = destination.trim();
         if name.is_empty() || destination.len() > 8192 || name.chars().any(char::is_control) {
-            return Err("SVG image needs a nonempty, control-free destination of at most 8192 bytes");
+            return Err(
+                "SVG image needs a nonempty, control-free destination of at most 8192 bytes",
+            );
         }
         if !unique.insert(name) {
             return Err("SVG image destinations must be unique after trimming");
         }
-        names = names.checked_add(destination.len()).ok_or("SVG image name byte count overflow")?;
+        names = names
+            .checked_add(destination.len())
+            .ok_or("SVG image name byte count overflow")?;
         let length = usize::try_from(length).map_err(|_| "SVG image length overflow")?;
         if names > 64 * 1024 || length == 0 || length > 32 * MIB {
-            return Err("SVG image must contain 1 byte through 32 MiB; names must total at most 64 KiB");
+            return Err(
+                "SVG image must contain 1 byte through 32 MiB; names must total at most 64 KiB",
+            );
         }
-        total = total.checked_add(length).ok_or("SVG image byte count overflow")?;
+        total = total
+            .checked_add(length)
+            .ok_or("SVG image byte count overflow")?;
     }
     if total != flat_len {
         return Err("SVG flattened image bytes do not match the declared lengths");
@@ -118,7 +144,9 @@ fn admit_assets(
     }
     let mut total = 0usize;
     for &length in font_lengths {
-        total = total.checked_add(length).ok_or("SVG font byte count overflow")?;
+        total = total
+            .checked_add(length)
+            .ok_or("SVG font byte count overflow")?;
         if length > 32 * MIB || total > 128 * MIB {
             return Err("SVG font exceeds 32 MiB or combined faces exceed 128 MiB");
         }
@@ -139,14 +167,20 @@ pub(super) fn render_with_options(
     width: f32,
 ) -> crate::Result<FmdRenderResult> {
     if markdown.len() > 32 * MIB {
-        return Err(crate::RenderError::InvalidInput("SVG source exceeds 32 MiB".to_owned()));
+        return Err(crate::RenderError::InvalidInput(
+            "SVG source exceeds 32 MiB".to_owned(),
+        ));
     }
     // Resolve the theme without html_options() cloning all supplied asset bytes.
     let theme_options = WasmRenderOptions {
-        theme: options.theme.clone(), font_scale: options.font_scale,
+        theme: options.theme.clone(),
+        font_scale: options.font_scale,
         ..WasmRenderOptions::default()
     };
-    let svg_options = SvgOptions { theme: theme_options.html_options().theme, max_width_pt: width };
+    let svg_options = SvgOptions {
+        theme: theme_options.html_options().theme,
+        max_width_pt: width,
+    };
     let parsed = crate::parse_markdown_spanned(markdown);
     let mut diagnostics = String::from("[");
     for diagnostic in &parsed.diagnostics {
@@ -154,23 +188,52 @@ pub(super) fn render_with_options(
             crate::DiagnosticSeverity::Warning => "warning",
             crate::DiagnosticSeverity::Error => "error",
         };
-        diagnostic_json(&mut diagnostics, severity, diagnostic.span.start, diagnostic.span.end,
-            None, &diagnostic.message);
+        diagnostic_json(
+            &mut diagnostics,
+            severity,
+            diagnostic.span.start,
+            diagnostic.span.end,
+            None,
+            &diagnostic.message,
+        );
     }
     let (bytes, report, warnings) = crate::svg::render_svg_with_resources(
-        &parsed.into_document(), &svg_options, &options.font_assets, &options.pdf_image_assets,
+        &parsed.into_document(),
+        &svg_options,
+        &options.font_assets,
+        &options.pdf_image_assets,
     )?;
     for warning in warnings {
         // The SVG core has no exact source span for these findings. 0..0 is
         // explicitly document-scoped, never an invented inline source location.
-        diagnostic_json(&mut diagnostics, "warning", 0, 0, Some(warning.code), &warning.message);
+        diagnostic_json(
+            &mut diagnostics,
+            "warning",
+            0,
+            0,
+            Some(warning.code),
+            &warning.message,
+        );
     }
     if report.glyphs_missing > 0 {
-        diagnostic_json(&mut diagnostics, "warning", 0, 0, Some("svg_missing_glyphs"),
-            &format!("SVG omitted {} unmapped glyph(s)", report.glyphs_missing));
+        diagnostic_json(
+            &mut diagnostics,
+            "warning",
+            0,
+            0,
+            Some("svg_missing_glyphs"),
+            &format!("SVG omitted {} unmapped glyph(s)", report.glyphs_missing),
+        );
     }
     diagnostics.push(']');
-    Ok(artifact_result("svg", "image/svg+xml", "svg", bytes, markdown.len(), diagnostics))
+    Ok(artifact_result(
+        "svg",
+        "image/svg+xml",
+        "svg",
+        bytes,
+        markdown.len(),
+        diagnostics,
+    ))
 }
 
 fn diagnostic_json(
@@ -182,8 +245,13 @@ fn diagnostic_json(
     message: &str,
 ) {
     use std::fmt::Write as _;
-    if out.len() > 1 { out.push(','); }
-    let _ = write!(out, "{{\"severity\":\"{severity}\",\"start\":{start},\"end\":{end},\"message\":\"");
+    if out.len() > 1 {
+        out.push(',');
+    }
+    let _ = write!(
+        out,
+        "{{\"severity\":\"{severity}\",\"start\":{start},\"end\":{end},\"message\":\""
+    );
     push_json_escaped(out, message);
     out.push('"');
     if let Some(code) = code {
@@ -205,7 +273,10 @@ mod tests {
         let source = "# Title\n\nText with **style** and $x^2$.";
         let options = WasmRenderOptions::default();
         let result = render_with_options(source, &options, 612.0).unwrap();
-        assert_eq!(result.bytes(), crate::render_svg(&crate::parse_markdown(source), &SvgOptions::default()));
+        assert_eq!(
+            result.bytes(),
+            crate::render_svg(&crate::parse_markdown(source), &SvgOptions::default())
+        );
         assert_eq!(result.source_length(), source.len());
         assert_eq!(result.format(), "svg");
         assert_eq!(result.mime_type(), "image/svg+xml");
@@ -217,16 +288,36 @@ mod tests {
     fn images_and_custom_fonts_reach_the_same_resource_renderer() {
         let source = "# A\n\n![plot](plot.svg)\n\nA";
         let options = WasmRenderOptions::default()
-            .with_pdf_image_asset("plot.svg", SVG.to_vec()).unwrap()
-            .with_font_asset_bytes(FontAssetSlot::BodyRegular,
-                crate::fonts::body_bytes(crate::FontFamily::Serif, crate::fonts::FontStyle::Regular).to_vec()).unwrap();
+            .with_pdf_image_asset("plot.svg", SVG.to_vec())
+            .unwrap()
+            .with_font_asset_bytes(
+                FontAssetSlot::BodyRegular,
+                crate::fonts::body_bytes(
+                    crate::FontFamily::Serif,
+                    crate::fonts::FontStyle::Regular,
+                )
+                .to_vec(),
+            )
+            .unwrap();
         let result = render_with_options(source, &options, 360.0).unwrap();
-        let direct = crate::svg::render_svg_with_resources(&crate::parse_markdown(source),
-            &SvgOptions { max_width_pt: 360.0, ..SvgOptions::default() },
-            &options.font_assets, &options.pdf_image_assets).unwrap();
+        let direct = crate::svg::render_svg_with_resources(
+            &crate::parse_markdown(source),
+            &SvgOptions {
+                max_width_pt: 360.0,
+                ..SvgOptions::default()
+            },
+            &options.font_assets,
+            &options.pdf_image_assets,
+        )
+        .unwrap();
         assert_eq!(result.bytes(), direct.0);
         assert_eq!(result.diagnostics_json(), "[]");
-        assert_ne!(result.bytes(), render_with_options(source, &WasmRenderOptions::default(), 360.0).unwrap().bytes());
+        assert_ne!(
+            result.bytes(),
+            render_with_options(source, &WasmRenderOptions::default(), 360.0)
+                .unwrap()
+                .bytes()
+        );
     }
 
     #[test]
@@ -265,7 +356,10 @@ mod tests {
         diagnostic_json(&mut json, "warning", 2, 4, None, "a\"b\\c\n\u{0001}");
         diagnostic_json(&mut json, "warning", 0, 0, Some("svg_test"), "second");
         json.push(']');
-        assert_eq!(json, "[{\"severity\":\"warning\",\"start\":2,\"end\":4,\"message\":\"a\\\"b\\\\c\\n\\u0001\"},{\"severity\":\"warning\",\"start\":0,\"end\":0,\"message\":\"second\",\"scope\":\"document\",\"code\":\"svg_test\"}]");
+        assert_eq!(
+            json,
+            "[{\"severity\":\"warning\",\"start\":2,\"end\":4,\"message\":\"a\\\"b\\\\c\\n\\u0001\"},{\"severity\":\"warning\",\"start\":0,\"end\":0,\"message\":\"second\",\"scope\":\"document\",\"code\":\"svg_test\"}]"
+        );
     }
 
     #[test]
@@ -275,7 +369,11 @@ mod tests {
         for lengths in [vec![1], vec![1, 0], vec![1, 2], vec![u32::MAX, 1]] {
             assert!(admit_assets(0, &names, 2, &lengths, &[0; 5], &[]).is_err());
         }
-        for names in [vec!["a".into(), " a ".into()], vec![" ".into(), "b".into()], vec!["a\nq".into(), "b".into()]] {
+        for names in [
+            vec!["a".into(), " a ".into()],
+            vec![" ".into(), "b".into()],
+            vec!["a\nq".into(), "b".into()],
+        ] {
             assert!(admit_assets(0, &names, 2, &[1, 1], &[0; 5], &[]).is_err());
         }
         assert!(admit_assets(0, &["a".repeat(8193)], 1, &[1], &[0; 5], &[]).is_err());
@@ -283,7 +381,17 @@ mod tests {
 
     #[test]
     fn admission_bounds_large_payloads_without_allocating_them() {
-        assert!(admit_assets(32 * MIB, &[], 0, &[], &[32 * MIB, 32 * MIB, 32 * MIB, 32 * MIB, 0], &[]).is_ok());
+        assert!(
+            admit_assets(
+                32 * MIB,
+                &[],
+                0,
+                &[],
+                &[32 * MIB, 32 * MIB, 32 * MIB, 32 * MIB, 0],
+                &[]
+            )
+            .is_ok()
+        );
         assert!(admit_assets(32 * MIB + 1, &[], 0, &[], &[0; 5], &[]).is_err());
         assert!(admit_assets(0, &[], 128 * MIB + 1, &[], &[0; 5], &[]).is_err());
         assert!(admit_assets(0, &[], 0, &[], &[32 * MIB; 5], &[]).is_err());
@@ -296,7 +404,14 @@ mod tests {
     #[test]
     fn geometry_rejects_nan_overflow_underflow_and_impossible_widths() {
         assert_eq!(geometry(None, None).unwrap(), 612.0);
-        for bad in [f64::NAN, f64::INFINITY, -1.0, 0.0, f64::MIN_POSITIVE, f64::MAX] {
+        for bad in [
+            f64::NAN,
+            f64::INFINITY,
+            -1.0,
+            0.0,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+        ] {
             assert!(geometry(Some(bad), None).is_err());
         }
         for bad in [f64::NAN, f64::INFINITY, 143.0, 14_401.0] {

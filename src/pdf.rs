@@ -1698,7 +1698,10 @@ impl Face {
             return self.shaped_width_ascii(bytes, size, self.ascii_tables());
         }
         let glyph_text = text_composition::glyph_text(text, &self.font);
-        let glyphs: Vec<u16> = glyph_text.chars().map(|ch| self.font.glyph_index(ch)).collect();
+        let glyphs: Vec<u16> = glyph_text
+            .chars()
+            .map(|ch| self.font.glyph_index(ch))
+            .collect();
         let shaped = self.lig.substitute(&glyphs);
         self.shaped_glyph_width(&shaped, size)
     }
@@ -22025,7 +22028,13 @@ fn generate_page_content(
                 }
                 if image.formula {
                     math::append_text_anchor(
-                        &mut body, image, line.rule_x, y, subsets, subset_lookup, faces,
+                        &mut body,
+                        image,
+                        line.rule_x,
+                        y,
+                        subsets,
+                        subset_lookup,
+                        faces,
                     );
                 }
             }
@@ -27929,7 +27938,6 @@ impl PageBreakPlan {
     }
 }
 
-
 fn pdf_height_block_end(lines: &[Line], start: usize) -> usize {
     let Some(first) = lines.get(start) else {
         return start;
@@ -27939,10 +27947,7 @@ fn pdf_height_block_end(lines: &[Line], start: usize) -> usize {
         return (start + 1).min(lines.len());
     }
     let mut end = start + 1;
-    while end < lines.len()
-        && !lines[end].page_break_before
-        && lines[end].flow.group == group
-    {
+    while end < lines.len() && !lines[end].page_break_before && lines[end].flow.group == group {
         end += 1;
     }
     end
@@ -27957,8 +27962,10 @@ fn pdf_split_is_hard_forbidden(lines: &[Line], candidate: usize) -> bool {
 
     if before.flow.group == after.flow.group {
         // Table header/rule material is inseparable from the first body row.
-        if matches!(before.flow.kind, FlowKind::TableHeader | FlowKind::TableRule)
-            && matches!(after.flow.kind, FlowKind::TableRule | FlowKind::TableRow)
+        if matches!(
+            before.flow.kind,
+            FlowKind::TableHeader | FlowKind::TableRule
+        ) && matches!(after.flow.kind, FlowKind::TableRule | FlowKind::TableRow)
         {
             return true;
         }
@@ -27974,14 +27981,9 @@ fn pdf_split_is_hard_forbidden(lines: &[Line], candidate: usize) -> bool {
     // A discretionary hyphen joins the two physical lines into one word. The
     // exact planner treats this as structural; if no legal partition exists,
     // the wrapper falls back to the legacy guaranteed-progress DP.
-    before
-        .segs
-        .last()
-        .is_some_and(|seg| {
-            seg.text.ends_with('-')
-                || seg.text.ends_with('\u{AD}')
-                || seg.text.ends_with('\u{2010}')
-        })
+    before.segs.last().is_some_and(|seg| {
+        seg.text.ends_with('-') || seg.text.ends_with('\u{AD}') || seg.text.ends_with('\u{2010}')
+    })
 }
 
 fn pdf_table_continuation_prefix(lines: &[Line], start: usize, end: usize) -> LayoutUnit {
@@ -41582,10 +41584,7 @@ mod plass_pagination_tests {
         ];
         // Body before the table makes a tempting but structurally illegal
         // first-row split in a local fill strategy.
-        lines.splice(
-            0..0,
-            (0..3).map(|i| line(FlowKind::Paragraph, 12, i, 3)),
-        );
+        lines.splice(0..0, (0..3).map(|i| line(FlowKind::Paragraph, 12, i, 3)));
         let plan = exact_height_page_breaks(&lines, pg).expect("exact plan");
         for &end in &plan.ends {
             if end == 0 || end >= lines.len() {

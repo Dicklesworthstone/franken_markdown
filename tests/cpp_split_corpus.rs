@@ -6,9 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::highlight::{Span, Tok, highlight};
-use franken_markdown::lang_cplusplus::{
-    CPP_CAPABILITY_V1, CppCapabilityV1, lex_cplusplus_into,
-};
+use franken_markdown::lang_cplusplus::{CPP_CAPABILITY_V1, CppCapabilityV1, lex_cplusplus_into};
 use franken_markdown::resume::{ResumableLexer, ResumeError, coalesce_spans};
 
 const CONSUMER_DOCUMENT: &str = include_str!("fixtures/cpp_route/consumer_document.cpp");
@@ -159,10 +157,7 @@ fn negative_control_tiling_oracle_detects_gap() {
     let result = std::panic::catch_unwind(|| {
         assert_tiling(&bad, 10);
     });
-    assert!(
-        result.is_err(),
-        "tiling oracle must reject input with gaps"
-    );
+    assert!(result.is_err(), "tiling oracle must reject input with gaps");
 }
 
 #[test]

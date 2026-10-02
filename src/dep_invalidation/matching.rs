@@ -15,7 +15,10 @@ use super::DependencyGraph;
 use std::collections::HashMap;
 use std::ops::Range;
 
-pub(super) fn reusable_indices(old: &DependencyGraph, new: &DependencyGraph) -> Vec<(usize, usize)> {
+pub(super) fn reusable_indices(
+    old: &DependencyGraph,
+    new: &DependencyGraph,
+) -> Vec<(usize, usize)> {
     let old_len = old.document.block_count();
     let new_len = new.document.block_count();
     let equal = |a: usize, b: usize| {
@@ -54,7 +57,12 @@ pub(super) fn reusable_indices(old: &DependencyGraph, new: &DependencyGraph) -> 
         old_cursor = a + 1;
         new_cursor = b + 1;
     }
-    append_edges(&mut matched, old_cursor..old_end, new_cursor..new_end, &equal);
+    append_edges(
+        &mut matched,
+        old_cursor..old_end,
+        new_cursor..new_end,
+        &equal,
+    );
     matched.extend((0..suffix).map(|i| (old_end + i, new_end + i)));
     matched
 }
@@ -63,7 +71,10 @@ fn unique_sources(graph: &DependencyGraph, range: Range<usize>) -> HashMap<&str,
     let mut unique = HashMap::new();
     for index in range {
         if let Some(text) = graph.document.blocks()[index].span.slice(graph.source()) {
-            unique.entry(text).and_modify(|entry| *entry = None).or_insert(Some(index));
+            unique
+                .entry(text)
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(index));
         }
     }
     unique
@@ -79,7 +90,8 @@ fn common_edges(
     while prefix < old.len().min(new.len()) && equal(old.start + prefix, new.start + prefix) {
         prefix += 1;
     }
-    while suffix < old.len() - prefix && suffix < new.len() - prefix
+    while suffix < old.len() - prefix
+        && suffix < new.len() - prefix
         && equal(old.end - suffix - 1, new.end - suffix - 1)
     {
         suffix += 1;
@@ -130,10 +142,10 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use crate::FontFamily;
     use crate::dep_invalidation::{FlowAssetReuse, FlowSession};
     use crate::flow_display::{AssetResult, FlowDisplayLimits, FlowLayoutOptions};
     use crate::fonts::BundledFlowFonts;
-    use crate::FontFamily;
 
     fn check_partition(old: &DependencyGraph, new: &DependencyGraph) {
         let change = old.compare(new);
@@ -142,8 +154,14 @@ mod tests {
         for pair in &change.reusable {
             old_indices.push(pair.old_index);
             new_indices.push(pair.new_index);
-            assert_eq!(pair.old_span.slice(old.source()), pair.new_span.slice(new.source()));
-            assert_eq!(old.document.blocks()[pair.old_index].node, new.document.blocks()[pair.new_index].node);
+            assert_eq!(
+                pair.old_span.slice(old.source()),
+                pair.new_span.slice(new.source())
+            );
+            assert_eq!(
+                old.document.blocks()[pair.old_index].node,
+                new.document.blocks()[pair.new_index].node
+            );
         }
         for window in change.reusable.windows(2) {
             assert!(window[0].old_index < window[1].old_index);
@@ -151,8 +169,14 @@ mod tests {
         }
         old_indices.sort_unstable();
         new_indices.sort_unstable();
-        assert_eq!(old_indices, (0..old.document.block_count()).collect::<Vec<_>>());
-        assert_eq!(new_indices, (0..new.document.block_count()).collect::<Vec<_>>());
+        assert_eq!(
+            old_indices,
+            (0..old.document.block_count()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            new_indices,
+            (0..new.document.block_count()).collect::<Vec<_>>()
+        );
         assert_eq!(change, old.compare(new), "matching must be deterministic");
     }
 
@@ -163,7 +187,14 @@ mod tests {
         let change = old.compare(&new);
         assert_eq!(change.dirty_blocks, vec![0, 3]);
         assert_eq!(change.removed_blocks, vec![0, 3]);
-        assert_eq!(change.reusable.iter().map(|p| (p.old_index, p.new_index)).collect::<Vec<_>>(), vec![(1, 1), (2, 2)]);
+        assert_eq!(
+            change
+                .reusable
+                .iter()
+                .map(|p| (p.old_index, p.new_index))
+                .collect::<Vec<_>>(),
+            vec![(1, 1), (2, 2)]
+        );
         assert_ne!(change.reusable[0].old_span, change.reusable[0].new_span);
         check_partition(&old, &new);
     }
@@ -183,8 +214,12 @@ mod tests {
     #[test]
     fn insertions_deletions_and_reordering_never_cross_occurrences() {
         let snapshots = [
-            "", "a\n", "a\n\nb\n\nc\n", "c\n\nb\n\na\n",
-            "a\n\na\n\nb\n", "new\n\na\n\nb\n\nc\n\ntail\n",
+            "",
+            "a\n",
+            "a\n\nb\n\nc\n",
+            "c\n\nb\n\na\n",
+            "a\n\na\n\nb\n",
+            "new\n\na\n\nb\n\nc\n\ntail\n",
             "left\n\na\n\na\n\nb\n\nright\n",
         ];
         for a in snapshots {
@@ -192,7 +227,10 @@ mod tests {
                 check_partition(&DependencyGraph::scan(a), &DependencyGraph::scan(b));
             }
         }
-        assert_eq!(increasing_anchors(&[(4, 0), (1, 1), (3, 2), (2, 3), (5, 4)]), vec![(1, 1), (2, 3), (5, 4)]);
+        assert_eq!(
+            increasing_anchors(&[(4, 0), (1, 1), (3, 2), (2, 3), (5, 4)]),
+            vec![(1, 1), (2, 3), (5, 4)]
+        );
     }
 
     #[test]
@@ -202,7 +240,12 @@ mod tests {
         let change = old.compare(&new);
         assert!(!change.global_context_changed);
         assert!(change.dirty_blocks.contains(&1));
-        assert!(change.reusable.iter().any(|p| p.old_index == 2 && p.new_index == 2));
+        assert!(
+            change
+                .reusable
+                .iter()
+                .any(|p| p.old_index == 2 && p.new_index == 2)
+        );
         check_partition(&old, &new);
     }
 
@@ -219,26 +262,47 @@ mod tests {
     #[test]
     fn session_retains_middle_assets_only_with_explicit_host_authorization() {
         let fonts = BundledFlowFonts::new(FontFamily::Sans).unwrap();
-        for reuse in [FlowAssetReuse::Invalidate, FlowAssetReuse::HostVerifiedUnchanged] {
+        for reuse in [
+            FlowAssetReuse::Invalidate,
+            FlowAssetReuse::HostVerifiedUnchanged,
+        ] {
             let mut session = FlowSession::new(
-                "old start\n\n![plot](plot.png)\n\nstable\n\nold tail\n", 2,
-                FlowDisplayLimits::default(), FlowLayoutOptions::default(),
+                "old start\n\n![plot](plot.png)\n\nstable\n\nold tail\n",
+                2,
+                FlowDisplayLimits::default(),
+                FlowLayoutOptions::default(),
                 |t, s, r, i| fonts.shape(t, s, r, i),
-            ).unwrap();
+            )
+            .unwrap();
             let request = session.pending_assets()[0].clone();
-            session.provide_asset(AssetResult {
-                request_id: request.id, generation: request.generation,
-                width: 20, height: 10, bytes: Some(vec![1, 2]),
-            }, |t, s, r, i| fonts.shape(t, s, r, i)).unwrap();
-            let update = session.replace_source(
-                1, "new start\n\n![plot](plot.png)\n\nstable\n\nnew tail\n", reuse,
-                |t, s, r, i| fonts.shape(t, s, r, i),
-            ).unwrap();
+            session
+                .provide_asset(
+                    AssetResult {
+                        request_id: request.id,
+                        generation: request.generation,
+                        width: 20,
+                        height: 10,
+                        bytes: Some(vec![1, 2]),
+                    },
+                    |t, s, r, i| fonts.shape(t, s, r, i),
+                )
+                .unwrap();
+            let update = session
+                .replace_source(
+                    1,
+                    "new start\n\n![plot](plot.png)\n\nstable\n\nnew tail\n",
+                    reuse,
+                    |t, s, r, i| fonts.shape(t, s, r, i),
+                )
+                .unwrap();
             assert_eq!(update.changes.reusable.len(), 2);
             if reuse == FlowAssetReuse::HostVerifiedUnchanged {
                 assert_eq!(update.reused_assets.len(), 1);
                 assert!(session.pending_assets().is_empty());
-                assert_eq!(session.engine().resolved_assets()[0].bytes, Some(vec![1, 2]));
+                assert_eq!(
+                    session.engine().resolved_assets()[0].bytes,
+                    Some(vec![1, 2])
+                );
                 assert_eq!(session.engine().resolved_assets()[0].generation, 2);
             } else {
                 assert!(update.reused_assets.is_empty());

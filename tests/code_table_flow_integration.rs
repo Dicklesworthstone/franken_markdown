@@ -19,8 +19,8 @@
 
 use franken_markdown::ast::Align;
 use franken_markdown::code_table_flow::{
-    CodeFenceFlow, CodeTableError, ConstrainedTableFlow, TableCell, TableConstraints,
-    TableMeasurementState, MAX_COLUMNS_BUDGET,
+    CodeFenceFlow, CodeTableError, ConstrainedTableFlow, MAX_COLUMNS_BUDGET, TableCell,
+    TableConstraints, TableMeasurementState,
 };
 use franken_markdown::display::{AccessibleReadingRole, DisplayItem, DisplayRect, VectorShapeType};
 use franken_markdown::span::SourceSpan;

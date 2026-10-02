@@ -12,8 +12,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use fmd_font::macos::{
-    MacFontAdapter, MacFontAdapterConfig, MacFontAdapterError, RawCoreGraphicsRaster,
-    SimulatedMacBridge, DEFAULT_MAC_CONTEXT_BUDGET, MAX_MAC_RASTER_DIMENSION,
+    DEFAULT_MAC_CONTEXT_BUDGET, MAX_MAC_RASTER_DIMENSION, MacFontAdapter, MacFontAdapterConfig,
+    MacFontAdapterError, RawCoreGraphicsRaster, SimulatedMacBridge,
 };
 use fmd_font::native_route::{
     NativeShapingError, NativeShapingRequest, NativeShapingRoute, ShapingRouteKind,
@@ -84,8 +84,15 @@ fn corpus_cjk_fallback_attribution() {
     assert_eq!(run.context.font_origin, FontOrigin::SystemFallbackFace);
 
     // Some glyphs must have fallback font IDs distinct from primary
-    let fallback_glyphs: Vec<_> = run.glyphs.iter().filter(|g| g.font_id != primary_id).collect();
-    assert!(!fallback_glyphs.is_empty(), "CJK characters must trigger fallback font ID");
+    let fallback_glyphs: Vec<_> = run
+        .glyphs
+        .iter()
+        .filter(|g| g.font_id != primary_id)
+        .collect();
+    assert!(
+        !fallback_glyphs.is_empty(),
+        "CJK characters must trigger fallback font ID"
+    );
 }
 
 #[test]
@@ -132,8 +139,15 @@ fn corpus_emoji_color_glyph_fallback() {
     };
 
     let run = adapter.shape_run(&req).expect("shape emoji text");
-    let fallback_glyphs: Vec<_> = run.glyphs.iter().filter(|g| g.font_id != primary_id).collect();
-    assert!(!fallback_glyphs.is_empty(), "Emoji must use Apple Color Emoji fallback");
+    let fallback_glyphs: Vec<_> = run
+        .glyphs
+        .iter()
+        .filter(|g| g.font_id != primary_id)
+        .collect();
+    assert!(
+        !fallback_glyphs.is_empty(),
+        "Emoji must use Apple Color Emoji fallback"
+    );
 }
 
 #[test]
@@ -152,7 +166,7 @@ fn core_graphics_raster_swizzles_bgra_to_rgba() {
 
     // Check swizzled RGBA pixel: simulated BGRA had B=255, G=200, R=50, A=255
     // Swapped: R=50, G=200, B=255, A=255
-    assert_eq!(raster.pixels[0], 50);  // R
+    assert_eq!(raster.pixels[0], 50); // R
     assert_eq!(raster.pixels[1], 200); // G
     assert_eq!(raster.pixels[2], 255); // B
     assert_eq!(raster.pixels[3], 255); // A
@@ -178,7 +192,9 @@ fn negative_control_context_work_budget_enforced() {
         allow_system_fallback: true,
     };
 
-    let err = adapter.shape_run(&req).expect_err("should reject oversized text");
+    let err = adapter
+        .shape_run(&req)
+        .expect_err("should reject oversized text");
     assert_eq!(
         err,
         NativeShapingError::ContextBudgetExceeded {
@@ -222,7 +238,9 @@ fn negative_control_disabled_fallback_yields_error() {
         allow_system_fallback: false, // disabled!
     };
 
-    let err = adapter.shape_run(&req).expect_err("disabled fallback must fail");
+    let err = adapter
+        .shape_run(&req)
+        .expect_err("disabled fallback must fail");
     assert_eq!(
         err,
         NativeShapingError::FallbackRequired {
@@ -246,7 +264,9 @@ fn negative_control_failing_bridge_propagates_adapter_error() {
         allow_system_fallback: true,
     };
 
-    let err = adapter.shape_run(&req).expect_err("failing bridge must error");
+    let err = adapter
+        .shape_run(&req)
+        .expect_err("failing bridge must error");
     assert!(matches!(
         err,
         NativeShapingError::AdapterError(ref msg) if msg.contains("simulated CoreText foreign call abort")
@@ -307,9 +327,15 @@ fn negative_control_raster_caps_and_buffer_mismatch() {
 
     // Dimension too large
     let err1 = adapter.get_glyph_rgba_raster("Test", 1, 14.0).unwrap_err();
-    assert!(matches!(err1, MacFontAdapterError::RasterDimensionTooLarge { .. }));
+    assert!(matches!(
+        err1,
+        MacFontAdapterError::RasterDimensionTooLarge { .. }
+    ));
 
     // Buffer mismatch
     let err2 = adapter.get_glyph_rgba_raster("Test", 2, 14.0).unwrap_err();
-    assert!(matches!(err2, MacFontAdapterError::RasterBufferMismatch { .. }));
+    assert!(matches!(
+        err2,
+        MacFontAdapterError::RasterBufferMismatch { .. }
+    ));
 }

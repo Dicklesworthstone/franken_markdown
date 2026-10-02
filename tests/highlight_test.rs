@@ -648,7 +648,10 @@ fn generic_empty_type_table_skips_uppercase_heuristic() {
     // Powershell has no type table: an uppercase word must stay Plain, not become Type.
     let code = "echo $HOME";
     assert_spans_tile("powershell", code);
-    let kinds: Vec<Tok> = highlight("powershell", code).iter().map(|s| s.kind).collect();
+    let kinds: Vec<Tok> = highlight("powershell", code)
+        .iter()
+        .map(|s| s.kind)
+        .collect();
     assert!(
         !kinds.contains(&Tok::Type),
         "an empty type table must not classify uppercase words as types"

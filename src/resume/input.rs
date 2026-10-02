@@ -11,9 +11,15 @@ pub(super) fn feed(lexer: &mut ResumableLexer, chunk: &[u8]) -> Result<FeedRepor
     if lexer.finished {
         return Err(ResumeError::AlreadyFinished);
     }
-    let projected = lexer.pending.len().checked_add(chunk.len())
+    let projected = lexer
+        .pending
+        .len()
+        .checked_add(chunk.len())
         .ok_or(ResumeError::OffsetOverflow)?;
-    lexer.base.checked_add(projected).ok_or(ResumeError::OffsetOverflow)?;
+    lexer
+        .base
+        .checked_add(projected)
+        .ok_or(ResumeError::OffsetOverflow)?;
     validate_append_utf8(&lexer.pending, chunk)?;
     let before = lexer.spans.len();
     if projected <= lexer.max_pending_bytes {
@@ -85,10 +91,14 @@ fn validate_append_utf8(pending: &[u8], chunk: &[u8]) -> Result<(), ResumeError>
             match std::str::from_utf8(&scalar[..length]) {
                 Ok(_) => break,
                 Err(error) if error.error_len().is_some() => {
-                    return Err(ResumeError::InvalidUtf8 { at: consumed.saturating_sub(1) });
+                    return Err(ResumeError::InvalidUtf8 {
+                        at: consumed.saturating_sub(1),
+                    });
                 }
                 Err(_) => {
-                    let Some(&byte) = chunk.get(consumed) else { return Ok(()); };
+                    let Some(&byte) = chunk.get(consumed) else {
+                        return Ok(());
+                    };
                     let Some(slot) = scalar.get_mut(length) else {
                         return Err(ResumeError::InvalidUtf8 { at: consumed });
                     };
@@ -100,9 +110,9 @@ fn validate_append_utf8(pending: &[u8], chunk: &[u8]) -> Result<(), ResumeError>
         }
     }
     match std::str::from_utf8(&chunk[consumed..]) {
-        Err(error) if error.error_len().is_some() => {
-            Err(ResumeError::InvalidUtf8 { at: consumed + error.valid_up_to() })
-        }
+        Err(error) if error.error_len().is_some() => Err(ResumeError::InvalidUtf8 {
+            at: consumed + error.valid_up_to(),
+        }),
         _ => Ok(()),
     }
 }
@@ -123,7 +133,10 @@ mod tests {
         assert!(report.pending_bytes <= 64);
         assert_eq!(lexer.received_bytes(), source.len());
         lexer.finish().unwrap();
-        assert_eq!(coalesce_spans(lexer.spans()), coalesce_spans(&highlight("rust", &source)));
+        assert_eq!(
+            coalesce_spans(lexer.spans()),
+            coalesce_spans(&highlight("rust", &source))
+        );
     }
 
     #[test]
@@ -133,13 +146,19 @@ mod tests {
         let before = lexer.checkpoint(5);
         let output = lexer.spans().to_vec();
         let rejected = format!("{}/*{}", "let x = 1; ".repeat(40), "x".repeat(100));
-        assert!(matches!(feed(&mut lexer, rejected.as_bytes()), Err(ResumeError::SuffixTooLong { .. })));
+        assert!(matches!(
+            feed(&mut lexer, rejected.as_bytes()),
+            Err(ResumeError::SuffixTooLong { .. })
+        ));
         assert_eq!(lexer.checkpoint(5), before);
         assert_eq!(lexer.spans(), output);
         feed(&mut lexer, b"let replacement = 2;").unwrap();
         lexer.finish().unwrap();
         let accepted = "let existing = 0; let replacement = 2;";
-        assert_eq!(coalesce_spans(lexer.spans()), coalesce_spans(&highlight("rust", accepted)));
+        assert_eq!(
+            coalesce_spans(lexer.spans()),
+            coalesce_spans(&highlight("rust", accepted))
+        );
     }
 
     #[test]
@@ -149,7 +168,11 @@ mod tests {
             let mut lexer = ResumableLexer::with_limits("rust", cap).unwrap();
             feed(&mut lexer, source.as_bytes()).unwrap();
             lexer.finish().unwrap();
-            assert_eq!(coalesce_spans(lexer.spans()), coalesce_spans(&highlight("rust", &source)), "cap {cap}");
+            assert_eq!(
+                coalesce_spans(lexer.spans()),
+                coalesce_spans(&highlight("rust", &source)),
+                "cap {cap}"
+            );
         }
     }
 
@@ -162,7 +185,10 @@ mod tests {
         let mut rejected = b"x = 1; let ".repeat(100);
         let invalid_at = rejected.len();
         rejected.push(0xff);
-        assert_eq!(feed(&mut lexer, &rejected), Err(ResumeError::InvalidUtf8 { at: invalid_at }));
+        assert_eq!(
+            feed(&mut lexer, &rejected),
+            Err(ResumeError::InvalidUtf8 { at: invalid_at })
+        );
         assert_eq!(lexer.checkpoint(6), before);
         assert_eq!(lexer.spans(), output);
     }
@@ -172,7 +198,10 @@ mod tests {
         let mut lexer = ResumableLexer::with_limits("rust", 32).unwrap();
         for _ in 0..10 {
             let rejected = format!("/*{}", "x".repeat(4096));
-            assert_eq!(feed(&mut lexer, rejected.as_bytes()), Err(ResumeError::SuffixTooLong { held: 33, cap: 32 }));
+            assert_eq!(
+                feed(&mut lexer, rejected.as_bytes()),
+                Err(ResumeError::SuffixTooLong { held: 33, cap: 32 })
+            );
             assert_eq!(lexer.pending_bytes(), 0);
             assert_eq!(lexer.received_bytes(), 0);
             assert!(lexer.spans().is_empty());
@@ -183,12 +212,24 @@ mod tests {
     fn utf8_boundary_validator_matches_whole_input_validity_at_every_split() {
         for source in ["", "ascii", "café", "日本語", "😀😀", "\u{10ffff}"] {
             for split in 0..=source.len() {
-                assert_eq!(validate_append_utf8(&source.as_bytes()[..split], &source.as_bytes()[split..]), Ok(()));
+                assert_eq!(
+                    validate_append_utf8(&source.as_bytes()[..split], &source.as_bytes()[split..]),
+                    Ok(())
+                );
             }
         }
-        assert_eq!(validate_append_utf8(b"held", b"ab\xff"), Err(ResumeError::InvalidUtf8 { at: 2 }));
-        assert_eq!(validate_append_utf8(&[0xf0, 0x9f], &[0x98, b'x']), Err(ResumeError::InvalidUtf8 { at: 1 }));
-        assert_eq!(validate_append_utf8(&[0xc3], &[0xa9, b'!', 0xff]), Err(ResumeError::InvalidUtf8 { at: 2 }));
+        assert_eq!(
+            validate_append_utf8(b"held", b"ab\xff"),
+            Err(ResumeError::InvalidUtf8 { at: 2 })
+        );
+        assert_eq!(
+            validate_append_utf8(&[0xf0, 0x9f], &[0x98, b'x']),
+            Err(ResumeError::InvalidUtf8 { at: 1 })
+        );
+        assert_eq!(
+            validate_append_utf8(&[0xc3], &[0xa9, b'!', 0xff]),
+            Err(ResumeError::InvalidUtf8 { at: 2 })
+        );
         assert_eq!(validate_append_utf8(&[0xf0], &[]), Ok(()));
     }
 }

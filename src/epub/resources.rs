@@ -33,7 +33,9 @@ pub(super) fn prepare(html: &str) -> Result<Chapter, &'static str> {
 /// Prefixes are deliberately restricted to filename characters, not paths.
 pub(super) fn prepare_with_prefix(html: &str, prefix: &str) -> Result<Chapter, &'static str> {
     if prefix.len() > 64
-        || !prefix.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        || !prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return Err("epub: invalid generated image prefix");
     }
@@ -262,15 +264,18 @@ mod tests {
         assert!(!chapter.mathml);
         assert!(!chapter.svg);
         assert_eq!(chapter.resources.len(), 1);
-        assert!(chapter.body.contains("alt='a > b' src='assets/image-1.png'"));
+        assert!(
+            chapter
+                .body
+                .contains("alt='a > b' src='assets/image-1.png'")
+        );
         Ok(())
     }
 
     #[test]
     fn detects_mathml_and_svg_including_referenced_svg() -> Result<(), &'static str> {
-        let chapter = prepare(
-            "<math><mi>x</mi></math><img src=\"data:image/svg+xml;base64,PHN2Zy8+\"/>",
-        )?;
+        let chapter =
+            prepare("<math><mi>x</mi></math><img src=\"data:image/svg+xml;base64,PHN2Zy8+\"/>")?;
         assert!(chapter.mathml);
         assert!(chapter.svg);
         assert_eq!(chapter.resources[0].bytes, b"<svg/>");
@@ -300,26 +305,34 @@ mod tests {
         for (encoded, plain) in [("Zg==", "f"), ("Zm8=", "fo"), ("Zm9v", "foo")] {
             assert_eq!(decode_base64(encoded).as_deref(), Some(plain.as_bytes()));
         }
-        for invalid in ["", "Zg=", "Zh==", "Zm9=", "Zg==AAAA", "=AAA", "A===", "!!!!"] {
+        for invalid in [
+            "", "Zg=", "Zh==", "Zm9=", "Zg==AAAA", "=AAA", "A===", "!!!!",
+        ] {
             assert!(decode_base64(invalid).is_none(), "accepted {invalid}");
         }
     }
 
     #[test]
     fn exact_src_attribute_with_boolean_and_unicode_neighbors() -> Result<(), &'static str> {
-        let html = "<img hidden data-src='ignore' alt='中文 🚀'\n src = \"data:image/gif;base64,AQID\"/>";
+        let html =
+            "<img hidden data-src='ignore' alt='中文 🚀'\n src = \"data:image/gif;base64,AQID\"/>";
         let chapter = prepare(html)?;
         assert_eq!(chapter.resources.len(), 1);
         assert_eq!(chapter.resources[0].media_type, "image/gif");
         assert!(chapter.body.contains("data-src='ignore' alt='中文 🚀'"));
         assert!(chapter.body.contains("src = \"assets/image-1.gif\""));
-        assert!(prepare("<img data-src='data:image/png;base64,AQID'/>")?.resources.is_empty());
+        assert!(
+            prepare("<img data-src='data:image/png;base64,AQID'/>")?
+                .resources
+                .is_empty()
+        );
         Ok(())
     }
 
     #[test]
     fn resource_limit_counts_unique_images_not_references() -> Result<(), &'static str> {
-        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut html = String::new();
         for index in 0..MAX_IMAGES {
             let a = char::from(ALPHABET[index >> 6]);

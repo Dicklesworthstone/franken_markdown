@@ -29,8 +29,12 @@ impl<'a> Footnotes<'a> {
     pub fn new(document: &'a SpannedDocument) -> Self {
         let mut definitions = Vec::new();
         let mut indices = BTreeMap::new();
-        let mut stack: Vec<_> = document.blocks().iter().rev()
-            .map(|block| (&block.node, block.span)).collect();
+        let mut stack: Vec<_> = document
+            .blocks()
+            .iter()
+            .rev()
+            .map(|block| (&block.node, block.span))
+            .collect();
         while let Some((block, span)) = stack.pop() {
             match block {
                 Block::FootnoteDefinition { id, blocks } => {
@@ -68,14 +72,24 @@ impl<'a> Footnotes<'a> {
                 numbering.follow(&definitions, &indices, &mut visited);
             }
         }
-        Self { definitions, indices, numbering }
+        Self {
+            definitions,
+            indices,
+            numbering,
+        }
     }
 
-    pub fn order(&self) -> &[usize] { &self.numbering.order }
+    pub fn order(&self) -> &[usize] {
+        &self.numbering.order
+    }
 
-    pub fn note(&self, index: usize) -> Note<'a> { self.definitions[index] }
+    pub fn note(&self, index: usize) -> Note<'a> {
+        self.definitions[index]
+    }
 
-    pub fn number(&self, index: usize) -> usize { self.numbering.numbers[index] }
+    pub fn number(&self, index: usize) -> usize {
+        self.numbering.numbers[index]
+    }
 
     /// Colons cannot be produced by the Markdown heading slugger. Keep note
     /// destinations outside the user-heading namespace without changing slugs.
@@ -102,9 +116,17 @@ impl<'a> Footnotes<'a> {
             },
             Inline::Emphasis(children) => Inline::Emphasis(self.inlines(children).into_owned()),
             Inline::Strong(children) => Inline::Strong(self.inlines(children).into_owned()),
-            Inline::Strikethrough(children) => Inline::Strikethrough(self.inlines(children).into_owned()),
-            Inline::Link { content, dest, title } => Inline::Link {
-                content: self.inlines(content).into_owned(), dest: dest.clone(), title: title.clone(),
+            Inline::Strikethrough(children) => {
+                Inline::Strikethrough(self.inlines(children).into_owned())
+            }
+            Inline::Link {
+                content,
+                dest,
+                title,
+            } => Inline::Link {
+                content: self.inlines(content).into_owned(),
+                dest: dest.clone(),
+                title: title.clone(),
             },
             // Literal code/math/HTML and image alt text are not footnote syntax.
             _ => inline.clone(),
@@ -126,7 +148,9 @@ impl Numbering {
     }
 
     fn reference(&mut self, indices: &BTreeMap<&str, usize>, id: &str) {
-        if let Some(&index) = indices.get(id) { self.assign(index); }
+        if let Some(&index) = indices.get(id) {
+            self.assign(index);
+        }
     }
 
     fn follow(&mut self, notes: &[Note<'_>], indices: &BTreeMap<&str, usize>, visited: &mut usize) {
@@ -145,15 +169,22 @@ fn has_resolved_reference(inlines: &[Inline], indices: &BTreeMap<&str, usize>) -
     while let Some(inline) = stack.pop() {
         match inline {
             Inline::FootnoteRef { id } if indices.contains_key(id.as_str()) => return true,
-            Inline::Emphasis(children) | Inline::Strong(children) | Inline::Strikethrough(children)
-            | Inline::Link { content: children, .. } => stack.extend(children.iter().rev()),
+            Inline::Emphasis(children)
+            | Inline::Strong(children)
+            | Inline::Strikethrough(children)
+            | Inline::Link {
+                content: children, ..
+            } => stack.extend(children.iter().rev()),
             _ => {}
         }
     }
     false
 }
 
-enum Visit<'a> { Block(&'a Block), Inline(&'a Inline) }
+enum Visit<'a> {
+    Block(&'a Block),
+    Inline(&'a Inline),
+}
 
 /// Visit actual AST citations in reading order. A definition is deliberately
 /// excluded; its outgoing references are visited when the note queue reaches it.
@@ -189,8 +220,12 @@ fn references(block: &Block, visit: &mut impl FnMut(&str)) {
             },
             Visit::Inline(inline) => match inline {
                 Inline::FootnoteRef { id } => visit(id),
-                Inline::Emphasis(children) | Inline::Strong(children) | Inline::Strikethrough(children)
-                | Inline::Link { content: children, .. } => {
+                Inline::Emphasis(children)
+                | Inline::Strong(children)
+                | Inline::Strikethrough(children)
+                | Inline::Link {
+                    content: children, ..
+                } => {
                     stack.extend(children.iter().rev().map(Visit::Inline));
                 }
                 _ => {}
@@ -222,20 +257,36 @@ mod tests {
         engine
     }
 
-    fn paragraph(text: &str) -> DisplayBlock { DisplayBlock::Paragraph { text: text.to_owned() } }
+    fn paragraph(text: &str) -> DisplayBlock {
+        DisplayBlock::Paragraph {
+            text: text.to_owned(),
+        }
+    }
     fn label(number: usize) -> DisplayBlock {
-        DisplayBlock::Heading { level: 6, text: format!("[{number}]") }
+        DisplayBlock::Heading {
+            level: 6,
+            text: format!("[{number}]"),
+        }
     }
 
     #[test]
     fn first_use_numbering_moves_complete_definitions_after_the_body() {
-        let source = "[^a]: Alpha\n\nBody [^b], **[^a]**, again [^b], unknown [^missing].\n\n[^b]: Beta\n";
+        let source =
+            "[^a]: Alpha\n\nBody [^b], **[^a]**, again [^b], unknown [^missing].\n\n[^b]: Beta\n";
         let engine = render(source, 1);
-        assert_eq!(engine.blocks(), &[
-            paragraph("Body [1], [2], again [1], unknown [^missing]."),
-            label(1), paragraph("Beta"), label(2), paragraph("Alpha"),
-        ]);
-        let DisplayBlock::Paragraph { text } = &engine.blocks()[0] else { panic!("body"); };
+        assert_eq!(
+            engine.blocks(),
+            &[
+                paragraph("Body [1], [2], again [1], unknown [^missing]."),
+                label(1),
+                paragraph("Beta"),
+                label(2),
+                paragraph("Alpha"),
+            ]
+        );
+        let DisplayBlock::Paragraph { text } = &engine.blocks()[0] else {
+            panic!("body");
+        };
         let runs = engine.inline_runs_for_block(0).unwrap();
         let citations: Vec<_> = runs.iter().filter(|run| run.link.is_some()).collect();
         assert_eq!(citations.len(), 3);
@@ -243,29 +294,63 @@ mod tests {
         assert_eq!(citations[1].active_link_target(), Some("#fmd:note:2"));
         assert!(citations[1].style.bold);
         assert_eq!(&text[citations[1].range.clone()], "[2]");
-        assert!(engine.source_span_for_block(1).unwrap().slice(source).unwrap().contains("[^b]:"));
-        assert!(engine.source_span_for_block(3).unwrap().slice(source).unwrap().contains("[^a]:"));
+        assert!(
+            engine
+                .source_span_for_block(1)
+                .unwrap()
+                .slice(source)
+                .unwrap()
+                .contains("[^b]:")
+        );
+        assert!(
+            engine
+                .source_span_for_block(3)
+                .unwrap()
+                .slice(source)
+                .unwrap()
+                .contains("[^a]:")
+        );
     }
 
     #[test]
     fn note_to_note_cycles_repeated_references_and_unreferenced_notes_terminate() {
-        let source = "Body [^b] [^b].\n\n[^a]: A [^b]\n\n[^b]: B [^a] [^b]\n\n[^unused]: Unreferenced\n";
+        let source =
+            "Body [^b] [^b].\n\n[^a]: A [^b]\n\n[^b]: B [^a] [^b]\n\n[^unused]: Unreferenced\n";
         let engine = render(source, 1);
-        assert_eq!(engine.blocks(), &[
-            paragraph("Body [1] [1]."), label(1), paragraph("B [2] [1]"),
-            label(2), paragraph("A [1]"), label(3), paragraph("Unreferenced"),
-        ]);
+        assert_eq!(
+            engine.blocks(),
+            &[
+                paragraph("Body [1] [1]."),
+                label(1),
+                paragraph("B [2] [1]"),
+                label(2),
+                paragraph("A [1]"),
+                label(3),
+                paragraph("Unreferenced"),
+            ]
+        );
     }
 
     #[test]
     fn ordinary_documents_and_literal_code_do_not_acquire_note_links() {
         let source = "Literal `[^a]` and unknown [^missing].\n\n[^a]: Alpha\n";
         let engine = render(source, 1);
-        assert_eq!(engine.blocks()[0], paragraph("Literal [^a] and unknown [^missing]."));
-        assert!(engine.inline_runs_for_block(0).unwrap().iter().all(|run| run.link.is_none()));
+        assert_eq!(
+            engine.blocks()[0],
+            paragraph("Literal [^a] and unknown [^missing].")
+        );
+        assert!(
+            engine
+                .inline_runs_for_block(0)
+                .unwrap()
+                .iter()
+                .all(|run| run.link.is_none())
+        );
         let document = crate::parse_markdown_spanned("Plain **text** and `code`.");
         let notes = Footnotes::new(&document);
-        let Block::Paragraph(inlines) = &document.blocks()[0].node else { panic!("paragraph"); };
+        let Block::Paragraph(inlines) = &document.blocks()[0].node else {
+            panic!("paragraph");
+        };
         assert!(matches!(notes.inlines(inlines), Cow::Borrowed(_)));
     }
 
@@ -273,17 +358,42 @@ mod tests {
     fn citations_in_table_cells_and_nested_containers_keep_reading_order() {
         let source = "| H [^b] |\n| --- |\n| Cell [^a] |\n\n> Quote [^c]\n\n- List [^b]\n\n[^a]: A\n\n[^b]: B\n\n[^c]: C\n";
         let engine = render(source, 2);
-        assert_eq!(engine.blocks()[0], DisplayBlock::TableHeader { cells: vec!["H [1]".into()] });
-        assert_eq!(engine.blocks()[1], DisplayBlock::TableRow { cells: vec!["Cell [2]".into()] });
-        assert!(engine.inline_runs_for_cell(0, 0).unwrap().iter()
-            .any(|run| run.active_link_target() == Some("#fmd:note:1")));
-        assert!(engine.inline_runs_for_cell(1, 0).unwrap().iter()
-            .any(|run| run.active_link_target() == Some("#fmd:note:2")));
+        assert_eq!(
+            engine.blocks()[0],
+            DisplayBlock::TableHeader {
+                cells: vec!["H [1]".into()]
+            }
+        );
+        assert_eq!(
+            engine.blocks()[1],
+            DisplayBlock::TableRow {
+                cells: vec!["Cell [2]".into()]
+            }
+        );
+        assert!(
+            engine
+                .inline_runs_for_cell(0, 0)
+                .unwrap()
+                .iter()
+                .any(|run| run.active_link_target() == Some("#fmd:note:1"))
+        );
+        assert!(
+            engine
+                .inline_runs_for_cell(1, 0)
+                .unwrap()
+                .iter()
+                .any(|run| run.active_link_target() == Some("#fmd:note:2"))
+        );
         assert!(engine.blocks().iter().any(|block| matches!(block,
             DisplayBlock::Quote { text } if text == "Quote [3]")));
-        let labels: Vec<_> = engine.blocks().iter().filter_map(|block| match block {
-            DisplayBlock::Heading { level: 6, text } => Some(text.as_str()), _ => None,
-        }).collect();
+        let labels: Vec<_> = engine
+            .blocks()
+            .iter()
+            .filter_map(|block| match block {
+                DisplayBlock::Heading { level: 6, text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(labels, vec!["[1]", "[2]", "[3]"]);
     }
 
@@ -293,16 +403,44 @@ mod tests {
         let engine = render(source, 1);
         assert!(engine.blocks().iter().any(|block| matches!(block,
             DisplayBlock::CodeBlock { language, source } if language.as_deref() == Some("rust") && source.contains("let x = 1;"))));
-        assert!(engine.blocks().iter().any(|block| matches!(block, DisplayBlock::TableHeader { .. })));
-        assert!(engine.blocks().iter().any(|block| matches!(block, DisplayBlock::ListItem { .. })));
+        assert!(
+            engine
+                .blocks()
+                .iter()
+                .any(|block| matches!(block, DisplayBlock::TableHeader { .. }))
+        );
+        assert!(
+            engine
+                .blocks()
+                .iter()
+                .any(|block| matches!(block, DisplayBlock::ListItem { .. }))
+        );
         assert_eq!(engine.unresolved_assets().len(), 1);
         assert_eq!(engine.unresolved_assets()[0].url, "note.png");
         assert_eq!(engine.unresolved_assets()[0].alt_text, "caption");
-        let body = engine.blocks().iter().position(|block| matches!(block,
-            DisplayBlock::Paragraph { text } if text == "Bold é中🙂")).unwrap();
-        assert!(engine.inline_runs_for_block(body).unwrap().iter().any(|run| run.style.bold));
+        let body = engine
+            .blocks()
+            .iter()
+            .position(|block| {
+                matches!(block,
+            DisplayBlock::Paragraph { text } if text == "Bold é中🙂")
+            })
+            .unwrap();
+        assert!(
+            engine
+                .inline_runs_for_block(body)
+                .unwrap()
+                .iter()
+                .any(|run| run.style.bold)
+        );
         for index in 0..engine.blocks().len() {
-            assert!(engine.source_span_for_block(index).unwrap().slice(source).is_some());
+            assert!(
+                engine
+                    .source_span_for_block(index)
+                    .unwrap()
+                    .slice(source)
+                    .is_some()
+            );
         }
     }
 
@@ -311,7 +449,10 @@ mod tests {
         let source = "# fmd:note:1\n\nText [^b] [^a].\n\n[^a]: First definition\n\n[^b]: Second definition\n";
         let expected = render(source, usize::MAX);
         let expected_display = expected.to_display_list();
-        let anchors: Vec<_> = expected_display.anchors().map(|anchor| anchor.anchor_id.as_str()).collect();
+        let anchors: Vec<_> = expected_display
+            .anchors()
+            .map(|anchor| anchor.anchor_id.as_str())
+            .collect();
         assert!(anchors.contains(&"fmd:note:1"));
         assert!(anchors.contains(&"fmd:note:2"));
         let mut unique = anchors.clone();
@@ -320,22 +461,38 @@ mod tests {
         assert_eq!(unique.len(), anchors.len());
         for batch in [1, 2, 3, 7] {
             let mut engine = ResumableFlowDisplay::new(source, batch);
-            while let Some(step) = engine.step().unwrap() { assert!(step.blocks.len() <= batch); }
+            while let Some(step) = engine.step().unwrap() {
+                assert!(step.blocks.len() <= batch);
+            }
             assert_eq!(engine.blocks(), expected.blocks());
             assert_eq!(engine.to_display_list(), expected_display);
             for index in 0..engine.blocks().len() {
-                assert_eq!(engine.inline_runs_for_block(index), expected.inline_runs_for_block(index));
-                assert_eq!(engine.source_span_for_block(index), expected.source_span_for_block(index));
+                assert_eq!(
+                    engine.inline_runs_for_block(index),
+                    expected.inline_runs_for_block(index)
+                );
+                assert_eq!(
+                    engine.source_span_for_block(index),
+                    expected.source_span_for_block(index)
+                );
             }
         }
     }
 
     #[test]
     fn note_projection_budget_failure_publishes_no_partial_document() {
-        let limits = FlowDisplayLimits { max_output_blocks: 2, ..FlowDisplayLimits::default() };
-        let mut engine = ResumableFlowDisplay::try_with_limits("Use [^x].\n\n[^x]: Note\n", 1, 1, limits).unwrap();
+        let limits = FlowDisplayLimits {
+            max_output_blocks: 2,
+            ..FlowDisplayLimits::default()
+        };
+        let mut engine =
+            ResumableFlowDisplay::try_with_limits("Use [^x].\n\n[^x]: Note\n", 1, 1, limits)
+                .unwrap();
         let error = engine.step().unwrap_err();
-        assert!(matches!(error, super::super::FlowDisplayError::BudgetExceeded(_)));
+        assert!(matches!(
+            error,
+            super::super::FlowDisplayError::BudgetExceeded(_)
+        ));
         assert!(engine.blocks().is_empty());
         assert!(engine.unresolved_assets().is_empty());
         assert_eq!(engine.step().unwrap_err(), error);

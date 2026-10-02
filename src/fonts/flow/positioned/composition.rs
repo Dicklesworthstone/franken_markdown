@@ -47,7 +47,9 @@ pub(super) fn shape(
     if source.chars().take(4097).count() > 4096 {
         return Ok(None); // The strict shaper reports its own admission budget.
     }
-    let Some((text, units)) = compose_word(source) else { return Ok(None); };
+    let Some((text, units)) = compose_word(source) else {
+        return Ok(None);
+    };
     let font = fonts.faces[primary].font;
     if !text.chars().all(|ch| {
         let glyph = font.glyph_index(if ch == '\t' { ' ' } else { ch });
@@ -59,11 +61,15 @@ pub(super) fn shape(
     let mut run = fonts.shape(&text, size, role, style)?;
     let invalid = || "invalid canonical flow source mapping".to_owned();
     for cluster in &mut run.clusters {
-        let first = units.binary_search_by_key(&cluster.byte_range.start, |u| u.rendered.start)
+        let first = units
+            .binary_search_by_key(&cluster.byte_range.start, |u| u.rendered.start)
             .map_err(|_| invalid())?;
-        let last = units.binary_search_by_key(&cluster.byte_range.end, |u| u.rendered.end)
+        let last = units
+            .binary_search_by_key(&cluster.byte_range.end, |u| u.rendered.end)
             .map_err(|_| invalid())?;
-        if last < first { return Err(invalid()); }
+        if last < first {
+            return Err(invalid());
+        }
         cluster.byte_range = units[first].source.start..units[last].source.end;
         cluster.utf16_range = units[first].utf16.start..units[last].utf16.end;
     }
@@ -77,15 +83,21 @@ fn compose_word(source: &str) -> Option<(String, Vec<SourceUnit>)> {
     let mut chars = source.char_indices().peekable();
     let mut utf16 = 0;
     while let Some((start, mut base)) = chars.next() {
-        if is_mark(base) { return None; }
+        if is_mark(base) {
+            return None;
+        }
         let mut end = start + base.len_utf8();
         let utf16_start = utf16;
         utf16 += base.len_utf16();
         let mut marks = 0;
         while let Some(&(offset, mark)) = chars.peek() {
-            if !is_mark(mark) { break; }
+            if !is_mark(mark) {
+                break;
+            }
             marks += 1;
-            if marks > 64 { return None; }
+            if marks > 64 {
+                return None;
+            }
             base = compose_pair(base, mark)?;
             chars.next();
             end = offset + mark.len_utf8();
@@ -94,7 +106,8 @@ fn compose_word(source: &str) -> Option<(String, Vec<SourceUnit>)> {
         let rendered_start = text.len();
         text.push(base);
         units.push(SourceUnit {
-            rendered: rendered_start..text.len(), source: start..end,
+            rendered: rendered_start..text.len(),
+            source: start..end,
             utf16: utf16_start..utf16,
         });
     }
@@ -109,26 +122,70 @@ fn compose_pair(base: char, mark: char) -> Option<char> {
 }
 
 const COMPOSITIONS: &[(char, &str, &str)] = &[
-    ('\u{0300}', "AEINOUWYaeinouwyÂÊÔÜâêôüĂăĒēŌōƠơƯư", "ÀÈÌǸÒÙẀỲàèìǹòùẁỳẦỀỒǛầềồǜẰằḔḕṐṑỜờỪừ"),
-    ('\u{0301}', "ACEGIKLMNOPRSUWYZacegiklmnoprsuwyzÂÅÆÇÊÏÔÕØÜâåæçêïôõøüĂăĒēŌōŨũƠơƯư", "ÁĆÉǴÍḰĹḾŃÓṔŔŚÚẂÝŹáćéǵíḱĺḿńóṕŕśúẃýźẤǺǼḈẾḮỐṌǾǗấǻǽḉếḯốṍǿǘẮắḖḗṒṓṸṹỚớỨứ"),
-    ('\u{0302}', "ACEGHIJOSUWYZaceghijosuwyzẠạẸẹỌọ", "ÂĈÊĜĤÎĴÔŜÛŴŶẐâĉêĝĥîĵôŝûŵŷẑẬậỆệỘộ"),
-    ('\u{0303}', "AEINOUVYaeinouvyÂÊÔâêôĂăƠơƯư", "ÃẼĨÑÕŨṼỸãẽĩñõũṽỹẪỄỖẫễỗẴẵỠỡỮữ"),
-    ('\u{0304}', "AEGIOUYaegiouyÄÆÕÖÜäæõöüǪǫȦȧȮȯḶḷṚṛ", "ĀĒḠĪŌŪȲāēḡīōūȳǞǢȬȪǕǟǣȭȫǖǬǭǠǡȰȱḸḹṜṝ"),
+    (
+        '\u{0300}',
+        "AEINOUWYaeinouwyÂÊÔÜâêôüĂăĒēŌōƠơƯư",
+        "ÀÈÌǸÒÙẀỲàèìǹòùẁỳẦỀỒǛầềồǜẰằḔḕṐṑỜờỪừ",
+    ),
+    (
+        '\u{0301}',
+        "ACEGIKLMNOPRSUWYZacegiklmnoprsuwyzÂÅÆÇÊÏÔÕØÜâåæçêïôõøüĂăĒēŌōŨũƠơƯư",
+        "ÁĆÉǴÍḰĹḾŃÓṔŔŚÚẂÝŹáćéǵíḱĺḿńóṕŕśúẃýźẤǺǼḈẾḮỐṌǾǗấǻǽḉếḯốṍǿǘẮắḖḗṒṓṸṹỚớỨứ",
+    ),
+    (
+        '\u{0302}',
+        "ACEGHIJOSUWYZaceghijosuwyzẠạẸẹỌọ",
+        "ÂĈÊĜĤÎĴÔŜÛŴŶẐâĉêĝĥîĵôŝûŵŷẑẬậỆệỘộ",
+    ),
+    (
+        '\u{0303}',
+        "AEINOUVYaeinouvyÂÊÔâêôĂăƠơƯư",
+        "ÃẼĨÑÕŨṼỸãẽĩñõũṽỹẪỄỖẫễỗẴẵỠỡỮữ",
+    ),
+    (
+        '\u{0304}',
+        "AEGIOUYaegiouyÄÆÕÖÜäæõöüǪǫȦȧȮȯḶḷṚṛ",
+        "ĀĒḠĪŌŪȲāēḡīōūȳǞǢȬȪǕǟǣȭȫǖǬǭǠǡȰȱḸḹṜṝ",
+    ),
     ('\u{0306}', "AEGIOUaegiouȨȩẠạ", "ĂĔĞĬŎŬăĕğĭŏŭḜḝẶặ"),
-    ('\u{0307}', "ABCDEFGHIMNOPRSTWXYZabcdefghmnoprstwxyzŚśŠšſṢṣ", "ȦḂĊḊĖḞĠḢİṀṄȮṖṘṠṪẆẊẎŻȧḃċḋėḟġḣṁṅȯṗṙṡṫẇẋẏżṤṥṦṧẛṨṩ"),
-    ('\u{0308}', "AEHIOUWXYaehiotuwxyÕõŪū", "ÄËḦÏÖÜẄẌŸäëḧïöẗüẅẍÿṎṏṺṻ"),
-    ('\u{0309}', "AEIOUYaeiouyÂÊÔâêôĂăƠơƯư", "ẢẺỈỎỦỶảẻỉỏủỷẨỂỔẩểổẲẳỞởỬử"),
+    (
+        '\u{0307}',
+        "ABCDEFGHIMNOPRSTWXYZabcdefghmnoprstwxyzŚśŠšſṢṣ",
+        "ȦḂĊḊĖḞĠḢİṀṄȮṖṘṠṪẆẊẎŻȧḃċḋėḟġḣṁṅȯṗṙṡṫẇẋẏżṤṥṦṧẛṨṩ",
+    ),
+    (
+        '\u{0308}',
+        "AEHIOUWXYaehiotuwxyÕõŪū",
+        "ÄËḦÏÖÜẄẌŸäëḧïöẗüẅẍÿṎṏṺṻ",
+    ),
+    (
+        '\u{0309}',
+        "AEIOUYaeiouyÂÊÔâêôĂăƠơƯư",
+        "ẢẺỈỎỦỶảẻỉỏủỷẨỂỔẩểổẲẳỞởỬử",
+    ),
     ('\u{030a}', "AUauwy", "ÅŮåůẘẙ"),
     ('\u{030b}', "OUou", "ŐŰőű"),
-    ('\u{030c}', "ACDEGHIKLNORSTUZacdeghijklnorstuzÜüƷʒ", "ǍČĎĚǦȞǏǨĽŇǑŘŠŤǓŽǎčďěǧȟǐǰǩľňǒřšťǔžǙǚǮǯ"),
+    (
+        '\u{030c}',
+        "ACDEGHIKLNORSTUZacdeghijklnorstuzÜüƷʒ",
+        "ǍČĎĚǦȞǏǨĽŇǑŘŠŤǓŽǎčďěǧȟǐǰǩľňǒřšťǔžǙǚǮǯ",
+    ),
     ('\u{030f}', "AEIORUaeioru", "ȀȄȈȌȐȔȁȅȉȍȑȕ"),
     ('\u{0311}', "AEIORUaeioru", "ȂȆȊȎȒȖȃȇȋȏȓȗ"),
     ('\u{031b}', "OUou", "ƠƯơư"),
-    ('\u{0323}', "ABDEHIKLMNORSTUVWYZabdehiklmnorstuvwyzƠơƯư", "ẠḄḌẸḤỊḲḶṂṆỌṚṢṬỤṾẈỴẒạḅḍẹḥịḳḷṃṇọṛṣṭụṿẉỵẓỢợỰự"),
+    (
+        '\u{0323}',
+        "ABDEHIKLMNORSTUVWYZabdehiklmnorstuvwyzƠơƯư",
+        "ẠḄḌẸḤỊḲḶṂṆỌṚṢṬỤṾẈỴẒạḅḍẹḥịḳḷṃṇọṛṣṭụṿẉỵẓỢợỰự",
+    ),
     ('\u{0324}', "Uu", "Ṳṳ"),
     ('\u{0325}', "Aa", "Ḁḁ"),
     ('\u{0326}', "STst", "ȘȚșț"),
-    ('\u{0327}', "CDEGHKLNRSTcdeghklnrst", "ÇḐȨĢḨĶĻŅŖŞŢçḑȩģḩķļņŗşţ"),
+    (
+        '\u{0327}',
+        "CDEGHKLNRSTcdeghklnrst",
+        "ÇḐȨĢḨĶĻŅŖŞŢçḑȩģḩķļņŗşţ",
+    ),
     ('\u{0328}', "AEIOUaeiou", "ĄĘĮǪŲąęįǫų"),
     ('\u{032d}', "DELNTUdelntu", "ḒḘḼṊṰṶḓḙḽṋṱṷ"),
     ('\u{032e}', "Hh", "Ḫḫ"),
@@ -161,7 +218,12 @@ mod tests {
 
     #[test]
     fn unconsumed_marks_and_compatibility_characters_are_not_silently_normalized() {
-        for source in ["\u{0301}a", "a\u{0301}\u{0307}", "a\u{034f}", "e\u{0301}\u{0301}"] {
+        for source in [
+            "\u{0301}a",
+            "a\u{0301}\u{0307}",
+            "a\u{034f}",
+            "e\u{0301}\u{0301}",
+        ] {
             assert!(compose_word(source).is_none());
         }
         assert_eq!(compose_word("ﬃ ① ²").unwrap().0, "ﬃ ① ²");
@@ -180,12 +242,25 @@ mod tests {
         let canonical = "office café\tÅngström";
         for family in [FontFamily::Sans, FontFamily::Serif] {
             let fonts = BundledFlowFonts::new(family).unwrap();
-            for (bold, italic, code) in [(false,false,false), (true,false,false),
-                (false,true,false), (true,true,false), (false,false,true)]
-            {
-                let style = FlowInlineStyle { bold, italic, code, ..FlowInlineStyle::default() };
-                let actual = fonts.shape(source, 14.0, FlowTextRole::Body, style).unwrap();
-                let expected = fonts.shape(canonical, 14.0, FlowTextRole::Body, style).unwrap();
+            for (bold, italic, code) in [
+                (false, false, false),
+                (true, false, false),
+                (false, true, false),
+                (true, true, false),
+                (false, false, true),
+            ] {
+                let style = FlowInlineStyle {
+                    bold,
+                    italic,
+                    code,
+                    ..FlowInlineStyle::default()
+                };
+                let actual = fonts
+                    .shape(source, 14.0, FlowTextRole::Body, style)
+                    .unwrap();
+                let expected = fonts
+                    .shape(canonical, 14.0, FlowTextRole::Body, style)
+                    .unwrap();
                 assert_eq!(actual.logical_text, source);
                 assert_eq!(actual.glyphs, expected.glyphs);
                 assert_eq!(actual.total_advance, expected.total_advance);
@@ -214,17 +289,29 @@ mod tests {
         for family in [FontFamily::Sans, FontFamily::Serif] {
             let fonts = BundledFlowFonts::new(family).unwrap();
             for width in [100.0, 220.0, 720.0] {
-                let display = fonts.render(&engine, FlowLayoutOptions {
-                    viewport_width: width, ..FlowLayoutOptions::default()
-                }).unwrap();
+                let display = fonts
+                    .render(
+                        &engine,
+                        FlowLayoutOptions {
+                            viewport_width: width,
+                            ..FlowLayoutOptions::default()
+                        },
+                    )
+                    .unwrap();
                 let mut marked = 0;
                 for item in display.items() {
                     if let DisplayItem::Text(item) = item {
                         let run = item.font_run.as_ref().unwrap();
                         assert_eq!(run.logical_text, item.text);
-                        assert!(run.glyphs.iter().all(|g| fonts.font_bytes(g.font_id).is_some()));
+                        assert!(
+                            run.glyphs
+                                .iter()
+                                .all(|g| fonts.font_bytes(g.font_id).is_some())
+                        );
                         assert!(item.bounds.right() <= width + 0.01);
-                        if run.logical_text.chars().any(is_mark) { marked += 1; }
+                        if run.logical_text.chars().any(is_mark) {
+                            marked += 1;
+                        }
                     }
                 }
                 assert!(marked >= 3);

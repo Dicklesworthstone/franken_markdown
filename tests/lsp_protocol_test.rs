@@ -11,9 +11,15 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn session(messages: &[&str]) -> Result<(ExitStatus, Vec<Json>), Box<dyn std::error::Error>> {
     let mut input = Vec::new();
-    for message in messages { write_frame(&mut input, message)?; }
+    for message in messages {
+        write_frame(&mut input, message)?;
+    }
     let mut child = Command::new(env!("CARGO_BIN_EXE_fmd-lsp"))
-        .arg("--stdio").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()?;
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
     let mut stdout = child.stdout.take().ok_or("missing server stdout")?;
     let reader = std::thread::spawn(move || {
         let mut output = Vec::new();
@@ -30,7 +36,9 @@ fn session(messages: &[&str]) -> Result<(ExitStatus, Vec<Json>), Box<dyn std::er
     drop(stdin);
     let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
-        if let Some(status) = child.try_wait()? { break status; }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
@@ -49,7 +57,10 @@ fn session(messages: &[&str]) -> Result<(ExitStatus, Vec<Json>), Box<dyn std::er
 }
 
 fn array(value: &Json) -> &[Json] {
-    match value { Json::Array(values) => values, _ => &[] }
+    match value {
+        Json::Array(values) => values,
+        _ => &[],
+    }
 }
 
 #[test]
@@ -68,16 +79,49 @@ fn real_editor_session_repairs_diagnostics_and_navigates_current_unicode_text() 
     ])?;
     assert!(status.success());
     assert_eq!(replies.len(), 8);
-    let diagnostics: Vec<_> = replies.iter()
-        .filter(|reply| reply.get("method").and_then(Json::as_str) == Some("textDocument/publishDiagnostics"))
-        .filter_map(|reply| reply.get("params")).collect();
+    let diagnostics: Vec<_> = replies
+        .iter()
+        .filter(|reply| {
+            reply.get("method").and_then(Json::as_str) == Some("textDocument/publishDiagnostics")
+        })
+        .filter_map(|reply| reply.get("params"))
+        .collect();
     assert_eq!(diagnostics.len(), 3);
-    assert!(!array(diagnostics[0].get("diagnostics").ok_or("missing initial findings")?).is_empty());
-    assert_eq!(diagnostics[1].get("version").and_then(Json::as_u64), Some(2));
-    assert!(array(diagnostics[1].get("diagnostics").ok_or("missing repaired findings")?).is_empty());
-    assert!(array(diagnostics[2].get("diagnostics").ok_or("missing close findings")?).is_empty());
-    let result = |id| replies.iter().find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
-        .and_then(|reply| reply.get("result")).ok_or("missing request result");
+    assert!(
+        !array(
+            diagnostics[0]
+                .get("diagnostics")
+                .ok_or("missing initial findings")?
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        diagnostics[1].get("version").and_then(Json::as_u64),
+        Some(2)
+    );
+    assert!(
+        array(
+            diagnostics[1]
+                .get("diagnostics")
+                .ok_or("missing repaired findings")?
+        )
+        .is_empty()
+    );
+    assert!(
+        array(
+            diagnostics[2]
+                .get("diagnostics")
+                .ok_or("missing close findings")?
+        )
+        .is_empty()
+    );
+    let result = |id| {
+        replies
+            .iter()
+            .find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
+            .and_then(|reply| reply.get("result"))
+            .ok_or("missing request result")
+    };
     let symbols = array(result(2)?);
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0].get("name").and_then(Json::as_str), Some("Root"));
@@ -96,7 +140,8 @@ fn real_process_rejects_exit_without_shutdown_and_abrupt_eof() -> TestResult {
     assert!(!status.success());
     assert!(replies.is_empty());
     // Abrupt EOF, even after initialize, is not a clean shutdown.
-    let (status, replies) = session(&[r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"###])?;
+    let (status, replies) =
+        session(&[r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"###])?;
     assert!(!status.success());
     assert_eq!(replies.len(), 1);
     Ok(())

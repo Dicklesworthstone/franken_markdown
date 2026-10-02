@@ -17,7 +17,8 @@ pub(super) fn input_paths(inputs: &[BookInput]) -> Result<Vec<String>> {
     for input in inputs {
         let path = source_path(&input.path).ok_or_else(|| {
             RenderError::InvalidInput(format!(
-                "book: invalid book-relative chapter path {:?}", input.path
+                "book: invalid book-relative chapter path {:?}",
+                input.path
             ))
         })?;
         if !seen.insert(path.clone()) {
@@ -52,7 +53,9 @@ fn normalize(path: &str) -> Option<String> {
     for part in path.split('/') {
         match part {
             "" | "." => {}
-            ".." => { parts.pop()?; }
+            ".." => {
+                parts.pop()?;
+            }
             _ => parts.push(part),
         }
     }
@@ -63,11 +66,15 @@ fn normalize(path: &str) -> Option<String> {
 }
 
 fn has_scheme(value: &str) -> bool {
-    let Some(colon) = value.find(':') else { return false; };
+    let Some(colon) = value.find(':') else {
+        return false;
+    };
     let scheme = &value[..colon];
     !scheme.is_empty()
         && scheme.as_bytes()[0].is_ascii_alphabetic()
-        && scheme.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
 }
 
 /// Resolve against the source chapter, not the flattened output directory.
@@ -251,7 +258,10 @@ pub(super) fn output_name(path: &str) -> String {
 /// enough context to resolve nested chapters. EPUB already understands these
 /// rooted source URLs. Unknown files and external links are not rewritten.
 pub(super) fn canonicalize(chapters: &mut [BookChapter]) {
-    let known: BTreeSet<_> = chapters.iter().map(|chapter| chapter.path.clone()).collect();
+    let known: BTreeSet<_> = chapters
+        .iter()
+        .map(|chapter| chapter.path.clone())
+        .collect();
     for chapter in chapters {
         let source = &chapter.path;
         rewrite_blocks(&mut chapter.doc.blocks, &mut |dest| {
@@ -284,7 +294,9 @@ pub(super) fn rewrite_from(doc: &mut Document, source: &str, book: &Book) -> Res
             RenderError::InvalidInput("book: invalid target chapter path".to_string())
         })?;
         if known.insert(path, chapter.out_name.as_str()).is_some() {
-            return Err(RenderError::InvalidInput("book: duplicate target chapter path".to_string()));
+            return Err(RenderError::InvalidInput(
+                "book: duplicate target chapter path".to_string(),
+            ));
         }
     }
     Ok(rewrite_blocks(&mut doc.blocks, &mut |dest| {
@@ -304,12 +316,18 @@ fn rewrite_blocks(blocks: &mut [Block], rewrite: &mut impl FnMut(&str) -> Option
                 count += rewrite_blocks(inner, rewrite);
             }
             Block::List(list) => {
-                for item in &mut list.items { count += rewrite_blocks(&mut item.blocks, rewrite); }
+                for item in &mut list.items {
+                    count += rewrite_blocks(&mut item.blocks, rewrite);
+                }
             }
             Block::Table(table) => {
-                for cell in &mut table.head { count += rewrite_inlines(cell, rewrite); }
+                for cell in &mut table.head {
+                    count += rewrite_inlines(cell, rewrite);
+                }
                 for row in &mut table.rows {
-                    for cell in row { count += rewrite_inlines(cell, rewrite); }
+                    for cell in row {
+                        count += rewrite_inlines(cell, rewrite);
+                    }
                 }
             }
             Block::DefinitionList(items) => {
@@ -325,7 +343,10 @@ fn rewrite_blocks(blocks: &mut [Block], rewrite: &mut impl FnMut(&str) -> Option
     count
 }
 
-fn rewrite_inlines(inlines: &mut [Inline], rewrite: &mut impl FnMut(&str) -> Option<String>) -> usize {
+fn rewrite_inlines(
+    inlines: &mut [Inline],
+    rewrite: &mut impl FnMut(&str) -> Option<String>,
+) -> usize {
     let mut count = 0;
     for inline in inlines {
         match inline {
@@ -338,7 +359,9 @@ fn rewrite_inlines(inlines: &mut [Inline], rewrite: &mut impl FnMut(&str) -> Opt
                 }
                 count += rewrite_inlines(content, rewrite);
             }
-            Inline::Emphasis(content) | Inline::Strong(content) | Inline::Strikethrough(content) => {
+            Inline::Emphasis(content)
+            | Inline::Strong(content)
+            | Inline::Strikethrough(content) => {
                 count += rewrite_inlines(content, rewrite);
             }
             _ => {}
@@ -355,9 +378,25 @@ mod tests {
 
     #[test]
     fn paths_are_normalized_without_escaping_the_book() {
-        assert_eq!(source_path("./guide/../intro.md").as_deref(), Some("intro.md"));
-        assert_eq!(source_path("guide\\install.md").as_deref(), Some("guide/install.md"));
-        for path in ["", ".", "..", "../escape.md", "/absolute.md", "C:\\file.md", "\\\\host\\file.md", "dir/", "a\0.md"] {
+        assert_eq!(
+            source_path("./guide/../intro.md").as_deref(),
+            Some("intro.md")
+        );
+        assert_eq!(
+            source_path("guide\\install.md").as_deref(),
+            Some("guide/install.md")
+        );
+        for path in [
+            "",
+            ".",
+            "..",
+            "../escape.md",
+            "/absolute.md",
+            "C:\\file.md",
+            "\\\\host\\file.md",
+            "dir/",
+            "a\0.md",
+        ] {
             assert!(source_path(path).is_none(), "accepted {path:?}");
         }
     }
@@ -366,16 +405,41 @@ mod tests {
     fn urls_keep_suffixes_and_use_source_directory_not_output_directory() {
         for (url, target, suffix) in [
             ("next.md#part", "guide/next.md", "#part"),
-            ("../intro.md?mode=print#part", "intro.md", "?mode=print#part"),
+            (
+                "../intro.md?mode=print#part",
+                "intro.md",
+                "?mode=print#part",
+            ),
             ("/reference.md#q?literal", "reference.md", "#q?literal"),
             ("%2e%2e/space%20name.md", "space name.md", ""),
             ("../%E4%B8%AD.md", "中.md", ""),
             ("../percent%2520.md", "percent%20.md", ""),
         ] {
-            assert_eq!(destination("guide/start.md", url), Some((target.into(), suffix.into())));
+            assert_eq!(
+                destination("guide/start.md", url),
+                Some((target.into(), suffix.into()))
+            );
         }
-        for url in ["#local", "?mode=print", "https://host/intro.md", "HTTPS://host/a.md", "//host/a.md", "mailto:a.md", "custom+v1:a.md", "../../escape.md", "%2f%2fhost/a.md", "%68ttps%3a/x.md", "bad%ZZ.md", "%FF.md", "a%00.md", "..\\a.md"] {
-            assert!(destination("guide/start.md", url).is_none(), "accepted {url:?}");
+        for url in [
+            "#local",
+            "?mode=print",
+            "https://host/intro.md",
+            "HTTPS://host/a.md",
+            "//host/a.md",
+            "mailto:a.md",
+            "custom+v1:a.md",
+            "../../escape.md",
+            "%2f%2fhost/a.md",
+            "%68ttps%3a/x.md",
+            "bad%ZZ.md",
+            "%FF.md",
+            "a%00.md",
+            "..\\a.md",
+        ] {
+            assert!(
+                destination("guide/start.md", url).is_none(),
+                "accepted {url:?}"
+            );
         }
     }
 
@@ -389,14 +453,25 @@ mod tests {
         assert_ne!(output_name("index.md"), output_name("~chapter-index.md"));
         for path in ["a?b#c.md", "中.md", "a%20b.md", "a\"b.md", "a'b.md"] {
             let name = output_name(path);
-            assert!(name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'~' | b'_' | b'-' | b'.')));
+            assert!(
+                name.bytes().all(|byte| byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'~' | b'_' | b'-' | b'.'))
+            );
         }
     }
 
     #[test]
     fn duplicate_paths_and_case_insensitive_output_collisions_fail_before_parsing() {
-        for pair in [["intro.md", "./intro.md"], ["a/b.md", "a__b.md"], ["chapter.md", "chapter.markdown"], ["Chapter.md", "chapter.md"]] {
-            let inputs = pair.map(|path| BookInput { path: path.into(), source: "# text".into() });
+        for pair in [
+            ["intro.md", "./intro.md"],
+            ["a/b.md", "a__b.md"],
+            ["chapter.md", "chapter.markdown"],
+            ["Chapter.md", "chapter.md"],
+        ] {
+            let inputs = pair.map(|path| BookInput {
+                path: path.into(),
+                source: "# text".into(),
+            });
             assert!(input_paths(&inputs).is_err(), "accepted {pair:?}");
         }
     }
@@ -411,9 +486,16 @@ mod tests {
     #[test]
     fn chapter_aliases_resolve_relative_rooted_and_encoded_urls() {
         let known: BTreeSet<_> = [
-            "install.md", "guide/next.markdown", "docs/index.md",
-            "manual/README.markdown", "中.md", "percent%20.md",
-        ].into_iter().map(String::from).collect();
+            "install.md",
+            "guide/next.markdown",
+            "docs/index.md",
+            "manual/README.markdown",
+            "中.md",
+            "percent%20.md",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
         for (url, path, suffix) in [
             ("../install#setup", "install.md", "#setup"),
             ("next?print#part", "guide/next.markdown", "?print#part"),
@@ -434,10 +516,15 @@ mod tests {
     #[test]
     fn directory_links_include_root_and_dot_directories() {
         let known: BTreeSet<_> = ["index.md", "guide/index.markdown"]
-            .into_iter().map(String::from).collect();
+            .into_iter()
+            .map(String::from)
+            .collect();
         for (url, path) in [
-            ("/", "index.md"), ("..", "index.md"), ("../", "index.md"),
-            (".", "guide/index.markdown"), ("./", "guide/index.markdown"),
+            ("/", "index.md"),
+            ("..", "index.md"),
+            ("../", "index.md"),
+            (".", "guide/index.markdown"),
+            ("./", "guide/index.markdown"),
             ("/guide/.", "guide/index.markdown"),
         ] {
             assert_eq!(
@@ -450,9 +537,17 @@ mod tests {
     #[test]
     fn exact_chapters_win_and_ambiguous_aliases_are_not_guessed() {
         let known: BTreeSet<_> = [
-            "guide", "guide/index.md", "manual.md", "manual/README.md",
-            "docs/index.md", "docs/README.md", "asset.pdf.md",
-        ].into_iter().map(String::from).collect();
+            "guide",
+            "guide/index.md",
+            "manual.md",
+            "manual/README.md",
+            "docs/index.md",
+            "docs/README.md",
+            "asset.pdf.md",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
         assert_eq!(
             chapter_destination("start.md", "guide", |path| known.contains(path)),
             Some(("guide".into(), String::new())),
@@ -469,14 +564,26 @@ mod tests {
     #[test]
     fn aliases_do_not_weaken_url_or_root_containment_policy() {
         for url in [
-            "#local", "?print", "//host/", "https://host/", "mailto:user",
-            "../../", "%2e%2e/%2e%2e/", "%2f%2fhost/", "%68ttps%3a/",
-            "bad%ZZ/", "%FF/", "a%00/", "..\\guide/", "../%252e%252e/",
+            "#local",
+            "?print",
+            "//host/",
+            "https://host/",
+            "mailto:user",
+            "../../",
+            "%2e%2e/%2e%2e/",
+            "%2f%2fhost/",
+            "%68ttps%3a/",
+            "bad%ZZ/",
+            "%FF/",
+            "a%00/",
+            "..\\guide/",
+            "../%252e%252e/",
         ] {
             assert!(
                 chapter_destination("guide/start.md", url, |path| {
                     matches!(path, "index.md" | "guide/index.md")
-                }).is_none(),
+                })
+                .is_none(),
                 "accepted {url:?}",
             );
         }
@@ -485,10 +592,17 @@ mod tests {
     #[test]
     fn build_book_canonicalizes_aliases_once_for_every_export() {
         let inputs = [
-            ("guide/start.md", "[Install](../install#setup) [Docs](/docs/?print#intro)"),
+            (
+                "guide/start.md",
+                "[Install](../install#setup) [Docs](/docs/?print#intro)",
+            ),
             ("install.md", "# Setup"),
             ("docs/index.md", "# Intro"),
-        ].map(|(path, source)| BookInput { path: path.into(), source: source.into() });
+        ]
+        .map(|(path, source)| BookInput {
+            path: path.into(),
+            source: source.into(),
+        });
         let mut book = crate::book::build_book(&inputs).expect("build aliased book");
         let first = book.chapters[0].doc.clone();
         let mut destinations = Vec::new();
@@ -496,20 +610,31 @@ mod tests {
             destinations.push(dest.to_string());
             None
         });
-        assert_eq!(destinations, ["/install.md#setup", "/docs/index.md?print#intro"]);
+        assert_eq!(
+            destinations,
+            ["/install.md#setup", "/docs/index.md?print#intro"]
+        );
         canonicalize(&mut book.chapters);
-        assert_eq!(book.chapters[0].doc, first, "canonicalization must be idempotent");
+        assert_eq!(
+            book.chapters[0].doc, first,
+            "canonicalization must be idempotent"
+        );
     }
 
     #[test]
     fn source_context_rewriting_uses_the_same_alias_policy() {
-        let inputs = [
-            ("guide/start.md", "# Start"), ("docs/README.md", "# Docs"),
-        ].map(|(path, source)| BookInput { path: path.into(), source: source.into() });
+        let inputs =
+            [("guide/start.md", "# Start"), ("docs/README.md", "# Docs")].map(|(path, source)| {
+                BookInput {
+                    path: path.into(),
+                    source: source.into(),
+                }
+            });
         let book = crate::book::build_book(&inputs).expect("build book");
         let mut doc = Document {
             blocks: vec![Block::Paragraph(vec![Inline::Strong(vec![Inline::Link {
-                dest: "../docs/#intro".into(), title: None,
+                dest: "../docs/#intro".into(),
+                title: None,
                 content: vec![Inline::Text("Docs".into())],
             }])])],
         };

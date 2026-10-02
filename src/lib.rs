@@ -34,17 +34,20 @@ extern crate self as franken_markdown;
 
 pub mod ast;
 pub mod block_flow;
-pub mod code_table_flow;
 pub mod book;
 pub mod caret;
+pub mod code_table_flow;
 pub mod compress;
-pub mod diagrams;
 pub mod dep_invalidation;
+pub mod diagrams;
 pub mod diff;
+pub mod display;
 pub mod doc_stats;
 pub mod error;
-pub mod fonts;
+pub mod flow;
+pub mod flow_display;
 pub mod font_context;
+pub mod fonts;
 mod footnotes;
 pub mod highlight;
 pub mod html;
@@ -61,24 +64,21 @@ pub mod lang_python;
 pub mod lang_shell;
 pub mod lang_sql;
 pub mod lang_swift;
-pub mod lang_typescript;
 pub mod lang_tsx;
+pub mod lang_typescript;
 pub mod layout;
-pub mod pagination;
 pub mod lex_c;
 pub mod lex_css;
 pub mod lex_toml;
 pub mod lex_yaml;
 pub mod math_display;
 pub mod md_gen;
-pub mod parse;
 pub mod paged_height;
+pub mod pagination;
+pub mod parse;
 pub mod pdf;
 pub mod pdfa;
 pub mod resume;
-pub mod flow;
-pub mod flow_display;
-pub mod display;
 pub mod scanner;
 pub mod source_map;
 pub mod span;
@@ -123,26 +123,57 @@ pub mod batch;
 pub mod mcp;
 
 pub use ast::{Align, Block, DefinitionItem, Document, Inline, List, ListItem, Table};
+pub use block_flow::{
+    BlockFlowEngine, BlockFlowError, BlockHeightIndex, FIXED_POINT_SCALE, FlowBlockItem,
+    LineBreakCache, ListMarker, LogicalHeight, MAX_NESTING_DEPTH, MAX_PARAGRAPH_LINES,
+    ScrollAnchor,
+};
 pub use book::{
     Book, BookChapter, BookHeading, BookInput, book_pdf_document, build_book, chapter_headings,
     inject_book_nav, out_name, rewrite_links_for_site,
 };
 pub use caret::{CaretStyle, ColorMode, render_caret, render_parse_diagnostic};
+pub use code_table_flow::{
+    CodeFenceFlow, CodeTableError, ConstrainedTableFlow, MAX_COLUMN_WIDTH, MAX_COLUMNS_BUDGET,
+    MAX_MEASURE_ROWS, MIN_COLUMN_WIDTH, TableCell, TableConstraints,
+};
 pub use compress::zlib_decompress;
 pub use diagrams::{is_diagram_code, render_diagram_svg};
 pub use diff::{DiffBlock, DiffInline, DiffStats, DocumentDiff, compute_diff};
+pub use display::{
+    AccessibleReadingNode, AccessibleReadingRole, DisplayClip, DisplayImage, DisplayItem,
+    DisplayList, DisplayRect, DisplaySemanticAnchor, DisplayTextRun, DisplayVectorPath,
+    VectorShapeType,
+};
 pub use doc_stats::{
     DocFinding, DocumentStats, DocumentStructure, OutlineHeading, compute_doc_stats,
 };
 pub use epub::render_epub;
 pub use error::{RenderError, Result};
+pub use flow::{
+    FlowBudgets, FlowConstraints, FlowError, FlowLine, FlowOutput, HeadlessFlowConsumer,
+};
+pub use flow_display::{
+    AssetRequest, AssetRequestId, AssetResult, DisplayBlock, FlowDisplayError,
+    ResumableFlowDisplay, StepResult, UnresolvedAsset,
+};
 pub use interactive::render_interactive_html;
 pub use lang_dispatch::{
     DispatchAuditReceipt, DispatchError, DispatchRequest, DispatchResult, LanguageId,
     LanguageRegistry, LanguageRouteRegistration, MAX_ALIASES_PER_ROUTE, MAX_REGISTERED_LANGUAGES,
     QualificationStatus, ResourceCounters, digest_spans, fnv1a_64,
 };
+pub use math_display::{
+    DiagramDisplay, DiagramError, MathDisplay, MathDisplayError, contains_hostile_markup,
+    diagram_anchor, diagram_fallback, diagram_to_display, diagram_to_display_with_fallback,
+    extract_diagram_blocks, extract_math_spans, is_diagram_language, layout_to_display,
+    math_anchor, math_to_display,
+};
 pub use md_gen::{ADVERSARIES, Adversary, GenOptions, Lcg, adversarial, generate};
+pub use paged_height::{
+    DEFAULT_PAGE_CAPACITY, HeightRefinementTransaction, Page, PagedHeightDirectory,
+    PagedHeightIndex,
+};
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
 pub use pdf::{
     PdfEmitOptions, PdfPageEmission, PdfProfile, PdfStageSummary, RenderWarning, render_warnings,
@@ -161,46 +192,14 @@ pub use scanner::{
     scan_table_or_fence_candidate,
 };
 pub use search_index::{SearchIndex, build_search_index, search_index_json};
-pub use display::{
-    AccessibleReadingNode, AccessibleReadingRole, DisplayClip, DisplayImage, DisplayItem,
-    DisplayList, DisplayRect, DisplaySemanticAnchor, DisplayTextRun, DisplayVectorPath,
-    VectorShapeType,
-};
-pub use math_display::{
-    contains_hostile_markup, diagram_anchor, diagram_fallback, diagram_to_display,
-    diagram_to_display_with_fallback, extract_diagram_blocks, extract_math_spans,
-    is_diagram_language, layout_to_display, math_anchor, math_to_display, DiagramDisplay,
-    DiagramError, MathDisplay, MathDisplayError,
-};
-pub use flow::{
-    FlowBudgets, FlowConstraints, FlowError, FlowLine, FlowOutput, HeadlessFlowConsumer,
-};
-pub use flow_display::{
-    AssetRequest, AssetRequestId, AssetResult, DisplayBlock, FlowDisplayError,
-    ResumableFlowDisplay, StepResult, UnresolvedAsset,
-};
-pub use block_flow::{
-    BlockFlowEngine, BlockFlowError, BlockHeightIndex, FlowBlockItem, LineBreakCache,
-    ListMarker, LogicalHeight, ScrollAnchor, FIXED_POINT_SCALE, MAX_NESTING_DEPTH,
-    MAX_PARAGRAPH_LINES,
-};
-pub use paged_height::{
-    DEFAULT_PAGE_CAPACITY, HeightRefinementTransaction, Page, PagedHeightDirectory,
-    PagedHeightIndex,
-};
-pub use code_table_flow::{
-    CodeFenceFlow, CodeTableError, ConstrainedTableFlow, TableCell, TableConstraints,
-    MAX_COLUMNS_BUDGET, MAX_COLUMN_WIDTH, MAX_MEASURE_ROWS, MIN_COLUMN_WIDTH,
-};
 pub use source_map::{
     DocumentSourceMap, HeadingSourceAnchor, RenderedElement, SourceMapError, TextSelectionRange,
 };
 pub use span::{
     CaptureId, DiagnosticSeverity, DisjointSourceRanges, NestedProvenanceGraph,
-    NestedProvenanceNode, ParseDiagnostic, ProvenanceAuditReport, ProvenanceError,
-    ProvenanceKind, ProvenanceNode, ProvenanceOracle, ProvenanceRelation, QualifiedSpan,
-    SourceOrigin, SourceSpan, Spanned, SpannedBlock, SpannedDocument, SpannedInline,
-    SpannedListItem, SpannedTable,
+    NestedProvenanceNode, ParseDiagnostic, ProvenanceAuditReport, ProvenanceError, ProvenanceKind,
+    ProvenanceNode, ProvenanceOracle, ProvenanceRelation, QualifiedSpan, SourceOrigin, SourceSpan,
+    Spanned, SpannedBlock, SpannedDocument, SpannedInline, SpannedListItem, SpannedTable,
 };
 pub use svg::{SvgOptions, SvgReport, render_svg, render_svg_with_report};
 pub use theme::{

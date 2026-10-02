@@ -129,7 +129,9 @@ impl ExpandedDocument {
         if offset >= self.text.len() || !self.text.is_char_boundary(offset) {
             return None;
         }
-        let index = self.spans.partition_point(|span| span.expanded.end <= offset);
+        let index = self
+            .spans
+            .partition_point(|span| span.expanded.end <= offset);
         let span = self.spans.get(index)?;
         if !span.expanded.contains(&offset) {
             return None;
@@ -137,7 +139,10 @@ impl ExpandedDocument {
         let byte_offset = if span.generated {
             span.original.start
         } else {
-            let original = span.original.start.checked_add(offset - span.expanded.start)?;
+            let original = span
+                .original
+                .start
+                .checked_add(offset - span.expanded.start)?;
             if original >= span.original.end {
                 return None;
             }
@@ -229,8 +234,10 @@ impl ExpansionMapping {
             } else {
                 last.original.end == original.start
             };
-            if last.source_id == source_id && last.generated == generated
-                && last.expanded.end == expanded.start && adjacent
+            if last.source_id == source_id
+                && last.generated == generated
+                && last.expanded.end == expanded.start
+                && adjacent
             {
                 last.expanded.end = expanded.end;
                 if !generated {
@@ -244,7 +251,12 @@ impl ExpansionMapping {
                 "include_map_budget: more than {MAX_MAPPING_SPANS} source mapping spans"
             )));
         }
-        self.spans.push(ExpansionSpan { expanded, source_id, original, generated });
+        self.spans.push(ExpansionSpan {
+            expanded,
+            source_id,
+            original,
+            generated,
+        });
         Ok(())
     }
 }
@@ -266,7 +278,10 @@ struct ActiveInclude {
 
 impl Expansion<'_> {
     fn source_id(&mut self, origin: &str) -> usize {
-        self.mapping.as_mut().map(|mapping| mapping.source_id(origin)).unwrap_or(0)
+        self.mapping
+            .as_mut()
+            .map(|mapping| mapping.source_id(origin))
+            .unwrap_or(0)
     }
 
     fn append(
@@ -283,10 +298,16 @@ impl Expansion<'_> {
             )));
         }
         if let Some(mapping) = &mut self.mapping {
-            let original_end = if generated { original_start } else { original_start + text.len() };
+            let original_end = if generated {
+                original_start
+            } else {
+                original_start + text.len()
+            };
             mapping.record(
-                self.output.len()..self.output.len() + text.len(), source_id,
-                original_start..original_end, generated,
+                self.output.len()..self.output.len() + text.len(),
+                source_id,
+                original_start..original_end,
+                generated,
             )?;
         }
         self.output.push_str(text);
@@ -321,7 +342,8 @@ impl Expansion<'_> {
             let candidate = fence_candidate(line);
             if let Some((marker, length)) = fence {
                 if candidate.is_some_and(|(next, count, tail)| {
-                    next == marker && count >= length
+                    next == marker
+                        && count >= length
                         && tail.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
                 }) {
                     fence = None;
@@ -346,7 +368,11 @@ impl Expansion<'_> {
                 continue;
             };
             // A longer directive name is ordinary text, not an include.
-            if rest.chars().next().is_some_and(|ch| !ch.is_whitespace() && ch != '}') {
+            if rest
+                .chars()
+                .next()
+                .is_some_and(|ch| !ch.is_whitespace() && ch != '}')
+            {
                 self.append(line, source_id, original_start, false)?;
                 continue;
             }
@@ -364,21 +390,29 @@ impl Expansion<'_> {
             let (content, resolved) = match (self.resolver)(path, origin) {
                 Ok(Some(pair)) => pair,
                 Ok(None) => {
-                    let mut chain: Vec<_> = self.stack.iter().map(|entry| entry.label.clone()).collect();
+                    let mut chain: Vec<_> =
+                        self.stack.iter().map(|entry| entry.label.clone()).collect();
                     chain.push(target.to_string());
                     return Err(RenderError::InvalidInput(format!(
-                        "include_missing: cannot read {path} (chain: {})", chain.join(" -> ")
+                        "include_missing: cannot read {path} (chain: {})",
+                        chain.join(" -> ")
                     )));
                 }
                 Err(reason) => return Err(RenderError::InvalidInput(reason)),
             };
             let range = selection.range(&content, &resolved)?;
             let label = selection.label(&resolved);
-            if self.stack.iter().any(|entry| entry.origin == resolved && entry.range == range) {
-                let mut chain: Vec<_> = self.stack.iter().map(|entry| entry.label.clone()).collect();
+            if self
+                .stack
+                .iter()
+                .any(|entry| entry.origin == resolved && entry.range == range)
+            {
+                let mut chain: Vec<_> =
+                    self.stack.iter().map(|entry| entry.label.clone()).collect();
                 chain.push(label);
                 return Err(RenderError::InvalidInput(format!(
-                    "include_cycle: {} forms an include cycle", chain.join(" -> ")
+                    "include_cycle: {} forms an include cycle",
+                    chain.join(" -> ")
                 )));
             }
             let start = self.output.len();
@@ -388,8 +422,11 @@ impl Expansion<'_> {
                 label,
             });
             let result = self.expand(
-                &content[range.clone()], depth + 1, &resolved,
-                matches!(selection, Selection::Anchor(_)), range.start,
+                &content[range.clone()],
+                depth + 1,
+                &resolved,
+                matches!(selection, Selection::Anchor(_)),
+                range.start,
             );
             self.stack.pop();
             result?;
@@ -402,7 +439,6 @@ impl Expansion<'_> {
     }
 }
 
-
 #[derive(Debug, PartialEq, Eq)]
 enum Selection {
     Whole,
@@ -411,21 +447,34 @@ enum Selection {
 }
 
 fn selector_error(target: &str) -> RenderError {
-    RenderError::InvalidInput(format!("include_selector: invalid include target {target:?}"))
+    RenderError::InvalidInput(format!(
+        "include_selector: invalid include target {target:?}"
+    ))
 }
 
 /// Separate host-owned paths from engine-owned selectors. Quoting is literal:
 /// backslashes are path bytes, never escape sequences or sandbox bypasses.
 fn parse_target(target: &str) -> Result<(&str, Selection)> {
     let (path, suffix) = if let Some(quote @ ('\'' | '"')) = target.chars().next() {
-        let close = target[1..].find(quote).ok_or_else(|| selector_error(target))? + 1;
+        let close = target[1..]
+            .find(quote)
+            .ok_or_else(|| selector_error(target))?
+            + 1;
         (&target[1..close], target[close + 1..].trim())
     } else {
         // A Windows drive prefix belongs to the host path, not a selector.
-        let separator = target.char_indices().find(|&(index, ch)| {
-            ch == ':' && !(index == 1 && target.as_bytes()[0].is_ascii_alphabetic()
-                && target.as_bytes().get(2).is_some_and(|&byte| matches!(byte, b'/' | b'\\')))
-        }).map(|(index, _)| index);
+        let separator = target
+            .char_indices()
+            .find(|&(index, ch)| {
+                ch == ':'
+                    && !(index == 1
+                        && target.as_bytes()[0].is_ascii_alphabetic()
+                        && target
+                            .as_bytes()
+                            .get(2)
+                            .is_some_and(|&byte| matches!(byte, b'/' | b'\\')))
+            })
+            .map(|(index, _)| index);
         match separator {
             Some(index) => (&target[..index], &target[index..]),
             None => (target, ""),
@@ -437,17 +486,30 @@ fn parse_target(target: &str) -> Result<(&str, Selection)> {
     if suffix.is_empty() {
         return Ok((path, Selection::Whole));
     }
-    let selector = suffix.strip_prefix(':').ok_or_else(|| selector_error(target))?;
+    let selector = suffix
+        .strip_prefix(':')
+        .ok_or_else(|| selector_error(target))?;
     let selection = if let Some((first, last)) = selector.split_once(':') {
-        let start = if first.is_empty() { 1 } else { line_number(first, target)? };
-        let end = if last.is_empty() { None } else { Some(line_number(last, target)?) };
+        let start = if first.is_empty() {
+            1
+        } else {
+            line_number(first, target)?
+        };
+        let end = if last.is_empty() {
+            None
+        } else {
+            Some(line_number(last, target)?)
+        };
         if end.is_some_and(|end| end < start) {
             return Err(selector_error(target));
         }
         Selection::Lines { start, end }
     } else if !selector.is_empty() && selector.bytes().all(|byte| byte.is_ascii_digit()) {
         let line = line_number(selector, target)?;
-        Selection::Lines { start: line, end: Some(line) }
+        Selection::Lines {
+            start: line,
+            end: Some(line),
+        }
     } else if valid_anchor_name(selector) {
         Selection::Anchor(selector.to_string())
     } else {
@@ -460,19 +522,27 @@ fn line_number(text: &str, target: &str) -> Result<usize> {
     if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(selector_error(target));
     }
-    text.parse::<usize>().ok().filter(|&line| line > 0)
+    text.parse::<usize>()
+        .ok()
+        .filter(|&line| line > 0)
         .ok_or_else(|| selector_error(target))
 }
 
 fn valid_anchor_name(name: &str) -> bool {
-    !name.is_empty() && name.chars().all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 impl Selection {
     fn label(&self, origin: &str) -> String {
         match self {
             Self::Whole => origin.to_string(),
-            Self::Lines { start, end: Some(end) } => format!("{origin}:{start}:{end}"),
+            Self::Lines {
+                start,
+                end: Some(end),
+            } => format!("{origin}:{start}:{end}"),
             Self::Lines { start, end: None } => format!("{origin}:{start}:"),
             Self::Anchor(name) => format!("{origin}:{name}"),
         }
@@ -499,7 +569,8 @@ impl Selection {
                 match first {
                     Some(first) if end.is_none_or(|end| end <= count) => Ok(first..offset),
                     _ => Err(RenderError::InvalidInput(format!(
-                        "include_range: {} is outside {count} available lines", self.label(origin)
+                        "include_range: {} is outside {count} available lines",
+                        self.label(origin)
                     ))),
                 }
             }
@@ -512,7 +583,11 @@ impl Selection {
                         if marker == name.as_str() {
                             if closing {
                                 if first.is_none() || last.is_some() {
-                                    return Err(anchor_error(origin, name, "unmatched or duplicate end"));
+                                    return Err(anchor_error(
+                                        origin,
+                                        name,
+                                        "unmatched or duplicate end",
+                                    ));
                                 }
                                 last = Some(offset);
                             } else {
@@ -548,9 +623,11 @@ fn anchor_marker(line: &str) -> Option<(bool, &str)> {
     } else if let Some(body) = line.strip_prefix("/*") {
         body.strip_suffix("*/")?
     } else {
-        ["//", "#", "--", ";", "%", "*"].iter()
+        ["//", "#", "--", ";", "%", "*"]
+            .iter()
             .find_map(|&prefix| line.strip_prefix(prefix))?
-    }.trim();
+    }
+    .trim();
     let (closing, name) = if let Some(name) = body.strip_prefix("ANCHOR_END:") {
         (true, name.trim())
     } else {
@@ -563,10 +640,14 @@ fn anchor_marker(line: &str) -> Option<(bool, &str)> {
 fn fence_candidate(line: &str) -> Option<(u8, usize, &str)> {
     let line = line.trim_end_matches(['\r', '\n']);
     let indent = line.bytes().take_while(|&byte| byte == b' ').count();
-    if indent > 3 { return None; }
+    if indent > 3 {
+        return None;
+    }
     let text = &line[indent..];
     let marker = *text.as_bytes().first()?;
-    if !matches!(marker, b'`' | b'~') { return None; }
+    if !matches!(marker, b'`' | b'~') {
+        return None;
+    }
     let count = text.bytes().take_while(|&byte| byte == marker).count();
     (count >= 3).then(|| (marker, count, &text[count..]))
 }
@@ -579,7 +660,9 @@ fn indented_code(line: &str) -> bool {
             b'\t' => column += 4 - column % 4,
             _ => break,
         }
-        if column >= 4 { return true; }
+        if column >= 4 {
+            return true;
+        }
     }
     false
 }
@@ -592,8 +675,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn resolver(files: &[(&str, &str)]) -> impl Fn(&str, &str) -> ResolveResult + use<> {
-        let map: BTreeMap<String, String> = files.iter()
-            .map(|(key, value)| (key.to_string(), value.to_string())).collect();
+        let map: BTreeMap<String, String> = files
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
         move |path, _origin| Ok(map.get(path).map(|text| (text.clone(), path.to_string())))
     }
 
@@ -618,7 +703,9 @@ mod tests {
             ("a.md", "{{#include b.md}}\n"),
             ("b.md", "{{#include a.md}}\n"),
         ]);
-        let error = expand_includes("{{#include a.md}}\n", &resolve).unwrap_err().to_string();
+        let error = expand_includes("{{#include a.md}}\n", &resolve)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("include_cycle"));
         assert!(error.contains("a.md -> b.md -> a.md"));
     }
@@ -646,16 +733,26 @@ mod tests {
             ("b.md", "B\n{{#include c.md}}\n"),
             ("c.md", "C\n"),
         ]);
-        assert_eq!(expand_includes("{{#include a.md}}\n", &resolve).unwrap(), "A\nB\nC\n");
+        assert_eq!(
+            expand_includes("{{#include a.md}}\n", &resolve).unwrap(),
+            "A\nB\nC\n"
+        );
     }
 
     #[test]
     fn depth_cap_errors() {
-        let map: BTreeMap<_, _> = (0..20).map(|index| (
-            format!("d{index}.md"), format!("{{{{#include d{}.md}}}}\n", index + 1)
-        )).collect();
+        let map: BTreeMap<_, _> = (0..20)
+            .map(|index| {
+                (
+                    format!("d{index}.md"),
+                    format!("{{{{#include d{}.md}}}}\n", index + 1),
+                )
+            })
+            .collect();
         let resolve = |path: &str, _: &str| {
-            Ok(map.get(path).map(|content| (content.clone(), path.to_string())))
+            Ok(map
+                .get(path)
+                .map(|content| (content.clone(), path.to_string())))
         };
         let error = expand_includes("{{#include d0.md}}\n", &resolve).unwrap_err();
         assert!(error.to_string().contains("include_depth"));
@@ -664,17 +761,28 @@ mod tests {
     #[test]
     fn malformed_directive_errors() {
         for source in ["{{#include oops.md }\n", "{{#include }}\n"] {
-            assert!(expand_includes(source, &resolver(&[])).unwrap_err()
-                .to_string().contains("include_missing"));
+            assert!(
+                expand_includes(source, &resolver(&[]))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("include_missing")
+            );
         }
     }
 
     #[test]
     fn budget_counts_utf8_and_inserted_newlines_exactly() {
         let resolve = resolver(&[("part", "中")]);
-        assert_eq!(expand_includes_with_limit("{{#include part}}", &resolve, 4).unwrap(), "中\n");
-        assert!(expand_includes_with_limit("{{#include part}}", &resolve, 3).unwrap_err()
-            .to_string().contains("include_size"));
+        assert_eq!(
+            expand_includes_with_limit("{{#include part}}", &resolve, 4).unwrap(),
+            "中\n"
+        );
+        assert!(
+            expand_includes_with_limit("{{#include part}}", &resolve, 3)
+                .unwrap_err()
+                .to_string()
+                .contains("include_size")
+        );
         assert_eq!(expand_includes_with_limit("", &resolve, 0).unwrap(), "");
         assert!(expand_includes_with_limit("a", &resolve, 0).is_err());
     }
@@ -683,7 +791,10 @@ mod tests {
     fn repeated_includes_share_one_output_budget() {
         let resolve = resolver(&[("part", "12345\n")]);
         let source = "{{#include part}}\n{{#include part}}\n";
-        assert_eq!(expand_includes_with_limit(source, &resolve, 12).unwrap(), "12345\n12345\n");
+        assert_eq!(
+            expand_includes_with_limit(source, &resolve, 12).unwrap(),
+            "12345\n12345\n"
+        );
         assert!(expand_includes_with_limit(source, &resolve, 11).is_err());
     }
 
@@ -693,8 +804,14 @@ mod tests {
         let resolve = |path: &str, _: &str| -> ResolveResult {
             calls.set(calls.get() + 1);
             let index: usize = path.parse().unwrap();
-            let content = if index == 12 { "leaf\n".to_string() } else {
-                format!("{{{{#include {}}}}}\n{{{{#include {}}}}}\n", index + 1, index + 1)
+            let content = if index == 12 {
+                "leaf\n".to_string()
+            } else {
+                format!(
+                    "{{{{#include {}}}}}\n{{{{#include {}}}}}\n",
+                    index + 1,
+                    index + 1
+                )
             };
             Ok(Some((content, path.to_string())))
         };
@@ -725,9 +842,11 @@ mod tests {
                 _ => Ok(None),
             }
         };
-        assert_eq!(expand_includes("{{#include part}}", &resolve).unwrap(), "nested\n");
+        assert_eq!(
+            expand_includes("{{#include part}}", &resolve).unwrap(),
+            "nested\n"
+        );
     }
-
 
     #[test]
     fn literal_code_examples_never_invoke_the_resolver() {
@@ -770,12 +889,20 @@ mod tests {
     fn line_selectors_preserve_bytes_and_only_resolve_the_file_path() {
         let resolve = resolver(&[("part.md", "one\r\n中\r\nlast")]);
         for (selector, expected) in [
-            ("1", "one\r\n"), ("2", "中\r\n"), ("3", "last\n"),
-            ("1:2", "one\r\n中\r\n"), (":2", "one\r\n中\r\n"),
-            ("2:", "中\r\nlast\n"), (":", "one\r\n中\r\nlast\n"),
+            ("1", "one\r\n"),
+            ("2", "中\r\n"),
+            ("3", "last\n"),
+            ("1:2", "one\r\n中\r\n"),
+            (":2", "one\r\n中\r\n"),
+            ("2:", "中\r\nlast\n"),
+            (":", "one\r\n中\r\nlast\n"),
         ] {
             let source = format!("{{{{#include part.md:{selector}}}}}");
-            assert_eq!(expand_includes(&source, &resolve).unwrap(), expected, "{selector}");
+            assert_eq!(
+                expand_includes(&source, &resolve).unwrap(),
+                expected,
+                "{selector}"
+            );
         }
     }
 
@@ -786,11 +913,25 @@ mod tests {
             calls.set(calls.get() + 1);
             Ok(None)
         };
-        for target in ["part:0", "part:3:2", "part:1:2:3", "part:x:2", "part:",
-            "part:99999999999999999999999999999999", "\"\":1", "\"part\" junk", "\"unclosed"] {
+        for target in [
+            "part:0",
+            "part:3:2",
+            "part:1:2:3",
+            "part:x:2",
+            "part:",
+            "part:99999999999999999999999999999999",
+            "\"\":1",
+            "\"part\" junk",
+            "\"unclosed",
+        ] {
             let source = format!("{{{{#include {target}}}}}");
-            assert!(expand_includes(&source, &resolve).unwrap_err().to_string()
-                .contains("include_selector"), "{target}");
+            assert!(
+                expand_includes(&source, &resolve)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("include_selector"),
+                "{target}"
+            );
         }
         assert_eq!(calls.get(), 0);
     }
@@ -800,34 +941,55 @@ mod tests {
         let resolve = resolver(&[("part", "one\ntwo\n"), ("empty", "")]);
         for target in ["part:3", "part:2:3", "part:3:", "empty:1"] {
             let source = format!("{{{{#include {target}}}}}");
-            assert!(expand_includes(&source, &resolve).unwrap_err().to_string()
-                .contains("include_range"), "{target}");
+            assert!(
+                expand_includes(&source, &resolve)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("include_range"),
+                "{target}"
+            );
         }
     }
 
     #[test]
     fn named_snippets_strip_nested_markers_and_ignore_unselected_includes() {
-        let resolve = resolver(&[("part", concat!(
-            "{{#include must-not-resolve}}\n",
-            "<!-- ANCHOR: example -->\r\n",
-            "α\r\n// ANCHOR: nested\r\nβ\r\n// ANCHOR_END: nested\r\n",
-            "<!-- ANCHOR_END: example -->\r\n",
-            "{{#include must-not-resolve-either}}\n"
-        ))]);
-        assert_eq!(expand_includes("{{#include part:example}}", &resolve).unwrap(), "α\r\nβ\r\n");
-        assert_eq!(expand_includes("{{#include part:nested}}", &resolve).unwrap(), "β\r\n");
+        let resolve = resolver(&[(
+            "part",
+            concat!(
+                "{{#include must-not-resolve}}\n",
+                "<!-- ANCHOR: example -->\r\n",
+                "α\r\n// ANCHOR: nested\r\nβ\r\n// ANCHOR_END: nested\r\n",
+                "<!-- ANCHOR_END: example -->\r\n",
+                "{{#include must-not-resolve-either}}\n"
+            ),
+        )]);
+        assert_eq!(
+            expand_includes("{{#include part:example}}", &resolve).unwrap(),
+            "α\r\nβ\r\n"
+        );
+        assert_eq!(
+            expand_includes("{{#include part:nested}}", &resolve).unwrap(),
+            "β\r\n"
+        );
     }
 
     #[test]
     fn missing_duplicate_and_unbalanced_anchors_report_errors() {
         for content in [
-            "no markers\n", "// ANCHOR: x\nunfinished\n", "// ANCHOR_END: x\n",
+            "no markers\n",
+            "// ANCHOR: x\nunfinished\n",
+            "// ANCHOR_END: x\n",
             "// ANCHOR: x\n// ANCHOR: x\n// ANCHOR_END: x\n",
             "// ANCHOR: x\na\n// ANCHOR_END: x\n// ANCHOR: x\nb\n// ANCHOR_END: x\n",
         ] {
             let resolve = resolver(&[("part", content)]);
-            let error = expand_includes("{{#include part:x}}", &resolve).unwrap_err().to_string();
-            assert!(error.contains("include_anchor") && error.contains("part:x"), "{error}");
+            let error = expand_includes("{{#include part:x}}", &resolve)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("include_anchor") && error.contains("part:x"),
+                "{error}"
+            );
         }
         assert_eq!(anchor_marker("a string says ANCHOR: x"), None);
         assert_eq!(anchor_marker("<!-- ANCHOR: x"), None);
@@ -840,47 +1002,88 @@ mod tests {
         let resolve = |path: &str, origin: &str| -> ResolveResult {
             assert_eq!(path, "part");
             assert!(matches!(origin, "<input>" | "canonical/part"));
-            Ok(Some((concat!(
-                "// ANCHOR: a\nA\n{{#include part:b}}\n// ANCHOR_END: a\n",
-                "// ANCHOR: b\nB\n// ANCHOR_END: b\n"
-            ).into(), "canonical/part".into())))
+            Ok(Some((
+                concat!(
+                    "// ANCHOR: a\nA\n{{#include part:b}}\n// ANCHOR_END: a\n",
+                    "// ANCHOR: b\nB\n// ANCHOR_END: b\n"
+                )
+                .into(),
+                "canonical/part".into(),
+            )))
         };
-        assert_eq!(expand_includes("{{#include part:a}}", &resolve).unwrap(), "A\nB\n");
+        assert_eq!(
+            expand_includes("{{#include part:a}}", &resolve).unwrap(),
+            "A\nB\n"
+        );
     }
 
     #[test]
     fn canonical_file_and_selected_bytes_detect_alias_cycles() {
         let resolve = |_: &str, _: &str| -> ResolveResult {
-            Ok(Some(("{{#include alias:1:1}}\n".into(), "same-file".into())))
+            Ok(Some((
+                "{{#include alias:1:1}}\n".into(),
+                "same-file".into(),
+            )))
         };
-        let error = expand_includes("{{#include original:1}}", &resolve).unwrap_err().to_string();
+        let error = expand_includes("{{#include original:1}}", &resolve)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("include_cycle"), "{error}");
     }
 
     #[test]
     fn quoted_colon_paths_and_windows_drive_prefixes_remain_host_paths() {
-        assert_eq!(parse_target(r#""dir/a:b.md":2:4"#).unwrap(),
-            ("dir/a:b.md", Selection::Lines { start: 2, end: Some(4) }));
-        assert_eq!(parse_target(r#"'a:b.md'"#).unwrap(), ("a:b.md", Selection::Whole));
-        assert_eq!(parse_target(r"C:\docs\part.md:2").unwrap(),
-            (r"C:\docs\part.md", Selection::Lines { start: 2, end: Some(2) }));
+        assert_eq!(
+            parse_target(r#""dir/a:b.md":2:4"#).unwrap(),
+            (
+                "dir/a:b.md",
+                Selection::Lines {
+                    start: 2,
+                    end: Some(4)
+                }
+            )
+        );
+        assert_eq!(
+            parse_target(r#"'a:b.md'"#).unwrap(),
+            ("a:b.md", Selection::Whole)
+        );
+        assert_eq!(
+            parse_target(r"C:\docs\part.md:2").unwrap(),
+            (
+                r"C:\docs\part.md",
+                Selection::Lines {
+                    start: 2,
+                    end: Some(2)
+                }
+            )
+        );
         let resolve = resolver(&[("a:b.md", "ok")]);
-        assert_eq!(expand_includes(r#"{{#include "a:b.md"}}"#, &resolve).unwrap(), "ok\n");
+        assert_eq!(
+            expand_includes(r#"{{#include "a:b.md"}}"#, &resolve).unwrap(),
+            "ok\n"
+        );
     }
 
     #[test]
     fn selecting_small_content_keeps_the_output_budget_and_host_policy() {
         let content = format!("{}\n中\n{}\n", "large".repeat(1000), "large".repeat(1000));
         let resolve = resolver(&[("part", &content)]);
-        assert_eq!(expand_includes_with_limit("{{#include part:2}}", &resolve, 4).unwrap(), "中\n");
+        assert_eq!(
+            expand_includes_with_limit("{{#include part:2}}", &resolve, 4).unwrap(),
+            "中\n"
+        );
         assert!(expand_includes_with_limit("{{#include part:2}}", &resolve, 3).is_err());
         let refuse = |path: &str, origin: &str| -> ResolveResult {
             assert_eq!(path, "../secret.md");
             assert_eq!(origin, "<input>");
             Err("include_escape: refused".into())
         };
-        assert!(expand_includes("{{#include ../secret.md:1}}", &refuse).unwrap_err()
-            .to_string().contains("include_escape: refused"));
+        assert!(
+            expand_includes("{{#include ../secret.md:1}}", &refuse)
+                .unwrap_err()
+                .to_string()
+                .contains("include_escape: refused")
+        );
     }
 
     #[test]
@@ -899,15 +1102,24 @@ mod tests {
             assert!(original.is_char_boundary(span.original.end));
             if span.generated {
                 assert!(span.original.is_empty());
-                assert!(document.text[span.expanded.clone()].bytes().all(|byte| byte == b'\n'));
+                assert!(
+                    document.text[span.expanded.clone()]
+                        .bytes()
+                        .all(|byte| byte == b'\n')
+                );
             } else {
-                assert_eq!(&document.text[span.expanded.clone()], &original[span.original.clone()]);
+                assert_eq!(
+                    &document.text[span.expanded.clone()],
+                    &original[span.original.clone()]
+                );
             }
             covered = span.expanded.end;
         }
         assert_eq!(covered, document.text.len());
         for (offset, _) in document.text.char_indices() {
-            let location = document.source_at(offset).expect("all characters have an origin");
+            let location = document
+                .source_at(offset)
+                .expect("all characters have an origin");
             assert!(originals[location.origin].is_char_boundary(location.byte_offset));
         }
         assert!(document.source_at(document.text.len()).is_none());
@@ -921,9 +1133,14 @@ mod tests {
         assert_eq!(document.sources, ["root.md"]);
         assert_eq!(document.spans.len(), 1);
         assert_eq!(document.spans[0].original, 0..source.len());
-        assert_eq!(document.source_at(0), Some(ExpansionLocation {
-            origin: "root.md", byte_offset: 0, generated: false,
-        }));
+        assert_eq!(
+            document.source_at(0),
+            Some(ExpansionLocation {
+                origin: "root.md",
+                byte_offset: 0,
+                generated: false,
+            })
+        );
         assert!(document.source_at(1).is_none(), "inside a UTF-8 scalar");
         assert!(document.source_at(usize::MAX).is_none());
         assert_exact_map(&document, &[("root.md", source)]);
@@ -939,16 +1156,29 @@ mod tests {
         assert_eq!(document.text, "root\r\nα\n中\nω\nend\n");
         assert_eq!(document.sources, ["root.md", "a", "b"]);
         for (text, origin, byte_offset) in [
-            ("α", "a", 0), ("中", "b", b.find('中').unwrap()),
-            ("ω", "a", a.find('ω').unwrap()), ("end", "root.md", root.find("end").unwrap()),
+            ("α", "a", 0),
+            ("中", "b", b.find('中').unwrap()),
+            ("ω", "a", a.find('ω').unwrap()),
+            ("end", "root.md", root.find("end").unwrap()),
         ] {
-            assert_eq!(document.source_at(document.text.find(text).unwrap()),
-                Some(ExpansionLocation { origin, byte_offset, generated: false }));
+            assert_eq!(
+                document.source_at(document.text.find(text).unwrap()),
+                Some(ExpansionLocation {
+                    origin,
+                    byte_offset,
+                    generated: false
+                })
+            );
         }
         let separator = document.text.find('中').unwrap() + '中'.len_utf8();
-        assert_eq!(document.source_at(separator), Some(ExpansionLocation {
-            origin: "b", byte_offset: b.len(), generated: true,
-        }));
+        assert_eq!(
+            document.source_at(separator),
+            Some(ExpansionLocation {
+                origin: "b",
+                byte_offset: b.len(),
+                generated: true,
+            })
+        );
         assert_exact_map(&document, &[("root.md", root), ("a", a), ("b", b)]);
     }
 
@@ -961,10 +1191,20 @@ mod tests {
         let root = "{{#include part:x}}";
         let document = expand_includes_mapped(root, "root", &resolver(&[("part", part)])).unwrap();
         assert_eq!(document.text, "α\nβ\n");
-        assert_eq!(document.spans.len(), 2, "removed marker bytes must not be coalesced");
+        assert_eq!(
+            document.spans.len(),
+            2,
+            "removed marker bytes must not be coalesced"
+        );
         for ch in ['α', 'β'] {
-            assert_eq!(document.source_at(document.text.find(ch).unwrap()),
-                Some(ExpansionLocation { origin: "part", byte_offset: part.find(ch).unwrap(), generated: false }));
+            assert_eq!(
+                document.source_at(document.text.find(ch).unwrap()),
+                Some(ExpansionLocation {
+                    origin: "part",
+                    byte_offset: part.find(ch).unwrap(),
+                    generated: false
+                })
+            );
         }
         assert_exact_map(&document, &[("root", root), ("part", part)]);
         let root = "{{#include part:3:3}}";
@@ -983,7 +1223,10 @@ mod tests {
         assert_eq!(document.spans.len(), 2);
         assert_eq!(document.spans[0].original, document.spans[1].original);
         assert_exact_map(&document, &[("root", root), ("part", "data\n")]);
-        assert_eq!(document, expand_includes_mapped(root, "root", &resolve).unwrap());
+        assert_eq!(
+            document,
+            expand_includes_mapped(root, "root", &resolve).unwrap()
+        );
         assert_eq!(document.text, expand_includes(root, &resolve).unwrap());
     }
 
@@ -997,9 +1240,14 @@ mod tests {
         let root = "{{#include empty}}";
         let document = expand_includes_mapped(root, "root", &resolve).unwrap();
         assert_eq!(document.text, "\n");
-        assert_eq!(document.source_at(0), Some(ExpansionLocation {
-            origin: "empty", byte_offset: 0, generated: true,
-        }));
+        assert_eq!(
+            document.source_at(0),
+            Some(ExpansionLocation {
+                origin: "empty",
+                byte_offset: 0,
+                generated: true,
+            })
+        );
         assert_exact_map(&document, &[("root", root), ("empty", "")]);
         assert!(expand_includes_mapped_with_limit(root, "root", &resolve, 0).is_err());
     }
@@ -1031,22 +1279,33 @@ mod tests {
         assert_eq!(document.sources, ["docs/root.md", "docs/child.md"]);
         let resolve = resolver(&[("child", "skip\n中")]);
         for budget in 0..=5 {
-            let plain = expand_includes_with_limit(source, &resolve, budget).map_err(|e| e.to_string());
+            let plain =
+                expand_includes_with_limit(source, &resolve, budget).map_err(|e| e.to_string());
             let mapped = expand_includes_mapped_with_limit(source, "<input>", &resolve, budget)
-                .map(|document| document.text).map_err(|e| e.to_string());
+                .map(|document| document.text)
+                .map_err(|e| e.to_string());
             assert_eq!(plain, mapped, "byte budget {budget}");
         }
     }
 
     #[test]
     fn mapping_budget_limits_metadata_but_allows_adjacent_coalescing() {
-        let span = ExpansionSpan { expanded: 0..1, source_id: 0, original: 0..1, generated: false };
+        let span = ExpansionSpan {
+            expanded: 0..1,
+            source_id: 0,
+            original: 0..1,
+            generated: false,
+        };
         let mut mapping = ExpansionMapping {
-            spans: vec![span; MAX_MAPPING_SPANS], ..ExpansionMapping::default()
+            spans: vec![span; MAX_MAPPING_SPANS],
+            ..ExpansionMapping::default()
         };
         mapping.record(1..2, 0, 1..2, false).unwrap();
         assert_eq!(mapping.spans.len(), MAX_MAPPING_SPANS);
-        let error = mapping.record(2..3, 1, 0..1, false).unwrap_err().to_string();
+        let error = mapping
+            .record(2..3, 1, 0..1, false)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("include_map_budget"));
         assert_eq!(mapping.spans.last().unwrap().expanded, 0..2);
     }
@@ -1058,6 +1317,9 @@ mod tests {
             let files = [("part", content.as_str())];
             resolver(&files)
         };
-        assert_eq!(expand_includes("{{#include part}}", &resolve).unwrap(), "owned fixture\n");
+        assert_eq!(
+            expand_includes("{{#include part}}", &resolve).unwrap(),
+            "owned fixture\n"
+        );
     }
 }

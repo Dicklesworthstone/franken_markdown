@@ -49,7 +49,10 @@ fn standard_stdio_handshake_notifications_discovery_and_ping() {
     assert_eq!(raw.lines().count(), 3);
     assert!(!raw.contains("Content-Length:"));
     for line in raw.lines() {
-        assert!(parse_json(line).is_ok(), "stdout must contain only JSON lines");
+        assert!(
+            parse_json(line).is_ok(),
+            "stdout must contain only JSON lines"
+        );
     }
     let result = responses[0].get("result").unwrap();
     assert_eq!(
@@ -57,7 +60,10 @@ fn standard_stdio_handshake_notifications_discovery_and_ping() {
         Some("2024-11-05")
     );
     assert!(responses[1].get("result").unwrap().get("tools").is_some());
-    assert_eq!(responses[2].get("id").and_then(JsonValue::as_str), Some("ping-α"));
+    assert_eq!(
+        responses[2].get("id").and_then(JsonValue::as_str),
+        Some("ping-α")
+    );
 }
 
 #[test]
@@ -140,7 +146,10 @@ fn oversized_frame_is_fatal_not_a_second_request() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     let raw = String::from_utf8(output).unwrap();
     assert_eq!(raw.lines().count(), 1);
-    assert_eq!(error_code(&parse_json(raw.trim()).unwrap()), f64::from(PARSE_ERROR));
+    assert_eq!(
+        error_code(&parse_json(raw.trim()).unwrap()),
+        f64::from(PARSE_ERROR)
+    );
     assert!(!raw.contains("\"result\""));
 }
 
@@ -155,7 +164,10 @@ fn malformed_headers_and_bodies_fail_without_panics() {
         "Content-Type: application/json\r\n\r\n",
         "Content-Length: 65\r\n\r\n",
     ] {
-        assert!(read_frame(&mut Cursor::new(input), 64).is_err(), "{input:?}");
+        assert!(
+            read_frame(&mut Cursor::new(input), 64).is_err(),
+            "{input:?}"
+        );
     }
     for input in [
         "Content-Length: 3\r\n",
@@ -177,7 +189,10 @@ fn malformed_headers_and_bodies_fail_without_panics() {
 
 #[test]
 fn cumulative_header_budget_and_unterminated_lines_are_bounded() {
-    let input = format!("Content-Length: 2\r\n{}\r\n{{}}", "X-Test: a\r\n".repeat(1024));
+    let input = format!(
+        "Content-Length: 2\r\n{}\r\n{{}}",
+        "X-Test: a\r\n".repeat(1024)
+    );
     assert!(read_frame(&mut Cursor::new(input), 64).is_err());
     let input = format!("Content-Length: {}", "1".repeat(16 * 1024));
     assert!(read_frame(&mut Cursor::new(input), MAX_FRAME_BYTES).is_err());
@@ -186,7 +201,8 @@ fn cumulative_header_budget_and_unterminated_lines_are_bounded() {
 
 #[test]
 fn single_byte_buffering_and_extra_headers_preserve_boundaries() {
-    let input = b"content-type: application/json\r\ncontent-length: 2\r\n\r\n{}Content-Length: 2\r\n\r\n[]";
+    let input =
+        b"content-type: application/json\r\ncontent-length: 2\r\n\r\n{}Content-Length: 2\r\n\r\n[]";
     let mut reader = BufReader::with_capacity(1, Cursor::new(input));
     assert_eq!(read_frame(&mut reader, 2).unwrap(), Some("{}".to_string()));
     assert_eq!(read_frame(&mut reader, 2).unwrap(), Some("[]".to_string()));
@@ -195,7 +211,11 @@ fn single_byte_buffering_and_extra_headers_preserve_boundaries() {
 
 #[test]
 fn json_depth_limit_bounds_recursive_descent() {
-    let at_limit = format!("{}0{}", "[".repeat(MAX_JSON_DEPTH), "]".repeat(MAX_JSON_DEPTH));
+    let at_limit = format!(
+        "{}0{}",
+        "[".repeat(MAX_JSON_DEPTH),
+        "]".repeat(MAX_JSON_DEPTH)
+    );
     assert!(parse_json(&at_limit).is_ok());
     for depth in [MAX_JSON_DEPTH + 1, 20_000] {
         let input = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
@@ -212,14 +232,37 @@ fn json_depth_limit_bounds_recursive_descent() {
 #[test]
 fn invalid_json_syntax_is_not_silently_repaired() {
     for input in [
-        "01", "-01", "1.", "-.1", "1e", "1e+", "+1", "NaN", "1e9999",
-        "[1,]", "{\"a\":1,}", "\u{a0}null", "null\u{b}", "\"raw\nnewline\"",
-        "\"raw\tcontrol\"", "\"\u{0}\"", r#""\q""#, r#""\u+000""#,
+        "01",
+        "-01",
+        "1.",
+        "-.1",
+        "1e",
+        "1e+",
+        "+1",
+        "NaN",
+        "1e9999",
+        "[1,]",
+        "{\"a\":1,}",
+        "\u{a0}null",
+        "null\u{b}",
+        "\"raw\nnewline\"",
+        "\"raw\tcontrol\"",
+        "\"\u{0}\"",
+        r#""\q""#,
+        r#""\u+000""#,
     ] {
-        assert!(parse_json(input).is_err(), "accepted invalid JSON: {input:?}");
+        assert!(
+            parse_json(input).is_err(),
+            "accepted invalid JSON: {input:?}"
+        );
     }
     for input in [
-        "0", "-0", "1.25e+2", "-3E-2", " \t\r\nnull", r#""\n\t\u0000\uD83D\uDE00""#,
+        "0",
+        "-0",
+        "1.25e+2",
+        "-3E-2",
+        " \t\r\nnull",
+        r#""\n\t\u0000\uD83D\uDE00""#,
     ] {
         assert!(parse_json(input).is_ok(), "rejected valid JSON: {input:?}");
     }
@@ -236,11 +279,16 @@ fn jsonrpc_version_id_and_parameter_shape_are_validated() {
         r#"{"jsonrpc":"2.0","id":9007199254740993,"method":"ping"}"#,
         r#"{"jsonrpc":"2.0","id":1.5,"method":"ping"}"#,
     ] {
-        assert_eq!(parse_jsonrpc_request(input).unwrap_err().1, INVALID_REQUEST, "{input}");
+        assert_eq!(
+            parse_jsonrpc_request(input).unwrap_err().1,
+            INVALID_REQUEST,
+            "{input}"
+        );
     }
     assert_eq!(
         parse_jsonrpc_request(r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":false}"#)
-            .unwrap_err().1,
+            .unwrap_err()
+            .1,
         INVALID_PARAMS
     );
 }

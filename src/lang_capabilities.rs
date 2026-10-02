@@ -54,12 +54,22 @@ impl CapabilityLevel {
     #[must_use]
     pub const fn permitted_claim(self) -> &'static str {
         match self {
-            Self::Bytes => "Exact source representation: range copy, exact literal match, line navigation.",
-            Self::Lexical => "Qualified token classification: comment/string boundaries, keyword coloring.",
-            Self::Structural => "Parser-supported syntax entities: Rust item outline, Markdown heading tree.",
+            Self::Bytes => {
+                "Exact source representation: range copy, exact literal match, line navigation."
+            }
+            Self::Lexical => {
+                "Qualified token classification: comment/string boundaries, keyword coloring."
+            }
+            Self::Structural => {
+                "Parser-supported syntax entities: Rust item outline, Markdown heading tree."
+            }
             Self::ResolvedLocal => "A proven relationship within the parser's modeled scope.",
-            Self::ExternalSemantic => "Facts supplied by an explicitly enabled, independently qualified provider.",
-            Self::Heuristic => "A candidate only: same-name identifier link, approximate related-file suggestion.",
+            Self::ExternalSemantic => {
+                "Facts supplied by an explicitly enabled, independently qualified provider."
+            }
+            Self::Heuristic => {
+                "A candidate only: same-name identifier link, approximate related-file suggestion."
+            }
         }
     }
 
@@ -127,9 +137,7 @@ pub enum CapabilityAuditError {
         claimed_level: CapabilityLevel,
     },
     /// A qualified route failed to guarantee source-exact span tiling.
-    SourceExactSpanViolation {
-        language: &'static str,
-    },
+    SourceExactSpanViolation { language: &'static str },
     /// Invalid span tiling detected during span validation.
     SpanTilingError {
         language: &'static str,
@@ -262,7 +270,12 @@ impl CapabilityMatrix {
                 coalesced_equivalence: true,
                 provisional_choices: false,
                 conservative_ambiguities: true,
-                multiline_constructs: &["jsx_tags", "embedded_expressions", "fragments", "entities"],
+                multiline_constructs: &[
+                    "jsx_tags",
+                    "embedded_expressions",
+                    "fragments",
+                    "entities",
+                ],
                 notes: "JSX incremental lexer with tag/text mode transitions, embedded JS expression containers, fragments, and adversarial split corpus qualification.",
             },
             LanguageCapabilityRow {
@@ -276,7 +289,13 @@ impl CapabilityMatrix {
                 coalesced_equivalence: true,
                 provisional_choices: false,
                 conservative_ambiguities: true,
-                multiline_constructs: &["jsx_tags", "embedded_expressions", "fragments", "typescript_expressions", "spread_operators"],
+                multiline_constructs: &[
+                    "jsx_tags",
+                    "embedded_expressions",
+                    "fragments",
+                    "typescript_expressions",
+                    "spread_operators",
+                ],
                 notes: "TSX incremental lexer with JSX+TypeScript composition, generic bracket vs tag disambiguation, spread holds, and split corpus qualification.",
             },
             LanguageCapabilityRow {
@@ -304,7 +323,11 @@ impl CapabilityMatrix {
                 coalesced_equivalence: true,
                 provisional_choices: false,
                 conservative_ambiguities: false,
-                multiline_constructs: &["preprocessor_continuation", "block_comments", "raw_strings"],
+                multiline_constructs: &[
+                    "preprocessor_continuation",
+                    "block_comments",
+                    "raw_strings",
+                ],
                 notes: "C++ incremental lexer with raw string literals, preprocessor continuation, and split corpus qualification.",
             },
             LanguageCapabilityRow {
@@ -318,7 +341,12 @@ impl CapabilityMatrix {
                 coalesced_equivalence: true,
                 provisional_choices: false,
                 conservative_ambiguities: false,
-                multiline_constructs: &["verbatim_strings", "interpolated_strings", "raw_strings", "preprocessor_continuation"],
+                multiline_constructs: &[
+                    "verbatim_strings",
+                    "interpolated_strings",
+                    "raw_strings",
+                    "preprocessor_continuation",
+                ],
                 notes: "C# incremental lexer with verbatim/interpolated/raw string variants and preprocessor directives.",
             },
             LanguageCapabilityRow {
@@ -360,7 +388,11 @@ impl CapabilityMatrix {
                 coalesced_equivalence: true,
                 provisional_choices: false,
                 conservative_ambiguities: false,
-                multiline_constructs: &["nested_block_comments", "raw_multiline_strings", "attributes"],
+                multiline_constructs: &[
+                    "nested_block_comments",
+                    "raw_multiline_strings",
+                    "attributes",
+                ],
                 notes: "Swift incremental lexer with nested block comments, multiline raw strings, and attributes.",
             },
             LanguageCapabilityRow {
@@ -444,7 +476,13 @@ impl CapabilityMatrix {
                 coalesced_equivalence: true,
                 provisional_choices: false,
                 conservative_ambiguities: false,
-                multiline_constructs: &["tags", "comments", "cdata", "doctype", "inert_script_style"],
+                multiline_constructs: &[
+                    "tags",
+                    "comments",
+                    "cdata",
+                    "doctype",
+                    "inert_script_style",
+                ],
                 notes: "HTML incremental lexer with doctype, comments, CDATA, tags, and inert script/style regions.",
             },
             LanguageCapabilityRow {

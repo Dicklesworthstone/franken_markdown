@@ -17,8 +17,8 @@ pub use browser::{BrowserFlowError, BrowserFlowSession};
 pub mod cache;
 pub use cache::{FlowShapeCache, FlowShapeCacheLimits, FlowShapeCacheStats};
 
-mod matching;
 mod edits;
+mod matching;
 pub use edits::{FlowEdit, FlowEditBatchError, MAX_FLOW_EDITS};
 
 pub mod session;
@@ -27,11 +27,20 @@ pub use session::{FlowAssetRemap, FlowAssetReuse, FlowSession, FlowSessionError,
 /// A conservative lexical dependency candidate, not a second Markdown parser.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DependencyKind {
-    Reference { label: String },
-    Footnote { label: String },
+    Reference {
+        label: String,
+    },
+    Footnote {
+        label: String,
+    },
     /// A parsed heading's base slug. Its span may enclose a nested container.
-    Heading { level: u8, slug: String },
-    Include { path: String },
+    Heading {
+        level: u8,
+        slug: String,
+    },
+    Include {
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,9 +115,14 @@ impl DependencyGraph {
         let normalized = source.strip_prefix('\u{feff}').unwrap_or(source);
         let (metadata, body) = crate::parse::split_frontmatter(normalized);
         if metadata.is_some() {
-            context.push(RenderContext::Frontmatter(normalized[..normalized.len() - body.len()].to_owned()));
+            context.push(RenderContext::Frontmatter(
+                normalized[..normalized.len() - body.len()].to_owned(),
+            ));
         }
-        enum Node<'a> { Block(&'a Block, SourceSpan), Inline(&'a Inline) }
+        enum Node<'a> {
+            Block(&'a Block, SourceSpan),
+            Inline(&'a Inline),
+        }
         let mut stack = Vec::new();
         for block in document.blocks().iter().rev() {
             stack.push(Node::Block(&block.node, block.span));
@@ -122,16 +136,26 @@ impl DependencyGraph {
                         deps.push(DocumentDependency {
                             kind: DependencyKind::Heading {
                                 level: *level,
-                                slug: if slug.is_empty() { "section".to_owned() } else { slug },
+                                slug: if slug.is_empty() {
+                                    "section".to_owned()
+                                } else {
+                                    slug
+                                },
                             },
-                            start: span.start, end: span.end,
+                            start: span.start,
+                            end: span.end,
                             content_digest: fingerprint(span.slice(source).unwrap_or_default()),
                         });
                         stack.extend(inlines.iter().rev().map(Node::Inline));
                     }
-                    Block::Paragraph(inlines) => stack.extend(inlines.iter().rev().map(Node::Inline)),
+                    Block::Paragraph(inlines) => {
+                        stack.extend(inlines.iter().rev().map(Node::Inline))
+                    }
                     Block::FootnoteDefinition { id, blocks } => {
-                        context.push(RenderContext::FootnoteDefinition(id.clone(), blocks.clone()));
+                        context.push(RenderContext::FootnoteDefinition(
+                            id.clone(),
+                            blocks.clone(),
+                        ));
                         stack.extend(blocks.iter().rev().map(|block| Node::Block(block, span)));
                     }
                     Block::BlockQuote(blocks) => {
@@ -139,17 +163,26 @@ impl DependencyGraph {
                     }
                     Block::List(list) => {
                         for item in list.items.iter().rev() {
-                            stack.extend(item.blocks.iter().rev().map(|block| Node::Block(block, span)));
+                            stack.extend(
+                                item.blocks
+                                    .iter()
+                                    .rev()
+                                    .map(|block| Node::Block(block, span)),
+                            );
                         }
                     }
                     Block::Table(table) => {
                         for row in table.rows.iter().rev().chain(std::iter::once(&table.head)) {
-                            for cell in row.iter().rev() { stack.extend(cell.iter().rev().map(Node::Inline)); }
+                            for cell in row.iter().rev() {
+                                stack.extend(cell.iter().rev().map(Node::Inline));
+                            }
                         }
                     }
                     Block::DefinitionList(items) => {
                         for item in items.iter().rev() {
-                            for content in item.definitions.iter().rev().chain(item.terms.iter().rev()) {
+                            for content in
+                                item.definitions.iter().rev().chain(item.terms.iter().rev())
+                            {
                                 stack.extend(content.iter().rev().map(Node::Inline));
                             }
                         }
@@ -157,9 +190,15 @@ impl DependencyGraph {
                     _ => {}
                 },
                 Node::Inline(inline) => match inline {
-                    Inline::FootnoteRef { id } => context.push(RenderContext::FootnoteReference(id.clone())),
-                    Inline::Emphasis(children) | Inline::Strong(children) | Inline::Strikethrough(children)
-                    | Inline::Link { content: children, .. } => stack.extend(children.iter().rev().map(Node::Inline)),
+                    Inline::FootnoteRef { id } => {
+                        context.push(RenderContext::FootnoteReference(id.clone()))
+                    }
+                    Inline::Emphasis(children)
+                    | Inline::Strong(children)
+                    | Inline::Strikethrough(children)
+                    | Inline::Link {
+                        content: children, ..
+                    } => stack.extend(children.iter().rev().map(Node::Inline)),
                     _ => {}
                 },
             }
@@ -172,22 +211,39 @@ impl DependencyGraph {
             }
         }
         deps.sort_by_key(|dep| (dep.start, dep.end));
-        Self { deps, source: source.to_owned(), document, context }
+        Self {
+            deps,
+            source: source.to_owned(),
+            document,
+            context,
+        }
     }
 
     #[must_use]
-    pub fn dependencies(&self) -> &[DocumentDependency] { &self.deps }
+    pub fn dependencies(&self) -> &[DocumentDependency] {
+        &self.deps
+    }
 
     #[must_use]
-    pub fn source(&self) -> &str { &self.source }
+    pub fn source(&self) -> &str {
+        &self.source
+    }
 
     /// A range-only invalidation cannot know the replacement text. Even a
     /// zero-width insertion can change every later block or a forward reference.
     /// Invalid ranges also fail closed. Use `compare` for verified reuse.
     #[must_use]
     pub fn invalidate(&self, _changed_start: usize, _changed_end: usize) -> InvalidationResult {
-        let dirty = if self.source.is_empty() { Vec::new() } else { vec![(0, self.source.len())] };
-        InvalidationResult { unchanged: Vec::new(), distant_dirty: !dirty.is_empty(), dirty }
+        let dirty = if self.source.is_empty() {
+            Vec::new()
+        } else {
+            vec![(0, self.source.len())]
+        };
+        InvalidationResult {
+            unchanged: Vec::new(),
+            distant_dirty: !dirty.is_empty(),
+            dirty,
+        }
     }
 
     /// Compare exact parsed snapshots, including resolved reference destinations.
@@ -214,7 +270,10 @@ impl DependencyGraph {
             removed_blocks.extend(old_cursor..a);
             dirty_blocks.extend(new_cursor..b);
             reusable.push(ReusableBlock {
-                old_index: a, new_index: b, old_span: old[a].span, new_span: new[b].span,
+                old_index: a,
+                new_index: b,
+                old_span: old[a].span,
+                new_span: new[b].span,
             });
             old_cursor = a + 1;
             new_cursor = b + 1;
@@ -222,7 +281,10 @@ impl DependencyGraph {
         removed_blocks.extend(old_cursor..old.len());
         dirty_blocks.extend(new_cursor..new.len());
         DocumentChangeSet {
-            reusable, dirty_blocks, removed_blocks, global_context_changed,
+            reusable,
+            dirty_blocks,
+            removed_blocks,
+            global_context_changed,
         }
     }
 }
@@ -244,10 +306,19 @@ fn candidates(source: &str) -> Vec<DocumentDependency> {
         while pos < line.len() {
             let rest = &line[pos..];
             let (kind, used) = if let Some(body) = rest.strip_prefix("{{include:") {
-                let Some(close) = body.find("}}") else { break; };
-                (DependencyKind::Include { path: body[..close].trim().to_owned() }, 10 + close + 2)
+                let Some(close) = body.find("}}") else {
+                    break;
+                };
+                (
+                    DependencyKind::Include {
+                        path: body[..close].trim().to_owned(),
+                    },
+                    10 + close + 2,
+                )
             } else if let Some(body) = rest.strip_prefix('[') {
-                let Some(close) = body.find(']') else { break; };
+                let Some(close) = body.find(']') else {
+                    break;
+                };
                 let label = &body[..close];
                 let end = close + 2;
                 let after = &rest[end..];
@@ -256,24 +327,52 @@ fn candidates(source: &str) -> Vec<DocumentDependency> {
                     continue;
                 }
                 let (kind, used) = if let Some(note) = label.strip_prefix('^') {
-                    (DependencyKind::Footnote { label: note.to_owned() }, end)
+                    (
+                        DependencyKind::Footnote {
+                            label: note.to_owned(),
+                        },
+                        end,
+                    )
                 } else if let Some(second) = after.strip_prefix('[') {
-                    let Some(close) = second.find(']') else { break; };
+                    let Some(close) = second.find(']') else {
+                        break;
+                    };
                     let target = &second[..close];
-                    (DependencyKind::Reference { label: if target.is_empty() { label } else { target }.to_owned() }, end + close + 2)
+                    (
+                        DependencyKind::Reference {
+                            label: if target.is_empty() { label } else { target }.to_owned(),
+                        },
+                        end + close + 2,
+                    )
                 } else {
-                    (DependencyKind::Reference { label: label.to_owned() }, end)
+                    (
+                        DependencyKind::Reference {
+                            label: label.to_owned(),
+                        },
+                        end,
+                    )
                 };
                 // The destination/title/body is part of a definition's envelope.
-                (kind, if after.starts_with(':') { rest.len() } else { used })
+                (
+                    kind,
+                    if after.starts_with(':') {
+                        rest.len()
+                    } else {
+                        used
+                    },
+                )
             } else {
-                let Some(ch) = rest.chars().next() else { break; };
+                let Some(ch) = rest.chars().next() else {
+                    break;
+                };
                 pos += ch.len_utf8();
                 continue;
             };
             let end = pos + used;
             out.push(DocumentDependency {
-                kind, start: line_start + pos, end: line_start + end,
+                kind,
+                start: line_start + pos,
+                end: line_start + end,
                 content_digest: fingerprint(&line[pos..end]),
             });
             pos = end;
@@ -289,7 +388,13 @@ mod tests {
 
     #[test]
     fn unicode_and_unterminated_syntax_never_slice_inside_a_scalar() {
-        for source in ["é東京😀 [label]", "[x](é", "[^é]: 東京\r\n", "{{include: café.md}}", "[" ] {
+        for source in [
+            "é東京😀 [label]",
+            "[x](é",
+            "[^é]: 東京\r\n",
+            "{{include: café.md}}",
+            "[",
+        ] {
             let graph = DependencyGraph::scan(source);
             for dep in graph.dependencies() {
                 assert!(source.get(dep.start..dep.end).is_some());
@@ -342,7 +447,10 @@ mod tests {
         assert_eq!(change.reusable.len(), 2);
         let tail = &change.reusable[1];
         assert_ne!(tail.old_span.start, tail.new_span.start);
-        assert_eq!(tail.old_span.slice(a.source()), tail.new_span.slice(b.source()));
+        assert_eq!(
+            tail.old_span.slice(a.source()),
+            tail.new_span.slice(b.source())
+        );
     }
 
     #[test]

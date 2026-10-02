@@ -20,7 +20,10 @@ pub(super) fn target(raw: &str) -> Option<Target> {
         return None;
     }
     let raw = raw.trim_matches(' ');
-    if raw.chars().any(|ch| ch.is_control() || ch.is_whitespace() || invalid_xml(ch)) {
+    if raw
+        .chars()
+        .any(|ch| ch.is_control() || ch.is_whitespace() || invalid_xml(ch))
+    {
         return None;
     }
     if let Some(fragment) = raw.strip_prefix('#') {
@@ -90,7 +93,13 @@ pub(super) fn text_label(text: &str) -> String {
 }
 
 fn label_char(ch: char) -> char {
-    if ch.is_control() { ' ' } else if invalid_xml(ch) { '\u{fffd}' } else { ch }
+    if ch.is_control() {
+        ' '
+    } else if invalid_xml(ch) {
+        '\u{fffd}'
+    } else {
+        ch
+    }
 }
 
 pub(super) fn inline_label(inlines: &[Inline]) -> String {
@@ -98,7 +107,9 @@ pub(super) fn inline_label(inlines: &[Inline]) -> String {
     let mut remaining = MAX_LABEL_CHARS;
     walk_text(inlines, true, |part| {
         for ch in part.chars() {
-            if remaining == 0 { return false; }
+            if remaining == 0 {
+                return false;
+            }
             out.push(label_char(ch));
             remaining -= 1;
         }
@@ -116,13 +127,19 @@ pub(super) fn heading_slug(inlines: &[Inline]) -> Option<String> {
     let mut dash = false;
     let mut remaining = 64 * 1024usize;
     let complete = walk_text(inlines, false, |part| {
-        if part.len() > remaining { return false; }
+        if part.len() > remaining {
+            return false;
+        }
         remaining -= part.len();
         for ch in part.chars() {
             if ch.is_ascii_alphanumeric() {
                 let extra = usize::from(dash && !out.is_empty()) + 1;
-                if out.len() + extra > MAX_SLUG_BYTES { return false; }
-                if dash && !out.is_empty() { out.push('-'); }
+                if out.len() + extra > MAX_SLUG_BYTES {
+                    return false;
+                }
+                if dash && !out.is_empty() {
+                    out.push('-');
+                }
                 out.push(ch.to_ascii_lowercase());
                 dash = false;
             } else if matches!(ch, ' ' | '-' | '_') {
@@ -131,8 +148,12 @@ pub(super) fn heading_slug(inlines: &[Inline]) -> Option<String> {
         }
         true
     });
-    if !complete { return None; }
-    if out.is_empty() { out.push_str("section"); }
+    if !complete {
+        return None;
+    }
+    if out.is_empty() {
+        out.push_str("section");
+    }
     Some(out)
 }
 
@@ -147,21 +168,32 @@ fn walk_text(inlines: &[Inline], notes: bool, mut visit: impl FnMut(&str) -> boo
             continue;
         };
         count += 1;
-        if count > 8192 { return false; }
+        if count > 8192 {
+            return false;
+        }
         let keep_going = match inline {
-            Inline::Text(text) | Inline::Code(text) | Inline::Html(text)
-            | Inline::Math(text) | Inline::DisplayMath(text) => visit(text),
+            Inline::Text(text)
+            | Inline::Code(text)
+            | Inline::Html(text)
+            | Inline::Math(text)
+            | Inline::DisplayMath(text) => visit(text),
             Inline::Image { alt, .. } => visit(alt),
             Inline::SoftBreak | Inline::HardBreak => visit(" "),
             Inline::FootnoteRef { id } => !notes || (visit("[^") && visit(id) && visit("]")),
-            Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner)
+            Inline::Emphasis(inner)
+            | Inline::Strong(inner)
+            | Inline::Strikethrough(inner)
             | Inline::Link { content: inner, .. } => {
-                if stack.len() >= 128 { return false; }
+                if stack.len() >= 128 {
+                    return false;
+                }
                 stack.push(inner.iter());
                 true
             }
         };
-        if !keep_going { return false; }
+        if !keep_going {
+            return false;
+        }
     }
     true
 }

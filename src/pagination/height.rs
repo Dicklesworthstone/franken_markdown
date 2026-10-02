@@ -233,7 +233,10 @@ impl fmt::Display for HeightPaginationError {
             }
             Self::CostOverflow => f.write_str("mixed-height pagination cost overflow"),
             Self::NoFeasibleLayout { block_index } => {
-                write!(f, "no feasible mixed-height pagination through block {block_index}")
+                write!(
+                    f,
+                    "no feasible mixed-height pagination through block {block_index}"
+                )
             }
         }
     }
@@ -310,11 +313,7 @@ impl Search {
             .ok_or(HeightPaginationError::CostOverflow)
     }
 
-    fn close_page(
-        &self,
-        mut state: State,
-        last: bool,
-    ) -> Result<State, HeightPaginationError> {
+    fn close_page(&self, mut state: State, last: bool) -> Result<State, HeightPaginationError> {
         let occupied = self.occupied(state)?;
         if occupied == 0 {
             return Ok(state);
@@ -434,11 +433,8 @@ impl Search {
                         .checked_add(i128::from(boundary_cost))
                         .ok_or(HeightPaginationError::CostOverflow)?;
                 }
-                let Some(cost) = violation(
-                    count,
-                    policy.min_before_break,
-                    policy.before_break_penalty,
-                )?
+                let Some(cost) =
+                    violation(count, policy.min_before_break, policy.before_break_penalty)?
                 else {
                     continue;
                 };
@@ -447,11 +443,8 @@ impl Search {
                     .ok_or(HeightPaginationError::CostOverflow)?;
             }
             if start > 0 {
-                let Some(cost) = violation(
-                    count,
-                    policy.min_after_break,
-                    policy.after_break_penalty,
-                )?
+                let Some(cost) =
+                    violation(count, policy.min_after_break, policy.after_break_penalty)?
                 else {
                     continue;
                 };
@@ -528,10 +521,7 @@ fn violation(
     Ok(Some(cost))
 }
 
-fn nonnegative_mpt(
-    value: LayoutUnit,
-    name: &'static str,
-) -> Result<usize, HeightPaginationError> {
+fn nonnegative_mpt(value: LayoutUnit, name: &'static str) -> Result<usize, HeightPaginationError> {
     let raw = value.milli_points();
     if raw < 0 {
         return Err(HeightPaginationError::InvalidOptions(name));
@@ -545,7 +535,10 @@ fn validate(
     options: HeightPaginationOptions,
 ) -> Result<(usize, usize), HeightPaginationError> {
     let capacity = nonnegative_mpt(options.page_capacity, "page capacity must be positive")?;
-    let initial = nonnegative_mpt(options.initial_used, "initial used height must be nonnegative")?;
+    let initial = nonnegative_mpt(
+        options.initial_used,
+        "initial used height must be nonnegative",
+    )?;
     if capacity == 0 || initial > capacity {
         return Err(HeightPaginationError::InvalidOptions(
             "page capacity must be positive and contain the initial used height",
@@ -672,8 +665,7 @@ pub fn plan_blocks(
 
     for (block_index, block) in blocks.iter().enumerate() {
         let policy = policy_at(block_index);
-        let keep_previous =
-            block_index > 0 && policy_at(block_index - 1).keep_with_next;
+        let keep_previous = block_index > 0 && policy_at(block_index - 1).keep_with_next;
         let mut completed = BTreeMap::new();
 
         for (variant_index, variant) in block.variants.iter().enumerate() {
@@ -684,10 +676,8 @@ pub fn plan_blocks(
                         .map_err(|_| HeightPaginationError::CostOverflow)?,
                 );
             }
-            let continuation_prefix = usize::try_from(
-                variant.continuation_prefix.milli_points(),
-            )
-            .map_err(|_| HeightPaginationError::CostOverflow)?;
+            let continuation_prefix = usize::try_from(variant.continuation_prefix.milli_points())
+                .map_err(|_| HeightPaginationError::CostOverflow)?;
             let reservations = if variant.fragment_reservations.is_empty() {
                 vec![0usize; heights.len()]
             } else {
@@ -812,7 +802,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::layout::{ParagraphVariant, LineBreak};
+    use crate::layout::{LineBreak, ParagraphVariant};
 
     fn u(value: i32) -> LayoutUnit {
         LayoutUnit::from_milli_points(value)
@@ -833,11 +823,7 @@ mod tests {
         }
     }
 
-    fn block_with_prefix(
-        demerits: i64,
-        heights: &[i32],
-        prefix: i32,
-    ) -> BlockCandidates {
+    fn block_with_prefix(demerits: i64, heights: &[i32], prefix: i32) -> BlockCandidates {
         BlockCandidates {
             variants: vec![BlockVariant {
                 demerits,
@@ -894,8 +880,16 @@ mod tests {
     fn paragraph_adapter_preserves_variants_and_line_counts() {
         let paragraph = ParagraphCandidates {
             variants: vec![
-                ParagraphVariant { line_count: 2, demerits: -4, lines: Vec::<LineBreak>::new() },
-                ParagraphVariant { line_count: 3, demerits: 7, lines: Vec::<LineBreak>::new() },
+                ParagraphVariant {
+                    line_count: 2,
+                    demerits: -4,
+                    lines: Vec::<LineBreak>::new(),
+                },
+                ParagraphVariant {
+                    line_count: 3,
+                    demerits: 7,
+                    lines: Vec::<LineBreak>::new(),
+                },
             ],
         };
         let lifted = BlockCandidates::from_paragraph_candidates(&paragraph, u(12));
@@ -968,18 +962,17 @@ mod tests {
             block(&[(0, &[20])]),
         ];
         let plan = plan_blocks(&forced, &[], options(100)).unwrap();
-        assert_eq!(plan.page_count, 2, "reservation must reduce usable body capacity");
+        assert_eq!(
+            plan.page_count, 2,
+            "reservation must reduce usable body capacity"
+        );
         assert_eq!(plan.fragments[1].page_index, 1);
         assert_eq!(plan.fragments[1].page_offset, LayoutUnit::ZERO);
     }
 
     #[test]
     fn per_boundary_policy_forbids_and_prices_splits() {
-        let hard = [block_with_splits(
-            0,
-            &[40, 40],
-            vec![None],
-        )];
+        let hard = [block_with_splits(0, &[40, 40], vec![None])];
         assert!(matches!(
             plan_blocks(&hard, &[], options(60)),
             Err(HeightPaginationError::NoFeasibleLayout { .. })
@@ -1094,7 +1087,9 @@ mod tests {
 
     #[test]
     fn invalid_inputs_and_budgets_are_typed() {
-        let empty = BlockCandidates { variants: Vec::new() };
+        let empty = BlockCandidates {
+            variants: Vec::new(),
+        };
         assert!(matches!(
             plan_blocks(&[empty], &[], options(100)),
             Err(HeightPaginationError::InvalidBlock { .. })
@@ -1158,12 +1153,11 @@ mod tests {
                     return;
                 }
                 let rank = (
-                    cost
-                        + if occupied > 0 {
-                            page_cost(opts, occupied, true)
-                        } else {
-                            0
-                        },
+                    cost + if occupied > 0 {
+                        page_cost(opts, occupied, true)
+                    } else {
+                        0
+                    },
                     page_count,
                 );
                 if best.is_none_or(|old| rank < old) {
@@ -1244,8 +1238,7 @@ mod tests {
                     reservation_height +=
                         variant.fragment_reservations[end].milli_points() as usize;
                 }
-                let occupied_after =
-                    content_start + body_height + reserved + reservation_height;
+                let occupied_after = content_start + body_height + reserved + reservation_height;
                 if occupied_after > capacity {
                     break;
                 }
@@ -1265,7 +1258,11 @@ mod tests {
                 let mut legal = true;
                 for (active, minimum, weight) in [
                     (split, policy.min_before_break, policy.before_break_penalty),
-                    (start > 0, policy.min_after_break, policy.after_break_penalty),
+                    (
+                        start > 0,
+                        policy.min_after_break,
+                        policy.after_break_penalty,
+                    ),
                 ] {
                     let missing = minimum.saturating_sub(count);
                     if active && missing > 0 {

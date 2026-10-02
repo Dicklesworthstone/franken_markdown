@@ -122,7 +122,10 @@ impl Default for TableConstraints {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TableMeasurementState {
     /// Column widths are provisional estimates based on initial sample rows.
-    Provisional { measured_rows: usize, total_rows: usize },
+    Provisional {
+        measured_rows: usize,
+        total_rows: usize,
+    },
     /// All rows have been measured; column widths are final and optimal.
     Complete { total_rows: usize },
 }
@@ -372,7 +375,10 @@ impl ConstrainedTableFlow {
     /// Preserves stable estimates during rendering; changes are reported in
     /// `MeasurementRefinement` with `reflow_required = true` so the host can
     /// trigger an explicit anchored reflow without surprise layout thrashing.
-    pub fn measure_batch(&mut self, batch_size: usize) -> Result<MeasurementRefinement, CodeTableError> {
+    pub fn measure_batch(
+        &mut self,
+        batch_size: usize,
+    ) -> Result<MeasurementRefinement, CodeTableError> {
         self.constraints.validate()?;
         let col_count = self.column_count();
         let total_rows = self.rows.len();
@@ -532,7 +538,11 @@ impl ConstrainedTableFlow {
                 "Table with {} columns and {} rows ({})",
                 self.column_count(),
                 self.row_count(),
-                if self.is_fully_measured() { "fully measured" } else { "provisional estimates" }
+                if self.is_fully_measured() {
+                    "fully measured"
+                } else {
+                    "provisional estimates"
+                }
             ),
             source_span: self.source_span,
             bounds: origin,
@@ -916,21 +926,30 @@ mod tests {
         let header_row = &full_tree.children[0];
         assert_eq!(header_row.role, AccessibleReadingRole::TableHeaderRow);
         assert_eq!(header_row.children.len(), 2);
-        assert_eq!(header_row.children[0].role, AccessibleReadingRole::TableHeaderCell);
+        assert_eq!(
+            header_row.children[0].role,
+            AccessibleReadingRole::TableHeaderCell
+        );
         assert!(header_row.children[0].text.contains("Col1"));
 
         // Body rows
         let body_row_0 = &full_tree.children[1];
         assert_eq!(body_row_0.role, AccessibleReadingRole::TableRow);
         assert_eq!(body_row_0.children.len(), 2);
-        assert_eq!(body_row_0.children[0].role, AccessibleReadingRole::TableCell);
+        assert_eq!(
+            body_row_0.children[0].role,
+            AccessibleReadingRole::TableCell
+        );
         assert!(body_row_0.children[0].text.contains("Row0Col0"));
 
         // Viewport accessible tree
         let dl = table.materialize_viewport(0.0, 0.0, 0.0, 200.0).unwrap();
         let reading_node = &dl.reading_order()[0];
         assert_eq!(reading_node.role, AccessibleReadingRole::Table);
-        assert_eq!(reading_node.children[0].role, AccessibleReadingRole::TableHeaderRow);
+        assert_eq!(
+            reading_node.children[0].role,
+            AccessibleReadingRole::TableHeaderRow
+        );
     }
 
     #[test]
@@ -1009,7 +1028,10 @@ mod tests {
             SourceSpan::default(),
             TableConstraints::default(),
         );
-        assert!(matches!(err, Err(CodeTableError::ColumnBudgetExceeded { .. })));
+        assert!(matches!(
+            err,
+            Err(CodeTableError::ColumnBudgetExceeded { .. })
+        ));
 
         // Invalid column index
         let valid_table = ConstrainedTableFlow::try_new(

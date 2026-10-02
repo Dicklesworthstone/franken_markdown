@@ -1,11 +1,11 @@
 //! Inline formatting retained from the shared AST, in reading-text coordinates.
 //! No Markdown reparsing and no source-position guessing occurs here.
 
-use super::{
-    AssetRequestId, BlockMeta, DisplayBlock, FlowDisplayError, PreparedBlock,
-    ResumableFlowDisplay, UnresolvedAsset, emit_text,
-};
 use super::limits::Projection;
+use super::{
+    AssetRequestId, BlockMeta, DisplayBlock, FlowDisplayError, PreparedBlock, ResumableFlowDisplay,
+    UnresolvedAsset, emit_text,
+};
 use crate::ast::Inline;
 use std::borrow::Cow;
 use std::ops::Range;
@@ -144,14 +144,20 @@ fn decode_activation_reference(tail: &str) -> Option<(char, usize)> {
         }
     }
     let digits = tail.strip_prefix("&#")?;
-    let (digits, radix, prefix) = match digits.strip_prefix('x').or_else(|| digits.strip_prefix('X')) {
+    let (digits, radix, prefix) = match digits
+        .strip_prefix('x')
+        .or_else(|| digits.strip_prefix('X'))
+    {
         Some(digits) => (digits, 16, 3),
         None => (digits, 10, 2),
     };
-    let count = digits.bytes().take_while(|byte| match radix {
-        16 => byte.is_ascii_hexdigit(),
-        _ => byte.is_ascii_digit(),
-    }).count();
+    let count = digits
+        .bytes()
+        .take_while(|byte| match radix {
+            16 => byte.is_ascii_hexdigit(),
+            _ => byte.is_ascii_digit(),
+        })
+        .count();
     if count == 0 {
         return None;
     }
@@ -166,13 +172,19 @@ impl ResumableFlowDisplay {
     /// slice: their block role supplies monospace styling. None means no block.
     #[must_use]
     pub fn inline_runs_for_block(&self, index: usize) -> Option<&[FlowInlineRun]> {
-        self.metadata.get(index).map(|meta| meta.inline_runs.as_slice())
+        self.metadata
+            .get(index)
+            .map(|meta| meta.inline_runs.as_slice())
     }
 
     /// Borrow formatting in one emitted table cell's reading-text coordinates.
     #[must_use]
     pub fn inline_runs_for_cell(&self, block: usize, column: usize) -> Option<&[FlowInlineRun]> {
-        self.metadata.get(block)?.cell_runs.get(column).map(Vec::as_slice)
+        self.metadata
+            .get(block)?
+            .cell_runs
+            .get(column)
+            .map(Vec::as_slice)
     }
 
     /// Retained link destination enclosing an image, including blocked targets.
@@ -199,9 +211,17 @@ struct Walker<'a> {
 
 impl<'a> Walker<'a> {
     fn new(inlines: &'a [Inline]) -> Self {
-        Self { stack: inlines.iter().rev().map(|inline| Context {
-            inline, style: FlowInlineStyle::default(), link: None,
-        }).collect() }
+        Self {
+            stack: inlines
+                .iter()
+                .rev()
+                .map(|inline| Context {
+                    inline,
+                    style: FlowInlineStyle::default(),
+                    link: None,
+                })
+                .collect(),
+        }
     }
 }
 
@@ -209,11 +229,25 @@ impl<'a> Iterator for Walker<'a> {
     type Item = (Leaf<'a>, FlowInlineStyle, Option<Arc<str>>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(Context { inline, mut style, mut link }) = self.stack.pop() {
+        while let Some(Context {
+            inline,
+            mut style,
+            mut link,
+        }) = self.stack.pop()
+        {
             let children = match inline {
-                Inline::Emphasis(children) => { style.italic = true; Some(children) }
-                Inline::Strong(children) => { style.bold = true; Some(children) }
-                Inline::Strikethrough(children) => { style.strikethrough = true; Some(children) }
+                Inline::Emphasis(children) => {
+                    style.italic = true;
+                    Some(children)
+                }
+                Inline::Strong(children) => {
+                    style.bold = true;
+                    Some(children)
+                }
+                Inline::Strikethrough(children) => {
+                    style.strikethrough = true;
+                    Some(children)
+                }
                 Inline::Link { content, dest, .. } => {
                     link = Some(Arc::from(dest.as_str()));
                     Some(content)
@@ -221,21 +255,31 @@ impl<'a> Iterator for Walker<'a> {
                 _ => None,
             };
             if let Some(children) = children {
-                self.stack.extend(children.iter().rev().map(|inline| Context {
-                    inline, style, link: link.clone(),
-                }));
+                self.stack
+                    .extend(children.iter().rev().map(|inline| Context {
+                        inline,
+                        style,
+                        link: link.clone(),
+                    }));
                 continue;
             }
             let leaf = match inline {
-                Inline::Text(text) | Inline::Math(text) | Inline::DisplayMath(text)
+                Inline::Text(text)
+                | Inline::Math(text)
+                | Inline::DisplayMath(text)
                 | Inline::Html(text) => Leaf::Text(Cow::Borrowed(text)),
-                Inline::Code(text) => { style.code = true; Leaf::Text(Cow::Borrowed(text)) }
+                Inline::Code(text) => {
+                    style.code = true;
+                    Leaf::Text(Cow::Borrowed(text))
+                }
                 Inline::SoftBreak => Leaf::Text(Cow::Borrowed(" ")),
                 Inline::HardBreak => Leaf::Text(Cow::Borrowed("\n")),
                 Inline::FootnoteRef { id } => Leaf::Text(Cow::Owned(format!("[^{id}]"))),
                 Inline::Image { alt, dest, .. } => Leaf::Image { alt, dest },
                 // Container variants were consumed above.
-                Inline::Emphasis(_) | Inline::Strong(_) | Inline::Strikethrough(_)
+                Inline::Emphasis(_)
+                | Inline::Strong(_)
+                | Inline::Strikethrough(_)
                 | Inline::Link { .. } => continue,
             };
             return Some((leaf, style, link));
@@ -252,29 +296,55 @@ struct Builder {
 }
 
 impl Builder {
-    fn append(&mut self, text: &str, style: FlowInlineStyle, link: Option<Arc<str>>, limit: usize)
-        -> Result<(), FlowDisplayError>
-    {
-        if text.is_empty() { return Ok(()); }
-        let merge = self.runs.last().is_some_and(|run| run.style == style && run.link == link);
+    fn append(
+        &mut self,
+        text: &str,
+        style: FlowInlineStyle,
+        link: Option<Arc<str>>,
+        limit: usize,
+    ) -> Result<(), FlowDisplayError> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let merge = self
+            .runs
+            .last()
+            .is_some_and(|run| run.style == style && run.link == link);
         // Conservative: count a target per retained run even when Arc shares
         // its allocation. This also bounds repeated target comparisons/hashing.
-        let link_bytes = if merge { 0 } else { link.as_ref().map_or(0, |s| s.len()) };
-        let next = self.bytes.checked_add(text.len()).and_then(|n| n.checked_add(link_bytes))
+        let link_bytes = if merge {
+            0
+        } else {
+            link.as_ref().map_or(0, |s| s.len())
+        };
+        let next = self
+            .bytes
+            .checked_add(text.len())
+            .and_then(|n| n.checked_add(link_bytes))
             .filter(|n| *n <= limit)
             .ok_or_else(|| FlowDisplayError::BudgetExceeded("inline output bytes".to_owned()))?;
         let start = self.text.len();
         self.text.push_str(text);
         if merge {
-            if let Some(last) = self.runs.last_mut() { last.range.end = self.text.len(); }
+            if let Some(last) = self.runs.last_mut() {
+                last.range.end = self.text.len();
+            }
         } else {
-            self.runs.push(FlowInlineRun { range: start..self.text.len(), style, link });
+            self.runs.push(FlowInlineRun {
+                range: start..self.text.len(),
+                style,
+                link,
+            });
         }
         self.bytes = next;
         Ok(())
     }
 
-    fn emit(&mut self, meta: &mut BlockMeta, output: &mut Projection<'_>) -> Result<(), FlowDisplayError> {
+    fn emit(
+        &mut self,
+        meta: &mut BlockMeta,
+        output: &mut Projection<'_>,
+    ) -> Result<(), FlowDisplayError> {
         meta.inline_runs = std::mem::take(&mut self.runs);
         self.bytes = 0;
         emit_text(std::mem::take(&mut self.text), meta, output)
@@ -283,7 +353,10 @@ impl Builder {
 
 /// Headings/table cells retain their existing reading-text representation of
 /// images (alt text); paragraphs still emit image requests as separate blocks.
-pub(super) fn collect(inlines: &[Inline], limit: usize) -> Result<(String, Vec<FlowInlineRun>), FlowDisplayError> {
+pub(super) fn collect(
+    inlines: &[Inline],
+    limit: usize,
+) -> Result<(String, Vec<FlowInlineRun>), FlowDisplayError> {
     let mut builder = Builder::default();
     for (leaf, style, link) in Walker::new(inlines) {
         match leaf {
@@ -294,9 +367,12 @@ pub(super) fn collect(inlines: &[Inline], limit: usize) -> Result<(String, Vec<F
     Ok((builder.text, builder.runs))
 }
 
-pub(super) fn emit_inlines(inlines: &[Inline], meta: &mut BlockMeta, output: &mut Projection<'_>, next_id: &mut u64)
-    -> Result<(), FlowDisplayError>
-{
+pub(super) fn emit_inlines(
+    inlines: &[Inline],
+    meta: &mut BlockMeta,
+    output: &mut Projection<'_>,
+    next_id: &mut u64,
+) -> Result<(), FlowDisplayError> {
     let mut builder = Builder::default();
     for (leaf, style, link) in Walker::new(inlines) {
         match leaf {
@@ -304,14 +380,22 @@ pub(super) fn emit_inlines(inlines: &[Inline], meta: &mut BlockMeta, output: &mu
             Leaf::Image { alt, dest } => {
                 builder.emit(meta, output)?;
                 let asset = UnresolvedAsset {
-                    id: AssetRequestId(*next_id), kind: "image", reference: dest.to_owned(),
-                    source_offset: meta.span.start, generation: 0,
-                    estimated_width: 320, estimated_height: 240, alt_text: alt.to_owned(),
+                    id: AssetRequestId(*next_id),
+                    kind: "image",
+                    reference: dest.to_owned(),
+                    source_offset: meta.span.start,
+                    generation: 0,
+                    estimated_width: 320,
+                    estimated_height: 240,
+                    alt_text: alt.to_owned(),
                 };
                 *next_id += 1;
                 let mut image_meta = meta.clone();
                 image_meta.image_link = link;
-                output.push_back(PreparedBlock { block: DisplayBlock::UnresolvedAsset(asset), meta: image_meta })?;
+                output.push_back(PreparedBlock {
+                    block: DisplayBlock::UnresolvedAsset(asset),
+                    meta: image_meta,
+                })?;
             }
         }
     }
@@ -329,7 +413,9 @@ mod tests {
         let source = "A **bold *é* end** [link `code`][r] ~~gone~~.\n\n[r]: https://example.com\n";
         let mut engine = ResumableFlowDisplay::new(source, 1);
         engine.process_all().unwrap();
-        let DisplayBlock::Paragraph { text } = &engine.blocks()[0] else { panic!("paragraph"); };
+        let DisplayBlock::Paragraph { text } = &engine.blocks()[0] else {
+            panic!("paragraph");
+        };
         assert_eq!(text, "A bold é end link code gone.");
         let runs = engine.inline_runs_for_block(0).unwrap();
         let mut end = 0;
@@ -339,15 +425,23 @@ mod tests {
             end = run.range.end;
         }
         assert_eq!(end, text.len());
-        assert!(runs.iter().any(|r| &text[r.range.clone()] == "é" && r.style.bold && r.style.italic));
-        assert!(runs.iter().any(|r| &text[r.range.clone()] == "code" && r.style.code
+        assert!(
+            runs.iter()
+                .any(|r| &text[r.range.clone()] == "é" && r.style.bold && r.style.italic)
+        );
+        assert!(runs.iter().any(|r| &text[r.range.clone()] == "code"
+            && r.style.code
             && r.active_link_target() == Some("https://example.com")));
-        assert!(runs.iter().any(|r| &text[r.range.clone()] == "gone" && r.style.strikethrough));
+        assert!(
+            runs.iter()
+                .any(|r| &text[r.range.clone()] == "gone" && r.style.strikethrough)
+        );
     }
 
     #[test]
     fn style_is_retained_in_headings_tables_and_across_image_splits() {
-        let source = "# **Title**\n\n| *Head* |\n| --- |\n| `cell` |\n\n**before ![alt](x.png) after**\n";
+        let source =
+            "# **Title**\n\n| *Head* |\n| --- |\n| `cell` |\n\n**before ![alt](x.png) after**\n";
         let mut engine = ResumableFlowDisplay::new(source, 1);
         engine.process_all().unwrap();
         assert!(engine.inline_runs_for_block(0).unwrap()[0].style.bold);
@@ -365,17 +459,35 @@ mod tests {
 
     #[test]
     fn image_links_and_blocked_destinations_are_retained_without_activation() {
-        let mut engine = ResumableFlowDisplay::new("[![a](a.png)](https://example.com) [bad](javascript:alert)", 8);
+        let mut engine = ResumableFlowDisplay::new(
+            "[![a](a.png)](https://example.com) [bad](javascript:alert)",
+            8,
+        );
         engine.process_all().unwrap();
         assert_eq!(engine.image_link_for_block(0), Some("https://example.com"));
         let runs = engine.inline_runs_for_block(1).unwrap();
         let bad = runs.iter().find(|run| run.link.is_some()).unwrap();
         assert_eq!(bad.link.as_deref(), Some("javascript:alert"));
         assert_eq!(bad.active_link_target(), None);
-        for target in ["javascript:x", "data:text/html,x", "file:///etc/passwd", "https:\\evil", "java\tscript:x", "", "vbscript:x"] {
+        for target in [
+            "javascript:x",
+            "data:text/html,x",
+            "file:///etc/passwd",
+            "https:\\evil",
+            "java\tscript:x",
+            "",
+            "vbscript:x",
+        ] {
             assert!(active_link_target(target).is_none(), "{target:?}");
         }
-        for target in ["#section", "../guide.md#part", "https://example.com", "HTTP://example.com", "mailto:a@example.com", "/path/a:b"] {
+        for target in [
+            "#section",
+            "../guide.md#part",
+            "https://example.com",
+            "HTTP://example.com",
+            "mailto:a@example.com",
+            "/path/a:b",
+        ] {
             assert_eq!(active_link_target(target), Some(target));
         }
     }
@@ -383,14 +495,23 @@ mod tests {
     #[test]
     fn activation_rejects_edge_controls_and_encoded_scheme_bypasses() {
         for target in [
-            "\thttps://example.com", "https://example.com\n", "\u{0085}#section",
-            "%6a%61vascript%3Aalert(1)", "java%09script:alert(1)",
-            "javascript&colon;alert(1)", "javascript&#58;alert(1)",
-            "javascript&#x3a;alert(1)", "javascript&#58alert(1)",
-            "&#106;avascript:alert(1)", "java&Tab;script:alert(1)",
-            "java&NewLine;script:alert(1)", "%256aavascript%253aalert(1)",
-            "javascript&amp;colon;alert(1)", "data%3atext/html,payload",
-            "https:%5c%5cevil.example", "https://example.com/%0d%0aheader",
+            "\thttps://example.com",
+            "https://example.com\n",
+            "\u{0085}#section",
+            "%6a%61vascript%3Aalert(1)",
+            "java%09script:alert(1)",
+            "javascript&colon;alert(1)",
+            "javascript&#58;alert(1)",
+            "javascript&#x3a;alert(1)",
+            "javascript&#58alert(1)",
+            "&#106;avascript:alert(1)",
+            "java&Tab;script:alert(1)",
+            "java&NewLine;script:alert(1)",
+            "%256aavascript%253aalert(1)",
+            "javascript&amp;colon;alert(1)",
+            "data%3atext/html,payload",
+            "https:%5c%5cevil.example",
+            "https://example.com/%0d%0aheader",
         ] {
             assert_eq!(active_link_target(target), None, "{target:?}");
         }
@@ -399,17 +520,34 @@ mod tests {
     #[test]
     fn activation_preserves_safe_encoding_and_relative_url_semantics() {
         for target in [
-            "https://example.com/a%20b?q=a%26b#part", "mailto:a@example.com",
-            "tel:+1-555-0100", "TEL:+1-555-0100", "../résumé%20final.md",
-            "/path/a:b", "./a:b", "?next=javascript:literal", "#javascript:literal",
-            "https://example.com/%F0%9F%98%80", "//example.com/path",
-            "https://example.com/?x=1&amp;y=2", "#日本語",
+            "https://example.com/a%20b?q=a%26b#part",
+            "mailto:a@example.com",
+            "tel:+1-555-0100",
+            "TEL:+1-555-0100",
+            "../résumé%20final.md",
+            "/path/a:b",
+            "./a:b",
+            "?next=javascript:literal",
+            "#javascript:literal",
+            "https://example.com/%F0%9F%98%80",
+            "//example.com/path",
+            "https://example.com/?x=1&amp;y=2",
+            "#日本語",
         ] {
             assert_eq!(active_link_target(target), Some(target), "{target:?}");
         }
-        assert_eq!(active_link_target("  https://example.com  "), Some("https://example.com"));
-        assert!(matches!(decode_activation_probe("https://example.com"), Cow::Borrowed(_)));
-        assert!(matches!(decode_activation_probe("résumé%F0%9F%98%80"), Cow::Borrowed(_)));
+        assert_eq!(
+            active_link_target("  https://example.com  "),
+            Some("https://example.com")
+        );
+        assert!(matches!(
+            decode_activation_probe("https://example.com"),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            decode_activation_probe("résumé%F0%9F%98%80"),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]
@@ -430,16 +568,25 @@ mod tests {
 
     #[test]
     fn link_retention_is_budgeted_and_failure_is_atomic() {
-        let limits = FlowDisplayLimits { max_output_bytes: 8, ..FlowDisplayLimits::default() };
-        let mut engine = ResumableFlowDisplay::try_with_limits("[x](https://example.com)", 1, 1, limits).unwrap();
-        assert!(matches!(engine.step(), Err(FlowDisplayError::BudgetExceeded(_))));
+        let limits = FlowDisplayLimits {
+            max_output_bytes: 8,
+            ..FlowDisplayLimits::default()
+        };
+        let mut engine =
+            ResumableFlowDisplay::try_with_limits("[x](https://example.com)", 1, 1, limits)
+                .unwrap();
+        assert!(matches!(
+            engine.step(),
+            Err(FlowDisplayError::BudgetExceeded(_))
+        ));
         assert!(engine.blocks().is_empty());
         assert!(engine.metadata.is_empty());
     }
 
     #[test]
     fn emission_batch_sizes_do_not_change_inline_metadata() {
-        let source = "# *Title*\n\n**one ![a](a.png) two** [x](#title)\n\n| Head |\n| --- |\n| ~~cell~~ |";
+        let source =
+            "# *Title*\n\n**one ![a](a.png) two** [x](#title)\n\n| Head |\n| --- |\n| ~~cell~~ |";
         let mut whole = ResumableFlowDisplay::new(source, usize::MAX);
         whole.process_all().unwrap();
         for batch in [1, 2, 3, 8] {
@@ -447,9 +594,18 @@ mod tests {
             stepped.process_all().unwrap();
             assert_eq!(stepped.blocks(), whole.blocks());
             for index in 0..whole.blocks().len() {
-                assert_eq!(stepped.inline_runs_for_block(index), whole.inline_runs_for_block(index));
-                assert_eq!(stepped.inline_runs_for_cell(index, 0), whole.inline_runs_for_cell(index, 0));
-                assert_eq!(stepped.image_link_for_block(index), whole.image_link_for_block(index));
+                assert_eq!(
+                    stepped.inline_runs_for_block(index),
+                    whole.inline_runs_for_block(index)
+                );
+                assert_eq!(
+                    stepped.inline_runs_for_cell(index, 0),
+                    whole.inline_runs_for_cell(index, 0)
+                );
+                assert_eq!(
+                    stepped.image_link_for_block(index),
+                    whole.image_link_for_block(index)
+                );
             }
         }
     }

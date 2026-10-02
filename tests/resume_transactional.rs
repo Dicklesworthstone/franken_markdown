@@ -21,7 +21,10 @@ fn assert_tiles(source: &str, spans: &[Span]) {
 
 fn assert_same_source(lang: &str, source: &str, spans: &[Span]) {
     assert_tiles(source, spans);
-    assert_eq!(coalesce_spans(spans), coalesce_spans(&highlight(lang, source)));
+    assert_eq!(
+        coalesce_spans(spans),
+        coalesce_spans(&highlight(lang, source))
+    );
 }
 
 fn empty_checkpoint(offset: u64) -> LexerCheckpoint {
@@ -66,7 +69,10 @@ fn invalid_utf8_offsets_are_chunk_relative_and_retries_are_lossless() {
     lexer.feed(b"let x = 1; ").unwrap();
     let checkpoint = lexer.checkpoint(3);
     let output = lexer.spans().to_vec();
-    assert_eq!(lexer.feed(b"ok\xff"), Err(ResumeError::InvalidUtf8 { at: 2 }));
+    assert_eq!(
+        lexer.feed(b"ok\xff"),
+        Err(ResumeError::InvalidUtf8 { at: 2 })
+    );
     assert_eq!(lexer.checkpoint(3), checkpoint);
     assert_eq!(lexer.spans(), output);
     lexer.feed(b"let y = 2;").unwrap();
@@ -82,7 +88,10 @@ fn invalid_continuation_reports_the_new_byte_without_losing_the_pending_scalar()
     let mut lexer = ResumableLexer::new("rust").unwrap();
     lexer.feed(&source.as_bytes()[..split]).unwrap();
     let checkpoint = lexer.checkpoint(1);
-    assert_eq!(lexer.feed(&[0x98, b'x']), Err(ResumeError::InvalidUtf8 { at: 1 }));
+    assert_eq!(
+        lexer.feed(&[0x98, b'x']),
+        Err(ResumeError::InvalidUtf8 { at: 1 })
+    );
     assert_eq!(lexer.checkpoint(1), checkpoint);
     lexer.feed(&source.as_bytes()[split..]).unwrap();
     lexer.finish().unwrap();
@@ -96,7 +105,10 @@ fn premature_finish_can_be_retried_after_completing_utf8() {
     let mut lexer = ResumableLexer::new("rust").unwrap();
     lexer.feed(&source.as_bytes()[..split]).unwrap();
     let checkpoint = lexer.checkpoint(1);
-    assert!(matches!(lexer.finish(), Err(ResumeError::InvalidUtf8 { .. })));
+    assert!(matches!(
+        lexer.finish(),
+        Err(ResumeError::InvalidUtf8 { .. })
+    ));
     assert!(!lexer.is_finished());
     assert_eq!(lexer.checkpoint(1), checkpoint);
     lexer.feed(&source.as_bytes()[split..]).unwrap();
@@ -153,7 +165,10 @@ fn checkpoints_can_roundtrip_and_resume_at_every_byte_including_inside_unicode()
         lexer.feed(&[byte]).unwrap();
         output.extend(lexer.take_spans());
         let checkpoint = lexer.try_checkpoint(88).unwrap();
-        assert_eq!(checkpoint.byte_offset as usize + checkpoint.unresolved_suffix.len(), index + 1);
+        assert_eq!(
+            checkpoint.byte_offset as usize + checkpoint.unresolved_suffix.len(),
+            index + 1
+        );
         let bytes = checkpoint.try_to_bytes().unwrap();
         let decoded = LexerCheckpoint::from_bytes(&bytes).unwrap();
         lexer = ResumableLexer::from_checkpoint(&decoded, 88, decoded.byte_offset).unwrap();
@@ -162,7 +177,10 @@ fn checkpoints_can_roundtrip_and_resume_at_every_byte_including_inside_unicode()
     lexer.finish().unwrap();
     output.extend(lexer.take_spans());
     assert_same_source("rust", source, &output);
-    assert_eq!(lexer.try_checkpoint(88).unwrap().byte_offset, source.len() as u64);
+    assert_eq!(
+        lexer.try_checkpoint(88).unwrap().byte_offset,
+        source.len() as u64
+    );
 }
 
 #[test]
@@ -190,9 +208,9 @@ fn restoration_honors_the_receiving_hosts_budget() {
         ResumableLexer::from_checkpoint_with_limits(&checkpoint, 7, checkpoint.byte_offset, 4),
         Err(CheckpointError::PayloadTooLarge { cap: 4, .. })
     ));
-    let restored = ResumableLexer::from_checkpoint_with_limits(
-        &checkpoint, 7, checkpoint.byte_offset, 64,
-    ).unwrap();
+    let restored =
+        ResumableLexer::from_checkpoint_with_limits(&checkpoint, 7, checkpoint.byte_offset, 64)
+            .unwrap();
     assert_eq!(restored.max_pending_bytes(), 64);
     assert_eq!(restored.received_bytes(), lexer.received_bytes());
 }
@@ -223,9 +241,13 @@ fn checked_snapshot_refuses_an_unrepresentable_replay_suffix() {
     let mut lexer = ResumableLexer::with_limits("rust", 2048).unwrap();
     let source = format!("/*{}", "x".repeat(MAX_SUFFIX_BYTES));
     lexer.feed(source.as_bytes()).unwrap();
-    assert!(matches!(lexer.try_checkpoint(1), Err(CheckpointError::PayloadTooLarge {
-        cap: MAX_SUFFIX_BYTES, ..
-    })));
+    assert!(matches!(
+        lexer.try_checkpoint(1),
+        Err(CheckpointError::PayloadTooLarge {
+            cap: MAX_SUFFIX_BYTES,
+            ..
+        })
+    ));
     assert_eq!(lexer.received_bytes(), source.len());
     lexer.feed(b"*/").unwrap();
     lexer.finish().unwrap();
@@ -235,14 +257,26 @@ fn checked_snapshot_refuses_an_unrepresentable_replay_suffix() {
 #[test]
 fn language_metadata_selects_the_same_streaming_policy_as_the_plain_alias() {
     for (canonical, metadata, source) in [
-        ("javascript", " Language-JavaScript,linenums ", "const x = value / 2;"),
+        (
+            "javascript",
+            " Language-JavaScript,linenums ",
+            "const x = value / 2;",
+        ),
         ("jsx", " LANGUAGE-JSX,linenums ", "const x = <A>{42}</A>;"),
-        ("html", " language-HTML linenums ", "<script>const x = 1;</script>"),
+        (
+            "html",
+            " language-HTML linenums ",
+            "<script>const x = 1;</script>",
+        ),
     ] {
         for step in 1..=source.len() {
             let expected = highlight_chunked(canonical, source, step).unwrap();
             let actual = highlight_chunked(metadata, source, step).unwrap();
-            assert_eq!(coalesce_spans(&actual), coalesce_spans(&expected), "{metadata}, chunk {step}");
+            assert_eq!(
+                coalesce_spans(&actual),
+                coalesce_spans(&expected),
+                "{metadata}, chunk {step}"
+            );
             assert_tiles(source, &actual);
         }
     }

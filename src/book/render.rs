@@ -11,12 +11,12 @@ use crate::{
 
 #[path = "pdf_links.rs"]
 mod pdf_links;
+#[path = "site_publication.rs"]
+mod site_publication;
 #[path = "site_search.rs"]
 pub(crate) mod site_search;
 #[path = "source_bundle.rs"]
 mod source_bundle;
-#[path = "site_publication.rs"]
-mod site_publication;
 
 const MAX_CHAPTERS: usize = 4096;
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
@@ -52,10 +52,13 @@ impl BookRenderer {
         let mut source_length = 0usize;
         let mut total = 0usize;
         for input in inputs {
-            source_length = source_length.checked_add(input.source.len())
+            source_length = source_length
+                .checked_add(input.source.len())
                 .ok_or_else(|| invalid("source size overflow"))?;
             for len in [input.source.len(), input.path.len()] {
-                total = total.checked_add(len).ok_or_else(|| invalid("source size overflow"))?;
+                total = total
+                    .checked_add(len)
+                    .ok_or_else(|| invalid("source size overflow"))?;
                 if total > MAX_SOURCE_BYTES {
                     return Err(invalid("source text and paths exceed the 64 MiB limit"));
                 }
@@ -101,17 +104,24 @@ impl BookRenderer {
     pub fn set_image(&mut self, destination: &str, bytes: Vec<u8>) -> Result<()> {
         let key = destination.trim();
         if key.is_empty() || bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
-            return Err(invalid("image needs a nonempty destination and 1..=32 MiB of bytes"));
+            return Err(invalid(
+                "image needs a nonempty destination and 1..=32 MiB of bytes",
+            ));
         }
         let assets = &mut self.options.pdf_image_assets;
         let total = validate_assets(assets)?;
-        let existing = assets.iter().position(|asset| asset.destination.trim() == key);
+        let existing = assets
+            .iter()
+            .position(|asset| asset.destination.trim() == key);
         let old_len = existing.map_or(0, |index| assets[index].bytes.len());
         let projected = total - old_len + bytes.len();
         if projected > MAX_TOTAL_IMAGE_BYTES || (existing.is_none() && assets.len() >= MAX_IMAGES) {
             return Err(invalid("images exceed the 128 MiB or 4096-asset limit"));
         }
-        let asset = PdfImageAsset { destination: key.to_string(), bytes };
+        let asset = PdfImageAsset {
+            destination: key.to_string(),
+            bytes,
+        };
         if let Some(index) = existing {
             assets[index] = asset;
         } else {
@@ -185,7 +195,10 @@ pub fn render_book_pdf(book: &Book, options: &PdfOptions) -> Result<Vec<u8>> {
 /// Render once and read the actual emitted page count for the CLI receipt.
 /// This includes generated contents/landing pages and all footnote pages.
 #[cfg(feature = "cli")]
-pub(super) fn render_book_pdf_counted(book: &Book, options: &PdfOptions) -> Result<(Vec<u8>, u64, Vec<crate::RenderWarning>)> {
+pub(super) fn render_book_pdf_counted(
+    book: &Book,
+    options: &PdfOptions,
+) -> Result<(Vec<u8>, u64, Vec<crate::RenderWarning>)> {
     let document = book_pdf_document_with_assets(book, &options.image_assets)?;
     let (bytes, warnings) = pdf_links::render_report(book, document, options)?;
     let pages = pdf_links::page_count(&bytes)
@@ -225,13 +238,18 @@ fn site_archive(book: &Book, options: &HtmlOptions) -> Result<(ZipWriter, usize)
             || chapter.out_name.eq_ignore_ascii_case("index.html")
             || !output_names.insert(chapter.out_name.to_ascii_lowercase())
         {
-            return Err(invalid("invalid, nonportable, or colliding HTML output filename"));
+            return Err(invalid(
+                "invalid, nonportable, or colliding HTML output filename",
+            ));
         }
     }
     // Source identity is not recoverable from flattened output names: a/b.md
     // and a__b.md both produce a__b.html. Build the exact map once per export.
-    let known: BTreeMap<_, _> = sources.iter().zip(&book.chapters)
-        .map(|(source, chapter)| (source.as_str(), chapter.out_name.as_str())).collect();
+    let known: BTreeMap<_, _> = sources
+        .iter()
+        .zip(&book.chapters)
+        .map(|(source, chapter)| (source.as_str(), chapter.out_name.as_str()))
+        .collect();
     let keys = asset_keys(&options.image_assets);
     // One AST copy for the entire site, not an extra copy per transformation.
     let mut chapters = book.chapters.clone();
@@ -248,7 +266,9 @@ fn site_archive(book: &Book, options: &HtmlOptions) -> Result<(ZipWriter, usize)
         resolve_site_links(&mut chapter.doc.blocks, &sources[index], &known);
         resolve_images(&mut chapter.doc.blocks, &sources[index], &keys);
         page_options.title = Some(chapter.title.clone());
-        page_options.lang = chapter.frontmatter.as_ref()
+        page_options.lang = chapter
+            .frontmatter
+            .as_ref()
             .and_then(|frontmatter| frontmatter.lang.clone())
             .or_else(|| options.lang.clone());
         let html = render_html_document(&chapter.doc, &page_options)?;
@@ -260,7 +280,9 @@ fn site_archive(book: &Book, options: &HtmlOptions) -> Result<(ZipWriter, usize)
     archive.add_deflated("search-index.json", search.as_bytes());
     let first = &book.chapters[0];
     let search_page = site_search::page(
-        &search, options.title.as_deref().unwrap_or(&first.title), options.lang.as_deref(),
+        &search,
+        options.title.as_deref().unwrap_or(&first.title),
+        options.lang.as_deref(),
     )?;
     add_site_bytes(&mut total, search_page.len())?;
     archive.add_deflated(site_search::PAGE_NAME, search_page.as_bytes());
@@ -301,10 +323,17 @@ fn validate_assets(assets: &[PdfImageAsset]) -> Result<usize> {
     }
     let mut total = 0usize;
     for asset in assets {
-        if asset.destination.trim().is_empty() || asset.bytes.is_empty() || asset.bytes.len() > MAX_IMAGE_BYTES {
-            return Err(invalid("image needs a nonempty destination and 1..=32 MiB of bytes"));
+        if asset.destination.trim().is_empty()
+            || asset.bytes.is_empty()
+            || asset.bytes.len() > MAX_IMAGE_BYTES
+        {
+            return Err(invalid(
+                "image needs a nonempty destination and 1..=32 MiB of bytes",
+            ));
         }
-        total = total.checked_add(asset.bytes.len()).ok_or_else(|| invalid("image size overflow"))?;
+        total = total
+            .checked_add(asset.bytes.len())
+            .ok_or_else(|| invalid("image size overflow"))?;
         if total > MAX_TOTAL_IMAGE_BYTES {
             return Err(invalid("image payloads exceed the 128 MiB limit"));
         }
@@ -313,15 +342,18 @@ fn validate_assets(assets: &[PdfImageAsset]) -> Result<usize> {
 }
 
 fn asset_keys(assets: &[PdfImageAsset]) -> BTreeSet<&str> {
-    assets.iter().map(|asset| asset.destination.trim()).collect()
+    assets
+        .iter()
+        .map(|asset| asset.destination.trim())
+        .collect()
 }
 
 fn resolve_site_links(blocks: &mut [Block], source: &str, known: &BTreeMap<&str, &str>) {
     walk_inline_nodes(blocks, &mut |inline| {
         if let Inline::Link { dest, .. } = inline {
-            if let Some((target, suffix)) = paths::chapter_destination(
-                source, dest, |path| known.contains_key(path),
-            ) {
+            if let Some((target, suffix)) =
+                paths::chapter_destination(source, dest, |path| known.contains_key(path))
+            {
                 if let Some(output) = known.get(target.as_str()) {
                     *dest = format!("{output}{suffix}");
                 }
@@ -396,7 +428,9 @@ fn visit_inline_nodes(inlines: &mut [Inline], visit: &mut impl FnMut(&mut Inline
 }
 
 fn add_site_bytes(total: &mut usize, bytes: usize) -> Result<()> {
-    *total = total.checked_add(bytes).ok_or_else(|| invalid("HTML site size overflow"))?;
+    *total = total
+        .checked_add(bytes)
+        .ok_or_else(|| invalid("HTML site size overflow"))?;
     if *total > MAX_SITE_BYTES {
         return Err(invalid("HTML site exceeds the 256 MiB uncompressed limit"));
     }
@@ -436,7 +470,8 @@ mod tests {
                 path: "appendix/end.md".into(),
                 source: "# End\n\n![Chart](figure.svg)\n".into(),
             },
-        ]).unwrap()
+        ])
+        .unwrap()
     }
 
     fn svg(width: u32) -> Vec<u8> {
@@ -449,27 +484,42 @@ mod tests {
         renderer.set_image("guide/figure.svg", svg(10)).unwrap();
         renderer.set_image("appendix/figure.svg", svg(20)).unwrap();
         let before = renderer.book.chapters[0].doc.clone();
-        let prepared = book_pdf_document_with_assets(
-            &renderer.book, &renderer.options.pdf_image_assets,
-        ).unwrap();
-        let images: Vec<_> = prepared.blocks.iter().filter_map(|block| {
-            if let Block::Paragraph(inlines) = block {
-                inlines.iter().find_map(|inline| {
-                    if let Inline::Image { dest, .. } = inline { Some(dest.as_str()) } else { None }
-                })
-            } else { None }
-        }).collect();
+        let prepared =
+            book_pdf_document_with_assets(&renderer.book, &renderer.options.pdf_image_assets)
+                .unwrap();
+        let images: Vec<_> = prepared
+            .blocks
+            .iter()
+            .filter_map(|block| {
+                if let Block::Paragraph(inlines) = block {
+                    inlines.iter().find_map(|inline| {
+                        if let Inline::Image { dest, .. } = inline {
+                            Some(dest.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert_eq!(images, vec!["guide/figure.svg", "appendix/figure.svg"]);
         assert_eq!(renderer.book.chapters[0].doc, before);
     }
 
     #[test]
     fn missing_external_and_unsafe_image_urls_are_not_reinterpreted() {
-        let mut doc = crate::parse_markdown("![A](figure.svg) ![B](https://host/image.svg) ![C](javascript:bad)");
+        let mut doc = crate::parse_markdown(
+            "![A](figure.svg) ![B](https://host/image.svg) ![C](javascript:bad)",
+        );
         let before = doc.clone();
         let keys = BTreeSet::from(["figure.svg", "https://host/image.svg", "javascript:bad"]);
         resolve_images(&mut doc.blocks, "guide/start.md", &keys);
-        assert_eq!(doc, before, "unqualified fallback and URL policy must be preserved");
+        assert_eq!(
+            doc, before,
+            "unqualified fallback and URL policy must be preserved"
+        );
     }
 
     #[test]
@@ -488,7 +538,8 @@ mod tests {
     fn render_validation_cannot_be_bypassed_via_mutable_options() {
         let mut renderer = renderer();
         renderer.options_mut().pdf_image_assets.push(PdfImageAsset {
-            destination: "bad.svg".into(), bytes: vec![],
+            destination: "bad.svg".into(),
+            bytes: vec![],
         });
         assert!(renderer.render_pdf().is_err());
         assert!(renderer.render_epub().is_err());
@@ -519,7 +570,9 @@ mod tests {
 
     fn link(dest: &str) -> Inline {
         Inline::Link {
-            dest: dest.into(), title: None, content: vec![Inline::Text("Chapter".into())],
+            dest: dest.into(),
+            title: None,
+            content: vec![Inline::Text("Chapter".into())],
         }
     }
 
@@ -536,55 +589,90 @@ mod tests {
     #[test]
     fn site_links_require_exact_source_identity_not_flattened_output_names() {
         let known = BTreeMap::from([
-            ("a/b.md", "a__b.html"), ("target.md", "target.html"),
+            ("a/b.md", "a__b.html"),
+            ("target.md", "target.html"),
             ("LICENSE", "LICENSE.html"),
         ]);
-        let mut blocks = vec![Block::Paragraph([
-            "/a__b.md", "/target.markdown", "/a/b.md#part",
-            "../target?print#part", "/LICENSE", "https://host/target.md", "#target",
-        ].into_iter().map(link).collect())];
+        let mut blocks = vec![Block::Paragraph(
+            [
+                "/a__b.md",
+                "/target.markdown",
+                "/a/b.md#part",
+                "../target?print#part",
+                "/LICENSE",
+                "https://host/target.md",
+                "#target",
+            ]
+            .into_iter()
+            .map(link)
+            .collect(),
+        )];
         resolve_site_links(&mut blocks, "guide/start.md", &known);
-        assert_eq!(link_destinations(&mut blocks), [
-            "/a__b.md", "/target.markdown", "a__b.html#part",
-            "target.html?print#part", "LICENSE.html", "https://host/target.md", "#target",
-        ]);
+        assert_eq!(
+            link_destinations(&mut blocks),
+            [
+                "/a__b.md",
+                "/target.markdown",
+                "a__b.html#part",
+                "target.html?print#part",
+                "LICENSE.html",
+                "https://host/target.md",
+                "#target",
+            ]
+        );
     }
 
     #[test]
     fn site_aliases_preserve_ambiguity_and_explicit_directory_intent() {
         let known = BTreeMap::from([
-            ("manual.md", "manual.html"), ("manual/index.md", "manual__index.html"),
+            ("manual.md", "manual.html"),
+            ("manual/index.md", "manual__index.html"),
         ]);
         let mut blocks = vec![Block::Paragraph(vec![
-            link("/manual"), link("/manual/#intro"), link("/manual.md#intro"),
+            link("/manual"),
+            link("/manual/#intro"),
+            link("/manual.md#intro"),
         ])];
         resolve_site_links(&mut blocks, "guide/start.md", &known);
-        assert_eq!(link_destinations(&mut blocks), [
-            "/manual", "manual__index.html#intro", "manual.html#intro",
-        ]);
+        assert_eq!(
+            link_destinations(&mut blocks),
+            ["/manual", "manual__index.html#intro", "manual.html#intro",]
+        );
     }
 
     #[test]
     fn site_and_asset_transforms_visit_every_container_without_conflating_roles() {
         use crate::{Align, DefinitionItem, List, ListItem, Table};
 
-        let image = Inline::Image { dest: "../target".into(), title: None, alt: "Asset".into() };
+        let image = Inline::Image {
+            dest: "../target".into(),
+            title: None,
+            alt: "Asset".into(),
+        };
         let linked_image = Inline::Link {
-            dest: "../target#heading".into(), title: None,
+            dest: "../target#heading".into(),
+            title: None,
             content: vec![Inline::Strong(vec![Inline::Emphasis(vec![
                 Inline::Strikethrough(vec![image.clone()]),
             ])])],
         };
         let mut blocks = vec![
-            Block::Heading { level: 1, inlines: vec![linked_image.clone()] },
+            Block::Heading {
+                level: 1,
+                inlines: vec![linked_image.clone()],
+            },
             Block::BlockQuote(vec![Block::List(List {
-                ordered: false, start: 1, tight: true,
+                ordered: false,
+                start: 1,
+                tight: true,
                 items: vec![ListItem {
-                    task: None, blocks: vec![Block::Paragraph(vec![linked_image.clone()])],
+                    task: None,
+                    blocks: vec![Block::Paragraph(vec![linked_image.clone()])],
                 }],
             })]),
             Block::Table(Table {
-                align: vec![Align::Left], head: vec![vec![linked_image.clone()]],
+                align: vec![Align::Left],
+                head: vec![vec![linked_image.clone()]],
                 rows: vec![vec![vec![linked_image.clone()]]],
             }),
             Block::DefinitionList(vec![DefinitionItem {
@@ -592,15 +680,22 @@ mod tests {
                 definitions: vec![vec![linked_image.clone()]],
             }]),
             Block::FootnoteDefinition {
-                id: "note".into(), blocks: vec![Block::Paragraph(vec![linked_image])],
+                id: "note".into(),
+                blocks: vec![Block::Paragraph(vec![linked_image])],
             },
             Block::Paragraph(vec![image]),
-            Block::CodeBlock { lang: None, code: "[not a link](../target)".into() },
+            Block::CodeBlock {
+                lang: None,
+                code: "[not a link](../target)".into(),
+            },
         ];
         let code = blocks.last().cloned();
         let known = BTreeMap::from([("target.md", "target.html")]);
         resolve_site_links(&mut blocks, "guide/start.md", &known);
-        assert_eq!(link_destinations(&mut blocks), vec!["target.html#heading"; 7]);
+        assert_eq!(
+            link_destinations(&mut blocks),
+            vec!["target.html#heading"; 7]
+        );
         let mut image_count = 0;
         walk_inline_nodes(&mut blocks, &mut |inline| {
             if let Inline::Image { dest, .. } = inline {
@@ -611,9 +706,14 @@ mod tests {
         assert_eq!(image_count, 8);
         resolve_images(&mut blocks, "guide/start.md", &BTreeSet::from(["target"]));
         walk_inline_nodes(&mut blocks, &mut |inline| {
-            if let Inline::Image { dest, .. } = inline { assert_eq!(dest, "target"); }
+            if let Inline::Image { dest, .. } = inline {
+                assert_eq!(dest, "target");
+            }
         });
-        assert_eq!(link_destinations(&mut blocks), vec!["target.html#heading"; 7]);
+        assert_eq!(
+            link_destinations(&mut blocks),
+            vec!["target.html#heading"; 7]
+        );
         assert_eq!(blocks.last().cloned(), code);
     }
 
@@ -624,11 +724,17 @@ mod tests {
                 path: "start.md".into(),
                 source: "[Missing](/a__b.md) [Actual](/a/b.md#part)".into(),
             },
-            BookInput { path: "a/b.md".into(), source: "# Part".into() },
+            BookInput {
+                path: "a/b.md".into(),
+                source: "# Part".into(),
+            },
         ];
         let book = build_book(&inputs).unwrap();
-        let known = book.chapters.iter()
-            .map(|chapter| (chapter.path.as_str(), chapter.out_name.as_str())).collect();
+        let known = book
+            .chapters
+            .iter()
+            .map(|chapter| (chapter.path.as_str(), chapter.out_name.as_str()))
+            .collect();
         let original = book.chapters[0].doc.clone();
         let mut document = original.clone();
         resolve_site_links(&mut document.blocks, "start.md", &known);

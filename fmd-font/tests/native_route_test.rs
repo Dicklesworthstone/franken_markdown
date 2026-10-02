@@ -13,9 +13,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use fmd_font::native_route::{
-    assemble_platform_run, FallbackFace, NativeShapingError, NativeShapingRequest,
-    NativeShapingRoute, PlatformRunGlyph, PlatformShapedOutput, ShapingRouteCapabilities,
-    ShapingRouteKind, SimulatedFallbackRule, SimulatedNativeRoute,
+    FallbackFace, NativeShapingError, NativeShapingRequest, NativeShapingRoute, PlatformRunGlyph,
+    PlatformShapedOutput, ShapingRouteCapabilities, ShapingRouteKind, SimulatedFallbackRule,
+    SimulatedNativeRoute, assemble_platform_run,
 };
 use fmd_font::shaping::Direction;
 use fmd_font::text_run::{CaretAffinity, FontId, FontOrigin, TextRunContext};
@@ -167,7 +167,10 @@ fn mixed_fallback_font_preserves_distinct_fallback_identities() {
         .find(|c| c.byte_range == (0..1))
         .expect("ascii 'R'");
     assert_eq!(ascii_r.font_id, primary_font_id);
-    assert_eq!(run.glyphs[ascii_r.glyph_range.start].font_id, primary_font_id);
+    assert_eq!(
+        run.glyphs[ascii_r.glyph_range.start].font_id,
+        primary_font_id
+    );
 
     // Check UTF-16 code units: emoji 😀 is 2 UTF-16 surrogate code units
     // Text UTF-16 len: 'R'(1) + 'u'(1) + 's'(1) + 't'(1) + ' '(1) + '语'(1) + '言'(1) + ' '(1) + '😀'(2) = 10 units

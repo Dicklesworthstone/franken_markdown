@@ -9,14 +9,36 @@ const FONT: &[u8] = include_bytes!("../fonts/test-shaping/FmdShaping.ttf");
 const REFERENCE: &str = include_str!("../fonts/test-shaping/harfbuzz-reference.tsv");
 
 fn run_at(text: &str, direction: Direction, scale: f32) -> OwnedTextRun {
-    let script = if direction == Direction::RightToLeft { *b"arab" } else { *b"latn" };
-    let shaped = Font::parse(FONT.to_vec()).unwrap().shape(text, &ShapeOptions {
-        script, language: *b"dflt", direction, features: &[],
-    }).unwrap();
-    OwnedTextRun::from_shaped_run(TextRunContext {
-        font_id: FontId::from_font_data(FONT), font_size: 10.0, script,
-        language: *b"dflt", direction, font_origin: FontOrigin::BundledFace,
-    }, &shaped, scale).unwrap()
+    let script = if direction == Direction::RightToLeft {
+        *b"arab"
+    } else {
+        *b"latn"
+    };
+    let shaped = Font::parse(FONT.to_vec())
+        .unwrap()
+        .shape(
+            text,
+            &ShapeOptions {
+                script,
+                language: *b"dflt",
+                direction,
+                features: &[],
+            },
+        )
+        .unwrap();
+    OwnedTextRun::from_shaped_run(
+        TextRunContext {
+            font_id: FontId::from_font_data(FONT),
+            font_size: 10.0,
+            script,
+            language: *b"dflt",
+            direction,
+            font_origin: FontOrigin::BundledFace,
+        },
+        &shaped,
+        scale,
+    )
+    .unwrap()
 }
 
 fn run(text: &str, direction: Direction) -> OwnedTextRun {
@@ -65,7 +87,12 @@ fn combining_clusters_do_not_expose_carets_between_base_and_marks() {
         close(trailing.visual_x, 5.0);
     }
     for utf16 in [1, 2] {
-        assert_eq!(run.caret_at_utf16(utf16, CaretAffinity::Trailing).unwrap().byte_offset, 5);
+        assert_eq!(
+            run.caret_at_utf16(utf16, CaretAffinity::Trailing)
+                .unwrap()
+                .byte_offset,
+            5
+        );
     }
     for invalid in [2, 4, 7, usize::MAX] {
         assert!(run.caret_at_byte(invalid, CaretAffinity::Leading).is_none());
@@ -80,18 +107,22 @@ fn combining_clusters_do_not_expose_carets_between_base_and_marks() {
 
 #[test]
 fn arabic_ligatures_and_marks_snap_in_logical_not_visual_direction() {
-    for (source, interior, end, units, left, right) in [
-        ("لا", 2, 4, 2, 0.0, 5.0),
-        ("بَب", 2, 4, 2, 5.0, 10.0),
-    ] {
+    for (source, interior, end, units, left, right) in
+        [("لا", 2, 4, 2, 0.0, 5.0), ("بَب", 2, 4, 2, 5.0, 10.0)]
+    {
         let run = run(source, Direction::RightToLeft);
         let leading = run.caret_at_byte(interior, CaretAffinity::Leading).unwrap();
-        let trailing = run.caret_at_byte(interior, CaretAffinity::Trailing).unwrap();
+        let trailing = run
+            .caret_at_byte(interior, CaretAffinity::Trailing)
+            .unwrap();
         assert_eq!((leading.byte_offset, leading.utf16_offset), (0, 0));
         assert_eq!((trailing.byte_offset, trailing.utf16_offset), (end, units));
         close(leading.visual_x, right);
         close(trailing.visual_x, left);
-        assert_eq!(run.caret_at_utf16(1, CaretAffinity::Trailing), Some(trailing));
+        assert_eq!(
+            run.caret_at_utf16(1, CaretAffinity::Trailing),
+            Some(trailing)
+        );
     }
 }
 
@@ -101,16 +132,32 @@ fn hit_test_edges_round_trip_through_byte_and_utf16_caret_queries() {
     for line in REFERENCE.lines().filter(|line| !line.is_empty()) {
         let fields: Vec<_> = line.split('\t').collect();
         let rtl = fields[0] == "arab";
-        let run = run(fields[1], if rtl { Direction::RightToLeft } else { Direction::LeftToRight });
+        let run = run(
+            fields[1],
+            if rtl {
+                Direction::RightToLeft
+            } else {
+                Direction::LeftToRight
+            },
+        );
         for cluster in &run.clusters {
-            if cluster.x_start == cluster.x_end { continue; }
+            if cluster.x_start == cluster.x_end {
+                continue;
+            }
             for fraction in [0.25, 0.5, 0.75] {
                 let x = cluster.x_start + (cluster.x_end - cluster.x_start) * fraction;
                 let hit = run.hit_test(x);
                 assert_eq!(hit.cluster_index, cluster.cluster_index);
-                assert!([cluster.byte_range.start, cluster.byte_range.end].contains(&hit.caret.byte_offset));
-                let from_byte = run.caret_at_byte(hit.caret.byte_offset, hit.caret.affinity).unwrap();
-                let from_utf16 = run.caret_at_utf16(hit.caret.utf16_offset, hit.caret.affinity).unwrap();
+                assert!(
+                    [cluster.byte_range.start, cluster.byte_range.end]
+                        .contains(&hit.caret.byte_offset)
+                );
+                let from_byte = run
+                    .caret_at_byte(hit.caret.byte_offset, hit.caret.affinity)
+                    .unwrap();
+                let from_utf16 = run
+                    .caret_at_utf16(hit.caret.utf16_offset, hit.caret.affinity)
+                    .unwrap();
                 assert_eq!(from_byte, hit.caret);
                 assert_eq!(from_utf16, hit.caret);
             }
@@ -171,7 +218,13 @@ fn host_supplied_visual_permutations_keep_discontiguous_selections() {
 #[test]
 fn invalid_selections_return_no_partial_geometry() {
     let mut run = run("a\u{0301}b", Direction::LeftToRight);
-    for range in [2..3, 0..2, 0..5, 0..usize::MAX, std::ops::Range { start: 3, end: 1 }] {
+    for range in [
+        2..3,
+        0..2,
+        0..5,
+        0..usize::MAX,
+        std::ops::Range { start: 3, end: 1 },
+    ] {
         assert!(run.selection_rects(range, 0.0, 12.0).is_empty());
     }
     for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
@@ -186,12 +239,21 @@ fn invalid_selections_return_no_partial_geometry() {
 
 #[test]
 fn nonfinite_hits_and_large_finite_geometry_have_consistent_edges() {
-    for (text, direction) in [("ab", Direction::LeftToRight), ("بب", Direction::RightToLeft)] {
+    for (text, direction) in [
+        ("ab", Direction::LeftToRight),
+        ("بب", Direction::RightToLeft),
+    ] {
         let run = run(text, direction);
         let invalid = run.hit_test(f32::NAN);
         assert!(!invalid.is_exact);
-        assert_eq!((invalid.caret.byte_offset, invalid.caret.utf16_offset), (0, 0));
-        assert_eq!(run.caret_at_byte(0, CaretAffinity::Leading), Some(invalid.caret));
+        assert_eq!(
+            (invalid.caret.byte_offset, invalid.caret.utf16_offset),
+            (0, 0)
+        );
+        assert_eq!(
+            run.caret_at_byte(0, CaretAffinity::Leading),
+            Some(invalid.caret)
+        );
         for (x, expected) in if direction == Direction::LeftToRight {
             [(f32::NEG_INFINITY, 0), (f32::INFINITY, text.len())]
         } else {

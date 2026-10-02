@@ -35,7 +35,11 @@ fn line_cost(natural: i64, measure: i64, last: bool) -> i64 {
     assert!(natural <= measure);
     let shortfall = measure - natural;
     let ratio = shortfall * 1000 / measure;
-    let badness = if last { 0 } else { 100 * ratio * ratio * ratio / 1_000_000_000 };
+    let badness = if last {
+        0
+    } else {
+        100 * ratio * ratio * ratio / 1_000_000_000
+    };
     (badness + 1).pow(2)
 }
 
@@ -45,7 +49,11 @@ fn score(groups: &[Group], lines: &[Range<usize>], measure: i64) -> i64 {
     for line in lines {
         assert_eq!(line.start, cursor);
         assert!(line.end > line.start && line.end <= groups.len());
-        result += line_cost(used(groups, line.clone()), measure, line.end == groups.len());
+        result += line_cost(
+            used(groups, line.clone()),
+            measure,
+            line.end == groups.len(),
+        );
         cursor = line.end;
     }
     assert_eq!(cursor, groups.len());
@@ -69,7 +77,12 @@ fn exhaustive(groups: &[Group], measure: i64, start: usize) -> i64 {
 
 #[test]
 fn moves_a_word_back_to_avoid_the_greedy_short_middle_line() {
-    let groups = [group(30.0, 0.0), group(20.0, 10.0), group(20.0, 10.0), group(50.0, 10.0)];
+    let groups = [
+        group(30.0, 0.0),
+        group(20.0, 10.0),
+        group(20.0, 10.0),
+        group(50.0, 10.0),
+    ];
     let lines = plan(&groups, 60.0).unwrap();
     assert_eq!(lines, [0..1, 1..3, 3..4]);
     assert_eq!(score(&groups, &lines, 60_000), 171);
@@ -88,8 +101,12 @@ fn shared_ragged_plans_match_an_independent_exhaustive_oracle() {
                 let gap = f64::from((state >> 8) % 9);
                 groups.push(group(width, gap));
             }
-            let lines = plan(&groups, 100.0).expect("individually fitting words have a feasible partition");
-            assert_eq!(score(&groups, &lines, 100_000), exhaustive(&groups, 100_000, 0));
+            let lines =
+                plan(&groups, 100.0).expect("individually fitting words have a feasible partition");
+            assert_eq!(
+                score(&groups, &lines, 100_000),
+                exhaustive(&groups, 100_000, 0)
+            );
         }
     }
 }
@@ -148,7 +165,16 @@ fn invalid_geometry_and_excess_candidates_are_not_cast_or_partially_planned() {
     }
     let many: Vec<_> = (0..=MAX_WORDS).map(|_| group(1.0, 1.0)).collect();
     assert!(plan(&many, 100.0).is_none());
-    assert!(plan(&[Group { runs: Vec::new(), gap: 0.0 }], 100.0).is_none());
+    assert!(
+        plan(
+            &[Group {
+                runs: Vec::new(),
+                gap: 0.0
+            }],
+            100.0
+        )
+        .is_none()
+    );
 }
 
 #[test]
@@ -162,10 +188,16 @@ fn empty_and_zero_advance_inputs_have_complete_deterministic_plans() {
 #[test]
 fn optimizer_limit_does_not_replace_an_existing_resource_warning() {
     let mut g = group(12.0, 2.0);
-    g.runs[0].warning = Some(SvgWarning { code: "original", message: "original".into() });
+    g.runs[0].warning = Some(SvgWarning {
+        code: "original",
+        message: "original".into(),
+    });
     limit_warning(&mut g);
     assert_eq!(g.runs[0].warning.as_ref().unwrap().code, "original");
-    assert_eq!(g.runs[1].warning.as_ref().unwrap().code, "svg_paragraph_limit");
+    assert_eq!(
+        g.runs[1].warning.as_ref().unwrap().code,
+        "svg_paragraph_limit"
+    );
     assert_eq!(g.runs[1].w, 0.0);
     assert_eq!(g.runs[1].gap, 0.0);
     assert!(g.runs[1].text.is_empty());

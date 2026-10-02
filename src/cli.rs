@@ -18,8 +18,7 @@ use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
 use crate::watch::{
     DEFAULT_INTERVAL_MS, PollWatcher, Route, SystemClock, bind_loopback, collect_watch_paths,
-    expand_md_directory, render_response, route_for, sse_preamble,
-    sse_reload_event,
+    expand_md_directory, render_response, route_for, sse_preamble, sse_reload_event,
 };
 use crate::{
     FontAssetSlot, FontAssets, FontFamily, FontScale, HtmlFontFormat, HtmlOptions, PdfAMode,
@@ -1293,7 +1292,10 @@ fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, Strin
     // For HTML exports, publish precisely the successful on-disk render. This
     // carries includes, frontmatter, assets and every renderer option without
     // parsing a second, possibly newer source snapshot during an atomic save.
-    if matches!(args.to, Target::Html | Target::Both | Target::InteractiveHtml) {
+    if matches!(
+        args.to,
+        Target::Html | Target::Both | Target::InteractiveHtml
+    ) {
         let path = if matches!(args.to, Target::Both) {
             args.out.with_extension("html")
         } else {
@@ -1307,8 +1309,7 @@ fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, Strin
     // PDF/SVG/EPUB watches still provide an HTML preview, using the same
     // bounded source expansion, local images and metadata as ordinary HTML.
     let input = args.input.to_string_lossy();
-    let src = read_input(Some(&input), None, DEFAULT_MAX_INPUT_BYTES)
-        .map_err(|e| e.to_string())?;
+    let src = read_input(Some(&input), None, DEFAULT_MAX_INPUT_BYTES).map_err(|e| e.to_string())?;
     let src = expand_file_includes(&src, &input, DEFAULT_MAX_INPUT_BYTES)?;
     let config = load_config(no_config).map_err(|e| e.to_string())?;
     let mut theme = config.to_theme();
@@ -1323,7 +1324,13 @@ fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, Strin
     let doc = parse_markdown(&src);
     let mut image_assets = Vec::new();
     let base = args.input.parent().unwrap_or_else(|| Path::new("."));
-    append_auto_image_assets(&doc, base, &mut image_assets, DEFAULT_MAX_PDF_IMAGE_BYTES, "HTML")?;
+    append_auto_image_assets(
+        &doc,
+        base,
+        &mut image_assets,
+        DEFAULT_MAX_PDF_IMAGE_BYTES,
+        "HTML",
+    )?;
     let opts = HtmlOptions {
         theme,
         title: frontmatter.as_ref().and_then(|fm| fm.title.clone()),
@@ -4578,7 +4585,7 @@ mod helper_tests {
             "a/../up.png",        // embedded parent-dir escape
             "%2e%2e/up.png",      // encoded parent-dir escape
             "a/%2e%2e/up.png",    // encoded embedded parent component
-            "%2fabsolute.png",   // encoded absolute path
+            "%2fabsolute.png",    // encoded absolute path
             "%2f%2fhost/a.png",   // encoded network path
             "%68ttps%3a/x.png",   // encoded scheme
             "nul%00.svg",         // encoded control

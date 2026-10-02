@@ -124,24 +124,35 @@ pub struct PaginationPlan {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaginationError {
     InvalidOptions(&'static str),
-    InvalidParagraph { paragraph_index: usize, reason: &'static str },
+    InvalidParagraph {
+        paragraph_index: usize,
+        reason: &'static str,
+    },
     BudgetExceeded(&'static str),
     CostOverflow,
     /// Includes hard widow/orphan, keep, and forced-break conflicts.
-    NoFeasibleLayout { paragraph_index: usize },
+    NoFeasibleLayout {
+        paragraph_index: usize,
+    },
 }
 
 impl fmt::Display for PaginationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidOptions(reason) => write!(f, "invalid pagination options: {reason}"),
-            Self::InvalidParagraph { paragraph_index, reason } => {
+            Self::InvalidParagraph {
+                paragraph_index,
+                reason,
+            } => {
                 write!(f, "invalid paragraph {paragraph_index}: {reason}")
             }
             Self::BudgetExceeded(budget) => write!(f, "pagination budget exceeded: {budget}"),
             Self::CostOverflow => f.write_str("pagination cost or page counter overflow"),
             Self::NoFeasibleLayout { paragraph_index } => {
-                write!(f, "no feasible pagination through paragraph {paragraph_index}")
+                write!(
+                    f,
+                    "no feasible pagination through paragraph {paragraph_index}"
+                )
             }
         }
     }
@@ -156,7 +167,9 @@ struct State {
     tail: Option<usize>,
 }
 impl State {
-    fn rank(self) -> (i128, usize) { (self.cost, self.closed_pages) }
+    fn rank(self) -> (i128, usize) {
+        (self.cost, self.closed_pages)
+    }
 }
 
 // A hard page budget makes used page count part of future feasibility.
@@ -175,7 +188,14 @@ struct Search {
 
 impl Search {
     fn key(&self, progress: usize, state: State) -> StateKey {
-        (progress, if self.options.max_pages.is_some() { state.closed_pages } else { 0 })
+        (
+            progress,
+            if self.options.max_pages.is_some() {
+                state.closed_pages
+            } else {
+                0
+            },
+        )
     }
 
     fn charge(&mut self) -> Result<(), PaginationError> {
@@ -187,18 +207,29 @@ impl Search {
     }
 
     fn close_page(&self, mut state: State, last: bool) -> Result<State, PaginationError> {
-        if state.used == 0 { return Ok(state); }
+        if state.used == 0 {
+            return Ok(state);
+        }
         let mut cost = i128::from(self.options.page_cost);
         if !last || self.options.penalize_last_page {
             let gap = i128::try_from(self.options.page_capacity_lines - state.used)
                 .map_err(|_| PaginationError::CostOverflow)?;
-            let ragged = gap.checked_mul(gap)
+            let ragged = gap
+                .checked_mul(gap)
                 .and_then(|n| n.checked_mul(i128::from(self.options.unused_line_cost)))
                 .ok_or(PaginationError::CostOverflow)?;
-            cost = cost.checked_add(ragged).ok_or(PaginationError::CostOverflow)?;
+            cost = cost
+                .checked_add(ragged)
+                .ok_or(PaginationError::CostOverflow)?;
         }
-        state.cost = state.cost.checked_add(cost).ok_or(PaginationError::CostOverflow)?;
-        state.closed_pages = state.closed_pages.checked_add(1).ok_or(PaginationError::CostOverflow)?;
+        state.cost = state
+            .cost
+            .checked_add(cost)
+            .ok_or(PaginationError::CostOverflow)?;
+        state.closed_pages = state
+            .closed_pages
+            .checked_add(1)
+            .ok_or(PaginationError::CostOverflow)?;
         state.used = 0;
         Ok(state)
     }
@@ -206,18 +237,27 @@ impl Search {
     // Only improving states receive backpointers. Discarded nodes are retained
     // because later tails can still refer to them; max_nodes bounds the arena.
     fn retain(
-        &mut self, frontier: &mut BTreeMap<StateKey, State>, progress: usize,
-        mut candidate: State, fragment: PageFragment,
+        &mut self,
+        frontier: &mut BTreeMap<StateKey, State>,
+        progress: usize,
+        mut candidate: State,
+        fragment: PageFragment,
     ) -> Result<(), PaginationError> {
         let key = self.key(progress, candidate);
-        if frontier.get(&key).is_some_and(|old| old.rank() <= candidate.rank()) {
+        if frontier
+            .get(&key)
+            .is_some_and(|old| old.rank() <= candidate.rank())
+        {
             return Ok(());
         }
         if self.nodes.len() >= self.options.limits.max_nodes {
             return Err(PaginationError::BudgetExceeded("backpointer nodes"));
         }
         let index = self.nodes.len();
-        self.nodes.push(Node { previous: candidate.tail, fragment });
+        self.nodes.push(Node {
+            previous: candidate.tail,
+            fragment,
+        });
         candidate.tail = Some(index);
         frontier.insert(key, candidate);
         Ok(())
@@ -225,11 +265,21 @@ impl Search {
 
     #[allow(clippy::too_many_arguments)]
     fn place(
-        &mut self, state: State, paragraph: usize, variant: usize, start: usize,
-        lines: usize, policy: ParagraphPolicy,
-        completed: &mut BTreeMap<StateKey, State>, pending: &mut BTreeMap<StateKey, State>,
+        &mut self,
+        state: State,
+        paragraph: usize,
+        variant: usize,
+        start: usize,
+        lines: usize,
+        policy: ParagraphPolicy,
+        completed: &mut BTreeMap<StateKey, State>,
+        pending: &mut BTreeMap<StateKey, State>,
     ) -> Result<(), PaginationError> {
-        if self.options.max_pages.is_some_and(|limit| state.closed_pages >= limit) {
+        if self
+            .options
+            .max_pages
+            .is_some_and(|limit| state.closed_pages >= limit)
+        {
             return Ok(()); // There is no permitted page on which to place a line.
         }
         let capacity = self.options.page_capacity_lines - state.used;
@@ -244,20 +294,36 @@ impl Search {
             let split = end < lines;
             let mut penalty = 0_i128;
             if split {
-                let Some(cost) = violation(count, self.options.orphans, self.options.orphan_penalty)? else { continue; };
+                let Some(cost) =
+                    violation(count, self.options.orphans, self.options.orphan_penalty)?
+                else {
+                    continue;
+                };
                 penalty = cost;
             }
             if start > 0 {
-                let Some(cost) = violation(count, self.options.widows, self.options.widow_penalty)? else { continue; };
-                penalty = penalty.checked_add(cost).ok_or(PaginationError::CostOverflow)?;
+                let Some(cost) = violation(count, self.options.widows, self.options.widow_penalty)?
+                else {
+                    continue;
+                };
+                penalty = penalty
+                    .checked_add(cost)
+                    .ok_or(PaginationError::CostOverflow)?;
             }
             let mut candidate = State {
-                cost: state.cost.checked_add(penalty).ok_or(PaginationError::CostOverflow)?,
-                used: state.used + count, ..state
+                cost: state
+                    .cost
+                    .checked_add(penalty)
+                    .ok_or(PaginationError::CostOverflow)?,
+                used: state.used + count,
+                ..state
             };
             let fragment = PageFragment {
-                paragraph_index: paragraph, variant_chosen: variant,
-                line_start: start, line_end: end, page_index: state.closed_pages,
+                paragraph_index: paragraph,
+                variant_chosen: variant,
+                line_start: start,
+                line_end: end,
+                page_index: state.closed_pages,
                 page_line_start: state.used,
             };
             if split {
@@ -271,26 +337,45 @@ impl Search {
     }
 }
 
-fn violation(count: usize, minimum: usize, penalty: Option<u64>) -> Result<Option<i128>, PaginationError> {
+fn violation(
+    count: usize,
+    minimum: usize,
+    penalty: Option<u64>,
+) -> Result<Option<i128>, PaginationError> {
     let missing = minimum.saturating_sub(count);
-    if missing == 0 { return Ok(Some(0)); }
-    let Some(penalty) = penalty else { return Ok(None); };
-    let cost = i128::try_from(missing).map_err(|_| PaginationError::CostOverflow)?
-        .checked_mul(i128::from(penalty)).ok_or(PaginationError::CostOverflow)?;
+    if missing == 0 {
+        return Ok(Some(0));
+    }
+    let Some(penalty) = penalty else {
+        return Ok(None);
+    };
+    let cost = i128::try_from(missing)
+        .map_err(|_| PaginationError::CostOverflow)?
+        .checked_mul(i128::from(penalty))
+        .ok_or(PaginationError::CostOverflow)?;
     Ok(Some(cost))
 }
 
 fn validate(
-    paragraphs: &[ParagraphCandidates], policies: &[ParagraphPolicy], options: PaginationOptions,
+    paragraphs: &[ParagraphCandidates],
+    policies: &[ParagraphPolicy],
+    options: PaginationOptions,
 ) -> Result<(), PaginationError> {
-    if options.page_capacity_lines == 0 || options.initial_used_lines > options.page_capacity_lines {
-        return Err(PaginationError::InvalidOptions("capacity must be positive and contain the initial occupied lines"));
+    if options.page_capacity_lines == 0 || options.initial_used_lines > options.page_capacity_lines
+    {
+        return Err(PaginationError::InvalidOptions(
+            "capacity must be positive and contain the initial occupied lines",
+        ));
     }
     if options.max_pages == Some(0) {
-        return Err(PaginationError::InvalidOptions("max_pages must be positive when supplied"));
+        return Err(PaginationError::InvalidOptions(
+            "max_pages must be positive when supplied",
+        ));
     }
     if !policies.is_empty() && policies.len() != paragraphs.len() {
-        return Err(PaginationError::InvalidOptions("policies must be empty or have one entry per paragraph"));
+        return Err(PaginationError::InvalidOptions(
+            "policies must be empty or have one entry per paragraph",
+        ));
     }
     if paragraphs.len() > options.limits.max_paragraphs {
         return Err(PaginationError::BudgetExceeded("paragraphs"));
@@ -301,19 +386,29 @@ fn validate(
     let mut total = 0usize;
     for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
         if paragraph.variants.is_empty() {
-            return Err(PaginationError::InvalidParagraph { paragraph_index, reason: "no line-breaking variants" });
+            return Err(PaginationError::InvalidParagraph {
+                paragraph_index,
+                reason: "no line-breaking variants",
+            });
         }
         if paragraph.variants.len() > options.limits.max_variants_per_paragraph {
             return Err(PaginationError::BudgetExceeded("variants per paragraph"));
         }
         for variant in &paragraph.variants {
             if variant.line_count == 0 {
-                return Err(PaginationError::InvalidParagraph { paragraph_index, reason: "zero-line variant" });
+                return Err(PaginationError::InvalidParagraph {
+                    paragraph_index,
+                    reason: "zero-line variant",
+                });
             }
             if !variant.lines.is_empty() && variant.lines.len() != variant.line_count {
-                return Err(PaginationError::InvalidParagraph { paragraph_index, reason: "line count does not match measured lines" });
+                return Err(PaginationError::InvalidParagraph {
+                    paragraph_index,
+                    reason: "line count does not match measured lines",
+                });
             }
-            total = total.checked_add(variant.line_count)
+            total = total
+                .checked_add(variant.line_count)
                 .filter(|&n| n <= options.limits.max_candidate_lines)
                 .ok_or(PaginationError::BudgetExceeded("candidate lines"))?;
         }
@@ -341,12 +436,23 @@ fn validate(
 /// Returns [`PaginationError`] when admission, feasibility, checked arithmetic,
 /// or the configured search budget prevents a complete exact plan.
 pub fn plan_pagination(
-    paragraphs: &[ParagraphCandidates], policies: &[ParagraphPolicy], options: PaginationOptions,
+    paragraphs: &[ParagraphCandidates],
+    policies: &[ParagraphPolicy],
+    options: PaginationOptions,
 ) -> Result<PaginationPlan, PaginationError> {
     validate(paragraphs, policies, options)?;
     let policy_at = |index| policies.get(index).copied().unwrap_or_default();
-    let mut search = Search { options, nodes: Vec::new(), transitions: 0 };
-    let initial = State { cost: 0, closed_pages: 0, used: options.initial_used_lines, tail: None };
+    let mut search = Search {
+        options,
+        nodes: Vec::new(),
+        transitions: 0,
+    };
+    let initial = State {
+        cost: 0,
+        closed_pages: 0,
+        used: options.initial_used_lines,
+        tail: None,
+    };
     let mut frontier = BTreeMap::from([(search.key(initial.used, initial), initial)]);
     for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
         let policy = policy_at(paragraph_index);
@@ -357,24 +463,51 @@ pub fn plan_pagination(
             for &previous in frontier.values() {
                 search.charge()?;
                 let state = State {
-                    cost: previous.cost.checked_add(i128::from(variant.demerits))
-                        .ok_or(PaginationError::CostOverflow)?, ..previous
+                    cost: previous
+                        .cost
+                        .checked_add(i128::from(variant.demerits))
+                        .ok_or(PaginationError::CostOverflow)?,
+                    ..previous
                 };
                 if !policy.break_before || state.used == 0 {
-                    search.place(state, paragraph_index, variant_index, 0, variant.line_count,
-                        policy, &mut completed, &mut pending)?;
+                    search.place(
+                        state,
+                        paragraph_index,
+                        variant_index,
+                        0,
+                        variant.line_count,
+                        policy,
+                        &mut completed,
+                        &mut pending,
+                    )?;
                 }
                 // Opening a page is optional, not only an overflow response.
                 // Never manufacture empty pages or break a keep-with-next bond.
                 if state.used > 0 && !keep_previous {
                     let state = search.close_page(state, false)?;
-                    search.place(state, paragraph_index, variant_index, 0, variant.line_count,
-                        policy, &mut completed, &mut pending)?;
+                    search.place(
+                        state,
+                        paragraph_index,
+                        variant_index,
+                        0,
+                        variant.line_count,
+                        policy,
+                        &mut completed,
+                        &mut pending,
+                    )?;
                 }
             }
             while let Some(((start, _), state)) = pending.pop_first() {
-                search.place(state, paragraph_index, variant_index, start, variant.line_count,
-                    policy, &mut completed, &mut pending)?;
+                search.place(
+                    state,
+                    paragraph_index,
+                    variant_index,
+                    start,
+                    variant.line_count,
+                    policy,
+                    &mut completed,
+                    &mut pending,
+                )?;
             }
         }
         if completed.is_empty() {
@@ -399,10 +532,16 @@ pub fn plan_pagination(
     }
     fragments.reverse();
     let mut variants = vec![0; paragraphs.len()];
-    for fragment in &fragments { variants[fragment.paragraph_index] = fragment.variant_chosen; }
+    for fragment in &fragments {
+        variants[fragment.paragraph_index] = fragment.variant_chosen;
+    }
     Ok(PaginationPlan {
-        variants, fragments, page_count: best.closed_pages, total_demerits: best.cost,
-        search_nodes: search.nodes.len(), search_transitions: search.transitions,
+        variants,
+        fragments,
+        page_count: best.closed_pages,
+        total_demerits: best.cost,
+        search_nodes: search.nodes.len(),
+        search_transitions: search.transitions,
     })
 }
 

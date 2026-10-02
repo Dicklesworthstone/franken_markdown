@@ -66,13 +66,7 @@ impl JsxContext {
     }
 }
 
-fn push_tiling(
-    spans: &mut Vec<Span>,
-    last_end: &mut usize,
-    kind: Tok,
-    start: usize,
-    end: usize,
-) {
+fn push_tiling(spans: &mut Vec<Span>, last_end: &mut usize, kind: Tok, start: usize, end: usize) {
     if *last_end < start {
         spans.push(Span {
             kind: Tok::Plain,
@@ -350,10 +344,7 @@ pub fn lex_jsx_composed_into(
         }
 
         // 2. Inside JSX Tag mode: `<tag_name attr="val" ... >`
-        if let Some(JsxContext::Tag {
-            has_tag_name, ..
-        }) = mode_stack.last_mut()
-        {
+        if let Some(JsxContext::Tag { has_tag_name, .. }) = mode_stack.last_mut() {
             let rest = &code[pos..];
             let ch = rest.chars().next().unwrap();
 
@@ -724,7 +715,11 @@ mod tests {
 
     #[test]
     fn nonempty_output_buffers_keep_existing_entries() {
-        let sentinel = Span { kind: Tok::Comment, start: 7, end: 11 };
+        let sentinel = Span {
+            kind: Tok::Comment,
+            start: 7,
+            end: 11,
+        };
         let mut spans = vec![sentinel];
         lex_jsx_into("<A/>", &mut spans);
         assert_eq!(spans[0].kind, Tok::Comment);

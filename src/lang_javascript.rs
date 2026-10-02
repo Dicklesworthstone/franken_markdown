@@ -438,10 +438,13 @@ pub(crate) fn scan_javascript_token_at(
                 scan += 1;
                 scan = consume_while(code, scan, |c| c.is_ascii_digit() || c == '_');
             }
-            if scan < bytes_len && (code.as_bytes()[scan] == b'e' || code.as_bytes()[scan] == b'E') {
+            if scan < bytes_len && (code.as_bytes()[scan] == b'e' || code.as_bytes()[scan] == b'E')
+            {
                 let save = scan;
                 scan += 1;
-                if scan < bytes_len && (code.as_bytes()[scan] == b'+' || code.as_bytes()[scan] == b'-') {
+                if scan < bytes_len
+                    && (code.as_bytes()[scan] == b'+' || code.as_bytes()[scan] == b'-')
+                {
                     scan += 1;
                 }
                 let exp_scan = consume_while(code, scan, |c| c.is_ascii_digit());
@@ -495,7 +498,15 @@ pub(crate) fn scan_javascript_token_at(
         } else {
             *brace_depth_in_interp = brace_depth_in_interp.saturating_sub(1);
         }
-        return (pos + clen, Tok::Punct, if ch == '}' { Prev::CloseBrace } else { Prev::Operator });
+        return (
+            pos + clen,
+            Tok::Punct,
+            if ch == '}' {
+                Prev::CloseBrace
+            } else {
+                Prev::Operator
+            },
+        );
     }
 
     // Punctuation.
@@ -512,9 +523,9 @@ pub(crate) fn scan_javascript_token_at(
 
     // Multi-char operators, longest first.
     const OPERATORS: &[&str] = &[
-        ">>>=", "===", "!==", "**=", "<<=", ">>=", "&&=", "||=", "??=", "=>", "...", "**",
-        "==", "!=", "<=", ">=", "&&", "||", "??", "?.", "++", "--", "+=", "-=", "*=", "/=",
-        "%=", "&=", "|=", "^=", "<<", ">>", ">>>",
+        ">>>=", "===", "!==", "**=", "<<=", ">>=", "&&=", "||=", "??=", "=>", "...", "**", "==",
+        "!=", "<=", ">=", "&&", "||", "??", "?.", "++", "--", "+=", "-=", "*=", "/=", "%=", "&=",
+        "|=", "^=", "<<", ">>", ">>>",
     ];
     for op in OPERATORS {
         if rest.starts_with(op) {

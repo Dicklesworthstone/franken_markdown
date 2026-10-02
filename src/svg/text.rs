@@ -35,11 +35,13 @@ impl Poster {
                     flow.trailing_break = true;
                 }
                 Piece::Image(destination, alt, style) => {
-                    flow.word.push(self.image_word(destination, alt, *style, size, width));
+                    flow.word
+                        .push(self.image_word(destination, alt, *style, size, width));
                     flow.trailing_break = false;
                 }
                 Piece::Math(source, display, style) => {
-                    flow.word.push(self.math_word(source, *display, *style, size, width));
+                    flow.word
+                        .push(self.math_word(source, *display, *style, size, width));
                     flow.trailing_break = false;
                 }
                 Piece::Text(text, style) => {
@@ -149,9 +151,12 @@ impl Poster {
                 self.draw_math(run, pen, baseline, word.style.ink);
                 if word.style.strike && word.w > 0.0 {
                     self.ops.push(Op::Rule {
-                        x1: pen, y1: baseline - size * 0.28,
-                        x2: pen + word.w, y2: baseline - size * 0.28,
-                        ink: word.style.ink, w: (size * 0.05).max(0.5),
+                        x1: pen,
+                        y1: baseline - size * 0.28,
+                        x2: pen + word.w,
+                        y2: baseline - size * 0.28,
+                        ink: word.style.ink,
+                        w: (size * 0.05).max(0.5),
                     });
                 }
                 pen += word.w;
@@ -164,9 +169,14 @@ impl Poster {
                 pen = prepared.paint(self, pen, baseline, word.style, size);
             }
             if word.style.link.is_some() {
-                let (ascent, height) = self.line_metrics(std::slice::from_ref(word), size * 0.85, size);
+                let (ascent, height) =
+                    self.line_metrics(std::slice::from_ref(word), size * 0.85, size);
                 let bounds = (start, baseline - ascent, pen, baseline - ascent + height);
-                self.navigation.borrow_mut().record(word.style.link, Some(bounds), &mut previous_link);
+                self.navigation.borrow_mut().record(
+                    word.style.link,
+                    Some(bounds),
+                    &mut previous_link,
+                );
             } else {
                 previous_link = None;
             }
@@ -179,7 +189,9 @@ impl Poster {
 }
 
 fn append_run(flow: &mut TextFlow, text: &str, style: RStyle) {
-    if text.is_empty() { return; }
+    if text.is_empty() {
+        return;
+    }
     flow.trailing_break = false;
     if let Some(last) = flow.word.last_mut().filter(|run| {
         run.style == style && run.formula.is_none() && run.image.is_none() && run.warning.is_none()
@@ -187,8 +199,14 @@ fn append_run(flow: &mut TextFlow, text: &str, style: RStyle) {
         last.text.push_str(text);
     } else {
         flow.word.push(Word {
-            text: text.to_owned(), style, w: 0.0, gap: 0.0,
-            formula: None, image: None, warning: None, shaped: None,
+            text: text.to_owned(),
+            style,
+            w: 0.0,
+            gap: 0.0,
+            formula: None,
+            image: None,
+            warning: None,
+            shaped: None,
         });
     }
 }
@@ -215,11 +233,11 @@ impl TextFlow {
 }
 
 #[cfg(test)]
-#[path = "text_shaping_tests.rs"]
-mod shaping_tests;
+#[path = "paragraph_tests.rs"]
+mod paragraph_tests;
 #[cfg(test)]
 #[path = "text_positioning_tests.rs"]
 mod positioning_tests;
 #[cfg(test)]
-#[path = "paragraph_tests.rs"]
-mod paragraph_tests;
+#[path = "text_shaping_tests.rs"]
+mod shaping_tests;

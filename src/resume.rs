@@ -196,33 +196,40 @@ impl ResumableLexer {
     }
 
     fn pending_text(&self) -> Result<&str, ResumeError> {
-        std::str::from_utf8(&self.pending)
-            .map_err(|error| ResumeError::InvalidUtf8 { at: error.valid_up_to() })
+        std::str::from_utf8(&self.pending).map_err(|error| ResumeError::InvalidUtf8 {
+            at: error.valid_up_to(),
+        })
     }
 
     /// Normalize only for choosing a hold policy. Keep the caller's original
     /// language string in public state and checkpoints.
     fn language_key(&self) -> &str {
         let trimmed = self.lang.trim();
-        let without_prefix = trimmed.get(.."language-".len())
+        let without_prefix = trimmed
+            .get(.."language-".len())
             .filter(|prefix| prefix.eq_ignore_ascii_case("language-"))
             .map_or(trimmed, |_| &trimmed["language-".len()..]);
-        let end = without_prefix.find(|ch: char| ch.is_whitespace() || ch == ',')
+        let end = without_prefix
+            .find(|ch: char| ch.is_whitespace() || ch == ',')
             .unwrap_or(without_prefix.len());
         &without_prefix[..end]
     }
 
     fn is_html_family(&self) -> bool {
-        ["html", "htm", "xhtml", "xml", "svg"].iter()
+        ["html", "htm", "xhtml", "xml", "svg"]
+            .iter()
             .any(|lang| self.language_key().eq_ignore_ascii_case(lang))
     }
 
     fn is_jsx_family(&self) -> bool {
-        ["jsx", "tsx"].iter().any(|lang| self.language_key().eq_ignore_ascii_case(lang))
+        ["jsx", "tsx"]
+            .iter()
+            .any(|lang| self.language_key().eq_ignore_ascii_case(lang))
     }
 
     fn is_javascript_family(&self) -> bool {
-        ["javascript", "js", "mjs", "cjs", "typescript", "ts"].iter()
+        ["javascript", "js", "mjs", "cjs", "typescript", "ts"]
+            .iter()
             .any(|lang| self.language_key().eq_ignore_ascii_case(lang))
     }
 
@@ -233,9 +240,13 @@ impl ResumableLexer {
             Ok(text) => text.len(),
             Err(error) => error.valid_up_to(),
         };
-        let Ok(text) = std::str::from_utf8(&self.pending[..valid_length]) else { return; };
+        let Ok(text) = std::str::from_utf8(&self.pending[..valid_length]) else {
+            return;
+        };
         let spans = highlight(&self.lang, text);
-        let Some(last) = spans.last() else { return; };
+        let Some(last) = spans.last() else {
+            return;
+        };
         let mut hold_from = last.start;
         if self.is_html_family() {
             if let Some(open_tag) = find_unclosed_html_tag(text, &spans) {
@@ -285,10 +296,16 @@ impl ResumableLexer {
     /// format. Oversized suffixes are refused before cloning their bytes.
     pub fn try_checkpoint(&self, source_revision: u64) -> Result<LexerCheckpoint, CheckpointError> {
         if self.lang.len() > MAX_LANG_LEN {
-            return Err(CheckpointError::PayloadTooLarge { bytes: self.lang.len(), cap: MAX_LANG_LEN });
+            return Err(CheckpointError::PayloadTooLarge {
+                bytes: self.lang.len(),
+                cap: MAX_LANG_LEN,
+            });
         }
         if self.pending.len() > MAX_SUFFIX_BYTES {
-            return Err(CheckpointError::PayloadTooLarge { bytes: self.pending.len(), cap: MAX_SUFFIX_BYTES });
+            return Err(CheckpointError::PayloadTooLarge {
+                bytes: self.pending.len(),
+                cap: MAX_SUFFIX_BYTES,
+            });
         }
         let checkpoint = self.checkpoint(source_revision);
         checkpoint.validate()?;
@@ -304,7 +321,10 @@ impl ResumableLexer {
         expected_offset: u64,
     ) -> Result<Self, CheckpointError> {
         Self::from_checkpoint_with_limits(
-            checkpoint, expected_revision, expected_offset, Self::DEFAULT_MAX_PENDING_BYTES,
+            checkpoint,
+            expected_revision,
+            expected_offset,
+            Self::DEFAULT_MAX_PENDING_BYTES,
         )
     }
 
@@ -319,21 +339,27 @@ impl ResumableLexer {
         checkpoint.validate()?;
         if checkpoint.source_revision != expected_revision {
             return Err(CheckpointError::SourceCorrespondenceMismatch {
-                expected_revision, found_revision: checkpoint.source_revision,
+                expected_revision,
+                found_revision: checkpoint.source_revision,
             });
         }
         if checkpoint.byte_offset != expected_offset {
             return Err(CheckpointError::OffsetMismatch {
-                expected_offset, found_offset: checkpoint.byte_offset,
+                expected_offset,
+                found_offset: checkpoint.byte_offset,
             });
         }
-        let overflow = || CheckpointError::OffsetOverflow { byte_offset: checkpoint.byte_offset };
+        let overflow = || CheckpointError::OffsetOverflow {
+            byte_offset: checkpoint.byte_offset,
+        };
         let base = usize::try_from(checkpoint.byte_offset).map_err(|_| overflow())?;
-        base.checked_add(checkpoint.unresolved_suffix.len()).ok_or_else(overflow)?;
+        base.checked_add(checkpoint.unresolved_suffix.len())
+            .ok_or_else(overflow)?;
         let max_pending_bytes = max_pending_bytes.max(1);
         if checkpoint.unresolved_suffix.len() > max_pending_bytes {
             return Err(CheckpointError::PayloadTooLarge {
-                bytes: checkpoint.unresolved_suffix.len(), cap: max_pending_bytes,
+                bytes: checkpoint.unresolved_suffix.len(),
+                cap: max_pending_bytes,
             });
         }
         Ok(Self {
@@ -348,7 +374,9 @@ impl ResumableLexer {
 
     /// Describe the final comment token in the replay suffix.
     pub fn detect_comment_state(&self) -> CommentState {
-        let Ok(text) = self.pending_text() else { return CommentState::None; };
+        let Ok(text) = self.pending_text() else {
+            return CommentState::None;
+        };
         let spans = highlight(&self.lang, text);
         if let Some(last) = spans.last()
             && last.end == text.len()
@@ -370,7 +398,9 @@ impl ResumableLexer {
                         i += 1;
                     }
                 }
-                return CommentState::Block { depth: depth.max(1) };
+                return CommentState::Block {
+                    depth: depth.max(1),
+                };
             } else if tail.starts_with("<!--") {
                 return CommentState::Block { depth: 1 };
             } else {
@@ -382,7 +412,9 @@ impl ResumableLexer {
 
     /// Describe the final string token in the replay suffix.
     pub fn detect_string_state(&self) -> StringState {
-        let Ok(text) = self.pending_text() else { return StringState::None; };
+        let Ok(text) = self.pending_text() else {
+            return StringState::None;
+        };
         let spans = highlight(&self.lang, text);
         if let Some(last) = spans.last()
             && last.end == text.len()
@@ -395,8 +427,10 @@ impl ResumableLexer {
                 return StringState::DoubleQuote;
             } else if tail.starts_with('`') {
                 return StringState::Backtick;
-            } else if tail.starts_with("r#") || tail.starts_with("r\"")
-                || tail.starts_with("br#") || tail.starts_with("br\"")
+            } else if tail.starts_with("r#")
+                || tail.starts_with("r\"")
+                || tail.starts_with("br#")
+                || tail.starts_with("br\"")
             {
                 let stripped = if tail.starts_with("br") {
                     tail.strip_prefix("br").unwrap_or("")
@@ -428,14 +462,22 @@ pub fn coalesce_spans(spans: &[Span]) -> Vec<CoalescedSpan> {
     for span in spans {
         match runs.last_mut() {
             Some(last) if last.kind == span.kind && last.end == span.start => last.end = span.end,
-            _ => runs.push(CoalescedSpan { kind: span.kind, start: span.start, end: span.end }),
+            _ => runs.push(CoalescedSpan {
+                kind: span.kind,
+                start: span.start,
+                end: span.end,
+            }),
         }
     }
     runs
 }
 
 /// Highlight source using fixed-size byte feeds through the resumable engine.
-pub fn highlight_chunked(lang: &str, code: &str, chunk_size: usize) -> Result<Vec<Span>, ResumeError> {
+pub fn highlight_chunked(
+    lang: &str,
+    code: &str,
+    chunk_size: usize,
+) -> Result<Vec<Span>, ResumeError> {
     let mut lexer = ResumableLexer::new(lang)?;
     for chunk in code.as_bytes().chunks(chunk_size.max(1)) {
         lexer.feed(chunk)?;
@@ -526,7 +568,9 @@ fn is_javascript_value_token(text: &str, span: &Span) -> bool {
 /// Preserve JavaScript's preceding-value context across slash/comparison and
 /// whitespace boundaries. The JSX lexer also uses this shared hold policy.
 pub(crate) fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
-    let Some(last) = spans.last() else { return 0; };
+    let Some(last) = spans.last() else {
+        return 0;
+    };
     let mut hold_from = last.start;
     // Until an exponent receives a digit, the batch lexer emits its marker
     // and optional sign separately. Retain the adjacent mantissa too: a later

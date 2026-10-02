@@ -87,11 +87,20 @@ mod tests {
     #[test]
     fn receipt_preserves_the_existing_schema_and_reading_order() {
         let renderer = BookRenderer::new(&[
-            BookInput { path: "z.md".into(), source: "# Z".into() },
-            BookInput { path: "guide/a.md".into(), source: "# A".into() },
-        ]).unwrap();
-        assert_eq!(receipt_json(renderer.book()).unwrap(),
-            "{\"schema\":\"fmd-book-receipt-v1\",\"chapter_count\":2,\"chapters\":[{\"path\":\"z.md\",\"title\":\"Z\",\"output\":\"z.html\"},{\"path\":\"guide/a.md\",\"title\":\"A\",\"output\":\"guide__a.html\"}]}");
+            BookInput {
+                path: "z.md".into(),
+                source: "# Z".into(),
+            },
+            BookInput {
+                path: "guide/a.md".into(),
+                source: "# A".into(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            receipt_json(renderer.book()).unwrap(),
+            "{\"schema\":\"fmd-book-receipt-v1\",\"chapter_count\":2,\"chapters\":[{\"path\":\"z.md\",\"title\":\"Z\",\"output\":\"z.html\"},{\"path\":\"guide/a.md\",\"title\":\"A\",\"output\":\"guide__a.html\"}]}"
+        );
     }
 
     #[test]
@@ -121,24 +130,42 @@ mod tests {
         assert_eq!(&plain[eocd..eocd + 4], b"PK\x05\x06");
         let start = u32::from_le_bytes(plain[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
         assert_eq!(&published[..start], &plain[..start]);
-        assert!(published.windows(b"frankenmarkdown-receipt.json".len())
-            .any(|window| window == b"frankenmarkdown-receipt.json"));
+        assert!(
+            published
+                .windows(b"frankenmarkdown-receipt.json".len())
+                .any(|window| window == b"frankenmarkdown-receipt.json")
+        );
         assert_eq!(published, renderer.render_site_publication().unwrap());
         assert_eq!(renderer.book().chapters[0].doc, original);
     }
 
     #[test]
     fn publication_keeps_site_collision_and_asset_validation() {
-        assert!(BookRenderer::new(&[
-            BookInput { path: "a/b.md".into(), source: "# One".into() },
-            BookInput { path: "a__b.md".into(), source: "# Two".into() },
-        ]).is_err());
-        let mut renderer = BookRenderer::new(&[
-            BookInput { path: "one.md".into(), source: "# One".into() },
-        ]).unwrap();
-        renderer.options_mut().pdf_image_assets.push(crate::PdfImageAsset {
-            destination: "bad.svg".into(), bytes: vec![],
-        });
+        assert!(
+            BookRenderer::new(&[
+                BookInput {
+                    path: "a/b.md".into(),
+                    source: "# One".into()
+                },
+                BookInput {
+                    path: "a__b.md".into(),
+                    source: "# Two".into()
+                },
+            ])
+            .is_err()
+        );
+        let mut renderer = BookRenderer::new(&[BookInput {
+            path: "one.md".into(),
+            source: "# One".into(),
+        }])
+        .unwrap();
+        renderer
+            .options_mut()
+            .pdf_image_assets
+            .push(crate::PdfImageAsset {
+                destination: "bad.svg".into(),
+                bytes: vec![],
+            });
         assert!(renderer.render_site_publication().is_err());
     }
 }

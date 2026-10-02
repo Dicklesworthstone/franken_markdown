@@ -46,10 +46,29 @@ pub fn render_book_site_publication(
     font_weights: Vec<u32>,
 ) -> std::result::Result<Vec<u8>, JsValue> {
     let request = SiteRequest {
-        paths, sources, include_paths, include_sources, expand_includes,
-        title, font, dark_mode, font_scale, lang, custom_css, toc, toc_depth,
-        image_destinations, image_bytes_flat, image_lengths,
-        fonts: [body_regular, body_bold, body_italic, body_bold_italic, mono_regular],
+        paths,
+        sources,
+        include_paths,
+        include_sources,
+        expand_includes,
+        title,
+        font,
+        dark_mode,
+        font_scale,
+        lang,
+        custom_css,
+        toc,
+        toc_depth,
+        image_destinations,
+        image_bytes_flat,
+        image_lengths,
+        fonts: [
+            body_regular,
+            body_bold,
+            body_italic,
+            body_bold_italic,
+            mono_regular,
+        ],
         font_weights,
     };
     build_renderer(request)
@@ -83,19 +102,29 @@ fn invalid(message: &str) -> RenderError {
     RenderError::InvalidInput(format!("book site: {message}"))
 }
 
-fn source_inputs(paths: Vec<String>, sources: Vec<String>, total: &mut usize) -> Result<Vec<BookInput>> {
+fn source_inputs(
+    paths: Vec<String>,
+    sources: Vec<String>,
+    total: &mut usize,
+) -> Result<Vec<BookInput>> {
     if paths.len() != sources.len() {
         return Err(invalid("paths and sources must have equal lengths"));
     }
     for (path, source) in paths.iter().zip(&sources) {
         for len in [path.len(), source.len()] {
-            *total = total.checked_add(len).ok_or_else(|| invalid("source size overflow"))?;
+            *total = total
+                .checked_add(len)
+                .ok_or_else(|| invalid("source size overflow"))?;
             if *total > 64 * 1024 * 1024 {
                 return Err(invalid("source text and paths exceed 64 MiB"));
             }
         }
     }
-    Ok(paths.into_iter().zip(sources).map(|(path, source)| BookInput { path, source }).collect())
+    Ok(paths
+        .into_iter()
+        .zip(sources)
+        .map(|(path, source)| BookInput { path, source })
+        .collect())
 }
 
 fn validate_assets(request: &SiteRequest) -> Result<()> {
@@ -105,15 +134,23 @@ fn validate_assets(request: &SiteRequest) -> Result<()> {
         || request.image_destinations.len() != request.image_lengths.len()
         || request.image_bytes_flat.len() > TOTAL
     {
-        return Err(invalid("image arrays differ in length or exceed 4096 assets / 128 MiB"));
+        return Err(invalid(
+            "image arrays differ in length or exceed 4096 assets / 128 MiB",
+        ));
     }
     let mut names = BTreeSet::new();
     let mut name_bytes = 0usize;
     let mut payload_bytes = 0usize;
-    for (destination, &len) in request.image_destinations.iter().zip(&request.image_lengths) {
+    for (destination, &len) in request
+        .image_destinations
+        .iter()
+        .zip(&request.image_lengths)
+    {
         let key = destination.trim();
         if key.is_empty() || destination.len() > 8192 || !names.insert(key) {
-            return Err(invalid("image destinations must be unique, nonempty and at most 8192 bytes"));
+            return Err(invalid(
+                "image destinations must be unique, nonempty and at most 8192 bytes",
+            ));
         }
         name_bytes += destination.len();
         if name_bytes > 65536 {
@@ -122,14 +159,17 @@ fn validate_assets(request: &SiteRequest) -> Result<()> {
         if len == 0 || len as usize > SINGLE {
             return Err(invalid("images must contain 1 byte through 32 MiB each"));
         }
-        payload_bytes = payload_bytes.checked_add(len as usize)
+        payload_bytes = payload_bytes
+            .checked_add(len as usize)
             .ok_or_else(|| invalid("image size overflow"))?;
         if payload_bytes > TOTAL {
             return Err(invalid("images exceed 128 MiB"));
         }
     }
     if payload_bytes != request.image_bytes_flat.len() {
-        return Err(invalid("flattened image bytes do not match their declared lengths"));
+        return Err(invalid(
+            "flattened image bytes do not match their declared lengths",
+        ));
     }
     let mut font_bytes = 0usize;
     for bytes in &request.fonts {
@@ -144,7 +184,9 @@ fn validate_assets(request: &SiteRequest) -> Result<()> {
     if (!request.font_weights.is_empty() && request.font_weights.len() != 5)
         || request.font_weights.iter().any(|&weight| weight > 1000)
     {
-        return Err(invalid("font weights must be empty or five integers in 0..=1000"));
+        return Err(invalid(
+            "font weights must be empty or five integers in 0..=1000",
+        ));
     }
     Ok(())
 }
@@ -152,38 +194,65 @@ fn validate_assets(request: &SiteRequest) -> Result<()> {
 // Keep the full admission/construction path callable without JsValue so native
 // tests can exercise failures without invoking browser-only imported functions.
 fn build_renderer(request: SiteRequest) -> Result<BookRenderer> {
-    if request.paths.is_empty() || request.paths.len() > 4096
+    if request.paths.is_empty()
+        || request.paths.len() > 4096
         || request.include_paths.len() > 4096 - request.paths.len()
     {
-        return Err(invalid("expected 1..=4096 chapters and include sources combined"));
+        return Err(invalid(
+            "expected 1..=4096 chapters and include sources combined",
+        ));
     }
-    if !request.expand_includes && (!request.include_paths.is_empty() || !request.include_sources.is_empty()) {
+    if !request.expand_includes
+        && (!request.include_paths.is_empty() || !request.include_sources.is_empty())
+    {
         return Err(invalid("include-only resources require expandIncludes"));
     }
     validate_assets(&request)?;
     let mut metadata_bytes = 0usize;
-    for text in [&request.title, &request.font, &request.dark_mode, &request.lang, &request.custom_css]
-        .into_iter().flatten()
+    for text in [
+        &request.title,
+        &request.font,
+        &request.dark_mode,
+        &request.lang,
+        &request.custom_css,
+    ]
+    .into_iter()
+    .flatten()
     {
-        metadata_bytes = metadata_bytes.checked_add(text.len()).ok_or_else(|| invalid("metadata size overflow"))?;
+        metadata_bytes = metadata_bytes
+            .checked_add(text.len())
+            .ok_or_else(|| invalid("metadata size overflow"))?;
         if metadata_bytes > 4 * 1024 * 1024 {
             return Err(invalid("metadata and CSS exceed 4 MiB combined"));
         }
     }
     let mut options = WasmRenderOptions::default();
-    if let Some(font) = request.font.as_deref().filter(|text| !text.trim().is_empty()) {
+    if let Some(font) = request
+        .font
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
         options = options.with_font_name(font)?;
     }
     if let Some(dark) = request.dark_mode.as_deref() {
-        options.theme = options.theme.with_dark_mode(match dark.trim().to_ascii_lowercase().as_str() {
-            "" | "auto" | "system" => DarkModePolicy::Auto,
-            "disabled" | "disable" | "off" | "light" => DarkModePolicy::Disabled,
-            _ => return Err(invalid("darkMode must be auto or disabled")),
-        });
+        options.theme =
+            options
+                .theme
+                .with_dark_mode(match dark.trim().to_ascii_lowercase().as_str() {
+                    "" | "auto" | "system" => DarkModePolicy::Auto,
+                    "disabled" | "disable" | "off" | "light" => DarkModePolicy::Disabled,
+                    _ => return Err(invalid("darkMode must be auto or disabled")),
+                });
     }
     options.font_scale = match request.font_scale {
-        Some(scale) if scale.is_finite() && (scale as f32).is_finite() && (scale as f32) > 0.0 => Some(scale as f32),
-        Some(_) => return Err(invalid("fontScale must be finite, positive and representable as f32")),
+        Some(scale) if scale.is_finite() && (scale as f32).is_finite() && (scale as f32) > 0.0 => {
+            Some(scale as f32)
+        }
+        Some(_) => {
+            return Err(invalid(
+                "fontScale must be finite, positive and representable as f32",
+            ));
+        }
         None => None,
     };
     options.toc_depth = match request.toc_depth {
@@ -194,7 +263,11 @@ fn build_renderer(request: SiteRequest) -> Result<BookRenderer> {
     options.title = request.title.filter(|text| !text.is_empty());
     options.lang = request.lang.and_then(|text| {
         let value = text.trim();
-        if value.is_empty() { None } else { Some(value.to_string()) }
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
     });
     // An explicit empty stylesheet means no default CSS, not absence.
     options.custom_css = request.custom_css;
@@ -208,7 +281,11 @@ fn build_renderer(request: SiteRequest) -> Result<BookRenderer> {
         BookRenderer::new(&chapters)?
     };
     let mut offset = 0usize;
-    for (destination, len) in request.image_destinations.into_iter().zip(request.image_lengths) {
+    for (destination, len) in request
+        .image_destinations
+        .into_iter()
+        .zip(request.image_lengths)
+    {
         let end = offset + len as usize; // Full lengths/aggregate validated above.
         options.pdf_image_assets.push(PdfImageAsset {
             destination: destination.trim().to_string(),
@@ -216,7 +293,11 @@ fn build_renderer(request: SiteRequest) -> Result<BookRenderer> {
         });
         offset = end;
     }
-    for (index, (slot, bytes)) in FontAssetSlot::ALL.into_iter().zip(request.fonts).enumerate() {
+    for (index, (slot, bytes)) in FontAssetSlot::ALL
+        .into_iter()
+        .zip(request.fonts)
+        .enumerate()
+    {
         if !bytes.is_empty() {
             options.font_assets.set_slot(slot, bytes)?;
         }
@@ -235,7 +316,11 @@ mod tests {
     use super::*;
 
     fn request() -> SiteRequest {
-        SiteRequest { paths: vec!["guide/start.md".into()], sources: vec!["# Start".into()], ..SiteRequest::default() }
+        SiteRequest {
+            paths: vec!["guide/start.md".into()],
+            sources: vec!["# Start".into()],
+            ..SiteRequest::default()
+        }
     }
 
     #[test]
@@ -253,7 +338,14 @@ mod tests {
             value.image_lengths = lengths;
             assert!(build_renderer(value).is_err());
         }
-        for scale in [f64::NAN, f64::INFINITY, 0.0, -1.0, f64::MAX, f64::MIN_POSITIVE] {
+        for scale in [
+            f64::NAN,
+            f64::INFINITY,
+            0.0,
+            -1.0,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+        ] {
             let mut value = request();
             value.font_scale = Some(scale);
             assert!(build_renderer(value).is_err());

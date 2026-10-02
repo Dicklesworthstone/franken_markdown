@@ -25,14 +25,25 @@ fn bounded_message(message: &str) -> String {
     result
 }
 
-fn finding(source: &str, index: &LineIndex, span: SourceSpan, severity: usize,
-    message: &str, code: Option<&str>) -> Json
-{
+fn finding(
+    source: &str,
+    index: &LineIndex,
+    span: SourceSpan,
+    severity: usize,
+    message: &str,
+    code: Option<&str>,
+) -> Json {
     let mut value = object([
-        ("range", object([
-            ("start", position(index.position(source, span.start))),
-            ("end", position(index.position(source, span.end.max(span.start)))),
-        ])),
+        (
+            "range",
+            object([
+                ("start", position(index.position(source, span.start))),
+                (
+                    "end",
+                    position(index.position(source, span.end.max(span.start))),
+                ),
+            ]),
+        ),
         ("severity", number(severity)),
         ("source", string("fmd")),
         ("message", string(&bounded_message(message))),
@@ -49,16 +60,32 @@ pub(super) fn publish(uri: &str, buffer: &Buffer) -> Json {
     let source = buffer.text.as_str();
     // Retain one extra item only to distinguish exactly-at-limit from actual
     // truncation. The final wire array never exceeds MAX_DIAGNOSTICS.
-    let mut findings: Vec<_> = document.diagnostics.iter().take(MAX_DIAGNOSTICS + 1)
-        .map(|diagnostic| finding(source, &index, diagnostic.span,
-            match diagnostic.severity { DiagnosticSeverity::Error => 1, DiagnosticSeverity::Warning => 2 },
-            &diagnostic.message, None))
+    let mut findings: Vec<_> = document
+        .diagnostics
+        .iter()
+        .take(MAX_DIAGNOSTICS + 1)
+        .map(|diagnostic| {
+            finding(
+                source,
+                &index,
+                diagnostic.span,
+                match diagnostic.severity {
+                    DiagnosticSeverity::Error => 1,
+                    DiagnosticSeverity::Warning => 2,
+                },
+                &diagnostic.message,
+                None,
+            )
+        })
         .collect();
 
     if findings.len() <= MAX_DIAGNOSTICS {
         // Move the original AST rather than cloning whole nested documents.
-        let (spans, blocks): (Vec<_>, Vec<_>) = document.blocks.into_iter()
-            .map(|block| (block.span, block.node)).unzip();
+        let (spans, blocks): (Vec<_>, Vec<_>) = document
+            .blocks
+            .into_iter()
+            .map(|block| (block.span, block.node))
+            .unzip();
         let plain = Document { blocks };
         match analyze_document_links(&plain) {
             Ok(report) => {
@@ -101,33 +128,49 @@ pub(super) fn publish(uri: &str, buffer: &Buffer) -> Json {
             "Additional diagnostics were omitted after reaching the 1024-item limit. Fix the displayed findings to reveal more.",
             Some("diagnostics_truncated")));
     }
-    notification("textDocument/publishDiagnostics", object([
-        ("uri", string(uri)), ("version", Json::Number(f64::from(buffer.version))),
-        ("diagnostics", Json::Array(findings)),
-    ]))
+    notification(
+        "textDocument/publishDiagnostics",
+        object([
+            ("uri", string(uri)),
+            ("version", Json::Number(f64::from(buffer.version))),
+            ("diagnostics", Json::Array(findings)),
+        ]),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{Phase, Server, parse_json};
+    use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn entries(report: &Json) -> &[Json] {
-        match report.get("params").and_then(|params| params.get("diagnostics")) {
+        match report
+            .get("params")
+            .and_then(|params| params.get("diagnostics"))
+        {
             Some(Json::Array(entries)) => entries,
             _ => &[],
         }
     }
 
     fn inspect(source: &str) -> Json {
-        publish("untitled:anchors", &Buffer { text: source.to_owned(), version: 7, synchronized: true })
+        publish(
+            "untitled:anchors",
+            &Buffer {
+                text: source.to_owned(),
+                version: 7,
+                synchronized: true,
+            },
+        )
     }
 
     fn anchors(report: &Json) -> Vec<&Json> {
-        entries(report).iter().filter(|entry| entry.get("code").and_then(Json::as_str)
-            == Some("missing_anchor")).collect()
+        entries(report)
+            .iter()
+            .filter(|entry| entry.get("code").and_then(Json::as_str) == Some("missing_anchor"))
+            .collect()
     }
 
     #[test]
@@ -135,13 +178,26 @@ mod tests {
         let report = inspect("[valid](#later) [bad](#missing)\n\n# Later\n");
         let found = anchors(&report);
         assert_eq!(found.len(), 1);
-        assert!(found[0].get("message").and_then(Json::as_str).is_some_and(|message| message.contains("#missing")));
-        assert_eq!(report.get("params").and_then(|params| params.get("version")).and_then(Json::as_u64), Some(7));
+        assert!(
+            found[0]
+                .get("message")
+                .and_then(Json::as_str)
+                .is_some_and(|message| message.contains("#missing"))
+        );
+        assert_eq!(
+            report
+                .get("params")
+                .and_then(|params| params.get("version"))
+                .and_then(Json::as_u64),
+            Some(7)
+        );
     }
 
     #[test]
     fn code_and_external_resources_are_not_treated_as_heading_links() {
-        let report = inspect("`[x](#missing)`\n\n```md\n[x](#missing)\n```\n\n[x](https://example.invalid/#missing) [x](other.md#missing) ![x](missing.png)\n");
+        let report = inspect(
+            "`[x](#missing)`\n\n```md\n[x](#missing)\n```\n\n[x](https://example.invalid/#missing) [x](other.md#missing) ![x](missing.png)\n",
+        );
         assert!(anchors(&report).is_empty());
     }
 
@@ -159,8 +215,12 @@ mod tests {
         let report = inspect(source);
         let found = anchors(&report);
         assert_eq!(found.len(), 2);
-        assert!(found.iter().all(|entry| entry.get("message").and_then(Json::as_str)
-            .is_some_and(|message| message.contains("#absent"))));
+        assert!(found.iter().all(|entry| {
+            entry
+                .get("message")
+                .and_then(Json::as_str)
+                .is_some_and(|message| message.contains("#absent"))
+        }));
     }
 
     #[test]
@@ -170,12 +230,27 @@ mod tests {
         let found = anchors(&report);
         assert_eq!(found.len(), 1);
         let range = found[0].get("range").ok_or("missing range")?;
-        assert_eq!(range.get("start").and_then(|p| p.get("line")).and_then(Json::as_u64), Some(2));
-        assert_eq!(range.get("start").and_then(|p| p.get("character")).and_then(Json::as_u64), Some(0));
+        assert_eq!(
+            range
+                .get("start")
+                .and_then(|p| p.get("line"))
+                .and_then(Json::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            range
+                .get("start")
+                .and_then(|p| p.get("character"))
+                .and_then(Json::as_u64),
+            Some(0)
+        );
         let parsed = parse_markdown_spanned(source);
         let block = parsed.blocks.last().ok_or("no paragraph")?;
         let index = LineIndex::new(source);
-        assert_eq!(range.get("end"), Some(&position(index.position(source, block.span.end))));
+        assert_eq!(
+            range.get("end"),
+            Some(&position(index.position(source, block.span.end)))
+        );
         Ok(())
     }
 
@@ -187,8 +262,12 @@ mod tests {
         let report = inspect(source);
         assert_eq!(anchors(&report).len(), 1);
         for diagnostic in expected {
-            assert!(entries(&report).iter().any(|entry| entry.get("message").and_then(Json::as_str)
-                == Some(bounded_message(&diagnostic.message).as_str())));
+            assert!(
+                entries(&report)
+                    .iter()
+                    .any(|entry| entry.get("message").and_then(Json::as_str)
+                        == Some(bounded_message(&diagnostic.message).as_str()))
+            );
         }
     }
 
@@ -196,16 +275,27 @@ mod tests {
     fn diagnostic_limit_is_explicit_and_messages_remain_bounded() {
         let report = inspect(&"[bad](#absent)\n\n".repeat(MAX_DIAGNOSTICS + 2));
         assert_eq!(entries(&report).len(), MAX_DIAGNOSTICS);
-        assert_eq!(entries(&report).last().and_then(|entry| entry.get("code")).and_then(Json::as_str), Some("diagnostics_truncated"));
+        assert_eq!(
+            entries(&report)
+                .last()
+                .and_then(|entry| entry.get("code"))
+                .and_then(Json::as_str),
+            Some("diagnostics_truncated")
+        );
         let long = inspect(&format!("[bad](#{})\n", "λ".repeat(2000)));
         assert_eq!(anchors(&long).len(), 1);
-        assert!(entries(&long).iter().all(|entry| entry.get("message").and_then(Json::as_str)
-            .is_some_and(|message| message.chars().count() <= MAX_MESSAGE_CHARS)));
+        assert!(entries(&long).iter().all(|entry| {
+            entry
+                .get("message")
+                .and_then(Json::as_str)
+                .is_some_and(|message| message.chars().count() <= MAX_MESSAGE_CHARS)
+        }));
     }
 
     #[test]
     fn encoded_fragments_and_root_links_follow_publication_rules() {
-        let report = inspect("# Here\n\n[encoded](#%68ere) [root](#) [query](?mode=read) [bad](#%zz)\n");
+        let report =
+            inspect("# Here\n\n[encoded](#%68ere) [root](#) [query](?mode=read) [bad](#%zz)\n");
         assert!(anchors(&report).is_empty());
         assert_eq!(entries(&report).iter().filter(|entry| entry.get("code").and_then(Json::as_str)
             == Some("invalid_fragment")).count(), 1);
@@ -224,12 +314,18 @@ mod tests {
     fn analyzer_admission_failure_is_not_published_as_a_clean_document() {
         let report = inspect(&"[bad](#absent) ".repeat(4097));
         assert_eq!(entries(&report).len(), 1);
-        assert_eq!(entries(&report)[0].get("code").and_then(Json::as_str), Some("link_analysis_incomplete"));
+        assert_eq!(
+            entries(&report)[0].get("code").and_then(Json::as_str),
+            Some("link_analysis_incomplete")
+        );
     }
 
     #[test]
     fn live_open_rename_repair_and_rejected_edit_do_not_publish_stale_findings() -> TestResult {
-        let mut server = Server { phase: Phase::Running, ..Server::default() };
+        let mut server = Server {
+            phase: Phase::Running,
+            ..Server::default()
+        };
         let messages = [
             r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///not-read.md","version":1,"text":"# Here\n\n[go](#here)\n"}}}"###,
             r###"{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///not-read.md","version":2},"contentChanges":[{"range":{"start":{"line":0,"character":2},"end":{"line":0,"character":6}},"text":"There"}]}}"###,
@@ -238,11 +334,22 @@ mod tests {
         ];
         for (index, input) in messages.iter().enumerate() {
             let replies = server.handle(parse_json(input)?);
-            let report = replies.iter().find(|reply| reply.get("method").and_then(Json::as_str)
-                == Some("textDocument/publishDiagnostics")).ok_or("missing publication")?;
+            let report = replies
+                .iter()
+                .find(|reply| {
+                    reply.get("method").and_then(Json::as_str)
+                        == Some("textDocument/publishDiagnostics")
+                })
+                .ok_or("missing publication")?;
             assert_eq!(anchors(report).len(), usize::from(index == 1));
             if index < 3 {
-                assert_eq!(report.get("params").and_then(|p| p.get("version")).and_then(Json::as_u64), Some((index + 1) as u64));
+                assert_eq!(
+                    report
+                        .get("params")
+                        .and_then(|p| p.get("version"))
+                        .and_then(Json::as_u64),
+                    Some((index + 1) as u64)
+                );
             } else {
                 assert!(entries(report).is_empty());
                 assert!(!server.documents["file:///not-read.md"].synchronized);

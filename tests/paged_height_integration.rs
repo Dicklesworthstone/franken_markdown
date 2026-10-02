@@ -67,7 +67,10 @@ fn oracle_scroll_anchoring_never_jumps_by_scrollbar_percentage_during_paged_refi
     // Total document height = 4,000 pt
     let initial_heights = vec![LogicalHeight::from_points(100.0); 40];
     let mut index = PagedHeightIndex::with_heights_and_capacity(&initial_heights, 10).unwrap();
-    assert_eq!(index.total_height().unwrap(), LogicalHeight::from_points(4000.0));
+    assert_eq!(
+        index.total_height().unwrap(),
+        LogicalHeight::from_points(4000.0)
+    );
 
     // User is reading Block 25 with intra-block offset 30 pt
     // Initial absolute scroll_y = 25 * 100 + 30 = 2,530 pt
@@ -90,7 +93,10 @@ fn oracle_scroll_anchoring_never_jumps_by_scrollbar_percentage_during_paged_refi
     let new_page3_heights = vec![LogicalHeight::from_points(50.0); 10];
     index.refine_heights(30, &new_page3_heights).unwrap();
 
-    assert_eq!(index.total_height().unwrap(), LogicalHeight::from_points(5000.0));
+    assert_eq!(
+        index.total_height().unwrap(),
+        LogicalHeight::from_points(5000.0)
+    );
 
     // If naive scrollbar percentage were used:
     // 63.25% of 5,000 pt = 3,162.5 pt (which causes a severe visual jump!)
@@ -122,9 +128,12 @@ fn oracle_transactional_refinement_old_new_page_reservation() {
     let mut tx = index.begin_refinement(&[1]).expect("reserve page 1");
 
     // Stage updates on page 1: change first 3 blocks from 50pt to 120pt (+70pt each = +210pt)
-    tx.stage_block_refinement(1, 0, LogicalHeight::from_points(120.0)).unwrap();
-    tx.stage_block_refinement(1, 1, LogicalHeight::from_points(120.0)).unwrap();
-    tx.stage_block_refinement(1, 2, LogicalHeight::from_points(120.0)).unwrap();
+    tx.stage_block_refinement(1, 0, LogicalHeight::from_points(120.0))
+        .unwrap();
+    tx.stage_block_refinement(1, 1, LogicalHeight::from_points(120.0))
+        .unwrap();
+    tx.stage_block_refinement(1, 2, LogicalHeight::from_points(120.0))
+        .unwrap();
 
     // Commit transaction
     tx.commit(&mut index).expect("commit page refinement");
@@ -135,10 +144,22 @@ fn oracle_transactional_refinement_old_new_page_reservation() {
     assert_eq!(index.total_height().unwrap(), expected_new_total);
 
     // Verify individual block heights
-    assert_eq!(index.block_height(10).unwrap(), LogicalHeight::from_points(120.0));
-    assert_eq!(index.block_height(11).unwrap(), LogicalHeight::from_points(120.0));
-    assert_eq!(index.block_height(12).unwrap(), LogicalHeight::from_points(120.0));
-    assert_eq!(index.block_height(13).unwrap(), LogicalHeight::from_points(50.0));
+    assert_eq!(
+        index.block_height(10).unwrap(),
+        LogicalHeight::from_points(120.0)
+    );
+    assert_eq!(
+        index.block_height(11).unwrap(),
+        LogicalHeight::from_points(120.0)
+    );
+    assert_eq!(
+        index.block_height(12).unwrap(),
+        LogicalHeight::from_points(120.0)
+    );
+    assert_eq!(
+        index.block_height(13).unwrap(),
+        LogicalHeight::from_points(50.0)
+    );
 }
 
 #[test]
@@ -157,7 +178,10 @@ fn oracle_transaction_rollback_negative_control() {
 
     // Target index is completely unchanged
     assert_eq!(index.total_height().unwrap(), original_total);
-    assert_eq!(index.block_height(0).unwrap(), LogicalHeight::from_points(25.0));
+    assert_eq!(
+        index.block_height(0).unwrap(),
+        LogicalHeight::from_points(25.0)
+    );
 }
 
 #[test]
@@ -173,13 +197,19 @@ fn oracle_structural_insert_and_remove_across_page_boundaries() {
         .insert_block(3, LogicalHeight::from_points(99.0))
         .unwrap();
     assert_eq!(index.len(), 7);
-    assert_eq!(index.block_height(3).unwrap(), LogicalHeight::from_points(99.0));
+    assert_eq!(
+        index.block_height(3).unwrap(),
+        LogicalHeight::from_points(99.0)
+    );
 
     // Remove block at global index 3
     let removed = index.remove_block(3).unwrap();
     assert_eq!(removed, LogicalHeight::from_points(99.0));
     assert_eq!(index.len(), 6);
-    assert_eq!(index.total_height().unwrap(), LogicalHeight::from_points(60.0));
+    assert_eq!(
+        index.total_height().unwrap(),
+        LogicalHeight::from_points(60.0)
+    );
 }
 
 #[test]
@@ -196,5 +226,8 @@ fn oracle_invalid_range_and_overflow_negative_controls() {
 
     // Out of bounds page reservation
     let err_page = index.begin_refinement(&[99]);
-    assert!(matches!(err_page, Err(BlockFlowError::IndexOutOfBounds { .. })));
+    assert!(matches!(
+        err_page,
+        Err(BlockFlowError::IndexOutOfBounds { .. })
+    ));
 }

@@ -124,7 +124,10 @@ impl<C: Clock> PollWatcher<C> {
     #[must_use]
     pub fn new(paths: Vec<PathBuf>, debounce: Duration, clock: C) -> Self {
         let mut seen = BTreeSet::new();
-        let paths: Vec<_> = paths.into_iter().filter(|path| seen.insert(path.clone())).collect();
+        let paths: Vec<_> = paths
+            .into_iter()
+            .filter(|path| seen.insert(path.clone()))
+            .collect();
         let mut watcher = Self {
             dependencies: dependencies::Graph::new(&paths),
             paths,
@@ -160,7 +163,9 @@ impl<C: Clock> PollWatcher<C> {
         for path in paths {
             if !self.fingerprints.contains_key(&path) {
                 let fingerprint = self.observe(&path);
-                if fingerprint.is_some() { self.ever_seen.insert(path.clone()); }
+                if fingerprint.is_some() {
+                    self.ever_seen.insert(path.clone());
+                }
                 self.paths.push(path.clone());
                 self.fingerprints.insert(path, fingerprint);
             }
@@ -174,7 +179,11 @@ impl<C: Clock> PollWatcher<C> {
     }
 
     fn observe(&self, path: &Path) -> Option<Fingerprint> {
-        if self.dependencies.entry_only(path) { fingerprint_entry(path) } else { fingerprint(path) }
+        if self.dependencies.entry_only(path) {
+            fingerprint_entry(path)
+        } else {
+            fingerprint(path)
+        }
     }
 
     /// Explicit Markdown roots whose dependency graph could not be refreshed.
@@ -219,7 +228,8 @@ impl<C: Clock> PollWatcher<C> {
                 continue;
             }
             if prev != fp {
-                self.pending.entry(path.clone())
+                self.pending
+                    .entry(path.clone())
                     .and_modify(|pending| pending.changed_at = now)
                     .or_insert(PendingChange {
                         before: prev,
@@ -227,7 +237,11 @@ impl<C: Clock> PollWatcher<C> {
                         changed_at: now,
                     });
             }
-            if self.pending.get(path).is_some_and(|pending| pending.before == fp) {
+            if self
+                .pending
+                .get(path)
+                .is_some_and(|pending| pending.before == fp)
+            {
                 self.pending.remove(path);
             }
         }
@@ -238,7 +252,9 @@ impl<C: Clock> PollWatcher<C> {
         let fingerprints = &self.fingerprints;
         let ever_seen = &mut self.ever_seen;
         self.pending.retain(|path, pending| {
-            let waited = now.checked_duration_since(pending.changed_at).unwrap_or(Duration::ZERO);
+            let waited = now
+                .checked_duration_since(pending.changed_at)
+                .unwrap_or(Duration::ZERO);
             if waited < debounce {
                 return true;
             }
@@ -246,13 +262,18 @@ impl<C: Clock> PollWatcher<C> {
             if current != pending.before {
                 let kind = match current {
                     None => ChangeKind::Removed,
-                    Some(_) if pending.before.is_none() && !pending.previously_seen => ChangeKind::Created,
+                    Some(_) if pending.before.is_none() && !pending.previously_seen => {
+                        ChangeKind::Created
+                    }
                     Some(_) => ChangeKind::Modified,
                 };
                 if current.is_some() {
                     ever_seen.insert(path.clone());
                 }
-                out.push(ChangeEvent { path: path.clone(), kind });
+                out.push(ChangeEvent {
+                    path: path.clone(),
+                    kind,
+                });
             }
             false
         });
@@ -262,9 +283,16 @@ impl<C: Clock> PollWatcher<C> {
     fn refresh_dependencies(&mut self, now: Instant) {
         // Use the same clock sample as event emission: crossing the deadline
         // during filesystem reads must not retire edges before their event.
-        let settling = self.pending.iter().filter(|(_, pending)| {
-            now.checked_duration_since(pending.changed_at).unwrap_or(Duration::ZERO) < self.debounce
-        }).map(|(path, _)| path.clone()).collect();
+        let settling = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| {
+                now.checked_duration_since(pending.changed_at)
+                    .unwrap_or(Duration::ZERO)
+                    < self.debounce
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
         let needed = self.dependencies.refresh(&self.fingerprints, &settling);
         self.paths.retain(|path| needed.contains(path));
         self.fingerprints.retain(|path, _| needed.contains(path));
@@ -361,7 +389,10 @@ fn fingerprint(path: &Path) -> Option<Fingerprint> {
     // sentinel observes shrink/replacement without hashing rejected gigabytes
     // on every polling interval. Growing files are bounded by the same limit.
     if metadata.len() > MAX_FINGERPRINT_BYTES {
-        return Some(Fingerprint { len: metadata.len(), hash: 0 });
+        return Some(Fingerprint {
+            len: metadata.len(),
+            hash: 0,
+        });
     }
     let mut file = std::fs::File::open(path).ok()?;
     let mut buf = [0u8; 8192];
@@ -375,7 +406,9 @@ fn fingerprint(path: &Path) -> Option<Fingerprint> {
             Err(_) => return None,
         };
         len = len.saturating_add(n as u64);
-        if len > MAX_FINGERPRINT_BYTES { return Some(Fingerprint { len, hash: 0 }); }
+        if len > MAX_FINGERPRINT_BYTES {
+            return Some(Fingerprint { len, hash: 0 });
+        }
         for &b in &buf[..n] {
             hash ^= u64::from(b);
             hash = hash.wrapping_mul(FNV_PRIME);
@@ -389,7 +422,10 @@ fn fingerprint(path: &Path) -> Option<Fingerprint> {
 fn fingerprint_entry(path: &Path) -> Option<Fingerprint> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     let identity = if metadata.is_symlink() {
-        format!("symlink:{}", std::fs::read_link(path).ok()?.to_string_lossy())
+        format!(
+            "symlink:{}",
+            std::fs::read_link(path).ok()?.to_string_lossy()
+        )
     } else if metadata.is_file() {
         "regular-file".to_owned()
     } else if metadata.is_dir() {
@@ -400,7 +436,10 @@ fn fingerprint_entry(path: &Path) -> Option<Fingerprint> {
     let hash = identity.bytes().fold(FNV_OFFSET, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
     });
-    Some(Fingerprint { len: metadata.len(), hash })
+    Some(Fingerprint {
+        len: metadata.len(),
+        hash,
+    })
 }
 
 // =====================================================================
@@ -603,8 +642,17 @@ mod tests {
         let input = dir.join("doc.md");
         let included = dir.join("large.txt");
         std::fs::write(&input, "{{#include large.txt}}\n").unwrap();
-        std::fs::File::create(&included).unwrap().set_len(MAX_FINGERPRINT_BYTES + 1).unwrap();
-        assert_eq!(fingerprint(&included), Some(Fingerprint { len: MAX_FINGERPRINT_BYTES + 1, hash: 0 }));
+        std::fs::File::create(&included)
+            .unwrap()
+            .set_len(MAX_FINGERPRINT_BYTES + 1)
+            .unwrap();
+        assert_eq!(
+            fingerprint(&included),
+            Some(Fingerprint {
+                len: MAX_FINGERPRINT_BYTES + 1,
+                hash: 0
+            })
+        );
         let mut watcher = primed(&input, Duration::ZERO, ManualClock::new());
         assert!(watcher.dependency_failures().contains(&input));
         assert!(watcher.poll().is_empty());

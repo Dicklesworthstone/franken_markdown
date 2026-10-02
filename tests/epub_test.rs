@@ -6,10 +6,10 @@
 
 #[path = "../src/epub.rs"]
 mod epub;
-#[path = "../src/zip.rs"]
-mod zip;
 #[path = "epub/theme.rs"]
 mod epub_theme;
+#[path = "../src/zip.rs"]
+mod zip;
 
 use franken_markdown::{HtmlOptions, parse_markdown, zlib_decompress};
 use zip::{ZipWriter, crc32};

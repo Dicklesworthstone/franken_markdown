@@ -3,8 +3,8 @@
 //! accepting a host payload. A rejected preparation publishes no partial output.
 
 use super::{
-    AssetResult, BlockMeta, DisplayBlock, FlowDisplayError, PreparedBlock,
-    ResumableFlowDisplay, SourceLine,
+    AssetResult, BlockMeta, DisplayBlock, FlowDisplayError, PreparedBlock, ResumableFlowDisplay,
+    SourceLine,
 };
 use crate::ast::{Block, Inline};
 use crate::span::SpannedDocument;
@@ -52,8 +52,14 @@ fn exceeded(name: &str, actual: usize, maximum: usize) -> FlowDisplayError {
     FlowDisplayError::BudgetExceeded(format!("{name}: {actual} exceeds limit {maximum}"))
 }
 
-fn charge(total: &mut usize, amount: usize, maximum: usize, name: &str) -> Result<(), FlowDisplayError> {
-    let next = total.checked_add(amount)
+fn charge(
+    total: &mut usize,
+    amount: usize,
+    maximum: usize,
+    name: &str,
+) -> Result<(), FlowDisplayError> {
+    let next = total
+        .checked_add(amount)
         .ok_or_else(|| FlowDisplayError::BudgetExceeded(format!("{name}: counter overflow")))?;
     if next > maximum {
         return Err(exceeded(name, next, maximum));
@@ -65,22 +71,35 @@ fn charge(total: &mut usize, amount: usize, maximum: usize, name: &str) -> Resul
 impl FlowDisplayLimits {
     fn check_source(&self, source: &str) -> Result<(), FlowDisplayError> {
         if source.len() > self.max_source_bytes {
-            return Err(exceeded("source bytes", source.len(), self.max_source_bytes));
+            return Err(exceeded(
+                "source bytes",
+                source.len(),
+                self.max_source_bytes,
+            ));
         }
-        let count = source.split_inclusive('\n')
-            .take(self.max_source_lines.saturating_add(1)).count();
+        let count = source
+            .split_inclusive('\n')
+            .take(self.max_source_lines.saturating_add(1))
+            .count();
         if count > self.max_source_lines {
             return Err(exceeded("source lines", count, self.max_source_lines));
         }
         Ok(())
     }
 
-    pub(super) fn check_asset(&self, result: &AssetResult, retained: usize) -> Result<usize, FlowDisplayError> {
-        if result.width == 0 || result.height == 0
-            || result.width > self.max_image_dimension || result.height > self.max_image_dimension
+    pub(super) fn check_asset(
+        &self,
+        result: &AssetResult,
+        retained: usize,
+    ) -> Result<usize, FlowDisplayError> {
+        if result.width == 0
+            || result.height == 0
+            || result.width > self.max_image_dimension
+            || result.height > self.max_image_dimension
         {
             return Err(FlowDisplayError::InvalidAssetDimensions {
-                width: result.width, height: result.height,
+                width: result.width,
+                height: result.height,
             });
         }
         let bytes = result.bytes.as_ref().map_or(0, Vec::len);
@@ -88,7 +107,12 @@ impl FlowDisplayLimits {
             return Err(exceeded("asset bytes", bytes, self.max_asset_bytes));
         }
         let mut next = retained;
-        charge(&mut next, bytes, self.max_retained_asset_bytes, "retained asset bytes")?;
+        charge(
+            &mut next,
+            bytes,
+            self.max_retained_asset_bytes,
+            "retained asset bytes",
+        )?;
         Ok(next)
     }
 }
@@ -108,7 +132,10 @@ impl ResumableFlowDisplay {
         let mut offset = 0;
         for segment in source.split_inclusive('\n') {
             let end_offset = offset + segment.len();
-            engine.lines.push_back(SourceLine { start_offset: offset, end_offset });
+            engine.lines.push_back(SourceLine {
+                start_offset: offset,
+                end_offset,
+            });
             offset = end_offset;
         }
         Ok(engine)
@@ -147,9 +174,15 @@ pub(super) fn audit_document(
         stack.push(Node::Block(&block.node, 0));
     }
     while let Some(node) = stack.pop() {
-        let depth = match &node { Node::Block(_, d) | Node::Inline(_, d) => *d };
+        let depth = match &node {
+            Node::Block(_, d) | Node::Inline(_, d) => *d,
+        };
         if depth > limits.max_nesting_depth {
-            return Err(exceeded("AST nesting depth", depth, limits.max_nesting_depth));
+            return Err(exceeded(
+                "AST nesting depth",
+                depth,
+                limits.max_nesting_depth,
+            ));
         }
         let child_depth = depth.saturating_add(1);
         match node {
@@ -184,17 +217,30 @@ pub(super) fn audit_document(
                         }
                     }
                 }
-                Block::CodeBlock { .. } | Block::HtmlBlock(_) | Block::MathBlock(_)
-                | Block::ThematicBreak | Block::PageBreak => {}
+                Block::CodeBlock { .. }
+                | Block::HtmlBlock(_)
+                | Block::MathBlock(_)
+                | Block::ThematicBreak
+                | Block::PageBreak => {}
             },
             Node::Inline(inline, _) => match inline {
-                Inline::Emphasis(children) | Inline::Strong(children) | Inline::Strikethrough(children)
-                | Inline::Link { content: children, .. } => {
+                Inline::Emphasis(children)
+                | Inline::Strong(children)
+                | Inline::Strikethrough(children)
+                | Inline::Link {
+                    content: children, ..
+                } => {
                     push_inlines(children, child_depth, &mut stack, &mut count, limits)?;
                 }
-                Inline::Text(_) | Inline::Code(_) | Inline::Html(_) | Inline::Math(_)
-                | Inline::DisplayMath(_) | Inline::Image { .. } | Inline::FootnoteRef { .. }
-                | Inline::SoftBreak | Inline::HardBreak => {}
+                Inline::Text(_)
+                | Inline::Code(_)
+                | Inline::Html(_)
+                | Inline::Math(_)
+                | Inline::DisplayMath(_)
+                | Inline::Image { .. }
+                | Inline::FootnoteRef { .. }
+                | Inline::SoftBreak
+                | Inline::HardBreak => {}
             },
         }
     }
@@ -202,7 +248,11 @@ pub(super) fn audit_document(
 }
 
 fn push_blocks<'a>(
-    blocks: &'a [Block], depth: usize, stack: &mut Vec<Node<'a>>, count: &mut usize, limits: &FlowDisplayLimits,
+    blocks: &'a [Block],
+    depth: usize,
+    stack: &mut Vec<Node<'a>>,
+    count: &mut usize,
+    limits: &FlowDisplayLimits,
 ) -> Result<(), FlowDisplayError> {
     charge(count, blocks.len(), limits.max_ast_nodes, "AST nodes")?;
     stack.extend(blocks.iter().rev().map(|block| Node::Block(block, depth)));
@@ -210,10 +260,19 @@ fn push_blocks<'a>(
 }
 
 fn push_inlines<'a>(
-    inlines: &'a [Inline], depth: usize, stack: &mut Vec<Node<'a>>, count: &mut usize, limits: &FlowDisplayLimits,
+    inlines: &'a [Inline],
+    depth: usize,
+    stack: &mut Vec<Node<'a>>,
+    count: &mut usize,
+    limits: &FlowDisplayLimits,
 ) -> Result<(), FlowDisplayError> {
     charge(count, inlines.len(), limits.max_ast_nodes, "AST nodes")?;
-    stack.extend(inlines.iter().rev().map(|inline| Node::Inline(inline, depth)));
+    stack.extend(
+        inlines
+            .iter()
+            .rev()
+            .map(|inline| Node::Inline(inline, depth)),
+    );
     Ok(())
 }
 
@@ -229,7 +288,12 @@ pub(super) struct Projection<'a> {
 
 impl<'a> Projection<'a> {
     pub(super) fn new(limits: &'a FlowDisplayLimits) -> Self {
-        Self { items: VecDeque::new(), bytes: 0, assets: 0, limits }
+        Self {
+            items: VecDeque::new(),
+            bytes: 0,
+            assets: 0,
+            limits,
+        }
     }
 
     pub(super) fn remaining_bytes(&self) -> usize {
@@ -238,33 +302,61 @@ impl<'a> Projection<'a> {
 
     pub(super) fn push_back(&mut self, item: PreparedBlock) -> Result<(), FlowDisplayError> {
         let mut count = self.items.len();
-        charge(&mut count, 1, self.limits.max_output_blocks, "output blocks")?;
+        charge(
+            &mut count,
+            1,
+            self.limits.max_output_blocks,
+            "output blocks",
+        )?;
         let mut bytes = self.bytes;
         let mut assets = self.assets;
-        let mut add = |amount| charge(&mut bytes, amount, self.limits.max_output_bytes, "output bytes");
+        let mut add = |amount| {
+            charge(
+                &mut bytes,
+                amount,
+                self.limits.max_output_bytes,
+                "output bytes",
+            )
+        };
         match &item.block {
-            DisplayBlock::Heading { text, .. } | DisplayBlock::Paragraph { text }
-            | DisplayBlock::ListItem { text, .. } | DisplayBlock::Quote { text } => add(text.len())?,
+            DisplayBlock::Heading { text, .. }
+            | DisplayBlock::Paragraph { text }
+            | DisplayBlock::ListItem { text, .. }
+            | DisplayBlock::Quote { text } => add(text.len())?,
             DisplayBlock::CodeBlock { language, source } => {
                 add(source.len())?;
                 add(language.as_ref().map_or(0, String::len))?;
             }
             DisplayBlock::TableHeader { cells } | DisplayBlock::TableRow { cells } => {
-                for cell in cells { add(cell.len())?; }
+                for cell in cells {
+                    add(cell.len())?;
+                }
             }
             DisplayBlock::UnresolvedAsset(asset) => {
-                charge(&mut assets, 1, self.limits.max_asset_requests, "asset requests")?;
+                charge(
+                    &mut assets,
+                    1,
+                    self.limits.max_asset_requests,
+                    "asset requests",
+                )?;
                 add(asset.reference.len())?;
                 add(asset.alt_text.len())?;
             }
             DisplayBlock::Rule => {}
         }
-        let BlockMeta { heading_id, marker, .. } = &item.meta;
+        let BlockMeta {
+            heading_id, marker, ..
+        } = &item.meta;
         add(heading_id.as_ref().map_or(0, String::len))?;
         add(marker.as_ref().map_or(0, String::len))?;
         // Count targets per retained run conservatively, even where Arc shares
         // the backing string. Formatting metadata must not bypass admission.
-        for run in item.meta.inline_runs.iter().chain(item.meta.cell_runs.iter().flatten()) {
+        for run in item
+            .meta
+            .inline_runs
+            .iter()
+            .chain(item.meta.cell_runs.iter().flatten())
+        {
             add(run.link.as_ref().map_or(0, |link| link.len()))?;
         }
         add(item.meta.image_link.as_ref().map_or(0, |link| link.len()))?;
@@ -274,7 +366,9 @@ impl<'a> Projection<'a> {
         Ok(())
     }
 
-    pub(super) fn into_items(self) -> VecDeque<PreparedBlock> { self.items }
+    pub(super) fn into_items(self) -> VecDeque<PreparedBlock> {
+        self.items
+    }
 }
 
 #[cfg(test)]
@@ -285,13 +379,23 @@ mod tests {
 
     #[test]
     fn source_admission_checks_utf8_bytes_and_physical_lines_before_retention() {
-        let tiny = FlowDisplayLimits { max_source_bytes: 1, ..FlowDisplayLimits::default() };
+        let tiny = FlowDisplayLimits {
+            max_source_bytes: 1,
+            ..FlowDisplayLimits::default()
+        };
         assert!(ResumableFlowDisplay::try_with_limits("é", 1, 1, tiny).is_err());
         assert!(ResumableFlowDisplay::try_with_limits("x", 1, 1, tiny).is_ok());
-        let one_line = FlowDisplayLimits { max_source_lines: 1, ..FlowDisplayLimits::default() };
+        let one_line = FlowDisplayLimits {
+            max_source_lines: 1,
+            ..FlowDisplayLimits::default()
+        };
         assert!(ResumableFlowDisplay::try_with_limits("one\n", 1, 1, one_line).is_ok());
         assert!(ResumableFlowDisplay::try_with_limits("one\n\n", 1, 1, one_line).is_err());
-        let empty = FlowDisplayLimits { max_source_bytes: 0, max_source_lines: 0, ..FlowDisplayLimits::default() };
+        let empty = FlowDisplayLimits {
+            max_source_bytes: 0,
+            max_source_lines: 0,
+            ..FlowDisplayLimits::default()
+        };
         let mut engine = ResumableFlowDisplay::try_with_limits("", 1, 1, empty).unwrap();
         assert!(engine.step().unwrap().is_none());
         assert!(engine.is_finished());
@@ -314,22 +418,59 @@ mod tests {
     #[test]
     fn ast_audit_counts_inline_nodes_and_checks_depth_and_source_boundaries() {
         let doc = crate::parse_markdown_spanned("**hello**");
-        let limits = FlowDisplayLimits { max_ast_nodes: 2, ..FlowDisplayLimits::default() };
+        let limits = FlowDisplayLimits {
+            max_ast_nodes: 2,
+            ..FlowDisplayLimits::default()
+        };
         assert!(audit_document(&doc, "**hello**", &limits).is_err());
-        let limits = FlowDisplayLimits { max_nesting_depth: 1, ..FlowDisplayLimits::default() };
+        let limits = FlowDisplayLimits {
+            max_nesting_depth: 1,
+            ..FlowDisplayLimits::default()
+        };
         assert!(audit_document(&doc, "**hello**", &limits).is_err());
-        let limits = FlowDisplayLimits { max_ast_nodes: 3, max_nesting_depth: 2, ..FlowDisplayLimits::default() };
+        let limits = FlowDisplayLimits {
+            max_ast_nodes: 3,
+            max_nesting_depth: 2,
+            ..FlowDisplayLimits::default()
+        };
         assert!(audit_document(&doc, "**hello**", &limits).is_ok());
-        assert!(matches!(audit_document(&doc, "", &limits), Err(FlowDisplayError::InvalidSourceSpan(_))));
+        assert!(matches!(
+            audit_document(&doc, "", &limits),
+            Err(FlowDisplayError::InvalidSourceSpan(_))
+        ));
     }
 
     #[test]
     fn failed_preparation_publishes_no_blocks_assets_or_progress() {
         for (source, limits) in [
-            ("one\n\ntwo", FlowDisplayLimits { max_output_blocks: 1, ..FlowDisplayLimits::default() }),
-            ("word", FlowDisplayLimits { max_output_bytes: 3, ..FlowDisplayLimits::default() }),
-            ("![a](a.png) ![b](b.png)", FlowDisplayLimits { max_asset_requests: 1, ..FlowDisplayLimits::default() }),
-            ("**bold**", FlowDisplayLimits { max_ast_nodes: 2, ..FlowDisplayLimits::default() }),
+            (
+                "one\n\ntwo",
+                FlowDisplayLimits {
+                    max_output_blocks: 1,
+                    ..FlowDisplayLimits::default()
+                },
+            ),
+            (
+                "word",
+                FlowDisplayLimits {
+                    max_output_bytes: 3,
+                    ..FlowDisplayLimits::default()
+                },
+            ),
+            (
+                "![a](a.png) ![b](b.png)",
+                FlowDisplayLimits {
+                    max_asset_requests: 1,
+                    ..FlowDisplayLimits::default()
+                },
+            ),
+            (
+                "**bold**",
+                FlowDisplayLimits {
+                    max_ast_nodes: 2,
+                    ..FlowDisplayLimits::default()
+                },
+            ),
         ] {
             let mut engine = ResumableFlowDisplay::try_with_limits(source, 1, 1, limits).unwrap();
             let error = engine.step().unwrap_err();
@@ -341,28 +482,47 @@ mod tests {
             assert_eq!(engine.current_line, 0);
             assert_eq!(engine.source_frontier, 0);
         }
-        let limits = FlowDisplayLimits { max_output_blocks: 1, max_output_bytes: 4, ..FlowDisplayLimits::default() };
+        let limits = FlowDisplayLimits {
+            max_output_blocks: 1,
+            max_output_bytes: 4,
+            ..FlowDisplayLimits::default()
+        };
         let mut engine = ResumableFlowDisplay::try_with_limits("word", 1, 1, limits).unwrap();
         assert_eq!(engine.process_all().unwrap().len(), 1);
     }
 
     fn payload(id: AssetRequestId, bytes: usize) -> AssetResult {
-        AssetResult { request_id: id, generation: 1, width: 10, height: 20, bytes: Some(vec![7; bytes]) }
+        AssetResult {
+            request_id: id,
+            generation: 1,
+            width: 10,
+            height: 20,
+            bytes: Some(vec![7; bytes]),
+        }
     }
 
     #[test]
     fn rejected_asset_results_leave_requests_and_retained_bytes_unchanged() {
         let limits = FlowDisplayLimits {
-            max_asset_bytes: 3, max_retained_asset_bytes: 4, max_image_dimension: 100,
+            max_asset_bytes: 3,
+            max_retained_asset_bytes: 4,
+            max_image_dimension: 100,
             ..FlowDisplayLimits::default()
         };
-        let mut engine = ResumableFlowDisplay::try_with_limits("![a](a.png) ![b](b.png)", 8, 1, limits).unwrap();
+        let mut engine =
+            ResumableFlowDisplay::try_with_limits("![a](a.png) ![b](b.png)", 8, 1, limits).unwrap();
         engine.process_all().unwrap();
         let first = engine.unresolved_assets()[0].id;
         let second = engine.unresolved_assets()[1].id;
         for (width, height) in [(0, 20), (10, 0), (101, 20), (10, 101)] {
-            assert!(matches!(engine.provide_asset(AssetResult { width, height, ..payload(first, 1) }),
-                Err(FlowDisplayError::InvalidAssetDimensions { .. })));
+            assert!(matches!(
+                engine.provide_asset(AssetResult {
+                    width,
+                    height,
+                    ..payload(first, 1)
+                }),
+                Err(FlowDisplayError::InvalidAssetDimensions { .. })
+            ));
             assert_eq!(engine.unresolved_assets().len(), 2);
             assert_eq!(engine.retained_asset_bytes(), 0);
         }
@@ -377,22 +537,40 @@ mod tests {
         engine.provide_asset(payload(second, 1)).unwrap();
         assert_eq!(engine.retained_asset_bytes(), 4);
         assert!(engine.unresolved_assets().is_empty());
-        assert!(matches!(engine.provide_asset(payload(first, 1)), Err(FlowDisplayError::UnknownAssetRequest(_))));
+        assert!(matches!(
+            engine.provide_asset(payload(first, 1)),
+            Err(FlowDisplayError::UnknownAssetRequest(_))
+        ));
         assert_eq!(engine.retained_asset_bytes(), 4);
         engine.set_generation(2);
         assert_eq!(engine.retained_asset_bytes(), 0);
         assert_eq!(engine.unresolved_assets().len(), 2);
-        engine.provide_asset(AssetResult { generation: 2, ..payload(first, 3) }).unwrap();
+        engine
+            .provide_asset(AssetResult {
+                generation: 2,
+                ..payload(first, 3)
+            })
+            .unwrap();
         assert_eq!(engine.retained_asset_bytes(), 3);
     }
 
     #[test]
     fn dimension_only_asset_results_do_not_consume_payload_budget() {
-        let limits = FlowDisplayLimits { max_asset_bytes: 0, max_retained_asset_bytes: 0, ..FlowDisplayLimits::default() };
-        let mut engine = ResumableFlowDisplay::try_with_limits("![a](a.png)", 1, 1, limits).unwrap();
+        let limits = FlowDisplayLimits {
+            max_asset_bytes: 0,
+            max_retained_asset_bytes: 0,
+            ..FlowDisplayLimits::default()
+        };
+        let mut engine =
+            ResumableFlowDisplay::try_with_limits("![a](a.png)", 1, 1, limits).unwrap();
         engine.process_all().unwrap();
         let id = engine.unresolved_assets()[0].id;
-        engine.provide_asset(AssetResult { bytes: None, ..payload(id, 0) }).unwrap();
+        engine
+            .provide_asset(AssetResult {
+                bytes: None,
+                ..payload(id, 0)
+            })
+            .unwrap();
         assert!(engine.is_asset_resolved(id));
         assert_eq!(engine.retained_asset_bytes(), 0);
     }

@@ -2,8 +2,8 @@
 //! A single generated page owns the index; chapter pages contain only a link.
 
 use crate::book::Book;
-use crate::{RenderError, Result, search_index_json};
 use crate::search_index::build_full_search_index;
+use crate::{RenderError, Result, search_index_json};
 
 // Source-path encoding always escapes literal '~' bytes. This host filename
 // cannot collide with a chapter produced by out_name, including search.md.
@@ -33,17 +33,23 @@ pub(crate) fn index_json(book: &Book) -> Result<String> {
             return Err(invalid("invalid or colliding chapter output name"));
         }
         let index = build_full_search_index(&chapter.doc);
-        count = count.checked_add(index.entries.len()).and_then(|n| n.checked_add(1))
+        count = count
+            .checked_add(index.entries.len())
+            .and_then(|n| n.checked_add(1))
             .ok_or_else(|| invalid("entry count overflow"))?;
         if count > MAX_ENTRIES {
             return Err(invalid("more than 250000 searchable entries"));
         }
-        if i > 0 { json.push(','); }
+        if i > 0 {
+            json.push(',');
+        }
         let document = search_index_json(&index);
         let entry = format!(
             "{{\"source\":{},\"page\":{},\"title\":{},\"index\":{}}}",
-            super::json_string(source), super::json_string(&chapter.out_name),
-            super::json_string(&chapter.title), document,
+            super::json_string(source),
+            super::json_string(&chapter.out_name),
+            super::json_string(&chapter.title),
+            document,
         );
         if entry.len() > MAX_INDEX_BYTES.saturating_sub(json.len() + 2) {
             return Err(invalid("index exceeds the 32 MiB limit"));
@@ -57,7 +63,9 @@ pub(crate) fn index_json(book: &Book) -> Result<String> {
 /// Only alter the generated navigation boundary, never arbitrary document HTML.
 /// Browser hosts using inject_book_nav alone do not acquire a nonexistent link.
 pub(crate) fn inject_link(rendered: &str) -> String {
-    let Some(position) = rendered.find(NAV_START) else { return rendered.to_string(); };
+    let Some(position) = rendered.find(NAV_START) else {
+        return rendered.to_string();
+    };
     let position = position + NAV_START.len();
     let mut out = String::with_capacity(rendered.len() + 96);
     out.push_str(&rendered[..position]);
@@ -107,14 +115,22 @@ pub(crate) fn page(index: &str, title: &str, lang: Option<&str>) -> Result<Strin
     );
     for ch in index.chars() {
         let escaped = match ch {
-            '<' => Some("\\u003c"), '>' => Some("\\u003e"), '&' => Some("\\u0026"),
-            '\u{2028}' => Some("\\u2028"), '\u{2029}' => Some("\\u2029"), _ => None,
+            '<' => Some("\\u003c"),
+            '>' => Some("\\u003e"),
+            '&' => Some("\\u0026"),
+            '\u{2028}' => Some("\\u2028"),
+            '\u{2029}' => Some("\\u2029"),
+            _ => None,
         };
         let length = escaped.map_or(ch.len_utf8(), str::len);
         if length > MAX_PAGE_BYTES.saturating_sub(html.len()) {
             return Err(invalid("search page exceeds the 128 MiB limit"));
         }
-        if let Some(escaped) = escaped { html.push_str(escaped); } else { html.push(ch); }
+        if let Some(escaped) = escaped {
+            html.push_str(escaped);
+        } else {
+            html.push(ch);
+        }
     }
     let tail = "</script><script>";
     let end = "</script></body></html>\n";
@@ -135,9 +151,16 @@ mod tests {
 
     fn book() -> Book {
         build_book(&[
-            BookInput { path: "guide/start.md".into(), source: "# Same\n\nOne.\n\n# Same\n\nTwo.".into() },
-            BookInput { path: "search.md".into(), source: "# Other\n\nThree.".into() },
-        ]).unwrap()
+            BookInput {
+                path: "guide/start.md".into(),
+                source: "# Same\n\nOne.\n\n# Same\n\nTwo.".into(),
+            },
+            BookInput {
+                path: "search.md".into(),
+                source: "# Other\n\nThree.".into(),
+            },
+        ])
+        .unwrap()
     }
 
     #[test]

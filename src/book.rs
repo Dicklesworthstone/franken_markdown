@@ -27,9 +27,7 @@ pub use workspace::{BookSourceUpdate, BookWorkspace};
 #[path = "book/validation.rs"]
 pub mod validation;
 
-pub use render::{
-    BookRenderer, book_pdf_document_with_assets, render_book_pdf, render_book_site,
-};
+pub use render::{BookRenderer, book_pdf_document_with_assets, render_book_pdf, render_book_site};
 
 #[cfg(feature = "wasm-bindgen")]
 #[path = "book/browser.rs"]

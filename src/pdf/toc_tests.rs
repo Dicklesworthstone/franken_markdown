@@ -93,7 +93,9 @@ fn deep_long_unbroken_titles_fit_narrow_pages_at_large_type_sizes() {
     let doc = crate::parse_markdown(&format!("[[TOC]]\n\n###### {title}\n"));
     let mut opts = narrow_options();
     opts.theme.page.size.width_pt = 160.0;
-    opts.theme = opts.theme.with_font_scale(crate::FontScale::from_factor(2.0));
+    opts.theme = opts
+        .theme
+        .with_font_scale(crate::FontScale::from_factor(2.0));
     let page = PageGeom::from_theme(&opts.theme);
     let faces = Faces::load(&opts).unwrap();
     let lines = layout(&doc.blocks, &opts, &faces, page);

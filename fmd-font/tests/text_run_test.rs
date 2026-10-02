@@ -12,11 +12,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use fmd_font::Font;
 use fmd_font::shaping::{Direction, ShapeOptions};
 use fmd_font::text_run::{
-    byte_to_utf16, utf16_to_byte, CaretAffinity, FontId, FontOrigin, OwnedTextRun, TextRunContext,
+    CaretAffinity, FontId, FontOrigin, OwnedTextRun, TextRunContext, byte_to_utf16, utf16_to_byte,
 };
-use fmd_font::Font;
 
 const SHAPING_FONT: &[u8] = include_bytes!("../fonts/test-shaping/FmdShaping.ttf");
 

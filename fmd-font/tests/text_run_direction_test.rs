@@ -4,9 +4,7 @@
 
 use fmd_font::Font;
 use fmd_font::shaping::{Direction, ShapeOptions, ShapedRun};
-use fmd_font::text_run::{
-    CaretAffinity, FontId, FontOrigin, OwnedTextRun, TextRunContext,
-};
+use fmd_font::text_run::{CaretAffinity, FontId, FontOrigin, OwnedTextRun, TextRunContext};
 
 const FONT: &[u8] = include_bytes!("../fonts/test-shaping/FmdShaping.ttf");
 const REFERENCE: &str = include_str!("../fonts/test-shaping/harfbuzz-reference.tsv");
@@ -15,7 +13,11 @@ fn context(direction: Direction, size: f32) -> TextRunContext {
     TextRunContext {
         font_id: FontId::from_font_data(FONT),
         font_size: size,
-        script: if direction == Direction::RightToLeft { *b"arab" } else { *b"latn" },
+        script: if direction == Direction::RightToLeft {
+            *b"arab"
+        } else {
+            *b"latn"
+        },
         language: *b"dflt",
         direction,
         font_origin: FontOrigin::BundledFace,
@@ -24,9 +26,18 @@ fn context(direction: Direction, size: f32) -> TextRunContext {
 
 fn shape(text: &str, direction: Direction) -> ShapedRun {
     let ctx = context(direction, 10.0);
-    Font::parse(FONT.to_vec()).unwrap().shape(text, &ShapeOptions {
-        script: ctx.script, language: ctx.language, direction, features: &[],
-    }).unwrap()
+    Font::parse(FONT.to_vec())
+        .unwrap()
+        .shape(
+            text,
+            &ShapeOptions {
+                script: ctx.script,
+                language: ctx.language,
+                direction,
+                features: &[],
+            },
+        )
+        .unwrap()
 }
 
 fn run(text: &str, direction: Direction) -> OwnedTextRun {
@@ -41,7 +52,10 @@ fn close(actual: f32, expected: f32) {
 fn rtl_keeps_asymmetric_visual_advances_and_reindexes_logical_clusters() {
     let run = run("بب", Direction::RightToLeft);
     assert_eq!(run.logical_text, "بب");
-    assert_eq!(run.glyphs.iter().map(|g| g.glyph_id).collect::<Vec<_>>(), [14, 12]);
+    assert_eq!(
+        run.glyphs.iter().map(|g| g.glyph_id).collect::<Vec<_>>(),
+        [14, 12]
+    );
     assert_eq!(run.clusters.len(), 2);
     assert_eq!(run.clusters[0].byte_range, 0..2);
     assert_eq!(run.clusters[0].utf16_range, 0..1);
@@ -105,15 +119,22 @@ fn all_saved_harfbuzz_cases_keep_visual_positions_and_complete_logical_coverage(
     let mut cases = 0;
     for line in REFERENCE.lines().filter(|line| !line.is_empty()) {
         let columns: Vec<_> = line.split('\t').collect();
-        let direction = if columns[0] == "arab" { Direction::RightToLeft } else { Direction::LeftToRight };
+        let direction = if columns[0] == "arab" {
+            Direction::RightToLeft
+        } else {
+            Direction::LeftToRight
+        };
         let text = columns[1];
-        let expected: Vec<Vec<i32>> = columns[2].split(';')
-            .map(|g| g.split(',').map(|v| v.parse().unwrap()).collect()).collect();
+        let expected: Vec<Vec<i32>> = columns[2]
+            .split(';')
+            .map(|g| g.split(',').map(|v| v.parse().unwrap()).collect())
+            .collect();
         let shaped = shape(text, direction);
         let before = shaped.clone();
         for size in [10.0, 15.625, 32.0] {
             let scale = size / 1000.0;
-            let run = OwnedTextRun::from_shaped_run(context(direction, size), &shaped, scale).unwrap();
+            let run =
+                OwnedTextRun::from_shaped_run(context(direction, size), &shaped, scale).unwrap();
             assert_eq!(run.glyphs.len(), expected.len());
             assert_eq!(run.logical_text, text);
             let mut positions = vec![0.0_f32];
@@ -146,7 +167,10 @@ fn all_saved_harfbuzz_cases_keep_visual_positions_and_complete_logical_coverage(
             assert_eq!(utf16, text.encode_utf16().count());
             close(run.total_advance, *positions.last().unwrap());
         }
-        assert_eq!(shaped, before, "conversion must never mutate the shaper's output");
+        assert_eq!(
+            shaped, before,
+            "conversion must never mutate the shaper's output"
+        );
         cases += 1;
     }
     assert_eq!(cases, 14);
@@ -167,8 +191,14 @@ fn context_direction_must_match_the_actual_shaping_direction() {
 fn invalid_sizes_scales_and_glyph_arithmetic_are_refused() {
     let shaped = shape("ab", Direction::LeftToRight);
     for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        assert!(OwnedTextRun::from_shaped_run(context(Direction::LeftToRight, invalid), &shaped, 0.01).is_err());
-        assert!(OwnedTextRun::from_shaped_run(context(Direction::LeftToRight, 10.0), &shaped, invalid).is_err());
+        assert!(
+            OwnedTextRun::from_shaped_run(context(Direction::LeftToRight, invalid), &shaped, 0.01)
+                .is_err()
+        );
+        assert!(
+            OwnedTextRun::from_shaped_run(context(Direction::LeftToRight, 10.0), &shaped, invalid)
+                .is_err()
+        );
     }
     for mutation in 0..3 {
         let mut broken = shaped.clone();
@@ -177,38 +207,81 @@ fn invalid_sizes_scales_and_glyph_arithmetic_are_refused() {
             1 => broken.glyphs[0].x_advance = -1,
             _ => broken.glyphs[0].x_advance = i32::MIN,
         }
-        assert!(OwnedTextRun::from_shaped_run(context(Direction::LeftToRight, 10.0), &broken, 0.01).is_err());
+        assert!(
+            OwnedTextRun::from_shaped_run(context(Direction::LeftToRight, 10.0), &broken, 0.01)
+                .is_err()
+        );
     }
     // Each individual advance fits; the accumulated third advance does not.
     let three = shape("aaa", Direction::LeftToRight);
-    assert!(OwnedTextRun::from_shaped_run(context(Direction::LeftToRight, 10.0), &three, f32::MAX / 1000.0).is_err());
+    assert!(
+        OwnedTextRun::from_shaped_run(
+            context(Direction::LeftToRight, 10.0),
+            &three,
+            f32::MAX / 1000.0
+        )
+        .is_err()
+    );
     let mut displaced = shaped.clone();
     displaced.glyphs[0].x_offset = i32::MAX;
-    assert!(OwnedTextRun::from_shaped_run(context(Direction::LeftToRight, 10.0), &displaced, f32::MAX / 1000.0).is_err());
+    assert!(
+        OwnedTextRun::from_shaped_run(
+            context(Direction::LeftToRight, 10.0),
+            &displaced,
+            f32::MAX / 1000.0
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn non_monotone_overlapping_empty_and_missing_source_clusters_are_refused() {
     for direction in [Direction::LeftToRight, Direction::RightToLeft] {
-        let good = shape(if direction == Direction::LeftToRight { "abba" } else { "بببب" }, direction);
+        let good = shape(
+            if direction == Direction::LeftToRight {
+                "abba"
+            } else {
+                "بببب"
+            },
+            direction,
+        );
         for mutation in 0..7 {
             let mut broken = good.clone();
             match mutation {
                 0 => broken.glyphs.clear(),
-                1 => { broken.glyphs.remove(0); }
-                2 => { broken.glyphs.pop(); }
+                1 => {
+                    broken.glyphs.remove(0);
+                }
+                2 => {
+                    broken.glyphs.pop();
+                }
                 3 => broken.glyphs.swap(0, 1),
-                4 => broken.glyphs[1].cluster = broken.glyphs[0].cluster.start..broken.glyphs[1].cluster.end,
+                4 => {
+                    broken.glyphs[1].cluster =
+                        broken.glyphs[0].cluster.start..broken.glyphs[1].cluster.end
+                }
                 5 => broken.glyphs[0].cluster = 0..0,
-                _ => { let range = broken.glyphs[0].cluster.clone(); broken.glyphs[3].cluster = range; }
+                _ => {
+                    let range = broken.glyphs[0].cluster.clone();
+                    broken.glyphs[3].cluster = range;
+                }
             }
-            assert!(OwnedTextRun::from_shaped_run(context(direction, 10.0), &broken, 0.01).is_err(),
-                "accepted mutation {mutation} in {direction:?}");
+            assert!(
+                OwnedTextRun::from_shaped_run(context(direction, 10.0), &broken, 0.01).is_err(),
+                "accepted mutation {mutation} in {direction:?}"
+            );
         }
     }
     let mut middle_of_scalar = shape("a\u{0301}b", Direction::LeftToRight);
     middle_of_scalar.glyphs[0].cluster.end = 2;
-    assert!(OwnedTextRun::from_shaped_run(context(Direction::LeftToRight, 10.0), &middle_of_scalar, 0.01).is_err());
+    assert!(
+        OwnedTextRun::from_shaped_run(
+            context(Direction::LeftToRight, 10.0),
+            &middle_of_scalar,
+            0.01
+        )
+        .is_err()
+    );
 }
 
 #[test]

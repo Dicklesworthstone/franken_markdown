@@ -221,11 +221,7 @@ impl FlowOutput {
         }
 
         out.push_str("\n--- PROVENANCE AUDIT ---\n");
-        let _ = writeln!(
-            out,
-            "total_elements: {}",
-            self.source_map.elements().len()
-        );
+        let _ = writeln!(out, "total_elements: {}", self.source_map.elements().len());
         let _ = writeln!(
             out,
             "provenance_nodes: {}",
@@ -613,9 +609,11 @@ mod tests {
             .consume_source(source)
             .unwrap();
             let elements = output.elements();
-            assert!(elements.windows(2).all(|pair| {
-                pair[0].rendered_range.end <= pair[1].rendered_range.start
-            }));
+            assert!(
+                elements
+                    .windows(2)
+                    .all(|pair| { pair[0].rendered_range.end <= pair[1].rendered_range.start })
+            );
             for line in &output.lines {
                 let expected: Vec<usize> = elements
                     .iter()

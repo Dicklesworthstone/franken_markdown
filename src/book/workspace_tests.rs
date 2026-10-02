@@ -3,7 +3,10 @@
 use super::*;
 
 fn file(path: &str, source: &str) -> BookInput {
-    BookInput { path: path.into(), source: source.into() }
+    BookInput {
+        path: path.into(),
+        source: source.into(),
+    }
 }
 
 fn chapters() -> Vec<BookInput> {
@@ -31,7 +34,8 @@ fn only_changed_chapter_is_reparsed_and_other_ast_allocations_are_retained() {
     let mut sources = chapters();
     let mut workspace = BookWorkspace::new(&sources).unwrap();
     let retained = workspace.book().chapters[1].doc.blocks.as_ptr();
-    sources[0].source = "---\ntitle: Revised\nlang: de\n---\n# New\n\n[Two](../two.md#two)\n".into();
+    sources[0].source =
+        "---\ntitle: Revised\nlang: de\n---\n# New\n\n[Two](../two.md#two)\n".into();
     let report = workspace.update_sources(&[sources[0].clone()]).unwrap();
     assert_eq!(report.revision, 1);
     assert_eq!(report.changed_sources, 1);
@@ -45,13 +49,22 @@ fn only_changed_chapter_is_reparsed_and_other_ast_allocations_are_retained() {
 fn new_links_bind_against_the_entire_book_not_only_the_changed_chapter() {
     let mut workspace = BookWorkspace::new(&chapters()).unwrap();
     let source = "# New\n\n[Peer](../two.md#two) [Third](../three)\n";
-    workspace.update_sources(&[file("guide/one.md", source)]).unwrap();
+    workspace
+        .update_sources(&[file("guide/one.md", source)])
+        .unwrap();
     let crate::Block::Paragraph(inlines) = &workspace.book().chapters[0].doc.blocks[1] else {
         panic!("expected paragraph");
     };
-    let destinations: Vec<_> = inlines.iter().filter_map(|inline| {
-        if let crate::Inline::Link { dest, .. } = inline { Some(dest.as_str()) } else { None }
-    }).collect();
+    let destinations: Vec<_> = inlines
+        .iter()
+        .filter_map(|inline| {
+            if let crate::Inline::Link { dest, .. } = inline {
+                Some(dest.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
     assert_eq!(destinations, ["/two.md#two", "/three.md"]);
 }
 
@@ -73,27 +86,37 @@ fn transitive_shared_resources_reparse_all_and_only_changed_chapter_text() {
     assert_eq!(report.reparsed_chapters, [0, 1]);
     assert_eq!(report.changed_sources, 1);
     assert_eq!(workspace.book().chapters[2].doc.blocks.as_ptr(), retained);
-    assert_book_eq(&workspace, &BookRenderer::from_sources(&roots, &resources).unwrap());
+    assert_book_eq(
+        &workspace,
+        &BookRenderer::from_sources(&roots, &resources).unwrap(),
+    );
 }
 
 #[test]
 fn edits_outside_selected_snippets_commit_capture_without_reparsing() {
     let roots = [file("a.md", "# A\n\n{{#include rows.txt:2}}\n")];
-    let resources = [file("rows.txt", "unused\nSelected\nunused\n"), file("spare.md", "Old")];
+    let resources = [
+        file("rows.txt", "unused\nSelected\nunused\n"),
+        file("spare.md", "Old"),
+    ];
     let mut workspace = BookWorkspace::from_sources(&roots, &resources).unwrap();
     let retained = workspace.book().chapters[0].doc.blocks.as_ptr();
     let before = workspace.render_site().unwrap();
-    let report = workspace.update_sources(&[
-        file("rows.txt", "changed outside\nSelected\ndifferent outside\n"),
-        file("spare.md", "New unused resource"),
-    ]).unwrap();
+    let report = workspace
+        .update_sources(&[
+            file("rows.txt", "changed outside\nSelected\ndifferent outside\n"),
+            file("spare.md", "New unused resource"),
+        ])
+        .unwrap();
     assert_eq!(report.revision, 1);
     assert_eq!(report.changed_sources, 2);
     assert!(report.reparsed_chapters.is_empty());
     assert_eq!(workspace.book().chapters[0].doc.blocks.as_ptr(), retained);
     assert_eq!(workspace.render_site().unwrap(), before);
     // A later root edit uses the latest retained version of the unused resource.
-    let report = workspace.update_sources(&[file("a.md", "{{#include spare.md}}")]).unwrap();
+    let report = workspace
+        .update_sources(&[file("a.md", "{{#include spare.md}}")])
+        .unwrap();
     assert_eq!(report.reparsed_chapters, [0]);
     assert!(format!("{:?}", workspace.book().chapters[0].doc).contains("New unused resource"));
 }
@@ -112,7 +135,9 @@ fn exact_noop_batches_preserve_revision_captures_and_ast_allocations() {
     let sources = chapters();
     let mut workspace = BookWorkspace::new(&sources).unwrap();
     let pointer = workspace.book().chapters[0].doc.blocks.as_ptr();
-    let report = workspace.update_sources(&[file("./guide/one.md", &sources[0].source)]).unwrap();
+    let report = workspace
+        .update_sources(&[file("./guide/one.md", &sources[0].source)])
+        .unwrap();
     assert_eq!(report.revision, 0);
     assert_eq!(report.changed_sources, 0);
     assert!(report.reparsed_chapters.is_empty());
@@ -121,14 +146,26 @@ fn exact_noop_batches_preserve_revision_captures_and_ast_allocations() {
 
 #[test]
 fn bad_second_source_rolls_back_the_entire_batch_and_allows_recovery() {
-    let roots = [file("a.md", "# A\n\n{{#include part.md}}\n"), file("b.md", "# B")];
+    let roots = [
+        file("a.md", "# A\n\n{{#include part.md}}\n"),
+        file("b.md", "# B"),
+    ];
     let mut workspace = BookWorkspace::from_sources(&roots, &[file("part.md", "Before")]).unwrap();
     let before = workspace.render_site().unwrap();
     let old_len = workspace.source_length();
     for bad in [
-        vec![file("b.md", "Changed"), file("part.md", "{{#include missing.md}}")],
-        vec![file("b.md", "Changed"), file("part.md", "{{#include a.md}}")],
-        vec![file("b.md", "Changed"), file("not-selected.md", "Forbidden")],
+        vec![
+            file("b.md", "Changed"),
+            file("part.md", "{{#include missing.md}}"),
+        ],
+        vec![
+            file("b.md", "Changed"),
+            file("part.md", "{{#include a.md}}"),
+        ],
+        vec![
+            file("b.md", "Changed"),
+            file("not-selected.md", "Forbidden"),
+        ],
     ] {
         assert!(workspace.update_sources(&bad).is_err());
         assert_eq!(workspace.source_revision(), 0);
@@ -136,7 +173,9 @@ fn bad_second_source_rolls_back_the_entire_batch_and_allows_recovery() {
         assert_eq!(workspace.render_site().unwrap(), before);
         assert_eq!(workspace.book().chapters[1].title, "B");
     }
-    let report = workspace.update_sources(&[file("part.md", "Recovered")]).unwrap();
+    let report = workspace
+        .update_sources(&[file("part.md", "Recovered")])
+        .unwrap();
     assert_eq!(report.revision, 1);
     assert_eq!(report.reparsed_chapters, [0]);
 }
@@ -144,19 +183,26 @@ fn bad_second_source_rolls_back_the_entire_batch_and_allows_recovery() {
 #[test]
 fn batched_edits_resolve_against_one_complete_new_source_set() {
     let roots = [file("a.md", "{{#include x.md}}")];
-    let mut workspace = BookWorkspace::from_sources(&roots, &[
-        file("x.md", "{{#include y.md}}"), file("y.md", "Old"),
-    ]).unwrap();
+    let mut workspace = BookWorkspace::from_sources(
+        &roots,
+        &[file("x.md", "{{#include y.md}}"), file("y.md", "Old")],
+    )
+    .unwrap();
     // Applying y first would temporarily create a cycle, but the batch's final
     // graph is valid. Only the completed replacement set is expanded.
-    let report = workspace.update_sources(&[
-        file("y.md", "{{#include x.md}}"), file("x.md", "New"),
-    ]).unwrap();
+    let report = workspace
+        .update_sources(&[file("y.md", "{{#include x.md}}"), file("x.md", "New")])
+        .unwrap();
     assert_eq!(report.changed_sources, 2);
     assert_eq!(report.reparsed_chapters, [0]);
-    assert_book_eq(&workspace, &BookRenderer::from_sources(&roots, &[
-        file("x.md", "New"), file("y.md", "{{#include x.md}}"),
-    ]).unwrap());
+    assert_book_eq(
+        &workspace,
+        &BookRenderer::from_sources(
+            &roots,
+            &[file("x.md", "New"), file("y.md", "{{#include x.md}}")],
+        )
+        .unwrap(),
+    );
 }
 
 #[test]
@@ -165,7 +211,10 @@ fn unknown_duplicate_and_escaping_paths_are_not_partial_edits() {
     let before = workspace.book().chapters[0].doc.clone();
     for updates in [
         vec![],
-        vec![file("guide/one.md", "First"), file("guide/./one.md", "Second")],
+        vec![
+            file("guide/one.md", "First"),
+            file("guide/./one.md", "Second"),
+        ],
         vec![file("../outside.md", "Outside")],
         vec![file("/two.md", "Absolute")],
         vec![file("Guide/one.md", "Case change")],
@@ -176,7 +225,11 @@ fn unknown_duplicate_and_escaping_paths_are_not_partial_edits() {
         assert_eq!(workspace.source_revision(), 0);
         assert_eq!(workspace.book().chapters[0].doc, before);
     }
-    assert!(workspace.update_sources(&vec![file("two.md", "x"); 4097]).is_err());
+    assert!(
+        workspace
+            .update_sources(&vec![file("two.md", "x"); 4097])
+            .is_err()
+    );
 }
 
 #[test]
@@ -186,11 +239,16 @@ fn final_source_budget_is_atomic_and_independent_of_batch_order() {
     let mut left = BookWorkspace::new(&roots).unwrap();
     let mut right = left.clone();
     let first = left.update_with_limit(&updates, 30).unwrap();
-    let second = right.update_with_limit(&[updates[1].clone(), updates[0].clone()], 30).unwrap();
+    let second = right
+        .update_with_limit(&[updates[1].clone(), updates[0].clone()], 30)
+        .unwrap();
     assert_eq!(first, second);
     assert_eq!(first.source_length, 21);
     let before = left.book().chapters[1].doc.clone();
-    assert!(left.update_with_limit(&[file("b.md", &"z".repeat(25))], 30).is_err());
+    assert!(
+        left.update_with_limit(&[file("b.md", &"z".repeat(25))], 30)
+            .is_err()
+    );
     assert_eq!(left.source_revision(), 1);
     assert_eq!(left.book().chapters[1].doc, before);
 }
@@ -199,12 +257,21 @@ fn final_source_budget_is_atomic_and_independent_of_batch_order() {
 fn unicode_bom_and_crlf_counts_are_original_utf8_bytes() {
     let initial = "\u{feff}# α\r\n\r\n😀\r\n";
     let mut workspace = BookWorkspace::new(&[file("a.md", initial)]).unwrap();
-    assert_eq!(workspace.update_sources(&[file("a.md", initial)]).unwrap().revision, 0);
+    assert_eq!(
+        workspace
+            .update_sources(&[file("a.md", initial)])
+            .unwrap()
+            .revision,
+        0
+    );
     let source = "\u{feff}# β\r\n\r\n😀😀\r\n";
     let report = workspace.update_sources(&[file("a.md", source)]).unwrap();
     assert_eq!(report.source_length, source.len());
     assert_eq!(workspace.chapters[0].source, source);
-    assert_book_eq(&workspace, &BookRenderer::new(&[file("a.md", source)]).unwrap());
+    assert_book_eq(
+        &workspace,
+        &BookRenderer::new(&[file("a.md", source)]).unwrap(),
+    );
 }
 
 #[test]
@@ -212,10 +279,20 @@ fn revision_exhaustion_cannot_wrap_or_mutate_sources() {
     let roots = chapters();
     let mut workspace = BookWorkspace::new(&roots).unwrap();
     workspace.revision = u32::MAX;
-    assert!(workspace.update_sources(&[file("two.md", "Changed")]).is_err());
+    assert!(
+        workspace
+            .update_sources(&[file("two.md", "Changed")])
+            .is_err()
+    );
     assert_eq!(workspace.source_revision(), u32::MAX);
     assert_eq!(workspace.book().chapters[1].title, "Two");
-    assert_eq!(workspace.update_sources(&[roots[1].clone()]).unwrap().changed_sources, 0);
+    assert_eq!(
+        workspace
+            .update_sources(&[roots[1].clone()])
+            .unwrap()
+            .changed_sources,
+        0
+    );
 }
 
 #[test]
@@ -235,21 +312,39 @@ fn options_assets_and_all_publication_surfaces_match_a_fresh_rebuild() {
     let asset_pointer = workspace.options().pdf_image_assets[0].bytes.as_ptr();
     roots[0].source = "# Revised\n\n![Chart](chart.svg)\n\n[Next](../two.md#two)\n".into();
     workspace.update_sources(&[roots[0].clone()]).unwrap();
-    assert_eq!(workspace.options().pdf_image_assets[0].bytes.as_ptr(), asset_pointer);
+    assert_eq!(
+        workspace.options().pdf_image_assets[0].bytes.as_ptr(),
+        asset_pointer
+    );
     let mut expected = BookRenderer::new(&roots).unwrap();
     *expected.options_mut() = workspace.options().clone();
     assert_book_eq(&workspace, &expected);
-    assert_eq!(workspace.render_pdf().unwrap(), expected.render_pdf().unwrap());
-    assert_eq!(workspace.render_epub().unwrap(), expected.render_epub().unwrap());
-    assert_eq!(workspace.render_site().unwrap(), expected.render_site().unwrap());
-    assert_eq!(workspace.render_site_publication().unwrap(), expected.render_site_publication().unwrap());
+    assert_eq!(
+        workspace.render_pdf().unwrap(),
+        expected.render_pdf().unwrap()
+    );
+    assert_eq!(
+        workspace.render_epub().unwrap(),
+        expected.render_epub().unwrap()
+    );
+    assert_eq!(
+        workspace.render_site().unwrap(),
+        expected.render_site().unwrap()
+    );
+    assert_eq!(
+        workspace.render_site_publication().unwrap(),
+        expected.render_site_publication().unwrap()
+    );
 }
 
 #[test]
 fn report_wire_shape_is_bounded_numeric_and_contains_no_source_text() {
     let mut workspace = BookWorkspace::new(&[file("a.md", "Old")]).unwrap();
     let report = workspace.update_sources(&[file("a.md", "New")]).unwrap();
-    assert_eq!(report.to_json(), "{\"schema\":\"fmd-book-source-update-v1\",\"revision\":1,\"source_length\":3,\"chapter_count\":1,\"changed_sources\":1,\"reparsed_chapters\":[0]}");
+    assert_eq!(
+        report.to_json(),
+        "{\"schema\":\"fmd-book-source-update-v1\",\"revision\":1,\"source_length\":3,\"chapter_count\":1,\"changed_sources\":1,\"reparsed_chapters\":[0]}"
+    );
 }
 
 #[test]
@@ -272,18 +367,30 @@ fn seeded_edit_sequences_match_fresh_full_book_parsing() {
 #[test]
 fn stale_revision_rejects_changes_and_noops_without_touching_the_capture() {
     let mut workspace = BookWorkspace::new(&[file("a.md", "Old")]).unwrap();
-    let accepted = workspace.update_sources_at_revision(&[file("a.md", "New")], 0).unwrap();
+    let accepted = workspace
+        .update_sources_at_revision(&[file("a.md", "New")], 0)
+        .unwrap();
     assert_eq!(accepted.revision, 1);
     let pointer = workspace.book().chapters[0].doc.blocks.as_ptr();
     for source in ["Stale replacement", "New"] {
-        let error = workspace.update_sources_at_revision(&[file("a.md", source)], 0).unwrap_err();
+        let error = workspace
+            .update_sources_at_revision(&[file("a.md", source)], 0)
+            .unwrap_err();
         assert!(error.to_string().contains("stale source revision"));
         assert_eq!(workspace.source_revision(), 1);
         assert_eq!(workspace.chapters[0].source, "New");
         assert_eq!(workspace.book().chapters[0].doc.blocks.as_ptr(), pointer);
     }
-    let noop = workspace.update_sources_at_revision(&[file("a.md", "New")], 1).unwrap();
+    let noop = workspace
+        .update_sources_at_revision(&[file("a.md", "New")], 1)
+        .unwrap();
     assert_eq!(noop.revision, 1);
     assert_eq!(noop.changed_sources, 0);
-    assert_eq!(workspace.update_sources_at_revision(&[file("a.md", "Latest")], 1).unwrap().revision, 2);
+    assert_eq!(
+        workspace
+            .update_sources_at_revision(&[file("a.md", "Latest")], 1)
+            .unwrap()
+            .revision,
+        2
+    );
 }

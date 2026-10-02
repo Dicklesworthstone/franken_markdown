@@ -14,14 +14,11 @@
 #![forbid(unsafe_code)]
 
 use crate::native_route::{
-    assemble_platform_run, FallbackFace, NativeShapingError, NativeShapingRequest,
-    NativeShapingRoute, PlatformRunGlyph, PlatformShapedOutput, ShapingRouteCapabilities,
-    ShapingRouteKind,
+    FallbackFace, NativeShapingError, NativeShapingRequest, NativeShapingRoute, PlatformRunGlyph,
+    PlatformShapedOutput, ShapingRouteCapabilities, ShapingRouteKind, assemble_platform_run,
 };
 use crate::shaping::Direction;
-use crate::text_run::{
-    utf16_to_byte, FontId, FontOrigin, OwnedTextRun, TextRunContext,
-};
+use crate::text_run::{FontId, FontOrigin, OwnedTextRun, TextRunContext, utf16_to_byte};
 use std::fmt;
 
 /// Maximum allowable paragraph byte length for a single Mac native shaping call (Plan §10.9).
@@ -143,29 +140,52 @@ pub enum MacFontAdapterError {
 impl fmt::Display for MacFontAdapterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ContextBudgetExceeded { length, max_allowed } => {
-                write!(f, "CoreText context budget exceeded: {length} bytes > {max_allowed} max")
+            Self::ContextBudgetExceeded {
+                length,
+                max_allowed,
+            } => {
+                write!(
+                    f,
+                    "CoreText context budget exceeded: {length} bytes > {max_allowed} max"
+                )
             }
             Self::EmptyText => write!(f, "cannot shape empty text with CoreText"),
             Self::InvalidUtf16Offset { utf16_offset } => {
                 write!(f, "invalid UTF-16 code unit offset: {utf16_offset}")
             }
             Self::MidScalarBoundary { byte_offset } => {
-                write!(f, "mapped byte offset {byte_offset} is inside a multi-byte UTF-8 scalar")
+                write!(
+                    f,
+                    "mapped byte offset {byte_offset} is inside a multi-byte UTF-8 scalar"
+                )
             }
             Self::BridgeUnavailable(msg) => write!(f, "Mac bridge unavailable: {msg}"),
             Self::ForeignCallFailed(msg) => write!(f, "foreign CoreText call failed: {msg}"),
-            Self::RasterDimensionTooLarge { dimension, max_allowed } => {
-                write!(f, "raster dimension {dimension} exceeds maximum {max_allowed}")
+            Self::RasterDimensionTooLarge {
+                dimension,
+                max_allowed,
+            } => {
+                write!(
+                    f,
+                    "raster dimension {dimension} exceeds maximum {max_allowed}"
+                )
             }
             Self::RasterBytesTooLarge { bytes, max_allowed } => {
                 write!(f, "raster bytes {bytes} exceeds maximum {max_allowed}")
             }
             Self::RasterBufferMismatch { expected, actual } => {
-                write!(f, "raster buffer mismatch: expected {expected} bytes, got {actual}")
+                write!(
+                    f,
+                    "raster buffer mismatch: expected {expected} bytes, got {actual}"
+                )
             }
-            Self::FallbackDisabled { unshaped_byte_offset } => {
-                write!(f, "system fallback required at byte offset {unshaped_byte_offset} but disabled")
+            Self::FallbackDisabled {
+                unshaped_byte_offset,
+            } => {
+                write!(
+                    f,
+                    "system fallback required at byte offset {unshaped_byte_offset} but disabled"
+                )
             }
         }
     }
@@ -176,22 +196,26 @@ impl std::error::Error for MacFontAdapterError {}
 impl From<MacFontAdapterError> for NativeShapingError {
     fn from(err: MacFontAdapterError) -> Self {
         match err {
-            MacFontAdapterError::ContextBudgetExceeded { length, max_allowed } => {
-                Self::ContextBudgetExceeded { length, max_allowed }
-            }
+            MacFontAdapterError::ContextBudgetExceeded {
+                length,
+                max_allowed,
+            } => Self::ContextBudgetExceeded {
+                length,
+                max_allowed,
+            },
             MacFontAdapterError::EmptyText => Self::EmptyText,
-            MacFontAdapterError::InvalidUtf16Offset { utf16_offset } => {
-                Self::InvalidByteRange {
-                    offset: utf16_offset,
-                    text_len: 0,
-                }
-            }
-            MacFontAdapterError::MidScalarBoundary { byte_offset } => {
-                Self::MidScalarBoundary { offset: byte_offset }
-            }
-            MacFontAdapterError::FallbackDisabled { unshaped_byte_offset } => {
-                Self::FallbackRequired { unshaped_byte_offset }
-            }
+            MacFontAdapterError::InvalidUtf16Offset { utf16_offset } => Self::InvalidByteRange {
+                offset: utf16_offset,
+                text_len: 0,
+            },
+            MacFontAdapterError::MidScalarBoundary { byte_offset } => Self::MidScalarBoundary {
+                offset: byte_offset,
+            },
+            MacFontAdapterError::FallbackDisabled {
+                unshaped_byte_offset,
+            } => Self::FallbackRequired {
+                unshaped_byte_offset,
+            },
             MacFontAdapterError::BridgeUnavailable(msg) => Self::PlatformUnavailable(msg),
             MacFontAdapterError::ForeignCallFailed(msg) => Self::AdapterError(msg),
             MacFontAdapterError::RasterDimensionTooLarge { dimension, .. } => {
@@ -200,9 +224,9 @@ impl From<MacFontAdapterError> for NativeShapingError {
             MacFontAdapterError::RasterBytesTooLarge { bytes, .. } => {
                 Self::AdapterError(format!("raster bytes {bytes} too large"))
             }
-            MacFontAdapterError::RasterBufferMismatch { expected, actual } => {
-                Self::AdapterError(format!("raster buffer mismatch: expected {expected}, got {actual}"))
-            }
+            MacFontAdapterError::RasterBufferMismatch { expected, actual } => Self::AdapterError(
+                format!("raster buffer mismatch: expected {expected}, got {actual}"),
+            ),
         }
     }
 }
@@ -271,7 +295,9 @@ impl<D: MacBridgeDriver> MacFontAdapter<D> {
         glyph_id: u16,
         font_size_px: f32,
     ) -> Result<Option<RawCoreGraphicsRaster>, MacFontAdapterError> {
-        let raw_opt = self.driver.rasterize_glyph(font_postscript_name, glyph_id, font_size_px)?;
+        let raw_opt = self
+            .driver
+            .rasterize_glyph(font_postscript_name, glyph_id, font_size_px)?;
         let mut raw = match raw_opt {
             Some(r) => r,
             None => return Ok(None),
@@ -344,7 +370,10 @@ impl<D: MacBridgeDriver> NativeShapingRoute for MacFontAdapter<D> {
         }
     }
 
-    fn shape_run(&self, req: &NativeShapingRequest<'_>) -> Result<OwnedTextRun, NativeShapingError> {
+    fn shape_run(
+        &self,
+        req: &NativeShapingRequest<'_>,
+    ) -> Result<OwnedTextRun, NativeShapingError> {
         if req.text.is_empty() {
             return Err(NativeShapingError::EmptyText);
         }
@@ -358,7 +387,9 @@ impl<D: MacBridgeDriver> NativeShapingRoute for MacFontAdapter<D> {
         }
 
         let is_rtl = req.direction == Direction::RightToLeft;
-        let line = self.driver.shape_line(req.text, "SystemFont", req.font_size, is_rtl)?;
+        let line = self
+            .driver
+            .shape_line(req.text, "SystemFont", req.font_size, is_rtl)?;
 
         let mut platform_glyphs: Vec<PlatformRunGlyph> = Vec::with_capacity(line.glyphs.len());
         let mut used_fallbacks: Vec<FallbackFace> = Vec::new();
@@ -396,8 +427,8 @@ impl<D: MacBridgeDriver> NativeShapingRoute for MacFontAdapter<D> {
             let byte_len = byte_end - byte_start;
 
             // Determine if this glyph was produced by a fallback face
-            let is_fallback = !g.font_postscript_name.is_empty()
-                && g.font_postscript_name != "SystemFont";
+            let is_fallback =
+                !g.font_postscript_name.is_empty() && g.font_postscript_name != "SystemFont";
 
             let font_id = if is_fallback {
                 if !req.allow_system_fallback {
@@ -504,17 +535,16 @@ impl MacBridgeDriver for SimulatedMacBridge {
             let utf16_len = ch.len_utf16();
 
             // Detect script for simulated CoreText font substitution
-            let (ps_name, fam_name, is_color, adv_scale) = if (0x2E80..=0x9FFF).contains(&cp)
-                || (0xAC00..=0xD7AF).contains(&cp)
-            {
-                ("PingFangSC-Regular", "PingFang SC", false, 1.0)
-            } else if (0x0590..=0x08FF).contains(&cp) || (0xFB1D..=0xFEFF).contains(&cp) {
-                ("GeezaPro", "Geeza Pro", false, 0.6)
-            } else if (0x1F300..=0x1FAFF).contains(&cp) || (0x2600..=0x27BF).contains(&cp) {
-                ("AppleColorEmoji", "Apple Color Emoji", true, 1.0)
-            } else {
-                ("SystemFont", "SystemFont", false, 0.5)
-            };
+            let (ps_name, fam_name, is_color, adv_scale) =
+                if (0x2E80..=0x9FFF).contains(&cp) || (0xAC00..=0xD7AF).contains(&cp) {
+                    ("PingFangSC-Regular", "PingFang SC", false, 1.0)
+                } else if (0x0590..=0x08FF).contains(&cp) || (0xFB1D..=0xFEFF).contains(&cp) {
+                    ("GeezaPro", "Geeza Pro", false, 0.6)
+                } else if (0x1F300..=0x1FAFF).contains(&cp) || (0x2600..=0x27BF).contains(&cp) {
+                    ("AppleColorEmoji", "Apple Color Emoji", true, 1.0)
+                } else {
+                    ("SystemFont", "SystemFont", false, 0.5)
+                };
 
             let x_adv = font_size * adv_scale;
             let glyph_id = (cp % 5000) as u16;
@@ -563,7 +593,7 @@ impl MacBridgeDriver for SimulatedMacBridge {
             for chunk in pixels.chunks_exact_mut(4) {
                 chunk[0] = 255; // B
                 chunk[1] = 200; // G
-                chunk[2] = 50;  // R
+                chunk[2] = 50; // R
                 chunk[3] = 255; // A
             }
             Ok(Some(RawCoreGraphicsRaster {

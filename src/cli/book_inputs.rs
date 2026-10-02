@@ -31,7 +31,11 @@ pub(super) struct LoadedBook {
     pub protected_paths: BTreeSet<PathBuf>,
 }
 
-pub(super) fn load(input: &Path, max_input_bytes: u64, max_image_bytes: u64) -> Result<LoadedBook, String> {
+pub(super) fn load(
+    input: &Path,
+    max_input_bytes: u64,
+    max_image_bytes: u64,
+) -> Result<LoadedBook, String> {
     let mut loaded = load_sources(input, max_input_bytes)?;
     load_images(&mut loaded, max_image_bytes)?;
     Ok(loaded)
@@ -40,9 +44,14 @@ pub(super) fn load(input: &Path, max_input_bytes: u64, max_image_bytes: u64) -> 
 /// Discovery, role selection and expansion only. The check command never
 /// calls the image phase or inspects presentation configuration.
 pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedBook, String> {
-    let root = input.canonicalize().map_err(|error| format!("opening {}: {error}", input.display()))?;
+    let root = input
+        .canonicalize()
+        .map_err(|error| format!("opening {}: {error}", input.display()))?;
     if !root.is_dir() {
-        return Err(format!("book input is not a directory: {}", input.display()));
+        return Err(format!(
+            "book input is not a directory: {}",
+            input.display()
+        ));
     }
     let mut warnings = Vec::new();
     let discovered = discover(&root, &mut warnings)?;
@@ -51,7 +60,8 @@ pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedB
         Ok(_) => {
             let (path, bytes) = read_regular(&root, "book.toml", MAX_MANIFEST_BYTES)?;
             protected_paths.insert(path);
-            let source = String::from_utf8(bytes).map_err(|_| "book.toml must be UTF-8".to_string())?;
+            let source =
+                String::from_utf8(bytes).map_err(|_| "book.toml must be UTF-8".to_string())?;
             manifest::parse(&source)?
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Manifest::default(),
@@ -59,8 +69,11 @@ pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedB
     };
     let order = chapter_order(&discovered, &manifest.order, &manifest.include_only)?;
     if order.is_empty() {
-        let message = if discovered.is_empty() { "no Markdown files found" }
-            else { "no published Markdown chapters remain after include_only selection" };
+        let message = if discovered.is_empty() {
+            "no Markdown files found"
+        } else {
+            "no published Markdown chapters remain after include_only selection"
+        };
         return Err(format!("{message} in {}", input.display()));
     }
     let mut inputs = Vec::with_capacity(order.len());
@@ -81,10 +94,15 @@ pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedB
         charge_read(&read_bytes, bytes.len())?;
         protected_paths.insert(path);
         source_bytes.push(bytes.len());
-        let raw = String::from_utf8(bytes).map_err(|_| format!("{relative}: Markdown must be UTF-8"))?;
+        let raw =
+            String::from_utf8(bytes).map_err(|_| format!("{relative}: Markdown must be UTF-8"))?;
         let source = if crate::transclude::has_includes(&raw) {
             let resolve = |requested: &str, origin: &str| -> crate::transclude::ResolveResult {
-                let origin = if origin == "<input>" { &relative } else { origin };
+                let origin = if origin == "<input>" {
+                    &relative
+                } else {
+                    origin
+                };
                 let parent = origin.rsplit_once('/').map_or("", |(parent, _)| parent);
                 let requested = relative_path(parent, requested)?;
                 let (path, bytes) = read_regular(&root, &requested, per_file)?;
@@ -97,25 +115,42 @@ pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedB
             let remaining = (MAX_TOTAL_SOURCE_BYTES - expanded_bytes).min(per_file) as usize;
             let expanded = crate::transclude::expand_includes_mapped_with_limit(
                 &raw, &relative, &resolve, remaining,
-            ).map_err(|error| format!("{relative}: {error}"))?;
+            )
+            .map_err(|error| format!("{relative}: {error}"))?;
             crate::cli::source_origins::rebase_destinations(
-                expanded, &relative, |origin| Some(origin.to_owned()), remaining,
-            ).map_err(|error| format!("{relative}: {error}"))?
+                expanded,
+                &relative,
+                |origin| Some(origin.to_owned()),
+                remaining,
+            )
+            .map_err(|error| format!("{relative}: {error}"))?
         } else {
             raw
         };
-        expanded_bytes = expanded_bytes.checked_add(source.len() as u64)
+        expanded_bytes = expanded_bytes
+            .checked_add(source.len() as u64)
             .ok_or_else(|| "expanded book size overflow".to_string())?;
         if expanded_bytes > MAX_TOTAL_SOURCE_BYTES {
             return Err("expanded book exceeds 64 MiB".to_string());
         }
-        inputs.push(BookInput { path: relative, source });
+        inputs.push(BookInput {
+            path: relative,
+            source,
+        });
     }
     protected_paths.extend(include_paths.into_inner());
     let book = build_book(&inputs).map_err(|error| error.to_string())?;
     warnings.sort();
     warnings.dedup();
-    Ok(LoadedBook { root, book, manifest, source_bytes, images: Vec::new(), warnings, protected_paths })
+    Ok(LoadedBook {
+        root,
+        book,
+        manifest,
+        source_bytes,
+        images: Vec::new(),
+        warnings,
+        protected_paths,
+    })
 }
 
 /// Load assets only after an optional source-navigation guard has passed.
@@ -126,7 +161,12 @@ pub(super) fn load_images(loaded: &mut LoadedBook, max_image_bytes: u64) -> Resu
     let protected_paths = &mut loaded.protected_paths;
     let mut requests = ImageRequests::default();
     for chapter in &mut loaded.book.chapters {
-        discover_images(&mut chapter.doc.blocks, &chapter.path, &mut requests, warnings)?;
+        discover_images(
+            &mut chapter.doc.blocks,
+            &chapter.path,
+            &mut requests,
+            warnings,
+        )?;
     }
     let mut images = Vec::new();
     let mut total_images = 0usize;
@@ -143,9 +183,12 @@ pub(super) fn load_images(loaded: &mut LoadedBook, max_image_bytes: u64) -> Resu
                     warnings.push(format!("image_unsupported: {relative}"));
                     continue;
                 }
-                let added = bytes.len().checked_mul(keys.len())
+                let added = bytes
+                    .len()
+                    .checked_mul(keys.len())
                     .ok_or_else(|| "image size overflow".to_string())?;
-                total_images = total_images.checked_add(added)
+                total_images = total_images
+                    .checked_add(added)
                     .ok_or_else(|| "image size overflow".to_string())?;
                 if total_images > MAX_TOTAL_IMAGE_BYTES {
                     return Err("book image payloads exceed 128 MiB".to_string());
@@ -158,7 +201,10 @@ pub(super) fn load_images(loaded: &mut LoadedBook, max_image_bytes: u64) -> Resu
                     } else {
                         bytes.as_deref().unwrap_or_default().to_vec()
                     };
-                    images.push(PdfImageAsset { destination, bytes: payload });
+                    images.push(PdfImageAsset {
+                        destination,
+                        bytes: payload,
+                    });
                 }
             }
             Err(error) => warnings.push(format!("image_unavailable: {relative}: {error}")),
@@ -171,7 +217,9 @@ pub(super) fn load_images(loaded: &mut LoadedBook, max_image_bytes: u64) -> Resu
 }
 
 fn charge_read(total: &Cell<u64>, bytes: usize) -> Result<(), String> {
-    let next = total.get().checked_add(bytes as u64)
+    let next = total
+        .get()
+        .checked_add(bytes as u64)
         .ok_or_else(|| "book read size overflow".to_string())?;
     if next > MAX_TOTAL_SOURCE_BYTES {
         return Err("book source/include reads exceed 64 MiB".to_string());
@@ -193,22 +241,32 @@ fn discover(root: &Path, warnings: &mut Vec<String>) -> Result<BTreeSet<String>,
         if depth > MAX_DEPTH {
             return Err("book directory nesting exceeds 64 levels".to_string());
         }
-        for entry in fs::read_dir(&directory).map_err(|error| format!("walking {}: {error}", directory.display()))? {
-            let entry = entry.map_err(|error| format!("walking {}: {error}", directory.display()))?;
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("walking {}: {error}", directory.display()))?
+        {
+            let entry =
+                entry.map_err(|error| format!("walking {}: {error}", directory.display()))?;
             visited += 1;
             if visited > MAX_ENTRIES {
                 return Err("book discovery exceeds 100000 directory entries".to_string());
             }
             let name = entry.file_name();
-            let name = name.to_str().ok_or_else(|| "book paths must be UTF-8".to_string())?;
+            let name = name
+                .to_str()
+                .ok_or_else(|| "book paths must be UTF-8".to_string())?;
             if name.starts_with('.') {
                 continue;
             }
             let path = entry.path();
-            let relative = path.strip_prefix(root).map_err(|_| "book path escapes root".to_string())?
-                .to_str().ok_or_else(|| "book paths must be UTF-8".to_string())?
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| "book path escapes root".to_string())?
+                .to_str()
+                .ok_or_else(|| "book paths must be UTF-8".to_string())?
                 .replace('\\', "/");
-            let kind = entry.file_type().map_err(|error| format!("reading {relative}: {error}"))?;
+            let kind = entry
+                .file_type()
+                .map_err(|error| format!("reading {relative}: {error}"))?;
             if kind.is_symlink() {
                 warnings.push(format!("symlink_skipped: {relative}"));
             } else if kind.is_dir() {
@@ -226,7 +284,9 @@ fn discover(root: &Path, warnings: &mut Vec<String>) -> Result<BTreeSet<String>,
 }
 
 fn chapter_order(
-    discovered: &BTreeSet<String>, requested: &[String], include_only: &[String],
+    discovered: &BTreeSet<String>,
+    requested: &[String],
+    include_only: &[String],
 ) -> Result<Vec<String>, String> {
     let mut resources = BTreeSet::new();
     for name in include_only {
@@ -235,7 +295,9 @@ fn chapter_order(
             return Err(format!("book.toml: duplicate include_only source {name:?}"));
         }
         if !discovered.contains(&name) {
-            return Err(format!("book.toml: include_only source {name:?} is not a discovered regular Markdown file"));
+            return Err(format!(
+                "book.toml: include_only source {name:?} is not a discovered regular Markdown file"
+            ));
         }
     }
     let mut seen = BTreeSet::new();
@@ -246,25 +308,38 @@ fn chapter_order(
             return Err(format!("book.toml: duplicate chapter {name:?}"));
         }
         if !discovered.contains(&name) {
-            return Err(format!("book.toml: chapter {name:?} is not a discovered regular Markdown file"));
+            return Err(format!(
+                "book.toml: chapter {name:?} is not a discovered regular Markdown file"
+            ));
         }
         if resources.contains(&name) {
-            return Err(format!("book.toml: {name:?} cannot be both an ordered chapter and an include_only source"));
+            return Err(format!(
+                "book.toml: {name:?} cannot be both an ordered chapter and an include_only source"
+            ));
         }
         ordered.push(name);
     }
-    ordered.extend(discovered.iter().filter(|path| !seen.contains(*path) && !resources.contains(*path)).cloned());
+    ordered.extend(
+        discovered
+            .iter()
+            .filter(|path| !seen.contains(*path) && !resources.contains(*path))
+            .cloned(),
+    );
     Ok(ordered)
 }
 
 /// Literal filesystem paths, not URLs. Manifest/include paths can contain
 /// spaces, commas and '#'; only image destinations go through URI decoding.
 fn relative_path(parent: &str, requested: &str) -> Result<String, String> {
-    if requested.is_empty() || requested.starts_with(['/', '\\'])
-        || requested.ends_with(['/', '\\']) || requested.contains(':')
+    if requested.is_empty()
+        || requested.starts_with(['/', '\\'])
+        || requested.ends_with(['/', '\\'])
+        || requested.contains(':')
         || requested.chars().any(char::is_control)
     {
-        return Err(format!("book path must be relative and nonempty: {requested:?}"));
+        return Err(format!(
+            "book path must be relative and nonempty: {requested:?}"
+        ));
     }
     let normalized = requested.replace('\\', "/");
     let mut parts: Vec<&str> = parent.split('/').filter(|part| !part.is_empty()).collect();
@@ -290,17 +365,21 @@ fn regular_path(root: &Path, relative: &str, limit: u64) -> Result<PathBuf, Stri
     let mut path = root.to_path_buf();
     for component in relative.split('/') {
         path.push(component);
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("reading {relative}: {error}"))?;
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|error| format!("reading {relative}: {error}"))?;
         if metadata.file_type().is_symlink() {
             return Err(format!("symlink component is not allowed: {relative}"));
         }
     }
     let metadata = fs::metadata(&path).map_err(|error| format!("reading {relative}: {error}"))?;
     if !metadata.is_file() || metadata.len() > limit {
-        return Err(format!("{relative}: expected a regular file of at most {limit} bytes"));
+        return Err(format!(
+            "{relative}: expected a regular file of at most {limit} bytes"
+        ));
     }
-    let canonical = path.canonicalize().map_err(|error| format!("resolving {relative}: {error}"))?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("resolving {relative}: {error}"))?;
     if !canonical.starts_with(root) {
         return Err(format!("book path escapes root: {relative}"));
     }
@@ -309,13 +388,19 @@ fn regular_path(root: &Path, relative: &str, limit: u64) -> Result<PathBuf, Stri
 
 fn read_regular(root: &Path, relative: &str, limit: u64) -> Result<(PathBuf, Vec<u8>), String> {
     let canonical = regular_path(root, relative, limit)?;
-    let file = fs::File::open(&canonical).map_err(|error| format!("opening {relative}: {error}"))?;
-    let metadata = file.metadata().map_err(|error| format!("reading {relative}: {error}"))?;
+    let file =
+        fs::File::open(&canonical).map_err(|error| format!("opening {relative}: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("reading {relative}: {error}"))?;
     if !metadata.is_file() || metadata.len() > limit {
-        return Err(format!("{relative}: expected a regular file of at most {limit} bytes"));
+        return Err(format!(
+            "{relative}: expected a regular file of at most {limit} bytes"
+        ));
     }
     let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
         .map_err(|error| format!("reading {relative}: {error}"))?;
     if bytes.len() as u64 > limit {
         return Err(format!("{relative}: file exceeds {limit} bytes"));
@@ -324,7 +409,8 @@ fn read_regular(root: &Path, relative: &str, limit: u64) -> Result<(PathBuf, Vec
 }
 
 fn supported_image(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.starts_with(b"\xff\xd8\xff")
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes.starts_with(b"\xff\xd8\xff")
         || std::str::from_utf8(bytes).is_ok_and(|text| {
             let start = text.trim_start_matches('\u{feff}').trim_start();
             start.starts_with("<svg") || (start.starts_with("<?xml") && start.contains("<svg"))
@@ -367,20 +453,32 @@ impl ImageRequests {
 }
 
 fn discover_images(
-    blocks: &mut [Block], source: &str,
-    requests: &mut ImageRequests, warnings: &mut Vec<String>,
+    blocks: &mut [Block],
+    source: &str,
+    requests: &mut ImageRequests,
+    warnings: &mut Vec<String>,
 ) -> Result<(), String> {
     for block in blocks {
         match block {
-            Block::Paragraph(inlines) | Block::Heading { inlines, .. } => image_inlines(inlines, source, requests, warnings)?,
-            Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => discover_images(inner, source, requests, warnings)?,
+            Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
+                image_inlines(inlines, source, requests, warnings)?
+            }
+            Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
+                discover_images(inner, source, requests, warnings)?
+            }
             Block::List(list) => {
-                for item in &mut list.items { discover_images(&mut item.blocks, source, requests, warnings)?; }
+                for item in &mut list.items {
+                    discover_images(&mut item.blocks, source, requests, warnings)?;
+                }
             }
             Block::Table(table) => {
-                for cell in &mut table.head { image_inlines(cell, source, requests, warnings)?; }
+                for cell in &mut table.head {
+                    image_inlines(cell, source, requests, warnings)?;
+                }
                 for row in &mut table.rows {
-                    for cell in row { image_inlines(cell, source, requests, warnings)?; }
+                    for cell in row {
+                        image_inlines(cell, source, requests, warnings)?;
+                    }
                 }
             }
             Block::DefinitionList(items) => {
@@ -397,8 +495,10 @@ fn discover_images(
 }
 
 fn image_inlines(
-    inlines: &mut [Inline], source: &str,
-    requests: &mut ImageRequests, warnings: &mut Vec<String>,
+    inlines: &mut [Inline],
+    source: &str,
+    requests: &mut ImageRequests,
+    warnings: &mut Vec<String>,
 ) -> Result<(), String> {
     for inline in inlines {
         match inline {
@@ -414,8 +514,12 @@ fn image_inlines(
                     warnings.push(format!("image_not_loaded: {source}: {dest}"));
                 }
             }
-            Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner)
-            | Inline::Link { content: inner, .. } => image_inlines(inner, source, requests, warnings)?,
+            Inline::Emphasis(inner)
+            | Inline::Strong(inner)
+            | Inline::Strikethrough(inner)
+            | Inline::Link { content: inner, .. } => {
+                image_inlines(inner, source, requests, warnings)?
+            }
             _ => {}
         }
     }
@@ -430,8 +534,19 @@ mod tests {
     #[test]
     fn literal_paths_normalize_and_refuse_absolute_or_escaping_reads() {
         assert_eq!(relative_path("guide", "../a,b#c.md").unwrap(), "a,b#c.md");
-        assert_eq!(relative_path("", "guide\\next.md").unwrap(), "guide/next.md");
-        for path in ["../secret.md", "/root.md", "C:\\file.md", "a/b:stream", "", ".", "a\0.md"] {
+        assert_eq!(
+            relative_path("", "guide\\next.md").unwrap(),
+            "guide/next.md"
+        );
+        for path in [
+            "../secret.md",
+            "/root.md",
+            "C:\\file.md",
+            "a/b:stream",
+            "",
+            ".",
+            "a\0.md",
+        ] {
             assert!(relative_path("", path).is_err(), "accepted {path:?}");
         }
     }
@@ -439,7 +554,10 @@ mod tests {
     #[test]
     fn manifest_order_is_explicit_with_lexical_remainder() {
         let files = BTreeSet::from(["a.md".into(), "b.md".into(), "z.md".into()]);
-        assert_eq!(chapter_order(&files, &["z.md".into()], &[]).unwrap(), ["z.md", "a.md", "b.md"]);
+        assert_eq!(
+            chapter_order(&files, &["z.md".into()], &[]).unwrap(),
+            ["z.md", "a.md", "b.md"]
+        );
         assert!(chapter_order(&files, &["missing.md".into()], &[]).is_err());
         assert!(chapter_order(&files, &["a.md".into(), "./a.md".into()], &[]).is_err());
     }
@@ -462,7 +580,10 @@ mod tests {
     #[test]
     fn include_only_paths_are_removed_without_reordering_other_chapters() {
         let files = BTreeSet::from([
-            "a.md".into(), "b.md".into(), "parts/共享.md".into(), "z.md".into(),
+            "a.md".into(),
+            "b.md".into(),
+            "parts/共享.md".into(),
+            "z.md".into(),
         ]);
         let order = chapter_order(&files, &["z.md".into()], &["./parts/共享.md".into()]).unwrap();
         assert_eq!(order, ["z.md", "a.md", "b.md"]);
@@ -473,13 +594,28 @@ mod tests {
     fn include_only_rejects_unknown_duplicate_escaping_and_conflicting_roles() {
         let files = BTreeSet::from(["a.md".into(), "parts/shared.md".into()]);
         for resources in [
-            vec!["missing.md".into()], vec!["../outside.md".into()],
+            vec!["missing.md".into()],
+            vec!["../outside.md".into()],
             vec!["parts/shared.md".into(), "./parts/shared.md".into()],
             vec!["/parts/shared.md".into()],
         ] {
-            assert!(chapter_order(&files, &[], &resources).is_err(), "{resources:?}");
+            assert!(
+                chapter_order(&files, &[], &resources).is_err(),
+                "{resources:?}"
+            );
         }
-        assert!(chapter_order(&files, &["parts/shared.md".into()], &["parts\\shared.md".into()]).is_err());
-        assert!(chapter_order(&files, &[], &files.iter().cloned().collect::<Vec<_>>()).unwrap().is_empty());
+        assert!(
+            chapter_order(
+                &files,
+                &["parts/shared.md".into()],
+                &["parts\\shared.md".into()]
+            )
+            .is_err()
+        );
+        assert!(
+            chapter_order(&files, &[], &files.iter().cloned().collect::<Vec<_>>())
+                .unwrap()
+                .is_empty()
+        );
     }
 }

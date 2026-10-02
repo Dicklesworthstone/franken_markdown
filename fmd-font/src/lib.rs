@@ -27,27 +27,27 @@
 pub mod bundled;
 pub mod cff;
 mod gvar;
+pub mod macos;
+pub mod native_route;
 pub mod outline;
 pub mod shaping;
 mod subset;
 pub mod text_run;
-pub mod native_route;
-pub mod macos;
+pub use macos::{
+    DEFAULT_MAC_CONTEXT_BUDGET, MAX_MAC_RASTER_BYTES, MAX_MAC_RASTER_DIMENSION, MacBridgeDriver,
+    MacFontAdapter, MacFontAdapterConfig, MacFontAdapterError, RawCoreGraphicsRaster,
+    RawCoreTextGlyph, RawCoreTextLine, SimulatedMacBridge,
+};
+pub use native_route::{
+    FallbackFace, NativeShapingError, NativeShapingRequest, NativeShapingRoute, PlatformRunGlyph,
+    PlatformShapedOutput, ShapingRouteCapabilities, ShapingRouteKind, SimulatedFallbackRule,
+    SimulatedNativeRoute, assemble_platform_run,
+};
+pub use shaping::Direction;
 pub use subset::{EmbeddingFormat, Subset, SubsetError, SubsetErrorKind};
 pub use text_run::{
     CaretAffinity, CaretPosition, FontId, FontOrigin, HitTestResult, OwnedTextRun, RunGlyph,
     SelectionRect, TextCluster, TextRunContext, byte_to_utf16, utf16_to_byte,
-};
-pub use native_route::{
-    assemble_platform_run, FallbackFace, NativeShapingError, NativeShapingRequest,
-    NativeShapingRoute, PlatformRunGlyph, PlatformShapedOutput, ShapingRouteCapabilities,
-    ShapingRouteKind, SimulatedFallbackRule, SimulatedNativeRoute,
-};
-pub use shaping::Direction;
-pub use macos::{
-    MacBridgeDriver, MacFontAdapter, MacFontAdapterConfig, MacFontAdapterError,
-    RawCoreGraphicsRaster, RawCoreTextGlyph, RawCoreTextLine, SimulatedMacBridge,
-    DEFAULT_MAC_CONTEXT_BUDGET, MAX_MAC_RASTER_BYTES, MAX_MAC_RASTER_DIMENSION,
 };
 
 /// Tiny OFL variable-font fixture (one glyph, `wght` 100..=900, gvar peak

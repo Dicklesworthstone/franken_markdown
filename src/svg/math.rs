@@ -1,9 +1,9 @@
 //! Adapter from the shared TeX engine's y-up em geometry to poster paths.
 //! No MathML/foreignObject, browser typesetter, or runtime font lookup.
 
-use std::rc::Rc;
-use franken_markdown::math::{self, FaceId, PathSeg, Style};
 use super::{Ink, Op, Poster, RStyle, SLOT_COUNT, SvgWarning, Word, push_q2};
+use franken_markdown::math::{self, FaceId, PathSeg, Style};
+use std::rc::Rc;
 
 const MAX_FORMULA_BYTES: usize = 64 * 1024;
 const MAX_PRIMITIVES: usize = 65_536;
@@ -25,22 +25,42 @@ pub(super) struct MathRun {
 }
 
 impl Poster {
-    pub(super) fn math_word(&self, source: &str, display: bool, style: RStyle, size: f64,
-        width: f64) -> Word
-    {
+    pub(super) fn math_word(
+        &self,
+        source: &str,
+        display: bool,
+        style: RStyle,
+        size: f64,
+        width: f64,
+    ) -> Word {
         match self.typeset_formula(source, display) {
             Ok(formula) => {
                 let size = fitted_size(&formula, size, width);
                 Word {
-                    text: String::new(), style, w: formula.width * size, gap: 0.0,
-                    formula: Some(MathRun { formula, size }), image: None, warning: None, shaped: None,
+                    text: String::new(),
+                    style,
+                    w: formula.width * size,
+                    gap: 0.0,
+                    formula: Some(MathRun { formula, size }),
+                    image: None,
+                    warning: None,
+                    shaped: None,
                 }
             }
             Err(warning) => {
-                let style = RStyle { mono: true, ..style };
+                let style = RStyle {
+                    mono: true,
+                    ..style
+                };
                 Word {
-                    text: source.to_string(), style, w: self.measure(source, style, size),
-                    gap: 0.0, formula: None, image: None, warning: Some(warning), shaped: None,
+                    text: source.to_string(),
+                    style,
+                    w: self.measure(source, style, size),
+                    gap: 0.0,
+                    formula: None,
+                    image: None,
+                    warning: Some(warning),
+                    shaped: None,
                 }
             }
         }
@@ -48,16 +68,30 @@ impl Poster {
 
     fn typeset_formula(&self, source: &str, display: bool) -> Result<Rc<Formula>, SvgWarning> {
         if source.len() > MAX_FORMULA_BYTES {
-            return Err(warning("svg_math_limit", "formula exceeds the 64 KiB source limit"));
+            return Err(warning(
+                "svg_math_limit",
+                "formula exceeds the 64 KiB source limit",
+            ));
         }
-        let engine = self.math_engine.get_or_init(|| math::Engine::bundled().ok())
-            .as_ref().ok_or_else(|| warning("svg_math_fonts", "bundled math faces unavailable"))?;
-        let layout = engine.typeset(source, if display { Style::Display } else { Style::Text })
+        let engine = self
+            .math_engine
+            .get_or_init(|| math::Engine::bundled().ok())
+            .as_ref()
+            .ok_or_else(|| warning("svg_math_fonts", "bundled math faces unavailable"))?;
+        let layout = engine
+            .typeset(source, if display { Style::Display } else { Style::Text })
             .map_err(|error| warning("svg_math_unsupported", &error.to_string()))?;
-        if layout.glyphs.len().saturating_add(layout.rules.len())
-            .saturating_add(layout.paths.len()) > MAX_PRIMITIVES
+        if layout
+            .glyphs
+            .len()
+            .saturating_add(layout.rules.len())
+            .saturating_add(layout.paths.len())
+            > MAX_PRIMITIVES
         {
-            return Err(warning("svg_math_limit", "formula exceeds the primitive limit"));
+            return Err(warning(
+                "svg_math_limit",
+                "formula exceeds the primitive limit",
+            ));
         }
         // Use actual ink bounds as well as advance metrics. Italic overhang,
         // negative kerns, radicals and large delimiters must stay in the box.
@@ -69,14 +103,20 @@ impl Poster {
                 return Err(warning("svg_math_geometry", "invalid glyph scale"));
             }
             bounds.add(glyph.x, glyph.y)?;
-            let font = engine.faces().font(glyph.face)
+            let font = engine
+                .faces()
+                .font(glyph.face)
                 .ok_or_else(|| warning("svg_math_fonts", "formula names an absent face"))?;
             if let Some(bbox) = font.glyph_bbox(glyph.gid) {
                 let scale = glyph.size / f64::from(font.units_per_em.max(1));
-                bounds.add(glyph.x + f64::from(bbox[0]) * scale,
-                    glyph.y + f64::from(bbox[1]) * scale)?;
-                bounds.add(glyph.x + f64::from(bbox[2]) * scale,
-                    glyph.y + f64::from(bbox[3]) * scale)?;
+                bounds.add(
+                    glyph.x + f64::from(bbox[0]) * scale,
+                    glyph.y + f64::from(bbox[1]) * scale,
+                )?;
+                bounds.add(
+                    glyph.x + f64::from(bbox[2]) * scale,
+                    glyph.y + f64::from(bbox[3]) * scale,
+                )?;
             }
         }
         for rule in &layout.rules {
@@ -89,9 +129,14 @@ impl Poster {
         let mut segments = 0usize;
         for path in &layout.paths {
             for contour in &path.contours {
-                segments = segments.saturating_add(contour.segments.len()).saturating_add(1);
+                segments = segments
+                    .saturating_add(contour.segments.len())
+                    .saturating_add(1);
                 if segments > MAX_PRIMITIVES {
-                    return Err(warning("svg_math_limit", "formula exceeds the path segment limit"));
+                    return Err(warning(
+                        "svg_math_limit",
+                        "formula exceeds the path segment limit",
+                    ));
                 }
                 bounds.add(contour.start.0, contour.start.1)?;
                 for segment in &contour.segments {
@@ -107,8 +152,11 @@ impl Poster {
             }
         }
         Ok(Rc::new(Formula {
-            layout, width: bounds.right - bounds.left, ascent: bounds.top,
-            descent: -bounds.bottom, left: bounds.left,
+            layout,
+            width: bounds.right - bounds.left,
+            ascent: bounds.top,
+            descent: -bounds.bottom,
+            left: bounds.left,
         }))
     }
 
@@ -116,7 +164,11 @@ impl Poster {
         if slot < SLOT_COUNT {
             self.faces[slot].as_ref()
         } else {
-            self.math_engine.get()?.as_ref()?.faces().font(FaceId(slot - SLOT_COUNT))
+            self.math_engine
+                .get()?
+                .as_ref()?
+                .faces()
+                .font(FaceId(slot - SLOT_COUNT))
         }
     }
 
@@ -127,16 +179,23 @@ impl Poster {
         for glyph in &formula.layout.glyphs {
             if !glyph.ch.is_whitespace() {
                 self.ops.push(Op::Glyph {
-                    slot: SLOT_COUNT + glyph.face.0, gid: glyph.gid,
-                    x: origin + glyph.x * size, y: baseline - glyph.y * size,
-                    size: glyph.size * size, ink,
+                    slot: SLOT_COUNT + glyph.face.0,
+                    gid: glyph.gid,
+                    x: origin + glyph.x * size,
+                    y: baseline - glyph.y * size,
+                    size: glyph.size * size,
+                    ink,
                 });
             }
         }
         for rule in &formula.layout.rules {
             self.ops.push(Op::Rect {
-                x: origin + rule.x * size, y: baseline - (rule.y + rule.height) * size,
-                w: rule.width * size, h: rule.height * size, fill: ink, stroke: None,
+                x: origin + rule.x * size,
+                y: baseline - (rule.y + rule.height) * size,
+                w: rule.width * size,
+                h: rule.height * size,
+                fill: ink,
+                stroke: None,
             });
         }
         for path in &formula.layout.paths {
@@ -173,7 +232,12 @@ impl Poster {
                 let pad = f64::from(self.scale.body) * 0.5;
                 let baseline = self.y + pad + formula.ascent * size;
                 let height = (formula.ascent + formula.descent) * size;
-                self.draw_math(&MathRun { formula, size }, x, baseline, Self::default_ink(quote));
+                self.draw_math(
+                    &MathRun { formula, size },
+                    x,
+                    baseline,
+                    Self::default_ink(quote),
+                );
                 self.y += height + 2.0 * pad;
             }
             Err(warning) => {
@@ -204,7 +268,11 @@ impl Poster {
 }
 
 fn fitted_size(formula: &Formula, size: f64, width: f64) -> f64 {
-    if formula.width > 0.0 { size.min(width.max(1.0) / formula.width) } else { size }
+    if formula.width > 0.0 {
+        size.min(width.max(1.0) / formula.width)
+    } else {
+        size
+    }
 }
 
 fn point(out: &mut String, p: (f64, f64), x: f64, baseline: f64, size: f64) {
@@ -214,7 +282,10 @@ fn point(out: &mut String, p: (f64, f64), x: f64, baseline: f64, size: f64) {
 }
 
 fn warning(code: &'static str, message: &str) -> SvgWarning {
-    SvgWarning { code, message: message.to_string() }
+    SvgWarning {
+        code,
+        message: message.to_string(),
+    }
 }
 
 fn valid(value: f64) -> bool {
@@ -232,7 +303,10 @@ struct Bounds {
 impl Bounds {
     fn add(&mut self, x: f64, y: f64) -> Result<(), SvgWarning> {
         if !valid(x) || !valid(y) {
-            return Err(warning("svg_math_geometry", "non-finite or excessive formula coordinates"));
+            return Err(warning(
+                "svg_math_geometry",
+                "non-finite or excessive formula coordinates",
+            ));
         }
         self.left = self.left.min(x);
         self.right = self.right.max(x);

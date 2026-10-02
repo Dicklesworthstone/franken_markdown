@@ -1,19 +1,27 @@
 //! End-to-end wrapping/painting checks with real, independently specified fonts.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use super::*;
 use super::super::{Ink, SvgOptions, render_svg_with_resources};
-use franken_markdown::{FontAssets, ast::{Block, Document, Inline}};
+use super::*;
+use franken_markdown::{
+    FontAssets,
+    ast::{Block, Document, Inline},
+};
 
 const FIXTURE: &[u8] = include_bytes!("../../fmd-font/fonts/test-shaping/FmdShaping.ttf");
 
 fn poster() -> Poster {
-    Poster::new(&SvgOptions::default()).with_resources(&FontAssets {
-        body_regular: Some(FIXTURE.to_vec()),
-        body_bold: Some(FIXTURE.to_vec()),
-        mono_regular: Some(FIXTURE.to_vec()),
-        ..FontAssets::default()
-    }, &[]).unwrap()
+    Poster::new(&SvgOptions::default())
+        .with_resources(
+            &FontAssets {
+                body_regular: Some(FIXTURE.to_vec()),
+                body_bold: Some(FIXTURE.to_vec()),
+                mono_regular: Some(FIXTURE.to_vec()),
+                ..FontAssets::default()
+            },
+            &[],
+        )
+        .unwrap()
 }
 
 fn words(poster: &Poster, source: &str, width: f64) -> Vec<Vec<Word>> {
@@ -21,10 +29,14 @@ fn words(poster: &Poster, source: &str, width: f64) -> Vec<Vec<Word>> {
 }
 
 fn glyphs(poster: &Poster) -> Vec<(usize, u16, f64)> {
-    poster.ops.iter().filter_map(|op| match op {
-        Op::Glyph { slot, gid, x, .. } => Some((*slot, *gid, *x)),
-        _ => None,
-    }).collect()
+    poster
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Glyph { slot, gid, x, .. } => Some((*slot, *gid, *x)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn close(actual: f64, expected: f64) {
@@ -62,19 +74,33 @@ fn ligature_outlines_and_break_measure_use_the_substituted_glyph() {
 #[test]
 fn equal_style_ast_fragments_shape_together_but_real_style_changes_do_not() {
     let mut poster = poster();
-    let joined = poster.wrap(&[
-        Piece::Text("f".to_owned(), RStyle::BODY),
-        Piece::Text("i".to_owned(), RStyle::BODY),
-    ], 10.0, 5.0);
+    let joined = poster.wrap(
+        &[
+            Piece::Text("f".to_owned(), RStyle::BODY),
+            Piece::Text("i".to_owned(), RStyle::BODY),
+        ],
+        10.0,
+        5.0,
+    );
     assert_eq!(joined.len(), 1);
     close(joined[0][0].w, 5.0);
     poster.draw_words(&joined[0], 0.0, 20.0, 10.0);
     assert_eq!(glyphs(&poster), [(0, 6, 0.0)]);
     poster.ops.clear();
-    let separated = poster.wrap(&[
-        Piece::Text("f".to_owned(), RStyle::BODY),
-        Piece::Text("i".to_owned(), RStyle { bold: true, ..RStyle::BODY }),
-    ], 10.0, 10.0);
+    let separated = poster.wrap(
+        &[
+            Piece::Text("f".to_owned(), RStyle::BODY),
+            Piece::Text(
+                "i".to_owned(),
+                RStyle {
+                    bold: true,
+                    ..RStyle::BODY
+                },
+            ),
+        ],
+        10.0,
+        10.0,
+    );
     close(poster.words_width(&separated[0], 10.0), 10.0);
     assert!(separated[0].iter().all(|word| word.gap == 0.0));
     poster.draw_words(&separated[0], 0.0, 20.0, 10.0);
@@ -95,8 +121,16 @@ fn pair_compression_changes_real_line_break_choices() {
 fn emergency_wrap_discards_cross_line_kerning_without_splitting_ligatures() {
     let mut poster = poster();
     let lines = words(&poster, "abfiabfi", 5.0);
-    assert_eq!(lines.iter().map(|line| line.iter().map(|word| word.text.as_str()).collect::<String>()).collect::<Vec<_>>(),
-        ["a", "b", "fi", "a", "b", "fi"]);
+    assert_eq!(
+        lines
+            .iter()
+            .map(|line| line
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<String>())
+            .collect::<Vec<_>>(),
+        ["a", "b", "fi", "a", "b", "fi"]
+    );
     for line in &lines {
         close(poster.words_width(line, 10.0), 5.0);
         let shape = Shaper::new(&poster).shape(&line[0].text, RStyle::BODY, 10.0);
@@ -112,7 +146,14 @@ fn many_widths_keep_complete_source_and_the_same_emitted_measure() {
     let source = "abfibbabfi".repeat(30);
     for width in [5.0, 5.1, 9.5, 9.6, 10.0, 14.9, 15.0, 24.1, 57.3] {
         let lines = words(&poster, &source, width);
-        assert_eq!(lines.iter().flatten().map(|word| word.text.as_str()).collect::<String>(), source);
+        assert_eq!(
+            lines
+                .iter()
+                .flatten()
+                .map(|word| word.text.as_str())
+                .collect::<String>(),
+            source
+        );
         for line in &lines {
             assert!(poster.words_width(line, 10.0) <= width + 1e-8);
             for word in line {
@@ -129,25 +170,43 @@ fn many_widths_keep_complete_source_and_the_same_emitted_measure() {
 #[test]
 fn mono_inline_text_and_fenced_code_retain_literal_glyphs_and_spaces() {
     let mut poster = poster();
-    let style = RStyle { mono: true, ..RStyle::BODY };
+    let style = RStyle {
+        mono: true,
+        ..RStyle::BODY
+    };
     let source = "fi  ab";
     let shaped = Shaper::new(&poster).shape(source, style, 10.0);
     close(shaped.width(), poster.measure(source, style, 10.0));
     close(shaped.width(), 26.0);
     shaped.paint(&mut poster, 0.0, 20.0, style, 10.0);
-    assert_eq!(glyphs(&poster).iter().map(|glyph| glyph.1).collect::<Vec<_>>(), [4, 5, 2, 3]);
+    assert_eq!(
+        glyphs(&poster)
+            .iter()
+            .map(|glyph| glyph.1)
+            .collect::<Vec<_>>(),
+        [4, 5, 2, 3]
+    );
     assert_eq!(poster.code_lines("f\ti", 10.0, 100.0), ["f   i"]);
 }
 
 #[test]
 fn shaped_strikethrough_ends_at_the_actual_glyph_advance() {
     let mut poster = poster();
-    let style = RStyle { strike: true, ink: Ink::Accent, ..RStyle::BODY };
+    let style = RStyle {
+        strike: true,
+        ink: Ink::Accent,
+        ..RStyle::BODY
+    };
     let lines = poster.wrap(&[Piece::Text("abfi".to_owned(), style)], 10.0, 100.0);
     poster.draw_words(&lines[0], 13.0, 20.0, 10.0);
-    let (left, right, ink) = poster.ops.iter().find_map(|op| match op {
-        Op::Rule { x1, x2, ink, .. } => Some((*x1, *x2, *ink)), _ => None,
-    }).unwrap();
+    let (left, right, ink) = poster
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            Op::Rule { x1, x2, ink, .. } => Some((*x1, *x2, *ink)),
+            _ => None,
+        })
+        .unwrap();
     close(left, 13.0);
     close(right, 27.6);
     assert_eq!(ink, Ink::Accent);
@@ -174,13 +233,25 @@ fn zero_advance_marks_stay_with_their_base_during_emergency_wrapping() {
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[0][0].text, "a\u{0301}");
     assert_eq!(lines[1][0].text, "b");
-    assert_eq!(lines.iter().flatten().map(|word| word.text.as_str()).collect::<String>(), source);
+    assert_eq!(
+        lines
+            .iter()
+            .flatten()
+            .map(|word| word.text.as_str())
+            .collect::<String>(),
+        source
+    );
 }
 
 #[test]
 fn supplied_font_shaping_reaches_the_public_svg_exporter_and_deduplicated_defs() {
-    let doc = Document { blocks: vec![Block::Paragraph(vec![Inline::Text("fi fi".to_owned())])] };
-    let assets = FontAssets { body_regular: Some(FIXTURE.to_vec()), ..FontAssets::default() };
+    let doc = Document {
+        blocks: vec![Block::Paragraph(vec![Inline::Text("fi fi".to_owned())])],
+    };
+    let assets = FontAssets {
+        body_regular: Some(FIXTURE.to_vec()),
+        ..FontAssets::default()
+    };
     let first = render_svg_with_resources(&doc, &SvgOptions::default(), &assets, &[]).unwrap();
     let second = render_svg_with_resources(&doc, &SvgOptions::default(), &assets, &[]).unwrap();
     assert_eq!(first, second);

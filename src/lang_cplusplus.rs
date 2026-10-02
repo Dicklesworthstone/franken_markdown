@@ -557,7 +557,9 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
             let start = pos;
             if rest.starts_with("0x") || rest.starts_with("0X") {
                 pos += 2;
-                pos = consume_while(code, pos, |c| c.is_ascii_hexdigit() || c == '_' || c == '.' || c == '\'');
+                pos = consume_while(code, pos, |c| {
+                    c.is_ascii_hexdigit() || c == '_' || c == '.' || c == '\''
+                });
                 // Hex-float p exponent.
                 if pos < bytes_len && (code.as_bytes()[pos] == b'p' || code.as_bytes()[pos] == b'P')
                 {
@@ -573,7 +575,9 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
                 pos += 2;
                 pos = consume_while(code, pos, |c| c == '0' || c == '1' || c == '\'');
             } else {
-                pos = consume_while(code, pos, |c| c.is_ascii_digit() || c == '_' || c == '.' || c == '\'');
+                pos = consume_while(code, pos, |c| {
+                    c.is_ascii_digit() || c == '_' || c == '.' || c == '\''
+                });
                 if pos < bytes_len && (code.as_bytes()[pos] == b'e' || code.as_bytes()[pos] == b'E')
                 {
                     let exp_start = pos;
@@ -590,9 +594,7 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
                 }
             }
             // Suffixes: ull, llu, ul, lu, ll, u, l, f (case-insensitive, longest first).
-            const SUFFIXES: &[&[u8]] = &[
-                b"ull", b"llu", b"ul", b"lu", b"ll", b"u", b"l", b"f",
-            ];
+            const SUFFIXES: &[&[u8]] = &[b"ull", b"llu", b"ul", b"lu", b"ll", b"u", b"l", b"f"];
             let rest_bytes = &code.as_bytes()[pos..];
             for suffix in SUFFIXES {
                 if rest_bytes.len() >= suffix.len()
@@ -723,8 +725,14 @@ mod tests {
         assert_tiling(code, &spans);
         let str_spans: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Str).collect();
         assert_eq!(str_spans.len(), 2);
-        assert_eq!(&code[str_spans[0].start..str_spans[0].end], r#"R"foo(hello "world")foo""#);
-        assert_eq!(&code[str_spans[1].start..str_spans[1].end], r#"R"delim(content with )" inside)delim""#);
+        assert_eq!(
+            &code[str_spans[0].start..str_spans[0].end],
+            r#"R"foo(hello "world")foo""#
+        );
+        assert_eq!(
+            &code[str_spans[1].start..str_spans[1].end],
+            r#"R"delim(content with )" inside)delim""#
+        );
     }
 
     #[test]
@@ -747,9 +755,15 @@ mod tests {
         let mut spans = Vec::new();
         lex_cplusplus_into(code, &mut spans);
         assert_tiling(code, &spans);
-        let num_span = spans.iter().find(|s| s.kind == Tok::Number).expect("number found");
+        let num_span = spans
+            .iter()
+            .find(|s| s.kind == Tok::Number)
+            .expect("number found");
         assert_eq!(&code[num_span.start..num_span.end], "1'000'000");
-        let str_span = spans.iter().find(|s| s.kind == Tok::Str).expect("char literal found");
+        let str_span = spans
+            .iter()
+            .find(|s| s.kind == Tok::Str)
+            .expect("char literal found");
         assert_eq!(&code[str_span.start..str_span.end], "'z'");
     }
 
@@ -759,7 +773,11 @@ mod tests {
         let mut spans = Vec::new();
         lex_cplusplus_into(code, &mut spans);
         assert_tiling(code, &spans);
-        let numbers: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Number).map(|s| &code[s.start..s.end]).collect();
+        let numbers: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == Tok::Number)
+            .map(|s| &code[s.start..s.end])
+            .collect();
         assert_eq!(numbers, vec!["0x1.fp3", "42ULL", "3.14f", "0b1010'0101"]);
     }
 
@@ -769,7 +787,13 @@ mod tests {
         let mut spans = Vec::new();
         lex_cplusplus_into(code, &mut spans);
         assert_tiling(code, &spans);
-        let op_spans: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Operator && (&code[s.start..s.end] == "<" || &code[s.start..s.end] == ">")).collect();
+        let op_spans: Vec<_> = spans
+            .iter()
+            .filter(|s| {
+                s.kind == Tok::Operator
+                    && (&code[s.start..s.end] == "<" || &code[s.start..s.end] == ">")
+            })
+            .collect();
         assert_eq!(op_spans.len(), 3);
     }
 
@@ -779,7 +803,11 @@ mod tests {
         let mut spans = Vec::new();
         lex_cplusplus_into(code, &mut spans);
         assert_tiling(code, &spans);
-        let kw_spans: Vec<_> = spans.iter().filter(|s| s.kind == Tok::Keyword && code[s.start..s.end].starts_with('#')).map(|s| &code[s.start..s.end]).collect();
+        let kw_spans: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == Tok::Keyword && code[s.start..s.end].starts_with('#'))
+            .map(|s| &code[s.start..s.end])
+            .collect();
         assert_eq!(kw_spans, vec!["#include", "#define", "#ifdef", "#endif"]);
     }
 
@@ -832,22 +860,62 @@ mod tests {
         let mut spans = Vec::new();
         lex_cplusplus_into(code, &mut spans);
         assert_tiling(code, &spans);
-        assert!(spans.iter().any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "class"));
-        assert!(spans.iter().any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "public"));
-        assert!(spans.iter().any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "virtual"));
-        assert!(spans.iter().any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "void"));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "class")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "public")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "virtual")
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == Tok::Keyword && &code[s.start..s.end] == "void")
+        );
     }
 
     #[test]
     fn negative_control_tiling_oracle_detects_gap() {
         let code = "int a = 1;";
         let spans = vec![
-            Span { kind: Tok::Keyword, start: 0, end: 3 },
-            Span { kind: Tok::Plain, start: 4, end: 5 },
-            Span { kind: Tok::Operator, start: 5, end: 6 },
-            Span { kind: Tok::Plain, start: 6, end: 7 },
-            Span { kind: Tok::Number, start: 7, end: 8 },
-            Span { kind: Tok::Punct, start: 8, end: 9 },
+            Span {
+                kind: Tok::Keyword,
+                start: 0,
+                end: 3,
+            },
+            Span {
+                kind: Tok::Plain,
+                start: 4,
+                end: 5,
+            },
+            Span {
+                kind: Tok::Operator,
+                start: 5,
+                end: 6,
+            },
+            Span {
+                kind: Tok::Plain,
+                start: 6,
+                end: 7,
+            },
+            Span {
+                kind: Tok::Number,
+                start: 7,
+                end: 8,
+            },
+            Span {
+                kind: Tok::Punct,
+                start: 8,
+                end: 9,
+            },
         ];
         let result = std::panic::catch_unwind(|| {
             assert_tiling(code, &spans);

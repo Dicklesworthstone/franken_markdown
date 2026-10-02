@@ -126,15 +126,9 @@ pub enum ProvenanceError {
         actual: CaptureId,
     },
     /// Source offset is outside the captured source text.
-    SourceOffsetOutOfBounds {
-        offset: usize,
-        source_len: usize,
-    },
+    SourceOffsetOutOfBounds { offset: usize, source_len: usize },
     /// Relation syntax mismatch (e.g. expected escape or entity).
-    InvalidRelationSyntax {
-        expected: String,
-        actual: String,
-    },
+    InvalidRelationSyntax { expected: String, actual: String },
 }
 
 impl std::fmt::Display for ProvenanceError {
@@ -766,10 +760,7 @@ pub enum ProvenanceRelation {
     Escape { escaped_char: char },
     /// HTML/XML character entity (e.g. `&amp;` -> `&`, `&#169;` -> `©`).
     /// Source span covers `&...;`; rendered output is the decoded character.
-    Entity {
-        decoded: char,
-        raw_entity: String,
-    },
+    Entity { decoded: char, raw_entity: String },
     /// Stripped delimiter syntax (e.g. `*` for emphasis, `**` for strong, `~~` for strike, `` ` `` for inline code).
     /// The delimiter bytes are present in the enclosing element's source span but excluded from the inner text.
     StrippedDelimiter { delimiter: String },
@@ -791,10 +782,7 @@ pub enum ProvenanceRelation {
         definition_span: SourceSpan,
     },
     /// Transcluded content from an external source capture.
-    Transclusion {
-        capture_id: CaptureId,
-        path: String,
-    },
+    Transclusion { capture_id: CaptureId, path: String },
 }
 
 impl ProvenanceRelation {
@@ -1140,4 +1128,3 @@ impl ProvenanceOracle {
         Ok(())
     }
 }
-

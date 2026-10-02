@@ -174,7 +174,9 @@ impl Numbering {
         while *visited < self.order.len() {
             let index = self.order[*visited];
             *visited += 1;
-            references_in_blocks(notes.definitions[index], &mut |id| self.reference(notes, id));
+            references_in_blocks(notes.definitions[index], &mut |id| {
+                self.reference(notes, id)
+            });
         }
     }
 }
@@ -286,23 +288,32 @@ fn rewrite_blocks(blocks: &[Block], notes: &Notes<'_>, numbering: &Numbering) ->
 }
 
 fn rewrite_inlines(inlines: &[Inline], notes: &Notes<'_>, numbering: &Numbering) -> Vec<Inline> {
-    inlines.iter().map(|inline| match inline {
-        Inline::FootnoteRef { id } => Inline::Text(match notes.indices.get(id.as_str()) {
-            Some(&index) => format!("[{}]", numbering.numbers[index]),
-            None => format!("[^{id}]"),
-        }),
-        Inline::Emphasis(content) => Inline::Emphasis(rewrite_inlines(content, notes, numbering)),
-        Inline::Strong(content) => Inline::Strong(rewrite_inlines(content, notes, numbering)),
-        Inline::Strikethrough(content) => {
-            Inline::Strikethrough(rewrite_inlines(content, notes, numbering))
-        }
-        Inline::Link { dest, title, content } => Inline::Link {
-            dest: dest.clone(),
-            title: title.clone(),
-            content: rewrite_inlines(content, notes, numbering),
-        },
-        other => other.clone(),
-    }).collect()
+    inlines
+        .iter()
+        .map(|inline| match inline {
+            Inline::FootnoteRef { id } => Inline::Text(match notes.indices.get(id.as_str()) {
+                Some(&index) => format!("[{}]", numbering.numbers[index]),
+                None => format!("[^{id}]"),
+            }),
+            Inline::Emphasis(content) => {
+                Inline::Emphasis(rewrite_inlines(content, notes, numbering))
+            }
+            Inline::Strong(content) => Inline::Strong(rewrite_inlines(content, notes, numbering)),
+            Inline::Strikethrough(content) => {
+                Inline::Strikethrough(rewrite_inlines(content, notes, numbering))
+            }
+            Inline::Link {
+                dest,
+                title,
+                content,
+            } => Inline::Link {
+                dest: dest.clone(),
+                title: title.clone(),
+                content: rewrite_inlines(content, notes, numbering),
+            },
+            other => other.clone(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -310,19 +321,34 @@ mod tests {
     use super::*;
     use crate::ast::{Align, DefinitionItem, List, ListItem, Table};
 
-    fn text(value: &str) -> Inline { Inline::Text(value.to_string()) }
-    fn reference(id: &str) -> Inline { Inline::FootnoteRef { id: id.to_string() } }
-    fn paragraph(value: &str) -> Block { Block::Paragraph(vec![text(value)]) }
-    fn definition(id: &str, blocks: Vec<Block>) -> Block {
-        Block::FootnoteDefinition { id: id.to_string(), blocks }
+    fn text(value: &str) -> Inline {
+        Inline::Text(value.to_string())
     }
-    fn document(blocks: Vec<Block>) -> Document { Document { blocks } }
+    fn reference(id: &str) -> Inline {
+        Inline::FootnoteRef { id: id.to_string() }
+    }
+    fn paragraph(value: &str) -> Block {
+        Block::Paragraph(vec![text(value)])
+    }
+    fn definition(id: &str, blocks: Vec<Block>) -> Block {
+        Block::FootnoteDefinition {
+            id: id.to_string(),
+            blocks,
+        }
+    }
+    fn document(blocks: Vec<Block>) -> Document {
+        Document { blocks }
+    }
 
     #[test]
     fn note_free_document_is_borrowed_including_literal_footnote_text() {
-        let doc = document(vec![paragraph("literal [^id]"), Block::CodeBlock {
-            lang: None, code: "[^id]: not a parsed definition".into(),
-        }]);
+        let doc = document(vec![
+            paragraph("literal [^id]"),
+            Block::CodeBlock {
+                lang: None,
+                code: "[^id]: not a parsed definition".into(),
+            },
+        ]);
         assert!(matches!(for_pdf(&doc), Cow::Borrowed(_)));
     }
 
@@ -332,11 +358,17 @@ mod tests {
             Block::Paragraph(vec![text("Body"), reference("a")]),
             definition("a", vec![paragraph("Citation")]),
         ]);
-        assert_eq!(for_pdf(&doc).as_ref(), &document(vec![
-            Block::Paragraph(vec![text("Body"), text("[1]")]),
-            Block::Heading { level: 2, inlines: vec![text("Notes")] },
-            Block::Paragraph(vec![text("[1] "), text("Citation")]),
-        ]));
+        assert_eq!(
+            for_pdf(&doc).as_ref(),
+            &document(vec![
+                Block::Paragraph(vec![text("Body"), text("[1]")]),
+                Block::Heading {
+                    level: 2,
+                    inlines: vec![text("Notes")]
+                },
+                Block::Paragraph(vec![text("[1] "), text("Citation")]),
+            ])
+        );
     }
 
     #[test]
@@ -347,33 +379,65 @@ mod tests {
             Block::Paragraph(vec![reference("b"), reference("a"), reference("b")]),
         ]);
         let transformed = for_pdf(&doc);
-        assert_eq!(transformed.blocks[0], Block::Paragraph(vec![text("[1]"), text("[2]"), text("[1]")]));
-        assert_eq!(transformed.blocks[2], Block::Paragraph(vec![text("[1] "), text("B")]));
-        assert_eq!(transformed.blocks[3], Block::Paragraph(vec![text("[2] "), text("A")]));
+        assert_eq!(
+            transformed.blocks[0],
+            Block::Paragraph(vec![text("[1]"), text("[2]"), text("[1]")])
+        );
+        assert_eq!(
+            transformed.blocks[2],
+            Block::Paragraph(vec![text("[1] "), text("B")])
+        );
+        assert_eq!(
+            transformed.blocks[3],
+            Block::Paragraph(vec![text("[2] "), text("A")])
+        );
     }
 
     #[test]
     fn every_rich_note_block_survives_in_order_and_sources_are_unchanged() {
         let rich = vec![
-            Block::CodeBlock { lang: Some("rust".into()), code: "let evidence = 42;".into() },
+            Block::CodeBlock {
+                lang: Some("rust".into()),
+                code: "let evidence = 42;".into(),
+            },
             Block::BlockQuote(vec![paragraph("Quoted evidence")]),
-            Block::List(List { ordered: true, start: 3, tight: false, items: vec![ListItem {
-                task: Some(true), blocks: vec![paragraph("List evidence")],
-            }] }),
-            Block::Table(Table { align: vec![Align::Right], head: vec![vec![text("Measure")]],
-                rows: vec![vec![vec![text("42")]]] }),
+            Block::List(List {
+                ordered: true,
+                start: 3,
+                tight: false,
+                items: vec![ListItem {
+                    task: Some(true),
+                    blocks: vec![paragraph("List evidence")],
+                }],
+            }),
+            Block::Table(Table {
+                align: vec![Align::Right],
+                head: vec![vec![text("Measure")]],
+                rows: vec![vec![vec![text("42")]]],
+            }),
             Block::MathBlock("x^2".into()),
             Block::DefinitionList(vec![DefinitionItem {
-                terms: vec![vec![text("Term")]], definitions: vec![vec![text("Meaning")]],
+                terms: vec![vec![text("Term")]],
+                definitions: vec![vec![text("Meaning")]],
             }]),
-            Block::Paragraph(vec![Inline::Image { dest: "plot.svg".into(), title: None, alt: "Plot".into() }]),
+            Block::Paragraph(vec![Inline::Image {
+                dest: "plot.svg".into(),
+                title: None,
+                alt: "Plot".into(),
+            }]),
             Block::HtmlBlock("<aside>Raw evidence</aside>".into()),
-            Block::Heading { level: 3, inlines: vec![text("Appendix")] },
+            Block::Heading {
+                level: 3,
+                inlines: vec![text("Appendix")],
+            },
             Block::ThematicBreak,
             Block::PageBreak,
             paragraph("Last evidence"),
         ];
-        let doc = document(vec![Block::Paragraph(vec![reference("rich")]), definition("rich", rich.clone())]);
+        let doc = document(vec![
+            Block::Paragraph(vec![reference("rich")]),
+            definition("rich", rich.clone()),
+        ]);
         let original = doc.clone();
         let result = for_pdf(&doc);
         assert_eq!(result.blocks[2], paragraph("[1]"));
@@ -384,23 +448,42 @@ mod tests {
     #[test]
     fn references_inside_tables_and_definition_lists_are_resolved() {
         let doc = document(vec![
-            Block::Table(Table { align: vec![Align::Left], head: vec![vec![reference("b")]],
-                rows: vec![vec![vec![Inline::Strong(vec![reference("a")])]]] }),
+            Block::Table(Table {
+                align: vec![Align::Left],
+                head: vec![vec![reference("b")]],
+                rows: vec![vec![vec![Inline::Strong(vec![reference("a")])]]],
+            }),
             Block::DefinitionList(vec![DefinitionItem {
                 terms: vec![vec![reference("a")]],
-                definitions: vec![vec![Inline::Link { dest: "https://example.com".into(),
-                    title: Some("Link".into()), content: vec![reference("b")] }]],
+                definitions: vec![vec![Inline::Link {
+                    dest: "https://example.com".into(),
+                    title: Some("Link".into()),
+                    content: vec![reference("b")],
+                }]],
             }]),
-            definition("a", vec![paragraph("A")]), definition("b", vec![paragraph("B")]),
+            definition("a", vec![paragraph("A")]),
+            definition("b", vec![paragraph("B")]),
         ]);
         let result = for_pdf(&doc);
-        assert_eq!(result.blocks[0], Block::Table(Table { align: vec![Align::Left],
-            head: vec![vec![text("[1]")]], rows: vec![vec![vec![Inline::Strong(vec![text("[2]")])]]] }));
-        assert_eq!(result.blocks[1], Block::DefinitionList(vec![DefinitionItem {
-            terms: vec![vec![text("[2]")]],
-            definitions: vec![vec![Inline::Link { dest: "https://example.com".into(),
-                title: Some("Link".into()), content: vec![text("[1]")] }]],
-        }]));
+        assert_eq!(
+            result.blocks[0],
+            Block::Table(Table {
+                align: vec![Align::Left],
+                head: vec![vec![text("[1]")]],
+                rows: vec![vec![vec![Inline::Strong(vec![text("[2]")])]]]
+            })
+        );
+        assert_eq!(
+            result.blocks[1],
+            Block::DefinitionList(vec![DefinitionItem {
+                terms: vec![vec![text("[2]")]],
+                definitions: vec![vec![Inline::Link {
+                    dest: "https://example.com".into(),
+                    title: Some("Link".into()),
+                    content: vec![text("[1]")]
+                }]],
+            }])
+        );
     }
 
     #[test]
@@ -412,8 +495,14 @@ mod tests {
         ]);
         let result = for_pdf(&doc);
         assert_eq!(result.blocks.len(), 4);
-        assert_eq!(result.blocks[2], Block::Paragraph(vec![text("[1] "), text("A"), text("[2]")]));
-        assert_eq!(result.blocks[3], Block::Paragraph(vec![text("[2] "), text("B"), text("[1]")]));
+        assert_eq!(
+            result.blocks[2],
+            Block::Paragraph(vec![text("[1] "), text("A"), text("[2]")])
+        );
+        assert_eq!(
+            result.blocks[3],
+            Block::Paragraph(vec![text("[2] "), text("B"), text("[1]")])
+        );
     }
 
     #[test]
@@ -426,34 +515,58 @@ mod tests {
         ]);
         let result = for_pdf(&doc);
         assert_eq!(result.blocks.len(), 4);
-        assert_eq!(result.blocks[2], Block::Paragraph(vec![text("[1] "), text("First definition")]));
-        assert_eq!(result.blocks[3], Block::Paragraph(vec![text("[2] "), text("Unreferenced evidence")]));
+        assert_eq!(
+            result.blocks[2],
+            Block::Paragraph(vec![text("[1] "), text("First definition")])
+        );
+        assert_eq!(
+            result.blocks[3],
+            Block::Paragraph(vec![text("[2] "), text("Unreferenced evidence")])
+        );
     }
 
     #[test]
     fn undefined_references_remain_literal_instead_of_zero() {
         let doc = document(vec![Block::Paragraph(vec![reference("missing")])]);
-        assert_eq!(for_pdf(&doc).as_ref(), &document(vec![paragraph("[^missing]")]));
+        assert_eq!(
+            for_pdf(&doc).as_ref(),
+            &document(vec![paragraph("[^missing]")])
+        );
     }
 
     #[test]
     fn nested_definitions_are_moved_once_and_continuation_paragraphs_keep_their_text() {
         let doc = document(vec![
             Block::Paragraph(vec![reference("outer")]),
-            definition("outer", vec![paragraph("First"), paragraph("Continuation"),
-                definition("inner", vec![paragraph("Nested definition")]),
-                Block::Paragraph(vec![reference("inner")])]),
+            definition(
+                "outer",
+                vec![
+                    paragraph("First"),
+                    paragraph("Continuation"),
+                    definition("inner", vec![paragraph("Nested definition")]),
+                    Block::Paragraph(vec![reference("inner")]),
+                ],
+            ),
         ]);
         let result = for_pdf(&doc);
         assert_eq!(result.blocks.len(), 6);
         assert_eq!(result.blocks[3], paragraph("Continuation"));
         assert_eq!(result.blocks[4], Block::Paragraph(vec![text("[2]")]));
-        assert_eq!(result.blocks[5], Block::Paragraph(vec![text("[2] "), text("Nested definition")]));
-        assert!(matches!(for_pdf(result.as_ref()), Cow::Borrowed(_)), "preparation is idempotent");
+        assert_eq!(
+            result.blocks[5],
+            Block::Paragraph(vec![text("[2] "), text("Nested definition")])
+        );
+        assert!(
+            matches!(for_pdf(result.as_ref()), Cow::Borrowed(_)),
+            "preparation is idempotent"
+        );
     }
 
     fn heading(value: &str) -> Block {
-        Block::Heading { level: 2, inlines: vec![text(value)] }
+        Block::Heading {
+            level: 2,
+            inlines: vec![text(value)],
+        }
     }
 
     #[test]
@@ -464,7 +577,10 @@ mod tests {
             definition("b", vec![heading("Same")]),
             Block::Paragraph(vec![reference("b"), reference("a")]),
         ]);
-        assert_eq!(heading_origins_for_pdf(&doc), vec![Some(1), None, Some(2), Some(0)]);
+        assert_eq!(
+            heading_origins_for_pdf(&doc),
+            vec![Some(1), None, Some(2), Some(0)]
+        );
         let prepared = for_pdf(&doc);
         let mut count = 0;
         visit_headings(&prepared.blocks, true, &mut |_| count += 1);

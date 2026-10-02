@@ -10,15 +10,13 @@
 //! - Unsupported elements display a source-preserving fallback and a concise capability explanation.
 //! - Source anchors survive the bridge to the display list.
 
-use franken_markdown::display::{
-    DisplayItem, DisplayTextRun, DisplayVectorPath, VectorShapeType,
-};
-use franken_markdown::math_display::{
-    contains_hostile_markup, diagram_anchor, diagram_to_display,
-    diagram_to_display_with_fallback, extract_diagram_blocks, extract_math_spans,
-    math_anchor, math_to_display, DiagramError,
-};
 use fmd_math::Engine;
+use franken_markdown::display::{DisplayItem, DisplayTextRun, DisplayVectorPath, VectorShapeType};
+use franken_markdown::math_display::{
+    DiagramError, contains_hostile_markup, diagram_anchor, diagram_to_display,
+    diagram_to_display_with_fallback, extract_diagram_blocks, extract_math_spans, math_anchor,
+    math_to_display,
+};
 
 fn bundled_engine() -> Engine {
     Engine::bundled().expect("bundled math engine loads successfully")
@@ -118,7 +116,8 @@ fn math_hostile_expansion_is_bounded_and_safe() {
 
 #[test]
 fn diagram_flowchart_vector_layout_produces_nodes_and_edges() {
-    let source = "graph TD\n  Client[Client App] --> Server[Core Server]\n  Server --> DB[(Database)]";
+    let source =
+        "graph TD\n  Client[Client App] --> Server[Core Server]\n  Server --> DB[(Database)]";
     let offset = 500;
     let items = diagram_to_display("mermaid", source, 20.0, 30.0, 14.0, offset)
         .expect("flowchart parses cleanly");

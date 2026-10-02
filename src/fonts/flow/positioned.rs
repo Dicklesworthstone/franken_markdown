@@ -41,9 +41,13 @@ impl BundledFlowFonts {
             return Err("bundled flow shaping scalar budget exceeded".to_owned());
         }
         let code = style.code || role == FlowTextRole::Code;
-        let bold = style.bold
-            || matches!(role, FlowTextRole::Heading(_) | FlowTextRole::TableHeader);
-        let primary = if code { MONO } else { usize::from(bold) + 2 * usize::from(style.italic) };
+        let bold =
+            style.bold || matches!(role, FlowTextRole::Heading(_) | FlowTextRole::TableHeader);
+        let primary = if code {
+            MONO
+        } else {
+            usize::from(bold) + 2 * usize::from(style.italic)
+        };
         // Prefer whole-run composition so kerning and ligatures across normal
         // whitespace and punctuation retain exactly the established geometry.
         if let Some(run) = composition::shape(self, primary, text, size, role, style)? {
@@ -68,23 +72,31 @@ impl BundledFlowFonts {
         let mut chars = text.char_indices().peekable();
         while let Some((_, first)) = chars.next() {
             let kind = segment_kind(first);
-            while chars.peek().is_some_and(|(_, ch)| segment_kind(*ch) == kind) {
+            while chars
+                .peek()
+                .is_some_and(|(_, ch)| segment_kind(*ch) == kind)
+            {
                 chars.next();
             }
             let end = chars.peek().map_or(text.len(), |(offset, _)| *offset);
             let source = &text[start..end];
-            let part = if let Some(part) = source.chars().any(is_mark)
+            let part = if let Some(part) = source
+                .chars()
+                .any(is_mark)
                 .then(|| composition::shape(self, primary, source, size, role, style))
-                .transpose()?.flatten()
+                .transpose()?
+                .flatten()
             {
                 part
             } else if source.chars().any(is_mark) {
                 // Whole-sequence fallback only: attaching a mark using another
                 // font's anchors would invent invalid geometry and identities.
-                let covers = |face: Face| source.chars().all(|ch| {
-                    let glyph = face.font.glyph_index(ch);
-                    glyph != 0 && glyph < face.font.num_glyphs
-                });
+                let covers = |face: Face| {
+                    source.chars().all(|ch| {
+                        let glyph = face.font.glyph_index(ch);
+                        glyph != 0 && glyph < face.font.num_glyphs
+                    })
+                };
                 let face = [self.faces[primary], self.faces[SYMBOL]]
                     .into_iter().find(|face| covers(*face))
                     .ok_or_else(|| format!(
@@ -112,14 +124,23 @@ fn positioned_part(face: Face, text: &str, size: f32, code: bool) -> Result<Owne
         return Err("invalid bundled flow font metrics".to_owned());
     }
     let code_features = [
-        Feature { tag: *b"liga", enabled: false },
-        Feature { tag: *b"kern", enabled: false },
+        Feature {
+            tag: *b"liga",
+            enabled: false,
+        },
+        Feature {
+            tag: *b"kern",
+            enabled: false,
+        },
     ];
     let options = ShapeOptions {
         features: if code { &code_features } else { &[] },
         ..ShapeOptions::default()
     };
-    let shaped = face.font.shape(text, &options).map_err(|error| error.to_string())?;
+    let shaped = face
+        .font
+        .shape(text, &options)
+        .map_err(|error| error.to_string())?;
     // Preserve every glyph's anchor offsets and the shared base/mark cluster.
     // The font engine reports unsupported lookup/mark mechanisms explicitly;
     // no heuristic placement or unpositioned-glyph fallback is permitted.
@@ -147,7 +168,9 @@ fn append_part(
     utf16_start: usize,
 ) -> Result<(), String> {
     let invalid = || "invalid positioned flow run".to_owned();
-    let byte_end = byte_start.checked_add(part.logical_text.len()).ok_or_else(invalid)?;
+    let byte_end = byte_start
+        .checked_add(part.logical_text.len())
+        .ok_or_else(invalid)?;
     if output.logical_text.get(byte_start..byte_end) != Some(part.logical_text.as_str())
         || part.context.direction != Direction::LeftToRight
     {
@@ -166,20 +189,30 @@ fn append_part(
         {
             return Err(invalid());
         }
-        let source = part.logical_text.get(cluster.byte_range.clone()).ok_or_else(invalid)?;
+        let source = part
+            .logical_text
+            .get(cluster.byte_range.clone())
+            .ok_or_else(invalid)?;
         let utf16_end = next_utf16 + source.encode_utf16().count();
         if cluster.utf16_range.end != utf16_end {
             return Err(invalid());
         }
-        let glyphs = part.glyphs.get(cluster.glyph_range.clone()).ok_or_else(invalid)?;
+        let glyphs = part
+            .glyphs
+            .get(cluster.glyph_range.clone())
+            .ok_or_else(invalid)?;
         let cluster_index = output.clusters.len();
         let glyph_start = output.glyphs.len();
         let x_start = output.total_advance;
         for glyph in glyphs {
-            if glyph.cluster_index != index || glyph.font_id != cluster.font_id
-                || glyph.glyph_id == 0 || glyph.y_advance != 0.0
-                || !glyph.x_advance.is_finite() || glyph.x_advance < 0.0
-                || !glyph.x_offset.is_finite() || !glyph.y_offset.is_finite()
+            if glyph.cluster_index != index
+                || glyph.font_id != cluster.font_id
+                || glyph.glyph_id == 0
+                || glyph.y_advance != 0.0
+                || !glyph.x_advance.is_finite()
+                || glyph.x_advance < 0.0
+                || !glyph.x_offset.is_finite()
+                || !glyph.y_offset.is_finite()
             {
                 return Err(invalid());
             }
@@ -228,14 +261,26 @@ mod tests {
         let font = FONT.get_or_init(|| Font::parse(bytes.to_vec()).unwrap());
         let mut fonts = BundledFlowFonts::new(FontFamily::Sans).unwrap();
         let original = fonts.faces[0];
-        fonts.faces[0] = Face { font, bytes, id: FontId::from_font_data(bytes), ..original };
+        fonts.faces[0] = Face {
+            font,
+            bytes,
+            id: FontId::from_font_data(bytes),
+            ..original
+        };
         fonts
     }
 
     #[test]
     fn positioned_marks_match_independent_harfbuzz_geometry_and_source_clusters() {
         let fonts = fixture_fonts();
-        let run = fonts.shape("a\u{0301}b", 10.0, FlowTextRole::Body, FlowInlineStyle::default()).unwrap();
+        let run = fonts
+            .shape(
+                "a\u{0301}b",
+                10.0,
+                FlowTextRole::Body,
+                FlowInlineStyle::default(),
+            )
+            .unwrap();
         assert_eq!(run.logical_text, "a\u{0301}b");
         assert_eq!(run.glyphs.len(), 3);
         assert_eq!(run.clusters.len(), 2);
@@ -245,19 +290,32 @@ mod tests {
         assert_eq!(run.clusters[1].byte_range, 3..4);
         assert_eq!(run.clusters[1].utf16_range, 2..3);
         assert_eq!(run.clusters[1].glyph_range, 2..3);
-        assert_eq!(run.glyphs.iter().map(|g| g.glyph_id).collect::<Vec<_>>(), [2, 7, 3]);
+        assert_eq!(
+            run.glyphs.iter().map(|g| g.glyph_id).collect::<Vec<_>>(),
+            [2, 7, 3]
+        );
         assert_eq!(run.glyphs[1].x_advance, 0.0);
         assert_eq!(run.glyphs[1].x_offset, -3.5);
         assert_eq!(run.glyphs[1].y_offset, 5.0);
         assert_eq!(run.total_advance, 10.0);
         assert_eq!(run.clusters[1].x_start, 5.0);
-        assert_eq!(fonts.font_bytes(run.glyphs[1].font_id), Some(fonts.faces[0].bytes));
+        assert_eq!(
+            fonts.font_bytes(run.glyphs[1].font_id),
+            Some(fonts.faces[0].bytes)
+        );
     }
 
     #[test]
     fn stacked_marks_share_one_atomic_selection_cluster() {
         let fonts = fixture_fonts();
-        let run = fonts.shape("a\u{0301}\u{0307}", 10.0, FlowTextRole::Body, FlowInlineStyle::default()).unwrap();
+        let run = fonts
+            .shape(
+                "a\u{0301}\u{0307}",
+                10.0,
+                FlowTextRole::Body,
+                FlowInlineStyle::default(),
+            )
+            .unwrap();
         assert_eq!(run.clusters.len(), 1);
         assert_eq!(run.clusters[0].byte_range, 0..5);
         assert_eq!(run.clusters[0].utf16_range, 0..3);
@@ -276,14 +334,24 @@ mod tests {
         let ordinary = BundledFlowFonts::new(FontFamily::Sans).unwrap();
         let fixture = fixture_fonts();
         let prefix = "λ\t";
-        let mut output = ordinary.shape(prefix, 10.0, FlowTextRole::Body, FlowInlineStyle::default()).unwrap();
+        let mut output = ordinary
+            .shape(prefix, 10.0, FlowTextRole::Body, FlowInlineStyle::default())
+            .unwrap();
         let prefix_advance = output.total_advance;
         let clusters = output.clusters.len();
         let glyphs = output.glyphs.len();
         let suffix = "a\u{0301}";
         output.logical_text.push_str(suffix);
-        let part = fixture.shape(suffix, 10.0, FlowTextRole::Body, FlowInlineStyle::default()).unwrap();
-        append_part(&mut output, part, prefix.len(), prefix.encode_utf16().count()).unwrap();
+        let part = fixture
+            .shape(suffix, 10.0, FlowTextRole::Body, FlowInlineStyle::default())
+            .unwrap();
+        append_part(
+            &mut output,
+            part,
+            prefix.len(),
+            prefix.encode_utf16().count(),
+        )
+        .unwrap();
         let marked = &output.clusters[clusters];
         assert_eq!(marked.byte_range, 3..6);
         assert_eq!(marked.utf16_range, 2..4);
@@ -298,18 +366,47 @@ mod tests {
     fn leading_marks_missing_glyphs_and_mark_budgets_do_not_fall_back_to_bad_geometry() {
         let fonts = fixture_fonts();
         for source in ["\u{0301}", "a\u{036f}"] {
-            assert!(fonts.shape(source, 10.0, FlowTextRole::Body, FlowInlineStyle::default()).is_err());
+            assert!(
+                fonts
+                    .shape(source, 10.0, FlowTextRole::Body, FlowInlineStyle::default())
+                    .is_err()
+            );
         }
         let crowded = format!("a{}", "\u{0301}".repeat(65));
-        assert!(fonts.shape(&crowded, 10.0, FlowTextRole::Body, FlowInlineStyle::default()).is_err());
+        assert!(
+            fonts
+                .shape(
+                    &crowded,
+                    10.0,
+                    FlowTextRole::Body,
+                    FlowInlineStyle::default()
+                )
+                .is_err()
+        );
         let over_budget = format!("{}\u{0301}", "a".repeat(MAX_RUN_SCALARS));
-        assert!(fonts.shape(&over_budget, 10.0, FlowTextRole::Body, FlowInlineStyle::default()).is_err());
+        assert!(
+            fonts
+                .shape(
+                    &over_budget,
+                    10.0,
+                    FlowTextRole::Body,
+                    FlowInlineStyle::default()
+                )
+                .is_err()
+        );
     }
 
     #[test]
     fn malformed_part_is_refused_instead_of_exposing_invalid_cluster_ranges() {
         let fonts = fixture_fonts();
-        let good = fonts.shape("a\u{0301}", 10.0, FlowTextRole::Body, FlowInlineStyle::default()).unwrap();
+        let good = fonts
+            .shape(
+                "a\u{0301}",
+                10.0,
+                FlowTextRole::Body,
+                FlowInlineStyle::default(),
+            )
+            .unwrap();
         for corruption in 0..5 {
             let mut part = good.clone();
             match corruption {

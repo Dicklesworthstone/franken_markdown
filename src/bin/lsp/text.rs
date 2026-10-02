@@ -90,9 +90,12 @@ impl LineIndex {
 }
 
 pub fn integer(value: &JsonValue) -> Option<i32> {
-    value.as_f64().filter(|n| {
-        n.is_finite() && n.fract() == 0.0 && *n >= i32::MIN as f64 && *n <= i32::MAX as f64
-    }).map(|n| n as i32)
+    value
+        .as_f64()
+        .filter(|n| {
+            n.is_finite() && n.fract() == 0.0 && *n >= i32::MIN as f64 && *n <= i32::MAX as f64
+        })
+        .map(|n| n as i32)
 }
 
 pub struct Buffer {
@@ -129,20 +132,22 @@ impl Buffer {
         }
     }
 
-    fn prepare_changes(
-        &self,
-        changes: &[JsonValue],
-        limit: usize,
-    ) -> Result<String, &'static str> {
+    fn prepare_changes(&self, changes: &[JsonValue], limit: usize) -> Result<String, &'static str> {
         if changes.len() > MAX_CHANGES {
             return Err("contentChanges exceeds the 128 edit limit");
         }
-        if !self.synchronized && !changes.first().is_some_and(|change| change.get("range").is_none()) {
+        if !self.synchronized
+            && !changes
+                .first()
+                .is_some_and(|change| change.get("range").is_none())
+        {
             return Err("buffer requires a full-text replacement after a rejected edit");
         }
         let mut text = self.text.clone();
         for change in changes {
-            let replacement = change.get("text").and_then(JsonValue::as_str)
+            let replacement = change
+                .get("text")
+                .and_then(JsonValue::as_str)
                 .ok_or("each edit requires text")?;
             let (start, end) = if let Some(range) = change.get("range") {
                 let start = Position::parse(range.get("start").ok_or("missing range start")?)?;

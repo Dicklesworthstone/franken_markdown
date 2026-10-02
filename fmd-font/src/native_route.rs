@@ -14,7 +14,7 @@
 
 use crate::shaping::Direction;
 use crate::text_run::{
-    byte_to_utf16, FontId, FontOrigin, OwnedTextRun, RunGlyph, TextCluster, TextRunContext,
+    FontId, FontOrigin, OwnedTextRun, RunGlyph, TextCluster, TextRunContext, byte_to_utf16,
 };
 use std::fmt;
 use std::ops::Range;
@@ -190,7 +190,10 @@ pub enum NativeShapingError {
 impl fmt::Display for NativeShapingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ContextBudgetExceeded { length, max_allowed } => {
+            Self::ContextBudgetExceeded {
+                length,
+                max_allowed,
+            } => {
                 write!(
                     f,
                     "text context length ({length} bytes) exceeds maximum budget ({max_allowed} bytes)"
@@ -204,9 +207,14 @@ impl fmt::Display for NativeShapingError {
                 )
             }
             Self::MidScalarBoundary { offset } => {
-                write!(f, "byte offset {offset} is inside a multi-byte UTF-8 scalar")
+                write!(
+                    f,
+                    "byte offset {offset} is inside a multi-byte UTF-8 scalar"
+                )
             }
-            Self::FallbackRequired { unshaped_byte_offset } => {
+            Self::FallbackRequired {
+                unshaped_byte_offset,
+            } => {
                 write!(
                     f,
                     "system fallback required at byte offset {unshaped_byte_offset} but fallback was disabled"
@@ -360,7 +368,8 @@ pub trait NativeShapingRoute: Send + Sync {
     fn capabilities(&self) -> ShapingRouteCapabilities;
 
     /// Shape a slice of text into an owned text run.
-    fn shape_run(&self, req: &NativeShapingRequest<'_>) -> Result<OwnedTextRun, NativeShapingError>;
+    fn shape_run(&self, req: &NativeShapingRequest<'_>)
+    -> Result<OwnedTextRun, NativeShapingError>;
 }
 
 /// Headless simulated native shaping route for test qualification.
@@ -424,7 +433,10 @@ impl NativeShapingRoute for SimulatedNativeRoute {
         self.capabilities.clone()
     }
 
-    fn shape_run(&self, req: &NativeShapingRequest<'_>) -> Result<OwnedTextRun, NativeShapingError> {
+    fn shape_run(
+        &self,
+        req: &NativeShapingRequest<'_>,
+    ) -> Result<OwnedTextRun, NativeShapingError> {
         // Enforce empty text guard
         if req.text.is_empty() {
             return Err(NativeShapingError::EmptyText);
@@ -448,10 +460,7 @@ impl NativeShapingRoute for SimulatedNativeRoute {
             let ch_len = ch.len_utf8();
 
             // Check if this character matches any registered fallback rule
-            let matched_fallback = self
-                .fallback_rules
-                .iter()
-                .find(|r| r.range.contains(&cp));
+            let matched_fallback = self.fallback_rules.iter().find(|r| r.range.contains(&cp));
 
             if let Some(rule) = matched_fallback {
                 if !req.allow_system_fallback {
@@ -460,7 +469,10 @@ impl NativeShapingRoute for SimulatedNativeRoute {
                     });
                 }
 
-                if !used_fallbacks.iter().any(|f| f.font_id == rule.fallback_face.font_id) {
+                if !used_fallbacks
+                    .iter()
+                    .any(|f| f.font_id == rule.fallback_face.font_id)
+                {
                     used_fallbacks.push(rule.fallback_face.clone());
                 }
 

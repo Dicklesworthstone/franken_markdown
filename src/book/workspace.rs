@@ -101,7 +101,8 @@ impl BookWorkspace {
     /// Rejects invalid source sets and any include-expansion or parsing ingress
     /// failure. No partially initialized workspace escapes.
     pub fn from_sources(chapters: &[BookInput], resources: &[BookInput]) -> Result<Self> {
-        let (expanded, source_length) = BookRenderer::prepare_workspace_sources(chapters, resources)?;
+        let (expanded, source_length) =
+            BookRenderer::prepare_workspace_sources(chapters, resources)?;
         let renderer = BookRenderer::from_workspace_sources(&expanded, source_length)?;
         Ok(Self {
             renderer,
@@ -166,12 +167,18 @@ impl BookWorkspace {
         expected_revision: u32,
     ) -> Result<BookSourceUpdate> {
         if expected_revision != self.revision {
-            return Err(invalid("stale source revision; refresh the source capture before editing"));
+            return Err(invalid(
+                "stale source revision; refresh the source capture before editing",
+            ));
         }
         self.update_sources(updates)
     }
 
-    fn update_with_limit(&mut self, updates: &[BookInput], limit: usize) -> Result<BookSourceUpdate> {
+    fn update_with_limit(
+        &mut self,
+        updates: &[BookInput],
+        limit: usize,
+    ) -> Result<BookSourceUpdate> {
         if updates.is_empty() || updates.len() > MAX_SOURCES {
             return Err(invalid("expected 1..=4096 source replacements"));
         }
@@ -180,8 +187,13 @@ impl BookWorkspace {
             add_bytes(&mut batch_bytes, update.path.len(), limit)?;
             add_bytes(&mut batch_bytes, update.source.len(), limit)?;
         }
-        let known: BTreeMap<_, _> = self.chapters.iter().chain(&self.resources)
-            .enumerate().map(|(index, input)| (input.path.as_str(), index)).collect();
+        let known: BTreeMap<_, _> = self
+            .chapters
+            .iter()
+            .chain(&self.resources)
+            .enumerate()
+            .map(|(index, input)| (input.path.as_str(), index))
+            .collect();
         let mut seen = BTreeSet::new();
         let mut changes = Vec::new();
         let mut removed = 0usize;
@@ -197,7 +209,8 @@ impl BookWorkspace {
             if !seen.insert(path.clone()) {
                 return Err(invalid("duplicate normalized source replacement path"));
             }
-            let &index = known.get(path.as_str())
+            let &index = known
+                .get(path.as_str())
                 .ok_or_else(|| invalid("source replacement path is not in this book capture"))?;
             let original = if index < self.chapters.len() {
                 &self.chapters[index]
@@ -214,12 +227,16 @@ impl BookWorkspace {
         // shrinking one source may make room for another in the same batch.
         let projected = current_bytes - removed;
         if added > limit.saturating_sub(projected) || projected > limit {
-            return Err(invalid("complete source text and paths exceed the source byte limit"));
+            return Err(invalid(
+                "complete source text and paths exceed the source byte limit",
+            ));
         }
         if changes.is_empty() {
             return Ok(self.report(0, Vec::new()));
         }
-        let revision = self.revision.checked_add(1)
+        let revision = self
+            .revision
+            .checked_add(1)
             .ok_or_else(|| invalid("source revision exhausted; create a new workspace"))?;
         let source_length = self.renderer.source_length() - removed + added;
         let mut chapters = self.chapters.clone();
@@ -246,7 +263,10 @@ impl BookWorkspace {
             if new.source == old.source {
                 replacements.push(None);
             } else {
-                replacements.push(Some(parse_chapter(new, &self.renderer.book().chapters[index])));
+                replacements.push(Some(parse_chapter(
+                    new,
+                    &self.renderer.book().chapters[index],
+                )));
                 reparsed.push(index);
             }
         }
@@ -259,7 +279,8 @@ impl BookWorkspace {
         };
         // No fallible operation follows publication. Keep the original options
         // and asset vectors, rather than cloning large image/font payloads.
-        self.renderer.commit_workspace_sources(replacements, source_length);
+        self.renderer
+            .commit_workspace_sources(replacements, source_length);
         self.chapters = chapters;
         self.resources = resources;
         self.expanded = expanded;
@@ -284,25 +305,36 @@ fn invalid(message: &str) -> RenderError {
 
 fn add_bytes(total: &mut usize, bytes: usize, limit: usize) -> Result<()> {
     if bytes > limit.saturating_sub(*total) {
-        return Err(invalid("source text and paths exceed the source byte limit"));
+        return Err(invalid(
+            "source text and paths exceed the source byte limit",
+        ));
     }
     *total += bytes;
     Ok(())
 }
 
 fn capture(inputs: &[BookInput]) -> Result<Vec<BookInput>> {
-    inputs.iter().map(|input| {
-        let path = paths::source_path(&input.path)
-            .ok_or_else(|| invalid("invalid captured source path"))?;
-        Ok(BookInput { path, source: input.source.clone() })
-    }).collect()
+    inputs
+        .iter()
+        .map(|input| {
+            let path = paths::source_path(&input.path)
+                .ok_or_else(|| invalid("invalid captured source path"))?;
+            Ok(BookInput {
+                path,
+                source: input.source.clone(),
+            })
+        })
+        .collect()
 }
 
 fn parse_chapter(input: &BookInput, previous: &BookChapter) -> BookChapter {
     let (frontmatter, _) = parse::split_frontmatter(&input.source);
     let doc = parse::parse_document(&input.source);
-    let title = frontmatter.as_ref().and_then(|value| value.title.clone())
-        .or_else(|| first_heading_text(&doc)).unwrap_or_else(|| path_stem(&previous.path));
+    let title = frontmatter
+        .as_ref()
+        .and_then(|value| value.title.clone())
+        .or_else(|| first_heading_text(&doc))
+        .unwrap_or_else(|| path_stem(&previous.path));
     BookChapter {
         path: previous.path.clone(),
         out_name: previous.out_name.clone(),

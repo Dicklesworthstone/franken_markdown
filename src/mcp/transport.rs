@@ -146,8 +146,8 @@ pub(super) fn read_message<R: BufRead>(
             return read_content_length(reader, line, max_frame_bytes).map(Some);
         }
         // Never slice UTF-8 at an arbitrary byte offset while inspecting headers.
-        let first = std::str::from_utf8(&line)
-            .map_err(|_| invalid_data("MCP frame is not valid UTF-8"))?;
+        let first =
+            std::str::from_utf8(&line).map_err(|_| invalid_data("MCP frame is not valid UTF-8"))?;
         if framing.is_none() && is_legacy_header(first.trim()) {
             *framing = Some(Framing::ContentLength);
             return read_content_length(reader, line, max_frame_bytes).map(Some);
@@ -174,7 +174,10 @@ pub(super) fn read_message<R: BufRead>(
 ///
 /// Stop reading this stream after a framing error. The server retains framing
 /// across messages; this standalone helper detects it independently per call.
-pub fn read_frame<R: BufRead>(reader: &mut R, max_frame_bytes: usize) -> io::Result<Option<String>> {
+pub fn read_frame<R: BufRead>(
+    reader: &mut R,
+    max_frame_bytes: usize,
+) -> io::Result<Option<String>> {
     read_message(reader, &mut None, max_frame_bytes)
 }
 

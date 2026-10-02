@@ -7,8 +7,8 @@
 
 use super::{Poster, RStyle, Shaper, SvgWarning, TextFlow, Word};
 use franken_markdown::layout::{
-    FORCED_BREAK_PENALTY, Glue, LayoutUnit, ParagraphItem, ParagraphLayoutScratch,
-    Penalty, TextBox, break_paragraph_into,
+    FORCED_BREAK_PENALTY, Glue, LayoutUnit, ParagraphItem, ParagraphLayoutScratch, Penalty,
+    TextBox, break_paragraph_into,
 };
 use std::ops::Range;
 
@@ -75,7 +75,11 @@ impl Paragraph {
         size: f64,
         width: f64,
     ) {
-        let plan = if self.greedy { None } else { plan(&self.groups, width) };
+        let plan = if self.greedy {
+            None
+        } else {
+            plan(&self.groups, width)
+        };
         let mut boundaries = plan.as_deref().unwrap_or_default().iter().peekable();
         for (index, group) in self.groups.drain(..).enumerate() {
             if boundaries.peek().is_some_and(|line| line.end == index) {

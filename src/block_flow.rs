@@ -126,7 +126,11 @@ pub enum BlockFlowError {
     /// Paragraph exceeded maximum permitted line count.
     ParagraphBudgetExceeded { lines: usize, max: usize },
     /// Range endpoints were reversed or invalid.
-    InvalidRange { start: usize, end: usize, len: usize },
+    InvalidRange {
+        start: usize,
+        end: usize,
+        len: usize,
+    },
 }
 
 impl fmt::Display for BlockFlowError {
@@ -179,7 +183,10 @@ impl ScrollAnchor {
     }
 
     /// Resolve this anchor to an absolute scroll offset in the document.
-    pub fn resolve_scroll_y(&self, index: &BlockHeightIndex) -> Result<LogicalHeight, BlockFlowError> {
+    pub fn resolve_scroll_y(
+        &self,
+        index: &BlockHeightIndex,
+    ) -> Result<LogicalHeight, BlockFlowError> {
         let block_top = index.prefix_height(self.block_id)?;
         block_top
             .checked_add(self.intra_block_offset)
@@ -323,7 +330,10 @@ impl BlockHeightIndex {
     /// Find the stable `ScrollAnchor` at a given absolute scroll position.
     ///
     /// Returns the block index containing `scroll_y` and the intra-block offset.
-    pub fn find_anchor_at_scroll(&self, scroll_y: LogicalHeight) -> Result<ScrollAnchor, BlockFlowError> {
+    pub fn find_anchor_at_scroll(
+        &self,
+        scroll_y: LogicalHeight,
+    ) -> Result<ScrollAnchor, BlockFlowError> {
         if self.is_empty() {
             return Ok(ScrollAnchor::new(0, LogicalHeight::ZERO));
         }
@@ -363,7 +373,11 @@ impl BlockHeightIndex {
     }
 
     /// Insert a block with `height` at `index`.
-    pub fn insert_block(&mut self, index: usize, height: LogicalHeight) -> Result<(), BlockFlowError> {
+    pub fn insert_block(
+        &mut self,
+        index: usize,
+        height: LogicalHeight,
+    ) -> Result<(), BlockFlowError> {
         if index > self.len() {
             return Err(BlockFlowError::IndexOutOfBounds {
                 index,
@@ -409,7 +423,7 @@ impl BlockHeightIndex {
                 return Err(BlockFlowError::IndexOutOfBounds {
                     index,
                     len: self.len(),
-                })
+                });
             }
         };
         let delta = new_height.0 as i64 - current.0 as i64;
@@ -575,7 +589,8 @@ fn wrap_prose(
         for word in words {
             if current_line.is_empty() {
                 current_line.push_str(word);
-            } else if current_line.chars().count() + 1 + word.chars().count() <= max_chars_per_line {
+            } else if current_line.chars().count() + 1 + word.chars().count() <= max_chars_per_line
+            {
                 current_line.push(' ');
                 current_line.push_str(word);
             } else {

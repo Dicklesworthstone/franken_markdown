@@ -144,7 +144,10 @@ mod tests {
         lex_typescript_into(code, &mut spans);
         assert_tiling(code, &spans);
 
-        let kinds: Vec<(Tok, &str)> = spans.iter().map(|s| (s.kind, &code[s.start..s.end])).collect();
+        let kinds: Vec<(Tok, &str)> = spans
+            .iter()
+            .map(|s| (s.kind, &code[s.start..s.end]))
+            .collect();
         assert!(kinds.contains(&(Tok::Keyword, "type")));
         assert!(kinds.contains(&(Tok::Type, "string")));
         assert!(kinds.contains(&(Tok::Type, "number")));
@@ -257,10 +260,22 @@ mod tests {
     fn negative_control_tiling_gap_detected() {
         let code = "type X = number;";
         let broken = vec![
-            Span { kind: Tok::Keyword, start: 0, end: 4 },
+            Span {
+                kind: Tok::Keyword,
+                start: 0,
+                end: 4,
+            },
             // gap from 4..7 omitted!
-            Span { kind: Tok::Type, start: 9, end: 15 },
-            Span { kind: Tok::Punct, start: 15, end: 16 },
+            Span {
+                kind: Tok::Type,
+                start: 9,
+                end: 15,
+            },
+            Span {
+                kind: Tok::Punct,
+                start: 15,
+                end: 16,
+            },
         ];
         let result = std::panic::catch_unwind(|| {
             assert_tiling(code, &broken);

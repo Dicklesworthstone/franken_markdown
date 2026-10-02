@@ -37,12 +37,30 @@ fn palette_variants_have_distinct_visual_roles() {
         assert!(!colors.bg.is_empty(), "{name} bg empty");
         assert!(!colors.selection_bg.is_empty(), "{name} selection_bg empty");
         assert!(!colors.selection_fg.is_empty(), "{name} selection_fg empty");
-        assert!(!colors.search_match_bg.is_empty(), "{name} search_match_bg empty");
-        assert!(!colors.search_match_fg.is_empty(), "{name} search_match_fg empty");
-        assert!(!colors.directory_border.is_empty(), "{name} directory_border empty");
-        assert!(!colors.diagnostic_error.is_empty(), "{name} diagnostic_error empty");
-        assert!(!colors.diagnostic_warning.is_empty(), "{name} diagnostic_warning empty");
-        assert!(!colors.diagnostic_info.is_empty(), "{name} diagnostic_info empty");
+        assert!(
+            !colors.search_match_bg.is_empty(),
+            "{name} search_match_bg empty"
+        );
+        assert!(
+            !colors.search_match_fg.is_empty(),
+            "{name} search_match_fg empty"
+        );
+        assert!(
+            !colors.directory_border.is_empty(),
+            "{name} directory_border empty"
+        );
+        assert!(
+            !colors.diagnostic_error.is_empty(),
+            "{name} diagnostic_error empty"
+        );
+        assert!(
+            !colors.diagnostic_warning.is_empty(),
+            "{name} diagnostic_warning empty"
+        );
+        assert!(
+            !colors.diagnostic_info.is_empty(),
+            "{name} diagnostic_info empty"
+        );
     }
 
     // Plan §5.7: Never rely solely on hue - selection and search match must be distinct from background
@@ -107,7 +125,10 @@ fn system_appearance_resolution() {
     assert_eq!(hc_resolved.fg, "#ffffff");
 
     let theme_hc_light = Theme::high_contrast_light();
-    assert_eq!(theme_hc_light.appearance, SystemAppearance::HighContrastLight);
+    assert_eq!(
+        theme_hc_light.appearance,
+        SystemAppearance::HighContrastLight
+    );
     let hc_l_resolved = theme_hc_light.effective_colors(true, false);
     assert_eq!(hc_l_resolved.bg, "#ffffff");
     assert_eq!(hc_l_resolved.fg, "#000000");
@@ -176,18 +197,14 @@ fn larger_text_and_scale_ladder() {
     assert!(larger_theme.spacing.max_width_px > default_theme.spacing.max_width_px);
 
     // FontScale ladder presets
-    let xl_theme =
-        Theme::default().with_font_scale(FontScale::Preset(TypeScalePreset::ExtraLarge));
+    let xl_theme = Theme::default().with_font_scale(FontScale::Preset(TypeScalePreset::ExtraLarge));
     assert!(xl_theme.spacing.base_px > larger_theme.spacing.base_px);
 }
 
 #[test]
 fn html_emission_contains_distinct_visual_tokens() {
-    let html = render_html(
-        "# Heading\n\nSome readable text.",
-        &HtmlOptions::default(),
-    )
-    .expect("render html");
+    let html = render_html("# Heading\n\nSome readable text.", &HtmlOptions::default())
+        .expect("render html");
 
     assert!(html.contains("--fmd-selection-bg:"));
     assert!(html.contains("--fmd-selection-fg:"));
@@ -340,7 +357,10 @@ fn structured_event_telemetry_recording() {
     telemetry.events.push("verify_negative_controls");
     telemetry.passed_invariants += 1;
 
-    assert_eq!(telemetry.scenario, "fcb-038.a/readable_theme_and_typography");
+    assert_eq!(
+        telemetry.scenario,
+        "fcb-038.a/readable_theme_and_typography"
+    );
     assert_eq!(telemetry.passed_invariants, 6);
     assert_eq!(telemetry.events.len(), 6);
 }

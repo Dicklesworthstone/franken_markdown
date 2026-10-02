@@ -577,7 +577,11 @@ impl Theme {
 
     /// Resolve the effective active colour palette based on appearance policy and host state.
     #[must_use]
-    pub fn effective_colors(&self, host_prefers_dark: bool, host_high_contrast: bool) -> &ThemeColors {
+    pub fn effective_colors(
+        &self,
+        host_prefers_dark: bool,
+        host_high_contrast: bool,
+    ) -> &ThemeColors {
         match self.appearance {
             SystemAppearance::Light => &self.colors,
             SystemAppearance::Dark => &self.dark_colors,

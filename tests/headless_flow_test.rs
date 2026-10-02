@@ -16,8 +16,8 @@
 
 use franken_markdown::{
     FlowBudgets, FlowConstraints, FlowError, HeadlessFlowConsumer, ProvenanceOracle,
-    SourceMapError, SourceOrigin, SourceSpan, SpannedBlock,
-    TextSelectionRange, parse_markdown_spanned,
+    SourceMapError, SourceOrigin, SourceSpan, SpannedBlock, TextSelectionRange,
+    parse_markdown_spanned,
 };
 
 #[test]
@@ -63,7 +63,9 @@ fn spanned_document_zero_copy_inspection() {
 fn truthful_copy_rendered_vs_enclosing_source() {
     let source = "# Welcome\n\nHere is **bold** and *italic* styling.\n";
     let doc = parse_markdown_spanned(source);
-    let map = doc.source_map(source).expect("source map built successfully");
+    let map = doc
+        .source_map(source)
+        .expect("source map built successfully");
 
     // Check rendered text contains clean text without markdown delimiters
     let rendered = map.rendered_text();
@@ -188,7 +190,10 @@ fn headless_flow_consumer_layout_and_wrapping() {
     let output = consumer.consume_source(source).expect("flow succeeded");
 
     // Output checks
-    assert!(output.lines.len() >= 2, "narrow viewport must wrap paragraph into multiple lines");
+    assert!(
+        output.lines.len() >= 2,
+        "narrow viewport must wrap paragraph into multiple lines"
+    );
     assert!(output.total_height >= 32);
     assert_eq!(output.consumed_blocks, 2);
     assert_eq!(output.consumed_bytes, source.len());
@@ -231,11 +236,15 @@ fn bidirectional_source_and_rendered_synchronization() {
 
     // Source offset 6 is 'w' in "world"
     let rendered_offset = map.sync_source_to_rendered(6).expect("sync to rendered");
-    let sync_back = map.sync_rendered_to_source(rendered_offset).expect("sync to source");
+    let sync_back = map
+        .sync_rendered_to_source(rendered_offset)
+        .expect("sync to source");
     assert_eq!(sync_back, 6);
 
     // Hit test element by rendered offset
-    let elem = map.element_at_rendered_offset(rendered_offset).expect("element found");
+    let elem = map
+        .element_at_rendered_offset(rendered_offset)
+        .expect("element found");
     assert_eq!(elem.block_index, 0);
     assert!(!elem.is_generated);
 
@@ -350,7 +359,9 @@ fn negative_controls_invalid_selection_ranges() {
 fn provenance_oracle_truthfulness_integration() {
     let source = "# Overview\n\nTesting nested *provenance* graph with [link](https://example.com) and `code`.\n";
     let consumer = HeadlessFlowConsumer::default();
-    let output = consumer.consume_source(source).expect("flow consumer succeeded");
+    let output = consumer
+        .consume_source(source)
+        .expect("flow consumer succeeded");
 
     // Run ProvenanceOracle over the generated provenance graph
     let report = ProvenanceOracle::verify_truthfulness(
@@ -373,7 +384,9 @@ fn multi_item_list_provenance_and_flow() {
                   - Item gamma with `code` block\n\n\
                   End paragraph.\n";
     let consumer = HeadlessFlowConsumer::default();
-    let output = consumer.consume_source(source).expect("flow consumer multi-item list succeeded");
+    let output = consumer
+        .consume_source(source)
+        .expect("flow consumer multi-item list succeeded");
 
     assert!(output.lines.len() >= 4);
     let report = ProvenanceOracle::verify_truthfulness(

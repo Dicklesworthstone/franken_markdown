@@ -46,17 +46,17 @@ use franken_markdown::{
 use crate::zip::ZipWriter;
 
 // Explicit paths also support the standalone #[path] integration harness.
-#[path = "epub/book.rs"]
-mod book;
-#[path = "epub/resources.rs"]
-mod resources;
-#[path = "epub/fonts.rs"]
-mod embedded_fonts;
-#[path = "epub/theme.rs"]
-mod theme;
 #[cfg(test)]
 #[path = "epub/archive_tests.rs"]
 mod archive_tests;
+#[path = "epub/book.rs"]
+mod book;
+#[path = "epub/fonts.rs"]
+mod embedded_fonts;
+#[path = "epub/resources.rs"]
+mod resources;
+#[path = "epub/theme.rs"]
+mod theme;
 
 pub use book::render_book_epub;
 
@@ -155,8 +155,21 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     fonts.link(&mut nav, opts.custom_css.is_some())?;
     fonts.manifest(&mut opf)?;
     fonts.check_output(
-        [chapter.len(), nav.len(), opf.len(), css.len(), CONTAINER_XML.len(), MIMETYPE.len()]
-            .into_iter().chain(prepared.resources.iter().map(|resource| resource.bytes.len())),
+        [
+            chapter.len(),
+            nav.len(),
+            opf.len(),
+            css.len(),
+            CONTAINER_XML.len(),
+            MIMETYPE.len(),
+        ]
+        .into_iter()
+        .chain(
+            prepared
+                .resources
+                .iter()
+                .map(|resource| resource.bytes.len()),
+        ),
     )?;
 
     let mut zip = ZipWriter::new();
@@ -413,12 +426,7 @@ fn push_nav_headings(headings: &[NavHeading], file: &str, out: &mut String) {
     }
 }
 
-fn content_opf(
-    title: &str,
-    lang: &str,
-    identifier: &str,
-    chapter: &resources::Chapter,
-) -> String {
+fn content_opf(title: &str, lang: &str, identifier: &str, chapter: &resources::Chapter) -> String {
     let mut s = String::with_capacity(1024);
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str("<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n");
@@ -433,7 +441,9 @@ fn content_opf(
     s.push_str(DCTERMS_MODIFIED);
     s.push_str("</meta>\n</metadata>\n<manifest>\n");
     s.push_str("<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n");
-    s.push_str("<item id=\"chapter-1\" href=\"chapter-1.xhtml\" media-type=\"application/xhtml+xml\"");
+    s.push_str(
+        "<item id=\"chapter-1\" href=\"chapter-1.xhtml\" media-type=\"application/xhtml+xml\"",
+    );
     if chapter.mathml || chapter.svg {
         s.push_str(" properties=\"");
         if chapter.mathml {
@@ -714,7 +724,9 @@ mod tests {
         )?;
         let opf = content_opf("Images & math", "en", "urn:test", &chapter);
         assert!(opf.contains("properties=\"mathml svg\""));
-        assert!(opf.contains("id=\"image-1\" href=\"assets/image-1.svg\" media-type=\"image/svg+xml\""));
+        assert!(
+            opf.contains("id=\"image-1\" href=\"assets/image-1.svg\" media-type=\"image/svg+xml\"")
+        );
         assert!(opf.contains("Images &amp; math"));
         let plain = resources::prepare("<p>Text</p>")?;
         let opf = content_opf("Text", "en", "urn:test", &plain);
@@ -725,7 +737,9 @@ mod tests {
 
     #[test]
     fn navigation_nests_skipped_levels_without_empty_items() {
-        let doc = franken_markdown::parse_markdown("# One\n\n#### Four\n\n### Three\n\n## Two\n\n# Next\n");
+        let doc = franken_markdown::parse_markdown(
+            "# One\n\n#### Four\n\n### Three\n\n## Two\n\n# Next\n",
+        );
         let nav = nav_xhtml("Outline", "en", &doc);
         assert_eq!(nav.matches("<ol>").count(), 2);
         assert_eq!(nav.matches("<li ").count(), 5);

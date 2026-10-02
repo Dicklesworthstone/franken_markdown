@@ -10,10 +10,7 @@ pub(super) fn assemble(book: &Book) -> Document {
 /// Prepare each chapter while its cloned blocks still have a known source
 /// boundary. Hosts can resolve assets here without cloning the entire book a
 /// second time or inferring boundaries from user-authored page-break blocks.
-pub(super) fn assemble_with(
-    book: &Book,
-    mut prepare: impl FnMut(usize, &mut [Block]),
-) -> Document {
+pub(super) fn assemble_with(book: &Book, mut prepare: impl FnMut(usize, &mut [Block])) -> Document {
     let mut blocks = Vec::new();
     let isolate = book.chapters.len() > 1;
     for (index, chapter) in book.chapters.iter().enumerate() {

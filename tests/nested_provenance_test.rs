@@ -15,9 +15,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use franken_markdown::{
-    CaptureId, DisjointSourceRanges, NestedProvenanceGraph, NestedProvenanceNode,
-    ProvenanceError, ProvenanceKind, ProvenanceOracle, ProvenanceRelation, QualifiedSpan,
-    SourceOrigin, SourceSpan, SpannedDocument, parse_markdown_spanned,
+    CaptureId, DisjointSourceRanges, NestedProvenanceGraph, NestedProvenanceNode, ProvenanceError,
+    ProvenanceKind, ProvenanceOracle, ProvenanceRelation, QualifiedSpan, SourceOrigin, SourceSpan,
+    SpannedDocument, parse_markdown_spanned,
 };
 
 #[test]
@@ -38,7 +38,10 @@ fn capture_id_and_source_origin_representation() {
     assert!(!q_prim.is_empty());
 
     let q_trans = QualifiedSpan::transcluded(CaptureId::new(7), SourceSpan::new(0, 5));
-    assert_eq!(q_trans.origin, SourceOrigin::Transclusion(CaptureId::new(7)));
+    assert_eq!(
+        q_trans.origin,
+        SourceOrigin::Transclusion(CaptureId::new(7))
+    );
     assert_eq!(q_trans.span, SourceSpan::new(0, 5));
 }
 
@@ -46,11 +49,9 @@ fn capture_id_and_source_origin_representation() {
 fn disjoint_source_ranges_validation_and_enclosing_block() {
     let origin = SourceOrigin::Primary;
     // Two disjoint ranges: e.g. text inside *emphasis* or disjoint selections
-    let ranges = DisjointSourceRanges::try_new(
-        origin,
-        vec![SourceSpan::new(2, 6), SourceSpan::new(10, 15)],
-    )
-    .expect("valid disjoint ranges");
+    let ranges =
+        DisjointSourceRanges::try_new(origin, vec![SourceSpan::new(2, 6), SourceSpan::new(10, 15)])
+            .expect("valid disjoint ranges");
 
     assert_eq!(ranges.count(), 2);
     assert_eq!(ranges.total_len(), 4 + 5);
@@ -92,10 +93,7 @@ fn negative_controls_disjoint_ranges_validation() {
 
     // 2. Overlapping ranges
     assert_eq!(
-        DisjointSourceRanges::try_new(
-            origin,
-            vec![SourceSpan::new(0, 10), SourceSpan::new(8, 15)],
-        ),
+        DisjointSourceRanges::try_new(origin, vec![SourceSpan::new(0, 10), SourceSpan::new(8, 15)],),
         Err(ProvenanceError::OverlappingChildren {
             previous: SourceSpan::new(0, 10),
             next: SourceSpan::new(8, 15),
@@ -104,10 +102,7 @@ fn negative_controls_disjoint_ranges_validation() {
 
     // 3. Out-of-order ranges
     assert_eq!(
-        DisjointSourceRanges::try_new(
-            origin,
-            vec![SourceSpan::new(12, 18), SourceSpan::new(2, 8)],
-        ),
+        DisjointSourceRanges::try_new(origin, vec![SourceSpan::new(12, 18), SourceSpan::new(2, 8)],),
         Err(ProvenanceError::OutOfOrderChildren {
             previous: SourceSpan::new(12, 18),
             next: SourceSpan::new(2, 8),
@@ -206,15 +201,11 @@ fn nested_provenance_graph_construction_and_hit_testing() {
     assert_eq!(graph.total_nodes(), 8); // root + paragraph + 6 inline children
 
     // Deep hit testing
-    let hit_hello = graph
-        .hit_test(SourceOrigin::Primary, 3)
-        .expect("hit hello");
+    let hit_hello = graph.hit_test(SourceOrigin::Primary, 3).expect("hit hello");
     assert_eq!(hit_hello.id, 1);
     assert_eq!(hit_hello.relation, ProvenanceRelation::Literal);
 
-    let hit_world = graph
-        .hit_test(SourceOrigin::Primary, 9)
-        .expect("hit world");
+    let hit_world = graph.hit_test(SourceOrigin::Primary, 9).expect("hit world");
     assert_eq!(hit_world.id, 2);
     assert_eq!(
         hit_world.relation,
@@ -339,8 +330,11 @@ fn transcluded_content_provenance_and_oracle() {
         10,
         ProvenanceKind::Block,
         ProvenanceRelation::Literal,
-        DisjointSourceRanges::single(SourceOrigin::Primary, SourceSpan::new(0, primary_source.len()))
-            .unwrap(),
+        DisjointSourceRanges::single(
+            SourceOrigin::Primary,
+            SourceSpan::new(0, primary_source.len()),
+        )
+        .unwrap(),
     )
     .unwrap();
 
@@ -348,8 +342,11 @@ fn transcluded_content_provenance_and_oracle() {
         0,
         ProvenanceKind::Document,
         ProvenanceRelation::Literal,
-        DisjointSourceRanges::single(SourceOrigin::Primary, SourceSpan::new(0, primary_source.len()))
-            .unwrap(),
+        DisjointSourceRanges::single(
+            SourceOrigin::Primary,
+            SourceSpan::new(0, primary_source.len()),
+        )
+        .unwrap(),
         vec![primary_p, trans_header],
     )
     .unwrap();

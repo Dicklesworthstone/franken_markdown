@@ -4,9 +4,9 @@
 use wasm_bindgen::prelude::*;
 
 use super::{
-    FmdRenderResult, apply_font_assets, apply_font_weights, empty_to_none,
-    heading_depth, optional_positive_usize, pdf_options_configured, positive_f32,
-    render_error_to_js, render_result, split_nonempty_image_assets,
+    FmdRenderResult, apply_font_assets, apply_font_weights, empty_to_none, heading_depth,
+    optional_positive_usize, pdf_options_configured, positive_f32, render_error_to_js,
+    render_result, split_nonempty_image_assets,
 };
 use crate::wasm;
 use crate::{PageMargins, PageSize, PageStyle};
@@ -250,9 +250,18 @@ pub fn render_book_pdf_configured_page(
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let inputs = configured_book_inputs(paths, sources).map_err(JsValue::from_str)?;
     configured_book_assets(
-        &image_destinations, &image_bytes_flat, &image_bytes_lengths,
-        [&body_regular, &body_bold, &body_italic, &body_bold_italic, &mono_regular],
-    ).map_err(JsValue::from_str)?;
+        &image_destinations,
+        &image_bytes_flat,
+        &image_bytes_lengths,
+        [
+            &body_regular,
+            &body_bold,
+            &body_italic,
+            &body_bold_italic,
+            &mono_regular,
+        ],
+    )
+    .map_err(JsValue::from_str)?;
     let options = configured_pdf_options(
         font,
         dark_mode,
@@ -282,8 +291,8 @@ pub fn render_book_pdf_configured_page(
         microtype_protrusion,
         page_geometry,
     )?;
-    let mut renderer = crate::book::BookRenderer::from_sources(&inputs, &[])
-        .map_err(render_error_to_js)?;
+    let mut renderer =
+        crate::book::BookRenderer::from_sources(&inputs, &[]).map_err(render_error_to_js)?;
     *renderer.options_mut() = options;
     let bytes = renderer.render_pdf().map_err(render_error_to_js)?;
     Ok(super::artifact_result(
@@ -314,8 +323,11 @@ fn configured_book_inputs(
             }
         }
     }
-    Ok(paths.into_iter().zip(sources)
-        .map(|(path, source)| crate::book::BookInput { path, source }).collect())
+    Ok(paths
+        .into_iter()
+        .zip(sources)
+        .map(|(path, source)| crate::book::BookInput { path, source })
+        .collect())
 }
 
 // Bound the direct ABI as well as the ergonomic JavaScript wrapper. Validate
@@ -328,9 +340,12 @@ fn configured_book_assets(
 ) -> Result<(), &'static str> {
     const ASSET_LIMIT: usize = 32 * 1024 * 1024;
     const TOTAL_LIMIT: usize = 128 * 1024 * 1024;
-    if destinations.len() > 4096 || destinations.len() != lengths.len()
+    if destinations.len() > 4096
+        || destinations.len() != lengths.len()
         || bytes.len() > TOTAL_LIMIT
-        || lengths.iter().any(|&len| len == 0 || len as usize > ASSET_LIMIT)
+        || lengths
+            .iter()
+            .any(|&len| len == 0 || len as usize > ASSET_LIMIT)
     {
         return Err("book images exceed count, payload, or parallel-array limits");
     }
@@ -454,11 +469,15 @@ fn page_style(values: &[f64]) -> Result<Option<PageStyle>, &'static str> {
     if values.len() != 6 {
         return Err("page geometry must contain width, height, top, right, bottom, left");
     }
-    if values.iter().any(|v| !v.is_finite() || *v < 0.0 || *v > 14_400.0)
+    if values
+        .iter()
+        .any(|v| !v.is_finite() || *v < 0.0 || *v > 14_400.0)
         || !(144.0..=14_400.0).contains(&values[0])
         || !(144.0..=14_400.0).contains(&values[1])
     {
-        return Err("page dimensions must be 144..14400 points; margins must be finite and nonnegative");
+        return Err(
+            "page dimensions must be 144..14400 points; margins must be finite and nonnegative",
+        );
     }
     let [width, height, top, right, bottom, left]: [f32; 6] =
         std::array::from_fn(|i| values[i] as f32);
@@ -474,11 +493,20 @@ fn page_style(values: &[f64]) -> Result<Option<PageStyle>, &'static str> {
     let size = if width == PageSize::LETTER.width_pt && height == PageSize::LETTER.height_pt {
         PageSize::LETTER
     } else {
-        PageSize { name: "custom", width_pt: width, height_pt: height }
+        PageSize {
+            name: "custom",
+            width_pt: width,
+            height_pt: height,
+        }
     };
     Ok(Some(PageStyle {
         size,
-        margins: PageMargins { top_pt: top, right_pt: right, bottom_pt: bottom, left_pt: left },
+        margins: PageMargins {
+            top_pt: top,
+            right_pt: right,
+            bottom_pt: bottom,
+            left_pt: left,
+        },
     }))
 }
 
@@ -489,17 +517,20 @@ mod tests {
     use super::*;
     use crate::wasm::WasmRenderOptions;
 
-
     #[test]
     fn configured_books_bound_raw_asset_admission() {
         assert!(configured_book_assets(&[], &[], &[], [&[]; 5]).is_ok());
         assert!(configured_book_assets(&["a.svg".into()], &[1], &[1], [&[]; 5]).is_ok());
         assert!(configured_book_assets(&["a.svg".into()], &[], &[], [&[]; 5]).is_err());
         assert!(configured_book_assets(&["a.svg".into()], &[], &[0], [&[]; 5]).is_err());
-        assert!(configured_book_assets(&["a.svg".into()], &[], &[33 * 1024 * 1024], [&[]; 5]).is_err());
+        assert!(
+            configured_book_assets(&["a.svg".into()], &[], &[33 * 1024 * 1024], [&[]; 5]).is_err()
+        );
         assert!(configured_book_assets(&[" ".into()], &[1], &[1], [&[]; 5]).is_err());
         assert!(configured_book_assets(&["x".repeat(8193)], &[1], &[1], [&[]; 5]).is_err());
-        assert!(configured_book_assets(&vec!["x".repeat(8192); 9], &[1; 9], &[1; 9], [&[]; 5]).is_err());
+        assert!(
+            configured_book_assets(&vec!["x".repeat(8192); 9], &[1; 9], &[1; 9], [&[]; 5]).is_err()
+        );
     }
 
     #[test]
@@ -508,8 +539,10 @@ mod tests {
         assert!(configured_book_inputs(vec!["one.md".into()], vec![]).is_err());
         assert!(configured_book_inputs(vec!["x".into(); 4097], vec![String::new(); 4097]).is_err());
         let inputs = configured_book_inputs(
-            vec!["z.md".into(), "a.md".into()], vec!["# Z".into(), "# A".into()],
-        ).unwrap();
+            vec!["z.md".into(), "a.md".into()],
+            vec!["# Z".into(), "# A".into()],
+        )
+        .unwrap();
         assert_eq!(inputs[0].path, "z.md");
         assert_eq!(inputs[1].source, "# A");
     }
@@ -524,16 +557,42 @@ mod tests {
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="red"/></svg>"#.to_vec();
         let geometry = vec![720.0, 540.0, 36.0, 30.0, 24.0, 18.0];
         let actual = render_book_pdf_configured_page(
-            paths.clone(), sources.clone(), Some("serif".into()), None,
-            Some("  Manual  ".into()), Some("Author".into()), Some(0.0), false, true,
-            vec!["guide/chart.svg".into()], svg.clone(), vec![svg.len() as u32],
-            vec![], vec![], vec![], vec![], vec![], vec![],
-            Some(12.0), Some(1.3), Some(9.0), true, Some(1.125), Some("de".into()),
-            true, Some(2), None, true, geometry.clone(),
-        ).unwrap();
+            paths.clone(),
+            sources.clone(),
+            Some("serif".into()),
+            None,
+            Some("  Manual  ".into()),
+            Some("Author".into()),
+            Some(0.0),
+            false,
+            true,
+            vec!["guide/chart.svg".into()],
+            svg.clone(),
+            vec![svg.len() as u32],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            Some(12.0),
+            Some(1.3),
+            Some(9.0),
+            true,
+            Some(1.125),
+            Some("de".into()),
+            true,
+            Some(2),
+            None,
+            true,
+            geometry.clone(),
+        )
+        .unwrap();
         let mut renderer = crate::book::BookRenderer::from_sources(
-            &configured_book_inputs(paths, sources).unwrap(), &[],
-        ).unwrap();
+            &configured_book_inputs(paths, sources).unwrap(),
+            &[],
+        )
+        .unwrap();
         let options = renderer.options_mut();
         options.theme = options.theme.clone().with_font(crate::FontFamily::Serif);
         options.theme.page = page_style(&geometry).unwrap().unwrap();
@@ -551,7 +610,8 @@ mod tests {
         options.toc_depth = Some(2);
         options.microtype = crate::layout::MicrotypeOptions::CONSERVATIVE;
         options.pdf_image_assets.push(crate::PdfImageAsset {
-            destination: "guide/chart.svg".into(), bytes: svg,
+            destination: "guide/chart.svg".into(),
+            bytes: svg,
         });
         assert_eq!(actual.bytes(), renderer.render_pdf().unwrap());
         assert!(String::from_utf8_lossy(&actual.bytes()).contains("/MediaBox [0 0 720 540]"));
@@ -559,8 +619,13 @@ mod tests {
 
     #[test]
     fn running_slots_are_positional_and_admitted_before_rendering() {
-        assert_eq!(running_content(vec![], false, false, false).unwrap(), crate::PdfRunningContent::default());
-        let slots = ["H-L", "", "{title}", "", "{page} / {pages}", "R"].map(String::from).to_vec();
+        assert_eq!(
+            running_content(vec![], false, false, false).unwrap(),
+            crate::PdfRunningContent::default()
+        );
+        let slots = ["H-L", "", "{title}", "", "{page} / {pages}", "R"]
+            .map(String::from)
+            .to_vec();
         let running = running_content(slots, true, false, true).unwrap();
         assert_eq!(running.header.left.as_deref(), Some("H-L"));
         assert_eq!(running.header.center, None);
@@ -578,14 +643,51 @@ mod tests {
 
     #[test]
     fn running_abi_matches_native_options_byte_for_byte() {
-        let slots = ["{title}", "", "{date}", "Confidential", "{page} / {pages}", ""]
-            .map(String::from).to_vec();
+        let slots = [
+            "{title}",
+            "",
+            "{date}",
+            "Confidential",
+            "{page} / {pages}",
+            "",
+        ]
+        .map(String::from)
+        .to_vec();
         let actual = render_pdf_configured_running(
-            "# Spec\n\nBody text.\n", None, None, Some("Widget".into()), None, Some(1_700_000_000.0),
-            false, false, vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![],
-            None, None, None, false, None, None, false, None, None, false, vec![],
-            slots, true, true, false,
-        ).unwrap();
+            "# Spec\n\nBody text.\n",
+            None,
+            None,
+            Some("Widget".into()),
+            None,
+            Some(1_700_000_000.0),
+            false,
+            false,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            false,
+            None,
+            None,
+            false,
+            vec![],
+            slots,
+            true,
+            true,
+            false,
+        )
+        .unwrap();
         let mut options = crate::PdfOptions {
             title: Some("Widget".into()),
             metadata_epoch_seconds: Some(1_700_000_000),
@@ -605,19 +707,29 @@ mod tests {
     #[test]
     fn absence_preserves_the_theme_and_explicit_default_matches_it() {
         assert_eq!(page_style(&[]).unwrap(), None);
-        assert_eq!(page_style(&[612.0, 792.0, 72.0, 72.0, 72.0, 72.0]).unwrap(),
-            Some(PageStyle::default()));
+        assert_eq!(
+            page_style(&[612.0, 792.0, 72.0, 72.0, 72.0, 72.0]).unwrap(),
+            Some(PageStyle::default())
+        );
     }
 
     #[test]
     fn independent_margins_and_landscape_reach_the_native_theme() {
-        let page = page_style(&[792.0, 612.0, 18.0, 24.0, 30.0, 36.0]).unwrap().unwrap();
+        let page = page_style(&[792.0, 612.0, 18.0, 24.0, 30.0, 36.0])
+            .unwrap()
+            .unwrap();
         let mut options = WasmRenderOptions::default();
         options.theme.page = page;
         assert_eq!(options.pdf_options().theme.page, page);
-        assert_eq!(page.margins, PageMargins {
-            top_pt: 18.0, right_pt: 24.0, bottom_pt: 30.0, left_pt: 36.0,
-        });
+        assert_eq!(
+            page.margins,
+            PageMargins {
+                top_pt: 18.0,
+                right_pt: 24.0,
+                bottom_pt: 30.0,
+                left_pt: 36.0,
+            }
+        );
     }
 
     #[test]
@@ -657,7 +769,8 @@ mod tests {
     fn configured_paper_changes_actual_pdf_media_box_and_is_deterministic() {
         let mut options = WasmRenderOptions::default();
         options.theme.page = page_style(&[720.0, 540.0, 36.0, 36.0, 36.0, 36.0])
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         options.metadata_epoch_seconds = Some(0);
         let first = wasm::render_pdf("# Paper\n\nMeasured content.", &options).unwrap();
         let second = wasm::render_pdf("# Paper\n\nMeasured content.", &options).unwrap();
@@ -668,15 +781,66 @@ mod tests {
     #[test]
     fn old_multi_abi_and_empty_geometry_produce_identical_pdf_bytes() {
         let old = super::super::render_pdf_configured_multi(
-            "# Unchanged", None, None, None, None, Some(0.0), false, false,
-            vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![],
-            None, None, None, false, None, None, false, None, None, false,
-        ).unwrap();
+            "# Unchanged",
+            None,
+            None,
+            None,
+            None,
+            Some(0.0),
+            false,
+            false,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            false,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         let new = render_pdf_configured_page(
-            "# Unchanged", None, None, None, None, Some(0.0), false, false,
-            vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![],
-            None, None, None, false, None, None, false, None, None, false, vec![],
-        ).unwrap();
+            "# Unchanged",
+            None,
+            None,
+            None,
+            None,
+            Some(0.0),
+            false,
+            false,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            false,
+            None,
+            None,
+            false,
+            vec![],
+        )
+        .unwrap();
         assert_eq!(old.bytes(), new.bytes());
     }
 }

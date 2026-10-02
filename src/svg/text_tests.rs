@@ -14,14 +14,21 @@ fn pieces(poster: &Poster, nodes: &[Inline]) -> Vec<Piece> {
 }
 
 fn text(lines: &[Vec<Word>]) -> String {
-    lines.iter().flatten().map(|run| run.text.as_str()).collect()
+    lines
+        .iter()
+        .flatten()
+        .map(|run| run.text.as_str())
+        .collect()
 }
 
 #[test]
 fn styled_word_has_no_invented_space_or_break() {
     let p = poster();
-    let nodes = vec![Inline::Text("pre".into()), Inline::Strong(vec![
-        Inline::Text("fix".into())]), Inline::Text(",suffix".into())];
+    let nodes = vec![
+        Inline::Text("pre".into()),
+        Inline::Strong(vec![Inline::Text("fix".into())]),
+        Inline::Text(",suffix".into()),
+    ];
     let input = pieces(&p, &nodes);
     let lines = p.wrap(&input, 11.0, 400.0);
     assert_eq!(lines.len(), 1);
@@ -38,8 +45,11 @@ fn styled_word_has_no_invented_space_or_break() {
 #[test]
 fn whitespace_only_runs_keep_one_real_gap() {
     let p = poster();
-    let nodes = vec![Inline::Strong(vec![Inline::Text("one".into())]),
-        Inline::Text("  \t".into()), Inline::Emphasis(vec![Inline::Text("two".into())])];
+    let nodes = vec![
+        Inline::Strong(vec![Inline::Text("one".into())]),
+        Inline::Text("  \t".into()),
+        Inline::Emphasis(vec![Inline::Text("two".into())]),
+    ];
     let lines = p.wrap(&pieces(&p, &nodes), 11.0, 400.0);
     assert_eq!(lines[0].len(), 2);
     assert_eq!(lines[0][1].gap, p.space_width(RStyle::BODY, 11.0));
@@ -48,8 +58,13 @@ fn whitespace_only_runs_keep_one_real_gap() {
 #[test]
 fn consecutive_and_trailing_hard_breaks_keep_empty_lines() {
     let p = poster();
-    let input = vec![Piece::Text("a".into(), RStyle::BODY), Piece::Break,
-        Piece::Break, Piece::Text("b".into(), RStyle::BODY), Piece::Break];
+    let input = vec![
+        Piece::Text("a".into(), RStyle::BODY),
+        Piece::Break,
+        Piece::Break,
+        Piece::Text("b".into(), RStyle::BODY),
+        Piece::Break,
+    ];
     let lines = p.wrap(&input, 11.0, 400.0);
     assert_eq!(lines.len(), 4);
     assert!(lines[1].is_empty());
@@ -59,8 +74,11 @@ fn consecutive_and_trailing_hard_breaks_keep_empty_lines() {
 #[test]
 fn code_span_spaces_are_preserved() {
     let p = poster();
-    let nodes = vec![Inline::Text("(".into()), Inline::Code("a  b".into()),
-        Inline::Text(")".into())];
+    let nodes = vec![
+        Inline::Text("(".into()),
+        Inline::Code("a  b".into()),
+        Inline::Text(")".into()),
+    ];
     let lines = p.wrap(&pieces(&p, &nodes), 11.0, 400.0);
     assert_eq!(text(&lines), "(a  b)");
     assert!(lines[0].iter().all(|word| word.gap == 0.0));
@@ -92,18 +110,30 @@ fn long_mixed_style_token_wraps_without_losing_utf8() {
 #[test]
 fn painted_width_matches_layout_with_mixed_styles_and_spaces() {
     let mut p = poster();
-    let input = pieces(&p, &[Inline::Text("a".into()),
-        Inline::Strong(vec![Inline::Text("b".into())]),
-        Inline::Text(" c".into()), Inline::Code("d  e".into())]);
+    let input = pieces(
+        &p,
+        &[
+            Inline::Text("a".into()),
+            Inline::Strong(vec![Inline::Text("b".into())]),
+            Inline::Text(" c".into()),
+            Inline::Code("d  e".into()),
+        ],
+    );
     let lines = p.wrap(&input, 11.0, 400.0);
     let expected = p.words_width(&lines[0], 11.0);
     p.draw_words(&lines[0], 0.0, 20.0, 11.0);
     let final_run = lines[0].last().unwrap();
     let last_ch = final_run.text.chars().last().unwrap();
     let last_advance = p.advance(p.resolve(last_ch, final_run.style).0, last_ch, 11.0);
-    let last_x = p.ops.iter().filter_map(|op| match op {
-        Op::Glyph { x, .. } => Some(*x), _ => None,
-    }).last().unwrap();
+    let last_x = p
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Glyph { x, .. } => Some(*x),
+            _ => None,
+        })
+        .last()
+        .unwrap();
     assert!((last_x + last_advance - expected).abs() < 0.00001);
 }
 
@@ -113,8 +143,15 @@ fn code_wrap_keeps_indentation_spaces_and_tab_stops() {
     let lines = p.code_lines("a\tb\n\n    hello  world", 10.0, 36.0);
     assert_eq!(lines.concat(), "a   b    hello  world");
     assert!(lines.iter().any(String::is_empty));
-    let style = RStyle { mono: true, ..RStyle::BODY };
-    assert!(lines.iter().all(|line| p.measure(line, style, 10.0) <= 36.00001));
+    let style = RStyle {
+        mono: true,
+        ..RStyle::BODY
+    };
+    assert!(
+        lines
+            .iter()
+            .all(|line| p.measure(line, style, 10.0) <= 36.00001)
+    );
 }
 
 #[test]
@@ -127,7 +164,11 @@ fn long_code_panel_reserves_height_for_every_wrapped_line() {
     p.code_panel(&source, 0.0, 60.0);
     assert!(rows > 20);
     assert!(p.y - top >= rows as f64 * size * 1.45);
-    let drawn = p.ops.iter().filter(|op| matches!(op, Op::Glyph { .. })).count();
+    let drawn = p
+        .ops
+        .iter()
+        .filter(|op| matches!(op, Op::Glyph { .. }))
+        .count();
     assert_eq!(drawn, source.len());
 }
 
@@ -137,7 +178,9 @@ fn raw_html_is_inert_visible_text_not_silently_dropped() {
     let source = "<b>visible</b>";
     let lines = p.wrap(&pieces(&p, &[Inline::Html(source.into())]), 11.0, 400.0);
     assert_eq!(text(&lines), source);
-    let doc = Document { blocks: vec![Block::HtmlBlock(source.into())] };
+    let doc = Document {
+        blocks: vec![Block::HtmlBlock(source.into())],
+    };
     let (bytes, report) = render_svg_with_report(&doc, &SvgOptions::default());
     assert_eq!(report.glyphs_drawn, source.len());
     assert!(!String::from_utf8(bytes).unwrap().contains("<b>"));

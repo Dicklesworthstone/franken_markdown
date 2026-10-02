@@ -333,7 +333,10 @@ impl DisplayList {
     /// no hit; use `hit_test_filtered` to receive the validation error.
     #[must_use]
     pub fn hit_test(&self, x: f32, y: f32) -> Option<&DisplayItem> {
-        self.hit_test_filtered(x, y, |_| true).ok().flatten().map(|(_, item)| item)
+        self.hit_test_filtered(x, y, |_| true)
+            .ok()
+            .flatten()
+            .map(|(_, item)| item)
     }
 
     /// Iterator over all semantic heading and link anchors.

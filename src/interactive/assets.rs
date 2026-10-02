@@ -1,7 +1,7 @@
 //! Persist native image bindings for the offline editor, not just its first frame.
 
-use std::collections::BTreeSet;
 use crate::HtmlOptions;
+use std::collections::BTreeSet;
 
 /// Encode with the actual HTML resource resolver (including SVG sanitization),
 /// preserving its destination trimming and duplicate-selection rules. Keep even
@@ -51,8 +51,13 @@ mod tests {
             ..Default::default()
         };
         let mut native = String::new();
-        assert!(crate::html::push_html_image_asset_data_uri("plot.svg", &opts, &mut native));
-        let html = super::super::render_interactive_html(&crate::parse_markdown("Text"), "Text", &opts);
+        assert!(crate::html::push_html_image_asset_data_uri(
+            "plot.svg",
+            &opts,
+            &mut native
+        ));
+        let html =
+            super::super::render_interactive_html(&crate::parse_markdown("Text"), "Text", &opts);
         assert!(html.contains(&format!("[\"plot.svg\",\"{native}\"]")));
         assert!(!html.contains("<rect width=\"2\""));
     }
@@ -71,8 +76,13 @@ mod tests {
         let resolved = crate::html::push_html_image_asset_data_uri("image.svg", &opts, &mut native);
         let mut manifest = String::new();
         push_manifest(&opts, &mut manifest);
-        assert_eq!(manifest.matches("[\"image.svg\",").count(), if resolved { 1 } else { 0 });
-        if resolved { assert!(manifest.contains(&native)); }
+        assert_eq!(
+            manifest.matches("[\"image.svg\",").count(),
+            if resolved { 1 } else { 0 }
+        );
+        if resolved {
+            assert!(manifest.contains(&native));
+        }
     }
 
     #[test]

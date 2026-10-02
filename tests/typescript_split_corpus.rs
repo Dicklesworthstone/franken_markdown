@@ -84,8 +84,7 @@ fn three_way_splits_match_whole_run() {
         let whole_coalesced = coalesced(&whole);
         for first in 0..fixture.len() {
             for second in first..=fixture.len() {
-                let mut lexer =
-                    ResumableLexer::new("typescript").expect("typescript route exists");
+                let mut lexer = ResumableLexer::new("typescript").expect("typescript route exists");
                 lexer.feed(&fixture.as_bytes()[..first]).expect("feed 1");
                 lexer
                     .feed(&fixture.as_bytes()[first..second])
@@ -203,7 +202,9 @@ fn malformed_bounds_and_error_handling() {
 
     // Finishing seals the lexer
     let mut normal_lexer = ResumableLexer::new("typescript").expect("valid route");
-    normal_lexer.feed(b"interface Config { id: string; }\n").unwrap();
+    normal_lexer
+        .feed(b"interface Config { id: string; }\n")
+        .unwrap();
     normal_lexer.finish().unwrap();
     assert!(normal_lexer.is_finished());
 

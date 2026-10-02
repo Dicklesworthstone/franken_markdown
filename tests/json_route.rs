@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use franken_markdown::highlight::{highlight, Span};
+use franken_markdown::highlight::{Span, highlight};
 use franken_markdown::lang_dispatch::{DispatchRequest, LanguageRegistry, QualificationStatus};
 use franken_markdown::resume::{ResumableLexer, ResumeError};
 
@@ -43,15 +43,42 @@ fn fixtures() -> Vec<Fixture> {
 }"#;
 
     vec![
-        Fixture { name: "escapes", bytes: escapes.as_bytes().to_vec() },
-        Fixture { name: "numbers", bytes: numbers.as_bytes().to_vec() },
-        Fixture { name: "literals", bytes: literals.as_bytes().to_vec() },
-        Fixture { name: "strings_heavy", bytes: strings_heavy.as_bytes().to_vec() },
-        Fixture { name: "whitespace_heavy", bytes: whitespace_heavy.as_bytes().to_vec() },
-        Fixture { name: "deep_nesting", bytes: deep_nesting.into_bytes() },
-        Fixture { name: "empty", bytes: empty.as_bytes().to_vec() },
-        Fixture { name: "whitespace_only", bytes: whitespace_only.as_bytes().to_vec() },
-        Fixture { name: "consumer_document", bytes: consumer.as_bytes().to_vec() },
+        Fixture {
+            name: "escapes",
+            bytes: escapes.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "numbers",
+            bytes: numbers.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "literals",
+            bytes: literals.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "strings_heavy",
+            bytes: strings_heavy.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "whitespace_heavy",
+            bytes: whitespace_heavy.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "deep_nesting",
+            bytes: deep_nesting.into_bytes(),
+        },
+        Fixture {
+            name: "empty",
+            bytes: empty.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "whitespace_only",
+            bytes: whitespace_only.as_bytes().to_vec(),
+        },
+        Fixture {
+            name: "consumer_document",
+            bytes: consumer.as_bytes().to_vec(),
+        },
     ]
 }
 
@@ -213,7 +240,11 @@ fn consumer_document_splits_match_outside_the_documented_gap() {
             );
         }
     }
-    scenario_receipt("consumer_document", "fully-split-equivalent", "all splits exact");
+    scenario_receipt(
+        "consumer_document",
+        "fully-split-equivalent",
+        "all splits exact",
+    );
 }
 
 #[test]

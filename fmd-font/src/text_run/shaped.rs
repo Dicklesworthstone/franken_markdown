@@ -7,8 +7,10 @@ pub(super) fn build(
     shaped: &ShapedRun,
     scale: f32,
 ) -> Result<OwnedTextRun, String> {
-    if !scale.is_finite() || scale <= 0.0
-        || !context.font_size.is_finite() || context.font_size <= 0.0
+    if !scale.is_finite()
+        || scale <= 0.0
+        || !context.font_size.is_finite()
+        || context.font_size <= 0.0
     {
         return Err("text run requires finite positive size and scale".to_owned());
     }
@@ -18,7 +20,11 @@ pub(super) fn build(
     let logical_text = shaped.logical_text().to_owned();
     let is_rtl = shaped.direction == Direction::RightToLeft;
     let mut byte_cursor = if is_rtl { logical_text.len() } else { 0 };
-    let mut utf16_cursor = if is_rtl { logical_text.encode_utf16().count() } else { 0 };
+    let mut utf16_cursor = if is_rtl {
+        logical_text.encode_utf16().count()
+    } else {
+        0
+    };
     let mut clusters = Vec::new();
     let mut glyphs = Vec::with_capacity(shaped.glyphs.len());
     let mut pen = 0.0_f32;
@@ -30,7 +36,8 @@ pub(super) fn build(
         // Repeated ranges are allowed only in one consecutive glyph group.
         // These checks also reject omitted source, empty/reversed ranges, and
         // scalar-interior boundaries before any run can escape to a painter.
-        let source = logical_text.get(bytes.clone())
+        let source = logical_text
+            .get(bytes.clone())
             .filter(|source| !source.is_empty())
             .ok_or_else(|| "invalid text run cluster byte range".to_owned())?;
         if (is_rtl && bytes.end != byte_cursor) || (!is_rtl && bytes.start != byte_cursor) {
@@ -40,14 +47,16 @@ pub(super) fn build(
         // made the previous constructor quadratic even for ordinary prose.
         let units = source.encode_utf16().count();
         let utf16 = if is_rtl {
-            let start = utf16_cursor.checked_sub(units)
+            let start = utf16_cursor
+                .checked_sub(units)
                 .ok_or_else(|| "invalid text run UTF-16 coverage".to_owned())?;
             let range = start..utf16_cursor;
             utf16_cursor = start;
             byte_cursor = bytes.start;
             range
         } else {
-            let end = utf16_cursor.checked_add(units)
+            let end = utf16_cursor
+                .checked_add(units)
                 .ok_or_else(|| "text run UTF-16 size overflow".to_owned())?;
             let range = utf16_cursor..end;
             utf16_cursor = end;
@@ -63,10 +72,14 @@ pub(super) fn build(
             let x_offset = glyph.x_offset as f32 * scale;
             let y_offset = glyph.y_offset as f32 * scale;
             let next = pen + x_advance;
-            if glyph.glyph_id == 0 || glyph.x_advance < 0
-                || !x_advance.is_finite() || !y_advance.is_finite()
-                || !x_offset.is_finite() || !y_offset.is_finite()
-                || !next.is_finite() || !(pen + x_offset).is_finite()
+            if glyph.glyph_id == 0
+                || glyph.x_advance < 0
+                || !x_advance.is_finite()
+                || !y_advance.is_finite()
+                || !x_offset.is_finite()
+                || !y_offset.is_finite()
+                || !next.is_finite()
+                || !(pen + x_offset).is_finite()
             {
                 return Err("invalid text run glyph or scaled positioning".to_owned());
             }
@@ -108,5 +121,11 @@ pub(super) fn build(
             }
         }
     }
-    Ok(OwnedTextRun { context, logical_text, clusters, glyphs, total_advance: pen })
+    Ok(OwnedTextRun {
+        context,
+        logical_text,
+        clusters,
+        glyphs,
+        total_advance: pen,
+    })
 }

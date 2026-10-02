@@ -227,14 +227,20 @@ impl LexerCheckpoint {
         }
         let version = u32::from_le_bytes(reader.array()?);
         if version != CHECKPOINT_VERSION {
-            return Err(CheckpointError::UnsupportedVersion { found: version, expected: CHECKPOINT_VERSION });
+            return Err(CheckpointError::UnsupportedVersion {
+                found: version,
+                expected: CHECKPOINT_VERSION,
+            });
         }
         let source_revision = u64::from_le_bytes(reader.array()?);
         let byte_offset = u64::from_le_bytes(reader.array()?);
         let comment_tag = reader.byte()?;
         let depth = u16::from_le_bytes(reader.array()?);
         if depth > MAX_COMMENT_DEPTH {
-            return Err(CheckpointError::DepthLimitExceeded { depth, max: MAX_COMMENT_DEPTH });
+            return Err(CheckpointError::DepthLimitExceeded {
+                depth,
+                max: MAX_COMMENT_DEPTH,
+            });
         }
         let comment_state = match comment_tag {
             0 => CommentState::None,
@@ -261,7 +267,8 @@ impl LexerCheckpoint {
         let lang_length = usize::from(u16::from_le_bytes(reader.array()?));
         bound(lang_length, MAX_LANG_LEN)?;
         let lang = std::str::from_utf8(reader.take(lang_length)?)
-            .map_err(|_| CheckpointError::InvalidUtf8)?.to_string();
+            .map_err(|_| CheckpointError::InvalidUtf8)?
+            .to_string();
         let suffix_length = usize::from(u16::from_le_bytes(reader.array()?));
         bound(suffix_length, MAX_SUFFIX_BYTES)?;
         let unresolved_suffix = reader.take(suffix_length)?.to_vec();
@@ -269,8 +276,15 @@ impl LexerCheckpoint {
             return Err(CheckpointError::TrailingBytes);
         }
         let checkpoint = Self {
-            version, lang, source_revision, byte_offset, comment_state,
-            string_state, interpolation_depth, is_eof, unresolved_suffix,
+            version,
+            lang,
+            source_revision,
+            byte_offset,
+            comment_state,
+            string_state,
+            interpolation_depth,
+            is_eof,
+            unresolved_suffix,
         };
         checkpoint.validate()?;
         Ok(checkpoint)
@@ -280,7 +294,10 @@ impl LexerCheckpoint {
     /// extent. Host-width checks additionally happen during restoration.
     pub fn validate(&self) -> Result<(), CheckpointError> {
         if self.version != CHECKPOINT_VERSION {
-            return Err(CheckpointError::UnsupportedVersion { found: self.version, expected: CHECKPOINT_VERSION });
+            return Err(CheckpointError::UnsupportedVersion {
+                found: self.version,
+                expected: CHECKPOINT_VERSION,
+            });
         }
         bound(self.lang.len(), MAX_LANG_LEN)?;
         bound(self.unresolved_suffix.len(), MAX_SUFFIX_BYTES)?;
@@ -289,12 +306,16 @@ impl LexerCheckpoint {
         }
         if let CommentState::Block { depth } = self.comment_state {
             if depth > MAX_COMMENT_DEPTH {
-                return Err(CheckpointError::DepthLimitExceeded { depth, max: MAX_COMMENT_DEPTH });
+                return Err(CheckpointError::DepthLimitExceeded {
+                    depth,
+                    max: MAX_COMMENT_DEPTH,
+                });
             }
         }
         if self.interpolation_depth > MAX_INTERPOLATION_DEPTH {
             return Err(CheckpointError::DepthLimitExceeded {
-                depth: self.interpolation_depth, max: MAX_INTERPOLATION_DEPTH,
+                depth: self.interpolation_depth,
+                max: MAX_INTERPOLATION_DEPTH,
             });
         }
         if let Err(error) = std::str::from_utf8(&self.unresolved_suffix) {
@@ -302,15 +323,22 @@ impl LexerCheckpoint {
                 return Err(CheckpointError::InvalidUtf8);
             }
         }
-        if self.is_eof && (!self.unresolved_suffix.is_empty()
-            || self.comment_state != CommentState::None
-            || self.string_state != StringState::None
-            || self.interpolation_depth != 0)
+        if self.is_eof
+            && (!self.unresolved_suffix.is_empty()
+                || self.comment_state != CommentState::None
+                || self.string_state != StringState::None
+                || self.interpolation_depth != 0)
         {
             return Err(CheckpointError::InvalidEofState);
         }
-        if self.byte_offset.checked_add(self.unresolved_suffix.len() as u64).is_none() {
-            return Err(CheckpointError::OffsetOverflow { byte_offset: self.byte_offset });
+        if self
+            .byte_offset
+            .checked_add(self.unresolved_suffix.len() as u64)
+            .is_none()
+        {
+            return Err(CheckpointError::OffsetOverflow {
+                byte_offset: self.byte_offset,
+            });
         }
         Ok(())
     }
@@ -331,14 +359,22 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn take(&mut self, length: usize) -> Result<&'a [u8], CheckpointError> {
-        let end = self.position.checked_add(length).ok_or(CheckpointError::UnexpectedEof)?;
-        let value = self.bytes.get(self.position..end).ok_or(CheckpointError::UnexpectedEof)?;
+        let end = self
+            .position
+            .checked_add(length)
+            .ok_or(CheckpointError::UnexpectedEof)?;
+        let value = self
+            .bytes
+            .get(self.position..end)
+            .ok_or(CheckpointError::UnexpectedEof)?;
         self.position = end;
         Ok(value)
     }
 
     fn array<const N: usize>(&mut self) -> Result<[u8; N], CheckpointError> {
-        self.take(N)?.try_into().map_err(|_| CheckpointError::UnexpectedEof)
+        self.take(N)?
+            .try_into()
+            .map_err(|_| CheckpointError::UnexpectedEof)
     }
 
     fn byte(&mut self) -> Result<u8, CheckpointError> {
@@ -354,9 +390,15 @@ mod tests {
 
     fn checkpoint() -> LexerCheckpoint {
         LexerCheckpoint {
-            version: CHECKPOINT_VERSION, lang: "rust".into(), source_revision: 17,
-            byte_offset: 9, comment_state: CommentState::None, string_state: StringState::None,
-            interpolation_depth: 0, is_eof: false, unresolved_suffix: b"let".to_vec(),
+            version: CHECKPOINT_VERSION,
+            lang: "rust".into(),
+            source_revision: 17,
+            byte_offset: 9,
+            comment_state: CommentState::None,
+            string_state: StringState::None,
+            interpolation_depth: 0,
+            is_eof: false,
+            unresolved_suffix: b"let".to_vec(),
         }
     }
 
@@ -375,11 +417,17 @@ mod tests {
     fn every_truncated_wire_prefix_is_refused() {
         let bytes = checkpoint().try_to_bytes().unwrap();
         for end in 0..bytes.len() {
-            assert!(LexerCheckpoint::from_bytes(&bytes[..end]).is_err(), "prefix {end}");
+            assert!(
+                LexerCheckpoint::from_bytes(&bytes[..end]).is_err(),
+                "prefix {end}"
+            );
         }
         let mut trailing = bytes;
         trailing.push(0);
-        assert_eq!(LexerCheckpoint::from_bytes(&trailing), Err(CheckpointError::TrailingBytes));
+        assert_eq!(
+            LexerCheckpoint::from_bytes(&trailing),
+            Err(CheckpointError::TrailingBytes)
+        );
     }
 
     #[test]
@@ -388,7 +436,10 @@ mod tests {
         for suffix in [vec![0xff], vec![0x80], vec![0xc0, 0xaf], vec![0xed, 0xa0]] {
             checkpoint.unresolved_suffix = suffix;
             assert_eq!(checkpoint.validate(), Err(CheckpointError::InvalidUtf8));
-            assert_eq!(LexerCheckpoint::from_bytes(&checkpoint.to_bytes()), Err(CheckpointError::InvalidUtf8));
+            assert_eq!(
+                LexerCheckpoint::from_bytes(&checkpoint.to_bytes()),
+                Err(CheckpointError::InvalidUtf8)
+            );
         }
         for suffix in [vec![0xc3], vec![0xf0, 0x9f], vec![0xf0, 0x9f, 0x98]] {
             checkpoint.unresolved_suffix = suffix;
@@ -412,20 +463,33 @@ mod tests {
     fn source_extent_overflow_is_refused() {
         let mut checkpoint = checkpoint();
         checkpoint.byte_offset = u64::MAX;
-        assert_eq!(checkpoint.validate(), Err(CheckpointError::OffsetOverflow { byte_offset: u64::MAX }));
+        assert_eq!(
+            checkpoint.validate(),
+            Err(CheckpointError::OffsetOverflow {
+                byte_offset: u64::MAX
+            })
+        );
     }
 
     #[test]
     fn checked_encoder_rejects_oversized_fields_before_serialization() {
         let mut checkpoint = checkpoint();
         checkpoint.unresolved_suffix = vec![b'x'; MAX_SUFFIX_BYTES + 1];
-        assert_eq!(checkpoint.try_to_bytes(), Err(CheckpointError::PayloadTooLarge {
-            bytes: MAX_SUFFIX_BYTES + 1, cap: MAX_SUFFIX_BYTES,
-        }));
+        assert_eq!(
+            checkpoint.try_to_bytes(),
+            Err(CheckpointError::PayloadTooLarge {
+                bytes: MAX_SUFFIX_BYTES + 1,
+                cap: MAX_SUFFIX_BYTES,
+            })
+        );
         checkpoint.unresolved_suffix.clear();
         checkpoint.lang = "r".repeat(MAX_LANG_LEN + 1);
-        assert_eq!(checkpoint.try_to_bytes(), Err(CheckpointError::PayloadTooLarge {
-            bytes: MAX_LANG_LEN + 1, cap: MAX_LANG_LEN,
-        }));
+        assert_eq!(
+            checkpoint.try_to_bytes(),
+            Err(CheckpointError::PayloadTooLarge {
+                bytes: MAX_LANG_LEN + 1,
+                cap: MAX_LANG_LEN,
+            })
+        );
     }
 }

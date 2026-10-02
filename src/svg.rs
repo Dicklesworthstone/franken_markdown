@@ -57,29 +57,29 @@ const SLOT_SYMBOL: usize = 5;
 const SLOT_COUNT: usize = 6;
 
 // Explicit paths also support the standalone #[path] SVG integration harness.
-#[path = "svg/text.rs"]
-mod text;
-#[path = "svg/links.rs"]
-mod links;
 #[path = "svg/geometry.rs"]
 mod geometry;
-#[path = "svg/lists.rs"]
-mod lists;
 #[cfg(test)]
 #[path = "svg/geometry_tests.rs"]
 mod geometry_tests;
-#[path = "svg/math.rs"]
-mod math;
-#[path = "svg/images.rs"]
-mod images;
 #[path = "svg/image_source.rs"]
 mod image_source;
 #[cfg(test)]
 #[path = "svg/image_tests.rs"]
 mod image_tests;
+#[path = "svg/images.rs"]
+mod images;
+#[path = "svg/links.rs"]
+mod links;
+#[path = "svg/lists.rs"]
+mod lists;
+#[path = "svg/math.rs"]
+mod math;
 #[cfg(test)]
 #[path = "svg/math_tests.rs"]
 mod math_tests;
+#[path = "svg/text.rs"]
+mod text;
 #[cfg(test)]
 #[path = "svg/text_tests.rs"]
 mod text_tests;
@@ -308,7 +308,11 @@ impl Ink {
 /// One paint operation, in document (painter's) order.
 #[derive(Debug, Clone, PartialEq)]
 enum Op {
-    Image { run: images::ImageRun, x: f64, y: f64 },
+    Image {
+        run: images::ImageRun,
+        x: f64,
+        y: f64,
+    },
     Path {
         data: String,
         ink: Ink,
@@ -582,8 +586,15 @@ impl Poster {
                     self.flatten(inner, RStyle { strike: true, ..st }, out);
                 }
                 Inline::Code(s) => out.push(Piece::Text(s.clone(), RStyle { mono: true, ..st })),
-                Inline::Link { dest, title, content } => {
-                    let link = self.navigation.borrow_mut().intern(dest, title.as_deref(), content);
+                Inline::Link {
+                    dest,
+                    title,
+                    content,
+                } => {
+                    let link = self
+                        .navigation
+                        .borrow_mut()
+                        .intern(dest, title.as_deref(), content);
                     self.flatten(
                         content,
                         RStyle {
@@ -722,7 +733,10 @@ impl Poster {
             self.y += height;
         }
         if level == 1 {
-            let has_replaced = lines.iter().flatten().any(|word| word.formula.is_some() || word.image.is_some());
+            let has_replaced = lines
+                .iter()
+                .flatten()
+                .any(|word| word.formula.is_some() || word.image.is_some());
             let nominal_rule = if has_replaced {
                 self.y + size * 0.1
             } else {
@@ -771,9 +785,14 @@ impl Poster {
         let pad = 8.0 * self.unit_scale();
         let inset = (12.0 * self.unit_scale()).min((r - l).max(0.0) * 0.25);
         let lines = self.code_words(code, size, r - l - 2.0 * inset);
-        let h = lines.iter().map(|line| {
-            self.line_metrics(std::slice::from_ref(line), size * 0.8, leading).1
-        }).sum::<f64>() + 2.0 * pad;
+        let h = lines
+            .iter()
+            .map(|line| {
+                self.line_metrics(std::slice::from_ref(line), size * 0.8, leading)
+                    .1
+            })
+            .sum::<f64>()
+            + 2.0 * pad;
         self.ops.push(Op::Rect {
             x: l,
             y: self.y,
@@ -841,10 +860,12 @@ impl Poster {
                 },
                 &mut pieces,
             );
-            let w = self.wrap(&pieces, size, f64::MAX)
+            let w = self
+                .wrap(&pieces, size, f64::MAX)
                 .iter()
                 .map(|line| self.words_width(line, size))
-                .fold(0.0_f64, f64::max) + 2.0 * pad_x;
+                .fold(0.0_f64, f64::max)
+                + 2.0 * pad_x;
             natural[col] = natural[col].max(w.min(avail * 0.6));
         };
         for (c, cell) in table.head.iter().enumerate().take(ncols) {
@@ -881,10 +902,16 @@ impl Poster {
                     poster.wrap(&pieces, size, (widths[c] - 2.0 * padding).max(1.0))
                 })
                 .collect();
-            let row_h = wrapped.iter().map(|lines| {
-                lines.iter().map(|line| poster.line_metrics(line, size * 0.8, leading).1)
-                    .sum::<f64>()
-            }).fold(leading, f64::max) + 2.0 * pad_y;
+            let row_h = wrapped
+                .iter()
+                .map(|lines| {
+                    lines
+                        .iter()
+                        .map(|line| poster.line_metrics(line, size * 0.8, leading).1)
+                        .sum::<f64>()
+                })
+                .fold(leading, f64::max)
+                + 2.0 * pad_y;
             let mut cx = l;
             for (c, cell_lines) in wrapped.iter().enumerate() {
                 let padding = pad_x.min(widths[c] * 0.25);
@@ -1041,8 +1068,11 @@ impl Poster {
         for op in &self.ops {
             if let Op::Image { run, .. } = op {
                 let next = image_ids.len();
-                image_ids.entry(run.image.uri.as_str())
-                    .or_insert((next, run.image.width, run.image.height));
+                image_ids.entry(run.image.uri.as_str()).or_insert((
+                    next,
+                    run.image.width,
+                    run.image.height,
+                ));
             }
         }
 
@@ -1098,7 +1128,9 @@ impl Poster {
         for op in &self.ops {
             match op {
                 Op::Image { run, x, y } => {
-                    let Some((id, _, _)) = image_ids.get(run.image.uri.as_str()) else { continue; };
+                    let Some((id, _, _)) = image_ids.get(run.image.uri.as_str()) else {
+                        continue;
+                    };
                     out.push_str("<use href=\"#i");
                     push_u64_fast(&mut out, *id as u64);
                     out.push_str("\" x=\"");
@@ -1113,9 +1145,19 @@ impl Poster {
                         out.push_str("\" aria-hidden=\"true\"/>\n");
                     } else {
                         out.push_str("\" role=\"img\" aria-label=\"");
-                        let alt: String = run.alt.chars().map(|ch| {
-                            if ch.is_control() { ' ' } else if ch == '\u{fffe}' || ch == '\u{ffff}' { '\u{fffd}' } else { ch }
-                        }).collect();
+                        let alt: String = run
+                            .alt
+                            .chars()
+                            .map(|ch| {
+                                if ch.is_control() {
+                                    ' '
+                                } else if ch == '\u{fffe}' || ch == '\u{ffff}' {
+                                    '\u{fffd}'
+                                } else {
+                                    ch
+                                }
+                            })
+                            .collect();
                         esc_attr(&alt, &mut out);
                         out.push_str("\"/>\n");
                     }
@@ -1202,7 +1244,9 @@ impl Poster {
                 }
             }
         }
-        self.navigation.into_inner().emit(&mut out, self.width, height, &mut self.warnings);
+        self.navigation
+            .into_inner()
+            .emit(&mut out, self.width, height, &mut self.warnings);
         out.push_str("</svg>\n");
 
         let report = SvgReport {

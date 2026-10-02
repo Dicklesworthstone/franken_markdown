@@ -48,8 +48,11 @@ pub(super) fn paths(markdown: &str, base_dir: &Path) -> Vec<PathBuf> {
                 }
                 None
             }
-            Node::Inline(Inline::Emphasis(inlines) | Inline::Strong(inlines)
-                | Inline::Strikethrough(inlines)) => {
+            Node::Inline(
+                Inline::Emphasis(inlines)
+                | Inline::Strong(inlines)
+                | Inline::Strikethrough(inlines),
+            ) => {
                 push_inlines(&mut pending, inlines);
                 None
             }
@@ -154,7 +157,10 @@ const MAX_DISCOVERY_BYTES: u64 = 64 * 1024 * 1024;
 
 impl Graph {
     pub(super) fn new(roots: &[PathBuf]) -> Self {
-        Self { roots: roots.iter().cloned().collect(), ..Self::default() }
+        Self {
+            roots: roots.iter().cloned().collect(),
+            ..Self::default()
+        }
     }
 
     pub(super) fn add_root(&mut self, path: PathBuf) {
@@ -168,15 +174,25 @@ impl Graph {
     }
 
     pub(super) fn affected_roots(&self, changed: &Path) -> Vec<PathBuf> {
-        self.roots.iter().filter(|root| is_markdown(root) && (
-            root.as_path() == changed || self.documents.get(*root)
-                .is_some_and(|snapshot| snapshot.paths.iter().any(|path| path == changed))
-        )).cloned().collect()
+        self.roots
+            .iter()
+            .filter(|root| {
+                is_markdown(root)
+                    && (root.as_path() == changed
+                        || self.documents.get(*root).is_some_and(|snapshot| {
+                            snapshot.paths.iter().any(|path| path == changed)
+                        }))
+            })
+            .cloned()
+            .collect()
     }
 
     pub(super) fn entry_only(&self, path: &Path) -> bool {
         !self.roots.contains(path)
-            && self.documents.values().any(|snapshot| snapshot.entries.contains(path))
+            && self
+                .documents
+                .values()
+                .any(|snapshot| snapshot.entries.contains(path))
     }
 
     pub(super) fn failures(&self) -> &BTreeSet<PathBuf> {
@@ -190,7 +206,8 @@ impl Graph {
     ) -> BTreeSet<PathBuf> {
         for root in &self.roots {
             let old = self.documents.get(root);
-            if !is_markdown(root) || settling.contains(root)
+            if !is_markdown(root)
+                || settling.contains(root)
                 || old.is_some_and(|old| old.includes.keys().any(|path| settling.contains(path)))
             {
                 // Do not drop old edges during an unsettled edit. If the edit
@@ -201,10 +218,16 @@ impl Graph {
                 self.failures.insert(root.clone());
                 continue;
             };
-            if old.is_some_and(|old| old.fingerprint == expected
-                && old.includes.iter().all(|(path, expected)| observed.get(path) == Some(expected)))
-            {
-                if old.is_some_and(|old| old.complete) { self.failures.remove(root); }
+            if old.is_some_and(|old| {
+                old.fingerprint == expected
+                    && old
+                        .includes
+                        .iter()
+                        .all(|(path, expected)| observed.get(path) == Some(expected))
+            }) {
+                if old.is_some_and(|old| old.complete) {
+                    self.failures.remove(root);
+                }
                 continue;
             }
             let Some(source) = read_source(root, expected, MAX_DISCOVERY_BYTES) else {
@@ -226,7 +249,10 @@ impl Graph {
                     paths.extend(old.paths.iter().cloned());
                     entries.extend(old.entries.iter().cloned());
                     for (path, fingerprint) in &old.includes {
-                        expansion.dependencies.entry(path.clone()).or_insert(*fingerprint);
+                        expansion
+                            .dependencies
+                            .entry(path.clone())
+                            .or_insert(*fingerprint);
                     }
                 }
                 self.failures.insert(root.clone());
@@ -236,9 +262,16 @@ impl Graph {
             paths.extend(expansion.dependencies.keys().cloned());
             let mut unique = BTreeSet::new();
             paths.retain(|path| unique.insert(path.clone()));
-            self.documents.insert(root.clone(), Snapshot {
-                fingerprint: expected, paths, includes: expansion.dependencies, entries, complete,
-            });
+            self.documents.insert(
+                root.clone(),
+                Snapshot {
+                    fingerprint: expected,
+                    paths,
+                    includes: expansion.dependencies,
+                    entries,
+                    complete,
+                },
+            );
         }
         let mut needed = self.roots.clone();
         for snapshot in self.documents.values() {
@@ -249,9 +282,11 @@ impl Graph {
 }
 
 fn is_markdown(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("md")
-            || extension.eq_ignore_ascii_case("markdown"))
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+        })
 }
 
 /// Read a bounded, valid UTF-8 snapshot that matches the content observed by
@@ -264,7 +299,9 @@ fn read_source(path: &Path, expected: super::Fingerprint, limit: u64) -> Option<
     }
     let file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1)).read_to_end(&mut bytes).ok()?;
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
     if bytes.len() as u64 > limit || bytes.len() as u64 != expected.len {
         return None;
     }
@@ -288,7 +325,9 @@ mod tests {
     impl Source {
         fn new(bytes: &[u8]) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "fmd-watch-snapshot-{}-{}.md", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+                "fmd-watch-snapshot-{}-{}.md",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             let mut file = std::fs::File::create_new(&path).unwrap();
             std::io::Write::write_all(&mut file, bytes).unwrap();
@@ -299,14 +338,19 @@ mod tests {
         }
     }
     impl Drop for Source {
-        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 
     #[test]
     fn snapshot_rejects_same_length_races_and_invalid_utf8() {
         let source = Source::new(b"first");
         let expected = source.fingerprint();
-        assert_eq!(read_source(&source.0, expected, 5).as_deref(), Some("first"));
+        assert_eq!(
+            read_source(&source.0, expected, 5).as_deref(),
+            Some("first")
+        );
         std::fs::write(&source.0, b"other").unwrap();
         assert!(read_source(&source.0, expected, 5).is_none());
         std::fs::write(&source.0, [0xFF]).unwrap();
@@ -317,7 +361,10 @@ mod tests {
     fn oversized_snapshots_are_rejected_at_the_configured_bound() {
         let source = Source::new(b"12345");
         assert!(read_source(&source.0, source.fingerprint(), 4).is_none());
-        assert_eq!(read_source(&source.0, source.fingerprint(), 5).as_deref(), Some("12345"));
+        assert_eq!(
+            read_source(&source.0, source.fingerprint(), 5).as_deref(),
+            Some("12345")
+        );
     }
 
     #[test]
@@ -347,17 +394,38 @@ mod tests {
             ("x%2523y.png", "x%23y.png"),
             ("plot(one).png", "plot(one).png"),
         ] {
-            assert_eq!(local_path(input, base), Some(base.join(expected)), "{input}");
+            assert_eq!(
+                local_path(input, base),
+                Some(base.join(expected)),
+                "{input}"
+            );
         }
     }
 
     #[test]
     fn schemes_unc_invalid_utf8_and_controls_never_become_local_paths() {
         for input in [
-            "", "#local", "?version=2", "http://example.com/x", "HTTPS://example.com/x",
-            "//example.com/x", "file:///etc/passwd", "mailto:a@b", "data:image/png,x",
-            "javascript:x", "C:/image.png", "a\\b", "%2F%2Fhost/x", "%5Chost/x",
-            "file%3Asecret", "a%00b", "a%0Ab", "a\nb", "%FF.png", "bad%", "bad%zz",
+            "",
+            "#local",
+            "?version=2",
+            "http://example.com/x",
+            "HTTPS://example.com/x",
+            "//example.com/x",
+            "file:///etc/passwd",
+            "mailto:a@b",
+            "data:image/png,x",
+            "javascript:x",
+            "C:/image.png",
+            "a\\b",
+            "%2F%2Fhost/x",
+            "%5Chost/x",
+            "file%3Asecret",
+            "a%00b",
+            "a%0Ab",
+            "a\nb",
+            "%FF.png",
+            "bad%",
+            "bad%zz",
         ] {
             assert!(local_path(input, Path::new("guide")).is_none(), "{input:?}");
         }

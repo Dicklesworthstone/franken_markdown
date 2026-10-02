@@ -65,13 +65,25 @@ log_check() {
 #            SVG poster + EPUB + self-hosting HTML exporters; semantic AST diff;
 #            document intelligence/search/accessibility; transclusion-aware book
 #            site ZIP + merged PDF workflows. HTML/PDF parity remains exact.
+#   0.5.0 (books, flow engine, native workspace)
+#          measured raw=7,701,812 gzip=3,274,774 (python gzip, mtime=0)
+#          budget 7,900,000 / 3,400,000 (+3,099,921 raw / +1,273,200 gzip
+#          vs the 0.4.5 ratchet). Section deltas vs the 0.4.5 package:
+#          code 1,920,768 -> 3,157,608; data 2,793,789 -> 4,536,297.
+#          Shipped contributors now reachable from the WASM ABI: reusable
+#          book sessions/workers (PDF/EPUB/site, search, inspection, fonts,
+#          images), the resumable flow-display engine (shaped reflow, tables,
+#          code fences, reader snapshots, case-folded search), the native
+#          workspace and document worker, running headers/footers, composed
+#          accents and typeset display math. Release v0.5.0 ratchet; parity and
+#          smoke gates are unchanged and pass. Trimming is a follow-up.
 #
 # PREVIOUS_* is the last ratchet's *measured* size (signed delta in the log).
 # Update PREVIOUS_* and BUDGET_* together.
-PREVIOUS_RAW=4601891
-PREVIOUS_GZIP=2001574
-BUDGET_RAW=4750000
-BUDGET_GZIP=2100000
+PREVIOUS_RAW=7701812
+PREVIOUS_GZIP=3274774
+BUDGET_RAW=7900000
+BUDGET_GZIP=3400000
 
 target="wasm32-unknown-unknown"
 package_dir="$CARGO_TARGET_DIR/wasm-package"

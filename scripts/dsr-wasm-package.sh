@@ -59,8 +59,8 @@ done
 python3 - "$PACKAGE" <<'PY'
 import gzip,json,pathlib,sys
 p=pathlib.Path(sys.argv[1]);d=(p/'pkg/franken_markdown_bg.wasm').read_bytes()
-assert len(d)<=4_750_000, len(d)
-assert len(gzip.compress(d,mtime=0))<=2_100_000
+assert len(d)<=7_900_000, len(d)  # budget history: scripts/check-wasm-package.sh
+assert len(gzip.compress(d,mtime=0))<=3_400_000
 for name in json.loads((p/'package.json').read_text())['files']:
     assert (p/name).is_file(), name
 print('WASM bytes:',len(d),'gzip:',len(gzip.compress(d,mtime=0)))

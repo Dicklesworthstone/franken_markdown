@@ -580,11 +580,11 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "fmd-font"
-version = "0.3.2"
+version = "0.3.3"
 
 [[package]]
 name = "fmd-math"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fmd-font",
 ]
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "franken_markdown"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "asupersync",
  "clap",

@@ -111,7 +111,10 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(dts.contains("weight?: number"));
     assert!(dts.contains("font_slot_weight: \"css_1_to_1000_variable_wght\""));
     assert!(dts.contains("bytes: Uint8Array"));
-    assert!(dts.contains("PNG and SVG are supported in HTML and PDF output"));
+    // 38f4554 documented per-format image support when SVG output gained assets.
+    assert!(dts.contains(
+        "Host-owned bytes; SVG supports PNG/JPEG/SVG, HTML/PDF support depends on their decoder."
+    ));
     assert!(dts.contains("fontAssets?: FmdFontAsset[]"));
     assert!(dts.contains("pdfImages?: FmdPdfImageAsset[]"));
     assert!(dts.contains("image_assets: \"png_svg_v0_host_supplied_bytes\""));

@@ -9,6 +9,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-02
+
+A large feature release (413 commits since 0.4.5). It changes the public Rust
+API and some default output, so it is a minor-version bump.
+`fmd-font` 0.3.3 and `fmd-math` 0.1.2 ship with it.
+
+### Security
+
+- Highlighted code in the default (safe) HTML could contain live markup. This
+  was present since 0.4.4 and is fixed here (details under Fixed). Upgrade if
+  you render untrusted Markdown to HTML through the CLI, MCP server, WASM
+  package, books or EPUB.
+- The MCP server bounds untrusted requests (frame size, recursion and render
+  budgets). Recursive inline parsing and nested-link retries are also bounded.
+
+### Breaking changes
+
+- `PdfOptions` has a new public `running` field (running header/footer
+  bands). Construct it with `..PdfOptions::default()`. Several other public
+  option and result structs gained fields for the same reason.
+- `mcp::handle_tool_call` now returns a typed `ToolError` instead of an
+  `(i32, String, &str)` tuple. The MCP module is split into `tools` and
+  `transport` submodules; `read_frame`, `write_frame`, `handle_tool_call` and
+  `tools_list_result` are still re-exported from `mcp`.
+- The MCP server uses standard stdio framing. It answers in newline-delimited
+  JSON by default, accepts `Content-Length` framing, and rejects unknown tool
+  arguments with JSON-RPC error `-32602`.
+- `fmd book` validates `book.toml` strictly. Unknown keys, chapters missing
+  from an explicit `order`, and non-UTF-8 file names are errors. In 0.4.5
+  they were ignored.
+- Default PDF and SVG output bytes change: display math is typeset as vector
+  geometry with the shared TeX engine, glyph expansion is off unless
+  microtype is enabled, and pagination uses an exact mixed-height planner.
+  Pin 0.4.5 if you depend on byte-identical PDFs.
+
+### Highlights
+
+- **Books and publishing:** `fmd book` renders multi-chapter books to PDF,
+  EPUB and offline HTML sites. Chapter links resolve across chapters, each
+  chapter keeps its own footnotes and assets, PDF chapter navigation and page
+  counts are exact, and HTML sites include offline full-text search. EPUB
+  export packages images, MathML/SVG, embedded font subsets and themes. ZIP64
+  is supported for large exports.
+- **Includes:** bounded line and named-snippet transclusion. Include
+  expansion keeps original source locations and resource origins.
+- **Browser/WASM:** reusable book sessions and cancellable worker exports,
+  persistent flow-editor sessions with paged layout, a Canvas preview with
+  source navigation, a semantic reader with Unicode search, document and
+  flow workers with cancellation and stale-output fencing, and typed
+  TypeScript entry points.
+- **Interactive HTML workspace:** editable offline workspaces with native
+  WASM rendering. They support image import/paste/drop, document settings,
+  font authoring, source open/find/replace, background previews, cancellable
+  PDF/HTML/EPUB/SVG exports, Document Lab reports, PDF proofs and recovery
+  copies.
+- **Layout and PDF:** an exact mixed-height pagination planner,
+  Knuth-Plass breaking for SVG posters, typeset display equations, composed
+  Latin accents (original Unicode kept as ActualText), rich footnote bodies,
+  and opt-in running headers and footers (#13).
+- **Engine:** a resumable flow-display engine with shaped reflow,
+  table/code-fence flow, incremental dependency invalidation and source maps.
+- **Language support:** incremental lexers with capability rows and
+  adversarial split corpora for Rust, Go, Shell, C++, JavaScript, TypeScript,
+  JSX and TSX. Streaming checkpoints are bounded and validated.
+- **Editors:** an opt-in `fmd-lsp` language server (feature `lsp`) with
+  diagnostics, outlines, folding, link/footnote checks, completion and
+  definitions. `fmd watch` tracks image and include dependencies.
+- **fmd-font 0.3.3:** owned text runs with caret and hit testing, a native
+  shaping route contract, and an optional macOS CoreText adapter (additive).
+- **fmd-math 0.1.2:** `\newcommand` optional defaults, bounded macro
+  expansion, a text-mode `\\` that drops the space before it, a public `mbox`
+  module, and an `Engine` that is `Send + Sync`.
+
 ### Added
 
 - Opt-in PDF running header and footer (#13): left/center/right text slots per
@@ -59,6 +132,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ragged headings cannot exceed the print measure by borrowing space compression
   that is never drawn. Preserve justified body text when the layout workspace
   is reused across headings and paragraphs.
+- Fix many bugs across the parser, footnotes, PDF lists and figures, SVG
+  text and endnotes, `fmd watch`, the EPUB/book pipelines and the WASM worker
+  lifecycle. See the git history for `fix(...)` commits since v0.4.5.
 
 ## [0.4.5] - 2026-09-15
 
@@ -342,7 +418,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - WASM compilation target with byte-for-byte output parity.
   - CommonMark 0.31.2 conformance test harness and verification test suite.
 
-[Unreleased]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.5...v0.5.0
+[0.4.5]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.4...v0.4.5
+[0.4.4]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.0...v0.4.1

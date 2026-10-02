@@ -17,17 +17,25 @@ class Document(HTMLParser):
         self.elements = []
         self.scripts = []
         self.script = None
+        self.in_header = False
+        self.header_ids = []
         self.feed(html)
         self.close()
 
     def handle_starttag(self, tag, attrs):
         self.elements.append((tag, dict(attrs)))
+        if tag == "header":
+            self.in_header = True
+        elif self.in_header and "id" in dict(attrs):
+            self.header_ids.append(dict(attrs)["id"])
         if tag == "script":
             assert self.script is None
             self.script = {"attrs": dict(attrs), "text": ""}
             self.scripts.append(self.script)
 
     def handle_endtag(self, tag):
+        if tag == "header":
+            self.in_header = False
         if tag == "script":
             self.script = None
 
@@ -70,13 +78,64 @@ runtime = r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+// A small stateful DOM: every event keeps all of its listeners (the bundled
+// scripts each observe the editor), nodes the app creates join a live tree,
+// and id selectors resolve like a real document: static template elements,
+// then created nodes, otherwise null.
 const elements = new Map();
-function element() {
-  const classes = new Set();
+const idOf = selector => selector.match(/#([\w-]+)(?:\[[^\]]*\])?$/)?.[1];
+function find(root, id) {
+  for (const child of root.children ?? []) {
+    if (child.id === id) return child;
+    const found = find(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+function element(tag, initial = false) {
+  const classes = new Set(), attributes = new Map(), listeners = {};
   return {
-    value: 'HTML parser normalized initial value', textContent: '',
-    innerHTML: '<p>Initial Rust preview</p>', handlers: {},
-    addEventListener(name, handler) { this.handlers[name] = handler; },
+    tagName: tag.toUpperCase(), id: '', hidden: false, disabled: false,
+    value: initial ? 'HTML parser normalized initial value' : '', textContent: '',
+    innerHTML: initial ? '<p>Initial Rust preview</p>' : '',
+    children: [], parentNode: null, style: {cssText: ''}, handlers: {},
+    addEventListener(name, handler) {
+      (listeners[name] ||= []).push(handler);
+      this.handlers[name] = (...args) => { for (const fn of [...listeners[name]]) fn(...args); };
+    },
+    dispatchEvent(event) { this.handlers[event.type]?.(event); return true; },
+    click() { this.handlers.click?.(); },
+    focus() {}, select() {}, setSelectionRange() {},
+    getAttribute(name) { return attributes.has(name) ? attributes.get(name) : null; },
+    setAttribute(name, value) { attributes.set(name, String(value)); },
+    removeAttribute(name) { attributes.delete(name); },
+    appendChild(child) { return this.insertBefore(child, null); },
+    insertBefore(child, reference) {
+      child.parentNode?.children && child.remove?.();
+      const at = reference ? this.children.indexOf(reference) : -1;
+      if (at < 0) this.children.push(child); else this.children.splice(at, 0, child);
+      child.parentNode = this;
+      return child;
+    },
+    replaceChildren(...nodes) {
+      for (const child of this.children) child.parentNode = null;
+      this.children = [];
+      for (const node of nodes) this.appendChild(node);
+    },
+    remove() {
+      const siblings = this.parentNode?.children;
+      if (siblings?.includes(this)) siblings.splice(siblings.indexOf(this), 1);
+      this.parentNode = null;
+    },
+    contains(node) {
+      for (let at = node; at; at = at.parentNode) if (at === this) return true;
+      return false;
+    },
+    querySelector(selector) {
+      const id = idOf(selector);
+      assert.ok(id, `Unexpected selector: ${selector}`);
+      return find(this, id);
+    },
     classList: {
       add(name) { classes.add(name); },
       remove(name) { classes.delete(name); },
@@ -85,33 +144,48 @@ function element() {
     }
   };
 }
-for (const id of input.ids) elements.set(id, element());
+const body = element('body'), header = element('header');
+header.classList.add('fmd-app-header');
+body.appendChild(header);
+for (const id of input.ids) {
+  const node = element('div', true);
+  node.id = id;
+  elements.set(id, node);
+  // Header controls are real children, so scripts can insert beside them.
+  if (input.headerIds.includes(id)) header.appendChild(node); else node.parentNode = body;
+}
 elements.get('fmd-raw-source').textContent = input.data;
 elements.get('stats-drawer').querySelector = selector => elements.get(selector.slice(1));
 const styles = new Map();
 const timers = new Map();
 let nextTimer = 0;
 let prints = 0;
-const documentEvents = {}, windowEvents = {};
+const documentEvents = element('#document'), windowEvents = element('#window');
+const window = {
+  print() { prints++; },
+  addEventListener(name, handler) { windowEvents.addEventListener(name, handler); },
+  getComputedStyle() { return {}; },
+  Event: class Event { constructor(type, init = {}) { this.type = type; Object.assign(this, init); } }
+};
 const document = {
-  addEventListener(name, handler) { documentEvents[name] = handler; },
+  readyState: 'complete', defaultView: window, body,
+  addEventListener(name, handler) { documentEvents.addEventListener(name, handler); },
   querySelector(selector) {
-    const ids = {
-      'body > script#fmd-raw-source[type="application/json"]': 'fmd-raw-source',
-      'body > #stats-drawer': 'stats-drawer'
-    };
-    assert.ok(ids[selector], `Unexpected selector: ${selector}`);
-    return elements.get(ids[selector]);
+    if (selector === 'body > .fmd-app-header') return header;
+    const id = idOf(selector);
+    assert.ok(id, `Unexpected selector: ${selector}`);
+    return elements.get(id) ?? find(body, id);
   },
   getElementById(id) {
     assert.ok(elements.has(id), `Missing DOM element: ${id}`);
     return elements.get(id);
   },
-  body: element(),
-  documentElement: {style: {setProperty(key, value) { styles.set(key, value); }, getPropertyValue(key) { return styles.get(key) || ''; }}}
+  createElement(tag) { return element(tag); },
+  createTextNode(text) { return {textContent: String(text), parentNode: null}; },
+  documentElement: {...element('html'), style: {setProperty(key, value) { styles.set(key, value); }, getPropertyValue(key) { return styles.get(key) || ''; }}}
 };
 const context = vm.createContext({
-  document, window: {print() { prints++; }, addEventListener(name, handler) { windowEvents[name] = handler; }},
+  document, window,
   setTimeout(fn, delay) { assert.equal(delay, 150); const id = ++nextTimer; timers.set(id, fn); return id; },
   clearTimeout(id) { timers.delete(id); }
 });
@@ -169,6 +243,7 @@ result = subprocess.run(
     [node, "-e", runtime],
     input=json.dumps({
         "ids": ids,
+        "headerIds": doc.header_ids,
         "data": source_script["text"],
         "app": app_script["text"],
         "source": source,

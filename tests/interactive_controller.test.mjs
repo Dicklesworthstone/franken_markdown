@@ -7,13 +7,19 @@ import vm from 'node:vm';
 const controller = readFileSync(new URL('../src/interactive_controller.js', import.meta.url), 'utf8');
 const template = readFileSync(new URL('../src/interactive.rs', import.meta.url), 'utf8');
 const ids = [...template.matchAll(/id="([^"]+)"/g)].map(match => match[1]);
+// Ids inside the static <header class="fmd-app-header">, for header-scoped queries.
+const headerMarkup = template.slice(template.indexOf('<header class="fmd-app-header">'), template.indexOf('</header>'));
+const headerIds = new Set([...headerMarkup.matchAll(/id="([^"]+)"/g)].map(match => match[1]));
 const escape = text => String(text).replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
 function element() {
-  const classes = new Set();
+  const classes = new Set(), attributes = new Map();
   return {
     value: '', textContent: '', innerHTML: '', handlers: {}, removed: false,
     addEventListener(name, fn) { this.handlers[name] = fn; },
     remove() { this.removed = true; },
+    getAttribute(name) { return attributes.has(name) ? attributes.get(name) : null; },
+    setAttribute(name, value) { attributes.set(name, String(value)); },
+    removeAttribute(name) { attributes.delete(name); },
     classList: {
       add(name) { classes.add(name); }, remove(name) { classes.delete(name); },
       contains(name) { return classes.has(name); },
@@ -38,10 +44,29 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
   const timers = new Map(), blobs = new Map(), downloads = [], revoked = [], anchors = [], renders = [], printed = [], copies = [];
   const styles = new Map([['--fmd-base', scale]]);
   let next = 0, failure = fail;
+  const absent = new Set([
+    'body > script#fmd-image-assets[type="application/json"]',
+    'body > script#fmd-native-runtime[type="application/json"]',
+    'body > dialog#fmd-document-settings',
+  ]);
+  const header = {...element(),
+    querySelector(selector) {
+      assert.ok(selector.startsWith('#'), selector);
+      const id = selector.slice(1);
+      return headerIds.has(id) ? get(id) : null;
+    }
+  };
   const document = {
     title, getElementById: get, ...element(),
+    // Like a real DOM: resolve the template's static elements and return null
+    // for optional ones it does not emit (image assets, native runtime payload,
+    // dialogs the controller creates on demand). Unknown selectors are errors.
     querySelector(selector) {
-      return get(selector === 'body > #stats-drawer' ? 'stats-drawer' : 'fmd-raw-source');
+      if (selector === 'body > script#fmd-raw-source[type="application/json"]') return get('fmd-raw-source');
+      if (selector === 'body > #stats-drawer') return get('stats-drawer');
+      if (selector === 'body > .fmd-app-header') return header;
+      assert.ok(absent.has(selector), selector);
+      return null;
     },
     body: {...element(), appendChild(node) { anchors.push(node); }},
     createElement(tag) {
@@ -51,7 +76,7 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
         downloads.push({filename: this.download, blob: blobs.get(this.href), url: this.href});
       }};
     },
-    documentElement: {
+    documentElement: {...element(),
       style: {getPropertyValue(key) { return styles.get(key) || ''; }, setProperty(key, value) { styles.set(key, value); }},
       cloneNode(deep) {
         assert.equal(deep, true);
@@ -66,8 +91,16 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
           ['body > #stats-drawer', drawer],
           ['#editor-pane > .fmd-pane-header > #fmd-save-status', status]
         ]);
-        const copy = {data, textarea, status, drawer, preview,
-          querySelector(selector) { assert.ok(nodes.has(selector), selector); return nodes.get(selector); },
+        const copy = {...element(), data, textarea, status, drawer, preview,
+          // The clone holds only the template's static elements. Controls the
+          // controller adds at runtime are absent from it and resolve to null;
+          // a static element this adapter does not model is a harness error.
+          querySelector(selector) {
+            if (nodes.has(selector)) return nodes.get(selector);
+            const id = selector.match(/#([\w-]+)$/)?.[1];
+            assert.ok(id && !ids.includes(id), selector);
+            return null;
+          },
           get outerHTML() { return '<html><body><textarea>' + escape(textarea.textContent) + '</textarea><main>' + preview + '</main><script type="application/json">' + data.textContent + '</script></body></html>'; }
         };
         copies.push(copy); return copy;

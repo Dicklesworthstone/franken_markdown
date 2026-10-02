@@ -1,5 +1,6 @@
 //! Real-process LSP integration tests. No mocked parser or transport.
 #![cfg(feature = "lsp")]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::io::{Cursor, Read, Write};
 use std::process::{Command, ExitStatus, Stdio};

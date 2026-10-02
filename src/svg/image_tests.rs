@@ -17,6 +17,8 @@ fn chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
 // Valid RGBA PNGs with stored DEFLATE blocks, not header-only fake images.
 fn png(width: u32, height: u32) -> Vec<u8> {
     let mut raw = Vec::new();
+    // One PNG filter byte (None) starts every scanline.
+    #[allow(clippy::same_item_push)]
     for _ in 0..height {
         raw.push(0);
         for _ in 0..width {

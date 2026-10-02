@@ -475,19 +475,9 @@ pub fn select_logical_range(
         _ => return None,
     };
 
-    let selected_clusters = match clusters.get(first..=last) {
-        Some(s) => s,
-        None => return None,
-    };
-
-    let byte_start = match clusters.get(first) {
-        Some(c) => c.start,
-        None => return None,
-    };
-    let byte_end = match clusters.get(last) {
-        Some(c) => c.end,
-        None => return None,
-    };
+    let selected_clusters = clusters.get(first..=last)?;
+    let byte_start = clusters.get(first)?.start;
+    let byte_end = clusters.get(last)?.end;
 
     let mut char_count = 0;
     let mut has_rtl = false;
@@ -721,7 +711,7 @@ impl BitmapGlyphResource {
                 max_allowed: MAX_BITMAP_GLYPH_BYTES,
             },
         )?;
-        let expected = (total_bits + 7) / 8;
+        let expected = total_bits.div_ceil(8);
         if bits.len() != expected {
             return Err(ColorGlyphError::BufferLengthMismatch {
                 expected,

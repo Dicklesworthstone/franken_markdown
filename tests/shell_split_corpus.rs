@@ -163,13 +163,13 @@ fn shell_capability_row_is_versioned() {
     let row: ShellCapabilityV1 = SHELL_CAPABILITY_V1;
     assert_eq!(row.version, 1);
     const {
-        assert!(SHELL_CAPABILITY_V1.incremental);
+        const { assert!(SHELL_CAPABILITY_V1.incremental) };
     };
     const {
-        assert!(SHELL_CAPABILITY_V1.heredocs_and_expansions);
+        const { assert!(SHELL_CAPABILITY_V1.heredocs_and_expansions) };
     };
     const {
-        assert!(SHELL_CAPABILITY_V1.quotes_and_substitutions);
+        const { assert!(SHELL_CAPABILITY_V1.quotes_and_substitutions) };
     };
 }
 

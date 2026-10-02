@@ -4,6 +4,7 @@
 //! (PDF syntax appends a newline before `endstream` that is NOT part of the
 //! stream — including it corrupts the zlib Adler-32 trailer), then decompresses
 //! with the crate's own validating `zlib_decompress`.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub fn decompressed_content(pdf: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use franken_markdown::{highlight::Span, lang_go::lex_go_into, lang_python::lex_python_into};
 
 fn assert_tiles(code: &str, spans: &[Span]) {

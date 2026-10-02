@@ -165,17 +165,17 @@ fn yaml_capability_row_is_versioned() {
     assert_eq!(YAML_CAPABILITY_V1.version, 1);
     const {
         const {
-            assert!(YAML_CAPABILITY_V1.incremental);
+            const { assert!(YAML_CAPABILITY_V1.incremental) };
         };
     };
     const {
         const {
-            assert!(YAML_CAPABILITY_V1.basic_and_literal_strings);
+            const { assert!(YAML_CAPABILITY_V1.basic_and_literal_strings) };
         };
     };
     const {
         const {
-            assert!(YAML_CAPABILITY_V1.colon_and_dash_cuts);
+            const { assert!(YAML_CAPABILITY_V1.colon_and_dash_cuts) };
         };
     };
 }

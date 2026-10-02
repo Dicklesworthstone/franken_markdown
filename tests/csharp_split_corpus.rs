@@ -114,17 +114,17 @@ fn csharp_capability_row_is_versioned() {
     assert_eq!(CSHARP_CAPABILITY_V1.version, 1);
     const {
         const {
-            assert!(CSHARP_CAPABILITY_V1.incremental);
+            const { assert!(CSHARP_CAPABILITY_V1.incremental) };
         };
     };
     const {
         const {
-            assert!(CSHARP_CAPABILITY_V1.string_variants_and_interpolation);
+            const { assert!(CSHARP_CAPABILITY_V1.string_variants_and_interpolation) };
         };
     };
     const {
         const {
-            assert!(CSHARP_CAPABILITY_V1.preprocessor_and_character_escapes);
+            const { assert!(CSHARP_CAPABILITY_V1.preprocessor_and_character_escapes) };
         };
     };
 }

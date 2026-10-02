@@ -5,6 +5,7 @@
 //! stub (which fails with "no installed distributions"). Windows installs use
 //! `install.ps1` instead, so this test crate is compiled out there.
 #![cfg(unix)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::fs;
 use std::path::{Path, PathBuf};

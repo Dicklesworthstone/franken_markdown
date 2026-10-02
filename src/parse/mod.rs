@@ -5028,6 +5028,9 @@ fn skip_link_whitespace(chars: &[char], i: &mut usize) {
     }
 }
 
+/// A parsed inline link or image: content, destination, title, end index, source span.
+type LinkLikeParse = (Vec<Inline>, String, Option<String>, usize, Range<usize>);
+
 /// Parse `[content](dest "title")` starting at the `[`.
 fn parse_link_like(
     chars: &[char],
@@ -5036,7 +5039,7 @@ fn parse_link_like(
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
     image: bool,
-) -> Option<(Vec<Inline>, String, Option<String>, usize, Range<usize>)> {
+) -> Option<LinkLikeParse> {
     if chars.get(i) != Some(&'[') {
         return None;
     }

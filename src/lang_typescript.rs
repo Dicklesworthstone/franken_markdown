@@ -249,11 +249,11 @@ mod tests {
     #[test]
     fn capability_row_is_versioned() {
         assert_eq!(TYPESCRIPT_CAPABILITY_V1.version, 1);
-        assert!(TYPESCRIPT_CAPABILITY_V1.incremental);
-        assert!(TYPESCRIPT_CAPABILITY_V1.type_keywords);
-        assert!(TYPESCRIPT_CAPABILITY_V1.generics_vs_comparisons);
-        assert!(TYPESCRIPT_CAPABILITY_V1.template_literal_types);
-        assert!(TYPESCRIPT_CAPABILITY_V1.satisfies_and_as_casts);
+        const { assert!(TYPESCRIPT_CAPABILITY_V1.incremental) };
+        const { assert!(TYPESCRIPT_CAPABILITY_V1.type_keywords) };
+        const { assert!(TYPESCRIPT_CAPABILITY_V1.generics_vs_comparisons) };
+        const { assert!(TYPESCRIPT_CAPABILITY_V1.template_literal_types) };
+        const { assert!(TYPESCRIPT_CAPABILITY_V1.satisfies_and_as_casts) };
     }
 
     #[test]

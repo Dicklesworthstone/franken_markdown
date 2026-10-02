@@ -6,6 +6,7 @@
 //! tooling exercised by the Linux/macOS CI jobs, so this test crate is
 //! compiled out on Windows.
 #![cfg(unix)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::fs;
 use std::io;

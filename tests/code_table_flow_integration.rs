@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Integration tests for code fence flow and constrained table layout (FCB-033.A).
 //!

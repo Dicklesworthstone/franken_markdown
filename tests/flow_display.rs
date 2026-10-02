@@ -5,7 +5,7 @@
 //! 1. Budget exhaustion followed by resume produces identical output to whole-input processing.
 //! 2. Stale asset generations are rejected with [`FlowDisplayError::StaleAssetGeneration`].
 //! 3. Display lists and reading orders are materialized without GPU, AppKit, or ambient I/O.
-
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![forbid(unsafe_code)]
 
 use franken_markdown::display::{AccessibleReadingRole, DisplayItem, VectorShapeType};
@@ -50,14 +50,9 @@ fn step_resume_equals_whole_at_every_batch_size() {
         let mut resumable_blocks = Vec::new();
         let mut resumable_assets = Vec::new();
 
-        loop {
-            match engine.step().expect("step succeeds") {
-                Some(result) => {
-                    resumable_blocks.extend(result.blocks);
-                    resumable_assets.extend(result.unresolved_assets);
-                }
-                None => break,
-            }
+        while let Some(result) = engine.step().expect("step succeeds") {
+            resumable_blocks.extend(result.blocks);
+            resumable_assets.extend(result.unresolved_assets);
         }
 
         // Whole: process the entire document in one pass.
@@ -231,16 +226,11 @@ fn step_reports_has_more_correctly() {
     let mut engine = ResumableFlowDisplay::new(DOC, 1);
     let mut saw_has_more_true = false;
     let mut saw_has_more_false = false;
-    loop {
-        match engine.step().expect("step succeeds") {
-            Some(result) => {
-                if result.has_more {
-                    saw_has_more_true = true;
-                } else {
-                    saw_has_more_false = true;
-                }
-            }
-            None => break,
+    while let Some(result) = engine.step().expect("step succeeds") {
+        if result.has_more {
+            saw_has_more_true = true;
+        } else {
+            saw_has_more_false = true;
         }
     }
     assert!(saw_has_more_true, "document has multiple blocks");

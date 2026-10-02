@@ -719,7 +719,7 @@ mod tests {
         );
         for (index, item) in dl.items().iter().enumerate() {
             if let DisplayItem::Clip(clip) = item {
-                assert!(clip.child_count <= dl.items().len() - index - 1);
+                assert!(clip.child_count < dl.items().len() - index);
             }
         }
         assert_eq!(flow.measured_rows_count(), 100);

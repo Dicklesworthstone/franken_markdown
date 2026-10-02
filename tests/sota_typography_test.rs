@@ -1,4 +1,5 @@
 //! Integration test suite for the SOTA World-Class Typography & Visual Optimization Suite.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::layout::{
     ColumnBadnessCurve, ContinuousHzExpansion, FontSize, LayoutUnit, OpticalKerningConfig,

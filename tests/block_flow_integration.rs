@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Integration tests for continuous flow layout, checked height indexing, stable
 //! scroll anchoring, and structural nesting limits (FCB-032.A).
@@ -179,7 +180,7 @@ fn oracle_nesting_depth_limit_negative_control() {
         assert_eq!(depth, excessive_depth);
         assert_eq!(max, MAX_NESTING_DEPTH);
     } else {
-        assert!(false, "expected NestingDepthExceeded, got {err:?}");
+        panic!("expected NestingDepthExceeded, got {err:?}");
     }
 
     // Also verify Blockquote nesting depth is checked
@@ -220,7 +221,7 @@ fn oracle_giant_paragraph_budget_defense_negative_control() {
         assert!(lines > max);
         assert_eq!(max, MAX_PARAGRAPH_LINES);
     } else {
-        assert!(false, "expected ParagraphBudgetExceeded, got {err:?}");
+        panic!("expected ParagraphBudgetExceeded, got {err:?}");
     }
 }
 

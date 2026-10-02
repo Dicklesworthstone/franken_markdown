@@ -182,17 +182,17 @@ fn c_capability_row_is_versioned() {
     assert_eq!(C_CAPABILITY_V1.version, 1);
     const {
         const {
-            assert!(C_CAPABILITY_V1.incremental);
+            const { assert!(C_CAPABILITY_V1.incremental) };
         };
     };
     const {
         const {
-            assert!(C_CAPABILITY_V1.preprocessor_continuation);
+            const { assert!(C_CAPABILITY_V1.preprocessor_continuation) };
         };
     };
     const {
         const {
-            assert!(C_CAPABILITY_V1.escaped_newline_in_literals);
+            const { assert!(C_CAPABILITY_V1.escaped_newline_in_literals) };
         };
     };
 }

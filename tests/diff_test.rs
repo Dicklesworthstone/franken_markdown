@@ -4,6 +4,7 @@
 //!
 //! The module is registered as `franken_markdown::diff`, so these tests
 //! exercise the public crate surface directly.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::diff::{ChangeKind, DiffReport, diff_documents, report_json, report_text};
 use franken_markdown::parse_markdown;

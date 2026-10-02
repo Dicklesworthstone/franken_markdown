@@ -3,6 +3,7 @@
 //! Enforces exact behavioral invariants across diff escaping, heading slug
 //! collision parity, unicode syntax highlighting, URL scanner case-insensitivity,
 //! PDF hex color parsing, and verification caret spans.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::PdfOptions;
 use franken_markdown::ast::{Block, Document, Inline};

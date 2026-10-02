@@ -1,5 +1,5 @@
 //! Public-contract tests for dependency-aware document change analysis.
-
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![forbid(unsafe_code)]
 
 use franken_markdown::dep_invalidation::{DependencyGraph, DependencyKind};

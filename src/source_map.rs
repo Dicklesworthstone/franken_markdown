@@ -206,7 +206,7 @@ impl DocumentSourceMap {
     ) -> Result<Self, SourceMapError> {
         let mut builder = SourceMapBuilder::new(doc.source_len);
         builder.build(doc, source)?;
-        Ok(builder.finish()?)
+        builder.finish()
     }
 
     /// Borrow the complete rendered reading text.

@@ -148,13 +148,13 @@ fn go_capability_row_is_versioned() {
     let row: GoCapabilityV1 = GO_CAPABILITY_V1;
     assert_eq!(row.version, 1);
     const {
-        assert!(GO_CAPABILITY_V1.incremental);
+        const { assert!(GO_CAPABILITY_V1.incremental) };
     };
     const {
-        assert!(GO_CAPABILITY_V1.strings_and_runes);
+        const { assert!(GO_CAPABILITY_V1.strings_and_runes) };
     };
     const {
-        assert!(GO_CAPABILITY_V1.numbers_and_operators);
+        const { assert!(GO_CAPABILITY_V1.numbers_and_operators) };
     };
 }
 

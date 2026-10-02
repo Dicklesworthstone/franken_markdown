@@ -645,10 +645,8 @@ fn parse_flowchart_vector(
             Some((idx, 3, true))
         } else if let Some(idx) = trimmed.find("---") {
             Some((idx, 3, false))
-        } else if let Some(idx) = trimmed.find("->") {
-            Some((idx, 2, true))
         } else {
-            None
+            trimmed.find("->").map(|idx| (idx, 2, true))
         };
 
         if let Some((arrow_idx, arrow_len, is_directed)) = edge_pattern {
@@ -1093,6 +1091,7 @@ fn source_offset_span(source_offset: usize, start: usize, end: usize) -> SourceS
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

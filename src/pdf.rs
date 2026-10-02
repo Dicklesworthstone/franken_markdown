@@ -41326,6 +41326,7 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
 /// that the DP is live (breaks differ on a myopia fixture where per-page
 /// greed strands a keep-together block).
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod plass_pagination_tests {
     use super::*;
 

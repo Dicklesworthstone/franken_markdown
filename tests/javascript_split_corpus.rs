@@ -165,16 +165,16 @@ fn javascript_capability_row_is_versioned() {
     let row: JavaScriptCapabilityV1 = JAVASCRIPT_CAPABILITY_V1;
     assert_eq!(row.version, 1);
     const {
-        assert!(JAVASCRIPT_CAPABILITY_V1.incremental);
+        const { assert!(JAVASCRIPT_CAPABILITY_V1.incremental) };
     };
     const {
-        assert!(JAVASCRIPT_CAPABILITY_V1.regex_vs_division);
+        const { assert!(JAVASCRIPT_CAPABILITY_V1.regex_vs_division) };
     };
     const {
-        assert!(JAVASCRIPT_CAPABILITY_V1.template_interpolations);
+        const { assert!(JAVASCRIPT_CAPABILITY_V1.template_interpolations) };
     };
     const {
-        assert!(JAVASCRIPT_CAPABILITY_V1.numeric_forms);
+        const { assert!(JAVASCRIPT_CAPABILITY_V1.numeric_forms) };
     };
 }
 

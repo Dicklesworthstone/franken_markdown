@@ -18,6 +18,7 @@
 //! `1.5` releases a partial Number). Number-containing splits in these
 //! fixtures reproduce it — that is the engine's known gap, not a TSX
 //! lexer defect; all non-number splits must be exact.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 
@@ -178,12 +179,12 @@ fn scenario_receipt(case: &str, outcome: &str, detail: &str) {
 #[test]
 fn capability_row_is_versioned_and_truthful() {
     assert_eq!(TSX_CAPABILITY_V1.version, 1);
-    assert!(TSX_CAPABILITY_V1.incremental);
-    assert!(TSX_CAPABILITY_V1.tag_and_attribute_transitions);
-    assert!(TSX_CAPABILITY_V1.embedded_expressions);
-    assert!(TSX_CAPABILITY_V1.fragments);
-    assert!(TSX_CAPABILITY_V1.typescript_expressions);
-    assert!(TSX_CAPABILITY_V1.conservative_unresolved);
+    const { assert!(TSX_CAPABILITY_V1.incremental) };
+    const { assert!(TSX_CAPABILITY_V1.tag_and_attribute_transitions) };
+    const { assert!(TSX_CAPABILITY_V1.embedded_expressions) };
+    const { assert!(TSX_CAPABILITY_V1.fragments) };
+    const { assert!(TSX_CAPABILITY_V1.typescript_expressions) };
+    const { assert!(TSX_CAPABILITY_V1.conservative_unresolved) };
 }
 
 #[test]

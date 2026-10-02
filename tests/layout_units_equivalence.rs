@@ -30,6 +30,7 @@
 //!    a strided advance sweep.
 //! 6. Deterministic randomized property sweep (xorshift64*) with boundary-
 //!    biased distributions.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::layout::{FontSize, adjustment_to_layout_units, advance_to_layout_units};
 

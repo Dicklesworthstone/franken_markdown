@@ -3,7 +3,7 @@
 //! resumable engine; coalesced token meaning and exact source tiling must
 //! agree. Malformed and truncated inputs must lex with bounded work, never panic.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::highlight::{Span, Tok, highlight};
 use franken_markdown::lang_jsx::{JSX_CAPABILITY_V1, JsxCapabilityV1, lex_jsx_into};
@@ -162,19 +162,19 @@ fn jsx_capability_row_is_versioned() {
     let row: JsxCapabilityV1 = JSX_CAPABILITY_V1;
     assert_eq!(row.version, 1);
     const {
-        assert!(JSX_CAPABILITY_V1.incremental);
+        const { assert!(JSX_CAPABILITY_V1.incremental) };
     };
     const {
-        assert!(JSX_CAPABILITY_V1.tag_and_attribute_transitions);
+        const { assert!(JSX_CAPABILITY_V1.tag_and_attribute_transitions) };
     };
     const {
-        assert!(JSX_CAPABILITY_V1.embedded_expressions);
+        const { assert!(JSX_CAPABILITY_V1.embedded_expressions) };
     };
     const {
-        assert!(JSX_CAPABILITY_V1.fragments);
+        const { assert!(JSX_CAPABILITY_V1.fragments) };
     };
     const {
-        assert!(JSX_CAPABILITY_V1.entities);
+        const { assert!(JSX_CAPABILITY_V1.entities) };
     };
 }
 
@@ -192,7 +192,7 @@ fn malformed_bounds_and_error_handling() {
         assert!(held > 32);
         assert_eq!(cap, 32);
     } else {
-        assert!(false, "expected SuffixTooLong");
+        panic!("expected SuffixTooLong");
     }
 
     // Finishing seals the lexer

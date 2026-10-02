@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Integration tests for checked paged height indexing, old/new page reservation,
 //! and transactional height refinement (FCB-032.B).

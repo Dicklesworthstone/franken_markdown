@@ -700,6 +700,7 @@ pub fn lex_cplusplus_into(code: &str, spans: &mut Vec<Span>) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -926,10 +927,10 @@ mod tests {
     #[test]
     fn cpp_capability_row_is_versioned() {
         assert_eq!(CPP_CAPABILITY_V1.version, 1);
-        assert!(CPP_CAPABILITY_V1.incremental);
-        assert!(CPP_CAPABILITY_V1.raw_strings);
-        assert!(CPP_CAPABILITY_V1.encoding_prefixes);
-        assert!(CPP_CAPABILITY_V1.numeric_forms);
-        assert!(CPP_CAPABILITY_V1.conservative_templates);
+        const { assert!(CPP_CAPABILITY_V1.incremental) };
+        const { assert!(CPP_CAPABILITY_V1.raw_strings) };
+        const { assert!(CPP_CAPABILITY_V1.encoding_prefixes) };
+        const { assert!(CPP_CAPABILITY_V1.numeric_forms) };
+        const { assert!(CPP_CAPABILITY_V1.conservative_templates) };
     }
 }

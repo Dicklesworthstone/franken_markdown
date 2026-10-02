@@ -368,7 +368,7 @@ fn header_fonts(stream: &str) -> Vec<String> {
         .find("/Subtype /Header>> BDC")
         .expect("header artifact");
     let section = &stream[start..];
-    let section = &section[..section.find("\nEMC\n").map_or(section.len(), |end| end)];
+    let section = &section[..section.find("\nEMC\n").unwrap_or(section.len())];
     let tokens: Vec<&str> = section.split_whitespace().collect();
     let mut fonts: Vec<String> = tokens
         .windows(3)

@@ -153,17 +153,17 @@ fn python_capability_row_is_versioned() {
     assert_eq!(PYTHON_CAPABILITY_V1.version, 1);
     const {
         const {
-            assert!(PYTHON_CAPABILITY_V1.incremental);
+            const { assert!(PYTHON_CAPABILITY_V1.incremental) };
         };
     };
     const {
         const {
-            assert!(PYTHON_CAPABILITY_V1.string_variants_and_interpolation);
+            const { assert!(PYTHON_CAPABILITY_V1.string_variants_and_interpolation) };
         };
     };
     const {
         const {
-            assert!(PYTHON_CAPABILITY_V1.continuations_and_indentation);
+            const { assert!(PYTHON_CAPABILITY_V1.continuations_and_indentation) };
         };
     };
 }

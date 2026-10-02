@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Integration tests for renderer-neutral math and first-party diagram display (FCB-034.A).
 //!

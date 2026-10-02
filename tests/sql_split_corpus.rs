@@ -265,9 +265,9 @@ fn sql_capability_row_is_versioned() {
     use franken_markdown::lang_sql::SQL_CAPABILITY_V1;
     assert_eq!(SQL_CAPABILITY_V1.version, 1);
     const {
-        assert!(SQL_CAPABILITY_V1.incremental);
+        const { assert!(SQL_CAPABILITY_V1.incremental) };
     };
     const {
-        assert!(SQL_CAPABILITY_V1.quotes_comments_params);
+        const { assert!(SQL_CAPABILITY_V1.quotes_comments_params) };
     };
 }

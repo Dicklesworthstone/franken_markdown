@@ -546,9 +546,8 @@ impl LineBreakCache {
         let text_hash = hasher.finish();
 
         let key = (text_hash, width_key);
-        if !self.cache.contains_key(&key) {
-            let lines = wrap_prose(text, available_width, font_size)?;
-            self.cache.insert(key, lines);
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.cache.entry(key) {
+            slot.insert(wrap_prose(text, available_width, font_size)?);
         }
 
         Ok(self.cache.get(&key).map(|v| v.as_slice()).unwrap_or(&[]))
@@ -1027,6 +1026,7 @@ fn heading_font_size(level: u8) -> f32 {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

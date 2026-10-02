@@ -2,6 +2,7 @@
 //!
 //! These tests pin security-relevant checksum behavior without requiring live
 //! GitHub downloads or PowerShell availability.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::fs;
 use std::io;

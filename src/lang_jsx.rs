@@ -674,11 +674,11 @@ mod tests {
     #[test]
     fn capability_row_is_versioned() {
         assert_eq!(JSX_CAPABILITY_V1.version, 1);
-        assert!(JSX_CAPABILITY_V1.incremental);
-        assert!(JSX_CAPABILITY_V1.tag_and_attribute_transitions);
-        assert!(JSX_CAPABILITY_V1.embedded_expressions);
-        assert!(JSX_CAPABILITY_V1.fragments);
-        assert!(JSX_CAPABILITY_V1.entities);
+        const { assert!(JSX_CAPABILITY_V1.incremental) };
+        const { assert!(JSX_CAPABILITY_V1.tag_and_attribute_transitions) };
+        const { assert!(JSX_CAPABILITY_V1.embedded_expressions) };
+        const { assert!(JSX_CAPABILITY_V1.fragments) };
+        const { assert!(JSX_CAPABILITY_V1.entities) };
     }
 
     #[test]

@@ -584,9 +584,7 @@ pub(crate) fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
     }
     if text.ends_with("<!-") {
         hold_from = hold_from.min(text.len() - 3);
-    } else if text.ends_with("<!") {
-        hold_from = hold_from.min(text.len() - 2);
-    } else if text.ends_with("..") {
+    } else if text.ends_with("<!") || text.ends_with("..") {
         hold_from = hold_from.min(text.len() - 2);
     }
     if text[last.start..last.end].chars().all(char::is_whitespace) {

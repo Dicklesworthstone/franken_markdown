@@ -1,6 +1,6 @@
 //! Comprehensive tests for font context, fallback chains, clustering,
 //! bounded checkpoints, color/bitmap resources, and exact logical selection (FCB-075.A).
-
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![forbid(unsafe_code)]
 
 use franken_markdown::font_context::{

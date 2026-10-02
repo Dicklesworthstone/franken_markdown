@@ -13,6 +13,7 @@
 //! The `numbers` and `consumer_document` fixtures document exactly where
 //! that divergence appears; they flip green when the engine fix lands.
 //! All non-number splits are asserted exact.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 

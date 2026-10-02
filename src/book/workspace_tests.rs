@@ -125,7 +125,9 @@ fn edits_outside_selected_snippets_commit_capture_without_reparsing() {
 fn parse_only_constructor_keeps_literal_includes_after_source_edits() {
     let mut workspace = BookWorkspace::new(&[file("a.md", "# A")]).unwrap();
     let new = file("a.md", "# A\n\n{{#include missing.md}}\n");
-    let report = workspace.update_sources(&[new.clone()]).unwrap();
+    let report = workspace
+        .update_sources(std::slice::from_ref(&new))
+        .unwrap();
     assert_eq!(report.reparsed_chapters, [0]);
     assert_book_eq(&workspace, &BookRenderer::new(&[new]).unwrap());
 }

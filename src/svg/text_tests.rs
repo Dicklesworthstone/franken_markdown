@@ -132,7 +132,7 @@ fn painted_width_matches_layout_with_mixed_styles_and_spaces() {
             Op::Glyph { x, .. } => Some(*x),
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap();
     assert!((last_x + last_advance - expected).abs() < 0.00001);
 }

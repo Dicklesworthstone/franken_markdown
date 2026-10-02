@@ -1,5 +1,6 @@
 //! Execute the bundled offline renderer, not just assertions on its source.
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[test]
 fn interactive_live_renderer_behavior() {

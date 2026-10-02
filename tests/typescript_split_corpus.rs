@@ -167,19 +167,19 @@ fn typescript_capability_row_is_versioned() {
     let row: TypeScriptCapabilityV1 = TYPESCRIPT_CAPABILITY_V1;
     assert_eq!(row.version, 1);
     const {
-        assert!(TYPESCRIPT_CAPABILITY_V1.incremental);
+        const { assert!(TYPESCRIPT_CAPABILITY_V1.incremental) };
     };
     const {
-        assert!(TYPESCRIPT_CAPABILITY_V1.type_keywords);
+        const { assert!(TYPESCRIPT_CAPABILITY_V1.type_keywords) };
     };
     const {
-        assert!(TYPESCRIPT_CAPABILITY_V1.generics_vs_comparisons);
+        const { assert!(TYPESCRIPT_CAPABILITY_V1.generics_vs_comparisons) };
     };
     const {
-        assert!(TYPESCRIPT_CAPABILITY_V1.template_literal_types);
+        const { assert!(TYPESCRIPT_CAPABILITY_V1.template_literal_types) };
     };
     const {
-        assert!(TYPESCRIPT_CAPABILITY_V1.satisfies_and_as_casts);
+        const { assert!(TYPESCRIPT_CAPABILITY_V1.satisfies_and_as_casts) };
     };
 }
 
@@ -197,7 +197,7 @@ fn malformed_bounds_and_error_handling() {
         assert!(held > 32);
         assert_eq!(cap, 32);
     } else {
-        assert!(false, "expected SuffixTooLong");
+        panic!("expected SuffixTooLong");
     }
 
     // Finishing seals the lexer

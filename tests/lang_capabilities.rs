@@ -7,6 +7,7 @@
 //! - Plain text fallback for unknown languages: opening a file never fails (§11.4).
 //! - Conservative handling of JS/TS/JSX/TSX syntactic ambiguities (§11.7).
 //! - Negative controls: compiler claim detection, span gap detection, and span overlap detection.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::highlight::{Span, Tok};
 use franken_markdown::lang_capabilities::{

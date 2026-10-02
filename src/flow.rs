@@ -233,19 +233,10 @@ impl FlowOutput {
 }
 
 /// Headless continuous-flow layout consumer with budget enforcement and provenance tracking.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeadlessFlowConsumer {
     constraints: FlowConstraints,
     budgets: FlowBudgets,
-}
-
-impl Default for HeadlessFlowConsumer {
-    fn default() -> Self {
-        Self {
-            constraints: FlowConstraints::default(),
-            budgets: FlowBudgets::default(),
-        }
-    }
 }
 
 impl HeadlessFlowConsumer {

@@ -211,12 +211,12 @@ fn css_capability_row_is_versioned() {
     assert_eq!(CSS_CAPABILITY_V1.version, 1);
     const {
         const {
-            assert!(CSS_CAPABILITY_V1.incremental);
+            const { assert!(CSS_CAPABILITY_V1.incremental) };
         };
     };
     const {
         const {
-            assert!(CSS_CAPABILITY_V1.comments_strings_nested);
+            const { assert!(CSS_CAPABILITY_V1.comments_strings_nested) };
         };
     };
 }

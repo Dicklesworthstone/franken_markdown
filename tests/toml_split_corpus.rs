@@ -151,17 +151,17 @@ fn toml_capability_row_is_versioned() {
     assert_eq!(TOML_CAPABILITY_V1.version, 1);
     const {
         const {
-            assert!(TOML_CAPABILITY_V1.incremental);
+            const { assert!(TOML_CAPABILITY_V1.incremental) };
         };
     };
     const {
         const {
-            assert!(TOML_CAPABILITY_V1.basic_and_literal_strings);
+            const { assert!(TOML_CAPABILITY_V1.basic_and_literal_strings) };
         };
     };
     const {
         const {
-            assert!(TOML_CAPABILITY_V1.structured_keys);
+            const { assert!(TOML_CAPABILITY_V1.structured_keys) };
         };
     };
 }

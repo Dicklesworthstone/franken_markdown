@@ -9,6 +9,9 @@ use franken_markdown::highlight::{Span, Tok, highlight};
 use franken_markdown::lang_cplusplus::{CPP_CAPABILITY_V1, CppCapabilityV1, lex_cplusplus_into};
 use franken_markdown::resume::{ResumableLexer, ResumeError, coalesce_spans};
 
+#[path = "support/split_plan.rs"]
+mod split_plan;
+
 const CONSUMER_DOCUMENT: &str = include_str!("fixtures/cpp_route/consumer_document.cpp");
 
 /// Representative C++ fixtures exercising the bead's feature list:
@@ -74,28 +77,39 @@ fn every_split_matches_whole_run_on_all_fixtures() {
     }
 }
 
-#[test]
-fn three_way_splits_match_whole_run() {
+fn assert_three_way_splits(exhaustive: bool) {
     for &fixture in FIXTURES {
         let whole = highlight("cpp", fixture);
         let whole_coalesced = coalesced(&whole);
-        for first in 0..fixture.len() {
-            for second in first..=fixture.len() {
-                let mut lexer = ResumableLexer::new("cpp").expect("cpp route exists");
-                lexer.feed(&fixture.as_bytes()[..first]).expect("feed 1");
-                lexer
-                    .feed(&fixture.as_bytes()[first..second])
-                    .expect("feed 2");
-                lexer.feed(&fixture.as_bytes()[second..]).expect("feed 3");
-                lexer.finish().expect("finish");
-                assert_eq!(
-                    coalesced(lexer.spans()),
-                    whole_coalesced,
-                    "fixture {fixture:?} diverges at splits {first}/{second}"
-                );
-            }
+        for (first, second) in split_plan::three_way_pairs(fixture.len(), exhaustive) {
+            let mut lexer = ResumableLexer::new("cpp").expect("cpp route exists");
+            lexer.feed(&fixture.as_bytes()[..first]).expect("feed 1");
+            lexer
+                .feed(&fixture.as_bytes()[first..second])
+                .expect("feed 2");
+            lexer.feed(&fixture.as_bytes()[second..]).expect("feed 3");
+            lexer.finish().expect("finish");
+            assert_eq!(
+                coalesced(lexer.spans()),
+                whole_coalesced,
+                "fixture {fixture:?} diverges at splits {first}/{second}"
+            );
         }
     }
+}
+
+#[test]
+fn three_way_splits_match_whole_run() {
+    assert_three_way_splits(false);
+}
+
+/// Every split pair of every fixture: about n^2/2 resumable runs per
+/// fixture (~1-2M for the consumer document). Run deliberately with
+/// `cargo test --release --test cpp_split_corpus -- --ignored`.
+#[test]
+#[ignore = "exhaustive n^2 split sweep; takes many minutes in debug builds"]
+fn three_way_splits_match_whole_run_exhaustive() {
+    assert_three_way_splits(true);
 }
 
 #[test]

@@ -925,6 +925,59 @@ mod tests {
     }
 
     #[test]
+    fn raw_prefix_fallthrough_always_advances_including_streamed_splits() {
+        // Every `R"` whose delimiter is invalid, too long, or has no `(` within
+        // 17 bytes falls through to identifier lexing. That path must advance
+        // `pos` for whole inputs and for every resumable split point. Run it
+        // under a watchdog so a non-progress regression fails instead of hanging.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let long = "a".repeat(20);
+            let cases = [
+                "R\"".to_owned(),
+                "R\"abc".to_owned(),
+                format!("R\"{long}"),
+                format!("R\"{long}(x){long}\""),
+                "R\"a b(x)a b\"".to_owned(),
+                "u8R\"".to_owned(),
+                "LR\"!!".to_owned(),
+                "R\"R\"R\"R\"R\"R\"R\"R\"R\"R\"".to_owned(),
+                format!("x = R\"{}(", "d".repeat(17)),
+            ];
+            for code in &cases {
+                let mut whole = Vec::new();
+                lex_cplusplus_into(code, &mut whole);
+                assert_tiling(code, &whole);
+                let expected = crate::resume::coalesce_spans(&whole);
+                for split in 0..=code.len() {
+                    let mut lexer = crate::resume::ResumableLexer::new("cpp").unwrap();
+                    lexer.feed(&code.as_bytes()[..split]).unwrap();
+                    lexer.feed(&code.as_bytes()[split..]).unwrap();
+                    lexer.finish().unwrap();
+                    assert_eq!(
+                        crate::resume::coalesce_spans(lexer.spans()),
+                        expected,
+                        "{code:?} split {split}"
+                    );
+                }
+            }
+            done_tx.send(()).unwrap();
+        });
+        match done_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // The worker panicked: surface its assertion message.
+                if let Err(panic) = worker.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("raw-prefix fall-through stopped making progress");
+            }
+        }
+    }
+
+    #[test]
     fn cpp_capability_row_is_versioned() {
         assert_eq!(CPP_CAPABILITY_V1.version, 1);
         const { assert!(CPP_CAPABILITY_V1.incremental) };

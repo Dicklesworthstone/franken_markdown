@@ -121,8 +121,8 @@ mod tests {
             max_items: 8,
             ..FlowLayoutOptions::default()
         };
-        let mut state = BrowserFlowSession::new("```rust\nlet value = 42;\n```", "sans", options)
-            .unwrap();
+        let mut state =
+            BrowserFlowSession::new("```rust\nlet value = 42;\n```", "sans", options).unwrap();
         let before = snapshot(&state);
         assert_eq!(
             state.set_code_highlighting(1, 1, true).unwrap_err().code(),

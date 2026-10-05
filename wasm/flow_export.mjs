@@ -1,6 +1,7 @@
 // Revision-fenced document export through the existing HTML/PDF/EPUB/SVG core. This is
 // not a Canvas screenshot or a second Markdown renderer. The injected renderers
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
+import { normalizePdfPage } from "./pdf_page.mjs";
 import {
   FLOW_ASSET_LIMIT,
   FLOW_SOURCE_LIMIT,
@@ -32,6 +33,8 @@ const PDF = [
   "tableFontSize",
   "fitToPages",
   "microtype",
+  "page",
+  "running",
 ];
 const fail = (code, message) => {
   throw new FlowError(code, message);
@@ -62,8 +65,59 @@ function fence(session, expected) {
     fail("STALE_LAYOUT", "export asset/layout revision changed");
 }
 
-// Primitives only; called on both sides of the worker boundary. No caller-owned
-// arrays, buffers, arbitrary renderer settings or ambient asset loaders enter it.
+// Running-band options cross worker queues as deeply owned data, never live
+// caller objects. Template expansion and margin-fit checks belong to Rust.
+function runningRecord(value, allowed, name) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+    fail("INVALID_OPTIONS", `${name} must be a plain data object`);
+  const result = {};
+  for (const key of Reflect.ownKeys(value)) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (!allowed.includes(key) || !field || !Object.hasOwn(field, "value"))
+      fail("INVALID_OPTIONS", `${name} has an unsupported field or accessor`);
+    if (field.value !== undefined) result[key] = field.value;
+  }
+  return result;
+}
+function pdfRunning(value) {
+  if (value === undefined) return undefined;
+  const input = runningRecord(value, ["header", "footer", "skipFirstPage"], "running");
+  const result = {};
+  let units = 0, draws = false;
+  for (const name of ["header", "footer"]) {
+    if (input[name] === undefined) continue;
+    const band = runningRecord(input[name], ["left", "center", "right", "rule"], `running.${name}`);
+    const next = {};
+    for (const slot of ["left", "center", "right"]) {
+      if (band[slot] === undefined) continue;
+      const value = text(band[slot], `running.${name}.${slot}`, 4096);
+      units += value.length;
+      if (units > 16384) fail("BUDGET_EXCEEDED", "running templates exceed 16384 UTF-16 units");
+      next[slot] = value;
+      draws ||= value.length > 0;
+    }
+    if (band.rule !== undefined) {
+      if (typeof band.rule !== "boolean") fail("INVALID_OPTIONS", "running rule must be boolean");
+      next.rule = band.rule;
+      draws ||= band.rule;
+    }
+    result[name] = Object.freeze(next);
+  }
+  if (input.skipFirstPage !== undefined) {
+    if (typeof input.skipFirstPage !== "boolean")
+      fail("INVALID_OPTIONS", "running.skipFirstPage must be boolean");
+    // The native wrapper chooses its legacy ABI when no band draws, so it
+    // cannot honor this flag alone. Refuse rather than silently ignore it.
+    if (input.skipFirstPage && !draws)
+      fail("INVALID_OPTIONS", "skipFirstPage requires a nonempty header or footer");
+    result.skipFirstPage = input.skipFirstPage;
+  }
+  return Object.freeze(result);
+}
+
+// Data-only options; called on both sides of the worker boundary. Nested print
+// settings are copied here; no caller buffers or ambient asset loaders enter it.
 export function normalizeFlowExport(format, options = {}, expectedToken) {
   if (typeof format !== "string" || !Object.hasOwn(MIME, format))
     fail("INVALID_OPTIONS", "export format must be html, pdf, epub or svg");
@@ -119,6 +173,15 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
       result.customCss = text(options.customCss, "customCss", FLOW_SOURCE_LIMIT);
     }
   } else {
+    const { page, running } = options;
+    if (page !== undefined) {
+      try {
+        result.page = normalizePdfPage(page);
+      } catch (error) {
+        throw new FlowError("INVALID_OPTIONS", error instanceof Error ? error.message : "invalid PDF page", { cause: error });
+      }
+    }
+    if (running !== undefined) result.running = pdfRunning(running);
     // Deterministic by default. A host can supply a chosen timestamp explicitly.
     result.metadataEpochSeconds = uint(
       options.metadataEpochSeconds ?? 0,

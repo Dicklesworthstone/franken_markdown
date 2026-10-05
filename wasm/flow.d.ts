@@ -1,3 +1,10 @@
+import type { FmdPdfPage, FmdPdfRunning } from "./franken_markdown.js";
+export type {
+  FmdPdfPage as FlowPdfPage,
+  FmdPdfRunning as FlowPdfRunning,
+  FmdPdfRunningBand as FlowPdfRunningBand,
+} from "./franken_markdown.js";
+
 /** u64 wire values are lossless decimal strings. Number is never an identity. */
 export type FlowIdentity = string | bigint;
 export interface FlowToken {
@@ -432,6 +439,11 @@ export interface FlowSvgExportOptions {
   maxOutputBytes?: number;
 }
 export interface FlowPdfExportOptions extends FlowExportOptions {
+  /** Shared native paper contract. Copied before enqueue; units are points. */
+  page?: FmdPdfPage;
+  /** At most 4096 UTF-16 units per slot, 16384 combined. Unknown template tokens
+   * remain literal. skipFirstPage=true requires a nonempty band or rule. */
+  running?: FmdPdfRunning;
   author?: string;
   /** Deterministic default 0; nonnegative safe integer seconds. */
   metadataEpochSeconds?: number;

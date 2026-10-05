@@ -406,7 +406,7 @@ export interface FlowGlyphOutlines {
   readonly glyphs: readonly FlowGlyphOutline[];
 }
 
-export type FlowExportFormat = "html" | "pdf" | "epub";
+export type FlowExportFormat = "html" | "pdf" | "epub" | "svg";
 export interface FlowExportOptions {
   title?: string;
   lang?: string;
@@ -424,6 +424,13 @@ export interface FlowEpubExportOptions extends FlowExportOptions {
   /** Verbatim EPUB stylesheet, at most 4 MiB UTF-8. Empty explicitly disables defaults. */
   customCss?: string;
 }
+/** Native light-only single-page SVG, not a Canvas screenshot. */
+export interface FlowSvgExportOptions {
+  /** Poster width in points: 144..14400, default 612. */
+  maxWidthPt?: number;
+  /** Published bytes only, not a WASM-heap ceiling. Default/max 64 MiB. */
+  maxOutputBytes?: number;
+}
 export interface FlowPdfExportOptions extends FlowExportOptions {
   author?: string;
   /** Deterministic default 0; nonnegative safe integer seconds. */
@@ -440,6 +447,7 @@ export interface FlowExportOptionsByFormat {
   html: FlowHtmlExportOptions;
   pdf: FlowPdfExportOptions;
   epub: FlowEpubExportOptions;
+  svg: FlowSvgExportOptions;
 }
 export interface FlowExportDiagnostic {
   readonly severity: "warning" | "error";
@@ -447,11 +455,15 @@ export interface FlowExportDiagnostic {
   readonly start: number;
   readonly end: number;
   readonly message: string;
+  /** Stable native renderer reason code, when supplied. */
+  readonly code?: string;
+  /** Document-level findings use start=end=0 rather than guessed source spans. */
+  readonly scope?: "document";
 }
 export interface FlowExportResult extends FlowToken {
   readonly schemaVersion: 1;
   readonly format: FlowExportFormat;
-  readonly mimeType: "text/html; charset=utf-8" | "application/pdf" | "application/epub+zip";
+  readonly mimeType: "text/html; charset=utf-8" | "application/pdf" | "application/epub+zip" | "image/svg+xml";
   readonly font: "sans" | "serif";
   readonly sourceLengthBytes: number;
   readonly assetCount: number;

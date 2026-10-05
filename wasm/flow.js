@@ -50,7 +50,10 @@ export async function createFlowSession(markdown, options = {}) {
     });
     return withFlowExports(
       withAssetBatches(session, () => raw),
-      { html: renderHtml, pdf: renderPdf, epub: publicationRenderers.renderEpub },
+      {
+        html: renderHtml, pdf: renderPdf,
+        epub: publicationRenderers.renderEpub, svg: publicationRenderers.renderSvg,
+      },
       prepared.font,
     );
   } catch (error) {

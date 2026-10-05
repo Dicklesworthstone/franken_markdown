@@ -1,4 +1,4 @@
-// Revision-fenced document export through the existing HTML/PDF/EPUB core. This is
+// Revision-fenced document export through the existing HTML/PDF/EPUB/SVG core. This is
 // not a Canvas screenshot or a second Markdown renderer. The injected renderers
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
 import {
@@ -19,6 +19,7 @@ const MIME = Object.freeze({
   html: "text/html; charset=utf-8",
   pdf: "application/pdf",
   epub: "application/epub+zip",
+  svg: "image/svg+xml",
 });
 const COMMON = ["title", "lang", "toc", "tocDepth", "maxOutputBytes"];
 const PDF = [
@@ -65,10 +66,10 @@ function fence(session, expected) {
 // arrays, buffers, arbitrary renderer settings or ambient asset loaders enter it.
 export function normalizeFlowExport(format, options = {}, expectedToken) {
   if (typeof format !== "string" || !Object.hasOwn(MIME, format))
-    fail("INVALID_OPTIONS", "export format must be html, pdf or epub");
+    fail("INVALID_OPTIONS", "export format must be html, pdf, epub or svg");
   if (!options || typeof options !== "object" || Array.isArray(options))
     fail("INVALID_OPTIONS", "export options must be an object");
-  const allowed = [
+  const allowed = format === "svg" ? ["maxWidthPt", "maxOutputBytes"] : [
     ...COMMON,
     ...(format === "pdf" ? PDF : ["darkMode"]),
     ...(format === "epub" ? ["customCss"] : []),
@@ -85,6 +86,15 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
       FLOW_EXPORT_LIMIT,
     ),
   };
+  if (format === "svg") {
+    // Standalone SVG is a native, single-page poster. Reject HTML/PDF-only
+    // settings rather than imply they can affect the SVG renderer.
+    const { maxWidthPt: width = 612 } = options;
+    if (typeof width !== "number" || !Number.isFinite(width) || width < 144 || width > 14400)
+      fail("INVALID_OPTIONS", "maxWidthPt must be 144..14400 points");
+    result.maxWidthPt = width;
+    return [format, Object.freeze(result), token(expectedToken)];
+  }
   for (const key of ["title", ...(format === "pdf" ? ["author"] : [])]) {
     if (options[key] !== undefined) result[key] = text(options[key], key, 4096);
   }
@@ -244,7 +254,13 @@ function checkDiagnostics(value, sourceLength) {
       item.end > sourceLength
     )
       fail("INVALID_WASM_RESPONSE", "invalid export diagnostic");
-    length += item.message.length;
+    if (item.code !== undefined && (
+      typeof item.code !== "string" || item.code.length === 0 || item.code.length > 128
+    )) fail("INVALID_WASM_RESPONSE", "invalid export diagnostic code");
+    if (item.scope !== undefined && (
+      item.scope !== "document" || item.start !== 0 || item.end !== 0
+    )) fail("INVALID_WASM_RESPONSE", "invalid document diagnostic scope");
+    length += item.message.length + (item.code?.length ?? 0);
     if (length > DIAGNOSTIC_TEXT) fail("BUDGET_EXCEEDED", "export diagnostic text limit exceeded");
   }
 }
@@ -316,7 +332,7 @@ export function withFlowExports(session, renderers, font = "sans") {
         const output = await render(source, {
           ...settings,
           font,
-          allowRawHtml: false,
+          ...(kind === "svg" ? {} : { allowRawHtml: false }),
           pdfImages: assets.pdfImages,
         });
         fence(session, expected);
@@ -341,6 +357,8 @@ export function withFlowExports(session, renderers, font = "sans") {
                 start: item.start,
                 end: item.end,
                 message: item.message,
+                ...(item.code === undefined ? {} : { code: item.code }),
+                ...(item.scope === undefined ? {} : { scope: item.scope }),
               }),
             ),
           ),

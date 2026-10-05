@@ -41,6 +41,7 @@ export type {
   FlowLayoutOptions,
   FlowPageOptions,
   FlowPdfExportOptions,
+  FlowSvgExportOptions,
   FlowReadingPage,
   FlowSelection,
   FlowSnapshot,

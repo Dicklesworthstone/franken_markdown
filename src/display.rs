@@ -13,6 +13,9 @@
 use crate::span::SourceSpan;
 use crate::text::OwnedTextRun;
 
+#[path = "display/code.rs"]
+mod code;
+
 #[path = "display/spatial.rs"]
 mod spatial;
 pub use spatial::{

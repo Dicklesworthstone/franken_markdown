@@ -65,6 +65,23 @@ impl FmdFlowSession {
         self.inner.source().to_owned()
     }
 
+    #[wasm_bindgen(getter, js_name = codeHighlighting)]
+    pub fn code_highlighting(&self) -> bool {
+        self.inner.code_highlighting()
+    }
+
+    #[wasm_bindgen(js_name = setCodeHighlighting)]
+    pub fn set_code_highlighting(
+        &mut self,
+        revision: &str,
+        layout_revision: &str,
+        enabled: bool,
+    ) -> Result<(), JsValue> {
+        self.inner
+            .set_code_highlighting(id(revision)?, id(layout_revision)?, enabled)
+            .map_err(js_error)
+    }
+
     #[wasm_bindgen(js_name = editUtf16)]
     pub fn edit_utf16(
         &mut self,

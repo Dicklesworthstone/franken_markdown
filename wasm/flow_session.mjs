@@ -425,6 +425,18 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
     get supportsEditBatches() {
       return call((b) => typeof b.editManyUtf16Packed === "function");
     },
+    get supportsCodeHighlighting() {
+      return call((b) => typeof b.setCodeHighlighting === "function"
+        && typeof b.codeHighlighting === "boolean");
+    },
+    get codeHighlighting() {
+      return call((b) => {
+        if (typeof b.setCodeHighlighting !== "function") return false;
+        if (typeof b.codeHighlighting !== "boolean")
+          fail("INVALID_WASM_RESPONSE", "native syntax mode must be boolean");
+        return b.codeHighlighting;
+      });
+    },
     get revision() {
       return current().revision;
     },
@@ -468,6 +480,25 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
       sourceText(source);
       call((b) => b.replaceSource(opts.revision, source, opts.reuse));
       return current();
+    },
+    setCodeHighlighting(enabled, expectedToken) {
+      alive();
+      boolean(enabled, "enabled");
+      const expected = fence(expectedToken);
+      const before = call((b) => {
+        if (typeof b.setCodeHighlighting !== "function")
+          fail("UNSUPPORTED_WASM_PACKAGE", "this native package lacks code highlighting");
+        if (typeof b.codeHighlighting !== "boolean")
+          fail("INVALID_WASM_RESPONSE", "native syntax mode must be boolean");
+        return b.codeHighlighting;
+      });
+      call((b) => b.setCodeHighlighting(expected.revision, expected.layoutRevision, enabled));
+      const next = current();
+      if (call((b) => b.codeHighlighting) !== enabled
+          || next.revision !== expected.revision
+          || BigInt(next.layoutRevision) !== BigInt(expected.layoutRevision) + BigInt(before !== enabled))
+        fail("INVALID_WASM_RESPONSE", "native syntax acknowledgment is inconsistent");
+      return next;
     },
     reflow(options, expectedToken) {
       const expected = fence(expectedToken);

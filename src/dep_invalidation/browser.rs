@@ -20,6 +20,7 @@ use std::fmt;
 
 mod asset_batch;
 mod edit_batch;
+mod highlighting;
 mod outlines;
 mod wire;
 pub use edit_batch::Utf16Edit;

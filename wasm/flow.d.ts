@@ -300,6 +300,10 @@ export interface FlowSession {
   readonly supportsAssetBatches: boolean;
   /** False for legacy native packages; atomic edits never fall back to partial writes. */
   readonly supportsEditBatches: boolean;
+  /** False for legacy native packages; explicit mode changes require this capability. */
+  readonly supportsCodeHighlighting: boolean;
+  /** Last successful native mode. Defaults false; retained across edits and reflows. */
+  readonly codeHighlighting: boolean;
   readonly revision: string;
   readonly layoutRevision: string;
   readonly token: FlowToken;
@@ -325,6 +329,10 @@ export interface FlowSession {
    * supportsEditBatches; a failed batch leaves the prior snapshot intact. */
   editMany(edits: readonly FlowBatchEdit[], options: FlowEditOptions): FlowToken;
   replaceSource(source: string, options: FlowEditOptions): FlowToken;
+  /** Atomic syntax paint change. Changed mode advances only layoutRevision;
+   * equal mode is a no-op. Source/assets survive, and old item indices are stale.
+   * Both identities are required, including for a no-op. No silent fallback. */
+  setCodeHighlighting(enabled: boolean, token: FlowTokenInput): FlowToken;
   reflow(options: FlowLayoutOptions, token: FlowTokenInput): FlowToken;
   provideAsset(result: FlowAssetResult): FlowToken;
   /** One atomic parse/reflow and layout revision for up to 1,024 pending images.

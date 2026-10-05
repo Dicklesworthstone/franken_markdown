@@ -30,6 +30,32 @@ queued operation removes only that operation. Cancelling an in-flight operation
 terminates the worker and loses the session; the host retains its authoritative
 source and explicitly recreates it. No mutation is retried automatically.
 
+## Ready-to-render startup
+
+The public worker factory can configure syntax before publishing the session:
+
+```js
+const session = await createWorkerFlowSession(markdown, { viewportWidth: 800 }, {
+  initialCodeHighlighting: true,
+  startupTimeoutMs: 60_000,
+  signal: startupAbortController.signal,
+});
+// The Promise resolves only after native mode setup is acknowledged.
+```
+
+This does not expose an intermediate uncolored session. Creation still performs
+its ordinary initial layout, followed by the native mode transaction when needed;
+it is not a claim of a single shaping pass. Omit `initialCodeHighlighting` to keep
+the native default. Explicit `false` also works with legacy plain-only packages.
+Explicit `true` requires support: missing support, budget failure, cancellation
+or an inconsistent acknowledgment rejects creation and terminates the new worker.
+
+The original monotonic startup deadline covers the worker factory, native
+creation and optional mode setup. Setup receives only the remaining budget,
+never a renewed deadline. `startupTimeoutMs: 0` disables that deadline; an expired
+finite deadline is never converted into zero. The startup signal covers both
+operations but does not become a lifetime cancellation signal after creation.
+
 ## Compatibility and protocol
 
 Capabilities and initial mode travel in the creation value. The legacy state
@@ -49,7 +75,8 @@ ordinary `FlowToken`, without protocol-only fields.
 normalizers, worker queue/dispatcher and snapshot delta codec with a native
 renderer double and structured-clone loopback endpoint. It covers negotiation,
 stale tokens and budget errors, no-ops, exact u64 identities, persistence,
-queued/in-flight cancellation, and corrupted acknowledgments. The TypeScript
+queued/in-flight cancellation, corrupted acknowledgments, and startup publication,
+cleanup and deadline accounting. The TypeScript
 fixture covers the public mode/cancellation contract.
 
 These tests are not generated-WASM, real browser-worker, glyph-shaping or raster

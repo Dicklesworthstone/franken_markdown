@@ -71,7 +71,12 @@ export interface FlowWorkerOptions {
   workerFactory?: () => FlowWorkerEndpoint;
   /** Applies only to creation, not to the lifetime of the returned session. */
   signal?: AbortSignal;
-  /** Startup deadline, including loading WASM and first layout. Default 60000. */
+  /** Optional mode applied before the creation Promise resolves. Omit to retain
+   * the native default. Enabling requires worker/native support; any setup failure
+   * terminates the new worker instead of exposing an unconfigured session. */
+  initialCodeHighlighting?: boolean;
+  /** Total startup deadline, including WASM, first layout and optional syntax
+   * setup. Default 60000; 0 disables. Setup does not receive a renewed deadline. */
   startupTimeoutMs?: number;
   /** Per-operation enqueue deadline; default 30000, 0 disables. */
   timeoutMs?: number;

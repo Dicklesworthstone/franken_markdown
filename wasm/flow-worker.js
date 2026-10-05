@@ -13,6 +13,7 @@ export async function createWorkerFlowSession(source, options = {}, workerOption
       "workerFactory",
       "signal",
       "startupTimeoutMs",
+      "initialCodeHighlighting",
       "timeoutMs",
       "maxPendingOperations",
       "maxPendingBytes",

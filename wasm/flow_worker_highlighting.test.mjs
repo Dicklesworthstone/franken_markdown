@@ -254,7 +254,7 @@ test("corrupted syntax acknowledgments terminate before a queued mutation is dis
       if (damage === "source") message.value.revision = message.state.token.revision = "9007199254740994";
       if (damage === "layout") message.state.layout.viewportWidth = 300;
       if (damage === "wrong-request") {
-        // A internally consistent no-op reply for an actual enabling request.
+        // An internally consistent no-op reply for an actual enabling request.
         message.value.codeHighlighting = false;
         message.value.layoutRevision = message.state.token.layoutRevision = request.args[1].layoutRevision;
       }
@@ -269,4 +269,157 @@ test("corrupted syntax acknowledgments terminate before a queued mutation is dis
     assert.equal(wire.sent.some((request) => request.method === "replaceSource"), false, damage);
     assert.notEqual(raw.source, "must not run");
   }
+});
+
+test("public creation publishes only the requested initial mode after both acknowledgments", async (t) => {
+  const { createWorkerFlowSession } = await import("./flow-worker.js");
+  const raw = native();
+  let wire;
+  wire = channel(raw, (_message, request) => {
+    if (request.method === "setCodeHighlighting") wire.hold = true;
+  });
+  t.after(() => wire.client.terminate());
+  let published = false;
+  const creating = createWorkerFlowSession(raw.source, {}, {
+    workerFactory: () => wire.client, initialCodeHighlighting: true,
+  }).then((session) => { published = true; return session; });
+  await turn();
+  assert.equal(raw.codeHighlighting, true);
+  assert.equal(published, false);
+  assert.deepEqual(wire.sent.map((request) => request.method), ["create", "setCodeHighlighting"]);
+  wire.flush();
+  const session = await creating;
+  assert.equal(session.codeHighlighting, true);
+  assert.equal(session.revision, "9007199254740993");
+  assert.equal(session.layoutRevision, "9007199254740996");
+});
+
+test("invalid startup mode is rejected before allocating a worker", async () => {
+  const { createWorkerFlowSession } = await import("./flow-worker.js");
+  let allocations = 0;
+  for (const initialCodeHighlighting of [1, "true", null, {}]) {
+    await assert.rejects(createWorkerFlowSession("hello", {}, {
+      workerFactory: () => { allocations++; throw new Error("must not allocate"); },
+      initialCodeHighlighting,
+    }), code("INVALID_OPTIONS"));
+  }
+  assert.equal(allocations, 0);
+});
+
+test("startup rejects unsupported or failed syntax setup and releases the new worker", async () => {
+  for (const legacy of [true, false]) {
+    const raw = native({ legacy });
+    raw.rejectHighlight = true;
+    const wire = channel(raw);
+    await assert.rejects(createWorkerFlowSessionWith(() => wire.client, raw.source, {}, {
+      initialCodeHighlighting: true,
+    }), code(legacy ? "UNSUPPORTED_WASM_PACKAGE" : "BUDGET_EXCEEDED"));
+    assert.equal(raw.freed, 1);
+    assert.equal(raw.codeHighlighting, false);
+  }
+});
+
+test("explicit plain startup remains compatible with legacy packages and omitted mode preserves native defaults", async (t) => {
+  for (const [legacy, enabled, initialCodeHighlighting, expected] of [
+    [true, false, false, false], [false, true, undefined, true], [false, true, false, false],
+  ]) {
+    const raw = native({ legacy, enabled }), wire = channel(raw);
+    const session = await createWorkerFlowSessionWith(() => wire.client, raw.source, {}, {
+      initialCodeHighlighting,
+    });
+    t.after(() => session.dispose());
+    assert.equal(session.codeHighlighting, expected);
+    assert.equal(raw.highlightCalls, initialCodeHighlighting === false && enabled ? 1 : 0);
+  }
+});
+
+test("startup syntax setup shares the original deadline rather than renewing it", async (t) => {
+  let now = 0;
+  const delays = [];
+  const timer = globalThis.setTimeout;
+  t.mock.method(performance, "now", () => now);
+  t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
+    delays.push(delay);
+    return timer(callback, delay, ...args);
+  });
+  const raw = native();
+  const wire = channel(raw, (_message, request) => {
+    if (request.method === "create") now = 200;
+  });
+  const session = await createWorkerFlowSessionWith(() => wire.client, raw.source, {}, {
+    initialCodeHighlighting: true, startupTimeoutMs: 300,
+  });
+  t.after(() => session.dispose());
+  assert.deepEqual(delays, [300, 100]);
+  assert.equal(session.codeHighlighting, true);
+});
+
+test("an exhausted startup budget never turns into an unlimited syntax operation", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const raw = native();
+  const wire = channel(raw, (_message, request) => {
+    if (request.method === "create") now = 301;
+  });
+  await assert.rejects(createWorkerFlowSessionWith(() => wire.client, raw.source, {}, {
+    initialCodeHighlighting: true, startupTimeoutMs: 300,
+  }), code("TIMEOUT"));
+  assert.deepEqual(wire.sent.map((request) => request.method), ["create"]);
+  assert.equal(raw.freed, 1);
+});
+
+test("aborting during startup syntax setup rejects creation and terminates the owned worker", async () => {
+  const raw = native(), wire = channel(raw);
+  const controller = new AbortController();
+  wire.hold = true;
+  const creating = createWorkerFlowSessionWith(() => wire.client, raw.source, {}, {
+    initialCodeHighlighting: true, signal: controller.signal,
+  });
+  const rejected = assert.rejects(creating, code("ABORTED"));
+  await turn();
+  // Release create, then hold the following mode reply while native setup runs.
+  wire.flush();
+  queueMicrotask(() => { wire.hold = true; });
+  await turn();
+  assert.equal(raw.highlightCalls, 1);
+  controller.abort();
+  await rejected;
+  assert.equal(raw.freed, 1);
+  wire.flush();
+});
+
+test("worker-factory time is charged before dispatch and a late plain acknowledgment cannot bypass startup expiry", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  for (const expireInFactory of [true, false]) {
+    now = 0;
+    const raw = native();
+    const wire = channel(raw, () => { now = 500; });
+    let terminated = 0;
+    const terminate = wire.client.terminate;
+    wire.client.terminate = () => { terminated++; terminate(); };
+    await assert.rejects(createWorkerFlowSessionWith(() => {
+      if (expireInFactory) now = 500;
+      return wire.client;
+    }, raw.source, {}, { startupTimeoutMs: 300 }), code("TIMEOUT"));
+    assert.equal(terminated, 1);
+    assert.equal(wire.sent.length, expireInFactory ? 0 : 1);
+    assert.equal(raw.highlightCalls, 0);
+  }
+});
+
+test("explicitly disabled startup deadline remains disabled through syntax setup", async (t) => {
+  const raw = native(), wire = channel(raw);
+  const delays = [];
+  const timer = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
+    delays.push(delay);
+    return timer(callback, delay, ...args);
+  });
+  const session = await createWorkerFlowSessionWith(() => wire.client, raw.source, {}, {
+    initialCodeHighlighting: true, startupTimeoutMs: 0, timeoutMs: 1,
+  });
+  t.after(() => session.dispose());
+  assert.equal(session.codeHighlighting, true);
+  assert.deepEqual(delays, []);
 });

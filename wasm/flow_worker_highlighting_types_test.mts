@@ -1,4 +1,4 @@
-import type { WorkerFlowSession, FlowToken } from "./flow-worker.js";
+import type { WorkerFlowSession, FlowToken, FlowWorkerOptions } from "./flow-worker.js";
 
 declare const session: WorkerFlowSession;
 const supported: boolean = session.supportsCodeHighlighting;
@@ -16,3 +16,8 @@ session.codeHighlighting = true;
 // @ts-expect-error controls use the same typed cancellation contract as other operations
 session.setCodeHighlighting(false, session.token, { signal: true });
 void [supported, enabled, changed];
+
+const startup: FlowWorkerOptions = { initialCodeHighlighting: true, startupTimeoutMs: 10000 };
+// @ts-expect-error the startup mode is also strictly boolean
+const invalidStartup: FlowWorkerOptions = { initialCodeHighlighting: "true" };
+void [startup, invalidStartup];

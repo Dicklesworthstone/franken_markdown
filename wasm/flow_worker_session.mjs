@@ -35,9 +35,14 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
   try {
     fields(
       runtime,
-      ["signal", "startupTimeoutMs", "timeoutMs", "maxPendingOperations", "maxPendingBytes"],
+      ["signal", "startupTimeoutMs", "timeoutMs", "maxPendingOperations", "maxPendingBytes",
+        "initialCodeHighlighting"],
       "worker options",
     );
+    const initialCodeHighlighting = runtime.initialCodeHighlighting;
+    if (initialCodeHighlighting !== undefined && typeof initialCodeHighlighting !== "boolean") {
+      throw new FlowWorkerError("INVALID_OPTIONS", "initialCodeHighlighting must be boolean");
+    }
     const configured = {};
     for (const key of ["timeoutMs", "maxPendingOperations", "maxPendingBytes"]) {
       if (runtime[key] !== undefined) configured[key] = runtime[key];
@@ -71,6 +76,17 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     let supportsEditBatches = false;
     let supportsCodeHighlighting = false;
     let codeHighlighting = false;
+    // One monotonic startup budget covers creation AND optional syntax setup.
+    // Do not publish the session while its requested initial mode is still pending.
+    const startupDeadline = startupTimeout === 0 ? null : performance.now() + startupTimeout;
+    const startupControl = () => {
+      const remaining = startupDeadline === null ? 0 : Math.ceil(startupDeadline - performance.now());
+      // Zero disables the RPC deadline; an exhausted finite budget must NOT
+      // accidentally become unlimited or receive a fresh startup timeout.
+      if (startupDeadline !== null && remaining <= 0)
+        throw new FlowWorkerError("TIMEOUT", "worker startup budget exhausted");
+      return { signal: runtime.signal, timeoutMs: remaining };
+    };
     worker = factory();
     rpc = new OwnedWorkerRpc(worker, limits, (value, method, result) => {
       const next = acknowledgedState(value);
@@ -222,10 +238,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       if (method === "getSource") sourceText(result);
       state = next;
     });
-    await rpc.request("create", requestWeight(initial), () => ({ args: initial }), {
-      signal: runtime.signal,
-      timeoutMs: startupTimeout,
-    });
+    await rpc.request("create", requestWeight(initial), () => ({ args: initial }), startupControl());
     const alive = () => {
       if (rpc.closed) throw new FlowWorkerError("SESSION_DISPOSED", "worker session is closed");
     };
@@ -452,6 +465,12 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         rpc.dispose();
       },
     };
+    if (initialCodeHighlighting !== undefined && initialCodeHighlighting !== codeHighlighting) {
+      await api.setCodeHighlighting(initialCodeHighlighting, api.token, startupControl());
+    }
+    if (runtime.signal?.aborted)
+      throw new FlowWorkerError("ABORTED", "worker creation was aborted");
+    startupControl(); // Also fence a late create acknowledgment without a mode change.
     return Object.freeze(api);
   } catch (error) {
     snapshotDeltas.clear();

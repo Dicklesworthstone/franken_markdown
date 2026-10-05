@@ -163,6 +163,23 @@ fn big_op_is_display_scaled_and_axis_centered() {
 }
 
 #[test]
+fn display_integrals_take_the_cmex_display_size() {
+    // cmex10's display integral is twice the text one (2.222 em vs 1.111 em);
+    // the `\sum` class keeps its 1.4.
+    let e = engine();
+    for op in [r"\int", r"\oint", r"\iint"] {
+        let display = e.typeset(op, Style::Display).unwrap();
+        let text = e.typeset(op, Style::Text).unwrap();
+        let ratio = display.glyphs[0].size / text.glyphs[0].size;
+        assert!(
+            (ratio - CM.display_integral_scale).abs() < EPS,
+            "{op}: {ratio}"
+        );
+    }
+    assert!((CM.display_integral_scale - 2.0).abs() < EPS);
+}
+
+#[test]
 fn display_limits_go_above_and_below_with_the_xi_gaps() {
     let e = engine();
     let l = e.typeset(r"\sum_{n=1}^{N}", Style::Display).unwrap();

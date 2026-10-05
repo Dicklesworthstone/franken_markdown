@@ -75,6 +75,11 @@ pub struct MathConstants {
     /// (14 pt-class vs 10 pt-class: 1.4) — a calibration constant the Look
     /// Gallery judges (G0-3 "spike simplifications" work item).
     pub display_op_scale: f64,
+    /// The display-size scale of `\int`-class operators. cmex10's display
+    /// integral (char 0x5A, 2.222 em tall) is twice its text integral (char
+    /// 0x52, 1.111 em), not the 1.4 of `\sum`; the pinned manim Reference
+    /// measures `Tex(r"\int")` at 2.0 times `\textstyle\int`.
+    pub display_integral_scale: f64,
     /// TeX's `delimiterfactor`/1000: a `\left…\right` delimiter must cover
     /// at least this fraction of twice the content's axis-distance.
     pub delimiter_factor: f64,
@@ -127,6 +132,7 @@ pub const CM: MathConstants = MathConstants {
     big_op_spacing4: 0.600_000,
     big_op_spacing5: 0.100_000,
     display_op_scale: 1.4,
+    display_integral_scale: 2.0,
     delimiter_factor: 0.901,
     delimiter_shortfall: 0.5,
     null_delimiter_space: 0.12,

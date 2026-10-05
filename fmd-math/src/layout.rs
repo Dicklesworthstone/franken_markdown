@@ -399,11 +399,11 @@ impl Engine {
                 char_glyph: None,
             }),
             NodeKind::Symbol { ch, .. } => self.char_atom(*ch, node.span, ctx),
-            NodeKind::BigOp { ch, .. } => {
-                let scale = if ctx.style.style == Style::Display {
-                    self.consts.display_op_scale
-                } else {
-                    1.0
+            NodeKind::BigOp { ch, integral, .. } => {
+                let scale = match (ctx.style.style == Style::Display, *integral) {
+                    (true, true) => self.consts.display_integral_scale,
+                    (true, false) => self.consts.display_op_scale,
+                    (false, _) => 1.0,
                 };
                 self.op_glyph(*ch, node.span, ctx, scale)
             }

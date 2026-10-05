@@ -87,6 +87,11 @@ cli = ["dep:clap"]
 # feature exists because Rust 2024 treats manual `no_mangle`/`export_name` ABI
 # exports as unsafe attributes, and the project forbids unsafe code.
 wasm-bindgen = ["dep:wasm-bindgen"]
+# Persistent browser editor ABI. Keep its exported roots out of render-only
+# builds; the native BrowserFlowSession API is not feature-gated.
+wasm-flow = ["wasm-bindgen"]
+# Full browser distribution, including the opt-in persistent editor.
+wasm-full = ["wasm-flow"]
 # Native-only batch/streaming orchestration (bead zmd). Pulls Asupersync for
 # structured concurrency, cancellation, and budgets. Strictly opt-in: the
 # library core, `--no-default-features`, and wasm32 builds never enable it, so

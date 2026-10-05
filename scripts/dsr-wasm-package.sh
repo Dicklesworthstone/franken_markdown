@@ -12,7 +12,7 @@ PACKAGE="$ART/package"
 mkdir -p "$PACKAGE/pkg" "$PACKAGE/demo" "$ART/parity"
 cargo build --no-default-features --lib
 cargo build --no-default-features --target wasm32-unknown-unknown --lib
-cargo build --release --no-default-features --features wasm-bindgen --target wasm32-unknown-unknown --lib
+cargo build --release --no-default-features --features wasm-full --target wasm32-unknown-unknown --lib
 wasm-bindgen "$TARGET_DIR/wasm32-unknown-unknown/release/franken_markdown.wasm" --target web --out-dir "$PACKAGE/pkg"
 for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts \
   interactive.js interactive.d.ts interactive_runtime.mjs interactive_preview.mjs NATIVE_PREVIEW.md INTERACTIVE.md \

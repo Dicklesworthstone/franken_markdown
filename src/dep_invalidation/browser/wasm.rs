@@ -1,3 +1,5 @@
+#![cfg(feature = "wasm-flow")]
+
 //! Feature-gated wasm-bindgen seam. All policy/transactions live in the native
 //! BrowserFlowSession so the core remains testable without a JavaScript runtime.
 use super::{BrowserFlowError, BrowserFlowSession, parse_identity, wire};

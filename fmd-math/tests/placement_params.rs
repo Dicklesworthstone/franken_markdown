@@ -431,3 +431,60 @@ fn a_line_break_unskips_the_space_before_it() {
     let xs = |l: &Layout| l.glyphs.iter().map(|g| g.x).collect::<Vec<_>>();
     assert_eq!(xs(&prose), xs(&plain));
 }
+
+/// Rule 17 (tex.web §755): a lone math character with no subscript is
+/// followed by a kern of its italic correction, so `f(` clears the f's
+/// overhang. A subscripted character keeps δ out of its width, and a
+/// character inside a word of a text face (TeX's math_text_char) gets none.
+#[test]
+fn italic_correction_kerns_follow_lone_math_characters() {
+    use fmd_math::faces::glyph_metrics;
+    let e = engine();
+    let metrics = |l: &Layout, i: usize| {
+        let g = &l.glyphs[i];
+        glyph_metrics(e.faces().font(g.face).expect("glyph face"), g.gid)
+    };
+
+    let italic = e.typeset("f(", Style::Text).unwrap();
+    let m = metrics(&italic, 0);
+    assert!(
+        m.italic > 0.0,
+        "the math-italic f overhangs its advance: {m:?}"
+    );
+    let gap = italic.glyphs[1].x - italic.glyphs[0].x;
+    assert!(
+        (gap - (m.advance + m.italic)).abs() < EPS,
+        "f( advances by the f's width plus its italic correction: {gap} vs {m:?}"
+    );
+
+    let subscripted = e.typeset("f_i", Style::Text).unwrap();
+    let gap = subscripted.glyphs[1].x - subscripted.glyphs[0].x;
+    assert!(
+        (gap - metrics(&subscripted, 0).advance).abs() < EPS,
+        "a subscript attaches at the nucleus width, without δ: {gap}"
+    );
+
+    // `\mathrm{f}` is a group: its f is alone in its own list, so TeX kerns δ.
+    let grouped = e.typeset(r"\mathrm{f}(", Style::Text).unwrap();
+    let upright = metrics(&grouped, 0);
+    assert!(
+        upright.italic > 0.0,
+        "the upright f overhangs too: {upright:?}"
+    );
+    let gap = grouped.glyphs[1].x - grouped.glyphs[0].x;
+    assert!(
+        (gap - (upright.advance + upright.italic)).abs() < EPS,
+        "a grouped upright f is lone in its list and keeps δ: {gap} vs {upright:?}"
+    );
+    // Inside one list, an upright f followed by an upright f is a word of the
+    // text face (math_text_char): no italic correction, only the font's kern.
+    let word = e.typeset(r"\mathrm{ff}", Style::Text).unwrap();
+    let (first, second) = (&word.glyphs[0], &word.glyphs[1]);
+    let font = e.faces().font(first.face).expect("glyph face");
+    let kern = fmd_math::faces::kern_em(font, first.gid, second.gid);
+    let gap = second.x - first.x;
+    assert!(
+        (gap - (upright.advance + kern)).abs() < EPS,
+        "inside a word of the text face the italic correction is zero: {gap} vs {upright:?}"
+    );
+}

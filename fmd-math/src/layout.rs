@@ -208,6 +208,12 @@ struct Laid {
     /// Set when the box is a single character glyph (rule 18's u=v=0 case,
     /// and the kerning pass).
     char_glyph: Option<(FaceId, u16)>,
+    /// For a braced list holding one character: that character's italic
+    /// correction, left out of the box width. A list appends it when the
+    /// group is an ordinary atom (TeX keeps the kern of a sub-mlist
+    /// nucleus); a construct part leaves it out, as TeX's clean_box drops an
+    /// "unneeded italic correction" (tex.web §720).
+    group_italic: f64,
 }
 
 enum LineItem {
@@ -223,21 +229,28 @@ impl Engine {
     /// size changes) persist across the line split: `\\` does not end the
     /// enclosing group.
     fn hlist(&self, items: &[Node], ctx: LayCtx) -> Result<MBox, MathError> {
+        self.hlist_with_italic(items, ctx).map(|(boxx, _)| boxx)
+    }
+
+    /// [`Self::hlist`], plus the italic correction a one-character list left
+    /// out of its width (see [`Laid::group_italic`]); 0 for anything else.
+    fn hlist_with_italic(&self, items: &[Node], ctx: LayCtx) -> Result<(MBox, f64), MathError> {
         let mut lines: Vec<(MBox, f64, f64)> = Vec::new();
         let mut ctx = ctx;
+        let mut sole_italic = 0.0;
         for line in items.split(|n| matches!(n.kind, NodeKind::Linebreak)) {
-            let (boxx, after) = self.line(line, ctx)?;
+            let (boxx, after, italic) = self.line(line, ctx)?;
             ctx = after;
+            sole_italic = italic;
             lines.push((boxx, ctx.size(), ctx.line_stretch));
         }
         if lines.len() == 1 {
-            return lines
-                .pop()
-                .map(|(boxx, _, _)| boxx)
-                .ok_or(MathError::Malformed {
+            return lines.pop().map(|(boxx, _, _)| (boxx, sole_italic)).ok_or(
+                MathError::Malformed {
                     what: "internal: empty line vector".to_owned(),
                     at: 0,
-                });
+                },
+            );
         }
         // Stack lines: baseline-to-baseline is \baselineskip (grown when
         // boxes would come closer than \lineskip), read at each line's own
@@ -267,18 +280,22 @@ impl Engine {
                 node: MNode::Box(line),
             });
         }
-        Ok(MBox {
-            kind: BoxKind::Vertical,
-            width,
-            height,
-            depth,
-            children,
-        })
+        Ok((
+            MBox {
+                kind: BoxKind::Vertical,
+                width,
+                height,
+                depth,
+                children,
+            },
+            0.0,
+        ))
     }
 
     /// One line of a horizontal list; also returns the context after the
-    /// line's declarations, so `\\`-separated lines inherit them.
-    fn line(&self, items: &[Node], outer: LayCtx) -> Result<(MBox, LayCtx), MathError> {
+    /// line's declarations, so `\\`-separated lines inherit them, and the
+    /// italic correction a one-character line left out of its width.
+    fn line(&self, items: &[Node], outer: LayCtx) -> Result<(MBox, LayCtx, f64), MathError> {
         let classes = classify_list(items);
         let mut ctx = outer;
         let mut laid_items: Vec<LineItem> = Vec::new();
@@ -330,13 +347,26 @@ impl Engine {
                 }
             }
         }
+        // The face of each item's successor when that successor is a single
+        // character, for rule 17's word-interior exception below.
+        let next_char_face: Vec<Option<FaceId>> = (0..laid_items.len())
+            .map(|i| match laid_items.get(i + 1) {
+                Some(LineItem::Atom { laid, .. }) => laid.char_glyph.map(|(face, _)| face),
+                _ => None,
+            })
+            .collect();
+        // A one-character line leaves its italic correction out of the width
+        // and reports it instead (Laid::group_italic): its consumer decides.
+        let sole_char = matches!(laid_items.as_slice(),
+            [LineItem::Atom { laid, .. }] if laid.char_glyph.is_some());
+        let mut sole_italic = 0.0;
         // Assemble: inter-atom glue + kerning.
         let mut children = Vec::new();
         let mut x = 0.0_f64;
         let mut height = 0.0_f64;
         let mut depth = 0.0_f64;
         let mut prev: Option<(AtomClass, Option<(FaceId, u16)>)> = None;
-        for item in laid_items {
+        for (index, item) in laid_items.into_iter().enumerate() {
             match item {
                 LineItem::Glue(glue) => {
                     x += glue.natural;
@@ -365,7 +395,31 @@ impl Engine {
                     }
                     height = height.max(laid.boxx.height);
                     depth = depth.max(laid.boxx.depth);
-                    let advance = laid.boxx.width;
+                    // Rule 17 (tex.web §755): a lone character with no
+                    // subscript is followed by a kern of its italic
+                    // correction, so `f(` clears the f's overhang. A
+                    // subscripted character reaches here as a script box,
+                    // which places its own δ (rule 18). The one exception
+                    // is a character inside a word of a text face (TeX's
+                    // math_text_char in a font with nonzero space): the
+                    // math-italic face is TeX's cmmi role and always keeps δ.
+                    // A braced one-character group used as an atom keeps
+                    // its character's kern (a sub-mlist nucleus in TeX).
+                    let italic_kern = match laid.char_glyph {
+                        Some((face, _))
+                            if face == FACE_ITALIC || next_char_face[index] != Some(face) =>
+                        {
+                            laid.italic
+                        }
+                        Some(_) => 0.0,
+                        None => laid.group_italic,
+                    };
+                    let advance = if sole_char {
+                        sole_italic = italic_kern;
+                        laid.boxx.width
+                    } else {
+                        laid.boxx.width + italic_kern
+                    };
                     let glyph = laid.char_glyph;
                     children.push(Positioned {
                         dx: x,
@@ -386,6 +440,7 @@ impl Engine {
                 children,
             },
             ctx,
+            sole_italic,
         ))
     }
 
@@ -393,11 +448,15 @@ impl Engine {
     #[allow(clippy::too_many_lines)]
     fn lay_node(&self, node: &Node, ctx: LayCtx) -> Result<Laid, MathError> {
         match &node.kind {
-            NodeKind::List(items) => Ok(Laid {
-                boxx: self.hlist(items, ctx)?,
-                italic: 0.0,
-                char_glyph: None,
-            }),
+            NodeKind::List(items) => {
+                let (boxx, group_italic) = self.hlist_with_italic(items, ctx)?;
+                Ok(Laid {
+                    boxx,
+                    italic: 0.0,
+                    char_glyph: None,
+                    group_italic,
+                })
+            }
             NodeKind::Symbol { ch, .. } => self.char_atom(*ch, node.span, ctx),
             NodeKind::BigOp { ch, integral, .. } => {
                 let scale = match (ctx.style.style == Style::Display, *integral) {
@@ -423,6 +482,7 @@ impl Engine {
                 )?,
                 italic: 0.0,
                 char_glyph: None,
+                group_italic: 0.0,
             }),
             NodeKind::TextStyled { style, body } => {
                 let styled = LayCtx {
@@ -440,12 +500,14 @@ impl Engine {
                         boxx: self.underline_box(inner, ctx, node.span),
                         italic: 0.0,
                         char_glyph: None,
+                        group_italic: 0.0,
                     })
                 } else {
                     Ok(Laid {
                         boxx: inner,
                         italic: 0.0,
                         char_glyph: None,
+                        group_italic: 0.0,
                     })
                 }
             }
@@ -481,6 +543,7 @@ impl Engine {
                     )?,
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 })
             }
             NodeKind::MathFont { font, body } => self.lay_node(
@@ -509,6 +572,7 @@ impl Engine {
                     boxx,
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 })
             }
             NodeKind::Phantom { kind, body } => {
@@ -528,6 +592,7 @@ impl Engine {
                     },
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 })
             }
             NodeKind::Stack {
@@ -549,6 +614,7 @@ impl Engine {
                     boxx: self.with_limits(base_laid.boxx, upper, lower, ctx, base_laid.italic),
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 })
             }
             NodeKind::XArrow {
@@ -603,6 +669,7 @@ impl Engine {
                     ),
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 })
             }
             NodeKind::Fragment(FragmentKind::StrayRight(delim)) => {
@@ -613,6 +680,7 @@ impl Engine {
                         boxx: kern_box(self.consts.null_delimiter_space * ctx.size()),
                         italic: 0.0,
                         char_glyph: None,
+                        group_italic: 0.0,
                     })
                 }
             }
@@ -646,6 +714,7 @@ impl Engine {
                     boxx,
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 })
             }
             NodeKind::Fragment(_)
@@ -661,6 +730,7 @@ impl Engine {
                 boxx: kern_box(0.0),
                 italic: 0.0,
                 char_glyph: None,
+                group_italic: 0.0,
             }),
         }
     }
@@ -717,6 +787,7 @@ impl Engine {
                         },
                         italic: 0.0,
                         char_glyph: None,
+                        group_italic: 0.0,
                     });
                 }
                 return Err(err);
@@ -728,6 +799,7 @@ impl Engine {
             boxx: glyph_box(face, gid, mapped, span, size, metrics),
             italic: metrics.italic * size,
             char_glyph: Some((face, gid)),
+            group_italic: 0.0,
         })
     }
 
@@ -762,6 +834,7 @@ impl Engine {
             boxx,
             italic: metrics.italic * size,
             char_glyph: None,
+            group_italic: 0.0,
         })
     }
 
@@ -841,6 +914,7 @@ impl Engine {
             },
             italic: last_italic,
             char_glyph: None,
+            group_italic: 0.0,
         })
     }
 
@@ -932,6 +1006,7 @@ impl Engine {
                     boxx: self.with_limits(base_laid.boxx, upper, lower, ctx, base_laid.italic),
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 });
             }
         }
@@ -943,6 +1018,7 @@ impl Engine {
                 boxx: kern_box(0.0),
                 italic: 0.0,
                 char_glyph: None,
+                group_italic: 0.0,
             },
         };
         let base_is_char = base_laid.char_glyph.is_some() || base.is_none();
@@ -1049,6 +1125,7 @@ impl Engine {
             },
             italic: 0.0,
             char_glyph: None,
+            group_italic: 0.0,
         })
     }
 
@@ -1265,6 +1342,7 @@ impl Engine {
             boxx,
             italic: 0.0,
             char_glyph: None,
+            group_italic: 0.0,
         })
     }
 
@@ -1368,6 +1446,7 @@ impl Engine {
             },
             italic: 0.0,
             char_glyph: None,
+            group_italic: 0.0,
         })
     }
 
@@ -1413,6 +1492,7 @@ impl Engine {
                     },
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 })
             }
             AccentKind::UnderLine => {
@@ -1421,6 +1501,7 @@ impl Engine {
                     boxx: self.underline_box(inner, ctx, span),
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 })
             }
             AccentKind::OverBrace
@@ -1503,6 +1584,7 @@ impl Engine {
                     },
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 })
             }
             _ => {
@@ -1569,6 +1651,7 @@ impl Engine {
                     },
                     italic: 0.0,
                     char_glyph: None,
+                    group_italic: 0.0,
                 })
             }
         }
@@ -1700,6 +1783,7 @@ impl Engine {
             boxx,
             italic: 0.0,
             char_glyph: None,
+            group_italic: 0.0,
         })
     }
 
@@ -1897,6 +1981,7 @@ impl Engine {
             },
             italic: 0.0,
             char_glyph: None,
+            group_italic: 0.0,
         })
     }
 
@@ -1949,6 +2034,7 @@ impl Engine {
             boxx: hcat(vec![left_box, inner, right_box]),
             italic: 0.0,
             char_glyph: None,
+            group_italic: 0.0,
         })
     }
 

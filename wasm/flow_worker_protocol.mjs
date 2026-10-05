@@ -28,6 +28,7 @@ const ARITIES = Object.freeze({
   editMany: 2,
   replaceSource: 2,
   reflow: 2,
+  setCodeHighlighting: 2,
   provideAsset: 1,
   provideAssets: 1,
   reloadAssets: 1,
@@ -153,6 +154,8 @@ export function normalizeFlowRequest(method, args) {
     }
     case "replaceSource":
       return [sourceText(args[0]), editOptions(args[1])];
+    case "setCodeHighlighting":
+      return [flag(args[0], "enabled"), flowToken(args[1])];
     case "reflow": {
       fields(args[0], LAYOUT_KEYS, "layout");
       const partial = {};

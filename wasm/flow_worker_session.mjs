@@ -69,6 +69,8 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     let supportsViewport = false;
     let supportsAssetBatches = false;
     let supportsEditBatches = false;
+    let supportsCodeHighlighting = false;
+    let codeHighlighting = false;
     worker = factory();
     rpc = new OwnedWorkerRpc(worker, limits, (value, method, result) => {
       const next = acknowledgedState(value);
@@ -116,6 +118,17 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         ) {
           throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid edit-batch capability");
         }
+        if (
+          (result?.supportsCodeHighlighting !== undefined &&
+            typeof result.supportsCodeHighlighting !== "boolean") ||
+          (result?.supportsCodeHighlighting === true
+            ? typeof result.codeHighlighting !== "boolean"
+            : result?.codeHighlighting !== undefined && result.codeHighlighting !== false)
+        ) {
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid syntax-mode capability");
+        }
+        supportsCodeHighlighting = result?.supportsCodeHighlighting === true;
+        codeHighlighting = supportsCodeHighlighting && result.codeHighlighting;
         supportsEditBatches = result?.supportsEditBatches === true;
         supportsViewportDeltas = result?.supportsViewportDeltas === true;
         supportsSnapshotDeltas = result?.supportsSnapshotDeltas === true;
@@ -136,6 +149,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
           "editMany",
           "replaceSource",
           "reflow",
+          "setCodeHighlighting",
           "provideAsset",
           "provideAssets",
           "reloadAssets",
@@ -189,6 +203,21 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
           }
         }
       }
+      if (method === "setCodeHighlighting") {
+        const previous = flowToken(result.previousToken);
+        if (
+          !supportsCodeHighlighting || typeof result.codeHighlighting !== "boolean" ||
+          !state || previous.revision !== state.token.revision ||
+          previous.layoutRevision !== state.token.layoutRevision ||
+          next.token.revision !== previous.revision ||
+          BigInt(next.token.layoutRevision) !== BigInt(previous.layoutRevision) +
+            BigInt(codeHighlighting !== result.codeHighlighting) ||
+          Object.keys(state.layout).some((key) => state.layout[key] !== next.layout[key])
+        ) {
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "inconsistent syntax-mode acknowledgment");
+        }
+        codeHighlighting = result.codeHighlighting;
+      }
       if (method === "exportDocument") validateFlowExportResult(result, next.token);
       if (method === "getSource") sourceText(result);
       state = next;
@@ -221,6 +250,12 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
             "this worker does not expose atomic source edit batches",
           );
         }
+        if (method === "setCodeHighlighting" && !supportsCodeHighlighting) {
+          throw new FlowWorkerError(
+            "UNSUPPORTED_WASM_PACKAGE",
+            "this worker does not expose persistent code highlighting",
+          );
+        }
         const normalized = normalizeFlowRequest(method, args);
         // Capture an omitted query token before enqueueing, not when the worker
         // eventually reads it behind an edit or reflow.
@@ -239,6 +274,21 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
           () => snapshotArguments(wireMethod, wireArgs),
           controls,
         );
+        if (method === "setCodeHighlighting")
+          return pending.then((result) => {
+            // Promise continuations run before the RPC pumps another request.
+            // A mismatched reply must close the session, not dispatch queued edits.
+            if (
+              result.codeHighlighting !== normalized[0] ||
+              result.previousToken.revision !== normalized[1].revision ||
+              result.previousToken.layoutRevision !== normalized[1].layoutRevision
+            ) {
+              rpc.dispose();
+              throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "syntax reply mismatched its request");
+            }
+            // Mode/previous-token metadata is private to this wire method.
+            return flowToken(result);
+          });
         if (method === "viewport")
           return pending.then((result) => {
             try {
@@ -286,6 +336,14 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         alive();
         return supportsEditBatches;
       },
+      get supportsCodeHighlighting() {
+        alive();
+        return supportsCodeHighlighting;
+      },
+      get codeHighlighting() {
+        alive();
+        return codeHighlighting;
+      },
       // These are the last ACKNOWLEDGED values. Await mutations before reading
       // their new token; no speculative source or revision is published locally.
       get token() {
@@ -327,6 +385,9 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       },
       replaceSource(source, options, control) {
         return call("replaceSource", [source, options], control);
+      },
+      setCodeHighlighting(enabled, token, control) {
+        return call("setCodeHighlighting", [enabled, token], control);
       },
       reflow(options, token, control) {
         return call("reflow", [options, token], control);
@@ -431,7 +492,13 @@ export function installFlowWorker(endpoint, createSession) {
         if (session)
           throw new FlowWorkerError("SESSION_EXISTS", "worker already owns a flow session");
         session = await createSession(...normalized);
+        const highlighting = session.supportsCodeHighlighting === true &&
+          typeof session.setCodeHighlighting === "function";
+        if (highlighting && typeof session.codeHighlighting !== "boolean")
+          throw new FlowWorkerError("INVALID_WASM_RESPONSE", "native syntax mode must be boolean");
         value = {
+          supportsCodeHighlighting: highlighting,
+          codeHighlighting: highlighting ? session.codeHighlighting : false,
           supportsViewport: session.supportsViewport === true,
           supportsAssetBatches: session.supportsAssetBatches === true,
           supportsEditBatches: session.supportsEditBatches === true && typeof session.editMany === "function",
@@ -455,9 +522,30 @@ export function installFlowWorker(endpoint, createSession) {
             "this native session does not support atomic source edit batches",
           );
         }
+        if (method === "setCodeHighlighting" && (
+          session.supportsCodeHighlighting !== true ||
+          typeof session.setCodeHighlighting !== "function"
+        )) {
+          throw new FlowWorkerError("UNSUPPORTED_WASM_PACKAGE", "native code highlighting unavailable");
+        }
         // normalizeFlowRequest is an own-key allowlist. Neither constructors,
         // arbitrary property paths, eval, imports nor dispose are remotely callable.
-        if (delta) {
+        if (method === "setCodeHighlighting") {
+          const previousToken = flowToken(session.token);
+          const before = session.codeHighlighting;
+          const token = await session.setCodeHighlighting(...normalized);
+          if (
+            typeof before !== "boolean" || session.codeHighlighting !== normalized[0] ||
+            previousToken.revision !== normalized[1].revision ||
+            previousToken.layoutRevision !== normalized[1].layoutRevision ||
+            token.revision !== previousToken.revision ||
+            BigInt(token.layoutRevision) !== BigInt(previousToken.layoutRevision) +
+              BigInt(before !== normalized[0])
+          ) {
+            throw new FlowWorkerError("INVALID_WASM_RESPONSE", "native syntax transition is inconsistent");
+          }
+          value = { ...token, previousToken, codeHighlighting: session.codeHighlighting };
+        } else if (delta) {
           if (pageMethod === "viewport" && session.supportsViewport !== true) {
             throw new FlowWorkerError("UNSUPPORTED_WASM_PACKAGE", "indexed viewport unavailable");
           }

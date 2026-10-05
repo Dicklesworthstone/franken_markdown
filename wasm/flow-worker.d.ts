@@ -92,6 +92,10 @@ export interface WorkerFlowSession {
   readonly supportsAssetBatches: boolean;
   /** True only when both worker and native package expose atomic source edits. */
   readonly supportsEditBatches: boolean;
+  /** False for legacy workers/native packages; enabling has no plain-text fallback. */
+  readonly supportsCodeHighlighting: boolean;
+  /** Last acknowledged mode, preserved across edits, reflows and asset completion. */
+  readonly codeHighlighting: boolean;
   readonly revision: string;
   readonly layoutRevision: string;
   readonly token: FlowToken;
@@ -126,6 +130,15 @@ export interface WorkerFlowSession {
   replaceSource(
     source: string,
     options: FlowEditOptions,
+    control?: FlowWorkerControl,
+  ): Promise<FlowToken>;
+  /** Change persistent fenced-code paint on the worker, fenced by BOTH revisions.
+   * A real change advances only layoutRevision; a same-mode request is a no-op.
+   * Failure leaves acknowledged mode/token unchanged. In-flight cancellation
+   * loses the session, like other worker mutations. Never reshapes on the UI thread. */
+  setCodeHighlighting(
+    enabled: boolean,
+    token: FlowTokenInput,
     control?: FlowWorkerControl,
   ): Promise<FlowToken>;
   reflow(

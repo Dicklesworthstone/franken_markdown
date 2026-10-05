@@ -73,7 +73,7 @@ impl FlowSession {
         for result in results {
             candidate.provide_asset(result)?;
         }
-        let display = candidate.to_styled_display_list(self.options, shape)?;
+        let display = self.render_candidate(&candidate, self.options, shape)?;
         self.engine = candidate;
         self.display = display;
         self.layout_revision = revision;

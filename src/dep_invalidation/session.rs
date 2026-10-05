@@ -18,6 +18,8 @@ use std::fmt;
 
 #[path = "asset_batch.rs"]
 mod asset_batch;
+#[path = "highlighting.rs"]
+mod highlighting;
 
 /// Reusing an unchanged URL is unsafe unless the host also knows its bytes and
 /// authorization are unchanged. The conservative default discards all assets.
@@ -109,6 +111,7 @@ pub struct FlowSession {
     display: DisplayList,
     options: FlowLayoutOptions,
     layout_revision: u64,
+    code_highlighting: bool,
 }
 
 impl FlowSession {
@@ -131,6 +134,7 @@ impl FlowSession {
             display,
             options,
             layout_revision: 1,
+            code_highlighting: false,
         })
     }
 
@@ -234,7 +238,7 @@ impl FlowSession {
         } else {
             Vec::new()
         };
-        let display = candidate.to_styled_display_list(self.options, shape)?;
+        let display = self.render_candidate(&candidate, self.options, shape)?;
         // The only publication point. Every fallible operation preceded it.
         self.engine = candidate;
         self.graph = graph;
@@ -261,7 +265,7 @@ impl FlowSession {
         F: FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String>,
     {
         let revision = next_revision(self.layout_revision)?;
-        let display = self.engine.to_styled_display_list(options, shape)?;
+        let display = self.render_candidate(&self.engine, options, shape)?;
         self.display = display;
         self.options = options;
         self.layout_revision = revision;
@@ -304,7 +308,7 @@ impl FlowSession {
             revision,
             self.engine.limits(),
         )?;
-        let display = candidate.to_styled_display_list(self.options, shape)?;
+        let display = self.render_candidate(&candidate, self.options, shape)?;
         self.engine = candidate;
         self.display = display;
         self.layout_revision = layout_revision;

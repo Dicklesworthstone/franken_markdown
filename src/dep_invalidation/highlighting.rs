@@ -2,8 +2,8 @@
 //! the same mode; failed paint admission cannot publish an uncolored fallback.
 
 use super::{
-    DisplayList, FlowInlineStyle, FlowLayoutOptions, FlowSession, FlowSessionError,
-    FlowTextRole, OwnedTextRun, ResumableFlowDisplay, next_revision,
+    DisplayList, FlowInlineStyle, FlowLayoutOptions, FlowSession, FlowSessionError, FlowTextRole,
+    OwnedTextRun, ResumableFlowDisplay, next_revision,
 };
 
 impl FlowSession {
@@ -38,7 +38,8 @@ impl FlowSession {
         }
         let revision = next_revision(self.layout_revision)?;
         let display = if enabled {
-            self.engine.to_highlighted_display_list(self.options, shape)?
+            self.engine
+                .to_highlighted_display_list(self.options, shape)?
         } else {
             self.engine.to_styled_display_list(self.options, shape)?
         };
@@ -100,9 +101,11 @@ mod tests {
     }
 
     fn colored(session: &FlowSession) -> bool {
-        session.display().items().iter().any(|item| {
-            matches!(item, DisplayItem::Text(run) if run.color_role == "tok-kw")
-        })
+        session
+            .display()
+            .items()
+            .iter()
+            .any(|item| matches!(item, DisplayItem::Text(run) if run.color_role == "tok-kw"))
     }
 
     #[test]
@@ -147,7 +150,12 @@ mod tests {
         assert!(colored(&doc));
         let source = SOURCE.replace("42", "123");
         let update = doc
-            .replace_source(1, &source, FlowAssetReuse::HostVerifiedUnchanged, shape(&fonts))
+            .replace_source(
+                1,
+                &source,
+                FlowAssetReuse::HostVerifiedUnchanged,
+                shape(&fonts),
+            )
             .unwrap();
         assert_eq!(update.reused_assets.len(), 2);
         assert!(colored(&doc));

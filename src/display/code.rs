@@ -10,6 +10,9 @@ use crate::highlight::{self, Span, Tok};
 use crate::span::SourceSpan;
 use crate::text::{OwnedTextRun, RunGlyph, TextCluster};
 
+#[path = "code_hosts.rs"]
+mod hosts;
+
 impl ResumableFlowDisplay {
     /// Styled, font-shaped flow with the shared fenced-code syntax highlighter.
     ///
@@ -117,8 +120,8 @@ impl Fence<'_> {
                 // non-monotone host cluster orders in their original positions.
                 if *kind == token.kind && (cluster.x_start == *right || cluster.x_end == *left) {
                     *last = index + 1;
-                    *left = left.min(cluster.x_start);
-                    *right = right.max(cluster.x_end);
+                    *left = (*left).min(cluster.x_start);
+                    *right = (*right).max(cluster.x_end);
                     continue;
                 }
             }

@@ -208,12 +208,6 @@ struct Laid {
     /// Set when the box is a single character glyph (rule 18's u=v=0 case,
     /// and the kerning pass).
     char_glyph: Option<(FaceId, u16)>,
-    /// For a braced list holding one character: that character's italic
-    /// correction, left out of the box width. A list appends it when the
-    /// group is an ordinary atom (TeX keeps the kern of a sub-mlist
-    /// nucleus); a construct part leaves it out, as TeX's clean_box drops an
-    /// "unneeded italic correction" (tex.web §720).
-    group_italic: f64,
 }
 
 enum LineItem {
@@ -229,28 +223,21 @@ impl Engine {
     /// size changes) persist across the line split: `\\` does not end the
     /// enclosing group.
     fn hlist(&self, items: &[Node], ctx: LayCtx) -> Result<MBox, MathError> {
-        self.hlist_with_italic(items, ctx).map(|(boxx, _)| boxx)
-    }
-
-    /// [`Self::hlist`], plus the italic correction a one-character list left
-    /// out of its width (see [`Laid::group_italic`]); 0 for anything else.
-    fn hlist_with_italic(&self, items: &[Node], ctx: LayCtx) -> Result<(MBox, f64), MathError> {
         let mut lines: Vec<(MBox, f64, f64)> = Vec::new();
         let mut ctx = ctx;
-        let mut sole_italic = 0.0;
         for line in items.split(|n| matches!(n.kind, NodeKind::Linebreak)) {
-            let (boxx, after, italic) = self.line(line, ctx)?;
+            let (boxx, after) = self.line(line, ctx)?;
             ctx = after;
-            sole_italic = italic;
             lines.push((boxx, ctx.size(), ctx.line_stretch));
         }
         if lines.len() == 1 {
-            return lines.pop().map(|(boxx, _, _)| (boxx, sole_italic)).ok_or(
-                MathError::Malformed {
+            return lines
+                .pop()
+                .map(|(boxx, _, _)| boxx)
+                .ok_or(MathError::Malformed {
                     what: "internal: empty line vector".to_owned(),
                     at: 0,
-                },
-            );
+                });
         }
         // Stack lines: baseline-to-baseline is \baselineskip (grown when
         // boxes would come closer than \lineskip), read at each line's own
@@ -280,22 +267,18 @@ impl Engine {
                 node: MNode::Box(line),
             });
         }
-        Ok((
-            MBox {
-                kind: BoxKind::Vertical,
-                width,
-                height,
-                depth,
-                children,
-            },
-            0.0,
-        ))
+        Ok(MBox {
+            kind: BoxKind::Vertical,
+            width,
+            height,
+            depth,
+            children,
+        })
     }
 
     /// One line of a horizontal list; also returns the context after the
-    /// line's declarations, so `\\`-separated lines inherit them, and the
-    /// italic correction a one-character line left out of its width.
-    fn line(&self, items: &[Node], outer: LayCtx) -> Result<(MBox, LayCtx, f64), MathError> {
+    /// line's declarations, so `\\`-separated lines inherit them.
+    fn line(&self, items: &[Node], outer: LayCtx) -> Result<(MBox, LayCtx), MathError> {
         let classes = classify_list(items);
         let mut ctx = outer;
         let mut laid_items: Vec<LineItem> = Vec::new();
@@ -348,18 +331,13 @@ impl Engine {
             }
         }
         // The face of each item's successor when that successor is a single
-        // character, for rule 17's word-interior exception below.
+        // character, for rule 17's math_text_char exception below.
         let next_char_face: Vec<Option<FaceId>> = (0..laid_items.len())
             .map(|i| match laid_items.get(i + 1) {
                 Some(LineItem::Atom { laid, .. }) => laid.char_glyph.map(|(face, _)| face),
                 _ => None,
             })
             .collect();
-        // A one-character line leaves its italic correction out of the width
-        // and reports it instead (Laid::group_italic): its consumer decides.
-        let sole_char = matches!(laid_items.as_slice(),
-            [LineItem::Atom { laid, .. }] if laid.char_glyph.is_some());
-        let mut sole_italic = 0.0;
         // Assemble: inter-atom glue + kerning.
         let mut children = Vec::new();
         let mut x = 0.0_f64;
@@ -395,31 +373,26 @@ impl Engine {
                     }
                     height = height.max(laid.boxx.height);
                     depth = depth.max(laid.boxx.depth);
-                    // Rule 17 (tex.web §755): a lone character with no
-                    // subscript is followed by a kern of its italic
-                    // correction, so `f(` clears the f's overhang. A
-                    // subscripted character reaches here as a script box,
-                    // which places its own δ (rule 18). The one exception
-                    // is a character inside a word of a text face (TeX's
-                    // math_text_char in a font with nonzero space): the
-                    // math-italic face is TeX's cmmi role and always keeps δ.
-                    // A braced one-character group used as an atom keeps
-                    // its character's kern (a sub-mlist nucleus in TeX).
+                    // Rule 17 (tex.web §755): a character with no subscript
+                    // is followed by a kern of its italic correction, so
+                    // `f(` clears the f's overhang. A scripted character
+                    // reaches here as a script box, which places its own δ
+                    // (rule 18); text mode never kerns. The one exception is
+                    // TeX's math_text_char: an Ord followed by another
+                    // character of its family, in a font with nonzero
+                    // interword space. The math-italic face plays cmmi
+                    // (space 0) and always keeps δ; the text faces drop it
+                    // inside such a word (`\mathrm{ff}`, `\mathrm{f}(`).
                     let italic_kern = match laid.char_glyph {
-                        Some((face, _))
-                            if face == FACE_ITALIC || next_char_face[index] != Some(face) =>
-                        {
-                            laid.italic
+                        Some((face, _)) if !ctx.text_mode => {
+                            let text_char = class == AtomClass::Ord
+                                && face != FACE_ITALIC
+                                && next_char_face[index] == Some(face);
+                            if text_char { 0.0 } else { laid.italic }
                         }
-                        Some(_) => 0.0,
-                        None => laid.group_italic,
+                        _ => 0.0,
                     };
-                    let advance = if sole_char {
-                        sole_italic = italic_kern;
-                        laid.boxx.width
-                    } else {
-                        laid.boxx.width + italic_kern
-                    };
+                    let advance = laid.boxx.width + italic_kern;
                     let glyph = laid.char_glyph;
                     children.push(Positioned {
                         dx: x,
@@ -440,23 +413,50 @@ impl Engine {
                 children,
             },
             ctx,
-            sole_italic,
         ))
+    }
+
+    /// A node set as its own formula, as TeX sets array cells, phantoms,
+    /// arrow labels, a radical's degree and the bodies of `\overbrace`-style
+    /// alignments (each an `\hbox{$…$}` or a `$…$` template): a lone
+    /// character keeps its rule-17 italic correction there. Where TeX
+    /// clean_boxes instead (fraction parts, scripts, limits, radicands,
+    /// accent bases), `lay_node(..).boxx` already leaves it out (§720).
+    fn formula_box(&self, node: &Node, ctx: LayCtx) -> Result<MBox, MathError> {
+        let laid = self.lay_node(node, ctx)?;
+        let mut boxx = laid.boxx;
+        if laid.char_glyph.is_some() && !ctx.text_mode {
+            boxx.width += laid.italic;
+        }
+        Ok(boxx)
     }
 
     /// Lay one node into an atom box.
     #[allow(clippy::too_many_lines)]
     fn lay_node(&self, node: &Node, ctx: LayCtx) -> Result<Laid, MathError> {
         match &node.kind {
-            NodeKind::List(items) => {
-                let (boxx, group_italic) = self.hlist_with_italic(items, ctx)?;
-                Ok(Laid {
-                    boxx,
-                    italic: 0.0,
-                    char_glyph: None,
-                    group_italic,
-                })
+            // A group holding one scriptless Ord character is that character
+            // (tex.web §1186): `{f}(` kerns like `f(`, `{x}^2` scripts like
+            // `x^2`, and `\mathrm{f}(` is a word of the text face.
+            NodeKind::List(items)
+                if matches!(
+                    items.as_slice(),
+                    [Node {
+                        kind: NodeKind::Symbol {
+                            class: AtomClass::Ord,
+                            ..
+                        },
+                        ..
+                    }]
+                ) =>
+            {
+                self.lay_node(&items[0], ctx)
             }
+            NodeKind::List(items) => Ok(Laid {
+                boxx: self.hlist(items, ctx)?,
+                italic: 0.0,
+                char_glyph: None,
+            }),
             NodeKind::Symbol { ch, .. } => self.char_atom(*ch, node.span, ctx),
             NodeKind::BigOp { ch, integral, .. } => {
                 let scale = match (ctx.style.style == Style::Display, *integral) {
@@ -482,7 +482,6 @@ impl Engine {
                 )?,
                 italic: 0.0,
                 char_glyph: None,
-                group_italic: 0.0,
             }),
             NodeKind::TextStyled { style, body } => {
                 let styled = LayCtx {
@@ -500,14 +499,12 @@ impl Engine {
                         boxx: self.underline_box(inner, ctx, node.span),
                         italic: 0.0,
                         char_glyph: None,
-                        group_italic: 0.0,
                     })
                 } else {
                     Ok(Laid {
                         boxx: inner,
                         italic: 0.0,
                         char_glyph: None,
-                        group_italic: 0.0,
                     })
                 }
             }
@@ -543,7 +540,6 @@ impl Engine {
                     )?,
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 })
             }
             NodeKind::MathFont { font, body } => self.lay_node(
@@ -572,15 +568,14 @@ impl Engine {
                     boxx,
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 })
             }
             NodeKind::Phantom { kind, body } => {
-                let inner = self.lay_node(body, ctx)?;
+                let inner = self.formula_box(body, ctx)?;
                 let (w, h, d) = match kind {
-                    PhantomKind::Full => (inner.boxx.width, inner.boxx.height, inner.boxx.depth),
-                    PhantomKind::Horizontal => (inner.boxx.width, 0.0, 0.0),
-                    PhantomKind::Vertical => (0.0, inner.boxx.height, inner.boxx.depth),
+                    PhantomKind::Full => (inner.width, inner.height, inner.depth),
+                    PhantomKind::Horizontal => (inner.width, 0.0, 0.0),
+                    PhantomKind::Vertical => (0.0, inner.height, inner.depth),
                 };
                 Ok(Laid {
                     boxx: MBox {
@@ -592,7 +587,6 @@ impl Engine {
                     },
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 })
             }
             NodeKind::Stack {
@@ -614,7 +608,6 @@ impl Engine {
                     boxx: self.with_limits(base_laid.boxx, upper, lower, ctx, base_laid.italic),
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 })
             }
             NodeKind::XArrow {
@@ -627,15 +620,16 @@ impl Engine {
                 // (a bare label still gets a healthy minimum arrow), sits
                 // on the math axis, and takes the labels as limits.
                 let size = ctx.size();
-                let above_laid = self.lay_node(above, ctx.map(StyleCtx::sup))?;
-                let below_laid = below
+                // amsmath pads the labels with \mkern, so clean_box keeps a
+                // lone character's italic correction: they are formula boxes.
+                let above_box = self.formula_box(above, ctx.map(StyleCtx::sup))?;
+                let below_box = below
                     .as_deref()
-                    .map(|b| self.lay_node(b, ctx.map(StyleCtx::sub)))
+                    .map(|b| self.formula_box(b, ctx.map(StyleCtx::sub)))
                     .transpose()?;
-                let label_w = above_laid
-                    .boxx
+                let label_w = above_box
                     .width
-                    .max(below_laid.as_ref().map_or(0.0, |b| b.boxx.width));
+                    .max(below_box.as_ref().map_or(0.0, |b| b.width));
                 let width = (label_w + 0.8 * size).max(1.2 * size);
                 let stretch_kind = if *mapsto {
                     crate::drawn::Stretch::MapstoArrow
@@ -660,16 +654,9 @@ impl Engine {
                     }],
                 };
                 Ok(Laid {
-                    boxx: self.with_limits(
-                        band_box,
-                        Some(above_laid.boxx),
-                        below_laid.map(|b| b.boxx),
-                        ctx,
-                        0.0,
-                    ),
+                    boxx: self.with_limits(band_box, Some(above_box), below_box, ctx, 0.0),
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 })
             }
             NodeKind::Fragment(FragmentKind::StrayRight(delim)) => {
@@ -680,7 +667,6 @@ impl Engine {
                         boxx: kern_box(self.consts.null_delimiter_space * ctx.size()),
                         italic: 0.0,
                         char_glyph: None,
-                        group_italic: 0.0,
                     })
                 }
             }
@@ -714,7 +700,6 @@ impl Engine {
                     boxx,
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 })
             }
             NodeKind::Fragment(_)
@@ -730,7 +715,6 @@ impl Engine {
                 boxx: kern_box(0.0),
                 italic: 0.0,
                 char_glyph: None,
-                group_italic: 0.0,
             }),
         }
     }
@@ -787,7 +771,6 @@ impl Engine {
                         },
                         italic: 0.0,
                         char_glyph: None,
-                        group_italic: 0.0,
                     });
                 }
                 return Err(err);
@@ -799,7 +782,6 @@ impl Engine {
             boxx: glyph_box(face, gid, mapped, span, size, metrics),
             italic: metrics.italic * size,
             char_glyph: Some((face, gid)),
-            group_italic: 0.0,
         })
     }
 
@@ -834,7 +816,6 @@ impl Engine {
             boxx,
             italic: metrics.italic * size,
             char_glyph: None,
-            group_italic: 0.0,
         })
     }
 
@@ -914,7 +895,6 @@ impl Engine {
             },
             italic: last_italic,
             char_glyph: None,
-            group_italic: 0.0,
         })
     }
 
@@ -1006,7 +986,6 @@ impl Engine {
                     boxx: self.with_limits(base_laid.boxx, upper, lower, ctx, base_laid.italic),
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 });
             }
         }
@@ -1018,7 +997,6 @@ impl Engine {
                 boxx: kern_box(0.0),
                 italic: 0.0,
                 char_glyph: None,
-                group_italic: 0.0,
             },
         };
         let base_is_char = base_laid.char_glyph.is_some() || base.is_none();
@@ -1125,7 +1103,6 @@ impl Engine {
             },
             italic: 0.0,
             char_glyph: None,
-            group_italic: 0.0,
         })
     }
 
@@ -1342,7 +1319,6 @@ impl Engine {
             boxx,
             italic: 0.0,
             char_glyph: None,
-            group_italic: 0.0,
         })
     }
 
@@ -1386,19 +1362,18 @@ impl Engine {
         let mut total_height = rule_y + theta;
         // Degree: raised 60% of the sign's extent, kerned 5mu in and
         // −10.5mu back (plain TeX's \root placement).
+        // The degree is its own formula (\setbox\rootbox\hbox{$...$}).
         if let Some(ix) = index {
-            let ix_box = self
-                .lay_node(
-                    ix,
-                    LayCtx {
-                        style: StyleCtx {
-                            style: Style::ScriptScript,
-                            cramped: ctx.style.cramped,
-                        },
-                        ..ctx
+            let ix_box = self.formula_box(
+                ix,
+                LayCtx {
+                    style: StyleCtx {
+                        style: Style::ScriptScript,
+                        cramped: ctx.style.cramped,
                     },
-                )?
-                .boxx;
+                    ..ctx
+                },
+            )?;
             // Plain TeX raises the degree by 60% of the radical construct's
             // total extent, measured from the baseline.
             let raise = 0.6 * (rule_y + theta + x.depth);
@@ -1446,7 +1421,6 @@ impl Engine {
             },
             italic: 0.0,
             char_glyph: None,
-            group_italic: 0.0,
         })
     }
 
@@ -1492,7 +1466,6 @@ impl Engine {
                     },
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 })
             }
             AccentKind::UnderLine => {
@@ -1501,7 +1474,6 @@ impl Engine {
                     boxx: self.underline_box(inner, ctx, span),
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 })
             }
             AccentKind::OverBrace
@@ -1584,7 +1556,6 @@ impl Engine {
                     },
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 })
             }
             _ => {
@@ -1651,7 +1622,6 @@ impl Engine {
                     },
                     italic: 0.0,
                     char_glyph: None,
-                    group_italic: 0.0,
                 })
             }
         }
@@ -1783,7 +1753,6 @@ impl Engine {
             boxx,
             italic: 0.0,
             char_glyph: None,
-            group_italic: 0.0,
         })
     }
 
@@ -1803,7 +1772,9 @@ impl Engine {
         for row in rows {
             let mut out = Vec::new();
             for cell in row {
-                out.push(self.lay_node(cell, cell_ctx)?.boxx);
+                // Each cell is its own formula (`$…$` in the \halign
+                // template), so a lone character keeps its rule-17 kern.
+                out.push(self.formula_box(cell, cell_ctx)?);
             }
             cells.push(out);
         }
@@ -1929,11 +1900,15 @@ impl Engine {
         let theta = self.consts.rule_thickness * size;
         let under = matches!(kind, AccentKind::UnderBrace);
         // Over-accents cramp their base (rule 12 / overline's rule 9);
-        // under-constructions do not (underline's rule 10).
-        let inner = if under {
-            self.lay_node(base, ctx)?.boxx
+        // under-constructions do not (underline's rule 10). The wide
+        // accents clean their base (clean_box drops a lone character's
+        // italic correction); the braces and arrows are plain/amsmath
+        // alignments whose body is its own formula and keeps it.
+        let base_ctx = if under { ctx } else { ctx.map(StyleCtx::cramp) };
+        let inner = if matches!(kind, AccentKind::WideHat | AccentKind::WideTilde) {
+            self.lay_node(base, base_ctx)?.boxx
         } else {
-            self.lay_node(base, ctx.map(StyleCtx::cramp))?.boxx
+            self.formula_box(base, base_ctx)?
         };
         let stretch_kind = match kind {
             AccentKind::WideHat => crate::drawn::Stretch::Hat,
@@ -1981,7 +1956,6 @@ impl Engine {
             },
             italic: 0.0,
             char_glyph: None,
-            group_italic: 0.0,
         })
     }
 
@@ -2034,7 +2008,6 @@ impl Engine {
             boxx: hcat(vec![left_box, inner, right_box]),
             italic: 0.0,
             char_glyph: None,
-            group_italic: 0.0,
         })
     }
 

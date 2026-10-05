@@ -432,10 +432,10 @@ fn a_line_break_unskips_the_space_before_it() {
     assert_eq!(xs(&prose), xs(&plain));
 }
 
-/// Rule 17 (tex.web §755): a lone math character with no subscript is
-/// followed by a kern of its italic correction, so `f(` clears the f's
-/// overhang. A subscripted character keeps δ out of its width, and a
-/// character inside a word of a text face (TeX's math_text_char) gets none.
+/// Rule 17 (tex.web §755): a math character with no subscript is followed
+/// by a kern of its italic correction, so `f(` clears the f's overhang. A
+/// subscripted character keeps δ out of its width, and a character inside a
+/// word of a text face (TeX's math_text_char) gets none.
 #[test]
 fn italic_correction_kerns_follow_lone_math_characters() {
     use fmd_math::faces::glyph_metrics;
@@ -464,27 +464,56 @@ fn italic_correction_kerns_follow_lone_math_characters() {
         "a subscript attaches at the nucleus width, without δ: {gap}"
     );
 
-    // `\mathrm{f}` is a group: its f is alone in its own list, so TeX kerns δ.
-    let grouped = e.typeset(r"\mathrm{f}(", Style::Text).unwrap();
-    let upright = metrics(&grouped, 0);
+    // A group holding one Ord character is that character (tex.web §1186):
+    // `{f}(` kerns like `f(`, and `{x}^2` places its script like `x^2`.
+    let grouped = e.typeset("{f}(", Style::Text).unwrap();
+    let gap = grouped.glyphs[1].x - grouped.glyphs[0].x;
+    assert!(
+        (gap - (m.advance + m.italic)).abs() < EPS,
+        "{{f}}( is f(: {gap} vs {m:?}"
+    );
+    let xs = |l: &Layout| l.glyphs.iter().map(|g| (g.x, g.y)).collect::<Vec<_>>();
+    assert_eq!(
+        xs(&e.typeset("{x}^2", Style::Text).unwrap()),
+        xs(&e.typeset("x^2", Style::Text).unwrap())
+    );
+    // ...and an accent over `{v}` takes the math-character skew of `\vec v`.
+    assert_eq!(
+        xs(&e.typeset(r"\vec{v}", Style::Text).unwrap()),
+        xs(&e.typeset(r"\vec v", Style::Text).unwrap())
+    );
+
+    // `\mathrm{f}(` is an upright f before an upright `(` of the same family:
+    // TeX's math_text_char in a font with interword space, so δ = 0.
+    let word = e.typeset(r"\mathrm{f}(", Style::Text).unwrap();
+    let upright = metrics(&word, 0);
     assert!(
         upright.italic > 0.0,
         "the upright f overhangs too: {upright:?}"
     );
-    let gap = grouped.glyphs[1].x - grouped.glyphs[0].x;
+    let gap = word.glyphs[1].x - word.glyphs[0].x;
     assert!(
-        (gap - (upright.advance + upright.italic)).abs() < EPS,
-        "a grouped upright f is lone in its list and keeps δ: {gap} vs {upright:?}"
+        (gap - upright.advance).abs() < EPS,
+        "inside a word of the text face the italic correction is zero: {gap} vs {upright:?}"
     );
-    // Inside one list, an upright f followed by an upright f is a word of the
-    // text face (math_text_char): no italic correction, only the font's kern.
-    let word = e.typeset(r"\mathrm{ff}", Style::Text).unwrap();
-    let (first, second) = (&word.glyphs[0], &word.glyphs[1]);
+    // Within `\mathrm{ff}` the first f is such a word character: only the
+    // font's kern separates the two.
+    let ff = e.typeset(r"\mathrm{ff}", Style::Text).unwrap();
+    let (first, second) = (&ff.glyphs[0], &ff.glyphs[1]);
     let font = e.faces().font(first.face).expect("glyph face");
     let kern = fmd_math::faces::kern_em(font, first.gid, second.gid);
     let gap = second.x - first.x;
     assert!(
         (gap - (upright.advance + kern)).abs() < EPS,
-        "inside a word of the text face the italic correction is zero: {gap} vs {upright:?}"
+        "\\mathrm{{ff}}: {gap} vs {upright:?} + kern {kern}"
+    );
+
+    // A `\left…\right` inner is a sub-mlist, not a clean box: its lone f
+    // keeps δ before the closing delimiter.
+    let fenced = e.typeset(r"\left( f \right)", Style::Text).unwrap();
+    let gap = fenced.glyphs[2].x - fenced.glyphs[1].x;
+    assert!(
+        (gap - (m.advance + m.italic)).abs() < EPS,
+        "\\left( f \\right): {gap} vs {m:?}"
     );
 }

@@ -1,115 +1,79 @@
-# Browser build profiles: persistent editor split
+# Composable browser build profiles
 
-The first implementation slice of issue #16 separates the persistent flow
-editor's wasm-bindgen ABI from document rendering. Native BrowserFlowSession,
-flow layout, and Rust editor APIs remain available without these browser flags.
+The browser ABI now separates three optional product surfaces. All feature
+selections below use `--no-default-features`; `wasm-full` preserves the complete
+browser distribution, and native Rust renderer/editor APIs are unchanged.
 
-- `--no-default-features --features wasm-bindgen`: document render exports,
-  without FmdFlowSession or its exported editor entrypoints.
-- `--no-default-features --features wasm-flow`: document rendering plus the
-  persistent editor, measured display, asset transactions and reading APIs.
-- `--no-default-features --features wasm-full`: the full browser distribution;
-  currently includes wasm-flow and its wasm-bindgen dependency.
+| Cargo feature | Additional JavaScript exports |
+| --- | --- |
+| `wasm-bindgen` | Single-document HTML/PDF/SVG/EPUB and document intelligence |
+| `wasm-flow` | `FmdFlowSession`: persistent editing, layout, assets and reading |
+| `wasm-book` | `FmdBook`, legacy/configured book PDF, legacy/canonical book sites |
+| `wasm-workspace` | `renderInteractiveHtmlConfigured`: self-hosting HTML workspace |
+| `wasm-full` | All three optional surfaces |
 
-Both existing package builders explicitly request wasm-full, preserving their
-full-package smoke tests and size budgets. A manually built wasm-bindgen-only
-package cannot create a flow session; the existing JavaScript facade refuses it
-with UNSUPPORTED_WASM_PACKAGE instead of emulating an editor. Consumers needing
-flow must build wasm-flow or wasm-full from matching source.
+Each optional feature enables `wasm-bindgen`, but not another optional surface.
+Features can be combined, for example `--features wasm-flow,wasm-book`.
+`BookRenderer`, `BookWorkspace` and `BrowserFlowSession` remain native Rust APIs.
+One-shot book/workspace adapter functions also remain callable from Rust: only
+their `wasm_bindgen` export attributes are conditional. This removes their
+JavaScript export roots without maintaining a second rendering implementation.
+The configured book PDF function is re-exported from `wasm_abi` for Rust callers.
 
-## Separate local packages
+## JavaScript compatibility
 
-`scripts/dsr-wasm-profiles.sh` is the dedicated DSR-host entrypoint for building
-both profiles from one clean committed checkout. It uses isolated Cargo target
-directories, locked dependencies, native library checks/tests, and release WASM
-builds. It retains both packages and a comparison report beneath a fresh
-`tests/artifacts/wasm/profiles.XXXXXXXX/` directory. It does not delete prior
-artifacts, modify the source manifest, invoke Actions, or publish to a registry.
+The root facade uses namespace lookup, not mandatory named imports, for the
+optional book/workspace bindings. A render-only binary can therefore load the
+same facade and render ordinary documents. Unsupported book/workspace calls
+reject with `UNSUPPORTED_WASM_PACKAGE` and the required Cargo feature before
+WASM initialization or reading/copying request payloads. The facade does not
+fetch another binary, emulate a missing renderer, or fall back to a different
+format. `createRenderer()` retains its methods with the same refusal behavior.
 
-The assembled packages are named with `-render` and `-full` suffixes and marked
-`private: true`; these are local validation artifacts, not newly released npm
-packages. The render package exports the main renderer and web component. The
-full package retains all source-manifest exports, including flow/book/worker
-entrypoints. Every generated binding/binary comes from its selected build,
-never an old `wasm/pkg` directory. The existing full distribution remains intact.
+Supported legacy book packages keep their existing narrow routes and warnings.
+Configured/canonical-only bindings are accepted where their ABI matches the
+request. A configured PDF binding is never called with legacy arguments, nor
+are advanced options silently dropped onto a legacy renderer. Workspace source
+and settings are captured before asynchronous initialization, like book exports.
 
-The build-time `scripts/assemble-wasm-profile.mjs` can also assemble already
-built artifacts:
+## Local packages and verification
 
-```sh
-node --experimental-vm-modules scripts/assemble-wasm-profile.mjs \
-  wasm /absolute/path/to/generated-bindings /absolute/path/to/new-package render
-```
+Both existing full-package builders explicitly request `wasm-full`; their smoke
+corpora and size budgets are retained. `scripts/dsr-wasm-profiles.sh` is the
+additional DSR-host entrypoint for isolated render/full builds, create-only local
+package assembly and comparison. It does not publish or delete prior artifacts.
 
-The destination parent must exist and the destination must not exist. Static
-JavaScript imports and re-exports are parsed using Node's V8 module parser and
-recursively copied, including helper files absent from hand-maintained copy
-lists. Input modules are never linked or evaluated during assembly. Cycles are
-deduplicated. Dynamic imports, workers, type declarations and other resources
-must still be declared in the source manifest; this is not a JavaScript bundler,
-TypeScript compiler, or dependency discovery for arbitrary computed URLs.
+`scripts/assemble-wasm-profile.mjs` recursively closes static JavaScript imports
+and re-exports without evaluating them. The render package exports the root
+facade/web component; full retains the source manifest's subpaths. Dynamic
+imports, workers, declarations and other resources must be declared explicitly.
+Packages are private local artifacts with `-render`/`-full` name suffixes and a
+SHA-256 inventory, not newly published npm releases. Input directories must be
+trusted; this is not confinement against a concurrently hostile filesystem.
 
-Full-profile roots come from `files` and `exports`; render roots are the root
-renderer/web-component plus their declarations and generated binding files.
-Bare/remote static imports, escaping paths, symlinks, missing files and syntax
-errors fail before output creation. Admission is bounded to 4,096 input files
-and 256 MiB of payload. Files are captured before writing, and writes never
-replace existing files. A filesystem write failure can leave a new incomplete
-directory; the package manifest is written last and no success is returned.
-Checkout/build directories are trusted inputs, not a hostile concurrent-filesystem
-sandbox. Every copied payload has a SHA-256 inventory in `fmd-profile.json`.
-
-## Executable profile comparison
-
-`wasm/compare_profiles.mjs` initializes both real generated modules, checks raw
-WASM and JavaScript ABI presence/absence, and exercises native flow creation,
-display and editing in the full profile. It renders two HTML/PDF fixtures through
-the generated bindings and another HTML/PDF fixture through each actual public
-facade. All six corresponding outputs must be byte-identical between profiles.
+`wasm/compare_profiles.mjs` checks actual generated bindings and binaries,
+executes flow editing on the full profile, and compares six HTML/PDF outputs.
+Both raw and gzip sizes must improve relative to the same full build, while
+remaining below the unchanged 7,900,000 / 3,400,000-byte full-package ceilings.
+Its output is profile-vs-profile proof, not native-vs-WASM or browser/raster proof.
 
 ```sh
-node wasm/compare_profiles.mjs /path/to/render /path/to/full \
-  /path/to/new-profile-report.json EXACT_40_HEX_SOURCE_COMMIT
-```
-
-The create-only JSON report records each binary's SHA-256, raw size and gzip-9
-size, output fingerprints, and errors. A valid empty WASM file cannot masquerade
-as a renderer. The runner requires both a raw-size and gzip-size improvement
-against the full build from the same invocation; equality or a loss fails. Both
-profiles must also stay under the existing full-package ceilings of 7,900,000
-raw bytes and 3,400,000 gzip bytes. No smaller-profile ceiling has been invented
-without a measured run. Failed comparisons retain their failure report.
-
-This comparison is profile-vs-profile, not native-vs-WASM or browser/raster proof.
-The original full-package, native-parity and visual gates remain independently
-required. The DSR entrypoint checks the source commit/clean-tree fence around
-builds and comparison; its exit status is part of the evidence, not just the
-presence of a JSON file. The runner executes package code only from the trusted
-build directories supplied by the host.
-
-## Remaining scope and verification
-
-This is not completion of the entire bundle-size issue. One-shot book and
-interactive exports, and the reusable book adapter, are still in wasm-bindgen.
-Separating those roots, publishing distinct npm distributions, measuring the
-resulting raw/gzip sizes, and ratcheting budgets on actual evidence remain open.
-No claim is made that this slice reaches the approximately 4.5 MB target.
-
-```sh
+node --experimental-vm-modules --test wasm/browser_profile_api.test.mjs
 node --experimental-vm-modules --test scripts/assemble-wasm-profile.test.mjs \
   wasm/flow_profile_probe.test.mjs wasm/compare_profiles.test.mjs
 ```
 
-All 26 tests pass in the authoring environment: 13 real-filesystem assembler
-tests, seven profile-probe tests with explicit binding doubles, and six
-comparison/error/size-gate tests. Assembly fixtures use a real but empty WASM
-module; the comparison runner correctly refuses it as a renderer. These tests
-prove package assembly and gate behavior, not Rust rendering or a size win.
-JavaScript syntax, shell syntax and the Cargo feature-graph checks also pass.
+The 15 root-facade tests pass using the complete production JavaScript module,
+the actual paper normalizer and explicit generated-binding doubles. Fourteen
+fail against the previous root facade. They cover stripped, partial, legacy and
+full export sets, dispatch, errors, request capture and result cleanup. These
+are module-linking/API tests, not native rendering or generated-WASM evidence.
+JavaScript syntax and the Cargo feature dependency closure also passed.
 
-Rust fmt/check/clippy/test were attempted but Cargo and Rust were absent. The
-DSR profile script exits 3 at its missing-Cargo preflight, before creating build
-artifacts. Neither generated profile has been built or executed here. Rust,
-linker elimination, actual size measurement, DSR, native parity and browser
-validation therefore remain unverified. No release, registry publish, Actions
-workflow or size-budget ratchet was made.
+Rust fmt/check/clippy/test were attempted but Cargo is unavailable in the
+implementation environment. No generated profile was built here. Compiler/linker
+behavior, actual size savings, DSR, native parity and browser rendering remain
+unverified. The existing DSR/native tests must run with the matching source and
+all selected feature combinations before release. The approximately 4.5 MB
+render-only target and a lower measured size ratchet are not claimed. No release,
+registry publish, Actions workflow or size-budget change is included.

@@ -90,8 +90,14 @@ wasm-bindgen = ["dep:wasm-bindgen"]
 # Persistent browser editor ABI. Keep its exported roots out of render-only
 # builds; the native BrowserFlowSession API is not feature-gated.
 wasm-flow = ["wasm-bindgen"]
-# Full browser distribution, including the opt-in persistent editor.
-wasm-full = ["wasm-flow"]
+# Browser-only book publishing ABI: one-shot PDF/site exports and FmdBook.
+# Native BookRenderer/BookWorkspace stay available without any WASM feature.
+wasm-book = ["wasm-bindgen"]
+# Self-hosting interactive HTML workspace export. Ordinary HTML/PDF/SVG/EPUB
+# and document intelligence do not require the workspace shell.
+wasm-workspace = ["wasm-bindgen"]
+# Full browser distribution. Individual capabilities can also be combined.
+wasm-full = ["wasm-flow", "wasm-book", "wasm-workspace"]
 # Native-only batch/streaming orchestration (bead zmd). Pulls Asupersync for
 # structured concurrency, cancellation, and budgets. Strictly opt-in: the
 # library core, `--no-default-features`, and wasm32 builds never enable it, so
@@ -107,8 +113,7 @@ lsp = ["mcp"]
 
 [dependencies]
 # First-party: the factored font subsystem (this repo's own workspace crate;
-# zero third-party dependencies of its own). `crate::text` re-exports it, so
-# the engine surface is unchanged.
+# zero third-party dependencies of its own).
 fmd-font = { path = "fmd-font", version = "0.3.3", features = ["bundled-faces"] }
 # First-party: the factored math subsystem (this repo's own workspace crate;
 # zero third-party dependencies of its own).

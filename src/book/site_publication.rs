@@ -73,7 +73,7 @@ fn receipt_string(out: &mut String, value: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "wasm-bindgen")]
+#[cfg(feature = "wasm-book")]
 #[path = "site_publication_browser.rs"]
 mod browser;
 

@@ -29,7 +29,7 @@ pub mod validation;
 
 pub use render::{BookRenderer, book_pdf_document_with_assets, render_book_pdf, render_book_site};
 
-#[cfg(feature = "wasm-bindgen")]
+#[cfg(feature = "wasm-book")]
 #[path = "book/browser.rs"]
 pub mod browser;
 

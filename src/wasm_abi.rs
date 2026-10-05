@@ -4,6 +4,10 @@
 //! `crate::wasm` API remains dependency-free and is the source of truth; this
 //! file only maps that API into a JavaScript-callable shape without hand-written
 //! unsafe pointer exports.
+//!
+//! Book and workspace exports require `wasm-book` and `wasm-workspace`.
+//! Their ordinary Rust functions remain available; only the JavaScript export
+//! roots are conditional, so render-only cdylibs need not retain those callers.
 
 use wasm_bindgen::prelude::*;
 
@@ -18,7 +22,7 @@ use crate::{
 };
 
 mod pdf_page;
-pub use pdf_page::render_pdf_configured_page;
+pub use pdf_page::{render_book_pdf_configured_page, render_pdf_configured_page};
 
 mod epub;
 pub use epub::render_epub_configured_advanced;
@@ -212,7 +216,10 @@ pub fn render_epub_configured(
 
 /// Render a self-hosting, single-file HTML workspace with its own editor,
 /// preview, intelligence panel, and print/PDF path.
-#[wasm_bindgen(js_name = renderInteractiveHtmlConfigured)]
+#[cfg_attr(
+    feature = "wasm-workspace",
+    wasm_bindgen(js_name = renderInteractiveHtmlConfigured)
+)]
 pub fn render_interactive_html_configured(
     markdown: &str,
     font: Option<String>,
@@ -241,7 +248,7 @@ pub fn render_interactive_html_configured(
 /// site ZIP. The host owns file selection; the core owns include expansion,
 /// link rewriting, navigation, parsing, rendering, and the search index.
 #[allow(clippy::too_many_arguments)]
-#[wasm_bindgen(js_name = renderBookSite)]
+#[cfg_attr(feature = "wasm-book", wasm_bindgen(js_name = renderBookSite))]
 pub fn render_book_site(
     paths: Vec<String>,
     sources: Vec<String>,
@@ -293,7 +300,7 @@ pub fn render_book_site(
 
 /// Compile in-memory Markdown files into one continuous, bookmarked PDF book.
 #[allow(clippy::too_many_arguments)]
-#[wasm_bindgen(js_name = renderBookPdf)]
+#[cfg_attr(feature = "wasm-book", wasm_bindgen(js_name = renderBookPdf))]
 pub fn render_book_pdf(
     paths: Vec<String>,
     sources: Vec<String>,

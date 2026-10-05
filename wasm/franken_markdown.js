@@ -3,20 +3,29 @@ import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
   renderHtmlConfiguredAdvanced,
-  renderInteractiveHtmlConfigured,
   renderPdfConfiguredMulti,
   renderSvgConfigured,
   accessibilityAudit as wasmAccessibilityAudit,
   capabilities as wasmCapabilities,
   documentStats as wasmDocumentStats,
-  renderBookPdf as wasmRenderBookPdf,
-  renderBookSite as wasmRenderBookSite,
   renderSemanticDiffHtml as wasmRenderSemanticDiffHtml,
   searchIndex as wasmSearchIndex,
   semanticDiff as wasmSemanticDiff,
 } from "./pkg/franken_markdown.js";
 
 let initPromise = null;
+
+// Optional exports must use namespace lookup: a static named import would stop
+// even ordinary HTML/PDF from loading with a deliberately smaller native build.
+function requireBrowserBinding(name, feature) {
+  const binding = wasmBindings[name];
+  if (typeof binding !== "function") {
+    throw Object.assign(new Error(
+      `${name} is unavailable in this WASM package; build with ${feature} or wasm-full from matching source`,
+    ), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  }
+  return binding;
+}
 
 export async function init(input) {
   if (initPromise === null) {
@@ -418,17 +427,13 @@ function epubTextBytes(text, maximum, label) {
 }
 
 export async function renderInteractiveHtml(markdown, options = {}) {
+  const render = requireBrowserBinding("renderInteractiveHtmlConfigured", "wasm-workspace");
+  // Capture the request before initialization yields, as the publication APIs do.
+  const args = [String(markdown), stringOption(options.font), darkModeOption(options.darkMode),
+    verbatimOption(options.title), stringOption(options.lang),
+    fontScaleOption(options.fontScale ?? options.typeSize)];
   await init();
-  return normalizeResult(
-    renderInteractiveHtmlConfigured(
-      String(markdown),
-      stringOption(options.font),
-      darkModeOption(options.darkMode),
-      verbatimOption(options.title),
-      stringOption(options.lang),
-      fontScaleOption(options.fontScale ?? options.typeSize),
-    ),
-  );
+  return normalizeResult(render(...args));
 }
 
 export async function documentStats(markdown) {
@@ -472,9 +477,11 @@ export async function renderSemanticDiff(oldMarkdown, newMarkdown, options = {})
 }
 
 export async function renderBookSite(files, options = {}) {
+  const render = wasmBindings.renderBookSitePublication;
+  const legacyRender = typeof render === "function" ? null
+    : requireBrowserBinding("renderBookSite", "wasm-book");
   // Capture the complete publication before initialization can yield to edits.
   const prepared = bookSiteArguments(files, options);
-  const render = wasmBindings.renderBookSitePublication;
   if (typeof render !== "function" && prepared.requiresPublication) {
     throw Object.assign(new Error(
       "Book site assets, includes, CSS, language and navigation require a WASM package rebuilt from matching source",
@@ -483,7 +490,7 @@ export async function renderBookSite(files, options = {}) {
   await init();
   try {
     if (typeof render !== "function") {
-      const legacy = normalizeResult(wasmRenderBookSite(...prepared.legacyArgs));
+      const legacy = normalizeResult(legacyRender(...prepared.legacyArgs));
       // Preserve old packages for basic exports, but never claim they gained
       // canonical cross-chapter navigation/search merely by replacing JS.
       return Object.freeze({ ...legacy, diagnostics: [...legacy.diagnostics, {
@@ -612,13 +619,17 @@ function bookSiteArguments(files, options) {
 }
 
 export async function renderBookPdf(files, options = {}) {
+  if (typeof wasmBindings.renderBookPdfConfiguredPage !== "function") {
+    requireBrowserBinding("renderBookPdf", "wasm-book");
+  }
   if (options?.running != null) {
     // Refuse rather than silently drop chrome the caller asked for.
     throw new TypeError("running header/footer is supported by renderPdf, not renderBookPdf yet");
   }
   // Capture source, primitive settings, geometry and owned assets before init.
   const prepared = bookPdfArguments(files, options);
-  const render = prepared.advanced ? wasmBindings.renderBookPdfConfiguredPage : wasmRenderBookPdf;
+  const render = prepared.advanced ? wasmBindings.renderBookPdfConfiguredPage
+    : requireBrowserBinding("renderBookPdf", "wasm-book");
   if (typeof render !== "function") {
     const error = new Error("Book PDF assets, typography, navigation and paper require a WASM package rebuilt from matching source");
     error.code = "UNSUPPORTED_WASM_PACKAGE";

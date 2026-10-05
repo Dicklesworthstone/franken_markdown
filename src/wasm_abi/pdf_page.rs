@@ -216,7 +216,10 @@ fn running_content(
 /// Rejects source/asset budgets, invalid options, include resolution errors,
 /// and book or PDF rendering failures.
 #[allow(clippy::too_many_arguments)]
-#[wasm_bindgen(js_name = renderBookPdfConfiguredPage)]
+#[cfg_attr(
+    feature = "wasm-book",
+    wasm_bindgen(js_name = renderBookPdfConfiguredPage)
+)]
 pub fn render_book_pdf_configured_page(
     paths: Vec<String>,
     sources: Vec<String>,

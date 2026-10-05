@@ -52,7 +52,9 @@ impl ResumableFlowDisplay {
             {
                 if highlight::is_supported(language) {
                     if source.len() > options.max_items {
-                        return Err(FlowLayoutError::BudgetExceeded("syntax source bytes per fence"));
+                        return Err(FlowLayoutError::BudgetExceeded(
+                            "syntax source bytes per fence",
+                        ));
                     }
                     bytes = bytes
                         .checked_add(source.len())
@@ -98,22 +100,34 @@ impl Fence<'_> {
         max_items: usize,
     ) -> Result<(), FlowLayoutError> {
         self.skip_newlines();
-        let end = self.byte.checked_add(text.text.len())
+        let end = self
+            .byte
+            .checked_add(text.text.len())
             .ok_or(FlowLayoutError::InvalidShapedRun)?;
         if self.source.get(self.byte..end) != Some(text.text.as_str()) {
             return Err(FlowLayoutError::InvalidShapedRun);
         }
-        let tokens = self.tokens.get_or_insert_with(|| highlight::highlight(self.language, self.source));
-        let run = text.font_run.as_ref().ok_or(FlowLayoutError::InvalidShapedRun)?;
+        let tokens = self
+            .tokens
+            .get_or_insert_with(|| highlight::highlight(self.language, self.source));
+        let run = text
+            .font_run
+            .as_ref()
+            .ok_or(FlowLayoutError::InvalidShapedRun)?;
         let mut logical: Vec<_> = run.clusters.iter().collect();
         logical.sort_by_key(|cluster| cluster.byte_range.start);
         let mut groups: Vec<(usize, usize, Tok, f32, f32)> = Vec::new();
         for (index, cluster) in logical.iter().enumerate() {
             let byte = self.byte + cluster.byte_range.start;
-            while tokens.get(self.token).is_some_and(|token| token.end <= byte) {
+            while tokens
+                .get(self.token)
+                .is_some_and(|token| token.end <= byte)
+            {
                 self.token += 1;
             }
-            let token = tokens.get(self.token).filter(|token| token.start <= byte)
+            let token = tokens
+                .get(self.token)
+                .filter(|token| token.start <= byte)
                 .ok_or(FlowLayoutError::InvalidShapedRun)?;
             if let Some((_, last, kind, left, right)) = groups.last_mut() {
                 // Logical neighbors must also touch visually. This keeps even
@@ -141,7 +155,10 @@ impl Fence<'_> {
             let fragment = fragment(run, &logical[first..end], left, right)?;
             let item = DisplayTextRun {
                 bounds: DisplayRect::new(
-                    text.bounds.x + left, text.bounds.y, right - left, text.bounds.height,
+                    text.bounds.x + left,
+                    text.bounds.y,
+                    right - left,
+                    text.bounds.height,
                 ),
                 text: fragment.logical_text.clone(),
                 font_run: Some(fragment),
@@ -165,7 +182,9 @@ fn fragment(
     let last = logical.last().ok_or(FlowLayoutError::InvalidShapedRun)?;
     let byte = first.byte_range.start;
     let utf16 = first.utf16_range.start;
-    let text = original.logical_text.get(byte..last.byte_range.end)
+    let text = original
+        .logical_text
+        .get(byte..last.byte_range.end)
         .ok_or(FlowLayoutError::InvalidShapedRun)?;
     let mut run = OwnedTextRun {
         context: original.context.clone(),
@@ -180,7 +199,9 @@ fn fragment(
     for cluster in presentation {
         let cluster_index = run.clusters.len();
         let glyph_start = run.glyphs.len();
-        let glyphs = original.glyphs.get(cluster.glyph_range.clone())
+        let glyphs = original
+            .glyphs
+            .get(cluster.glyph_range.clone())
             .ok_or(FlowLayoutError::InvalidShapedRun)?;
         for glyph in glyphs {
             run.glyphs.push(RunGlyph {
@@ -206,7 +227,11 @@ fn fragment(
     Ok(run)
 }
 
-fn push(output: &mut Vec<DisplayItem>, item: DisplayItem, max_items: usize) -> Result<(), FlowLayoutError> {
+fn push(
+    output: &mut Vec<DisplayItem>,
+    item: DisplayItem,
+    max_items: usize,
+) -> Result<(), FlowLayoutError> {
     if output.len() >= max_items {
         return Err(FlowLayoutError::BudgetExceeded("highlighted display items"));
     }
@@ -222,15 +247,28 @@ fn paint(
     if blocks.len() != list.reading_order.len() {
         return Err(FlowLayoutError::InvalidShapedRun);
     }
-    let fences: Vec<_> = blocks.iter().zip(&list.reading_order).filter_map(|(block, reading)| {
-        let DisplayBlock::CodeBlock { language: Some(language), source } = block else {
-            return None;
-        };
-        highlight::is_supported(language).then_some(Fence {
-            source, language, bounds: reading.bounds, span: reading.source_span,
-            tokens: None, token: 0, byte: 0,
+    let fences: Vec<_> = blocks
+        .iter()
+        .zip(&list.reading_order)
+        .filter_map(|(block, reading)| {
+            let DisplayBlock::CodeBlock {
+                language: Some(language),
+                source,
+            } = block
+            else {
+                return None;
+            };
+            highlight::is_supported(language).then_some(Fence {
+                source,
+                language,
+                bounds: reading.bounds,
+                span: reading.source_span,
+                tokens: None,
+                token: 0,
+                byte: 0,
+            })
         })
-    }).collect();
+        .collect();
     if fences.is_empty() {
         return Ok(list);
     }
@@ -239,7 +277,10 @@ fn paint(
     let input = std::mem::take(&mut list.items);
     let mut output = Vec::with_capacity(input.len());
     for item in input {
-        while active.as_ref().is_some_and(|fence| item.bounds().y >= fence.bounds.bottom()) {
+        while active
+            .as_ref()
+            .is_some_and(|fence| item.bounds().y >= fence.bounds.bottom())
+        {
             if let Some(fence) = &mut active {
                 fence.finish()?;
             }
@@ -247,7 +288,8 @@ fn paint(
         }
         match (item, active.as_mut()) {
             (DisplayItem::Text(text), Some(fence))
-                if text.color_role == "code" && text.source_span == fence.span
+                if text.color_role == "code"
+                    && text.source_span == fence.span
                     && text.bounds.y >= fence.bounds.y
                     && text.bounds.y < fence.bounds.bottom() =>
             {
@@ -265,7 +307,9 @@ fn paint(
     for mut fence in fences {
         fence.finish()?;
     }
-    list.total_bounds = output.iter().fold(DisplayRect::default(), |bounds, item| bounds.union(item.bounds()));
+    list.total_bounds = output.iter().fold(DisplayRect::default(), |bounds, item| {
+        bounds.union(item.bounds())
+    });
     list.items = output;
     list.spatial = super::spatial::IndexCache::new();
     Ok(list)

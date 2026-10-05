@@ -56,9 +56,10 @@ mod tests {
     }
 
     fn has_keyword(display: &DisplayList) -> bool {
-        display.items().iter().any(|item| {
-            matches!(item, DisplayItem::Text(text) if text.color_role == "tok-kw")
-        })
+        display
+            .items()
+            .iter()
+            .any(|item| matches!(item, DisplayItem::Text(text) if text.color_role == "tok-kw"))
     }
 
     #[test]
@@ -88,13 +89,19 @@ mod tests {
         let options = FlowLayoutOptions::default();
         let highlighted = cache.render_highlighted(&rust, options).unwrap();
         let before = cache.stats();
-        assert_eq!(cache.render_highlighted(&rust, options).unwrap(), highlighted);
+        assert_eq!(
+            cache.render_highlighted(&rust, options).unwrap(),
+            highlighted
+        );
         let ordinary = cache.render_highlighted(&plain, options).unwrap();
         let after = cache.stats();
         assert!(after.hits > before.hits);
         assert_eq!(after.misses, before.misses);
         assert!(has_keyword(&highlighted));
         assert!(!has_keyword(&ordinary));
-        assert_eq!(cache.render(&rust, options).unwrap().reading_order(), highlighted.reading_order());
+        assert_eq!(
+            cache.render(&rust, options).unwrap().reading_order(),
+            highlighted.reading_order()
+        );
     }
 }

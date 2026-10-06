@@ -289,8 +289,9 @@ fn robot_docs_describe_current_pdf_capability_without_stale_base14_claims() {
     assert!(stdout.contains("Knuth-Plass paragraph layout"));
     assert!(stdout.contains("deterministic discretionary hyphenation"));
     assert!(stdout.contains("glue justification for body paragraphs"));
-    assert!(stdout.contains("basic keep/widow page building"));
-    assert!(stdout.contains("deeper page-builder polish is still planned"));
+    assert!(stdout.contains("keep-with-next headings and widow/orphan control"));
+    assert!(stdout.contains("still planned: bottom-of-page footnotes"));
+    assert!(!stdout.contains("deeper page-builder polish is still planned"));
     assert!(!stdout.contains(
         "Knuth-Plass paragraph layout, hyphenation, and page-builder polish are still planned"
     ));

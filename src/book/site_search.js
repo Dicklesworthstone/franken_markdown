@@ -166,6 +166,7 @@
       length = 0,
       mask = 0,
       offset = -1;
+    const offsets = terms.map(() => -1);
     return {
       add(chunk) {
         const window = tail + chunk.body;
@@ -181,6 +182,7 @@
               continue;
             }
             const source = segment.chunk.offsetAt(segment.from + at);
+            offsets[i] = source;
             if (offset < 0 || source < offset) offset = source;
             break;
           }
@@ -209,6 +211,7 @@
         return {
           mask,
           offset,
+          offsets,
           prefix: head.startsWith(terms[0]),
           exact: terms.length === 1 && length === head.length && head.trim() === terms[0],
         };
@@ -258,15 +261,41 @@
     // Prepared rows are chapter-contiguous. Keep only the last title summary,
     // not another full-sized lowercase copy or one cache entry per paragraph.
     let lastTitle, titleMatch;
-    // Group repeated matches within a section; headings outrank its body hits.
+    // A section is the contiguous run owned by one emitted anchor. Match all
+    // its entries together, but keep each phrase inside a real entry: joining
+    // strings would manufacture phrases and lose the original source offsets.
     let section = null,
-      representative = null;
-    const flush = () => {
-      if (representative) {
-        total++;
-        retain(results, representative);
+      representative = null,
+      partial = null,
+      coverage = 0,
+      witnesses = [];
+    const witness = (row, match, i, inTitle = false) => ({
+      row, offset: match.offsets[i], inTitle,
+    });
+    const passages = (evidence) => {
+      const ordered = evidence.filter(Boolean).sort((a, b) =>
+        a.row.order - b.row.order || Number(b.inTitle) - Number(a.inTitle) || a.offset - b.offset);
+      const selected = [];
+      for (const hit of ordered) {
+        const previous = selected[selected.length - 1];
+        // Nearby hits in the same source field share one bounded excerpt.
+        if (!previous || previous.row !== hit.row || previous.inTitle !== hit.inTitle ||
+            hit.offset - previous.offset > 100) selected.push(hit);
       }
-      representative = null;
+      return selected;
+    };
+    const flush = () => {
+      if (coverage === all && (representative || partial)) {
+        const result = representative || {
+          row: partial.row, score: -1, offset: partial.offset,
+          titleOffset: partial.titleOffset, passages: passages(witnesses),
+        };
+        total++;
+        retain(results, result);
+      }
+      representative = partial = null;
+      coverage = 0;
+      witnesses = [];
     };
     for (const row of rows) {
       if (cancelled()) return null;
@@ -282,6 +311,24 @@
       }
       const body = row.text === lastTitle ? titleMatch : await scan(row.text);
       if (!body || cancelled()) return null;
+      coverage |= body.mask | titleMatch.mask;
+      const local = [];
+      let bodyTerms = 0;
+      for (let i = 0; i < terms.length; i++) {
+        if (body.mask & (1 << i)) {
+          bodyTerms++;
+          local[i] = witness(row, body, i);
+          // Prefer an actual passage over inherited chapter-title evidence.
+          if (!witnesses[i] || witnesses[i].inTitle) witnesses[i] = local[i];
+        } else if (titleMatch.mask & (1 << i)) {
+          local[i] = witness(row, titleMatch, i, true);
+          if (!witnesses[i]) witnesses[i] = local[i];
+        }
+      }
+      if (bodyTerms && (!partial || bodyTerms > partial.bodyTerms ||
+          (bodyTerms === partial.bodyTerms && row.heading && !partial.row.heading))) {
+        partial = { row, bodyTerms, offset: body.offset, titleOffset: titleMatch.offset };
+      }
       if ((body.mask | titleMatch.mask) === all) {
         const inBody = body.mask === all;
         const score =
@@ -289,7 +336,8 @@
           (row.heading ? 10 : 0) +
           (body.exact ? 30 : 0) +
           (inBody && body.prefix ? 5 : 0);
-        const result = { row, score, offset: body.offset, titleOffset: titleMatch.offset };
+        const result = { row, score, offset: body.offset, titleOffset: titleMatch.offset,
+          passages: passages(local) };
         if (!representative || compare(result, representative) < 0) representative = result;
       }
       visited++;
@@ -378,7 +426,9 @@
         link.textContent =
           excerpt(row.title, answer.terms, result.titleOffset) +
           (row.anchor ? " — " + excerpt(row.anchor, [], 0) : "");
-        detail.textContent = excerpt(row.text, answer.terms, result.offset);
+        detail.textContent = result.passages.map((hit) =>
+          excerpt(hit.inTitle ? hit.row.title : hit.row.text, answer.terms, hit.offset)
+        ).join("\n…\n");
         item.append(link, detail);
         list.append(item);
       }

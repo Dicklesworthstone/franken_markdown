@@ -97,7 +97,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 
 | Area | Current functionality |
 |---|---|
-| Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, GitHub-style safe lowering of common raw HTML (unknown tags stay escaped) by default, and a ratcheted CommonMark 0.31.2 conformance floor |
+| Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, GitHub-style sanitizing of raw HTML by default (an allowlisted subset stays markup in HTML and becomes native nodes in PDF/SVG/EPUB; unknown tags stay escaped), and a ratcheted CommonMark 0.31.2 conformance floor |
 | HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
 | PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, UAX #14 CJK line breaking, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
@@ -533,7 +533,7 @@ fmd --text '<markdown>' --out out.html
 | `--css <file>` | Replace the default stylesheet entirely with your CSS (HTML) |
 | `--title <text>` | Set the document title (otherwise the first heading, then "Document") |
 | `--author <text>` | Set PDF author metadata |
-| `--allow-html` | Pass raw HTML in the source through verbatim instead of the safe lowering (trusted input only) |
+| `--allow-html` | Pass raw HTML in the source through verbatim instead of sanitizing it (trusted input only) |
 | `--pdf-line-numbers` | Render muted line numbers in PDF fenced code blocks |
 | `--pdf-page-numbers` | Centered page number in the PDF bottom margin (sugar for `--pdf-footer-center '{page}'`) |
 | `--pdf-header-left\|center\|right <text>`, `--pdf-footer-left\|center\|right <text>` | Opt-in running header/footer text in the PDF margins. Tokens `{page}`, `{pages}`, `{title}`, `{author}`, `{date}` (from `SOURCE_DATE_EPOCH`, never the clock); overlong slots get an ellipsis; a band that does not fit its margin fails the render. Add `--pdf-header-rule`/`--pdf-footer-rule` for hairlines and `--pdf-running-skip-first` to leave page 1 bare |
@@ -816,7 +816,7 @@ Core modules:
 | Input is refused as too large (exit 66) | Raise the guard explicitly, for example `fmd --max-input-bytes 134217728 big.md --out big.html` |
 | `SOURCE_DATE_EPOCH must be non-negative decimal seconds` | Use plain decimal seconds: `SOURCE_DATE_EPOCH=1700000000 fmd doc.md --to pdf --out doc.pdf` |
 | HTML printed to the terminal | That is stdout. Pass `--out file.html` or redirect: `fmd doc.md > doc.html` |
-| Raw HTML appears as escaped text | By default fmd keeps a GitHub-style safe subset (`<b>`, `<a href>`, `<img src>`, `<br>`, `<details>`, `<p>`/`<div>`, headings, lists, tables; comments vanish) as native Markdown nodes and escapes any other tag. Pass `--allow-html` only for trusted input |
+| Raw HTML appears as escaped text | By default fmd keeps a GitHub-style safe subset (`<div align>`, `<p>`, `<img src width>`, `<a href>`, `<b>`, `<kbd>`, `<sup>`, `<details>`/`<summary>`, headings, lists, tables; comments vanish): balanced, re-serialized markup with vetted URLs in HTML, native nodes in PDF/SVG/EPUB. Any other tag or attribute is escaped or dropped. Pass `--allow-html` only for trusted input |
 | Custom CSS removed all styling | `--css` replaces the stylesheet entirely; include every rule you want to keep |
 | `unknown config key ...` | Run `fmd capabilities --json` or see [Configuration](#configuration) for the supported key list |
 | `config set` errors with `--no-config` | They are mutually exclusive; drop `--no-config` to write config |

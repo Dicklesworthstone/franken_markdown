@@ -154,7 +154,7 @@ fn prepare_book_with_budget(
             .unwrap_or(lang);
         html_opts.title = Some(source.title.clone());
         html_opts.lang = Some(chapter_lang.to_string());
-        let page = franken_markdown::html::render(&doc, &html_opts);
+        let page = franken_markdown::html::render(&franken_markdown::safe_html::lower(&doc), &html_opts);
         // Bound one transient render as before, but do not charge its base64
         // image copies to the publication. Only the externalized XHTML and
         // unique image payloads are retained in the archive.

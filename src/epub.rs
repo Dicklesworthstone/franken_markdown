@@ -119,7 +119,9 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     let mut html_opts = opts.clone();
     html_opts.custom_css = Some(String::new());
     html_opts.allow_raw_html = false;
-    let page = franken_markdown::html::render(doc, &html_opts);
+    // Raw HTML is lowered to native nodes (only tags outside the safe subset
+    // remain, escaped) so chapter XHTML stays well-formed and valid.
+    let page = franken_markdown::html::render(&franken_markdown::safe_html::lower(doc), &html_opts);
     let body = extract_main_body(&page).ok_or_else(|| {
         RenderError::InvalidInput("epub: HTML renderer <main> wrapper not found".to_string())
     })?;

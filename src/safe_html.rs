@@ -1042,6 +1042,325 @@ fn lower_html_block(html: &str) -> Vec<Block> {
     builder.finish()
 }
 
+// ---------------------------------------------------------------------------
+// HTML output: balanced allowlist sanitizer
+// ---------------------------------------------------------------------------
+
+/// What a URL attribute points at, so the host applies its matching policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UrlKind {
+    Link,
+    Image,
+}
+
+/// An element HTML output may keep, GitHub-style, with its void-ness.
+fn allowed_element(name: &str) -> Option<(&'static str, bool)> {
+    const CONTAINERS: &[&str] = &[
+        "a",
+        "abbr",
+        "b",
+        "bdi",
+        "bdo",
+        "blockquote",
+        "caption",
+        "center",
+        "cite",
+        "code",
+        "dd",
+        "del",
+        "details",
+        "dfn",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "figcaption",
+        "figure",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "i",
+        "ins",
+        "kbd",
+        "li",
+        "mark",
+        "ol",
+        "p",
+        "picture",
+        "pre",
+        "q",
+        "rp",
+        "rt",
+        "ruby",
+        "s",
+        "samp",
+        "small",
+        "span",
+        "strike",
+        "strong",
+        "sub",
+        "summary",
+        "sup",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "time",
+        "tr",
+        "tt",
+        "u",
+        "ul",
+        "var",
+    ];
+    const VOIDS: &[&str] = &["br", "hr", "img", "wbr"];
+    if let Some(&tag) = CONTAINERS.iter().find(|&&tag| tag == name) {
+        return Some((tag, false));
+    }
+    VOIDS
+        .iter()
+        .find(|&&tag| tag == name)
+        .map(|&tag| (tag, true))
+}
+
+/// Tags that are dropped silently (their content, if any, is kept): media
+/// sources a `<picture>` falls back from, and table column metadata.
+fn dropped_element(name: &str) -> bool {
+    matches!(name, "source" | "track" | "col" | "colgroup")
+}
+
+fn is_digits(value: &str, allow_percent: bool) -> bool {
+    let digits = if allow_percent {
+        value.strip_suffix('%').unwrap_or(value)
+    } else {
+        value
+    };
+    !digits.is_empty() && digits.len() <= 6 && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Escape text content: markup characters only, quotes stay literal.
+fn push_escaped_text(text: &str, out: &mut String) {
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+/// Escape an attribute value (also quotes).
+fn push_escaped(text: &str, out: &mut String) {
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+/// Raw HTML that HTML output keeps as live markup when raw passthrough is
+/// off. The allowlisted elements and attributes are re-serialized from the
+/// parsed tag (never copied), every URL goes through the host's policy,
+/// text is entity-decoded and re-escaped, and any other tag is escaped as
+/// visible text. Open elements are tracked so a container (paragraph, list
+/// item, document) can close whatever its raw HTML left open: the output is
+/// always balanced, and a stray closing tag can never end markup the
+/// renderer itself opened.
+#[derive(Debug, Default)]
+pub(crate) struct Sanitizer {
+    open: Vec<&'static str>,
+}
+
+impl Sanitizer {
+    /// Current open-element depth, the base a container later closes to.
+    pub(crate) fn depth(&self) -> usize {
+        self.open.len()
+    }
+
+    /// Close every element opened above `base`.
+    pub(crate) fn close_to(&mut self, base: usize, out: &mut String) {
+        while self.open.len() > base {
+            if let Some(name) = self.open.pop() {
+                out.push_str("</");
+                out.push_str(name);
+                out.push('>');
+            }
+        }
+    }
+
+    /// True when `raw` holds any element the sanitizer keeps as markup.
+    pub(crate) fn keeps_markup(raw: &str) -> bool {
+        pieces(raw).iter().any(
+            |piece| matches!(piece, Piece::Tag(tag, _) if allowed_element(&tag.name).is_some()),
+        )
+    }
+
+    /// Sanitize `raw` into `out`. Closing tags may only end elements opened
+    /// above `base`. `url` writes a vetted, escaped URL and returns true, or
+    /// returns false to drop the attribute.
+    pub(crate) fn feed(
+        &mut self,
+        raw: &str,
+        base: usize,
+        out: &mut String,
+        url: &mut dyn FnMut(&str, UrlKind, &mut String) -> bool,
+    ) {
+        for piece in pieces(raw) {
+            match piece {
+                Piece::Ignorable => {}
+                Piece::Text(text) => push_escaped_text(&decode_entities(text), out),
+                Piece::Tag(tag, source) => self.tag(&tag, source, base, out, url),
+            }
+        }
+    }
+
+    fn tag(
+        &mut self,
+        tag: &Tag,
+        source: &str,
+        base: usize,
+        out: &mut String,
+        url: &mut dyn FnMut(&str, UrlKind, &mut String) -> bool,
+    ) {
+        if dropped_element(&tag.name) {
+            return;
+        }
+        let Some((name, void)) = allowed_element(&tag.name) else {
+            push_escaped_text(source, out);
+            return;
+        };
+        if tag.closing {
+            if void {
+                return;
+            }
+            let floor = base.min(self.open.len());
+            if let Some(pos) = self.open[floor..].iter().rposition(|&open| open == name) {
+                self.close_to(floor + pos, out);
+            }
+            return;
+        }
+        if name == "img" {
+            let Some(src) = tag.attr("src").map(str::trim).filter(|src| !src.is_empty()) else {
+                return;
+            };
+            let mut attrs = String::new();
+            attrs.push_str(" src=\"");
+            if !url(src, UrlKind::Image, &mut attrs) {
+                // An unusable source keeps the picture's description visible.
+                push_escaped_text(tag.attr("alt").unwrap_or_default(), out);
+                return;
+            }
+            attrs.push('"');
+            out.push_str("<img");
+            out.push_str(&attrs);
+            out.push_str(" alt=\"");
+            push_escaped(tag.attr("alt").unwrap_or_default(), out);
+            out.push('"');
+            self.push_attrs(tag, name, out, url);
+            out.push('>');
+            return;
+        }
+        if !void && self.open.len() >= MAX_HTML_NESTING {
+            return; // Too deep: keep the content, add no level.
+        }
+        out.push('<');
+        out.push_str(name);
+        self.push_attrs(tag, name, out, url);
+        out.push('>');
+        if !void {
+            if tag.self_closing {
+                out.push_str("</");
+                out.push_str(name);
+                out.push('>');
+            } else {
+                self.open.push(name);
+            }
+        }
+    }
+
+    fn push_attrs(
+        &self,
+        tag: &Tag,
+        name: &str,
+        out: &mut String,
+        url: &mut dyn FnMut(&str, UrlKind, &mut String) -> bool,
+    ) {
+        for (key, value) in &tag.attrs {
+            let value = value.trim();
+            let keep = match key.as_str() {
+                "align" => matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "left" | "center" | "right" | "justify"
+                ),
+                "title" | "lang" => true,
+                "dir" => matches!(value, "ltr" | "rtl" | "auto"),
+                "width" | "height" => name == "img" && is_digits(value, true),
+                "colspan" | "rowspan" => matches!(name, "td" | "th") && is_digits(value, false),
+                "start" => name == "ol" && is_digits(value, false),
+                "value" => name == "li" && is_digits(value, false),
+                "type" => name == "ol" && matches!(value, "1" | "a" | "A" | "i" | "I"),
+                "open" => name == "details",
+                "href" if name == "a" => {
+                    let mut vetted = String::new();
+                    if url(value, UrlKind::Link, &mut vetted) {
+                        out.push_str(" href=\"");
+                        out.push_str(&vetted);
+                        out.push('"');
+                    }
+                    false
+                }
+                _ => false,
+            };
+            if keep {
+                out.push(' ');
+                out.push_str(key);
+                out.push_str("=\"");
+                let value = if key == "align" {
+                    value.to_ascii_lowercase()
+                } else {
+                    value.to_string()
+                };
+                push_escaped(&value, out);
+                out.push('"');
+            }
+        }
+    }
+}
+
+/// The text a raw HTML fragment shows: decoded text runs plus the source of
+/// tags outside the safe subset, without markup the renderers keep or lower.
+pub(crate) fn visible_text(raw: &str) -> Cow<'_, str> {
+    if !raw.contains('<') && !raw.contains('&') {
+        return Cow::Borrowed(raw);
+    }
+    let mut out = String::with_capacity(raw.len());
+    for piece in pieces(raw) {
+        match piece {
+            Piece::Ignorable => {}
+            Piece::Text(text) => out.push_str(&decode_entities(text)),
+            Piece::Tag(tag, source) => {
+                if allowed_element(&tag.name).is_none()
+                    && inline_role(&tag.name).is_none()
+                    && !dropped_element(&tag.name)
+                {
+                    out.push_str(source);
+                }
+            }
+        }
+    }
+    Cow::Owned(out)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1367,9 +1686,113 @@ mod tests {
             let doc = crate::parse_markdown(&source);
             let once = lower(&doc).into_owned();
             assert_eq!(lower(&once).into_owned(), once, "{source:?}");
-            crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();
+            let html = crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();
+            assert!(!html.contains("<script"), "{source:?}");
             crate::render_pdf_document(&doc, &crate::PdfOptions::default()).unwrap();
         }
+    }
+
+    fn sanitized(markdown: &str) -> String {
+        let html = crate::render_html(markdown, &crate::HtmlOptions::default()).unwrap();
+        let start = html.find("<main class=\"fmd\">").unwrap() + "<main class=\"fmd\">".len();
+        let end = html.rfind("</main>").unwrap();
+        html[start..end].trim().to_string()
+    }
+
+    #[test]
+    fn sanitizer_keeps_github_layout_markup() {
+        assert_eq!(
+            sanitized(
+                "<p align=\"CENTER\" class=\"x\" id=\"y\">\n<img src=\"logo.png\" width=\"120\" height=\"50%\" onerror=\"x()\">\n</p>\n"
+            ),
+            "<p align=\"center\">\n<img src=\"logo.png\" alt=\"\" width=\"120\" height=\"50%\">\n</p>"
+        );
+        assert_eq!(
+            sanitized("<details open>\n<summary>More</summary>\n\nBody *md*\n\n</details>\n"),
+            "<details open=\"\">\n<summary>More</summary>\n<p>Body <em>md</em></p>\n</details>"
+        );
+        assert_eq!(
+            sanitized("Press <kbd>Ctrl</kbd>+<kbd>C</kbd>, H<sub>2</sub>O, x<sup>2</sup>.\n"),
+            "<p>Press <kbd>Ctrl</kbd>+<kbd>C</kbd>, H<sub>2</sub>O, x<sup>2</sup>.</p>"
+        );
+    }
+
+    #[test]
+    fn sanitizer_blocks_script_urls_handlers_and_injection() {
+        for markdown in [
+            "<a href=\"javascript:alert(1)\">x</a>\n",
+            "<a href=\"&#x6A;avascript:alert(1)\">x</a>\n",
+            "<a href=\"java\tscript:alert(1)\">x</a>\n",
+            "<img src=\"javascript:alert(1)\" alt=\"pic\">\n",
+            "<div onclick=\"alert(1)\" style=\"background:url(javascript:alert(1))\">x</div>\n",
+            "<svg onload=\"alert(1)\"><script>alert(1)</script></svg>\n",
+            "<a title='\"><script>alert(1)</script>'>x</a>\n",
+            "<iframe src=\"https://evil.example\"></iframe>\n",
+        ] {
+            let out = sanitized(markdown);
+            let lower = out.to_ascii_lowercase();
+            assert!(!lower.contains("javascript:"), "{markdown:?} -> {out}");
+            assert!(!lower.contains("<script"), "{markdown:?} -> {out}");
+            assert!(!lower.contains("<svg"), "{markdown:?} -> {out}");
+            assert!(!lower.contains("<iframe"), "{markdown:?} -> {out}");
+            // Handlers and styles never survive as live attributes; escaped,
+            // inert source text (`&lt;div onclick=...`) is not markup.
+            for live_tag in lower
+                .split('<')
+                .skip(1)
+                .filter_map(|rest| rest.split_once('>'))
+            {
+                for attr in [" onclick", " onload", " onerror", " style"] {
+                    assert!(!live_tag.0.contains(attr), "{markdown:?} -> {out}");
+                }
+            }
+        }
+        // A title can carry quotes, but only escaped inside the attribute.
+        assert_eq!(
+            sanitized("<a title='\"><b>'>x</a>\n"),
+            "<p><a title=\"&quot;&gt;&lt;b&gt;\">x</a></p>"
+        );
+    }
+
+    #[test]
+    fn stray_closers_cannot_end_renderer_markup_and_open_tags_close() {
+        // A raw `</div>` inside a table cell must not close the table wrapper,
+        // and `</main>`/`</body>` are escaped text.
+        let out = sanitized("| a |\n|---|\n| x </div></td></table></main> y |\n");
+        assert!(
+            out.contains("<td>x  y</td>") || out.contains("<td>x &lt;/main&gt; y</td>"),
+            "{out}"
+        );
+        assert_eq!(
+            out.matches("<div").count(),
+            out.matches("</div>").count(),
+            "{out}"
+        );
+        // Unclosed inline tags close with their paragraph; block ones with
+        // their container.
+        assert_eq!(
+            sanitized("a <b>bold\n\nnext\n"),
+            "<p>a <b>bold</b></p>\n<p>next</p>"
+        );
+        let quoted = sanitized("> <div align=\"right\">\n>\n> quoted\n\noutside\n");
+        assert!(quoted.contains("</div></blockquote>"), "{quoted}");
+        assert!(quoted.ends_with("<p>outside</p>"), "{quoted}");
+    }
+
+    #[test]
+    fn local_raw_images_embed_like_markdown_images() {
+        let png = [137, 80, 78, 71, 13, 10, 26, 10];
+        let opts = crate::HtmlOptions {
+            image_assets: vec![crate::PdfImageAsset::new("pic.png", png.to_vec())],
+            ..crate::HtmlOptions::default()
+        };
+        let html = crate::render_html("<img src=\"pic.png\" width=\"10\">\n", &opts).unwrap();
+        let markdown = crate::render_html("![](pic.png)\n", &opts).unwrap();
+        let data_uri = |html: &str| {
+            let start = html.find("src=\"").unwrap() + 5;
+            html[start..start + html[start..].find('"').unwrap()].to_string()
+        };
+        assert_eq!(data_uri(&html), data_uri(&markdown));
     }
 
     #[test]

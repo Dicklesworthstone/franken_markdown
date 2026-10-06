@@ -402,17 +402,16 @@ fn gfm_table_escaped_backticks_do_not_hide_cell_pipes() {
 }
 
 #[test]
-fn html_blocks_lower_safely_by_default_and_pass_through_when_allowed() {
+fn html_blocks_sanitize_by_default_and_pass_through_when_allowed() {
     let md = "<div class=\"note\">\n<strong>trusted</strong>\n</div>";
     let escaped = html(md);
 
-    // Default: the safe subset becomes native nodes, attributes are dropped.
+    // Default: the safe subset stays markup, other attributes are dropped.
     assert!(
-        escaped.contains("<p><strong>trusted</strong></p>"),
+        escaped.contains("<div>\n<strong>trusted</strong>\n</div>"),
         "{escaped}"
     );
     assert!(!escaped.contains("class=\"note\""));
-    assert!(!escaped.contains("<div"));
     // Tags outside the subset stay escaped, visible text.
     let unknown = html("<marquee onclick=\"x()\">\nhi\n</marquee>");
     assert!(
@@ -426,11 +425,14 @@ fn html_blocks_lower_safely_by_default_and_pass_through_when_allowed() {
 }
 
 #[test]
-fn inline_html_lowers_safely_by_default_and_passes_through_when_allowed() {
+fn inline_html_sanitizes_by_default_and_passes_through_when_allowed() {
     let md = "A <span class=\"pill\">trusted</span> word.";
     let escaped = html(md);
 
-    assert!(escaped.contains("A trusted word."), "{escaped}");
+    assert!(
+        escaped.contains("A <span>trusted</span> word."),
+        "{escaped}"
+    );
     assert!(!escaped.contains("<span class=\"pill\">"));
     let unknown = html("A <blink>x</blink> word.");
     assert!(

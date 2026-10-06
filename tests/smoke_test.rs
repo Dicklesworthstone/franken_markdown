@@ -164,11 +164,11 @@ fn heading_ids_are_unique_non_empty_and_collision_safe() {
 
 #[test]
 fn heading_plain_text_projection_preserves_raw_html_source() {
-    // Safe-subset tags lower to native emphasis; the title and slug use text.
+    // Safe-subset tags stay sanitized markup; the title and slug use text.
     let html = render("# Title <i>raw</i>");
     assert!(html.contains("<title>Title raw</title>"), "{html}");
     assert!(
-        html.contains("<h1 id=\"title-raw\">Title <em>raw</em></h1>"),
+        html.contains("<h1 id=\"title-raw\">Title <i>raw</i></h1>"),
         "{html}"
     );
 

@@ -22,16 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Raw HTML without `--allow-html` is no longer printed as literal tags. A
-  GitHub-style safe subset is lowered to native Markdown nodes for HTML, PDF,
-  SVG and EPUB output: comments disappear; `<b>`/`<strong>`, `<i>`/`<em>`,
-  `<del>`/`<s>`, `<code>`/`<kbd>`, `<a href>`, `<img src>` and `<br>` become
-  their Markdown equivalents; `<p>`, `<div>`, `<h1>`..`<h6>`, `<pre>`,
-  `<blockquote>`, `<ul>`/`<ol>`/`<li>`, `<table>`, `<hr>` and
-  `<details>`/`<summary>` become blocks; wrappers such as `<span>`, `<sup>` and
-  `<picture>` keep their content. Attributes other than `href`, `src`, `alt`
-  and `title` are dropped, URLs still pass the safe-URL policies, and every
-  other tag (`<script>`, `<iframe>`, ...) is still escaped as visible text.
+- Raw HTML without `--allow-html` is no longer printed as literal tags; fmd
+  sanitizes it the way GitHub does. HTML output keeps an allowlisted subset
+  as balanced, re-serialized markup (`<div align>`, `<p>`, headings,
+  `<img src width height>`, `<a href>`, `<b>`/`<i>`/`<kbd>`/`<sub>`/`<sup>`,
+  `<details>`/`<summary>`, lists, tables, ...): only `align`, `title`, `lang`,
+  `dir` and a few per-element attributes survive, URLs pass the safe-URL
+  policies, local `<img src>` assets embed like Markdown images, and open
+  elements close at the end of their container so a stray closing tag can
+  never end renderer markup. PDF, SVG and EPUB lower the same subset to
+  native Markdown nodes. Comments disappear everywhere, and any other tag
+  (`<script>`, `<iframe>`, ...) is still escaped as visible text. CommonMark
+  conformance rises from 578 to 589/652 as a side effect.
 
 ## [0.5.0] - 2026-10-02
 

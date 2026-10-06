@@ -263,10 +263,10 @@ fn angle_bracket_link_destination_allows_spaces() {
 fn angle_bracket_link_destination_rejects_newline() {
     // A newline inside `<...>` aborts the destination, so no link forms; the
     // `<a\nb>` that remains is a raw HTML tag (an anchor without href), which
-    // the safe-HTML lowering keeps inert.
+    // the sanitizer keeps inert.
     let out = html("[t](<a\nb>)");
     assert!(out.contains("[t]("), "{out}");
-    assert!(!out.contains("<a"), "{out}");
+    assert!(!out.contains("href"), "{out}");
 }
 
 #[test]

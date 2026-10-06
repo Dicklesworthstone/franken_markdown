@@ -67,30 +67,51 @@ pub(super) fn restore(
     probe: &str,
     destination: &mut Option<String>,
 ) {
+    restore_block(block, original, probe, destination, false);
+}
+
+/// Reference-use probes replace the suffix that supplies both URL and title.
+/// Restore both metadata fields at that one Link; all other AST data must match.
+pub(super) fn restore_reference(
+    block: &mut Block,
+    original: &Block,
+    probe: &str,
+    destination: &mut Option<String>,
+) {
+    restore_block(block, original, probe, destination, true);
+}
+
+fn restore_block(
+    block: &mut Block,
+    original: &Block,
+    probe: &str,
+    destination: &mut Option<String>,
+    reference_title: bool,
+) {
     match (block, original) {
         (Block::Paragraph(items), Block::Paragraph(old))
         | (Block::Heading { inlines: items, .. }, Block::Heading { inlines: old, .. }) => {
-            restore_inlines(items, old, probe, destination);
+            restore_inlines(items, old, probe, destination, reference_title);
         }
         (Block::BlockQuote(blocks), Block::BlockQuote(old))
         | (Block::FootnoteDefinition { blocks, .. }, Block::FootnoteDefinition { blocks: old, .. }) => {
-            restore_blocks(blocks, old, probe, destination);
+            restore_blocks(blocks, old, probe, destination, reference_title);
         }
         (Block::List(list), Block::List(old)) if list.items.len() == old.items.len() => {
             for (item, old) in list.items.iter_mut().zip(&old.items) {
-                restore_blocks(&mut item.blocks, &old.blocks, probe, destination);
+                restore_blocks(&mut item.blocks, &old.blocks, probe, destination, reference_title);
             }
         }
         (Block::Table(table), Block::Table(old)) if table.rows.len() == old.rows.len() => {
-            restore_cells(&mut table.head, &old.head, probe, destination);
+            restore_cells(&mut table.head, &old.head, probe, destination, reference_title);
             for (row, old) in table.rows.iter_mut().zip(&old.rows) {
-                restore_cells(row, old, probe, destination);
+                restore_cells(row, old, probe, destination, reference_title);
             }
         }
         (Block::DefinitionList(items), Block::DefinitionList(old)) if items.len() == old.len() => {
             for (item, old) in items.iter_mut().zip(old) {
-                restore_cells(&mut item.terms, &old.terms, probe, destination);
-                restore_cells(&mut item.definitions, &old.definitions, probe, destination);
+                restore_cells(&mut item.terms, &old.terms, probe, destination, reference_title);
+                restore_cells(&mut item.definitions, &old.definitions, probe, destination, reference_title);
             }
         }
         _ => {}
@@ -102,10 +123,11 @@ fn restore_blocks(
     original: &[Block],
     probe: &str,
     destination: &mut Option<String>,
+    reference_title: bool,
 ) {
     if blocks.len() == original.len() {
         for (block, old) in blocks.iter_mut().zip(original) {
-            restore(block, old, probe, destination);
+            restore_block(block, old, probe, destination, reference_title);
         }
     }
 }
@@ -115,10 +137,11 @@ fn restore_cells(
     original: &[Vec<Inline>],
     probe: &str,
     destination: &mut Option<String>,
+    reference_title: bool,
 ) {
     if cells.len() == original.len() {
         for (cell, old) in cells.iter_mut().zip(original) {
-            restore_inlines(cell, old, probe, destination);
+            restore_inlines(cell, old, probe, destination, reference_title);
         }
     }
 }
@@ -128,6 +151,7 @@ fn restore_inlines(
     original: &[Inline],
     probe: &str,
     destination: &mut Option<String>,
+    reference_title: bool,
 ) {
     if items.len() != original.len() {
         return;
@@ -135,19 +159,22 @@ fn restore_inlines(
     for (item, original) in items.iter_mut().zip(original) {
         match (item, original) {
             (
-                Inline::Link { dest, content, .. },
-                Inline::Link { dest: old, content: old_content, .. },
+                Inline::Link { dest, title, content },
+                Inline::Link { dest: old, title: old_title, content: old_content },
             ) => {
                 if dest.as_str() == probe {
                     *destination = Some(old.clone());
                     dest.clone_from(old);
+                    if reference_title {
+                        title.clone_from(old_title);
+                    }
                 }
-                restore_inlines(content, old_content, probe, destination);
+                restore_inlines(content, old_content, probe, destination, reference_title);
             }
             (Inline::Emphasis(items), Inline::Emphasis(old))
             | (Inline::Strong(items), Inline::Strong(old))
             | (Inline::Strikethrough(items), Inline::Strikethrough(old)) => {
-                restore_inlines(items, old, probe, destination);
+                restore_inlines(items, old, probe, destination, reference_title);
             }
             _ => {}
         }

@@ -1,99 +1,94 @@
-# Same-document fragment navigation
+# Markdown link navigation
 
-The native `fmd-lsp` exposes `textDocument/completion` and
-`textDocument/definition` for explicit same-document fragment destinations.
-It never opens a URI, reads a workspace, loads fonts, renders PDF or invokes
-an external Markdown parser.
+The native `fmd-lsp` exposes `textDocument/completion` for explicit fragment
+destinations and `textDocument/definition` for explicit and reference-style
+links. It never opens a URI, reads workspace files, loads fonts, renders PDF or
+invokes an external Markdown parser.
 
-Links between explicitly opened files are also supported; see
-[LSP_WORKSPACE_NAVIGATION.md](LSP_WORKSPACE_NAVIGATION.md) for cross-document
-resolution and completion. [LSP_WORKSPACE_SYMBOLS.md](LSP_WORKSPACE_SYMBOLS.md)
-describes ranked heading search across synchronized buffers.
+Links between explicitly opened files are supported; see
+[LSP_WORKSPACE_NAVIGATION.md](LSP_WORKSPACE_NAVIGATION.md) for file resolution and
+[LSP_WORKSPACE_SYMBOLS.md](LSP_WORKSPACE_SYMBOLS.md) for ranked heading search.
+[Nested origins](LSP_NESTED_NAVIGATION.md) and
+[reference-style uses](LSP_REFERENCE_NAVIGATION.md) share the same target model.
 
 ## Completion
 
 Place the caret in `[label](#inst)` and request completion, or type `#` to
 trigger it. The unfinished `[label](#inst` and `[label](<#inst` are supported
-when the destination ends the enclosing block. A candidate completion replaces
-the complete fragment, not just the prefix: accepting `#installation` midway
-through `#inst-old` does not leave an unwanted `-old` suffix.
+when the destination ends the enclosing top-level block or container. Accepting
+`#installation` midway through `#inst-old` replaces the complete fragment and
+leaves no stale suffix.
 
 Queries and titles are preserved: `[label](?view=read#inst "Guide")` changes only
-`#inst`. Angle delimiters are likewise left intact. Positions and edits use
-UTF-16, including text after astral characters and CRLF line endings.
+`#inst`. Angle delimiters and container prefixes remain intact. Positions and
+edits use UTF-16, including text after astral characters and CRLF line endings.
+Reference labels are not fragment destinations and receive no completion edits.
 
 The shared document analyzer supplies collision-correct heading IDs, including
-headings inside containers and referenced notes. Ambiguous IDs are never
-suggested. Prefix filtering is case-sensitive against actual emitted IDs;
-percent escapes are decoded once for filtering. An incomplete percent escape
-returns an empty incomplete list so the next character can retry. Results are
-sorted by canonical ID and include a bounded plain-text heading title.
+headings inside containers and referenced notes. Ambiguous IDs are not suggested.
+Prefix filtering is case-sensitive against emitted IDs; percent escapes are
+decoded once. Incomplete percent escapes return an empty incomplete list so the
+next character can retry. Results are sorted by canonical ID with bounded titles.
 
-Completion does not automatically insert closing delimiters in the user's
-buffer. A temporary closure may be used solely to validate unfinished syntax;
-the actual TextEdit only changes the fragment. The editor/user retains control
-of the remaining Markdown.
+Completion never inserts closing delimiters into the user's buffer. A temporary
+closure can validate unfinished syntax; the actual edit changes only the fragment.
 
 ## Definitions
 
-Place the caret inside an existing fragment destination to jump to its source.
-Forward references, duplicate headings, encoded fragments, query fragments and
-emitted footnote IDs use the same resolution as book/HTML validation. Missing,
-invalid and ambiguous targets return null, never an arbitrary first match.
-An empty `#` fragment returns the document's zero-width start location.
+An explicit destination, or the text/label of a single-line reference use such
+as `[guide][install]`, can resolve to its published target. Forward references,
+duplicate headings, encoded fragments, query fragments and emitted footnote IDs
+follow book/HTML validation. Missing, invalid and ambiguous targets return null.
+An empty fragment addresses the document's zero-width start location. Reference
+uses resolve to that target, not the reference-definition declaration.
 
-A top-level heading has its exact heading block range. A heading nested inside
-a quote/list or a referenced footnote has its authoritative enclosing top-level
-source block range. This is deliberately not a claim of precise nested spans.
-The returned URI is always the exact synchronized buffer URI from the request.
+A top-level heading has its exact block range. A heading nested inside a quote,
+list or referenced footnote retains its authoritative enclosing top-level source
+range, not an invented fine-grained span. Results preserve exact client URIs.
+Cross-document targets must already be open and synchronized.
 
 ## Parser-verified source locations
 
-A bounded lexical scan finds a possible single-line URL token after `](`,
-optionally with an angle delimiter. That scan grants no authority by itself.
-The server substitutes a unique harmless fragment into a temporary copy and
-runs the actual first-party parser. The resulting AST must contain that probe
-as a Link destination in the selected top-level block, with every other block
-unchanged. Code, images, HTML attributes and titles therefore cannot pass merely
-because they contain text that resembles a link.
+Lexical tokens grant no authority on their own. The server substitutes a unique
+harmless destination in a temporary source copy and invokes the actual parser.
+The resulting AST must contain that Link in the selected top-level block, with
+all other blocks unchanged. Structural correspondence descends through quotes,
+lists, tables, definition lists and note bodies. The renderer must also emit the
+probed reference, excluding dormant notes before any cross-file lookup.
 
-Definition requests apply a stronger check: align the original/probed inline
-structure, restore only the original destination, then require equality of the
-entire AST. Only an existing parsed link at that token can acquire a destination.
-Completion permits a newly formed Link because the user may still be typing it.
+For an existing explicit link, restoring its destination must reproduce the
+entire AST. For a reference-use probe, both the destination and the title supplied
+by the reference definition are restored at the one matching Link. Siblings,
+labels, container metadata and other titles are not relaxed. Code, images, math
+and HTML attributes therefore cannot acquire authority from link-shaped text.
 Probe text never enters stored buffers, diagnostics, response edits or files.
 
-This currently supports origin tokens in top-level paragraphs and headings.
-It does not guess origin locations inside lists, quotes, tables or note bodies;
-it does not implement reference-style link navigation, direct footnote-marker
-navigation, escaped URL delimiters, or multiline URLs. Those remain separate
-source-provenance work. Broad semantic diagnostics still cover parsed links in
-nested containers.
+Direct footnote-marker navigation, escaped/multiline explicit URL tokens,
+multiline reference uses and reference-definition editing are not implemented.
 
 ## Limits and verification
 
-The server's 2-MiB document cap remains. Navigation additionally admits at most
-64 KiB in the selected source block and 8,192 bytes in a candidate destination.
+The server's 2-MiB document cap remains. Navigation admits at most 64 KiB in the
+selected top-level source block and 8192 bytes in a candidate destination/use.
 Probe selection is bounded to 32 attempts. Completion returns at most 256 items,
-with IDs of at most 1,024 bytes and titles of at most 128 Unicode scalars;
-excess matches set `isIncomplete`. The core analyzer's existing admission limits
-remain in force. An oversized block or refused analysis returns RequestFailed;
-malformed coordinates return InvalidParams, and unsynchronized buffers return
-ContentModified. Out-of-scope syntax returns an empty result.
+with IDs of at most 1024 bytes and titles of at most 128 Unicode scalars; excess
+matches set `isIncomplete`. The core analyzer's admission limits remain in force.
 
-At most two temporary probe parses follow the initial spanned parse. This is
-bounded synchronous work, not incremental parsing or a hard frame-time promise.
+Explicit URL navigation uses at most two temporary probe parses. Reference-use
+navigation admits at most eight candidate contexts, with one parse per candidate.
+These are bounded synchronous operations, not incremental parsing or frame-time
+promises. An oversized block or refused analysis returns RequestFailed; malformed
+coordinates return InvalidParams; unsynchronized buffers return ContentModified.
+Out-of-scope syntax returns an empty result.
 
 ```sh
-cargo test --features lsp --bin fmd-lsp links::tests
-cargo test --features lsp --bin fmd-lsp --test lsp_protocol_test
+cargo test --features lsp --bin fmd-lsp
+cargo test --features lsp --test lsp_protocol_test
 cargo test --test document_links_test
 ```
 
-The fourteen Rust regressions cover parser exclusions, canonical collisions,
-forward/encoded targets, partial destinations, precise fragment edits, Unicode,
-container target ownership, note collisions, probe uniqueness, result/work
-limits, protocol dispatch and current-version fencing. They were authored but
-not executed in the toolchain-less authoring environment. An independent
-CommonMark probe-context experiment is not a Rust build or a substitute for
-these repository-parser tests.
+The suites cover parser exclusions, target collisions, forward/encoded targets,
+partial destinations, exact edits, Unicode, nested origins, reference uses, notes,
+work limits, dispatch and current-version fencing. Rust compilation and execution
+remain unverified in the toolchain-less authoring environment. Lexical checks,
+source review and whitespace checks are not substitutes for these tests.

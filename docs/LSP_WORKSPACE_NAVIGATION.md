@@ -1,20 +1,23 @@
 # Cross-document editor navigation
 
-`fmd-lsp` resolves explicit Markdown links against documents the editor has
-already opened with `textDocument/didOpen`. This extends the same-document
-navigation described in `LSP_LINK_NAVIGATION.md`; it does not scan a workspace,
-read files, fetch URLs, or silently fall back to saved content.
+`fmd-lsp` resolves Markdown links against documents the editor has already
+opened with `textDocument/didOpen`. This extends the navigation described in
+`LSP_LINK_NAVIGATION.md`; it does not scan a workspace, read files, fetch URLs,
+or silently fall back to saved content.
 
 ## Definitions and fragment completion
 
 Go to definition works anywhere in an explicit destination such as
-`[guide](../guide.md#installation)`, including its filename. A destination with
+`[guide](../guide.md#installation)`, including its filename. Full, collapsed and
+shortcut reference uses also resolve to their target; see
+[LSP_REFERENCE_NAVIGATION.md](LSP_REFERENCE_NAVIGATION.md). A destination with
 no fragment, or an empty fragment, addresses the target buffer's start.
-Typing `#inst` after the filename offers that target's actual emitted heading
-IDs, including collision suffixes. Accepting an item replaces only the origin
-buffer's fragment; its filename, query, angle brackets, title, and surrounding
-text are preserved. Unfinished destinations at the end of their enclosing
-block can be completed without inserting closing delimiters into the buffer.
+Typing `#inst` after an explicit filename offers that target's actual emitted
+heading IDs, including collision suffixes. Accepting an item replaces only the
+origin buffer's fragment; its filename, query, angle brackets, title, and
+surrounding text are preserved. Unfinished destinations at the end of their
+enclosing block can be completed without inserting closing delimiters into the
+buffer. Reference labels receive no fragment completion edits.
 
 Targets use their own heading and referenced-footnote namespace, not a merged
 workspace namespace. Nested headings point to their authoritative enclosing
@@ -53,15 +56,18 @@ from resolution. Unknown files yield null/empty results, not invented locations.
 The existing 64-buffer, 16-MiB session, 2-MiB document, 64-KiB source-block,
 8-KiB destination, 256-completion, and core analysis limits remain in force.
 Parser-verified probes still exclude code, image destinations, HTML attributes,
-and link titles. Origin tokens remain limited to top-level paragraphs and
-headings; reference-style links and multiline/escaped URL delimiters are not
-implemented by this slice.
+and link titles. Origins inside quotes, lists, tables, definition lists and
+referenced notes are supported as described in
+[LSP_NESTED_NAVIGATION.md](LSP_NESTED_NAVIGATION.md). Multiline reference uses,
+multiline/escaped explicit URL tokens and direct footnote-marker navigation
+remain outside this implementation.
 
 ## Verification
 
 `src/bin/lsp/workspace_links_tests.rs` adds twelve Rust regressions covering URI
 identity, directory ambiguity, parser exclusions, definitions, completion edits,
 Unicode, footnotes, revision changes, resynchronization, close, and dispatch.
+The nested- and reference-link suites additionally cover cross-file origins.
 
 ```sh
 cargo test --features lsp --bin fmd-lsp

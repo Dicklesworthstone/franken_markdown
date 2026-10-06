@@ -16,6 +16,8 @@ use std::collections::BTreeMap;
 
 #[path = "link_structure.rs"]
 mod structure;
+#[path = "reference_links.rs"]
+mod references;
 
 const MAX_BLOCK_BYTES: usize = 64 * 1024;
 const MAX_DESTINATION_BYTES: usize = 8192;
@@ -89,6 +91,14 @@ fn matches_probe(probed: &Document, original: &Document, owner: usize, probe: &s
             .is_some_and(|block| structure::count_block(block, probe) == 1)
 }
 
+fn unique_probe(source: &str, original: &Document) -> Option<String> {
+    (0..32)
+        .map(|attempt| format!("#fmd-lsp-probe-{attempt}"))
+        .find(|probe| {
+            !source.contains(probe.as_str()) && structure::count(&original.blocks, probe) == 0
+        })
+}
+
 fn probe_document(
     source: &str,
     span: SourceSpan,
@@ -97,11 +107,7 @@ fn probe_document(
     owner: usize,
     completing: bool,
 ) -> Option<(Document, String)> {
-    let probe = (0..32)
-        .map(|attempt| format!("#fmd-lsp-probe-{attempt}"))
-        .find(|probe| {
-            !source.contains(probe.as_str()) && structure::count(&original.blocks, probe) == 0
-        })?;
+    let probe = unique_probe(source, original)?;
     let mut amended = String::with_capacity(source.len() + probe.len() + 2);
     amended.push_str(&source[..token.start]);
     amended.push_str(&probe);
@@ -226,21 +232,27 @@ fn request_resolving<'a>(
     if span.len() > MAX_BLOCK_BYTES {
         return Err((-32803, "enclosing block exceeds the link navigation budget"));
     }
-    let Some(token) = candidate(source, span, offset) else {
-        return Ok(empty(completing));
-    };
-    // Completion edits only a fragment; definition may also address a whole
-    // file, or be requested over the path portion of a file+fragment link.
-    let fragment = token.fragment.unwrap_or(token.end);
-    if completing && (token.fragment.is_none() || offset <= fragment) {
-        return Ok(empty(true));
-    }
+    let token = candidate(source, span, offset);
     let (spans, blocks): (Vec<_>, Vec<_>) = document
         .blocks
         .into_iter()
         .map(|block| (block.span, block.node))
         .unzip();
     let original = Document { blocks };
+    let definition_source = DefinitionSource { uri, source, document: &original, spans: &spans, owner };
+    let Some(token) = token else {
+        if !completing {
+            if let Some(destination) = references::destination(source, span, offset, &original, owner)? {
+                return definition_source.resolve(&destination, &resolve);
+            }
+        }
+        return Ok(empty(completing));
+    };
+    // Reference labels are never edited by fragment completion.
+    let fragment = token.fragment.unwrap_or(token.end);
+    if completing && (token.fragment.is_none() || offset <= fragment) {
+        return Ok(empty(true));
+    }
     let Some((mut probed, probe)) =
         probe_document(source, span, token, &original, owner, completing)
     else {
@@ -268,93 +280,113 @@ fn request_resolving<'a>(
         // metadata, label or title, even for a completion request.
         return Ok(empty(completing));
     }
-    if !completing && destination.is_none() {
-        return Ok(Json::Null);
+    if !completing {
+        return match destination {
+            Some(destination) => definition_source.resolve(&destination, &resolve),
+            None => Ok(Json::Null),
+        };
     }
     // Existing links use the parser-decoded destination (including entities).
     // An unfinished completion has only its verified lexical URL available.
     let address = destination.as_deref().unwrap_or(&source[token.start..token.end]);
     if !address.is_empty() && !address.starts_with(['#', '?']) {
-        let Some((target_uri, target_source)) = resolve(address)? else {
+        let Some((_, target_source)) = resolve(address)? else {
             return Ok(empty(completing));
         };
         if target_source.len() > MAX_DOCUMENT_BYTES {
             return Err((-32803, "target document exceeds the link navigation budget"));
-        }
-        if !completing {
-            return remote_definition(target_uri, target_source, address);
         }
         // Targets are analyzed as authored: injecting a synthetic reference
         // could incorrectly make an unreferenced footnote become published.
         analysis = analyze_document_links(&parse_markdown(target_source))
             .map_err(|_| (-32803, "target link analysis could not complete within its limits"))?;
     }
-    if completing {
-        let Some(prefix) = prefix_text(&source[fragment + 1..offset]) else {
-            return Ok(completion_list(Vec::new(), true));
-        };
-        let mut items = Vec::new();
-        let mut incomplete = false;
-        let edit_range = range(&index, source, SourceSpan::new(fragment, token.end));
-        for anchor in analysis.anchors {
-            if anchor.kind != AnchorKind::Heading
-                || anchor.occurrences != 1
-                || !anchor.id.starts_with(&prefix)
-            {
-                continue;
-            }
-            if anchor.id.len() > MAX_ANCHOR_BYTES || items.len() >= MAX_COMPLETIONS {
-                incomplete = true;
-                continue;
-            }
-            let label = format!("#{}", anchor.id);
-            let detail: String = anchor.title.chars().take(128).collect();
-            // The client can match the literal typed URI prefix even when it
-            // contains percent escapes; the server already filtered decoded IDs.
-            let filter = format!(
-                "{}{}",
-                &source[fragment..offset],
-                &anchor.id[prefix.len()..]
-            );
-            items.push(object([
-                ("label", string(&label)),
-                ("kind", number(18)),
-                ("detail", string(&detail)),
-                ("filterText", string(&filter)),
-                ("insertTextFormat", number(1)),
-                (
-                    "textEdit",
-                    object([("range", edit_range.clone()), ("newText", string(&label))]),
-                ),
-            ]));
+    let Some(prefix) = prefix_text(&source[fragment + 1..offset]) else {
+        return Ok(completion_list(Vec::new(), true));
+    };
+    let mut items = Vec::new();
+    let mut incomplete = false;
+    let edit_range = range(&index, source, SourceSpan::new(fragment, token.end));
+    for anchor in analysis.anchors {
+        if anchor.kind != AnchorKind::Heading
+            || anchor.occurrences != 1
+            || !anchor.id.starts_with(&prefix)
+        {
+            continue;
         }
-        return Ok(completion_list(items, incomplete));
+        if anchor.id.len() > MAX_ANCHOR_BYTES || items.len() >= MAX_COMPLETIONS {
+            incomplete = true;
+            continue;
+        }
+        let label = format!("#{}", anchor.id);
+        let detail: String = anchor.title.chars().take(128).collect();
+        // The client can match the literal typed URI prefix even when it
+        // contains percent escapes; the server already filtered decoded IDs.
+        let filter = format!(
+            "{}{}",
+            &source[fragment..offset],
+            &anchor.id[prefix.len()..]
+        );
+        items.push(object([
+            ("label", string(&label)),
+            ("kind", number(18)),
+            ("detail", string(&detail)),
+            ("filterText", string(&filter)),
+            ("insertTextFormat", number(1)),
+            (
+                "textEdit",
+                object([("range", edit_range.clone()), ("newText", string(&label))]),
+            ),
+        ]));
     }
-    let Some(destination) = destination else {
-        return Ok(Json::Null);
-    };
-    let analysis = analyze_document_links(&original)
-        .map_err(|_| (-32803, "link analysis could not complete within its limits"))?;
-    let Some(reference) = analysis.references.iter().find(|reference| {
-        reference.block_index == owner
-            && reference.kind == ReferenceKind::Link
-            && reference.destination == destination
-    }) else {
-        return Ok(Json::Null);
-    };
-    if reference.finding.is_some() {
-        return Ok(Json::Null);
+    Ok(completion_list(items, incomplete))
+}
+
+struct DefinitionSource<'a> {
+    uri: &'a str,
+    source: &'a str,
+    document: &'a Document,
+    spans: &'a [SourceSpan],
+    owner: usize,
+}
+
+impl DefinitionSource<'_> {
+    fn resolve<'a>(
+        &self,
+        destination: &str,
+        resolve: &impl Fn(&str) -> Result<Option<(&'a str, &'a str)>, Failure>,
+    ) -> Result<Json, Failure> {
+        if !destination.is_empty() && !destination.starts_with(['#', '?']) {
+            let Some((uri, source)) = resolve(destination)? else {
+                return Ok(Json::Null);
+            };
+            if source.len() > MAX_DOCUMENT_BYTES {
+                return Err((-32803, "target document exceeds the link navigation budget"));
+            }
+            return remote_definition(uri, source, destination);
+        }
+        let analysis = analyze_document_links(self.document)
+            .map_err(|_| (-32803, "link analysis could not complete within its limits"))?;
+        let Some(reference) = analysis.references.iter().find(|reference| {
+            reference.block_index == self.owner
+                && reference.kind == ReferenceKind::Link
+                && reference.destination == destination
+        }) else {
+            return Ok(Json::Null);
+        };
+        if reference.finding.is_some() {
+            return Ok(Json::Null);
+        }
+        let target = match reference.target_block_index {
+            Some(target) => *self.spans.get(target)
+                .ok_or((-32803, "invalid navigation source owner"))?,
+            None => SourceSpan::new(0, 0),
+        };
+        Ok(object([
+            ("uri", string(self.uri)),
+            ("range", range(&LineIndex::new(self.source), self.source, target)),
+        ]))
     }
-    let target = match reference.target_block_index {
-        Some(target) => *spans
-            .get(target)
-            .ok_or((-32803, "invalid navigation source owner"))?,
-        None => SourceSpan::new(0, 0), // Empty fragment addresses the document root.
-    };
-    Ok(object([
-        ("uri", string(uri)),
-        ("range", range(&index, source, target)),
-    ]))
 }
 
 // Resolve against the target's own emitted anchors and source owners, not

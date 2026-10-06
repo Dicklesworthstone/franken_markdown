@@ -8399,3 +8399,64 @@ fn pdf_numeric_table_column_alignment_inference() {
     let pdf = render_pdf_document(&doc, &opts).expect("render pdf");
     assert!(!pdf.is_empty());
 }
+
+/// Objects of an uncompressed-structure PDF as `(number, dictionary text)`.
+fn pdf_object_dicts(text: &str) -> Vec<(u32, String)> {
+    let mut out = Vec::new();
+    for chunk in text.split(" 0 obj").skip(1).zip(text.split(" 0 obj")) {
+        let (body, before) = chunk;
+        let number = before
+            .rsplit(|c: char| !c.is_ascii_digit())
+            .next()
+            .and_then(|digits| digits.parse().ok());
+        if let Some(number) = number {
+            let body = body.split("endobj").next().unwrap_or_default();
+            out.push((number, body.to_string()));
+        }
+    }
+    out
+}
+
+#[test]
+fn inline_links_are_nested_link_elements_inside_their_paragraph() {
+    let pdf = render_pdf(
+        "See the [docs](https://example.com/docs) for more detail.\n",
+        &PdfOptions::default(),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+    let objects = pdf_object_dicts(&text);
+    let tag_of = |number: u32| {
+        objects
+            .iter()
+            .find(|(n, _)| *n == number)
+            .and_then(|(_, body)| body.split("/S /").nth(1))
+            .and_then(|rest| rest.split([' ', '/', '>']).next())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let links: Vec<&(u32, String)> = objects
+        .iter()
+        .filter(|(_, body)| body.contains("/Type /StructElem") && body.contains("/S /Link"))
+        .collect();
+    assert_eq!(links.len(), 1, "one link element for the one link run");
+    let (_, link) = links[0];
+    let parent: u32 = link
+        .split("/P ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .expect("link has a parent");
+    assert_eq!(tag_of(parent), "P", "the /Link is a child of the paragraph");
+    assert!(
+        link.contains("/OBJR"),
+        "the link element owns its annotation"
+    );
+    // The surrounding prose is not inside any /Link element.
+    assert!(
+        objects
+            .iter()
+            .any(|(_, body)| body.contains("/S /P") && body.contains("/MCR")
+                || body.contains("/S /P") && body.contains("/K [")),
+    );
+}

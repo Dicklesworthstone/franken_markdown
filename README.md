@@ -868,7 +868,8 @@ Honest about what the renderer does not do yet.
 - **Tagged-PDF accessibility is partial.** Headings keep their exact `/H1`-`/H6`
   tags from the source level (at any type scale), and lists, tables (with header
   column scope), blockquotes, figures, task-list markers, strikethrough runs,
-  and links are tagged. Cell-to-header id linkage, sub-line inline-link tagging,
+  and links are tagged (each link run is a `/Link` inside its paragraph or
+  heading, owning its annotation). Cell-to-header id linkage,
   full PDF/UA validation, and page-spanning logical elements remain roadmap. See
   [`docs/PDF_ACCESSIBILITY.md`](docs/PDF_ACCESSIBILITY.md).
 - **Release binaries are tag-driven.** The installers prefer the GitHub release

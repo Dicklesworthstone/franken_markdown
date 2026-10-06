@@ -22355,6 +22355,8 @@ fn generate_page_content(
             // Whether the line's own marked content is open (an inline formula
             // closes it and takes its own /Formula element; text reopens it).
             let mut text_open = marked;
+            // The link whose /Link run is open (None: the leaf's own text).
+            let mut open_link: Option<u64> = None;
             if let Some(seg_start) = first_visible_seg {
                 for seg in &line.segs[seg_start..] {
                     if let (F_IMAGE, Some((_, path))) = (seg.slot, text_path.as_ref()) {
@@ -22437,17 +22439,37 @@ fn generate_page_content(
                         next_mcid += 1;
                         continue;
                     }
+                    // A link run is its own /Link element inside the line's
+                    // leaf, owning its annotations (/OBJR); prose around it
+                    // stays in the leaf itself.
+                    let link_key = seg.link.as_ref().map(link_struct_key);
+                    if text_path.is_some() && text_open && open_link != link_key {
+                        body.push_str("EMC\n");
+                        text_open = false;
+                    }
                     if !text_open && let Some((tag, path)) = text_path.as_ref() {
+                        let mut mark_path = SmallPath::from_slice(path.as_slice());
+                        let tag = match link_key {
+                            Some(key) => {
+                                mark_path.push(SElem {
+                                    key: SKey::InlineLink(line.flow.group, key),
+                                    tag: "Link",
+                                });
+                                "Link"
+                            }
+                            None => tag,
+                        };
                         append_marked_content_begin(&mut body, tag, next_mcid);
                         marks.push(StructMark {
                             mcid: next_mcid,
-                            path: SmallPath::from_slice(path.as_slice()),
+                            path: mark_path,
                             alt: None,
                             bbox: None,
                         });
                         owner = next_mcid;
                         next_mcid += 1;
                         text_open = true;
+                        open_link = link_key;
                     }
                     draw_seg(
                         &mut body,
@@ -22529,6 +22551,17 @@ enum SKey {
     InlineFormula(usize),
     /// An inline image inside a text line, keyed by its own MCID.
     InlineFigure(usize),
+    /// A link run inside a text line: its flow group plus the target digest,
+    /// so a link wrapping onto the next line continues the same element.
+    InlineLink(u32, u64),
+}
+
+/// Stable digest identifying a link target for structure-element sharing.
+fn link_struct_key(target: &LinkTarget) -> u64 {
+    match target {
+        LinkTarget::Uri(uri) => seg_text_hash(uri),
+        LinkTarget::Fragment(fragment) => !seg_text_hash(fragment),
+    }
 }
 
 /// One element on a mark's container path: its sharing key plus the `/S`
@@ -28264,19 +28297,11 @@ fn leaf_elem(line: &Line) -> SElem {
             key: SKey::Code(line.bg),
             tag: "Code",
         },
-        _ => {
-            if line.segs.iter().any(|seg| seg.link.is_some()) {
-                SElem {
-                    key: SKey::Link(line.flow.group),
-                    tag: "Link",
-                }
-            } else {
-                SElem {
-                    key: SKey::Paragraph(line.flow.group),
-                    tag: "P",
-                }
-            }
-        }
+        // Links inside the line are nested /Link runs (see the page writer).
+        _ => SElem {
+            key: SKey::Paragraph(line.flow.group),
+            tag: "P",
+        },
     }
 }
 

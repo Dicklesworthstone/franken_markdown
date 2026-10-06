@@ -27,7 +27,7 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 | Table header cell | `/TH` with `/A << /O /Table /Scope /Column >>` | Column scope (Markdown headers are column headers) |
 | Fenced code block | `/Code` | All lines of one block share a single `/Code` |
 | Image | `/Figure` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Alt text from the Markdown `![alt]`; bbox locates the image |
-| Inline / autolink link | `/Link` with `/OBJR` to its annotation, and the annotation's reverse `/StructParent` | Fully bidirectional: the element references the annotation and the annotation maps back through the parent tree (PDF/UA) |
+| Inline / autolink link | `/Link` nested in its `/P` or heading (one per link run; prose stays in the parent) with `/OBJR` to its annotation, and the annotation's reverse `/StructParent` | Fully bidirectional: the element references the annotation and the annotation maps back through the parent tree (PDF/UA) |
 | Backgrounds, panels, zebra stripes, inline-code chips, rules, thematic breaks, blockquote gutter bars | `/Artifact` (BMC…EMC) | Decoration is kept out of the reading order |
 | Running header/footer and page numbers (`PdfOptions.running`, `page_numbers`) | `/Artifact <</Type /Pagination /Subtype /Header\|/Footer>> BDC … EMC` | One pagination artifact per band, text and rule together; never in the reading order and never given an `/MCID` |
 
@@ -71,10 +71,6 @@ derived from existing per-line data.
 These are deliberate consequences of a small, line-based, dependency-free writer.
 They are safe (they never corrupt the tree) and are candidates for future beads.
 
-- **Inline links inside a paragraph** are tagged at *line* granularity: a line
-  that contains any link run becomes a single `/Link` element covering the whole
-  line, rather than splitting the surrounding prose into `/P` text plus a nested
-  `/Link` span. The link annotation is still correctly referenced with `/OBJR`.
 - **Empty table cells** emit no `/TD`; a row with blank source cells is not
   back-filled to a rectangular grid. Non-empty cells are always tagged.
 - **No `/Headers` ID associations** between body cells and header cells. Header

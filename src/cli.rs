@@ -1577,7 +1577,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let frontmatter_toc_depth = frontmatter.as_ref().and_then(|fm| fm.toc_depth);
     let doc = parse_markdown(&src);
     let mut image_destinations = Vec::new();
-    collect_image_destinations(&doc.blocks, &mut image_destinations);
+    let lowered_doc = crate::safe_html::lower(&doc);
+    collect_image_destinations(&lowered_doc.blocks, &mut image_destinations);
     let base_image_dir = auto_pdf_image_base_dir(args.input.as_deref(), args.text.as_deref());
     let html_image_assets = if want_html || want_epub {
         let mut assets = if want_epub {
@@ -2911,7 +2912,8 @@ fn append_auto_image_assets(
         return Ok(());
     };
     let mut destinations = Vec::new();
-    collect_image_destinations(&doc.blocks, &mut destinations);
+    let lowered_doc = crate::safe_html::lower(doc);
+    collect_image_destinations(&lowered_doc.blocks, &mut destinations);
     for destination in destinations {
         let destination = destination.trim();
         if destination.is_empty()
@@ -4663,7 +4665,8 @@ mod helper_tests {
              *![e](e.png)* **![s](s.png)** ~~![k](k.png)~~ [![n](n.png)](https://x/)\n",
         );
         let mut dests = Vec::new();
-        collect_image_destinations(&doc.blocks, &mut dests);
+        let lowered_doc = crate::safe_html::lower(&doc);
+        collect_image_destinations(&lowered_doc.blocks, &mut dests);
         assert_eq!(
             dests,
             vec![

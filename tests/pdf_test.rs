@@ -6858,7 +6858,8 @@ fn pdf_structure_tree_is_hierarchical_and_accessible() {
 
 #[test]
 fn pdf_preserves_raw_html_source_text_instead_of_dropping_it() {
-    let md = "before <i>raw</i> after\n\n<section>block</section>\n";
+    // Tags outside the safe-HTML subset keep their visible source in PDF.
+    let md = "before <blink>raw</blink> after\n\n<marquee>block</marquee>\n";
     for (label, opts) in [
         ("default", PdfOptions::default()),
         (
@@ -6888,6 +6889,36 @@ fn pdf_preserves_raw_html_source_text_instead_of_dropping_it() {
             text_streams(&pdf).join("\n").matches("BT /F").count() >= 2,
             "{label}: inline and block raw HTML source should both produce PDF text"
         );
+    }
+}
+
+#[test]
+fn pdf_lowers_safe_raw_html_instead_of_printing_tags() {
+    let md = "<!-- lint: off -->\n\nbefore <i>raw</i> after<br>next\n\n\
+              <p align=\"center\"><b>block</b></p>\n";
+    for opts in [
+        PdfOptions::default(),
+        PdfOptions {
+            allow_raw_html: true,
+            ..PdfOptions::default()
+        },
+    ] {
+        let pdf = render_pdf(md, &opts).unwrap();
+        let text = as_text(&pdf);
+        assert!(!text.contains("<003C>"), "no '<' glyph from lowered tags");
+        let layer = franken_markdown::pdf::verification_text_layer(
+            &franken_markdown::parse_markdown(md),
+            &opts,
+        )
+        .unwrap();
+        let lines: Vec<String> = layer
+            .pages
+            .iter()
+            .flat_map(|page| &page.runs)
+            .map(|run| run.text.clone())
+            .filter(|text| !text.is_empty())
+            .collect();
+        assert_eq!(lines, ["before raw after", "next", "block"], "{lines:?}");
     }
 }
 

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Raw HTML without `--allow-html` is no longer printed as literal tags. A
+  GitHub-style safe subset is lowered to native Markdown nodes for HTML, PDF,
+  SVG and EPUB output: comments disappear; `<b>`/`<strong>`, `<i>`/`<em>`,
+  `<del>`/`<s>`, `<code>`/`<kbd>`, `<a href>`, `<img src>` and `<br>` become
+  their Markdown equivalents; `<p>`, `<div>`, `<h1>`..`<h6>`, `<pre>`,
+  `<blockquote>`, `<ul>`/`<ol>`/`<li>`, `<table>`, `<hr>` and
+  `<details>`/`<summary>` become blocks; wrappers such as `<span>`, `<sup>` and
+  `<picture>` keep their content. Attributes other than `href`, `src`, `alt`
+  and `title` are dropped, URLs still pass the safe-URL policies, and every
+  other tag (`<script>`, `<iframe>`, ...) is still escaped as visible text.
+
 ## [0.5.0] - 2026-10-02
 
 A large feature release (413 commits since 0.4.5). It changes the public Rust

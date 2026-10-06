@@ -2321,6 +2321,8 @@ impl RenderWarning {
 /// stderr so degraded output is never silent.
 #[must_use]
 pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> {
+    let lowered = crate::safe_html::lower(doc);
+    let doc = &*lowered;
     let mut warnings = Vec::new();
     let supported_math = math::collect_warnings(&doc.blocks, &mut warnings);
     math::collect_inline_warnings(
@@ -41493,6 +41495,8 @@ fn line_overshoot(line: &Line, page: &PageGeom) -> Option<f32> {
 /// layout + pagination pipeline the PDF writer runs. Returns `None` when font
 /// loading fails (never panics).
 pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<VerifyTextLayer> {
+    let lowered = crate::safe_html::lower(doc);
+    let doc = &*lowered;
     let faces = Faces::load(opts).ok()?;
     let (effective_opts, page) = effective_pdf_options(doc, opts, &faces);
     let lines = layout(&doc.blocks, &effective_opts, &faces, page);

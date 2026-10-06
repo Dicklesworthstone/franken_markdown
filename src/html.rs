@@ -17,6 +17,15 @@ use crate::{FontAssetSlot, FontAssets, HtmlOptions, instance_host_font};
 /// Render a document to a complete HTML5 document string.
 #[must_use]
 pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
+    // Without raw-HTML passthrough, the HTML subset GitHub would keep is
+    // lowered to native nodes; everything else is still escaped below.
+    let lowered;
+    let doc = if opts.allow_raw_html {
+        doc
+    } else {
+        lowered = crate::safe_html::lower(doc);
+        &*lowered
+    };
     let title = opts
         .title
         .clone()

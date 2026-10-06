@@ -213,11 +213,13 @@ fn render_warnings_flags_glyphless_characters_and_stays_quiet_on_ascii() {
 fn render_warnings_include_raw_html_preserved_as_pdf_text() {
     use franken_markdown::{PdfOptions, RenderWarning, parse_markdown, render_warnings};
 
-    // PDF output preserves raw HTML source as visible text. The warning walker
-    // must inspect that same source, or glyphless characters in HTML tags and
-    // attributes render as .notdef boxes without any diagnostic.
+    // PDF output preserves raw HTML outside the safe subset as visible text.
+    // The warning walker must inspect that same source, or glyphless
+    // characters in HTML tags and attributes render as .notdef boxes without
+    // any diagnostic. (Safe-subset tags such as `<div>` are lowered and their
+    // attributes dropped, so they are not visible source.)
     let doc = parse_markdown(
-        "<div title=\"中文\">ok</div>\n\nParagraph <span title=\"日本語\">ok</span>",
+        "<marquee title=\"中文\">ok</marquee>\n\nParagraph <blink title=\"日本語\">ok</blink>",
     );
     let missing = render_warnings(&doc, &PdfOptions::default())
         .into_iter()

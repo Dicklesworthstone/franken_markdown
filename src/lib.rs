@@ -79,6 +79,7 @@ pub mod parse;
 pub mod pdf;
 pub mod pdfa;
 pub mod resume;
+pub mod safe_html;
 pub mod scanner;
 pub mod source_map;
 pub mod span;

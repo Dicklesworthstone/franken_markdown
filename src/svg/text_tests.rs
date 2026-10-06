@@ -178,10 +178,20 @@ fn raw_html_is_inert_visible_text_not_silently_dropped() {
     let source = "<b>visible</b>";
     let lines = p.wrap(&pieces(&p, &[Inline::Html(source.into())]), 11.0, 400.0);
     assert_eq!(text(&lines), source);
+    // An unknown tag in a block stays visible source text, never live markup.
+    let unknown = "<marquee>visible</marquee>";
+    let doc = Document {
+        blocks: vec![Block::HtmlBlock(unknown.into())],
+    };
+    let (bytes, report) = render_svg_with_report(&doc, &SvgOptions::default());
+    assert_eq!(report.glyphs_drawn, unknown.len());
+    assert!(!String::from_utf8(bytes).unwrap().contains("<marquee>"));
+    // A tag of the safe subset is lowered: its content renders, the tag
+    // itself is neither drawn nor emitted as markup.
     let doc = Document {
         blocks: vec![Block::HtmlBlock(source.into())],
     };
     let (bytes, report) = render_svg_with_report(&doc, &SvgOptions::default());
-    assert_eq!(report.glyphs_drawn, source.len());
+    assert_eq!(report.glyphs_drawn, "visible".len());
     assert!(!String::from_utf8(bytes).unwrap().contains("<b>"));
 }

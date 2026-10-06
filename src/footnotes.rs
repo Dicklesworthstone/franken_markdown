@@ -20,6 +20,15 @@ use crate::ast::{Block, Document, Inline};
 /// visible as `[^id]`, never the misleading `[0]`. A document with no footnote
 /// syntax is borrowed, avoiding a whole-AST clone on the ordinary PDF path.
 pub(crate) fn for_pdf(doc: &Document) -> Cow<'_, Document> {
+    // Paged output cannot pass markup through: lower the safe HTML subset to
+    // native nodes first (idempotent, borrowed when there is no raw HTML).
+    match crate::safe_html::lower(doc) {
+        Cow::Borrowed(doc) => endnotes_for_pdf(doc),
+        Cow::Owned(lowered) => Cow::Owned(endnotes_for_pdf(&lowered).into_owned()),
+    }
+}
+
+fn endnotes_for_pdf(doc: &Document) -> Cow<'_, Document> {
     let mut notes = Notes::default();
     notes.collect(&doc.blocks);
     if notes.definitions.is_empty() && !notes.has_reference {
@@ -439,9 +448,13 @@ mod tests {
             definition("rich", rich.clone()),
         ]);
         let original = doc.clone();
-        let result = for_pdf(&doc);
+        // Endnote rewriting alone must keep every block, raw HTML included;
+        // `for_pdf` additionally lowers that HTML (see `safe_html`).
+        let result = endnotes_for_pdf(&doc);
         assert_eq!(result.blocks[2], paragraph("[1]"));
         assert_eq!(&result.blocks[3..], rich.as_slice());
+        let prepared = for_pdf(&doc);
+        assert_eq!(prepared.blocks[10], paragraph("Raw evidence"));
         assert_eq!(doc, original);
     }
 

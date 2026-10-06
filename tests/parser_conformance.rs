@@ -402,25 +402,41 @@ fn gfm_table_escaped_backticks_do_not_hide_cell_pipes() {
 }
 
 #[test]
-fn html_blocks_escape_by_default_and_pass_through_when_allowed() {
+fn html_blocks_lower_safely_by_default_and_pass_through_when_allowed() {
     let md = "<div class=\"note\">\n<strong>trusted</strong>\n</div>";
     let escaped = html(md);
 
-    assert!(escaped.contains("&lt;div class=\"note\"&gt;"));
-    assert!(escaped.contains("&lt;strong&gt;trusted&lt;/strong&gt;"));
-    assert!(!escaped.contains("<div class=\"note\">"));
+    // Default: the safe subset becomes native nodes, attributes are dropped.
+    assert!(
+        escaped.contains("<p><strong>trusted</strong></p>"),
+        "{escaped}"
+    );
+    assert!(!escaped.contains("class=\"note\""));
+    assert!(!escaped.contains("<div"));
+    // Tags outside the subset stay escaped, visible text.
+    let unknown = html("<marquee onclick=\"x()\">\nhi\n</marquee>");
+    assert!(
+        unknown.contains("&lt;marquee onclick=\"x()\"&gt;"),
+        "{unknown}"
+    );
+    assert!(!unknown.contains("<marquee"));
 
     let raw = html_allowing_raw(md);
     assert!(raw.contains("<div class=\"note\">\n<strong>trusted</strong>\n</div>\n"));
 }
 
 #[test]
-fn inline_html_escapes_by_default_and_passes_through_when_allowed() {
+fn inline_html_lowers_safely_by_default_and_passes_through_when_allowed() {
     let md = "A <span class=\"pill\">trusted</span> word.";
     let escaped = html(md);
 
-    assert!(escaped.contains("A &lt;span class=\"pill\"&gt;trusted&lt;/span&gt; word."));
+    assert!(escaped.contains("A trusted word."), "{escaped}");
     assert!(!escaped.contains("<span class=\"pill\">"));
+    let unknown = html("A <blink>x</blink> word.");
+    assert!(
+        unknown.contains("A &lt;blink&gt;x&lt;/blink&gt; word."),
+        "{unknown}"
+    );
 
     let raw = html_allowing_raw(md);
     assert!(raw.contains("A <span class=\"pill\">trusted</span> word."));

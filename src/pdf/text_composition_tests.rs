@@ -138,6 +138,39 @@ fn positioned_svg_elements_do_not_suppress_an_orphan_mark_warning() {
     }
 }
 
+/// The default faces draw U+0301, so the test above cannot see the warning;
+/// a host face without the mark must still report it for a positioned mark.
+#[test]
+fn positioned_orphan_mark_warns_when_the_face_lacks_it() {
+    let regular = fonts::body_font(crate::FontFamily::Sans, FontStyle::Regular)
+        .unwrap()
+        .subset(&['e', ' '])
+        .unwrap();
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"40\">\
+               <text x=\"10\" y=\"25\">e</text><text x=\"20\" y=\"25\">\u{0301}</text></svg>";
+    let opts = PdfOptions {
+        font_assets: FontAssets {
+            body_regular: Some(regular),
+            ..FontAssets::default()
+        },
+        image_assets: vec![crate::PdfImageAsset::new(
+            "positioned.svg",
+            svg.as_bytes().to_vec(),
+        )],
+        page_numbers: false,
+        ..PdfOptions::default()
+    };
+    // The alt text uses only glyphs the subset face keeps.
+    let doc = crate::parse_markdown("![e e](positioned.svg)");
+    let missing = render_warnings(&doc, &opts)
+        .into_iter()
+        .find_map(|warning| match warning {
+            RenderWarning::MissingGlyphs { count, sample } => Some((count, sample)),
+            _ => None,
+        });
+    assert_eq!(missing, Some((1, "\u{0301}".to_owned())));
+}
+
 fn assert_layout_geometry_matches(actual: &[Line], expected: &[Line]) {
     assert_eq!(actual.len(), expected.len(), "physical line count");
     for (line_index, (actual, expected)) in actual.iter().zip(expected).enumerate() {

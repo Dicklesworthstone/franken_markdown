@@ -93,7 +93,10 @@ fn decode_with_limit(source: &str, limit: usize) -> Result<Vec<u8>, SvgWarning> 
 }
 
 fn limit_error() -> SvgWarning {
-    failure("svg_image_limit", "image exceeds the byte or allocation limit")
+    failure(
+        "svg_image_limit",
+        "image exceeds the byte or allocation limit",
+    )
 }
 
 fn base64_error() -> SvgWarning {
@@ -229,8 +232,20 @@ mod tests {
     #[test]
     fn strict_padding_and_alphabet_survive_streaming() {
         for payload in [
-            "A", "AAAAA", "=AAA", "A===", "AB==", "AAB=", "AA==AAAA", "AA$=", "AA%",
-            "AA==%41%41%41%41", "AQ==\n", "AQ%3D%3D=", "AQ-_", "AQ==%00",
+            "A",
+            "AAAAA",
+            "=AAA",
+            "A===",
+            "AB==",
+            "AAB=",
+            "AA==AAAA",
+            "AA$=",
+            "AA%",
+            "AA==%41%41%41%41",
+            "AQ==\n",
+            "AQ%3D%3D=",
+            "AQ-_",
+            "AQ==%00",
         ] {
             let source = format!("data:image/png;base64,{payload}");
             assert_eq!(

@@ -325,9 +325,15 @@ mod tests {
     #[test]
     fn supplied_asset_keys_remain_opaque_and_take_precedence() {
         let key = "data:image/png,opaque-host-key";
-        let store = ImageStore::with_assets(&[PdfImageAsset::new(key, b"<svg/>".to_vec())])
-            .unwrap();
-        assert!(store.resolve(key).unwrap().uri.starts_with("data:image/svg+xml;"));
+        let store =
+            ImageStore::with_assets(&[PdfImageAsset::new(key, b"<svg/>".to_vec())]).unwrap();
+        assert!(
+            store
+                .resolve(key)
+                .unwrap()
+                .uri
+                .starts_with("data:image/svg+xml;")
+        );
     }
 
     #[test]

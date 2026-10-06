@@ -1,6 +1,7 @@
 //! Bounded image containers and intrinsic sizes. Pixel decoding stays with the
 //! SVG viewer; no external source is ever fetched by this module.
 
+#[path = "image_source/data_uri.rs"]
 mod data_uri;
 
 use super::SvgWarning;

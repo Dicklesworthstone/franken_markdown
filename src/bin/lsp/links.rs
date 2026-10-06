@@ -1,4 +1,4 @@
-//! Same-buffer fragment completion and definition navigation.
+//! Parser-verified fragment completion and same/cross-buffer navigation.
 //!
 //! A lexical token is only a candidate. A unique destination probe must become
 //! an actual Link in the real parser before we offer edits. Definition requests
@@ -10,7 +10,11 @@ use franken_markdown::{
     Block, Document, Inline, SourceSpan, parse_markdown, parse_markdown_spanned,
 };
 
-use super::{Json, LineIndex, MAX_DOCUMENT_BYTES, Position, number, object, position, string};
+use super::{
+    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, Position, number, object, position, string,
+    workspace_links,
+};
+use std::collections::BTreeMap;
 
 const MAX_BLOCK_BYTES: usize = 64 * 1024;
 const MAX_DESTINATION_BYTES: usize = 8192;
@@ -22,7 +26,7 @@ type Failure = (i32, &'static str);
 struct Token {
     start: usize,
     end: usize,
-    fragment: usize,
+    fragment: Option<usize>,
     angle: bool,
 }
 
@@ -63,13 +67,10 @@ fn candidate(source: &str, span: SourceSpan, offset: usize) -> Option<Token> {
         end += 1;
     }
     let raw = source.get(start..end)?;
-    if raw.len() > MAX_DESTINATION_BYTES || !(raw.starts_with('#') || raw.starts_with('?')) {
+    if raw.is_empty() || raw.len() > MAX_DESTINATION_BYTES {
         return None;
     }
-    let fragment = start + raw.find('#')?;
-    if offset < fragment {
-        return None;
-    }
+    let fragment = raw.find('#').map(|index| start + index);
     let angle = start > span.start && bytes[start - 1] == b'<';
     let mut prefix = start - usize::from(angle);
     while prefix > span.start && matches!(bytes[prefix - 1], b' ' | b'\t') {
@@ -236,7 +237,30 @@ fn prefix_text(raw: &str) -> Option<String> {
         .filter(|text| !text.chars().any(char::is_control))
 }
 
-pub fn request(method: &str, params: &Json, uri: &str, source: &str) -> Result<Json, Failure> {
+#[cfg(test)]
+fn request(method: &str, params: &Json, uri: &str, source: &str) -> Result<Json, Failure> {
+    request_resolving(method, params, uri, source, |_| Ok(None))
+}
+
+pub fn request_in_workspace(
+    method: &str,
+    params: &Json,
+    uri: &str,
+    source: &str,
+    documents: &BTreeMap<String, Buffer>,
+) -> Result<Json, Failure> {
+    request_resolving(method, params, uri, source, |destination| {
+        workspace_links::resolve(documents, uri, destination)
+    })
+}
+
+fn request_resolving<'a>(
+    method: &str,
+    params: &Json,
+    uri: &str,
+    source: &str,
+    resolve: impl Fn(&str) -> Result<Option<(&'a str, &'a str)>, Failure>,
+) -> Result<Json, Failure> {
     let completing = method == "textDocument/completion";
     if !completing && method != "textDocument/definition" {
         return Err((-32601, "unsupported link request"));
@@ -270,7 +294,10 @@ pub fn request(method: &str, params: &Json, uri: &str, source: &str) -> Result<J
     let Some(token) = candidate(source, span, offset) else {
         return Ok(empty(completing));
     };
-    if completing && offset <= token.fragment {
+    // Completion edits only a fragment; definition may also address a whole
+    // file, or be requested over the path portion of a file+fragment link.
+    let fragment = token.fragment.unwrap_or(token.end);
+    if completing && (token.fragment.is_none() || offset <= fragment) {
         return Ok(empty(true));
     }
     let (spans, blocks): (Vec<_>, Vec<_>) = document
@@ -284,15 +311,44 @@ pub fn request(method: &str, params: &Json, uri: &str, source: &str) -> Result<J
     else {
         return Ok(empty(completing));
     };
+    let mut destination = None;
+    if let Some(items) = probed.blocks.get_mut(owner).and_then(inlines_mut) {
+        if let Some(old) = original.blocks.get(owner).and_then(inlines) {
+            restore(items, old, &probe, &mut destination);
+        }
+    }
+    if probed != original {
+        destination = None;
+    }
+    if !completing && destination.is_none() {
+        return Ok(Json::Null);
+    }
+    // Existing links use the parser-decoded destination (including entities).
+    // An unfinished completion has only its verified lexical URL available.
+    let address = destination.as_deref().unwrap_or(&source[token.start..token.end]);
+    if !address.is_empty() && !address.starts_with(['#', '?']) {
+        let Some((target_uri, target_source)) = resolve(address)? else {
+            return Ok(empty(completing));
+        };
+        if target_source.len() > MAX_DOCUMENT_BYTES {
+            return Err((-32803, "target document exceeds the link navigation budget"));
+        }
+        if !completing {
+            return remote_definition(target_uri, target_source, address);
+        }
+        // Targets are analyzed as authored: injecting a synthetic reference
+        // could incorrectly make an unreferenced footnote become published.
+        probed = parse_markdown(target_source);
+    }
     if completing {
-        let Some(prefix) = prefix_text(&source[token.fragment + 1..offset]) else {
+        let Some(prefix) = prefix_text(&source[fragment + 1..offset]) else {
             return Ok(completion_list(Vec::new(), true));
         };
         let analysis = analyze_document_links(&probed)
             .map_err(|_| (-32803, "link analysis could not complete within its limits"))?;
         let mut items = Vec::new();
         let mut incomplete = false;
-        let edit_range = range(&index, source, SourceSpan::new(token.fragment, token.end));
+        let edit_range = range(&index, source, SourceSpan::new(fragment, token.end));
         for anchor in analysis.anchors {
             if anchor.kind != AnchorKind::Heading
                 || anchor.occurrences != 1
@@ -310,7 +366,7 @@ pub fn request(method: &str, params: &Json, uri: &str, source: &str) -> Result<J
             // contains percent escapes; the server already filtered decoded IDs.
             let filter = format!(
                 "{}{}",
-                &source[token.fragment..offset],
+                &source[fragment..offset],
                 &anchor.id[prefix.len()..]
             );
             items.push(object([
@@ -326,15 +382,6 @@ pub fn request(method: &str, params: &Json, uri: &str, source: &str) -> Result<J
             ]));
         }
         return Ok(completion_list(items, incomplete));
-    }
-    let mut destination = None;
-    if let Some(items) = probed.blocks.get_mut(owner).and_then(inlines_mut) {
-        if let Some(old) = original.blocks.get(owner).and_then(inlines) {
-            restore(items, old, &probe, &mut destination);
-        }
-    }
-    if probed != original {
-        return Ok(Json::Null);
     }
     let Some(destination) = destination else {
         return Ok(Json::Null);
@@ -356,6 +403,39 @@ pub fn request(method: &str, params: &Json, uri: &str, source: &str) -> Result<J
             .get(target)
             .ok_or((-32803, "invalid navigation source owner"))?,
         None => SourceSpan::new(0, 0), // Empty fragment addresses the document root.
+    };
+    Ok(object([
+        ("uri", string(uri)),
+        ("range", range(&index, source, target)),
+    ]))
+}
+
+// Resolve against the target's own emitted anchors and source owners, not
+// headings merged across buffers. IDs and ambiguity come from the core analyzer.
+fn remote_definition(uri: &str, source: &str, destination: &str) -> Result<Json, Failure> {
+    let index = LineIndex::new(source);
+    let fragment = destination.split_once('#').map_or("", |(_, fragment)| fragment);
+    let target = if fragment.is_empty() {
+        SourceSpan::new(0, 0)
+    } else {
+        let Some(id) = prefix_text(fragment) else {
+            return Ok(Json::Null);
+        };
+        let document = parse_markdown_spanned(source);
+        let (spans, blocks): (Vec<_>, Vec<_>) = document
+            .blocks
+            .into_iter()
+            .map(|block| (block.span, block.node))
+            .unzip();
+        let analysis = analyze_document_links(&Document { blocks })
+            .map_err(|_| (-32803, "target link analysis could not complete within its limits"))?;
+        let Some(anchor) = analysis.anchors.iter().find(|anchor| anchor.id == id) else {
+            return Ok(Json::Null);
+        };
+        if anchor.occurrences != 1 {
+            return Ok(Json::Null);
+        }
+        *spans.get(anchor.block_index).ok_or((-32803, "invalid target source owner"))?
     };
     Ok(object([
         ("uri", string(uri)),

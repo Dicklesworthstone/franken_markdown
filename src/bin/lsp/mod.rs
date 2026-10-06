@@ -1,5 +1,5 @@
 //! Minimal native LSP, reusing the first-party JSON codec and Markdown parser.
-//! URIs are opaque buffer keys: no network, filesystem reads, or transclusion.
+//! Only explicitly opened buffers participate: no network, file reads, or transclusion.
 
 mod diagnostics;
 mod links;
@@ -7,6 +7,7 @@ mod navigation;
 #[cfg(test)]
 mod tests;
 mod text;
+mod workspace_links;
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
@@ -259,7 +260,7 @@ impl Server {
             method,
             "textDocument/completion" | "textDocument/definition"
         ) {
-            return links::request(method, params, uri, &buffer.text);
+            return links::request_in_workspace(method, params, uri, &buffer.text, &self.documents);
         }
         navigation::request(
             method,

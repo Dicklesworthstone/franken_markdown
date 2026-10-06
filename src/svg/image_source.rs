@@ -1,8 +1,12 @@
 //! Bounded image containers and intrinsic sizes. Pixel decoding stays with the
 //! SVG viewer; no external source is ever fetched by this module.
 
+mod data_uri;
+
 use super::SvgWarning;
 use std::collections::BTreeMap;
+
+pub(super) use data_uri::decode_data_uri;
 
 pub(super) const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SIDE: f64 = 16_384.0;
@@ -187,131 +191,6 @@ fn jpeg_size(bytes: &[u8]) -> Option<(u16, u16)> {
         offset = end;
     }
     None
-}
-
-pub(super) fn decode_data_uri(source: &str) -> Result<Vec<u8>, SvgWarning> {
-    let (header, encoded) = source
-        .split_once(',')
-        .ok_or_else(|| failure("svg_image_invalid", "malformed image data URI"))?;
-    let mut fields = header
-        .get(5..)
-        .ok_or_else(|| failure("svg_image_invalid", "malformed image data URI"))?
-        .split(';');
-    let mime = fields.next().unwrap_or("");
-    if !["image/png", "image/jpeg", "image/svg+xml"]
-        .iter()
-        .any(|m| mime.eq_ignore_ascii_case(m))
-    {
-        return Err(failure(
-            "svg_image_unsupported",
-            "data URI must name PNG, JPEG, or SVG",
-        ));
-    }
-    let mut base64 = false;
-    for field in fields {
-        if field.eq_ignore_ascii_case("base64") && !base64 {
-            base64 = true;
-        } else if field.eq_ignore_ascii_case("charset=utf-8") && !base64 { /* SVG UTF-8 */
-        } else {
-            return Err(failure(
-                "svg_image_invalid",
-                "unsupported image data URI parameter",
-            ));
-        }
-    }
-    if encoded.len() > MAX_IMAGE_BYTES.saturating_mul(3) {
-        return Err(failure(
-            "svg_image_limit",
-            "encoded image exceeds the source byte limit",
-        ));
-    }
-    let mut decoded = Vec::with_capacity(encoded.len().min(MAX_IMAGE_BYTES));
-    let input = encoded.as_bytes();
-    let mut i = 0;
-    while i < input.len() {
-        let byte = if input[i] == b'%' {
-            let high = hex(*input
-                .get(i + 1)
-                .ok_or_else(|| failure("svg_image_invalid", "truncated percent escape"))?)?;
-            let low = hex(*input
-                .get(i + 2)
-                .ok_or_else(|| failure("svg_image_invalid", "truncated percent escape"))?)?;
-            i += 3;
-            high * 16 + low
-        } else {
-            let b = input[i];
-            i += 1;
-            b
-        };
-        decoded.push(byte);
-        let limit = if base64 {
-            MAX_IMAGE_BYTES.div_ceil(3) * 4
-        } else {
-            MAX_IMAGE_BYTES
-        };
-        if decoded.len() > limit {
-            return Err(failure(
-                "svg_image_limit",
-                "decoded image exceeds the byte limit",
-            ));
-        }
-    }
-    if base64 {
-        decode_base64(&decoded)
-    } else {
-        Ok(decoded)
-    }
-}
-
-fn hex(byte: u8) -> Result<u8, SvgWarning> {
-    match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(failure("svg_image_invalid", "invalid percent escape")),
-    }
-}
-
-fn decode_base64(input: &[u8]) -> Result<Vec<u8>, SvgWarning> {
-    let invalid = || failure("svg_image_invalid", "invalid base64 image payload");
-    if input.len() % 4 != 0 {
-        return Err(invalid());
-    }
-    let mut result = Vec::with_capacity(input.len() / 4 * 3);
-    for (index, chunk) in input.chunks_exact(4).enumerate() {
-        let last = index + 1 == input.len() / 4;
-        let value = |b| match b {
-            b'A'..=b'Z' => Some(b - b'A'),
-            b'a'..=b'z' => Some(b - b'a' + 26),
-            b'0'..=b'9' => Some(b - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        };
-        let a = value(chunk[0]).ok_or_else(invalid)?;
-        let b = value(chunk[1]).ok_or_else(invalid)?;
-        result.push((a << 2) | (b >> 4));
-        if chunk[2] == b'=' {
-            if !last || chunk[3] != b'=' || b & 15 != 0 {
-                return Err(invalid());
-            }
-        } else {
-            let c = value(chunk[2]).ok_or_else(invalid)?;
-            result.push((b << 4) | (c >> 2));
-            if chunk[3] == b'=' {
-                if !last || c & 3 != 0 {
-                    return Err(invalid());
-                }
-            } else {
-                let d = value(chunk[3]).ok_or_else(invalid)?;
-                result.push((c << 6) | d);
-            }
-        }
-    }
-    if result.len() > MAX_IMAGE_BYTES {
-        return Err(failure("svg_image_limit", "image exceeds the byte limit"));
-    }
-    Ok(result)
 }
 
 fn xml_char(ch: char) -> bool {

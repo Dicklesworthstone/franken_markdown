@@ -10,6 +10,9 @@ use super::{
     html_fragment_to_xhtml, push_nav_headings, resources, theme,
 };
 
+#[path = "book_images.rs"]
+mod shared_images;
+
 const MAX_CHAPTERS: usize = 4096;
 const MAX_RESOURCES: usize = 4096;
 const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
@@ -41,6 +44,10 @@ struct PreparedBook {
 /// links and links to files outside the book remain unchanged. Images may be
 /// supplied in `opts.image_assets` under book-relative paths; a matching
 /// book-relative asset takes precedence over the original destination key.
+/// Equal image bytes with the same media type share one publication resource,
+/// even when they came from different chapter-relative asset keys. The first
+/// occurrence retains its generated filename. Unique payloads, not references,
+/// count toward the book's image limits.
 /// No filesystem or network access occurs in the render core.
 ///
 /// `opts.title` and `opts.lang` describe the book. Chapter titles and language
@@ -117,8 +124,7 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
     for text in ["franken_markdown/epub-book/v1", title, lang, css.as_ref()] {
         identity.part(text);
     }
-    let mut image_bytes = 0usize;
-    let mut resource_count = 0usize;
+    let mut images = shared_images::SharedImages::default();
     let mut chapters = Vec::with_capacity(book.chapters.len());
     // Host image/font bytes can be large: clone the options once per book,
     // not once per chapter. Only the title and language change in the loop.
@@ -148,21 +154,11 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
         ] {
             identity.part(text);
         }
-        let content = resources::prepare_with_prefix(&body, &format!("chapter-{}-", index + 1))
+        let mut content = resources::prepare_with_prefix(&body, &format!("chapter-{}-", index + 1))
             .map_err(invalid)?;
         repertoire.add(&source.title)?;
         repertoire.add(&content.body)?;
-        resource_count += content.resources.len();
-        image_bytes += content
-            .resources
-            .iter()
-            .map(|r| r.bytes.len())
-            .sum::<usize>();
-        if resource_count > MAX_RESOURCES || image_bytes > MAX_IMAGE_BYTES {
-            return Err(invalid(
-                "book exceeds 4096 images or 128 MiB of image payloads",
-            ));
-        }
+        images.prepare(index, &mut content)?;
         let wrapped = format!("<main class=\"fmd\">\n{}</main>\n", content.body);
         chapters.push(Chapter {
             title: source.title.clone(),
@@ -171,6 +167,14 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
             headings: collect_headings(&doc.blocks),
             content,
         });
+    }
+    // Keep the first-use resource in its owning chapter. The existing manifest
+    // and ZIP writer then declare/write it exactly once, while every chapter
+    // may reference it. SVG/MathML flags remain properties of each chapter.
+    for (owner, resource) in images.finish() {
+        chapters.get_mut(owner)
+            .ok_or_else(|| invalid("invalid shared image owner"))?
+            .content.resources.push(resource);
     }
     // Collect every chapter before subsetting: later chapters and titles may
     // introduce glyphs not present in the first. Fonts are never duplicated per

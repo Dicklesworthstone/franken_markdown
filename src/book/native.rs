@@ -55,7 +55,7 @@ enum BookCommand {
 }
 
 #[derive(Args)]
-struct BookArgs {
+pub(crate) struct BookArgs {
     /// Input directory. book.toml sets metadata, chapter order and include_only sources.
     #[arg(value_name = "DIR")]
     input: PathBuf,
@@ -182,12 +182,18 @@ pub fn main() -> ExitCode {
     }
     let _ = cli.no_color;
     let BookCommand::Book(args) = cli.command;
+    dispatch(args, cli.json, cli.no_config)
+}
+
+/// Runs a parsed `fmd book` invocation. The general CLI parser reaches this
+/// too when global flags it alone understands precede `book`.
+pub(crate) fn dispatch(args: BookArgs, json: bool, no_config: bool) -> ExitCode {
     if args.check_links {
-        return preflight::run(&args, cli.json);
+        return preflight::run(&args, json);
     }
-    match run(args, cli.no_config) {
+    match run(args, no_config) {
         Ok(receipt) => {
-            if cli.json {
+            if json {
                 if stdout_line(&receipt.json).is_err() {
                     return ExitCode::from(74);
                 }
@@ -202,7 +208,7 @@ pub fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(error) => failure(error.code, error.tag, &error.message, cli.json),
+        Err(error) => failure(error.code, error.tag, &error.message, json),
     }
 }
 

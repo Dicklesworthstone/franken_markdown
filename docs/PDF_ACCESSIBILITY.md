@@ -19,7 +19,7 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 
 | Markdown | Structure | Notes |
 |---|---|---|
-| `#`/`##`/`###` heading | `/H1` / `/H2` / `/H3` | Lower levels collapse to generic `/H` (see limitations) |
+| `#` … `######` heading | `/H1` … `/H6` | Exact level from the source heading, independent of the type scale |
 | Paragraph | `/P` | Wrapped lines of one paragraph share a single `/P` (one `/MCR` per line) |
 | Bullet / ordered / task list | `/L` → `/LI` → `/LBody` → `/P` | Nested lists produce nested `/L`, to arbitrary depth |
 | Blockquote | `/BlockQuote` | Nested quotes nest; content keeps its own `/P`/`/L`/… inside |
@@ -71,9 +71,6 @@ derived from existing per-line data.
 These are deliberate consequences of a small, line-based, dependency-free writer.
 They are safe (they never corrupt the tree) and are candidates for future beads.
 
-- **Heading levels H4–H6** collapse to the generic `/H` tag. They share the body
-  text measure, so the writer cannot recover the exact source level from glyph
-  size alone. H1–H3 are exact.
 - **Inline links inside a paragraph** are tagged at *line* granularity: a line
   that contains any link run becomes a single `/Link` element covering the whole
   line, rather than splitting the surrounding prose into `/P` text plus a nested
@@ -120,9 +117,9 @@ ratchets `failedRules` against `tests/fixtures/pdfua-baseline.txt` (currently
 
 | veraPDF rule | What it flags |
 |---|---|
-| clause 7.1, test 9 | heading-structure detail (H4–H6 collapse to generic `/H`) |
+| clause 7.1, test 9 | heading-structure detail (H4–H6 collapsed to generic `/H` when measured; exact `/H4`–`/H6` tags have since landed, re-measure before tightening) |
 | clause 7.1, test 10 | heading-structure detail (same roadmap item) |
 | clause 5, test 1 | document-level requirement (viewer/title metadata class) |
 
-These rows map to the roadmap items above (H4–H6 exact tags; document title
+These rows map to the roadmap items above (H4–H6 exact tags, now landed; document title
 display). When they land, tighten the baseline in the same commit.

@@ -7804,26 +7804,29 @@ fn pdf_reuses_hyphenation_cache_for_repeated_words() {
 // ===========================================================================
 
 #[test]
-fn pdf_tags_h3_through_h6_with_generic_heading_collapse() {
-    let pdf = render_pdf(
-        "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nBody text.\n",
-        &PdfOptions::default(),
-    )
-    .unwrap();
-    let text = as_text(&pdf);
-
-    for tag in ["/S /H1 ", "/S /H2 ", "/S /H3 "] {
-        assert!(text.contains(tag), "explicit heading level missing: {tag}");
+fn pdf_tags_every_heading_level_exactly() {
+    let md =
+        "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nBody text.\n";
+    // The source level decides the tag, whatever the type scale: a small base
+    // size used to push H1 below the old display-size thresholds.
+    for opts in [
+        PdfOptions::default(),
+        PdfOptions {
+            base_font_size: Some(7.0),
+            ..PdfOptions::default()
+        },
+    ] {
+        let pdf = render_pdf(md, &opts).unwrap();
+        let text = as_text(&pdf);
+        for tag in [
+            "/S /H1 ", "/S /H2 ", "/S /H3 ", "/S /H4 ", "/S /H5 ", "/S /H6 ",
+        ] {
+            assert_eq!(text.matches(tag).count(), 1, "exact heading tag {tag}");
+        }
+        assert!(!text.contains("/S /H /P"), "no generic /H collapse");
+        // Each heading still produces an outline destination/title.
+        assert!(text.contains("/Outlines ") && text.contains("/Title (Three)"));
     }
-    // H4–H6 share the body measure, so the writer cannot recover the source level
-    // and collapses them to the generic `/H`. There are three such headings.
-    assert_eq!(
-        text.matches("/S /H /P").count(),
-        3,
-        "H4/H5/H6 should each collapse to a generic /H structure element"
-    );
-    // Each heading still produces an outline destination/title.
-    assert!(text.contains("/Outlines ") && text.contains("/Title (Three)"));
 }
 
 #[test]

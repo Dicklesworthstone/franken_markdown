@@ -182,6 +182,16 @@ fn is_inline_object(slot: u8) -> bool {
     slot == F_MATH || slot == F_IMAGE
 }
 
+/// The text a segment stands for in outlines and text layers: an inline
+/// image's alt text, otherwise the segment's own text.
+fn seg_display_text(seg: &Seg) -> &str {
+    if seg.slot == F_IMAGE {
+        inline_image::alt_text(&seg.text)
+    } else {
+        &seg.text
+    }
+}
+
 /// Advance of an inline object token at `size` points.
 fn inline_object_advance(slot: u8, text: &str, size: f32) -> f32 {
     if slot == F_IMAGE {
@@ -1484,6 +1494,9 @@ struct FlowMark {
     /// True only on the first line of a list (the first item's marker line), so
     /// the page builder can keep a short intro/caption with the list it heads.
     list_start: bool,
+    /// Source heading level (1..=6) on heading lines, 0 elsewhere. Tagged PDF
+    /// uses it for the exact `/H1`..`/H6` element, whatever the type scale.
+    heading_level: u8,
 }
 
 impl Default for FlowMark {
@@ -1494,6 +1507,7 @@ impl Default for FlowMark {
             count: 1,
             kind: FlowKind::Other,
             list_start: false,
+            heading_level: 0,
         }
     }
 }
@@ -3087,6 +3101,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                     count,
                     kind: FlowKind::Paragraph,
                     list_start: false,
+                    heading_level: 0,
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
@@ -4061,6 +4076,9 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     kind: FlowKind::Heading,
                 },
             );
+            for line in &mut out[before..] {
+                line.flow.heading_level = (*level).clamp(1, 6);
+            }
             if ruled && out.len() > before {
                 push_heading_rule(out, indent, cx.page, group, heading_gap_after(*level));
             }
@@ -4286,6 +4304,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     count: 1,
                     kind: FlowKind::Rule,
                     list_start: false,
+                    heading_level: 0,
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
@@ -4473,6 +4492,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
             count: 1,
             kind: FlowKind::Heading,
             list_start: false,
+            heading_level: 0,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -4524,6 +4544,7 @@ fn layout_standalone_image(
             count: 1,
             kind: FlowKind::Image,
             list_start: false,
+            heading_level: 0,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -16325,6 +16346,7 @@ fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
             count,
             kind,
             list_start: false,
+            heading_level: 0,
         };
     }
 }
@@ -17621,6 +17643,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                     count: depth,
                     kind,
                     list_start: false,
+                    heading_level: 0,
                 },
                 list_path: Vec::new(),
                 table_cols: cols,
@@ -17647,6 +17670,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             count: 1,
             kind: FlowKind::TableRule,
             list_start: false,
+            heading_level: 0,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -23048,7 +23072,7 @@ fn heading_metadata(lines: &[Line]) -> BTreeMap<u32, HeadingMeta> {
             title.push(' ');
         }
         for seg in &line.segs {
-            title.push_str(&seg.text);
+            title.push_str(seg_display_text(seg));
         }
     }
 
@@ -28196,10 +28220,20 @@ fn append_rounded_rect_path(body: &mut String, x0: f32, y0: f32, s: f32, r: f32)
     body.push_str("h ");
 }
 
-/// The `/H1`..`/H6`/`/H` structure tag for a heading line, by its display size.
-/// Sizes below H3 collapse to the generic `/H` (the writer cannot recover the
-/// exact source level from size alone for H4–H6, which share the body measure).
-fn heading_tag(size: f32) -> &'static str {
+/// The `/H1`..`/H6` structure tag for a heading line from its source level.
+/// Lines without one (synthesized headings) fall back to the display size,
+/// where sizes below H3 collapse to the generic `/H`.
+fn heading_tag(line: &Line) -> &'static str {
+    match line.flow.heading_level {
+        1 => return "H1",
+        2 => return "H2",
+        3 => return "H3",
+        4 => return "H4",
+        5 => return "H5",
+        6 => return "H6",
+        _ => {}
+    }
+    let size = line.size;
     if size >= 23.0 {
         "H1"
     } else if size >= 18.0 {
@@ -28224,7 +28258,7 @@ fn leaf_elem(line: &Line) -> SElem {
     match line.flow.kind {
         FlowKind::Heading => SElem {
             key: SKey::Heading(line.flow.group),
-            tag: heading_tag(line.size),
+            tag: heading_tag(line),
         },
         FlowKind::Code => SElem {
             key: SKey::Code(line.bg),
@@ -29194,6 +29228,7 @@ mod keep_with_next_tests {
                 count,
                 kind,
                 list_start: false,
+                heading_level: 0,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
@@ -29413,6 +29448,7 @@ mod void_budget_tests {
                 count,
                 kind,
                 list_start: false,
+                heading_level: 0,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
@@ -34905,6 +34941,7 @@ mod pdf_writer_tests {
                         FlowKind::TableRow
                     },
                     list_start: false,
+                    heading_level: 0,
                 },
                 list_path: lists
                     .iter()
@@ -41749,17 +41786,7 @@ pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<Veri
             } else if let Some(image) = line.image.as_ref().filter(|image| image.formula) {
                 (image.alt.clone(), line.rule_x, None)
             } else {
-                let text = line
-                    .segs
-                    .iter()
-                    .map(|s| {
-                        if s.slot == F_IMAGE {
-                            inline_image::alt_text(&s.text)
-                        } else {
-                            s.text.as_str()
-                        }
-                    })
-                    .collect::<String>();
+                let text = line.segs.iter().map(seg_display_text).collect::<String>();
                 let x = line.segs.first().map(|s| s.x).unwrap_or(0.0);
                 (text, x, line_overshoot(line, &page))
             };
@@ -41952,6 +41979,7 @@ mod plass_pagination_tests {
                 count,
                 kind,
                 list_start: false,
+                heading_level: 0,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),

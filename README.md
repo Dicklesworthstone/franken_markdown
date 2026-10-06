@@ -864,8 +864,8 @@ Honest about what the renderer does not do yet.
   gated manifest/size budgets, but browser-side visual fixtures remain thin.
 - **`batch` is opt-in and native-only.** It is not in the default build; enable
   it with `--features batch`, which pulls in Asupersync.
-- **Tagged-PDF accessibility is partial.** H1-H3 headings keep exact heading
-  tags, H4-H6 headings collapse to generic `/H`, and lists, tables (with header
+- **Tagged-PDF accessibility is partial.** Headings keep their exact `/H1`-`/H6`
+  tags from the source level (at any type scale), and lists, tables (with header
   column scope), blockquotes, figures, task-list markers, strikethrough runs,
   and links are tagged. Cell-to-header id linkage, sub-line inline-link tagging,
   full PDF/UA validation, and page-spanning logical elements remain roadmap. See

@@ -123,9 +123,13 @@ impl ImageStore {
                 image_data(&bytes, Some(declared), budget)
             })
         } else {
+            let shown: String = key.chars().take(120).collect();
             Err(failure(
                 "svg_image_missing",
-                "image needs caller-supplied bytes; the renderer does not fetch files or URLs",
+                &format!(
+                    "image '{shown}' needs caller-supplied bytes; the renderer does not fetch \
+                     files or URLs (add --pdf-image '{shown}=PATH')"
+                ),
             ))
         };
         let mut cache = self.cache.borrow_mut();

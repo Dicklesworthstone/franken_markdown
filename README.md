@@ -535,6 +535,7 @@ fmd --text '<markdown>' --out out.html
 | `--author <text>` | Set PDF author metadata |
 | `--allow-html` | Pass raw HTML in the source through verbatim instead of sanitizing it (trusted input only) |
 | `--pdf-line-numbers` | Render muted line numbers in PDF fenced code blocks |
+| `--svg-width-pt <POINTS>` | SVG poster width (144..=14400 points; default 612). SVG output draws the same auto-loaded, `--pdf-image` and remote images and `--pdf-font` faces as PDF |
 | `--pdf-page-numbers` | Centered page number in the PDF bottom margin (sugar for `--pdf-footer-center '{page}'`) |
 | `--pdf-header-left\|center\|right <text>`, `--pdf-footer-left\|center\|right <text>` | Opt-in running header/footer text in the PDF margins. Tokens `{page}`, `{pages}`, `{title}`, `{author}`, `{date}` (from `SOURCE_DATE_EPOCH`, never the clock); overlong slots get an ellipsis; a band that does not fit its margin fails the render. Add `--pdf-header-rule`/`--pdf-footer-rule` for hairlines and `--pdf-running-skip-first` to leave page 1 bare |
 | `--pdf-image DEST=PATH` | Provide or override one Markdown image destination for PDF rendering; repeat for multiple images. File-input HTML/PDF renders also auto-load relative local PNG/SVG/JPEG image destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). The render core never reads files or fetches network resources itself |

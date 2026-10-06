@@ -3071,3 +3071,45 @@ fn fmd_render_interactive_html_generates_self_contained_workspace() {
     let _ = fs::remove_file(doc_md);
     let _ = fs::remove_file(out_html);
 }
+
+#[test]
+fn fmd_svg_embeds_local_images_honors_width_and_reports_missing_images() {
+    let dir = temp_dir("svg-resources");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("dot.svg"), simple_svg("dot")).unwrap();
+    std::fs::write(
+        dir.join("doc.md"),
+        "# Poster\n\n![dot](dot.svg)\n\nMissing ![gone](gone.png) image.\n",
+    )
+    .unwrap();
+    let out = fmd_in_dir(
+        &[
+            "doc.md",
+            "--to",
+            "svg",
+            "--svg-width-pt",
+            "400",
+            "--out",
+            "doc.svg",
+            "--json",
+        ],
+        &dir,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let svg = std::fs::read_to_string(dir.join("doc.svg")).unwrap();
+    assert!(
+        svg.contains("<image") && svg.contains("href=\"data:image/"),
+        "local image embedded"
+    );
+    assert!(svg.contains("width=\"400.00\""), "--svg-width-pt applied");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("\"event\":\"warning\"") && stderr.contains("svg_image_missing"),
+        "missing image reported: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

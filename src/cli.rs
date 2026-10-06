@@ -397,6 +397,9 @@ struct RenderArgs {
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
+    /// SVG poster width in points (144..=14400; default 612, US Letter).
+    #[arg(long = "svg-width-pt", value_name = "POINTS")]
+    svg_width_pt: Option<f32>,
     /// Render running page numbers in the bottom margin of PDF pages.
     /// Sugar for `--pdf-footer-center '{page}'`; an explicit footer center wins.
     #[arg(long)]
@@ -730,6 +733,7 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         font_scale: None,
         fit_to_pages: None,
         pdf_line_numbers: false,
+        svg_width_pt: None,
         pdf_page_numbers: false,
         pdf_header_left: None,
         pdf_header_center: None,
@@ -1609,7 +1613,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     } else {
         Vec::new()
     };
-    let pdf_image_assets = if want_pdf {
+    // SVG posters draw the same host image bytes as PDF.
+    let mut pdf_image_assets = if want_pdf || want_svg {
         let mut assets = match read_pdf_image_assets(
             &args.pdf_images,
             args.max_pdf_image_bytes,
@@ -1714,7 +1719,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
                 .or_else(|| font_scale.map(|s| s.pdf_base_pt())),
             heading_scale: args.pdf_heading_scale,
             table_font_size: args.pdf_table_font_size,
-            image_assets: pdf_image_assets,
+            // PDF and SVG targets are exclusive, so PDF may own the bytes.
+            image_assets: std::mem::take(&mut pdf_image_assets),
             font_assets: font_assets.clone(),
             toc: args.toc || frontmatter_toc.unwrap_or(false),
             toc_depth: args.toc_depth.or(frontmatter_toc_depth),
@@ -1777,11 +1783,32 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     // SVG poster (bead y0vu): text format, so like HTML it may stream to
     // stdout; with a path it rides the staged write.
     let svg_render = if want_svg {
-        let opts = crate::svg::SvgOptions {
+        let mut opts = crate::svg::SvgOptions {
             theme: theme.clone(),
             ..crate::svg::SvgOptions::default()
         };
-        Some(crate::render_svg(&doc, &opts))
+        if let Some(width) = args.svg_width_pt {
+            opts.max_width_pt = width;
+        }
+        // Same host fonts and image bytes (auto-loaded, --pdf-image, remote)
+        // as PDF; recoverable problems surface like PDF render warnings.
+        match crate::svg::render_svg_with_resources(&doc, &opts, &font_assets, &pdf_image_assets) {
+            Ok((bytes, _report, warnings)) => {
+                for warning in warnings {
+                    if json {
+                        eprintln!(
+                            "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"{}\",\"detail\":\"{}\"}}",
+                            warning.code,
+                            json_escape(&warning.message)
+                        );
+                    } else {
+                        eprintln!("fmd: warning: {}", warning.message);
+                    }
+                }
+                Some(bytes)
+            }
+            Err(e) => return fail_render(e, json),
+        }
     } else {
         None
     };

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `fmd --to svg` now draws the same images (auto-loaded local files,
+  `--pdf-image`, remote fetches) and host fonts (`--pdf-font`) as PDF, and
+  reports missing images and other recoverable problems as warnings naming
+  the image. It previously ignored all of them silently. New
+  `--svg-width-pt` sets the poster width.
+
 ### Changed
 
 - PDF and SVG footnote references are typeset as superscript numerals

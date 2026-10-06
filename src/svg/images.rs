@@ -70,7 +70,15 @@ impl ImageStore {
             if cache.entries.contains_key(key) {
                 continue;
             }
-            let value = image_data(&asset.bytes);
+            let budget = MAX_RETAINED_BYTES
+                .saturating_sub(cache.retained_bytes)
+                .saturating_sub(key.len());
+            let value = image_data(&asset.bytes, None, budget);
+            // Host asset admission remains a typed error, not a silently
+            // cached placeholder when valid image data cannot fit.
+            if matches!(&value, Err(warning) if warning.code == "svg_image_limit") {
+                return Err(invalid("encoded image cache exceeds 128 MiB"));
+            }
             let cost = key
                 .len()
                 .checked_add(retained_size(&value))
@@ -87,14 +95,13 @@ impl ImageStore {
 
     fn resolve(&self, destination: &str) -> Result<Rc<ImageData>, SvgWarning> {
         let key = destination.trim();
-        if key.len() > MAX_RESOURCE_KEY_BYTES
-            && !key
-                .get(..5)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
-        {
+        let is_data_uri = key
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"));
+        if key.len() > MAX_RESOURCE_KEY_BYTES && !is_data_uri {
             return Err(failure("svg_image_limit", "image key exceeds 4096 bytes"));
         }
-        {
+        let budget = {
             let cache = self.cache.borrow();
             if let Some(value) = cache.entries.get(key) {
                 return value.clone();
@@ -107,12 +114,14 @@ impl ImageStore {
                     "image cache admission limit reached",
                 ));
             }
-        }
-        let value = if key
-            .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
-        {
-            decode_data_uri(key).and_then(|bytes| image_data(&bytes))
+            MAX_RETAINED_BYTES - cache.retained_bytes - key.len()
+        };
+        let value = if is_data_uri {
+            decode_data_uri(key).and_then(|bytes| {
+                // The decoder validates the header before this slice is used.
+                let declared = key[5..].split([';', ',']).next().unwrap_or("");
+                image_data(&bytes, Some(declared), budget)
+            })
         } else {
             Err(failure(
                 "svg_image_missing",
@@ -139,8 +148,27 @@ fn retained_size(value: &Result<Rc<ImageData>, SvgWarning>) -> usize {
     }
 }
 
-fn image_data(bytes: &[u8]) -> Result<Rc<ImageData>, SvgWarning> {
+fn image_data(
+    bytes: &[u8],
+    declared_mime: Option<&str>,
+    budget: usize,
+) -> Result<Rc<ImageData>, SvgWarning> {
     let (mime, width, height) = inspect(bytes)?;
+    if declared_mime.is_some_and(|declared| !declared.eq_ignore_ascii_case(mime)) {
+        return Err(failure(
+            "svg_image_mime",
+            "declared image MIME type does not match the image container",
+        ));
+    }
+    // inspect() has already bounded bytes to 32 MiB, so this arithmetic cannot
+    // overflow. Include the canonical header, not just the encoded payload.
+    let uri_size = "data:".len() + mime.len() + ";base64,".len() + bytes.len().div_ceil(3) * 4;
+    if uri_size > budget {
+        return Err(failure(
+            "svg_image_limit",
+            "encoded image cache exceeds 128 MiB",
+        ));
+    }
     let encoded = franken_markdown::html::base64_encode(bytes);
     Ok(Rc::new(ImageData {
         uri: format!("data:{mime};base64,{encoded}"),
@@ -249,5 +277,71 @@ impl Poster {
             x,
             y: baseline - run.height,
         });
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declared_mime_must_match_the_inspected_container() {
+        let store = ImageStore::default();
+        for mime in ["image/png", "image/jpeg"] {
+            let uri = format!("data:{mime},%3Csvg/%3E");
+            assert_eq!(store.resolve(&uri).unwrap_err().code, "svg_image_mime");
+            assert_eq!(store.resolve(&uri).unwrap_err().code, "svg_image_mime");
+        }
+        let image = store.resolve("DATA:IMAGE/SVG+XML,%3Csvg/%3E").unwrap();
+        assert!(image.uri.starts_with("data:image/svg+xml;base64,"));
+    }
+
+    #[test]
+    fn encoding_budget_includes_the_canonical_header() {
+        let bytes = b"<svg/>";
+        let image = image_data(bytes, None, MAX_RETAINED_BYTES).unwrap();
+        let exact = image.uri.len();
+        assert_eq!(image_data(bytes, None, exact).unwrap(), image);
+        for budget in [0, 1, exact - 1] {
+            assert_eq!(
+                image_data(bytes, None, budget).unwrap_err().code,
+                "svg_image_limit"
+            );
+        }
+    }
+
+    #[test]
+    fn lazy_images_cannot_exceed_the_remaining_cache_budget() {
+        let store = ImageStore::default();
+        let key = "data:image/svg+xml,%3Csvg/%3E";
+        let initial = MAX_RETAINED_BYTES - key.len() - 1;
+        store.cache.borrow_mut().retained_bytes = initial;
+        assert_eq!(store.resolve(key).unwrap_err().code, "svg_image_limit");
+        assert!(store.cache.borrow().entries.is_empty());
+        assert_eq!(store.cache.borrow().retained_bytes, initial);
+    }
+
+    #[test]
+    fn supplied_asset_keys_remain_opaque_and_take_precedence() {
+        let key = "data:image/png,opaque-host-key";
+        let store = ImageStore::with_assets(&[PdfImageAsset::new(key, b"<svg/>".to_vec())])
+            .unwrap();
+        assert!(store.resolve(key).unwrap().uri.starts_with("data:image/svg+xml;"));
+    }
+
+    #[test]
+    fn mismatched_images_keep_alt_text_and_a_stable_diagnostic() {
+        let poster = Poster::new(&super::super::SvgOptions::default());
+        let word = poster.image_word(
+            "data:image/png,%3Csvg/%3E",
+            "Architecture",
+            RStyle::BODY,
+            11.0,
+            200.0,
+        );
+        assert!(word.image.is_none());
+        assert_eq!(word.text, "[Architecture]");
+        assert_eq!(word.warning.unwrap().code, "svg_image_mime");
     }
 }

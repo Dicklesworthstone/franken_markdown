@@ -60,6 +60,10 @@ impl SharedImages {
         Ok(&self.resources[index].1.href)
     }
 
+    pub(super) fn byte_len(&self) -> usize {
+        self.bytes
+    }
+
     pub(super) fn finish(self) -> Vec<(usize, Resource)> {
         self.resources
     }

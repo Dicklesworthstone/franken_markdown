@@ -59,7 +59,10 @@ struct PreparedBook {
 /// # Errors
 /// Rejects empty books, duplicate or invalid source paths, more than 4096
 /// chapters or image resources, more than 128 MiB of image payloads, and more
-/// than 256 MiB of rendered chapter markup, stylesheet and book metadata.
+/// than 256 MiB of uncompressed publication content (chapter markup, metadata,
+/// stylesheets, unique images and embedded fonts). This applies with or without
+/// supplied fonts; transient base64 copies are not publication content. Each
+/// intermediate chapter render is separately bounded to 256 MiB.
 /// The single-document image limits also apply to each chapter. Supplied
 /// fonts opt into publication-wide TrueType subsets, with the same font and
 /// repertoire limits as single-document EPUB export. Fonts are validated and
@@ -93,6 +96,16 @@ fn invalid(message: &str) -> RenderError {
 }
 
 fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
+    prepare_book_with_budget(book, opts, MAX_BOOK_BYTES)
+}
+
+// The public entrypoint always uses MAX_BOOK_BYTES. A private budget argument
+// lets regressions exercise the identical pipeline at exact, small boundaries.
+fn prepare_book_with_budget(
+    book: &Book,
+    opts: &HtmlOptions,
+    byte_limit: usize,
+) -> Result<PreparedBook> {
     if book.chapters.is_empty() || book.chapters.len() > MAX_CHAPTERS {
         return Err(invalid("expected between 1 and 4096 chapters"));
     }
@@ -117,8 +130,8 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
     repertoire.add(title)?;
     repertoire.add(&css)?;
     let mut byte_count = 0;
-    for text in [title, lang, css.as_ref()] {
-        add_bytes(&mut byte_count, text.len())?;
+    for size in [css.len(), CONTAINER_XML.len(), MIMETYPE.len()] {
+        add_bytes(&mut byte_count, size, byte_limit)?;
     }
     let mut identity = Identity::new();
     for text in ["franken_markdown/epub-book/v1", title, lang, css.as_ref()] {
@@ -142,7 +155,12 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
         html_opts.title = Some(source.title.clone());
         html_opts.lang = Some(chapter_lang.to_string());
         let page = franken_markdown::html::render(&doc, &html_opts);
-        add_bytes(&mut byte_count, page.len())?;
+        // Bound one transient render as before, but do not charge its base64
+        // image copies to the publication. Only the externalized XHTML and
+        // unique image payloads are retained in the archive.
+        if page.len() > MAX_BOOK_BYTES {
+            return Err(invalid("one chapter render exceeds the 256 MiB scratch limit"));
+        }
         let body = extract_main_body(&page)
             .ok_or_else(|| invalid("HTML renderer <main> wrapper not found"))?;
         let body = html_fragment_to_xhtml(body);
@@ -160,10 +178,14 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
         repertoire.add(&content.body)?;
         images.prepare(index, &mut content)?;
         let wrapped = format!("<main class=\"fmd\">\n{}</main>\n", content.body);
+        let xhtml = chapter_xhtml(&source.title, chapter_lang, &wrapped);
+        add_bytes(&mut byte_count, xhtml.len(), byte_limit)?;
+        let mut retained = byte_count;
+        add_bytes(&mut retained, images.byte_len(), byte_limit)?;
         chapters.push(Chapter {
             title: source.title.clone(),
             file: chapter_file(index),
-            xhtml: chapter_xhtml(&source.title, chapter_lang, &wrapped),
+            xhtml,
             headings: collect_headings(&doc.blocks),
             content,
         });
@@ -191,41 +213,47 @@ fn prepare_book(book: &Book, opts: &HtmlOptions) -> Result<PreparedBook> {
     let mut nav = navigation(title, lang, &chapters);
     fonts.manifest(&mut opf)?;
     fonts.link(&mut nav, opts.custom_css.is_some())?;
-    add_bytes(&mut byte_count, fonts.byte_len())?;
-    fonts.check_output(
-        [
-            opf.len(),
-            nav.len(),
-            css.len(),
-            CONTAINER_XML.len(),
-            MIMETYPE.len(),
-        ]
-        .into_iter()
-        .chain(chapters.iter().map(|chapter| chapter.xhtml.len()))
-        .chain(chapters.iter().flat_map(|chapter| {
-            chapter
-                .content
-                .resources
-                .iter()
-                .map(|resource| resource.bytes.len())
-        })),
-    )?;
-    Ok(PreparedBook {
+    let prepared = PreparedBook {
         chapters,
         opf,
         nav,
         fonts,
         css: css.into_owned(),
-    })
+    };
+    // Universal final admission, including font-free books. Metadata, linked
+    // chapter wrappers, font CSS/subsets and unique image payloads all count.
+    check_output(&prepared, byte_limit)?;
+    Ok(prepared)
 }
 
-fn add_bytes(total: &mut usize, count: usize) -> Result<()> {
-    *total = total
+fn check_output(book: &PreparedBook, byte_limit: usize) -> Result<usize> {
+    let mut total = 0;
+    for size in [
+        book.opf.len(),
+        book.nav.len(),
+        book.css.len(),
+        CONTAINER_XML.len(),
+        MIMETYPE.len(),
+        book.fonts.byte_len(),
+    ]
+    .into_iter()
+    .chain(book.chapters.iter().map(|chapter| chapter.xhtml.len()))
+    .chain(book.chapters.iter().flat_map(|chapter| {
+        chapter.content.resources.iter().map(|resource| resource.bytes.len())
+    })) {
+        add_bytes(&mut total, size, byte_limit)?;
+    }
+    Ok(total)
+}
+
+fn add_bytes(total: &mut usize, count: usize, byte_limit: usize) -> Result<()> {
+    let next = total
         .checked_add(count)
         .ok_or_else(|| invalid("book size overflow"))?;
-    if *total > MAX_BOOK_BYTES {
-        return Err(invalid("rendered book exceeds 256 MiB"));
+    if next > byte_limit {
+        return Err(invalid(&format!("rendered book exceeds the {byte_limit}-byte limit")));
     }
+    *total = next;
     Ok(())
 }
 
@@ -652,3 +680,7 @@ mod tests {
 #[cfg(test)]
 #[path = "book_font_tests.rs"]
 mod font_tests;
+
+#[cfg(test)]
+#[path = "book_budget_tests.rs"]
+mod budget_tests;

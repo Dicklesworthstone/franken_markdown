@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `fmd batch --to epub` and `--to svg` write one EPUB or SVG per input file
+  (local images embedded, render style flags honored); `--to
+  interactive-html` is refused with a pointer to `fmd render`.
 - WASM/browser and MCP PDF options gain the typography and pagination
   switches the CLI already had: `typography: {homogeneous, antiriver,
   pareto}`, `optimalPagination` and `microtype: "expansion"` in

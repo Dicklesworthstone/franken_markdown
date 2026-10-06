@@ -2317,14 +2317,15 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         Target::Html => OutputFormat::Html,
         Target::Pdf => OutputFormat::Pdf,
         Target::Both => OutputFormat::Both,
-        // Multi-file EPUB is the fmd book epic's job (7tus); a batch run of
-        // one-chapter epubs would silently skip the unified-book semantics.
-        // SVG posters are a per-document display artifact, not a batch target.
-        Target::Epub | Target::Svg | Target::InteractiveHtml => {
+        // One single-chapter EPUB / SVG poster per input; a multi-file book
+        // with shared navigation is `fmd book`.
+        Target::Epub => OutputFormat::Epub,
+        Target::Svg => OutputFormat::Svg,
+        Target::InteractiveHtml => {
             return fail_json(
                 64,
                 "usage_error",
-                "--to epub/svg/interactive-html is not supported in batch; epub books await fmd book (7tus), svg/interactive are single-document artifacts",
+                "--to interactive-html is not supported in batch (each workspace embeds its own editor); render it per file with fmd render",
                 json,
             );
         }
@@ -4917,6 +4918,33 @@ mod run_batch_exit_code_tests {
         // Flags batch cannot honor are refused, not silently dropped.
         let mut a = args(vec![dir.join("a.md")]);
         a.style.svg_width_pt = Some(300.0);
+        assert_eq!(run_batch(a, false, true), ExitCode::from(64));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_renders_one_epub_and_one_svg_per_input() {
+        let dir = fresh_dir("epub-svg");
+        std::fs::write(dir.join("a.md"), "# A\n\nBody.\n").unwrap();
+        std::fs::write(dir.join("b.md"), "# B\n\nBody.\n").unwrap();
+        for (target, ext, magic) in [
+            (Target::Epub, "epub", b"PK".as_slice()),
+            (Target::Svg, "svg", b"<svg".as_slice()),
+        ] {
+            let mut a = args(vec![dir.join("a.md"), dir.join("b.md")]);
+            a.to = target;
+            assert_eq!(run_batch(a, false, true), ExitCode::SUCCESS, "{ext}");
+            for name in ["a", "b"] {
+                let bytes = std::fs::read(dir.join(format!("{name}.{ext}"))).unwrap();
+                let head = &bytes[..bytes.len().min(256)];
+                assert!(
+                    head.windows(magic.len()).any(|w| w == magic),
+                    "{name}.{ext}"
+                );
+            }
+        }
+        let mut a = args(vec![dir.join("a.md")]);
+        a.to = Target::InteractiveHtml;
         assert_eq!(run_batch(a, false, true), ExitCode::from(64));
         let _ = std::fs::remove_dir_all(&dir);
     }

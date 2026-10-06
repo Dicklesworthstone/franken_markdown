@@ -6,15 +6,16 @@
 //! No source search is mistaken for parser provenance; no URI is ever opened.
 
 use franken_markdown::book::validation::{AnchorKind, ReferenceKind, analyze_document_links};
-use franken_markdown::{
-    Block, Document, Inline, SourceSpan, parse_markdown, parse_markdown_spanned,
-};
+use franken_markdown::{Document, SourceSpan, parse_markdown, parse_markdown_spanned};
 
 use super::{
     Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, Position, number, object, position, string,
     workspace_links,
 };
 use std::collections::BTreeMap;
+
+#[path = "link_structure.rs"]
+mod structure;
 
 const MAX_BLOCK_BYTES: usize = 64 * 1024;
 const MAX_DESTINATION_BYTES: usize = 8192;
@@ -28,19 +29,6 @@ struct Token {
     end: usize,
     fragment: Option<usize>,
     angle: bool,
-}
-
-fn inlines(block: &Block) -> Option<&[Inline]> {
-    match block {
-        Block::Paragraph(items) | Block::Heading { inlines: items, .. } => Some(items),
-        _ => None,
-    }
-}
-fn inlines_mut(block: &mut Block) -> Option<&mut [Inline]> {
-    match block {
-        Block::Paragraph(items) | Block::Heading { inlines: items, .. } => Some(items),
-        _ => None,
-    }
 }
 
 // Deliberately conservative: explicit single-line destinations, not reference
@@ -87,21 +75,6 @@ fn candidate(source: &str, span: SourceSpan, offset: usize) -> Option<Token> {
     })
 }
 
-fn probe_count(items: &[Inline], probe: &str) -> usize {
-    items
-        .iter()
-        .map(|item| match item {
-            Inline::Link { dest, content, .. } => {
-                usize::from(dest.as_str() == probe) + probe_count(content, probe)
-            }
-            Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
-                probe_count(inner, probe)
-            }
-            _ => 0,
-        })
-        .sum()
-}
-
 fn matches_probe(probed: &Document, original: &Document, owner: usize, probe: &str) -> bool {
     probed.blocks.len() == original.blocks.len()
         && probed
@@ -113,8 +86,7 @@ fn matches_probe(probed: &Document, original: &Document, owner: usize, probe: &s
         && probed
             .blocks
             .get(owner)
-            .and_then(inlines)
-            .is_some_and(|items| probe_count(items, probe) == 1)
+            .is_some_and(|block| structure::count_block(block, probe) == 1)
 }
 
 fn probe_document(
@@ -125,10 +97,11 @@ fn probe_document(
     owner: usize,
     completing: bool,
 ) -> Option<(Document, String)> {
-    let items = inlines(original.blocks.get(owner)?)?;
     let probe = (0..32)
         .map(|attempt| format!("#fmd-lsp-probe-{attempt}"))
-        .find(|probe| !source.contains(probe.as_str()) && probe_count(items, probe) == 0)?;
+        .find(|probe| {
+            !source.contains(probe.as_str()) && structure::count(&original.blocks, probe) == 0
+        })?;
     let mut amended = String::with_capacity(source.len() + probe.len() + 2);
     amended.push_str(&source[..token.start]);
     amended.push_str(&probe);
@@ -149,44 +122,6 @@ fn probe_document(
         }
     }
     None
-}
-
-// A definition must be an EXISTING parsed link at this exact token. Align the
-// probe's inline structure with the original, restore just its destination,
-// and require equality of the entire document before trusting the location.
-fn restore(
-    items: &mut [Inline],
-    original: &[Inline],
-    probe: &str,
-    destination: &mut Option<String>,
-) {
-    if items.len() != original.len() {
-        return;
-    }
-    for (item, original) in items.iter_mut().zip(original) {
-        match (item, original) {
-            (
-                Inline::Link { dest, content, .. },
-                Inline::Link {
-                    dest: old,
-                    content: old_content,
-                    ..
-                },
-            ) => {
-                if dest.as_str() == probe {
-                    *destination = Some(old.clone());
-                    *dest = old.clone();
-                }
-                restore(content, old_content, probe, destination);
-            }
-            (Inline::Emphasis(items), Inline::Emphasis(old))
-            | (Inline::Strong(items), Inline::Strong(old))
-            | (Inline::Strikethrough(items), Inline::Strikethrough(old)) => {
-                restore(items, old, probe, destination)
-            }
-            _ => {}
-        }
-    }
 }
 
 fn range(index: &LineIndex, source: &str, span: SourceSpan) -> Json {
@@ -284,7 +219,7 @@ fn request_resolving<'a>(
     else {
         return Ok(empty(completing));
     };
-    if inlines(&block.node).is_none() {
+    if !structure::supported(&block.node) {
         return Ok(empty(completing));
     }
     let span = block.span;
@@ -311,14 +246,27 @@ fn request_resolving<'a>(
     else {
         return Ok(empty(completing));
     };
-    let mut destination = None;
-    if let Some(items) = probed.blocks.get_mut(owner).and_then(inlines_mut) {
-        if let Some(old) = original.blocks.get(owner).and_then(inlines) {
-            restore(items, old, &probe, &mut destination);
-        }
+    // A parsed link inside an unreferenced note is not emitted. Require the
+    // unique probe in the renderer's reference walk before granting either
+    // completion edits or cross-file navigation. Admission also precedes the
+    // recursive structural restoration below.
+    let mut analysis = analyze_document_links(&probed)
+        .map_err(|_| (-32803, "link analysis could not complete within its limits"))?;
+    if !analysis.references.iter().any(|reference| {
+        reference.block_index == owner
+            && reference.kind == ReferenceKind::Link
+            && reference.destination == probe
+    }) {
+        return Ok(empty(completing));
     }
-    if probed != original {
-        destination = None;
+    let mut destination = None;
+    if let (Some(block), Some(old)) = (probed.blocks.get_mut(owner), original.blocks.get(owner)) {
+        structure::restore(block, old, &probe, &mut destination);
+    }
+    if destination.is_some() && probed != original {
+        // Restoring a URL must not conceal changes to any sibling, container
+        // metadata, label or title, even for a completion request.
+        return Ok(empty(completing));
     }
     if !completing && destination.is_none() {
         return Ok(Json::Null);
@@ -338,14 +286,13 @@ fn request_resolving<'a>(
         }
         // Targets are analyzed as authored: injecting a synthetic reference
         // could incorrectly make an unreferenced footnote become published.
-        probed = parse_markdown(target_source);
+        analysis = analyze_document_links(&parse_markdown(target_source))
+            .map_err(|_| (-32803, "target link analysis could not complete within its limits"))?;
     }
     if completing {
         let Some(prefix) = prefix_text(&source[fragment + 1..offset]) else {
             return Ok(completion_list(Vec::new(), true));
         };
-        let analysis = analyze_document_links(&probed)
-            .map_err(|_| (-32803, "link analysis could not complete within its limits"))?;
         let mut items = Vec::new();
         let mut incomplete = false;
         let edit_range = range(&index, source, SourceSpan::new(fragment, token.end));
@@ -446,3 +393,7 @@ fn remote_definition(uri: &str, source: &str, destination: &str) -> Result<Json,
 #[cfg(test)]
 #[path = "links_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "nested_links_tests.rs"]
+mod nested_tests;

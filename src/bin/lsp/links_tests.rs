@@ -172,10 +172,11 @@ fn nested_targets_keep_their_real_enclosing_source_block() -> TestResult {
         }))
     );
     assert!(end_line(&result).is_some_and(|line| line >= 1));
-    // Origin locations inside containers are deliberately not guessed.
+    // The origin is proven by an AST probe, not an invented nested span.
+    let nested = call("textDocument/definition", "# Target\n\n> [go](#tar¦get)")?;
     assert_eq!(
-        call("textDocument/definition", "# Target\n\n> [go](#tar¦get)")?,
-        Json::Null
+        nested.get("range").and_then(|r| r.get("start")),
+        Some(&position(Position { line: 0, character: 0 }))
     );
     Ok(())
 }

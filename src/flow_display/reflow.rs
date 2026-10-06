@@ -188,15 +188,15 @@ impl ResumableFlowDisplay {
         self.layout_with_styles(options, &mut shape, true)
     }
 
-    fn layout_with_styles<F>(
+    /// One non-generic body for every caller: shaping goes through a trait
+    /// object, so each host closure type does not stamp out another ~18 KB
+    /// copy of the reflow engine (nine copies shipped in the WASM package).
+    fn layout_with_styles(
         &self,
         options: FlowLayoutOptions,
-        shape: &mut F,
+        shape: &mut ShapeFn<'_>,
         styled: bool,
-    ) -> Result<DisplayList, FlowLayoutError>
-    where
-        F: FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String>,
-    {
+    ) -> Result<DisplayList, FlowLayoutError> {
         if let Some(error) = &self.initial_error {
             return Err(FlowLayoutError::Input(error.clone()));
         }
@@ -457,7 +457,11 @@ impl ResumableFlowDisplay {
     }
 }
 
-struct Reflow<'a, F> {
+/// The shaping callback every reflow pass calls through.
+type ShapeFn<'s> =
+    dyn FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String> + 's;
+
+struct Reflow<'a, F: ?Sized> {
     list: DisplayList,
     options: FlowLayoutOptions,
     shape: &'a mut F,
@@ -467,7 +471,7 @@ struct Reflow<'a, F> {
     alignment: Align,
 }
 
-impl<'a, F> Reflow<'a, F>
+impl<'a, F: ?Sized> Reflow<'a, F>
 where
     F: FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String>,
 {

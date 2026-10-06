@@ -6,6 +6,9 @@
 
 use wasm_bindgen::prelude::*;
 
+#[path = "browser_render_options.rs"]
+mod render_options;
+
 use super::{BookInput, BookRenderer, BookWorkspace};
 use crate::{DarkModePolicy, FontAssetSlot, FontFamily, RenderError};
 
@@ -170,6 +173,55 @@ impl FmdBook {
     pub fn set_font_scale(&mut self, scale: f64) -> Result<(), JsValue> {
         let scale = font_scale(scale).map_err(JsValue::from_str)?;
         self.renderer.options_mut().font_scale = Some(scale);
+        Ok(())
+    }
+
+    /// Replace detailed PDF layout, typography, metadata epoch and running
+    /// bands as one transaction. Absent fields reset this profile to defaults;
+    /// title, author, theme, assets, source and navigation enablement survive.
+    /// Typography tokens use the single-document contract. Running templates
+    /// are header left/center/right followed by footer left/center/right.
+    /// Geometry and template validity that depends on it are checked at render.
+    /// The TOC depth also applies to subsequent HTML table-of-contents output.
+    ///
+    /// # Errors
+    /// Invalid tokens, sizes, integers or band sizes leave every setting intact.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = setPdfOptions)]
+    pub fn set_pdf_options(
+        &mut self,
+        typography: Option<String>,
+        base_font_size: Option<f64>,
+        heading_scale: Option<f64>,
+        table_font_size: Option<f64>,
+        toc_depth: Option<f64>,
+        fit_to_pages: Option<f64>,
+        code_line_numbers: bool,
+        metadata_epoch_seconds: Option<f64>,
+        running_slots: Vec<String>,
+        header_rule: bool,
+        footer_rule: bool,
+        skip_first_page: bool,
+    ) -> Result<(), JsValue> {
+        let settings = render_options::PdfSettings::new(
+            typography.as_deref(), base_font_size, heading_scale, table_font_size,
+            toc_depth, fit_to_pages, code_line_numbers, metadata_epoch_seconds,
+            running_slots, header_rule, footer_rule, skip_first_page,
+        ).map_err(to_js)?;
+        settings.apply(self.renderer.options_mut());
+        Ok(())
+    }
+
+    /// Select the HTML site's embedded font container; EPUB still uses its
+    /// publication-local TrueType package. Does not change PDF or source state.
+    ///
+    /// # Errors
+    /// Unknown formats leave the last valid format unchanged.
+    #[wasm_bindgen(js_name = setHtmlFontFormat)]
+    pub fn set_html_font_format(&mut self, format: &str) -> Result<(), JsValue> {
+        let format = crate::HtmlFontFormat::parse(format)
+            .ok_or_else(|| JsValue::from_str("htmlFontFormat must be ttf, woff1, or woff2"))?;
+        self.renderer.options_mut().html_font_format = format;
         Ok(())
     }
 

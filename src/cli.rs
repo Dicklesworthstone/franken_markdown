@@ -185,9 +185,6 @@ struct BatchArgs {
     /// recording it as a failed entry, so a large tree cannot exhaust memory.
     #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
     max_input_bytes: u64,
-    /// Maximum bytes accepted for each auto-loaded local PNG/SVG/JPEG image asset.
-    #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
-    max_pdf_image_bytes: u64,
     /// Record per-file failures in the receipt instead of failing the run.
     #[arg(long)]
     continue_on_error: bool,
@@ -200,6 +197,9 @@ struct BatchArgs {
     /// Emit the machine-readable batch receipt JSON to stdout.
     #[arg(long)]
     json: bool,
+    /// The same rendering flags as `fmd render`, applied to every input.
+    #[command(flatten)]
+    style: RenderStyleArgs,
 }
 
 #[cfg(feature = "mcp")]
@@ -285,6 +285,10 @@ struct WatchArgs {
     /// (detect+render+serve) must be ≤ 150ms or the process exits 1 (j3e0.3).
     #[arg(long, value_name = "N")]
     measure: Option<u32>,
+    /// The same rendering flags as `fmd render` (title, TOC, PDF page
+    /// numbers and running headers, typography, images, fonts, ...).
+    #[command(flatten)]
+    style: RenderStyleArgs,
 }
 
 #[cfg(feature = "batch")]
@@ -318,6 +322,28 @@ struct RenderArgs {
     /// Path to a custom stylesheet that fully replaces the default theme CSS.
     #[arg(long)]
     css: Option<PathBuf>,
+    /// Generate an interactive, self-hosting single-file HTML workspace with live editor,
+    /// real-time preview, document statistics, and client-side PDF export.
+    #[arg(long, visible_alias = "self-hosting")]
+    interactive_html: bool,
+    /// Write a deterministic JSON search index (headings + anchored paragraph
+    /// chunks, schema fmd-search-index-v1) for docs-site search integrations.
+    #[arg(long, value_name = "PATH")]
+    search_index: Option<PathBuf>,
+    /// Maximum Markdown input bytes accepted before rendering.
+    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
+    max_input_bytes: u64,
+    /// Emit a stable JSON status envelope to stderr after writing outputs.
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    style: RenderStyleArgs,
+}
+
+/// Rendering style flags shared by `fmd render`, `fmd watch` and `fmd batch`,
+/// so every surface renders a document the same way.
+#[derive(Args, Clone)]
+struct RenderStyleArgs {
     /// Document title (defaults to the first heading).
     #[arg(long)]
     title: Option<String>,
@@ -345,10 +371,6 @@ struct RenderArgs {
     /// ~half the bytes), woff2 (clean-room Brotli, ~65% smaller), or ttf (raw subset bytes).
     #[arg(long, value_enum)]
     html_font_format: Option<HtmlFontFormatArg>,
-    /// Generate an interactive, self-hosting single-file HTML workspace with live editor,
-    /// real-time preview, document statistics, and client-side PDF export.
-    #[arg(long, visible_alias = "self-hosting")]
-    interactive_html: bool,
     /// Typographic scale factor or preset for uniform type sizing across HTML and PDF.
     ///
     /// Accepts named presets (`xs`, `sm`, `compact`, `md`, `normal`, `default`, `lg`, `xl`, `2xl`, `huge`),
@@ -356,10 +378,6 @@ struct RenderArgs {
     /// Scales body, headings, code, tables, and layout measure proportionally without aliasing.
     #[arg(long, value_name = "SCALE|PRESET", visible_alias = "type-size")]
     font_scale: Option<String>,
-    /// Write a deterministic JSON search index (headings + anchored paragraph
-    /// chunks, schema fmd-search-index-v1) for docs-site search integrations.
-    #[arg(long, value_name = "PATH")]
-    search_index: Option<PathBuf>,
     /// Adaptive page budgeting solver to fit rendered PDF content into target pages.
     ///
     /// Automatically tunes micro-typographic scale (base font size, line height,
@@ -488,12 +506,6 @@ struct RenderArgs {
     /// Per-image timeout in seconds for remote PDF image fetches.
     #[arg(long, default_value_t = DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS)]
     remote_image_timeout_secs: u64,
-    /// Maximum Markdown input bytes accepted before rendering.
-    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
-    max_input_bytes: u64,
-    /// Emit a stable JSON status envelope to stderr after writing outputs.
-    #[arg(long)]
-    json: bool,
 }
 
 #[derive(Args)]
@@ -722,47 +734,10 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         out: Some(args.out.clone()),
         font: args.font,
         css: args.css.clone(),
-        title: None,
-        author: None,
-        lang: None,
-        profile: None,
-        allow_html: false,
-        toc: false,
-        toc_depth: None,
-        html_font_format: None,
         search_index: None,
         interactive_html: false,
-        font_scale: None,
-        fit_to_pages: None,
-        pdf_line_numbers: false,
-        svg_width_pt: None,
-        pdf_page_numbers: false,
-        pdf_header_left: None,
-        pdf_header_center: None,
-        pdf_header_right: None,
-        pdf_footer_left: None,
-        pdf_footer_center: None,
-        pdf_footer_right: None,
-        pdf_header_rule: false,
-        pdf_footer_rule: false,
-        pdf_running_skip_first: false,
-        pdf_base_font_size: None,
-        pdf_heading_scale: None,
-        pdf_table_font_size: None,
-        pdf_images: Vec::new(),
-        pdf_fonts: Vec::new(),
-        pdf_font_weights: Vec::new(),
-        pdf_a: None,
-        pdf_a_strict: false,
-        max_pdf_image_bytes: DEFAULT_MAX_PDF_IMAGE_BYTES,
-        no_remote_images: false,
-        remote_image_timeout_secs: DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS,
         max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
-        microtype: Default::default(),
-        typography_homogeneous: false,
-        typography_antiriver: false,
-        typography_pareto: false,
-        pdf_optimal_pagination: false,
+        style: args.style.clone(),
         json: args.json,
     }
 }
@@ -1471,22 +1446,9 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         theme = theme.with_font(font.into());
     }
 
-    let font_scale = if let Some(scale_str) = &args.font_scale {
-        match FontScale::parse(scale_str) {
-            Some(scale) => Some(scale),
-            None => {
-                return fail_json(
-                    64,
-                    "usage_error",
-                    &format!(
-                        "unknown font scale: '{scale_str}'. Valid choices: 'xs', 'sm', 'compact', 'md', 'normal', 'default', 'lg', 'xl', '2xl', 'huge', percentages like '125%', or numbers like '1.2'"
-                    ),
-                    json,
-                );
-            }
-        }
-    } else {
-        None
+    let font_scale = match parse_font_scale_arg(&args.style, json) {
+        Ok(scale) => scale,
+        Err(code) => return code,
     };
 
     if let Some(scale) = font_scale {
@@ -1554,11 +1516,12 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     } else {
         None
     };
-    let font_assets = match load_host_font_assets(&args.pdf_fonts, &args.pdf_font_weights) {
-        Ok(assets) => assets,
-        Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
-        Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
-    };
+    let font_assets =
+        match load_host_font_assets(&args.style.pdf_fonts, &args.style.pdf_font_weights) {
+            Ok(assets) => assets,
+            Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+            Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
+        };
     if json {
         report_font_assets(&font_assets);
     }
@@ -1589,8 +1552,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let html_image_assets = if want_html || want_epub {
         let mut assets = if want_epub {
             match read_pdf_image_assets(
-                &args.pdf_images,
-                args.max_pdf_image_bytes,
+                &args.style.pdf_images,
+                args.style.max_pdf_image_bytes,
                 &image_destinations,
             ) {
                 Ok(assets) => assets,
@@ -1605,7 +1568,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
                 &doc,
                 base_dir,
                 &mut assets,
-                args.max_pdf_image_bytes,
+                args.style.max_pdf_image_bytes,
                 if want_epub { "EPUB" } else { "HTML" },
             )
         {
@@ -1618,8 +1581,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     // SVG posters draw the same host image bytes as PDF.
     let mut pdf_image_assets = if want_pdf || want_svg {
         let mut assets = match read_pdf_image_assets(
-            &args.pdf_images,
-            args.max_pdf_image_bytes,
+            &args.style.pdf_images,
+            args.style.max_pdf_image_bytes,
             &image_destinations,
         ) {
             Ok(assets) => assets,
@@ -1633,18 +1596,18 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
                 &doc,
                 base_dir,
                 &mut assets,
-                args.max_pdf_image_bytes,
+                args.style.max_pdf_image_bytes,
                 "PDF",
             )
         {
             return fail_json(66, "input_error", &e, json);
         }
-        if !args.no_remote_images {
+        if !args.style.no_remote_images {
             append_remote_image_assets(
                 &image_destinations,
                 &mut assets,
-                args.max_pdf_image_bytes,
-                args.remote_image_timeout_secs,
+                args.style.max_pdf_image_bytes,
+                args.style.remote_image_timeout_secs,
                 json,
             );
         }
@@ -1653,22 +1616,9 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         Vec::new()
     };
 
-    let profile = if let Some(prof_str) = &args.profile {
-        match crate::Profile::parse(prof_str) {
-            Some(p) => Some(p),
-            None => {
-                return fail_json(
-                    64,
-                    "usage_error",
-                    &format!(
-                        "unknown markdown authoring profile: '{prof_str}'. Valid choices: 'commonmark-gfm', 'gfm-plus'"
-                    ),
-                    json,
-                );
-            }
-        }
-    } else {
-        None
+    let profile = match parse_profile_arg(&args.style, json) {
+        Ok(profile) => profile,
+        Err(code) => return code,
     };
     // `--to both` run whose PDF render fails never leaves a stale HTML file on
     // disk (previously HTML was written, then a PDF failure returned exit 70
@@ -1676,16 +1626,21 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let html_bytes = if want_html {
         let opts = HtmlOptions {
             theme: theme.clone(),
-            title: args.title.clone().or_else(|| frontmatter_title.clone()),
+            title: args
+                .style
+                .title
+                .clone()
+                .or_else(|| frontmatter_title.clone()),
             custom_css: custom_css.clone(),
-            allow_raw_html: args.allow_html,
+            allow_raw_html: args.style.allow_html,
             font_assets: font_assets.clone(),
             image_assets: html_image_assets.clone(),
-            lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
+            lang: args.style.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
-            toc: args.toc || frontmatter_toc.unwrap_or(false),
-            toc_depth: args.toc_depth.or(frontmatter_toc_depth),
+            toc: args.style.toc || frontmatter_toc.unwrap_or(false),
+            toc_depth: args.style.toc_depth.or(frontmatter_toc_depth),
             html_font_format: args
+                .style
                 .html_font_format
                 .map(HtmlFontFormat::from)
                 .unwrap_or_default(),
@@ -1707,31 +1662,40 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let pdf_render = if want_pdf {
         let opts = PdfOptions {
             theme: theme.clone(),
-            title: args.title.clone().or_else(|| frontmatter_title.clone()),
-            author: args.author.clone().or_else(|| frontmatter_author.clone()),
-            lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
+            title: args
+                .style
+                .title
+                .clone()
+                .or_else(|| frontmatter_title.clone()),
+            author: args
+                .style
+                .author
+                .clone()
+                .or_else(|| frontmatter_author.clone()),
+            lang: args.style.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
             metadata_epoch_seconds: pdf_metadata_epoch,
-            allow_raw_html: args.allow_html,
-            code_line_numbers: args.pdf_line_numbers,
-            page_numbers: args.pdf_page_numbers,
-            running: pdf_running_content(&args),
+            allow_raw_html: args.style.allow_html,
+            code_line_numbers: args.style.pdf_line_numbers,
+            page_numbers: args.style.pdf_page_numbers,
+            running: pdf_running_content(&args.style),
             base_font_size: args
+                .style
                 .pdf_base_font_size
                 .or_else(|| font_scale.map(|s| s.pdf_base_pt())),
-            heading_scale: args.pdf_heading_scale,
-            table_font_size: args.pdf_table_font_size,
+            heading_scale: args.style.pdf_heading_scale,
+            table_font_size: args.style.pdf_table_font_size,
             // PDF and SVG targets are exclusive, so PDF may own the bytes.
             image_assets: std::mem::take(&mut pdf_image_assets),
             font_assets: font_assets.clone(),
-            toc: args.toc || frontmatter_toc.unwrap_or(false),
-            toc_depth: args.toc_depth.or(frontmatter_toc_depth),
-            fit_to_pages: args.fit_to_pages,
-            microtype: args.microtype.into(),
-            gradual_demerits: args.typography_homogeneous,
-            river_penalty: args.typography_antiriver,
-            pareto_line_breaking: args.typography_pareto,
-            optimal_pagination: args.pdf_optimal_pagination,
+            toc: args.style.toc || frontmatter_toc.unwrap_or(false),
+            toc_depth: args.style.toc_depth.or(frontmatter_toc_depth),
+            fit_to_pages: args.style.fit_to_pages,
+            microtype: args.style.microtype.into(),
+            gradual_demerits: args.style.typography_homogeneous,
+            river_penalty: args.style.typography_antiriver,
+            pareto_line_breaking: args.style.typography_pareto,
+            optimal_pagination: args.style.pdf_optimal_pagination,
         };
         match render_pdf_with_pdfa(&doc, &opts, &args, json) {
             // Keep render errors typed with a distinct exit code (70 = render
@@ -1748,15 +1712,19 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let epub_render = if want_epub {
         let opts = HtmlOptions {
             theme: theme.clone(),
-            title: args.title.clone().or_else(|| frontmatter_title.clone()),
+            title: args
+                .style
+                .title
+                .clone()
+                .or_else(|| frontmatter_title.clone()),
             custom_css,
-            allow_raw_html: args.allow_html,
+            allow_raw_html: args.style.allow_html,
             font_assets: font_assets.clone(),
             image_assets: html_image_assets,
-            lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
+            lang: args.style.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
-            toc: args.toc || frontmatter_toc.unwrap_or(false),
-            toc_depth: args.toc_depth.or(frontmatter_toc_depth),
+            toc: args.style.toc || frontmatter_toc.unwrap_or(false),
+            toc_depth: args.style.toc_depth.or(frontmatter_toc_depth),
             html_font_format: HtmlFontFormat::default(),
         };
         match crate::render_epub(&doc, &opts) {
@@ -1789,7 +1757,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             theme: theme.clone(),
             ..crate::svg::SvgOptions::default()
         };
-        if let Some(width) = args.svg_width_pt {
+        if let Some(width) = args.style.svg_width_pt {
             opts.max_width_pt = width;
         }
         // Same host fonts and image bytes (auto-loaded, --pdf-image, remote)
@@ -2402,15 +2370,88 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         return fail_json(66, "input_error", &msg, json);
     }
 
+    // Shared render style (the same flags as `fmd render`). Per-file images
+    // are still auto-loaded next to each input by the batch engine.
+    let style = &args.style;
+    for (set, flag) in [
+        (style.pdf_a.is_some() || style.pdf_a_strict, "--pdf-a"),
+        (style.svg_width_pt.is_some(), "--svg-width-pt"),
+    ] {
+        if set {
+            return fail_json(
+                64,
+                "usage_error",
+                &format!(
+                    "{flag} is not supported by fmd batch; render those files with fmd render"
+                ),
+                json,
+            );
+        }
+    }
+    let font_scale = match parse_font_scale_arg(style, json) {
+        Ok(scale) => scale,
+        Err(code) => return code,
+    };
+    if let Some(scale) = font_scale {
+        theme = theme.with_font_scale(scale);
+    }
+    let profile = match parse_profile_arg(style, json) {
+        Ok(profile) => profile,
+        Err(code) => return code,
+    };
+    let font_assets = match load_host_font_assets(&style.pdf_fonts, &style.pdf_font_weights) {
+        Ok(assets) => assets,
+        Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+        Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
+    };
+    let explicit_images =
+        match read_pdf_image_assets(&style.pdf_images, style.max_pdf_image_bytes, &[]) {
+            Ok(assets) => assets,
+            Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+            Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
+        };
     let html = HtmlOptions {
         theme: theme.clone(),
+        title: style.title.clone(),
         custom_css,
-        ..Default::default()
+        allow_raw_html: style.allow_html,
+        font_assets: font_assets.clone(),
+        image_assets: explicit_images.clone(),
+        lang: style.lang.clone(),
+        profile,
+        toc: style.toc,
+        toc_depth: style.toc_depth,
+        html_font_format: style
+            .html_font_format
+            .map(HtmlFontFormat::from)
+            .unwrap_or_default(),
     };
     let pdf = PdfOptions {
         theme,
+        title: style.title.clone(),
+        author: style.author.clone(),
+        lang: style.lang.clone(),
+        profile,
         metadata_epoch_seconds: pdf_epoch,
-        ..Default::default()
+        allow_raw_html: style.allow_html,
+        code_line_numbers: style.pdf_line_numbers,
+        page_numbers: style.pdf_page_numbers,
+        running: pdf_running_content(style),
+        base_font_size: style
+            .pdf_base_font_size
+            .or_else(|| font_scale.map(|s| s.pdf_base_pt())),
+        heading_scale: style.pdf_heading_scale,
+        table_font_size: style.pdf_table_font_size,
+        image_assets: explicit_images,
+        font_assets,
+        toc: style.toc,
+        toc_depth: style.toc_depth,
+        fit_to_pages: style.fit_to_pages,
+        microtype: style.microtype.into(),
+        gradual_demerits: style.typography_homogeneous,
+        river_penalty: style.typography_antiriver,
+        pareto_line_breaking: style.typography_pareto,
+        optimal_pagination: style.pdf_optimal_pagination,
     };
 
     let plan = BatchPlan {
@@ -2427,7 +2468,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         continue_on_error,
         timeout_secs: args.timeout,
         max_input_bytes: args.max_input_bytes,
-        max_pdf_image_bytes: args.max_pdf_image_bytes,
+        max_pdf_image_bytes: args.style.max_pdf_image_bytes,
     };
 
     match batch::run_batch_blocking(plan, &opts) {
@@ -3523,7 +3564,7 @@ fn parse_pdf_a_settings(
     args: &RenderArgs,
     json: bool,
 ) -> std::result::Result<PdfASettings, ExitCode> {
-    if args.pdf_a_strict && args.pdf_a.is_none() {
+    if args.style.pdf_a_strict && args.style.pdf_a.is_none() {
         return Err(fail_json(
             64,
             "usage_error",
@@ -3531,7 +3572,7 @@ fn parse_pdf_a_settings(
             json,
         ));
     }
-    let Some(raw) = args.pdf_a.as_deref() else {
+    let Some(raw) = args.style.pdf_a.as_deref() else {
         return Ok(PdfASettings::OFF);
     };
     let Some(mode) = PdfAMode::parse(raw) else {
@@ -3544,26 +3585,66 @@ fn parse_pdf_a_settings(
     };
     Ok(PdfASettings {
         mode,
-        strict: args.pdf_a_strict,
+        strict: args.style.pdf_a_strict,
     })
 }
 
 /// Running header/footer from the `--pdf-header-*` / `--pdf-footer-*` flags.
-fn pdf_running_content(args: &RenderArgs) -> crate::PdfRunningContent {
+/// `--font-scale` as a typed scale, or the usage error naming valid values.
+fn parse_font_scale_arg(
+    style: &RenderStyleArgs,
+    json: bool,
+) -> std::result::Result<Option<FontScale>, ExitCode> {
+    let Some(scale_str) = &style.font_scale else {
+        return Ok(None);
+    };
+    FontScale::parse(scale_str).map(Some).ok_or_else(|| {
+        fail_json(
+            64,
+            "usage_error",
+            &format!(
+                "unknown font scale: '{scale_str}'. Valid choices: 'xs', 'sm', 'compact', 'md', 'normal', 'default', 'lg', 'xl', '2xl', 'huge', percentages like '125%', or numbers like '1.2'"
+            ),
+            json,
+        )
+    })
+}
+
+/// `--profile` as a typed profile, or the usage error naming valid values.
+fn parse_profile_arg(
+    style: &RenderStyleArgs,
+    json: bool,
+) -> std::result::Result<Option<crate::Profile>, ExitCode> {
+    let Some(prof_str) = &style.profile else {
+        return Ok(None);
+    };
+    crate::Profile::parse(prof_str).map(Some).ok_or_else(|| {
+        fail_json(
+            64,
+            "usage_error",
+            &format!(
+                "unknown markdown authoring profile: '{prof_str}'. Valid choices: 'commonmark-gfm', 'gfm-plus'"
+            ),
+            json,
+        )
+    })
+}
+
+fn pdf_running_content(style: &RenderStyleArgs) -> crate::PdfRunningContent {
     crate::PdfRunningContent {
         header: crate::PdfRunningBand {
-            left: args.pdf_header_left.clone(),
-            center: args.pdf_header_center.clone(),
-            right: args.pdf_header_right.clone(),
-            rule: args.pdf_header_rule,
+            left: style.pdf_header_left.clone(),
+            center: style.pdf_header_center.clone(),
+            right: style.pdf_header_right.clone(),
+            rule: style.pdf_header_rule,
         },
         footer: crate::PdfRunningBand {
-            left: args.pdf_footer_left.clone(),
-            center: args.pdf_footer_center.clone(),
-            right: args.pdf_footer_right.clone(),
-            rule: args.pdf_footer_rule,
+            left: style.pdf_footer_left.clone(),
+            center: style.pdf_footer_center.clone(),
+            right: style.pdf_footer_right.clone(),
+            rule: style.pdf_footer_rule,
         },
-        skip_first_page: args.pdf_running_skip_first,
+        skip_first_page: style.pdf_running_skip_first,
     }
 }
 
@@ -4779,12 +4860,22 @@ mod run_batch_exit_code_tests {
             mem_budget: None,
             timeout: None,
             max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
-            max_pdf_image_bytes: DEFAULT_MAX_PDF_IMAGE_BYTES,
             continue_on_error: false,
             font: None,
             css: None,
             json: false,
+            style: default_style(),
         }
+    }
+
+    /// The render style clap produces when no style flag is given.
+    fn default_style() -> RenderStyleArgs {
+        #[derive(clap::Parser)]
+        struct StyleOnly {
+            #[command(flatten)]
+            style: RenderStyleArgs,
+        }
+        <StyleOnly as clap::Parser>::parse_from(["fmd"]).style
     }
 
     #[test]
@@ -4806,6 +4897,27 @@ mod run_batch_exit_code_tests {
         a.out_dir = Some(PathBuf::from("-"));
         assert_eq!(run_batch(a, true, true), ExitCode::from(64));
         assert!(!dir.join("a.html").exists(), "nothing may render");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_style_flags_apply_to_every_batch_output() {
+        let dir = fresh_dir("style");
+        std::fs::write(dir.join("a.md"), "# A\n\nBody.\n").unwrap();
+        std::fs::write(dir.join("b.md"), "# B\n\nBody.\n").unwrap();
+        let mut a = args(vec![dir.join("a.md"), dir.join("b.md")]);
+        a.style.title = Some("Shared Title".into());
+        a.style.lang = Some("de".into());
+        assert_eq!(run_batch(a, false, true), ExitCode::SUCCESS);
+        for name in ["a.html", "b.html"] {
+            let html = std::fs::read_to_string(dir.join(name)).unwrap();
+            assert!(html.contains("<title>Shared Title</title>"), "{name}");
+            assert!(html.contains("lang=\"de\""), "{name}");
+        }
+        // Flags batch cannot honor are refused, not silently dropped.
+        let mut a = args(vec![dir.join("a.md")]);
+        a.style.svg_width_pt = Some(300.0);
+        assert_eq!(run_batch(a, false, true), ExitCode::from(64));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

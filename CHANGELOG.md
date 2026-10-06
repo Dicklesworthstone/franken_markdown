@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `fmd watch` and `fmd batch` now accept the same rendering flags as
+  `fmd render` (`--title`, `--lang`, `--toc`, `--font-scale`, `--profile`,
+  every `--pdf-*` page/running-header/font/image flag, `--microtype` and the
+  typography switches). Previously watch hard-coded them off and batch
+  rendered with only the theme. Batch refuses `--pdf-a` and `--svg-width-pt`
+  with a usage error instead of ignoring them.
+
 - `--profile` (and `HtmlOptions::profile` / `PdfOptions::profile`) was parsed
   but never read. An explicit `commonmark-gfm` profile now renders exactly
   GitHub's dialect: definition lists stay their literal paragraph text,

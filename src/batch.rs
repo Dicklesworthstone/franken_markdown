@@ -653,7 +653,7 @@ fn append_auto_image_assets_for_input(
     };
 
     let mut destinations = Vec::new();
-    let lowered_doc = crate::safe_html::lower(&doc);
+    let lowered_doc = crate::safe_html::lower(doc);
     collect_image_destinations(&lowered_doc.blocks, &mut destinations);
     for destination in destinations {
         let destination = destination.trim();

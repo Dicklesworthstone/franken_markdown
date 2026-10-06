@@ -3113,3 +3113,21 @@ fn fmd_svg_embeds_local_images_honors_width_and_reports_missing_images() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn fmd_watch_accepts_the_same_render_style_flags_as_render() {
+    let out = fmd(&["watch", "--help"]);
+    assert!(out.status.success());
+    let help = String::from_utf8_lossy(&out.stdout);
+    for flag in [
+        "--title",
+        "--toc",
+        "--pdf-page-numbers",
+        "--pdf-footer-center",
+        "--font-scale",
+        "--pdf-image",
+        "--microtype",
+    ] {
+        assert!(help.contains(flag), "fmd watch --help lacks {flag}");
+    }
+}

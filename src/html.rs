@@ -510,6 +510,42 @@ fn render_blocks<'a, 'b>(
     state.raw_html_base = saved_base;
 }
 
+/// Escape text, replacing GitHub emoji shortcodes (`:rocket:`) with their
+/// Unicode emoji. Only prose text is scanned: code spans, URLs and raw HTML
+/// never reach here, and unknown `:names:` stay literal.
+fn push_text_with_shortcodes(text: &str, out: &mut String) {
+    if !text.contains(':') {
+        push_escaped_text(text, out);
+        return;
+    }
+    let bytes = text.as_bytes();
+    let mut written = 0usize;
+    let mut i = 0usize;
+    while let Some(offset) = text[i..].find(':') {
+        let open = i + offset;
+        let name_start = open + 1;
+        let name_len = bytes[name_start..]
+            .iter()
+            .take(41)
+            .take_while(|&&b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'+' | b'-')
+            })
+            .count();
+        let close = name_start + name_len;
+        if name_len > 0 && name_len <= 40 && bytes.get(close) == Some(&b':') {
+            if let Some(emoji) = crate::emoji_shortcodes::lookup(&text[name_start..close]) {
+                push_escaped_text(&text[written..open], out);
+                out.push_str(emoji);
+                written = close + 1;
+                i = close + 1;
+                continue;
+            }
+        }
+        i = name_start;
+    }
+    push_escaped_text(&text[written..], out);
+}
+
 /// Write sanitized raw HTML: allowlisted markup with vetted URLs (local
 /// images embedded like Markdown images), everything else escaped.
 fn push_sanitized_html(
@@ -818,7 +854,7 @@ fn render_inlines_body(
 ) {
     for inl in inlines {
         match inl {
-            Inline::Text(t) => push_escaped_text(t, out),
+            Inline::Text(t) => push_text_with_shortcodes(t, out),
             Inline::FootnoteRef { id } => {
                 render_footnote_ref(id, out, state);
             }

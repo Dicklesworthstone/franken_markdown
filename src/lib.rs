@@ -41,6 +41,7 @@ pub mod compress;
 pub mod dep_invalidation;
 pub mod diagrams;
 pub mod diff;
+mod emoji_shortcodes;
 pub mod display;
 pub mod doc_stats;
 pub mod error;

@@ -547,3 +547,56 @@ fn font_assets_weight_pins_instance_variable_faces_and_ignore_static() {
         }),
     );
 }
+
+#[test]
+fn explicit_commonmark_gfm_profile_renders_github_dialect_only() {
+    use franken_markdown::{HtmlOptions, PdfOptions, Profile, render_html};
+
+    let md = "Term\n: Meaning\n\nNote[^1].\n\n[^1]: Footnote.\n\n> [!NOTE]\n> Alert.\n";
+    let html = |profile| {
+        render_html(
+            md,
+            &HtmlOptions {
+                profile,
+                ..HtmlOptions::default()
+            },
+        )
+        .unwrap()
+    };
+    // No profile and gfm-plus keep definition lists.
+    for profile in [None, Some(Profile::GfmPlus)] {
+        assert!(html(profile).contains("<dl>"), "{profile:?}");
+    }
+    // GitHub's dialect: no definition lists (literal paragraph), but GitHub
+    // does render footnotes and alerts.
+    let strict = html(Some(Profile::CommonMarkGfm));
+    assert!(!strict.contains("<dl>"), "{strict}");
+    assert!(strict.contains("<p>Term\n: Meaning</p>"), "{strict}");
+    assert!(strict.contains("footnote-ref"), "{strict}");
+    assert!(strict.contains("callout"), "{strict}");
+
+    // PDF honors the same profile.
+    let layer = |profile| {
+        franken_markdown::pdf::verification_text_layer(
+            &franken_markdown::apply_profile(&franken_markdown::parse_markdown(md), profile),
+            &PdfOptions::default(),
+        )
+        .unwrap()
+    };
+    let text: String = layer(Some(Profile::CommonMarkGfm))
+        .pages
+        .iter()
+        .flat_map(|page| &page.runs)
+        .map(|run| format!("{}\n", run.text))
+        .collect();
+    assert!(text.contains(": Meaning"), "{text}");
+    let pdf = franken_markdown::render_pdf(
+        md,
+        &PdfOptions {
+            profile: Some(Profile::CommonMarkGfm),
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(pdf.starts_with(b"%PDF-"));
+}

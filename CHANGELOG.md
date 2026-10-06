@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `--profile` (and `HtmlOptions::profile` / `PdfOptions::profile`) was parsed
+  but never read. An explicit `commonmark-gfm` profile now renders exactly
+  GitHub's dialect: definition lists stay their literal paragraph text,
+  while footnotes and alerts, which GitHub renders, are kept. No profile and
+  `gfm-plus` keep every construct, as before. Library callers can apply the
+  same transform with `apply_profile`.
+
 - `fmd --to svg` now draws the same images (auto-loaded local files,
   `--pdf-image`, remote fetches) and host fonts (`--pdf-font`) as PDF, and
   reports missing images and other recoverable problems as warnings naming

@@ -327,7 +327,9 @@ struct RenderArgs {
     /// Document language tag for hyphenation and HTML lang attribute (e.g. "en", "de", "fr", "es", "nl").
     #[arg(long)]
     lang: Option<String>,
-    /// Markdown authoring profile (e.g. "commonmark-gfm", "gfm-plus").
+    /// Markdown dialect: "commonmark-gfm" renders exactly what GitHub renders
+    /// (definition lists stay literal text); "gfm-plus" (and the default) also
+    /// renders definition lists.
     #[arg(long)]
     profile: Option<String>,
     /// Pass raw HTML in the source through instead of escaping it.

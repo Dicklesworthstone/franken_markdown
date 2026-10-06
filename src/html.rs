@@ -17,6 +17,8 @@ use crate::{FontAssetSlot, FontAssets, HtmlOptions, instance_host_font};
 /// Render a document to a complete HTML5 document string.
 #[must_use]
 pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
+    let profiled = crate::apply_profile(doc, opts.profile);
+    let doc = &*profiled;
     let title = opts
         .title
         .clone()

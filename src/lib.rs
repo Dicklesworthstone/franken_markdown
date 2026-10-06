@@ -41,9 +41,9 @@ pub mod compress;
 pub mod dep_invalidation;
 pub mod diagrams;
 pub mod diff;
-mod emoji_shortcodes;
 pub mod display;
 pub mod doc_stats;
+mod emoji_shortcodes;
 pub mod error;
 pub mod flow;
 pub mod flow_display;
@@ -568,13 +568,82 @@ pub(crate) fn instance_host_font(
 }
 
 /// Authoring profile for Markdown parsing and rendering (ryu4.4).
+///
+/// Without an explicit profile every supported syntax renders. An explicit
+/// [`Profile::CommonMarkGfm`] renders exactly the dialect GitHub renders:
+/// syntax GitHub does not support (definition lists) keeps its literal
+/// paragraph text instead of becoming structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Profile {
-    /// Standard CommonMark + GitHub Flavored Markdown (tables, task lists, strikethrough, autolinks).
+    /// CommonMark + GitHub Flavored Markdown as GitHub renders it: tables,
+    /// task lists, strikethrough, autolinks, footnotes and alerts.
     #[default]
     CommonMarkGfm,
-    /// GFM-Plus: CommonMark + GFM + Footnotes + GitHub Alerts + Definition Lists.
+    /// GFM-Plus: GitHub's dialect plus definition lists.
     GfmPlus,
+}
+
+/// Apply an explicit authoring profile to a parsed document. `None` and
+/// [`Profile::GfmPlus`] keep every construct; [`Profile::CommonMarkGfm`]
+/// turns definition lists back into the paragraphs GitHub shows for them
+/// (`Term` then `: definition` lines). Borrowed when nothing changes.
+#[must_use]
+pub fn apply_profile(doc: &Document, profile: Option<Profile>) -> std::borrow::Cow<'_, Document> {
+    use crate::ast::{Block, Inline};
+    fn has_extensions(blocks: &[Block]) -> bool {
+        blocks.iter().any(|block| match block {
+            Block::DefinitionList(_) => true,
+            Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
+                has_extensions(inner)
+            }
+            Block::List(list) => list.items.iter().any(|item| has_extensions(&item.blocks)),
+            _ => false,
+        })
+    }
+    fn demote(blocks: &[Block]) -> Vec<Block> {
+        let mut out = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            match block {
+                Block::DefinitionList(items) => {
+                    for item in items {
+                        let mut inlines = Vec::new();
+                        for (index, term) in item.terms.iter().enumerate() {
+                            if index > 0 {
+                                inlines.push(Inline::SoftBreak);
+                            }
+                            inlines.extend(term.iter().cloned());
+                        }
+                        for definition in &item.definitions {
+                            inlines.push(Inline::SoftBreak);
+                            inlines.push(Inline::Text(": ".to_string()));
+                            inlines.extend(definition.iter().cloned());
+                        }
+                        out.push(Block::Paragraph(inlines));
+                    }
+                }
+                Block::BlockQuote(inner) => out.push(Block::BlockQuote(demote(inner))),
+                Block::FootnoteDefinition { id, blocks } => out.push(Block::FootnoteDefinition {
+                    id: id.clone(),
+                    blocks: demote(blocks),
+                }),
+                Block::List(list) => {
+                    let mut list = list.clone();
+                    for item in &mut list.items {
+                        item.blocks = demote(&item.blocks);
+                    }
+                    out.push(Block::List(list));
+                }
+                other => out.push(other.clone()),
+            }
+        }
+        out
+    }
+    if profile != Some(Profile::CommonMarkGfm) || !has_extensions(&doc.blocks) {
+        return std::borrow::Cow::Borrowed(doc);
+    }
+    std::borrow::Cow::Owned(Document {
+        blocks: demote(&doc.blocks),
+    })
 }
 
 impl Profile {
@@ -911,7 +980,7 @@ pub fn render_pdf_document_emitted(
     emit: PdfEmitOptions,
 ) -> Result<Vec<u8>> {
     opts.font_assets.validate()?;
-    let doc = transform_footnotes_for_pdf(doc);
+    let doc = transform_footnotes_for_pdf(doc, opts);
     pdf::render_with_emit(&doc, opts, PdfASettings::OFF, emit)
 }
 
@@ -939,7 +1008,7 @@ pub fn render_pdf_document_pdfa(
     if pdf_a.strict {
         validate_doc_pdfa_strict(doc)?;
     }
-    let doc = transform_footnotes_for_pdf(doc);
+    let doc = transform_footnotes_for_pdf(doc, opts);
     pdf::render(&doc, opts, pdf_a)
 }
 
@@ -1018,8 +1087,16 @@ pub fn render_pdf_pdfa(src: &str, opts: &PdfOptions, pdf_a: PdfASettings) -> Res
 /// Footnote-free documents are borrowed; only documents that need the
 /// transformation allocate a replacement AST. The HTML renderer keeps its
 /// own native footnote representation.
-fn transform_footnotes_for_pdf(doc: &Document) -> std::borrow::Cow<'_, Document> {
-    footnotes::for_pdf(doc)
+fn transform_footnotes_for_pdf<'a>(
+    doc: &'a Document,
+    opts: &PdfOptions,
+) -> std::borrow::Cow<'a, Document> {
+    match apply_profile(doc, opts.profile) {
+        std::borrow::Cow::Borrowed(doc) => footnotes::for_pdf(doc),
+        std::borrow::Cow::Owned(doc) => {
+            std::borrow::Cow::Owned(footnotes::for_pdf(&doc).into_owned())
+        }
+    }
 }
 
 /// Render an already-parsed document to PDF bytes and collect per-stage timing.
@@ -1035,7 +1112,7 @@ fn transform_footnotes_for_pdf(doc: &Document) -> std::borrow::Cow<'_, Document>
 /// See [`render_pdf_document`].
 pub fn render_pdf_document_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> {
     opts.font_assets.validate()?;
-    let doc = transform_footnotes_for_pdf(doc);
+    let doc = transform_footnotes_for_pdf(doc, opts);
     pdf::render_profiled(&doc, opts)
 }
 

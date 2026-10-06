@@ -376,6 +376,11 @@ enum InlineRole {
     Code,
     Link,
     Quote,
+    /// `<sup>`/`<sub>`: digit-only content becomes Unicode super/subscript
+    /// digits (x², H₂O), which every bundled face carries; anything else
+    /// keeps its plain text.
+    Superscript,
+    Subscript,
     /// Keep the content, drop the tag.
     Transparent,
 }
@@ -388,9 +393,11 @@ fn inline_role(name: &str) -> Option<InlineRole> {
         "code" | "kbd" | "samp" | "tt" => InlineRole::Code,
         "a" => InlineRole::Link,
         "q" => InlineRole::Quote,
-        "span" | "sup" | "sub" | "small" | "big" | "u" | "ins" | "mark" | "abbr" | "font"
-        | "time" | "picture" | "nobr" | "bdi" | "bdo" | "data" | "label" | "center" | "p"
-        | "div" | "summary" | "details" | "figure" | "figcaption" => InlineRole::Transparent,
+        "sup" => InlineRole::Superscript,
+        "sub" => InlineRole::Subscript,
+        "span" | "small" | "big" | "u" | "ins" | "mark" | "abbr" | "font" | "time" | "picture"
+        | "nobr" | "bdi" | "bdo" | "data" | "label" | "center" | "p" | "div" | "summary"
+        | "details" | "figure" | "figcaption" => InlineRole::Transparent,
         _ => return None,
     })
 }
@@ -554,7 +561,38 @@ fn finish_frame(frame: Frame) -> Vec<Inline> {
             out.push(Inline::Text("\u{201d}".to_string()));
             out
         }
+        InlineRole::Superscript | InlineRole::Subscript => {
+            let superscript = frame.role == InlineRole::Superscript;
+            let mut text = String::new();
+            plain_text(&children, &mut text);
+            let digits = text.trim();
+            if !digits.is_empty()
+                && digits.len() <= 16
+                && digits.bytes().all(|b| b.is_ascii_digit())
+            {
+                let shifted: String = digits
+                    .bytes()
+                    .map(|digit| script_digit(digit - b'0', superscript))
+                    .collect();
+                vec![Inline::Text(shifted)]
+            } else {
+                children
+            }
+        }
         InlineRole::Transparent => children,
+    }
+}
+
+fn script_digit(digit: u8, superscript: bool) -> char {
+    const SUPER: [char; 10] = [
+        '\u{2070}', '\u{B9}', '\u{B2}', '\u{B3}', '\u{2074}', '\u{2075}', '\u{2076}', '\u{2077}',
+        '\u{2078}', '\u{2079}',
+    ];
+    let index = usize::from(digit.min(9));
+    if superscript {
+        SUPER[index]
+    } else {
+        char::from_u32(0x2080 + u32::from(digit.min(9))).unwrap_or('0')
     }
 }
 
@@ -1793,6 +1831,16 @@ mod tests {
             html[start..start + html[start..].find('"').unwrap()].to_string()
         };
         assert_eq!(data_uri(&html), data_uri(&markdown));
+    }
+
+    #[test]
+    fn digit_sup_and_sub_become_script_digits_and_others_stay_plain() {
+        assert_eq!(
+            lowered("x<sup>2</sup>, H<sub>2</sub>O, 10<sup>-3</sup>, a<sub>i</sub>\n"),
+            vec![Block::Paragraph(vec![text(
+                "x\u{B2}, H\u{2082}O, 10-3, ai"
+            )])]
+        );
     }
 
     #[test]

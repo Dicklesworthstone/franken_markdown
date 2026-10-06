@@ -103,10 +103,12 @@
     return terms;
   }
 
-  // Folding final sigma as well makes caseless matching independent of word
-  // context: scalar/chunk lowercasing must agree with whole-query lowercasing.
-  const normalize = (value) => value.toLowerCase().replace(/ς/gu, "σ").replace(/\s+/gu, " ");
+  // Folding final sigma makes caseless matching independent of word context.
+  // Canonical decomposition equates composed/decomposed spellings; it does
+  // not strip marks or apply compatibility folding to symbols and ligatures.
+  const normalize = (value) => value.toLowerCase().replace(/ς/gu, "σ").normalize("NFD").replace(/\s+/gu, " ");
   const CHUNK = 4096,
+    NORMALIZATION_TAIL = 256,
     WORK_SLICE = 65536;
 
   // Bound SOURCE work, not normalized output: long whitespace runs must
@@ -118,13 +120,22 @@
     while (position < value.length) {
       const start = position,
         leadingSpace = space;
-      position = Math.min(value.length, start + CHUNK);
+      // Reserve bounded room to finish a combining sequence. NFD can reorder
+      // marks, so cutting immediately before another mark is not a canonical
+      // normalization boundary. Never normalize an unbounded hostile sequence.
+      position = Math.min(value.length, start + CHUNK - NORMALIZATION_TAIL);
       if (
         position < value.length &&
         /[\uDC00-\uDFFF]/u.test(value[position]) &&
         /[\uD800-\uDBFF]/u.test(value[position - 1])
       )
         position++;
+      while (position < value.length && /^\p{M}/u.test(value.slice(position, position + 2))) {
+        const width = value.codePointAt(position) > 0xffff ? 2 : 1;
+        if (position + width > start + CHUNK)
+          fail("A combining sequence exceeds the search normalization work limit.");
+        position += width;
+      }
       const stop = position,
         folded = normalize(value.slice(start, stop));
       const body = leadingSpace && folded.startsWith(" ") ? folded.slice(1) : folded;
@@ -135,20 +146,36 @@
         work: stop - start,
         offsetAt(index) {
           if (!offsets) {
-            offsets = [];
+            // Normalization can expand a scalar and reorder adjacent marks.
+            // For each normalized scalar, retain its source origins in stable
+            // occurrence order. Canonical reordering preserves that order for
+            // equal scalars; matching the bulk output then recovers exact
+            // origins without assuming a monotone one-code-unit source map.
+            const origins = new Map();
+            const record = (scalar, origin) => {
+              let queue = origins.get(scalar);
+              if (!queue) origins.set(scalar, queue = { values: [], next: 0 });
+              queue.values.push(origin);
+            };
             let whitespace = leadingSpace;
             for (let at = start; at < stop; ) {
               const scalar = String.fromCodePoint(value.codePointAt(at)),
                 origin = at;
               at += scalar.length;
               if (/\s/u.test(scalar)) {
-                if (!whitespace) offsets.push(origin);
+                if (!whitespace) record(" ", origin);
                 whitespace = true;
               } else {
                 whitespace = false;
-                const count = normalize(scalar).length;
-                for (let i = 0; i < count; i++) offsets.push(origin);
+                for (const normalized of normalize(scalar)) record(normalized, origin);
               }
+            }
+            offsets = [];
+            for (const scalar of body) {
+              const queue = origins.get(scalar);
+              const origin = queue && queue.values[queue.next++];
+              if (origin === undefined) fail("Search normalization source map is inconsistent.");
+              for (let i = 0; i < scalar.length; i++) offsets.push(origin);
             }
           }
           return offsets[index];

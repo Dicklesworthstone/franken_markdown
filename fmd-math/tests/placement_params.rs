@@ -149,6 +149,64 @@ fn radical_index_is_scriptscript_and_raised() {
     assert!(glyph_y(&l, '3') > 0.3, "degree must be raised");
 }
 
+fn glyph_x(layout: &Layout, ch: char) -> f64 {
+    layout
+        .glyphs
+        .iter()
+        .find(|g| g.ch == ch)
+        .unwrap_or_else(|| panic!("glyph {ch} in {layout:?}"))
+        .x
+}
+
+#[test]
+fn radical_degree_follows_plain_tex_root() {
+    // plain.tex's \r@@t: \mkern5mu \raise.6\dimen@ \copy\rootbox \mkern-10mu
+    // \box0, with \dimen@ = \ht0 - \dp0 of the radical box. In display
+    // style one mu is 1/18 em.
+    let e = engine();
+    let plain = e.typeset(r"\sqrt{x}", Style::Display).unwrap();
+    let rooted = e.typeset(r"\sqrt[3]{x}", Style::Display).unwrap();
+    let raise = 0.6 * (plain.height - plain.depth);
+    assert!(
+        (glyph_y(&rooted, '3') - raise).abs() < EPS,
+        "degree at {} for .6(ht - dp) = {raise}",
+        glyph_y(&rooted, '3')
+    );
+    let degree = e.typeset("3", Style::ScriptScript).unwrap().width;
+    let shift = 5.0 / 18.0 + degree - 10.0 / 18.0;
+    assert!(
+        (glyph_x(&rooted, 'x') - glyph_x(&plain, 'x') - shift).abs() < EPS,
+        "radicand moved {} for 5mu + w - 10mu = {shift}",
+        glyph_x(&rooted, 'x') - glyph_x(&plain, 'x')
+    );
+}
+
+#[test]
+fn a_radical_box_encloses_its_sign() {
+    // TeX packs the raised sign with the overbar (§737), so the box is as
+    // deep as the sign's descent below the radicand, not just the radicand.
+    let e = engine();
+    let l = e.typeset(r"\sqrt{x}", Style::Display).unwrap();
+    let contours = fmd_math::paths::resolve_paths(&e, &l).unwrap();
+    let ink_bottom = contours
+        .iter()
+        .flat_map(|contour| {
+            std::iter::once(contour.start).chain(contour.segments.iter().map(|segment| {
+                match *segment {
+                    fmd_math::PathSeg::Line { to } | fmd_math::PathSeg::Quad { to, .. } => to,
+                }
+            }))
+        })
+        .map(|(_, y)| y)
+        .fold(f64::INFINITY, f64::min);
+    assert!(ink_bottom < 0.0, "the sign descends below the baseline");
+    assert!(
+        -l.depth <= ink_bottom + 1e-9,
+        "depth {} leaves ink at {ink_bottom} outside the box",
+        l.depth
+    );
+}
+
 #[test]
 fn big_op_is_display_scaled_and_axis_centered() {
     let e = engine();

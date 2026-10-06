@@ -24,8 +24,7 @@ fn integer(value: Option<f64>, name: &str, min: u64, max: u64) -> Result<Option<
         .map(|value| {
             if !value.is_finite()
                 || value.fract() != 0.0
-                || value < min as f64
-                || value > max as f64
+                || !(min as f64..=max as f64).contains(&value)
             {
                 return Err(invalid(format!("{name} must be an integer in {min}..={max}")));
             }

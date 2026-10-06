@@ -393,10 +393,13 @@ export function createRetainedBookPreview(engine, renderPreview) {
     if (!pathsMatch(before.files, input.files) || !pathsMatch(a.includeSources, b.includeSources))
       return false;
     for (const key of ["title", "author", "lang", "customCss", "toc", "pageNumbers", "font",
-      "darkMode", "fontScale", "expandIncludes"]) {
+      "darkMode", "fontScale", "expandIncludes", "typography", "baseFontSize", "headingScale",
+      "tableFontSize", "tocDepth", "fitToPages", "codeLineNumbers", "metadataEpochSeconds",
+      "htmlFontFormat"]) {
       if (a[key] !== b[key]) return false;
     }
-    if (JSON.stringify(a.page) !== JSON.stringify(b.page)) return false;
+    if (JSON.stringify(a.page) !== JSON.stringify(b.page)
+        || JSON.stringify(a.running) !== JSON.stringify(b.running)) return false;
     const sameAssets = (left, right, keys) => left.length === right.length && left.every((asset, i) => {
       const other = right[i];
       if (keys.some(key => asset[key] !== other[key]) || asset.bytes.length !== other.bytes.length)

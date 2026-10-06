@@ -94,8 +94,135 @@ function fontAsset(value) {
   return { slot: font.slot, bytes: assetBytes(font.bytes), weight: font.weight };
 }
 
+// Match the additive FmdBook.setPdfOptions contract. These values are owned
+// primitives/plain records before any await; normalization is idempotent across
+// the client, worker and session layers. Defaults need no new WASM methods.
+const PDF_OPTION_FIELDS = [
+  "typography", "baseFontSize", "headingScale", "tableFontSize", "tocDepth",
+  "fitToPages", "codeLineNumbers", "metadataEpochSeconds", "running",
+];
+function boundedNumber(value, name, min, max, integer = false) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max
+      || (integer && !Number.isSafeInteger(value))) {
+    throw new RangeError(`${name} must be ${integer ? "an integer" : "finite"} in ${min}..=${max}`);
+  }
+  return value === 0 ? 0 : value;
+}
+function runningRecord(value, keys, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw new TypeError(`${label} must be a plain data object`);
+  }
+  const result = {};
+  for (const key of Reflect.ownKeys(value)) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (!keys.includes(key) || !field || !Object.hasOwn(field, "value")) {
+      throw new TypeError(`${label} has an unsupported field or accessor`);
+    }
+    result[key] = field.value;
+  }
+  return result;
+}
+function bookRunning(value) {
+  if (value === undefined || value === null) return undefined;
+  const running = runningRecord(value, ["header", "footer", "skipFirstPage"], "running");
+  const band = (value, label) => {
+    const data = value == null ? {} : runningRecord(value, ["left", "center", "right", "rule"], label);
+    const result = {};
+    for (const slot of ["left", "center", "right"]) {
+      const text = data[slot];
+      if (text !== undefined) {
+        if (typeof text !== "string") throw new TypeError(`${label}.${slot} must be a string`);
+        bookTextBytes(text, 4096);
+        if (text.length) result[slot] = text;
+      }
+    }
+    if (boolean(data.rule, `${label}.rule`)) result.rule = true;
+    return Object.freeze(result);
+  };
+  const header = band(running.header, "running.header"), footer = band(running.footer, "running.footer");
+  const skipFirstPage = boolean(running.skipFirstPage, "running.skipFirstPage");
+  if (!Object.keys(header).length && !Object.keys(footer).length && !skipFirstPage) return undefined;
+  return Object.freeze({ header, footer, skipFirstPage });
+}
+function bookRenderOptions(options) {
+  const result = {};
+  // Read each host property once, including aliases; no later getter can
+  // substitute a different value after validation or asynchronous loading.
+  const typography = options.typography;
+  const optimal = options.optimalPagination;
+  const microtype = options.microtype;
+  const protrusion = options.microtypeProtrusion;
+  const tokens = [];
+  if (typography !== undefined) {
+    if (typeof typography !== "string") throw new TypeError("typography must be a comma-separated string");
+    bookTextBytes(typography, 256);
+    for (const token of typography.split(",").map(token => token.trim()).filter(Boolean)) {
+      if (!["homogeneous", "antiriver", "pareto", "optimal-pagination", "protrusion", "expansion"].includes(token)) {
+        throw new TypeError(`Unknown typography token: '${token}'`);
+      }
+      tokens.push(token);
+    }
+  }
+  if (boolean(optimal, "optimalPagination")) tokens.push("optimal-pagination");
+  if (microtype !== undefined) {
+    if (!["off", "protrusion", "expansion", "all"].includes(microtype)) {
+      throw new TypeError("microtype must be off, protrusion, expansion, or all");
+    }
+    // An explicit mode overrides microtype tokens, but not other layout flags.
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      if (tokens[i] === "protrusion" || tokens[i] === "expansion") tokens.splice(i, 1);
+    }
+    if (microtype !== "off") tokens.push(microtype === "all" ? "protrusion" : microtype);
+  }
+  if (boolean(protrusion, "microtypeProtrusion")) tokens.push("protrusion");
+  if (tokens.length) {
+    result.typography = tokens.join(",");
+    bookTextBytes(result.typography, 256);
+  }
+  for (const [key, min, max, integer] of [
+    ["baseFontSize", 6, 24, false], ["headingScale", 1.05, 2, false],
+    ["tableFontSize", 5, 24, false], ["tocDepth", 1, 6, true],
+    ["fitToPages", 1, 0xffffffff, true], ["metadataEpochSeconds", 0, Number.MAX_SAFE_INTEGER, true],
+  ]) {
+    const value = options[key];
+    if (value !== undefined) result[key] = boundedNumber(value, key, min, max, integer);
+  }
+  if (boolean(options.codeLineNumbers, "codeLineNumbers")) result.codeLineNumbers = true;
+  const running = bookRunning(options.running);
+  if (running !== undefined) result.running = running;
+  const format = options.htmlFontFormat;
+  if (format !== undefined) {
+    if (!["ttf", "woff1", "woff2"].includes(format)) throw new TypeError("htmlFontFormat must be ttf, woff1, or woff2");
+    result.htmlFontFormat = format;
+  }
+  return result;
+}
+function pdfOptionArgs(settings) {
+  if (!PDF_OPTION_FIELDS.some(key => settings[key] !== undefined)) return null;
+  const running = settings.running;
+  const slots = running ? [running.header, running.footer].flatMap(band =>
+    [band.left ?? "", band.center ?? "", band.right ?? ""]) : [];
+  return [settings.typography, settings.baseFontSize, settings.headingScale, settings.tableFontSize,
+    settings.tocDepth, settings.fitToPages, settings.codeLineNumbers ?? false, settings.metadataEpochSeconds,
+    slots, running?.header.rule ?? false, running?.footer.rule ?? false, running?.skipFirstPage ?? false];
+}
+function requireBookOptions(target, settings) {
+  for (const [name, requested] of [
+    ["setPdfOptions", pdfOptionArgs(settings) !== null],
+    ["setHtmlFontFormat", settings.htmlFontFormat !== undefined],
+  ]) {
+    if (requested && typeof target?.[name] !== "function") {
+      throw Object.assign(new Error(
+        `this WASM build lacks FmdBook.${name}; rebuild the matching package for book rendering options`,
+      ), { code: "UNSUPPORTED_BOOK_OPTIONS" });
+    }
+  }
+}
+
 function normalizeOptions(value) {
   const options = record(value, "options");
+  const renderOptions = bookRenderOptions(options);
   const page = normalizePdfPage(options.page);
   const font = options.font ?? "sans";
   const darkMode = options.darkMode ?? "auto";
@@ -143,6 +270,7 @@ function normalizeOptions(value) {
     includeSources,
     images: normalizedImages,
     fontAssets: fonts.map(fontAsset),
+    ...renderOptions,
   };
 }
 
@@ -471,6 +599,7 @@ export function createBookBindings(loadBookClass) {
         "this WASM build lacks FmdBook; rebuild the browser package with the updated Rust source",
       );
     }
+    requireBookOptions(BookClass.prototype, settings);
     // Editable books must retain expansion policy even before their first
     // include is authored. Old render-only packages keep their original gate.
     // Rust alone interprets directives; JavaScript never parses Markdown.
@@ -504,6 +633,10 @@ export function createBookBindings(loadBookClass) {
       throw error;
     }
     try {
+      requireBookOptions(raw, settings);
+      const pdf = pdfOptionArgs(settings);
+      if (pdf !== null) raw.setPdfOptions(...pdf);
+      if (settings.htmlFontFormat !== undefined) raw.setHtmlFontFormat(settings.htmlFontFormat);
       raw.setMetadata(settings.title, settings.author, settings.lang);
       raw.setCustomCss(settings.customCss);
       raw.setTheme(settings.font, settings.darkMode);
@@ -517,6 +650,7 @@ export function createBookBindings(loadBookClass) {
       return new BookSession(raw, settings.page);
     } catch (error) {
       raw.free();
+      if (typeof error === "string") throw new Error(error.slice(0, 2048));
       throw error;
     }
   }

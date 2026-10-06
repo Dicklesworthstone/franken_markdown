@@ -26,6 +26,20 @@ export interface BookFont {
   weight?: number;
 }
 
+/** Template text is bounded to 4096 UTF-8 bytes per slot. */
+export interface BookRunningBand {
+  left?: string;
+  center?: string;
+  right?: string;
+  rule?: boolean;
+}
+export interface BookRunningContent {
+  header?: BookRunningBand;
+  footer?: BookRunningBand;
+  /** Also suppresses the pageNumbers footer on the first page. */
+  skipFirstPage?: boolean;
+}
+
 export interface BookOptions {
   /** Expand includes in Rust (default true). False preserves literal source. */
   expandIncludes?: boolean;
@@ -48,6 +62,32 @@ export interface BookOptions {
   fontScale?: number;
   toc?: boolean;
   pageNumbers?: boolean;
+  /** Comma-separated homogeneous, antiriver, pareto, optimal-pagination,
+   * protrusion or expansion. Unknown tokens fail before WASM initialization.
+   * Requires FmdBook.setPdfOptions; old packages fail explicitly.
+   */
+  typography?: string;
+  optimalPagination?: boolean;
+  /** An explicit mode overrides microtype tokens in typography. */
+  microtype?: "off" | "protrusion" | "expansion" | "all";
+  /** Compatibility shortcut, applied after microtype. */
+  microtypeProtrusion?: boolean;
+  /** Body size in points, 6..=24. */
+  baseFontSize?: number;
+  /** Heading ratio, 1.05..=2. */
+  headingScale?: number;
+  /** Table size in points, 5..=24. */
+  tableFontSize?: number;
+  /** In-content TOC depth, integer 1..=6; also applies to HTML. */
+  tocDepth?: number;
+  /** Adaptive target, integer 1..=4294967295; not a hard page-count guarantee. */
+  fitToPages?: number;
+  codeLineNumbers?: boolean;
+  /** Nonnegative safe-integer epoch; no ambient clock is read. */
+  metadataEpochSeconds?: number;
+  running?: BookRunningContent;
+  /** HTML-site font container only; EPUB keeps its TrueType package. */
+  htmlFontFormat?: "ttf" | "woff1" | "woff2";
   /** Default paper/margins for PDF exports only; HTML/EPUB are unaffected.
    * Uses the single-document point-based geometry contract. Captured before
    * asynchronous initialization or worker transfer, with no host references.

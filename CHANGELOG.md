@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- PDF inline images: images inside paragraphs, headings, lists and table
+  cells (badge rows, icons in prose) are drawn as unbreakable boxes in the
+  Knuth-Plass paragraph instead of printing their alt text. PNG, JPEG and SVG
+  assets are supported (SVG badge text is subset like other SVG text), links
+  around an image stay clickable, each image is tagged `/Figure` with its alt
+  text, and images taller than the text open extra line space. A paragraph of
+  several large pictures keeps one figure line per picture. Unresolved images
+  still fall back to their alt text.
+
 ### Changed
 
 - Raw HTML without `--allow-html` is no longer printed as literal tags. A

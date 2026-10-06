@@ -832,10 +832,11 @@ Honest about what the renderer does not do yet.
   intros), basic widow handling, and repeatable table headers across page breaks
   work today; full widow/orphan control and finer block pagination remain
   roadmap.
-- **PDF vs HTML gaps.** The PDF path does not yet render inline images within
-  running prose or arbitrary CSS. (Inline styling and links *inside table cells*
-  now render, with bold/italic/mono faces and clickable link annotations.) PDF
-  images are standalone PNG or SVG assets supplied by the host; the native CLI
+- **PDF vs HTML gaps.** The PDF path does not render arbitrary CSS. Images
+  inside running prose and table cells (badges, icons) are drawn inline as
+  unbreakable boxes up to 1.75 em tall and tagged `/Figure` with their alt
+  text; a paragraph of several large pictures keeps one figure line per
+  picture. PDF images are PNG, JPEG or SVG assets supplied by the host; the native CLI
   auto-loads relative local image destinations for file-input HTML/PDF renders,
   HTML embeds supported assets as data URIs, and `--pdf-image` can provide or
   override PDF assets explicitly.

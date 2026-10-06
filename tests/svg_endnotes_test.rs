@@ -133,7 +133,11 @@ fn rich_notes_retain_code_lists_tables_math_and_styles_in_order() {
         definition("rich", rich.clone()),
     ]);
     let mut expected = vec![paragraph("[1]"), notes_heading(), paragraph("[1]")];
-    expected.extend(rich);
+    // Paged output lowers safe raw HTML: the `<aside>` keeps its text.
+    expected.extend(rich.into_iter().map(|block| match block {
+        Block::HtmlBlock(_) => paragraph("Inert evidence"),
+        other => other,
+    }));
     assert_svg_equivalent(&source, &doc(expected));
 }
 

@@ -40,6 +40,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
+mod inline_image;
 mod math;
 mod running;
 mod text_composition;
@@ -169,6 +170,26 @@ const F_CJK: u8 = 7;
 /// the writer fills its outlines instead of showing text. Never in [`SLOTS`],
 /// so no font resource or subset is ever made for it.
 const F_MATH: u8 = 8;
+/// An image inside running text (see [`inline_image`]): like [`F_MATH`], an
+/// unbreakable box that is never a font. Its token text encodes the image's
+/// natural size, destination and alt text.
+const F_IMAGE: u8 = 9;
+
+/// Slots that are drawn objects rather than shaped text: never merged into a
+/// neighbouring run, split, hyphenated, re-slotted, protruded or `Tz`-scaled.
+#[inline]
+fn is_inline_object(slot: u8) -> bool {
+    slot == F_MATH || slot == F_IMAGE
+}
+
+/// Advance of an inline object token at `size` points.
+fn inline_object_advance(slot: u8, text: &str, size: f32) -> f32 {
+    if slot == F_IMAGE {
+        inline_image::advance(text, size)
+    } else {
+        inline_math_advance(text, size)
+    }
+}
 const SLOTS: [u8; 7] = [
     F_BODY,
     F_BOLD,
@@ -1744,6 +1765,9 @@ struct Faces {
     symbol: Face,
     /// Optional CJK fallback face for Han, Kana, Hangul characters.
     cjk: Option<Face>,
+    /// Images placed inside running text, decoded once per render by
+    /// [`layout`] (see [`inline_image::prepare`]).
+    inline_images: inline_image::InlineImageTable,
 }
 
 /// Sanitized page geometry derived from the shared theme model.
@@ -1850,6 +1874,7 @@ impl Faces {
             )?,
             symbol: Face::load_bundled_symbol()?,
             cjk: None,
+            inline_images: Default::default(),
         })
     }
 
@@ -1896,8 +1921,9 @@ impl Faces {
     }
 
     fn shaped_width(&self, slot: u8, text: &str, size: FontSize) -> LayoutUnit {
-        if slot == F_MATH {
-            return lu_from_points_f32(inline_math_advance(
+        if is_inline_object(slot) {
+            return lu_from_points_f32(inline_object_advance(
+                slot,
                 text,
                 size.milli_points() as f32 / 1000.0,
             ));
@@ -1906,8 +1932,8 @@ impl Faces {
     }
 
     fn shaped_width_points(&self, slot: u8, text: &str, size: f32) -> f32 {
-        if slot == F_MATH {
-            return inline_math_advance(text, size);
+        if is_inline_object(slot) {
+            return inline_object_advance(slot, text, size);
         }
         self.face(slot).shaped_width_points(text, size)
     }
@@ -2574,7 +2600,7 @@ fn collect_token_text(mut toks: Vec<Tok>, out: &mut Vec<(u8, String)>, faces: &F
     // An inline formula's glyphs are fmd-math's own outlines, not font text.
     out.extend(
         toks.into_iter()
-            .filter(|tok| !tok.space && tok.slot != F_MATH)
+            .filter(|tok| !tok.space && !is_inline_object(tok.slot))
             .map(|tok| (tok.slot, tok.text)),
     );
 }
@@ -3139,6 +3165,7 @@ fn append_pdf_toc_page(
 // ---- layout -----------------------------------------------------------------
 
 fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) -> Vec<Line> {
+    inline_image::prepare(blocks, &opts.image_assets, faces);
     let has_toc = opts.toc || has_toc_marker(blocks);
     if !has_toc {
         let type_scale = opts.type_scale();
@@ -4044,6 +4071,16 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 return;
             }
             if layout_standalone_image(inlines, indent, out, cx) {
+                return;
+            }
+            if let Some(images) =
+                inline_image::gallery_images(inlines, cx.faces, cx.type_scale.body)
+            {
+                // A row of large pictures keeps one figure line per picture
+                // instead of shrinking each to an icon inside a text line.
+                for image in images {
+                    layout_standalone_image(std::slice::from_ref(image), indent, out, cx);
+                }
                 return;
             }
             if let [Inline::Text(text)] = inlines.as_slice() {
@@ -16326,7 +16363,7 @@ fn cell_tokens(
 fn split_cell_separator_tokens(toks: Vec<Tok>) -> Vec<Tok> {
     let mut out = Vec::with_capacity(toks.len());
     for tok in toks {
-        if tok.space || tok.hard_break || tok.text.len() < 4 {
+        if tok.space || tok.hard_break || is_inline_object(tok.slot) || tok.text.len() < 4 {
             out.push(tok);
             continue;
         }
@@ -16521,9 +16558,12 @@ fn build_cell_line_owned(
     let mut runs: Vec<CellRun> = Vec::new();
     for t in toks {
         let text = token_visible_text(&t);
-        let merge = runs
-            .last()
-            .is_some_and(|r| r.slot == t.slot && r.link == t.link && r.strike == t.strike);
+        let merge = runs.last().is_some_and(|r| {
+            r.slot == t.slot
+                && !is_inline_object(r.slot)
+                && r.link == t.link
+                && r.strike == t.strike
+        });
         if merge {
             if let Some(last) = runs.last_mut() {
                 last.text.push_str(text);
@@ -16584,7 +16624,9 @@ fn wrap_cell_styled(
         // boundaries so it can never overflow the column (and run off the page);
         // this preserves the run's style. The leftover tail stays on the current
         // line so a following word can still pack after it.
-        if ww > max_width && max_width > 0.0 {
+        // Formulas and images are never split: at worst one sits alone on
+        // its row (the column allocator reserves its width as min-content).
+        if ww > max_width && max_width > 0.0 && !is_inline_object(t.slot) {
             if !cur.is_empty() {
                 lines.push(build_cell_line_owned(
                     std::mem::take(&mut cur),
@@ -17816,8 +17858,15 @@ fn tokenize(
                 let target = safe_pdf_link(dest).map(|target| intern.intern(target));
                 tokenize(content, bold, italic, strike, target, intern, out);
             }
-            Inline::Image { alt, .. } => {
-                push_text_tokens(alt, slot_of(bold, italic, false), strike, link, out);
+            Inline::Image { dest, alt, .. } => {
+                inline_image::push_token(
+                    dest,
+                    alt,
+                    slot_of(bold, italic, false),
+                    strike,
+                    link,
+                    out,
+                );
             }
             Inline::SoftBreak => out.push(Tok {
                 text: String::new(),
@@ -17882,6 +17931,13 @@ fn inline_math_extents(line: &Line) -> (f32, f32) {
         {
             above = above.max((formula.ascent - INLINE_MATH_ASCENT_ROOM) * line.size);
             below = below.max((formula.descent - INLINE_MATH_DESCENT_ROOM) * line.size);
+        } else if seg.slot == F_IMAGE
+            && let Some(image) = inline_image::image_box(&seg.text, line.size)
+        {
+            // Inline images grow their line exactly like tall formulas.
+            let ascent = image.height - image.descent;
+            above = above.max(ascent - INLINE_MATH_ASCENT_ROOM * line.size);
+            below = below.max(image.descent - INLINE_MATH_DESCENT_ROOM * line.size);
         }
     }
     (above, below)
@@ -18000,6 +18056,7 @@ fn subscript_phonetic_fallback(c: char) -> Option<char> {
 /// tokens, which the paragraph builder already measures as one unbreakable
 /// word with per-slot shaping.
 fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
+    inline_image::resolve_tokens(toks, faces);
     if toks
         .iter()
         .any(|tok| !tok.text.is_ascii() && tok.text.chars().any(text_composition::is_mark))
@@ -18015,7 +18072,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
                 && !last.space
                 && !last.hard_break
                 && tok.slot == last.slot
-                && tok.slot != F_MATH
+                && !is_inline_object(tok.slot)
                 && tok.link == last.link
                 && tok.strike == last.strike
             {
@@ -18033,7 +18090,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
         // face carries no ASCII repertoire, so `fallback_slot` is the identity
         // for them. This keeps the common path allocation-free. An inline
         // formula draws its own glyphs; its source is never re-slotted.
-        if tok.space || tok.slot == F_MATH || tok.text.is_ascii() {
+        if tok.space || is_inline_object(tok.slot) || tok.text.is_ascii() {
             i += 1;
             continue;
         }
@@ -18141,7 +18198,7 @@ fn measure_word(runs: &[Tok], fs: FontSize, faces: &Faces) -> LayoutUnit {
         match &mut current {
             Some(run)
                 if run.slot == tok.slot
-                    && run.slot != F_MATH
+                    && !is_inline_object(run.slot)
                     && run.link == tok.link
                     && run.strike == tok.strike =>
             {
@@ -18183,7 +18240,7 @@ fn measure_word_cached(
         match &mut current {
             Some(run)
                 if run.slot == tok.slot
-                    && run.slot != F_MATH
+                    && !is_inline_object(run.slot)
                     && run.link == tok.link
                     && run.strike == tok.strike =>
             {
@@ -18515,7 +18572,7 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
 
     // A word holding an inline formula never breaks inside: the formula is
     // one box, and TeX does not hyphenate against math either.
-    if word.iter().any(|tok| tok.slot == F_MATH) {
+    if word.iter().any(|tok| is_inline_object(tok.slot)) {
         push_pdf_word_box(
             built,
             word,
@@ -19574,7 +19631,7 @@ fn left_protrusion_hang(toks: &[LineTok], size: f32) -> f32 {
 /// is the single place that applies it.
 fn left_hang_for_tok(tok: &Tok, size: f32) -> f32 {
     // A formula's text is its TeX source, not what is drawn.
-    if tok.slot == F_MATH {
+    if is_inline_object(tok.slot) {
         return 0.0;
     }
     let Some(ch) = token_visible_text(tok).chars().next() else {
@@ -19910,8 +19967,10 @@ fn build_segs_adjusted(
     let expansion_permille_budget = expansion_permille_budget.min(100);
     // `Tz` scales text, not filled outlines: a line holding an inline formula
     // takes its justification as spacing instead of glyph expansion.
-    let use_expansion =
-        expansion_permille_budget > 0 && !toks.iter().any(|line_tok| line_tok.tok.slot == F_MATH);
+    let use_expansion = expansion_permille_budget > 0
+        && !toks
+            .iter()
+            .any(|line_tok| is_inline_object(line_tok.tok.slot));
     let mut word_extra_milli: f64 = 0.0;
     let mut box_width_milli: f64 = 0.0;
     // Preserve the final shaped advance and interword adjustment separately.
@@ -19936,7 +19995,10 @@ fn build_segs_adjusted(
         while let Some(line_tok) = toks.get(end) {
             let tok = &line_tok.tok;
             if end > i
-                && (tok.slot != slot || tok.link != link || tok.strike != strike || slot == F_MATH)
+                && (tok.slot != slot
+                    || tok.link != link
+                    || tok.strike != strike
+                    || is_inline_object(slot))
             {
                 break;
             }
@@ -19947,12 +20009,12 @@ fn build_segs_adjusted(
             }
         }
         let seg_x = x;
-        if slot == F_MATH {
-            // One formula: its advance plus any justification share, as
-            // spacing (expansion is off on this line).
+        if is_inline_object(slot) {
+            // One formula or image: its advance plus any justification
+            // share, as spacing (expansion is off on this line).
             let line_tok = &toks[i];
             let text = line_tok.tok.text.clone();
-            let width = inline_math_advance(&text, size) + line_tok.extra_advance;
+            let width = inline_object_advance(slot, &text, size) + line_tok.extra_advance;
             x += width.max(0.0);
             segs.push(Seg {
                 x: seg_x,
@@ -20110,7 +20172,7 @@ fn single_adjusted_seg_text_len(
     strike: bool,
 ) -> Option<usize> {
     // Each inline formula is its own segment: two never merge into one text.
-    if slot == F_MATH && toks.len() != 1 {
+    if is_inline_object(slot) && toks.len() != 1 {
         return None;
     }
     let mut len = 0usize;
@@ -20878,7 +20940,23 @@ fn serialize(
 
     // Which slots actually appear (skip embedding unused faces).
     let used_slot_started = profiler.checkpoint();
+    // Vector images inside text lines carry their own text runs; keep them
+    // alive here so their glyphs join the subsets like figure-line SVGs do.
+    let inline_vectors: Vec<std::rc::Rc<PdfImageData>> = lines
+        .iter()
+        .flat_map(|line| &line.segs)
+        .filter(|seg| seg.slot == F_IMAGE)
+        .filter_map(|seg| inline_image::parts(&seg.text))
+        .filter_map(|parts| inline_image::image_for(faces, parts.dest))
+        .filter(|image| image.vector.is_some())
+        .collect();
     let mut slot_texts = collect_font_slot_text_refs(lines);
+    for svg in inline_vectors
+        .iter()
+        .filter_map(|image| image.vector.as_ref())
+    {
+        collect_svg_font_slot_text_refs(svg, &mut slot_texts);
+    }
     if let Some(chrome) = &chrome {
         for (slot, text) in chrome.texts() {
             if let Some(slot_idx) = pdf_font_slot_index(slot) {
@@ -21148,7 +21226,7 @@ fn serialize(
         "image_asset_collection",
         lines.len(),
         "collect supported PDF image XObjects from laid-out image lines",
-        || collect_pdf_images(lines),
+        || collect_pdf_images(lines, faces),
         |images| {
             images
                 .iter()
@@ -22062,6 +22140,39 @@ fn generate_page_content(
                     key: SKey::TableCell(line.flow.group, tbl_row, col),
                     tag: cell_tag,
                 });
+                if seg.slot == F_IMAGE {
+                    // An image in a cell is a /Figure inside its /TD.
+                    path.push(SElem {
+                        key: SKey::InlineFigure(next_mcid),
+                        tag: "Figure",
+                    });
+                    append_marked_content_begin(&mut body, "Figure", next_mcid);
+                    let bbox = draw_inline_image_seg(
+                        &mut body,
+                        &mut annots,
+                        next_mcid,
+                        seg,
+                        line.size,
+                        y,
+                        InlineImageDraw {
+                            image_index,
+                            page_resources: &mut page_resources,
+                            subsets,
+                            subset_lookup,
+                            faces,
+                            shaped_cache,
+                        },
+                    );
+                    body.push_str("EMC\n");
+                    marks.push(StructMark {
+                        mcid: next_mcid,
+                        path,
+                        alt: Some(inline_image::alt_text(&seg.text).to_string()),
+                        bbox,
+                    });
+                    next_mcid += 1;
+                    continue;
+                }
                 append_marked_content_begin(&mut body, cell_tag, next_mcid);
                 draw_seg(
                     &mut body,
@@ -22222,6 +22333,43 @@ fn generate_page_content(
             let mut text_open = marked;
             if let Some(seg_start) = first_visible_seg {
                 for seg in &line.segs[seg_start..] {
+                    if let (F_IMAGE, Some((_, path))) = (seg.slot, text_path.as_ref()) {
+                        if text_open {
+                            body.push_str("EMC\n");
+                            text_open = false;
+                        }
+                        let mut figure_path = SmallPath::from_slice(path.as_slice());
+                        figure_path.push(SElem {
+                            key: SKey::InlineFigure(next_mcid),
+                            tag: "Figure",
+                        });
+                        append_marked_content_begin(&mut body, "Figure", next_mcid);
+                        let bbox = draw_inline_image_seg(
+                            &mut body,
+                            &mut annots,
+                            next_mcid,
+                            seg,
+                            line.size,
+                            y,
+                            InlineImageDraw {
+                                image_index,
+                                page_resources: &mut page_resources,
+                                subsets,
+                                subset_lookup,
+                                faces,
+                                shaped_cache,
+                            },
+                        );
+                        body.push_str("EMC\n");
+                        marks.push(StructMark {
+                            mcid: next_mcid,
+                            path: figure_path,
+                            alt: Some(inline_image::alt_text(&seg.text).to_string()),
+                            bbox,
+                        });
+                        next_mcid += 1;
+                        continue;
+                    }
                     if let (F_MATH, Some((_, path))) = (seg.slot, text_path.as_ref()) {
                         if text_open {
                             body.push_str("EMC\n");
@@ -22355,6 +22503,8 @@ enum SKey {
     Link(u32),
     /// An inline formula inside a text line, keyed by its own MCID.
     InlineFormula(usize),
+    /// An inline image inside a text line, keyed by its own MCID.
+    InlineFigure(usize),
 }
 
 /// One element on a mark's container path: its sharing key plus the `/S`
@@ -22916,7 +23066,7 @@ fn heading_metadata(lines: &[Line]) -> BTreeMap<u32, HeadingMeta> {
     out
 }
 
-fn collect_pdf_images(lines: &[Line]) -> Vec<PdfImageData> {
+fn collect_pdf_images(lines: &[Line], faces: &Faces) -> Vec<PdfImageData> {
     let mut by_key: BTreeMap<String, PdfImageData> = BTreeMap::new();
     for image in lines.iter().filter_map(|line| line.image.as_ref()) {
         if let Some(svg) = image.image.vector.as_ref() {
@@ -22925,6 +23075,26 @@ fn collect_pdf_images(lines: &[Line]) -> Vec<PdfImageData> {
             by_key
                 .entry(image.image.key.clone())
                 .or_insert_with(|| image.image.clone());
+        }
+    }
+    // Images inside text lines: rasters become XObjects; vector images may
+    // themselves embed rasters.
+    for seg in lines
+        .iter()
+        .flat_map(|line| &line.segs)
+        .filter(|seg| seg.slot == F_IMAGE)
+    {
+        let Some(image) = inline_image::parts(&seg.text)
+            .and_then(|parts| inline_image::image_for(faces, parts.dest))
+        else {
+            continue;
+        };
+        if let Some(svg) = image.vector.as_ref() {
+            collect_svg_pdf_images(svg, &mut by_key);
+        } else {
+            by_key
+                .entry(image.key.clone())
+                .or_insert_with(|| (*image).clone());
         }
     }
     by_key.into_values().collect()
@@ -27843,6 +28013,74 @@ fn draw_inline_math_seg(
         y,
         palette,
     );
+}
+
+/// Writer state an inline image needs: XObject indices for rasters and the
+/// SVG lane's page resources and fonts for vector images.
+struct InlineImageDraw<'a, 'r, 's> {
+    image_index: &'a BTreeMap<&'a str, usize>,
+    page_resources: &'r mut SvgPageResources<'s>,
+    subsets: &'a [EmbeddedFace<'a>],
+    subset_lookup: &'a EmbeddedFaceLookup,
+    faces: &'a Faces,
+    shaped_cache: &'a ShapedRunCache,
+}
+
+/// Draw one inline image segment with its bottom just below the baseline at
+/// `y`, add its link annotation, and return its bounding box.
+fn draw_inline_image_seg(
+    body: &mut String,
+    annots: &mut Vec<LinkAnnotation>,
+    owner_mcid: usize,
+    seg: &Seg,
+    size: f32,
+    y: f32,
+    draw: InlineImageDraw<'_, '_, '_>,
+) -> Option<[f32; 4]> {
+    let parts = inline_image::parts(&seg.text)?;
+    let image_box = inline_image::image_box(&seg.text, size)?;
+    let image = inline_image::image_for(draw.faces, parts.dest)?;
+    let bottom = y - image_box.descent;
+    if image.vector.is_some() {
+        let line_image = ImageLine {
+            image: (*image).clone(),
+            alt: parts.alt.to_string(),
+            formula: false,
+            link: None,
+            marker_size: None,
+            width_pt: image_box.width,
+            height_pt: image_box.height,
+        };
+        draw_svg_image(
+            body,
+            annots,
+            &line_image,
+            seg.x,
+            bottom,
+            draw.image_index,
+            draw.page_resources,
+            draw.subsets,
+            draw.subset_lookup,
+            draw.faces,
+            draw.shaped_cache,
+        );
+    } else if let Some(idx) = draw.image_index.get(image.key.as_str()) {
+        append_image_xobject_do(body, *idx, image_box.width, image_box.height, seg.x, bottom);
+    }
+    let rect = Rect {
+        x0: seg.x,
+        y0: bottom,
+        x1: seg.x + image_box.width,
+        y1: bottom + image_box.height,
+    };
+    if let Some(target) = &seg.link {
+        annots.push(LinkAnnotation {
+            rect,
+            target: target.clone(),
+            owner_mcid: Some(owner_mcid),
+        });
+    }
+    Some([rect.x0, rect.y0, rect.x1, rect.y1])
 }
 
 /// A run's strikethrough and link underline plus its link annotation.
@@ -41514,7 +41752,13 @@ pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<Veri
                 let text = line
                     .segs
                     .iter()
-                    .map(|s| s.text.as_str())
+                    .map(|s| {
+                        if s.slot == F_IMAGE {
+                            inline_image::alt_text(&s.text)
+                        } else {
+                            s.text.as_str()
+                        }
+                    })
                     .collect::<String>();
                 let x = line.segs.first().map(|s| s.x).unwrap_or(0.0);
                 (text, x, line_overshoot(line, &page))

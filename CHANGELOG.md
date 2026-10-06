@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- PDF and SVG footnote references are typeset as superscript numerals
+  (`claim¹`) instead of bracketed `[1]`, and each endnote starts with the
+  same superscript label.
+
 ### Added
 
 - HTML emoji shortcodes: GitHub's `:rocket:`-style aliases (1,913 from

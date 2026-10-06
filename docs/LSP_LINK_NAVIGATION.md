@@ -5,6 +5,11 @@ The native `fmd-lsp` exposes `textDocument/completion` and
 It never opens a URI, reads a workspace, loads fonts, renders PDF or invokes
 an external Markdown parser.
 
+Links between explicitly opened files are also supported; see
+[LSP_WORKSPACE_NAVIGATION.md](LSP_WORKSPACE_NAVIGATION.md) for cross-document
+resolution and completion. [LSP_WORKSPACE_SYMBOLS.md](LSP_WORKSPACE_SYMBOLS.md)
+describes ranked heading search across synchronized buffers.
+
 ## Completion
 
 Place the caret in `[label](#inst)` and request completion, or type `#` to
@@ -61,9 +66,9 @@ Probe text never enters stored buffers, diagnostics, response edits or files.
 This currently supports origin tokens in top-level paragraphs and headings.
 It does not guess origin locations inside lists, quotes, tables or note bodies;
 it does not implement reference-style link navigation, direct footnote-marker
-navigation, escaped URL delimiters, multiline URLs, or links to another file.
-Those remain separate source-provenance/workspace integration work. Broad
-semantic diagnostics still cover parsed links in nested containers.
+navigation, escaped URL delimiters, or multiline URLs. Those remain separate
+source-provenance work. Broad semantic diagnostics still cover parsed links in
+nested containers.
 
 ## Limits and verification
 

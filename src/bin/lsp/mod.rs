@@ -8,6 +8,7 @@ mod navigation;
 mod tests;
 mod text;
 mod workspace_links;
+mod workspace_symbols;
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
@@ -160,6 +161,7 @@ impl Server {
                         object([
                             ("positionEncoding", string("utf-16")),
                             ("documentSymbolProvider", Json::Bool(true)),
+                            ("workspaceSymbolProvider", Json::Bool(true)),
                             ("foldingRangeProvider", Json::Bool(true)),
                             ("selectionRangeProvider", Json::Bool(true)),
                             ("definitionProvider", Json::Bool(true)),
@@ -217,6 +219,12 @@ impl Server {
         let empty = object([]);
         let params = message.get("params").unwrap_or(&empty);
         if let Some(id) = id {
+            if method == "workspace/symbol" {
+                return vec![match workspace_symbols::request(&self.documents, params) {
+                    Ok(result) => response(id, result),
+                    Err((code, reason)) => error(id, code, reason),
+                }];
+            }
             if matches!(
                 method,
                 "textDocument/documentSymbol"

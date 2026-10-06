@@ -28,6 +28,12 @@ use std::borrow::Cow;
 
 use crate::ast::{Align, Block, DefinitionItem, Document, Inline, List, ListItem, Table};
 
+/// Deepest nesting raw HTML may add (inline formatting frames, and block
+/// containers such as quotes, lists and tables). Deeper tags keep their
+/// content but add no level, so flat adversarial input like ten thousand
+/// `<b>` tags cannot become an AST deep enough to exhaust a renderer's stack.
+const MAX_HTML_NESTING: usize = 32;
+
 /// Lower every raw HTML node in `doc` the pass understands. Documents without
 /// raw HTML are returned borrowed.
 #[must_use]
@@ -474,7 +480,7 @@ impl InlineBuilder {
         };
         if tag.closing {
             self.close(&tag.name);
-        } else if !tag.self_closing {
+        } else if !tag.self_closing && self.stack.len() < MAX_HTML_NESTING {
             let link = if role == InlineRole::Link {
                 tag.attr("href").map(|href| {
                     (
@@ -818,7 +824,7 @@ impl BlockBuilder {
                 self.flush();
                 if tag.closing {
                     self.close_container("blockquote");
-                } else {
+                } else if self.stack.len() < MAX_HTML_NESTING {
                     self.stack.push(Container::Quote(Vec::new()));
                 }
             }
@@ -826,7 +832,7 @@ impl BlockBuilder {
                 self.flush();
                 if tag.closing {
                     self.close_container(if name == "ol" { "ol" } else { "ul" });
-                } else {
+                } else if self.stack.len() < MAX_HTML_NESTING {
                     self.stack.push(Container::List {
                         ordered: name == "ol",
                         start: tag
@@ -850,7 +856,7 @@ impl BlockBuilder {
                 self.flush();
                 if tag.closing {
                     self.close_container("table");
-                } else {
+                } else if self.stack.len() < MAX_HTML_NESTING {
                     self.stack.push(Container::Table {
                         before: Vec::new(),
                         rows: Vec::new(),
@@ -937,7 +943,7 @@ impl BlockBuilder {
             }
             Container::Cell(inlines) => {
                 if let Some(Container::Table { row, .. }) = self.stack.last_mut() {
-                    row.get_or_insert_with(Vec::new).push(inlines);
+                    row.get_or_insert_with(Vec::new).push(merge_texts(inlines));
                 }
             }
             Container::Table {
@@ -972,6 +978,19 @@ impl BlockBuilder {
             _ => Vec::new(),
         }
     }
+}
+
+/// Coalesce adjacent text nodes, the canonical form the inline builder emits.
+fn merge_texts(inlines: Vec<Inline>) -> Vec<Inline> {
+    let mut out: Vec<Inline> = Vec::with_capacity(inlines.len());
+    for inline in inlines {
+        if let (Inline::Text(text), Some(Inline::Text(last))) = (&inline, out.last_mut()) {
+            last.push_str(text);
+            continue;
+        }
+        out.push(inline);
+    }
+    out
 }
 
 fn table_from_rows(mut rows: Vec<Vec<Vec<Inline>>>) -> Option<Table> {
@@ -1025,6 +1044,7 @@ fn lower_html_block(html: &str) -> Vec<Block> {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -1220,6 +1240,136 @@ mod tests {
             lowered("a < b and c<d\n"),
             vec![Block::Paragraph(vec![text("a < b and c<d")])]
         );
+    }
+
+    #[test]
+    fn adversarial_tag_floods_stay_shallow() {
+        fn depth(inlines: &[Inline]) -> usize {
+            inlines
+                .iter()
+                .map(|inline| match inline {
+                    Inline::Strong(children) | Inline::Emphasis(children) => 1 + depth(children),
+                    _ => 0,
+                })
+                .max()
+                .unwrap_or(0)
+        }
+        fn block_depth(blocks: &[Block]) -> usize {
+            blocks
+                .iter()
+                .map(|block| match block {
+                    Block::BlockQuote(inner) => 1 + block_depth(inner),
+                    _ => 0,
+                })
+                .max()
+                .unwrap_or(0)
+        }
+        let flood = format!("x {}deep{}\n", "<b>".repeat(10_000), "</b>".repeat(10_000));
+        let blocks = lowered(&flood);
+        let [Block::Paragraph(inlines)] = blocks.as_slice() else {
+            panic!("{blocks:?}");
+        };
+        assert!(depth(inlines) <= MAX_HTML_NESTING);
+        let quotes = format!(
+            "<div>{}q{}</div>\n",
+            "<blockquote>".repeat(5_000),
+            "</blockquote>".repeat(5_000)
+        );
+        assert!(block_depth(&lowered(&quotes)) <= MAX_HTML_NESTING);
+        // Rendering the flood must not overflow the stack either.
+        let html = crate::render_html(&flood, &crate::HtmlOptions::default()).unwrap();
+        assert!(html.contains("deep"));
+    }
+
+    #[test]
+    fn pseudo_random_html_never_panics_and_lowers_idempotently() {
+        const FRAGMENTS: &[&str] = &[
+            "<b>",
+            "</b>",
+            "<i>",
+            "</em>",
+            "<a href=\"x\">",
+            "</a>",
+            "<img src=\"p.png\" alt='a'>",
+            "<br>",
+            "<br/>",
+            "<p align=center>",
+            "</p>",
+            "<div>",
+            "</div>",
+            "<ul>",
+            "<li>",
+            "</ul>",
+            "<ol start=3>",
+            "</ol>",
+            "<table>",
+            "<tr>",
+            "<td>",
+            "<th>",
+            "</td>",
+            "</table>",
+            "<pre>",
+            "</pre>",
+            "<blockquote>",
+            "</blockquote>",
+            "<h2>",
+            "</h2>",
+            "<details>",
+            "<summary>",
+            "</summary>",
+            "<!-- c -->",
+            "<!--",
+            "-->",
+            "<?x?>",
+            "<!DOCTYPE html>",
+            "<script>",
+            "</script>",
+            "<",
+            ">",
+            "&amp;",
+            "&#x1F600;",
+            "&#0;",
+            "&bogus;",
+            "&",
+            "\"",
+            "'",
+            "=",
+            "text",
+            " ",
+            "\n",
+            "\n\n",
+            "*em*",
+            "`code`",
+            "# h",
+            "- item",
+            "> q",
+            "| a |\n|---|\n| b |",
+            "\u{e9}",
+            "\u{4e2d}",
+            "<kbd>",
+            "</kbd>",
+            "<span title=\"<b>\">",
+            "</span>",
+            "<a\nb>",
+        ];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..400 {
+            let len = (next() % 40) as usize;
+            let source: String = (0..len)
+                .map(|_| FRAGMENTS[(next() % FRAGMENTS.len() as u64) as usize])
+                .collect();
+            let doc = crate::parse_markdown(&source);
+            let once = lower(&doc).into_owned();
+            assert_eq!(lower(&once).into_owned(), once, "{source:?}");
+            crate::render_html_document(&doc, &crate::HtmlOptions::default()).unwrap();
+            crate::render_pdf_document(&doc, &crate::PdfOptions::default()).unwrap();
+        }
     }
 
     #[test]

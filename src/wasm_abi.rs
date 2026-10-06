@@ -499,6 +499,7 @@ pub fn render_html_configured_advanced(
     lang: Option<String>,
     toc: bool,
     toc_depth: Option<u32>,
+    html_font_format: Option<String>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
     options.title = nonempty_verbatim(title);
@@ -508,6 +509,11 @@ pub fn render_html_configured_advanced(
     options.lang = empty_to_none(lang);
     options.toc = toc;
     options.toc_depth = heading_depth(toc_depth)?;
+    if let Some(format) = empty_to_none(html_font_format) {
+        options.html_font_format = crate::HtmlFontFormat::parse(&format).ok_or_else(|| {
+            JsValue::from_str("htmlFontFormat must be \"ttf\", \"woff1\" or \"woff2\"")
+        })?;
+    }
     for (destination, bytes) in
         split_nonempty_image_assets(&image_destinations, &image_bytes_flat, &image_bytes_lengths)
             .map_err(JsValue::from_str)?
@@ -704,6 +710,7 @@ pub fn render_pdf_configured_multi(
     toc_depth: Option<u32>,
     fit_to_pages: Option<u32>,
     microtype_protrusion: bool,
+    typography: Option<String>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     render_pdf_configured_page(
         markdown,
@@ -734,6 +741,7 @@ pub fn render_pdf_configured_multi(
         fit_to_pages,
         microtype_protrusion,
         Vec::new(),
+        typography,
     )
 }
 

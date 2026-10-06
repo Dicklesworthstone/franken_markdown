@@ -79,6 +79,7 @@ export async function renderHtml(markdown, options = {}) {
       stringOption(options.lang),
       Boolean(options.toc),
       integerOption(options.tocDepth, "tocDepth"),
+      ...(options.htmlFontFormat === undefined ? [] : [stringOption(options.htmlFontFormat)]),
     ),
   );
 }
@@ -147,14 +148,36 @@ export async function renderPdf(markdown, options = {}) {
     integerOption(options.fitToPages, "fitToPages"),
     options.microtype === "protrusion" || options.microtypeProtrusion === true,
   ];
+  // The typography tokens ride as one optional trailing argument, sent only
+  // when requested so existing calls keep their exact ABI shape.
+  const typography = typographyOption(options);
+  const tail = typography === undefined ? [] : [typography];
   // Source, primitive settings, image bytes and font bytes now belong to this
   // request. Asynchronous initialization cannot retarget its page or contents.
   await init();
   if (running) {
     return normalizeResult(render(...args, geometry, running.slots, running.headerRule,
-      running.footerRule, running.skipFirstPage));
+      running.footerRule, running.skipFirstPage, ...tail));
   }
-  return normalizeResult(geometry.length ? render(...args, geometry) : render(...args));
+  return normalizeResult(geometry.length
+    ? render(...args, geometry, ...tail)
+    : render(...args, ...tail));
+}
+
+// Opt-in typography/pagination switches as the comma-separated tokens the
+// core accepts; undefined keeps the default (all off).
+function typographyOption(options) {
+  const tokens = [];
+  const typography = options.typography ?? {};
+  if (typography.homogeneous === true) tokens.push("homogeneous");
+  if (typography.antiriver === true) tokens.push("antiriver");
+  if (typography.pareto === true) tokens.push("pareto");
+  if (options.optimalPagination === true) tokens.push("optimal-pagination");
+  if (options.microtype === "expansion") tokens.push("expansion");
+  else if (options.microtype !== undefined && !["disabled", "protrusion"].includes(options.microtype)) {
+    throw new RangeError(`microtype must be "disabled", "protrusion" or "expansion"`);
+  }
+  return tokens.length ? tokens.join(",") : undefined;
 }
 
 // Running header/footer (GH #13). Returns null when nothing would draw, so

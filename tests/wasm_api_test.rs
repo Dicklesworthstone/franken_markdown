@@ -445,3 +445,43 @@ fn wasm_pdf_accepts_typography_overrides() {
         "Typography overrides must change PDF output"
     );
 }
+
+#[test]
+fn typography_tokens_match_native_pdf_options_byte_for_byte() {
+    let markdown = "# Title\n\nA long paragraph with enough words to wrap across several justified lines so the line breaker has real choices to make between alternative breakpoints and spacing.\n\nAnother paragraph follows here.\n";
+    let mut wasm_options = franken_markdown::wasm::WasmRenderOptions::default();
+    wasm_options
+        .apply_typography_tokens(Some(
+            "homogeneous, antiriver,pareto,optimal-pagination,expansion",
+        ))
+        .unwrap();
+    let wasm_pdf = franken_markdown::wasm::render_pdf(markdown, &wasm_options).unwrap();
+    let native_pdf = franken_markdown::render_pdf(
+        markdown,
+        &franken_markdown::PdfOptions {
+            gradual_demerits: true,
+            river_penalty: true,
+            pareto_line_breaking: true,
+            optimal_pagination: true,
+            microtype: franken_markdown::layout::MicrotypeOptions {
+                protrusion: false,
+                max_expansion_per_mille: 15,
+            },
+            ..franken_markdown::PdfOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(wasm_pdf.bytes, native_pdf);
+    // Absent or empty tokens keep the defaults.
+    let mut plain = franken_markdown::wasm::WasmRenderOptions::default();
+    plain.apply_typography_tokens(None).unwrap();
+    plain.apply_typography_tokens(Some("")).unwrap();
+    assert_eq!(
+        franken_markdown::wasm::render_pdf(markdown, &plain)
+            .unwrap()
+            .bytes,
+        franken_markdown::render_pdf(markdown, &franken_markdown::PdfOptions::default()).unwrap()
+    );
+    let err = plain.apply_typography_tokens(Some("kerning")).unwrap_err();
+    assert!(err.contains("kerning"), "{err}");
+}

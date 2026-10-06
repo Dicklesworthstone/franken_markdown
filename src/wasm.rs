@@ -104,6 +104,15 @@ pub struct WasmRenderOptions {
     /// optical-margin protrusion. DISABLED by default; default output stays
     /// byte-identical.
     pub microtype: crate::layout::MicrotypeOptions,
+    /// Opt-in typography/pagination switches, the same as the CLI's
+    /// `--typography-homogeneous`, `--typography-antiriver`,
+    /// `--typography-pareto` and `--pdf-optimal-pagination`.
+    pub gradual_demerits: bool,
+    pub river_penalty: bool,
+    pub pareto_line_breaking: bool,
+    pub optimal_pagination: bool,
+    /// Container for HTML font subsets (WOFF1 by default).
+    pub html_font_format: HtmlFontFormat,
 }
 
 impl WasmRenderOptions {
@@ -375,7 +384,7 @@ impl WasmRenderOptions {
             profile: self.profile,
             toc: self.toc,
             toc_depth: self.toc_depth,
-            html_font_format: HtmlFontFormat::default(),
+            html_font_format: self.html_font_format,
         }
     }
 
@@ -409,11 +418,47 @@ impl WasmRenderOptions {
             toc_depth: self.toc_depth,
             fit_to_pages: self.fit_to_pages,
             microtype: self.microtype,
-            gradual_demerits: false,
-            river_penalty: false,
-            optimal_pagination: false,
-            pareto_line_breaking: false,
+            gradual_demerits: self.gradual_demerits,
+            river_penalty: self.river_penalty,
+            optimal_pagination: self.optimal_pagination,
+            pareto_line_breaking: self.pareto_line_breaking,
         }
+    }
+
+    /// Apply comma-separated typography tokens from a browser host:
+    /// `homogeneous`, `antiriver`, `pareto`, `optimal-pagination`, and the
+    /// microtype modes `protrusion` (with the expansion budget, like the CLI)
+    /// or `expansion` (glyph expansion only). Empty or absent is a no-op.
+    ///
+    /// # Errors
+    /// Names the first unknown token.
+    pub fn apply_typography_tokens(
+        &mut self,
+        tokens: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        for token in tokens.unwrap_or_default().split(',').map(str::trim) {
+            match token {
+                "" => {}
+                "homogeneous" => self.gradual_demerits = true,
+                "antiriver" => self.river_penalty = true,
+                "pareto" => self.pareto_line_breaking = true,
+                "optimal-pagination" => self.optimal_pagination = true,
+                "protrusion" => self.microtype = crate::layout::MicrotypeOptions::CONSERVATIVE,
+                "expansion" => {
+                    self.microtype = crate::layout::MicrotypeOptions {
+                        protrusion: false,
+                        max_expansion_per_mille: 15,
+                    };
+                }
+                other => {
+                    return Err(format!(
+                        "unknown typography option '{other}'; expected homogeneous, antiriver, \
+                         pareto, optimal-pagination, protrusion or expansion"
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 

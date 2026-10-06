@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- WASM/browser and MCP PDF options gain the typography and pagination
+  switches the CLI already had: `typography: {homogeneous, antiriver,
+  pareto}`, `optimalPagination` and `microtype: "expansion"` in
+  `renderPdf`, and `typographyAntiriver` / `typographyPareto` /
+  `optimalPagination` MCP arguments. `renderHtml` accepts `htmlFontFormat`
+  (`woff1`, `woff2`, `ttf`). Rust hosts set the same through
+  `WasmRenderOptions` fields or `apply_typography_tokens`.
+
 ### Fixed
 
 - `fmd watch` and `fmd batch` now accept the same rendering flags as

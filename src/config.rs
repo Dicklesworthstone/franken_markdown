@@ -27,7 +27,177 @@ pub const CONFIG_KEYS: &[&str] = &[
     // readable without changing default behavior. See
     // `docs/EMOJI_FALLBACK.md`.
     "emoji_strategy",
+    // Render defaults. A command-line flag wins, then document frontmatter
+    // (lang/toc/toc_depth), then these keys.
+    "lang",
+    "toc",
+    "toc_depth",
+    "font_scale",
+    "html_font_format",
+    "microtype",
+    "pdf_page_numbers",
+    "typography_homogeneous",
+    "typography_antiriver",
+    "typography_pareto",
+    "pdf_optimal_pagination",
 ];
+
+/// Persistent render defaults from the native config. `None` means the key
+/// is unset and the built-in default applies.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RenderDefaults {
+    pub lang: Option<String>,
+    pub toc: Option<bool>,
+    pub toc_depth: Option<u8>,
+    /// Validated `--font-scale` spelling (preset, percentage or number).
+    pub font_scale: Option<String>,
+    /// `woff1`, `woff2` or `ttf`.
+    pub html_font_format: Option<String>,
+    /// `off`, `protrusion` or `expansion`.
+    pub microtype: Option<String>,
+    pub pdf_page_numbers: Option<bool>,
+    pub typography_homogeneous: Option<bool>,
+    pub typography_antiriver: Option<bool>,
+    pub typography_pareto: Option<bool>,
+    pub pdf_optimal_pagination: Option<bool>,
+}
+
+impl RenderDefaults {
+    fn flag_mut(&mut self, key: &str) -> Option<&mut Option<bool>> {
+        Some(match key {
+            "toc" => &mut self.toc,
+            "pdf_page_numbers" => &mut self.pdf_page_numbers,
+            "typography_homogeneous" => &mut self.typography_homogeneous,
+            "typography_antiriver" => &mut self.typography_antiriver,
+            "typography_pareto" => &mut self.typography_pareto,
+            "pdf_optimal_pagination" => &mut self.pdf_optimal_pagination,
+            _ => return None,
+        })
+    }
+
+    /// `(key, value)` for every set key, in `CONFIG_KEYS` order.
+    fn entries(&self) -> Vec<(&'static str, String)> {
+        let flag = |value: Option<bool>| value.map(|on| on.to_string());
+        [
+            ("lang", self.lang.clone()),
+            ("toc", flag(self.toc)),
+            ("toc_depth", self.toc_depth.map(|depth| depth.to_string())),
+            ("font_scale", self.font_scale.clone()),
+            ("html_font_format", self.html_font_format.clone()),
+            ("microtype", self.microtype.clone()),
+            ("pdf_page_numbers", flag(self.pdf_page_numbers)),
+            ("typography_homogeneous", flag(self.typography_homogeneous)),
+            ("typography_antiriver", flag(self.typography_antiriver)),
+            ("typography_pareto", flag(self.typography_pareto)),
+            ("pdf_optimal_pagination", flag(self.pdf_optimal_pagination)),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key, value)))
+        .collect()
+    }
+
+    fn set(&mut self, key: &str, value: &str) -> Option<std::result::Result<(), String>> {
+        let value = value.trim();
+        if let Some(slot) = self.flag_mut(key) {
+            return Some(
+                parse_flag(value)
+                    .map(|on| *slot = Some(on))
+                    .ok_or_else(|| format!("{key} must be `true` or `false`")),
+            );
+        }
+        let choice = |allowed: &[&str]| {
+            let lower = value.to_ascii_lowercase();
+            if allowed.contains(&lower.as_str()) {
+                Ok(Some(lower))
+            } else {
+                Err(format!("{key} must be one of: {}", allowed.join(", ")))
+            }
+        };
+        let result = match key {
+            "lang" => {
+                if value.is_empty()
+                    || value.len() > 35
+                    || !value
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                {
+                    Err("lang must be a language tag like `en`, `de` or `pt-BR`".to_string())
+                } else {
+                    self.lang = Some(value.to_string());
+                    Ok(())
+                }
+            }
+            "toc_depth" => match value.parse::<u8>() {
+                Ok(depth @ 1..=6) => {
+                    self.toc_depth = Some(depth);
+                    Ok(())
+                }
+                _ => Err("toc_depth must be a heading level from 1 to 6".to_string()),
+            },
+            "font_scale" => {
+                if crate::FontScale::parse(value).is_some() {
+                    self.font_scale = Some(value.to_string());
+                    Ok(())
+                } else {
+                    Err("font_scale must be xs, sm, md, lg, xl, 2xl, a percentage like `125%` or a number like `1.2`".to_string())
+                }
+            }
+            "html_font_format" => {
+                choice(&["woff1", "woff2", "ttf"]).map(|v| self.html_font_format = v)
+            }
+            "microtype" => choice(&["off", "protrusion", "expansion"]).map(|v| self.microtype = v),
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    fn resolved(&self, key: &str) -> Option<String> {
+        if let Some(value) = self.entries().into_iter().find(|(k, _)| *k == key) {
+            return Some(value.1);
+        }
+        Some(
+            match key {
+                "lang" => "",
+                "toc_depth" => "3",
+                "font_scale" => "md",
+                "html_font_format" => "woff1",
+                "microtype" => "off",
+                "toc"
+                | "pdf_page_numbers"
+                | "typography_homogeneous"
+                | "typography_antiriver"
+                | "typography_pareto"
+                | "pdf_optimal_pagination" => "false",
+                _ => return None,
+            }
+            .to_string(),
+        )
+    }
+
+    fn to_json(&self) -> String {
+        let fields: Vec<String> = self
+            .entries()
+            .into_iter()
+            .map(|(key, value)| {
+                let is_raw = value == "true" || value == "false" || key == "toc_depth";
+                if is_raw {
+                    format!("\"{key}\":{value}")
+                } else {
+                    format!("\"{key}\":\"{}\"", json_escape(&value))
+                }
+            })
+            .collect();
+        format!("{{{}}}", fields.join(","))
+    }
+}
+
+fn parse_flag(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "on" | "yes" | "1" => Some(true),
+        "false" | "off" | "no" | "0" => Some(false),
+        _ => None,
+    }
+}
 
 /// Native CLI configuration. Every field is optional; unresolved values come
 /// from the built-in [`Theme`] default so renders stay deterministic.
@@ -43,6 +213,8 @@ pub struct FmdConfig {
     /// string) so the JSON / `config show` output is normalized and a
     /// future `noto_subset` or `drawn` strategy just adds a new variant.
     pub emoji_strategy: Option<EmojiStrategy>,
+    /// Render defaults (`lang`, `toc`, `font_scale`, `microtype`, ...).
+    pub render: RenderDefaults,
 }
 
 /// Config read/parse/write error.
@@ -162,7 +334,11 @@ impl FmdConfig {
 
     /// Set one supported key.
     pub fn set_key_value(&mut self, key: &str, value: &str) -> std::result::Result<(), String> {
-        match normalize_key(key).as_str() {
+        let normalized = normalize_key(key);
+        if let Some(result) = self.render.set(&normalized, value) {
+            return result;
+        }
+        match normalized.as_str() {
             "font" => {
                 self.font = Some(
                     FontFamily::parse(value)
@@ -232,7 +408,7 @@ impl FmdConfig {
             "margin_left_pt" => Some(json_num(theme.page.margins.left_pt)),
             // Unset is the v1 default: renderer and CLI both treat it as warning.
             "emoji_strategy" => Some(self.emoji_strategy.unwrap_or_default().as_str().to_string()),
-            _ => None,
+            other => self.render.resolved(other),
         }
     }
 
@@ -264,7 +440,7 @@ impl FmdConfig {
         format!(
             "{{\"font\":\"{}\",\"dark_mode\":\"{}\",\"custom_css\":{},\"page_size\":\"{}\",\
              \"margins\":{{\"top_pt\":{},\"right_pt\":{},\"bottom_pt\":{},\"left_pt\":{}}},\
-             \"emoji_strategy\":\"{}\"}}",
+             \"emoji_strategy\":\"{}\",\"render\":{}}}",
             theme.font.as_str(),
             theme.dark_mode.as_str(),
             custom_css,
@@ -274,6 +450,7 @@ impl FmdConfig {
             json_num(theme.page.margins.bottom_pt),
             json_num(theme.page.margins.left_pt),
             self.emoji_strategy.unwrap_or_default().as_str(),
+            self.render.to_json(),
         )
     }
 
@@ -333,6 +510,12 @@ impl FmdConfig {
         if let Some(strategy) = self.emoji_strategy {
             out.push_str("emoji_strategy=");
             out.push_str(strategy.as_str());
+            out.push('\n');
+        }
+        for (key, value) in self.render.entries() {
+            out.push_str(key);
+            out.push('=');
+            out.push_str(&value);
             out.push('\n');
         }
         Ok(out)

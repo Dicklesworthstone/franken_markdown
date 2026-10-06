@@ -749,6 +749,18 @@ Resolution order for the config path:
 | `margin_right_pt` | non-negative points | `72` |
 | `margin_bottom_pt` | non-negative points | `72` |
 | `margin_left_pt` | non-negative points | `72` |
+| `lang` | language tag such as `en`, `de`, `pt-BR` | unset |
+| `toc`, `toc_depth` | `true`/`false`; heading level `1`..`6` | `false`, `3` |
+| `font_scale` | as `--font-scale` (`lg`, `125%`, `1.2`, ...) | `md` |
+| `html_font_format` | `woff1`, `woff2`, `ttf` | `woff1` |
+| `microtype` | `off`, `protrusion`, `expansion` | `off` |
+| `pdf_page_numbers`, `pdf_optimal_pagination` | `true`/`false` | `false` |
+| `typography_homogeneous`, `typography_antiriver`, `typography_pareto` | `true`/`false` | `false` |
+
+The render-default keys apply to `fmd render`, `watch` and `batch`. A flag
+always wins; for `lang`, `toc` and `toc_depth`, document frontmatter also beats
+the config. Switches set to `true` here cannot be turned off per run except
+with `--no-config`.
 
 Example config file:
 

@@ -367,8 +367,8 @@ struct RenderStyleArgs {
     /// enables optical-margin alignment (punctuation hangs into the margin)
     /// via the precomputed per-box hooks in docs/MICROTYPOGRAPHY.md. Default
     /// `off` keeps output byte-identical to previous versions.
-    #[arg(long, value_enum, default_value_t = MicrotypeArg::Off)]
-    microtype: MicrotypeArg,
+    #[arg(long, value_enum)]
+    microtype: Option<MicrotypeArg>,
     /// Enable gradual adjacent demerits (Verna, DocEng '25) in the
     /// Knuth-Plass breaker for justified paragraphs: replaces the coarse
     /// 4-class fitness check with a penalty proportional to the spacing
@@ -1365,7 +1365,7 @@ fn read_http_head(stream: &mut TcpStream) -> Vec<u8> {
     buf
 }
 
-fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
+fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = global_json || args.json;
     if out_is_stdout(&args)
         && !matches!(
@@ -1419,6 +1419,8 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         Ok(config) => config,
         Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
     };
+    // lang/toc/toc_depth merge below frontmatter, so they wait for it.
+    apply_config_render_defaults(&mut args.style, &config.render, false);
 
     let mut theme = config.to_theme();
     if let Some(font) = args.font {
@@ -1520,9 +1522,19 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     }
     let frontmatter_title = frontmatter.as_ref().and_then(|fm| fm.title.clone());
     let frontmatter_author = frontmatter.as_ref().and_then(|fm| fm.author.clone());
-    let frontmatter_lang = frontmatter.as_ref().and_then(|fm| fm.lang.clone());
-    let frontmatter_toc = frontmatter.as_ref().and_then(|fm| fm.toc);
-    let frontmatter_toc_depth = frontmatter.as_ref().and_then(|fm| fm.toc_depth);
+    // Precedence: flag, then frontmatter, then native config.
+    let frontmatter_lang = frontmatter
+        .as_ref()
+        .and_then(|fm| fm.lang.clone())
+        .or_else(|| config.render.lang.clone());
+    let frontmatter_toc = frontmatter
+        .as_ref()
+        .and_then(|fm| fm.toc)
+        .or(config.render.toc);
+    let frontmatter_toc_depth = frontmatter
+        .as_ref()
+        .and_then(|fm| fm.toc_depth)
+        .or(config.render.toc_depth);
     let doc = parse_markdown(&src);
     let mut image_destinations = Vec::new();
     let lowered_doc = crate::safe_html::lower(&doc);
@@ -1670,7 +1682,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
             toc: args.style.toc || frontmatter_toc.unwrap_or(false),
             toc_depth: args.style.toc_depth.or(frontmatter_toc_depth),
             fit_to_pages: args.style.fit_to_pages,
-            microtype: args.style.microtype.into(),
+            microtype: args.style.microtype.unwrap_or_default().into(),
             gradual_demerits: args.style.typography_homogeneous,
             river_penalty: args.style.typography_antiriver,
             pareto_line_breaking: args.style.typography_pareto,
@@ -2240,7 +2252,7 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
     }
 }
 #[cfg(feature = "batch")]
-fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
+fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     use crate::batch::{self, BatchOptions, BatchPlan, OutputFormat};
 
     let json = global_json || args.json;
@@ -2272,6 +2284,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         Ok(config) => config,
         Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
     };
+    apply_config_render_defaults(&mut args.style, &config.render, true);
     let mut theme = config.to_theme();
     if let Some(font) = args.font {
         theme = theme.with_font(font.into());
@@ -2427,7 +2440,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         toc: style.toc,
         toc_depth: style.toc_depth,
         fit_to_pages: style.fit_to_pages,
-        microtype: style.microtype.into(),
+        microtype: style.microtype.unwrap_or_default().into(),
         gradual_demerits: style.typography_homogeneous,
         river_penalty: style.typography_antiriver,
         pareto_line_breaking: style.typography_pareto,
@@ -3590,6 +3603,44 @@ fn parse_font_scale_arg(
     })
 }
 
+/// Fills render style settings the command line left unset from the native
+/// config. Boolean switches can only be turned on here; `--no-config` gives a
+/// config-free run. `lang`/`toc`/`toc_depth` rank below document
+/// frontmatter, so callers that read frontmatter merge those themselves.
+fn apply_config_render_defaults(
+    style: &mut RenderStyleArgs,
+    defaults: &crate::config::RenderDefaults,
+    include_document_keys: bool,
+) {
+    if include_document_keys {
+        if style.lang.is_none() {
+            style.lang.clone_from(&defaults.lang);
+        }
+        style.toc |= defaults.toc.unwrap_or(false);
+        style.toc_depth = style.toc_depth.or(defaults.toc_depth);
+    }
+    if style.font_scale.is_none() {
+        style.font_scale.clone_from(&defaults.font_scale);
+    }
+    if style.html_font_format.is_none() {
+        style.html_font_format = defaults
+            .html_font_format
+            .as_deref()
+            .and_then(|value| HtmlFontFormatArg::from_str(value, true).ok());
+    }
+    if style.microtype.is_none() {
+        style.microtype = defaults
+            .microtype
+            .as_deref()
+            .and_then(|value| MicrotypeArg::from_str(value, true).ok());
+    }
+    style.pdf_page_numbers |= defaults.pdf_page_numbers.unwrap_or(false);
+    style.typography_homogeneous |= defaults.typography_homogeneous.unwrap_or(false);
+    style.typography_antiriver |= defaults.typography_antiriver.unwrap_or(false);
+    style.typography_pareto |= defaults.typography_pareto.unwrap_or(false);
+    style.pdf_optimal_pagination |= defaults.pdf_optimal_pagination.unwrap_or(false);
+}
+
 /// `--profile` as a typed profile, or the usage error naming valid values.
 fn parse_profile_arg(
     style: &RenderStyleArgs,
@@ -3856,7 +3907,7 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --interactive-html --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --font-scale lg --out README.html\n  fmd README.md --to pdf --font-scale 125% --out README.pdf\n  fmd README.md --to pdf --fit-to-pages 1 --out README.pdf\n  fmd diff v1.md v2.md --out diff.html\n  fmd stats README.md --json\n  fmd README.md --toc --out README.html\n  fmd README.md --to pdf --toc --toc-depth 2 --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-header-right '{title}' --pdf-footer-center '{page} / {pages}' --pdf-footer-rule --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to epub --out README.epub\n  fmd README.md --to svg --out README.svg\n  fmd README.md --to pdf --microtype protrusion --typography-homogeneous --pdf-optimal-pagination --out README.pdf\n  fmd batch docs/ --to both --toc --out-dir out/\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license\n  fmd doctor fonts --corpus ./docs --json\n                             # glyph coverage vs bundled faces + Noto math fallback.\n                             # stdout JSON: scripts/ranges/uncovered/hints.\n                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd diff <F1> <F2> --json  # semantic AST diff and change metrics\n  fmd stats [FILE] --json    # word counts, readability scores, outline, and health checks\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  emoji_strategy=warning|noto_subset|drawn (forward-compat hook; default = warning, render\n    falls back gracefully when a Noto Sans Symbols subset is not bundled; an undeclared key\n    is the v1 default and resolves to 'warning' until a curated Noto Sans Symbols subset\n    ships; set the key explicitly to declare intent).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage/stats/diff.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, keep-with-next headings and widow/orphan control in the page builder (opt-in document-wide optimal pagination via --pdf-optimal-pagination), inline and display math, inline images, footnote notes, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, opt-in running header/footer text slots (--pdf-header-left/center/right, --pdf-footer-left/center/right with {page} {pages} {title} {author} {date}; --pdf-header-rule/--pdf-footer-rule; --pdf-running-skip-first; bands that do not fit their margin fail with exit 70), table of contents generation with dot leaders and bookmark alignment (--toc / [[_TOC_]]), local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. still planned: bottom-of-page footnotes (notes currently follow the body) and multi-column layout.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Use --font-scale <xs|sm|md|lg|xl|2xl|FLOAT|PERCENT> (alias --type-size) for uniform, anti-aliased typographic scaling across HTML and PDF.\n  Use --fit-to-pages <N> (alias --target-pages) to automatically solve micro-typography and fit content to a page budget.\n  Use --interactive-html (alias --self-hosting) to render a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n  0.4.1    4,162,426      4,300,000    1,854,075      1,900,000    table of contents + math + CJK fallbacks\n  current  ~7.6 MB        7,900,000    ~3.3 MB        3,400,000    books, EPUB, interactive workspace, typography knobs (gate prints exact numbers)\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --interactive-html --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --font-scale lg --out README.html\n  fmd README.md --to pdf --font-scale 125% --out README.pdf\n  fmd README.md --to pdf --fit-to-pages 1 --out README.pdf\n  fmd diff v1.md v2.md --out diff.html\n  fmd stats README.md --json\n  fmd README.md --toc --out README.html\n  fmd README.md --to pdf --toc --toc-depth 2 --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-header-right '{title}' --pdf-footer-center '{page} / {pages}' --pdf-footer-rule --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to epub --out README.epub\n  fmd README.md --to svg --out README.svg\n  fmd README.md --to pdf --microtype protrusion --typography-homogeneous --pdf-optimal-pagination --out README.pdf\n  fmd batch docs/ --to both --toc --out-dir out/\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license\n  fmd doctor fonts --corpus ./docs --json\n                             # glyph coverage vs bundled faces + Noto math fallback.\n                             # stdout JSON: scripts/ranges/uncovered/hints.\n                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd diff <F1> <F2> --json  # semantic AST diff and change metrics\n  fmd stats [FILE] --json    # word counts, readability scores, outline, and health checks\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  render defaults (flag > frontmatter > config): lang, toc, toc_depth, font_scale,\n    html_font_format=woff1|woff2|ttf, microtype=off|protrusion|expansion, pdf_page_numbers,\n    pdf_optimal_pagination, typography_homogeneous|antiriver|pareto (true/false)\n  emoji_strategy=warning|noto_subset|drawn (forward-compat hook; default = warning, render\n    falls back gracefully when a Noto Sans Symbols subset is not bundled; an undeclared key\n    is the v1 default and resolves to 'warning' until a curated Noto Sans Symbols subset\n    ships; set the key explicitly to declare intent).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage/stats/diff.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, keep-with-next headings and widow/orphan control in the page builder (opt-in document-wide optimal pagination via --pdf-optimal-pagination), inline and display math, inline images, footnote notes, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, opt-in running header/footer text slots (--pdf-header-left/center/right, --pdf-footer-left/center/right with {page} {pages} {title} {author} {date}; --pdf-header-rule/--pdf-footer-rule; --pdf-running-skip-first; bands that do not fit their margin fail with exit 70), table of contents generation with dot leaders and bookmark alignment (--toc / [[_TOC_]]), local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. still planned: bottom-of-page footnotes (notes currently follow the body) and multi-column layout.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Use --font-scale <xs|sm|md|lg|xl|2xl|FLOAT|PERCENT> (alias --type-size) for uniform, anti-aliased typographic scaling across HTML and PDF.\n  Use --fit-to-pages <N> (alias --target-pages) to automatically solve micro-typography and fit content to a page budget.\n  Use --interactive-html (alias --self-hosting) to render a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n  0.4.1    4,162,426      4,300,000    1,854,075      1,900,000    table of contents + math + CJK fallbacks\n  current  ~7.6 MB        7,900,000    ~3.3 MB        3,400,000    books, EPUB, interactive workspace, typography knobs (gate prints exact numbers)\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
     )
 }
 

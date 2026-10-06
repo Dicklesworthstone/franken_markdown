@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native config keys for render defaults: `lang`, `toc`, `toc_depth`,
+  `font_scale`, `html_font_format`, `microtype`, `pdf_page_numbers`,
+  `pdf_optimal_pagination` and the three `typography_*` switches. Flags win,
+  then frontmatter (`lang`/`toc`/`toc_depth`), then config; `config show
+  --json` reports them under `render`. `FmdConfig` gains a public `render`
+  field.
 - `fmd batch --to epub` and `--to svg` write one EPUB or SVG per input file
   (local images embedded, render style flags honored); `--to
   interactive-html` is refused with a pointer to `fmd render`.

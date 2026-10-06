@@ -3132,3 +3132,58 @@ fn fmd_watch_accepts_the_same_render_style_flags_as_render() {
         assert!(help.contains(flag), "fmd watch --help lacks {flag}");
     }
 }
+
+/// Native config render defaults apply to renders, rank below frontmatter
+/// and flags, round-trip through `config set`, and reject bad values.
+#[test]
+fn config_render_defaults_apply_below_frontmatter_and_flags() {
+    let config = temp_file("render-defaults", "conf");
+    let config_s = config.display().to_string();
+    let env = [("FMD_CONFIG", config_s.as_str())];
+    for (key, value) in [
+        ("lang", "de"),
+        ("toc", "true"),
+        ("html_font_format", "ttf"),
+        ("microtype", "expansion"),
+    ] {
+        let out = fmd_with_env(&["config", "set", key, value], &env);
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    }
+    let saved = fs::read_to_string(&config).unwrap();
+    assert!(saved.contains("lang=de\ntoc=true\n"), "{saved}");
+    assert!(saved.contains("microtype=expansion\n"), "{saved}");
+
+    let bad = fmd_with_env(&["config", "set", "microtype", "sideways"], &env);
+    assert_eq!(bad.status.code(), Some(64), "{}", text(&bad.stderr));
+    assert!(text(&bad.stderr).contains("protrusion"));
+
+    let shown = fmd_with_env(&["config", "show", "--json"], &env);
+    let shown = text(&shown.stdout);
+    assert!(
+        shown.contains("\"render\":{\"lang\":\"de\",\"toc\":true,"),
+        "{shown}"
+    );
+
+    let doc = "# One\n\n## Two\n\nBody text.\n";
+    let html = fmd_with_env(&["--text", doc], &env);
+    let html = text(&html.stdout);
+    assert!(html.contains("lang=\"de\""), "config lang applies");
+    assert!(html.contains("<nav class=\"toc\">"), "config toc applies");
+    assert!(html.contains("font/ttf"), "config html_font_format applies");
+
+    let fm = "--text=---\nlang: fr\ntoc: false\n---\n# One\n\n## Two\n";
+    let html = text(&fmd_with_env(&[fm], &env).stdout);
+    assert!(html.contains("lang=\"fr\""), "frontmatter beats config");
+    assert!(
+        !html.contains("<nav class=\"toc\">"),
+        "frontmatter toc: false wins"
+    );
+
+    let html = text(&fmd_with_env(&[fm, "--lang", "es"], &env).stdout);
+    assert!(html.contains("lang=\"es\""), "flag beats frontmatter");
+
+    let html = text(&fmd_with_env(&["--no-config", "--text", doc], &[]).stdout);
+    assert!(!html.contains("lang=\"de\"") && !html.contains("<nav class=\"toc\">"));
+
+    let _ = fs::remove_file(config);
+}

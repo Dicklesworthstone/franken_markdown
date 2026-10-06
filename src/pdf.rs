@@ -164,6 +164,11 @@ const F_SYMBOL: u8 = 6;
 /// The optional CJK fallback face (Han/Kana/Hangul routing). Layout routes CJK
 /// characters here when the style slot lacks the glyph and the CJK face is loaded.
 const F_CJK: u8 = 7;
+/// An inline `$…$` formula typeset by fmd-math (fm-djcw), not a font: the
+/// token's text is its TeX source, it measures as the formula's advance, and
+/// the writer fills its outlines instead of showing text. Never in [`SLOTS`],
+/// so no font resource or subset is ever made for it.
+const F_MATH: u8 = 8;
 const SLOTS: [u8; 7] = [
     F_BODY,
     F_BOLD,
@@ -1891,10 +1896,19 @@ impl Faces {
     }
 
     fn shaped_width(&self, slot: u8, text: &str, size: FontSize) -> LayoutUnit {
+        if slot == F_MATH {
+            return lu_from_points_f32(inline_math_advance(
+                text,
+                size.milli_points() as f32 / 1000.0,
+            ));
+        }
         self.face(slot).shaped_width(text, size)
     }
 
     fn shaped_width_points(&self, slot: u8, text: &str, size: f32) -> f32 {
+        if slot == F_MATH {
+            return inline_math_advance(text, size);
+        }
         self.face(slot).shaped_width_points(text, size)
     }
 }
@@ -2240,8 +2254,16 @@ pub enum RenderWarning {
     /// A CSS `font-weight` pin was set for a slot whose face has no `wght`
     /// axis. The static outlines were used unchanged.
     FontWeightIgnoredStatic { slot: String, weight: u16 },
-    /// An unsupported or excessive display equation retained its visible TeX.
+    /// An unsupported or excessive equation, display or inline `$…$`,
+    /// retained its visible TeX.
     MathFallback { source: String, reason: String },
+    /// An inline formula is wider than the text measure at body size. It
+    /// never splits, so it overflows its line. Widths are whole points.
+    MathOverflow {
+        source: String,
+        width_pt: u32,
+        measure_pt: u32,
+    },
 }
 
 impl RenderWarning {
@@ -2254,6 +2276,7 @@ impl RenderWarning {
             Self::MissingGlyphs { .. } => "missing_glyphs",
             Self::FontWeightIgnoredStatic { .. } => "font_weight_ignored_static",
             Self::MathFallback { .. } => "math_fallback",
+            Self::MathOverflow { .. } => "math_overflow",
         }
     }
 
@@ -2278,7 +2301,15 @@ impl RenderWarning {
                  (pin a variable font, or drop --pdf-font-weight)"
             ),
             Self::MathFallback { source, reason } => format!(
-                "display equation {source:?} could not be typeset: {reason}; rendered as TeX source"
+                "equation {source:?} could not be typeset: {reason}; rendered as TeX source"
+            ),
+            Self::MathOverflow {
+                source,
+                width_pt,
+                measure_pt,
+            } => format!(
+                "inline formula {source:?} is {width_pt} pt wide, more than the {measure_pt} pt \
+                 text measure; it overflows its line (set it as a display equation)"
             ),
         }
     }
@@ -2292,6 +2323,12 @@ impl RenderWarning {
 pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> {
     let mut warnings = Vec::new();
     let supported_math = math::collect_warnings(&doc.blocks, &mut warnings);
+    math::collect_inline_warnings(
+        &doc.blocks,
+        opts.type_scale().body,
+        PageGeom::from_theme(&opts.theme).content_w,
+        &mut warnings,
+    );
     let mut image_text = Vec::new();
 
     let mut dests = Vec::new();
@@ -2532,9 +2569,10 @@ fn collect_text_inlines(
 
 fn collect_token_text(mut toks: Vec<Tok>, out: &mut Vec<(u8, String)>, faces: &Faces) {
     apply_symbol_fallback(&mut toks, faces);
+    // An inline formula's glyphs are fmd-math's own outlines, not font text.
     out.extend(
         toks.into_iter()
-            .filter(|tok| !tok.space)
+            .filter(|tok| !tok.space && tok.slot != F_MATH)
             .map(|tok| (tok.slot, tok.text)),
     );
 }
@@ -3378,6 +3416,34 @@ mod pdf_footnote_layout_tests {
         assert!(text.contains("[^1]"), "{text:?}");
     }
 
+    /// fm-djcw: a typeset inline formula is one unbreakable token carrying its
+    /// source, however many spaces it holds; an unsupported one keeps the
+    /// monospace word tokens of its visible TeX.
+    #[test]
+    fn tokenize_makes_one_unbreakable_token_per_inline_formula() {
+        let tokens = |source: &str| {
+            let mut toks = Vec::new();
+            tokenize(
+                &[Inline::Math(source.into())],
+                false,
+                false,
+                false,
+                None,
+                &mut LinkIntern::default(),
+                &mut toks,
+            );
+            toks
+        };
+        let typeset = tokens(r"a + b + \frac{c}{d}");
+        assert_eq!(typeset.len(), 1);
+        assert_eq!(typeset[0].slot, super::F_MATH);
+        assert_eq!(typeset[0].text, r"a + b + \frac{c}{d}");
+        assert!(!typeset[0].space);
+        let fallback = tokens(r"\fmnNotACommand{x} y");
+        assert!(fallback.len() > 1, "the visible TeX keeps its word breaks");
+        assert!(fallback.iter().all(|tok| tok.slot == super::F_MONO));
+    }
+
     #[test]
     fn audit_anchors_walks_table_cells() {
         let doc = crate::parse_markdown("# T\n\n| a |\n| --- |\n| [bad](#nope) |\n");
@@ -3639,6 +3705,8 @@ enum TableLayoutInlineKey {
     Strong(Vec<TableLayoutInlineKey>),
     Strikethrough(Vec<TableLayoutInlineKey>),
     Code(String),
+    /// An inline formula: laid out as outlines, unlike code with the same text.
+    Math(String),
     Link {
         dest: String,
         title: Option<String>,
@@ -3749,7 +3817,7 @@ fn table_layout_inline_key(
         }
         Inline::Math(code) | Inline::DisplayMath(code) => {
             add_table_layout_key_bytes(inline_bytes, code.len())?;
-            Some(TableLayoutInlineKey::Code(code.clone()))
+            Some(TableLayoutInlineKey::Math(code.clone()))
         }
     }
 }
@@ -17766,11 +17834,55 @@ fn tokenize(
                 strike,
             }),
             Inline::Html(h) => push_text_tokens(h, slot_of(bold, italic, false), strike, link, out),
-            Inline::Math(t) | Inline::DisplayMath(t) => {
-                push_text_tokens(t, F_MONO, strike, link, out)
-            }
+            Inline::Math(t) | Inline::DisplayMath(t) => push_math_token(t, strike, link, out),
         }
     }
+}
+
+/// An inline formula fmd-math typesets becomes one unbreakable [`F_MATH`]
+/// token carrying its source (fm-djcw); anything it cannot typeset keeps its
+/// visible TeX in the monospace face, and `render_warnings` names it.
+fn push_math_token(source: &str, strike: bool, link: Option<u32>, out: &mut Vec<Tok>) {
+    if math::inline_formula(source).is_ok() {
+        out.push(Tok {
+            text: source.to_owned(),
+            slot: F_MATH,
+            space: false,
+            hard_break: false,
+            link,
+            strike,
+        });
+    } else {
+        push_text_tokens(source, F_MONO, strike, link, out);
+    }
+}
+
+/// The advance of an inline formula at `size` points. Only formulas that
+/// typeset become [`F_MATH`] tokens, so a miss measures as nothing.
+fn inline_math_advance(source: &str, size: f32) -> f32 {
+    math::inline_formula(source).map_or(0.0, |formula| formula.advance * size)
+}
+
+/// Ink a text line already leaves room for, in ems of its size: above the
+/// baseline within the 1.32 leading, and below it before the next line.
+const INLINE_MATH_ASCENT_ROOM: f32 = 1.0;
+const INLINE_MATH_DESCENT_ROOM: f32 = 0.3;
+
+/// Extra room `line`'s inline formulas need beyond a text line's leading:
+/// `(above, below)` in points, zero for a line without math. A tall formula
+/// grows its line the way TeX's box heights and depths do.
+fn inline_math_extents(line: &Line) -> (f32, f32) {
+    let mut above = 0.0f32;
+    let mut below = 0.0f32;
+    for seg in &line.segs {
+        if seg.slot == F_MATH
+            && let Ok(formula) = math::inline_formula(&seg.text)
+        {
+            above = above.max((formula.ascent - INLINE_MATH_ASCENT_ROOM) * line.size);
+            below = below.max((formula.descent - INLINE_MATH_DESCENT_ROOM) * line.size);
+        }
+    }
+    (above, below)
 }
 
 /// Split `text` into word + single-space tokens (preserving spaces) with `slot`.
@@ -17901,6 +18013,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
                 && !last.space
                 && !last.hard_break
                 && tok.slot == last.slot
+                && tok.slot != F_MATH
                 && tok.link == last.link
                 && tok.strike == last.strike
             {
@@ -17916,8 +18029,9 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
         let tok = &toks[i];
         // Space tokens and pure-ASCII words never split: the curated fallback
         // face carries no ASCII repertoire, so `fallback_slot` is the identity
-        // for them. This keeps the common path allocation-free.
-        if tok.space || tok.text.is_ascii() {
+        // for them. This keeps the common path allocation-free. An inline
+        // formula draws its own glyphs; its source is never re-slotted.
+        if tok.space || tok.slot == F_MATH || tok.text.is_ascii() {
             i += 1;
             continue;
         }
@@ -18024,7 +18138,10 @@ fn measure_word(runs: &[Tok], fs: FontSize, faces: &Faces) -> LayoutUnit {
         let text = token_visible_text(tok);
         match &mut current {
             Some(run)
-                if run.slot == tok.slot && run.link == tok.link && run.strike == tok.strike =>
+                if run.slot == tok.slot
+                    && run.slot != F_MATH
+                    && run.link == tok.link
+                    && run.strike == tok.strike =>
             {
                 run.text.push_str(text);
             }
@@ -18063,7 +18180,10 @@ fn measure_word_cached(
         let text = token_visible_text(tok);
         match &mut current {
             Some(run)
-                if run.slot == tok.slot && run.link == tok.link && run.strike == tok.strike =>
+                if run.slot == tok.slot
+                    && run.slot != F_MATH
+                    && run.link == tok.link
+                    && run.strike == tok.strike =>
             {
                 run.text.push_str(text);
             }
@@ -18391,6 +18511,19 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         return;
     }
 
+    // A word holding an inline formula never breaks inside: the formula is
+    // one box, and TeX does not hyphenate against math either.
+    if word.iter().any(|tok| tok.slot == F_MATH) {
+        push_pdf_word_box(
+            built,
+            word,
+            cx.fs,
+            cx.faces,
+            cx.width_cache,
+            cx.policy.microtype,
+        );
+        return;
+    }
     let stats = pdf_word_stats(word);
     let needs_dictionary = cx.policy.hyphenate && !stats.cjk && stats.hyphenable;
     let needs_synthetic_breaks = stats.char_len >= FORCED_BREAK_MIN_WORD;
@@ -19438,6 +19571,10 @@ fn left_protrusion_hang(toks: &[LineTok], size: f32) -> f32 {
 /// quotes, brackets and dashes sit partly in the margin. The segment builder
 /// is the single place that applies it.
 fn left_hang_for_tok(tok: &Tok, size: f32) -> f32 {
+    // A formula's text is its TeX source, not what is drawn.
+    if tok.slot == F_MATH {
+        return 0.0;
+    }
     let Some(ch) = token_visible_text(tok).chars().next() else {
         return 0.0;
     };
@@ -19769,7 +19906,10 @@ fn build_segs_adjusted(
     // max_expansion_per_mille as an unclamped u16, and the permille factor is
     // stored in an i16 — an unsane budget would wrap here.
     let expansion_permille_budget = expansion_permille_budget.min(100);
-    let use_expansion = expansion_permille_budget > 0;
+    // `Tz` scales text, not filled outlines: a line holding an inline formula
+    // takes its justification as spacing instead of glyph expansion.
+    let use_expansion =
+        expansion_permille_budget > 0 && !toks.iter().any(|line_tok| line_tok.tok.slot == F_MATH);
     let mut word_extra_milli: f64 = 0.0;
     let mut box_width_milli: f64 = 0.0;
     // Preserve the final shaped advance and interword adjustment separately.
@@ -19793,7 +19933,9 @@ fn build_segs_adjusted(
         let mut text_len = 0usize;
         while let Some(line_tok) = toks.get(end) {
             let tok = &line_tok.tok;
-            if end > i && (tok.slot != slot || tok.link != link || tok.strike != strike) {
+            if end > i
+                && (tok.slot != slot || tok.link != link || tok.strike != strike || slot == F_MATH)
+            {
                 break;
             }
             text_len = text_len.saturating_add(token_visible_text(tok).len());
@@ -19803,6 +19945,32 @@ fn build_segs_adjusted(
             }
         }
         let seg_x = x;
+        if slot == F_MATH {
+            // One formula: its advance plus any justification share, as
+            // spacing (expansion is off on this line).
+            let line_tok = &toks[i];
+            let text = line_tok.tok.text.clone();
+            let width = inline_math_advance(&text, size) + line_tok.extra_advance;
+            x += width.max(0.0);
+            segs.push(Seg {
+                x: seg_x,
+                slot,
+                text_hash: seg_text_hash(&text),
+                text,
+                link: resolve_seg_link(links, link),
+                fill: if link.is_some() {
+                    Fill::Link
+                } else {
+                    Fill::Black
+                },
+                strike,
+                task: None,
+                width: width.max(0.0),
+                expansion_permille: 0,
+            });
+            i = end;
+            continue;
+        }
         let mut text = String::with_capacity(text_len);
         let mut shaper = SegRunShaper::new(faces.face(slot), fs);
         // Width is the running max over the run of (natural prefix width +
@@ -19939,6 +20107,10 @@ fn single_adjusted_seg_text_len(
     link: Option<u32>,
     strike: bool,
 ) -> Option<usize> {
+    // Each inline formula is its own segment: two never merge into one text.
+    if slot == F_MATH && toks.len() != 1 {
+        return None;
+    }
     let mut len = 0usize;
     for line_tok in toks {
         let tok = &line_tok.tok;
@@ -21955,7 +22127,9 @@ fn generate_page_content(
                 first_visible_segment_index(line)
             };
             let marked = line.image.is_some() || first_visible_seg.is_some();
-            let owner = next_mcid;
+            let mut owner = next_mcid;
+            // A text line's own leaf path, which an inline formula splits.
+            let mut text_path: Option<(&'static str, SmallPath)> = None;
             if marked {
                 let leaf = leaf_elem(line);
                 append_marked_content_begin(&mut body, leaf.tag, next_mcid);
@@ -21971,6 +22145,9 @@ fn generate_page_content(
                     });
                 }
                 path.push(leaf);
+                if line.image.is_none() {
+                    text_path = Some((leaf.tag, SmallPath::from_slice(path.as_slice())));
+                }
                 let (alt, bbox) = if let Some(image) = &line.image {
                     let x0 = line.rule_x;
                     let y1 = y + image.height_pt;
@@ -22038,8 +22215,66 @@ fn generate_page_content(
                     );
                 }
             }
+            // Whether the line's own marked content is open (an inline formula
+            // closes it and takes its own /Formula element; text reopens it).
+            let mut text_open = marked;
             if let Some(seg_start) = first_visible_seg {
                 for seg in &line.segs[seg_start..] {
+                    if let (F_MATH, Some((_, path))) = (seg.slot, text_path.as_ref()) {
+                        if text_open {
+                            body.push_str("EMC\n");
+                            text_open = false;
+                        }
+                        let mut formula_path = SmallPath::from_slice(path.as_slice());
+                        formula_path.push(SElem {
+                            key: SKey::InlineFormula(next_mcid),
+                            tag: "Formula",
+                        });
+                        append_marked_content_begin(&mut body, "Formula", next_mcid);
+                        draw_seg(
+                            &mut body,
+                            &mut annots,
+                            &mut current_fill,
+                            next_mcid,
+                            seg,
+                            line.size,
+                            y,
+                            subsets,
+                            subset_lookup,
+                            faces,
+                            shaped_cache,
+                            palette,
+                        );
+                        body.push_str("EMC\n");
+                        let bbox = math::inline_formula(&seg.text).ok().map(|formula| {
+                            [
+                                seg.x,
+                                y - formula.descent * line.size,
+                                seg.x + seg.width,
+                                y + formula.ascent * line.size,
+                            ]
+                        });
+                        marks.push(StructMark {
+                            mcid: next_mcid,
+                            path: formula_path,
+                            alt: Some(seg.text.clone()),
+                            bbox,
+                        });
+                        next_mcid += 1;
+                        continue;
+                    }
+                    if !text_open && let Some((tag, path)) = text_path.as_ref() {
+                        append_marked_content_begin(&mut body, tag, next_mcid);
+                        marks.push(StructMark {
+                            mcid: next_mcid,
+                            path: SmallPath::from_slice(path.as_slice()),
+                            alt: None,
+                            bbox: None,
+                        });
+                        owner = next_mcid;
+                        next_mcid += 1;
+                        text_open = true;
+                    }
                     draw_seg(
                         &mut body,
                         &mut annots,
@@ -22056,7 +22291,7 @@ fn generate_page_content(
                     );
                 }
             }
-            if marked {
+            if text_open {
                 body.push_str("EMC\n");
             }
         }
@@ -22116,6 +22351,8 @@ enum SKey {
     TableCell(u32, u32, u32),
     Figure(u32),
     Link(u32),
+    /// An inline formula inside a text line, keyed by its own MCID.
+    InlineFormula(usize),
 }
 
 /// One element on a mark's container path: its sharing key plus the `/S`
@@ -22726,7 +22963,10 @@ fn collect_font_slot_text_refs(lines: &[Line]) -> [FontSlotTextRefs<'_>; SLOTS.l
             if seg.text.is_empty() {
                 continue;
             }
-            if let Some(slot_idx) = pdf_font_slot_index(seg.slot) {
+            if seg.slot == F_MATH {
+                // An inline formula is outlines plus an invisible body anchor.
+                refs[0].texts.push(math::TEXT_ANCHOR);
+            } else if let Some(slot_idx) = pdf_font_slot_index(seg.slot) {
                 refs[slot_idx].texts.push(seg.text.as_str());
             }
         }
@@ -27463,6 +27703,22 @@ fn draw_seg(
     if seg.text.is_empty() {
         return;
     }
+    if seg.slot == F_MATH {
+        draw_inline_math_seg(
+            body,
+            annots,
+            current_fill,
+            owner_mcid,
+            seg,
+            size,
+            y,
+            subsets,
+            subset_lookup,
+            faces,
+            palette,
+        );
+        return;
+    }
     let Some(slot_idx) = pdf_font_slot_index(seg.slot) else {
         return;
     };
@@ -27528,6 +27784,77 @@ fn draw_seg(
     if run.requires_actual_text {
         body.push_str("EMC\n");
     }
+    draw_seg_decorations(
+        body,
+        annots,
+        current_fill,
+        owner_mcid,
+        seg,
+        size,
+        y,
+        palette,
+    );
+}
+
+/// An inline formula's segment (fm-djcw): its outlines filled in the run's
+/// colour at the baseline, an invisible body glyph carrying its source as
+/// `/ActualText` for extraction, then the run's strike and link decorations.
+#[allow(clippy::too_many_arguments)]
+fn draw_inline_math_seg(
+    body: &mut String,
+    annots: &mut Vec<LinkAnnotation>,
+    current_fill: &mut Fill,
+    owner_mcid: usize,
+    seg: &Seg,
+    size: f32,
+    y: f32,
+    subsets: &[EmbeddedFace<'_>],
+    subset_lookup: &EmbeddedFaceLookup,
+    faces: &Faces,
+    palette: &Palette,
+) {
+    let Ok(formula) = math::inline_formula(&seg.text) else {
+        return;
+    };
+    if seg.fill != *current_fill {
+        append_rgb_fill_operator(body, fill_rgb(seg.fill, palette));
+        *current_fill = seg.fill;
+    }
+    math::append_inline_formula(body, &formula, seg.x, y, size);
+    math::append_inline_anchor(
+        body,
+        &seg.text,
+        seg.x,
+        y,
+        size,
+        subsets,
+        subset_lookup,
+        faces,
+    );
+    draw_seg_decorations(
+        body,
+        annots,
+        current_fill,
+        owner_mcid,
+        seg,
+        size,
+        y,
+        palette,
+    );
+}
+
+/// A run's strikethrough and link underline plus its link annotation.
+#[allow(clippy::too_many_arguments)]
+fn draw_seg_decorations(
+    body: &mut String,
+    annots: &mut Vec<LinkAnnotation>,
+    current_fill: &mut Fill,
+    owner_mcid: usize,
+    seg: &Seg,
+    size: f32,
+    y: f32,
+    palette: &Palette,
+) {
     // Strikethrough: a thin stroke through the run's middle, in the text's own
     // color (stroke `RG`, leaving the text fill `rg` untouched).
     if seg.strike && seg.width > 0.0 {
@@ -28923,7 +29250,8 @@ mod void_budget_tests {
 }
 
 fn line_leading(line: &Line) -> f32 {
-    line.size * 1.32
+    let (above, below) = inline_math_extents(line);
+    line.size * 1.32 + above + below
 }
 
 /// Text on an image row is the list marker, aligned to the first normal text
@@ -28950,14 +29278,22 @@ fn place_lines_shrunk<'a>(
     let mut placed = Vec::with_capacity(repeated.len() + end.saturating_sub(start));
     let mut y = page.top_y();
     let mut idx = start;
+    // A line's baseline sits above its inline formulas' extra depth, which
+    // `line_leading` already reserved.
     for line in repeated.into_iter() {
         y -= line_leading(line);
-        placed.push(Placed { line, y });
+        placed.push(Placed {
+            line,
+            y: y + inline_math_extents(line).1,
+        });
         y -= line.gap_after;
     }
     for line in &lines[start..end] {
         y -= line_leading(line);
-        placed.push(Placed { line, y });
+        placed.push(Placed {
+            line,
+            y: y + inline_math_extents(line).1,
+        });
         let gap = match shrink_from {
             Some(from) if idx >= from && is_block_boundary(lines, idx) => {
                 flexed_gap(line.gap_after)
@@ -31895,7 +32231,7 @@ fn char_width(ch: char, size: f32, font: u8, faces: &Faces) -> f32 {
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod pdf_writer_tests {
     use super::{
-        EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MONO, FNV_OFFSET, FORCED_BREAK_CHUNK,
+        EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MATH, F_MONO, FNV_OFFSET, FORCED_BREAK_CHUNK,
         FORCED_BREAK_PENALTY, FaceMetrics, Faces, Fill, FlowKind, FlowMark, FlowSpec, Font,
         HeadingIdState, INLINE_PATH_CAP, ImageLine, LayoutCx, Ligatures, Line, LineTok, LinkIntern,
         LinkTarget, ListMark, PageContentCapacityEstimate, PageGeom, Palette, ParagraphItem,
@@ -31940,7 +32276,7 @@ mod pdf_writer_tests {
         hyphenator_for_word_with_doc_lang, is_breakable_whitespace, kerned_tj,
         kerned_tj_with_spacing, layout_inlines, layout_inlines_greedy,
         layout_simple_text_paragraph, layout_table, layout_table_uncached, left_protrusion_hang,
-        line_has_visible_content, measure_word, normalize_svg_text_node, parse_svg_attrs,
+        line_has_visible_content, math, measure_word, normalize_svg_text_node, parse_svg_attrs,
         parse_svg_background_color_token, parse_svg_baseline_shift,
         parse_svg_css_color_mix_over_background, parse_svg_css_rules, parse_svg_css_selector,
         parse_svg_filter_shadow, parse_svg_filter_shadow_body, parse_svg_length_adjust,
@@ -34881,7 +35217,18 @@ mod pdf_writer_tests {
                     push_text_tokens_reference(h, slot_of(bold, italic, false), strike, link, out)
                 }
                 Inline::Math(t) | Inline::DisplayMath(t) => {
-                    push_text_tokens_reference(t, F_MONO, strike, link, out)
+                    if math::inline_formula(t).is_ok() {
+                        out.push(RefTok {
+                            text: t.clone(),
+                            slot: F_MATH,
+                            space: false,
+                            hard_break: false,
+                            link: link.cloned(),
+                            strike,
+                        });
+                    } else {
+                        push_text_tokens_reference(t, F_MONO, strike, link, out);
+                    }
                 }
             }
         }

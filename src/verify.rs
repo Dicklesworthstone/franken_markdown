@@ -81,7 +81,9 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
             RenderWarning::FontWeightIgnoredStatic { slot, weight } => {
                 format!("{slot} font-weight {weight} ignored on a static face")
             }
-            RenderWarning::MathFallback { .. } => warning.message(),
+            RenderWarning::MathFallback { .. } | RenderWarning::MathOverflow { .. } => {
+                warning.message()
+            }
         };
         findings.push(VerifyFinding {
             code: warning.code(),

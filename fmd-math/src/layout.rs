@@ -1354,15 +1354,20 @@ impl Engine {
             psi += excess / 2.0;
         }
         // Vertical frame: radicand baseline at 0; rule sits ψ above the
-        // radicand's top; the sign's top aligns with the rule's top.
+        // radicand's top; the sign's top aligns with the rule's top. The
+        // box's depth is the deeper of the radicand and the sign, as TeX's
+        // hpack of the shifted sign and the overbar (§737) has it.
         let rule_y = x.height + psi;
         let sign_dy = rule_y + theta - sign.height;
         let mut pen = 0.0_f64;
         let mut children = Vec::new();
         let mut total_height = rule_y + theta;
-        // Degree: raised 60% of the sign's extent, kerned 5mu in and
-        // −10.5mu back (plain TeX's \root placement).
-        // The degree is its own formula (\setbox\rootbox\hbox{$...$}).
+        let mut total_depth = x.depth.max(sign.depth - sign_dy);
+        // Degree: plain TeX's \r@@t, `\mkern5mu\raise.6\dimen@\copy\rootbox
+        // \mkern-10mu\box0` with \dimen@ the radical box's height minus its
+        // depth. The degree is its own formula (\setbox\rootbox\hbox{$...$}).
+        // A degree narrower than 5mu starts the sign left of the origin, as
+        // in TeX.
         if let Some(ix) = index {
             let ix_box = self.formula_box(
                 ix,
@@ -1374,19 +1379,17 @@ impl Engine {
                     ..ctx
                 },
             )?;
-            // Plain TeX raises the degree by 60% of the radical construct's
-            // total extent, measured from the baseline.
-            let raise = 0.6 * (rule_y + theta + x.depth);
+            let raise = 0.6 * (total_height - total_depth);
             pen += 5.0 / 18.0 * size;
             total_height = total_height.max(raise + ix_box.height);
+            total_depth = total_depth.max(ix_box.depth - raise);
             let ix_width = ix_box.width;
             children.push(Positioned {
                 dx: pen,
                 dy: raise,
                 node: MNode::Box(ix_box),
             });
-            pen += ix_width - 10.5 / 18.0 * size;
-            pen = pen.max(0.0);
+            pen += ix_width - 10.0 / 18.0 * size;
         }
         let sign_width = sign.width;
         children.push(Positioned {
@@ -1405,7 +1408,6 @@ impl Engine {
             },
         });
         let x_width = x.width;
-        let x_depth = x.depth;
         children.push(Positioned {
             dx: pen,
             dy: 0.0,
@@ -1416,7 +1418,7 @@ impl Engine {
                 kind: BoxKind::Horizontal,
                 width: pen + x_width,
                 height: total_height,
-                depth: x_depth,
+                depth: total_depth,
                 children,
             },
             italic: 0.0,

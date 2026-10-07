@@ -451,6 +451,57 @@ function sourceUpdateReport(json, before, submittedCount, raw) {
   });
 }
 
+// Whole-collection replacement has a distinct wire contract: the chapter count
+// and include membership may change. Never infer rollback from a bad receipt
+// after the native transaction has returned success.
+function sourceSetOptions(options, fallback) {
+  const invalid = () => updateError("INVALID_OPTIONS",
+    "Source-set options must contain only includeSources and an integer expectedRevision in 0..=4294967295.");
+  if (!options || typeof options !== "object" || Array.isArray(options)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(options))) throw invalid();
+  let expected = fallback, resources = [];
+  for (const key of Reflect.ownKeys(options)) {
+    const field = Object.getOwnPropertyDescriptor(options, key);
+    if (!["includeSources", "expectedRevision"].includes(key)
+        || !field || !Object.hasOwn(field, "value")) throw invalid();
+    if (field.value !== undefined) {
+      if (key === "expectedRevision") expected = field.value;
+      else resources = field.value;
+    }
+  }
+  if (!isRevision(expected)) throw invalid();
+  return { expected, resources };
+}
+
+function sourceSetReport(json, before, submitted, raw) {
+  const invalid = () => updateError("INVALID_BOOK_SOURCE_SET_REPORT",
+    "The source-set result is invalid or mismatched; the book session was disposed. Recreate it from your source capture.");
+  let report;
+  try {
+    bookTextBytes(json, 4096);
+    report = JSON.parse(json);
+  } catch { throw invalid(); }
+  if (!report || report.schema !== "fmd-book-source-set-v1"
+      || typeof report.changed !== "boolean" || !isRevision(report.revision)
+      || report.revision !== before.revision + (report.changed ? 1 : 0)
+      || report.revision !== raw.sourceRevision
+      || report.chapter_count !== submitted.chapters || report.chapter_count !== raw.chapterCount
+      || report.resource_count !== submitted.resources
+      || report.source_length !== submitted.bytes || report.source_length !== raw.sourceLength
+      || report.reparsed_chapter_count !== (report.changed ? submitted.chapters : 0)
+      || (!report.changed && (submitted.chapters !== before.chapters || submitted.bytes !== before.bytes))) {
+    throw invalid();
+  }
+  return Object.freeze({
+    revision: report.revision,
+    sourceLength: report.source_length,
+    chapterCount: report.chapter_count,
+    resourceCount: report.resource_count,
+    changed: report.changed,
+    reparsedChapterCount: report.reparsed_chapter_count,
+  });
+}
+
 export function createBookBindings(loadBookClass) {
   class BookSession {
     #raw;
@@ -504,6 +555,50 @@ export function createBookBindings(loadBookClass) {
           if (error?.code === "INVALID_BOOK_UPDATE_REPORT") throw error;
           throw updateError("INVALID_BOOK_UPDATE_REPORT",
             "Cannot verify the source update; the book session was disposed. Recreate it from your source capture.");
+        }
+      } finally {
+        this.#updating = false;
+      }
+    }
+    replaceSources(files, options = {}) {
+      this.#live();
+      if (this.#updating) throw updateError("BOOK_BUSY", "A book source update is already being admitted.");
+      // Share admission with selective updates before any caller code can run.
+      this.#updating = true;
+      try {
+        const raw = this.#live();
+        if (typeof raw.replaceSources !== "function") {
+          throw updateError("UNSUPPORTED_BOOK_SOURCE_SET",
+            "this WASM build lacks FmdBook.replaceSources; rebuild the matching package for collection editing");
+        }
+        const before = { revision: currentSourceRevision(raw), chapters: raw.chapterCount, bytes: raw.sourceLength };
+        const { expected, resources: selected } = sourceSetOptions(options, before.revision);
+        const stale = () => updateError("STALE_BOOK_REVISION", "Book source changed; refresh the capture before replacing this collection.");
+        if (expected !== before.revision) throw stale();
+        const chapters = normalizeFiles(files);
+        const resources = normalizeFiles(selected, 0,
+          MAX_CHAPTERS - chapters.paths.length, MAX_SOURCE_BYTES - chapters.total);
+        const pathBytes = [...chapters.paths, ...resources.paths]
+          .reduce((total, path) => total + bookTextBytes(path), 0);
+        const submitted = { chapters: chapters.paths.length, resources: resources.paths.length,
+          bytes: chapters.total + resources.total - pathBytes };
+        const live = this.#live();
+        if (currentSourceRevision(live) !== expected) throw stale();
+        let json;
+        try {
+          json = live.replaceSources(chapters.paths, chapters.sources,
+            resources.paths, resources.sources, expected);
+        } catch (error) {
+          if (typeof error === "string") throw new Error(error.slice(0, 2048));
+          throw error;
+        }
+        try {
+          return sourceSetReport(json, before, submitted, this.#live());
+        } catch (error) {
+          try { this.dispose(); } catch { /* Keep the raw handle retired. */ }
+          if (error?.code === "INVALID_BOOK_SOURCE_SET_REPORT") throw error;
+          throw updateError("INVALID_BOOK_SOURCE_SET_REPORT",
+            "Cannot verify the source-set replacement; the book session was disposed. Recreate it from your source capture.");
         }
       } finally {
         this.#updating = false;

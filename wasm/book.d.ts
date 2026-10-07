@@ -135,6 +135,24 @@ export interface BookSourceUpdateOptions {
   expectedRevision?: number;
 }
 
+/** Receipt for replacing the complete ordered chapter/include source set. */
+export interface BookSourceSetUpdate {
+  readonly revision: number;
+  readonly sourceLength: number;
+  readonly chapterCount: number;
+  readonly resourceCount: number;
+  readonly changed: boolean;
+  /** Changed sets rebuild every chapter against the new map; exact no-ops
+   * retain the AST and report zero. Use updateSources for selective parsing. */
+  readonly reparsedChapterCount: number;
+}
+export interface BookSourceSetOptions extends BookSourceUpdateOptions {
+  /** The COMPLETE next include-only capture. Omitted/undefined means empty,
+   * not retain previous resources. Requires an expanding book. Chapter and
+   * resource paths/text together are limited to 4096 sources and 64 MiB. */
+  includeSources?: readonly BookFile[];
+}
+
 /** Parsed WASM book. Dispose in a finally block when repeated exports finish. */
 export interface BookSession {
   readonly chapterCount: number;
@@ -152,6 +170,16 @@ export interface BookSession {
    * its committed source state cannot safely be verified.
    */
   updateSources(files: readonly BookFile[], options?: BookSourceUpdateOptions): BookSourceUpdate;
+  /** Replace the COMPLETE ordered chapter list and include-only capture.
+   * Supports adding/removing/renaming/reordering selected sources while keeping
+   * settings, assets and PDF page defaults. Does not write/delete host files or
+   * rewrite source links. Expansion policy is fixed at createBook time.
+   * Shares optimistic revisions and the admission guard with updateSources.
+   * Rejections keep the previous book; an unverifiable successful native
+   * receipt instead disposes it. Old WASM throws UNSUPPORTED_BOOK_SOURCE_SET.
+   * Synchronous: no worker queue, Promise or cancellation is implied.
+   */
+  replaceSources(files: readonly BookFile[], options?: BookSourceSetOptions): BookSourceSetUpdate;
   setImage(destination: string, bytes: BookAssetBytes): BookSession;
   setFont(slot: BookFontSlot, bytes: BookAssetBytes, weight?: number): BookSession;
   /** Synchronous rendering after asynchronous session creation. An optional

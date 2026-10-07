@@ -9,6 +9,9 @@ use wasm_bindgen::prelude::*;
 #[path = "browser_render_options.rs"]
 mod render_options;
 
+#[path = "browser_source_set.rs"]
+mod source_set;
+
 use super::{BookInput, BookRenderer, BookWorkspace};
 use crate::{DarkModePolicy, FontAssetSlot, FontFamily, RenderError};
 
@@ -109,6 +112,30 @@ impl FmdBook {
             .update_sources_at_revision(&updates, expected)
             .map(|report| report.to_json())
             .map_err(to_js)
+    }
+
+    /// Replace the complete ordered chapter/include capture at an expected
+    /// revision, preserving publishing settings, page defaults and all assets.
+    /// Empty include arrays remove the include-only capture; expansion mode
+    /// remains fixed. No host files or source text are rewritten. Changed sets
+    /// rebuild all chapter bindings; exact normalized no-ops retain the AST.
+    /// Returns bounded fmd-book-source-set-v1 JSON.
+    ///
+    /// # Errors
+    /// Invalid/stale revisions, mismatched arrays, source/path/output limits,
+    /// and invalid include graphs leave the previous usable book untouched.
+    #[wasm_bindgen(js_name = replaceSources)]
+    pub fn replace_sources(
+        &mut self,
+        paths: Vec<String>,
+        sources: Vec<String>,
+        include_paths: Vec<String>,
+        include_sources: Vec<String>,
+        expected_revision: f64,
+    ) -> Result<String, JsValue> {
+        source_set::replace(
+            &mut self.renderer, paths, sources, include_paths, include_sources, expected_revision,
+        ).map_err(to_js)
     }
 
     /// Set shared metadata. Absent or blank values restore renderer defaults.

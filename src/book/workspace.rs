@@ -1,8 +1,8 @@
 //! Transactional source revisions for a retained, parsed book.
 //!
-//! The source set and reading order are fixed at creation. Replacing chapter
-//! or include-only source reuses the shared bounded expansion engine, compares
-//! the exact resulting chapter text, and reparses only changed chapters.
+//! Text updates reuse the shared bounded expansion engine, compare the exact
+//! resulting chapter text, and reparse only changed chapters. Whole-source-set
+//! transactions also support chapter membership and reading-order changes.
 //! Rendering options and authorized image/font bytes survive every revision.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,11 +13,15 @@ use crate::parse;
 use crate::wasm::WasmRenderOptions;
 use crate::{RenderError, Result};
 
+#[path = "workspace_source_set.rs"]
+mod source_set;
+pub use source_set::BookSourceSetUpdate;
+
 const MAX_SOURCES: usize = 4096;
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 
 /// A successfully committed source revision. Chapter indexes are zero-based,
-/// strictly increasing, and refer to the original reading order. They identify
+/// strictly increasing, and refer to the current reading order. They identify
 /// actual parser invocations, not guessed dependency invalidations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookSourceUpdate {
@@ -134,9 +138,9 @@ impl BookWorkspace {
     }
 
     /// Replace one or more existing chapter/include sources as one transaction.
-    /// Paths identify existing captures; adding, deleting, renaming or reordering
-    /// sources requires constructing another workspace. Duplicate normalized
-    /// paths are rejected, never last-write-wins.
+    /// Paths identify existing captures. Use `replace_sources_at_revision` to
+    /// add, remove, rename or reorder sources. Duplicate normalized paths are
+    /// rejected, never last-write-wins.
     ///
     /// Every requested source and the projected complete source budget is
     /// validated before copying. Include expansion finishes before any parsing.

@@ -548,6 +548,36 @@ impl<'s> Parser<'s> {
                     span.union(raw_span),
                 ))
             }
+            // amsmath's display form, `\mkern18mu(\operator@font mod\mkern6mu
+            // #1)`: a quad, the parenthesis, upright "mod" (ordinary letters,
+            // not an operator atom), 6 mu and the argument. Inline amsmath
+            // leads with 8 mu instead. Generated material carries the
+            // command's span, as macro bodies do.
+            Cmd::Pmod => {
+                let argument = self.argument("argument of \\pmod")?;
+                let whole = span.union(argument.span);
+                use crate::atom::AtomClass;
+                let sym = |ch, class| Node::new(NodeKind::Symbol { ch, class }, span);
+                let letters = "mod".chars().map(|ch| sym(ch, AtomClass::Ord)).collect();
+                Ok(Node::new(
+                    NodeKind::List(vec![
+                        Node::new(NodeKind::Space(SpaceKind::Quad), span),
+                        sym('(', AtomClass::Open),
+                        Node::new(
+                            NodeKind::MathFont {
+                                font: crate::node::MathFont::Roman,
+                                body: Box::new(Node::new(NodeKind::List(letters), span)),
+                            },
+                            span,
+                        ),
+                        Node::new(NodeKind::Space(SpaceKind::Thin), span),
+                        Node::new(NodeKind::Space(SpaceKind::Thin), span),
+                        argument,
+                        sym(')', AtomClass::Close),
+                    ]),
+                    whole,
+                ))
+            }
             Cmd::Accent(kind) => {
                 let base = self.argument(&format!("argument of \\{name}"))?;
                 let span = span.union(base.span);

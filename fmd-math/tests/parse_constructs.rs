@@ -996,3 +996,30 @@ fn ding_refusals_are_precise() {
     let err = parse(r"\ding").unwrap_err();
     assert!(matches!(&err, MathError::Malformed { .. }), "{err}");
 }
+
+#[test]
+fn pmod_expands_to_the_amsmath_display_form() {
+    // `\mkern18mu(\operator@font mod\mkern6mu #1)`: upright letters, not an
+    // operator atom, and 6 mu as two thin spaces.
+    use fmd_math::node::SpaceKind;
+    let items = parse_items(r"a \equiv b \pmod{n}");
+    let Some(NodeKind::List(pmod)) = items.last().map(|node| &node.kind) else {
+        panic!("{items:?}");
+    };
+    let kinds: Vec<&NodeKind> = pmod.iter().map(|node| &node.kind).collect();
+    assert!(
+        matches!(
+            kinds.as_slice(),
+            [
+                NodeKind::Space(SpaceKind::Quad),
+                NodeKind::Symbol { ch: '(', .. },
+                NodeKind::MathFont { .. },
+                NodeKind::Space(SpaceKind::Thin),
+                NodeKind::Space(SpaceKind::Thin),
+                _,
+                NodeKind::Symbol { ch: ')', .. },
+            ]
+        ),
+        "{kinds:?}"
+    );
+}

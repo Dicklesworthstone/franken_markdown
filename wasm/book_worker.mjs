@@ -130,6 +130,41 @@ export function applyBookSourceUpdate(input, value) {
   return next;
 }
 
+
+// Immutable strings may be shared, but mutable input containers must not escape
+// into the idle cache through a Worker-compatible embedding's postMessage hook.
+function captureSources(input) {
+  const copy = files => files.map(({ path, source }) => ({ path, source }));
+  return { files: copy(input.files), includeSources: copy(input.options.includeSources) };
+}
+function updateCapturedSources(before, changes) {
+  const values = new Map(changes.map(file => [file.path, file.source]));
+  const apply = files => files.map(file => ({ path: file.path,
+    source: values.has(file.path) ? values.get(file.path) : file.source }));
+  return { files: apply(before.files), includeSources: apply(before.includeSources) };
+}
+function prepareSourceCapture(files, options) {
+  const keys = options && Object.hasOwn(options, "includeSources")
+    ? ["expectedRevision", "includeSources"] : ["expectedRevision"];
+  const value = deltaRecord(options, keys);
+  const { expectedRevision } = prepareBookSourceUpdate([], { expectedRevision: value.expectedRevision });
+  // The complete next source set is admitted before comparing to the idle
+  // baseline. This path has no image, font or presentation-option access.
+  const input = prepareBookInput(files, { includeSources: value.includeSources ?? [] });
+  return { expectedRevision, sources: captureSources(input) };
+}
+function sourceChanges(before, after) {
+  const changes = [];
+  for (const key of ["files", "includeSources"]) {
+    const old = before[key], next = after[key];
+    if (old.length !== next.length || next.some((file, i) => file.path !== old[i].path)) {
+      throw bookError("BOOK_SOURCE_SET_CHANGED", "Source membership or order changed; render the complete snapshot instead.");
+    }
+    for (let i = 0; i < next.length; i++) if (next[i].source !== old[i].source) changes.push(next[i]);
+  }
+  return changes;
+}
+
 /** One worker per export. Cancellation terminates synchronous Rust work, not
  * merely its Promise. Optional retention shares one idle native book across
  * publishing formats; the default remains one-shot. Nothing is queued.
@@ -180,9 +215,9 @@ export function createBookWorkerClient({
     return entry.worker;
   }
   function releaseIdle() { terminate(takeIdle()); }
-  function keepIdle(worker, format, inputRevision) {
+  function keepIdle(worker, format, inputRevision, sources) {
     if (disposed || active || idle) { terminate(worker); return; }
-    const entry = { worker, format, inputRevision, timer: null, failed: null };
+    const entry = { worker, format, inputRevision, sources, timer: null, failed: null };
     entry.failed = () => { if (idle === entry) releaseIdle(); };
     idle = entry;
     try {
@@ -229,7 +264,8 @@ export function createBookWorkerClient({
         timer = null,
         settled = false,
         retired = false,
-        inputRevision = null;
+        inputRevision = null,
+        sources = null;
       const onAbort = () =>
         finish(bookError("EXPORT_CANCELLED", "Book export cancelled; source is unchanged."));
       function retireWorker(keep = false) {
@@ -248,7 +284,7 @@ export function createBookWorkerClient({
             /* Attempt every detach even when a host adapter fails. */
           }
         }
-        if (keep && detached && !disposed) keepIdle(worker, format, inputRevision);
+        if (keep && detached && !disposed) keepIdle(worker, format, inputRevision, sources);
         else terminate(worker);
       }
       function finish(error, result, failed = error !== null) {
@@ -328,7 +364,9 @@ export function createBookWorkerClient({
         if (sourceOnly) {
           // Validate before claiming the idle endpoint. A stale caller does not
           // destroy the newer capture, and Proxy reentry cannot steal a job.
-          const sourceUpdate = prepareBookSourceUpdate(files, options);
+          const capture = sourceOnly === 2 ? prepareSourceCapture(files, options) : null;
+          const sourceUpdate = capture ? { expectedRevision: capture.expectedRevision }
+            : prepareBookSourceUpdate(files, options);
           if (settled) return;
           if (!idle)
             throw bookError("BOOK_CAPTURE_EXPIRED", "The retained book was released; render the complete current snapshot first.");
@@ -336,6 +374,10 @@ export function createBookWorkerClient({
             throw bookError("UNSUPPORTED_BOOK_SOURCE_DELTA", "This worker does not support source deltas; use render() or rebuild the matching worker.");
           if (sourceUpdate.expectedRevision !== idle.inputRevision)
             throw bookError("STALE_BOOK_CAPTURE", "The retained input changed; refresh its revision before applying source changes.");
+          if (capture) {
+            sourceUpdate.files = sourceChanges(idle.sources, capture.sources);
+            sources = capture.sources;
+          } else sources = updateCapturedSources(idle.sources, sourceUpdate.files);
           input = { sourceUpdate };
           worker = takeIdle();
           if (!worker)
@@ -358,6 +400,7 @@ export function createBookWorkerClient({
           onAbort();
           return;
         }
+        if (!sourceOnly && retaining) sources = captureSources(input);
         // Transfer only private copies, never detach caller-owned assets.
         transfer = sourceOnly ? [] : [...input.options.images, ...input.options.fontAssets].map(
           (asset) => asset.bytes.buffer,
@@ -412,6 +455,7 @@ export function createBookWorkerClient({
   return Object.freeze({
     render: (files, format, options, request) => run(files, format, options, request),
     renderSourceUpdate: (files, format, options, request) => run(files, format, options, request, true),
+    renderSources: (files, format, options, request) => run(files, format, options, request, 2),
     cancel,
     cancelPending,
     get hasRetainedPreview() { return idle?.format === "preview"; },
@@ -529,4 +573,70 @@ export function createRetainedBookPreview(engine, renderPreview) {
     render: (files, options) => retained.render(files, options, "preview"),
     clear: retained.clear,
   });
+}
+
+/** Workbench capture selection. Only scalar ownership/configuration fences live
+ * here; source baselines belong to the worker client's expiring idle entry.
+ * The host must advance renderConfigurationRevision for any setting, asset or
+ * source membership/order change. Legacy adapters retain full snapshot behavior.
+ * Returns a one-use task so all existing editor/output checkpoint fences remain
+ * at their call sites, before and after the asynchronous renderer boundary.
+ */
+export function createBookCollectionCapture(collection, worker) {
+  let previous = null, serial = 0;
+  return function capture() {
+    const revision = collection.revision, configuration = collection.renderConfigurationRevision;
+    const expectedRevision = worker.retainedInputRevision;
+    const sourceOnly = Number.isSafeInteger(configuration) && configuration >= 0
+      && Number.isSafeInteger(expectedRevision) && expectedRevision > 0
+      && previous?.configuration === configuration && previous?.transport === expectedRevision
+      && typeof worker.renderSources === "function" && typeof collection.project === "function";
+    const fence = () => {
+      if (collection.revision !== revision || collection.renderConfigurationRevision !== configuration)
+        throw bookError("STALE_SOURCE", "The book changed during publication capture; capture it again.");
+    };
+    let input;
+    if (sourceOnly) {
+      // project() is the collection's validated source-only serialization, not
+      // snapshot(): no image/font store is read or cloned for an ordinary edit.
+      const project = collection.project();
+      if (!Array.isArray(project?.files) || project.files.length > 4096
+          || project.files.some(file => !file || (file.role !== undefined
+            && file.role !== "chapter" && file.role !== "include")))
+        throw bookError("INVALID_PROJECT", "Publication needs a valid source-only project.");
+      const files = [], includeSources = [];
+      for (const file of project.files) {
+        (file.role === "include" ? includeSources : files).push({ path: file.path, source: file.source });
+      }
+      input = prepareBookInput(files, { ...project.options, includeSources, images: [], fontAssets: [] });
+    } else input = collection.snapshot();
+    fence();
+    let used = false;
+    return {
+      files: input.files, options: input.options,
+      async render(format, request) {
+        if (used) throw bookError("BOOK_CAPTURE_USED", "Capture the current book again before another publication.");
+        used = true;
+        const ticket = ++serial;
+        fence();
+        try {
+          const result = sourceOnly
+            ? await worker.renderSources(input.files, format, {
+              includeSources: input.options.includeSources, expectedRevision }, request)
+            : await worker.render(input.files, format, input.options, request);
+          if (ticket === serial) {
+            const transport = result.retainedInputRevision;
+            previous = Number.isSafeInteger(transport) && transport > 0
+              && worker.retainedInputRevision === transport
+              && collection.revision === revision && collection.renderConfigurationRevision === configuration
+              ? { configuration, transport } : null;
+          }
+          return result;
+        } catch (error) {
+          if (ticket === serial) previous = null;
+          throw error;
+        }
+      },
+    };
+  };
 }

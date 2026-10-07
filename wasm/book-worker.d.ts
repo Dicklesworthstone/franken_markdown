@@ -90,6 +90,17 @@ export interface BookWorker {
     options: { expectedRevision: number },
     request?: { signal?: AbortSignal },
   ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput>;
+  /** Capture complete current chapter/include text, then send only changed
+   * strings against the idle source baseline. No images/fonts/settings are
+   * read or transferred. Membership/order/roles must remain identical; use
+   * render() for structural or configuration changes. The source baseline
+   * shares the idle worker lifetime and is released on expiry/cancellation. */
+  renderSources(
+    files: readonly BookFile[],
+    format: BookFormat | "preview",
+    options: { expectedRevision: number; includeSources?: readonly BookFile[] },
+    request?: { signal?: AbortSignal },
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput>;
   /** Terminates running AND retained idle workers. The client can render again. */
   cancel(): void;
   /** Cancel in-flight work, but keep an already-idle book. Hosts must use

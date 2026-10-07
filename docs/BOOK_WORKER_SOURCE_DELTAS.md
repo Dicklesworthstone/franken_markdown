@@ -56,4 +56,46 @@ Its output is deterministic JSON, not typeset PDF/EPUB or a visual preview.
 A fixture transfers 12 MiB of image/font bytes initially, then no asset bytes on
 its source delta. This is transport-volume evidence, not a renderer-speed claim.
 Complete source admission and rendering still have input-dependent cost.
-No Rust/WASM rebuild or browser rendering was performed for this change.
+The native Rust/WASM renderer was not rebuilt or executed for this change.
+
+
+## Complete source capture and workbench integration
+
+`renderSources(chapters, format, { expectedRevision, includeSources })` accepts
+all current source strings but sends only their differences from the last
+successful capture. It uses the same delta wire contract, native update path,
+output validation and cancellation. The chapter/include order and membership
+must match; structural changes still require a full `render()`.
+
+The client retains one source-only baseline inside its idle worker entry.
+It is detached from mutable caller/transport containers and released together
+with that entry on expiry, cancellation, failure or disposal. It contains no
+image/font buffers or presentation profile. Explicit `renderSourceUpdate()`
+calls advance this same baseline, so callers can mix both source APIs safely.
+
+The publisher's PDF/EPUB/site exports and the independent PDF-proof session now
+use this path automatically after a compatible successful capture. They read
+`collection.project()` rather than cloning resources with `snapshot()`. Both
+the collection configuration identity and worker capture revision must match
+that controller's previous success. Structural edits, metadata/page/asset
+changes, foreign use of the worker, older adapters and expired captures select
+a full snapshot before rendering. A failure after delta submission is not
+silently retried. Existing source/checkpoint fences still prevent stale output.
+The workbench's separate HTML-preview controller still uses full snapshots;
+preview embeddings can explicitly use either source-only worker method.
+
+Tests use the complete production publisher controller and PDF-proof session
+with explicitly injected source/DOM/native doubles. They verify that compatible
+edits do not call the full-resource snapshot, and resource revocation, failed
+exports, silent DOM changes, cancellation and suspension do not revive old
+output or authority. The original PDF-proof regression suite runs unchanged.
+The Chromium proof harness loads the added runtime dependencies and checks
+native-viewer/Blob download lifecycle against its independent ReportLab PDF;
+that is browser integration evidence, not FrankenMarkdown typesetting proof.
+
+Run the focused suites from the repository root:
+
+```sh
+node --test wasm/tests/book_worker.test.mjs wasm/tests/book_worker_delta.test.mjs wasm/tests/book_publishing_delta.test.mjs wasm/tests/book_pdf_proof.test.mjs
+python wasm/book_pdf_proof_browser.py
+```

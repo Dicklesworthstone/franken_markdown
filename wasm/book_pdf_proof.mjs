@@ -1,6 +1,8 @@
 // A complete book PDF retained once for preview and exact-byte download.
 // The host owns source/settings/resources; this session owns a dedicated book
 // worker client. No Markdown/PDF parser, alternative renderer or network access.
+import { createBookCollectionCapture } from "./book_worker.mjs";
+
 const MAX_BYTES = 128 * 1024 * 1024;
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
@@ -45,6 +47,7 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
   if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 8 || maxOutputBytes > MAX_BYTES)
     throw new TypeError("Invalid book PDF output limit.");
 
+  const capturePublication = createBookCollectionCapture(collection, worker);
   let pending = null, retained = null, disposed = false, suspended = false;
   let configurationRevision = collection.renderConfigurationRevision;
   const listeners = new Set();
@@ -161,7 +164,7 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
         ready();
         operation.revision = collection.revision;
         operation.checkpoint = controls.checkpoint();
-        const input = collection.snapshot();
+        const input = capturePublication();
         if (!owns()) throw failure("STALE_SOURCE", "The book changed during PDF capture.");
         const metadata = { filename: filename(input.options.title), chapters: input.files.length,
           revision: operation.revision };
@@ -169,7 +172,7 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
         if (pending !== operation) return;
         // The production client copies/transfers the admitted book inputs and
         // kills synchronous WASM on abort. Observe both early and late failures.
-        Promise.resolve(worker.render(input.files, "pdf", input.options,
+        Promise.resolve(input.render("pdf",
           { signal: operation.controller.signal })).then(result => {
           if (pending !== operation) return;
           if (!owns()) throw failure("STALE_SOURCE", "The book changed while its PDF was rendering.");

@@ -1,4 +1,4 @@
-import { bookError } from "../book_worker.mjs";
+import { bookError, createBookCollectionCapture } from "../book_worker.mjs";
 import { normalizePdfPage } from "../pdf_page.mjs";
 import {
   createBookCollection,
@@ -65,6 +65,7 @@ export function createBookControls({
     el[id] = root.querySelector(`#${id}`);
   const unlisten = [],
     sourceListeners = new Set();
+  const capturePublication = createBookCollectionCapture(collection, worker);
   let pageSetup = null;
   let portableAbort = null;
   let lastSourceBusy = false;
@@ -232,14 +233,14 @@ export function createBookControls({
       if (reading) throw bookError("BOOK_BUSY", "A local import is in progress.");
       invalidate(true);
       capture();
-      const input = collection.snapshot(),
+      const input = capturePublication(),
         revision = collection.revision,
         view = signature();
       ticket = ++generation;
       preparing = true;
       buttons();
       el.status.textContent = `Preparing ${format.toUpperCase()} in the worker. Editing or cancelling terminates this export.`;
-      const result = await worker.render(input.files, format, input.options);
+      const result = await input.render(format);
       const name =
         (input.options.title
           .replace(/[^a-z0-9_-]+/gi, "-")

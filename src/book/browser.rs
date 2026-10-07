@@ -337,6 +337,18 @@ impl FmdBook {
         self.renderer.render_site().map_err(to_js)
     }
 
+    /// Render one chapter and the complete navigation map, without rendering
+    /// or compressing a full site. Returns fmd-book-chapter-preview-v1 JSON.
+    ///
+    /// # Errors
+    /// Rejects lossy JavaScript indexes, invalid assets and preview budgets.
+    #[wasm_bindgen(js_name = renderChapterPreview)]
+    pub fn render_chapter_preview(&self, selected: f64) -> Result<Vec<u8>, JsValue> {
+        let index = chapter_preview_index(selected, self.chapter_count())
+            .map_err(JsValue::from_str)?;
+        self.renderer.render_chapter_preview(index).map_err(to_js)
+    }
+
     /// Check local HTML navigation on the retained, expanded book. Returns
     /// fmd-book-link-report-v1 JSON without rendering pages or inspecting assets.
     /// External URLs and non-chapter downloads are counted, not verified.
@@ -392,6 +404,15 @@ fn checked_source_revision(value: f64) -> Result<u32, &'static str> {
     Ok(value as u32)
 }
 
+// Preserve fractional/negative/out-of-range values until admission. A u32
+// ABI argument would otherwise coerce them before this check could reject.
+fn chapter_preview_index(value: f64, count: usize) -> Result<usize, &'static str> {
+    if !value.is_finite() || value < 0.0 || value >= count as f64 || value.fract() != 0.0 {
+        return Err("chapter preview index must be an integer within this book");
+    }
+    Ok(value as usize)
+}
+
 fn nonblank(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
@@ -443,6 +464,16 @@ mod tests {
         ] {
             assert!(checked_source_revision(value).is_err());
         }
+    }
+
+    #[test]
+    fn chapter_preview_indexes_are_checked_before_abi_narrowing() {
+        assert_eq!(chapter_preview_index(0.0, 2), Ok(0));
+        assert_eq!(chapter_preview_index(4095.0, 4096), Ok(4095));
+        for value in [f64::NAN, f64::INFINITY, -1.0, 0.5, 2.0, 4_294_967_296.0] {
+            assert!(chapter_preview_index(value, 2).is_err());
+        }
+        assert!(chapter_preview_index(0.0, 0).is_err());
     }
 
     fn paper_book() -> BookRenderer {

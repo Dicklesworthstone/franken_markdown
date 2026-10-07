@@ -17,6 +17,8 @@ mod site_publication;
 pub(crate) mod site_search;
 #[path = "source_bundle.rs"]
 mod source_bundle;
+#[path = "chapter_preview.rs"]
+mod chapter_preview;
 
 const MAX_CHAPTERS: usize = 4096;
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;

@@ -929,14 +929,9 @@ impl<'s> Parser<'s> {
             }
             TokKind::Char(c) => {
                 self.pos += 1;
+                let (text, char_spans) = text_ligatures(&c.to_string(), &[tok.span]);
                 Ok((
-                    vec![Node::new(
-                        NodeKind::TextRun {
-                            text: c.to_string(),
-                            char_spans: vec![tok.span],
-                        },
-                        tok.span,
-                    )],
+                    vec![Node::new(NodeKind::TextRun { text, char_spans }, tok.span)],
                     tok.span,
                 ))
             }
@@ -1732,18 +1727,42 @@ fn flush_run(items: &mut Vec<Node>, run: &mut String, run_spans: &mut Vec<Span>)
         run_spans.clear();
         return;
     }
-    let char_spans = std::mem::take(run_spans);
+    let (text, char_spans) = text_ligatures(&std::mem::take(run), &std::mem::take(run_spans));
     let span = match (char_spans.first(), char_spans.last()) {
         (Some(first), Some(last)) => first.union(*last),
         _ => Span::new(0, 0),
     };
-    items.push(Node::new(
-        NodeKind::TextRun {
-            text: std::mem::take(run),
-            char_spans,
-        },
-        span,
-    ));
+    items.push(Node::new(NodeKind::TextRun { text, char_spans }, span));
+}
+
+/// TeX's text-font ligatures, as in cmr10's ligature table (franken_manim
+/// fm-5wq.56): `` ` `` and `'` set as the curly quotes, doubled they set as
+/// the double quotes, and `--` and `---` set as the en and em dashes. Math
+/// mode never reaches this, so a math `'` stays a prime. Each produced
+/// character spans the union of the source characters it replaced, which
+/// keeps one span per character.
+fn text_ligatures(run: &str, spans: &[Span]) -> (String, Vec<Span>) {
+    let chars: Vec<char> = run.chars().collect();
+    let mut text = String::with_capacity(run.len());
+    let mut out_spans = Vec::with_capacity(spans.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let (ch, width) = match (chars[i], chars.get(i + 1), chars.get(i + 2)) {
+            ('-', Some('-'), Some('-')) => ('\u{2014}', 3),
+            ('-', Some('-'), _) => ('\u{2013}', 2),
+            ('`', Some('`'), _) => ('\u{201C}', 2),
+            ('\'', Some('\''), _) => ('\u{201D}', 2),
+            ('`', _, _) => ('\u{2018}', 1),
+            ('\'', _, _) => ('\u{2019}', 1),
+            (other, _, _) => (other, 1),
+        };
+        text.push(ch);
+        let first = spans.get(i).copied().unwrap_or(Span::new(0, 0));
+        let last = spans.get(i + width - 1).copied().unwrap_or(first);
+        out_spans.push(first.union(last));
+        i += width;
+    }
+    (text, out_spans)
 }
 
 /// The current list was closed by the wrong closer.

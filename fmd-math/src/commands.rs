@@ -70,6 +70,8 @@ pub(crate) enum Cmd {
     },
     /// `\operatorname{…}`.
     OperatorName,
+    /// `\pmod{…}`: amsmath's parenthesized modulus.
+    Pmod,
     /// An accent command.
     Accent(AccentKind),
     /// A two-argument fraction command.
@@ -537,6 +539,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
             rendered: "mod",
             limits: false,
         },
+        "pmod" => Cmd::Pmod,
         "lim" => Cmd::OpName {
             rendered: "lim",
             limits: true,

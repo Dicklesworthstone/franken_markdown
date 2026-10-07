@@ -602,3 +602,40 @@ fn italic_correction_kerns_follow_lone_math_characters() {
         "\\left( f \\right): {gap} vs {m:?}"
     );
 }
+
+#[test]
+fn ellipses_are_three_thin_spaced_punctuation_dots() {
+    // Plain TeX: `\cdots` is `\mathinner{\cdotp\cdotp\cdotp}` and `\ldots`
+    // the same with `\ldotp`. Punct-punct glue is a thin space (3 mu) in
+    // display and text styles and nothing in script styles.
+    let e = engine();
+    for (command, dot) in [(r"\cdots", '⋅'), (r"\ldots", '.')] {
+        let xs = |layout: &Layout| -> Vec<f64> {
+            layout
+                .glyphs
+                .iter()
+                .filter(|glyph| glyph.ch == dot)
+                .map(|glyph| glyph.x)
+                .collect()
+        };
+        let display = e.typeset(command, Style::Display).unwrap();
+        let script = e
+            .typeset(&format!("x_{{{command}}}"), Style::Display)
+            .unwrap();
+        let (d, s) = (xs(&display), xs(&script));
+        assert_eq!(display.glyphs.len(), 3, "{command}: {display:?}");
+        assert_eq!(s.len(), 3, "{command}: {script:?}");
+        let advance = (s[1] - s[0]) / glyph_size(&script, dot);
+        assert!(
+            ((s[2] - s[1]) - (s[1] - s[0])).abs() < EPS,
+            "{command}: {s:?}"
+        );
+        for pair in d.windows(2) {
+            let gap = pair[1] - pair[0];
+            assert!(
+                (gap - (advance + 1.0 / 6.0)).abs() < EPS,
+                "{command}: gap {gap} vs advance {advance} + 3 mu"
+            );
+        }
+    }
+}

@@ -457,6 +457,31 @@ impl Engine {
                 italic: 0.0,
                 char_glyph: None,
             }),
+            // Plain TeX's `\ldots` is `\mathinner{\ldotp\ldotp\ldotp}` and
+            // `\cdots` is `\mathinner{\cdotp\cdotp\cdotp}`: three punctuation
+            // dots, thin-spaced outside script styles, with the Inner atom's
+            // own spacing outside. One wide ellipsis glyph is 27-34%
+            // narrower and is one glyph where LaTeX sets three.
+            NodeKind::Symbol {
+                ch: ch @ ('…' | '⋯'),
+                class: AtomClass::Inner,
+            } => {
+                let dot = if *ch == '…' { '.' } else { '⋅' };
+                let dots = [0; 3].map(|_| {
+                    Node::new(
+                        NodeKind::Symbol {
+                            ch: dot,
+                            class: AtomClass::Punct,
+                        },
+                        node.span,
+                    )
+                });
+                Ok(Laid {
+                    boxx: self.hlist(&dots, ctx)?,
+                    italic: 0.0,
+                    char_glyph: None,
+                })
+            }
             NodeKind::Symbol { ch, .. } => self.char_atom(*ch, node.span, ctx),
             NodeKind::BigOp { ch, integral, .. } => {
                 let scale = match (ctx.style.style == Style::Display, *integral) {

@@ -71,13 +71,13 @@ export function createBookPdfControls({ root, controls, collection, worker,
     el.build.disabled = !enabled || operation !== null || session.pending
       || !collection.files.some(file => file.role !== "include");
     el.cancel.disabled = !session.pending;
-    el.release.disabled = !shown && !session.pending;
+    el.release.disabled = !shown && !session.pending && !worker.hasRetainedBook;
     el.download.hidden = !enabled || !proof || shown !== proof || url === null;
     panel.setAttribute("aria-busy", String(session.pending));
   }
-  function invalidate(message) {
+  function invalidate(message, keepIdle = false) {
     operation = null;
-    session.invalidate(message);
+    session.invalidate(message, keepIdle);
     releaseView();
     if (!disposed) { el.status.textContent = message; refresh(); }
   }
@@ -176,7 +176,8 @@ export function createBookPdfControls({ root, controls, collection, worker,
   for (const id of ["chapter-source", "chapter-path", "source-role", "chapters", "title", "author", "lang", "font", "dark-mode", "font-scale", "toc", "page-numbers"]) {
     const input = root.querySelector(`#${id}`);
     for (const type of ["input", "change"]) on(input, type, () => {
-      invalidate("Source or settings changed. Generate a new book PDF proof.");
+      invalidate("Source or settings changed. Generate a new book PDF proof.",
+        id === "chapter-source" || id === "chapters");
     });
   }
   on(root.querySelector("#chapter-source"), "compositionstart", () => {

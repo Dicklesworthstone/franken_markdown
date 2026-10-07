@@ -7,7 +7,7 @@ import { createRetainedBook, installBookWorker } from "../book_worker.mjs";
 
 const encode = value => new TextEncoder().encode(JSON.stringify(value));
 const failure = code => Object.assign(new Error(code), { code });
-export function fixture({ counters, old = false, noSets = false } = {}) {
+export function fixture({ counters, old = false, noSets = false, pdfEnvelope = false } = {}) {
   const stats = { creates: 0, updates: 0, replacements: 0, frees: 0, instances: [], calls: [] };
   const bump = (key, index) => { stats[key]++; if (counters) Atomics.add(counters, index, 1); };
   const files = (paths, sources) => paths.map((path, i) => ({ path, source: sources[i] }));
@@ -70,8 +70,12 @@ export function fixture({ counters, old = false, noSets = false } = {}) {
         Atomics.store(counters, 4, 1);
         Atomics.wait(counters, 5, 0, 10000);
       }
-      return encode({ format, page, files: this.files, includes: this.includes,
-        settings: this.settings, images: this.images, fonts: this.fonts });
+      const payload = { format, page, files: this.files, includes: this.includes,
+        settings: this.settings, images: this.images, fonts: this.fonts };
+      // Admission fixture only, not a valid typeset PDF. Proof lifecycle tests
+      // need a recognizable header; they never assert PDF conformance/quality.
+      return pdfEnvelope && format === "pdf"
+        ? new TextEncoder().encode("%PDF-1.7\n" + JSON.stringify(payload)) : encode(payload);
     }
     renderPdf() { return this.payload("pdf"); }
     renderPdfWithPage(page) { return this.payload("pdf", [...page]); }

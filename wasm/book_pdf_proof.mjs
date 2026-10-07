@@ -46,6 +46,7 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
     throw new TypeError("Invalid book PDF output limit.");
 
   let pending = null, retained = null, disposed = false, suspended = false;
+  let configurationRevision = collection.renderConfigurationRevision;
   const listeners = new Set();
   const notify = () => {
     for (const listener of listeners) {
@@ -60,10 +61,16 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
     return !disposed && !suspended && !controls.sourceBusy
       && collection.revision === value.revision && controls.checkpoint() === value.checkpoint;
   }
-  function retire(reason) {
+  function releaseIdle() {
+    if (worker.hasRetainedBook === true) worker.cancel?.();
+  }
+  function retire(reason, keepIdle = false) {
     retained = null;
     const operation = pending;
     pending = null;
+    // Release only the idle endpoint before abort/observer callbacks can start
+    // another proof. An active job remains owned by its per-operation signal.
+    if (!keepIdle) releaseIdle();
     if (operation) {
       operation.removeAbort();
       // Settle our own promise even when a broken host ignores the signal.
@@ -72,8 +79,8 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
     }
     notify();
   }
-  function invalidate(message = "The book changed; generate a new PDF proof.") {
-    retire(failure("STALE_SOURCE", message));
+  function invalidate(message = "The book changed; generate a new PDF proof.", keepIdle = false) {
+    retire(failure("STALE_SOURCE", message), keepIdle === true);
   }
   function current() {
     if (!retained) return null;
@@ -84,11 +91,18 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
     return null;
   }
   const unsubscribe = collection.subscribe(() => {
+    const next = collection.renderConfigurationRevision;
+    const sourceOnly = Number.isSafeInteger(next) && next === configurationRevision;
+    configurationRevision = next;
     // captureProject synchronously installs the current raw editor text. It is
     // part of this capture, not a stale edit. Admission is reserved throughout;
     // the final checkpoint and snapshot are validated after capture returns.
-    if (pending?.capturing) { retained = null; return; }
-    invalidate();
+    if (pending?.capturing) {
+      retained = null;
+      if (!sourceOnly) releaseIdle();
+      return;
+    }
+    invalidate(undefined, sourceOnly);
   });
   const unsubscribeSource = controls.subscribeSourceState(() => {
     if (controls.sourceBusy) invalidate("Book import or text composition started; the PDF proof was retired.");
@@ -117,6 +131,9 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
       function settle(reason, proof, failed = true) {
         if (pending !== operation) return;
         pending = null;
+        // A worker may have completed and become idle before PDF-envelope
+        // validation failed. Never retain that failed publication endpoint.
+        if (failed) releaseIdle();
         operation.removeAbort();
         if (failed) {
           retained = null;

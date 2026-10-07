@@ -124,7 +124,7 @@ for file in interactive.js interactive.d.ts interactive_runtime.mjs interactive_
   native_workspace.js native_workspace.d.ts interactive_export.mjs NATIVE_WORKSPACE.md \
   native_pdf_proof.mjs native_pdf_proof_ui.mjs NATIVE_PDF_PROOF.md \
   book_pdf_proof.mjs BOOK_PDF_PROOF.md BOOK_FONTS.md BOOK_IMAGES.md \
-  book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md PORTABLE_BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
+  book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_retained.mjs book_worker_entry.js BOOK.md PORTABLE_BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
   flow_export.mjs EXPORT.md SOURCE.md FILES.md SETTINGS.md \
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
@@ -264,6 +264,7 @@ node --test wasm/native_pdf_proof.test.mjs wasm/native_pdf_proof_package.test.mj
 node --test wasm/tests/book_font_authoring.test.mjs wasm/tests/book_font_controls.test.mjs wasm/tests/book_font_package.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_image_*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_pdf*.test.mjs 2>&1 | tee -a "$LEDGER"
+node --test wasm/tests/book_retained_exports.test.mjs wasm/tests/book_publishing_retention.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_portable*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/document_comparison.test.mjs wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs 2>&1 | tee -a "$LEDGER"
 node wasm/document_worker_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"

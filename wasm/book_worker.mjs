@@ -54,6 +54,82 @@ function diagnostic(error) {
   }
 }
 
+// Source-only worker transport admission. This revision names a successful
+// worker input capture, NOT the native BookSession's u32 source revision.
+function deltaRecord(value, keys) {
+  const invalid = () => bookError("INVALID_BOOK_SOURCE_DELTA",
+    "Source deltas need plain data records with only the documented fields.");
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw invalid();
+  const own = Reflect.ownKeys(value);
+  if (own.length !== keys.length || own.some(key => !keys.includes(key))) throw invalid();
+  const result = {};
+  for (const key of keys) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (!field || !Object.hasOwn(field, "value")) throw invalid();
+    result[key] = field.value;
+  }
+  return result;
+}
+
+/** Snapshot only changed chapter/include strings, with no asset/options access.
+ * Empty changes re-export the captured book in another supported format.
+ * Membership, order, settings and resource authority cannot change here.
+ */
+function prepareBookSourceUpdate(files, options) {
+  const { expectedRevision } = deltaRecord(options, ["expectedRevision"]);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+    throw bookError("INVALID_BOOK_SOURCE_DELTA", "Use a positive retainedInputRevision from this worker.");
+  }
+  const count = Array.isArray(files) ? Object.getOwnPropertyDescriptor(files, "length")?.value : -1;
+  if (!Number.isInteger(count) || count < 0 || count > 4096) {
+    throw bookError("INVALID_BOOK_SOURCE_DELTA", "Use at most 4096 source changes.");
+  }
+  const owned = [], seen = new Set();
+  for (let index = 0; index < count; index++) {
+    const field = Object.getOwnPropertyDescriptor(files, String(index));
+    if (!field || !Object.hasOwn(field, "value")) {
+      throw bookError("INVALID_BOOK_SOURCE_DELTA", "Source changes must not contain holes or accessors.");
+    }
+    const file = deltaRecord(field.value, ["path", "source"]);
+    if (typeof file.path !== "string" || typeof file.source !== "string") {
+      throw bookError("INVALID_BOOK_SOURCE_DELTA", "Source changes need string path and source fields.");
+    }
+    if (seen.has(file.path)) throw bookError("DUPLICATE_BOOK_SOURCE", "Change each source path at most once.");
+    seen.add(file.path);
+    owned.push(file);
+  }
+  // Reuse the same UTF-8/count/aggregate policy as full book admission.
+  if (owned.length) prepareBookInput(owned);
+  return { expectedRevision, files: owned };
+}
+
+/** Worker-private reconstruction from an already admitted successful capture.
+ * Validate the COMPLETE resulting source budget before invoking native code.
+ * Resource arrays are owned by this worker and reused, never sent by the patch.
+ * The old source capture is not mutated, even if validation or rendering fails.
+ */
+export function applyBookSourceUpdate(input, value) {
+  const update = deltaRecord(value, ["expectedRevision", "files"]);
+  const prepared = prepareBookSourceUpdate(update.files, { expectedRevision: update.expectedRevision });
+  const known = new Set([...input.files, ...input.options.includeSources].map(file => file.path));
+  for (const file of prepared.files) {
+    if (!known.has(file.path)) {
+      throw bookError("UNKNOWN_BOOK_SOURCE", "Source deltas must use exact paths from the retained capture; use render() to replace the source set.");
+    }
+  }
+  const changes = new Map(prepared.files.map(file => [file.path, file.source]));
+  const replace = files => files.map(file => ({ path: file.path,
+    source: changes.has(file.path) ? changes.get(file.path) : file.source }));
+  // Already-admitted assets need neither reauthorization nor a second copy.
+  // Presentation options still pass the shared normalizer; only bytes are reused.
+  const next = prepareBookInput(replace(input.files), { ...input.options,
+    includeSources: replace(input.options.includeSources), images: [], fontAssets: [] });
+  next.options.images = input.options.images;
+  next.options.fontAssets = input.options.fontAssets;
+  return next;
+}
+
 /** One worker per export. Cancellation terminates synchronous Rust work, not
  * merely its Promise. Optional retention shares one idle native book across
  * publishing formats; the default remains one-shot. Nothing is queued.
@@ -104,9 +180,9 @@ export function createBookWorkerClient({
     return entry.worker;
   }
   function releaseIdle() { terminate(takeIdle()); }
-  function keepIdle(worker, format) {
+  function keepIdle(worker, format, inputRevision) {
     if (disposed || active || idle) { terminate(worker); return; }
-    const entry = { worker, format, timer: null, failed: null };
+    const entry = { worker, format, inputRevision, timer: null, failed: null };
     entry.failed = () => { if (idle === entry) releaseIdle(); };
     idle = entry;
     try {
@@ -127,13 +203,15 @@ export function createBookWorkerClient({
     cancelPending();
     releaseIdle();
   }
-  async function render(files, format, options = {}, { signal } = {}) {
+  async function run(files, format, options = {}, { signal } = {}, sourceOnly = false) {
     alive();
     if (active) throw bookError("BOOK_BUSY", "A book export is already running.");
     const [, mimeType, extension] = formatInfo(format);
     const retainingBook = retainBook && retainedFormats.has(format);
     const retainingPreview = !retainingBook && retainPreview && format === "preview";
     const retaining = retainingBook || retainingPreview;
+    if (sourceOnly && !retaining)
+      throw bookError("UNSUPPORTED_BOOK_SOURCE_DELTA", "Source deltas require a retained book or retained preview in this format.");
     if (
       signal !== undefined &&
       (signal === null ||
@@ -150,7 +228,8 @@ export function createBookWorkerClient({
       let worker = null,
         timer = null,
         settled = false,
-        retired = false;
+        retired = false,
+        inputRevision = null;
       const onAbort = () =>
         finish(bookError("EXPORT_CANCELLED", "Book export cancelled; source is unchanged."));
       function retireWorker(keep = false) {
@@ -169,7 +248,7 @@ export function createBookWorkerClient({
             /* Attempt every detach even when a host adapter fails. */
           }
         }
-        if (keep && detached && !disposed) keepIdle(worker, format);
+        if (keep && detached && !disposed) keepIdle(worker, format, inputRevision);
         else terminate(worker);
       }
       function finish(error, result, failed = error !== null) {
@@ -214,6 +293,13 @@ export function createBookWorkerClient({
             throw bookError("WORKER_PROTOCOL_ERROR", "Rebuild the matching book worker for retained publications.");
           if (retainingPreview && data.retainedPreview !== true)
             throw bookError("WORKER_PROTOCOL_ERROR", "Rebuild the matching book worker for retained previews.");
+          if (data.retainedInputRevision !== undefined) {
+            if (!retaining || data.retainedInputRevision !== id)
+              throw bookError("WORKER_PROTOCOL_ERROR", "Book worker acknowledged a different input capture.");
+            inputRevision = id;
+          }
+          if (sourceOnly && inputRevision === null)
+            throw bookError("WORKER_PROTOCOL_ERROR", "Book worker did not acknowledge the source delta.");
           checkedOutput(data.bytes, data.sourceLength, maxOutputBytes);
           const bytes = data.bytes;
           finish(
@@ -222,6 +308,7 @@ export function createBookWorkerClient({
               format: `book-${format}`,
               bytes,
               sourceLength: data.sourceLength,
+              ...(inputRevision === null ? {} : { retainedInputRevision: inputRevision }),
               mimeType,
               extension,
               blob: () => new Blob([bytes], { type: mimeType }),
@@ -238,7 +325,22 @@ export function createBookWorkerClient({
       try {
         // Claim any idle worker before input/signal adapters can reenter. A
         // failed or cancelled admission releases only this request's endpoint.
-        if (!retaining) releaseIdle();
+        if (sourceOnly) {
+          // Validate before claiming the idle endpoint. A stale caller does not
+          // destroy the newer capture, and Proxy reentry cannot steal a job.
+          const sourceUpdate = prepareBookSourceUpdate(files, options);
+          if (settled) return;
+          if (!idle)
+            throw bookError("BOOK_CAPTURE_EXPIRED", "The retained book was released; render the complete current snapshot first.");
+          if (idle.inputRevision === null)
+            throw bookError("UNSUPPORTED_BOOK_SOURCE_DELTA", "This worker does not support source deltas; use render() or rebuild the matching worker.");
+          if (sourceUpdate.expectedRevision !== idle.inputRevision)
+            throw bookError("STALE_BOOK_CAPTURE", "The retained input changed; refresh its revision before applying source changes.");
+          input = { sourceUpdate };
+          worker = takeIdle();
+          if (!worker)
+            throw bookError("BOOK_CAPTURE_EXPIRED", "The retained endpoint could not be reclaimed; render the complete snapshot again.");
+        } else if (!retaining) releaseIdle();
         else worker = takeIdle();
         if (settled) { retireWorker(); return; }
         signal?.addEventListener("abort", onAbort, { once: true });
@@ -247,7 +349,7 @@ export function createBookWorkerClient({
           onAbort();
           return;
         }
-        input = prepareBookInput(
+        if (!sourceOnly) input = prepareBookInput(
           files,
           format === "inspection" ? {} : format === "links" ? bookLinkOptions(options) : options,
         );
@@ -257,7 +359,7 @@ export function createBookWorkerClient({
           return;
         }
         // Transfer only private copies, never detach caller-owned assets.
-        transfer = [...input.options.images, ...input.options.fontAssets].map(
+        transfer = sourceOnly ? [] : [...input.options.images, ...input.options.fontAssets].map(
           (asset) => asset.bytes.buffer,
         );
       } catch (error) {
@@ -308,11 +410,13 @@ export function createBookWorkerClient({
     });
   }
   return Object.freeze({
-    render,
+    render: (files, format, options, request) => run(files, format, options, request),
+    renderSourceUpdate: (files, format, options, request) => run(files, format, options, request, true),
     cancel,
     cancelPending,
     get hasRetainedPreview() { return idle?.format === "preview"; },
     get hasRetainedBook() { return idle !== null; },
+    get retainedInputRevision() { return idle?.inputRevision ?? null; },
     get busy() {
       return active !== null;
     },
@@ -327,7 +431,13 @@ export function createBookWorkerClient({
  * engine doubles explicitly. It never fetches a chapter, image or font URL.
  */
 export function installBookWorker(scope, engine) {
-  let busy = false;
+  let busy = false, capture = null;
+  function releaseCapture() {
+    const previous = capture;
+    capture = null;
+    if (previous?.mode === "book") engine.clearRetainedBook?.();
+    else if (previous?.mode === "preview") engine.clearRetainedBookPreview?.();
+  }
   scope.addEventListener("message", async (event) => {
     const data = event.data;
     const envelope = { schemaVersion: 1, id: data?.id, format: data?.format };
@@ -364,25 +474,45 @@ export function installBookWorker(scope, engine) {
       }
       busy = true;
       owned = true;
-      const input = prepareBookInput(
-        data.files,
-        data.format === "inspection"
-          ? {}
-          : data.format === "links"
-            ? bookLinkOptions(data.options)
-            : data.options,
-      );
+      const mode = data.retainBook ? "book" : data.retainPreview ? "preview" : null;
+      let input;
+      if (Object.hasOwn(data, "sourceUpdate")) {
+        if (!mode || Object.hasOwn(data, "files") || Object.hasOwn(data, "options"))
+          throw bookError("WORKER_PROTOCOL_ERROR", "A source delta must not include a full snapshot or change resource authority.");
+        if (!capture || capture.mode !== mode || data.sourceUpdate?.expectedRevision !== capture.id)
+          throw bookError("STALE_BOOK_CAPTURE", "Source delta does not match the retained worker input.");
+        if (data.id <= capture.id)
+          throw bookError("STALE_BOOK_CAPTURE", "Source delta request IDs must advance the retained capture.");
+        input = applyBookSourceUpdate(capture.input, data.sourceUpdate);
+      } else {
+        if (capture && capture.mode !== mode) releaseCapture();
+        input = prepareBookInput(
+          data.files,
+          data.format === "inspection" ? {} : data.format === "links"
+            ? bookLinkOptions(data.options) : data.options,
+        );
+      }
       const result = data.retainBook
         ? await engine[method](input.files, input.options, data.format)
         : await engine[method](input.files, input.options);
       checkedOutput(result.bytes, result.sourceLength, data.maxOutputBytes);
       // Transfer only the returned view, never a larger backing WASM memory.
       const bytes = result.bytes.slice();
+      if (mode) {
+        // Publish the revision only after source admission, native export and
+        // output validation all succeed. Keep one input, sharing its assets.
+        capture = { id: data.id, mode, input };
+        envelope.retainedInputRevision = data.id;
+      }
       scope.postMessage({ ...envelope, bytes, sourceLength: result.sourceLength }, [bytes.buffer]);
     } catch (error) {
-      if (owned && data.retainBook) {
+      const previousMode = owned ? capture?.mode : null;
+      if (owned) {
+        try { releaseCapture(); } catch { /* Report the primary failure. */ }
+      }
+      if (owned && data.retainBook && previousMode !== "book") {
         try { engine.clearRetainedBook?.(); } catch { /* Report the original failure. */ }
-      } else if (owned && data.retainPreview) {
+      } else if (owned && data.retainPreview && previousMode !== "preview") {
         try { engine.clearRetainedBookPreview?.(); } catch { /* Report the original failure. */ }
       }
       scope.postMessage({ ...envelope, error: diagnostic(error) });

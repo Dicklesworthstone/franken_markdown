@@ -16,13 +16,15 @@ function sameOptions(a, b) {
   }
   if (JSON.stringify(a.page) !== JSON.stringify(b.page)
       || JSON.stringify(a.running) !== JSON.stringify(b.running)) return false;
-  const sameAssets = (left, right, keys) => left.length === right.length && left.every((asset, i) => {
+  // Source-delta captures share worker-owned resource arrays, not host views.
+  // Identity proves unchanged bytes here and avoids rescanning every asset.
+  const sameAssets = (left, right, keys) => left === right || (left.length === right.length && left.every((asset, i) => {
     const other = right[i];
     if (keys.some(key => asset[key] !== other[key]) || asset.bytes.length !== other.bytes.length)
       return false;
     for (let j = 0; j < asset.bytes.length; j++) if (asset.bytes[j] !== other.bytes[j]) return false;
     return true;
-  });
+  }));
   return sameAssets(a.images, b.images, ["destination"])
     && sameAssets(a.fontAssets, b.fontAssets, ["slot", "weight"]);
 }

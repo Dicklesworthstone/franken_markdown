@@ -65,7 +65,7 @@ function synchronize(session, before, input) {
  * explicitly, including revocation. Old edit APIs reconstruct from current input.
  * Nothing is queued or persisted; clear() retires both idle and pending captures.
  */
-export function createRetainedBook(engine, renderPreview) {
+export function createRetainedBook(engine, renderPreview, renderChapterPreview) {
   if (typeof engine?.createBook !== "function" || typeof renderPreview !== "function")
     throw new TypeError("Retained books require the native book factory and existing preview codec.");
   let cached = null, busy = false, generation = 0;
@@ -75,10 +75,16 @@ export function createRetainedBook(engine, renderPreview) {
     cached = null;
     previous?.session.dispose();
   }
-  async function render(files, options, format = "preview") {
+  async function render(files, options, format = "preview", selected = 0) {
     if (busy) throw error("BOOK_BUSY", "A retained book is already rendering.");
-    if (format !== "preview" && !Object.hasOwn(methods, format))
-      throw error("INVALID_FORMAT", "Retained books support pdf, epub, site or preview.");
+    if (format !== "preview" && format !== "chapter-preview" && !Object.hasOwn(methods, format))
+      throw error("INVALID_FORMAT", "Retained books support pdf, epub, site, preview or chapter-preview.");
+    if (format === "chapter-preview") {
+      if (typeof renderChapterPreview !== "function")
+        throw error("UNSUPPORTED_BOOK_CHAPTER_PREVIEW", "Rebuild the matching worker for chapter previews.");
+      if (!Number.isInteger(selected) || selected < 0 || selected >= files.length)
+        throw error("INVALID_CHAPTER_INDEX", "Choose a chapter in the current book.");
+    }
     busy = true;
     let ticket = generation;
     const input = { files, options };
@@ -97,11 +103,14 @@ export function createRetainedBook(engine, renderPreview) {
         cached = { session, input };
       }
       const session = cached.session;
-      // Native exporters still own every byte. Preview passes the same complete
-      // site through the existing ZIP/chapter-map validator; no partial HTML cache.
-      const result = format === "preview"
-        ? await renderPreview({ renderBookSite: () => session.renderSite() }, files, options)
-        : await session[methods[format]]();
+      // Native exporters still own every byte. Legacy preview keeps its full
+      // ZIP contract; selected previews render one chapter on capable packages.
+      // No rendered HTML is retained between requests.
+      const result = format === "chapter-preview"
+        ? await renderChapterPreview(session, selected)
+        : format === "preview"
+          ? await renderPreview({ renderBookSite: () => session.renderSite() }, files, options)
+          : await session[methods[format]]();
       if (ticket !== generation)
         throw error("EXPORT_CANCELLED", "Retained book was released during export.");
       cached.input = input;

@@ -1,6 +1,6 @@
-import type { BookFile, BookLinksOutput, BookOptions, BookOutput } from "./book.js";
+import type { BookChapterPreviewOutput, BookFile, BookLinksOutput, BookOptions, BookOutput } from "./book.js";
 export type BookFormat = "pdf" | "epub" | "site";
-export type BookWorkerFormat = BookFormat | "preview" | "inspection" | "links";
+export type BookWorkerFormat = BookFormat | "preview" | "chapter-preview" | "inspection" | "links";
 /** A transport capture revision is local to this worker client, not a native
  * source revision. Present only when the worker negotiated source deltas. */
 export interface BookWorkerCapture {
@@ -15,6 +15,18 @@ export interface BookPreviewOutput extends BookWorkerCapture {
   readonly bytes: Uint8Array;
   blob(): Blob;
 }
+/** selectedChapter belongs to this operation, not retained BookOptions. */
+export interface BookChapterPreviewRequest {
+  signal?: AbortSignal;
+  /** Zero-based integer in the captured chapter order; default 0. */
+  selectedChapter?: number;
+}
+export interface BookChapterWorkerOutput extends Omit<BookChapterPreviewOutput, "filename">, BookWorkerCapture {
+  readonly selectedChapter: number;
+  /** Only an old native package takes the bounded whole-site ZIP fallback.
+   * Native render/limit/protocol failures never trigger that larger operation. */
+  readonly previewMode: "native-chapter" | "site-fallback";
+}
 export interface BookInspectionOutput {
   readonly format: "book-inspection";
   readonly mimeType: "application/json";
@@ -27,6 +39,9 @@ export interface BookInspectionOutput {
 }
 export interface BookWorker {
   readonly busy: boolean;
+  /** True for the selected-chapter worker protocol. Not a native ABI claim;
+   * older custom worker adapters may omit this capability marker. */
+  readonly supportsChapterPreview?: boolean;
   /** Whether an idle book last used for preview is currently retained. */
   readonly hasRetainedPreview: boolean;
   /** Whether any idle native book is retained, including preview-only mode. */
@@ -49,6 +64,16 @@ export interface BookWorker {
     options?: BookOptions,
     request?: { signal?: AbortSignal },
   ): Promise<BookPreviewOutput>;
+  /** One chapter HTML plus the full navigation map; requires matching worker
+   * scripts. Supports 4096 chapters on a capable native package, 8 MiB selected
+   * HTML and 64 MiB wire JSON. Old native packages retain the legacy ZIP limits.
+   * Both modes preserve untrusted HTML and require an isolated reader. */
+  render(
+    files: readonly BookFile[],
+    format: "chapter-preview",
+    options?: BookOptions,
+    request?: BookChapterPreviewRequest,
+  ): Promise<BookChapterWorkerOutput>;
   /** Source-only structural/accessibility inspection. Publication options,
    * images and fonts are ignored and are not transferred to the worker. */
   render(
@@ -69,10 +94,11 @@ export interface BookWorker {
     files: readonly BookFile[],
     format: BookWorkerFormat,
     options?: BookOptions,
-    request?: { signal?: AbortSignal },
+    request?: BookChapterPreviewRequest,
   ): Promise<
     | (Omit<BookOutput, "filename"> & BookWorkerCapture)
     | BookPreviewOutput
+    | BookChapterWorkerOutput
     | BookInspectionOutput
     | Omit<BookLinksOutput, "filename">
   >;
@@ -86,10 +112,10 @@ export interface BookWorker {
    * timeout still terminate synchronous rendering. Output is always complete. */
   renderSourceUpdate(
     changes: readonly BookFile[],
-    format: BookFormat | "preview",
+    format: BookFormat | "preview" | "chapter-preview",
     options: { expectedRevision: number },
-    request?: { signal?: AbortSignal },
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput>;
+    request?: BookChapterPreviewRequest,
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput>;
   /** Capture complete current chapter/include text, then send only changed
    * strings against the idle source baseline. No images/fonts/settings are
    * read or transferred. Membership/order/roles must remain identical; use
@@ -97,10 +123,10 @@ export interface BookWorker {
    * shares the idle worker lifetime and is released on expiry/cancellation. */
   renderSources(
     files: readonly BookFile[],
-    format: BookFormat | "preview",
+    format: BookFormat | "preview" | "chapter-preview",
     options: { expectedRevision: number; includeSources?: readonly BookFile[] },
-    request?: { signal?: AbortSignal },
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput>;
+    request?: BookChapterPreviewRequest,
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput>;
   /** Terminates running AND retained idle workers. The client can render again. */
   cancel(): void;
   /** Cancel in-flight work, but keep an already-idle book. Hosts must use
@@ -115,7 +141,7 @@ export function createBookWorker(options?: {
   timeoutMs?: number;
   /** Default and ceiling 128 MiB. Checked again before publishing to the host. */
   maxOutputBytes?: number;
-  /** Opt in to one retained native book for preview calls only. Default false.
+  /** Opt in to one retained native book for both preview formats only. Default false.
    * Source edits use native transactions; settings/assets changes reconstruct.
    * render() sends a full snapshot; renderSourceUpdate() sends only changes. */
   retainPreview?: boolean;

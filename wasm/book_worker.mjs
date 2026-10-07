@@ -1,24 +1,44 @@
 // Worker transport only. The entrypoint injects the real Rust/WASM book API.
-import { bookLinkOptions, prepareBookInput } from "./book_session.mjs";
+import { bookLinkOptions, prepareBookInput, parseBookChapterPreview } from "./book_session.mjs";
 import { createRetainedBook } from "./book_retained.mjs";
 export { createRetainedBook } from "./book_retained.mjs";
 
 const LIMIT = 128 * 1024 * 1024;
-const retainedFormats = new Set(["pdf", "epub", "site", "preview"]);
+const retainedFormats = new Set(["pdf", "epub", "site", "preview", "chapter-preview"]);
 const formats = Object.freeze({
   pdf: ["renderBookPdf", "application/pdf", "pdf"],
   epub: ["renderBookEpub", "application/epub+zip", "epub"],
   site: ["renderBookSite", "application/zip", "zip"],
   preview: ["renderBookPreview", "application/json", "json"],
+  "chapter-preview": ["renderBookSelectedPreview", "application/json", "json"],
   inspection: ["inspectBook", "application/json", "json"],
   links: ["checkBookLinks", "application/json", "json"],
 });
 export const bookError = (code, message) => Object.assign(new Error(message), { code });
 function formatInfo(format) {
   if (!Object.hasOwn(formats, format))
-    throw bookError("INVALID_FORMAT", "Choose pdf, epub, site, preview, inspection or links.");
+    throw bookError("INVALID_FORMAT", "Choose pdf, epub, site, preview, chapter-preview, inspection or links.");
   return formats[format];
 }
+
+// Selection is an operation argument, not a presentation option or retained
+// source identity. Validate it independently on both sides of the worker.
+function chapterSelection(format, value, count = 4096) {
+  if (format !== "chapter-preview") {
+    if (value !== undefined) throw bookError("INVALID_OPTIONS", "selectedChapter requires chapter-preview format.");
+    return undefined;
+  }
+  const selected = value === undefined ? 0 : value;
+  if (!Number.isInteger(selected) || selected < 0 || selected >= count)
+    throw bookError("INVALID_CHAPTER_INDEX", "Choose a chapter in the current book.");
+  return selected === 0 ? 0 : selected;
+}
+function checkedChapterPreview(result, selected, count) {
+  if (!["native-chapter", "site-fallback"].includes(result.previewMode))
+    throw bookError("WORKER_PROTOCOL_ERROR", "Invalid chapter-preview capability receipt.");
+  parseBookChapterPreview(result.bytes, selected, count);
+}
+
 function checkedOutput(bytes, sourceLength, maximum) {
   if (
     !(bytes instanceof Uint8Array) ||
@@ -238,12 +258,13 @@ export function createBookWorkerClient({
     cancelPending();
     releaseIdle();
   }
-  async function run(files, format, options = {}, { signal } = {}, sourceOnly = false) {
+  async function run(files, format, options = {}, { signal, selectedChapter } = {}, sourceOnly = false) {
     alive();
     if (active) throw bookError("BOOK_BUSY", "A book export is already running.");
     const [, mimeType, extension] = formatInfo(format);
+    const selected = chapterSelection(format, selectedChapter);
     const retainingBook = retainBook && retainedFormats.has(format);
-    const retainingPreview = !retainingBook && retainPreview && format === "preview";
+    const retainingPreview = !retainingBook && retainPreview && ["preview", "chapter-preview"].includes(format);
     const retaining = retainingBook || retainingPreview;
     if (sourceOnly && !retaining)
       throw bookError("UNSUPPORTED_BOOK_SOURCE_DELTA", "Source deltas require a retained book or retained preview in this format.");
@@ -265,7 +286,8 @@ export function createBookWorkerClient({
         settled = false,
         retired = false,
         inputRevision = null,
-        sources = null;
+        sources = null,
+        chapterCount = null;
       const onAbort = () =>
         finish(bookError("EXPORT_CANCELLED", "Book export cancelled; source is unchanged."));
       function retireWorker(keep = false) {
@@ -337,6 +359,11 @@ export function createBookWorkerClient({
           if (sourceOnly && inputRevision === null)
             throw bookError("WORKER_PROTOCOL_ERROR", "Book worker did not acknowledge the source delta.");
           checkedOutput(data.bytes, data.sourceLength, maxOutputBytes);
+          if (selected !== undefined) {
+            if (data.selectedChapter !== selected)
+              throw bookError("WORKER_PROTOCOL_ERROR", "Book worker replied for a different chapter.");
+            checkedChapterPreview(data, selected, chapterCount);
+          }
           const bytes = data.bytes;
           finish(
             null,
@@ -344,6 +371,7 @@ export function createBookWorkerClient({
               format: `book-${format}`,
               bytes,
               sourceLength: data.sourceLength,
+              ...(selected === undefined ? {} : { selectedChapter: selected, previewMode: data.previewMode }),
               ...(inputRevision === null ? {} : { retainedInputRevision: inputRevision }),
               mimeType,
               extension,
@@ -378,6 +406,7 @@ export function createBookWorkerClient({
             sourceUpdate.files = sourceChanges(idle.sources, capture.sources);
             sources = capture.sources;
           } else sources = updateCapturedSources(idle.sources, sourceUpdate.files);
+          if (selected !== undefined) chapterSelection(format, selected, sources.files.length);
           input = { sourceUpdate };
           worker = takeIdle();
           if (!worker)
@@ -401,6 +430,10 @@ export function createBookWorkerClient({
           return;
         }
         if (!sourceOnly && retaining) sources = captureSources(input);
+        if (selected !== undefined) {
+          chapterCount = (sourceOnly ? sources.files : input.files).length;
+          chapterSelection(format, selected, chapterCount);
+        }
         // Transfer only private copies, never detach caller-owned assets.
         transfer = sourceOnly ? [] : [...input.options.images, ...input.options.fontAssets].map(
           (asset) => asset.bytes.buffer,
@@ -446,6 +479,7 @@ export function createBookWorkerClient({
           timeoutMs,
         );
         worker.postMessage({ schemaVersion: 1, id, format, ...input, maxOutputBytes,
+          ...(selected === undefined ? {} : { selectedChapter: selected }),
           ...(retainingBook ? { retainBook: true } : retainingPreview ? { retainPreview: true } : {}) }, transfer);
       } catch (error) {
         finish(bookError("WORKER_FAILED", diagnostic(error).message));
@@ -453,12 +487,14 @@ export function createBookWorkerClient({
     });
   }
   return Object.freeze({
+    // Protocol support, not a claim about the loaded native package.
+    supportsChapterPreview: true,
     render: (files, format, options, request) => run(files, format, options, request),
     renderSourceUpdate: (files, format, options, request) => run(files, format, options, request, true),
     renderSources: (files, format, options, request) => run(files, format, options, request, 2),
     cancel,
     cancelPending,
-    get hasRetainedPreview() { return idle?.format === "preview"; },
+    get hasRetainedPreview() { return ["preview", "chapter-preview"].includes(idle?.format); },
     get hasRetainedBook() { return idle !== null; },
     get retainedInputRevision() { return idle?.inputRevision ?? null; },
     get busy() {
@@ -491,6 +527,7 @@ export function installBookWorker(scope, engine) {
         throw bookError("WORKER_PROTOCOL_ERROR", "Invalid book request envelope.");
       }
       let [method] = formatInfo(data.format);
+      const selected = chapterSelection(data.format, data.selectedChapter);
       if (data.retainPreview !== undefined && typeof data.retainPreview !== "boolean")
         throw bookError("WORKER_PROTOCOL_ERROR", "Invalid preview retention request.");
       if (data.retainBook !== undefined && typeof data.retainBook !== "boolean")
@@ -503,7 +540,7 @@ export function installBookWorker(scope, engine) {
         method = "renderRetainedBook";
         envelope.retainedBook = true;
       } else if (data.retainPreview) {
-        if (data.format !== "preview" || typeof engine.renderRetainedBookPreview !== "function")
+        if (!["preview", "chapter-preview"].includes(data.format) || typeof engine.renderRetainedBookPreview !== "function")
           throw bookError("UNSUPPORTED_BOOK_PREVIEW", "Rebuild the matching worker for retained book previews.");
         method = "renderRetainedBookPreview";
         envelope.retainedPreview = true;
@@ -536,10 +573,17 @@ export function installBookWorker(scope, engine) {
             ? bookLinkOptions(data.options) : data.options,
         );
       }
-      const result = data.retainBook
-        ? await engine[method](input.files, input.options, data.format)
-        : await engine[method](input.files, input.options);
+      if (selected !== undefined) chapterSelection(data.format, selected, input.files.length);
+      const args = [input.files, input.options];
+      if (data.retainBook) args.push(data.format);
+      if (selected !== undefined) args.push(selected);
+      const result = await engine[method](...args);
       checkedOutput(result.bytes, result.sourceLength, data.maxOutputBytes);
+      if (selected !== undefined) {
+        checkedChapterPreview(result, selected, input.files.length);
+        envelope.selectedChapter = selected;
+        envelope.previewMode = result.previewMode;
+      }
       // Transfer only the returned view, never a larger backing WASM memory.
       const bytes = result.bytes.slice();
       if (mode) {
@@ -567,10 +611,11 @@ export function installBookWorker(scope, engine) {
 }
 
 /** Compatibility adapter for existing preview-only embeddings. */
-export function createRetainedBookPreview(engine, renderPreview) {
-  const retained = createRetainedBook(engine, renderPreview);
+export function createRetainedBookPreview(engine, renderPreview, renderChapterPreview) {
+  const retained = createRetainedBook(engine, renderPreview, renderChapterPreview);
   return Object.freeze({
-    render: (files, options) => retained.render(files, options, "preview"),
+    render: (files, options, selected) => retained.render(files, options,
+      selected === undefined ? "preview" : "chapter-preview", selected),
     clear: retained.clear,
   });
 }

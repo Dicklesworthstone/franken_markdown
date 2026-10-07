@@ -93,7 +93,7 @@ pub(crate) fn parse_text_mode_with<'s>(
 ) -> Result<Node, MathError> {
     let toks = crate::macros::expand(lex(source), macros, source.len())?;
     let mut parser = Parser::with_tokens(source, toks);
-    let (items, reason) = parser.text_list(false)?;
+    let (items, reason) = parser.text_list(false, false)?;
     match reason {
         Reason::EndOfInput => Ok(Node::new(NodeKind::List(items), Span::new(0, source.len()))),
         Reason::EndGroup(span) => Err(MathError::Malformed {
@@ -947,7 +947,9 @@ impl<'s> Parser<'s> {
         match tok.kind {
             TokKind::BeginGroup => {
                 self.pos += 1;
-                let (items, reason) = self.descend(tok.span.start, |p| p.text_list(false))?;
+                // `\text{…}` and its kin are boxes: horizontal mode from the
+                // first token, so a leading space is glue (`n\text{ terms}`).
+                let (items, reason) = self.descend(tok.span.start, |p| p.text_list(false, true))?;
                 match reason {
                     Reason::EndGroup(close) => Ok((items, tok.span.union(close))),
                     Reason::EndOfInput => Err(MathError::Malformed {
@@ -1206,7 +1208,7 @@ impl<'s> Parser<'s> {
         let mut lines: Vec<Node> = Vec::new();
         let end_span = loop {
             let line_fallback = self.here();
-            let (items, reason) = self.descend(begin_span.start, |p| p.text_list(true))?;
+            let (items, reason) = self.descend(begin_span.start, |p| p.text_list(true, false))?;
             let line_span = list_span(&items, line_fallback);
             lines.push(Node::new(NodeKind::List(items), line_span));
             match reason {
@@ -1413,7 +1415,7 @@ impl<'s> Parser<'s> {
     /// the line ([`Reason::CellBreak`]) and `\end{name}` ends the body
     /// ([`Reason::EnvEnd`]).
     #[allow(clippy::too_many_lines)]
-    fn text_list(&mut self, env: bool) -> Result<(Vec<Node>, Reason), MathError> {
+    fn text_list(&mut self, env: bool, started: bool) -> Result<(Vec<Node>, Reason), MathError> {
         let mut items: Vec<Node> = Vec::new();
         let mut run = String::new();
         let mut run_spans: Vec<Span> = Vec::new();
@@ -1427,9 +1429,14 @@ impl<'s> Parser<'s> {
                     run.push(c);
                     run_spans.push(tok.span);
                 }
+                // TeX: a space is interword glue once the line has begun,
+                // so `$x$ is` keeps the space after the island. Before
+                // anything is set, a paragraph or line start drops it
+                // (vertical mode), while a `\text{ …}` box (`started`)
+                // keeps it.
                 TokKind::Space => {
                     self.pos += 1;
-                    if !run.is_empty() {
+                    if !run.is_empty() || line_begun(&items, started) {
                         run.push(' ');
                         run_spans.push(tok.span);
                     }
@@ -1496,8 +1503,12 @@ impl<'s> Parser<'s> {
                 }
                 TokKind::BeginGroup => {
                     self.pos += 1;
+                    // A group does not change mode: it begins mid-line
+                    // exactly when its surroundings have.
+                    let inner_started = !run.is_empty() || line_begun(&items, started);
                     flush_run(&mut items, &mut run, &mut run_spans);
-                    let (body, reason) = self.descend(tok.span.start, |p| p.text_list(false))?;
+                    let (body, reason) =
+                        self.descend(tok.span.start, |p| p.text_list(false, inner_started))?;
                     match reason {
                         Reason::EndGroup(close) => {
                             items.push(Node::new(NodeKind::List(body), tok.span.union(close)));
@@ -1752,6 +1763,31 @@ fn set_limits(last: Option<&mut Node>, mode: Limits) -> bool {
 }
 
 /// Flush the pending text run into the item list.
+/// Whether the current text line has begun, so a space is interword glue:
+/// some node since the last `\\` sets material, or the list began mid-line
+/// (`started`) and has not broken since. Declarations (`\small`,
+/// `\color{…}`, `\centering` …) set nothing, so a space after one at a line
+/// start is still dropped, as is a space after `\\`.
+fn line_begun(items: &[Node], started: bool) -> bool {
+    let breaks = |node: &Node| matches!(node.kind, NodeKind::Linebreak);
+    let sets_material = |node: &Node| {
+        !matches!(
+            node.kind,
+            NodeKind::StyleChange(_)
+                | NodeKind::SizeChange(_)
+                | NodeKind::ColorChange(_)
+                | NodeKind::AlignChange(_)
+                | NodeKind::LineSpacing(_)
+        )
+    };
+    items
+        .iter()
+        .rev()
+        .take_while(|node| !breaks(node))
+        .any(sets_material)
+        || (started && !items.iter().any(breaks))
+}
+
 fn flush_run(items: &mut Vec<Node>, run: &mut String, run_spans: &mut Vec<Span>) {
     if run.is_empty() {
         run_spans.clear();

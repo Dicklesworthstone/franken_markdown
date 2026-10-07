@@ -1023,3 +1023,33 @@ fn pmod_expands_to_the_amsmath_display_form() {
         "{kinds:?}"
     );
 }
+
+#[test]
+fn text_spaces_follow_tex_modes() {
+    // A space is interword glue once the line has begun: inside a `\text`
+    // box from its first token, after an inline island, after a styled
+    // box. At a paragraph start, and after `\\`, TeX is between lines and
+    // drops it.
+    let runs = |items: &[Node]| -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|node| match &node.kind {
+                NodeKind::TextRun { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let items = parse_items(r"n\text{ terms}");
+    let Some(NodeKind::Text { body }) = items.last().map(|node| &node.kind) else {
+        panic!("{items:?}");
+    };
+    assert_eq!(runs(body), [" terms"]);
+    for (source, expected) in [
+        (r" value $x$ done", vec!["value ", " done"]),
+        (r"\textbf{A} b", vec![" b"]),
+        (r"one\\ two", vec!["one", "two"]),
+    ] {
+        let root = parse_text(source).unwrap_or_else(|e| panic!("`{source}`: {e}"));
+        assert_eq!(runs(root_items(&root)), expected, "`{source}`");
+    }
+}

@@ -22,8 +22,10 @@ export interface BookInspectionOutput {
 }
 export interface BookWorker {
   readonly busy: boolean;
-  /** Whether an idle native preview is currently retained. */
+  /** Whether an idle book last used for preview is currently retained. */
   readonly hasRetainedPreview: boolean;
+  /** Whether any idle native book is retained, including preview-only mode. */
+  readonly hasRetainedBook: boolean;
   /** A single export owns a worker. Concurrent calls reject with BOOK_BUSY.
    * Assets are snapshotted, never transferred out of caller-owned buffers. */
   render(
@@ -68,8 +70,8 @@ export interface BookWorker {
   >;
   /** Terminates running AND retained idle workers. The client can render again. */
   cancel(): void;
-  /** Cancel in-flight work, but keep an already-idle preview session. Hosts must
-   * use cancel() for resource revocation, suspension and explicit preview clearing. */
+  /** Cancel in-flight work, but keep an already-idle book. Hosts must use
+   * cancel() for resource revocation, suspension and explicit clearing. */
   cancelPending(): void;
   /** Idempotent; also cancels the current export. */
   dispose(): void;
@@ -81,9 +83,18 @@ export function createBookWorker(options?: {
   /** Default and ceiling 128 MiB. Checked again before publishing to the host. */
   maxOutputBytes?: number;
   /** Opt in to one retained native book for preview calls only. Default false.
-   * Source-only changes use native updateSources; other changes reconstruct.
+   * Source edits use native transactions; settings/assets changes reconstruct.
    * Full snapshots are still admitted and transferred for every request. */
   retainPreview?: boolean;
-  /** Release idle retained previews after this delay. Default 30000; 1..600000 ms. */
+  /** Opt in to one native session across PDF, EPUB, site and preview exports.
+   * Takes precedence over retainPreview. Text edits use updateSources; source
+   * membership/order changes use replaceSources. Old edit APIs reconstruct from
+   * the current snapshot. Settings or assets changes also reconstruct.
+   * Inspection and links remain one-shot, source-only, and release idle state.
+   * Failures/cancellation retire the session; no queue or persistence is added.
+   * A matching worker script is required; unsupported responses fail explicitly.
+   */
+  retainBook?: boolean;
+  /** Release idle retained books after this delay. Default 30000; 1..600000 ms. */
   idleTimeoutMs?: number;
 }): BookWorker;

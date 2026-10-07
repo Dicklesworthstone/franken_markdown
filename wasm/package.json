@@ -152,6 +152,7 @@
     "book-worker.js",
     "book-worker.d.ts",
     "book_worker.mjs",
+    "book_retained.mjs",
     "book_worker_entry.js",
     "BOOK.md",
     "PORTABLE_BOOK.md",

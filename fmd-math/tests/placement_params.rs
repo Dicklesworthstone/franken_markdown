@@ -158,6 +158,33 @@ fn glyph_x(layout: &Layout, ch: char) -> f64 {
         .x
 }
 
+/// franken_manim fm-5wq.56: the text face carries every ligature glyph, so
+/// text mode typesets the curly quotes and dashes instead of refusing them.
+#[test]
+fn text_ligature_glyphs_typeset_from_the_bundled_text_face() {
+    let e = engine();
+    for (source, ch) in [
+        ("can't", '\u{2019}'),
+        ("`a", '\u{2018}'),
+        ("``a''", '\u{201C}'),
+        ("``a''", '\u{201D}'),
+        ("1--2", '\u{2013}'),
+        ("a---b", '\u{2014}'),
+    ] {
+        let layout = e.typeset_text(source).expect(source);
+        assert!(
+            layout.glyphs.iter().any(|glyph| glyph.ch == ch),
+            "{source}: no {ch:?} glyph"
+        );
+        assert!(
+            !layout
+                .glyphs
+                .iter()
+                .any(|glyph| glyph.ch == '\'' || glyph.ch == '`')
+        );
+    }
+}
+
 #[test]
 fn radical_degree_follows_plain_tex_root() {
     // plain.tex's \r@@t: \mkern5mu \raise.6\dimen@ \copy\rootbox \mkern-10mu

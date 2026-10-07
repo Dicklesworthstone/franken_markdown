@@ -496,6 +496,63 @@ fn text_island_in_math_and_math_island_in_text() {
     );
 }
 
+/// The text run of a text-mode source and its per-character spans.
+fn text_run(source: &str) -> (String, Vec<fmd_math::Span>) {
+    let root = parse_text(source).expect(source);
+    let mut text = String::new();
+    let mut spans = Vec::new();
+    for item in root_items(&root) {
+        if let NodeKind::TextRun {
+            text: run,
+            char_spans,
+        } = &item.kind
+        {
+            text.push_str(run);
+            spans.extend(char_spans.iter().copied());
+        }
+    }
+    (text, spans)
+}
+
+/// franken_manim fm-5wq.56: TeX's text fonts ligature quotes and dashes
+/// (cmr10's table), so TexText("can't") sets a curly right quote, not the
+/// straight ASCII apostrophe.
+#[test]
+fn text_mode_sets_tex_quote_and_dash_ligatures() {
+    let cases = [
+        ("can't", "can\u{2019}t"),
+        ("`single'", "\u{2018}single\u{2019}"),
+        ("``double''", "\u{201C}double\u{201D}"),
+        ("1--2", "1\u{2013}2"),
+        ("yes---no", "yes\u{2014}no"),
+        ("a - b", "a - b"),
+    ];
+    for (source, expected) in cases {
+        let (text, spans) = text_run(source);
+        assert_eq!(text, expected, "{source}");
+        assert_eq!(
+            spans.len(),
+            text.chars().count(),
+            "one span per character: {source}"
+        );
+    }
+    // A ligature spans every source character it replaced.
+    let (_, spans) = text_run("``x''");
+    assert_eq!((spans[0].start, spans[0].end), (0, 2));
+    assert_eq!((spans[2].start, spans[2].end), (3, 5));
+    let (_, spans) = text_run("a---b");
+    assert_eq!((spans[1].start, spans[1].end), (1, 4));
+}
+
+/// Math mode keeps `'` as a prime: the ligature table belongs to text fonts.
+#[test]
+fn math_mode_prime_is_not_a_text_quote() {
+    let root = parse("f'").expect("f'");
+    let tree = format!("{root:?}");
+    assert!(!tree.contains('\u{2019}'), "{tree}");
+    assert!(!tree.contains("TextRun"), "{tree}");
+}
+
 #[test]
 fn textbf_works_in_both_modes() {
     let items = parse_items(r"\textbf{M}");

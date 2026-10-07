@@ -190,6 +190,15 @@ export interface BookSession {
   renderPdf(options?: Pick<BookOptions, "page">): BookOutput;
   renderEpub(): BookOutput;
   renderSite(): BookOutput;
+  /** Whether this live WASM book implements the additive chapter-preview ABI. */
+  readonly supportsChapterPreview: boolean;
+  /** Render only the selected zero-based chapter (default 0), with a complete
+   * ordered navigation map. Synchronous; no ZIP, worker, or cancellation is
+   * implied. Requires rebuilt WASM; old packages fail explicitly rather than
+   * rendering the whole site. The bounded JSON reply is checked against the
+   * requested index and chapter count. HTML is not sanitized for host insertion.
+   */
+  renderChapterPreview(selected?: number): BookChapterPreviewOutput;
   /** Check local HTML navigation on the retained AST without rendering pages. */
   validateLinks(): BookLinksOutput;
   /** Idempotent. All subsequent operations except dispose throw. */
@@ -265,3 +274,41 @@ export function parseBookLinkReport(
   bytes: Uint8Array,
   expectedPaths: readonly string[],
 ): BookLinkReport;
+
+/** Metadata for every chapter, in Rust-defined reading order. */
+export interface BookChapterPreviewPage {
+  readonly path: string;
+  readonly source: string;
+  readonly title: string;
+}
+export interface BookChapterPreview {
+  readonly schema: "fmd-book-chapter-preview-v1";
+  readonly selected: number;
+  readonly pages: readonly BookChapterPreviewPage[];
+  /** Only the selected chapter's HTML; untrusted content requiring isolation. */
+  readonly html: string;
+}
+export interface BookChapterPreviewOutput {
+  readonly format: "book-chapter-preview";
+  readonly mimeType: "application/json";
+  readonly extension: "json";
+  readonly sourceLength: number;
+  /** Owned UTF-8 fmd-book-chapter-preview-v1 JSON, valid after disposal. */
+  readonly bytes: Uint8Array;
+  blob(): Blob;
+  filename(baseName?: string): string;
+}
+/** Create a book, render one chapter, and dispose even when rendering fails. */
+export function renderBookChapterPreview(
+  files: readonly BookFile[],
+  selected?: number,
+  options?: BookOptions,
+): Promise<BookChapterPreviewOutput>;
+/** Validate bounded UTF-8 JSON and optionally bind it to a requested index and
+ * count. Allows 4096 metadata entries, 8 MiB selected HTML, 64 MiB wire bytes.
+ * Returns deeply frozen metadata. Does not sanitize or execute the HTML. */
+export function parseBookChapterPreview(
+  bytes: Uint8Array,
+  expectedSelected?: number,
+  expectedCount?: number,
+): BookChapterPreview;

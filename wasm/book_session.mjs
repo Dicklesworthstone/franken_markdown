@@ -351,6 +351,7 @@ function output(bytes, kind, sourceLength) {
     pdf: ["book-pdf", "application/pdf", "pdf"],
     epub: ["book-epub", "application/epub+zip", "epub"],
     site: ["book-site", "application/zip", "zip"],
+    chapterPreview: ["book-chapter-preview", "application/json", "json"],
   }[kind];
   return Object.freeze({
     format,
@@ -646,6 +647,30 @@ export function createBookBindings(loadBookClass) {
       const raw = this.#live();
       return output(raw.renderSite(), "site", raw.sourceLength);
     }
+    get supportsChapterPreview() {
+      return typeof this.#live().renderChapterPreview === "function";
+    }
+    renderChapterPreview(selected = 0) {
+      const raw = this.#live();
+      if (this.#updating) throw updateError("BOOK_BUSY", "A book source update is already being admitted.");
+      const count = raw.chapterCount;
+      const index = chapterPreviewIndex(selected, count);
+      if (typeof raw.renderChapterPreview !== "function") {
+        throw updateError("UNSUPPORTED_BOOK_CHAPTER_PREVIEW",
+          "this WASM build lacks FmdBook.renderChapterPreview; rebuild the matching package for on-demand chapter previews");
+      }
+      let bytes;
+      try {
+        bytes = raw.renderChapterPreview(index);
+      } catch (error) {
+        if (typeof error === "string") throw new Error(error.slice(0, 2048));
+        throw error;
+      }
+      // Validate the native reply against the requested chapter, not merely
+      // its declared schema. Rendering is read-only; failures do not edit source.
+      parseBookChapterPreview(bytes, index, count);
+      return output(bytes, "chapterPreview", raw.sourceLength);
+    }
     validateLinks() {
       const raw = this.#live();
       if (typeof raw.validateLinks !== "function") {
@@ -764,6 +789,15 @@ export function createBookBindings(loadBookClass) {
     renderBookPdf: (files, options) => once(files, options, "renderPdf"),
     renderBookEpub: (files, options) => once(files, options, "renderEpub"),
     renderBookSite: (files, options) => once(files, options, "renderSite"),
+    renderBookChapterPreview: async (files, selected = 0, options = {}) => {
+      const index = chapterPreviewIndex(selected, MAX_CHAPTERS);
+      const session = await createBook(files, options);
+      try {
+        return session.renderChapterPreview(index);
+      } finally {
+        session.dispose();
+      }
+    },
     checkBookLinks: async (files, options) =>
       once(files, bookLinkOptions(options), "validateLinks"),
   });
@@ -869,4 +903,56 @@ export function parseBookLinkReport(bytes, expectedPaths) {
     chapters: Object.freeze(chapters),
     summary: Object.freeze(summary),
   });
+}
+
+
+function chapterPreviewIndex(value, count) {
+  if (!Number.isInteger(value) || value < 0 || value >= count) {
+    throw updateError("INVALID_CHAPTER_INDEX", "Select an integer chapter index within this book's reading order.");
+  }
+  return value === 0 ? 0 : value;
+}
+
+/** Decode the native selected-chapter contract, not HTML or Markdown. The
+ * complete navigation map has no unselected HTML and supports 4096 chapters.
+ * HTML is preserved verbatim and remains untrusted: use the isolated preview
+ * frame, never this decoder alone, as the browser's content-security boundary.
+ */
+export function parseBookChapterPreview(bytes, expectedSelected, expectedCount) {
+  const invalid = () => updateError("INVALID_BOOK_PREVIEW", "The renderer returned an invalid or mismatched chapter preview.");
+  const limit = () => updateError("PREVIEW_LIMIT", "This chapter exceeds the preview budget; export the book instead.");
+  if (!(bytes instanceof Uint8Array)
+      || Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]"
+      || !bytes.byteLength) throw invalid();
+  if (bytes.byteLength > 64 * 1024 * 1024) throw limit();
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes));
+  } catch { throw invalid(); }
+  if (!value || value.schema !== "fmd-book-chapter-preview-v1"
+      || !Array.isArray(value.pages) || !value.pages.length) throw invalid();
+  if (value.pages.length > MAX_CHAPTERS) throw limit();
+  if (!Number.isInteger(value.selected) || value.selected < 0 || value.selected >= value.pages.length
+      || (expectedSelected !== undefined && value.selected !== expectedSelected)
+      || (expectedCount !== undefined && value.pages.length !== expectedCount)) throw invalid();
+  const text = (value, maximum) => {
+    try { bookTextBytes(value, maximum); }
+    catch (error) { throw error instanceof RangeError ? limit() : invalid(); }
+    return value;
+  };
+  const paths = new Set(), sources = new Set();
+  const pages = value.pages.map(page => {
+    if (!page || typeof page !== "object" || Array.isArray(page)) throw invalid();
+    const path = text(page.path, 255), source = text(page.source, 4096), title = text(page.title, 4096);
+    // Only Rust-attested flat site names can be reader navigation targets.
+    if (!path || /[\\/\x00-\x20\x7f<>:"|?*#%]/.test(path) || !path.endsWith(".html")
+        || path.startsWith(".") || ["index.html", "~fmd-search.html"].includes(path)
+        || !source || paths.has(path.toLowerCase()) || sources.has(source)) throw invalid();
+    paths.add(path.toLowerCase());
+    sources.add(source);
+    return Object.freeze({ path, source, title });
+  });
+  const html = text(value.html, 8 * 1024 * 1024);
+  return Object.freeze({ schema: "fmd-book-chapter-preview-v1", selected: value.selected,
+    pages: Object.freeze(pages), html });
 }

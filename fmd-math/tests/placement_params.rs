@@ -639,3 +639,21 @@ fn ellipses_are_three_thin_spaced_punctuation_dots() {
         }
     }
 }
+
+#[test]
+fn tbinom_and_dbinom_force_their_styles() {
+    // amsmath: \tbinom is \genfrac(){0pt}{1} (text style), \dbinom is
+    // \genfrac(){0pt}{0} (display style), whatever the surroundings.
+    let e = engine();
+    let height = |source: &str, style: Style| {
+        let layout = e
+            .typeset(source, style)
+            .unwrap_or_else(|err| panic!("`{source}`: {err}"));
+        layout.height + layout.depth
+    };
+    let display = height(r"\binom{N}{4}", Style::Display);
+    let text = height(r"\binom{N}{4}", Style::Text);
+    assert!(text < display, "text {text} vs display {display}");
+    assert!((height(r"\tbinom{N}{4}", Style::Display) - text).abs() < EPS);
+    assert!((height(r"\dbinom{N}{4}", Style::Text) - display).abs() < EPS);
+}

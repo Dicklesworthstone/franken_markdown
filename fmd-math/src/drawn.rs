@@ -158,14 +158,22 @@ fn paren(closing: bool, h: f64, em: f64) -> Drawn {
     let t_top = 0.035 * em;
     let t_mid = 0.062 * em + 0.01 * h;
     let bulge = 0.16 * w;
-    let (x_out, x_in) = (0.0, t_mid);
-    let start = (w, h);
+    // The convex (outer) edge runs tip to tip through a control at
+    // `-bulge`; the concave (inner) edge sits `t_top` further right at the
+    // tips. A quad's midpoint lies halfway to its control, so the inner
+    // control is offset by `2 t_mid - t_top` to make the axis waist
+    // `t_mid`. The inner edge then stays inside the outer edge at every
+    // height; an outline that crosses itself fills as pinched pieces.
+    let (tip_out, tip_in) = (w - t_top, w);
+    let ctrl_out = -bulge;
+    let ctrl_in = ctrl_out + 2.0 * t_mid - t_top;
+    let start = (tip_out, h);
     let c = contour(
         start,
         vec![
-            quad((x_out - bulge, h / 2.0), (w, 0.0)),
-            line((w - t_top, 0.0)),
-            quad((x_in - bulge, h / 2.0), (w - t_top, h)),
+            quad((ctrl_out, h / 2.0), (tip_out, 0.0)),
+            line((tip_in, 0.0)),
+            quad((ctrl_in, h / 2.0), (tip_in, h)),
             line(start),
         ],
     );
@@ -796,6 +804,96 @@ mod tests {
                 assert_closed(&d.contours);
                 assert_y_range(&d.contours, 0.0, total);
             }
+        }
+    }
+
+    /// A contour flattened to a closed polyline, each quad sampled 32 times.
+    fn flatten(c: &PathContour) -> Vec<(f64, f64)> {
+        let mut points = vec![c.start];
+        let mut at = c.start;
+        for s in &c.segments {
+            match *s {
+                PathSeg::Line { to } => points.push(to),
+                PathSeg::Quad { ctrl, to } => points.extend((1..=32).map(|i| {
+                    let t = f64::from(i) / 32.0;
+                    let u = 1.0 - t;
+                    (
+                        u * u * at.0 + 2.0 * u * t * ctrl.0 + t * t * to.0,
+                        u * u * at.1 + 2.0 * u * t * ctrl.1 + t * t * to.1,
+                    )
+                })),
+            }
+            at = match *s {
+                PathSeg::Line { to } | PathSeg::Quad { to, .. } => to,
+            };
+        }
+        points
+    }
+
+    /// Whether segments `ab` and `cd` cross at a point interior to both.
+    fn properly_cross(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
+        let orient = |p: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+            (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+        };
+        let (o1, o2) = (orient(a, b, c), orient(a, b, d));
+        let (o3, o4) = (orient(c, d, a), orient(c, d, b));
+        o1 * o2 < -1e-18 && o3 * o4 < -1e-18
+    }
+
+    #[test]
+    fn every_delimiter_contour_is_a_simple_outline() {
+        // A self-crossing outline fills as pinched, disjoint pieces under
+        // the nonzero rule: the tall `\binom` parens broke this way at
+        // 1080p (franken_manim fm-binom-delimiters-glyph-gaps-ed1k).
+        for ch in [
+            '(', ')', '[', ']', '{', '}', '|', '‖', '⟨', '⟩', '⌈', '⌉', '⌊', '⌋', '/', '\\', '√',
+        ] {
+            for total in [1.0, 1.6, 2.5, 7.0, 40.0] {
+                let d = delimiter(ch, total, 1.0).unwrap_or_else(|| panic!("{ch:?}"));
+                for c in &d.contours {
+                    let p = flatten(c);
+                    let n = p.len() - 1;
+                    for i in 0..n {
+                        for j in i + 2..n {
+                            if i == 0 && j == n - 1 {
+                                continue; // the closing edge meets the first
+                            }
+                            assert!(
+                                !properly_cross(p[i], p[i + 1], p[j], p[j + 1]),
+                                "{ch:?} at {total} em crosses itself near {:?} / {:?}",
+                                p[i],
+                                p[j]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paren_waist_carries_the_calibrated_stroke() {
+        // The waist of a drawn paren is t_mid = 0.062 em + 0.01 * total
+        // thick, measured horizontally on the axis, and the inner edge
+        // stays inside the outer edge all the way to the tips.
+        for total in [1.6, 2.5, 7.0] {
+            let d = delimiter('(', total, 1.0).unwrap();
+            let p = flatten(&d.contours[0]);
+            let at_axis: Vec<f64> = p
+                .windows(2)
+                .filter(|w| (w[0].1 > total / 2.0) != (w[1].1 > total / 2.0))
+                .map(|w| {
+                    let t = (total / 2.0 - w[0].1) / (w[1].1 - w[0].1);
+                    w[0].0 + t * (w[1].0 - w[0].0)
+                })
+                .collect();
+            assert_eq!(at_axis.len(), 2, "{total}: {at_axis:?}");
+            let waist = (at_axis[0] - at_axis[1]).abs();
+            let expected = 0.062 + 0.01 * total;
+            assert!(
+                (waist - expected).abs() < 0.002,
+                "{total} em: waist {waist}, calibrated {expected}"
+            );
         }
     }
 

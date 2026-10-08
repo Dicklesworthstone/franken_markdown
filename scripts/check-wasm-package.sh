@@ -97,7 +97,7 @@ if ! rustup target list --installed | grep -qx "$target"; then
   printf "fmd wasm-package: missing Rust target '%s' (rustup target add %s)\n" "$target" "$target" >&2
   exit 3
 fi
-require wasm-bindgen "Install: cargo install wasm-bindgen-cli --version 0.2.126 --locked"
+require wasm-bindgen "Install: cargo install wasm-bindgen-cli --version 0.2.129 --locked"
 require node "Install Node.js (>=18)."
 
 log "=== wasm-package gate run=${RUN_ID} ==="

@@ -954,8 +954,12 @@ maybe_add_path() {
 }
 # Shell completions and man page installation (bead ncok)
 install_completions_and_man() {
-  local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+  # Piped installers have no source path on macOS Bash 3.2. Optional bundled
+  # files are available only when running a script from a checkout.
+  local script_dir="" script_path="${BASH_SOURCE[0]:-}"
+  if [ -n "$script_path" ]; then
+    script_dir="$(cd "$(dirname "$script_path")" 2>/dev/null && pwd || true)"
+  fi
 
   local share_dir
   if [ "$DEST" = "$DEST_DEFAULT" ]; then

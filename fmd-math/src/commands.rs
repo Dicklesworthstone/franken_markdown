@@ -626,6 +626,17 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
             delims: Some(('(', ')')),
             forced_style: None,
         }),
+        // amsmath's `\genfrac(){0pt}{0}` and `\genfrac(){0pt}{1}`.
+        "dbinom" => Cmd::Frac(FracSpec {
+            bar: false,
+            delims: Some(('(', ')')),
+            forced_style: Some(Style::Display),
+        }),
+        "tbinom" => Cmd::Frac(FracSpec {
+            bar: false,
+            delims: Some(('(', ')')),
+            forced_style: Some(Style::Text),
+        }),
         "over" => Cmd::OverInfix(FracSpec {
             bar: true,
             delims: None,

@@ -54,9 +54,16 @@ def run():
 </head><body><textarea id="chapter-source"># First</textarea><input id="title" value="Browser proof">
 <p><a id="download" href="#ordinary">Unrelated export</a></p>
 <section><h2 id="publish-title">Publish</h2><p>Other publishing controls remain independent.</p></section></body></html>''')
-        page.evaluate("""async ({core, ui, helper, pdf}) => {
+        page.evaluate("""async ({core, ui, helper, pdf, dependencies}) => {
           const moduleUrl = source => URL.createObjectURL(new Blob([source], {type:'text/javascript'}));
-          const coreUrl = moduleUrl(core);
+          const dependencyUrls = {};
+          for (const [name, body] of Object.entries(dependencies)) {
+            let source = body;
+            for (const [path, url] of Object.entries(dependencyUrls))
+              source = source.replaceAll(`"./${path}"`, JSON.stringify(url));
+            dependencyUrls[name] = moduleUrl(source);
+          }
+          const coreUrl = moduleUrl(core.replace('"./book_worker.mjs"', JSON.stringify(dependencyUrls['book_worker.mjs'])));
           const uiUrl = moduleUrl(ui.replace('"../book_pdf_proof.mjs"', JSON.stringify(coreUrl)));
           const {createBookPdfControls} = await import(uiUrl);
           const {proofHost} = await import(moduleUrl(helper));
@@ -100,7 +107,10 @@ def run():
         }""", {"core": (ROOT / "book_pdf_proof.mjs").read_text(),
                 "ui": (ROOT / "demo/book_pdf_controls.mjs").read_text(),
                 "helper": (ROOT / "tests/book_pdf_proof_helpers.mjs").read_text(),
-                "pdf": base64.b64encode(expected).decode()})
+                "pdf": base64.b64encode(expected).decode(),
+                "dependencies": {name: (ROOT / name).read_text() for name in [
+                    "pdf_page.mjs", "book_session.mjs", "book_retained.mjs", "book_worker.mjs",
+                ]}})
 
         def check(name, condition):
             assert condition, name

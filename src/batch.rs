@@ -136,6 +136,10 @@ pub enum OutputFormat {
     Html,
     Pdf,
     Both,
+    /// One single-chapter EPUB per input (multi-file books are `fmd book`).
+    Epub,
+    /// One standalone vector-SVG poster per input.
+    Svg,
 }
 
 impl OutputFormat {
@@ -145,6 +149,8 @@ impl OutputFormat {
             OutputFormat::Html => "html",
             OutputFormat::Pdf => "pdf",
             OutputFormat::Both => "both",
+            OutputFormat::Epub => "epub",
+            OutputFormat::Svg => "svg",
         }
     }
     #[inline(always)]
@@ -653,7 +659,8 @@ fn append_auto_image_assets_for_input(
     };
 
     let mut destinations = Vec::new();
-    collect_image_destinations(&doc.blocks, &mut destinations);
+    let lowered_doc = crate::safe_html::lower(doc);
+    collect_image_destinations(&lowered_doc.blocks, &mut destinations);
     for destination in destinations {
         let destination = destination.trim();
         if destination.is_empty()
@@ -906,6 +913,59 @@ fn render_one(
                     input,
                     FileErrorKind::Render,
                     format!("render pdf failed: {e}"),
+                );
+            }
+        }
+    }
+
+    if matches!(format, OutputFormat::Epub) {
+        let mut epub_opts = html.clone();
+        if let Err(e) = append_auto_image_assets_for_input(
+            input,
+            &doc,
+            &mut epub_opts.image_assets,
+            "EPUB",
+            max_pdf_image_bytes,
+        ) {
+            return failed(input, FileErrorKind::Input, e);
+        }
+        match crate::render_epub(&doc, &epub_opts) {
+            Ok(bytes) => rendered.push(PendingOutput {
+                kind: "epub",
+                path: output_path(input, out_dir, "epub"),
+                bytes,
+            }),
+            Err(e) => {
+                return failed(
+                    input,
+                    FileErrorKind::Render,
+                    format!("render epub failed: {e}"),
+                );
+            }
+        }
+    }
+    if matches!(format, OutputFormat::Svg) {
+        let mut images = pdf.image_assets.clone();
+        if let Err(e) =
+            append_auto_image_assets_for_input(input, &doc, &mut images, "SVG", max_pdf_image_bytes)
+        {
+            return failed(input, FileErrorKind::Input, e);
+        }
+        let svg_opts = crate::SvgOptions {
+            theme: pdf.theme.clone(),
+            ..crate::SvgOptions::default()
+        };
+        match crate::svg::render_svg_with_resources(&doc, &svg_opts, &pdf.font_assets, &images) {
+            Ok((bytes, _, _)) => rendered.push(PendingOutput {
+                kind: "svg",
+                path: output_path(input, out_dir, "svg"),
+                bytes,
+            }),
+            Err(e) => {
+                return failed(
+                    input,
+                    FileErrorKind::Render,
+                    format!("render svg failed: {e}"),
                 );
             }
         }

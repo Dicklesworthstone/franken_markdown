@@ -164,10 +164,20 @@ fn heading_ids_are_unique_non_empty_and_collision_safe() {
 
 #[test]
 fn heading_plain_text_projection_preserves_raw_html_source() {
+    // Safe-subset tags stay sanitized markup; the title and slug use text.
     let html = render("# Title <i>raw</i>");
+    assert!(html.contains("<title>Title raw</title>"), "{html}");
+    assert!(
+        html.contains("<h1 id=\"title-raw\">Title <i>raw</i></h1>"),
+        "{html}"
+    );
 
-    assert!(html.contains("<title>Title &lt;i&gt;raw&lt;/i&gt;</title>"));
-    assert!(html.contains("<h1 id=\"title-irawi\">Title &lt;i&gt;raw&lt;/i&gt;</h1>"));
+    // Tags outside the subset keep their visible source in title and slug.
+    let html = render("# Title <blink>raw</blink>");
+    assert!(html.contains("<title>Title &lt;blink&gt;raw&lt;/blink&gt;</title>"));
+    assert!(
+        html.contains("<h1 id=\"title-blinkrawblink\">Title &lt;blink&gt;raw&lt;/blink&gt;</h1>")
+    );
 }
 
 #[test]

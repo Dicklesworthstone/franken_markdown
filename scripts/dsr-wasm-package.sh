@@ -19,7 +19,7 @@ for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts 
   native_workspace.js native_workspace.d.ts interactive_export.mjs NATIVE_WORKSPACE.md \
   native_pdf_proof.mjs native_pdf_proof_ui.mjs NATIVE_PDF_PROOF.md \
   book_pdf_proof.mjs BOOK_PDF_PROOF.md BOOK_FONTS.md BOOK_IMAGES.md \
-  book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_worker_entry.js BOOK.md PORTABLE_BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
+  book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_retained.mjs book_worker_entry.js BOOK.md PORTABLE_BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
   flow_export.mjs EXPORT.md SOURCE.md FILES.md SETTINGS.md \
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
@@ -40,6 +40,7 @@ node --test wasm/native_pdf_proof.test.mjs wasm/native_pdf_proof_package.test.mj
 node --test wasm/tests/book_font_authoring.test.mjs wasm/tests/book_font_controls.test.mjs wasm/tests/book_font_package.test.mjs
 node --test wasm/tests/book_image_*.test.mjs
 node --test wasm/tests/book_pdf*.test.mjs
+node --test wasm/tests/book_retained_exports.test.mjs wasm/tests/book_publishing_retention.test.mjs
 node --test wasm/tests/book_portable*.test.mjs
 node --test wasm/document_comparison.test.mjs wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs
 node --test wasm/interactive.test.mjs wasm/interactive_runtime.test.mjs wasm/interactive_export.test.mjs wasm/native_workspace_page.test.mjs wasm/native_workspace_images.test.mjs wasm/native_workspace_settings.test.mjs wasm/native_workspace_source.test.mjs wasm/native_workspace_publishing.test.mjs

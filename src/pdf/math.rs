@@ -351,6 +351,7 @@ pub(super) fn layout_block(
             count: 1,
             kind: FlowKind::Image,
             list_start: false,
+            heading_level: 0,
         },
         page_break_before: false,
         list_path: Vec::new(),

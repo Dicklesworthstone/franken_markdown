@@ -6,6 +6,12 @@
 
 use wasm_bindgen::prelude::*;
 
+#[path = "browser_render_options.rs"]
+mod render_options;
+
+#[path = "browser_source_set.rs"]
+mod source_set;
+
 use super::{BookInput, BookRenderer, BookWorkspace};
 use crate::{DarkModePolicy, FontAssetSlot, FontFamily, RenderError};
 
@@ -108,6 +114,30 @@ impl FmdBook {
             .map_err(to_js)
     }
 
+    /// Replace the complete ordered chapter/include capture at an expected
+    /// revision, preserving publishing settings, page defaults and all assets.
+    /// Empty include arrays remove the include-only capture; expansion mode
+    /// remains fixed. No host files or source text are rewritten. Changed sets
+    /// rebuild all chapter bindings; exact normalized no-ops retain the AST.
+    /// Returns bounded fmd-book-source-set-v1 JSON.
+    ///
+    /// # Errors
+    /// Invalid/stale revisions, mismatched arrays, source/path/output limits,
+    /// and invalid include graphs leave the previous usable book untouched.
+    #[wasm_bindgen(js_name = replaceSources)]
+    pub fn replace_sources(
+        &mut self,
+        paths: Vec<String>,
+        sources: Vec<String>,
+        include_paths: Vec<String>,
+        include_sources: Vec<String>,
+        expected_revision: f64,
+    ) -> Result<String, JsValue> {
+        source_set::replace(
+            &mut self.renderer, paths, sources, include_paths, include_sources, expected_revision,
+        ).map_err(to_js)
+    }
+
     /// Set shared metadata. Absent or blank values restore renderer defaults.
     /// Per-chapter frontmatter language overrides the book's language in HTML
     /// and EPUB. Author metadata is used by the PDF path.
@@ -170,6 +200,55 @@ impl FmdBook {
     pub fn set_font_scale(&mut self, scale: f64) -> Result<(), JsValue> {
         let scale = font_scale(scale).map_err(JsValue::from_str)?;
         self.renderer.options_mut().font_scale = Some(scale);
+        Ok(())
+    }
+
+    /// Replace detailed PDF layout, typography, metadata epoch and running
+    /// bands as one transaction. Absent fields reset this profile to defaults;
+    /// title, author, theme, assets, source and navigation enablement survive.
+    /// Typography tokens use the single-document contract. Running templates
+    /// are header left/center/right followed by footer left/center/right.
+    /// Geometry and template validity that depends on it are checked at render.
+    /// The TOC depth also applies to subsequent HTML table-of-contents output.
+    ///
+    /// # Errors
+    /// Invalid tokens, sizes, integers or band sizes leave every setting intact.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = setPdfOptions)]
+    pub fn set_pdf_options(
+        &mut self,
+        typography: Option<String>,
+        base_font_size: Option<f64>,
+        heading_scale: Option<f64>,
+        table_font_size: Option<f64>,
+        toc_depth: Option<f64>,
+        fit_to_pages: Option<f64>,
+        code_line_numbers: bool,
+        metadata_epoch_seconds: Option<f64>,
+        running_slots: Vec<String>,
+        header_rule: bool,
+        footer_rule: bool,
+        skip_first_page: bool,
+    ) -> Result<(), JsValue> {
+        let settings = render_options::PdfSettings::new(
+            typography.as_deref(), base_font_size, heading_scale, table_font_size,
+            toc_depth, fit_to_pages, code_line_numbers, metadata_epoch_seconds,
+            running_slots, header_rule, footer_rule, skip_first_page,
+        ).map_err(to_js)?;
+        settings.apply(self.renderer.options_mut());
+        Ok(())
+    }
+
+    /// Select the HTML site's embedded font container; EPUB still uses its
+    /// publication-local TrueType package. Does not change PDF or source state.
+    ///
+    /// # Errors
+    /// Unknown formats leave the last valid format unchanged.
+    #[wasm_bindgen(js_name = setHtmlFontFormat)]
+    pub fn set_html_font_format(&mut self, format: &str) -> Result<(), JsValue> {
+        let format = crate::HtmlFontFormat::parse(format)
+            .ok_or_else(|| JsValue::from_str("htmlFontFormat must be ttf, woff1, or woff2"))?;
+        self.renderer.options_mut().html_font_format = format;
         Ok(())
     }
 
@@ -258,6 +337,18 @@ impl FmdBook {
         self.renderer.render_site().map_err(to_js)
     }
 
+    /// Render one chapter and the complete navigation map, without rendering
+    /// or compressing a full site. Returns fmd-book-chapter-preview-v1 JSON.
+    ///
+    /// # Errors
+    /// Rejects lossy JavaScript indexes, invalid assets and preview budgets.
+    #[wasm_bindgen(js_name = renderChapterPreview)]
+    pub fn render_chapter_preview(&self, selected: f64) -> Result<Vec<u8>, JsValue> {
+        let index = chapter_preview_index(selected, self.chapter_count())
+            .map_err(JsValue::from_str)?;
+        self.renderer.render_chapter_preview(index).map_err(to_js)
+    }
+
     /// Check local HTML navigation on the retained, expanded book. Returns
     /// fmd-book-link-report-v1 JSON without rendering pages or inspecting assets.
     /// External URLs and non-chapter downloads are counted, not verified.
@@ -313,6 +404,15 @@ fn checked_source_revision(value: f64) -> Result<u32, &'static str> {
     Ok(value as u32)
 }
 
+// Preserve fractional/negative/out-of-range values until admission. A u32
+// ABI argument would otherwise coerce them before this check could reject.
+fn chapter_preview_index(value: f64, count: usize) -> Result<usize, &'static str> {
+    if !value.is_finite() || value < 0.0 || value >= count as f64 || value.fract() != 0.0 {
+        return Err("chapter preview index must be an integer within this book");
+    }
+    Ok(value as usize)
+}
+
 fn nonblank(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
@@ -364,6 +464,16 @@ mod tests {
         ] {
             assert!(checked_source_revision(value).is_err());
         }
+    }
+
+    #[test]
+    fn chapter_preview_indexes_are_checked_before_abi_narrowing() {
+        assert_eq!(chapter_preview_index(0.0, 2), Ok(0));
+        assert_eq!(chapter_preview_index(4095.0, 4096), Ok(4095));
+        for value in [f64::NAN, f64::INFINITY, -1.0, 0.5, 2.0, 4_294_967_296.0] {
+            assert!(chapter_preview_index(value, 2).is_err());
+        }
+        assert!(chapter_preview_index(0.0, 0).is_err());
     }
 
     fn paper_book() -> BookRenderer {

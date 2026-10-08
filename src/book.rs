@@ -22,7 +22,7 @@ mod paths;
 mod render;
 #[path = "book/workspace.rs"]
 mod workspace;
-pub use workspace::{BookSourceUpdate, BookWorkspace};
+pub use workspace::{BookSourceSetUpdate, BookSourceUpdate, BookWorkspace};
 
 #[path = "book/validation.rs"]
 pub mod validation;

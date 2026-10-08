@@ -50,16 +50,11 @@ alone; `--microtype protrusion` enables both effects. Related quality lever:
 `--typography-homogeneous` (Verna DocEng '25 gradual adjacent demerits) refines
 the KP fitness-class penalty for smoother inter-word spacing.
 
-The hooks are complete, tested, and conservative-by-default. Enabling them inside
-the optimal line breaker is intentionally **not** done by default, per the
+Both effects stay **off by default**, per the
 `tests/artifacts/perf/qw1.7-reprofile/DECISION.md` gate (microtypography is a
 *quality* feature that *adds* cost; line breaking is rank 4 / 7.5 ms and not
-first-order). The breaker is deliberately size-agnostic (it carries box widths,
-not font sizes), so wiring protrusion through it requires precomputing per-box
-protrusion at box construction (where the font size is known) and storing it on
-`TextBox` — a broad, opt-in change to be made when a quality pass justifies
-enabling microtypography by default. The design and deltas above are the
-contract that wiring will honor.
+first-order). Turning them on by default is a separate quality decision that
+needs golden-fixture review, not more wiring.
 
 ## Adjacent techniques (Unreleased)
 

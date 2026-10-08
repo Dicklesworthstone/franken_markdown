@@ -19,8 +19,8 @@ if the capability is real and proven.
 | First-class browser/WASM package + demo | **Implemented; publish gated** | `wasm/` package (`@franken-suite/franken-markdown`), `wasm/demo/`, `check-wasm-package.sh`, tag-gated `release-wasm.yml`; npm publish is a maintainer tag-push (bead 3i5) |
 | Asupersync-native batch orchestration (off the render core) | **Implemented** | `src/batch.rs` behind the `batch` feature, `fmd batch`, deterministic receipts, cancellation lab test; isolation proven (`check-wasm-core.sh` + asupersync-only-under-`--features batch` in `check-policy.sh`) |
 | Performance proof discipline | **Implemented** | qw1.8 perf track (shared schema, counters, comparer), `tests/artifacts/perf/qw1.7-reprofile/DECISION.md`; layout micro-opts rejected on evidence (qw1.7.2/.4) |
-| Microtypography (LaTeX-grade) | **Hooks implemented; default wiring gated** | fixed-point protrusion/expansion hooks + tests, `docs/MICROTYPOGRAPHY.md`; default-render wiring deferred by the re-profile DECISION (bead qw1.7.5) |
-| Official CommonMark conformance | **Implemented (ratcheted floor)** | `commonmark-conformance.sh ci` — 379/652 spec examples (379/591 in-scope, 64.1%), pass count at the enforced floor of 379 |
+| Microtypography (LaTeX-grade) | **Implemented (opt-in)** | `--microtype protrusion\|expansion` wires optical-margin protrusion and `Tz` glyph expansion into justified PDF paragraphs; `tests/microtype_test.rs`, `docs/MICROTYPOGRAPHY.md`; off by default so default output stays byte-identical |
+| Official CommonMark conformance | **Implemented (ratcheted floor)** | `commonmark-conformance.sh ci` — 589/652 spec examples (97.2% of 606 in-scope), pass count at the enforced floor of 589 |
 | Determinism across runs/OSes | **Implemented** | `check-determinism.sh` (byte-stable across `SOURCE_DATE_EPOCH`) |
 | Cross-platform release + installers | **Implemented; tag push gated** | Win/macOS/Linux + WASM CI; `install.sh`/`install.ps1`; tag-gated `release.yml` (4 targets, checksums, per-platform smoke); README Installation section (bead 08f) |
 
@@ -30,7 +30,7 @@ if the capability is real and proven.
 `cargo clippy --all-targets -- -D warnings` · `cargo test` ·
 `check-policy.sh` · `check-claim-discipline.sh` · `check-wasm-core.sh` ·
 `check-determinism.sh` · `parser-diff.sh` · `commonmark-conformance.sh ci`
-(pass 379/652 ≥ floor 379) · `cargo test --features batch` (7) + batch clippy ·
+(pass 589/652 ≥ floor 589) · `cargo test --features batch` (7) + batch clippy ·
 `release-smoke.sh` · `perf-counters.sh --self-test` ·
 `perf-compare.sh --self-test`.
 

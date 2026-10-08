@@ -103,10 +103,12 @@
     return terms;
   }
 
-  // Folding final sigma as well makes caseless matching independent of word
-  // context: scalar/chunk lowercasing must agree with whole-query lowercasing.
-  const normalize = (value) => value.toLowerCase().replace(/ς/gu, "σ").replace(/\s+/gu, " ");
+  // Folding final sigma makes caseless matching independent of word context.
+  // Canonical decomposition equates composed/decomposed spellings; it does
+  // not strip marks or apply compatibility folding to symbols and ligatures.
+  const normalize = (value) => value.toLowerCase().replace(/ς/gu, "σ").normalize("NFD").replace(/\s+/gu, " ");
   const CHUNK = 4096,
+    NORMALIZATION_TAIL = 256,
     WORK_SLICE = 65536;
 
   // Bound SOURCE work, not normalized output: long whitespace runs must
@@ -118,13 +120,22 @@
     while (position < value.length) {
       const start = position,
         leadingSpace = space;
-      position = Math.min(value.length, start + CHUNK);
+      // Reserve bounded room to finish a combining sequence. NFD can reorder
+      // marks, so cutting immediately before another mark is not a canonical
+      // normalization boundary. Never normalize an unbounded hostile sequence.
+      position = Math.min(value.length, start + CHUNK - NORMALIZATION_TAIL);
       if (
         position < value.length &&
         /[\uDC00-\uDFFF]/u.test(value[position]) &&
         /[\uD800-\uDBFF]/u.test(value[position - 1])
       )
         position++;
+      while (position < value.length && /^\p{M}/u.test(value.slice(position, position + 2))) {
+        const width = value.codePointAt(position) > 0xffff ? 2 : 1;
+        if (position + width > start + CHUNK)
+          fail("A combining sequence exceeds the search normalization work limit.");
+        position += width;
+      }
       const stop = position,
         folded = normalize(value.slice(start, stop));
       const body = leadingSpace && folded.startsWith(" ") ? folded.slice(1) : folded;
@@ -135,20 +146,36 @@
         work: stop - start,
         offsetAt(index) {
           if (!offsets) {
-            offsets = [];
+            // Normalization can expand a scalar and reorder adjacent marks.
+            // For each normalized scalar, retain its source origins in stable
+            // occurrence order. Canonical reordering preserves that order for
+            // equal scalars; matching the bulk output then recovers exact
+            // origins without assuming a monotone one-code-unit source map.
+            const origins = new Map();
+            const record = (scalar, origin) => {
+              let queue = origins.get(scalar);
+              if (!queue) origins.set(scalar, queue = { values: [], next: 0 });
+              queue.values.push(origin);
+            };
             let whitespace = leadingSpace;
             for (let at = start; at < stop; ) {
               const scalar = String.fromCodePoint(value.codePointAt(at)),
                 origin = at;
               at += scalar.length;
               if (/\s/u.test(scalar)) {
-                if (!whitespace) offsets.push(origin);
+                if (!whitespace) record(" ", origin);
                 whitespace = true;
               } else {
                 whitespace = false;
-                const count = normalize(scalar).length;
-                for (let i = 0; i < count; i++) offsets.push(origin);
+                for (const normalized of normalize(scalar)) record(normalized, origin);
               }
+            }
+            offsets = [];
+            for (const scalar of body) {
+              const queue = origins.get(scalar);
+              const origin = queue && queue.values[queue.next++];
+              if (origin === undefined) fail("Search normalization source map is inconsistent.");
+              for (let i = 0; i < scalar.length; i++) offsets.push(origin);
             }
           }
           return offsets[index];
@@ -166,6 +193,7 @@
       length = 0,
       mask = 0,
       offset = -1;
+    const offsets = terms.map(() => -1);
     return {
       add(chunk) {
         const window = tail + chunk.body;
@@ -181,6 +209,7 @@
               continue;
             }
             const source = segment.chunk.offsetAt(segment.from + at);
+            offsets[i] = source;
             if (offset < 0 || source < offset) offset = source;
             break;
           }
@@ -209,6 +238,7 @@
         return {
           mask,
           offset,
+          offsets,
           prefix: head.startsWith(terms[0]),
           exact: terms.length === 1 && length === head.length && head.trim() === terms[0],
         };
@@ -258,15 +288,41 @@
     // Prepared rows are chapter-contiguous. Keep only the last title summary,
     // not another full-sized lowercase copy or one cache entry per paragraph.
     let lastTitle, titleMatch;
-    // Group repeated matches within a section; headings outrank its body hits.
+    // A section is the contiguous run owned by one emitted anchor. Match all
+    // its entries together, but keep each phrase inside a real entry: joining
+    // strings would manufacture phrases and lose the original source offsets.
     let section = null,
-      representative = null;
-    const flush = () => {
-      if (representative) {
-        total++;
-        retain(results, representative);
+      representative = null,
+      partial = null,
+      coverage = 0,
+      witnesses = [];
+    const witness = (row, match, i, inTitle = false) => ({
+      row, offset: match.offsets[i], inTitle,
+    });
+    const passages = (evidence) => {
+      const ordered = evidence.filter(Boolean).sort((a, b) =>
+        a.row.order - b.row.order || Number(b.inTitle) - Number(a.inTitle) || a.offset - b.offset);
+      const selected = [];
+      for (const hit of ordered) {
+        const previous = selected[selected.length - 1];
+        // Nearby hits in the same source field share one bounded excerpt.
+        if (!previous || previous.row !== hit.row || previous.inTitle !== hit.inTitle ||
+            hit.offset - previous.offset > 100) selected.push(hit);
       }
-      representative = null;
+      return selected;
+    };
+    const flush = () => {
+      if (coverage === all && (representative || partial)) {
+        const result = representative || {
+          row: partial.row, score: -1, offset: partial.offset,
+          titleOffset: partial.titleOffset, passages: passages(witnesses),
+        };
+        total++;
+        retain(results, result);
+      }
+      representative = partial = null;
+      coverage = 0;
+      witnesses = [];
     };
     for (const row of rows) {
       if (cancelled()) return null;
@@ -282,6 +338,24 @@
       }
       const body = row.text === lastTitle ? titleMatch : await scan(row.text);
       if (!body || cancelled()) return null;
+      coverage |= body.mask | titleMatch.mask;
+      const local = [];
+      let bodyTerms = 0;
+      for (let i = 0; i < terms.length; i++) {
+        if (body.mask & (1 << i)) {
+          bodyTerms++;
+          local[i] = witness(row, body, i);
+          // Prefer an actual passage over inherited chapter-title evidence.
+          if (!witnesses[i] || witnesses[i].inTitle) witnesses[i] = local[i];
+        } else if (titleMatch.mask & (1 << i)) {
+          local[i] = witness(row, titleMatch, i, true);
+          if (!witnesses[i]) witnesses[i] = local[i];
+        }
+      }
+      if (bodyTerms && (!partial || bodyTerms > partial.bodyTerms ||
+          (bodyTerms === partial.bodyTerms && row.heading && !partial.row.heading))) {
+        partial = { row, bodyTerms, offset: body.offset, titleOffset: titleMatch.offset };
+      }
       if ((body.mask | titleMatch.mask) === all) {
         const inBody = body.mask === all;
         const score =
@@ -289,7 +363,8 @@
           (row.heading ? 10 : 0) +
           (body.exact ? 30 : 0) +
           (inBody && body.prefix ? 5 : 0);
-        const result = { row, score, offset: body.offset, titleOffset: titleMatch.offset };
+        const result = { row, score, offset: body.offset, titleOffset: titleMatch.offset,
+          passages: passages(local) };
         if (!representative || compare(result, representative) < 0) representative = result;
       }
       visited++;
@@ -378,7 +453,9 @@
         link.textContent =
           excerpt(row.title, answer.terms, result.titleOffset) +
           (row.anchor ? " — " + excerpt(row.anchor, [], 0) : "");
-        detail.textContent = excerpt(row.text, answer.terms, result.offset);
+        detail.textContent = result.passages.map((hit) =>
+          excerpt(hit.inTitle ? hit.row.title : hit.row.text, answer.terms, hit.offset)
+        ).join("\n…\n");
         item.append(link, detail);
         list.append(item);
       }

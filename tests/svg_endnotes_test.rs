@@ -80,10 +80,10 @@ fn svg_resolves_forward_references_in_first_use_order() {
         definition("b", vec![paragraph("Beta")]),
     ]);
     let expected = doc(vec![
-        Block::Paragraph(vec![text("Body"), text("[1]"), text("[2]"), text("[1]")]),
+        Block::Paragraph(vec![text("Body"), text("¹"), text("²"), text("¹")]),
         notes_heading(),
-        Block::Paragraph(vec![text("[1] "), text("Beta")]),
-        Block::Paragraph(vec![text("[2] "), text("Alpha")]),
+        Block::Paragraph(vec![text("¹ "), text("Beta")]),
+        Block::Paragraph(vec![text("² "), text("Alpha")]),
     ]);
     assert_svg_equivalent(&source, &expected);
 }
@@ -132,8 +132,12 @@ fn rich_notes_retain_code_lists_tables_math_and_styles_in_order() {
         Block::Paragraph(vec![reference("rich")]),
         definition("rich", rich.clone()),
     ]);
-    let mut expected = vec![paragraph("[1]"), notes_heading(), paragraph("[1]")];
-    expected.extend(rich);
+    let mut expected = vec![paragraph("¹"), notes_heading(), paragraph("¹")];
+    // Paged output lowers safe raw HTML: the `<aside>` keeps its text.
+    expected.extend(rich.into_iter().map(|block| match block {
+        Block::HtmlBlock(_) => paragraph("Inert evidence"),
+        other => other,
+    }));
     assert_svg_equivalent(&source, &doc(expected));
 }
 
@@ -152,10 +156,10 @@ fn nested_definitions_and_reference_cycles_are_emitted_once() {
     assert_svg_equivalent(
         &source,
         &doc(vec![
-            paragraph("[1]"),
+            paragraph("¹"),
             notes_heading(),
-            Block::Paragraph(vec![text("[1] "), text("A"), text("[2]")]),
-            Block::Paragraph(vec![text("[2] "), text("B"), text("[1]")]),
+            Block::Paragraph(vec![text("¹ "), text("A"), text("²")]),
+            Block::Paragraph(vec![text("² "), text("B"), text("¹")]),
         ]),
     );
 }
@@ -181,11 +185,11 @@ fn notes_in_list_and_quote_containers_are_not_lost() {
             tight: true,
             items: vec![ListItem {
                 task: None,
-                blocks: vec![paragraph("[1]")],
+                blocks: vec![paragraph("¹")],
             }],
         })]),
         notes_heading(),
-        Block::Paragraph(vec![text("[1] "), text("Nested note")]),
+        Block::Paragraph(vec![text("¹ "), text("Nested note")]),
     ]);
     assert_svg_equivalent(&source, &expected);
 }
@@ -203,8 +207,8 @@ fn undefined_duplicate_and_unreferenced_notes_have_explicit_policy() {
         &doc(vec![
             paragraph("[^missing]"),
             notes_heading(),
-            Block::Paragraph(vec![text("[1] "), text("First wins")]),
-            paragraph("[2]"),
+            Block::Paragraph(vec![text("¹ "), text("First wins")]),
+            paragraph("²"),
         ]),
     );
 }
@@ -221,9 +225,9 @@ fn note_images_use_resources_and_report_failures_once() {
         definition("plot", vec![Block::Paragraph(vec![image.clone()])]),
     ]);
     let expected = doc(vec![
-        Block::Paragraph(vec![text("[1]"), text("[1]")]),
+        Block::Paragraph(vec![text("¹"), text("¹")]),
         notes_heading(),
-        Block::Paragraph(vec![text("[1] "), image]),
+        Block::Paragraph(vec![text("¹ "), image]),
     ]);
     let options = SvgOptions::default();
     let fonts = FontAssets::default();

@@ -7,8 +7,8 @@
 # would violate the clean-room policy); this gate SKIPS cleanly when veraPDF is not
 # installed, so it can live in CI without becoming a hard dependency.
 #
-# fmd's tagging is intentionally PARTIAL (H1-H3, lists, tables, blockquotes,
-# figures, links — see docs/PDF_ACCESSIBILITY.md; H4-H6 + cell-id linkage are
+# fmd's tagging is intentionally PARTIAL (H1-H6, lists, tables, blockquotes,
+# figures, links — see docs/PDF_ACCESSIBILITY.md; cell-id linkage is
 # roadmap), so full PDF/UA-1 *conformance* is not yet expected. The spot-check
 # therefore asserts veraPDF can PARSE the document and recognizes its structure
 # tree (no fatal/parse error), and records the full conformance report for review

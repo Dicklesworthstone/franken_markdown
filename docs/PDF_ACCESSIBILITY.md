@@ -19,7 +19,7 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 
 | Markdown | Structure | Notes |
 |---|---|---|
-| `#`/`##`/`###` heading | `/H1` / `/H2` / `/H3` | Lower levels collapse to generic `/H` (see limitations) |
+| `#` … `######` heading | `/H1` … `/H6` | Exact level from the source heading, independent of the type scale |
 | Paragraph | `/P` | Wrapped lines of one paragraph share a single `/P` (one `/MCR` per line) |
 | Bullet / ordered / task list | `/L` → `/LI` → `/LBody` → `/P` | Nested lists produce nested `/L`, to arbitrary depth |
 | Blockquote | `/BlockQuote` | Nested quotes nest; content keeps its own `/P`/`/L`/… inside |
@@ -27,7 +27,7 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 | Table header cell | `/TH` with `/A << /O /Table /Scope /Column >>` | Column scope (Markdown headers are column headers) |
 | Fenced code block | `/Code` | All lines of one block share a single `/Code` |
 | Image | `/Figure` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Alt text from the Markdown `![alt]`; bbox locates the image |
-| Inline / autolink link | `/Link` with `/OBJR` to its annotation, and the annotation's reverse `/StructParent` | Fully bidirectional: the element references the annotation and the annotation maps back through the parent tree (PDF/UA) |
+| Inline / autolink link | `/Link` nested in its `/P` or heading (one per link run; prose stays in the parent) with `/OBJR` to its annotation, and the annotation's reverse `/StructParent` | Fully bidirectional: the element references the annotation and the annotation maps back through the parent tree (PDF/UA) |
 | Backgrounds, panels, zebra stripes, inline-code chips, rules, thematic breaks, blockquote gutter bars | `/Artifact` (BMC…EMC) | Decoration is kept out of the reading order |
 | Running header/footer and page numbers (`PdfOptions.running`, `page_numbers`) | `/Artifact <</Type /Pagination /Subtype /Header\|/Footer>> BDC … EMC` | One pagination artifact per band, text and rule together; never in the reading order and never given an `/MCID` |
 
@@ -71,13 +71,6 @@ derived from existing per-line data.
 These are deliberate consequences of a small, line-based, dependency-free writer.
 They are safe (they never corrupt the tree) and are candidates for future beads.
 
-- **Heading levels H4–H6** collapse to the generic `/H` tag. They share the body
-  text measure, so the writer cannot recover the exact source level from glyph
-  size alone. H1–H3 are exact.
-- **Inline links inside a paragraph** are tagged at *line* granularity: a line
-  that contains any link run becomes a single `/Link` element covering the whole
-  line, rather than splitting the surrounding prose into `/P` text plus a nested
-  `/Link` span. The link annotation is still correctly referenced with `/OBJR`.
 - **Empty table cells** emit no `/TD`; a row with blank source cells is not
   back-filled to a rectangular grid. Non-empty cells are always tagged.
 - **No `/Headers` ID associations** between body cells and header cells. Header
@@ -120,9 +113,9 @@ ratchets `failedRules` against `tests/fixtures/pdfua-baseline.txt` (currently
 
 | veraPDF rule | What it flags |
 |---|---|
-| clause 7.1, test 9 | heading-structure detail (H4–H6 collapse to generic `/H`) |
+| clause 7.1, test 9 | heading-structure detail (H4–H6 collapsed to generic `/H` when measured; exact `/H4`–`/H6` tags have since landed, re-measure before tightening) |
 | clause 7.1, test 10 | heading-structure detail (same roadmap item) |
 | clause 5, test 1 | document-level requirement (viewer/title metadata class) |
 
-These rows map to the roadmap items above (H4–H6 exact tags; document title
+These rows map to the roadmap items above (H4–H6 exact tags, now landed; document title
 display). When they land, tighten the baseline in the same commit.

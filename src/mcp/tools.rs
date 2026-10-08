@@ -136,6 +136,21 @@ const PDF_FIELDS: &[Field] = &[
         "Gradual adjacent demerits in the line breaker",
     ),
     (
+        "typographyAntiriver",
+        "boolean",
+        "Penalize white rivers through justified paragraphs",
+    ),
+    (
+        "typographyPareto",
+        "boolean",
+        "Pareto-front line breaking safety net",
+    ),
+    (
+        "optimalPagination",
+        "boolean",
+        "Globally optimal (Plass) PDF page breaking",
+    ),
+    (
         "codeLineNumbers",
         "boolean",
         "Render line numbers in code blocks",
@@ -569,6 +584,9 @@ fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError
             lang: string(args, "lang").map(str::to_string),
             fit_to_pages,
             gradual_demerits: boolean(args, "typographyHomogeneous"),
+            river_penalty: boolean(args, "typographyAntiriver"),
+            pareto_line_breaking: boolean(args, "typographyPareto"),
+            optimal_pagination: boolean(args, "optimalPagination"),
             code_line_numbers: boolean(args, "codeLineNumbers"),
             page_numbers: boolean(args, "pageNumbers"),
             running: running::parse(args.get("running"))?,

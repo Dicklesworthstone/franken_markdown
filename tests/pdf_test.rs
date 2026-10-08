@@ -6858,7 +6858,8 @@ fn pdf_structure_tree_is_hierarchical_and_accessible() {
 
 #[test]
 fn pdf_preserves_raw_html_source_text_instead_of_dropping_it() {
-    let md = "before <i>raw</i> after\n\n<section>block</section>\n";
+    // Tags outside the safe-HTML subset keep their visible source in PDF.
+    let md = "before <blink>raw</blink> after\n\n<marquee>block</marquee>\n";
     for (label, opts) in [
         ("default", PdfOptions::default()),
         (
@@ -6888,6 +6889,36 @@ fn pdf_preserves_raw_html_source_text_instead_of_dropping_it() {
             text_streams(&pdf).join("\n").matches("BT /F").count() >= 2,
             "{label}: inline and block raw HTML source should both produce PDF text"
         );
+    }
+}
+
+#[test]
+fn pdf_lowers_safe_raw_html_instead_of_printing_tags() {
+    let md = "<!-- lint: off -->\n\nbefore <i>raw</i> after<br>next\n\n\
+              <p align=\"center\"><b>block</b></p>\n";
+    for opts in [
+        PdfOptions::default(),
+        PdfOptions {
+            allow_raw_html: true,
+            ..PdfOptions::default()
+        },
+    ] {
+        let pdf = render_pdf(md, &opts).unwrap();
+        let text = as_text(&pdf);
+        assert!(!text.contains("<003C>"), "no '<' glyph from lowered tags");
+        let layer = franken_markdown::pdf::verification_text_layer(
+            &franken_markdown::parse_markdown(md),
+            &opts,
+        )
+        .unwrap();
+        let lines: Vec<String> = layer
+            .pages
+            .iter()
+            .flat_map(|page| &page.runs)
+            .map(|run| run.text.clone())
+            .filter(|text| !text.is_empty())
+            .collect();
+        assert_eq!(lines, ["before raw after", "next", "block"], "{lines:?}");
     }
 }
 
@@ -7773,26 +7804,29 @@ fn pdf_reuses_hyphenation_cache_for_repeated_words() {
 // ===========================================================================
 
 #[test]
-fn pdf_tags_h3_through_h6_with_generic_heading_collapse() {
-    let pdf = render_pdf(
-        "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nBody text.\n",
-        &PdfOptions::default(),
-    )
-    .unwrap();
-    let text = as_text(&pdf);
-
-    for tag in ["/S /H1 ", "/S /H2 ", "/S /H3 "] {
-        assert!(text.contains(tag), "explicit heading level missing: {tag}");
+fn pdf_tags_every_heading_level_exactly() {
+    let md =
+        "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nBody text.\n";
+    // The source level decides the tag, whatever the type scale: a small base
+    // size used to push H1 below the old display-size thresholds.
+    for opts in [
+        PdfOptions::default(),
+        PdfOptions {
+            base_font_size: Some(7.0),
+            ..PdfOptions::default()
+        },
+    ] {
+        let pdf = render_pdf(md, &opts).unwrap();
+        let text = as_text(&pdf);
+        for tag in [
+            "/S /H1 ", "/S /H2 ", "/S /H3 ", "/S /H4 ", "/S /H5 ", "/S /H6 ",
+        ] {
+            assert_eq!(text.matches(tag).count(), 1, "exact heading tag {tag}");
+        }
+        assert!(!text.contains("/S /H /P"), "no generic /H collapse");
+        // Each heading still produces an outline destination/title.
+        assert!(text.contains("/Outlines ") && text.contains("/Title (Three)"));
     }
-    // H4–H6 share the body measure, so the writer cannot recover the source level
-    // and collapses them to the generic `/H`. There are three such headings.
-    assert_eq!(
-        text.matches("/S /H /P").count(),
-        3,
-        "H4/H5/H6 should each collapse to a generic /H structure element"
-    );
-    // Each heading still produces an outline destination/title.
-    assert!(text.contains("/Outlines ") && text.contains("/Title (Three)"));
 }
 
 #[test]
@@ -8364,4 +8398,65 @@ fn pdf_numeric_table_column_alignment_inference() {
     let opts = PdfOptions::default();
     let pdf = render_pdf_document(&doc, &opts).expect("render pdf");
     assert!(!pdf.is_empty());
+}
+
+/// Objects of an uncompressed-structure PDF as `(number, dictionary text)`.
+fn pdf_object_dicts(text: &str) -> Vec<(u32, String)> {
+    let mut out = Vec::new();
+    for chunk in text.split(" 0 obj").skip(1).zip(text.split(" 0 obj")) {
+        let (body, before) = chunk;
+        let number = before
+            .rsplit(|c: char| !c.is_ascii_digit())
+            .next()
+            .and_then(|digits| digits.parse().ok());
+        if let Some(number) = number {
+            let body = body.split("endobj").next().unwrap_or_default();
+            out.push((number, body.to_string()));
+        }
+    }
+    out
+}
+
+#[test]
+fn inline_links_are_nested_link_elements_inside_their_paragraph() {
+    let pdf = render_pdf(
+        "See the [docs](https://example.com/docs) for more detail.\n",
+        &PdfOptions::default(),
+    )
+    .unwrap();
+    let text = as_text(&pdf);
+    let objects = pdf_object_dicts(&text);
+    let tag_of = |number: u32| {
+        objects
+            .iter()
+            .find(|(n, _)| *n == number)
+            .and_then(|(_, body)| body.split("/S /").nth(1))
+            .and_then(|rest| rest.split([' ', '/', '>']).next())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let links: Vec<&(u32, String)> = objects
+        .iter()
+        .filter(|(_, body)| body.contains("/Type /StructElem") && body.contains("/S /Link"))
+        .collect();
+    assert_eq!(links.len(), 1, "one link element for the one link run");
+    let (_, link) = links[0];
+    let parent: u32 = link
+        .split("/P ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .expect("link has a parent");
+    assert_eq!(tag_of(parent), "P", "the /Link is a child of the paragraph");
+    assert!(
+        link.contains("/OBJR"),
+        "the link element owns its annotation"
+    );
+    // The surrounding prose is not inside any /Link element.
+    assert!(
+        objects
+            .iter()
+            .any(|(_, body)| body.contains("/S /P") && body.contains("/MCR")
+                || body.contains("/S /P") && body.contains("/K [")),
+    );
 }

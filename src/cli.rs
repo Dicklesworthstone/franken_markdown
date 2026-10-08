@@ -86,7 +86,7 @@ enum Command {
     Diff(DiffArgs),
     /// Assemble a directory of Markdown files into a unified HTML site and/or a
     /// single PDF book (global outline, continuous page numbers).
-    Book(BookArgs),
+    Book(crate::book::native::BookArgs),
     /// Render many Markdown inputs in parallel under a bounded worker budget
     /// (native-only; Asupersync-backed). See docs/BATCH_ORCHESTRATION.md.
     #[cfg(feature = "batch")]
@@ -94,27 +94,6 @@ enum Command {
     /// Run Model Context Protocol (MCP) stdio server exposing tools for agents.
     #[cfg(feature = "mcp")]
     Mcp(McpArgs),
-}
-
-#[derive(Args, Clone)]
-struct BookArgs {
-    /// Book directory (walked recursively for *.md/*.markdown, sorted
-    /// deterministically by path).
-    #[arg(value_name = "DIR")]
-    input: PathBuf,
-    /// Output directory for the site and/or book file (default: alongside the
-    /// input directory as `<dir>-site/` and `<dir>.pdf`).
-    #[arg(long, short)]
-    out_dir: Option<PathBuf>,
-    /// Which output(s) to produce.
-    #[arg(long, value_enum, default_value_t = Target::Both)]
-    to: Target,
-    /// Emit the deterministic book receipt JSON to stdout.
-    #[arg(long)]
-    json: bool,
-    /// Maximum Markdown input bytes per file accepted before parsing (default 64 MiB).
-    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
-    max_input_bytes: u64,
 }
 
 #[derive(Args)]
@@ -185,9 +164,6 @@ struct BatchArgs {
     /// recording it as a failed entry, so a large tree cannot exhaust memory.
     #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
     max_input_bytes: u64,
-    /// Maximum bytes accepted for each auto-loaded local PNG/SVG/JPEG image asset.
-    #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
-    max_pdf_image_bytes: u64,
     /// Record per-file failures in the receipt instead of failing the run.
     #[arg(long)]
     continue_on_error: bool,
@@ -200,6 +176,9 @@ struct BatchArgs {
     /// Emit the machine-readable batch receipt JSON to stdout.
     #[arg(long)]
     json: bool,
+    /// The same rendering flags as `fmd render`, applied to every input.
+    #[command(flatten)]
+    style: RenderStyleArgs,
 }
 
 #[cfg(feature = "mcp")]
@@ -285,6 +264,10 @@ struct WatchArgs {
     /// (detect+render+serve) must be ≤ 150ms or the process exits 1 (j3e0.3).
     #[arg(long, value_name = "N")]
     measure: Option<u32>,
+    /// The same rendering flags as `fmd render` (title, TOC, PDF page
+    /// numbers and running headers, typography, images, fonts, ...).
+    #[command(flatten)]
+    style: RenderStyleArgs,
 }
 
 #[cfg(feature = "batch")]
@@ -318,6 +301,28 @@ struct RenderArgs {
     /// Path to a custom stylesheet that fully replaces the default theme CSS.
     #[arg(long)]
     css: Option<PathBuf>,
+    /// Generate an interactive, self-hosting single-file HTML workspace with live editor,
+    /// real-time preview, document statistics, and client-side PDF export.
+    #[arg(long, visible_alias = "self-hosting")]
+    interactive_html: bool,
+    /// Write a deterministic JSON search index (headings + anchored paragraph
+    /// chunks, schema fmd-search-index-v1) for docs-site search integrations.
+    #[arg(long, value_name = "PATH")]
+    search_index: Option<PathBuf>,
+    /// Maximum Markdown input bytes accepted before rendering.
+    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
+    max_input_bytes: u64,
+    /// Emit a stable JSON status envelope to stderr after writing outputs.
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    style: RenderStyleArgs,
+}
+
+/// Rendering style flags shared by `fmd render`, `fmd watch` and `fmd batch`,
+/// so every surface renders a document the same way.
+#[derive(Args, Clone)]
+struct RenderStyleArgs {
     /// Document title (defaults to the first heading).
     #[arg(long)]
     title: Option<String>,
@@ -327,7 +332,9 @@ struct RenderArgs {
     /// Document language tag for hyphenation and HTML lang attribute (e.g. "en", "de", "fr", "es", "nl").
     #[arg(long)]
     lang: Option<String>,
-    /// Markdown authoring profile (e.g. "commonmark-gfm", "gfm-plus").
+    /// Markdown dialect: "commonmark-gfm" renders exactly what GitHub renders
+    /// (definition lists stay literal text); "gfm-plus" (and the default) also
+    /// renders definition lists.
     #[arg(long)]
     profile: Option<String>,
     /// Pass raw HTML in the source through instead of escaping it.
@@ -343,10 +350,6 @@ struct RenderArgs {
     /// ~half the bytes), woff2 (clean-room Brotli, ~65% smaller), or ttf (raw subset bytes).
     #[arg(long, value_enum)]
     html_font_format: Option<HtmlFontFormatArg>,
-    /// Generate an interactive, self-hosting single-file HTML workspace with live editor,
-    /// real-time preview, document statistics, and client-side PDF export.
-    #[arg(long, visible_alias = "self-hosting")]
-    interactive_html: bool,
     /// Typographic scale factor or preset for uniform type sizing across HTML and PDF.
     ///
     /// Accepts named presets (`xs`, `sm`, `compact`, `md`, `normal`, `default`, `lg`, `xl`, `2xl`, `huge`),
@@ -354,10 +357,6 @@ struct RenderArgs {
     /// Scales body, headings, code, tables, and layout measure proportionally without aliasing.
     #[arg(long, value_name = "SCALE|PRESET", visible_alias = "type-size")]
     font_scale: Option<String>,
-    /// Write a deterministic JSON search index (headings + anchored paragraph
-    /// chunks, schema fmd-search-index-v1) for docs-site search integrations.
-    #[arg(long, value_name = "PATH")]
-    search_index: Option<PathBuf>,
     /// Adaptive page budgeting solver to fit rendered PDF content into target pages.
     ///
     /// Automatically tunes micro-typographic scale (base font size, line height,
@@ -368,8 +367,8 @@ struct RenderArgs {
     /// enables optical-margin alignment (punctuation hangs into the margin)
     /// via the precomputed per-box hooks in docs/MICROTYPOGRAPHY.md. Default
     /// `off` keeps output byte-identical to previous versions.
-    #[arg(long, value_enum, default_value_t = MicrotypeArg::Off)]
-    microtype: MicrotypeArg,
+    #[arg(long, value_enum)]
+    microtype: Option<MicrotypeArg>,
     /// Enable gradual adjacent demerits (Verna, DocEng '25) in the
     /// Knuth-Plass breaker for justified paragraphs: replaces the coarse
     /// 4-class fitness check with a penalty proportional to the spacing
@@ -397,6 +396,9 @@ struct RenderArgs {
     /// Render muted line numbers in PDF fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
+    /// SVG poster width in points (144..=14400; default 612, US Letter).
+    #[arg(long = "svg-width-pt", value_name = "POINTS")]
+    svg_width_pt: Option<f32>,
     /// Render running page numbers in the bottom margin of PDF pages.
     /// Sugar for `--pdf-footer-center '{page}'`; an explicit footer center wins.
     #[arg(long)]
@@ -483,12 +485,6 @@ struct RenderArgs {
     /// Per-image timeout in seconds for remote PDF image fetches.
     #[arg(long, default_value_t = DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS)]
     remote_image_timeout_secs: u64,
-    /// Maximum Markdown input bytes accepted before rendering.
-    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
-    max_input_bytes: u64,
-    /// Emit a stable JSON status envelope to stderr after writing outputs.
-    #[arg(long)]
-    json: bool,
 }
 
 #[derive(Args)]
@@ -683,7 +679,7 @@ pub fn main() -> ExitCode {
         Some(Command::Config(args)) => run_config(args, json, no_config),
         Some(Command::Stats(args)) => run_stats(args, json),
         Some(Command::Diff(args)) => run_diff(args, json, no_config),
-        Some(Command::Book(args)) => run_book(args, json, no_config),
+        Some(Command::Book(args)) => crate::book::native::dispatch(args, json, no_config),
         #[cfg(feature = "batch")]
         Some(Command::Batch(args)) => run_batch(args, json, no_config),
         #[cfg(feature = "mcp")]
@@ -717,46 +713,10 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
         out: Some(args.out.clone()),
         font: args.font,
         css: args.css.clone(),
-        title: None,
-        author: None,
-        lang: None,
-        profile: None,
-        allow_html: false,
-        toc: false,
-        toc_depth: None,
-        html_font_format: None,
         search_index: None,
         interactive_html: false,
-        font_scale: None,
-        fit_to_pages: None,
-        pdf_line_numbers: false,
-        pdf_page_numbers: false,
-        pdf_header_left: None,
-        pdf_header_center: None,
-        pdf_header_right: None,
-        pdf_footer_left: None,
-        pdf_footer_center: None,
-        pdf_footer_right: None,
-        pdf_header_rule: false,
-        pdf_footer_rule: false,
-        pdf_running_skip_first: false,
-        pdf_base_font_size: None,
-        pdf_heading_scale: None,
-        pdf_table_font_size: None,
-        pdf_images: Vec::new(),
-        pdf_fonts: Vec::new(),
-        pdf_font_weights: Vec::new(),
-        pdf_a: None,
-        pdf_a_strict: false,
-        max_pdf_image_bytes: DEFAULT_MAX_PDF_IMAGE_BYTES,
-        no_remote_images: false,
-        remote_image_timeout_secs: DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS,
         max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
-        microtype: Default::default(),
-        typography_homogeneous: false,
-        typography_antiriver: false,
-        typography_pareto: false,
-        pdf_optimal_pagination: false,
+        style: args.style.clone(),
         json: args.json,
     }
 }
@@ -1405,7 +1365,7 @@ fn read_http_head(stream: &mut TcpStream) -> Vec<u8> {
     buf
 }
 
-fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
+fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = global_json || args.json;
     if out_is_stdout(&args)
         && !matches!(
@@ -1459,28 +1419,17 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         Ok(config) => config,
         Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
     };
+    // lang/toc/toc_depth merge below frontmatter, so they wait for it.
+    apply_config_render_defaults(&mut args.style, &config.render, false);
 
     let mut theme = config.to_theme();
     if let Some(font) = args.font {
         theme = theme.with_font(font.into());
     }
 
-    let font_scale = if let Some(scale_str) = &args.font_scale {
-        match FontScale::parse(scale_str) {
-            Some(scale) => Some(scale),
-            None => {
-                return fail_json(
-                    64,
-                    "usage_error",
-                    &format!(
-                        "unknown font scale: '{scale_str}'. Valid choices: 'xs', 'sm', 'compact', 'md', 'normal', 'default', 'lg', 'xl', '2xl', 'huge', percentages like '125%', or numbers like '1.2'"
-                    ),
-                    json,
-                );
-            }
-        }
-    } else {
-        None
+    let font_scale = match parse_font_scale_arg(&args.style, json) {
+        Ok(scale) => scale,
+        Err(code) => return code,
     };
 
     if let Some(scale) = font_scale {
@@ -1548,11 +1497,12 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     } else {
         None
     };
-    let font_assets = match load_host_font_assets(&args.pdf_fonts, &args.pdf_font_weights) {
-        Ok(assets) => assets,
-        Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
-        Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
-    };
+    let font_assets =
+        match load_host_font_assets(&args.style.pdf_fonts, &args.style.pdf_font_weights) {
+            Ok(assets) => assets,
+            Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+            Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
+        };
     if json {
         report_font_assets(&font_assets);
     }
@@ -1572,18 +1522,29 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     }
     let frontmatter_title = frontmatter.as_ref().and_then(|fm| fm.title.clone());
     let frontmatter_author = frontmatter.as_ref().and_then(|fm| fm.author.clone());
-    let frontmatter_lang = frontmatter.as_ref().and_then(|fm| fm.lang.clone());
-    let frontmatter_toc = frontmatter.as_ref().and_then(|fm| fm.toc);
-    let frontmatter_toc_depth = frontmatter.as_ref().and_then(|fm| fm.toc_depth);
+    // Precedence: flag, then frontmatter, then native config.
+    let frontmatter_lang = frontmatter
+        .as_ref()
+        .and_then(|fm| fm.lang.clone())
+        .or_else(|| config.render.lang.clone());
+    let frontmatter_toc = frontmatter
+        .as_ref()
+        .and_then(|fm| fm.toc)
+        .or(config.render.toc);
+    let frontmatter_toc_depth = frontmatter
+        .as_ref()
+        .and_then(|fm| fm.toc_depth)
+        .or(config.render.toc_depth);
     let doc = parse_markdown(&src);
     let mut image_destinations = Vec::new();
-    collect_image_destinations(&doc.blocks, &mut image_destinations);
+    let lowered_doc = crate::safe_html::lower(&doc);
+    collect_image_destinations(&lowered_doc.blocks, &mut image_destinations);
     let base_image_dir = auto_pdf_image_base_dir(args.input.as_deref(), args.text.as_deref());
     let html_image_assets = if want_html || want_epub {
         let mut assets = if want_epub {
             match read_pdf_image_assets(
-                &args.pdf_images,
-                args.max_pdf_image_bytes,
+                &args.style.pdf_images,
+                args.style.max_pdf_image_bytes,
                 &image_destinations,
             ) {
                 Ok(assets) => assets,
@@ -1598,7 +1559,7 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
                 &doc,
                 base_dir,
                 &mut assets,
-                args.max_pdf_image_bytes,
+                args.style.max_pdf_image_bytes,
                 if want_epub { "EPUB" } else { "HTML" },
             )
         {
@@ -1608,10 +1569,11 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     } else {
         Vec::new()
     };
-    let pdf_image_assets = if want_pdf {
+    // SVG posters draw the same host image bytes as PDF.
+    let mut pdf_image_assets = if want_pdf || want_svg {
         let mut assets = match read_pdf_image_assets(
-            &args.pdf_images,
-            args.max_pdf_image_bytes,
+            &args.style.pdf_images,
+            args.style.max_pdf_image_bytes,
             &image_destinations,
         ) {
             Ok(assets) => assets,
@@ -1625,18 +1587,18 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
                 &doc,
                 base_dir,
                 &mut assets,
-                args.max_pdf_image_bytes,
+                args.style.max_pdf_image_bytes,
                 "PDF",
             )
         {
             return fail_json(66, "input_error", &e, json);
         }
-        if !args.no_remote_images {
+        if !args.style.no_remote_images {
             append_remote_image_assets(
                 &image_destinations,
                 &mut assets,
-                args.max_pdf_image_bytes,
-                args.remote_image_timeout_secs,
+                args.style.max_pdf_image_bytes,
+                args.style.remote_image_timeout_secs,
                 json,
             );
         }
@@ -1645,22 +1607,9 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
         Vec::new()
     };
 
-    let profile = if let Some(prof_str) = &args.profile {
-        match crate::Profile::parse(prof_str) {
-            Some(p) => Some(p),
-            None => {
-                return fail_json(
-                    64,
-                    "usage_error",
-                    &format!(
-                        "unknown markdown authoring profile: '{prof_str}'. Valid choices: 'commonmark-gfm', 'gfm-plus'"
-                    ),
-                    json,
-                );
-            }
-        }
-    } else {
-        None
+    let profile = match parse_profile_arg(&args.style, json) {
+        Ok(profile) => profile,
+        Err(code) => return code,
     };
     // `--to both` run whose PDF render fails never leaves a stale HTML file on
     // disk (previously HTML was written, then a PDF failure returned exit 70
@@ -1668,16 +1617,21 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let html_bytes = if want_html {
         let opts = HtmlOptions {
             theme: theme.clone(),
-            title: args.title.clone().or_else(|| frontmatter_title.clone()),
+            title: args
+                .style
+                .title
+                .clone()
+                .or_else(|| frontmatter_title.clone()),
             custom_css: custom_css.clone(),
-            allow_raw_html: args.allow_html,
+            allow_raw_html: args.style.allow_html,
             font_assets: font_assets.clone(),
             image_assets: html_image_assets.clone(),
-            lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
+            lang: args.style.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
-            toc: args.toc || frontmatter_toc.unwrap_or(false),
-            toc_depth: args.toc_depth.or(frontmatter_toc_depth),
+            toc: args.style.toc || frontmatter_toc.unwrap_or(false),
+            toc_depth: args.style.toc_depth.or(frontmatter_toc_depth),
             html_font_format: args
+                .style
                 .html_font_format
                 .map(HtmlFontFormat::from)
                 .unwrap_or_default(),
@@ -1699,30 +1653,40 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let pdf_render = if want_pdf {
         let opts = PdfOptions {
             theme: theme.clone(),
-            title: args.title.clone().or_else(|| frontmatter_title.clone()),
-            author: args.author.clone().or_else(|| frontmatter_author.clone()),
-            lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
+            title: args
+                .style
+                .title
+                .clone()
+                .or_else(|| frontmatter_title.clone()),
+            author: args
+                .style
+                .author
+                .clone()
+                .or_else(|| frontmatter_author.clone()),
+            lang: args.style.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
             metadata_epoch_seconds: pdf_metadata_epoch,
-            allow_raw_html: args.allow_html,
-            code_line_numbers: args.pdf_line_numbers,
-            page_numbers: args.pdf_page_numbers,
-            running: pdf_running_content(&args),
+            allow_raw_html: args.style.allow_html,
+            code_line_numbers: args.style.pdf_line_numbers,
+            page_numbers: args.style.pdf_page_numbers,
+            running: pdf_running_content(&args.style),
             base_font_size: args
+                .style
                 .pdf_base_font_size
                 .or_else(|| font_scale.map(|s| s.pdf_base_pt())),
-            heading_scale: args.pdf_heading_scale,
-            table_font_size: args.pdf_table_font_size,
-            image_assets: pdf_image_assets,
+            heading_scale: args.style.pdf_heading_scale,
+            table_font_size: args.style.pdf_table_font_size,
+            // PDF and SVG targets are exclusive, so PDF may own the bytes.
+            image_assets: std::mem::take(&mut pdf_image_assets),
             font_assets: font_assets.clone(),
-            toc: args.toc || frontmatter_toc.unwrap_or(false),
-            toc_depth: args.toc_depth.or(frontmatter_toc_depth),
-            fit_to_pages: args.fit_to_pages,
-            microtype: args.microtype.into(),
-            gradual_demerits: args.typography_homogeneous,
-            river_penalty: args.typography_antiriver,
-            pareto_line_breaking: args.typography_pareto,
-            optimal_pagination: args.pdf_optimal_pagination,
+            toc: args.style.toc || frontmatter_toc.unwrap_or(false),
+            toc_depth: args.style.toc_depth.or(frontmatter_toc_depth),
+            fit_to_pages: args.style.fit_to_pages,
+            microtype: args.style.microtype.unwrap_or_default().into(),
+            gradual_demerits: args.style.typography_homogeneous,
+            river_penalty: args.style.typography_antiriver,
+            pareto_line_breaking: args.style.typography_pareto,
+            optimal_pagination: args.style.pdf_optimal_pagination,
         };
         match render_pdf_with_pdfa(&doc, &opts, &args, json) {
             // Keep render errors typed with a distinct exit code (70 = render
@@ -1739,15 +1703,19 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     let epub_render = if want_epub {
         let opts = HtmlOptions {
             theme: theme.clone(),
-            title: args.title.clone().or_else(|| frontmatter_title.clone()),
+            title: args
+                .style
+                .title
+                .clone()
+                .or_else(|| frontmatter_title.clone()),
             custom_css,
-            allow_raw_html: args.allow_html,
+            allow_raw_html: args.style.allow_html,
             font_assets: font_assets.clone(),
             image_assets: html_image_assets,
-            lang: args.lang.clone().or_else(|| frontmatter_lang.clone()),
+            lang: args.style.lang.clone().or_else(|| frontmatter_lang.clone()),
             profile,
-            toc: args.toc || frontmatter_toc.unwrap_or(false),
-            toc_depth: args.toc_depth.or(frontmatter_toc_depth),
+            toc: args.style.toc || frontmatter_toc.unwrap_or(false),
+            toc_depth: args.style.toc_depth.or(frontmatter_toc_depth),
             html_font_format: HtmlFontFormat::default(),
         };
         match crate::render_epub(&doc, &opts) {
@@ -1776,11 +1744,32 @@ fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode 
     // SVG poster (bead y0vu): text format, so like HTML it may stream to
     // stdout; with a path it rides the staged write.
     let svg_render = if want_svg {
-        let opts = crate::svg::SvgOptions {
+        let mut opts = crate::svg::SvgOptions {
             theme: theme.clone(),
             ..crate::svg::SvgOptions::default()
         };
-        Some(crate::render_svg(&doc, &opts))
+        if let Some(width) = args.style.svg_width_pt {
+            opts.max_width_pt = width;
+        }
+        // Same host fonts and image bytes (auto-loaded, --pdf-image, remote)
+        // as PDF; recoverable problems surface like PDF render warnings.
+        match crate::svg::render_svg_with_resources(&doc, &opts, &font_assets, &pdf_image_assets) {
+            Ok((bytes, _report, warnings)) => {
+                for warning in warnings {
+                    if json {
+                        eprintln!(
+                            "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"{}\",\"detail\":\"{}\"}}",
+                            warning.code,
+                            json_escape(&warning.message)
+                        );
+                    } else {
+                        eprintln!("fmd: warning: {}", warning.message);
+                    }
+                }
+                Some(bytes)
+            }
+            Err(e) => return fail_render(e, json),
+        }
     } else {
         None
     };
@@ -2263,7 +2252,7 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
     }
 }
 #[cfg(feature = "batch")]
-fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
+fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     use crate::batch::{self, BatchOptions, BatchPlan, OutputFormat};
 
     let json = global_json || args.json;
@@ -2295,6 +2284,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         Ok(config) => config,
         Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
     };
+    apply_config_render_defaults(&mut args.style, &config.render, true);
     let mut theme = config.to_theme();
     if let Some(font) = args.font {
         theme = theme.with_font(font.into());
@@ -2319,14 +2309,15 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         Target::Html => OutputFormat::Html,
         Target::Pdf => OutputFormat::Pdf,
         Target::Both => OutputFormat::Both,
-        // Multi-file EPUB is the fmd book epic's job (7tus); a batch run of
-        // one-chapter epubs would silently skip the unified-book semantics.
-        // SVG posters are a per-document display artifact, not a batch target.
-        Target::Epub | Target::Svg | Target::InteractiveHtml => {
+        // One single-chapter EPUB / SVG poster per input; a multi-file book
+        // with shared navigation is `fmd book`.
+        Target::Epub => OutputFormat::Epub,
+        Target::Svg => OutputFormat::Svg,
+        Target::InteractiveHtml => {
             return fail_json(
                 64,
                 "usage_error",
-                "--to epub/svg/interactive-html is not supported in batch; epub books await fmd book (7tus), svg/interactive are single-document artifacts",
+                "--to interactive-html is not supported in batch (each workspace embeds its own editor); render it per file with fmd render",
                 json,
             );
         }
@@ -2372,15 +2363,88 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         return fail_json(66, "input_error", &msg, json);
     }
 
+    // Shared render style (the same flags as `fmd render`). Per-file images
+    // are still auto-loaded next to each input by the batch engine.
+    let style = &args.style;
+    for (set, flag) in [
+        (style.pdf_a.is_some() || style.pdf_a_strict, "--pdf-a"),
+        (style.svg_width_pt.is_some(), "--svg-width-pt"),
+    ] {
+        if set {
+            return fail_json(
+                64,
+                "usage_error",
+                &format!(
+                    "{flag} is not supported by fmd batch; render those files with fmd render"
+                ),
+                json,
+            );
+        }
+    }
+    let font_scale = match parse_font_scale_arg(style, json) {
+        Ok(scale) => scale,
+        Err(code) => return code,
+    };
+    if let Some(scale) = font_scale {
+        theme = theme.with_font_scale(scale);
+    }
+    let profile = match parse_profile_arg(style, json) {
+        Ok(profile) => profile,
+        Err(code) => return code,
+    };
+    let font_assets = match load_host_font_assets(&style.pdf_fonts, &style.pdf_font_weights) {
+        Ok(assets) => assets,
+        Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+        Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
+    };
+    let explicit_images =
+        match read_pdf_image_assets(&style.pdf_images, style.max_pdf_image_bytes, &[]) {
+            Ok(assets) => assets,
+            Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+            Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
+        };
     let html = HtmlOptions {
         theme: theme.clone(),
+        title: style.title.clone(),
         custom_css,
-        ..Default::default()
+        allow_raw_html: style.allow_html,
+        font_assets: font_assets.clone(),
+        image_assets: explicit_images.clone(),
+        lang: style.lang.clone(),
+        profile,
+        toc: style.toc,
+        toc_depth: style.toc_depth,
+        html_font_format: style
+            .html_font_format
+            .map(HtmlFontFormat::from)
+            .unwrap_or_default(),
     };
     let pdf = PdfOptions {
         theme,
+        title: style.title.clone(),
+        author: style.author.clone(),
+        lang: style.lang.clone(),
+        profile,
         metadata_epoch_seconds: pdf_epoch,
-        ..Default::default()
+        allow_raw_html: style.allow_html,
+        code_line_numbers: style.pdf_line_numbers,
+        page_numbers: style.pdf_page_numbers,
+        running: pdf_running_content(style),
+        base_font_size: style
+            .pdf_base_font_size
+            .or_else(|| font_scale.map(|s| s.pdf_base_pt())),
+        heading_scale: style.pdf_heading_scale,
+        table_font_size: style.pdf_table_font_size,
+        image_assets: explicit_images,
+        font_assets,
+        toc: style.toc,
+        toc_depth: style.toc_depth,
+        fit_to_pages: style.fit_to_pages,
+        microtype: style.microtype.unwrap_or_default().into(),
+        gradual_demerits: style.typography_homogeneous,
+        river_penalty: style.typography_antiriver,
+        pareto_line_breaking: style.typography_pareto,
+        optimal_pagination: style.pdf_optimal_pagination,
     };
 
     let plan = BatchPlan {
@@ -2397,7 +2461,7 @@ fn run_batch(args: BatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         continue_on_error,
         timeout_secs: args.timeout,
         max_input_bytes: args.max_input_bytes,
-        max_pdf_image_bytes: args.max_pdf_image_bytes,
+        max_pdf_image_bytes: args.style.max_pdf_image_bytes,
     };
 
     match batch::run_batch_blocking(plan, &opts) {
@@ -2911,7 +2975,8 @@ fn append_auto_image_assets(
         return Ok(());
     };
     let mut destinations = Vec::new();
-    collect_image_destinations(&doc.blocks, &mut destinations);
+    let lowered_doc = crate::safe_html::lower(doc);
+    collect_image_destinations(&lowered_doc.blocks, &mut destinations);
     for destination in destinations {
         let destination = destination.trim();
         if destination.is_empty()
@@ -3492,7 +3557,7 @@ fn parse_pdf_a_settings(
     args: &RenderArgs,
     json: bool,
 ) -> std::result::Result<PdfASettings, ExitCode> {
-    if args.pdf_a_strict && args.pdf_a.is_none() {
+    if args.style.pdf_a_strict && args.style.pdf_a.is_none() {
         return Err(fail_json(
             64,
             "usage_error",
@@ -3500,7 +3565,7 @@ fn parse_pdf_a_settings(
             json,
         ));
     }
-    let Some(raw) = args.pdf_a.as_deref() else {
+    let Some(raw) = args.style.pdf_a.as_deref() else {
         return Ok(PdfASettings::OFF);
     };
     let Some(mode) = PdfAMode::parse(raw) else {
@@ -3513,26 +3578,104 @@ fn parse_pdf_a_settings(
     };
     Ok(PdfASettings {
         mode,
-        strict: args.pdf_a_strict,
+        strict: args.style.pdf_a_strict,
     })
 }
 
 /// Running header/footer from the `--pdf-header-*` / `--pdf-footer-*` flags.
-fn pdf_running_content(args: &RenderArgs) -> crate::PdfRunningContent {
+/// `--font-scale` as a typed scale, or the usage error naming valid values.
+fn parse_font_scale_arg(
+    style: &RenderStyleArgs,
+    json: bool,
+) -> std::result::Result<Option<FontScale>, ExitCode> {
+    let Some(scale_str) = &style.font_scale else {
+        return Ok(None);
+    };
+    FontScale::parse(scale_str).map(Some).ok_or_else(|| {
+        fail_json(
+            64,
+            "usage_error",
+            &format!(
+                "unknown font scale: '{scale_str}'. Valid choices: 'xs', 'sm', 'compact', 'md', 'normal', 'default', 'lg', 'xl', '2xl', 'huge', percentages like '125%', or numbers like '1.2'"
+            ),
+            json,
+        )
+    })
+}
+
+/// Fills render style settings the command line left unset from the native
+/// config. Boolean switches can only be turned on here; `--no-config` gives a
+/// config-free run. `lang`/`toc`/`toc_depth` rank below document
+/// frontmatter, so callers that read frontmatter merge those themselves.
+fn apply_config_render_defaults(
+    style: &mut RenderStyleArgs,
+    defaults: &crate::config::RenderDefaults,
+    include_document_keys: bool,
+) {
+    if include_document_keys {
+        if style.lang.is_none() {
+            style.lang.clone_from(&defaults.lang);
+        }
+        style.toc |= defaults.toc.unwrap_or(false);
+        style.toc_depth = style.toc_depth.or(defaults.toc_depth);
+    }
+    if style.font_scale.is_none() {
+        style.font_scale.clone_from(&defaults.font_scale);
+    }
+    if style.html_font_format.is_none() {
+        style.html_font_format = defaults
+            .html_font_format
+            .as_deref()
+            .and_then(|value| HtmlFontFormatArg::from_str(value, true).ok());
+    }
+    if style.microtype.is_none() {
+        style.microtype = defaults
+            .microtype
+            .as_deref()
+            .and_then(|value| MicrotypeArg::from_str(value, true).ok());
+    }
+    style.pdf_page_numbers |= defaults.pdf_page_numbers.unwrap_or(false);
+    style.typography_homogeneous |= defaults.typography_homogeneous.unwrap_or(false);
+    style.typography_antiriver |= defaults.typography_antiriver.unwrap_or(false);
+    style.typography_pareto |= defaults.typography_pareto.unwrap_or(false);
+    style.pdf_optimal_pagination |= defaults.pdf_optimal_pagination.unwrap_or(false);
+}
+
+/// `--profile` as a typed profile, or the usage error naming valid values.
+fn parse_profile_arg(
+    style: &RenderStyleArgs,
+    json: bool,
+) -> std::result::Result<Option<crate::Profile>, ExitCode> {
+    let Some(prof_str) = &style.profile else {
+        return Ok(None);
+    };
+    crate::Profile::parse(prof_str).map(Some).ok_or_else(|| {
+        fail_json(
+            64,
+            "usage_error",
+            &format!(
+                "unknown markdown authoring profile: '{prof_str}'. Valid choices: 'commonmark-gfm', 'gfm-plus'"
+            ),
+            json,
+        )
+    })
+}
+
+fn pdf_running_content(style: &RenderStyleArgs) -> crate::PdfRunningContent {
     crate::PdfRunningContent {
         header: crate::PdfRunningBand {
-            left: args.pdf_header_left.clone(),
-            center: args.pdf_header_center.clone(),
-            right: args.pdf_header_right.clone(),
-            rule: args.pdf_header_rule,
+            left: style.pdf_header_left.clone(),
+            center: style.pdf_header_center.clone(),
+            right: style.pdf_header_right.clone(),
+            rule: style.pdf_header_rule,
         },
         footer: crate::PdfRunningBand {
-            left: args.pdf_footer_left.clone(),
-            center: args.pdf_footer_center.clone(),
-            right: args.pdf_footer_right.clone(),
-            rule: args.pdf_footer_rule,
+            left: style.pdf_footer_left.clone(),
+            center: style.pdf_footer_center.clone(),
+            right: style.pdf_footer_right.clone(),
+            rule: style.pdf_footer_rule,
         },
-        skip_first_page: args.pdf_running_skip_first,
+        skip_first_page: style.pdf_running_skip_first,
     }
 }
 
@@ -3747,494 +3890,9 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
     }
 }
 
-fn run_book(args: BookArgs, global_json: bool, no_config: bool) -> ExitCode {
-    let json = args.json || global_json;
-    if !args.input.exists() {
-        return fail_json(
-            66,
-            "input_error",
-            &format!("book input directory not found: {}", args.input.display()),
-            json,
-        );
-    }
-    if !args.input.is_dir() {
-        return fail_json(
-            66,
-            "input_error",
-            &format!("book input is not a directory: {}", args.input.display()),
-            json,
-        );
-    }
-    match args.to {
-        Target::Html | Target::Pdf | Target::Both => {}
-        Target::Epub | Target::Svg | Target::InteractiveHtml => {
-            return fail_json(
-                64,
-                "usage_error",
-                "--to epub/svg/interactive-html is not supported for fmd book",
-                json,
-            );
-        }
-    }
-
-    let mut files = Vec::new();
-    if let Err(e) = collect_markdown_files(&args.input, &mut files) {
-        return fail_json(
-            66,
-            "input_error",
-            &format!("walking {}: {e}", args.input.display()),
-            json,
-        );
-    }
-
-    let manifest_path = args.input.join("book.toml");
-    let mut manifest_order = Vec::new();
-    let mut manifest_title = None;
-    if manifest_path.is_file() {
-        if let Ok(manifest_src) = std::fs::read_to_string(&manifest_path) {
-            parse_book_manifest(&manifest_src, &mut manifest_order, &mut manifest_title);
-        }
-    }
-
-    if !manifest_order.is_empty() {
-        let mut ordered_files = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for item in manifest_order {
-            let item_path = args.input.join(&item);
-            if item_path.is_file() {
-                ordered_files.push(item_path.clone());
-                seen.insert(item_path);
-            }
-        }
-        for f in files {
-            if !seen.contains(&f) {
-                ordered_files.push(f);
-            }
-        }
-        files = ordered_files;
-    } else {
-        files.sort_by(|a, b| {
-            let rel_a = a.strip_prefix(&args.input).unwrap_or(a);
-            let rel_b = b.strip_prefix(&args.input).unwrap_or(b);
-            rel_a.cmp(rel_b)
-        });
-    }
-
-    if files.is_empty() {
-        return fail_json(
-            66,
-            "input_error",
-            &format!("no Markdown files found in {}", args.input.display()),
-            json,
-        );
-    }
-
-    let mut inputs = Vec::with_capacity(files.len());
-    let mut file_byte_counts = Vec::with_capacity(files.len());
-    for file_path in &files {
-        let rel = file_path
-            .strip_prefix(&args.input)
-            .unwrap_or(file_path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let path_str = file_path.to_string_lossy();
-        let raw = match read_input(Some(&path_str), None, args.max_input_bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                return fail_json(
-                    66,
-                    "input_error",
-                    &format!("reading {}: {e}", file_path.display()),
-                    json,
-                );
-            }
-        };
-        file_byte_counts.push(raw.len());
-        let expanded = if crate::transclude::has_includes(&raw) {
-            match expand_file_includes(&raw, &path_str, args.max_input_bytes) {
-                Ok(s) => s,
-                Err(e) => return fail_json(66, "include_error", &e, json),
-            }
-        } else {
-            raw
-        };
-        inputs.push(crate::book::BookInput {
-            path: rel,
-            source: expanded,
-        });
-    }
-
-    let book = match crate::book::build_book(&inputs) {
-        Ok(b) => b,
-        Err(e) => return fail_json(66, "book_error", &e.to_string(), json),
-    };
-
-    let dir_name = args
-        .input
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .filter(|s| !s.is_empty() && s != ".")
-        .unwrap_or(std::borrow::Cow::Borrowed("book"));
-
-    let (site_dir, pdf_path) = match &args.out_dir {
-        Some(out) => {
-            if args.to == Target::Pdf && out.extension().is_some_and(|e| e == "pdf") {
-                (
-                    out.parent()
-                        .unwrap_or(Path::new(""))
-                        .join(format!("{dir_name}-site")),
-                    out.clone(),
-                )
-            } else {
-                (out.clone(), out.join(format!("{dir_name}.pdf")))
-            }
-        }
-        None => {
-            let parent = args.input.parent().unwrap_or(Path::new(""));
-            (
-                parent.join(format!("{dir_name}-site")),
-                parent.join(format!("{dir_name}.pdf")),
-            )
-        }
-    };
-
-    let theme = if no_config {
-        Theme::default()
-    } else {
-        match load_config(false) {
-            Ok(c) => c.to_theme(),
-            Err(_) => Theme::default(),
-        }
-    };
-
-    let known_pages: std::collections::BTreeSet<String> =
-        book.chapters.iter().map(|c| c.out_name.clone()).collect();
-    let mut outputs = Vec::new();
-    let mut unresolved_count = 0;
-
-    for chapter in &book.chapters {
-        unresolved_count += count_unresolved_links(&chapter.doc, &known_pages);
-    }
-    if unresolved_count > 0 && !json {
-        eprintln!("fmd: warning: found {unresolved_count} unresolved cross-file links");
-    }
-
-    if matches!(args.to, Target::Html | Target::Both) {
-        if let Err(e) = std::fs::create_dir_all(&site_dir) {
-            return fail_json(
-                73,
-                "output_error",
-                &format!("creating site dir {}: {e}", site_dir.display()),
-                json,
-            );
-        }
-        let html_opts = HtmlOptions {
-            theme: theme.clone(),
-            ..HtmlOptions::default()
-        };
-
-        for chapter in &book.chapters {
-            let mut doc = chapter.doc.clone();
-            crate::book::rewrite_links_for_site(&mut doc, &known_pages);
-            let rendered = match crate::render_html_document(&doc, &html_opts) {
-                Ok(s) => s,
-                Err(e) => return fail_json(70, "html_render_error", &e.to_string(), json),
-            };
-            let final_html = crate::book::inject_book_nav(&rendered, &book, &chapter.out_name);
-            let out_file = site_dir.join(&chapter.out_name);
-            if let Err(e) = std::fs::write(&out_file, final_html.as_bytes()) {
-                return fail_json(
-                    73,
-                    "output_error",
-                    &format!("writing {}: {e}", out_file.display()),
-                    json,
-                );
-            }
-            outputs.push(out_file.display().to_string());
-        }
-
-        if let Some(first) = book.chapters.first() {
-            let escaped_url = crate::book::escape_attr_pub(&first.out_name);
-            let escaped_title = crate::book::escape_text_pub(&first.title);
-            let index_html = format!(
-                "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0; url={escaped_url}\"><title>Redirecting to {escaped_title}</title></head><body><p>Redirecting to <a href=\"{escaped_url}\">{escaped_title}</a>...</p></body></html>\n"
-            );
-            let index_file = site_dir.join("index.html");
-            if let Err(e) = std::fs::write(&index_file, index_html.as_bytes()) {
-                return fail_json(
-                    73,
-                    "output_error",
-                    &format!("writing {}: {e}", index_file.display()),
-                    json,
-                );
-            }
-            outputs.push(index_file.display().to_string());
-        }
-    }
-
-    let mut pdf_pages = 0;
-    if matches!(args.to, Target::Pdf | Target::Both) {
-        let pdf_doc = crate::book::book_pdf_document(&book);
-        let mut pdf_opts = PdfOptions {
-            theme,
-            toc: true,
-            ..PdfOptions::default()
-        };
-        if let Some(title) = manifest_title.or_else(|| {
-            book.chapters
-                .first()
-                .and_then(|c| c.frontmatter.as_ref())
-                .and_then(|fm| fm.title.clone())
-        }) {
-            pdf_opts.title = Some(title);
-        }
-        if let Some(author) = book
-            .chapters
-            .first()
-            .and_then(|c| c.frontmatter.as_ref())
-            .and_then(|fm| fm.author.clone())
-        {
-            pdf_opts.author = Some(author);
-        }
-        let pdf_bytes = match crate::render_pdf_document(&pdf_doc, &pdf_opts) {
-            Ok(b) => b,
-            Err(e) => return fail_json(70, "pdf_render_error", &e.to_string(), json),
-        };
-        pdf_pages = count_pdf_pages(&pdf_bytes);
-        if let Some(p) = pdf_path.parent() {
-            let _ = std::fs::create_dir_all(p);
-        }
-        if let Err(e) = std::fs::write(&pdf_path, &pdf_bytes) {
-            return fail_json(
-                73,
-                "output_error",
-                &format!("writing {}: {e}", pdf_path.display()),
-                json,
-            );
-        }
-        outputs.push(pdf_path.display().to_string());
-    }
-
-    if json {
-        let mut files_json = Vec::new();
-        for (i, ch) in book.chapters.iter().enumerate() {
-            let bytes = file_byte_counts.get(i).copied().unwrap_or(0);
-            files_json.push(format!(
-                "{{\"path\":\"{}\",\"out_name\":\"{}\",\"title\":\"{}\",\"bytes\":{bytes}}}",
-                json_escape(&ch.path),
-                json_escape(&ch.out_name),
-                json_escape(&ch.title),
-            ));
-        }
-        let outputs_json: Vec<_> = outputs
-            .iter()
-            .map(|o| format!("\"{}\"", json_escape(o)))
-            .collect();
-        let receipt = format!(
-            "{{\"ok\":true,\"tool\":\"fmd\",\"command\":\"book\",\"input\":\"{}\",\"chapters\":{},\"files\":[{}],\"unresolved_links\":{},\"pages\":{},\"outputs\":[{}]}}",
-            json_escape(&args.input.display().to_string()),
-            book.chapters.len(),
-            files_json.join(","),
-            unresolved_count,
-            pdf_pages,
-            outputs_json.join(",")
-        );
-        return emit_stdout(&receipt);
-    }
-
-    eprintln!("fmd: assembled book ({} chapters)", book.chapters.len());
-    if matches!(args.to, Target::Html | Target::Both) {
-        eprintln!("fmd: wrote HTML site -> {}", site_dir.display());
-    }
-    if matches!(args.to, Target::Pdf | Target::Both) {
-        eprintln!("fmd: wrote PDF book -> {}", pdf_path.display());
-    }
-    ExitCode::SUCCESS
-}
-
-fn collect_markdown_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
-    entries.sort_by_key(|e| e.file_name());
-
-    for entry in entries {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') {
-            continue;
-        }
-        let path = entry.path();
-        if path.is_dir() {
-            collect_markdown_files(&path, out)?;
-        } else if path.is_file() && (name_str.ends_with(".md") || name_str.ends_with(".markdown")) {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn parse_book_manifest(src: &str, order: &mut Vec<String>, title: &mut Option<String>) {
-    let mut in_order_array = false;
-    for raw_line in src.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if in_order_array {
-            let chunk = if let Some(idx) = line.find(']') {
-                in_order_array = false;
-                &line[..idx]
-            } else {
-                line
-            };
-            for item in chunk.split(',') {
-                let s = item.trim().trim_matches('"').trim_matches('\'').trim();
-                if !s.is_empty() {
-                    order.push(s.to_string());
-                }
-            }
-            continue;
-        }
-        if let Some((k, v)) = line.split_once('=') {
-            let key = k.trim();
-            let val = v.trim();
-            if key == "title" {
-                *title = Some(val.trim_matches('"').trim_matches('\'').to_string());
-            } else if key == "order" || key == "chapters" {
-                if let Some(open_idx) = val.find('[') {
-                    let after_open = &val[open_idx + 1..];
-                    let (chunk, closed) = if let Some(close_idx) = after_open.find(']') {
-                        (&after_open[..close_idx], true)
-                    } else {
-                        (after_open, false)
-                    };
-                    for item in chunk.split(',') {
-                        let s = item.trim().trim_matches('"').trim_matches('\'').trim();
-                        if !s.is_empty() {
-                            order.push(s.to_string());
-                        }
-                    }
-                    if !closed {
-                        in_order_array = true;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn count_unresolved_links(doc: &Document, known: &std::collections::BTreeSet<String>) -> usize {
-    let mut count = 0;
-    count_block_unresolved(&doc.blocks, known, &mut count);
-    count
-}
-
-fn count_block_unresolved(
-    blocks: &[Block],
-    known: &std::collections::BTreeSet<String>,
-    count: &mut usize,
-) {
-    for block in blocks {
-        match block {
-            Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
-                count_inline_unresolved(inlines, known, count);
-            }
-            Block::BlockQuote(inner) => count_block_unresolved(inner, known, count),
-            Block::List(list) => {
-                for item in &list.items {
-                    count_block_unresolved(&item.blocks, known, count);
-                }
-            }
-            Block::Table(table) => {
-                for cell in &table.head {
-                    count_inline_unresolved(cell, known, count);
-                }
-                for row in &table.rows {
-                    for cell in row {
-                        count_inline_unresolved(cell, known, count);
-                    }
-                }
-            }
-            Block::DefinitionList(items) => {
-                for item in items {
-                    for term in &item.terms {
-                        count_inline_unresolved(term, known, count);
-                    }
-                    for def in &item.definitions {
-                        count_inline_unresolved(def, known, count);
-                    }
-                }
-            }
-            Block::FootnoteDefinition { blocks, .. } => {
-                count_block_unresolved(blocks, known, count)
-            }
-            _ => {}
-        }
-    }
-}
-
-fn count_inline_unresolved(
-    inlines: &[Inline],
-    known: &std::collections::BTreeSet<String>,
-    count: &mut usize,
-) {
-    for inl in inlines {
-        match inl {
-            Inline::Link { dest, content, .. } => {
-                if !dest.starts_with("http://")
-                    && !dest.starts_with("https://")
-                    && !dest.starts_with("//")
-                    && !dest.starts_with("mailto:")
-                    && !dest.starts_with("data:")
-                {
-                    let target = dest.split_once('#').map_or(dest.as_str(), |(p, _)| p);
-                    let target_lower = target.to_ascii_lowercase();
-                    if target_lower.ends_with(".md") || target_lower.ends_with(".markdown") {
-                        let page_html = crate::book::out_name(target);
-                        if !known.contains(&page_html) {
-                            *count += 1;
-                        }
-                    }
-                }
-                count_inline_unresolved(content, known, count);
-            }
-            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                count_inline_unresolved(c, known, count);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn count_pdf_pages(bytes: &[u8]) -> usize {
-    let mut count = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i..].starts_with(b"/Type /Page") {
-            let next = bytes.get(i + 11);
-            if matches!(next, Some(b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>')) {
-                count += 1;
-                i += 11;
-                continue;
-            }
-        } else if bytes[i..].starts_with(b"/Type/Page") {
-            let next = bytes.get(i + 10);
-            if matches!(next, Some(b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>')) {
-                count += 1;
-                i += 10;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    count.max(1)
-}
-
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --microtype expansion --out README.pdf\",\"fmd README.md --to pdf --typography-homogeneous --out README.pdf\",\"fmd README.md --to pdf --typography-antiriver --out README.pdf\",\"fmd README.md --to pdf --pdf-optimal-pagination --out README.pdf\",\"fmd README.md --to pdf --typography-pareto --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"diff\",\"examples\":[\"fmd diff v1.md v2.md\",\"fmd diff v1.md v2.md --out diff.html\",\"fmd diff v1.md v2.md --json\"]}},{{\"name\":\"stats\",\"examples\":[\"fmd stats README.md\",\"fmd stats README.md --json\",\"fmd stats --text '# Hello' --json\",\"fmd stats - < README.md\"]}},{{\"name\":\"book\",\"examples\":[\"fmd book ./docs --out-dir ./site\",\"fmd book ./docs --to pdf --out-dir ./dist\",\"fmd book ./docs --json\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\",\"fmd verify doc.md --a11y\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\",\"interactive-html\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"fit_to_pages\":\"available_binary_search_solver\",\"interactive_html\":\"available_self_hosting_single_file\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"html_font_format\":\"available_ttf_woff1_woff2_default_woff1\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"pdf_running_content\":\"available_text_slots_v1\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"microtype_pdf\":\"available_optin_protrusion_expansion\",\"optimal_pagination_pdf\":\"available_optin_plass_dp\",\"epub_output\":\"available_epub3_one_chapter\",\"search_index\":\"available_fmd-search-index-v1\",\"svg_output\":\"available_vector_glyphs_as_paths\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_578_of_652_normalized\"}},\"pdf_running_content\":{{\"slots\":[\"header.left\",\"header.center\",\"header.right\",\"footer.left\",\"footer.center\",\"footer.right\"],\"tokens\":[\"page\",\"pages\",\"title\",\"author\",\"date\"],\"date_source\":\"SOURCE_DATE_EPOCH_or_metadata_epoch_seconds_never_clock\",\"page_numbers_sugar\":true,\"skip_first_page\":true,\"rules\":true,\"overflow\":\"ellipsis\",\"margin_overflow\":\"error\",\"images\":false,\"section_titles\":false,\"html_templates\":false}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --microtype expansion --out README.pdf\",\"fmd README.md --to pdf --typography-homogeneous --out README.pdf\",\"fmd README.md --to pdf --typography-antiriver --out README.pdf\",\"fmd README.md --to pdf --pdf-optimal-pagination --out README.pdf\",\"fmd README.md --to pdf --typography-pareto --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"diff\",\"examples\":[\"fmd diff v1.md v2.md\",\"fmd diff v1.md v2.md --out diff.html\",\"fmd diff v1.md v2.md --json\"]}},{{\"name\":\"stats\",\"examples\":[\"fmd stats README.md\",\"fmd stats README.md --json\",\"fmd stats --text '# Hello' --json\",\"fmd stats - < README.md\"]}},{{\"name\":\"book\",\"examples\":[\"fmd book ./docs --out-dir ./site\",\"fmd book ./docs --to pdf --out-dir ./dist\",\"fmd book ./docs --json\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\",\"fmd verify doc.md --a11y\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\",\"interactive-html\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"fit_to_pages\":\"available_binary_search_solver\",\"interactive_html\":\"available_self_hosting_single_file\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"html_font_format\":\"available_ttf_woff1_woff2_default_woff1\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"pdf_running_content\":\"available_text_slots_v1\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"microtype_pdf\":\"available_optin_protrusion_expansion\",\"optimal_pagination_pdf\":\"available_optin_plass_dp\",\"epub_output\":\"available_epub3_one_chapter\",\"search_index\":\"available_fmd-search-index-v1\",\"svg_output\":\"available_vector_glyphs_as_paths\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_589_of_652_normalized\"}},\"pdf_running_content\":{{\"slots\":[\"header.left\",\"header.center\",\"header.right\",\"footer.left\",\"footer.center\",\"footer.right\"],\"tokens\":[\"page\",\"pages\",\"title\",\"author\",\"date\"],\"date_source\":\"SOURCE_DATE_EPOCH_or_metadata_epoch_seconds_never_clock\",\"page_numbers_sugar\":true,\"skip_first_page\":true,\"rules\":true,\"overflow\":\"ellipsis\",\"margin_overflow\":\"error\",\"images\":false,\"section_titles\":false,\"html_templates\":false}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))
@@ -4249,7 +3907,7 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --interactive-html --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --font-scale lg --out README.html\n  fmd README.md --to pdf --font-scale 125% --out README.pdf\n  fmd README.md --to pdf --fit-to-pages 1 --out README.pdf\n  fmd diff v1.md v2.md --out diff.html\n  fmd stats README.md --json\n  fmd README.md --toc --out README.html\n  fmd README.md --to pdf --toc --toc-depth 2 --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-header-right '{title}' --pdf-footer-center '{page} / {pages}' --pdf-footer-rule --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license\n  fmd doctor fonts --corpus ./docs --json\n                             # glyph coverage vs bundled faces + Noto math fallback.\n                             # stdout JSON: scripts/ranges/uncovered/hints.\n                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd diff <F1> <F2> --json  # semantic AST diff and change metrics\n  fmd stats [FILE] --json    # word counts, readability scores, outline, and health checks\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  emoji_strategy=warning|noto_subset|drawn (forward-compat hook; default = warning, render\n    falls back gracefully when a Noto Sans Symbols subset is not bundled; an undeclared key\n    is the v1 default and resolves to 'warning' until a curated Noto Sans Symbols subset\n    ships; set the key explicitly to declare intent).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage/stats/diff.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, basic keep/widow page building, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, opt-in running header/footer text slots (--pdf-header-left/center/right, --pdf-footer-left/center/right with {page} {pages} {title} {author} {date}; --pdf-header-rule/--pdf-footer-rule; --pdf-running-skip-first; bands that do not fit their margin fail with exit 70), table of contents generation with dot leaders and bookmark alignment (--toc / [[_TOC_]]), local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. deeper page-builder polish is still planned; specifics: full widow/orphan control, keep-with-next, footnotes layout, columns.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Use --font-scale <xs|sm|md|lg|xl|2xl|FLOAT|PERCENT> (alias --type-size) for uniform, anti-aliased typographic scaling across HTML and PDF.\n  Use --fit-to-pages <N> (alias --target-pages) to automatically solve micro-typography and fit content to a page budget.\n  Use --interactive-html (alias --self-hosting) to render a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n  0.4.1    4,162,426      4,300,000    1,854,075      1,900,000    table of contents + math + CJK fallbacks\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --interactive-html --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --font-scale lg --out README.html\n  fmd README.md --to pdf --font-scale 125% --out README.pdf\n  fmd README.md --to pdf --fit-to-pages 1 --out README.pdf\n  fmd diff v1.md v2.md --out diff.html\n  fmd stats README.md --json\n  fmd README.md --toc --out README.html\n  fmd README.md --to pdf --toc --toc-depth 2 --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-header-right '{title}' --pdf-footer-center '{page} / {pages}' --pdf-footer-rule --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to epub --out README.epub\n  fmd README.md --to svg --out README.svg\n  fmd README.md --to pdf --microtype protrusion --typography-homogeneous --pdf-optimal-pagination --out README.pdf\n  fmd batch docs/ --to both --toc --out-dir out/\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license\n  fmd doctor fonts --corpus ./docs --json\n                             # glyph coverage vs bundled faces + Noto math fallback.\n                             # stdout JSON: scripts/ranges/uncovered/hints.\n                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd diff <F1> <F2> --json  # semantic AST diff and change metrics\n  fmd stats [FILE] --json    # word counts, readability scores, outline, and health checks\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  render defaults (flag > frontmatter > config): lang, toc, toc_depth, font_scale,\n    html_font_format=woff1|woff2|ttf, microtype=off|protrusion|expansion, pdf_page_numbers,\n    pdf_optimal_pagination, typography_homogeneous|antiriver|pareto (true/false)\n  emoji_strategy=warning|noto_subset|drawn (forward-compat hook; default = warning, render\n    falls back gracefully when a Noto Sans Symbols subset is not bundled; an undeclared key\n    is the v1 default and resolves to 'warning' until a curated Noto Sans Symbols subset\n    ships; set the key explicitly to declare intent).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage/stats/diff.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, keep-with-next headings and widow/orphan control in the page builder (opt-in document-wide optimal pagination via --pdf-optimal-pagination), inline and display math, inline images, footnote notes, syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, opt-in running header/footer text slots (--pdf-header-left/center/right, --pdf-footer-left/center/right with {page} {pages} {title} {author} {date}; --pdf-header-rule/--pdf-footer-rule; --pdf-running-skip-first; bands that do not fit their margin fail with exit 70), table of contents generation with dot leaders and bookmark alignment (--toc / [[_TOC_]]), local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. still planned: bottom-of-page footnotes (notes currently follow the body) and multi-column layout.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Use --font-scale <xs|sm|md|lg|xl|2xl|FLOAT|PERCENT> (alias --type-size) for uniform, anti-aliased typographic scaling across HTML and PDF.\n  Use --fit-to-pages <N> (alias --target-pages) to automatically solve micro-typography and fit content to a page budget.\n  Use --interactive-html (alias --self-hosting) to render a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n  0.4.1    4,162,426      4,300,000    1,854,075      1,900,000    table of contents + math + CJK fallbacks\n  current  ~7.6 MB        7,900,000    ~3.3 MB        3,400,000    books, EPUB, interactive workspace, typography knobs (gate prints exact numbers)\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
     )
 }
 
@@ -4663,7 +4321,8 @@ mod helper_tests {
              *![e](e.png)* **![s](s.png)** ~~![k](k.png)~~ [![n](n.png)](https://x/)\n",
         );
         let mut dests = Vec::new();
-        collect_image_destinations(&doc.blocks, &mut dests);
+        let lowered_doc = crate::safe_html::lower(&doc);
+        collect_image_destinations(&lowered_doc.blocks, &mut dests);
         assert_eq!(
             dests,
             vec![
@@ -4747,12 +4406,22 @@ mod run_batch_exit_code_tests {
             mem_budget: None,
             timeout: None,
             max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
-            max_pdf_image_bytes: DEFAULT_MAX_PDF_IMAGE_BYTES,
             continue_on_error: false,
             font: None,
             css: None,
             json: false,
+            style: default_style(),
         }
+    }
+
+    /// The render style clap produces when no style flag is given.
+    fn default_style() -> RenderStyleArgs {
+        #[derive(clap::Parser)]
+        struct StyleOnly {
+            #[command(flatten)]
+            style: RenderStyleArgs,
+        }
+        <StyleOnly as clap::Parser>::parse_from(["fmd"]).style
     }
 
     #[test]
@@ -4774,6 +4443,54 @@ mod run_batch_exit_code_tests {
         a.out_dir = Some(PathBuf::from("-"));
         assert_eq!(run_batch(a, true, true), ExitCode::from(64));
         assert!(!dir.join("a.html").exists(), "nothing may render");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_style_flags_apply_to_every_batch_output() {
+        let dir = fresh_dir("style");
+        std::fs::write(dir.join("a.md"), "# A\n\nBody.\n").unwrap();
+        std::fs::write(dir.join("b.md"), "# B\n\nBody.\n").unwrap();
+        let mut a = args(vec![dir.join("a.md"), dir.join("b.md")]);
+        a.style.title = Some("Shared Title".into());
+        a.style.lang = Some("de".into());
+        assert_eq!(run_batch(a, false, true), ExitCode::SUCCESS);
+        for name in ["a.html", "b.html"] {
+            let html = std::fs::read_to_string(dir.join(name)).unwrap();
+            assert!(html.contains("<title>Shared Title</title>"), "{name}");
+            assert!(html.contains("lang=\"de\""), "{name}");
+        }
+        // Flags batch cannot honor are refused, not silently dropped.
+        let mut a = args(vec![dir.join("a.md")]);
+        a.style.svg_width_pt = Some(300.0);
+        assert_eq!(run_batch(a, false, true), ExitCode::from(64));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_renders_one_epub_and_one_svg_per_input() {
+        let dir = fresh_dir("epub-svg");
+        std::fs::write(dir.join("a.md"), "# A\n\nBody.\n").unwrap();
+        std::fs::write(dir.join("b.md"), "# B\n\nBody.\n").unwrap();
+        for (target, ext, magic) in [
+            (Target::Epub, "epub", b"PK".as_slice()),
+            (Target::Svg, "svg", b"<svg".as_slice()),
+        ] {
+            let mut a = args(vec![dir.join("a.md"), dir.join("b.md")]);
+            a.to = target;
+            assert_eq!(run_batch(a, false, true), ExitCode::SUCCESS, "{ext}");
+            for name in ["a", "b"] {
+                let bytes = std::fs::read(dir.join(format!("{name}.{ext}"))).unwrap();
+                let head = &bytes[..bytes.len().min(256)];
+                assert!(
+                    head.windows(magic.len()).any(|w| w == magic),
+                    "{name}.{ext}"
+                );
+            }
+        }
+        let mut a = args(vec![dir.join("a.md")]);
+        a.to = Target::InteractiveHtml;
+        assert_eq!(run_batch(a, false, true), ExitCode::from(64));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

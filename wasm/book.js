@@ -13,5 +13,6 @@ export const createBook = bindings.createBook;
 export const renderBookPdf = bindings.renderBookPdf;
 export const renderBookEpub = bindings.renderBookEpub;
 export const renderBookSite = bindings.renderBookSite;
+export const renderBookChapterPreview = bindings.renderBookChapterPreview;
 export const checkBookLinks = bindings.checkBookLinks;
-export { parseBookLinkReport } from "./book_session.mjs";
+export { parseBookLinkReport, parseBookChapterPreview } from "./book_session.mjs";

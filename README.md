@@ -97,8 +97,8 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 
 | Area | Current functionality |
 |---|---|
-| Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, safe raw-HTML escaping by default, and a ratcheted CommonMark 0.31.2 conformance floor |
-| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, shared syntax highlighting, and optional stylesheet replacement |
+| Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, GitHub-style sanitizing of raw HTML by default (an allowlisted subset stays markup in HTML and becomes native nodes in PDF/SVG/EPUB; unknown tags stay escaped), and a ratcheted CommonMark 0.31.2 conformance floor |
+| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, GitHub emoji shortcodes (`:rocket:` becomes 🚀), shared syntax highlighting, and optional stylesheet replacement |
 | PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, UAX #14 CJK line breaking, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
 | PDF display mathematics | The shared math engine draws native vector equations from dollar blocks and math fences, with measured fitting, theme colors, `/Formula` tags, extractable TeX source, and explicit fallback warnings; see [PDF mathematics](docs/PDF_MATHEMATICS.md) |
@@ -524,17 +524,29 @@ fmd --text '<markdown>' --out out.html
 |---|---|
 | `<input>` (positional) | Input `.md` path, or `-` to read Markdown from stdin |
 | `--text <markdown>` | Render a raw Markdown string directly, with no input file |
-| `--to html\|pdf\|both\|epub` | Output format(s). Default `html`. `epub` writes a single-file EPUB 3 e-book (binary; requires a real `--out` path like PDF) |
+| `--to html\|pdf\|both\|epub\|svg` | Output format(s). Default `html`. `epub` writes a single-file EPUB 3 e-book and `svg` a single-page vector poster (both require a real `--out` path like PDF) |
 | `--out, -o <path>` | Output path. HTML with no `--out` (or `--out -`) writes to stdout. PDF and `--to both` always write files |
 | `--font sans\|serif` | Override the body font for this render |
 | `--html-font-format woff1\|woff2\|ttf` | Font container for embedded HTML subsets (default `woff1`, ~18% smaller documents; `woff2` uses clean-room Brotli for ~22–30% savings; `ttf` keeps raw TrueType data URLs) |
-| `--microtype off\|protrusion` | Optical-margin protrusion for justified PDF body paragraphs (punctuation hangs into the margin; default `off` keeps output byte-identical) |
+| `--microtype off\|protrusion\|expansion` | Microtypography for justified PDF body paragraphs: `protrusion` hangs punctuation into the margin and adds ±1.5% glyph expansion; `expansion` is glyph expansion alone. Default `off` keeps output byte-identical |
+| `--typography-homogeneous`, `--typography-antiriver`, `--typography-pareto` | Opt-in line-breaking refinements: gradual adjacent-line spacing demerits, whitespace-river penalties, and Pareto-front Knuth-Plass search |
+| `--pdf-optimal-pagination` | Choose page breaks with a document-wide dynamic program (Plass) instead of greedy page filling |
+| `--toc`, `--toc-depth <N>` | Insert a table of contents (HTML nav; PDF with dot leaders and page numbers). A `[[_TOC_]]` marker places it explicitly |
+| `--font-scale <xs\|sm\|md\|lg\|xl\|2xl\|FLOAT\|PERCENT>` | Uniform typographic scale for HTML and PDF (alias `--type-size`) |
+| `--fit-to-pages <N>` | Shrink type and spacing until the PDF fits in `N` pages (alias `--target-pages`) |
+| `--pdf-base-font-size`, `--pdf-heading-scale`, `--pdf-table-font-size` | Fine-grained PDF type sizes |
+| `--pdf-font SLOT=PATH`, `--pdf-font-weight` | Host TrueType faces for PDF/HTML and variable-font weight pins |
+| `--pdf-a 2b`, `--pdf-a-strict` | Emit PDF/A-2b identification (XMP + sRGB OutputIntent); `--pdf-a-strict` fails closed on constructs PDF/A-2b cannot carry |
+| `--lang <tag>` | Document language for hyphenation patterns and the HTML `lang` attribute (`en`, `de`, `fr`, `es`, `nl`, ...) |
+| `--profile gfm-plus\|commonmark-gfm` | Markdown dialect. Default `gfm-plus` adds definition lists and other extensions; `commonmark-gfm` renders the GitHub dialect only |
+| `--interactive-html` | Self-hosting single-file HTML workspace with live editor, preview and client-side PDF export (alias `--self-hosting`) |
 | `--search-index <path>` | Also write a deterministic JSON search index (headings + anchored paragraphs, schema `fmd-search-index-v1`) for docs-site search |
 | `--css <file>` | Replace the default stylesheet entirely with your CSS (HTML) |
 | `--title <text>` | Set the document title (otherwise the first heading, then "Document") |
 | `--author <text>` | Set PDF author metadata |
-| `--allow-html` | Pass raw HTML in the source through instead of escaping it (trusted input only) |
+| `--allow-html` | Pass raw HTML in the source through verbatim instead of sanitizing it (trusted input only) |
 | `--pdf-line-numbers` | Render muted line numbers in PDF fenced code blocks |
+| `--svg-width-pt <POINTS>` | SVG poster width (144..=14400 points; default 612). SVG output draws the same auto-loaded, `--pdf-image` and remote images and `--pdf-font` faces as PDF |
 | `--pdf-page-numbers` | Centered page number in the PDF bottom margin (sugar for `--pdf-footer-center '{page}'`) |
 | `--pdf-header-left\|center\|right <text>`, `--pdf-footer-left\|center\|right <text>` | Opt-in running header/footer text in the PDF margins. Tokens `{page}`, `{pages}`, `{title}`, `{author}`, `{date}` (from `SOURCE_DATE_EPOCH`, never the clock); overlong slots get an ellipsis; a band that does not fit its margin fails the render. Add `--pdf-header-rule`/`--pdf-footer-rule` for hairlines and `--pdf-running-skip-first` to leave page 1 bare |
 | `--pdf-image DEST=PATH` | Provide or override one Markdown image destination for PDF rendering; repeat for multiple images. File-input HTML/PDF renders also auto-load relative local PNG/SVG/JPEG image destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). The render core never reads files or fetches network resources itself |
@@ -637,7 +649,7 @@ fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR] [--workers N]
 | Flag | Meaning |
 |---|---|
 | `<inputs...>` | Files and/or directories (directories are recursed for `*.md`/`*.markdown`, sorted deterministically) |
-| `--to html\|pdf\|both` | Output(s) to produce for every input. Default `html` |
+| `--to html\|pdf\|both\|epub\|svg` | Output(s) to produce for every input. Default `html`. `interactive-html` is refused (render it per file with `fmd render`) |
 | `--out-dir <dir>` | Where to write outputs (default: alongside each input) |
 | `--workers <n>` | Worker cap (default: derived from CPU count and the batch mode) |
 | `--batch-mode interactive\|throughput` | `interactive` reserves CPU headroom; `throughput` uses all cores. Default `interactive` |
@@ -645,7 +657,7 @@ fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR] [--workers N]
 | `--timeout <secs>` | Wall-clock deadline; on expiry the run cancels at the next per-file checkpoint and the receipt is marked `cancelled` |
 | `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG/JPEG image asset for HTML and PDF batch renders |
 | `--continue-on-error` | Record per-file failures in the receipt instead of failing the whole run |
-| `--font`, `--css` | Shared theme overrides, as in `render` |
+| `--font`, `--css`, and the render style flags | Shared theme and style overrides (`--toc`, `--font-scale`, `--microtype`, typography, PDF running headers/footers, `--pdf-font`, ...), as in `render`. `--pdf-a` and `--svg-width-pt` are render-only |
 | `--json` | Emit the deterministic batch receipt JSON to stdout |
 
 With `--json`, the only thing on stdout is the deterministic batch receipt (a
@@ -737,6 +749,18 @@ Resolution order for the config path:
 | `margin_right_pt` | non-negative points | `72` |
 | `margin_bottom_pt` | non-negative points | `72` |
 | `margin_left_pt` | non-negative points | `72` |
+| `lang` | language tag such as `en`, `de`, `pt-BR` | unset |
+| `toc`, `toc_depth` | `true`/`false`; heading level `1`..`6` | `false`, `3` |
+| `font_scale` | as `--font-scale` (`lg`, `125%`, `1.2`, ...) | `md` |
+| `html_font_format` | `woff1`, `woff2`, `ttf` | `woff1` |
+| `microtype` | `off`, `protrusion`, `expansion` | `off` |
+| `pdf_page_numbers`, `pdf_optimal_pagination` | `true`/`false` | `false` |
+| `typography_homogeneous`, `typography_antiriver`, `typography_pareto` | `true`/`false` | `false` |
+
+The render-default keys apply to `fmd render`, `watch` and `batch`. A flag
+always wins; for `lang`, `toc` and `toc_depth`, document frontmatter also beats
+the config. Switches set to `true` here cannot be turned off per run except
+with `--no-config`.
 
 Example config file:
 
@@ -816,7 +840,7 @@ Core modules:
 | Input is refused as too large (exit 66) | Raise the guard explicitly, for example `fmd --max-input-bytes 134217728 big.md --out big.html` |
 | `SOURCE_DATE_EPOCH must be non-negative decimal seconds` | Use plain decimal seconds: `SOURCE_DATE_EPOCH=1700000000 fmd doc.md --to pdf --out doc.pdf` |
 | HTML printed to the terminal | That is stdout. Pass `--out file.html` or redirect: `fmd doc.md > doc.html` |
-| Raw HTML appears as escaped text | Default is safe escaping. Pass `--allow-html` only for trusted input |
+| Raw HTML appears as escaped text | By default fmd keeps a GitHub-style safe subset (`<div align>`, `<p>`, `<img src width>`, `<a href>`, `<b>`, `<kbd>`, `<sup>`, `<details>`/`<summary>`, headings, lists, tables; comments vanish): balanced, re-serialized markup with vetted URLs in HTML, native nodes in PDF/SVG/EPUB. Any other tag or attribute is escaped or dropped. Pass `--allow-html` only for trusted input |
 | Custom CSS removed all styling | `--css` replaces the stylesheet entirely; include every rule you want to keep |
 | `unknown config key ...` | Run `fmd capabilities --json` or see [Configuration](#configuration) for the supported key list |
 | `config set` errors with `--no-config` | They are mutually exclusive; drop `--no-config` to write config |
@@ -832,16 +856,18 @@ Honest about what the renderer does not do yet.
   intros), basic widow handling, and repeatable table headers across page breaks
   work today; full widow/orphan control and finer block pagination remain
   roadmap.
-- **PDF vs HTML gaps.** The PDF path does not yet render inline images within
-  running prose or arbitrary CSS. (Inline styling and links *inside table cells*
-  now render, with bold/italic/mono faces and clickable link annotations.) PDF
-  images are standalone PNG or SVG assets supplied by the host; the native CLI
+- **PDF vs HTML gaps.** The PDF path does not render arbitrary CSS. Images
+  inside running prose and table cells (badges, icons) are drawn inline as
+  unbreakable boxes up to 1.75 em tall and tagged `/Figure` with their alt
+  text; a paragraph of several large pictures keeps one figure line per
+  picture. PDF images are PNG, JPEG or SVG assets supplied by the host; the native CLI
   auto-loads relative local image destinations for file-input HTML/PDF renders,
   HTML embeds supported assets as data URIs, and `--pdf-image` can provide or
   override PDF assets explicitly.
-- **PDF mathematics.** Display equations use real math glyphs and geometry.
-  Inline formulas within running prose still render as literal TeX; unsupported
-  display commands preserve their source and report `math_fallback`.
+- **PDF mathematics.** Display and inline equations use real math glyphs and
+  geometry (inline formulas are unbreakable boxes inside running prose, tagged
+  `/Formula`); unsupported commands preserve their source and report
+  `math_fallback`.
 - **SVG support is practical, not browser-complete.** The PDF renderer covers
   the shapes, gradients, masks, clips, markers, CSS variables/selectors,
   embedded PNGs, marker view boxes/orientation/units, and `paint-order` behavior
@@ -849,10 +875,11 @@ Honest about what the renderer does not do yet.
   features are reported as structured render warnings rather than silently
   pretending to match a browser.
 - **CommonMark coverage is high and measured.** Against the official
-  CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **578/652
-  examples match** after normalizing fmd's styled HTML (97.1% of the 595 in-scope
-  examples across 16 fully passing sections; the raw-HTML examples are intentional
-  non-goals, since fmd escapes raw HTML by default). This is a ratcheted floor: CI fails if it drops.
+  CommonMark 0.31.2 suite (`scripts/commonmark-conformance.sh`), **589/652
+  examples match** after normalizing fmd's styled HTML (97.2% of the 606 in-scope
+  examples across 16 fully passing sections; the remaining raw-HTML examples are
+  intentional non-goals, since fmd sanitizes rather than passes raw HTML through
+  by default). This is a ratcheted floor: CI fails if it drops.
 - **HTML font subsets are WOFF1 data URLs by default, with WOFF2 available.** Per-document subsets are
   wrapped in the renderer's own deterministic DEFLATE container (measured 18.4%
   smaller HTML on the showcase document). Clean-room WOFF2 (Brotli-based) is
@@ -863,10 +890,11 @@ Honest about what the renderer does not do yet.
   gated manifest/size budgets, but browser-side visual fixtures remain thin.
 - **`batch` is opt-in and native-only.** It is not in the default build; enable
   it with `--features batch`, which pulls in Asupersync.
-- **Tagged-PDF accessibility is partial.** H1-H3 headings keep exact heading
-  tags, H4-H6 headings collapse to generic `/H`, and lists, tables (with header
+- **Tagged-PDF accessibility is partial.** Headings keep their exact `/H1`-`/H6`
+  tags from the source level (at any type scale), and lists, tables (with header
   column scope), blockquotes, figures, task-list markers, strikethrough runs,
-  and links are tagged. Cell-to-header id linkage, sub-line inline-link tagging,
+  and links are tagged (each link run is a `/Link` inside its paragraph or
+  heading, owning its annotation). Cell-to-header id linkage,
   full PDF/UA validation, and page-spanning logical elements remain roadmap. See
   [`docs/PDF_ACCESSIBILITY.md`](docs/PDF_ACCESSIBILITY.md).
 - **Release binaries are tag-driven.** The installers prefer the GitHub release

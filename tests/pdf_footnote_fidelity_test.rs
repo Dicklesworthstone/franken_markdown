@@ -73,9 +73,9 @@ fn rich_document() -> (Document, Document) {
             level: 1,
             inlines: vec![text("Study")],
         },
-        Block::Paragraph(vec![text("Evidence"), text("[1]")]),
+        Block::Paragraph(vec![text("Evidence"), text("¹")]),
         notes_heading(),
-        Block::Paragraph(vec![text("[1] "), text("PARAPROOF")]),
+        Block::Paragraph(vec![text("¹ "), text("PARAPROOF")]),
     ];
     expected.extend(body.into_iter().skip(1));
     (doc, Document { blocks: expected })
@@ -180,15 +180,10 @@ fn first_reference_order_matches_numbered_bodies_even_when_definitions_are_rever
     };
     let expected = Document {
         blocks: vec![
-            Block::Paragraph(vec![
-                text("First"),
-                text("[1]"),
-                text(" then "),
-                text("[2]"),
-            ]),
+            Block::Paragraph(vec![text("First"), text("¹"), text(" then "), text("²")]),
             notes_heading(),
-            Block::Paragraph(vec![text("[1] "), text("BETAPROOF")]),
-            Block::Paragraph(vec![text("[2] "), text("ALPHAPROOF")]),
+            Block::Paragraph(vec![text("¹ "), text("BETAPROOF")]),
+            Block::Paragraph(vec![text("² "), text("ALPHAPROOF")]),
         ],
     };
     assert_eq!(

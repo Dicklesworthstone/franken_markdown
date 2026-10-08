@@ -225,11 +225,17 @@ fn book_archive_contains_every_chapter_and_isolated_image_payload() {
         },
         BookInput {
             path: "second.md".into(),
-            source: "# Second\n\n![pixel](pic.png)\n".into(),
+            source: "# Second\n\n![pixel](pic2.png)\n".into(),
         },
     ])
     .expect("book");
-    let opts = image_options(RED_PNG);
+    // Distinct bytes per chapter: identical images are shared across
+    // chapters (see `book_image_tests`), distinct ones keep their own payload.
+    let mut opts = image_options(RED_PNG);
+    opts.image_assets.push(PdfImageAsset {
+        destination: "pic2.png".into(),
+        bytes: BLUE_PNG.to_vec(),
+    });
     let archive = render_book_epub(&book, &opts).expect("book EPUB");
     let records = entries(&archive);
     assert_eq!(records.len(), 9);
@@ -249,7 +255,7 @@ fn book_archive_contains_every_chapter_and_isolated_image_payload() {
         assert_entry(
             &records,
             &format!("OEBPS/assets/{prefix}image-1.png"),
-            RED_PNG,
+            [RED_PNG, BLUE_PNG][index],
         );
     }
 }

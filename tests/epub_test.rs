@@ -620,7 +620,7 @@ fn main() { println!(\"hi\"); }
 
 A duplicate heading exercises anchor collision suffixes.
 
-> A quote with <b>raw html</b> inside.
+> A quote with <b>raw html</b> and <marquee>unknown</marquee> inside.
 
 Footnote here[^n1].
 
@@ -753,12 +753,18 @@ fn epub_chapter_and_nav_are_well_formed_xhtml() {
         chapter.contains("<input type=\"checkbox\" disabled=\"disabled\" checked=\"checked\"/>"),
         "checked task checkbox legalized"
     );
-    // Raw inline HTML is escaped, not passed through.
+    // Raw inline HTML is never passed through: the safe subset is lowered to
+    // native XHTML elements and any other tag is escaped as visible text.
     assert!(
-        chapter.contains("&lt;b&gt;raw html&lt;/b&gt;"),
-        "raw HTML escaped"
+        chapter.contains("<strong>raw html</strong>"),
+        "safe raw HTML lowered: {chapter}"
+    );
+    assert!(
+        chapter.contains("&lt;marquee&gt;unknown&lt;/marquee&gt;"),
+        "unknown raw HTML escaped"
     );
     assert!(!chapter.contains("<b>raw html</b>"), "no raw passthrough");
+    assert!(!chapter.contains("<marquee>"), "no raw passthrough");
 
     let nav = entry_text(&bytes, "OEBPS/nav.xhtml");
     assert_well_formed_xml(&nav);

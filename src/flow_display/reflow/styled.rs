@@ -23,7 +23,7 @@ struct Fragment {
     size: f32,
 }
 
-impl<F> Reflow<'_, F>
+impl<F: ?Sized> Reflow<'_, F>
 where
     F: FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String>,
 {

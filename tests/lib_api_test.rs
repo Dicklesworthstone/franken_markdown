@@ -213,11 +213,13 @@ fn render_warnings_flags_glyphless_characters_and_stays_quiet_on_ascii() {
 fn render_warnings_include_raw_html_preserved_as_pdf_text() {
     use franken_markdown::{PdfOptions, RenderWarning, parse_markdown, render_warnings};
 
-    // PDF output preserves raw HTML source as visible text. The warning walker
-    // must inspect that same source, or glyphless characters in HTML tags and
-    // attributes render as .notdef boxes without any diagnostic.
+    // PDF output preserves raw HTML outside the safe subset as visible text.
+    // The warning walker must inspect that same source, or glyphless
+    // characters in HTML tags and attributes render as .notdef boxes without
+    // any diagnostic. (Safe-subset tags such as `<div>` are lowered and their
+    // attributes dropped, so they are not visible source.)
     let doc = parse_markdown(
-        "<div title=\"中文\">ok</div>\n\nParagraph <span title=\"日本語\">ok</span>",
+        "<marquee title=\"中文\">ok</marquee>\n\nParagraph <blink title=\"日本語\">ok</blink>",
     );
     let missing = render_warnings(&doc, &PdfOptions::default())
         .into_iter()
@@ -544,4 +546,57 @@ fn font_assets_weight_pins_instance_variable_faces_and_ignore_static() {
             ) && w.code() == "font_weight_ignored_static"
         }),
     );
+}
+
+#[test]
+fn explicit_commonmark_gfm_profile_renders_github_dialect_only() {
+    use franken_markdown::{HtmlOptions, PdfOptions, Profile, render_html};
+
+    let md = "Term\n: Meaning\n\nNote[^1].\n\n[^1]: Footnote.\n\n> [!NOTE]\n> Alert.\n";
+    let html = |profile| {
+        render_html(
+            md,
+            &HtmlOptions {
+                profile,
+                ..HtmlOptions::default()
+            },
+        )
+        .unwrap()
+    };
+    // No profile and gfm-plus keep definition lists.
+    for profile in [None, Some(Profile::GfmPlus)] {
+        assert!(html(profile).contains("<dl>"), "{profile:?}");
+    }
+    // GitHub's dialect: no definition lists (literal paragraph), but GitHub
+    // does render footnotes and alerts.
+    let strict = html(Some(Profile::CommonMarkGfm));
+    assert!(!strict.contains("<dl>"), "{strict}");
+    assert!(strict.contains("<p>Term\n: Meaning</p>"), "{strict}");
+    assert!(strict.contains("footnote-ref"), "{strict}");
+    assert!(strict.contains("callout"), "{strict}");
+
+    // PDF honors the same profile.
+    let layer = |profile| {
+        franken_markdown::pdf::verification_text_layer(
+            &franken_markdown::apply_profile(&franken_markdown::parse_markdown(md), profile),
+            &PdfOptions::default(),
+        )
+        .unwrap()
+    };
+    let text: String = layer(Some(Profile::CommonMarkGfm))
+        .pages
+        .iter()
+        .flat_map(|page| &page.runs)
+        .map(|run| format!("{}\n", run.text))
+        .collect();
+    assert!(text.contains(": Meaning"), "{text}");
+    let pdf = franken_markdown::render_pdf(
+        md,
+        &PdfOptions {
+            profile: Some(Profile::CommonMarkGfm),
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(pdf.starts_with(b"%PDF-"));
 }

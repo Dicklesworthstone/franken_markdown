@@ -217,4 +217,15 @@ test("root single-document PDF calls still use their existing ABI and geometry o
   assert.equal(state.calls[1].kind, "pdf-page");
   assert.equal(state.calls[1].args.length, 28);
   assert.deepEqual(Array.from(state.calls[1].args[27]), [720, 540, 18, 24, 30, 36]);
+  // Opt-in typography appends one trailing token string after everything else.
+  await api.renderPdf("# Solo", {
+    typography: { homogeneous: true, pareto: true },
+    optimalPagination: true,
+    microtype: "expansion",
+  });
+  assert.equal(state.calls[2].args.length, 28);
+  assert.equal(state.calls[2].args[27], "homogeneous,pareto,optimal-pagination,expansion");
+  await api.renderPdf("# Solo", { page: page(), typography: { antiriver: true } });
+  assert.equal(state.calls[3].args.length, 29);
+  assert.equal(state.calls[3].args[28], "antiriver");
 });

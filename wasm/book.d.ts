@@ -26,6 +26,20 @@ export interface BookFont {
   weight?: number;
 }
 
+/** Template text is bounded to 4096 UTF-8 bytes per slot. */
+export interface BookRunningBand {
+  left?: string;
+  center?: string;
+  right?: string;
+  rule?: boolean;
+}
+export interface BookRunningContent {
+  header?: BookRunningBand;
+  footer?: BookRunningBand;
+  /** Also suppresses the pageNumbers footer on the first page. */
+  skipFirstPage?: boolean;
+}
+
 export interface BookOptions {
   /** Expand includes in Rust (default true). False preserves literal source. */
   expandIncludes?: boolean;
@@ -48,6 +62,32 @@ export interface BookOptions {
   fontScale?: number;
   toc?: boolean;
   pageNumbers?: boolean;
+  /** Comma-separated homogeneous, antiriver, pareto, optimal-pagination,
+   * protrusion or expansion. Unknown tokens fail before WASM initialization.
+   * Requires FmdBook.setPdfOptions; old packages fail explicitly.
+   */
+  typography?: string;
+  optimalPagination?: boolean;
+  /** An explicit mode overrides microtype tokens in typography. */
+  microtype?: "off" | "protrusion" | "expansion" | "all";
+  /** Compatibility shortcut, applied after microtype. */
+  microtypeProtrusion?: boolean;
+  /** Body size in points, 6..=24. */
+  baseFontSize?: number;
+  /** Heading ratio, 1.05..=2. */
+  headingScale?: number;
+  /** Table size in points, 5..=24. */
+  tableFontSize?: number;
+  /** In-content TOC depth, integer 1..=6; also applies to HTML. */
+  tocDepth?: number;
+  /** Adaptive target, integer 1..=4294967295; not a hard page-count guarantee. */
+  fitToPages?: number;
+  codeLineNumbers?: boolean;
+  /** Nonnegative safe-integer epoch; no ambient clock is read. */
+  metadataEpochSeconds?: number;
+  running?: BookRunningContent;
+  /** HTML-site font container only; EPUB keeps its TrueType package. */
+  htmlFontFormat?: "ttf" | "woff1" | "woff2";
   /** Default paper/margins for PDF exports only; HTML/EPUB are unaffected.
    * Uses the single-document point-based geometry contract. Captured before
    * asynchronous initialization or worker transfer, with no host references.
@@ -95,6 +135,24 @@ export interface BookSourceUpdateOptions {
   expectedRevision?: number;
 }
 
+/** Receipt for replacing the complete ordered chapter/include source set. */
+export interface BookSourceSetUpdate {
+  readonly revision: number;
+  readonly sourceLength: number;
+  readonly chapterCount: number;
+  readonly resourceCount: number;
+  readonly changed: boolean;
+  /** Changed sets rebuild every chapter against the new map; exact no-ops
+   * retain the AST and report zero. Use updateSources for selective parsing. */
+  readonly reparsedChapterCount: number;
+}
+export interface BookSourceSetOptions extends BookSourceUpdateOptions {
+  /** The COMPLETE next include-only capture. Omitted/undefined means empty,
+   * not retain previous resources. Requires an expanding book. Chapter and
+   * resource paths/text together are limited to 4096 sources and 64 MiB. */
+  includeSources?: readonly BookFile[];
+}
+
 /** Parsed WASM book. Dispose in a finally block when repeated exports finish. */
 export interface BookSession {
   readonly chapterCount: number;
@@ -112,6 +170,16 @@ export interface BookSession {
    * its committed source state cannot safely be verified.
    */
   updateSources(files: readonly BookFile[], options?: BookSourceUpdateOptions): BookSourceUpdate;
+  /** Replace the COMPLETE ordered chapter list and include-only capture.
+   * Supports adding/removing/renaming/reordering selected sources while keeping
+   * settings, assets and PDF page defaults. Does not write/delete host files or
+   * rewrite source links. Expansion policy is fixed at createBook time.
+   * Shares optimistic revisions and the admission guard with updateSources.
+   * Rejections keep the previous book; an unverifiable successful native
+   * receipt instead disposes it. Old WASM throws UNSUPPORTED_BOOK_SOURCE_SET.
+   * Synchronous: no worker queue, Promise or cancellation is implied.
+   */
+  replaceSources(files: readonly BookFile[], options?: BookSourceSetOptions): BookSourceSetUpdate;
   setImage(destination: string, bytes: BookAssetBytes): BookSession;
   setFont(slot: BookFontSlot, bytes: BookAssetBytes, weight?: number): BookSession;
   /** Synchronous rendering after asynchronous session creation. An optional
@@ -122,6 +190,15 @@ export interface BookSession {
   renderPdf(options?: Pick<BookOptions, "page">): BookOutput;
   renderEpub(): BookOutput;
   renderSite(): BookOutput;
+  /** Whether this live WASM book implements the additive chapter-preview ABI. */
+  readonly supportsChapterPreview: boolean;
+  /** Render only the selected zero-based chapter (default 0), with a complete
+   * ordered navigation map. Synchronous; no ZIP, worker, or cancellation is
+   * implied. Requires rebuilt WASM; old packages fail explicitly rather than
+   * rendering the whole site. The bounded JSON reply is checked against the
+   * requested index and chapter count. HTML is not sanitized for host insertion.
+   */
+  renderChapterPreview(selected?: number): BookChapterPreviewOutput;
   /** Check local HTML navigation on the retained AST without rendering pages. */
   validateLinks(): BookLinksOutput;
   /** Idempotent. All subsequent operations except dispose throw. */
@@ -197,3 +274,41 @@ export function parseBookLinkReport(
   bytes: Uint8Array,
   expectedPaths: readonly string[],
 ): BookLinkReport;
+
+/** Metadata for every chapter, in Rust-defined reading order. */
+export interface BookChapterPreviewPage {
+  readonly path: string;
+  readonly source: string;
+  readonly title: string;
+}
+export interface BookChapterPreview {
+  readonly schema: "fmd-book-chapter-preview-v1";
+  readonly selected: number;
+  readonly pages: readonly BookChapterPreviewPage[];
+  /** Only the selected chapter's HTML; untrusted content requiring isolation. */
+  readonly html: string;
+}
+export interface BookChapterPreviewOutput {
+  readonly format: "book-chapter-preview";
+  readonly mimeType: "application/json";
+  readonly extension: "json";
+  readonly sourceLength: number;
+  /** Owned UTF-8 fmd-book-chapter-preview-v1 JSON, valid after disposal. */
+  readonly bytes: Uint8Array;
+  blob(): Blob;
+  filename(baseName?: string): string;
+}
+/** Create a book, render one chapter, and dispose even when rendering fails. */
+export function renderBookChapterPreview(
+  files: readonly BookFile[],
+  selected?: number,
+  options?: BookOptions,
+): Promise<BookChapterPreviewOutput>;
+/** Validate bounded UTF-8 JSON and optionally bind it to a requested index and
+ * count. Allows 4096 metadata entries, 8 MiB selected HTML, 64 MiB wire bytes.
+ * Returns deeply frozen metadata. Does not sanitize or execute the HTML. */
+export function parseBookChapterPreview(
+  bytes: Uint8Array,
+  expectedSelected?: number,
+  expectedCount?: number,
+): BookChapterPreview;

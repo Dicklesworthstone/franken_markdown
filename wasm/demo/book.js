@@ -25,7 +25,7 @@ let library = null,
   links = null;
 const controls = createBookControls({
   root: document,
-  worker: createBookWorker(),
+  worker: createBookWorker({ retainBook: true }),
   collection,
   confirm: (text) => window.confirm(text),
   onProjectReplaced: () => library?.detach(),
@@ -68,7 +68,7 @@ try {
 let pdfWorker = null;
 try {
   createBookPdfPanel(document);
-  pdfWorker = createBookWorker();
+  pdfWorker = createBookWorker({ retainBook: true });
   pdfProof = createBookPdfControls({ root: document, controls, collection, worker: pdfWorker });
 } catch {
   pdfWorker?.dispose();

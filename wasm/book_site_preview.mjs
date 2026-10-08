@@ -1,5 +1,7 @@
 // Read the Rust book engine's classic ZIP subset, not arbitrary user archives.
 // Markdown parsing, chapter addressing, transclusion and HTML remain Rust-owned.
+import { parseBookChapterPreview } from "./book_session.mjs";
+
 export const BOOK_PREVIEW_LIMITS = Object.freeze({
   archiveBytes: 64 * 1024 * 1024,
   pageBytes: 8 * 1024 * 1024,
@@ -307,4 +309,39 @@ export function resolveBookPreviewLink(preview, current, href) {
   }
   if (fragment.length > 4096 || /[\x00-\x1f\x7f]/.test(fragment)) return null;
   return { path: page.path, fragment };
+}
+
+/** Selected-chapter worker route. Capability detection is deliberately separate
+ * from error recovery: a native render/budget/protocol failure never retries a
+ * larger whole-site render. Old native packages keep the bounded ZIP fallback.
+ * Neither route sanitizes HTML; both still require the isolated reader frame.
+ */
+export async function renderBookSessionChapterPreview(session, selected = 0) {
+  const count = session.chapterCount;
+  if (!Number.isInteger(selected) || selected < 0 || selected >= count)
+    throw error("INVALID_CHAPTER_INDEX", "Choose a chapter in the current book.");
+  if (session.supportsChapterPreview === true) {
+    const result = await session.renderChapterPreview(selected);
+    parseBookChapterPreview(result.bytes, selected, count);
+    return { bytes: result.bytes, sourceLength: result.sourceLength, previewMode: "native-chapter" };
+  }
+  const site = await session.renderSite();
+  const preview = await decodeBookSiteArchive(site.bytes);
+  if (preview.pages.length !== count) throw invalid();
+  const value = { schema: "fmd-book-chapter-preview-v1", selected,
+    pages: preview.pages.map(({ path, source, title }) => ({ path, source, title })),
+    html: preview.pages[selected].html };
+  // All inputs have already passed the legacy aggregate/per-field limits. Check
+  // JSON escaping before allocating the transfer buffer as well.
+  const json = JSON.stringify(value);
+  text(json, L.messageBytes);
+  const bytes = encoder.encode(json);
+  parseBookChapterPreview(bytes, selected, count);
+  return { bytes, sourceLength: site.sourceLength, previewMode: "site-fallback" };
+}
+
+export async function renderBookSelectedPreview(engine, files, options, selected = 0) {
+  const session = await engine.createBook(files, options);
+  try { return await renderBookSessionChapterPreview(session, selected); }
+  finally { session.dispose(); }
 }

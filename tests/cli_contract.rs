@@ -289,8 +289,9 @@ fn robot_docs_describe_current_pdf_capability_without_stale_base14_claims() {
     assert!(stdout.contains("Knuth-Plass paragraph layout"));
     assert!(stdout.contains("deterministic discretionary hyphenation"));
     assert!(stdout.contains("glue justification for body paragraphs"));
-    assert!(stdout.contains("basic keep/widow page building"));
-    assert!(stdout.contains("deeper page-builder polish is still planned"));
+    assert!(stdout.contains("keep-with-next headings and widow/orphan control"));
+    assert!(stdout.contains("still planned: bottom-of-page footnotes"));
+    assert!(!stdout.contains("deeper page-builder polish is still planned"));
     assert!(!stdout.contains(
         "Knuth-Plass paragraph layout, hyphenation, and page-builder polish are still planned"
     ));
@@ -3070,4 +3071,119 @@ fn fmd_render_interactive_html_generates_self_contained_workspace() {
 
     let _ = fs::remove_file(doc_md);
     let _ = fs::remove_file(out_html);
+}
+
+#[test]
+fn fmd_svg_embeds_local_images_honors_width_and_reports_missing_images() {
+    let dir = temp_dir("svg-resources");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("dot.svg"), simple_svg("dot")).unwrap();
+    std::fs::write(
+        dir.join("doc.md"),
+        "# Poster\n\n![dot](dot.svg)\n\nMissing ![gone](gone.png) image.\n",
+    )
+    .unwrap();
+    let out = fmd_in_dir(
+        &[
+            "doc.md",
+            "--to",
+            "svg",
+            "--svg-width-pt",
+            "400",
+            "--out",
+            "doc.svg",
+            "--json",
+        ],
+        &dir,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let svg = std::fs::read_to_string(dir.join("doc.svg")).unwrap();
+    assert!(
+        svg.contains("<image") && svg.contains("href=\"data:image/"),
+        "local image embedded"
+    );
+    assert!(svg.contains("width=\"400.00\""), "--svg-width-pt applied");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("\"event\":\"warning\"") && stderr.contains("svg_image_missing"),
+        "missing image reported: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fmd_watch_accepts_the_same_render_style_flags_as_render() {
+    let out = fmd(&["watch", "--help"]);
+    assert!(out.status.success());
+    let help = String::from_utf8_lossy(&out.stdout);
+    for flag in [
+        "--title",
+        "--toc",
+        "--pdf-page-numbers",
+        "--pdf-footer-center",
+        "--font-scale",
+        "--pdf-image",
+        "--microtype",
+    ] {
+        assert!(help.contains(flag), "fmd watch --help lacks {flag}");
+    }
+}
+
+/// Native config render defaults apply to renders, rank below frontmatter
+/// and flags, round-trip through `config set`, and reject bad values.
+#[test]
+fn config_render_defaults_apply_below_frontmatter_and_flags() {
+    let config = temp_file("render-defaults", "conf");
+    let config_s = config.display().to_string();
+    let env = [("FMD_CONFIG", config_s.as_str())];
+    for (key, value) in [
+        ("lang", "de"),
+        ("toc", "true"),
+        ("html_font_format", "ttf"),
+        ("microtype", "expansion"),
+    ] {
+        let out = fmd_with_env(&["config", "set", key, value], &env);
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    }
+    let saved = fs::read_to_string(&config).unwrap();
+    assert!(saved.contains("lang=de\ntoc=true\n"), "{saved}");
+    assert!(saved.contains("microtype=expansion\n"), "{saved}");
+
+    let bad = fmd_with_env(&["config", "set", "microtype", "sideways"], &env);
+    assert_eq!(bad.status.code(), Some(64), "{}", text(&bad.stderr));
+    assert!(text(&bad.stderr).contains("protrusion"));
+
+    let shown = fmd_with_env(&["config", "show", "--json"], &env);
+    let shown = text(&shown.stdout);
+    assert!(
+        shown.contains("\"render\":{\"lang\":\"de\",\"toc\":true,"),
+        "{shown}"
+    );
+
+    let doc = "# One\n\n## Two\n\nBody text.\n";
+    let html = fmd_with_env(&["--text", doc], &env);
+    let html = text(&html.stdout);
+    assert!(html.contains("lang=\"de\""), "config lang applies");
+    assert!(html.contains("<nav class=\"toc\">"), "config toc applies");
+    assert!(html.contains("font/ttf"), "config html_font_format applies");
+
+    let fm = "--text=---\nlang: fr\ntoc: false\n---\n# One\n\n## Two\n";
+    let html = text(&fmd_with_env(&[fm], &env).stdout);
+    assert!(html.contains("lang=\"fr\""), "frontmatter beats config");
+    assert!(
+        !html.contains("<nav class=\"toc\">"),
+        "frontmatter toc: false wins"
+    );
+
+    let html = text(&fmd_with_env(&[fm, "--lang", "es"], &env).stdout);
+    assert!(html.contains("lang=\"es\""), "flag beats frontmatter");
+
+    let html = text(&fmd_with_env(&["--no-config", "--text", doc], &[]).stdout);
+    assert!(!html.contains("lang=\"de\"") && !html.contains("<nav class=\"toc\">"));
+
+    let _ = fs::remove_file(config);
 }

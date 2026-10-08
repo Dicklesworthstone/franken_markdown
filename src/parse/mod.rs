@@ -16,7 +16,7 @@ use crate::ast::{Align, Block, Document, Inline, List, ListItem, Table};
 use crate::scanner::{ParserLineScan, scan_markdown_line};
 use crate::span::{ParseDiagnostic, SourceSpan, Spanned, SpannedDocument};
 
-mod entities;
+pub(crate) mod entities;
 mod frontmatter;
 mod unicode_punct;
 

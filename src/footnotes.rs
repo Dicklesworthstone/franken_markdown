@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use crate::ast::{Block, Document, Inline};
 
-/// Preserve the historical `[n]` PDF reference style while retaining every
-/// supported block in each note. Number referenced notes by first use in the
+/// Typeset references as superscript numerals (`claim¹`, the way a printed
+/// document marks notes) while retaining every supported block in each note. Number referenced notes by first use in the
 /// body, then traverse note-to-note references in that order. Definitions
 /// without references follow in source order, preserving the legacy policy
 /// that an explicitly supplied definition is not silently discarded.
@@ -20,6 +20,15 @@ use crate::ast::{Block, Document, Inline};
 /// visible as `[^id]`, never the misleading `[0]`. A document with no footnote
 /// syntax is borrowed, avoiding a whole-AST clone on the ordinary PDF path.
 pub(crate) fn for_pdf(doc: &Document) -> Cow<'_, Document> {
+    // Paged output cannot pass markup through: lower the safe HTML subset to
+    // native nodes first (idempotent, borrowed when there is no raw HTML).
+    match crate::safe_html::lower(doc) {
+        Cow::Borrowed(doc) => endnotes_for_pdf(doc),
+        Cow::Owned(lowered) => Cow::Owned(endnotes_for_pdf(&lowered).into_owned()),
+    }
+}
+
+fn endnotes_for_pdf(doc: &Document) -> Cow<'_, Document> {
     let mut notes = Notes::default();
     notes.collect(&doc.blocks);
     if notes.definitions.is_empty() && !notes.has_reference {
@@ -35,7 +44,7 @@ pub(crate) fn for_pdf(doc: &Document) -> Cow<'_, Document> {
         });
         for &index in &numbering.order {
             let mut body = rewrite_blocks(notes.definitions[index], &notes, &numbering);
-            let label = format!("[{}]", numbering.numbers[index]);
+            let label = superscript(numbering.numbers[index]);
             match body.first_mut() {
                 Some(Block::Paragraph(inlines)) => {
                     inlines.insert(0, Inline::Text(format!("{label} ")));
@@ -287,12 +296,26 @@ fn rewrite_blocks(blocks: &[Block], notes: &Notes<'_>, numbering: &Numbering) ->
     out
 }
 
+/// A note number in Unicode superscript digits (every bundled body face and
+/// the SVG/PDF fallback carry them).
+fn superscript(number: usize) -> String {
+    const DIGITS: [char; 10] = [
+        '\u{2070}', '\u{B9}', '\u{B2}', '\u{B3}', '\u{2074}', '\u{2075}', '\u{2076}', '\u{2077}',
+        '\u{2078}', '\u{2079}',
+    ];
+    number
+        .to_string()
+        .bytes()
+        .map(|digit| DIGITS[usize::from(digit - b'0')])
+        .collect()
+}
+
 fn rewrite_inlines(inlines: &[Inline], notes: &Notes<'_>, numbering: &Numbering) -> Vec<Inline> {
     inlines
         .iter()
         .map(|inline| match inline {
             Inline::FootnoteRef { id } => Inline::Text(match notes.indices.get(id.as_str()) {
-                Some(&index) => format!("[{}]", numbering.numbers[index]),
+                Some(&index) => superscript(numbering.numbers[index]),
                 None => format!("[^{id}]"),
             }),
             Inline::Emphasis(content) => {
@@ -353,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn single_paragraph_note_retains_historical_shape() {
+    fn single_paragraph_note_keeps_its_shape() {
         let doc = document(vec![
             Block::Paragraph(vec![text("Body"), reference("a")]),
             definition("a", vec![paragraph("Citation")]),
@@ -361,14 +384,22 @@ mod tests {
         assert_eq!(
             for_pdf(&doc).as_ref(),
             &document(vec![
-                Block::Paragraph(vec![text("Body"), text("[1]")]),
+                Block::Paragraph(vec![text("Body"), text("¹")]),
                 Block::Heading {
                     level: 2,
                     inlines: vec![text("Notes")]
                 },
-                Block::Paragraph(vec![text("[1] "), text("Citation")]),
+                Block::Paragraph(vec![text("¹ "), text("Citation")]),
             ])
         );
+    }
+
+    #[test]
+    fn note_numbers_are_superscript_numerals() {
+        assert_eq!(superscript(1), "\u{B9}");
+        assert_eq!(superscript(10), "\u{B9}\u{2070}");
+        assert_eq!(superscript(2345), "\u{B2}\u{B3}\u{2074}\u{2075}");
+        assert_eq!(superscript(6789), "\u{2076}\u{2077}\u{2078}\u{2079}");
     }
 
     #[test]
@@ -381,15 +412,15 @@ mod tests {
         let transformed = for_pdf(&doc);
         assert_eq!(
             transformed.blocks[0],
-            Block::Paragraph(vec![text("[1]"), text("[2]"), text("[1]")])
+            Block::Paragraph(vec![text("¹"), text("²"), text("¹")])
         );
         assert_eq!(
             transformed.blocks[2],
-            Block::Paragraph(vec![text("[1] "), text("B")])
+            Block::Paragraph(vec![text("¹ "), text("B")])
         );
         assert_eq!(
             transformed.blocks[3],
-            Block::Paragraph(vec![text("[2] "), text("A")])
+            Block::Paragraph(vec![text("² "), text("A")])
         );
     }
 
@@ -439,9 +470,13 @@ mod tests {
             definition("rich", rich.clone()),
         ]);
         let original = doc.clone();
-        let result = for_pdf(&doc);
-        assert_eq!(result.blocks[2], paragraph("[1]"));
+        // Endnote rewriting alone must keep every block, raw HTML included;
+        // `for_pdf` additionally lowers that HTML (see `safe_html`).
+        let result = endnotes_for_pdf(&doc);
+        assert_eq!(result.blocks[2], paragraph("¹"));
         assert_eq!(&result.blocks[3..], rich.as_slice());
+        let prepared = for_pdf(&doc);
+        assert_eq!(prepared.blocks[10], paragraph("Raw evidence"));
         assert_eq!(doc, original);
     }
 
@@ -469,18 +504,18 @@ mod tests {
             result.blocks[0],
             Block::Table(Table {
                 align: vec![Align::Left],
-                head: vec![vec![text("[1]")]],
-                rows: vec![vec![vec![Inline::Strong(vec![text("[2]")])]]]
+                head: vec![vec![text("¹")]],
+                rows: vec![vec![vec![Inline::Strong(vec![text("²")])]]]
             })
         );
         assert_eq!(
             result.blocks[1],
             Block::DefinitionList(vec![DefinitionItem {
-                terms: vec![vec![text("[2]")]],
+                terms: vec![vec![text("²")]],
                 definitions: vec![vec![Inline::Link {
                     dest: "https://example.com".into(),
                     title: Some("Link".into()),
-                    content: vec![text("[1]")]
+                    content: vec![text("¹")]
                 }]],
             }])
         );
@@ -497,11 +532,11 @@ mod tests {
         assert_eq!(result.blocks.len(), 4);
         assert_eq!(
             result.blocks[2],
-            Block::Paragraph(vec![text("[1] "), text("A"), text("[2]")])
+            Block::Paragraph(vec![text("¹ "), text("A"), text("²")])
         );
         assert_eq!(
             result.blocks[3],
-            Block::Paragraph(vec![text("[2] "), text("B"), text("[1]")])
+            Block::Paragraph(vec![text("² "), text("B"), text("¹")])
         );
     }
 
@@ -517,11 +552,11 @@ mod tests {
         assert_eq!(result.blocks.len(), 4);
         assert_eq!(
             result.blocks[2],
-            Block::Paragraph(vec![text("[1] "), text("First definition")])
+            Block::Paragraph(vec![text("¹ "), text("First definition")])
         );
         assert_eq!(
             result.blocks[3],
-            Block::Paragraph(vec![text("[2] "), text("Unreferenced evidence")])
+            Block::Paragraph(vec![text("² "), text("Unreferenced evidence")])
         );
     }
 
@@ -551,10 +586,10 @@ mod tests {
         let result = for_pdf(&doc);
         assert_eq!(result.blocks.len(), 6);
         assert_eq!(result.blocks[3], paragraph("Continuation"));
-        assert_eq!(result.blocks[4], Block::Paragraph(vec![text("[2]")]));
+        assert_eq!(result.blocks[4], Block::Paragraph(vec![text("²")]));
         assert_eq!(
             result.blocks[5],
-            Block::Paragraph(vec![text("[2] "), text("Nested definition")])
+            Block::Paragraph(vec![text("² "), text("Nested definition")])
         );
         assert!(
             matches!(for_pdf(result.as_ref()), Cow::Borrowed(_)),

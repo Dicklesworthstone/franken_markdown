@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parent
 ART = Path(tempfile.mkdtemp(prefix="fmd-book-images-"))
 modules = {name: (ROOT / name).read_text() for name in [
-    "pdf_page.mjs", "book_session.mjs", "book_worker.mjs",
+    "pdf_page.mjs", "book_session.mjs", "book_retained.mjs", "book_worker.mjs",
     "demo/book_font_assets.mjs", "demo/book_collection.mjs", "demo/book_image_controls.mjs",
 ]}
 # Independent valid one-pixel PNG; pixel decoding is not what this feature does.

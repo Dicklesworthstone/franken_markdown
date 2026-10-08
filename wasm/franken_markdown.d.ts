@@ -78,12 +78,29 @@ export interface FmdRenderOptions {
   tocDepth?: number;
   /** Adaptive PDF page-count target. */
   fitToPages?: number;
-  /** Enable optical-margin punctuation protrusion for justified PDF text. */
-  microtype?: "disabled" | "protrusion";
+  /**
+   * Microtypography for justified PDF text: "protrusion" (optical-margin
+   * protrusion with a small glyph-expansion budget) or "expansion" (glyph
+   * expansion only).
+   */
+  microtype?: "disabled" | "protrusion" | "expansion";
   /** Boolean alias for microtype: "protrusion". */
   microtypeProtrusion?: boolean;
   /** Standalone SVG poster width in points (144..14400; default 612). */
   maxWidthPt?: number;
+  /** HTML font subset container: "woff1" (default), "woff2" (smallest) or "ttf". */
+  htmlFontFormat?: "woff1" | "woff2" | "ttf";
+  /** Opt-in PDF line-breaking refinements (all off by default). */
+  typography?: {
+    /** Gradual adjacent-line demerits for more homogeneous spacing. */
+    homogeneous?: boolean;
+    /** Penalize white "rivers" through justified paragraphs. */
+    antiriver?: boolean;
+    /** Pareto-front line breaking safety net. */
+    pareto?: boolean;
+  };
+  /** Globally optimal (Plass) PDF page breaking instead of greedy. */
+  optimalPagination?: boolean;
   /** Host-supplied image bytes for HTML, PDF, EPUB and SVG; each export enforces resource limits. */
   pdfImages?: FmdPdfImageAsset[];
   /** Host-supplied TrueType font bytes by renderer slot. */

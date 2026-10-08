@@ -51,8 +51,9 @@ pub fn render_pdf_configured_page(
     fit_to_pages: Option<u32>,
     microtype_protrusion: bool,
     page_geometry: Vec<f64>,
+    typography: Option<String>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
-    let options = configured_pdf_options(
+    let mut options = configured_pdf_options(
         font,
         dark_mode,
         title,
@@ -81,6 +82,9 @@ pub fn render_pdf_configured_page(
         microtype_protrusion,
         page_geometry,
     )?;
+    options
+        .apply_typography_tokens(typography.as_deref())
+        .map_err(|e| JsValue::from_str(&e))?;
     wasm::render_pdf(markdown, &options)
         .map(render_result)
         .map_err(render_error_to_js)
@@ -132,11 +136,12 @@ pub fn render_pdf_configured_running(
     header_rule: bool,
     footer_rule: bool,
     skip_first_page: bool,
+    typography: Option<String>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     // Admit the chrome before copying any asset payloads.
     let running = running_content(running_slots, header_rule, footer_rule, skip_first_page)
         .map_err(JsValue::from_str)?;
-    let options = configured_pdf_options(
+    let mut options = configured_pdf_options(
         font,
         dark_mode,
         title,
@@ -166,6 +171,9 @@ pub fn render_pdf_configured_running(
         page_geometry,
     )?
     .with_running(running);
+    options
+        .apply_typography_tokens(typography.as_deref())
+        .map_err(|e| JsValue::from_str(&e))?;
     wasm::render_pdf(markdown, &options)
         .map(render_result)
         .map_err(render_error_to_js)
@@ -689,6 +697,7 @@ mod tests {
             true,
             true,
             false,
+            None,
         )
         .unwrap();
         let mut options = crate::PdfOptions {
@@ -811,6 +820,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         let new = render_pdf_configured_page(
@@ -842,6 +852,7 @@ mod tests {
             None,
             false,
             vec![],
+            None,
         )
         .unwrap();
         assert_eq!(old.bytes(), new.bytes());

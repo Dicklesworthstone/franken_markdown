@@ -1,4 +1,4 @@
-import { bookError } from "../book_worker.mjs";
+import { bookError, createBookCollectionCapture } from "../book_worker.mjs";
 import { normalizePdfPage } from "../pdf_page.mjs";
 import {
   createBookCollection,
@@ -65,10 +65,12 @@ export function createBookControls({
     el[id] = root.querySelector(`#${id}`);
   const unlisten = [],
     sourceListeners = new Set();
+  const capturePublication = createBookCollectionCapture(collection, worker);
   let pageSetup = null;
   let portableAbort = null;
   let lastSourceBusy = false;
   let composing = false;
+  let configurationRevision = collection.renderConfigurationRevision;
   let disposed = false,
     active = 0,
     generation = 0,
@@ -119,7 +121,7 @@ export function createBookControls({
       "open-project",
     ])
       el[kind].disabled = reading;
-    el["cancel-export"].disabled = !preparing && !(reading && portableAbort);
+    el["cancel-export"].disabled = !preparing && !(reading && portableAbort) && !worker.hasRetainedBook;
     if (el["save-portable"]) el["save-portable"].disabled = reading || composing || preparing;
     if (el["open-portable"]) el["open-portable"].disabled = reading || composing;
     if (el["cancel-portable"]) el["cancel-portable"].disabled = portableAbort === null;
@@ -147,13 +149,14 @@ export function createBookControls({
       urls.revokeObjectURL(previous);
     }
   }
-  function invalidate() {
+  function invalidate(keepIdle = false) {
     portableAbort?.abort();
     portableAbort = null;
     if (el["portable-review"]) el["portable-review"].textContent = "No portable restore is under review.";
     generation++;
     preparing = false;
-    worker.cancel();
+    if (keepIdle && typeof worker.cancelPending === "function") worker.cancelPending();
+    else worker.cancel();
     revoke();
     if (!disposed) buttons();
   }
@@ -228,16 +231,16 @@ export function createBookControls({
     try {
       alive();
       if (reading) throw bookError("BOOK_BUSY", "A local import is in progress.");
-      invalidate();
+      invalidate(true);
       capture();
-      const input = collection.snapshot(),
+      const input = capturePublication(),
         revision = collection.revision,
         view = signature();
       ticket = ++generation;
       preparing = true;
       buttons();
       el.status.textContent = `Preparing ${format.toUpperCase()} in the worker. Editing or cancelling terminates this export.`;
-      const result = await worker.render(input.files, format, input.options);
+      const result = await input.render(format);
       const name =
         (input.options.title
           .replace(/[^a-z0-9_-]+/gi, "-")
@@ -376,7 +379,12 @@ export function createBookControls({
     unlisten.push(() => el[id].removeEventListener(type, handler));
   }
   const unsubscribe = collection.subscribe(() => {
-    invalidate();
+    const next = collection.renderConfigurationRevision;
+    const sourceOnly = Number.isSafeInteger(next) && next === configurationRevision;
+    configurationRevision = next;
+    // Retire every prepared download and in-flight job. Only an already-idle
+    // source-compatible native book survives for the next publication format.
+    invalidate(sourceOnly);
     list();
   });
   on("chapter-source", "compositionstart", () => {
@@ -648,6 +656,7 @@ export function createBookControls({
     },
     suspend() {
       if (!disposed) {
+        invalidate();
         pageSetup?.discard();
         collection.revokeImages();
         collection.revokeFonts();

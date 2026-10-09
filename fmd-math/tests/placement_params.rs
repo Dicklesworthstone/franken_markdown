@@ -740,6 +740,44 @@ fn math_lines_open_up_by_jot_and_text_lines_do_not() {
 }
 
 #[test]
+fn tex_rows_follow_align_star() {
+    // The Reference sets Tex in align*: `&` cells pair right/left around the
+    // alignment point, a right-hand cell opens with amsmath's `{}`, and a row
+    // without `&` sits in the right-aligned first column. TexText lines stay
+    // flush left.
+    let e = engine();
+    let x = |layout: &Layout, ch: char| -> f64 {
+        layout
+            .glyphs
+            .iter()
+            .find(|g| g.ch == ch)
+            .unwrap_or_else(|| panic!("glyph {ch} in {layout:?}"))
+            .x
+    };
+    // `1 &= 2` is as wide as `1 = 2`: the empty Ord keeps `=` a relation.
+    let aligned = e.typeset(r"1 &= 2", Style::Display).unwrap();
+    let plain = e.typeset(r"1 = 2", Style::Display).unwrap();
+    assert!((aligned.width - plain.width).abs() < EPS, "{aligned:?}");
+    assert!((x(&aligned, '=') - x(&plain, '=')).abs() < EPS);
+    // Rows align at `&`.
+    let rows = e.typeset(r"1 + 1 &= 2 \\ 3 &= 4", Style::Display).unwrap();
+    let eqs: Vec<f64> = rows
+        .glyphs
+        .iter()
+        .filter(|g| g.ch == '=')
+        .map(|g| g.x)
+        .collect();
+    assert_eq!(eqs.len(), 2);
+    assert!((eqs[0] - eqs[1]).abs() < EPS, "{eqs:?}");
+    // A row without `&` is right-aligned: `1` ends where `222` does.
+    let right = e.typeset(r"1 \\ 222", Style::Display).unwrap();
+    let one = e.typeset("1", Style::Display).unwrap();
+    assert!((x(&right, '1') + one.width - right.width).abs() < EPS);
+    let text = e.typeset_text(r"1\\222").unwrap();
+    assert!(x(&text, '1').abs() < EPS);
+}
+
+#[test]
 fn a_trailing_row_break_opens_no_empty_math_row() {
     // align* ends its last row at \crcr: `= x + \\` is one row, like `= x +`.
     // A TexText paragraph's trailing \\ still sets an empty line.

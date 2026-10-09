@@ -154,17 +154,22 @@ impl Engine {
             NodeKind::List(items) => items.as_slice(),
             _ => std::slice::from_ref(root),
         };
-        let boxx = self.hlist(
-            items,
-            LayCtx {
-                style: ctx,
-                alphabet: None,
-                text_mode: false,
-                decl_size: 1.0,
-                line_stretch: 1.0,
-                align_rows,
-            },
-        )?;
+        let ctx = LayCtx {
+            style: ctx,
+            alphabet: None,
+            text_mode: false,
+            decl_size: 1.0,
+            line_stretch: 1.0,
+            align_rows,
+        };
+        let rows = items
+            .iter()
+            .any(|n| matches!(n.kind, NodeKind::Linebreak | NodeKind::AlignTab));
+        let boxx = if align_rows && rows {
+            self.align_star_rows(items, ctx, root.span)?
+        } else {
+            self.hlist(items, ctx)?
+        };
         let mut layout = Layout {
             width: boxx.width,
             height: boxx.height,
@@ -1330,6 +1335,54 @@ impl Engine {
         }
     }
 
+    /// The Tex surface's top level is the body of the Reference's align*:
+    /// `\\` rows of `&`-separated cells in r,l pairs, \minalignsep between
+    /// pairs, rows opened up by \jot. A row without `&` sits in the
+    /// right-aligned first column. Each cell is its own formula, as in
+    /// amsmath's template, so a declaration ends with its cell. Unlike the
+    /// environment, the box keeps its first row's baseline.
+    fn align_star_rows(&self, items: &[Node], ctx: LayCtx, span: Span) -> Result<MBox, MathError> {
+        let cell = |items: &[Node]| {
+            let cell_span = match (items.first(), items.last()) {
+                (Some(first), Some(last)) => Span {
+                    start: first.span.start,
+                    end: last.span.end,
+                },
+                _ => Span {
+                    start: span.start,
+                    end: span.start,
+                },
+            };
+            Node::new(NodeKind::List(items.to_vec()), cell_span)
+        };
+        let mut rows: Vec<Vec<Node>> = items
+            .split(|n| matches!(n.kind, NodeKind::Linebreak))
+            .map(|row| {
+                row.split(|n| matches!(n.kind, NodeKind::AlignTab))
+                    .map(cell)
+                    .collect()
+            })
+            .collect();
+        // A trailing `\\` ends the last row without opening an empty one
+        // (\crcr).
+        let empty_row = |row: &[Node]| matches!(row, [Node { kind: NodeKind::List(items), .. }] if items.is_empty());
+        if rows.len() > 1 && rows.last().is_some_and(|row| empty_row(row)) {
+            rows.pop();
+        }
+        self.grid(
+            &rows,
+            ctx,
+            &Grid {
+                align: AlignRule::AlignPairs,
+                col_sep: 1.0,
+                jot: self.consts.jot,
+                first_baseline: true,
+                ..Grid::centered(1.0)
+            },
+            span,
+        )
+    }
+
     /// Rule 15: generalized fractions (with or without bar, with or
     /// without wrapped delimiters).
     fn fraction(
@@ -1885,10 +1938,18 @@ impl Engine {
         let mut cells: Vec<Vec<MBox>> = Vec::new();
         for row in rows {
             let mut out = Vec::new();
-            for cell in row {
+            for (j, cell) in row.iter().enumerate() {
                 // Each cell is its own formula (`$…$` in the \halign
                 // template), so a lone character keeps its rule-17 kern.
-                out.push(self.formula_box(cell, cell_ctx)?);
+                // amsmath sets an align pair's right-hand cell as `{{}##}`:
+                // an empty Ord opens it, so a relation or operator there
+                // keeps its left-hand space (`a &= b` is `a = b` wide).
+                let box_ = if matches!(grid.align, AlignRule::AlignPairs) && j % 2 == 1 {
+                    self.formula_box(&opened_by_empty_ord(cell), cell_ctx)?
+                } else {
+                    self.formula_box(cell, cell_ctx)?
+                };
+                out.push(box_);
             }
             cells.push(out);
         }
@@ -1934,9 +1995,13 @@ impl Engine {
             baselines.last().copied().unwrap_or(0.0) - row_d.last().copied().unwrap_or(0.0);
         let total = top - bottom;
         let axis = c.axis_height * cell_ctx.size();
-        let height = total / 2.0 + axis;
-        let shift = height - top; // added to every child dy
-        let depth = (total / 2.0 - axis).max(0.0);
+        let (height, shift, depth) = if grid.first_baseline {
+            (top, 0.0, (-bottom).max(0.0))
+        } else {
+            let height = total / 2.0 + axis;
+            // `shift` is added to every child dy.
+            (height, height - top, (total / 2.0 - axis).max(0.0))
+        };
         let mut children = Vec::new();
         for (i, row) in cells.into_iter().enumerate() {
             for (j, cell) in row.into_iter().enumerate() {
@@ -2293,12 +2358,16 @@ struct Grid {
     /// Vertical rules before these column indices (an `array` spec's `|`;
     /// `ncols` means after the last column).
     vrules: Vec<usize>,
+    /// Keep the first row's baseline (the Tex surface's align* rows)
+    /// instead of `\vcenter`ing the grid on the axis.
+    first_baseline: bool,
 }
 
 impl Grid {
     /// All-centered columns with the given separation — the matrix baseline.
     fn centered(col_sep: f64) -> Self {
         Self {
+            first_baseline: false,
             align: AlignRule::AllCenter,
             col_sep,
             outer_pad: 0.0,
@@ -2394,6 +2463,21 @@ fn parse_array_spec(spec: &str, span: Span) -> Result<ArrayPlan, MathError> {
         }
     }
     Ok(ArrayPlan { aligns, vrules })
+}
+
+/// `{}` followed by `cell`'s items: amsmath's `{{}##}` right-hand align
+/// cell. The empty group is an Ord atom with no ink.
+fn opened_by_empty_ord(cell: &Node) -> Node {
+    let start = Span {
+        start: cell.span.start,
+        end: cell.span.start,
+    };
+    let mut items = vec![Node::new(NodeKind::List(Vec::new()), start)];
+    match &cell.kind {
+        NodeKind::List(body) => items.extend(body.iter().cloned()),
+        _ => items.push(cell.clone()),
+    }
+    Node::new(NodeKind::List(items), cell.span)
 }
 
 /// A zero-height horizontal kern box.

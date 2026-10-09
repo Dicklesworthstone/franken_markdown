@@ -82,6 +82,10 @@ static CM_ITALIC_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static CM_BOLD_ITALIC_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static MONO_REGULAR_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static SYMBOL_REGULAR_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
+#[cfg(feature = "emoji-face")]
+static EMOJI_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
+#[cfg(feature = "emoji-face")]
+static EMOJI_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static PLEX_REGULAR_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static PLEX_BOLD_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static PLEX_ITALIC_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
@@ -177,6 +181,27 @@ pub(crate) fn symbol_layout_tables() -> Result<&'static OpenTypeLayoutTables, Fo
     Ok(cached_layout_tables(&SYMBOL_REGULAR_LAYOUT, font))
 }
 
+/// The bundled emoji fallback face (curated monochrome Noto Emoji subset),
+/// when the `emoji-face` feature compiled it in.
+///
+/// # Errors
+/// See [`body_layout_tables`].
+#[cfg(feature = "emoji-face")]
+pub(crate) fn emoji_font()
+-> Option<Result<(&'static Font, &'static OpenTypeLayoutTables), FontError>> {
+    Some(
+        cached_font(&EMOJI_FONT, fmd_font::bundled::NOTO_EMOJI_CURATED)
+            .map(|font| (font, cached_layout_tables(&EMOJI_LAYOUT, font))),
+    )
+}
+
+/// Without the `emoji-face` feature there is no emoji fallback face.
+#[cfg(not(feature = "emoji-face"))]
+pub(crate) fn emoji_font()
+-> Option<Result<(&'static Font, &'static OpenTypeLayoutTables), FontError>> {
+    None
+}
+
 /// Cached GPOS/GSUB tables for a bundled proportional body font.
 ///
 /// # Errors
@@ -255,6 +280,12 @@ pub fn load_mono(style: FontStyle) -> Result<Font, FontError> {
 /// See [`load_body`].
 pub fn load_symbol() -> Result<Font, FontError> {
     symbol_font().cloned()
+}
+
+/// Owned copy of the bundled emoji fallback face, when compiled in.
+#[must_use]
+pub fn load_emoji() -> Option<Font> {
+    emoji_font()?.ok().map(|(font, _)| font.clone())
 }
 
 #[cfg(test)]

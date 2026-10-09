@@ -37,6 +37,11 @@ pub const PLEX_BOLD_ITALIC: &[u8] =
 pub const NOTO_SANS_MATH_SYMBOLS: &[u8] =
     include_bytes!("../fonts/noto-sans-math/NotoSansMathSymbols.ttf");
 
+/// The curated monochrome Noto Emoji subset (emoji fallback face). Regenerated
+/// via `cargo run --example gen_emoji_fallback_font`.
+#[cfg(feature = "emoji-face")]
+pub const NOTO_EMOJI_CURATED: &[u8] = include_bytes!("../fonts/noto-emoji/NotoEmojiCurated.ttf");
+
 /// Every bundled face as `(stable name, bytes)`, in registry order.
 pub const ALL_FACES: [(&str, &[u8]); 10] = [
     ("cm-regular", CM_REGULAR),

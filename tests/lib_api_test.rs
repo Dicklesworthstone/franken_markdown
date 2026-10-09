@@ -190,7 +190,7 @@ fn render_warnings_flags_unresolved_and_unsupported_images() {
 fn render_warnings_flags_glyphless_characters_and_stays_quiet_on_ascii() {
     use franken_markdown::{PdfOptions, RenderWarning, parse_markdown, render_warnings};
 
-    let doc = parse_markdown("Hello 中文 😀 world");
+    let doc = parse_markdown("Hello 中文 \u{13000} world");
     let warns = render_warnings(&doc, &PdfOptions::default());
     let missing = warns
         .iter()

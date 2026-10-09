@@ -82,7 +82,11 @@ required-features = ["lsp"]
 [features]
 default = ["cli"]
 # CLI surface only. The engine library never depends on these.
-cli = ["dep:clap"]
+cli = ["dep:clap", "emoji-face"]
+# Native emoji fallback face for PDF and SVG (curated Noto Emoji subset, ~230 KB).
+# Enabled by `cli`; the core and WASM builds leave it off, so their output is
+# unchanged and emoji there stay `.notdef` with a `missing_glyphs` warning.
+emoji-face = ["fmd-font/emoji-face"]
 # Browser package adapter only. The no-default core stays dependency-free; this
 # feature exists because Rust 2024 treats manual `no_mangle`/`export_name` ABI
 # exports as unsafe attributes, and the project forbids unsafe code.

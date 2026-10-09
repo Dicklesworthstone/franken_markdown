@@ -4,6 +4,27 @@ Date: 2026-08-28
 Scope: how `franken_markdown` handles emoji and unsupported symbol codepoints
 that have no glyph in the bundled face set. Bead: `y5i9.2`.
 
+## Update (Unreleased): curated emoji face in native builds
+
+Phase 2 below shipped for native builds. The README corpus itself demanded it
+(`🚀`, `✅`, `⚠️` printed `.notdef` boxes). `fmd-font/fonts/noto-emoji/` holds a
+curated monochrome Noto Emoji subset (~360 codepoints, ~229 KiB, regenerated
+by `cargo run --example gen_emoji_fallback_font`), compiled in by the
+`emoji-face` cargo feature, which `cli` enables. PDF and SVG route a character
+to it only when neither its text face nor the symbol fallback maps it, and a
+document embeds it (subset again to the glyphs it uses) only when it contains
+such a character, so emoji-free output is byte-identical. Variation selectors,
+the zero-width joiner and the keycap combiner map to invisible glyphs; ZWJ
+sequences draw as their component emoji, and skin-tone modifiers are not
+carried.
+
+The core (`--no-default-features`) and WASM builds leave the feature off: the
+face would cost ~120 KB gzipped against the WASM budget, and browsers draw
+emoji themselves in HTML. There, and for emoji outside the curated set, the v1
+behavior below still holds: `.notdef` plus a `missing_glyphs` warning. The
+`emoji_strategy` key remains a recorded policy hook that resolves to
+`warning`.
+
 ## Decision (v1)
 
 **Strategy: warning-only.** Emoji and other unsupported symbol codepoints are

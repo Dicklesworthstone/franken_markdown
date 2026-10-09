@@ -72,13 +72,14 @@ fn symbol_fallback_covers_code_blocks_tables_and_headings() {
 
 #[test]
 fn genuinely_unsupported_glyphs_still_warn() {
-    // Neither the text faces nor the curated symbol fallback cover emoji, so
-    // the degraded-output warning must keep firing.
-    let warnings = missing_glyph_warnings("emoji: 😀", &PdfOptions::default());
+    // No bundled face (text, symbol fallback, or the native emoji face)
+    // covers Egyptian hieroglyphs, so the degraded-output warning must keep
+    // firing.
+    let warnings = missing_glyph_warnings("glyph: \u{13000}", &PdfOptions::default());
     assert_eq!(warnings.len(), 1, "one missing-glyph warning expected");
     let (count, sample) = &warnings[0];
     assert_eq!(*count, 1);
-    assert_eq!(sample, "😀");
+    assert_eq!(sample, "\u{13000}");
 }
 
 #[test]

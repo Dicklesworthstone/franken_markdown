@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native PDF and SVG output draw ~360 common emoji (🚀 ✅ ❌ ⚠️ 🎉 💡 📦 👍 …)
+  with a curated monochrome Noto Emoji face instead of `.notdef` boxes
+  (`emoji-face` cargo feature, enabled by `cli`; see docs/EMOJI_FALLBACK.md).
+  The face is embedded only in documents that use it. Core and WASM builds
+  are unchanged.
 - PDF and SVG posters draw Mermaid flowchart and sequence fences as vector
   figures with the same diagram compiler HTML uses, instead of printing their
   source.

@@ -162,8 +162,10 @@ const F_BOLDITALIC: u8 = 5;
 /// but the fallback does, so common math/arrow symbols render as real glyphs
 /// instead of `.notdef` boxes.
 const F_SYMBOL: u8 = 6;
-/// The optional CJK fallback face (Han/Kana/Hangul routing). Layout routes CJK
-/// characters here when the style slot lacks the glyph and the CJK face is loaded.
+/// The optional extra fallback face: the bundled emoji face in native builds
+/// (`emoji-face` feature). Layout routes a character here when neither its
+/// style slot nor the symbol face maps it (CJK script characters come here
+/// first when the face maps them).
 const F_CJK: u8 = 7;
 /// An inline `$…$` formula typeset by fmd-math (fm-djcw), not a font: the
 /// token's text is its TeX source, it measures as the formula's advance, and
@@ -1683,6 +1685,25 @@ impl Face {
     /// Load the bundled symbol fallback face. It has no caller-override slot
     /// (the fallback repertoire is a renderer guarantee, not a theme choice),
     /// so it is built straight from the registry's cached parse.
+    /// The bundled emoji fallback face, when the `emoji-face` feature compiled
+    /// it in (native builds); `None` in core and WASM builds.
+    fn load_bundled_emoji() -> Result<Option<Self>> {
+        let Some(loaded) = fonts::emoji_font() else {
+            return Ok(None);
+        };
+        let (font, layout) = loaded.map_err(|err| {
+            RenderError::InvalidInput(format!(
+                "bundled emoji fallback font is not a supported TrueType font: {err}"
+            ))
+        })?;
+        Ok(Some(Self {
+            font: Cow::Borrowed(font),
+            kern: Cow::Borrowed(&layout.kern),
+            lig: Cow::Borrowed(&layout.lig),
+            ascii: std::sync::OnceLock::new(),
+        }))
+    }
+
     fn load_bundled_symbol() -> Result<Self> {
         let font = fonts::symbol_font().map_err(|err| {
             RenderError::InvalidInput(format!(
@@ -1784,7 +1805,8 @@ struct Faces {
     /// Bundled symbol fallback face; never caller-overridable, always loaded so
     /// coverage checks are total. Embedded in the PDF only when actually used.
     symbol: Face,
-    /// Optional CJK fallback face for Han, Kana, Hangul characters.
+    /// Optional extra fallback face (see [`F_CJK`]): the bundled emoji face in
+    /// native builds.
     cjk: Option<Face>,
     /// Images placed inside running text, decoded once per render by
     /// [`layout`] (see [`inline_image::prepare`]).
@@ -1894,7 +1916,7 @@ impl Faces {
                 assets.effective_weight(FontAssetSlot::MonoRegular),
             )?,
             symbol: Face::load_bundled_symbol()?,
-            cjk: None,
+            cjk: Face::load_bundled_emoji()?,
             inline_images: Default::default(),
         })
     }
@@ -1917,11 +1939,15 @@ impl Faces {
     fn fallback_slot(&self, slot: u8, c: char) -> u8 {
         if slot == F_SYMBOL || slot == F_CJK || self.face(slot).glyph_index(c) != 0 {
             slot
-        } else if let Some(ref cjk) = self.cjk {
-            if classify_script(c).wants_cjk_fallback() && cjk.glyph_index(c) != 0 {
+        } else if let Some(ref extra) = self.cjk {
+            let in_extra = extra.glyph_index(c) != 0;
+            if in_extra && classify_script(c).wants_cjk_fallback() {
                 F_CJK
             } else if self.symbol.glyph_index(c) != 0 {
                 F_SYMBOL
+            } else if in_extra {
+                // Last resort: emoji and anything else only the extra face maps.
+                F_CJK
             } else {
                 slot
             }
@@ -41908,7 +41934,7 @@ mod coverage_gap_tests {
     #[test]
     fn render_warnings_report_undecodable_assets_and_missing_glyphs() {
         let doc = crate::parse_markdown(
-            "![diagram](broken.img)\n\nEmoji the fonts cannot map: \u{1F984}\u{1F984}\n",
+            "![diagram](broken.img)\n\nGlyphs no face maps: \u{13000}\u{13000}\n",
         );
         let mut opts = PdfOptions::default();
         opts.image_assets.push(crate::PdfImageAsset {
@@ -41934,8 +41960,8 @@ mod coverage_gap_tests {
                 _ => None,
             })
             .expect("missing glyph warning");
-        assert_eq!(*missing.0, 2, "both emoji occurrences are counted");
-        assert_eq!(missing.1, "\u{1F984}", "sample dedupes repeated chars");
+        assert_eq!(*missing.0, 2, "both occurrences are counted");
+        assert_eq!(missing.1, "\u{13000}", "sample dedupes repeated chars");
     }
 
     #[test]

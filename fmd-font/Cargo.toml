@@ -27,6 +27,9 @@ path = "src/lib.rs"
 # build on. Default-off so lean builds that bring their own fonts pay
 # nothing.
 bundled-faces = []
+# The curated monochrome Noto Emoji subset (~230 KB) as `bundled::NOTO_EMOJI_CURATED`.
+# Native renderers enable it; the WASM package leaves it off for size.
+emoji-face = ["bundled-faces"]
 
 [lints.rust]
 unsafe_code = "forbid"

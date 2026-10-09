@@ -7,6 +7,7 @@
 use std::cell::OnceCell;
 use std::ops::Range;
 
+use super::super::SLOT_COUNT;
 use super::{Op, Poster, RStyle, SvgWarning};
 use franken_markdown::text::{Kerning, Ligatures};
 
@@ -22,7 +23,7 @@ struct Tables {
 
 pub(super) struct Shaper<'a> {
     poster: &'a Poster,
-    tables: [OnceCell<Tables>; 6],
+    tables: [OnceCell<Tables>; SLOT_COUNT],
 }
 
 #[derive(Clone, Debug, Default)]

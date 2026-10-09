@@ -54,7 +54,9 @@ const DEF_EM_PT: f64 = 100.0;
 const SLOT_BODY: usize = 0; // + style index (regular/bold/italic/bold-italic)
 const SLOT_MONO: usize = 4;
 const SLOT_SYMBOL: usize = 5;
-const SLOT_COUNT: usize = 6;
+/// The bundled emoji face (native `emoji-face` builds); last-resort fallback.
+const SLOT_EMOJI: usize = 6;
+const SLOT_COUNT: usize = 7;
 
 // Explicit paths also support the standalone #[path] SVG integration harness.
 #[path = "svg/geometry.rs"]
@@ -442,6 +444,7 @@ impl Poster {
                 load(FontStyle::BoldItalic),
                 fonts::load_mono(FontStyle::Regular).ok(),
                 fonts::load_symbol().ok(),
+                fonts::load_emoji(),
             ],
             math_engine: OnceCell::new(),
             images: images::ImageStore::default(),
@@ -496,7 +499,7 @@ impl Poster {
     // -- glyph resolution / measurement ------------------------------------
 
     /// Map `ch` to `(face slot, glyph id)`: the styled primary face first,
-    /// then the bundled symbol fallback. `(slot, 0)` means unmapped.
+    /// then the bundled symbol and emoji fallbacks. `(slot, 0)` means unmapped.
     fn resolve(&self, ch: char, st: RStyle) -> (usize, u16) {
         let slot = if st.mono {
             SLOT_MONO
@@ -509,12 +512,14 @@ impl Poster {
                 return (slot, gid);
             }
         }
-        if slot != SLOT_SYMBOL
-            && let Some(font) = &self.faces[SLOT_SYMBOL]
-        {
-            let gid = font.glyph_index(ch);
-            if gid != 0 {
-                return (SLOT_SYMBOL, gid);
+        for fallback in [SLOT_SYMBOL, SLOT_EMOJI] {
+            if slot != fallback
+                && let Some(font) = &self.faces[fallback]
+            {
+                let gid = font.glyph_index(ch);
+                if gid != 0 {
+                    return (fallback, gid);
+                }
             }
         }
         (slot, 0)

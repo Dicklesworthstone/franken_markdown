@@ -657,3 +657,20 @@ fn tbinom_and_dbinom_force_their_styles() {
     assert!((height(r"\tbinom{N}{4}", Style::Display) - text).abs() < EPS);
     assert!((height(r"\dbinom{N}{4}", Style::Text) - display).abs() < EPS);
 }
+
+#[test]
+fn math_lines_open_up_by_jot_and_text_lines_do_not() {
+    // The Tex surface's top-level `\\` rows are align* rows: amsmath's
+    // \openup\jot puts their baselines \baselineskip + \jot = 15 pt apart at
+    // 10 pt. A TexText paragraph keeps plain \baselineskip, 12 pt.
+    let e = engine();
+    let math = e.typeset(r"a \\ b", Style::Display).unwrap();
+    let rows = glyph_y(&math, 'a') - glyph_y(&math, 'b');
+    assert!(
+        (rows - (CM.baseline_skip + CM.jot)).abs() < EPS,
+        "math rows {rows}"
+    );
+    let text = e.typeset_text(r"a\\b").unwrap();
+    let lines = glyph_y(&text, 'a') - glyph_y(&text, 'b');
+    assert!((lines - CM.baseline_skip).abs() < EPS, "text lines {lines}");
+}

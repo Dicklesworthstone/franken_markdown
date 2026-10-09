@@ -104,7 +104,7 @@ impl Engine {
     /// the extensions bead's constructs.
     pub fn typeset(&self, source: &str, style: Style) -> Result<Layout, MathError> {
         let root = crate::parse(source)?;
-        self.finish(&root, StyleCtx::new(style))
+        self.finish(&root, StyleCtx::new(style), true)
     }
 
     /// Typeset a TexText-contract string (text mainland + math islands).
@@ -114,7 +114,7 @@ impl Engine {
     /// As [`Engine::typeset`].
     pub fn typeset_text(&self, source: &str) -> Result<Layout, MathError> {
         let root = crate::parse_text(source)?;
-        self.finish(&root, StyleCtx::new(Style::Text))
+        self.finish(&root, StyleCtx::new(Style::Text), false)
     }
 
     /// [`Engine::typeset`], against a macro set (a preamble pack and/or
@@ -130,7 +130,7 @@ impl Engine {
         macros: &crate::macros::MacroSet,
     ) -> Result<Layout, MathError> {
         let root = crate::parse_with_macros(source, macros)?;
-        self.finish(&root, StyleCtx::new(style))
+        self.finish(&root, StyleCtx::new(style), true)
     }
 
     /// [`Engine::typeset_text`], against a macro set.
@@ -144,10 +144,12 @@ impl Engine {
         macros: &crate::macros::MacroSet,
     ) -> Result<Layout, MathError> {
         let root = crate::parse_text_with_macros(source, macros)?;
-        self.finish(&root, StyleCtx::new(Style::Text))
+        self.finish(&root, StyleCtx::new(Style::Text), false)
     }
 
-    fn finish(&self, root: &Node, ctx: StyleCtx) -> Result<Layout, MathError> {
+    /// Lay out a parsed root. `align_rows`: the root is the Tex surface,
+    /// whose `\\` lines are align* rows; false for TexText paragraphs.
+    fn finish(&self, root: &Node, ctx: StyleCtx, align_rows: bool) -> Result<Layout, MathError> {
         let items = match &root.kind {
             NodeKind::List(items) => items.as_slice(),
             _ => std::slice::from_ref(root),
@@ -160,6 +162,7 @@ impl Engine {
                 text_mode: false,
                 decl_size: 1.0,
                 line_stretch: 1.0,
+                align_rows,
             },
         )?;
         let mut layout = Layout {
@@ -186,6 +189,9 @@ struct LayCtx {
     decl_size: f64,
     /// \baselinestretch for subsequent stacked lines (\doublespacing).
     line_stretch: f64,
+    /// Whether stacked `\\` lines are the Tex surface's align* rows, which
+    /// amsmath opens up by \jot. False for TexText paragraphs.
+    align_rows: bool,
 }
 
 impl LayCtx {
@@ -241,7 +247,14 @@ impl Engine {
         }
         // Stack lines: baseline-to-baseline is \baselineskip (grown when
         // boxes would come closer than \lineskip), read at each line's own
-        // size. The box baseline is the first line's.
+        // size. The box baseline is the first line's. Mathematics lines are
+        // the Tex surface's align* rows, which amsmath opens up by \jot
+        // (both skips); text paragraphs keep plain line spacing.
+        let jot = if ctx.align_rows && !ctx.text_mode {
+            self.consts.jot
+        } else {
+            0.0
+        };
         let mut children = Vec::new();
         let mut baseline = 0.0_f64;
         let mut prev_depth = 0.0_f64;
@@ -254,8 +267,8 @@ impl Engine {
             } else {
                 // setspace's \baselinestretch scales the natural skip; the
                 // \lineskip floor still applies unstretched.
-                let natural = self.consts.baseline_skip * size * stretch;
-                let min_gap = prev_depth + line.height + self.consts.line_skip * size;
+                let natural = (self.consts.baseline_skip * stretch + jot) * size;
+                let min_gap = prev_depth + line.height + (self.consts.line_skip + jot) * size;
                 baseline -= natural.max(min_gap);
             }
             width = width.max(line.width);
@@ -1751,7 +1764,7 @@ impl Engine {
                     &Grid {
                         align: AlignRule::AlignPairs,
                         col_sep: 1.0,
-                        jot: 0.3,
+                        jot: self.consts.jot,
                         ..Grid::centered(1.0)
                     },
                     span,
@@ -1837,7 +1850,8 @@ impl Engine {
         let mut baselines = vec![0.0_f64; cells.len()];
         for i in 1..cells.len() {
             let natural = (c.baseline_skip + grid.jot) * grid.row_factor * size;
-            let min_gap = row_d[i - 1] + row_h[i] + c.line_skip * size;
+            // \openup\jot raises the \lineskip floor too.
+            let min_gap = row_d[i - 1] + row_h[i] + (c.line_skip + grid.jot) * size;
             baselines[i] = baselines[i - 1] - natural.max(min_gap);
         }
         // 5. Assemble, then axis-center the whole grid (\vcenter).

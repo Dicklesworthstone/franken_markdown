@@ -95,6 +95,10 @@ pub struct MathConstants {
     /// `\lineskip` in ems (1 pt at 10 pt): the gap used when boxes would
     /// otherwise touch.
     pub line_skip: f64,
+    /// amsmath's `\jot` in ems (3 pt at 10 pt): `\openup\jot` widens both
+    /// `\baselineskip` and `\lineskip` between the rows of the align class,
+    /// which includes the Tex surface's own align* lines.
+    pub jot: f64,
     /// The uniform-scaling ceiling of the delimiter mechanism (ADR-0005):
     /// beyond `1.25×` natural, drawn-path construction takes over (the
     /// drawn constructions land with the extensions bead; until then the
@@ -138,6 +142,7 @@ pub const CM: MathConstants = MathConstants {
     null_delimiter_space: 0.12,
     baseline_skip: 1.2,
     line_skip: 0.1,
+    jot: 0.3,
     delimiter_scale_ceiling: 1.25,
     fallback_space: 1.0 / 3.0,
 };

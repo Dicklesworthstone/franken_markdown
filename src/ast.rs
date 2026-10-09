@@ -15,7 +15,9 @@ pub struct Document {
 impl Document {
     /// Resolve footnotes into ordinary blocks followed by a numbered Notes section.
     ///
-    /// This is the same lossless endnote preparation used by PDF and SVG. Note
+    /// This is the lossless endnote preparation SVG uses. PDF places notes at
+    /// the foot of their page by default; rendering this prepared document to
+    /// PDF keeps every note in the trailing Notes section instead. Note
     /// bodies retain their block structure, images, mathematics and inline styles.
     /// Body references determine first-use order, then note-to-note references
     /// are followed in that order. Unreferenced definitions follow in source order.

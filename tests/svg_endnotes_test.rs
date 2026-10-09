@@ -264,13 +264,28 @@ fn parsed_markdown_and_explicit_preparation_match_all_svg_entry_points() {
 }
 
 #[test]
-fn public_endnote_preparation_matches_pdf_without_changing_the_source() {
+fn public_endnote_preparation_opts_pdf_into_endnotes_without_changing_the_source() {
     let source =
         parse_markdown("# Evidence\n\nCitations[^b] and[^a].\n\n[^a]: Alpha.\n\n[^b]: Beta.\n");
     let before = source.clone();
     let options = PdfOptions::default();
-    let expected = render_pdf_document(&source, &options).unwrap();
+    // The PDF places notes at the page foot by default; a host that prepares
+    // endnotes gets the trailing Notes section the SVG renderer also draws.
+    let page_notes = render_pdf_document(&source, &options).unwrap();
     let prepared = source.with_endnotes();
-    assert_eq!(render_pdf_document(&prepared, &options).unwrap(), expected);
+    let endnotes = render_pdf_document(&prepared, &options).unwrap();
+    assert_ne!(endnotes, page_notes);
+    assert_eq!(render_pdf_document(&prepared, &options).unwrap(), endnotes);
+    let outline = |pdf: &[u8]| {
+        String::from_utf8_lossy(pdf)
+            .matches("/Title (Notes)")
+            .count()
+    };
+    assert_eq!(
+        outline(&endnotes),
+        1,
+        "endnotes keep their bookmarked heading"
+    );
+    assert_eq!(outline(&page_notes), 0);
     assert_eq!(source, before);
 }

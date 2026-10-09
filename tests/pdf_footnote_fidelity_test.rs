@@ -19,10 +19,19 @@ fn paragraph(value: &str) -> Block {
 fn reference(id: &str) -> Inline {
     Inline::FootnoteRef { id: id.to_string() }
 }
-fn notes_heading() -> Block {
-    Block::Heading {
-        level: 2,
-        inlines: vec![text("Notes")],
+/// A prepared page-bottom note reference: the superscript links to the note.
+fn note_mark(number: usize, superscript: &str) -> Inline {
+    Inline::Link {
+        dest: format!("#fmd-fn-{number}"),
+        title: None,
+        content: vec![text(superscript)],
+    }
+}
+/// A prepared page-bottom note body, placed at the foot of its page.
+fn page_note(number: usize, blocks: Vec<Block>) -> Block {
+    Block::FootnoteDefinition {
+        id: format!("fmd-fn-{number}"),
+        blocks,
     }
 }
 
@@ -68,16 +77,16 @@ fn rich_document() -> (Document, Document) {
             },
         ],
     };
-    let mut expected = vec![
+    let mut note = vec![Block::Paragraph(vec![text("¹ "), text("PARAPROOF")])];
+    note.extend(body.into_iter().skip(1));
+    let expected = vec![
         Block::Heading {
             level: 1,
             inlines: vec![text("Study")],
         },
-        Block::Paragraph(vec![text("Evidence"), text("¹")]),
-        notes_heading(),
-        Block::Paragraph(vec![text("¹ "), text("PARAPROOF")]),
+        Block::Paragraph(vec![text("Evidence"), note_mark(1, "¹")]),
+        page_note(1, note),
     ];
-    expected.extend(body.into_iter().skip(1));
     (doc, Document { blocks: expected })
 }
 
@@ -180,10 +189,20 @@ fn first_reference_order_matches_numbered_bodies_even_when_definitions_are_rever
     };
     let expected = Document {
         blocks: vec![
-            Block::Paragraph(vec![text("First"), text("¹"), text(" then "), text("²")]),
-            notes_heading(),
-            Block::Paragraph(vec![text("¹ "), text("BETAPROOF")]),
-            Block::Paragraph(vec![text("² "), text("ALPHAPROOF")]),
+            Block::Paragraph(vec![
+                text("First"),
+                note_mark(1, "¹"),
+                text(" then "),
+                note_mark(2, "²"),
+            ]),
+            page_note(
+                1,
+                vec![Block::Paragraph(vec![text("¹ "), text("BETAPROOF")])],
+            ),
+            page_note(
+                2,
+                vec![Block::Paragraph(vec![text("² "), text("ALPHAPROOF")])],
+            ),
         ],
     };
     assert_eq!(
@@ -267,14 +286,26 @@ fn generated_notes_anchor_resolves_and_unresolved_note_images_are_reported() {
             },
         ],
     };
+    // Page-bottom notes have no generated Notes section to link to; the note
+    // mark itself resolves to its note.
     let report = verify::verify_pdf(&doc, &PdfOptions::default()).unwrap();
-    assert!(
-        report.anchors_unresolved.is_empty(),
-        "the PDF contains the generated Notes heading"
-    );
     assert_eq!(report.anchors_resolved, 1);
+    assert_eq!(report.anchors_unresolved, ["notes"]);
     assert!(
         report
+            .findings
+            .iter()
+            .any(|finding| finding.detail.contains("evidence.svg"))
+    );
+    // Endnote preparation keeps the Notes heading, so the anchor resolves.
+    let endnotes = verify::verify_pdf(&doc.with_endnotes(), &PdfOptions::default()).unwrap();
+    assert!(
+        endnotes.anchors_unresolved.is_empty(),
+        "the PDF contains the generated Notes heading"
+    );
+    assert_eq!(endnotes.anchors_resolved, 1);
+    assert!(
+        endnotes
             .findings
             .iter()
             .any(|finding| finding.detail.contains("evidence.svg"))

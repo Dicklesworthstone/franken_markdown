@@ -1497,6 +1497,12 @@ struct FlowMark {
     /// Source heading level (1..=6) on heading lines, 0 elsewhere. Tagged PDF
     /// uses it for the exact `/H1`..`/H6` element, whatever the type scale.
     heading_level: u8,
+    /// Page-bottom footnote region: the note number on every line of that
+    /// note's body, [`NOTE_SEPARATOR`] on the region's separator rule, and 0
+    /// on every other line. Region lines trail the body lines and are placed
+    /// by [`next_placed_page`] at the foot of the page carrying the note's
+    /// first reference, never in body flow.
+    note: u32,
 }
 
 impl Default for FlowMark {
@@ -1508,6 +1514,7 @@ impl Default for FlowMark {
             kind: FlowKind::Other,
             list_start: false,
             heading_level: 0,
+            note: 0,
         }
     }
 }
@@ -3102,6 +3109,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                     kind: FlowKind::Paragraph,
                     list_start: false,
                     heading_level: 0,
+                    note: 0,
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
@@ -3209,7 +3217,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         };
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
         layout_blocks(blocks, 0.0, &mut out, &mut cx);
-        layout_pdf_footnote_notes(blocks, &mut out, &mut cx);
+        layout_pdf_notes(blocks, &mut out, &mut cx);
         return out;
     }
 
@@ -3275,7 +3283,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         cx.toc_page_map = page_map.clone();
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
         layout_blocks(blocks, 0.0, &mut out, &mut cx);
-        layout_pdf_footnote_notes(blocks, &mut out, &mut cx);
+        layout_pdf_notes(blocks, &mut out, &mut cx);
 
         // Run pagination to find the resulting page of each heading
         let heading_metas = heading_metadata(&out);
@@ -3302,6 +3310,136 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
     }
 
     final_lines
+}
+
+/// Flow note number of a page-bottom footnote region's separator rule.
+const NOTE_SEPARATOR: u32 = u32::MAX;
+/// A note taller than this share of the page body prints as an endnote: a
+/// page that gave it more room would hold almost no body text.
+const PAGE_NOTE_MAX_SHARE: f32 = 0.4;
+/// Footnote text size relative to the body sizes (9 pt notes under 10.5 pt
+/// body by default).
+const PAGE_NOTE_SIZE_SCALE: f32 = 0.85;
+/// Space between a note's last line and the next note.
+const PAGE_NOTE_GAP: f32 = 2.0;
+
+/// The note number a prepared page-note definition id or reference fragment
+/// names (`fmd-fn-3` -> 3).
+fn page_note_number(id: &str) -> Option<u32> {
+    id.strip_prefix(crate::footnotes::PAGE_NOTE_PREFIX)?
+        .parse::<u32>()
+        .ok()
+        .filter(|&number| number != 0 && number != NOTE_SEPARATOR)
+}
+
+fn seg_page_note(seg: &Seg) -> Option<u32> {
+    match &seg.link {
+        Some(LinkTarget::Fragment(id)) => page_note_number(id),
+        _ => None,
+    }
+}
+
+/// Footnote notes: page-bottom placement for documents prepared by
+/// `footnotes::for_pdf_paged`, the trailing notes section otherwise.
+fn layout_pdf_notes(blocks: &[Block], out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let defs = collect_pdf_footnote_defs(blocks);
+    if !defs.is_empty() && defs.iter().all(|(id, _)| page_note_number(id).is_some()) {
+        layout_pdf_page_notes(&defs, out, cx);
+    } else {
+        layout_pdf_footnote_notes(blocks, out, cx);
+    }
+}
+
+/// Lays out each prepared note at footnote size into a region that trails the
+/// body lines (see [`FlowMark::note`]). A note goes to the trailing Notes
+/// section instead when no body line references it (it is unreferenced or
+/// referenced only from another note) or when it is too tall for a page foot.
+fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let referenced: BTreeSet<u32> = out
+        .iter()
+        .flat_map(|line| &line.segs)
+        .filter_map(seg_page_note)
+        .collect();
+
+    let capacity = (cx.page.top_y() - cx.page.bottom).max(MIN_CONTENT_DIM);
+    let body_scale = cx.type_scale;
+    cx.type_scale.body *= PAGE_NOTE_SIZE_SCALE;
+    cx.type_scale.code *= PAGE_NOTE_SIZE_SCALE;
+    cx.type_scale.table *= PAGE_NOTE_SIZE_SCALE;
+    for size in &mut cx.type_scale.h {
+        *size *= PAGE_NOTE_SIZE_SCALE;
+    }
+    let mut region = Vec::new();
+    let mut endnotes = Vec::new();
+    for &(id, body) in defs {
+        let Some(number) = page_note_number(id).filter(|number| referenced.contains(number)) else {
+            endnotes.push(body);
+            continue;
+        };
+        let mut note = Vec::new();
+        layout_blocks(body, 0.0, &mut note, cx);
+        if let Some(last) = note.last_mut() {
+            last.gap_after = PAGE_NOTE_GAP;
+        }
+        let height: f32 = note
+            .iter()
+            .map(|line| line_leading(line) + line.gap_after)
+            .sum();
+        if note.is_empty() || height > capacity * PAGE_NOTE_MAX_SHARE {
+            endnotes.push(body);
+            continue;
+        }
+        for line in &mut note {
+            line.flow.note = number;
+            line.page_break_before = false;
+        }
+        region.extend(note);
+    }
+    cx.type_scale = body_scale;
+
+    if !endnotes.is_empty() {
+        gap(out, 10.0);
+        layout_block(
+            &Block::Heading {
+                level: 2,
+                inlines: vec![Inline::Text("Notes".to_string())],
+            },
+            0.0,
+            out,
+            cx,
+        );
+        for body in endnotes {
+            layout_blocks(body, 0.0, out, cx);
+        }
+    }
+    if !region.is_empty() {
+        out.push(Line {
+            size: 3.0,
+            gap_after: 3.0,
+            page_break_before: false,
+            rule: true,
+            rule_x: cx.page.left,
+            quote_bars: Vec::new(),
+            bg: 0,
+            shade: false,
+            flow: FlowMark {
+                kind: FlowKind::Rule,
+                note: NOTE_SEPARATOR,
+                ..FlowMark::default()
+            },
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
+            segs: Vec::new(),
+            image: None,
+        });
+        out.extend(region);
+    }
+    // A note mark reads as part of the text, not as a blue link.
+    for seg in out.iter_mut().flat_map(|line| &mut line.segs) {
+        if seg_page_note(seg).is_some() {
+            seg.fill = Fill::Black;
+        }
+    }
 }
 
 /// GFM footnote definitions are skipped in the body walk (same as HTML). The
@@ -4305,6 +4443,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     kind: FlowKind::Rule,
                     list_start: false,
                     heading_level: 0,
+                    note: 0,
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
@@ -4493,6 +4632,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
             kind: FlowKind::Heading,
             list_start: false,
             heading_level: 0,
+            note: 0,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -4545,6 +4685,7 @@ fn layout_standalone_image(
             kind: FlowKind::Image,
             list_start: false,
             heading_level: 0,
+            note: 0,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -16347,6 +16488,7 @@ fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
             kind,
             list_start: false,
             heading_level: 0,
+            note: 0,
         };
     }
 }
@@ -17644,6 +17786,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                     kind,
                     list_start: false,
                     heading_level: 0,
+                    note: 0,
                 },
                 list_path: Vec::new(),
                 table_cols: cols,
@@ -17671,6 +17814,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             kind: FlowKind::TableRule,
             list_start: false,
             heading_level: 0,
+            note: 0,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -21403,13 +21547,165 @@ fn check_retained_ceiling(
     Ok(())
 }
 
+/// Page-bottom footnote bookkeeping for one pagination pass: where the body
+/// ends, each note's line range in the trailing region, and the body line that
+/// first references each note, in body order.
+struct PageNotes {
+    body_end: usize,
+    separator: usize,
+    /// `(body line, note region range)` for each note's first reference.
+    first_refs: Vec<(usize, std::ops::Range<usize>)>,
+}
+
+impl PageNotes {
+    /// `None` unless the lines end in a page-note region (the common case
+    /// costs one comparison).
+    fn scan(lines: &[Line]) -> Option<Self> {
+        if lines.last().is_none_or(|line| line.flow.note == 0) {
+            return None;
+        }
+        let body_end = lines
+            .iter()
+            .rposition(|line| line.flow.note == 0)
+            .map_or(0, |index| index + 1);
+        let mut separator = None;
+        let mut ranges = BTreeMap::<u32, std::ops::Range<usize>>::new();
+        for (index, line) in lines.iter().enumerate().skip(body_end) {
+            match line.flow.note {
+                NOTE_SEPARATOR => separator = Some(index),
+                number => {
+                    ranges
+                        .entry(number)
+                        .and_modify(|range| range.end = index + 1)
+                        .or_insert(index..index + 1);
+                }
+            }
+        }
+        let separator = separator?;
+        let mut first_refs = Vec::with_capacity(ranges.len());
+        for (index, line) in lines[..body_end].iter().enumerate() {
+            for seg in &line.segs {
+                if let Some(range) = seg_page_note(seg).and_then(|number| ranges.remove(&number)) {
+                    first_refs.push((index, range));
+                }
+            }
+        }
+        Some(Self {
+            body_end,
+            separator,
+            first_refs,
+        })
+    }
+
+    /// Notes first referenced by body lines `[start, end)`.
+    fn notes_in(&self, start: usize, end: usize) -> &[(usize, std::ops::Range<usize>)] {
+        let from = self.first_refs.partition_point(|&(line, _)| line < start);
+        let to = self.first_refs.partition_point(|&(line, _)| line < end);
+        &self.first_refs[from..to]
+    }
+
+    /// Height the foot of a page holding body lines `[start, end)` needs.
+    fn reserve(&self, lines: &[Line], start: usize, end: usize) -> f32 {
+        let notes = self.notes_in(start, end);
+        if notes.is_empty() {
+            return 0.0;
+        }
+        let height = |line: &Line| line_leading(line) + line.gap_after;
+        height(&lines[self.separator])
+            + notes
+                .iter()
+                .flat_map(|(_, range)| &lines[range.clone()])
+                .map(height)
+                .sum::<f32>()
+    }
+}
+
+impl PageGeom {
+    /// This page with `reserve` points taken off the bottom of its body area.
+    fn with_foot_reserve(self, reserve: f32) -> Self {
+        Self {
+            bottom: (self.bottom + reserve).min(self.top_y() - MIN_CONTENT_DIM),
+            ..self
+        }
+    }
+}
+
+/// [`next_placed_page`] for a document with page-bottom notes. The body break
+/// is chosen against a page shortened by the notes its lines reference; that
+/// changes which lines fit, so the reserve is re-measured until the chosen
+/// lines' notes fit in it (it only grows, and a smaller page holds fewer
+/// references, so this settles in a few rounds).
+fn next_placed_page_with_notes<'a>(
+    lines: &'a [Line],
+    notes: &PageNotes,
+    start: &mut usize,
+    page: PageGeom,
+    emitted_any: &mut bool,
+) -> Option<Vec<Placed<'a>>> {
+    let body = &lines[..notes.body_end];
+    if *start >= body.len() {
+        return None;
+    }
+    // A reserve is feasible when the lines chosen for it need no more. The
+    // search raises an infeasible reserve to the need it measured and lowers a
+    // feasible one to its actual need, keeping the feasible page that holds
+    // the most body lines (then the smaller reserve).
+    let mut reserve = 0.0f32;
+    let mut chosen: Option<(usize, Option<usize>, PageGeom, f32)> = None;
+    for _ in 0..8 {
+        let geom = page.with_foot_reserve(reserve);
+        let (end, shrink_from) = choose_page_break_with_void_control(body, *start, geom);
+        let need = notes.reserve(lines, *start, end);
+        if need <= reserve + 0.01 {
+            if chosen.is_none_or(|(best, _, _, best_reserve)| {
+                end > best || (end == best && reserve < best_reserve)
+            }) {
+                chosen = Some((end, shrink_from, geom, reserve));
+            }
+            if need >= reserve - 0.01 {
+                break;
+            }
+        }
+        reserve = need;
+    }
+    let chosen = chosen.map(|(end, shrink_from, geom, _)| (end, shrink_from, geom));
+    // Not settled: one body line per page always makes progress.
+    let (end, shrink_from, geom) = chosen.unwrap_or_else(|| {
+        let end = *start + 1;
+        reserve = notes.reserve(lines, *start, end);
+        (end, None, page.with_foot_reserve(reserve))
+    });
+    let mut placed = place_lines_shrunk(body, *start, end, geom, shrink_from);
+    let foot = notes.notes_in(*start, end);
+    if !foot.is_empty() {
+        let mut y = page.bottom + notes.reserve(lines, *start, end);
+        let region = std::iter::once(&lines[notes.separator])
+            .chain(foot.iter().flat_map(|(_, range)| &lines[range.clone()]));
+        for line in region {
+            y -= line_leading(line);
+            placed.push(Placed {
+                line,
+                y: y + inline_math_extents(line).1,
+            });
+            y -= line.gap_after;
+        }
+    }
+    *start = end;
+    *emitted_any = true;
+    Some(placed)
+}
+
 fn next_placed_page<'a>(
     lines: &'a [Line],
     start: &mut usize,
     page: PageGeom,
     emitted_any: &mut bool,
     plan: Option<&PageBreakPlan>,
+    notes: Option<&PageNotes>,
 ) -> Option<Vec<Placed<'a>>> {
+    if let Some(notes) = notes {
+        return next_placed_page_with_notes(lines, notes, start, page, emitted_any);
+    }
     if lines.is_empty() {
         if *emitted_any {
             return None;
@@ -21577,7 +21873,15 @@ fn serialize_pages_chunked(
     let mut pipeline: Option<ChunkedCompressPipeline> = None;
     #[cfg(not(target_arch = "wasm32"))]
     let mut cumulative_stream_bytes = 0usize;
-    while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any, plan) {
+    let notes = PageNotes::scan(lines);
+    while let Some(placed) = next_placed_page(
+        lines,
+        &mut start,
+        page,
+        &mut emitted_any,
+        plan,
+        notes.as_ref(),
+    ) {
         let (mut content, reserved) = generate_page_content(
             &placed,
             page_idx,
@@ -22114,8 +22418,26 @@ fn generate_page_content(
                 y: (y + line.size * 0.9).min(page.top_y()),
             });
         }
+        // A page note's first line is the destination its references link
+        // to. Build_pdf keeps these `fmd-fn-N` entries out of the bookmarks.
+        if line.flow.note != 0 && line.flow.note != NOTE_SEPARATOR {
+            let id = format!("{}{}", crate::footnotes::PAGE_NOTE_PREFIX, line.flow.note);
+            if !scratch.outlines.iter().any(|entry| entry.id == id) {
+                scratch.outlines.push(OutlineEntry {
+                    id,
+                    title: String::new(),
+                    page_index: page_idx,
+                    y: (y + line.size * 0.9).min(page.top_y()),
+                });
+            }
+        }
         if line.rule {
-            let x2 = page.right_x();
+            // A page-note separator is the short rule printed books use.
+            let x2 = if line.flow.note == NOTE_SEPARATOR {
+                line.rule_x + page.content_w * 0.3
+            } else {
+                page.right_x()
+            };
             let (rr, rg, rb) = if line.flow.kind == FlowKind::Rule {
                 palette.hr
             } else {
@@ -28161,13 +28483,17 @@ fn draw_seg_decorations(
         append_rgb_stroke_line_operator(body, (r, g, b), sw, seg.x, sy, seg.x + seg.width);
     }
     if let Some(target) = &seg.link {
-        let (r, g, b) = palette.link;
-        let (fr, fg2, fb) = palette.fg;
-        let uy = y - size * 0.12;
-        let uw = (size * 0.06).max(0.4);
-        append_rgb_stroke_line_operator(body, (r, g, b), uw, seg.x, uy, seg.x + seg.width);
-        append_rgb_fill_operator(body, (fr, fg2, fb));
-        *current_fill = Fill::Black;
+        // A footnote mark stays a plain superscript; only its click target
+        // (the note) is added.
+        if seg_page_note(seg).is_none() {
+            let (r, g, b) = palette.link;
+            let (fr, fg2, fb) = palette.fg;
+            let uy = y - size * 0.12;
+            let uw = (size * 0.06).max(0.4);
+            append_rgb_stroke_line_operator(body, (r, g, b), uw, seg.x, uy, seg.x + seg.width);
+            append_rgb_fill_operator(body, (fr, fg2, fb));
+            *current_fill = Fill::Black;
+        }
         if seg.width > 0.0 {
             annots.push(LinkAnnotation {
                 rect: Rect {
@@ -28431,7 +28757,9 @@ fn page_break_plan_for_options(
     page: PageGeom,
     opts: &PdfOptions,
 ) -> Option<PageBreakPlan> {
-    opts.optimal_pagination
+    // The page planners do not model note reserves; documents with
+    // page-bottom notes paginate greedily (docs/PDF_FOOTNOTES.md).
+    (opts.optimal_pagination && PageNotes::scan(lines).is_none())
         .then(|| optimal_page_breaks(lines, page))
 }
 
@@ -28453,7 +28781,17 @@ fn count_pages_with(lines: &[Line], page: PageGeom, plan: Option<&PageBreakPlan>
     let mut count = 0usize;
     let mut start = 0usize;
     let mut emitted_any = false;
-    while next_placed_page(lines, &mut start, page, &mut emitted_any, plan).is_some() {
+    let notes = PageNotes::scan(lines);
+    while next_placed_page(
+        lines,
+        &mut start,
+        page,
+        &mut emitted_any,
+        plan,
+        notes.as_ref(),
+    )
+    .is_some()
+    {
         count += 1;
     }
     count
@@ -28467,7 +28805,15 @@ fn paginate_lines_with<'a>(
     let mut pages = Vec::new();
     let mut start = 0usize;
     let mut emitted_any = false;
-    while let Some(placed) = next_placed_page(lines, &mut start, page, &mut emitted_any, plan) {
+    let notes = PageNotes::scan(lines);
+    while let Some(placed) = next_placed_page(
+        lines,
+        &mut start,
+        page,
+        &mut emitted_any,
+        plan,
+        notes.as_ref(),
+    ) {
         pages.push(placed);
     }
     pages
@@ -29254,6 +29600,7 @@ mod keep_with_next_tests {
                 kind,
                 list_start: false,
                 heading_level: 0,
+                note: 0,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
@@ -29474,6 +29821,7 @@ mod void_budget_tests {
                 kind,
                 list_start: false,
                 heading_level: 0,
+                note: 0,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
@@ -31077,7 +31425,12 @@ fn build_pdf(
     let ni = images.len();
     let title = opts.title.clone().unwrap_or_default();
     let author = opts.author.clone().unwrap_or_default();
-    let outline_count = outlines.len();
+    // Page-note destinations resolve links but are not bookmarks.
+    let bookmarks: Vec<&OutlineEntry> = outlines
+        .iter()
+        .filter(|outline| page_note_number(&outline.id).is_none())
+        .collect();
+    let outline_count = bookmarks.len();
     let dest_ids: BTreeSet<&str> = outlines.iter().map(|o| o.id.as_str()).collect();
     let dest_by_id: BTreeMap<&str, &OutlineEntry> =
         outlines.iter().map(|o| (o.id.as_str(), o)).collect();
@@ -31520,7 +31873,7 @@ fn build_pdf(
                 count = outline_count,
             ),
         );
-        for (i, outline) in outlines.iter().enumerate() {
+        for (i, outline) in bookmarks.iter().enumerate() {
             append_pdf_outline_item_object(
                 &mut buf,
                 &mut offsets,
@@ -34967,6 +35320,7 @@ mod pdf_writer_tests {
                     },
                     list_start: false,
                     heading_level: 0,
+                    note: 0,
                 },
                 list_path: lists
                     .iter()
@@ -41907,7 +42261,11 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
                         collect_ids(&item.blocks, state, ids);
                     }
                 }
-                Block::FootnoteDefinition { blocks: inner, .. } => {
+                Block::FootnoteDefinition { id, blocks: inner } => {
+                    // A prepared page note is its references' link target.
+                    if page_note_number(id).is_some() {
+                        ids.insert(id.clone());
+                    }
                     collect_ids(inner, state, ids);
                 }
                 _ => {}
@@ -42005,6 +42363,7 @@ mod plass_pagination_tests {
                 kind,
                 list_start: false,
                 heading_level: 0,
+                note: 0,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),

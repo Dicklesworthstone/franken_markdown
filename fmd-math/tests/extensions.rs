@@ -7,6 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg(feature = "bundled-faces")]
 
+use fmd_math::metrics::CM;
 use fmd_math::{Engine, MacroSet, Style};
 
 fn engine() -> Engine {
@@ -56,23 +57,29 @@ fn every_delimiter_family_serves_every_size() {
 #[test]
 fn the_big_family_hits_its_fixed_targets() {
     let e = engine();
-    // \big… \Bigg): fixed total sizes 0.85 / 1.15 / 1.45 / 1.75 em.
+    // \big… \Bigg: TeX lands on cmex's 1.2 / 1.8 / 2.4 / 3.0 em variants,
+    // axis-centered (measured under the Reference's preamble: \big( is
+    // 0.85 em high and 0.35 em deep).
     let sizes = [
-        (r"\big(", 0.85),
-        (r"\Big(", 1.15),
-        (r"\bigg(", 1.45),
-        (r"\Bigg(", 1.75),
+        (r"\big(", 1.2),
+        (r"\Big(", 1.8),
+        (r"\bigg(", 2.4),
+        (r"\Bigg(", 3.0),
+        (r"\big[", 1.2),
+        (r"\Big\{", 1.8),
     ];
-    let mut last_total = 0.0;
     for (src, want) in sizes {
         let l = e.typeset(src, Style::Display).unwrap();
         let total = l.height + l.depth;
         assert!(
-            total >= want - 1e-6,
-            "{src}: total {total} below its {want} target"
+            (total - want).abs() < 1e-6,
+            "{src}: total {total}, TeX {want}"
         );
-        assert!(total > last_total, "{src}: not monotone over the family");
-        last_total = total;
+        assert!(
+            (l.height - (want / 2.0 + CM.axis_height)).abs() < 1e-6,
+            "{src}: height {}",
+            l.height
+        );
     }
 }
 

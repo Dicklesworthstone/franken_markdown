@@ -2323,14 +2323,15 @@ fn script_p(c: &MathConstants, style: StyleCtx) -> f64 {
     }
 }
 
-/// The `\big` family's total-size targets in ems (plain TeX's 8.5 pt /
-/// 11.5 pt / 14.5 pt / 17.5 pt at 10 pt).
+/// The `\big` family's total sizes in ems: the cmex variants TeX lands on,
+/// 1.2, 1.8, 2.4 and 3.0 em, axis-centered. Their heights are the plain-TeX
+/// struts (8.5, 11.5, 14.5 and 17.5 pt at 10 pt), which are not the totals.
 fn fixed_delim_target(size: DelimSize) -> f64 {
     match size {
-        DelimSize::Big => 0.85,
-        DelimSize::BBig => 1.15,
-        DelimSize::Bigg => 1.45,
-        DelimSize::BBigg => 1.75,
+        DelimSize::Big => 1.2,
+        DelimSize::BBig => 1.8,
+        DelimSize::Bigg => 2.4,
+        DelimSize::BBigg => 3.0,
     }
 }
 

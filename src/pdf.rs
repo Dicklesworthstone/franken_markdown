@@ -4262,6 +4262,9 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             );
         }
         Block::CodeBlock { lang, code } => {
+            if layout_diagram(lang.as_deref(), code, indent, out, cx) {
+                return;
+            }
             let start = out.len();
             let group = cx.alloc_flow();
             let gid = cx.alloc_bg();
@@ -4653,7 +4656,55 @@ fn layout_standalone_image(
     let Some(image) = resolve_pdf_image(&cx.opts.image_assets, dest) else {
         return false;
     };
+    push_figure_line(image, alt, link, indent, out, cx)
+}
 
+/// Mermaid flowchart and sequence fences, compiled by the same
+/// diagram compiler the HTML renderer uses and drawn as vector figures.
+/// Returns false (the fence prints as code) when the source is not a diagram
+/// the compiler supports.
+fn layout_diagram(
+    lang: Option<&str>,
+    code: &str,
+    indent: f32,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+) -> bool {
+    let lang = lang.unwrap_or("");
+    if !crate::diagrams::is_diagram_code(code, lang) {
+        return false;
+    }
+    let Some(svg) = crate::diagrams::render_diagram_svg(code, lang) else {
+        return false;
+    };
+    // ASCII box art keeps the fitted monospace code panel, which preserves
+    // its exact row geometry.
+    if !svg.contains("fmd-flowchart") && !svg.contains("fmd-sequence") {
+        return false;
+    }
+    // Equal sources share one image XObject.
+    let key = format!("fmd-diagram-{:016x}", seg_text_hash(&svg));
+    let Some(image) = parse_svg_image_asset(&key, svg.as_bytes()) else {
+        return false;
+    };
+    let alt = if svg.contains("fmd-sequence") {
+        "Sequence diagram"
+    } else {
+        "Diagram"
+    };
+    push_figure_line(image, alt, None, indent, out, cx)
+}
+
+/// One block figure line: `image` at its natural size, scaled down to fit the
+/// measure and the page body.
+fn push_figure_line(
+    image: PdfImageData,
+    alt: &str,
+    link: Option<LinkTarget>,
+    indent: f32,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+) -> bool {
     let max_w = (cx.page.content_w - indent).max(MIN_CONTENT_DIM);
     let max_h = (cx.page.top_y() - cx.page.bottom).max(MIN_CONTENT_DIM);
     let natural_w = image.width_px as f32 * PDF_IMAGE_DPI_SCALE;
@@ -38578,7 +38629,25 @@ flowchart LR
             );
         }
 
-        let diagram_rows = tree
+        // The flowchart fence is a vector figure, not highlighted source.
+        assert!(
+            tree.lines()
+                .any(|line| line.trim_start().starts_with("figure ")
+                    && line.contains("alt=\"Diagram\"")),
+            "the Mermaid flowchart should render as a figure\n{tree}"
+        );
+        assert!(
+            !tree.contains("large markdown file"),
+            "the flowchart source should not print as code\n{tree}"
+        );
+
+        // Mermaid types the diagram compiler does not draw stay code; a long
+        // highlighted row must still stay one rendered row.
+        let code_tree = render_tree_debug(
+            "```mermaid\nstateDiagram-v2\n    Markdown[large markdown file] --> Parser[AST] --> Layout[measured table/code layout] --> PDF[compact tagged PDF]\n```\n",
+            &small_opts(612.0, 792.0),
+        );
+        let diagram_rows = code_tree
             .lines()
             .filter(|line| line.contains("Code "))
             .filter(|line| {
@@ -38593,7 +38662,7 @@ flowchart LR
         assert_eq!(
             diagram_rows.len(),
             1,
-            "the long Mermaid diagram row should stay on one rendered code row even when syntax highlighting splits it into token segments\n{tree}"
+            "the long Mermaid diagram row should stay on one rendered code row even when syntax highlighting splits it into token segments\n{code_tree}"
         );
 
         let body_fill =
@@ -38617,15 +38686,22 @@ flowchart LR
                 .any(|line| line.contains("\"# installs fmd\"")),
             "PowerShell comments should emit a non-body fill\n{tree}"
         );
+        let code_syntax_lines = code_tree
+            .lines()
+            .filter(|line| line.contains("Code "))
+            .filter(|line| !line.contains(&format!("fill={body_fill}")))
+            .collect::<Vec<_>>();
         assert!(
-            syntax_lines
+            code_syntax_lines
                 .iter()
-                .any(|line| line.contains("\"flowchart\"")),
-            "Mermaid diagram keywords should emit a non-body fill in PDF code blocks\n{tree}"
+                .any(|line| line.contains("\"stateDiagram-v2\"")),
+            "Mermaid diagram keywords should emit a non-body fill in PDF code blocks\n{code_tree}"
         );
         assert!(
-            syntax_lines.iter().any(|line| line.contains("\"-->\"")),
-            "Mermaid edge operators should emit a non-body fill in PDF code blocks\n{tree}"
+            code_syntax_lines
+                .iter()
+                .any(|line| line.contains("\"-->\"")),
+            "Mermaid edge operators should emit a non-body fill in PDF code blocks\n{code_tree}"
         );
     }
 

@@ -59,6 +59,11 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
     {
         render_ascii_diagram(trimmed)
+    } else if lower_lang == "mermaid" && !names_flowchart(first_directive) {
+        // pie, classDiagram, gantt, stateDiagram, erDiagram and other Mermaid
+        // types this compiler does not draw stay readable source code instead
+        // of being misread as flowchart nodes.
+        None
     } else if lower_lang == "flowchart"
         || lower_lang == "mermaid"
         || first_directive.starts_with("graph ")
@@ -70,6 +75,14 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// A Mermaid flowchart header: `graph`/`flowchart`, optionally with a direction.
+fn names_flowchart(directive: &str) -> bool {
+    matches!(
+        directive.split_whitespace().next(),
+        Some("graph" | "flowchart")
+    )
 }
 
 // ---------------------------------------------------------------------------

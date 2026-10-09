@@ -1687,9 +1687,8 @@ impl Engine {
                     char_glyph: None,
                 })
             }
-            AccentKind::OverBrace
-            | AccentKind::UnderBrace
-            | AccentKind::OverRightArrow
+            AccentKind::OverBrace | AccentKind::UnderBrace => self.brace(kind, base, ctx, span),
+            AccentKind::OverRightArrow
             | AccentKind::OverLeftArrow
             | AccentKind::WideHat
             | AccentKind::WideTilde => self.stretchy_accent(kind, base, ctx, span),
@@ -2150,12 +2149,79 @@ impl Engine {
         Ok(hcat(vec![left_box, inner, right_box]))
     }
 
-    /// The stretchy over/under constructions (`\widehat`, `\widetilde`,
-    /// `\overbrace`, `\underbrace`, `\overrightarrow`, `\overleftarrow`):
-    /// a drawn band spanning the base's width, placed with a small
-    /// rule-thickness clearance (hats and tildes ride close, the way the
-    /// authored accents do; braces and arrows take a little more air).
-    /// Any width draws — the constructions are total.
+    /// LaTeX's `\overbrace` and `\underbrace` (fontmath.ltx): a `\mathop`
+    /// alignment of the base, in display style and centered, and a brace
+    /// fill 3 pt from it, with 3 pt more past the fill. The fill is four
+    /// cmex pieces, 0.45 em wide and 0.12 em high, joined by rules, so it
+    /// is never narrower than 1.8 em. The pieces' ink curls 0.214 em to
+    /// either side of their row, and the drawn brace is centered where
+    /// that ink is. cmex has one size, so neither the fill nor the kerns
+    /// shrink in script styles.
+    fn brace(
+        &self,
+        kind: AccentKind,
+        base: &Node,
+        ctx: LayCtx,
+        span: Span,
+    ) -> Result<Laid, MathError> {
+        let em = ctx.decl_size;
+        let under = matches!(kind, AccentKind::UnderBrace);
+        let display = LayCtx {
+            style: StyleCtx::new(Style::Display),
+            ..ctx
+        };
+        let inner = self.formula_box(base, display)?;
+        let width = inner.width.max(4.0 * 0.45 * em);
+        let stretch_kind = if under {
+            crate::drawn::Stretch::UnderBrace
+        } else {
+            crate::drawn::Stretch::OverBrace
+        };
+        let band = crate::drawn::stretch(stretch_kind, width, em);
+        // The fill's ink center, 3 pt plus half its 0.12 em row from the
+        // base; the whole construction adds both kerns and the row.
+        let center = 0.3 * em + 0.06 * em;
+        let extra = 0.3 * em + 0.12 * em + 0.3 * em;
+        let (band_dy, height, depth) = if under {
+            let dy = -(inner.depth + center) - band.height / 2.0;
+            (dy, inner.height, inner.depth + extra)
+        } else {
+            let dy = inner.height + center - band.height / 2.0;
+            (dy, inner.height + extra, inner.depth)
+        };
+        let inner_dx = (width - inner.width) / 2.0;
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width,
+                height,
+                depth,
+                children: vec![
+                    Positioned {
+                        dx: 0.0,
+                        dy: band_dy,
+                        node: MNode::Path {
+                            contours: band.contours,
+                            span,
+                        },
+                    },
+                    Positioned {
+                        dx: inner_dx,
+                        dy: 0.0,
+                        node: MNode::Box(inner),
+                    },
+                ],
+            },
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// The stretchy over-constructions (`\widehat`, `\widetilde`,
+    /// `\overrightarrow`, `\overleftarrow`): a drawn band spanning the
+    /// base's width, placed with a small rule-thickness clearance (hats
+    /// and tildes ride close, the way the authored accents do; arrows take
+    /// a little more air). Any width draws — the constructions are total.
     fn stretchy_accent(
         &self,
         kind: AccentKind,
@@ -2165,13 +2231,11 @@ impl Engine {
     ) -> Result<Laid, MathError> {
         let size = ctx.size();
         let theta = self.consts.rule_thickness * size;
-        let under = matches!(kind, AccentKind::UnderBrace);
-        // Over-accents cramp their base (rule 12 / overline's rule 9);
-        // under-constructions do not (underline's rule 10). The wide
-        // accents clean their base (clean_box drops a lone character's
-        // italic correction); the braces and arrows are plain/amsmath
+        // Over-accents cramp their base (rule 12 / overline's rule 9). The
+        // wide accents clean their base (clean_box drops a lone
+        // character's italic correction); the arrows are amsmath
         // alignments whose body is its own formula and keeps it.
-        let base_ctx = if under { ctx } else { ctx.map(StyleCtx::cramp) };
+        let base_ctx = ctx.map(StyleCtx::cramp);
         let inner = if matches!(kind, AccentKind::WideHat | AccentKind::WideTilde) {
             self.lay_node(base, base_ctx)?.boxx
         } else {
@@ -2180,8 +2244,6 @@ impl Engine {
         let stretch_kind = match kind {
             AccentKind::WideHat => crate::drawn::Stretch::Hat,
             AccentKind::WideTilde => crate::drawn::Stretch::Tilde,
-            AccentKind::OverBrace => crate::drawn::Stretch::OverBrace,
-            AccentKind::UnderBrace => crate::drawn::Stretch::UnderBrace,
             AccentKind::OverRightArrow => crate::drawn::Stretch::RightArrow,
             _ => crate::drawn::Stretch::LeftArrow,
         };
@@ -2191,13 +2253,8 @@ impl Engine {
             AccentKind::WideHat | AccentKind::WideTilde => theta,
             _ => 2.0 * theta,
         };
-        let (band_dy, height, depth) = if under {
-            let dy = -(inner.depth + gap + band.height);
-            (dy, inner.height, inner.depth + gap + band.height)
-        } else {
-            let dy = inner.height + gap;
-            (dy, inner.height + gap + band.height, inner.depth)
-        };
+        let band_dy = inner.height + gap;
+        let (height, depth) = (inner.height + gap + band.height, inner.depth);
         let inner_width = inner.width;
         Ok(Laid {
             boxx: MBox {

@@ -883,6 +883,42 @@ fn primes_are_cmsy_prime_characters() {
 }
 
 #[test]
+fn braces_are_latex_brace_fills() {
+    // LaTeX's \overbrace and \underbrace: the base in display style,
+    // centered on a fill of four 0.45 em cmex pieces (never narrower than
+    // 1.8 em), 3 pt from it, with 3 pt more past the fill's 0.12 em row.
+    // Measured in LaTeX: \underbrace{\frac{1}{6^2}} is 1.8 em wide and
+    // 0.72 em deeper than the fraction.
+    let e = engine();
+    let x = |layout: &Layout, ch: char| {
+        layout
+            .glyphs
+            .iter()
+            .find(|g| g.ch == ch)
+            .unwrap_or_else(|| panic!("glyph {ch}"))
+            .x
+    };
+    let frac = e.typeset(r"\frac{1}{6^2}", Style::Display).unwrap();
+    let under = e
+        .typeset(r"\underbrace{\frac{1}{6^2}}", Style::Display)
+        .unwrap();
+    assert!((under.width - 1.8).abs() < EPS, "{}", under.width);
+    assert!((under.height - frac.height).abs() < EPS);
+    assert!((under.depth - (frac.depth + 0.72)).abs() < EPS);
+    let centered = (1.8 - frac.width) / 2.0;
+    assert!((x(&under, '1') - x(&frac, '1') - centered).abs() < EPS);
+    let sum = e.typeset("a+b+c+d", Style::Display).unwrap();
+    let over = e.typeset(r"\overbrace{a+b+c+d}", Style::Display).unwrap();
+    assert!((over.width - sum.width).abs() < EPS);
+    assert!((over.height - (sum.height + 0.72)).abs() < EPS);
+    assert!((over.depth - sum.depth).abs() < EPS);
+    // \displaystyle resets the size: a braced base in a superscript is
+    // full size.
+    let scripted = e.typeset(r"x^{\overbrace{a}}", Style::Display).unwrap();
+    assert!((glyph_size(&scripted, 'a') - 1.0).abs() < EPS);
+}
+
+#[test]
 fn a_trailing_row_break_opens_no_empty_math_row() {
     // align* ends its last row at \crcr: `= x + \\` is one row, like `= x +`.
     // A TexText paragraph's trailing \\ still sets an empty line.

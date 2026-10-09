@@ -55,7 +55,7 @@ pub struct VerifyReport {
 #[must_use]
 pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
     opts.font_assets.validate().ok()?;
-    let prepared = crate::footnotes::for_pdf(doc);
+    let prepared = crate::footnotes::for_pdf_paged(doc);
     let layer = verification_text_layer(&prepared, opts)?;
     let audit = audit_anchors(&prepared);
     let warnings = render_warnings(&prepared, opts);

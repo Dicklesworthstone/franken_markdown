@@ -59,6 +59,11 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
     {
         render_ascii_diagram(trimmed)
+    } else if lower_lang == "mermaid" && !names_flowchart(first_directive) {
+        // pie, classDiagram, gantt, stateDiagram, erDiagram and other Mermaid
+        // types this compiler does not draw stay readable source code instead
+        // of being misread as flowchart nodes.
+        None
     } else if lower_lang == "flowchart"
         || lower_lang == "mermaid"
         || first_directive.starts_with("graph ")
@@ -70,6 +75,33 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// A Mermaid flowchart or sequence diagram as an SVG figure, with alt text,
+/// for paged and poster outputs. ASCII box art returns `None`: those outputs
+/// keep it as a fitted monospace panel that preserves its row geometry.
+#[must_use]
+pub fn figure_svg(code: &str, lang: &str) -> Option<(String, &'static str)> {
+    if !is_diagram_code(code, lang) {
+        return None;
+    }
+    let svg = render_diagram_svg(code, lang)?;
+    let alt = if svg.contains("fmd-sequence") {
+        "Sequence diagram"
+    } else if svg.contains("fmd-flowchart") {
+        "Diagram"
+    } else {
+        return None;
+    };
+    Some((svg, alt))
+}
+
+/// A Mermaid flowchart header: `graph`/`flowchart`, optionally with a direction.
+fn names_flowchart(directive: &str) -> bool {
+    matches!(
+        directive.split_whitespace().next(),
+        Some("graph" | "flowchart")
+    )
 }
 
 // ---------------------------------------------------------------------------

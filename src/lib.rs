@@ -1092,9 +1092,9 @@ fn transform_footnotes_for_pdf<'a>(
     opts: &PdfOptions,
 ) -> std::borrow::Cow<'a, Document> {
     match apply_profile(doc, opts.profile) {
-        std::borrow::Cow::Borrowed(doc) => footnotes::for_pdf(doc),
+        std::borrow::Cow::Borrowed(doc) => footnotes::for_pdf_paged(doc),
         std::borrow::Cow::Owned(doc) => {
-            std::borrow::Cow::Owned(footnotes::for_pdf(&doc).into_owned())
+            std::borrow::Cow::Owned(footnotes::for_pdf_paged(&doc).into_owned())
         }
     }
 }

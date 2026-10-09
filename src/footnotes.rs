@@ -20,24 +20,55 @@ use crate::ast::{Block, Document, Inline};
 /// visible as `[^id]`, never the misleading `[0]`. A document with no footnote
 /// syntax is borrowed, avoiding a whole-AST clone on the ordinary PDF path.
 pub(crate) fn for_pdf(doc: &Document) -> Cow<'_, Document> {
+    prepare(doc, false)
+}
+
+/// Prefix of the fragment a page-bottom note reference links to, and of the
+/// id its prepared definition carries (`fmd-fn-3` for note 3).
+pub(crate) const PAGE_NOTE_PREFIX: &str = "fmd-fn-";
+
+/// [`for_pdf`] for the PDF page builder's bottom-of-page notes. References
+/// become `#fmd-fn-N` links around the superscript numeral, and each note
+/// body stays a `FootnoteDefinition` with id `fmd-fn-N` at the end of the
+/// document, in note order, already labeled. The PDF layout places each note
+/// at the foot of the page carrying its first body reference, and prints any
+/// note it cannot place there (unreferenced, referenced only from another
+/// note, or too tall) in a trailing Notes section exactly like [`for_pdf`].
+pub(crate) fn for_pdf_paged(doc: &Document) -> Cow<'_, Document> {
+    prepare(doc, true)
+}
+
+fn prepare(doc: &Document, paged: bool) -> Cow<'_, Document> {
     // Paged output cannot pass markup through: lower the safe HTML subset to
     // native nodes first (idempotent, borrowed when there is no raw HTML).
     match crate::safe_html::lower(doc) {
-        Cow::Borrowed(doc) => endnotes_for_pdf(doc),
-        Cow::Owned(lowered) => Cow::Owned(endnotes_for_pdf(&lowered).into_owned()),
+        Cow::Borrowed(doc) => endnotes_for_pdf(doc, paged),
+        Cow::Owned(lowered) => Cow::Owned(endnotes_for_pdf(&lowered, paged).into_owned()),
     }
 }
 
-fn endnotes_for_pdf(doc: &Document) -> Cow<'_, Document> {
+fn endnotes_for_pdf(doc: &Document, paged: bool) -> Cow<'_, Document> {
     let mut notes = Notes::default();
     notes.collect(&doc.blocks);
     if notes.definitions.is_empty() && !notes.has_reference {
         return Cow::Borrowed(doc);
     }
+    // Already prepared for page notes: nothing references the labeled
+    // definitions any more, and preparing again would renumber them.
+    if paged
+        && !notes.has_reference
+        && notes
+            .indices
+            .keys()
+            .all(|id| id.starts_with(PAGE_NOTE_PREFIX))
+    {
+        return Cow::Borrowed(doc);
+    }
 
-    let numbering = number_notes(doc, &notes);
+    let mut numbering = number_notes(doc, &notes);
+    numbering.paged = paged;
     let mut blocks = rewrite_blocks(&doc.blocks, &notes, &numbering);
-    if !notes.definitions.is_empty() {
+    if !notes.definitions.is_empty() && !paged {
         blocks.push(Block::Heading {
             level: 2,
             inlines: vec![Inline::Text("Notes".to_string())],
@@ -59,6 +90,23 @@ fn endnotes_for_pdf(doc: &Document) -> Cow<'_, Document> {
             blocks.extend(body);
         }
     }
+    if paged {
+        for &index in &numbering.order {
+            let number = numbering.numbers[index];
+            let mut body = rewrite_blocks(notes.definitions[index], &notes, &numbering);
+            let label = superscript(number);
+            match body.first_mut() {
+                Some(Block::Paragraph(inlines)) => {
+                    inlines.insert(0, Inline::Text(format!("{label} ")));
+                }
+                _ => body.insert(0, Block::Paragraph(vec![Inline::Text(label)])),
+            }
+            blocks.push(Block::FootnoteDefinition {
+                id: format!("{PAGE_NOTE_PREFIX}{number}"),
+                blocks: body,
+            });
+        }
+    }
     Cow::Owned(Document { blocks })
 }
 
@@ -66,6 +114,7 @@ fn number_notes(doc: &Document, notes: &Notes<'_>) -> Numbering {
     let mut numbering = Numbering {
         numbers: vec![0; notes.definitions.len()],
         order: Vec::with_capacity(notes.definitions.len()),
+        paged: false,
     };
     references_in_blocks(&doc.blocks, &mut |id| numbering.reference(notes, id));
     let mut visited = 0;
@@ -163,6 +212,8 @@ impl<'a> Notes<'a> {
 struct Numbering {
     numbers: Vec<usize>,
     order: Vec<usize>,
+    /// References link to their page-bottom note (see [`for_pdf_paged`]).
+    paged: bool,
 }
 
 impl Numbering {
@@ -311,13 +362,34 @@ fn superscript(number: usize) -> String {
 }
 
 fn rewrite_inlines(inlines: &[Inline], notes: &Notes<'_>, numbering: &Numbering) -> Vec<Inline> {
+    rewrite_inlines_in(inlines, notes, numbering, numbering.paged)
+}
+
+/// `link_refs` is false inside an existing link: links do not nest.
+fn rewrite_inlines_in(
+    inlines: &[Inline],
+    notes: &Notes<'_>,
+    numbering: &Numbering,
+    link_refs: bool,
+) -> Vec<Inline> {
+    let rewrite_inlines = |content: &[Inline], notes: &Notes<'_>, numbering: &Numbering| {
+        rewrite_inlines_in(content, notes, numbering, link_refs)
+    };
     inlines
         .iter()
         .map(|inline| match inline {
-            Inline::FootnoteRef { id } => Inline::Text(match notes.indices.get(id.as_str()) {
-                Some(&index) => superscript(numbering.numbers[index]),
-                None => format!("[^{id}]"),
-            }),
+            Inline::FootnoteRef { id } => match notes.indices.get(id.as_str()) {
+                Some(&index) if link_refs => {
+                    let number = numbering.numbers[index];
+                    Inline::Link {
+                        dest: format!("#{PAGE_NOTE_PREFIX}{number}"),
+                        title: None,
+                        content: vec![Inline::Text(superscript(number))],
+                    }
+                }
+                Some(&index) => Inline::Text(superscript(numbering.numbers[index])),
+                None => Inline::Text(format!("[^{id}]")),
+            },
             Inline::Emphasis(content) => {
                 Inline::Emphasis(rewrite_inlines(content, notes, numbering))
             }
@@ -332,7 +404,7 @@ fn rewrite_inlines(inlines: &[Inline], notes: &Notes<'_>, numbering: &Numbering)
             } => Inline::Link {
                 dest: dest.clone(),
                 title: title.clone(),
-                content: rewrite_inlines(content, notes, numbering),
+                content: rewrite_inlines_in(content, notes, numbering, false),
             },
             other => other.clone(),
         })
@@ -472,7 +544,7 @@ mod tests {
         let original = doc.clone();
         // Endnote rewriting alone must keep every block, raw HTML included;
         // `for_pdf` additionally lowers that HTML (see `safe_html`).
-        let result = endnotes_for_pdf(&doc);
+        let result = endnotes_for_pdf(&doc, false);
         assert_eq!(result.blocks[2], paragraph("¹"));
         assert_eq!(&result.blocks[3..], rich.as_slice());
         let prepared = for_pdf(&doc);

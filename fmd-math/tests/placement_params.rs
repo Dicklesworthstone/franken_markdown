@@ -778,6 +778,32 @@ fn tex_rows_follow_align_star() {
 }
 
 #[test]
+fn array_rows_carry_latex_struts() {
+    // LaTeX's array (amsmath's matrices, cases): every row carries
+    // \@arstrut, 0.7 and 0.3 \baselineskip times \arraystretch, and rows
+    // stack depth to height. Measured in LaTeX: a two-row matrix of
+    // letters is 1.45 em high and 0.95 em deep, a three-row one 3.6 em in
+    // all; cases rows are 1.44 em apart (\arraystretch 1.2).
+    let e = engine();
+    let two = e
+        .typeset(r"\begin{matrix} a \\ b \end{matrix}", Style::Display)
+        .unwrap();
+    assert!(
+        (two.height - 1.45).abs() < EPS && (two.depth - 0.95).abs() < EPS,
+        "{two:?}"
+    );
+    let three = e
+        .typeset(r"\begin{matrix} a \\ b \\ c \end{matrix}", Style::Display)
+        .unwrap();
+    assert!((three.height + three.depth - 3.6).abs() < EPS, "{three:?}");
+    let cases = e
+        .typeset(r"\begin{cases} a & b \\ c & d \end{cases}", Style::Display)
+        .unwrap();
+    let pitch = glyph_y(&cases, 'a') - glyph_y(&cases, 'c');
+    assert!((pitch - 1.44).abs() < EPS, "cases rows {pitch}");
+}
+
+#[test]
 fn accents_take_tex_accent_geometry() {
     // Rule 12 with plain TeX's accent characters (cmr10's, cmmi10's vector):
     // the accent ink sits where TeX's does, whichever face supplies it.

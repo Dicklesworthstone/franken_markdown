@@ -1839,7 +1839,17 @@ impl Engine {
         });
         let boxx = match name {
             "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" => {
-                let grid = self.grid(rows, text_cells, &Grid::centered(1.0), span)?;
+                // amsmath's \env@matrix is an `array` of centered columns
+                // (its outer \arraycolsep cancelled).
+                let grid = self.grid(
+                    rows,
+                    text_cells,
+                    &Grid {
+                        array_stretch: Some(1.0),
+                        ..Grid::centered(1.0)
+                    },
+                    span,
+                )?;
                 match name {
                     // A bare matrix has no delimiters at all (not even the
                     // null-delimiter kerns a `\left.` would add).
@@ -1868,12 +1878,14 @@ impl Engine {
             }
             "cases" => {
                 // Text-style cells, left-aligned value and condition
-                // columns a quad apart, behind a stretched `{`.
+                // columns a quad apart, behind a stretched `{`: amsmath's
+                // `array{@{}l@{\quad}l@{}}` with \arraystretch 1.2.
                 let grid = self.grid(
                     rows,
                     text_cells,
                     &Grid {
                         align: AlignRule::AllLeft,
+                        array_stretch: Some(1.2),
                         ..Grid::centered(1.0)
                     },
                     span,
@@ -1889,6 +1901,7 @@ impl Engine {
                         align: AlignRule::Columns(plan.aligns),
                         vrules: plan.vrules,
                         outer_pad: 0.5,
+                        array_stretch: Some(1.0),
                         ..Grid::centered(1.0)
                     },
                     span,
@@ -1978,13 +1991,19 @@ impl Engine {
                 col_w[j] = col_w[j].max(cell.width);
             }
         }
+        // An array row is at least as tall and deep as its \@arstrut, which
+        // follows the text size in force, not the math style.
+        let (strut_h, strut_d) = grid.array_stretch.map_or((0.0, 0.0), |stretch| {
+            let skip = c.baseline_skip * stretch * cell_ctx.decl_size;
+            (0.7 * skip, 0.3 * skip)
+        });
         let row_h: Vec<f64> = cells
             .iter()
-            .map(|r| r.iter().map(|b| b.height).fold(0.0, f64::max))
+            .map(|r| r.iter().map(|b| b.height).fold(strut_h, f64::max))
             .collect();
         let row_d: Vec<f64> = cells
             .iter()
-            .map(|r| r.iter().map(|b| b.depth).fold(0.0, f64::max))
+            .map(|r| r.iter().map(|b| b.depth).fold(strut_d, f64::max))
             .collect();
         // 3. Column x positions.
         let mut col_x = vec![0.0_f64; ncols];
@@ -1999,12 +2018,19 @@ impl Engine {
         let total_width = x + grid.outer_pad * size;
         // 4. Row baselines: \baselineskip (+\jot) grown by \lineskip when
         // boxes would touch — the same stacking rule multi-line hlists use.
+        // Array rows instead stack depth to height (LaTeX's array sets
+        // \baselineskip and \lineskip to zero; the struts space the rows).
         let mut baselines = vec![0.0_f64; cells.len()];
         for i in 1..cells.len() {
-            let natural = (c.baseline_skip + grid.jot) * grid.row_factor * size;
-            // \openup\jot raises the \lineskip floor too.
-            let min_gap = row_d[i - 1] + row_h[i] + (c.line_skip + grid.jot) * size;
-            baselines[i] = baselines[i - 1] - natural.max(min_gap);
+            let pitch = if grid.array_stretch.is_some() {
+                row_d[i - 1] + row_h[i]
+            } else {
+                let natural = (c.baseline_skip + grid.jot) * grid.row_factor * size;
+                // \openup\jot raises the \lineskip floor too.
+                let min_gap = row_d[i - 1] + row_h[i] + (c.line_skip + grid.jot) * size;
+                natural.max(min_gap)
+            };
+            baselines[i] = baselines[i - 1] - pitch;
         }
         // 5. Assemble, then axis-center the whole grid (\vcenter).
         let top = row_h.first().copied().unwrap_or(0.0);
@@ -2399,6 +2425,11 @@ struct Grid {
     /// Keep the first row's baseline (the Tex surface's align* rows)
     /// instead of `\vcenter`ing the grid on the axis.
     first_baseline: bool,
+    /// LaTeX's `array` rows: every row carries `\@arstrut` (height
+    /// 0.7\baselineskip, depth 0.3\baselineskip, both times this
+    /// `\arraystretch`), and rows stack depth to height with no
+    /// interline glue. `None` for the baselineskip-stacked grids.
+    array_stretch: Option<f64>,
 }
 
 impl Grid {
@@ -2406,6 +2437,7 @@ impl Grid {
     fn centered(col_sep: f64) -> Self {
         Self {
             first_baseline: false,
+            array_stretch: None,
             align: AlignRule::AllCenter,
             col_sep,
             outer_pad: 0.0,

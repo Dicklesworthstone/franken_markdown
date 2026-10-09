@@ -64,3 +64,14 @@ fn identical_diagrams_share_one_image_and_render_deterministically() {
     let raw = String::from_utf8_lossy(&a);
     assert_eq!(raw.matches("/S /Figure").count(), 2);
 }
+
+#[test]
+fn svg_posters_embed_the_same_diagram_figures() {
+    use franken_markdown::svg::{SvgOptions, render_svg_with_diagnostics};
+    let doc = parse_markdown(&format!("{FLOW}\n{SEQUENCE}\n{PIE}"));
+    let (bytes, _, warnings) = render_svg_with_diagnostics(&doc, &SvgOptions::default());
+    let xml = String::from_utf8(bytes).unwrap();
+    assert_eq!(xml.matches("data:image/svg+xml;base64,").count(), 2);
+    assert!(xml.contains("aria-label=\"Sequence diagram\""));
+    assert!(warnings.is_empty(), "{warnings:?}");
+}

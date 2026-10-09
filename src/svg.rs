@@ -632,7 +632,24 @@ impl Poster {
         match block {
             Block::Heading { level, inlines } => self.heading(*level, inlines, l, r, quote),
             Block::Paragraph(inlines) => self.paragraph(inlines, l, r, quote),
-            Block::CodeBlock { code, .. } => self.code_panel(code, l, r),
+            Block::CodeBlock { lang, code } => {
+                // Mermaid diagrams draw as figures, as in HTML and PDF.
+                match franken_markdown::diagrams::figure_svg(code, lang.as_deref().unwrap_or("")) {
+                    Some((svg, alt)) => {
+                        let dest = format!(
+                            "data:image/svg+xml;base64,{}",
+                            franken_markdown::html::base64_encode(svg.as_bytes())
+                        );
+                        let image = Inline::Image {
+                            dest,
+                            title: None,
+                            alt: alt.to_owned(),
+                        };
+                        self.paragraph(std::slice::from_ref(&image), l, r, quote);
+                    }
+                    None => self.code_panel(code, l, r),
+                }
+            }
             Block::MathBlock(src) => self.math_block(src, l, r, quote),
             Block::BlockQuote(inner) => self.blockquote(inner, l, r),
             Block::List(list) => self.list(list, l, r, quote),

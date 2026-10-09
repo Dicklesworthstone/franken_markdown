@@ -4670,27 +4670,13 @@ fn layout_diagram(
     out: &mut Vec<Line>,
     cx: &mut LayoutCx<'_>,
 ) -> bool {
-    let lang = lang.unwrap_or("");
-    if !crate::diagrams::is_diagram_code(code, lang) {
-        return false;
-    }
-    let Some(svg) = crate::diagrams::render_diagram_svg(code, lang) else {
+    let Some((svg, alt)) = crate::diagrams::figure_svg(code, lang.unwrap_or("")) else {
         return false;
     };
-    // ASCII box art keeps the fitted monospace code panel, which preserves
-    // its exact row geometry.
-    if !svg.contains("fmd-flowchart") && !svg.contains("fmd-sequence") {
-        return false;
-    }
     // Equal sources share one image XObject.
     let key = format!("fmd-diagram-{:016x}", seg_text_hash(&svg));
     let Some(image) = parse_svg_image_asset(&key, svg.as_bytes()) else {
         return false;
-    };
-    let alt = if svg.contains("fmd-sequence") {
-        "Sequence diagram"
-    } else {
-        "Diagram"
     };
     push_figure_line(image, alt, None, indent, out, cx)
 }

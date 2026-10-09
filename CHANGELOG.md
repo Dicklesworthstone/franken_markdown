@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- PDF draws Mermaid flowchart and sequence fences as vector figures with
-  the same diagram compiler HTML uses, instead of printing their source.
+- PDF and SVG posters draw Mermaid flowchart and sequence fences as vector
+  figures with the same diagram compiler HTML uses, instead of printing their
+  source.
   Mermaid types the compiler does not support (pie, classDiagram, gantt, ...)
   now stay highlighted code in HTML and PDF rather than being misread as
   flowchart nodes.

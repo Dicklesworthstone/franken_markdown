@@ -231,7 +231,17 @@ impl Engine {
     fn hlist(&self, items: &[Node], ctx: LayCtx) -> Result<MBox, MathError> {
         let mut lines: Vec<(MBox, f64, f64)> = Vec::new();
         let mut ctx = ctx;
-        for line in items.split(|n| matches!(n.kind, NodeKind::Linebreak)) {
+        let mut sources: Vec<&[Node]> = items
+            .split(|n| matches!(n.kind, NodeKind::Linebreak))
+            .collect();
+        // A trailing `\\` ends the Tex surface's last align* row without
+        // opening an empty one (\crcr), as the environments' rows do. A
+        // TexText paragraph's trailing \\ does set an empty line in LaTeX.
+        let align_rows = ctx.align_rows && !ctx.text_mode;
+        if align_rows && sources.len() > 1 && sources.last().is_some_and(|l| l.is_empty()) {
+            sources.pop();
+        }
+        for line in sources {
             let (boxx, after) = self.line(line, ctx)?;
             ctx = after;
             lines.push((boxx, ctx.size(), ctx.line_stretch));

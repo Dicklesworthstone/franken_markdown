@@ -738,3 +738,18 @@ fn math_lines_open_up_by_jot_and_text_lines_do_not() {
     let lines = glyph_y(&text, 'a') - glyph_y(&text, 'b');
     assert!((lines - CM.baseline_skip).abs() < EPS, "text lines {lines}");
 }
+
+#[test]
+fn a_trailing_row_break_opens_no_empty_math_row() {
+    // align* ends its last row at \crcr: `= x + \\` is one row, like `= x +`.
+    // A TexText paragraph's trailing \\ still sets an empty line.
+    let e = engine();
+    let one = e.typeset(r"= x +", Style::Display).unwrap();
+    let trailing = e.typeset(r"= x + \\", Style::Display).unwrap();
+    assert!((trailing.height - one.height).abs() < EPS);
+    assert!((trailing.depth - one.depth).abs() < EPS);
+    assert!((trailing.width - one.width).abs() < EPS);
+    let paragraph = e.typeset_text(r"a\\").unwrap();
+    let line = e.typeset_text("a").unwrap();
+    assert!(paragraph.depth > line.depth + CM.baseline_skip / 2.0);
+}

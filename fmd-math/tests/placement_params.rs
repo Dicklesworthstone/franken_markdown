@@ -858,6 +858,31 @@ fn accents_take_tex_accent_geometry() {
 }
 
 #[test]
+fn primes_are_cmsy_prime_characters() {
+    // Plain TeX's \prime is cmsy's prime: 0.275 em wide and 0.559 em high in
+    // text style, cmsy7's 0.329 x 0.559 (x 0.7) as a superscript. `'` is
+    // `^{\prime}`, so `x''` superscripts two of them.
+    let e = engine();
+    let text = e.typeset(r"\prime", Style::Display).unwrap();
+    assert!((text.width - 0.275).abs() < EPS, "{text:?}");
+    assert!((text.height - 0.559).abs() < EPS && text.depth.abs() < EPS);
+    let script_prime = 0.7 * 0.329;
+    for (src, n) in [("{}'", 1.0), ("{}''", 2.0)] {
+        let l = e.typeset(src, Style::Display).unwrap();
+        let w = n * script_prime + CM.script_space;
+        assert!((l.width - w).abs() < EPS, "{src}: {} vs {w}", l.width);
+        let h = CM.sup1 + 0.7 * 0.559;
+        assert!((l.height - h).abs() < EPS, "{src}: {} vs {h}", l.height);
+    }
+    let quote = e.typeset("f'(x)", Style::Display).unwrap();
+    let explicit = e.typeset(r"f^\prime(x)", Style::Display).unwrap();
+    assert_eq!(quote.glyphs.len(), explicit.glyphs.len());
+    for (a, b) in quote.glyphs.iter().zip(&explicit.glyphs) {
+        assert!((a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS && a.size == b.size);
+    }
+}
+
+#[test]
 fn a_trailing_row_break_opens_no_empty_math_row() {
     // align* ends its last row at \crcr: `= x + \\` is one row, like `= x +`.
     // A TexText paragraph's trailing \\ still sets an empty line.

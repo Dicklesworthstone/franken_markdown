@@ -562,6 +562,11 @@ impl Engine {
                     char_glyph: None,
                 })
             }
+            NodeKind::Symbol { ch: '′', .. } => Ok(Laid {
+                boxx: self.tex_prime(node.span, ctx)?,
+                italic: 0.0,
+                char_glyph: None,
+            }),
             NodeKind::Symbol { ch, .. } => self.char_atom(*ch, node.span, ctx),
             NodeKind::BigOp { ch, integral, .. } => {
                 let scale = match (ctx.style.style == Style::Display, *integral) {
@@ -1250,40 +1255,73 @@ impl Engine {
     }
 
     /// A run of prime marks as superscript material, each carrying its own
-    /// `'` token's span.
+    /// `'` token's span: plain TeX makes `x''` into `x^{\prime\prime}`.
     fn prime_run(&self, primes: &[Span], ctx: LayCtx) -> Result<MBox, MathError> {
         let sup_ctx = ctx.map(StyleCtx::sup);
-        let size = sup_ctx.size();
-        let fallback = primes.first().copied().unwrap_or(Span::new(0, 0));
-        let Some((face, gid)) = self.faces.resolve('′', &[FACE_REGULAR, FACE_SYMBOLS]) else {
-            return Err(MathError::UnmappedChar {
-                ch: '′',
-                span: fallback,
-            });
-        };
-        let m = self.metrics_of(face, gid);
         let mut children = Vec::new();
-        let mut x = 0.0;
+        let (mut x, mut height) = (0.0, 0.0_f64);
         for span in primes {
+            let prime = self.tex_prime(*span, sup_ctx)?;
+            let width = prime.width;
+            height = height.max(prime.height);
             children.push(Positioned {
                 dx: x,
                 dy: 0.0,
-                node: MNode::Glyph {
-                    face,
-                    gid,
-                    ch: '′',
-                    size,
-                    span: *span,
-                },
+                node: MNode::Box(prime),
             });
-            x += m.advance * size;
+            x += width;
         }
         Ok(MBox {
             kind: BoxKind::Horizontal,
             width: x,
-            height: m.height * size,
-            depth: m.depth * size,
+            height,
+            depth: 0.0,
             children,
+        })
+    }
+
+    /// Plain TeX's `\prime`, cmsy's prime character at the size in force:
+    /// its box, and the bundled prime glyph fitted to its ink. The
+    /// character is drawn large and sits on the baseline so that, as a
+    /// superscript, it reaches down toward the x-height. The bundled glyph
+    /// is a small raised tick of a squatter design, so, as accents are, it
+    /// is scaled to the character's ink width, centered on its ink and hung
+    /// from its ink top (scaled to the ink height it would be twice as
+    /// heavy as TeX's stroke).
+    fn tex_prime(&self, span: Span, ctx: LayCtx) -> Result<MBox, MathError> {
+        let unmapped = MathError::UnmappedChar { ch: '′', span };
+        let Some((face, gid)) = self.faces.resolve('′', &[FACE_REGULAR, FACE_SYMBOLS]) else {
+            return Err(unmapped);
+        };
+        let Some(font) = self.faces.font(face) else {
+            return Err(unmapped);
+        };
+        let upm = f64::from(font.units_per_em.max(1));
+        let bbox = font.glyph_bbox(gid).unwrap_or([0, 0, 0, 0]);
+        let [gl, _, gr, gt] = bbox.map(|v| f64::from(v) / upm);
+        let (advance, [tl, _, tr, tt]) = tex_prime_metrics(ctx.style.style);
+        let size = ctx.size();
+        let glyph_size = if gr > gl {
+            size * (tr - tl) / (gr - gl)
+        } else {
+            size
+        };
+        Ok(MBox {
+            kind: BoxKind::Horizontal,
+            width: advance * size,
+            height: tt * size,
+            depth: 0.0,
+            children: vec![Positioned {
+                dx: (tl + tr) / 2.0 * size - (gl + gr) / 2.0 * glyph_size,
+                dy: tt * size - gt * glyph_size,
+                node: MNode::Glyph {
+                    face,
+                    gid,
+                    ch: '′',
+                    size: glyph_size,
+                    span,
+                },
+            }],
         })
     }
 
@@ -2392,6 +2430,18 @@ const fn tex_accent_metrics(kind: AccentKind) -> (f64, [f64; 4]) {
         AccentKind::Vec => (0.5, [0.182, 0.516, 0.625, 0.714]),
         AccentKind::Ring => (0.75, [0.279, 0.541, 0.470, 0.716]),
         _ => (0.5, [0.116, 0.540, 0.383, 0.694]),
+    }
+}
+
+/// cmsy's prime character from its AFM metrics, in ems of that size's
+/// design: cmsy10 in the display and text styles, cmsy7 in script and
+/// cmsy5 in scriptscript, the sizes TeX sets. The advance, then the ink's
+/// left, bottom, right and top; the top is also the character's height.
+const fn tex_prime_metrics(style: Style) -> (f64, [f64; 4]) {
+    match style {
+        Style::Display | Style::Text => (0.275, [0.029, 0.045, 0.262, 0.559]),
+        Style::Script => (0.329, [0.048, 0.041, 0.299, 0.559]),
+        Style::ScriptScript => (0.440, [0.093, 0.038, 0.370, 0.559]),
     }
 }
 

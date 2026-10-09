@@ -1141,6 +1141,12 @@ impl Engine {
             Some(node) => Some(self.lay_node(node, ctx.map(StyleCtx::sub))?.boxx),
             None => None,
         };
+        // §756: every script box is widened by \scriptspace.
+        let widen = |mut b: MBox| {
+            b.width += c.script_space;
+            b
+        };
+        let (sup_box, sub_box) = (sup_box.map(widen), sub_box.map(widen));
         let base_w = base_laid.boxx.width;
         let mut children = vec![Positioned {
             dx: 0.0,

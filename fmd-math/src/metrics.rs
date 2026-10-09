@@ -89,6 +89,9 @@ pub struct MathConstants {
     /// TeX's `nulldelimiterspace` in ems (1.2 pt at 10 pt): the width a
     /// null delimiter (`\left.`, either side of `\frac`) occupies.
     pub null_delimiter_space: f64,
+    /// TeX's `scriptspace` in ems (0.5 pt at 10 pt): added to the width of
+    /// every sub- and superscript box (§756), whatever the style.
+    pub script_space: f64,
     /// `\baselineskip` in ems (12 pt at 10 pt): minimum baseline-to-
     /// baseline distance when stacking `\\`-separated lines.
     pub baseline_skip: f64,
@@ -140,6 +143,7 @@ pub const CM: MathConstants = MathConstants {
     delimiter_factor: 0.901,
     delimiter_shortfall: 0.5,
     null_delimiter_space: 0.12,
+    script_space: 0.05,
     baseline_skip: 1.2,
     line_skip: 0.1,
     jot: 0.3,

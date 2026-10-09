@@ -778,6 +778,26 @@ fn tex_rows_follow_align_star() {
 }
 
 #[test]
+fn script_boxes_carry_scriptspace() {
+    // §756: each sub- and superscript box is widened by \scriptspace
+    // (0.5 pt), in every style; limits are not scripts and get none.
+    let e = engine();
+    let two = e.typeset("2", Style::Script).unwrap().width;
+    for src in ["{}^2", "{}_2"] {
+        let w = e.typeset(src, Style::Display).unwrap().width;
+        assert!(
+            (w - (two + CM.script_space)).abs() < EPS,
+            "{src}: {w} vs {two}"
+        );
+    }
+    let both = e.typeset("{}^2_2", Style::Display).unwrap().width;
+    assert!((both - (two + CM.script_space)).abs() < EPS, "{both}");
+    let limits = e.typeset(r"\sum_2", Style::Display).unwrap().width;
+    let sum = e.typeset(r"\sum", Style::Display).unwrap().width;
+    assert!((limits - sum).abs() < EPS, "limits {limits} vs {sum}");
+}
+
+#[test]
 fn array_rows_carry_latex_struts() {
     // LaTeX's array (amsmath's matrices, cases): every row carries
     // \@arstrut, 0.7 and 0.3 \baselineskip times \arraystretch, and rows

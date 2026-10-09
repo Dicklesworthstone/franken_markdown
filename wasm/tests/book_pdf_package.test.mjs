@@ -8,7 +8,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const wasm = fileURLToPath(new URL('../', import.meta.url));
 const repo = dirname(wasm.replace(/[\\/]$/, ''));
 const read = path => readFileSync(path, 'utf8');
-const required = ['book_pdf_proof.mjs', 'demo/book_pdf_controls.mjs', 'BOOK_PDF_PROOF.md'];
+// The proof helpers' full relative import closure, plus their documentation.
+const required = [
+  'book_pdf_proof.mjs', 'book_session.mjs', 'book_worker.mjs', 'book_retained.mjs', 'pdf_page.mjs',
+  'demo/book_pdf_controls.mjs', 'BOOK_PDF_PROOF.md',
+];
 
 test('PDF proof runtime closure and documentation are declared in the published package', () => {
   const manifest = JSON.parse(read(join(wasm, 'package.json')));

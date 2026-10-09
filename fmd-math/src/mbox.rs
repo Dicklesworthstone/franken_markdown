@@ -103,6 +103,18 @@ pub struct PlacedPath {
     pub span: Span,
 }
 
+/// One placed primitive: its kind and its index in that kind's [`Layout`]
+/// vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Placed {
+    /// `Layout::glyphs[i]`.
+    Glyph(usize),
+    /// `Layout::rules[i]`.
+    Rule(usize),
+    /// `Layout::paths[i]`.
+    Path(usize),
+}
+
 /// The final layout of a formula: flat positioned primitives plus overall
 /// metrics. Everything is in ems of the base size, y-up, baseline at 0;
 /// `width` spans the whole formula, `height` rises above the baseline,
@@ -115,6 +127,12 @@ pub struct Layout {
     pub rules: Vec<PlacedRule>,
     /// Every drawn path, positioned.
     pub paths: Vec<PlacedPath>,
+    /// Every primitive once, in TeX's emission order: the order TeX ships
+    /// the boxes out to the page, which a DVI-to-SVG conversion (and so
+    /// manim's `Tex` submobject list) follows. A fraction is numerator,
+    /// bar, denominator; a radical degree, sign, bar, radicand; limits
+    /// upper, operator, lower.
+    pub order: Vec<Placed>,
     /// Total advance width, ems.
     pub width: f64,
     /// Extent above the baseline, ems.
@@ -227,7 +245,8 @@ impl MBox {
     }
 
     /// Flatten the box tree into a [`Layout`], accumulating offsets from
-    /// `(x, y)`.
+    /// `(x, y)`. Children are visited in order, so the builders keep each
+    /// box's children in TeX's emission order.
     pub(crate) fn flatten_into(&self, x: f64, y: f64, out: &mut Layout) {
         for child in &self.children {
             let cx = x + child.dx;
@@ -239,26 +258,32 @@ impl MBox {
                     ch,
                     size,
                     span,
-                } => out.glyphs.push(PlacedGlyph {
-                    face: *face,
-                    gid: *gid,
-                    ch: *ch,
-                    x: cx,
-                    y: cy,
-                    size: *size,
-                    span: *span,
-                }),
+                } => {
+                    out.order.push(Placed::Glyph(out.glyphs.len()));
+                    out.glyphs.push(PlacedGlyph {
+                        face: *face,
+                        gid: *gid,
+                        ch: *ch,
+                        x: cx,
+                        y: cy,
+                        size: *size,
+                        span: *span,
+                    });
+                }
                 MNode::Rule {
                     width,
                     height,
                     span,
-                } => out.rules.push(PlacedRule {
-                    x: cx,
-                    y: cy,
-                    width: *width,
-                    height: *height,
-                    span: *span,
-                }),
+                } => {
+                    out.order.push(Placed::Rule(out.rules.len()));
+                    out.rules.push(PlacedRule {
+                        x: cx,
+                        y: cy,
+                        width: *width,
+                        height: *height,
+                        span: *span,
+                    });
+                }
                 MNode::Path { contours, span } => {
                     let moved = contours
                         .iter()
@@ -279,6 +304,7 @@ impl MBox {
                                 .collect(),
                         })
                         .collect();
+                    out.order.push(Placed::Path(out.paths.len()));
                     out.paths.push(PlacedPath {
                         contours: moved,
                         span: *span,
@@ -359,6 +385,7 @@ mod tests {
         }
         .flatten_into(0.0, 0.0, &mut layout);
         assert!(layout.glyphs.is_empty());
+        assert_eq!(layout.order, vec![Placed::Rule(0), Placed::Path(0)]);
         assert_eq!(layout.rules.len(), 1);
         assert_eq!(layout.rules[0].x, 1.1);
         assert_eq!(layout.rules[0].y, 0.9);

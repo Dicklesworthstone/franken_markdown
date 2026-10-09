@@ -1,7 +1,7 @@
 layout w 1.528323 h 1.444999 d 0.944999
+path contours 1 span 0..12
 glyph face 1 gid 81 ch U+006E x 0.483400 y 0.676508 size 1.000000 span 7..8
 glyph face 1 gid 78 ch U+006B x 0.534181 y -0.685951 size 1.000000 span 10..11
-path contours 1 span 0..12
 path contours 1 span 0..12
 contour 0 start 0.566408 0.964594
   quad 0.566408 0.966547 0.570314 0.981928

@@ -15,7 +15,7 @@
 
 use crate::error::MathError;
 use crate::layout::Engine;
-use crate::mbox::{Layout, PathContour, PathSeg};
+use crate::mbox::{Layout, PathContour, PathSeg, Placed};
 use crate::node::Span;
 
 /// Resolve every primitive of a layout into closed quadratic contours, in
@@ -122,28 +122,36 @@ pub fn layout_dump(layout: &Layout) -> String {
         "layout w {:.6} h {:.6} d {:.6}",
         layout.width, layout.height, layout.depth
     );
-    for g in &layout.glyphs {
-        let _ = writeln!(
-            out,
-            "glyph face {} gid {} ch U+{:04X} x {:.6} y {:.6} size {:.6} span {}..{}",
-            g.face.0, g.gid, g.ch as u32, g.x, g.y, g.size, g.span.start, g.span.end
-        );
-    }
-    for r in &layout.rules {
-        let _ = writeln!(
-            out,
-            "rule x {:.6} y {:.6} w {:.6} h {:.6} span {}..{}",
-            r.x, r.y, r.width, r.height, r.span.start, r.span.end
-        );
-    }
-    for p in &layout.paths {
-        let _ = writeln!(
-            out,
-            "path contours {} span {}..{}",
-            p.contours.len(),
-            p.span.start,
-            p.span.end
-        );
+    // In emission order, so a golden locks the order too.
+    for placed in &layout.order {
+        match *placed {
+            Placed::Glyph(i) => {
+                let g = &layout.glyphs[i];
+                let _ = writeln!(
+                    out,
+                    "glyph face {} gid {} ch U+{:04X} x {:.6} y {:.6} size {:.6} span {}..{}",
+                    g.face.0, g.gid, g.ch as u32, g.x, g.y, g.size, g.span.start, g.span.end
+                );
+            }
+            Placed::Rule(i) => {
+                let r = &layout.rules[i];
+                let _ = writeln!(
+                    out,
+                    "rule x {:.6} y {:.6} w {:.6} h {:.6} span {}..{}",
+                    r.x, r.y, r.width, r.height, r.span.start, r.span.end
+                );
+            }
+            Placed::Path(i) => {
+                let p = &layout.paths[i];
+                let _ = writeln!(
+                    out,
+                    "path contours {} span {}..{}",
+                    p.contours.len(),
+                    p.span.start,
+                    p.span.end
+                );
+            }
+        }
     }
     out
 }

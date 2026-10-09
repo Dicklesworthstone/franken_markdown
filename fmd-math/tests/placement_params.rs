@@ -365,7 +365,8 @@ fn vdots_and_ddots_are_latex_period_constructions() {
     let vdots = e.typeset(r"\vdots", Style::Display).unwrap();
     let v = dots(&vdots);
     assert_eq!(v.len(), 3);
-    for (dot, y) in v.iter().zip([0.0, 0.4, 0.8]) {
+    // Top to bottom, as the vbox emits them.
+    for (dot, y) in v.iter().zip([0.8, 0.4, 0.0]) {
         assert!(dot.0.abs() < EPS && (dot.1 - y).abs() < EPS && (dot.2 - 1.0).abs() < EPS);
     }
     assert!((vdots.width - period.width).abs() < EPS);

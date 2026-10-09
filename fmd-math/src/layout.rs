@@ -524,7 +524,8 @@ impl Engine {
                         width: dot.width,
                         height: 0.6 + 0.8 + dot.height,
                         depth: dot.depth,
-                        children: [0.0, 0.4, 0.8]
+                        // Top to bottom, the vbox's emission order.
+                        children: [0.8, 0.4, 0.0]
                             .map(|dy| Positioned {
                                 dx: 0.0,
                                 dy,
@@ -1355,21 +1356,23 @@ impl Engine {
                 node: MNode::Box(up),
             });
         }
-        if let Some(low) = lower {
+        let lower = lower.map(|low| {
             let gap = (c.big_op_spacing2 * size).max(c.big_op_spacing4 * size - low.height);
             let dy = -(op.depth + gap + low.height);
             depth = -dy + low.depth + c.big_op_spacing5 * size;
-            children.push(Positioned {
+            Positioned {
                 dx: (width - low.width) / 2.0 - delta / 2.0,
                 dy,
                 node: MNode::Box(low),
-            });
-        }
+            }
+        });
+        // TeX's emission order: upper limit, operator, lower limit.
         children.push(Positioned {
             dx: op_dx,
             dy: 0.0,
             node: MNode::Box(op),
         });
+        children.extend(lower);
         MBox {
             kind: BoxKind::Horizontal,
             width,
@@ -1485,18 +1488,12 @@ impl Engine {
         let den_dx = (inner_width - den_box.width) / 2.0;
         let height = u + num_box.height;
         let depth = v + den_box.depth;
-        let mut children = vec![
-            Positioned {
-                dx: num_dx,
-                dy: u,
-                node: MNode::Box(num_box),
-            },
-            Positioned {
-                dx: den_dx,
-                dy: -v,
-                node: MNode::Box(den_box),
-            },
-        ];
+        // TeX's emission order: numerator, bar, denominator.
+        let mut children = vec![Positioned {
+            dx: num_dx,
+            dy: u,
+            node: MNode::Box(num_box),
+        }];
         if spec.bar {
             children.push(Positioned {
                 dx: 0.0,
@@ -1508,6 +1505,11 @@ impl Engine {
                 },
             });
         }
+        children.push(Positioned {
+            dx: den_dx,
+            dy: -v,
+            node: MNode::Box(den_box),
+        });
         let core = MBox {
             kind: BoxKind::Horizontal,
             width: inner_width,
@@ -2190,27 +2192,33 @@ impl Engine {
             (dy, inner.height + extra, inner.depth)
         };
         let inner_dx = (width - inner.width) / 2.0;
+        let band = Positioned {
+            dx: 0.0,
+            dy: band_dy,
+            node: MNode::Path {
+                contours: band.contours,
+                span,
+            },
+        };
+        let base = Positioned {
+            dx: inner_dx,
+            dy: 0.0,
+            node: MNode::Box(inner),
+        };
+        // TeX's emission order is top to bottom: the brace over its base,
+        // the base over its brace.
+        let children = if under {
+            vec![base, band]
+        } else {
+            vec![band, base]
+        };
         Ok(Laid {
             boxx: MBox {
                 kind: BoxKind::Horizontal,
                 width,
                 height,
                 depth,
-                children: vec![
-                    Positioned {
-                        dx: 0.0,
-                        dy: band_dy,
-                        node: MNode::Path {
-                            contours: band.contours,
-                            span,
-                        },
-                    },
-                    Positioned {
-                        dx: inner_dx,
-                        dy: 0.0,
-                        node: MNode::Box(inner),
-                    },
-                ],
+                children,
             },
             italic: 0.0,
             char_glyph: None,
@@ -2292,7 +2300,13 @@ impl Engine {
             width,
             height: inner.height,
             depth: -rule_y + 2.0 * theta,
+            // TeX's emission order: the base, then the rule under it.
             children: vec![
+                Positioned {
+                    dx: 0.0,
+                    dy: 0.0,
+                    node: MNode::Box(inner),
+                },
                 Positioned {
                     dx: 0.0,
                     dy: rule_y,
@@ -2301,11 +2315,6 @@ impl Engine {
                         height: theta,
                         span,
                     },
-                },
-                Positioned {
-                    dx: 0.0,
-                    dy: 0.0,
-                    node: MNode::Box(inner),
                 },
             ],
         }

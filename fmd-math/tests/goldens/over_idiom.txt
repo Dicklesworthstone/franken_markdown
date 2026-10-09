@@ -2,8 +2,8 @@ layout w 2.457394 h 1.370356 d 0.685951
 glyph face 1 gid 68 ch U+0061 x 0.120000 y 0.676508 size 1.000000 span 1..2
 glyph face 0 gid 14 ch U+002B x 0.877378 y 0.676508 size 1.000000 span 3..4
 glyph face 1 gid 69 ch U+0062 x 1.877433 y 0.676508 size 1.000000 span 5..6
-glyph face 0 gid 21 ch U+0032 x 0.978697 y -0.685951 size 1.000000 span 13..14
 rule x 0.120000 y 0.230000 w 2.217394 h 0.039999 span 1..14
+glyph face 0 gid 21 ch U+0032 x 0.978697 y -0.685951 size 1.000000 span 13..14
 contour 0 start 0.227910 0.820551
   quad 0.227910 0.929438 0.300908 1.023920
   quad 0.373906 1.118403 0.456914 1.118403

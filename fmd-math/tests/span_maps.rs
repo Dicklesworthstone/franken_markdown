@@ -182,3 +182,66 @@ fn touching_selection_serves_the_inspector() {
     assert_eq!(sel.glyphs.len(), 1);
     assert_eq!(sel.rules.len(), 1);
 }
+
+/// `Layout::order` is TeX's emission order, the order manim's `Tex`
+/// submobjects follow (franken_manim fm-aia1): one character per
+/// primitive, `R` for a rule and `P` for a drawn path. The expected orders
+/// were measured on the pinned Reference.
+#[test]
+fn primitives_follow_tex_emission_order() {
+    use fmd_math::Placed;
+    let e = engine();
+    let order = |src: &str| {
+        let layout = e.typeset(src, Style::Display).unwrap();
+        let mut seen = layout.order.clone();
+        seen.sort_by_key(|p| match *p {
+            Placed::Glyph(i) => (0, i),
+            Placed::Rule(i) => (1, i),
+            Placed::Path(i) => (2, i),
+        });
+        let every: Vec<Placed> = (0..layout.glyphs.len())
+            .map(Placed::Glyph)
+            .chain((0..layout.rules.len()).map(Placed::Rule))
+            .chain((0..layout.paths.len()).map(Placed::Path))
+            .collect();
+        assert_eq!(seen, every, "`{src}`: every primitive exactly once");
+        let text: String = layout
+            .order
+            .iter()
+            .map(|p| match *p {
+                Placed::Glyph(i) => layout.glyphs[i].ch,
+                Placed::Rule(_) => 'R',
+                Placed::Path(_) => 'P',
+            })
+            .collect();
+        (text, layout)
+    };
+    assert_eq!(order(r"\frac{1}{2}").0, "1R2");
+    assert_eq!(order(r"\sum_{n=1}^{N} n").0, "N∑n=1n");
+    assert_eq!(order(r"\overline{ab}").0, "Rab");
+    assert_eq!(order(r"\underline{ab}").0, "abR");
+    assert_eq!(order(r"\overbrace{ab}").0, "Pab");
+    assert_eq!(order(r"\underbrace{ab}").0, "abP");
+    // Degree, sign, bar, radicand; the sign is a glyph or a drawn path.
+    let (root, _) = order(r"\sqrt[3]{x}");
+    let root: Vec<char> = root.chars().collect();
+    assert_eq!((root[0], root[2], root[3]), ('3', 'R', 'x'), "{root:?}");
+    // Delimiters (glyphs or drawn paths) around their contents, cells row
+    // by row.
+    let delimited = |text: &str, inner: &str| {
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len();
+        n >= 2
+            && matches!(chars[0], '(' | 'P')
+            && matches!(chars[n - 1], ')' | 'P')
+            && chars[1..n - 1].iter().collect::<String>() == inner
+    };
+    let (matrix, _) = order(r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}");
+    assert!(delimited(&matrix, "abcd"), "{matrix}");
+    let (binom, _) = order(r"\binom{n}{k}");
+    assert!(delimited(&binom, "nk"), "{binom}");
+    // \vdots is a vbox: its top dot first.
+    let (_, vdots) = order(r"\vdots");
+    let ys: Vec<f64> = vdots.glyphs.iter().map(|g| g.y).collect();
+    assert!(ys.windows(2).all(|w| w[0] > w[1]), "{ys:?}");
+}

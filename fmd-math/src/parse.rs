@@ -50,6 +50,7 @@ pub(crate) fn parse_math_with<'s>(
 ) -> Result<Node, MathError> {
     let toks = crate::macros::expand(lex(source), macros, source.len())?;
     let mut parser = Parser::with_tokens(source, toks);
+    parser.ligatures = macros.ligatures();
     let (items, reason) = parser.math_list(Stops {
         top: true,
         ..Stops::default()
@@ -93,6 +94,7 @@ pub(crate) fn parse_text_mode_with<'s>(
 ) -> Result<Node, MathError> {
     let toks = crate::macros::expand(lex(source), macros, source.len())?;
     let mut parser = Parser::with_tokens(source, toks);
+    parser.ligatures = macros.ligatures();
     let (items, reason) = parser.text_list(false, false)?;
     match reason {
         Reason::EndOfInput => Ok(Node::new(NodeKind::List(items), Span::new(0, source.len()))),
@@ -176,6 +178,8 @@ struct Parser<'s> {
     toks: Vec<Tok<'s>>,
     pos: usize,
     depth: usize,
+    /// Text mode sets TeX's font ligatures (`MacroSet::ligatures`).
+    ligatures: bool,
 }
 
 impl<'s> Parser<'s> {
@@ -186,6 +190,7 @@ impl<'s> Parser<'s> {
             toks,
             pos: 0,
             depth: 0,
+            ligatures: true,
         }
     }
 
@@ -961,7 +966,8 @@ impl<'s> Parser<'s> {
             }
             TokKind::Char(c) => {
                 self.pos += 1;
-                let (text, char_spans) = text_ligatures(&c.to_string(), &[tok.span]);
+                let (text, char_spans) =
+                    text_ligatures(&c.to_string(), &[tok.span], self.ligatures);
                 Ok((
                     vec![Node::new(NodeKind::TextRun { text, char_spans }, tok.span)],
                     tok.span,
@@ -1443,12 +1449,12 @@ impl<'s> Parser<'s> {
                 }
                 TokKind::Tie => {
                     self.pos += 1;
-                    flush_run(&mut items, &mut run, &mut run_spans);
+                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     items.push(Node::new(NodeKind::Tie, tok.span));
                 }
                 TokKind::MathShift => {
                     self.pos += 1;
-                    flush_run(&mut items, &mut run, &mut run_spans);
+                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     // An immediately adjacent second '$' opens display
                     // mathematics ($$…$$).
                     let display = matches!(self.peek().map(|t| t.kind), Some(TokKind::MathShift));
@@ -1506,7 +1512,7 @@ impl<'s> Parser<'s> {
                     // A group does not change mode: it begins mid-line
                     // exactly when its surroundings have.
                     let inner_started = !run.is_empty() || line_begun(&items, started);
-                    flush_run(&mut items, &mut run, &mut run_spans);
+                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     let (body, reason) =
                         self.descend(tok.span.start, |p| p.text_list(false, inner_started))?;
                     match reason {
@@ -1524,7 +1530,7 @@ impl<'s> Parser<'s> {
                 }
                 TokKind::EndGroup => {
                     self.pos += 1;
-                    flush_run(&mut items, &mut run, &mut run_spans);
+                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     break Reason::EndGroup(tok.span);
                 }
                 TokKind::AlignTab => {
@@ -1538,7 +1544,7 @@ impl<'s> Parser<'s> {
                     // LaTeX recovers by inserting the missing '$'; keep the
                     // behavior as an explicit implicit island with an empty
                     // script base.
-                    flush_run(&mut items, &mut run, &mut run_spans);
+                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     let mut cluster: Vec<Node> = Vec::new();
                     self.script_cluster(&mut cluster)?;
                     if let Some(node) = cluster.pop() {
@@ -1591,7 +1597,7 @@ impl<'s> Parser<'s> {
                         run.pop();
                         run_spans.pop();
                     }
-                    flush_run(&mut items, &mut run, &mut run_spans);
+                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     match c {
                         '\\' => {
                             if env {
@@ -1620,7 +1626,7 @@ impl<'s> Parser<'s> {
                     }
                 }
                 TokKind::ControlWord(name) => {
-                    flush_run(&mut items, &mut run, &mut run_spans);
+                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     if env && name == "end" {
                         self.pos += 1;
                         let (env_name, _) = self.raw_group("environment name after \\end")?;
@@ -1634,7 +1640,7 @@ impl<'s> Parser<'s> {
                 }
             }
         };
-        flush_run(&mut items, &mut run, &mut run_spans);
+        flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
         Ok((items, reason))
     }
 
@@ -1788,12 +1794,13 @@ fn line_begun(items: &[Node], started: bool) -> bool {
         || (started && !items.iter().any(breaks))
 }
 
-fn flush_run(items: &mut Vec<Node>, run: &mut String, run_spans: &mut Vec<Span>) {
+fn flush_run(items: &mut Vec<Node>, run: &mut String, run_spans: &mut Vec<Span>, ligatures: bool) {
     if run.is_empty() {
         run_spans.clear();
         return;
     }
-    let (text, char_spans) = text_ligatures(&std::mem::take(run), &std::mem::take(run_spans));
+    let (text, char_spans) =
+        text_ligatures(&std::mem::take(run), &std::mem::take(run_spans), ligatures);
     let span = match (char_spans.first(), char_spans.last()) {
         (Some(first), Some(last)) => first.union(*last),
         _ => Span::new(0, 0),
@@ -1801,19 +1808,23 @@ fn flush_run(items: &mut Vec<Node>, run: &mut String, run_spans: &mut Vec<Span>)
     items.push(Node::new(NodeKind::TextRun { text, char_spans }, span));
 }
 
-/// TeX's text-font ligatures, as in cmr10's ligature table (franken_manim
-/// fm-5wq.56): `` ` `` and `'` set as the curly quotes, doubled they set as
-/// the double quotes, and `--` and `---` set as the en and em dashes. Math
-/// mode never reaches this, so a math `'` stays a prime. Each produced
+/// TeX's text-font characters for `` ` `` and `'`, the curly quotes
+/// (franken_manim fm-5wq.56), and with `ligatures` the font's ligatures as
+/// in cmr10's table: doubled quotes set as the double quotes, and `--` and
+/// `---` as the en and em dashes. Without them (microtype's
+/// `\DisableLigatures`, as in the Reference's template) `` `` `` is two
+/// left quotes and `--` two hyphens (franken_manim fm-aia1). Math mode
+/// never reaches this, so a math `'` stays a prime. Each produced
 /// character spans the union of the source characters it replaced, which
 /// keeps one span per character.
-fn text_ligatures(run: &str, spans: &[Span]) -> (String, Vec<Span>) {
+fn text_ligatures(run: &str, spans: &[Span], ligatures: bool) -> (String, Vec<Span>) {
     let chars: Vec<char> = run.chars().collect();
     let mut text = String::with_capacity(run.len());
     let mut out_spans = Vec::with_capacity(spans.len());
     let mut i = 0;
     while i < chars.len() {
-        let (ch, width) = match (chars[i], chars.get(i + 1), chars.get(i + 2)) {
+        let next = |k: usize| chars.get(i + k).copied().filter(|_| ligatures);
+        let (ch, width) = match (chars[i], next(1), next(2)) {
             ('-', Some('-'), Some('-')) => ('\u{2014}', 3),
             ('-', Some('-'), _) => ('\u{2013}', 2),
             ('`', Some('`'), _) => ('\u{201C}', 2),

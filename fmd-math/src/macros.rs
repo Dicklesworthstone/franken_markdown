@@ -60,6 +60,10 @@ const EXPANSION_DEPTH_BUDGET: usize = 32;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MacroSet {
     defs: BTreeMap<String, MacroDef>,
+    /// microtype's `\DisableLigatures`: text mode then sets `` `` ``,
+    /// `''`, `--` and `---` as the characters they are made of, not as
+    /// the font's ligatures (curly double quotes, en and em dashes).
+    disable_ligatures: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,11 +91,13 @@ impl MacroSet {
         match id {
             "fmd-math/pack/default" | "default" => {
                 // The Reference's default template declares `\minus`, a
-                // binary-minus shorthand (its one real macro; the rest of
-                // its preamble is package loading with no native meaning).
-                // Built directly — the definition is static and trivially
-                // valid (the tests define the same macro through the
-                // validating path).
+                // binary-minus shorthand (its one real macro), and ends
+                // with microtype's `\DisableLigatures{encoding = *,
+                // family = *}`, which text mode honors (franken_manim
+                // fm-aia1). The rest of its preamble is package loading
+                // with no native meaning. Built directly — the definition
+                // is static and trivially valid (the tests define the same
+                // macro through the validating path).
                 let mut defs = BTreeMap::new();
                 defs.insert(
                     "minus".to_owned(),
@@ -100,7 +106,10 @@ impl MacroSet {
                         body: "-".to_owned(),
                     },
                 );
-                Some(Self { defs })
+                Some(Self {
+                    defs,
+                    disable_ligatures: true,
+                })
             }
             "fmd-math/pack/basic" | "basic" | "fmd-math/pack/empty" | "empty" => Some(Self::new()),
             _ => None,
@@ -162,6 +171,8 @@ impl MacroSet {
     /// sorted order (US/RS are the ASCII unit/record separators, which
     /// cannot appear in names and are vanishingly unlikely in bodies; the
     /// version tag changes if this framing ever does).
+    /// A set with ligatures disabled ends with one more record, a group
+    /// separator then `ligatures-off`.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = b"fmd-math-macroset-v1\x1e".to_vec();
@@ -173,7 +184,18 @@ impl MacroSet {
             out.extend_from_slice(def.body.as_bytes());
             out.push(0x1e);
         }
+        if self.disable_ligatures {
+            out.extend_from_slice(b"\x1dligatures-off\x1e");
+        }
         out
+    }
+
+    /// Whether text mode sets TeX's font ligatures (`` `` `` and `''` as
+    /// curly double quotes, `--` and `---` as dashes). The default pack
+    /// disables them, as the Reference's template does.
+    #[must_use]
+    pub fn ligatures(&self) -> bool {
+        !self.disable_ligatures
     }
 }
 

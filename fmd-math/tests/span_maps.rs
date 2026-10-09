@@ -245,3 +245,35 @@ fn primitives_follow_tex_emission_order() {
     let ys: Vec<f64> = vdots.glyphs.iter().map(|g| g.y).collect();
     assert!(ys.windows(2).all(|w| w[0] > w[1]), "{ys:?}");
 }
+
+/// The default pack carries the Reference template's microtype
+/// `\DisableLigatures` (franken_manim fm-aia1): text mode sets `` `` `` as
+/// two left quotes and `--` as two hyphens, as the Reference's TexText does
+/// (`` ``Pairs'' `` is nine glyphs there). Without a pack, TeX's font
+/// ligatures apply. Single quotes are the font's curly quotes either way.
+#[test]
+fn text_ligatures_follow_the_preamble() {
+    use fmd_math::MacroSet;
+    let e = engine();
+    let chars = |src: &str, macros: &MacroSet| -> String {
+        let layout = e.typeset_text_with_macros(src, macros).unwrap();
+        layout.glyphs.iter().map(|g| g.ch).collect()
+    };
+    let pack = MacroSet::pack("fmd-math/pack/default").unwrap();
+    assert!(!pack.ligatures());
+    assert_eq!(
+        chars("``Pairs''", &pack),
+        "\u{2018}\u{2018}Pairs\u{2019}\u{2019}"
+    );
+    assert_eq!(chars("a--b---c", &pack), "a--b---c");
+    assert_eq!(chars("can't", &pack), "can\u{2019}t");
+    let plain = MacroSet::new();
+    assert!(plain.ligatures());
+    assert_eq!(chars("``Pairs''", &plain), "\u{201C}Pairs\u{201D}");
+    assert_eq!(chars("a--b---c", &plain), "a\u{2013}b\u{2014}c");
+    assert_ne!(pack.canonical_bytes(), {
+        let mut same_defs = MacroSet::new();
+        same_defs.define("minus", 0, "-").unwrap();
+        same_defs.canonical_bytes()
+    });
+}

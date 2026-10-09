@@ -495,6 +495,58 @@ impl Engine {
                     char_glyph: None,
                 })
             }
+            // LaTeX's `\vdots` is `\vbox{\baselineskip4\p@ \lineskiplimit\z@
+            // \kern6\p@\hbox{.}\hbox{.}\hbox{.}}`: three text periods on 4 pt
+            // baselines, the lowest on the baseline, under a 6 pt kern
+            // (1.51 em tall in all). Points and \hbox do not scale with the
+            // math style. The single ⋮ glyph is half that tall, its dots
+            // closer.
+            NodeKind::Symbol { ch: '⋮', .. } => {
+                let dot = self.text_period(node.span, ctx)?;
+                Ok(Laid {
+                    boxx: MBox {
+                        kind: BoxKind::Horizontal,
+                        width: dot.width,
+                        height: 0.6 + 0.8 + dot.height,
+                        depth: dot.depth,
+                        children: [0.0, 0.4, 0.8]
+                            .map(|dy| Positioned {
+                                dx: 0.0,
+                                dy,
+                                node: MNode::Box(dot.clone()),
+                            })
+                            .into(),
+                    },
+                    italic: 0.0,
+                    char_glyph: None,
+                })
+            }
+            // LaTeX's `\ddots` is `\mathinner{\mkern1mu\raise7\p@\vbox{\kern7\p@
+            // \hbox{.}}\mkern2mu\raise4\p@\hbox{.}\mkern2mu\raise\p@\hbox{.}
+            // \mkern1mu}`: text periods raised 7, 4 and 1 pt, the highest
+            // under a 7 pt kern, so the box is as tall as `\vdots`.
+            NodeKind::Symbol { ch: '⋱', .. } => {
+                let dot = self.text_period(node.span, ctx)?;
+                let mu = ctx.size() / 18.0;
+                let children: Vec<Positioned<MNode>> = [(0.0, 0.7), (1.0, 0.4), (2.0, 0.1)]
+                    .map(|(i, dy)| Positioned {
+                        dx: mu + i * (dot.width + 2.0 * mu),
+                        dy,
+                        node: MNode::Box(dot.clone()),
+                    })
+                    .into();
+                Ok(Laid {
+                    boxx: MBox {
+                        kind: BoxKind::Horizontal,
+                        width: 3.0 * dot.width + 6.0 * mu,
+                        height: 0.7 + 0.7 + dot.height,
+                        depth: (dot.depth - 0.1).max(0.0),
+                        children,
+                    },
+                    italic: 0.0,
+                    char_glyph: None,
+                })
+            }
             NodeKind::Symbol { ch, .. } => self.char_atom(*ch, node.span, ctx),
             NodeKind::BigOp { ch, integral, .. } => {
                 let scale = match (ctx.style.style == Style::Display, *integral) {
@@ -774,6 +826,18 @@ impl Engine {
             Some((face, gid)) => Ok((face, gid, mapped)),
             None => Err(MathError::UnmappedChar { ch: mapped, span }),
         }
+    }
+
+    /// LaTeX's `\hbox{.}`: a period of the text face at the size in force,
+    /// which the math style does not scale.
+    fn text_period(&self, span: Span, ctx: LayCtx) -> Result<MBox, MathError> {
+        let text = LayCtx {
+            style: StyleCtx::new(Style::Text),
+            alphabet: None,
+            text_mode: true,
+            ..ctx
+        };
+        Ok(self.char_atom('.', span, text)?.boxx)
     }
 
     /// A single-character atom.
@@ -1344,17 +1408,17 @@ impl Engine {
             depth,
             children,
         };
-        let boxx = if let Some((l, r)) = spec.delims {
-            // Rule 15e: wrap in delimiters of the style-fixed size.
-            let target = if display { c.delim1 } else { c.delim2 } * size;
-            let left = self.delimiter_box(&Delim { ch: Some(l), span }, target, eff)?;
-            let right = self.delimiter_box(&Delim { ch: Some(r), span }, target, eff)?;
-            hcat(vec![left, core, right])
-        } else {
-            core
-        };
+        // Rule 15e: wrap in delimiters of the style-fixed size. A fraction
+        // without delimiters (\frac, \over) is wrapped in null delimiters,
+        // `\nulldelimiterspace` on each side, as TeX's var_delimiter has it.
+        let target = if display { c.delim1 } else { c.delim2 } * size;
+        let (l, r) = spec
+            .delims
+            .map_or((None, None), |(l, r)| (Some(l), Some(r)));
+        let left = self.delimiter_box(&Delim { ch: l, span }, target, eff)?;
+        let right = self.delimiter_box(&Delim { ch: r, span }, target, eff)?;
         Ok(Laid {
-            boxx,
+            boxx: hcat(vec![left, core, right]),
             italic: 0.0,
             char_glyph: None,
         })

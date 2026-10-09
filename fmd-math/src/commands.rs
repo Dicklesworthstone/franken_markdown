@@ -254,9 +254,9 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "vert" => delim_sym('|', Ord),
         "Vert" => delim_sym('‖', Ord),
         // Dots. `\ldots`-class dots are Inner atoms in TeX (\mathinner);
-        // `\vdots` is a plain Ord box.
-        "ldots" | "dots" | "dotsc" | "dotso" => sym('…', Inner),
-        "cdots" | "dotsb" | "hdots" => sym('⋯', Inner),
+        // `\vdots` is a plain Ord box. LaTeX's `\hdots` is `\ldots`.
+        "ldots" | "dots" | "dotsc" | "dotso" | "hdots" => sym('…', Inner),
+        "cdots" | "dotsb" => sym('⋯', Inner),
         "vdots" => sym('⋮', Ord),
         "ddots" => sym('⋱', Inner),
         // ── Binary operations ───────────────────────────────────────────

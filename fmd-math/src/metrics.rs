@@ -87,7 +87,7 @@ pub struct MathConstants {
     /// may fall short of full coverage by at most this much.
     pub delimiter_shortfall: f64,
     /// TeX's `nulldelimiterspace` in ems (1.2 pt at 10 pt): the width a
-    /// null delimiter (`\left.`) occupies.
+    /// null delimiter (`\left.`, either side of `\frac`) occupies.
     pub null_delimiter_space: f64,
     /// `\baselineskip` in ems (12 pt at 10 pt): minimum baseline-to-
     /// baseline distance when stacking `\\`-separated lines.

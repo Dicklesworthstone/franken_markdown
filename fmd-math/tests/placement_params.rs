@@ -329,6 +329,70 @@ fn null_delimiter_occupies_nulldelimiterspace() {
 }
 
 #[test]
+fn fractions_without_delimiters_carry_null_delimiters() {
+    // Rule 15e: TeX wraps every generalized fraction in its delimiters, and
+    // \frac's are null: \nulldelimiterspace each side of the bar.
+    let e = engine();
+    let frac = e.typeset(r"\frac{a}{b}", Style::Display).unwrap();
+    let bar = &frac.rules[0];
+    assert!((bar.x - CM.null_delimiter_space).abs() < EPS, "{bar:?}");
+    assert!((frac.width - (bar.width + 2.0 * CM.null_delimiter_space)).abs() < EPS);
+    // An empty `\over` is the bare null fraction: TeX's 2.4 pt box at the
+    // num1 and denom1 shifts.
+    let over = e.typeset(r"\over", Style::Display).unwrap();
+    assert!((over.width - 2.0 * CM.null_delimiter_space).abs() < EPS);
+    assert!((over.height - CM.num1).abs() < EPS && (over.depth - CM.denom1).abs() < EPS);
+}
+
+#[test]
+fn vdots_and_ddots_are_latex_period_constructions() {
+    // LaTeX: \vdots stacks three text periods on 4 pt baselines under a 6 pt
+    // kern; \ddots raises them 7, 4 and 1 pt between 1-2-2-1 mu kerns, the
+    // highest under a 7 pt kern. Points and \hbox{.} keep their size in
+    // scripts.
+    let e = engine();
+    let period = e.typeset(r"\text{.}", Style::Display).unwrap();
+    let dots = |layout: &Layout| -> Vec<(f64, f64, f64)> {
+        layout
+            .glyphs
+            .iter()
+            .map(|g| {
+                assert_eq!(g.ch, '.', "{layout:?}");
+                (g.x, g.y, g.size)
+            })
+            .collect()
+    };
+    let vdots = e.typeset(r"\vdots", Style::Display).unwrap();
+    let v = dots(&vdots);
+    assert_eq!(v.len(), 3);
+    for (dot, y) in v.iter().zip([0.0, 0.4, 0.8]) {
+        assert!(dot.0.abs() < EPS && (dot.1 - y).abs() < EPS && (dot.2 - 1.0).abs() < EPS);
+    }
+    assert!((vdots.width - period.width).abs() < EPS);
+    assert!((vdots.height - (1.4 + period.height)).abs() < EPS);
+    let scripted = e.typeset(r"x_{\vdots}", Style::Display).unwrap();
+    assert!(
+        scripted
+            .glyphs
+            .iter()
+            .filter(|g| g.ch == '.')
+            .all(|g| (g.size - 1.0).abs() < EPS),
+        "{scripted:?}"
+    );
+
+    let ddots = e.typeset(r"\ddots", Style::Display).unwrap();
+    let d = dots(&ddots);
+    let mu = 1.0 / 18.0;
+    assert_eq!(d.len(), 3);
+    for (i, (dot, y)) in d.iter().zip([0.7, 0.4, 0.1]).enumerate() {
+        let x = mu + f64::from(u8::try_from(i).unwrap()) * (period.width + 2.0 * mu);
+        assert!((dot.0 - x).abs() < EPS && (dot.1 - y).abs() < EPS, "{d:?}");
+    }
+    assert!((ddots.width - (3.0 * period.width + 6.0 * mu)).abs() < EPS);
+    assert!((ddots.height - (1.4 + period.height)).abs() < EPS);
+}
+
+#[test]
 fn spacing_glue_matches_the_table() {
     let e = engine();
     // a+b: 4mu medium spaces around Bin in text/display.
@@ -609,7 +673,7 @@ fn ellipses_are_three_thin_spaced_punctuation_dots() {
     // the same with `\ldotp`. Punct-punct glue is a thin space (3 mu) in
     // display and text styles and nothing in script styles.
     let e = engine();
-    for (command, dot) in [(r"\cdots", '⋅'), (r"\ldots", '.')] {
+    for (command, dot) in [(r"\cdots", '⋅'), (r"\ldots", '.'), (r"\hdots", '.')] {
         let xs = |layout: &Layout| -> Vec<f64> {
             layout
                 .glyphs

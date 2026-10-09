@@ -32,8 +32,12 @@ always uses endnotes, and the book pipeline keeps its endnote layout.
 
 ## Limits
 
-- `--pdf-optimal-pagination` does not model note space; documents with page
-  notes keep the greedy page breaks.
+- Under `--pdf-optimal-pagination` the exact page planner reserves each
+  note's space with the line citing it, charging the separator once per citing
+  line, so planned pages never under-reserve but can leave a little extra room
+  when one page carries several notes. If the exact planner cannot plan a
+  document, it paginates greedily (the legacy fallback planner does not model
+  note space).
 - Notes are not split across pages. A line whose notes together exceed the
   page body (several near-limit notes on one line) still places them all, and
   they can run into the bottom margin.
@@ -42,6 +46,6 @@ always uses endnotes, and the book pipeline keeps its endnote layout.
 
 `tests/pdf_page_footnotes_test.rs` pins placement (every note on its
 reference's page, below the body, smaller than body text), linking without
-bookmarks, the endnote fallbacks, emitter determinism and the optimal
-pagination fallback. `tests/pdf_footnote_fidelity_test.rs` proves no note
+bookmarks, the endnote fallbacks, emitter determinism and placement under
+optimal pagination. `tests/pdf_footnote_fidelity_test.rs` proves no note
 block is discarded on any PDF entrypoint.

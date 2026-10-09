@@ -46,8 +46,19 @@ fn locate(report: &VerifyReport, needle: &str) -> (usize, f32, f32) {
 
 #[test]
 fn each_note_sits_below_the_body_of_the_page_with_its_reference() {
-    let opts = PdfOptions::default();
-    let report = report(&long_document(), &opts);
+    assert_notes_follow_their_references(&PdfOptions::default());
+}
+
+#[test]
+fn optimal_pagination_reserves_note_space_with_the_citing_line() {
+    assert_notes_follow_their_references(&PdfOptions {
+        optimal_pagination: true,
+        ..PdfOptions::default()
+    });
+}
+
+fn assert_notes_follow_their_references(opts: &PdfOptions) {
+    let report = report(&long_document(), opts);
     assert!(report.page_count > 3, "the fixture must really paginate");
     for index in 0..40 {
         let (note_page, note_y, note_size) = locate(&report, &format!("NOTE{index} "));
@@ -140,7 +151,7 @@ fn unreferenced_and_oversized_notes_keep_the_trailing_notes_section() {
 }
 
 #[test]
-fn page_notes_are_deterministic_across_emitters_and_optimal_pagination() {
+fn page_notes_are_deterministic_across_emitters() {
     let doc = parse_markdown(&long_document());
     let opts = PdfOptions::default();
     let monolithic = render_pdf_document(&doc, &opts).unwrap();
@@ -149,13 +160,16 @@ fn page_notes_are_deterministic_across_emitters_and_optimal_pagination() {
         render_pdf_document_emitted(&doc, &opts, PdfEmitOptions::default()).unwrap(),
         monolithic
     );
-    // The page planners do not model note space, so optimal pagination keeps
-    // the greedy breaks for documents with page notes.
     let optimal = PdfOptions {
         optimal_pagination: true,
         ..PdfOptions::default()
     };
-    assert_eq!(render_pdf_document(&doc, &optimal).unwrap(), monolithic);
+    let planned = render_pdf_document(&doc, &optimal).unwrap();
+    assert_eq!(render_pdf_document(&doc, &optimal).unwrap(), planned);
+    assert_eq!(
+        render_pdf_document_emitted(&doc, &optimal, PdfEmitOptions::default()).unwrap(),
+        planned
+    );
 }
 
 #[test]

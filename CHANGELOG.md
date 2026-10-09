@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   links to its note (docs/PDF_FOOTNOTES.md). Unreferenced notes and notes
   taller than 40% of a page keep the trailing Notes section; hosts that want
   endnotes render `doc.with_endnotes()`. `fmd verify` counts note marks as
-  resolved anchors. Documents with page notes keep greedy page breaks under
-  `--pdf-optimal-pagination`.
+  resolved anchors. `--pdf-optimal-pagination` reserves each note's space
+  with the line citing it in the exact page planner.
 - Native config keys for render defaults: `lang`, `toc`, `toc_depth`,
   `font_scale`, `html_font_format`, `microtype`, `pdf_page_numbers`,
   `pdf_optimal_pagination` and the three `typography_*` switches. Flags win,

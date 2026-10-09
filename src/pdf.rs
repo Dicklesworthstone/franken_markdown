@@ -21604,6 +21604,22 @@ impl PageNotes {
         &self.first_refs[from..to]
     }
 
+    /// Foot space body line `line` introduces: its first-cited notes plus the
+    /// separator (charged per citing line, so planning never under-reserves).
+    fn line_reserve(&self, lines: &[Line], line: usize) -> f32 {
+        let notes = self.notes_in(line, line + 1);
+        if notes.is_empty() {
+            return 0.0;
+        }
+        let height = |line: &Line| line_leading(line) + line.gap_after;
+        height(&lines[self.separator])
+            + notes
+                .iter()
+                .flat_map(|(_, range)| &lines[range.clone()])
+                .map(height)
+                .sum::<f32>()
+    }
+
     /// Height the foot of a page holding body lines `[start, end)` needs.
     fn reserve(&self, lines: &[Line], start: usize, end: usize) -> f32 {
         let notes = self.notes_in(start, end);
@@ -21641,10 +21657,21 @@ fn next_placed_page_with_notes<'a>(
     start: &mut usize,
     page: PageGeom,
     emitted_any: &mut bool,
+    plan: Option<&PageBreakPlan>,
 ) -> Option<Vec<Placed<'a>>> {
     let body = &lines[..notes.body_end];
     if *start >= body.len() {
         return None;
+    }
+    if let Some(plan) = plan {
+        // The planner already charged each page's note space.
+        let end = plan.end_for(*start);
+        let geom = page.with_foot_reserve(notes.reserve(lines, *start, end));
+        let mut placed = place_lines_shrunk(body, *start, end, geom, None);
+        place_page_notes(&mut placed, lines, notes, *start, end, page);
+        *start = end;
+        *emitted_any = true;
+        return Some(placed);
     }
     // A reserve is feasible when the lines chosen for it need no more. The
     // search raises an infeasible reserve to the need it measured and lowers a
@@ -21676,23 +21703,37 @@ fn next_placed_page_with_notes<'a>(
         (end, None, page.with_foot_reserve(reserve))
     });
     let mut placed = place_lines_shrunk(body, *start, end, geom, shrink_from);
-    let foot = notes.notes_in(*start, end);
-    if !foot.is_empty() {
-        let mut y = page.bottom + notes.reserve(lines, *start, end);
-        let region = std::iter::once(&lines[notes.separator])
-            .chain(foot.iter().flat_map(|(_, range)| &lines[range.clone()]));
-        for line in region {
-            y -= line_leading(line);
-            placed.push(Placed {
-                line,
-                y: y + inline_math_extents(line).1,
-            });
-            y -= line.gap_after;
-        }
-    }
+    place_page_notes(&mut placed, lines, notes, *start, end, page);
     *start = end;
     *emitted_any = true;
     Some(placed)
+}
+
+/// Appends the separator and the notes first cited by body lines
+/// `[start, end)` at the foot of `page`.
+fn place_page_notes<'a>(
+    placed: &mut Vec<Placed<'a>>,
+    lines: &'a [Line],
+    notes: &PageNotes,
+    start: usize,
+    end: usize,
+    page: PageGeom,
+) {
+    let foot = notes.notes_in(start, end);
+    if foot.is_empty() {
+        return;
+    }
+    let mut y = page.bottom + notes.reserve(lines, start, end);
+    let region = std::iter::once(&lines[notes.separator])
+        .chain(foot.iter().flat_map(|(_, range)| &lines[range.clone()]));
+    for line in region {
+        y -= line_leading(line);
+        placed.push(Placed {
+            line,
+            y: y + inline_math_extents(line).1,
+        });
+        y -= line.gap_after;
+    }
 }
 
 fn next_placed_page<'a>(
@@ -21704,7 +21745,7 @@ fn next_placed_page<'a>(
     notes: Option<&PageNotes>,
 ) -> Option<Vec<Placed<'a>>> {
     if let Some(notes) = notes {
-        return next_placed_page_with_notes(lines, notes, start, page, emitted_any);
+        return next_placed_page_with_notes(lines, notes, start, page, emitted_any, plan);
     }
     if lines.is_empty() {
         if *emitted_any {
@@ -28757,10 +28798,18 @@ fn page_break_plan_for_options(
     page: PageGeom,
     opts: &PdfOptions,
 ) -> Option<PageBreakPlan> {
-    // The page planners do not model note reserves; documents with
-    // page-bottom notes paginate greedily (docs/PDF_FOOTNOTES.md).
-    (opts.optimal_pagination && PageNotes::scan(lines).is_none())
-        .then(|| optimal_page_breaks(lines, page))
+    if !opts.optimal_pagination {
+        return None;
+    }
+    match PageNotes::scan(lines) {
+        None => Some(optimal_page_breaks(lines, page)),
+        // Page notes: the exact planner reserves each note's foot space with
+        // the line citing it. The legacy fallback DP does not model note
+        // space, so a document it would be needed for paginates greedily.
+        Some(notes) => exact_height_page_breaks_reserving(&lines[..notes.body_end], page, |line| {
+            notes.line_reserve(lines, line)
+        }),
+    }
 }
 
 fn paginate_lines_for_options<'a>(
@@ -28989,6 +29038,16 @@ fn pdf_table_continuation_prefix(lines: &[Line], start: usize, end: usize) -> La
 }
 
 fn exact_height_page_breaks(lines: &[Line], page: PageGeom) -> Option<PageBreakPlan> {
+    exact_height_page_breaks_reserving(lines, page, |_| 0.0)
+}
+
+/// [`exact_height_page_breaks`] with `reserve(line)` points of page-foot
+/// material (footnote bodies) introduced by each line.
+fn exact_height_page_breaks_reserving(
+    lines: &[Line],
+    page: PageGeom,
+    reserve: impl Fn(usize) -> f32,
+) -> Option<PageBreakPlan> {
     use crate::pagination::height::{
         BlockCandidates, BlockPolicy, BlockVariant, HeightPaginationOptions, plan_blocks,
     };
@@ -29012,6 +29071,12 @@ fn exact_height_page_breaks(lines: &[Line], page: PageGeom) -> Option<PageBreakP
             let points = (line_leading(line) + line.gap_after).max(0.001);
             fragment_heights.push(lu_from_points_f32(points));
         }
+        let reservations: Vec<f32> = (start..end).map(&reserve).collect();
+        let fragment_reservations = if reservations.iter().all(|&points| points == 0.0) {
+            Vec::new()
+        } else {
+            reservations.into_iter().map(lu_from_points_f32).collect()
+        };
 
         let mut split_costs = Vec::with_capacity(end.saturating_sub(start + 1));
         for candidate in (start + 1)..end {
@@ -29027,7 +29092,7 @@ fn exact_height_page_breaks(lines: &[Line], page: PageGeom) -> Option<PageBreakP
                 demerits: 0,
                 fragment_heights,
                 continuation_prefix: pdf_table_continuation_prefix(lines, start, end),
-                fragment_reservations: Vec::new(),
+                fragment_reservations,
                 split_costs,
             }],
         });

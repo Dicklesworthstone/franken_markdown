@@ -778,6 +778,40 @@ fn tex_rows_follow_align_star() {
 }
 
 #[test]
+fn accents_take_tex_accent_geometry() {
+    // Rule 12 with plain TeX's accent characters (cmr10's, cmmi10's vector):
+    // the accent ink sits where TeX's does, whichever face supplies it.
+    let e = engine();
+    let one = e.typeset("1", Style::Display).unwrap();
+    let accent = |layout: &Layout, base: char| {
+        layout
+            .glyphs
+            .iter()
+            .find(|g| g.ch != base)
+            .cloned()
+            .unwrap_or_else(|| panic!("an accent glyph in {layout:?}"))
+    };
+    // `\vec` draws a 0.44 em arrow above the letter, topping out at cmmi10's
+    // 0.714 em, not a full-size arrow through it.
+    let vec = e.typeset(r"\vec{v}", Style::Display).unwrap();
+    let arrow = accent(&vec, 'v');
+    assert!(arrow.size > 0.4 && arrow.size < 0.6, "{arrow:?}");
+    assert!((vec.height - 0.714).abs() < 0.02, "{vec:?}");
+    // `\hat` is CM's own circumflex (cmr10's), topping out 0.694 em above
+    // its box, which rises by h - min(h, x-height): barely over an x-height
+    // letter, by 0.25 em over `A`. (CM Unicode's circumflex is 0.013 em
+    // taller than cmr10's.)
+    let hat = e.typeset(r"\hat{x}", Style::Display).unwrap();
+    assert_eq!(accent(&hat, 'x').face, one.glyphs[0].face);
+    for (base, accented) in [("x", r"\hat{x}"), ("A", r"\hat{A}")] {
+        let h = e.typeset(base, Style::Display).unwrap().height;
+        let laid = e.typeset(accented, Style::Display).unwrap().height;
+        let tex = h - h.min(CM.x_height) + 0.694;
+        assert!((laid - tex).abs() < 0.02, "{accented}: {laid} vs {tex}");
+    }
+}
+
+#[test]
 fn a_trailing_row_break_opens_no_empty_math_row() {
     // align* ends its last row at \crcr: `= x + \\` is one row, like `= x +`.
     // A TexText paragraph's trailing \\ still sets an empty line.

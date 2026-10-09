@@ -1728,11 +1728,19 @@ impl Engine {
             _ => {
                 let base_laid = self.lay_node(base, ctx.map(StyleCtx::cramp))?;
                 let combining = accent_char(kind);
-                let resolved = self
-                    .faces
-                    .resolve(combining, &[FACE_REGULAR, FACE_ITALIC, FACE_SYMBOLS])
+                // CM Unicode's spacing accents are cmr's own designs, so
+                // they come first; a combining mark from another face only
+                // where CM has none (the vector arrow).
+                let spacing = accent_spacing_fallback(combining);
+                let resolved = spacing
+                    .and_then(|alt| self.faces.resolve(alt, &[FACE_REGULAR]))
+                    .filter(|&(face, _)| face == FACE_REGULAR)
                     .or_else(|| {
-                        accent_spacing_fallback(combining)
+                        self.faces
+                            .resolve(combining, &[FACE_REGULAR, FACE_ITALIC, FACE_SYMBOLS])
+                    })
+                    .or_else(|| {
+                        spacing
                             .and_then(|alt| self.faces.resolve(alt, &[FACE_REGULAR, FACE_SYMBOLS]))
                     });
                 let Some((face, gid)) = resolved else {
@@ -1749,15 +1757,24 @@ impl Engine {
                 };
                 let upm = f64::from(font.units_per_em.max(1));
                 let bbox = font.glyph_bbox(gid).unwrap_or([0, 0, 0, 0]);
-                let ink_left = f64::from(bbox[0]) / upm * size;
-                let ink_right = f64::from(bbox[2]) / upm * size;
-                let ink_top = f64::from(bbox[3]) / upm * size;
-                let ink_bottom = f64::from(bbox[1]) / upm * size;
-                // Rule 12: raise by the base's height over x-height; center
-                // ink over the base, skewed by half the italic correction.
-                let dy = base_laid.boxx.height - c.x_height * size;
+                let [gl, gb, gr, _] = bbox.map(|v| f64::from(v) / upm);
+                // Rule 12 with TeX's accent character: its box (the
+                // advance) is centered over the base, skewed by half the
+                // italic correction, its baseline at h(x) - min(h(x),
+                // x-height). The glyph is scaled to that character's ink
+                // width and its ink set where that character's ink sits,
+                // whichever face supplied it.
+                let (advance, [tl, tb, tr, _]) = tex_accent_metrics(kind);
+                let scale = if gr > gl { (tr - tl) / (gr - gl) } else { 1.0 };
+                let glyph_size = size * scale;
+                let h = base_laid.boxx.height;
+                let box_dy = h - h.min(c.x_height * size);
                 let skew = base_laid.italic / 2.0;
-                let dx = base_laid.boxx.width / 2.0 + skew - (ink_left + ink_right) / 2.0;
+                let box_dx = (base_laid.boxx.width - advance * size) / 2.0 + skew;
+                let dx = box_dx + tl * size - gl * glyph_size;
+                let dy = box_dy + tb * size - gb * glyph_size;
+                let ink_top = f64::from(bbox[3]) / upm * glyph_size;
+                let ink_bottom = gb * glyph_size;
                 let width = base_laid.boxx.width;
                 let height = base_laid.boxx.height.max(dy + ink_top);
                 let depth = base_laid.boxx.depth.max(-(dy + ink_bottom));
@@ -1776,7 +1793,7 @@ impl Engine {
                                     face,
                                     gid,
                                     ch: combining,
-                                    size,
+                                    size: glyph_size,
                                     span,
                                 },
                             },
@@ -2322,6 +2339,26 @@ fn text_face(ctx: LayCtx) -> FaceId {
         Some(MathFont::Bold) => FACE_BOLD,
         Some(MathFont::Italic) => FACE_ITALIC,
         _ => FACE_REGULAR,
+    }
+}
+
+/// The accent character plain TeX's `\mathaccent` sets for `kind` (cmr10's
+/// accents, cmmi10's vector), from its AFM metrics in ems: the advance,
+/// then the ink's left, bottom, right and top.
+const fn tex_accent_metrics(kind: AccentKind) -> (f64, [f64; 4]) {
+    match kind {
+        AccentKind::Hat => (0.5, [0.116, 0.540, 0.383, 0.694]),
+        AccentKind::Check => (0.5, [0.118, 0.516, 0.381, 0.638]),
+        AccentKind::Tilde => (0.5, [0.083, 0.575, 0.416, 0.668]),
+        AccentKind::Acute => (0.5, [0.206, 0.510, 0.392, 0.698]),
+        AccentKind::Grave => (0.5, [0.107, 0.510, 0.293, 0.698]),
+        AccentKind::Dot => (0.277, [0.085, 0.563, 0.192, 0.669]),
+        AccentKind::Ddot => (0.5, [0.103, 0.569, 0.396, 0.669]),
+        AccentKind::Breve => (0.5, [0.100, 0.522, 0.399, 0.694]),
+        AccentKind::Bar => (0.5, [0.069, 0.559, 0.430, 0.590]),
+        AccentKind::Vec => (0.5, [0.182, 0.516, 0.625, 0.714]),
+        AccentKind::Ring => (0.75, [0.279, 0.541, 0.470, 0.716]),
+        _ => (0.5, [0.116, 0.540, 0.383, 0.694]),
     }
 }
 

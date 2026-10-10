@@ -7,7 +7,7 @@ import test from "node:test";
 
 // Execute the exact public wrapper with only the generated WASM binding doubled.
 // This tests ABI selection, argument order and ownership, not native PDF output.
-async function fixture({ pageBinding = true, blocked = false, runningBinding = true } = {}) {
+async function fixture({ pageBinding = true, blocked = false, runningBinding = true, imageBinding = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-pdf-page-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
@@ -33,6 +33,7 @@ async function fixture({ pageBinding = true, blocked = false, runningBinding = t
     export const renderPdfConfiguredMulti = (...args) => result("legacy", args);
     ${pageBinding ? 'export const renderPdfConfiguredPage = (...args) => result("page", args);' : ""}
     ${runningBinding ? 'export const renderPdfConfiguredRunning = (...args) => result("running", args);' : ""}
+    ${imageBinding ? 'export const renderPdfConfiguredRunningImages = (...args) => result("running-images", args);' : ""}
     ${unused.map(name => `export const ${name} = () => { throw new Error("unexpected ${name}"); };`).join("\n")}
   `);
   const bindings = await import(pathToFileURL(join(dir, "pkg/franken_markdown.js")));
@@ -58,6 +59,61 @@ test("no page option uses the unchanged 27-argument legacy ABI even with a new p
   assert.equal(output.sourceLength, 7);
   assert.equal(output.diagnostics[0].message, "fixture");
   assert.equal(bindings.frees, 1);
+});
+
+test("running logos select the additive ABI and capture exact asset bytes before initialization", async () => {
+  const { api, bindings } = await fixture({ blocked: true });
+  const payload = new Uint8Array([99, 1, 2, 3, 88]);
+  const options = { page: { margins: 48 }, optimalPagination: true,
+    pdfImages: [{ destination: "logo.svg", bytes: payload.subarray(1, 4) }],
+    running: { header: { image: { dest: " logo.svg " }, right: "{title}" },
+      footer: { image: { dest: "logo.svg", position: "right", heightPt: 24 }, center: "{page}" },
+      skipFirstPage: true } };
+  const pending = api.renderPdf("# Original", options);
+  options.running.header.image.dest = "different.svg";
+  options.running.footer.image.position = "left";
+  options.running.footer.image.heightPt = 42;
+  payload.fill(7);
+  bindings.finishInit();
+  await pending;
+  const { kind, args } = bindings.calls[0];
+  assert.equal(kind, "running-images");
+  assert.equal(args.length, 36);
+  assert.deepEqual(args[8], ["logo.svg"]);
+  assert.deepEqual([...args[9]], [1, 2, 3]);
+  assert.deepEqual(args[28], ["", "", "{title}", "", "{page}", ""]);
+  assert.deepEqual(args.slice(29, 32), [false, false, true]);
+  assert.deepEqual(args[32], ["logo.svg", "logo.svg"]);
+  assert.deepEqual([...args[33]], [0, 1]);
+  assert.deepEqual([...args[34]], [0, 24]);
+  assert.equal(args[35], "optimal-pagination");
+  assert.equal(bindings.frees, 1);
+  assert.equal(payload.byteLength, 5);
+});
+
+test("image-only bands are retained, malformed images fail early and old packages refuse logos", async () => {
+  const { api, bindings } = await fixture();
+  for (const image of [null, [], {}, { dest: " " }, { dest: "\ud800" },
+    { dest: "é".repeat(2049) }, { dest: "logo", url: "https://example.test/logo" },
+    { dest: "logo", position: "center" }, { dest: "logo", heightPt: 0 },
+    { dest: "logo", heightPt: 0.5 }, { dest: "logo", heightPt: 65536 },
+    { dest: "logo", heightPt: "24" }]) {
+    await assert.rejects(api.renderPdf("x", { running: { header: { image } } }));
+  }
+  let getterCalls = 0;
+  const accessor = Object.defineProperty({}, "dest", { get() { getterCalls++; return "logo"; } });
+  await assert.rejects(api.renderPdf("x", { running: { header: { image: accessor } } }));
+  assert.equal(getterCalls, 0);
+  assert.equal(bindings.initCount, 0);
+  await api.renderPdf("x", { running: { header: { image: { dest: "logo" } }, skipFirstPage: true } });
+  assert.equal(bindings.calls[0].kind, "running-images");
+  assert.deepEqual(bindings.calls[0].args[32], ["logo", ""]);
+  const old = await fixture({ imageBinding: false });
+  await assert.rejects(old.api.renderPdf("x", { running: { header: { image: { dest: "logo" } } } }),
+    error => error.code === "UNSUPPORTED_WASM_PACKAGE");
+  assert.equal(old.bindings.initCount, 0);
+  await old.api.renderPdf("x", { running: { footer: { center: "{page}" } } });
+  assert.equal(old.bindings.calls[0].kind, "running");
 });
 
 test("paper geometry appends exactly six point values without losing images, font slots or weights", async () => {

@@ -179,6 +179,103 @@ pub fn render_pdf_configured_running(
         .map_err(render_error_to_js)
 }
 
+/// Running text and optional image logos from explicitly supplied image assets.
+/// Image vectors are empty, or two entries (header, footer). A blank destination
+/// is absent; positions are 0/1 (left/right), heights are 0 (automatic) or positive
+/// u16 points. The text-only ABI remains unchanged.
+///
+/// # Errors
+/// Rejects malformed image settings before rendering; missing or invalid image
+/// payloads and images that do not fit are reported by the shared PDF renderer.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderPdfConfiguredRunningImages)]
+pub fn render_pdf_configured_running_images(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    author: Option<String>,
+    metadata_epoch_seconds: Option<f64>,
+    allow_raw_html: bool,
+    code_line_numbers: bool,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    base_font_size: Option<f64>,
+    heading_scale: Option<f64>,
+    table_font_size: Option<f64>,
+    page_numbers: bool,
+    font_scale: Option<f64>,
+    lang: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    fit_to_pages: Option<u32>,
+    microtype_protrusion: bool,
+    page_geometry: Vec<f64>,
+    running_slots: Vec<String>,
+    header_rule: bool,
+    footer_rule: bool,
+    skip_first_page: bool,
+    running_image_destinations: Vec<String>,
+    running_image_positions: Vec<u32>,
+    running_image_heights: Vec<u32>,
+    typography: Option<String>,
+) -> std::result::Result<FmdRenderResult, JsValue> {
+    // Admit the chrome before copying any asset payloads.
+    let mut running = running_content(running_slots, header_rule, footer_rule, skip_first_page)
+        .map_err(JsValue::from_str)?;
+    let [header_image, footer_image] = wasm::running_images_from_abi(
+        running_image_destinations,
+        running_image_positions,
+        running_image_heights,
+    )
+    .map_err(JsValue::from_str)?;
+    running.header.image = header_image;
+    running.footer.image = footer_image;
+    let mut options = configured_pdf_options(
+        font,
+        dark_mode,
+        title,
+        author,
+        metadata_epoch_seconds,
+        allow_raw_html,
+        code_line_numbers,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        base_font_size,
+        heading_scale,
+        table_font_size,
+        page_numbers,
+        font_scale,
+        lang,
+        toc,
+        toc_depth,
+        fit_to_pages,
+        microtype_protrusion,
+        page_geometry,
+    )?
+    .with_running(running);
+    options
+        .apply_typography_tokens(typography.as_deref())
+        .map_err(|e| JsValue::from_str(&e))?;
+    wasm::render_pdf(markdown, &options)
+        .map(render_result)
+        .map_err(render_error_to_js)
+}
+
 /// Positional running-chrome admission, independent of `JsValue` so native
 /// tests cover the rejection paths.
 fn running_content(
@@ -204,6 +301,7 @@ fn running_content(
         center: slots.next().flatten(),
         right: slots.next().flatten(),
         rule,
+        image: None,
     };
     let header = band(header_rule);
     let footer = band(footer_rule);
@@ -711,6 +809,83 @@ mod tests {
         options.running.footer.left = Some("Confidential".into());
         options.running.footer.center = Some("{page} / {pages}".into());
         options.running.footer.rule = true;
+        let native = crate::render_pdf("# Spec\n\nBody text.\n", &options).unwrap();
+        assert_eq!(actual.bytes(), native);
+        assert!(String::from_utf8_lossy(&native).contains("/Subtype /Header"));
+    }
+
+    #[test]
+    fn running_image_abi_matches_native_options_with_host_only_logo() {
+        let logo = br##"<svg width="12" height="6" xmlns="http://www.w3.org/2000/svg"><rect width="12" height="6" fill="#b00"/></svg>"##.to_vec();
+        let slots = [
+            "{title}",
+            "",
+            "{date}",
+            "Confidential",
+            "{page} / {pages}",
+            "",
+        ]
+        .map(String::from)
+        .to_vec();
+        let actual = render_pdf_configured_running_images(
+            "# Spec\n\nBody text.\n",
+            None,
+            None,
+            Some("Widget".into()),
+            None,
+            Some(1_700_000_000.0),
+            false,
+            false,
+            vec!["logo.svg".into()],
+            logo.clone(),
+            vec![logo.len() as u32],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            false,
+            None,
+            None,
+            false,
+            vec![],
+            slots,
+            true,
+            true,
+            false,
+            vec!["logo.svg".into(), String::new()],
+            vec![1, 0],
+            vec![24, 0],
+            None,
+        )
+        .unwrap();
+        let mut options = crate::PdfOptions {
+            title: Some("Widget".into()),
+            metadata_epoch_seconds: Some(1_700_000_000),
+            ..Default::default()
+        };
+        options.running.header.left = Some("{title}".into());
+        options.running.header.right = Some("{date}".into());
+        options.running.header.rule = true;
+        options.running.footer.left = Some("Confidential".into());
+        options.running.footer.center = Some("{page} / {pages}".into());
+        options.running.footer.rule = true;
+        options.running.header.image = Some(crate::PdfRunningImage {
+            dest: "logo.svg".into(),
+            position: crate::PdfRunningImagePosition::Right,
+            height_pt: Some(24),
+        });
+        options.image_assets.push(crate::PdfImageAsset {
+            destination: "logo.svg".into(),
+            bytes: logo,
+        });
         let native = crate::render_pdf("# Spec\n\nBody text.\n", &options).unwrap();
         assert_eq!(actual.bytes(), native);
         assert!(String::from_utf8_lossy(&native).contains("/Subtype /Header"));

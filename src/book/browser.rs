@@ -134,8 +134,14 @@ impl FmdBook {
         expected_revision: f64,
     ) -> Result<String, JsValue> {
         source_set::replace(
-            &mut self.renderer, paths, sources, include_paths, include_sources, expected_revision,
-        ).map_err(to_js)
+            &mut self.renderer,
+            paths,
+            sources,
+            include_paths,
+            include_sources,
+            expected_revision,
+        )
+        .map_err(to_js)
     }
 
     /// Set shared metadata. Absent or blank values restore renderer defaults.
@@ -231,10 +237,69 @@ impl FmdBook {
         skip_first_page: bool,
     ) -> Result<(), JsValue> {
         let settings = render_options::PdfSettings::new(
-            typography.as_deref(), base_font_size, heading_scale, table_font_size,
-            toc_depth, fit_to_pages, code_line_numbers, metadata_epoch_seconds,
-            running_slots, header_rule, footer_rule, skip_first_page,
-        ).map_err(to_js)?;
+            typography.as_deref(),
+            base_font_size,
+            heading_scale,
+            table_font_size,
+            toc_depth,
+            fit_to_pages,
+            code_line_numbers,
+            metadata_epoch_seconds,
+            running_slots,
+            header_rule,
+            footer_rule,
+            skip_first_page,
+        )
+        .map_err(to_js)?;
+        settings.apply(self.renderer.options_mut());
+        Ok(())
+    }
+
+    /// Replace the PDF settings profile, including optional running logos, as
+    /// one transaction. Image keys refer to assets supplied with `setImage`.
+    /// The original `setPdfOptions` ABI still resets to text-only bands.
+    ///
+    /// # Errors
+    /// Invalid image references, position codes, heights or other settings leave
+    /// the entire retained profile unchanged. Payload decoding occurs at render.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = setPdfOptionsWithRunningImages)]
+    pub fn set_pdf_options_with_running_images(
+        &mut self,
+        typography: Option<String>,
+        base_font_size: Option<f64>,
+        heading_scale: Option<f64>,
+        table_font_size: Option<f64>,
+        toc_depth: Option<f64>,
+        fit_to_pages: Option<f64>,
+        code_line_numbers: bool,
+        metadata_epoch_seconds: Option<f64>,
+        running_slots: Vec<String>,
+        header_rule: bool,
+        footer_rule: bool,
+        skip_first_page: bool,
+        image_destinations: Vec<String>,
+        image_positions: Vec<u32>,
+        image_heights: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        let settings = render_options::PdfSettings::new(
+            typography.as_deref(),
+            base_font_size,
+            heading_scale,
+            table_font_size,
+            toc_depth,
+            fit_to_pages,
+            code_line_numbers,
+            metadata_epoch_seconds,
+            running_slots,
+            header_rule,
+            footer_rule,
+            skip_first_page,
+        )
+        .and_then(|settings| {
+            settings.with_running_images(image_destinations, image_positions, image_heights)
+        })
+        .map_err(to_js)?;
         settings.apply(self.renderer.options_mut());
         Ok(())
     }
@@ -344,8 +409,8 @@ impl FmdBook {
     /// Rejects lossy JavaScript indexes, invalid assets and preview budgets.
     #[wasm_bindgen(js_name = renderChapterPreview)]
     pub fn render_chapter_preview(&self, selected: f64) -> Result<Vec<u8>, JsValue> {
-        let index = chapter_preview_index(selected, self.chapter_count())
-            .map_err(JsValue::from_str)?;
+        let index =
+            chapter_preview_index(selected, self.chapter_count()).map_err(JsValue::from_str)?;
         self.renderer.render_chapter_preview(index).map_err(to_js)
     }
 

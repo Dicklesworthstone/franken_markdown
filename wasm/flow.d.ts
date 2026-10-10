@@ -3,6 +3,7 @@ export type {
   FmdPdfPage as FlowPdfPage,
   FmdPdfRunning as FlowPdfRunning,
   FmdPdfRunningBand as FlowPdfRunningBand,
+  FmdPdfRunningImage as FlowPdfRunningImage,
 } from "./franken_markdown.js";
 
 /** u64 wire values are lossless decimal strings. Number is never an identity. */
@@ -444,6 +445,10 @@ export interface FlowPdfExportOptions extends FlowExportOptions {
   /** At most 4096 UTF-16 units per slot, 16384 combined. Unknown template tokens
    * remain literal. skipFirstPage=true requires a nonempty band or rule. */
   running?: FmdPdfRunning;
+  /** Explicit export-only images, including logos absent from Markdown. Exact
+   * Uint8Array views are copied before enqueue. At most 8 MiB each / 32 MiB
+   * total; combined session/explicit image limits and conflict checks apply. */
+  pdfImages?: readonly { destination: string; bytes: Uint8Array }[];
   author?: string;
   /** Deterministic default 0; nonnegative safe integer seconds. */
   metadataEpochSeconds?: number;

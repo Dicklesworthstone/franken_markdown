@@ -59,3 +59,39 @@ Every render result has:
 - `bytes`: `Uint8Array`,
 - `diagnostics`: recoverable parser diagnostics,
 - `text()`, `blob()`, and `filename()` helpers.
+
+## PDF running logos
+
+Single-document PDFs can repeat a host-supplied logo in either margin band:
+
+```js
+const pdf = await fmd.renderPdf("# Report\n\nCurrent results.", {
+  pdfImages: [{ destination: "brand.svg", bytes: logoBytes }],
+  running: {
+    header: { image: { dest: "brand.svg", heightPt: 24 }, right: "{title}", rule: true },
+    footer: { center: "{page} / {pages}" },
+    skipFirstPage: true,
+  },
+});
+```
+
+Each band accepts one `image` with `dest`, optional `position` (`left` or `right`,
+default `left`), and optional `heightPt` (integer points, 1..65535). Omitted
+height uses the renderer's automatic margin fit. The destination must match an
+explicit image asset; neither the wrapper nor core loads a URL or file. Image
+bytes and settings are captured before asynchronous initialization. The native
+renderer preserves aspect ratio, reserves space for adjacent text, and refuses
+missing/invalid assets or impossible margin geometry. After fitting, both image
+dimensions must remain at least 0.01 pt, the PDF coordinate precision; smaller
+results fail with `pdf_running_image_invalid` instead of producing an invisible
+logo. Increase the requested height, available page width or margin, or use
+artwork with a less extreme aspect ratio.
+
+Logos require the additive `renderPdfConfiguredRunningImages` binding from a
+matching rebuilt package. Older packages continue to handle existing text-only
+requests but reject a requested logo. The separate retained-book API supports
+the same image shape using `options.images` and its additive
+`setPdfOptionsWithRunningImages` binding. The legacy root `renderBookPdf` helper
+continues to reject all running-band options explicitly.
+The stateless `document-worker` wrapper also rejects running-band options;
+use the direct renderer or Flow/retained-book worker APIs for running logos.

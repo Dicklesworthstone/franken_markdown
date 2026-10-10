@@ -576,6 +576,61 @@ pub fn render_pdf(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRen
     })
 }
 
+/// Admit the additive browser image-band ABI before changing settings or
+/// copying image payloads. Empty destinations denote absent header/footer logos;
+/// nonempty keys reference existing, explicitly supplied image assets.
+#[cfg(feature = "wasm-bindgen")]
+pub(crate) fn running_images_from_abi(
+    destinations: Vec<String>,
+    positions: Vec<u32>,
+    heights: Vec<u32>,
+) -> std::result::Result<[Option<crate::PdfRunningImage>; 2], &'static str> {
+    if destinations.is_empty() && positions.is_empty() && heights.is_empty() {
+        return Ok([None, None]);
+    }
+    if destinations.len() != 2 || positions.len() != 2 || heights.len() != 2 {
+        return Err(
+            "running images require two destinations, positions and heights: header, footer",
+        );
+    }
+    let mut result = [None, None];
+    for (index, ((dest, position), height)) in destinations
+        .into_iter()
+        .zip(positions)
+        .zip(heights)
+        .enumerate()
+    {
+        if dest.is_empty() {
+            if position != 0 || height != 0 {
+                return Err("an absent running image cannot have a position or height");
+            }
+            continue;
+        }
+        if dest.len() > 4096 || dest.trim().is_empty() || dest.trim() != dest {
+            return Err(
+                "running image destinations require 1..4096 UTF-8 bytes without outer whitespace",
+            );
+        }
+        let position = match position {
+            0 => crate::PdfRunningImagePosition::Left,
+            1 => crate::PdfRunningImagePosition::Right,
+            _ => return Err("running image position must be 0 (left) or 1 (right)"),
+        };
+        let height_pt = match height {
+            0 => None,
+            value => Some(
+                u16::try_from(value).map_err(|_| "running image height exceeds 65535 points")?,
+            ),
+        };
+        result[index] = Some(crate::PdfRunningImage {
+            dest,
+            position,
+            height_pt,
+        });
+    }
+    Ok(result)
+}
+
 /// Stable JSON capability surface for browser/WASM packaging and tests.
 #[must_use]
 pub fn capabilities_json() -> String {
@@ -583,7 +638,7 @@ pub fn capabilities_json() -> String {
      \"outputs\":[\"html\",\"pdf\",\"svg\",\"epub\",\"interactive-html\",\"diff-html\",\"book-site\",\"book-pdf\"],\
      \"input\":\"markdown_utf8\",\
      \"html\":{\"mime_type\":\"text/html; charset=utf-8\",\"self_contained\":true,\"custom_css_utf8\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\"},\
-     \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\",\"running_content\":{\"binding\":\"renderPdfConfiguredRunning\",\"slots\":[\"header.left\",\"header.center\",\"header.right\",\"footer.left\",\"footer.center\",\"footer.right\"],\"tokens\":[\"page\",\"pages\",\"title\",\"author\",\"date\"],\"rules\":true,\"skip_first_page\":true,\"images\":false}},\
+     \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\",\"running_content\":{\"binding\":\"renderPdfConfiguredRunning\",\"slots\":[\"header.left\",\"header.center\",\"header.right\",\"footer.left\",\"footer.center\",\"footer.right\"],\"tokens\":[\"page\",\"pages\",\"title\",\"author\",\"date\"],\"rules\":true,\"skip_first_page\":true,\"images\":true,\"image_binding\":\"renderPdfConfiguredRunningImages\",\"image_positions\":[\"left\",\"right\"],\"image_height\":\"optional_positive_integer_points\"}},\
      \"diagnostics\":{\"source_spans\":\"byte_offsets\",\"json\":true},\
      \"document_intelligence\":{\"stats\":true,\"readability\":true,\"structural_lint\":true,\"accessibility_audit\":true,\"search_index\":true},\
      \"workflows\":{\"semantic_ast_diff\":true,\"in_memory_book_builder\":true,\"recursive_transclusion\":true,\"mermaid_to_svg\":true},\

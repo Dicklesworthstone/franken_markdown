@@ -12,7 +12,9 @@ fn size(value: Option<f64>, name: &str, min: f64, max: f64) -> Result<Option<f32
     value
         .map(|value| {
             if !value.is_finite() || !(min..=max).contains(&value) {
-                return Err(invalid(format!("{name} must be finite and in {min}..={max}")));
+                return Err(invalid(format!(
+                    "{name} must be finite and in {min}..={max}"
+                )));
             }
             Ok(value as f32)
         })
@@ -26,7 +28,9 @@ fn integer(value: Option<f64>, name: &str, min: u64, max: u64) -> Result<Option<
                 || value.fract() != 0.0
                 || !(min as f64..=max as f64).contains(&value)
             {
-                return Err(invalid(format!("{name} must be an integer in {min}..={max}")));
+                return Err(invalid(format!(
+                    "{name} must be an integer in {min}..={max}"
+                )));
             }
             Ok(value as u64)
         })
@@ -59,13 +63,15 @@ impl PdfSettings {
         let mut candidate = WasmRenderOptions::default();
         // The shared token parser can mutate before encountering an unknown
         // token. Run it on this candidate, NEVER the retained book options.
-        candidate.apply_typography_tokens(typography).map_err(invalid)?;
+        candidate
+            .apply_typography_tokens(typography)
+            .map_err(invalid)?;
         candidate.base_font_size = size(base_font_size, "baseFontSize", 6.0, 24.0)?;
         candidate.heading_scale = size(heading_scale, "headingScale", 1.05, 2.0)?;
         candidate.table_font_size = size(table_font_size, "tableFontSize", 5.0, 24.0)?;
         candidate.toc_depth = integer(toc_depth, "tocDepth", 1, 6)?.map(|n| n as u8);
-        candidate.fit_to_pages = integer(fit_to_pages, "fitToPages", 1, u64::from(u32::MAX))?
-            .map(|n| n as usize);
+        candidate.fit_to_pages =
+            integer(fit_to_pages, "fitToPages", 1, u64::from(u32::MAX))?.map(|n| n as usize);
         candidate.code_line_numbers = code_line_numbers;
         candidate.metadata_epoch_seconds = integer(
             metadata_epoch_seconds,
@@ -74,19 +80,22 @@ impl PdfSettings {
             9_007_199_254_740_991,
         )?;
         if !running_slots.is_empty() && running_slots.len() != 6 {
-            return Err(invalid("running slots must be empty or exactly six templates"));
+            return Err(invalid(
+                "running slots must be empty or exactly six templates",
+            ));
         }
         if running_slots.iter().any(|slot| slot.len() > 4096) {
             return Err(invalid("each running slot is limited to 4096 UTF-8 bytes"));
         }
-        let mut slots = running_slots.into_iter().map(|slot| {
-            (!slot.is_empty()).then_some(slot)
-        });
+        let mut slots = running_slots
+            .into_iter()
+            .map(|slot| (!slot.is_empty()).then_some(slot));
         let mut band = |rule| PdfRunningBand {
             left: slots.next().flatten(),
             center: slots.next().flatten(),
             right: slots.next().flatten(),
             rule,
+            image: None,
         };
         candidate.running = PdfRunningContent {
             header: band(header_rule),
@@ -94,6 +103,22 @@ impl PdfSettings {
             skip_first_page,
         };
         Ok(Self(candidate))
+    }
+
+    /// Admit image references on the candidate before the replace-all commit.
+    /// Bytes remain in the existing host asset store and are decoded at render.
+    pub(super) fn with_running_images(
+        mut self,
+        destinations: Vec<String>,
+        positions: Vec<u32>,
+        heights: Vec<u32>,
+    ) -> Result<Self> {
+        let [header, footer] =
+            crate::wasm::running_images_from_abi(destinations, positions, heights)
+                .map_err(invalid)?;
+        self.0.running.header.image = header;
+        self.0.running.footer.image = footer;
+        Ok(self)
     }
 
     /// Infallible commit after all fields have been admitted. No asset copies,

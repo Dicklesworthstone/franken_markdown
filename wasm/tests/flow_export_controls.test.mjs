@@ -122,6 +122,40 @@ test("prepares an owned Blob, never auto-clicks, and makes a separate download a
   });
   assert.equal(f.download.click().defaultPrevented, false);
 });
+test("unchanged nested paper, running logo and owned image settings produce a usable download", async (t) => {
+  const payload = new Uint8Array([1, 2, 3]);
+  const read = () => ({ page: { size: "a4", margins: { topPt: 48 } },
+    running: { header: { image: { dest: "logo.png", position: "right", heightPt: 24 }, left: "{title}" } },
+    pdfImages: [{ destination: "logo.png", bytes: new Uint8Array(payload) }] });
+  const f = fixture(read);
+  t.after(() => f.controls.dispose());
+  f.pdf.click();
+  await tick();
+  assert.equal(f.created.length, 1);
+  assert.equal(f.download.hidden, false);
+  assert.equal(f.download.click().defaultPrevented, false);
+  assert.deepEqual([...f.calls[0].options.pdfImages[0].bytes], [1, 2, 3]);
+  payload[1] = 9;
+  assert.equal(f.download.click().defaultPrevented, true);
+  assert.equal(f.download.hidden, true);
+  assert.deepEqual(f.revoked, ["blob:test-1"]);
+});
+
+test("nested running-image edits during preparation suppress publication of the earlier snapshot", async (t) => {
+  const settings = { running: { header: { image: { dest: "logo", heightPt: 24 } } },
+    pdfImages: [{ destination: "logo", bytes: new Uint8Array([1]) }] };
+  const f = fixture(() => settings), hold = gate();
+  t.after(() => f.controls.dispose());
+  f.hold(hold);
+  f.pdf.click();
+  settings.running.header.image.heightPt = 30;
+  hold.resolve();
+  await tick();
+  assert.equal(f.calls[0].options.running.header.image.heightPt, 24);
+  assert.equal(f.created.length, 0);
+  assert.match(f.status.textContent, /STALE_OPTIONS/);
+});
+
 test("new exports revoke the previous object URL and keep only one downloadable document", async (t) => {
   const f = fixture();
   t.after(() => f.controls.dispose());
@@ -269,7 +303,7 @@ test("unknown and unsafe publishing options fail before invoking the renderer", 
   for (const options of [
     { allowRawHtml: true },
     { font: "serif" },
-    { pdfImages: [] },
+    { pdfImages: [{ destination: "logo", bytes: "invalid" }] },
     { lang: "bad tag" },
     { fitToPages: 0 },
     { baseFontSize: NaN },

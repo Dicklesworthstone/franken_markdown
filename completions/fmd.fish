@@ -35,6 +35,15 @@ complete -c fmd -n "__fish_seen_subcommand_from render watch book batch" -l marg
 complete -c fmd -n "__fish_seen_subcommand_from render watch book batch" -l margin-bottom-pt -r -d "PDF bottom margin in points"
 complete -c fmd -n "__fish_seen_subcommand_from render watch book batch" -l margin-left-pt -r -d "PDF left margin in points"
 
+# Decorative running images share explicit asset mappings across render routes.
+complete -c fmd -n "__fish_seen_subcommand_from render watch batch" -l pdf-header-image -r -d "Header logo destination supplied with --pdf-image"
+complete -c fmd -n "__fish_seen_subcommand_from render watch batch" -l pdf-header-image-position -r -a "left right" -d "Header logo placement (default left)"
+complete -c fmd -n "__fish_seen_subcommand_from render watch batch" -l pdf-header-image-height-pt -r -d "Positive requested header logo height in points"
+complete -c fmd -n "__fish_seen_subcommand_from render watch batch" -l pdf-footer-image -r -d "Footer logo destination supplied with --pdf-image"
+complete -c fmd -n "__fish_seen_subcommand_from render watch batch" -l pdf-footer-image-position -r -a "left right" -d "Footer logo placement (default left)"
+complete -c fmd -n "__fish_seen_subcommand_from render watch batch" -l pdf-footer-image-height-pt -r -d "Positive requested footer logo height in points"
+complete -c fmd -n "__fish_seen_subcommand_from watch batch" -l pdf-image -r -d "Provide or override a local image asset (DEST=PATH)"
+
 # Subcommand: render
 complete -c fmd -n "__fish_seen_subcommand_from render" -F
 complete -c fmd -n "__fish_seen_subcommand_from render" -l text -d "Raw Markdown text to render directly"

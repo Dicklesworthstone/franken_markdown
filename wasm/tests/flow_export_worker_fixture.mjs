@@ -87,6 +87,7 @@ installFlowWorker(endpoint, async (source, options) => {
           font: settings.font,
           title: settings.title,
           epoch: settings.metadataEpochSeconds,
+          running: settings.running,
           images: settings.pdfImages.map((image) => [image.destination, [...image.bytes]]),
         }),
       ),

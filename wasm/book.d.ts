@@ -1,4 +1,4 @@
-import type { FmdPdfPage } from "./franken_markdown.js";
+import type { FmdPdfPage, FmdPdfRunningImage } from "./franken_markdown.js";
 
 /** One chapter. Array order is reading order; paths are book-relative. */
 export interface BookFile {
@@ -32,6 +32,9 @@ export interface BookRunningBand {
   center?: string;
   right?: string;
   rule?: boolean;
+  /** Image dest is a book-root key from options.images. Requires a matching
+   * FmdBook.setPdfOptionsWithRunningImages binding; older packages reject it. */
+  image?: FmdPdfRunningImage;
 }
 export interface BookRunningContent {
   header?: BookRunningBand;

@@ -46,6 +46,39 @@ sizes, heading scale, a page target and the existing protrusion setting. Unknown
 wrong-format and coerced settings are errors, not silently ignored preferences.
 The TypeScript declarations expose format-specific option types.
 
+PDF also accepts native running bands, including a repeated logo. Supply image
+bytes explicitly through `pdfImages` when the logo does not occur in Markdown:
+
+```js
+const publication = await session.exportDocument("pdf", {
+  pdfImages: [{ destination: "brand.svg", bytes: logoBytes }],
+  running: {
+    header: { image: { dest: "brand.svg", position: "right", heightPt: 24 }, left: "{title}" },
+    footer: { center: "{page} / {pages}" },
+  },
+}, session.token);
+```
+
+`image.dest` names a supplied asset after trimming surrounding whitespace from
+both destination keys. Position is `left` by default, or
+`right`; height is an optional positive integer in points (at most 65535).
+Omitting height lets the native renderer fit the margin. Native image decoding,
+aspect ratio, text clearance and margin-fit errors apply. A fitted image must be
+at least 0.01 pt in both dimensions; a smaller result fails with
+`pdf_running_image_invalid`. Increase the height, available page width or margin,
+or use artwork with a less extreme aspect ratio. A logo requires a matching
+rebuilt package with the additive running-image binding.
+
+These explicit images are export inputs and do not change Markdown, the live
+preview, session asset grants or the source/layout token. Exact non-shared
+`Uint8Array` views are deeply copied before enqueueing. Admission allows at most
+1,024 entries, 8 MiB per image, 32 MiB total supplied bytes and 64 Ki UTF-16
+destination units. The merged session/explicit inventory shares the existing
+export count, unique-byte, destination and copy/comparison bounds. Trimmed keys
+with equal bytes deduplicate; conflicting payloads fail
+`AMBIGUOUS_EXPORT_ASSET`. Worker queue byte limits apply as usual. This option
+is PDF-only and cannot bypass unresolved source-image checks.
+
 ## Image authority and completeness
 
 Every flow image must be resolved AND have encoded bytes retained in the native

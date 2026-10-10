@@ -127,7 +127,7 @@ function bookRunning(value) {
   if (value === undefined || value === null) return undefined;
   const running = runningRecord(value, ["header", "footer", "skipFirstPage"], "running");
   const band = (value, label) => {
-    const data = value == null ? {} : runningRecord(value, ["left", "center", "right", "rule"], label);
+    const data = value == null ? {} : runningRecord(value, ["left", "center", "right", "rule", "image"], label);
     const result = {};
     for (const slot of ["left", "center", "right"]) {
       const text = data[slot];
@@ -138,6 +138,19 @@ function bookRunning(value) {
       }
     }
     if (boolean(data.rule, `${label}.rule`)) result.rule = true;
+    if (data.image !== undefined) {
+      const image = runningRecord(data.image, ["dest", "position", "heightPt"], `${label}.image`);
+      if (typeof image.dest !== "string" || !image.dest.trim())
+        throw new TypeError(`${label}.image.dest must be a nonempty image asset key`);
+      const dest = image.dest.trim();
+      bookTextBytes(dest, 4096);
+      if (image.position !== undefined && !["left", "right"].includes(image.position))
+        throw new TypeError(`${label}.image.position must be left or right`);
+      const heightPt = image.heightPt === undefined ? undefined
+        : boundedNumber(image.heightPt, `${label}.image.heightPt`, 1, 65535, true);
+      result.image = Object.freeze({ dest, ...(image.position === undefined ? {} : { position: image.position }),
+        ...(heightPt === undefined ? {} : { heightPt }) });
+    }
     return Object.freeze(result);
   };
   const header = band(running.header, "running.header"), footer = band(running.footer, "running.footer");
@@ -203,13 +216,24 @@ function pdfOptionArgs(settings) {
   const running = settings.running;
   const slots = running ? [running.header, running.footer].flatMap(band =>
     [band.left ?? "", band.center ?? "", band.right ?? ""]) : [];
-  return [settings.typography, settings.baseFontSize, settings.headingScale, settings.tableFontSize,
+  const args = [settings.typography, settings.baseFontSize, settings.headingScale, settings.tableFontSize,
     settings.tocDepth, settings.fitToPages, settings.codeLineNumbers ?? false, settings.metadataEpochSeconds,
     slots, running?.header.rule ?? false, running?.footer.rule ?? false, running?.skipFirstPage ?? false];
+  if (pdfOptionMethod(settings) === "setPdfOptionsWithRunningImages") {
+    const images = [running.header.image, running.footer.image];
+    args.push(images.map(image => image?.dest ?? ""),
+      new Uint32Array(images.map(image => image?.position === "right" ? 1 : 0)),
+      new Uint32Array(images.map(image => image?.heightPt ?? 0)));
+  }
+  return args;
+}
+function pdfOptionMethod(settings) {
+  return settings.running?.header.image || settings.running?.footer.image
+    ? "setPdfOptionsWithRunningImages" : "setPdfOptions";
 }
 function requireBookOptions(target, settings) {
   for (const [name, requested] of [
-    ["setPdfOptions", pdfOptionArgs(settings) !== null],
+    [pdfOptionMethod(settings), pdfOptionArgs(settings) !== null],
     ["setHtmlFontFormat", settings.htmlFontFormat !== undefined],
   ]) {
     if (requested && typeof target?.[name] !== "function") {
@@ -755,7 +779,7 @@ export function createBookBindings(loadBookClass) {
     try {
       requireBookOptions(raw, settings);
       const pdf = pdfOptionArgs(settings);
-      if (pdf !== null) raw.setPdfOptions(...pdf);
+      if (pdf !== null) raw[pdfOptionMethod(settings)](...pdf);
       if (settings.htmlFontFormat !== undefined) raw.setHtmlFontFormat(settings.htmlFontFormat);
       raw.setMetadata(settings.title, settings.author, settings.lang);
       raw.setCustomCss(settings.customCss);

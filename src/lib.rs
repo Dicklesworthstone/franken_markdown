@@ -844,7 +844,8 @@ impl PdfRunningContent {
     }
 }
 
-/// One running band: three text slots and an optional hairline rule.
+/// One running band: three text slots, an optional hairline rule, and one
+/// decorative image resolved from [`PdfOptions::image_assets`].
 ///
 /// An empty string and `None` are equivalent for a slot.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -858,17 +859,42 @@ pub struct PdfRunningBand {
     /// Hairline across the content width: under the header text, or over the
     /// footer text. Default false.
     pub rule: bool,
+    /// Decorative image in the margin band. Its destination must resolve to a
+    /// supported host-supplied asset; requested images never silently disappear.
+    pub image: Option<PdfRunningImage>,
 }
 
 impl PdfRunningBand {
-    /// True when the band has no non-empty slot and no rule.
+    /// True when the band has no non-empty slot, rule, or image.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         !self.rule
+            && self.image.is_none()
             && [&self.left, &self.center, &self.right]
                 .into_iter()
                 .all(|slot| slot.as_deref().is_none_or(str::is_empty))
     }
+}
+
+/// A decorative running image. The core never fetches or reads its destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdfRunningImage {
+    /// Destination key in [`PdfOptions::image_assets`], matched like body images.
+    pub dest: String,
+    /// Side of the band. Text on that side starts after the image and a gap.
+    pub position: PdfRunningImagePosition,
+    /// Requested positive height in points. `None` uses 0.75 times the band
+    /// text size. Height is reduced, preserving aspect ratio, to fit the
+    /// existing margin and leave room for any neighboring text.
+    pub height_pt: Option<u16>,
+}
+
+/// Horizontal placement of a decorative running image.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PdfRunningImagePosition {
+    #[default]
+    Left,
+    Right,
 }
 
 impl PdfOptions {

@@ -116,6 +116,15 @@ export interface FmdPdfPage {
   /** Uniform points or independent sides, each defaulting to 72 points. */
   margins?: number | { topPt?: number; rightPt?: number; bottomPt?: number; leftPt?: number };
 }
+/** Optional repeated image from explicit host assets. */
+export interface FmdPdfRunningImage {
+  /** Exact key in the explicitly supplied pdfImages. No URL or file is loaded. */
+  dest: string;
+  /** Image occupies the left or right edge of the band; default left. */
+  position?: "left" | "right";
+  /** Positive integer points, at most 65535. Omitted height fits the margin. */
+  heightPt?: number;
+}
 /** One running band. Slot templates accept {page}, {pages}, {title}, {author}
  * and {date} (from metadataEpochSeconds, never the clock); unknown tokens stay literal. */
 export interface FmdPdfRunningBand {
@@ -124,6 +133,8 @@ export interface FmdPdfRunningBand {
   right?: string;
   /** Hairline under the header / over the footer. */
   rule?: boolean;
+  /** Repeated logo from host image bytes. Text is fitted beside its reserved area. */
+  image?: FmdPdfRunningImage;
 }
 /** Opt-in PDF running header/footer drawn in the page margins. */
 export interface FmdPdfRunning {

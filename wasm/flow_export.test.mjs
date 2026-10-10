@@ -130,7 +130,7 @@ test("rejects unknown/coerced settings, unsafe HTML/font/asset injection, and in
     ["html", { author: "ignored" }],
     ["pdf", { allowRawHtml: true }],
     ["html", { customCss: "@import url(https://example.test)" }],
-    ["pdf", { pdfImages: [] }],
+    ["html", { pdfImages: [] }],
     ["html", { fontAssets: [] }],
     ["pdf", { font: "sans" }],
     ["pdf", { metadataEpochSeconds: NaN }],
@@ -155,6 +155,73 @@ test("rejects unknown/coerced settings, unsafe HTML/font/asset injection, and in
     { revision: 18446744073709551615n, layoutRevision: 0n },
   );
   assert.equal(normalized[2].revision, "18446744073709551615");
+});
+
+test("explicit PDF logos merge with session images without changing source or overriding payloads", async () => {
+  const f = fixture();
+  f.session.items = [image(1, "body.png")];
+  f.session.assets.set("1", new Uint8Array([1, 2, 3]));
+  const payload = new Uint8Array([99, 4, 5, 88]);
+  const options = { pdfImages: [
+    { destination: "logo.png", bytes: payload.subarray(1, 3) },
+    { destination: "body.png", bytes: new Uint8Array([1, 2, 3]) },
+  ], running: { header: { image: { dest: "logo.png", position: "right", heightPt: 24 } },
+    skipFirstPage: true } };
+  const result = await f.api.exportDocument("pdf", options, f.session.token);
+  const call = f.calls[0];
+  assert.equal(call.source, f.session.source);
+  assert.deepEqual(call.options.pdfImages.map(asset => [asset.destination, [...asset.bytes]]),
+    [["body.png", [1, 2, 3]], ["logo.png", [4, 5]]]);
+  assert.deepEqual(call.options.running, options.running);
+  assert.equal(result.assetCount, 2);
+  assert.equal(result.assetBytes, 5);
+  payload.fill(9);
+  assert.deepEqual([...call.options.pdfImages[1].bytes], [4, 5]);
+  await assert.rejects(f.api.exportDocument("pdf", {
+    pdfImages: [{ destination: "body.png", bytes: new Uint8Array([9]) }],
+  }, f.session.token), code("AMBIGUOUS_EXPORT_ASSET"));
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.session.assets.get("1")[0], 1);
+  // Core image lookup trims keys; merged admission must detect the same
+  // identity before the renderer can choose between conflicting payloads.
+  f.session.items[0].destination = " body.png ";
+  await assert.rejects(f.api.exportDocument("pdf", {
+    pdfImages: [{ destination: "body.png", bytes: new Uint8Array([9]) }],
+  }, f.session.token), code("AMBIGUOUS_EXPORT_ASSET"));
+  const same = await f.api.exportDocument("pdf", {
+    pdfImages: [{ destination: " body.png ", bytes: new Uint8Array([1, 2, 3]) }],
+  }, f.session.token);
+  assert.equal(same.assetCount, 1);
+  assert.equal(f.calls[1].options.pdfImages[0].destination, "body.png");
+  f.session.items[0].destination = " \t ";
+  await assert.rejects(f.api.exportDocument("pdf", {}, f.session.token), code("INVALID_WASM_RESPONSE"));
+});
+
+test("explicit PDF image admission is bounded, data-only and shares aggregate session limits", async () => {
+  const f = fixture();
+  let getters = 0;
+  const accessor = Object.defineProperty({ destination: "logo" }, "bytes", {
+    get() { getters++; return new Uint8Array([1]); },
+  });
+  for (const pdfImages of [null, {}, [null], [accessor], new Array(1),
+    [{ destination: "", bytes: new Uint8Array([1]) }],
+    [{ destination: "logo", bytes: new Uint8Array() }],
+    [{ destination: "logo", bytes: new Uint16Array([1]) }],
+    [{ destination: "logo", bytes: new Uint8Array(new SharedArrayBuffer(1)) }],
+    [{ destination: "logo", bytes: new Uint8Array([1]), url: "https://example.test" }],
+  ]) await assert.rejects(f.api.exportDocument("pdf", { pdfImages }, f.session.token), code("INVALID_OPTIONS"));
+  assert.equal(getters, 0);
+  assert.equal(f.session.reads.length, 0);
+  const bytes = new Uint8Array([1]);
+  const normalized = normalizeFlowExport("pdf", { pdfImages: [{ destination: "logo", bytes }] }, f.session.token);
+  bytes[0] = 9;
+  assert.equal(normalized[1].pdfImages[0].bytes[0], 1);
+  assert(Object.isFrozen(normalized[1].pdfImages[0]));
+  assert.deepEqual(normalizeFlowExport(...structuredClone(normalized)), normalized);
+  f.session.items = Array.from({ length: 1024 }, (_, i) => image(i + 1, "body.png"));
+  for (let i = 1; i <= 1024; i++) f.session.assets.set(String(i), bytes);
+  await assert.rejects(f.api.exportDocument(...normalized), code("BUDGET_EXCEEDED"));
+  assert.equal(f.calls.length, 0);
 });
 
 test("collects late-page images, deduplicates equal destinations and copies exact owned payloads", async () => {

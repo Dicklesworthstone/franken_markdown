@@ -42,12 +42,14 @@ fn full_chrome() -> PdfRunningContent {
             center: None,
             right: Some("{date}".into()),
             rule: true,
+            image: None,
         },
         footer: PdfRunningBand {
             left: Some("Confidential {foo}".into()),
             center: Some("{page} / {pages}".into()),
             right: Some("{author}".into()),
             rule: true,
+            image: None,
         },
         skip_first_page: false,
     }

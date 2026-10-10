@@ -61,6 +61,28 @@ test("real worker awaits exports, transfers owned document bytes and retains nat
   assert.equal(session.pendingBytes, 0);
 });
 
+test("worker PDF logos retain owned image and settings snapshots while queued", async (t) => {
+  const session = await setup(t, { image: true, delayMs: 30 });
+  const first = session.exportDocument("pdf", {}, session.token);
+  const source = new Uint8Array([99, 4, 5, 88]);
+  const options = { pdfImages: [{ destination: "logo.png", bytes: source.subarray(1, 3) }],
+    running: { header: { image: { dest: "logo.png", position: "right", heightPt: 24 } } } };
+  const queued = session.exportDocument("pdf", options, session.token);
+  source.fill(9);
+  options.pdfImages[0].destination = "changed.png";
+  options.running.header.image.heightPt = 30;
+  await first;
+  const output = decode(await queued);
+  assert.deepEqual(output.images, [["local.png", [1, 2, 3]], ["logo.png", [4, 5]]]);
+  assert.deepEqual(output.running.header.image, { dest: "logo.png", position: "right", heightPt: 24 });
+  assert.equal(source.byteLength, 4);
+  assert.equal(session.pendingBytes, 0);
+  await assert.rejects(session.exportDocument("pdf", {
+    pdfImages: [{ destination: "local.png", bytes: new Uint8Array([9]) }],
+  }, session.token), code("AMBIGUOUS_EXPORT_ASSET"));
+  assert.equal(session.disposed, false);
+});
+
 test("a queued edit cannot race ahead of an asynchronous export", async (t) => {
   const session = await setup(t, { delayMs: 80 });
   const token = session.token;
@@ -125,7 +147,7 @@ test("export deadlines kill only the owned worker and settle every request", asy
 test("renderer rejection is recoverable; invalid options are rejected before worker ingress", async (t) => {
   const session = await setup(t);
   await assert.rejects(
-    session.exportDocument("pdf", { pdfImages: [] }, session.token),
+    session.exportDocument("pdf", { pdfImages: [{ destination: "logo", bytes: "not bytes" }] }, session.token),
     code("INVALID_OPTIONS"),
   );
   assert.equal(session.pendingOperations, 0);

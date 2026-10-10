@@ -88,8 +88,9 @@ export async function renderPdf(markdown, options = {}) {
   // Admit and capture geometry before initializing WASM or copying assets.
   const geometry = pdfPageGeometry(options.page);
   const running = pdfRunningOption(options.running);
-  const render = running
-    ? wasmBindings.renderPdfConfiguredRunning
+  const render = running?.hasImages
+    ? wasmBindings.renderPdfConfiguredRunningImages
+    : running ? wasmBindings.renderPdfConfiguredRunning
     : geometry.length ? wasmBindings.renderPdfConfiguredPage : renderPdfConfiguredMulti;
   if (typeof render !== "function") {
     const error = new Error(running
@@ -156,6 +157,11 @@ export async function renderPdf(markdown, options = {}) {
   // request. Asynchronous initialization cannot retarget its page or contents.
   await init();
   if (running) {
+    if (running.hasImages) {
+      return normalizeResult(render(...args, geometry, running.slots, running.headerRule,
+        running.footerRule, running.skipFirstPage, running.imageDestinations,
+        running.imagePositions, running.imageHeights, ...tail));
+    }
     return normalizeResult(render(...args, geometry, running.slots, running.headerRule,
       running.footerRule, running.skipFirstPage, ...tail));
   }
@@ -196,13 +202,13 @@ function pdfRunningOption(value) {
   }
   const band = (bandValue, label) => {
     if (bandValue === undefined || bandValue === null) {
-      return { slots: ["", "", ""], rule: false };
+      return { slots: ["", "", ""], rule: false, image: null };
     }
     if (typeof bandValue !== "object" || Array.isArray(bandValue)) {
       throw new TypeError(`running.${label} must be an object`);
     }
     for (const key of Object.keys(bandValue)) {
-      if (!["left", "center", "right", "rule"].includes(key)) {
+      if (!["left", "center", "right", "rule", "image"].includes(key)) {
         throw new TypeError(`Unsupported running.${label} field: '${key}'`);
       }
     }
@@ -219,7 +225,8 @@ function pdfRunningOption(value) {
     if (bandValue.rule !== undefined && typeof bandValue.rule !== "boolean") {
       throw new TypeError(`running.${label}.rule must be a boolean`);
     }
-    return { slots, rule: bandValue.rule === true };
+    return { slots, rule: bandValue.rule === true,
+      image: runningImageOption(bandValue.image, `running.${label}.image`) };
   };
   const header = band(value.header, "header");
   const footer = band(value.footer, "footer");
@@ -227,7 +234,9 @@ function pdfRunningOption(value) {
     throw new TypeError("running.skipFirstPage must be a boolean");
   }
   const slots = [...header.slots, ...footer.slots];
-  if (slots.every((slot) => slot === "") && !header.rule && !footer.rule) {
+  const images = [header.image, footer.image];
+  const hasImages = images.some(image => image !== null);
+  if (slots.every((slot) => slot === "") && !header.rule && !footer.rule && !hasImages) {
     return null;
   }
   return {
@@ -235,7 +244,40 @@ function pdfRunningOption(value) {
     headerRule: header.rule,
     footerRule: footer.rule,
     skipFirstPage: value.skipFirstPage === true,
+    hasImages,
+    imageDestinations: images.map(image => image?.dest ?? ""),
+    imagePositions: new Uint32Array(images.map(image => image?.position === "right" ? 1 : 0)),
+    imageHeights: new Uint32Array(images.map(image => image?.heightPt ?? 0)),
   };
+}
+
+function runningImageOption(value, label) {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw new TypeError(`${label} must be a plain data object`);
+  }
+  const fields = {};
+  for (const key of Reflect.ownKeys(value)) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (!["dest", "position", "heightPt"].includes(key) || !field || !Object.hasOwn(field, "value")) {
+      throw new TypeError(`${label} has an unsupported field or accessor`);
+    }
+    fields[key] = field.value;
+  }
+  if (typeof fields.dest !== "string" || !fields.dest.trim()) {
+    throw new TypeError(`${label}.dest must be a nonempty image asset key`);
+  }
+  const dest = fields.dest.trim();
+  bookPdfTextBytes(dest, 4096);
+  if (fields.position !== undefined && !["left", "right"].includes(fields.position)) {
+    throw new TypeError(`${label}.position must be left or right`);
+  }
+  if (fields.heightPt !== undefined && (!Number.isSafeInteger(fields.heightPt)
+      || fields.heightPt < 1 || fields.heightPt > 65535)) {
+    throw new RangeError(`${label}.heightPt must be an integer in 1..65535 points`);
+  }
+  return { dest, position: fields.position ?? "left", heightPt: fields.heightPt };
 }
 
 export async function renderSvg(markdown, options = {}) {

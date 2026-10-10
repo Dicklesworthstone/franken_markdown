@@ -35,6 +35,7 @@ const PDF = [
   "microtype",
   "page",
   "running",
+  "pdfImages",
 ];
 const fail = (code, message) => {
   throw new FlowError(code, message);
@@ -87,7 +88,7 @@ function pdfRunning(value) {
   let units = 0, draws = false;
   for (const name of ["header", "footer"]) {
     if (input[name] === undefined) continue;
-    const band = runningRecord(input[name], ["left", "center", "right", "rule"], `running.${name}`);
+    const band = runningRecord(input[name], ["left", "center", "right", "rule", "image"], `running.${name}`);
     const next = {};
     for (const slot of ["left", "center", "right"]) {
       if (band[slot] === undefined) continue;
@@ -102,6 +103,20 @@ function pdfRunning(value) {
       next.rule = band.rule;
       draws ||= band.rule;
     }
+    if (band.image !== undefined) {
+      const label = `running.${name}.image`;
+      const image = runningRecord(band.image, ["dest", "position", "heightPt"], label);
+      const dest = text(image.dest, `${label}.dest`, 4096).trim();
+      if (!dest || new TextEncoder().encode(dest).length > 4096)
+        fail("INVALID_OPTIONS", `${label}.dest requires 1..4096 UTF-8 bytes`);
+      if (image.position !== undefined && !["left", "right"].includes(image.position))
+        fail("INVALID_OPTIONS", `${label}.position must be left or right`);
+      const heightPt = image.heightPt === undefined ? undefined
+        : uint(image.heightPt, `${label}.heightPt`, 1, 65535);
+      next.image = Object.freeze({ dest, ...(image.position === undefined ? {} : { position: image.position }),
+        ...(heightPt === undefined ? {} : { heightPt }) });
+      draws = true;
+    }
     result[name] = Object.freeze(next);
   }
   if (input.skipFirstPage !== undefined) {
@@ -114,6 +129,34 @@ function pdfRunning(value) {
     result.skipFirstPage = input.skipFirstPage;
   }
   return Object.freeze(result);
+}
+
+// Explicit export-only assets let a host supply a running logo without adding
+// it to Markdown or granting ambient loading. Validate the complete inventory
+// before copying, including exact views and the aggregate byte budget.
+function exportImages(value) {
+  if (!Array.isArray(value) || value.length > IMAGE_COUNT)
+    fail("INVALID_OPTIONS", "pdfImages must contain at most 1024 image assets");
+  const images = [];
+  let total = 0, destinationUnits = 0;
+  for (let i = 0; i < value.length; i++) {
+    const entry = Object.getOwnPropertyDescriptor(value, String(i));
+    if (!entry || !Object.hasOwn(entry, "value"))
+      fail("INVALID_OPTIONS", "pdfImages must contain data entries without holes or accessors");
+    const image = runningRecord(entry.value, ["destination", "bytes"], `pdfImages[${i}]`);
+    const destination = text(image.destination, "image destination", 8192).trim();
+    if (!destination) fail("INVALID_OPTIONS", "empty image destination");
+    const bytes = byteView(image.bytes, FLOW_ASSET_LIMIT, "INVALID_OPTIONS");
+    if (!bytes.length) fail("INVALID_OPTIONS", "image assets require encoded bytes");
+    total += bytes.length;
+    destinationUnits += destination.length;
+    if (total > IMAGE_BYTES || destinationUnits > 64 * 1024)
+      fail("BUDGET_EXCEEDED", "explicit export images exceed aggregate payload or destination limits");
+    images.push({ destination, bytes });
+  }
+  return Object.freeze(images.map(image => Object.freeze({
+    destination: image.destination, bytes: new Uint8Array(image.bytes),
+  })));
 }
 
 // Data-only options; called on both sides of the worker boundary. Nested print
@@ -173,7 +216,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
       result.customCss = text(options.customCss, "customCss", FLOW_SOURCE_LIMIT);
     }
   } else {
-    const { page, running } = options;
+    const { page, running, pdfImages } = options;
     if (page !== undefined) {
       try {
         result.page = normalizePdfPage(page);
@@ -182,6 +225,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
       }
     }
     if (running !== undefined) result.running = pdfRunning(running);
+    if (pdfImages !== undefined) result.pdfImages = exportImages(pdfImages);
     // Deterministic by default. A host can supply a chosen timestamp explicitly.
     result.metadataEpochSeconds = uint(
       options.metadataEpochSeconds ?? 0,
@@ -228,7 +272,7 @@ function byteView(value, max, code = "INVALID_WASM_RESPONSE") {
 function sameBytes(a, b) {
   return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
-function collectImages(session, expected) {
+function collectImages(session, expected, extraImages = []) {
   const images = new Map();
   let offset = 0,
     total = null,
@@ -236,6 +280,25 @@ function collectImages(session, expected) {
     retained = 0,
     destinationUnits = 0,
     processed = 0;
+  const addImage = (destination, bytes) => {
+    if (++occurrences > IMAGE_COUNT) fail("BUDGET_EXCEEDED", "export image count exceeded");
+    processed += bytes.length;
+    if (processed > 64 * 1024 * 1024)
+      fail("BUDGET_EXCEEDED", "export image copy/compare work limit exceeded");
+    const previous = images.get(destination);
+    if (previous) {
+      if (!sameBytes(previous.bytes, bytes))
+        fail("AMBIGUOUS_EXPORT_ASSET", "one image destination has different occurrence or explicit payloads");
+      return;
+    }
+    if (bytes.length > IMAGE_BYTES - retained)
+      fail("BUDGET_EXCEEDED", "export image payload limit exceeded");
+    destinationUnits += destination.length;
+    if (destinationUnits > 64 * 1024)
+      fail("BUDGET_EXCEEDED", "export image destination limit exceeded");
+    retained += bytes.length;
+    images.set(destination, { destination, bytes: new Uint8Array(bytes) });
+  };
   do {
     const page = session.snapshot({ offset, limit: 256, glyphs: false, token: expected });
     if (
@@ -261,9 +324,8 @@ function collectImages(session, expected) {
       if (!item || typeof item.kind !== "string")
         fail("INVALID_WASM_RESPONSE", "invalid export display item");
       if (item.kind !== "image") continue;
-      if (++occurrences > IMAGE_COUNT) fail("BUDGET_EXCEEDED", "export image count exceeded");
       const id = identity(item.requestId);
-      const destination = text(item.destination, "image destination", 8192);
+      const destination = text(item.destination, "image destination", 8192).trim();
       if (!destination) fail("INVALID_WASM_RESPONSE", "empty image destination");
       if (item.isResolved !== true)
         fail(
@@ -277,28 +339,12 @@ function collectImages(session, expected) {
           `image ${id} has dimensions only; encoded bytes are required for export`,
         );
       const bytes = byteView(raw, FLOW_ASSET_LIMIT);
-      processed += bytes.length;
-      if (processed > 64 * 1024 * 1024)
-        fail("BUDGET_EXCEEDED", "export image copy/compare work limit exceeded");
       if (!bytes.length) fail("UNRESOLVED_EXPORT_ASSET", `image ${id} has no encoded payload`);
-      const previous = images.get(destination);
-      if (previous) {
-        // The document renderer addresses assets by destination, not occurrence.
-        // Choosing either differing payload would silently export the wrong image.
-        if (!sameBytes(previous.bytes, bytes))
-          fail("AMBIGUOUS_EXPORT_ASSET", "one image destination has different occurrence payloads");
-        continue;
-      }
-      if (bytes.length > IMAGE_BYTES - retained)
-        fail("BUDGET_EXCEEDED", "export image payload limit exceeded");
-      destinationUnits += destination.length;
-      if (destinationUnits > 64 * 1024)
-        fail("BUDGET_EXCEEDED", "export image destination limit exceeded");
-      retained += bytes.length;
-      images.set(destination, { destination, bytes: new Uint8Array(bytes) });
+      addImage(destination, bytes);
     }
     offset = page.nextOffset;
   } while (offset !== null);
+  for (const image of extraImages) addImage(image.destination, image.bytes);
   return { pdfImages: [...images.values()], assetBytes: retained };
 }
 function checkDiagnostics(value, sourceLength) {
@@ -387,7 +433,7 @@ export function withFlowExports(session, renderers, font = "sans") {
       try {
         const source = sourceText(session.source);
         const sourceLengthBytes = new TextEncoder().encode(source).length;
-        const assets = collectImages(session, expected);
+        const assets = collectImages(session, expected, normalized.pdfImages);
         fence(session, expected);
         const { maxOutputBytes, ...settings } = normalized;
         // Own the complete input before the renderer's initialization await. Edits

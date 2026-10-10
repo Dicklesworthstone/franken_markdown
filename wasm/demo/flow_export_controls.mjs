@@ -4,9 +4,21 @@
 import { normalizeFlowExport, validateFlowExportResult } from "../flow_export.mjs";
 import { FlowError } from "../flow_session.mjs";
 
-const sameOptions = (a, b) =>
-  Object.keys(a).length === Object.keys(b).length &&
-  Object.keys(a).every((key) => a[key] === b[key]);
+// Both inputs have passed bounded, deeply owned export admission. New page,
+// running-band and asset records are allocated on each read, so reference
+// equality would reject unchanged settings and make those downloads unusable.
+function sameOptions(a, b) {
+  if (a === b) return true;
+  if (a instanceof Uint8Array || b instanceof Uint8Array) {
+    return a instanceof Uint8Array && b instanceof Uint8Array
+      && a.length === b.length && a.every((value, index) => value === b[index]);
+  }
+  if (!a || !b || typeof a !== "object" || typeof b !== "object"
+      || Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length
+    && keys.every(key => Object.hasOwn(b, key) && sameOptions(a[key], b[key]));
+}
 const same = (a, b) => a?.revision === b?.revision && a?.layoutRevision === b?.layoutRevision;
 export function createExportControls({
   html,

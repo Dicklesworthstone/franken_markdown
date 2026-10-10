@@ -551,7 +551,8 @@ fmd --text '<markdown>' --out out.html
 | `--svg-width-pt <POINTS>` | SVG poster width (144..=14400 points; default 612). SVG output draws the same auto-loaded, `--pdf-image` and remote images and `--pdf-font` faces as PDF |
 | `--pdf-page-numbers` | Centered page number in the PDF bottom margin (sugar for `--pdf-footer-center '{page}'`) |
 | `--pdf-header-left\|center\|right <text>`, `--pdf-footer-left\|center\|right <text>` | Opt-in running header/footer text in the PDF margins. Tokens `{page}`, `{pages}`, `{title}`, `{author}`, `{date}` (from `SOURCE_DATE_EPOCH`, never the clock); overlong slots get an ellipsis; a band that does not fit its margin fails the render. Add `--pdf-header-rule`/`--pdf-footer-rule` for hairlines and `--pdf-running-skip-first` to leave page 1 bare |
-| `--pdf-image DEST=PATH` | Provide or override one Markdown image destination for PDF rendering; repeat for multiple images. File-input HTML/PDF renders also auto-load relative local PNG/SVG/JPEG image destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). The render core never reads files or fetches network resources itself |
+| `--pdf-header-image DEST`, `--pdf-footer-image DEST` | One decorative PNG/JPEG/SVG logo per PDF band, resolved from `--pdf-image DEST=PATH`; the destination need not appear in Markdown. Use `--pdf-header-image-position left\|right` or `--pdf-footer-image-position left\|right` (default left) and optional `--pdf-header-image-height-pt`/`--pdf-footer-image-height-pt` positive integer points. Images shrink proportionally to fit the existing margin and leave room for text. Missing or invalid images fail the render. Available in render, watch and batch; requires `--to pdf` or `--to both` |
+| `--pdf-image DEST=PATH` | Provide or override one image destination for PDF rendering, including running logos; repeat for multiple images. File-input HTML/PDF renders also auto-load relative local PNG/SVG/JPEG Markdown image destinations, and PDF renders fetch remote http(s) Markdown destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). The render core never reads files or fetches network resources itself |
 | `--max-pdf-image-bytes <n>` | Max bytes accepted per explicit PDF image or auto-loaded local HTML/PDF image file before rendering; also caps each remote image fetch (default `33554432`, 32 MiB) |
 | `--no-remote-images` | Do not fetch remote http(s) image destinations for PDF output; they degrade to alt text with a warning |
 | `--remote-image-timeout-secs <n>` | Per-image timeout for remote PDF image fetches (default `20`) |
@@ -574,11 +575,19 @@ fmd README.md --out README.html
 fmd README.md --to pdf --out README.pdf
 fmd README.md --to pdf --pdf-line-numbers --out README.pdf
 fmd README.md --to pdf --pdf-header-right '{title}' --pdf-footer-center '{page} / {pages}' --pdf-footer-rule --out README.pdf
+fmd README.md --to pdf --pdf-image brand=./logo.svg --pdf-header-image brand --pdf-header-image-height-pt 18 --pdf-footer-center '{page} / {pages}' --out branded.pdf
 fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf
 fmd README.md --to both --out README.html        # writes README.html + README.pdf
 fmd --max-input-bytes 1048576 README.md --out README.html
 SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf
 ```
+
+Running images occupy the margin without changing body pagination. Their default
+height is three quarters of the band text size; an explicit height is a requested
+maximum. They are decorative PDF artifacts, including when an SVG contains links.
+One `--pdf-image` mapping can serve both header and footer. In `watch`, changing
+the selected logo file triggers a rebuild even when Markdown does not reference it.
+Position and height flags require the corresponding header or footer image flag.
 
 ### `config`
 

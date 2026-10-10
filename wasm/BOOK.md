@@ -10,6 +10,23 @@ The workbench combines the existing Rust `FmdBook` renderer with an ordered loca
 collection and dedicated module workers. It adds no Markdown renderer, ZIP writer,
 browser-print PDF, third-party dependency, network loader, or server-side storage.
 
+## Running logos in the book API
+
+The programmatic `book`/`book-worker` APIs accept a header or footer
+`image: { dest, position?, heightPt? }` inside `options.running`. Supply its bytes
+in `options.images`; `dest` is a book-root asset key, so a logo need not appear in
+a chapter. Position is `left` by default or `right`. Height is an optional positive
+integer in points (1..65535); omission lets the native renderer fit the margin.
+Both fitted dimensions must remain at least 0.01 pt. A smaller result fails with
+`pdf_running_image_invalid`; increase the height, available width or margin, or
+choose artwork with a less extreme aspect ratio.
+Settings and exact byte views are captured before initialization or worker
+transfer. The additive `FmdBook.setPdfOptionsWithRunningImages` binding admits the
+complete PDF settings profile transactionally. Old packages reject requested
+logos before creating a book; ordinary text-only calls keep their existing ABI.
+Changed logo configuration invalidates retained exports like other PDF settings.
+These programmatic options do not add logo controls to the book workbench UI.
+
 ## Complete workflow
 
 Add `.md`/`.markdown` files, PNG/JPEG/SVG image files, or a folder. Folder import

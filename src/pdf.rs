@@ -21367,6 +21367,9 @@ fn serialize(
                 slot_texts[slot_idx].texts.push(text);
             }
         }
+        for svg in chrome.images().filter_map(|image| image.vector.as_ref()) {
+            collect_svg_font_slot_text_refs(svg, &mut slot_texts);
+        }
     }
     let mut used_slots: Vec<u8> = SLOTS
         .into_iter()
@@ -21630,7 +21633,7 @@ fn serialize(
         "image_asset_collection",
         lines.len(),
         "collect supported PDF image XObjects from laid-out image lines",
-        || collect_pdf_images(lines, faces),
+        || collect_pdf_images(lines, faces, chrome.as_ref()),
         |images| {
             images
                 .iter()
@@ -23112,6 +23115,8 @@ fn generate_page_content(
             next_mcid,
             chrome,
             page_idx,
+            image_index,
+            &mut page_resources,
             subsets,
             subset_lookup,
             faces,
@@ -23728,7 +23733,11 @@ fn heading_metadata(lines: &[Line]) -> BTreeMap<u32, HeadingMeta> {
     out
 }
 
-fn collect_pdf_images(lines: &[Line], faces: &Faces) -> Vec<PdfImageData> {
+fn collect_pdf_images(
+    lines: &[Line],
+    faces: &Faces,
+    chrome: Option<&running::ChromePages>,
+) -> Vec<PdfImageData> {
     let mut by_key: BTreeMap<String, PdfImageData> = BTreeMap::new();
     for image in lines.iter().filter_map(|line| line.image.as_ref()) {
         if let Some(svg) = image.image.vector.as_ref() {
@@ -23757,6 +23766,17 @@ fn collect_pdf_images(lines: &[Line], faces: &Faces) -> Vec<PdfImageData> {
             by_key
                 .entry(image.key.clone())
                 .or_insert_with(|| (*image).clone());
+        }
+    }
+    if let Some(chrome) = chrome {
+        for image in chrome.images() {
+            if let Some(svg) = image.vector.as_ref() {
+                collect_svg_pdf_images(svg, &mut by_key);
+            } else {
+                by_key
+                    .entry(image.key.clone())
+                    .or_insert_with(|| image.clone());
+            }
         }
     }
     by_key.into_values().collect()

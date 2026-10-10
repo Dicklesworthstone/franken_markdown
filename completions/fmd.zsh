@@ -24,6 +24,16 @@ _fmd() {
         '--margin-left-pt=[PDF left margin in points]:points:'
     )
 
+    local -a logo_opts=(
+        '--pdf-header-image=[Header logo destination from --pdf-image]:destination:'
+        '--pdf-header-image-position=[Header logo placement (default left)]:side:(left right)'
+        '--pdf-header-image-height-pt=[Positive requested header logo height]:points:'
+        '--pdf-footer-image=[Footer logo destination from --pdf-image]:destination:'
+        '--pdf-footer-image-position=[Footer logo placement (default left)]:side:(left right)'
+        '--pdf-footer-image-height-pt=[Positive requested footer logo height]:points:'
+        '*--pdf-image=[Provide or override a local image asset]:DEST=PATH:'
+    )
+
     _arguments -C \
         $global_opts \
         '1: :->command' \
@@ -54,6 +64,7 @@ _fmd() {
                     _arguments -s \
                         $global_opts \
                         $page_opts \
+                        $logo_opts \
                         '--text=[Raw Markdown text to render directly]:text:' \
                         '--to=[Which output(s) to produce]:target:(html pdf both epub svg)' \
                         '(-o --out)'{-o,--out}'=[Output path]:output file:_files' \
@@ -87,7 +98,6 @@ _fmd() {
                         '--pdf-base-font-size=[Base body font size override in points]:points:' \
                         '--pdf-heading-scale=[Per-step heading geometric scale ratio]:ratio:' \
                         '--pdf-table-font-size=[Nominal table cell font size override in points]:points:' \
-                        '*--pdf-image=[Provide or override a local PDF image asset]:DEST=PATH:' \
                         '*--pdf-font=[Host TrueType face for a renderer slot]:SLOT=PATH:' \
                         '*--pdf-font-weight=[Pin CSS font-weight for a host font slot]:WEIGHT:' \
                         '--max-pdf-image-bytes=[Maximum bytes accepted per PDF image]:bytes:' \
@@ -118,6 +128,7 @@ _fmd() {
                     _arguments \
                         $global_opts \
                         $page_opts \
+                        $logo_opts \
                         '--to=[Which output(s) to produce]:target:(html pdf both epub svg)' \
                         '(-o --out)'{-o,--out}'=[Output path]:output file:_files' \
                         '--font=[Override body font]:font:(sans serif)' \
@@ -169,6 +180,7 @@ _fmd() {
                     _arguments \
                         $global_opts \
                         $page_opts \
+                        $logo_opts \
                         '--to=[Which output(s) to produce]:target:(html pdf both epub svg)' \
                         '--out-dir=[Directory for outputs]:directory:_files -/' \
                         '--workers=[Worker cap]:workers:' \

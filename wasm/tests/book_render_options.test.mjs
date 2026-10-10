@@ -25,6 +25,10 @@ class RecordingBook {
   setFont(slot, bytes) { (this.settings.fonts ??= []).push([slot, [...bytes]]); }
   setFontWeight(slot, weight) { this.settings.weight = [slot, weight]; }
   setPdfOptions(...args) { this.settings.pdf = args; }
+  setPdfOptionsWithRunningImages(...args) {
+    this.settings.pdf = args.slice(0, 12);
+    this.settings.runningImages = args.slice(12).map(value => [...value]);
+  }
   setHtmlFontFormat(format) { this.settings.htmlFontFormat = format; }
   renderPdf() { return new TextEncoder().encode(JSON.stringify(this.settings)); }
   renderPdfWithPage(page) { this.settings.page = [...page]; return this.renderPdf(); }
@@ -48,11 +52,58 @@ const PDF_ARGS = ["homogeneous,antiriver,pareto,optimal-pagination,expansion",
 
 if (!isMainThread) {
   if (workerData?.old) delete RecordingBook.prototype.setPdfOptions;
+  if (workerData?.oldImages) delete RecordingBook.prototype.setPdfOptionsWithRunningImages;
   installBookWorker({
     addEventListener(type, listener) { parentPort.on(type, data => listener({ data })); },
     postMessage(data, transfer) { parentPort.postMessage(data, transfer); },
   }, api);
 } else {
+  test("book logos use the additive settings transaction and retain exact host assets", async () => {
+    let ready;
+    const delayed = createBookBindings(() => new Promise(resolve => { ready = resolve; }));
+    const bytes = new Uint8Array([99, 1, 2, 3, 88]);
+    const options = { ...full(), images: [{ destination: "logo.svg", bytes: bytes.subarray(1, 4) }] };
+    options.running.header.image = { dest: "logo.svg", position: "right", heightPt: 24 };
+    options.running.footer.image = { dest: "logo.svg" };
+    const admitted = prepareBookInput(FILES, options);
+    assert(Object.isFrozen(admitted.options.running.header.image));
+    assert.deepEqual(prepareBookInput(admitted.files, structuredClone(admitted.options)), admitted);
+    const pending = delayed.createBook(FILES, options);
+    options.running.header.image.dest = "changed.svg";
+    options.running.header.image.heightPt = 30;
+    options.images[0].destination = "changed.svg";
+    bytes.fill(9);
+    ready(RecordingBook);
+    const session = await pending;
+    const result = decoded(session.renderPdf());
+    assert.deepEqual(result.pdf, PDF_ARGS);
+    assert.deepEqual(result.runningImages, [["logo.svg", "logo.svg"], [1, 0], [24, 0]]);
+    assert.deepEqual(result.images, [["logo.svg", [1, 2, 3]]]);
+    session.dispose();
+    assert.equal(bytes.byteLength, 5);
+  });
+
+  test("book image options reject malformed data and unsupported packages before construction", async () => {
+    let getterCalls = 0;
+    const accessor = Object.defineProperty({}, "dest", { get() { getterCalls++; return "logo"; } });
+    for (const image of [null, [], {}, accessor, { dest: " " }, { dest: "\ud800" },
+      { dest: "logo", position: "center" }, { dest: "logo", heightPt: 0 },
+      { dest: "logo", heightPt: 1.5 }, { dest: "logo", heightPt: 65536 },
+      { dest: "logo", bytes: new Uint8Array([1]) }]) {
+      assert.throws(() => prepareBookInput(FILES, { running: { header: { image } } }));
+    }
+    assert.equal(getterCalls, 0);
+    class OldBook extends RecordingBook {}
+    Object.defineProperty(OldBook.prototype, "setPdfOptionsWithRunningImages", { value: undefined });
+    const old = createBookBindings(async () => OldBook);
+    const created = state.created;
+    await assert.rejects(old.createBook(FILES, { running: { header: { image: { dest: "logo" } } } }),
+      error => error.code === "UNSUPPORTED_BOOK_OPTIONS");
+    assert.equal(state.created, created);
+    const text = await old.createBook(FILES, { running: { footer: { center: "{page}" } } });
+    text.dispose();
+  });
+
   test("book PDF settings and running bands reach the raw method in exact ABI order", async () => {
     const session = await api.createBook(FILES, full());
     const result = decoded(session.renderPdf());
@@ -220,8 +271,8 @@ if (!isMainThread) {
     for (const value of [Infinity, -Infinity, NaN, "12", null]) assert.throws(() => prepareBookInput(FILES, { baseFontSize: value }));
   });
 
-  function workerEndpoint(old = false) {
-    const worker = new Worker(new URL(import.meta.url), { workerData: { old } });
+  function workerEndpoint(old = false, oldImages = false) {
+    const worker = new Worker(new URL(import.meta.url), { workerData: { old, oldImages } });
     const callbacks = new Map();
     return {
       postMessage: (message, transfer) => worker.postMessage(message, transfer),
@@ -260,6 +311,28 @@ if (!isMainThread) {
     } finally { client.dispose(); }
   });
 
+  test("retained book logo configuration survives a real worker and rejects an old image binding", async () => {
+    const client = createBookWorkerClient({ workerFactory: () => workerEndpoint(), timeoutMs: 10000 });
+    try {
+      const bytes = new Uint8Array([3, 4]);
+      const options = { images: [{ destination: "logo.svg", bytes }],
+        running: { header: { image: { dest: "logo.svg", position: "right", heightPt: 24 } } } };
+      const pending = client.render(FILES, "pdf", options);
+      options.running.header.image.dest = "late.svg";
+      bytes.fill(9);
+      const result = decoded(await pending);
+      assert.deepEqual(result.runningImages, [["logo.svg", ""], [1, 0], [24, 0]]);
+      assert.deepEqual(result.images, [["logo.svg", [3, 4]]]);
+    } finally { client.dispose(); }
+    const old = createBookWorkerClient({ workerFactory: () => workerEndpoint(false, true), timeoutMs: 10000 });
+    try {
+      await assert.rejects(old.render(FILES, "pdf", { running: { header: { image: { dest: "logo" } } } }),
+        error => error.code === "UNSUPPORTED_BOOK_OPTIONS");
+      assert.equal(old.busy, false);
+      assert.equal(decoded(await old.render(FILES, "pdf")).pdf, undefined);
+    } finally { old.dispose(); }
+  });
+
   test("retained preview invalidation includes every new publishing option", async () => {
     const preview = createRetainedBookPreview(api, (engine) => engine.renderBookSite());
     let prior = state.created;
@@ -267,7 +340,9 @@ if (!isMainThread) {
       { tocDepth: 2 }, { tocDepth: 3 }, { typography: "pareto" }, { typography: "antiriver" },
       { baseFontSize: 12 }, { headingScale: 1.3 }, { tableFontSize: 9 }, { fitToPages: 3 },
       { codeLineNumbers: true }, { metadataEpochSeconds: 0 },
-      { running: { header: { left: "First" } } }, { running: { header: { left: "Second" } } }];
+      { running: { header: { left: "First" } } }, { running: { header: { left: "Second" } } },
+      { running: { header: { image: { dest: "logo" } } } },
+      { running: { header: { image: { dest: "logo", position: "right", heightPt: 24 } } } }];
     try {
       for (const options of variants) {
         const input = prepareBookInput(FILES, options);

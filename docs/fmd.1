@@ -140,11 +140,34 @@ YYYY-MM-DD UTC; empty when unset, never the wall clock). Unknown tokens stay
 literal. Overlong slots are shortened with an ellipsis. A band that does not fit
 its margin fails the render (exit 70); enlarge margin_top_pt/margin_bottom_pt.
 .TP
+\fB\-\-pdf\-header\-image\fR, \fB\-\-pdf\-footer\-image\fR \fIDEST\fR
+Draw one decorative PNG/JPEG/SVG logo per PDF band, using the bytes supplied by
+\fB\-\-pdf\-image\fR DEST=PATH. The destination need not occur in Markdown.
+One asset mapping can serve both bands. Missing or invalid assets fail the render.
+Requires PDF or combined output; also available in watch and batch.
+.TP
+\fB\-\-pdf\-header\-image\-position\fR, \fB\-\-pdf\-footer\-image\-position\fR \fIleft|right\fR
+Place the image on the selected side (default: left), reserving space before
+fitting the neighboring text. Requires the corresponding image flag.
+.TP
+\fB\-\-pdf\-header\-image\-height\-pt\fR, \fB\-\-pdf\-footer\-image\-height\-pt\fR \fIPOINTS\fR
+Requested image height, a positive integer from 1 through 65535 points.
+Default: three quarters of the band text size. Images shrink proportionally to
+fit the existing margin and neighboring text; body pagination does not change.
+Requires the corresponding image flag. Logos are decorative artifacts without
+interactive links. Watch rebuilds when the selected logo file changes.
+.TP
+\fB\-\-pdf\-image\fR \fIDEST=PATH\fR
+Supply a local image asset for a Markdown destination or running logo. Repeat
+for multiple mappings. For example, \fBfmd report.md \-\-to pdf \-\-pdf\-image
+brand=./logo.svg \-\-pdf\-header\-image brand \-\-pdf\-header\-image\-height\-pt
+18 \-\-pdf\-footer\-center '{page} / {pages}' \-\-out branded.pdf\fR.
+.TP
 \fB\-\-pdf\-header\-rule\fR, \fB\-\-pdf\-footer\-rule\fR
 Draw a hairline under the header or over the footer.
 .TP
 \fB\-\-pdf\-running\-skip\-first\fR
-Leave page 1 without header, footer, rules or page number.
+Leave page 1 without header, footer, logos, rules or page number.
 .TP
 \fB\-\-pdf\-a\fR \fI2b\fR
 Produce PDF/A-2b compliant archive with embedded sRGB ICC profile and XMP metadata packet.

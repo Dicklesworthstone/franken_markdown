@@ -48,6 +48,9 @@ One point is 1/72 inch. Each dimension must be from 144 through 14,400 points.
 Each margin must be finite and nonnegative, and the resulting content area
 must be at least 72 points wide and high. An omitted margin retains its
 configured value; `--no-config` selects the normal 72-point defaults.
+The same flags are available for single-document `render`, `watch`, and `batch`.
+Use `fmd config set page_size a4` (or custom dimensions) to persist a default
+paper size for every native PDF route. An explicit `--page-size` overrides it.
 
 `--pdf-line-numbers` numbers fenced code. `--toc-depth` accepts levels 1–6
 and controls the automatically generated PDF contents; source headings and

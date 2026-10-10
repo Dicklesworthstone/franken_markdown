@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use super::{BookArgs, BookTarget, Failure, error};
-use crate::{FontAssetSlot, FontAssets, FontScale, PageMargins, PageSize, RenderWarning, Theme};
+use crate::{FontAssetSlot, FontAssets, FontScale, RenderWarning, Theme};
 
 pub(super) struct Typography {
     pub theme: Theme,
@@ -93,96 +93,8 @@ fn configure_page(
     selected: Option<&str>,
     margins: [Option<f64>; 4],
 ) -> Result<(), Failure> {
-    let (name, width, height) = match selected {
-        Some(value) => page_size(value)?,
-        None => (
-            theme.page.size.name,
-            f64::from(theme.page.size.width_pt),
-            f64::from(theme.page.size.height_pt),
-        ),
-    };
-    let defaults = theme.page.margins;
-    let [top, right, bottom, left] = std::array::from_fn(|i| {
-        margins[i].unwrap_or(f64::from(
-            [
-                defaults.top_pt,
-                defaults.right_pt,
-                defaults.bottom_pt,
-                defaults.left_pt,
-            ][i],
-        ))
-    });
-    if [top, right, bottom, left]
-        .iter()
-        .any(|point| !point.is_finite() || !(0.0..=14_400.0).contains(point))
-    {
-        return Err(error(
-            64,
-            "invalid_page",
-            "PDF margins must be finite values from 0 through 14400 points",
-        ));
-    }
-    let [width32, height32, top32, right32, bottom32, left32] =
-        [width, height, top, right, bottom, left].map(|point| point as f32);
-    // Admit at host precision AND using the exact arithmetic used by the PDF
-    // layout engine. Rounding must not admit an impossible content rectangle.
-    if width - left - right < 72.0
-        || height - top - bottom < 72.0
-        || width32 - left32 - right32 < 72.0
-        || height32 - top32 - bottom32 < 72.0
-    {
-        return Err(error(
-            64,
-            "invalid_page",
-            "PDF margins must leave at least 72 points of content width and height",
-        ));
-    }
-    theme.page.size = PageSize {
-        name,
-        width_pt: width32,
-        height_pt: height32,
-    };
-    theme.page.margins = PageMargins {
-        top_pt: top32,
-        right_pt: right32,
-        bottom_pt: bottom32,
-        left_pt: left32,
-    };
-    Ok(())
-}
-
-fn page_size(value: &str) -> Result<(&'static str, f64, f64), Failure> {
-    let value = value.trim().to_ascii_lowercase();
-    let (name, width, height) =
-        match value.as_str() {
-            "letter" => ("letter", 612.0, 792.0),
-            "a4" => ("a4", 210.0 * 72.0 / 25.4, 297.0 * 72.0 / 25.4),
-            "a5" => ("a5", 148.0 * 72.0 / 25.4, 210.0 * 72.0 / 25.4),
-            "legal" => ("legal", 612.0, 1008.0),
-            "tabloid" => ("tabloid", 792.0, 1224.0),
-            _ => {
-                let parsed = value.split_once('x').and_then(|(width, height)| {
-                    Some((
-                        width.trim().parse::<f64>().ok()?,
-                        height.trim().parse::<f64>().ok()?,
-                    ))
-                });
-                let (width, height) = parsed.ok_or_else(|| error(64, "invalid_page",
-                "--page-size must be letter, a4, a5, legal, tabloid, or WIDTHxHEIGHT in points"))?;
-                ("custom", width, height)
-            }
-        };
-    if [width, height]
-        .iter()
-        .any(|point| !point.is_finite() || !(144.0..=14_400.0).contains(point))
-    {
-        return Err(error(
-            64,
-            "invalid_page",
-            "PDF paper dimensions must be finite values from 144 through 14400 points",
-        ));
-    }
-    Ok((name, width, height))
+    crate::config::page::configure(theme, selected, margins)
+        .map_err(|message| error(64, "invalid_page", message))
 }
 
 impl Typography {

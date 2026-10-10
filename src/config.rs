@@ -11,6 +11,8 @@ use crate::file_write::{OutputFile, write_outputs_staged};
 use crate::span::DiagnosticSeverity;
 use crate::{DarkModePolicy, FontFamily, PageMargins, Theme};
 
+pub(crate) mod page;
+
 /// Supported config keys.
 pub const CONFIG_KEYS: &[&str] = &[
     "font",
@@ -206,6 +208,9 @@ pub struct FmdConfig {
     pub font: Option<FontFamily>,
     pub dark_mode: Option<DarkModePolicy>,
     pub custom_css: Option<PathBuf>,
+    /// Validated paper name or `WIDTHxHEIGHT` in points. Keep the dimensions
+    /// for custom paper so saving another key cannot lose the selected size.
+    pub page_size: Option<String>,
     pub margins: Option<PageMargins>,
     /// Resolved emoji + symbol fallback strategy (bead y5i9.2). `None`
     /// means "use the v1 default", which the renderer treats as
@@ -363,9 +368,7 @@ impl FmdConfig {
                 };
             }
             "page_size" => {
-                if !value.trim().eq_ignore_ascii_case("letter") {
-                    return Err("page_size currently supports only `letter`".to_string());
-                }
+                self.page_size = Some(page::parse_size(value)?.config_value());
             }
             "margin_top_pt" => self.set_margin(|m, v| m.top_pt = v, value)?,
             "margin_right_pt" => self.set_margin(|m, v| m.right_pt = v, value)?,
@@ -401,7 +404,7 @@ impl FmdConfig {
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
             ),
-            "page_size" => Some(theme.page.size.name.to_string()),
+            "page_size" => Some(self.resolved_page_size()),
             "margin_top_pt" => Some(json_num(theme.page.margins.top_pt)),
             "margin_right_pt" => Some(json_num(theme.page.margins.right_pt)),
             "margin_bottom_pt" => Some(json_num(theme.page.margins.bottom_pt)),
@@ -421,6 +424,11 @@ impl FmdConfig {
         }
         if let Some(dark_mode) = self.dark_mode {
             theme = theme.with_dark_mode(dark_mode);
+        }
+        if let Some(selected) = &self.page_size
+            && let Ok(paper) = page::parse_size(selected)
+        {
+            theme.page.size = paper.size();
         }
         if let Some(margins) = self.margins {
             theme.page.margins = margins;
@@ -444,7 +452,7 @@ impl FmdConfig {
             theme.font.as_str(),
             theme.dark_mode.as_str(),
             custom_css,
-            theme.page.size.name,
+            self.resolved_page_size(),
             json_num(theme.page.margins.top_pt),
             json_num(theme.page.margins.right_pt),
             json_num(theme.page.margins.bottom_pt),
@@ -493,6 +501,17 @@ impl FmdConfig {
                 out.push('\n');
             }
         }
+        if let Some(selected) = &self.page_size {
+            match page::parse_size(selected) {
+                Ok(paper) => {
+                    out.push_str("page_size=");
+                    out.push_str(&paper.config_value());
+                    out.push('\n');
+                }
+                Err(message) if reject_invalid => return Err(ConfigError::Parse(message)),
+                Err(_) => {}
+            }
+        }
         if let Some(margins) = self.margins {
             out.push_str("margin_top_pt=");
             out.push_str(&json_num(margins.top_pt));
@@ -519,6 +538,14 @@ impl FmdConfig {
             out.push('\n');
         }
         Ok(out)
+    }
+
+    fn resolved_page_size(&self) -> String {
+        self.page_size
+            .as_deref()
+            .and_then(|selected| page::parse_size(selected).ok())
+            .map(|paper| paper.config_value())
+            .unwrap_or_else(|| "letter".to_string())
     }
 
     fn set_margin(

@@ -746,7 +746,7 @@ Resolution order for the config path:
 | `font` | `sans`, `serif` | `sans` |
 | `dark_mode` | `auto`, `disabled` (also `on`/`off`/`true`/`false`/`none`) | `auto` |
 | `custom_css` | path to a stylesheet, or `none` | unset |
-| `page_size` | `letter` (612 x 792 pt) | `letter` |
+| `page_size` | `letter`, `a4`, `a5`, `legal`, `tabloid`, or `WIDTHxHEIGHT` in points | `letter` |
 | `margin_top_pt` | non-negative points | `72` |
 | `margin_right_pt` | non-negative points | `72` |
 | `margin_bottom_pt` | non-negative points | `72` |
@@ -763,6 +763,24 @@ The render-default keys apply to `fmd render`, `watch` and `batch`. A flag
 always wins; for `lang`, `toc` and `toc_depth`, document frontmatter also beats
 the config. Switches set to `true` here cannot be turned off per run except
 with `--no-config`.
+
+Paper and margin flags apply to PDF output from `render`, `watch`, `batch`, and
+`book`. Each flag overrides its configured value; omitted margin sides keep
+their configured values. Custom dimensions retain their orientation, so
+`792x612` selects landscape Letter. One point is 1/72 inch.
+
+```sh
+fmd report.md --to pdf --page-size a4 --out report.pdf
+fmd report.md --to pdf --page-size 792x612 --margin-top-pt 36 \
+  --margin-right-pt 30 --margin-bottom-pt 36 --margin-left-pt 42 --out landscape.pdf
+fmd config set page_size a4
+```
+
+Each paper dimension must be 144–14,400 points. PDF margins must be finite,
+nonnegative values that leave at least 72 points of content width and height.
+Invalid combined geometry fails before rendering or replacing outputs. Explicit
+paper and margin flags require `--to pdf` or `--to both`; configured paper does
+not prevent ordinary HTML rendering.
 
 Example config file:
 

@@ -93,6 +93,17 @@ Set default body typography family (default: \fBsans\fR).
 Uniform typographic scaling preset (\fBxs\fR, \fBsm\fR, \fBmd\fR, \fBlg\fR, \fBxl\fR, \fB2xl\fR),
 percentage (\fB125%\fR), multiplier (\fB1.125\fR), or size (\fB18px\fR, \fB12pt\fR).
 .TP
+\fB\-\-page\-size\fR \fISIZE\fR
+PDF paper: letter, a4, a5, legal, tabloid, or WIDTHxHEIGHT in points.
+Custom dimensions retain their orientation; 792x612 selects landscape Letter.
+Each dimension must be 144 through 14400 points. Requires PDF or combined output.
+.TP
+\fB\-\-margin\-top\-pt\fR, \fB\-\-margin\-right\-pt\fR,
+\fB\-\-margin\-bottom\-pt\fR, \fB\-\-margin\-left\-pt\fR \fIPOINTS\fR
+Override individual PDF margins; omitted sides retain configured values (72 points by default).
+Margins must be finite and nonnegative, leaving at least 72 points of content width and height.
+Paper and margin flags are also available in watch, batch and book.
+.TP
 \fB\-\-fit\-to\-pages\fR, \fB\-\-target\-pages\fR \fIPAGES\fR
 Adaptive binary-search solver to fit PDF content strictly within \fIPAGES\fR page budget.
 .TP

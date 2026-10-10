@@ -147,6 +147,76 @@ fn configured_book_pdf_matches_core_and_emits_requested_geometry() {
 }
 
 #[test]
+fn persistent_paper_reaches_book_output_and_explicit_sides_override_it() {
+    let source =
+        "# Manual\n\nA book uses the same persistent paper preferences as a single document.\n";
+    let root = workspace(source);
+    fs::write(root.join("config"), "page_size=a5\nmargin_top_pt=24\nmargin_right_pt=30\nmargin_bottom_pt=36\nmargin_left_pt=42\n").unwrap();
+    let book = build_book(&[BookInput {
+        path: "start.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for (flags, width, height, left) in [
+        (
+            vec![],
+            (148.0_f64 * 72.0 / 25.4) as f32,
+            (210.0_f64 * 72.0 / 25.4) as f32,
+            42.0,
+        ),
+        (
+            vec!["--page-size", "360x504", "--margin-left-pt", "18"],
+            360.0,
+            504.0,
+            18.0,
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_fmd"))
+            .args([
+                "book",
+                "book",
+                "--to",
+                "pdf",
+                "--title",
+                "Stored paper",
+                "--out",
+                "paper.pdf",
+                "--json",
+            ])
+            .args(flags)
+            .env("FMD_CONFIG", root.join("config"))
+            .env_remove("SOURCE_DATE_EPOCH")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        succeeded(&output);
+        let mut theme = Theme::default();
+        theme.page.size = PageSize {
+            name: "custom",
+            width_pt: width,
+            height_pt: height,
+        };
+        theme.page.margins = PageMargins {
+            top_pt: 24.0,
+            right_pt: 30.0,
+            bottom_pt: 36.0,
+            left_pt: left,
+        };
+        let expected = PdfOptions {
+            theme,
+            title: Some("Stored paper".into()),
+            toc: true,
+            page_numbers: true,
+            ..PdfOptions::default()
+        };
+        assert_eq!(
+            fs::read(root.join("paper.pdf")).unwrap(),
+            render_book_pdf(&book, &expected).unwrap()
+        );
+    }
+}
+
+#[test]
 fn host_variable_fonts_and_scale_reach_html_and_epub() {
     let source = "# Hello\n\nHello **variable**.\n";
     let root = workspace(source);

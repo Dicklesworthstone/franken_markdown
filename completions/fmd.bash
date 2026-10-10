@@ -6,6 +6,7 @@ _fmd() {
     _init_completion || return
 
     local subcommands="render capabilities robot-docs verify watch doctor config stats diff book batch mcp help"
+    local page_flags="--page-size --margin-top-pt --margin-right-pt --margin-bottom-pt --margin-left-pt"
     local global_flags="--json --no-color --no-config --robot-triage --help -h --version -V"
 
     # Find the current subcommand if one has already been specified
@@ -41,6 +42,17 @@ _fmd() {
                 ;;
         esac
     fi
+
+    # Paper geometry is shared by native PDF render routes.
+    case "$cmd:$prev" in
+        render:--page-size|watch:--page-size|book:--page-size|batch:--page-size)
+            COMPREPLY=($(compgen -W "letter a4 a5 legal tabloid" -- "$cur"))
+            return 0
+            ;;
+        render:--margin-*-pt|watch:--margin-*-pt|book:--margin-*-pt|batch:--margin-*-pt)
+            return 0
+            ;;
+    esac
 
     # Subcommand specific completion
     case "$cmd" in
@@ -80,7 +92,7 @@ _fmd() {
             esac
             case "$cur" in
                 -*)
-                    local render_flags="--text --to --out -o --font --css --title --author --lang --profile --allow-html --toc --toc-depth --html-font-format --interactive-html --self-hosting --font-scale --type-size --search-index --fit-to-pages --target-pages --microtype --typography-homogeneous --pdf-line-numbers --pdf-page-numbers --pdf-header-left --pdf-header-center --pdf-header-right --pdf-footer-left --pdf-footer-center --pdf-footer-right --pdf-header-rule --pdf-footer-rule --pdf-running-skip-first --pdf-base-font-size --pdf-heading-scale --pdf-table-font-size --pdf-image --pdf-font --pdf-font-weight --max-pdf-image-bytes --no-remote-images --pdf-a --pdf-a-strict --remote-image-timeout-secs --max-input-bytes --json --no-color --no-config --robot-triage --help -h --version -V"
+                    local render_flags="$page_flags --text --to --out -o --font --css --title --author --lang --profile --allow-html --toc --toc-depth --html-font-format --interactive-html --self-hosting --font-scale --type-size --search-index --fit-to-pages --target-pages --microtype --typography-homogeneous --pdf-line-numbers --pdf-page-numbers --pdf-header-left --pdf-header-center --pdf-header-right --pdf-footer-left --pdf-footer-center --pdf-footer-right --pdf-header-rule --pdf-footer-rule --pdf-running-skip-first --pdf-base-font-size --pdf-heading-scale --pdf-table-font-size --pdf-image --pdf-font --pdf-font-weight --max-pdf-image-bytes --no-remote-images --pdf-a --pdf-a-strict --remote-image-timeout-secs --max-input-bytes --json --no-color --no-config --robot-triage --help -h --version -V"
                     COMPREPLY=($(compgen -W "$render_flags" -- "$cur"))
                     return 0
                     ;;
@@ -152,7 +164,7 @@ _fmd() {
             esac
             case "$cur" in
                 -*)
-                    local watch_flags="--to --out -o --font --css --interval --verbose --json --serve --measure --no-color --no-config --robot-triage --help -h --version -V"
+                    local watch_flags="$page_flags --to --out -o --font --css --interval --verbose --json --serve --measure --no-color --no-config --robot-triage --help -h --version -V"
                     COMPREPLY=($(compgen -W "$watch_flags" -- "$cur"))
                     return 0
                     ;;
@@ -241,7 +253,7 @@ _fmd() {
             esac
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--out-dir -o --to --json --max-input-bytes --no-color --no-config --robot-triage --help -h --version -V" -- "$cur"))
+                    COMPREPLY=($(compgen -W "$page_flags --out-dir -o --to --json --max-input-bytes --no-color --no-config --robot-triage --help -h --version -V" -- "$cur"))
                     return 0
                     ;;
                 *)
@@ -270,7 +282,7 @@ _fmd() {
             esac
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--to --out-dir --workers --batch-mode --mem-budget --timeout --json --no-color --no-config --robot-triage --help -h --version -V" -- "$cur"))
+                    COMPREPLY=($(compgen -W "$page_flags --to --out-dir --workers --batch-mode --mem-budget --timeout --json --no-color --no-config --robot-triage --help -h --version -V" -- "$cur"))
                     return 0
                     ;;
                 *)

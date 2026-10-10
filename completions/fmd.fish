@@ -28,6 +28,13 @@ complete -c fmd -n "__fish_use_subcommand" -a book -d "Assemble a directory of M
 complete -c fmd -n "__fish_use_subcommand" -a batch -d "Render many Markdown inputs in parallel under a bounded worker budget"
 complete -c fmd -n "__fish_use_subcommand" -a mcp -d "Run Model Context Protocol (MCP) stdio server exposing tools for agents"
 
+# Paper geometry shared by native PDF render routes.
+complete -c fmd -n "__fish_seen_subcommand_from render watch book batch" -l page-size -r -a "letter a4 a5 legal tabloid" -d "PDF paper or WIDTHxHEIGHT in points"
+complete -c fmd -n "__fish_seen_subcommand_from render watch book batch" -l margin-top-pt -r -d "PDF top margin in points"
+complete -c fmd -n "__fish_seen_subcommand_from render watch book batch" -l margin-right-pt -r -d "PDF right margin in points"
+complete -c fmd -n "__fish_seen_subcommand_from render watch book batch" -l margin-bottom-pt -r -d "PDF bottom margin in points"
+complete -c fmd -n "__fish_seen_subcommand_from render watch book batch" -l margin-left-pt -r -d "PDF left margin in points"
+
 # Subcommand: render
 complete -c fmd -n "__fish_seen_subcommand_from render" -F
 complete -c fmd -n "__fish_seen_subcommand_from render" -l text -d "Raw Markdown text to render directly"

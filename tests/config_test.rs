@@ -346,15 +346,67 @@ fn parse_custom_css_none_and_empty_clear_the_path() {
 }
 
 #[test]
-fn parse_page_size_accepts_letter_case_insensitively_and_rejects_others() {
-    assert!(FmdConfig::parse("page_size=letter").is_ok());
-    assert!(FmdConfig::parse("page_size=LETTER").is_ok());
-    assert!(FmdConfig::parse("page_size= letter ").is_ok());
-    let err = FmdConfig::parse("page_size=a4").expect_err("a4 is unsupported");
-    assert_eq!(
-        err.to_string(),
-        "line 1: page_size currently supports only `letter`"
-    );
+fn parse_page_size_names_and_custom_dimensions_survive_config_round_trips() {
+    for (input, normalized, width, height) in [
+        ("letter", "letter", 612.0, 792.0),
+        (" LETTER ", "letter", 612.0, 792.0),
+        ("A4", "a4", 210.0_f64 * 72.0 / 25.4, 297.0 * 72.0 / 25.4),
+        ("a5", "a5", 148.0 * 72.0 / 25.4, 210.0 * 72.0 / 25.4),
+        ("legal", "legal", 612.0, 1008.0),
+        ("tabloid", "tabloid", 792.0, 1224.0),
+        (" 792 X 612 ", "792x612", 792.0, 612.0),
+        ("360.25x504.5", "360.25x504.5", 360.25, 504.5),
+    ] {
+        let cfg = FmdConfig::parse(&format!("page_size={input}\n")).unwrap();
+        assert_eq!(cfg.get_resolved("page_size").as_deref(), Some(normalized));
+        let size = cfg.to_theme().page.size;
+        assert_eq!(size.width_pt, width as f32);
+        assert_eq!(size.height_pt, height as f32);
+        assert!(
+            cfg.to_json()
+                .contains(&format!("\"page_size\":\"{normalized}\""))
+        );
+        let serialized = cfg.try_to_file_string().unwrap();
+        assert_eq!(serialized, format!("page_size={normalized}\n"));
+        assert_eq!(FmdConfig::parse(&serialized).unwrap(), cfg);
+    }
+    assert!(!FmdConfig::default().to_file_string().contains("page_size="));
+}
+
+#[test]
+fn malformed_page_size_rejects_without_mutating_the_previous_selection() {
+    let mut cfg = FmdConfig::parse("page_size=a4").unwrap();
+    for value in [
+        "custom",
+        "a0",
+        "",
+        "NaNx600",
+        "600xinf",
+        "0x600",
+        "143.999999x600",
+        "14400.000001x600",
+        "360x504x612",
+        "a4\nfont=serif",
+    ] {
+        let previous = cfg.clone();
+        assert!(cfg.set_key_value("page_size", value).is_err(), "{value:?}");
+        assert_eq!(cfg, previous);
+    }
+    let invalid = FmdConfig {
+        page_size: Some("a4\nfont=serif".into()),
+        ..FmdConfig::default()
+    };
+    assert!(invalid.try_to_file_string().is_err());
+    assert!(!invalid.to_file_string().contains("font=serif"));
+}
+
+#[test]
+fn page_size_and_margins_resolve_independently_of_config_key_order() {
+    let paper_first = FmdConfig::parse("page_size=144x144\nmargin_top_pt=36\nmargin_right_pt=36\nmargin_bottom_pt=36\nmargin_left_pt=36\n").unwrap();
+    let paper_last = FmdConfig::parse("margin_left_pt=36\nmargin_bottom_pt=36\nmargin_right_pt=36\nmargin_top_pt=36\npage_size=144x144\n").unwrap();
+    assert_eq!(paper_first, paper_last);
+    assert_eq!(paper_first.to_theme().page.size.width_pt, 144.0);
+    assert_eq!(paper_first.to_theme().page.margins.top_pt, 36.0);
 }
 
 #[test]
@@ -445,6 +497,7 @@ fn to_theme_overlays_font_dark_mode_and_margins() {
         left_pt: 4.0,
     };
     let cfg = FmdConfig {
+        page_size: None,
         font: Some(FontFamily::Serif),
         dark_mode: Some(DarkModePolicy::Disabled),
         custom_css: None,
@@ -466,6 +519,7 @@ fn to_theme_overlays_font_dark_mode_and_margins() {
 #[test]
 fn get_resolved_covers_every_key_and_unknown_returns_none() {
     let cfg = FmdConfig {
+        page_size: None,
         font: Some(FontFamily::Serif),
         dark_mode: Some(DarkModePolicy::Disabled),
         custom_css: Some(PathBuf::from("/x/y.css")),
@@ -511,6 +565,7 @@ fn get_resolved_covers_every_key_and_unknown_returns_none() {
 #[test]
 fn to_file_string_serializes_all_fields_and_round_trips() {
     let cfg = FmdConfig {
+        page_size: None,
         font: Some(FontFamily::Serif),
         dark_mode: Some(DarkModePolicy::Disabled),
         custom_css: Some(PathBuf::from("/themes/custom.css")),

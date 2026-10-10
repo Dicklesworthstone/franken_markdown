@@ -16,6 +16,14 @@ _fmd() {
         '(-V --version)'{-V,--version}'[Print version]'
     )
 
+    local -a page_opts=(
+        '--page-size=[PDF paper name or WIDTHxHEIGHT in points]:size:(letter a4 a5 legal tabloid)'
+        '--margin-top-pt=[PDF top margin in points]:points:'
+        '--margin-right-pt=[PDF right margin in points]:points:'
+        '--margin-bottom-pt=[PDF bottom margin in points]:points:'
+        '--margin-left-pt=[PDF left margin in points]:points:'
+    )
+
     _arguments -C \
         $global_opts \
         '1: :->command' \
@@ -45,6 +53,7 @@ _fmd() {
                 render)
                     _arguments -s \
                         $global_opts \
+                        $page_opts \
                         '--text=[Raw Markdown text to render directly]:text:' \
                         '--to=[Which output(s) to produce]:target:(html pdf both epub svg)' \
                         '(-o --out)'{-o,--out}'=[Output path]:output file:_files' \
@@ -108,6 +117,7 @@ _fmd() {
                 watch)
                     _arguments \
                         $global_opts \
+                        $page_opts \
                         '--to=[Which output(s) to produce]:target:(html pdf both epub svg)' \
                         '(-o --out)'{-o,--out}'=[Output path]:output file:_files' \
                         '--font=[Override body font]:font:(sans serif)' \
@@ -149,6 +159,7 @@ _fmd() {
                 book)
                     _arguments \
                         $global_opts \
+                        $page_opts \
                         '(-o --out-dir)'{-o,--out-dir}'=[Output directory]:directory:_files -/' \
                         '--to=[Which output(s) to produce]:target:(html pdf both epub svg)' \
                         '--max-input-bytes=[Maximum Markdown input bytes per file]:bytes:' \
@@ -157,6 +168,7 @@ _fmd() {
                 batch)
                     _arguments \
                         $global_opts \
+                        $page_opts \
                         '--to=[Which output(s) to produce]:target:(html pdf both epub svg)' \
                         '--out-dir=[Directory for outputs]:directory:_files -/' \
                         '--workers=[Worker cap]:workers:' \

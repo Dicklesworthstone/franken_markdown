@@ -16,46 +16,72 @@ struct FrankenMarkdownApp: App {
         .windowResizability(.contentMinSize)
 #endif
         .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("New Document") {
-                    NotificationCenter.default.post(name: .newMarkdownDocument, object: nil)
-                }
-                .keyboardShortcut("n", modifiers: .command)
-
-                Button("Open Markdown…") {
-                    NotificationCenter.default.post(name: .openMarkdownDocument, object: nil)
-                }
-            }
-            CommandGroup(replacing: .saveItem) {
-                Button("Save") {
-                    NotificationCenter.default.post(name: .saveMarkdownDocument, object: nil)
-                }
-                .keyboardShortcut("s", modifiers: .command)
-
-                Button("Save a Copy…") {
-                    NotificationCenter.default.post(name: .saveMarkdownDocumentCopy, object: nil)
-                }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
-            }
-            CommandMenu("Render") {
-                Button("Render Document") {
-                    NotificationCenter.default.post(name: .renderMarkdownNow, object: nil)
-                }
-                .keyboardShortcut("r", modifiers: .command)
-
-                Divider()
-
-                Button("Export PDF...") {
-                    NotificationCenter.default.post(name: .exportPdfNow, object: nil)
-                }
-                .keyboardShortcut("e", modifiers: [.command, .shift])
-
-                Button("Export HTML...") {
-                    NotificationCenter.default.post(name: .exportHtmlNow, object: nil)
-                }
-                .keyboardShortcut("e", modifiers: [.command, .option])
-            }
+            MarkdownCommands()
             TextSizeCommands()
+        }
+    }
+}
+
+/// Commands belong to the active document scene, even when its editor does not
+/// hold keyboard focus. Broadcasting notifications would edit every open window.
+struct MarkdownSceneActions {
+    var newDocument: () -> Void
+    var openDocument: () -> Void
+    var saveDocument: () -> Void
+    var saveCopy: () -> Void
+    var render: () -> Void
+    var exportPDF: () -> Void
+    var exportHTML: () -> Void
+    var canSave: Bool
+}
+
+private struct MarkdownSceneActionsKey: FocusedValueKey {
+    typealias Value = MarkdownSceneActions
+}
+
+extension FocusedValues {
+    var markdownSceneActions: MarkdownSceneActions? {
+        get { self[MarkdownSceneActionsKey.self] }
+        set { self[MarkdownSceneActionsKey.self] = newValue }
+    }
+}
+
+private struct MarkdownCommands: Commands {
+    @FocusedValue(\.markdownSceneActions) private var actions
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Document") { actions?.newDocument() }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(actions == nil)
+
+            Button("Open Markdown…") { actions?.openDocument() }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(actions == nil)
+        }
+        CommandGroup(replacing: .saveItem) {
+            Button("Save") { actions?.saveDocument() }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(actions?.canSave != true)
+
+            Button("Save a Copy…") { actions?.saveCopy() }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(actions == nil)
+        }
+        CommandMenu("Render") {
+            Button("Render Document") { actions?.render() }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(actions == nil)
+
+            Divider()
+
+            Button("Export PDF...") { actions?.exportPDF() }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(actions == nil)
+
+            Button("Export HTML...") { actions?.exportHTML() }
+                .keyboardShortcut("e", modifiers: [.command, .option])
+                .disabled(actions == nil)
         }
     }
 }
@@ -110,14 +136,4 @@ private struct CatalystWindowFreedom: UIViewControllerRepresentable {
 #endif
         }
     }
-}
-
-extension Notification.Name {
-    static let renderMarkdownNow = Notification.Name("FrankenMarkdown.renderNow")
-    static let exportPdfNow = Notification.Name("FrankenMarkdown.exportPdfNow")
-    static let exportHtmlNow = Notification.Name("FrankenMarkdown.exportHtmlNow")
-    static let newMarkdownDocument = Notification.Name("FrankenMarkdown.newDocument")
-    static let openMarkdownDocument = Notification.Name("FrankenMarkdown.openDocument")
-    static let saveMarkdownDocument = Notification.Name("FrankenMarkdown.saveDocument")
-    static let saveMarkdownDocumentCopy = Notification.Name("FrankenMarkdown.saveDocumentCopy")
 }

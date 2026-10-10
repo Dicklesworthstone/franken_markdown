@@ -138,7 +138,8 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         let restored = MarkdownDocumentSession(initialSource: initial, defaults: defaults)
         XCTAssertEqual(restored.recentDocuments, session.recentDocuments)
         let recent = try XCTUnwrap(restored.recentDocuments.first)
-        let reopened = try await restored.openRecent(recent)
+        let reopenedResult = try await restored.openRecent(recent)
+        let reopened = try XCTUnwrap(reopenedResult)
         XCTAssertEqual(reopened.source, "# Recent\n")
     }
 
@@ -261,6 +262,199 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testNewerOpenWinsWhenReadsCompleteOutOfOrder() async throws {
+        let first = try await testDocument("# First\n", name: "first.md")
+        let second = try await testDocument("# Second\n", name: "second.md")
+        let reads = SuspendedMarkdownIO()
+        let session = MarkdownDocumentSession(
+            initialSource: "# Untitled\n",
+            defaults: try makeDefaults(),
+            openDocument: { try await reads.read($0) }
+        )
+        let firstRequest = session.beginDocumentRequest()
+        let firstTask = Task { try await session.open(from: first.url, request: firstRequest) }
+        await reads.waitUntilRequested(first.url)
+        let secondRequest = session.beginDocumentRequest()
+        let secondTask = Task { try await session.open(from: second.url, request: secondRequest) }
+        await reads.waitUntilRequested(second.url)
+
+        await reads.complete(second.url, with: .success(second))
+        let secondResult = try await secondTask.value
+        session.adopt(try XCTUnwrap(secondResult))
+        await reads.complete(first.url, with: .success(first))
+
+        let firstResult = try await firstTask.value
+        XCTAssertNil(firstResult)
+        XCTAssertEqual(session.currentDocument, second)
+        XCTAssertEqual(session.recentDocuments.first?.displayName, "second.md")
+    }
+
+    @MainActor
+    func testOpenReservedBeforeNewIsDiscardedEvenIfItsTaskStartsLate() async throws {
+        let document = try await testDocument("# Old request\n")
+        let session = MarkdownDocumentSession(
+            initialSource: "# Untitled\n",
+            defaults: try makeDefaults(),
+            openDocument: { _ in document }
+        )
+        let request = session.beginDocumentRequest()
+        session.beginUntitled(source: "# New document\n")
+
+        let result = try await session.open(from: document.url, request: request)
+
+        XCTAssertNil(result)
+        XCTAssertFalse(session.hasCurrentDocument)
+        XCTAssertFalse(session.isDirty(source: "# New document\n"))
+    }
+
+    @MainActor
+    func testFailedOlderOpenDoesNotReportAnErrorForTheNewRequest() async throws {
+        let document = try await testDocument("# Old request\n")
+        let reads = SuspendedMarkdownIO()
+        let session = MarkdownDocumentSession(
+            initialSource: "# Untitled\n",
+            defaults: try makeDefaults(),
+            openDocument: { try await reads.read($0) }
+        )
+        let request = session.beginDocumentRequest()
+        let task = Task { try await session.open(from: document.url, request: request) }
+        await reads.waitUntilRequested(document.url)
+        session.cancelPendingDocumentRequests()
+        await reads.complete(document.url, with: .failure(MarkdownSourceLoader.DocumentError.coordinatedRead))
+
+        let result = try await task.value
+        XCTAssertNil(result)
+        XCTAssertNil(session.attention)
+    }
+
+    @MainActor
+    func testStartupRestorationCannotReplaceAnExplicitlyOpenedFile() async throws {
+        let defaults = try makeDefaults()
+        let previous = try await testDocument("# Previous file\n", name: "previous.md")
+        let selected = try await testDocument("# Selected in Finder\n", name: "selected.md")
+        let initialSession = MarkdownDocumentSession(initialSource: "# Untitled\n", defaults: defaults)
+        initialSession.adopt(previous)
+        let reads = SuspendedMarkdownIO()
+        let session = MarkdownDocumentSession(
+            initialSource: "# Untitled\n",
+            defaults: defaults,
+            openDocument: { try await reads.read($0) }
+        )
+        let restorationTask = Task {
+            try await session.restoreActiveDocument(
+                recoveredSource: nil,
+                recoveredDocumentIdentity: nil
+            )
+        }
+        await reads.waitUntilRequested(previous.url)
+        let request = session.beginDocumentRequest()
+        let openTask = Task { try await session.open(from: selected.url, request: request) }
+        await reads.waitUntilRequested(selected.url)
+        await reads.complete(selected.url, with: .success(selected))
+        let selectedResult = try await openTask.value
+        session.adopt(try XCTUnwrap(selectedResult))
+        await reads.complete(previous.url, with: .success(previous))
+
+        let restoration = try await restorationTask.value
+        XCTAssertEqual(restoration, .none)
+        XCTAssertEqual(session.currentDocument, selected)
+        XCTAssertNil(session.attention)
+    }
+
+    @MainActor
+    func testEditingDuringStartupRestorationKeepsLiveBufferOnReadFailure() async throws {
+        let defaults = try makeDefaults()
+        let previous = try await testDocument("# Previous file\n")
+        let initialSession = MarkdownDocumentSession(initialSource: "# Untitled\n", defaults: defaults)
+        initialSession.adopt(previous)
+        let reads = SuspendedMarkdownIO()
+        let session = MarkdownDocumentSession(
+            initialSource: "# Untitled\n",
+            defaults: defaults,
+            openDocument: { try await reads.read($0) }
+        )
+        var currentSource = "# Untitled\n"
+        let task = Task {
+            try await session.restoreActiveDocument(
+                recoveredSource: nil,
+                recoveredDocumentIdentity: nil,
+                isCurrentSource: { currentSource == "# Untitled\n" }
+            )
+        }
+        await reads.waitUntilRequested(previous.url)
+        currentSource = "# Typed while the document provider was busy\n"
+        await reads.complete(previous.url, with: .failure(MarkdownSourceLoader.DocumentError.coordinatedRead))
+
+        let result = try await task.value
+        XCTAssertEqual(result, .none)
+        XCTAssertFalse(session.hasCurrentDocument)
+        XCTAssertNil(session.attention)
+        XCTAssertTrue(session.isDirty(source: currentSource))
+    }
+
+    @MainActor
+    func testSaveForPreviousDocumentCannotReattachItOrFinishNewDocumentsSave() async throws {
+        let first = try await testDocument("# First\n", name: "first.md")
+        let second = try await testDocument("# Second\n", name: "second.md")
+        let writes = SuspendedMarkdownIO()
+        let session = MarkdownDocumentSession(
+            initialSource: "# Untitled\n",
+            defaults: try makeDefaults(),
+            saveDocument: { _, document in try await writes.read(document.url) }
+        )
+        session.adopt(first)
+        let firstSave = Task { try await session.save(source: "# First edited\n") }
+        await writes.waitUntilRequested(first.url)
+        session.adopt(second)
+        let secondIdentity = session.currentDocumentIdentity
+        let secondSave = Task { try await session.save(source: "# Second edited\n") }
+        await writes.waitUntilRequested(second.url)
+
+        await writes.complete(first.url, with: .success(first))
+        try await firstSave.value
+        XCTAssertEqual(session.currentDocument, second)
+        XCTAssertEqual(session.currentDocumentIdentity, secondIdentity)
+        XCTAssertTrue(session.isSaving, "The first save must not clear the second document's busy state")
+        XCTAssertEqual(session.recentDocuments.first?.displayName, "second.md")
+
+        await writes.complete(second.url, with: .success(second))
+        try await secondSave.value
+        XCTAssertFalse(session.isSaving)
+        XCTAssertEqual(session.currentDocument, second)
+    }
+
+    @MainActor
+    func testOldSaveFailureDoesNotMarkNewDocumentAsConflicted() async throws {
+        let first = try await testDocument("# First\n", name: "first.md")
+        let second = try await testDocument("# Second\n", name: "second.md")
+        let writes = SuspendedMarkdownIO()
+        let session = MarkdownDocumentSession(
+            initialSource: "# Untitled\n",
+            defaults: try makeDefaults(),
+            saveDocument: { _, document in try await writes.read(document.url) }
+        )
+        session.adopt(first)
+        let task = Task { try await session.save(source: "# First edited\n") }
+        await writes.waitUntilRequested(first.url)
+        session.adopt(second)
+        await writes.complete(first.url, with: .failure(MarkdownSourceLoader.DocumentError.changedOnDisk))
+        do {
+            try await task.value
+            XCTFail("The requested save failure must still reach its caller")
+        } catch {
+            XCTAssertEqual(error as? MarkdownSourceLoader.DocumentError, .changedOnDisk)
+        }
+        XCTAssertEqual(session.currentDocument, second)
+        XCTAssertNil(session.attention)
+        XCTAssertFalse(session.isSaving)
+    }
+
+    private func testDocument(_ source: String, name: String = "notes.md") async throws -> MarkdownSourceDocument {
+        let url = try temporarySourceURL(contents: Data(source.utf8), name: name)
+        return try await MarkdownSourceLoader.open(from: url)
+    }
+
     private func makeDefaults() throws -> UserDefaults {
         try XCTUnwrap(UserDefaults(suiteName: "MarkdownRestorationTests.\(UUID().uuidString)"))
     }
@@ -272,5 +466,33 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         let url = directory.appendingPathComponent(name, isDirectory: false)
         try contents.write(to: url, options: .atomic)
         return url
+    }
+}
+
+/// Controlled suspension proves request ordering without timing sleeps or a
+/// particular filesystem/provider speed. Production still uses coordinated I/O.
+private actor SuspendedMarkdownIO {
+    private var requests: [URL: CheckedContinuation<MarkdownSourceDocument, Error>] = [:]
+    private var observers: [URL: CheckedContinuation<Void, Never>] = [:]
+
+    func read(_ url: URL) async throws -> MarkdownSourceDocument {
+        let key = url.standardizedFileURL.resolvingSymlinksInPath()
+        return try await withCheckedThrowingContinuation { continuation in
+            requests[key] = continuation
+            observers.removeValue(forKey: key)?.resume()
+        }
+    }
+
+    func waitUntilRequested(_ url: URL) async {
+        let key = url.standardizedFileURL.resolvingSymlinksInPath()
+        if requests[key] != nil { return }
+        await withCheckedContinuation { continuation in
+            observers[key] = continuation
+        }
+    }
+
+    func complete(_ url: URL, with result: Result<MarkdownSourceDocument, Error>) {
+        let key = url.standardizedFileURL.resolvingSymlinksInPath()
+        requests.removeValue(forKey: key)?.resume(with: result)
     }
 }

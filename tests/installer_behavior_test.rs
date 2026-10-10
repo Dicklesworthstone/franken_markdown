@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 struct TempDir {
     path: PathBuf,
@@ -104,6 +104,7 @@ fn resolve_with_response(json: &str, redirect: &str, setup: &str) -> TestResult<
         .0;
     let script = format!(
         r#"set -euo pipefail
+exec 3>&2
 release_tag_is_valid() {{{resolver}
 OWNER=example
 REPO=renderer
@@ -114,8 +115,8 @@ info() {{ :; }}
 warn() {{ :; }}
 xcurl() {{
   case "$*" in
-    *api.github.com*) printf '%s' "$FMD_TEST_RELEASE_JSON"; echo api >&2 ;;
-    *) printf '%s' "$FMD_TEST_RELEASE_REDIRECT"; echo redirect >&2 ;;
+    *api.github.com*) printf '%s' "$FMD_TEST_RELEASE_JSON"; echo api >&3 ;;
+    *) printf '%s' "$FMD_TEST_RELEASE_REDIRECT"; echo redirect >&3 ;;
   esac
 }}
 {setup}

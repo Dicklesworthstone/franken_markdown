@@ -311,6 +311,71 @@ VERSION_BARE="${VERSION#v}"
 # Never hard-exits: with no releases yet, an empty VERSION simply routes to the
 # from-source fallback.
 # ─────────────────────────────────────────────────────────────────────────────
+release_tag_is_valid() {
+  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
+}
+
+parse_latest_tag_json() {
+  # GitHub may return compact or pretty JSON. Scan strings and nesting so a
+  # release body, escaped key mention, or nested asset cannot supply the tag.
+  # awk is available on the supported Unix hosts, including stock macOS; jq
+  # and Python are deliberately not installer prerequisites.
+  local tag=""
+  tag=$(LC_ALL=C awk '
+    function string_value(    value, c) {
+      value = ""
+      for (++pos; pos <= length(json); ++pos) {
+        c = substr(json, pos, 1)
+        if (c == "\"") return value
+        if (c == "\\") {
+          value = value c substr(json, ++pos, 1)
+        } else {
+          if (c ~ /[[:cntrl:]]/) invalid = 1
+          value = value c
+        }
+      }
+      invalid = 1
+      return value
+    }
+    function skip_space() {
+      while (substr(json, pos, 1) ~ /[[:space:]]/ && pos <= length(json)) ++pos
+    }
+    { json = json $0 "\n" }
+    END {
+      for (pos = 1; pos <= length(json); ++pos) {
+        c = substr(json, pos, 1)
+        if (c ~ /[[:space:]]/) continue
+        if (done) { invalid = 1; break }
+        if (c == "\"") {
+          value = string_value()
+          if (depth == 1 && value == "tag_name") {
+            saved = pos
+            ++pos; skip_space()
+            if (substr(json, pos, 1) != ":") { pos = saved; continue }
+            ++pos; skip_space()
+            if (substr(json, pos, 1) != "\"") { invalid = 1; break }
+            tag = string_value()
+            ++found
+          }
+        } else if (c == "{" || c == "[") {
+          if (depth == 0 && (started++ || c != "{")) invalid = 1
+          stack[++depth] = c
+        } else if (c == "}" || c == "]") {
+          if (depth == 0 || (c == "}" && stack[depth] != "{") ||
+              (c == "]" && stack[depth] != "[")) { invalid = 1; break }
+          if (--depth == 0) done = 1
+        } else if (depth == 0) {
+          invalid = 1
+        }
+      }
+      if (!invalid && done && !depth && found == 1) print tag
+    }
+  ')
+  if release_tag_is_valid "$tag"; then
+    printf '%s\n' "$tag"
+  fi
+}
+
 resolve_version() {
   if [ -n "$VERSION" ]; then
     info "Using requested version: $VERSION"
@@ -325,7 +390,7 @@ resolve_version() {
   tag=$(xcurl -fsSL --connect-timeout 15 --max-time 30 \
         -H "Accept: application/vnd.github.v3+json" \
         "https://api.github.com/repos/${OWNER}/${REPO}/releases/latest" 2>/dev/null \
-        | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -n1 || true)
+        | parse_latest_tag_json || true)
 
   if [ -z "$tag" ]; then
     # Fallback: follow the /releases/latest redirect and parse the tag.
@@ -333,10 +398,9 @@ resolve_version() {
           -w '%{url_effective}' \
           "https://github.com/${OWNER}/${REPO}/releases/latest" 2>/dev/null \
           | sed -E 's|.*/tag/||' || true)
-    case "$tag" in
-      v[0-9]*) : ;;   # looks like a tag
-      *) tag="" ;;    # redirected back to /releases (no release published)
-    esac
+    if ! release_tag_is_valid "$tag"; then
+      tag="" # redirected back to /releases, or an invalid tag
+    fi
   fi
 
   if [ -n "$tag" ]; then
@@ -704,6 +768,18 @@ installer_checksum_self_test() {
     local got="$1" label="$2"
     [ -z "$got" ] || selftest_fail "$label: got unexpected '$got'"
   }
+
+  selftest_eq "$(printf '%s' '{"tag_name":"v0.5.0","body":"## Highlights"}' | parse_latest_tag_json)" "v0.5.0" "compact latest release"
+  selftest_eq "$(printf '{\n  "tag_name" :\n  "v1.2.3-rc.1+build.2"\n}\n' | parse_latest_tag_json)" "v1.2.3-rc.1+build.2" "multiline release tag"
+  selftest_eq "$(printf '%s' '{"body":"mention \"tag_name\":\"v9.9.9\" and {braces}","tag_name":"v0.5.0","assets":[{"tag_name":"v8.8.8"}]}' | parse_latest_tag_json)" "v0.5.0" "escaped and nested tag mentions"
+  selftest_empty "$(printf '%s' '{"assets":[{"tag_name":"v8.8.8"}]}' | parse_latest_tag_json)" "nested tag is not a release tag"
+  selftest_empty "$(printf '%s' '{"tag_name":"v1.2.3","tag_name":"v4.5.6"}' | parse_latest_tag_json)" "ambiguous duplicate tags"
+  selftest_empty "$(printf '%s' '{"tag_name":"v1.2.3/../../main"}' | parse_latest_tag_json)" "malformed release tag"
+  selftest_empty "$(printf '%s' '{"message":"Not Found"}' | parse_latest_tag_json)" "missing release tag"
+  selftest_empty "$(printf '%s' '{"tag_name":null}' | parse_latest_tag_json)" "non-string release tag"
+  selftest_empty "$(printf '%s' '[{"tag_name":"v1.2.3"}]' | parse_latest_tag_json)" "release array is not latest release"
+  selftest_empty "$(printf '%s' '{"tag_name":"v1.2.3"' | parse_latest_tag_json)" "truncated release JSON"
+  printf '%s\n' "installer version resolution self-test: ok"
 
   cat >"$sums" <<EOF
 $other  other-fmd-x.tar.gz

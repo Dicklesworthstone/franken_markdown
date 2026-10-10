@@ -18,11 +18,15 @@ link to its note.
   - no body line references it (an unreferenced definition, or one referenced
     only from another note), or
   - it is taller than 40% of the page body, where a page holding it would
-    carry almost no text.
+    carry almost no text, or
+  - the first reference shares a line with other notes and their combined
+    height, separator, and citing line cannot fit on one page. Eligible notes
+    are admitted in note order; the remaining notes use the Notes section.
 - Note bodies keep their full block structure: paragraphs, lists, code,
   tables, quotes, mathematics and images.
-- Note marks link to the note (a `/Link` annotation with a `/Dest`). Note
-  destinations are not bookmarks.
+- Note marks link to the note (a `/Link` annotation with a `/Dest`), including
+  notes moved to the Notes section and references from one note to another.
+  Note destinations are not bookmarks.
 
 ## Endnotes instead
 
@@ -38,9 +42,10 @@ always uses endnotes, and the book pipeline keeps its endnote layout.
   when one page carries several notes. If the exact planner cannot plan a
   document, it paginates greedily (the legacy fallback planner does not model
   note space).
-- Notes are not split across pages. A line whose notes together exceed the
-  page body (several near-limit notes on one line) still places them all, and
-  they can run into the bottom margin.
+- Notes placed at a page foot are indivisible. Notes that exceed the available
+  space print as endnotes, where ordinary block pagination can span pages.
+  Their complete text, block structure, numbering, and link destinations are
+  retained.
 
 ## Tests
 
@@ -49,3 +54,6 @@ reference's page, below the body, smaller than body text), linking without
 bookmarks, the endnote fallbacks, emitter determinism and placement under
 optimal pagination. `tests/pdf_footnote_fidelity_test.rs` proves no note
 block is discarded on any PDF entrypoint.
+The page-footnote tests also cover several large notes cited on one line,
+fallback destinations in the emitted PDF, note-to-note cycles, nonparagraph
+endnotes, and byte parity with the ordinary-note PDF captured before these fixes.

@@ -1,16 +1,87 @@
 # Joint paragraph-variant and page planning
 
+## PDF rendering
+
+`fmd input.md --to pdf --pdf-optimal-pagination` (or
+`PdfOptions::optimal_pagination = true`) now considers alternative paragraph
+shapes as well as page boundaries. The normal paragraph layout remains one
+choice. The existing Knuth–Plass candidate generator can offer layouts with one
+fewer or one additional line **at the same text width and font size**. Each
+alternative must satisfy its ordinary line-fit constraints; page packing does
+not license an overfull line or scale down the text.
+
+The mixed-height planner, `pagination::height::plan_blocks`, combines the actual
+line-breaking demerits with page costs and existing pagination constraints.
+Shorter paragraphs can therefore avoid an extra page, while an alternative with
+poor word spacing can cost more than the page it would save. There is no fixed
+preference for the shortest shape.
+
+Selection happens after block layout has finalized paragraph spacing and forced
+chapter breaks. The selected positioned text segments become the input to PDF
+emission, TOC page-number convergence, page-budget fitting, and text verification.
+Links and inline styles stay attached to their original text. A substitution is
+accepted only when the existing page planner reproduces the selected page
+boundaries from those final lines. Both streaming and monolithic PDF emission use
+that same result.
+
+### Current admission limits
+
+The first integration offers alternatives for ordinary body paragraphs only,
+with at least four physical lines in both the baseline and every offered shape.
+This preserves the existing context-sensitive rules for short captions, heading
+followers, and final list items. Other blocks still participate in page planning
+at their existing measured shape.
+
+Paragraphs inside lists or blockquotes, paragraphs containing inline images or
+typeset math, and documents containing footnote definitions retain their baseline
+paragraph shapes. The same applies when gradual-demerit, river, or Pareto line
+breaking is enabled: their additional predecessor state is not represented by
+the adjacent-line-count candidate search. These cases continue to use the
+existing optimal page planner, including its footnote reservations and repeated
+table headers.
+
+Candidate generation is capped at 1,024 paragraph items and 16,384 retained
+alternative lines per layout pass, in addition to the candidate generator's
+state-cell bound and the page planner's existing work budgets. Each attempted
+search also consumes a document-wide work allowance: the conservative estimate
+`items² × (baseline lines + 2)` is charged before searching, with a total cap of
+67,108,864 per layout pass. Attempts that produce no usable alternatives still
+consume that allowance. Reaching a bound keeps the original measured paragraph.
+An infeasible or exhausted joint search keeps the complete original layout and
+its existing pagination fallback.
+Default PDF rendering, without `optimal_pagination`, does not collect or select
+alternative paragraph shapes.
+
+### A measured PDF regression
+
+The fixed prose fixture in `src/pdf/joint_pagination_tests.rs` uses the bundled
+fonts at the normal 11 pt body size, a 440 pt content width, and a 196 pt content
+height (a 512 × 268 pt page with 36 pt margins). Its ordinary measured paragraph
+has 14 lines and needs two pages when the planner respects the paragraph's final
+gap and two-line widow/orphan minima. A feasible 13-line alternative fits on one
+page, with the same width and font size. Its extra line-breaking cost is 13,455,
+less than the planner's existing 50,000 cost for an additional page.
+
+This is a specific example, not a promise that every document becomes shorter.
+A second fixture offers a much more expensive shorter shape and retains its
+original paragraph. The tests also exercise links and tagged text after an
+actual substitution, unchanged font size when fitting to one page, forced
+chapter boundaries, repeated paragraphs, and TOC numbers matching emitted
+heading destinations. Default and unsupported-mode cases compare emitted bytes
+with the original measured layout. Run these regressions with
+`cargo test --lib joint_pagination`.
+
+## Uniform-grid core API
+
 `franken_markdown::pagination::plan_pagination` plans a complete, uniform-line-grid
 publication from `layout::ParagraphCandidates`. It jointly chooses a measured
 line-breaking variant for every paragraph and page boundaries, including breaks
 inside long paragraphs. It returns the chosen variants and every half-open line
 fragment, not merely the paragraphs at which a page starts.
 
-This is an additive core API. It does **not** replace the existing PDF renderer,
-`PdfOptions::optimal_pagination`, or the legacy
-`layout::solve_2d_optimal_pagination` heuristic. Mixed-height PDF blocks,
-footnote reservations, table-header repetition and PDF object emission remain
-owned by that renderer. A line-grid plan is not evidence of improved PDF output.
+This additive line-grid API is separate from the mixed-height planner used by
+PDF rendering and from the legacy `layout::solve_2d_optimal_pagination` heuristic.
+A line-grid plan alone is not evidence of improved PDF output.
 
 ## Use the selected variants and fragments together
 

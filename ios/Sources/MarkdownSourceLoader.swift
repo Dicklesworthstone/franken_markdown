@@ -91,10 +91,26 @@ final class MarkdownDocumentSession: ObservableObject {
     private var activeDocumentReference: MarkdownActiveDocumentReference?
     private var restorationDisplayName: String?
     private let defaults: UserDefaults
+    private let openDocument: @Sendable (URL) async throws -> MarkdownSourceDocument
+    private let saveDocument: @Sendable (String, MarkdownSourceDocument) async throws -> MarkdownSourceDocument
+    private var requestGeneration = UUID()
+    private var explicitDocumentRequested = false
+    private(set) var documentGeneration = UUID()
 
-    init(initialSource: String, defaults: UserDefaults = .standard) {
+    init(
+        initialSource: String,
+        defaults: UserDefaults = .standard,
+        openDocument: @escaping @Sendable (URL) async throws -> MarkdownSourceDocument = {
+            try await MarkdownSourceLoader.open(from: $0)
+        },
+        saveDocument: @escaping @Sendable (String, MarkdownSourceDocument) async throws -> MarkdownSourceDocument = {
+            try await MarkdownSourceLoader.save($0, replacing: $1)
+        }
+    ) {
         untitledBaseline = initialSource
         self.defaults = defaults
+        self.openDocument = openDocument
+        self.saveDocument = saveDocument
         recentDocuments = Self.loadRecents(from: defaults)
         activeDocumentReference = Self.loadActiveDocument(from: defaults)
         restorationDisplayName = activeDocumentReference?.displayName
@@ -109,7 +125,33 @@ final class MarkdownDocumentSession: ObservableObject {
         source != (currentDocument?.source ?? untitledBaseline)
     }
 
+    /// An explicit picker, New, or file-open request supersedes automatic launch
+    /// restoration and any older read. The underlying coordinated I/O can finish
+    /// safely, but its result must no longer replace the active document.
+    func cancelPendingDocumentRequests() {
+        requestGeneration = UUID()
+        explicitDocumentRequested = true
+    }
+
+    /// Reserve the request synchronously at the UI event, before a Task can
+    /// suspend. A later event must win even if an earlier Task starts late.
+    func beginDocumentRequest() -> UUID {
+        cancelPendingDocumentRequests()
+        return requestGeneration
+    }
+
+    func isCurrentDocumentRequest(_ request: UUID) -> Bool {
+        request == requestGeneration
+    }
+
+    private func beginDocumentTransition() {
+        cancelPendingDocumentRequests()
+        documentGeneration = UUID()
+        isSaving = false
+    }
+
     func beginUntitled(source: String) {
+        beginDocumentTransition()
         currentDocument = nil
         currentDocumentIdentity = nil
         untitledBaseline = source
@@ -123,6 +165,7 @@ final class MarkdownDocumentSession: ObservableObject {
         _ document: MarkdownSourceDocument,
         documentIdentity: UUID = UUID()
     ) {
+        beginDocumentTransition()
         currentDocument = document
         currentDocumentIdentity = documentIdentity
         attention = nil
@@ -136,6 +179,7 @@ final class MarkdownDocumentSession: ObservableObject {
         documentIdentity: UUID,
         changedOnDisk: Bool
     ) {
+        beginDocumentTransition()
         currentDocument = document
         currentDocumentIdentity = documentIdentity
         attention = changedOnDisk ? .changedOnDisk : nil
@@ -149,6 +193,7 @@ final class MarkdownDocumentSession: ObservableObject {
         while retaining: MarkdownSourceDocument,
         documentIdentity: UUID
     ) {
+        beginDocumentTransition()
         currentDocument = retaining
         currentDocumentIdentity = documentIdentity
         attention = .recoveryConflict
@@ -157,12 +202,18 @@ final class MarkdownDocumentSession: ObservableObject {
 
     func restoreActiveDocument(
         recoveredSource: String?,
-        recoveredDocumentIdentity: UUID?
+        recoveredDocumentIdentity: UUID?,
+        isCurrentSource: () -> Bool = { true }
     ) async throws -> MarkdownDocumentRestoration {
-        guard let reference = activeDocumentReference else { return .none }
+        guard !explicitDocumentRequested, let reference = activeDocumentReference else { return .none }
+        let request = requestGeneration
         do {
             let url = try MarkdownSourceLoader.resolveBookmark(reference.bookmarkData)
-            let document = try await MarkdownSourceLoader.open(from: url)
+            let document = try await openDocument(url)
+            // Read the live buffer before either returning a restored file or
+            // mutating its error state. SwiftUI onChange delivery can lag behind
+            // a user's edit and must not decide which asynchronous result wins.
+            guard request == requestGeneration, isCurrentSource() else { return .none }
             let restored = MarkdownRestoredDocument(
                 document: document,
                 documentIdentity: reference.documentIdentity
@@ -181,15 +232,43 @@ final class MarkdownDocumentSession: ObservableObject {
             }
             return .conflict(restored)
         } catch {
+            guard request == requestGeneration, isCurrentSource() else { return .none }
             attention = .unavailable
             restorationDisplayName = reference.displayName
             throw error
         }
     }
 
-    func openRecent(_ recent: MarkdownRecentDocument) async throws -> MarkdownSourceDocument {
+    func open(from url: URL, request: UUID? = nil) async throws -> MarkdownSourceDocument? {
+        let request = request ?? beginDocumentRequest()
+        guard isCurrentDocumentRequest(request) else { return nil }
+        return try await readRequestedDocument(from: url, request: request)
+    }
+
+    func openRecent(
+        _ recent: MarkdownRecentDocument,
+        request: UUID? = nil
+    ) async throws -> MarkdownSourceDocument? {
+        let request = request ?? beginDocumentRequest()
+        guard isCurrentDocumentRequest(request) else { return nil }
         let url = try MarkdownSourceLoader.resolveBookmark(recent.bookmarkData)
-        return try await MarkdownSourceLoader.open(from: url)
+        return try await readRequestedDocument(from: url, request: request)
+    }
+
+    private func readRequestedDocument(
+        from url: URL,
+        request: UUID
+    ) async throws -> MarkdownSourceDocument? {
+        do {
+            let document = try await openDocument(url)
+            guard request == requestGeneration else { return nil }
+            return document
+        } catch {
+            // A failed older open must not cover the newly selected document
+            // with an unrelated error alert either.
+            guard request == requestGeneration else { return nil }
+            throw error
+        }
     }
 
     func save(source: String) async throws {
@@ -201,22 +280,31 @@ final class MarkdownDocumentSession: ObservableObject {
             throw MarkdownSourceLoader.DocumentError.recoveryConflict
         }
         guard !isSaving else { return }
+        let generation = documentGeneration
+        let identity = currentDocumentIdentity ?? UUID()
         isSaving = true
-        defer { isSaving = false }
+        defer {
+            if generation == documentGeneration { isSaving = false }
+        }
         do {
-            let saved = try await MarkdownSourceLoader.save(source, replacing: currentDocument)
+            let saved = try await saveDocument(source, currentDocument)
+            // Saving the previous file may finish after New/Open. Its disk
+            // write still belongs to that file; its session state does not.
+            guard generation == documentGeneration else { return }
             self.currentDocument = saved
             attention = nil
             recordActive(
                 saved,
-                documentIdentity: currentDocumentIdentity ?? UUID()
+                documentIdentity: identity
             )
             recordRecent(saved)
         } catch {
-            if error as? MarkdownSourceLoader.DocumentError == .changedOnDisk {
-                attention = .changedOnDisk
-            } else if Self.isUnavailableFileError(error) {
-                attention = .unavailable
+            if generation == documentGeneration {
+                if error as? MarkdownSourceLoader.DocumentError == .changedOnDisk {
+                    attention = .changedOnDisk
+                } else if Self.isUnavailableFileError(error) {
+                    attention = .unavailable
+                }
             }
             throw error
         }

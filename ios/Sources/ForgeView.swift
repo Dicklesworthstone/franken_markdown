@@ -20,6 +20,11 @@ private enum SourceExportPurpose: Equatable {
     case saveCopy
 }
 
+private struct PendingSourceDocument {
+    let document: MarkdownSourceDocument
+    let request: UUID
+}
+
 struct ForgeView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage(LabAppearance.storageKey) private var appearance = LabAppearance.dark.rawValue
@@ -41,12 +46,16 @@ struct ForgeView: View {
     @State private var auxiliaryPanel: AuxiliaryPanel?
     @State private var showDocumentLab = false
     @State private var showSourceImporter = false
+    @State private var sourceImportRequest: UUID?
     @State private var showSourceExporter = false
     @State private var sourceFileToExport = MarkdownSourceFile(source: "")
     @State private var sourceExportPurpose = SourceExportPurpose.saveCopy
+    @State private var sourceExportRequest: UUID?
+    @State private var sourceExportDocumentGeneration: UUID?
     @State private var sourceImportError: String?
     @State private var documentError: String?
-    @State private var pendingDocument: MarkdownSourceDocument?
+    @State private var pendingDocument: PendingSourceDocument?
+    @State private var confirmationRequest: UUID?
     @State private var confirmingNewDocument = false
     @State private var confirmingRevert = false
     @State private var attemptedDocumentRestoration = false
@@ -76,6 +85,19 @@ struct ForgeView: View {
             .onChange(of: renderer.draftRecoveryIsComplete, initial: true) { _, isComplete in
                 if isComplete { restoreActiveDocumentAfterLaunch() }
             }
+            .focusedSceneValue(\.markdownSceneActions, MarkdownSceneActions(
+                newDocument: requestNewSourceDocument,
+                openDocument: requestSourceImporter,
+                saveDocument: saveCurrentSource,
+                saveCopy: { beginSourceExport(.saveCopy) },
+                render: renderAndRevealPreview,
+                exportPDF: triggerPdfExport,
+                exportHTML: triggerHtmlExport,
+                canSave: !documentSession.isSaving
+                    && documentSession.attention == nil
+                    && (!documentSession.hasCurrentDocument
+                        || documentSession.isDirty(source: renderer.source))
+            ))
             .preferredColorScheme((LabAppearance(rawValue: appearance) ?? .dark).colorScheme)
     }
 
@@ -174,31 +196,10 @@ struct ForgeView: View {
             if renderFontScale != clamped { renderFontScale = clamped }
             renderer.renderFontScale = clamped
         }
-        .onReceive(NotificationCenter.default.publisher(for: .renderMarkdownNow)) { _ in
-            renderAndRevealPreview()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .exportPdfNow)) { _ in
-            triggerPdfExport()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .exportHtmlNow)) { _ in
-            triggerHtmlExport()
-        }
     }
 
     private var forgeDocumentEvents: some View {
         forgeModelObservers
-        .onReceive(NotificationCenter.default.publisher(for: .newMarkdownDocument)) { _ in
-            requestNewSourceDocument()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openMarkdownDocument)) { _ in
-            showSourceImporter = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .saveMarkdownDocument)) { _ in
-            saveCurrentSource()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .saveMarkdownDocumentCopy)) { _ in
-            beginSourceExport(.saveCopy)
-        }
         .onChange(of: documentAutosave) { _, enabled in
             if enabled {
                 scheduleDocumentAutosave(renderer.source)
@@ -261,46 +262,51 @@ struct ForgeView: View {
             Text(documentError ?? "The document could not be saved.")
         }
         .alert(
-            "Open \(pendingDocument?.displayName ?? "this document")?",
+            "Open \(pendingDocument?.document.displayName ?? "this document")?",
             isPresented: Binding(
                 get: { pendingDocument != nil },
                 set: { if !$0 { pendingDocument = nil } }
-            )
-        ) {
+            ),
+            presenting: pendingDocument
+        ) { pending in
             Button("Cancel", role: .cancel) { pendingDocument = nil }
             Button("Discard Edits and Open", role: .destructive) {
-                guard let document = pendingDocument else { return }
+                guard documentSession.isCurrentDocumentRequest(pending.request) else { return }
                 pendingDocument = nil
-                adopt(document)
+                adopt(pending.document)
             }
-        } message: {
+        } message: { _ in
             Text("The current Markdown has unsaved edits. Use Save a Copy first if you want to keep them.")
         }
-        .alert("Start a New Document?", isPresented: $confirmingNewDocument) {
+        .alert("Start a New Document?", isPresented: $confirmingNewDocument, presenting: confirmationRequest) { request in
             Button("Cancel", role: .cancel) {}
             Button("Discard Edits and Start New", role: .destructive) {
+                guard documentSession.isCurrentDocumentRequest(request) else { return }
                 newSourceDocument()
             }
-        } message: {
+        } message: { _ in
             Text("The current Markdown has unsaved edits. Use Save or Save a Copy first if you want to keep them.")
         }
-        .alert("Reopen Saved Version?", isPresented: $confirmingRevert) {
+        .alert("Reopen Saved Version?", isPresented: $confirmingRevert, presenting: confirmationRequest) { request in
             Button("Cancel", role: .cancel) {}
             Button("Discard Edits and Reopen", role: .destructive) {
+                guard documentSession.isCurrentDocumentRequest(request) else { return }
                 reloadCurrentDocument()
             }
-        } message: {
+        } message: { _ in
             Text("This replaces the current edits with the latest version from Files.")
         }
-        .alert("Recovered Edits Need Attention", isPresented: $showingRestorationConflict) {
+        .alert("Recovered Edits Need Attention", isPresented: $showingRestorationConflict, presenting: confirmationRequest) { request in
             Button("Keep Editing", role: .cancel) {}
             Button("Save Recovered Copy…") {
+                guard documentSession.isCurrentDocumentRequest(request) else { return }
                 beginSourceExport(.saveCopy)
             }
             Button("Use File Version", role: .destructive) {
+                guard documentSession.isCurrentDocumentRequest(request) else { return }
                 reloadCurrentDocument()
             }
-        } message: {
+        } message: { _ in
             Text(
                 "FrankenMarkdown could not safely combine this recovered draft with "
                     + "\(documentSession.displayName). The file may also have changed. "
@@ -437,7 +443,7 @@ struct ForgeView: View {
                 }
                 Divider()
                 Button {
-                    showSourceImporter = true
+                    requestSourceImporter()
                 } label: {
                     Label("Open Markdown…", systemImage: "folder")
                 }
@@ -915,15 +921,29 @@ struct ForgeView: View {
     }
 
     private func importSourceDocument(_ result: Result<[URL], Error>) {
+        guard let request = sourceImportRequest,
+              documentSession.isCurrentDocumentRequest(request) else { return }
         do {
             guard let url = try result.get().first else { return }
-            loadSourceDocument(from: url)
+            loadSourceDocument(from: url, request: request)
         } catch {
             sourceImportError = error.localizedDescription
         }
     }
 
+    private func clearDocumentPresentations() {
+        pendingDocument = nil
+        confirmationRequest = nil
+        confirmingNewDocument = false
+        confirmingRevert = false
+        showingRestorationConflict = false
+        sourceImportError = nil
+        documentError = nil
+    }
+
     private func requestNewSourceDocument() {
+        clearDocumentPresentations()
+        confirmationRequest = documentSession.beginDocumentRequest()
         if documentSession.isDirty(source: renderer.source) {
             confirmingNewDocument = true
         } else {
@@ -931,7 +951,14 @@ struct ForgeView: View {
         }
     }
 
+    private func requestSourceImporter() {
+        clearDocumentPresentations()
+        sourceImportRequest = documentSession.beginDocumentRequest()
+        showSourceImporter = true
+    }
+
     private func newSourceDocument() {
+        clearDocumentPresentations()
         let source = "# New Document\n\nStart writing..."
         documentSession.beginUntitled(source: source)
         renderer.documentIdentity = nil
@@ -943,30 +970,40 @@ struct ForgeView: View {
         documentError = nil
     }
 
-    private func loadSourceDocument(from url: URL) {
+    private func loadSourceDocument(from url: URL, request: UUID? = nil) {
+        let request = request ?? documentSession.beginDocumentRequest()
+        guard documentSession.isCurrentDocumentRequest(request) else { return }
+        clearDocumentPresentations()
         Task {
             do {
-                requestAdoption(of: try await MarkdownSourceLoader.open(from: url))
+                guard let document = try await documentSession.open(from: url, request: request) else { return }
+                requestAdoption(of: document, request: request)
             } catch {
+                guard documentSession.isCurrentDocumentRequest(request) else { return }
                 sourceImportError = error.localizedDescription
             }
         }
     }
 
     private func openRecent(_ recent: MarkdownRecentDocument) {
+        let request = documentSession.beginDocumentRequest()
+        clearDocumentPresentations()
         Task {
             do {
-                requestAdoption(of: try await documentSession.openRecent(recent))
+                guard let document = try await documentSession.openRecent(recent, request: request) else { return }
+                requestAdoption(of: document, request: request)
             } catch {
+                guard documentSession.isCurrentDocumentRequest(request) else { return }
                 sourceImportError = error.localizedDescription
             }
         }
     }
 
-    private func requestAdoption(of document: MarkdownSourceDocument) {
+    private func requestAdoption(of document: MarkdownSourceDocument, request: UUID) {
+        guard documentSession.isCurrentDocumentRequest(request) else { return }
         editorFocused = false
         if documentSession.isDirty(source: renderer.source) {
-            pendingDocument = document
+            pendingDocument = PendingSourceDocument(document: document, request: request)
         } else {
             adopt(document)
         }
@@ -976,6 +1013,7 @@ struct ForgeView: View {
         _ document: MarkdownSourceDocument,
         documentIdentity: UUID = UUID()
     ) {
+        clearDocumentPresentations()
         documentSession.adopt(document, documentIdentity: documentIdentity)
         renderer.documentIdentity = documentIdentity
         renderer.source = document.source
@@ -990,12 +1028,24 @@ struct ForgeView: View {
         guard !attemptedDocumentRestoration else { return }
         attemptedDocumentRestoration = true
         Task {
+            let sourceAtStart = renderer.source
+            let identityAtStart = renderer.documentIdentity
+            // Recovery is allowed to restore a known draft. A user who has
+            // already started typing owns the current buffer instead.
+            guard renderer.draftWasRecovered || !documentSession.isDirty(source: sourceAtStart) else { return }
             do {
                 let recoveredSource = renderer.draftWasRecovered ? renderer.source : nil
-                switch try await documentSession.restoreActiveDocument(
+                let restoration = try await documentSession.restoreActiveDocument(
                     recoveredSource: recoveredSource,
-                    recoveredDocumentIdentity: renderer.documentIdentity
-                ) {
+                    recoveredDocumentIdentity: identityAtStart,
+                    isCurrentSource: {
+                        renderer.source == sourceAtStart
+                            && renderer.documentIdentity == identityAtStart
+                    }
+                )
+                guard renderer.source == sourceAtStart,
+                      renderer.documentIdentity == identityAtStart else { return }
+                switch restoration {
                 case .none:
                     break
                 case .fileVersion(let restored):
@@ -1004,15 +1054,20 @@ struct ForgeView: View {
                     adoptRecoveredEdits(from: restored, changedOnDisk: false)
                 case .conflict(let restored):
                     adoptRecoveredEdits(from: restored, changedOnDisk: true)
+                    confirmationRequest = documentSession.beginDocumentRequest()
                     showingRestorationConflict = true
                 case .unassociatedDraft(let restored):
                     documentSession.adoptUnassociatedDraft(
                         while: restored.document,
                         documentIdentity: restored.documentIdentity
                     )
+                    clearDocumentPresentations()
+                    confirmationRequest = documentSession.beginDocumentRequest()
                     showingRestorationConflict = true
                 }
             } catch {
+                guard renderer.source == sourceAtStart,
+                      renderer.documentIdentity == identityAtStart else { return }
                 sourceImportError = "Your recovered draft is still available, but "
                     + "\(documentSession.displayName) could not be reopened: "
                     + error.localizedDescription
@@ -1024,6 +1079,7 @@ struct ForgeView: View {
         from restored: MarkdownRestoredDocument,
         changedOnDisk: Bool
     ) {
+        clearDocumentPresentations()
         documentSession.adoptRecoveredEdits(
             from: restored.document,
             documentIdentity: restored.documentIdentity,
@@ -1045,10 +1101,14 @@ struct ForgeView: View {
             beginSourceExport(.saveNewDocument)
             return
         }
+        let generation = documentSession.documentGeneration
+        let source = renderer.source
         Task {
             do {
-                try await documentSession.save(source: renderer.source)
+                guard documentSession.documentGeneration == generation else { return }
+                try await documentSession.save(source: source)
             } catch {
+                guard documentSession.documentGeneration == generation else { return }
                 documentError = error.localizedDescription
             }
         }
@@ -1062,20 +1122,24 @@ struct ForgeView: View {
               documentSession.attention == nil,
               documentSession.isDirty(source: source) else { return }
 
+        let generation = documentSession.documentGeneration
         pendingDocumentAutosave = Task { @MainActor in
             do {
                 try await Task.sleep(nanoseconds: 1_200_000_000)
                 try Task.checkCancellation()
                 guard documentAutosave,
+                      documentSession.documentGeneration == generation,
                       documentSession.hasCurrentDocument,
                       documentSession.attention == nil,
                       documentSession.isDirty(source: source),
                       renderer.source == source else { return }
                 try await documentSession.save(source: source)
+                guard documentSession.documentGeneration == generation else { return }
                 pendingDocumentAutosave = nil
             } catch is CancellationError {
                 // A newer edit or an explicit save superseded this debounce.
             } catch {
+                guard documentSession.documentGeneration == generation else { return }
                 pendingDocumentAutosave = nil
                 documentError = error.localizedDescription
             }
@@ -1084,24 +1148,37 @@ struct ForgeView: View {
 
     private func beginSourceExport(_ purpose: SourceExportPurpose) {
         editorFocused = false
+        clearDocumentPresentations()
+        sourceExportRequest = documentSession.beginDocumentRequest()
+        sourceExportDocumentGeneration = documentSession.documentGeneration
         sourceFileToExport = MarkdownSourceFile(source: renderer.source)
         sourceExportPurpose = purpose
         showSourceExporter = true
     }
 
     private func finishSourceExport(_ result: Result<URL, Error>) {
+        guard let request = sourceExportRequest,
+              let generation = sourceExportDocumentGeneration,
+              documentSession.isCurrentDocumentRequest(request),
+              generation == documentSession.documentGeneration else { return }
         switch result {
         case .success(let url):
             guard sourceExportPurpose == .saveNewDocument else { return }
             let expectedSource = sourceFileToExport.source
+            // The exporter writes its captured snapshot. Later typing stays
+            // in the editor instead of being replaced by that older snapshot.
+            guard renderer.source == expectedSource else { return }
             Task {
                 do {
-                    let document = try await MarkdownSourceLoader.open(from: url)
+                    guard let document = try await documentSession.open(from: url, request: request),
+                          renderer.source == expectedSource else { return }
                     guard document.source == expectedSource else {
                         throw MarkdownSourceLoader.DocumentError.savedCopyMismatch
                     }
                     adopt(document)
                 } catch {
+                    guard documentSession.isCurrentDocumentRequest(request),
+                          generation == documentSession.documentGeneration else { return }
                     documentError = error.localizedDescription
                 }
             }
@@ -1113,6 +1190,8 @@ struct ForgeView: View {
     }
 
     private func requestReopenCurrentDocument() {
+        clearDocumentPresentations()
+        confirmationRequest = documentSession.beginDocumentRequest()
         if documentSession.isDirty(source: renderer.source) {
             confirmingRevert = true
         } else {
@@ -1122,10 +1201,19 @@ struct ForgeView: View {
 
     private func reloadCurrentDocument() {
         guard let url = documentSession.currentDocument?.url else { return }
+        let request = documentSession.beginDocumentRequest()
+        let sourceAtStart = renderer.source
+        clearDocumentPresentations()
         Task {
             do {
-                adopt(try await MarkdownSourceLoader.open(from: url))
+                guard let document = try await documentSession.open(from: url, request: request) else { return }
+                if renderer.source == sourceAtStart {
+                    adopt(document)
+                } else {
+                    requestAdoption(of: document, request: request)
+                }
             } catch {
+                guard documentSession.isCurrentDocumentRequest(request) else { return }
                 documentError = error.localizedDescription
             }
         }

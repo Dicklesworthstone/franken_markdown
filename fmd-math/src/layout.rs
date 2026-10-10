@@ -381,7 +381,11 @@ impl Engine {
                         dy: 0.0,
                         node: MNode::Glue(glue),
                     });
-                    prev = None;
+                    // Inter-atom spacing looks past glue and kerns to the
+                    // previous atom (tex.web §761 keeps r_type across them),
+                    // so `a\,=b` gets the thin space and the Ord–Rel thick
+                    // space. A font kern needs adjacent characters.
+                    prev = prev.map(|(class, _)| (class, None));
                 }
                 LineItem::Atom { laid, class } => {
                     if let Some((prev_class, prev_glyph)) = prev {

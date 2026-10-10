@@ -933,3 +933,18 @@ fn a_trailing_row_break_opens_no_empty_math_row() {
     let line = e.typeset_text("a").unwrap();
     assert!(paragraph.depth > line.depth + CM.baseline_skip / 2.0);
 }
+
+#[test]
+fn explicit_spaces_keep_inter_atom_spacing() {
+    // tex.web §761 keeps the previous atom's type across glue and kerns:
+    // `a\,=b` is `a=b` plus 3 mu, and `a\quad\Rightarrow\quad b` is
+    // `a\Rightarrow b` plus two quads (plain TeX: 24.577 - 22.911 pt and
+    // 45.133 - 25.133 pt at 10 pt).
+    let e = engine();
+    let width = |s: &str| e.typeset(s, Style::Text).unwrap().width;
+    assert!((width(r"a\,=b") - width("a=b") - 3.0 / 18.0).abs() < EPS);
+    assert!((width(r"a\quad\Rightarrow\quad b") - width(r"a\Rightarrow b") - 2.0).abs() < EPS);
+    // A kern still separates the characters, so no font kern applies
+    // across it.
+    assert!((width(r"A\!V") - width("A") - width("V") + 3.0 / 18.0).abs() < EPS);
+}

@@ -149,6 +149,23 @@ test("running templates validate scalar text, per-slot and aggregate budgets", a
   assert.equal(f.calls.length, 1);
 });
 
+test("non-ASCII running slots reject above the native UTF-8 limit before reading the session", async () => {
+  const f = fixture();
+  const boundaries = ["中".repeat(1365) + "x", "😀".repeat(1024)];
+  for (const exact of boundaries) {
+    assert.equal(new TextEncoder().encode(exact).length, 4096);
+    await assert.rejects(f.api.exportDocument("pdf", {
+      running: { header: { left: exact + "x" } },
+    }, token), code("INVALID_OPTIONS"));
+  }
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.reads, 0);
+  for (const exact of boundaries) {
+    await f.api.exportDocument("pdf", { running: { header: { left: exact } } }, token);
+    assert.equal(f.calls.at(-1).options.running.header.left, exact);
+  }
+});
+
 test("skip-first never silently disappears when no running band would draw", async () => {
   const f = fixture();
   for (const running of [{ skipFirstPage: true }, { header: {}, skipFirstPage: true },

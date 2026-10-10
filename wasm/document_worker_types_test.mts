@@ -9,13 +9,20 @@ const renderer = createWorkerRenderer({
 const control = { signal: new AbortController().signal, timeoutMs: 1000 };
 const pdf: DocumentOutput<"pdf"> = await renderer.renderPdf("# PDF", { pageNumbers: true, metadataEpochSeconds: 0 }, control);
 const pdfExtension: "pdf" = pdf.extension;
+await renderer.renderPdf("# Branded PDF", {
+  running: { header: { image: { dest: "brand.svg", position: "right", heightPt: 24 }, left: "{title}" },
+    footer: { center: "{page}", rule: true }, skipFirstPage: true },
+  pdfImages: [{ destination: "brand.svg", bytes: new Uint8Array([1]) }],
+}, control);
 const svg: DocumentOutput<"svg"> = await renderer.render("svg", "# SVG", { maxWidthPt: 612 }, control);
 const svgExtension: "svg" = svg.extension;
 await renderer.renderHtml("# HTML", { customCss: "body{}", pdfImages: [{ destination: "a.png", bytes: new Uint8Array([1]) }] });
 await renderer.renderEpub("# Book", { title: "Book", lang: "en" });
 await renderer.renderInteractiveHtml("# Editable", { fontScale: "lg" });
-// @ts-expect-error EPUB ABI does not accept host image bytes.
+// EPUB shares the existing host-owned resource input.
 await renderer.renderEpub("# Book", { pdfImages: [] });
+// @ts-expect-error EPUB has no PDF running bands.
+await renderer.renderEpub("# Book", { running: { footer: { center: "{page}" } } });
 // @ts-expect-error PDF renderer does not consume CSS.
 await renderer.renderPdf("# PDF", { customCss: "body{}" });
 // @ts-expect-error Generic dispatch retains the SVG option contract.

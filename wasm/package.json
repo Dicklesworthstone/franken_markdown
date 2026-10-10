@@ -193,6 +193,7 @@
     "document-worker.d.ts",
     "DOCUMENT_WORKER.md",
     "pdf_page.mjs",
+    "pdf_running.mjs",
     "interactive.js",
     "interactive.d.ts",
     "interactive_runtime.mjs",

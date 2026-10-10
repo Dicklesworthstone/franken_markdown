@@ -2,6 +2,7 @@
 // not a Canvas screenshot or a second Markdown renderer. The injected renderers
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
 import { normalizePdfPage } from "./pdf_page.mjs";
+import { normalizePdfRunning } from "./pdf_running.mjs";
 import {
   FLOW_ASSET_LIMIT,
   FLOW_SOURCE_LIMIT,
@@ -66,8 +67,7 @@ function fence(session, expected) {
     fail("STALE_LAYOUT", "export asset/layout revision changed");
 }
 
-// Running-band options cross worker queues as deeply owned data, never live
-// caller objects. Template expansion and margin-fit checks belong to Rust.
+// Explicit export assets admit plain data without invoking caller accessors.
 function runningRecord(value, allowed, name) {
   if (!value || typeof value !== "object" || Array.isArray(value)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
@@ -80,55 +80,6 @@ function runningRecord(value, allowed, name) {
     if (field.value !== undefined) result[key] = field.value;
   }
   return result;
-}
-function pdfRunning(value) {
-  if (value === undefined) return undefined;
-  const input = runningRecord(value, ["header", "footer", "skipFirstPage"], "running");
-  const result = {};
-  let units = 0, draws = false;
-  for (const name of ["header", "footer"]) {
-    if (input[name] === undefined) continue;
-    const band = runningRecord(input[name], ["left", "center", "right", "rule", "image"], `running.${name}`);
-    const next = {};
-    for (const slot of ["left", "center", "right"]) {
-      if (band[slot] === undefined) continue;
-      const value = text(band[slot], `running.${name}.${slot}`, 4096);
-      units += value.length;
-      if (units > 16384) fail("BUDGET_EXCEEDED", "running templates exceed 16384 UTF-16 units");
-      next[slot] = value;
-      draws ||= value.length > 0;
-    }
-    if (band.rule !== undefined) {
-      if (typeof band.rule !== "boolean") fail("INVALID_OPTIONS", "running rule must be boolean");
-      next.rule = band.rule;
-      draws ||= band.rule;
-    }
-    if (band.image !== undefined) {
-      const label = `running.${name}.image`;
-      const image = runningRecord(band.image, ["dest", "position", "heightPt"], label);
-      const dest = text(image.dest, `${label}.dest`, 4096).trim();
-      if (!dest || new TextEncoder().encode(dest).length > 4096)
-        fail("INVALID_OPTIONS", `${label}.dest requires 1..4096 UTF-8 bytes`);
-      if (image.position !== undefined && !["left", "right"].includes(image.position))
-        fail("INVALID_OPTIONS", `${label}.position must be left or right`);
-      const heightPt = image.heightPt === undefined ? undefined
-        : uint(image.heightPt, `${label}.heightPt`, 1, 65535);
-      next.image = Object.freeze({ dest, ...(image.position === undefined ? {} : { position: image.position }),
-        ...(heightPt === undefined ? {} : { heightPt }) });
-      draws = true;
-    }
-    result[name] = Object.freeze(next);
-  }
-  if (input.skipFirstPage !== undefined) {
-    if (typeof input.skipFirstPage !== "boolean")
-      fail("INVALID_OPTIONS", "running.skipFirstPage must be boolean");
-    // The native wrapper chooses its legacy ABI when no band draws, so it
-    // cannot honor this flag alone. Refuse rather than silently ignore it.
-    if (input.skipFirstPage && !draws)
-      fail("INVALID_OPTIONS", "skipFirstPage requires a nonempty header or footer");
-    result.skipFirstPage = input.skipFirstPage;
-  }
-  return Object.freeze(result);
 }
 
 // Explicit export-only assets let a host supply a running logo without adding
@@ -224,7 +175,10 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
         throw new FlowError("INVALID_OPTIONS", error instanceof Error ? error.message : "invalid PDF page", { cause: error });
       }
     }
-    if (running !== undefined) result.running = pdfRunning(running);
+    if (running !== undefined) {
+      try { result.running = normalizePdfRunning(running); }
+      catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
+    }
     if (pdfImages !== undefined) result.pdfImages = exportImages(pdfImages);
     // Deterministic by default. A host can supply a chosen timestamp explicitly.
     result.metadataEpochSeconds = uint(

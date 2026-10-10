@@ -129,7 +129,7 @@ for file in interactive.js interactive.d.ts interactive_runtime.mjs interactive_
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
-  document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs; do
+  document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs pdf_running.mjs; do
   cp "wasm/$file" "$package_dir/$file"
 done
 cp wasm/package.json "$package_dir/package.json"

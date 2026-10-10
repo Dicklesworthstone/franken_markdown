@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import { createWorkerRenderer, installDocumentWorker, DOCUMENT_SOURCE_LIMIT } from "./document_worker.mjs";
+import { OwnedWorkerRpc } from "./worker_transport.mjs";
 
 const formats = {
   html: ["renderHtml", "text/html; charset=utf-8", "html"],
@@ -41,6 +42,13 @@ if (!isMainThread) {
         if (source === "unsupported") throw Object.assign(new Error("fixture requires matching WASM"), {
           code: "UNSUPPORTED_WASM_PACKAGE",
         });
+        const bands = options.running && [options.running.header, options.running.footer];
+        if (format === "pdf" && bands && (workerData.runningSupport === "none"
+            || (workerData.runningSupport === "text-only" && bands.some(band => band?.image)))) {
+          throw Object.assign(new Error("Running bands require a rebuilt matching WASM package"), {
+            code: "UNSUPPORTED_WASM_PACKAGE",
+          });
+        }
         const bytes = new TextEncoder().encode(JSON.stringify({ source, options, renders: ++renders },
           (_key, value) => value instanceof Uint8Array ? [...value] : value));
         previousBytes = bytes;
@@ -326,6 +334,181 @@ if (!isMainThread) {
     assert.equal(api.pendingBytes, priorBytes);
     await first;
     assert.equal(api.pendingBytes, 0);
+  });
+
+  test("PDF running templates, rules and host-only logos reach the worker renderer", async t => {
+    const api = renderer(t);
+    assert.equal(Object.hasOwn(JSON.parse((await api.renderPdf("plain")).text()).options, "running"), false);
+    for (const running of [
+      {},
+      { header: { left: "{title}", center: "{author}", right: "{date}", rule: true },
+        footer: { left: "{unknown}", center: "{page} / {pages}", right: "Archive", rule: false },
+        skipFirstPage: true },
+      { footer: { rule: true }, skipFirstPage: true },
+      { header: { image: { dest: "logo.svg" } }, skipFirstPage: true },
+      { header: { left: "Title", image: { dest: "logo.svg", position: "right", heightPt: 24 } },
+        footer: { image: { dest: "logo.svg", position: "left", heightPt: 65535 }, center: "{page}" } },
+    ]) {
+      const options = { title: "Report", author: "Writer", metadataEpochSeconds: 0,
+        pageNumbers: true, running,
+        pdfImages: [{ destination: "logo.svg", bytes: new Uint8Array([1, 2]) }] };
+      const actual = JSON.parse((await api.render("pdf", "No Markdown image.", options)).text());
+      assert.deepEqual(actual.options.running, running, "native templates and omitted defaults stay literal");
+      assert.deepEqual(actual.options.pdfImages, [{ destination: "logo.svg", bytes: [1, 2] }]);
+      assert.equal(actual.options.pageNumbers, true);
+    }
+  });
+
+  test("queued running bands and exact logo bytes are captured before caller mutations", async t => {
+    const api = renderer(t);
+    const first = api.renderHtml("slow");
+    const payload = new Uint8Array([99, 1, 2, 3, 88]);
+    const options = { running: {
+      header: { left: "Before {title}", rule: true,
+        image: { dest: " \tlogo.svg\n", position: "right", heightPt: 24 } },
+      footer: { center: "{page} / {pages}" }, skipFirstPage: true,
+    }, pdfImages: [{ destination: "logo.svg", bytes: new DataView(payload.buffer, 1, 3) }] };
+    const pending = api.renderPdf("Captured source", options);
+    options.running.header.left = "After";
+    options.running.header.rule = false;
+    options.running.header.image.dest = "replacement.svg";
+    options.running.header.image.position = "left";
+    options.running.header.image.heightPt = 1;
+    options.running.footer.center = "After";
+    options.running.skipFirstPage = false;
+    options.pdfImages[0].destination = "replacement.svg";
+    payload.fill(0);
+    const [, output] = await Promise.all([first, pending]);
+    const captured = JSON.parse(output.text()).options;
+    assert.deepEqual(captured.running, {
+      header: { left: "Before {title}", rule: true,
+        image: { dest: "logo.svg", position: "right", heightPt: 24 } },
+      footer: { center: "{page} / {pages}" }, skipFirstPage: true,
+    });
+    assert.deepEqual(captured.pdfImages, [{ destination: "logo.svg", bytes: [1, 2, 3] }]);
+    assert.equal(payload.byteLength, 5);
+    assert.equal(api.pendingBytes, 0);
+  });
+
+  test("invalid running data rejects before worker startup or nested accessor evaluation", async () => {
+    let starts = 0, reads = 0;
+    const api = createWorkerRenderer({ workerFactory() { starts++; throw new Error("unexpected worker"); } });
+    const hidden = Object.defineProperty({}, "url", { value: "https://example.test/logo.svg" });
+    try {
+      for (const running of [
+        null, [], "header", Object.create({ header: { left: "inherited" } }),
+        { [Symbol("unexpected")]: true }, { unknown: true },
+        { get header() { reads++; return {}; } },
+        { header: { get left() { reads++; return "Title"; } } },
+        { header: { get image() { reads++; return {}; } } },
+        { header: { image: { get dest() { reads++; return "logo.svg"; } } } },
+        { header: hidden }, { header: "title" }, { header: { left: null } },
+        { footer: { right: 42 } }, { footer: { center: () => "text" } },
+        { header: { rule: 1 } }, { skipFirstPage: "true" }, { skipFirstPage: true },
+        { header: {}, skipFirstPage: true },
+        { footer: { center: "", rule: false }, skipFirstPage: true },
+        { header: { left: "x".repeat(4097) } },
+        ...[null, [], {}, { dest: " " }, { dest: 4 }, { dest: "x".repeat(4097) },
+          { dest: "😀".repeat(1025) }, { dest: "x", position: "center" },
+          { dest: "x", heightPt: 0 }, { dest: "x", heightPt: 65536 },
+          { dest: "x", heightPt: 1.5 }, { dest: "x", heightPt: NaN },
+          { dest: "x", heightPt: "24" }, { dest: "x", url: "https://example.test" },
+          Object.defineProperty({ dest: "x" }, "bytes", { value: new Uint8Array([1]) }),
+        ].map(image => ({ header: { image } })),
+      ]) await rejects(api.renderPdf("x", { running }), "INVALID_OPTIONS");
+      for (const running of [{ header: { left: "\ud800" } },
+        { footer: { image: { dest: "logo\udfff.svg" } } }])
+        await rejects(api.renderPdf("x", { running }), "INVALID_UNICODE");
+      for (const format of ["html", "svg", "epub", "interactive-html"])
+        await rejects(api.render(format, "x", { running: { footer: { center: "{page}" } } }), "INVALID_OPTIONS");
+      assert.equal(starts, 0);
+      assert.equal(reads, 0);
+      assert.equal(api.pendingBytes, 0);
+      assert.equal(api.disposed, false);
+    } finally { api.dispose(); }
+  });
+
+  test("running strings respect native UTF-8 limits and the combined template budget", async t => {
+    const api = renderer(t);
+    const full = "x".repeat(4096);
+    const running = { header: { left: full, center: full, right: full }, footer: { left: full } };
+    await rejects(api.renderPdf("x", { running: {
+      ...running, footer: { ...running.footer, right: "x" },
+    } }), "BUDGET_EXCEEDED");
+    assert.equal(api.pendingBytes, 0);
+    assert.deepEqual(JSON.parse((await api.renderPdf("x", { running })).text()).options.running, running);
+    const image = { dest: "😀".repeat(1024), heightPt: 1 };
+    assert.deepEqual(JSON.parse((await api.renderPdf("x", { running: { header: { image } } })).text())
+      .options.running.header.image, image);
+    for (const exact of ["中".repeat(1365) + "x", "😀".repeat(1024)]) {
+      assert.equal(new TextEncoder().encode(exact).length, 4096);
+      await rejects(api.renderPdf("x", { running: { header: { left: exact + "x" } } }), "INVALID_OPTIONS");
+      const actual = JSON.parse((await api.renderPdf("x", { running: { header: { left: exact } } })).text());
+      assert.equal(actual.options.running.header.left, exact);
+    }
+    const nullPrototype = Object.assign(Object.create(null), { footer: { right: "Owned" } });
+    assert.deepEqual(JSON.parse((await api.renderPdf("x", { running: nullPrototype })).text())
+      .options.running, { footer: { right: "Owned" } });
+    assert.equal(api.disposed, false);
+  });
+
+  test("running text and logo keys charge ingress, and queued cancellation releases them", async t => {
+    let starts = 0;
+    const small = createWorkerRenderer({ maxPendingBytes: 2048,
+      workerFactory() { starts++; throw new Error("over-budget work started a worker"); } });
+    try {
+      for (const running of [
+        { header: { left: "x".repeat(2048) } },
+        { footer: { image: { dest: "x".repeat(2048) } } },
+      ]) await rejects(small.renderPdf("x", { running }), "WORKER_QUEUE_FULL");
+      assert.equal(starts, 0);
+      assert.equal(small.pendingBytes, 0);
+    } finally { small.dispose(); }
+    const api = renderer(t);
+    const first = api.renderHtml("slow");
+    const priorBytes = api.pendingBytes;
+    const abort = new AbortController();
+    const running = { header: { left: "x".repeat(1000),
+      image: { dest: "l".repeat(1000), heightPt: 16 } }, footer: { rule: true } };
+    const queued = rejects(api.renderPdf("x", { running }, { signal: abort.signal }), "ABORTED");
+    assert.ok(api.pendingBytes >= priorBytes + 4000, "both nested strings are charged as retained UTF-16");
+    abort.abort();
+    await queued;
+    assert.equal(api.pendingBytes, priorBytes);
+    await first;
+    assert.equal(api.pendingBytes, 0);
+    assert.equal(JSON.parse((await api.renderPdf("after", { running: { footer: { center: "{page}" } } })).text()).renders, 2);
+  });
+
+  test("worker-side running validation rejects malformed raw RPC before loading the renderer", async t => {
+    const endpoint = new NodeEndpoint({ loadFailure: true });
+    const rpc = new OwnedWorkerRpc(endpoint, { timeoutMs: 5000 });
+    t.after(() => rpc.dispose());
+    for (const running of [{ header: { image: { dest: "x", heightPt: 0 } } },
+      { footer: { unexpected: true } }]) {
+      await rejects(rpc.request("pdf", 512, () => ({ args: ["pdf", "x", { running }, 4096] })), "INVALID_OPTIONS");
+    }
+    assert.equal(rpc.closed, false);
+    // The loader failure appears only once a correctly admitted request reaches it.
+    await rejects(rpc.request("pdf", 512, () => ({ args: ["pdf", "x", {}, 4096] })), "RENDER_FAILED");
+    assert.equal(rpc.closed, true);
+    assert.equal(rpc.pendingBytes, 0);
+  });
+
+  test("old packages reject requested running bands or logos without replay or downgrade", async t => {
+    for (const [runningSupport, running] of [
+      ["none", { footer: { center: "{page}" } }],
+      ["text-only", { header: { image: { dest: "logo.svg" } } }],
+    ]) {
+      const api = renderer(t, {}, { runningSupport });
+      const first = assert.rejects(api.renderPdf("requested running content", {
+        running, pdfImages: [{ destination: "logo.svg", bytes: new Uint8Array([1]) }],
+      }), { code: "UNSUPPORTED_WASM_PACKAGE", message: /rebuilt matching WASM/ });
+      const queued = rejects(api.renderPdf("never replayed"), "SESSION_LOST");
+      await Promise.all([first, queued]);
+      assert.equal(api.disposed, true);
+      assert.equal(api.pendingBytes, 0);
+    }
   });
 
   test("SVG images and font weights cross the worker using exact owned byte views", async t => {

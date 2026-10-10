@@ -93,5 +93,7 @@ requests but reject a requested logo. The separate retained-book API supports
 the same image shape using `options.images` and its additive
 `setPdfOptionsWithRunningImages` binding. The legacy root `renderBookPdf` helper
 continues to reject all running-band options explicitly.
-The stateless `document-worker` wrapper also rejects running-band options;
-use the direct renderer or Flow/retained-book worker APIs for running logos.
+The stateless `document-worker` supports the same running bands and `pdfImages`
+through `renderPdf` and `render("pdf", ...)`. It captures nested settings before
+queueing and charges their strings and records against the worker ingress budget.
+See [document workers](DOCUMENT_WORKER.md) for limits and cancellation behavior.

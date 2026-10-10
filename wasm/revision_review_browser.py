@@ -80,7 +80,8 @@ def main():
         # Explicit allowlist; no path traversal or accidental access to unrelated
         # repository files, system paths, credentials or network destinations.
         allowed = {f'/wasm/{name}' for name in ['demo/review.html', 'demo/revision_review.mjs',
-                   'document_worker.mjs', 'document_worker_entry.js', 'worker_transport.mjs', 'pdf_page.mjs']}
+                   'document_worker.mjs', 'document_worker_entry.js', 'worker_transport.mjs', 'pdf_page.mjs',
+                   'pdf_running.mjs']}
         def route(request):
             path = urlparse(request.request.url).path
             if request.request.url == ORIGIN + '/wasm/franken_markdown.js':
@@ -108,12 +109,12 @@ def main():
             html = re.sub(r'<script type="module">[\s\S]*?</script>', '', html)
             page.set_content(html)
             modules = {name: (ROOT/'wasm'/name).read_text() for name in [
-                'worker_transport.mjs', 'pdf_page.mjs', 'document_worker.mjs',
+                'worker_transport.mjs', 'pdf_page.mjs', 'pdf_running.mjs', 'document_worker.mjs',
                 'document_worker_entry.js', 'demo/revision_review.mjs']}
             modules['franken_markdown.js'] = FIXTURE
             page.evaluate("""async modules => {
                 const urls = {};
-                for (const name of ['worker_transport.mjs','pdf_page.mjs','franken_markdown.js',
+                for (const name of ['worker_transport.mjs','pdf_page.mjs','pdf_running.mjs','franken_markdown.js',
                     'document_worker.mjs','document_worker_entry.js','demo/revision_review.mjs']) {
                     let code = modules[name];
                     for (const [path, url] of Object.entries(urls)) {

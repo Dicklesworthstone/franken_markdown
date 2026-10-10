@@ -75,6 +75,41 @@ An explicit page defaults to Letter and 72-point margins. Omitting `page` preser
 the original renderer defaults. Nested geometry is validated and deeply captured
 before dispatch using the same normalization and f32 bounds as the direct API.
 
+PDF also accepts `running.header` and `running.footer`, each with optional
+`left`, `center`, and `right` text templates, a boolean `rule`, and one decorative
+`image`. Templates reach Rust unchanged and may use `{page}`, `{pages}`, `{title}`,
+`{author}`, and `{date}`. The image shape is
+`{ dest, position?: "left" | "right", heightPt?: number }`; its bytes belong in
+`pdfImages`, including when the logo is absent from Markdown. Position defaults
+to `left`; height is an optional integer from 1 through 65535 points. Rust fits
+the image to the margin, preserving its aspect ratio and text clearance. Both
+fitted dimensions must remain at least 0.01 pt; otherwise rendering fails with
+`pdf_running_image_invalid` and a sizing remedy.
+
+```js
+const pdf = await renderer.renderPdf(markdown, {
+  title: "Report", metadataEpochSeconds: 0,
+  pdfImages: [{ destination: "brand.svg", bytes: logoBytes }],
+  running: {
+    header: { left: "{title}", rule: true,
+      image: { dest: "brand.svg", position: "right", heightPt: 24 } },
+    footer: { center: "{page} / {pages}" },
+    skipFirstPage: true,
+  },
+});
+```
+
+Running templates allow 4096 UTF-8 bytes per slot and 16384 UTF-16 units together. Image
+destinations trim surrounding whitespace and allow at most 4096 UTF-8 bytes.
+Malformed Unicode, nested accessors, unknown fields and coerced values reject
+before worker startup. `skipFirstPage: true` requires a nonempty band, rule or
+image. Settings are deeply owned before queueing, and all retained nested records,
+templates and destinations count toward the ingress budget before asset copies.
+That memory charge counts two bytes per UTF-16 unit for retained strings; the
+native per-string UTF-8 limit is checked separately.
+The same shared normalizer validates the request again inside the worker. Other
+document formats reject running-band settings.
+
 SVG accepts `maxWidthPt` in 144..14400 and the same owned image/font inputs.
 EPUB also accepts `customCss`, `toc`, and `tocDepth` (1..6) for styled publications
 with navigation. Custom CSS is limited to 1 MiB of UTF-8 in the worker entry.
@@ -136,11 +171,13 @@ tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution noden
 The first command exercises actual Node worker threads and structured-clone
 transfers with an explicitly identified native renderer double, plus production
 demo lifecycle code with DOM/renderer doubles. Worker regressions cover geometry,
-EPUB publication settings, exact-view resource ownership, cancellation, diagnostic
-metadata and package-mismatch errors. They do not prove typography or browser
+running bands and logos, EPUB publication settings, exact-view resource ownership,
+queue budgets, cancellation, diagnostic metadata and package-mismatch errors.
+They do not prove typography or browser
 acceptance. The separate smoke gate loads the production worker entry and actual
 generated WASM and compares all five formats against the existing direct API,
-including supplied images for HTML/PDF/SVG/EPUB, named/custom PDF geometry, EPUB
-CSS/navigation, and document-scoped SVG export diagnostics. Both build routes run
+including supplied images for HTML/PDF/SVG/EPUB, named/custom PDF geometry, running
+text/logos and first-page suppression, EPUB CSS/navigation, and document-scoped
+SVG export diagnostics. Both build routes run
 that gate. Native-browser iframe/CSP/download and visual acceptance remain
 separate checks.

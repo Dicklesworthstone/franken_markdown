@@ -69,6 +69,10 @@ at least 0.01 pt in both dimensions; a smaller result fails with
 or use artwork with a less extreme aspect ratio. A logo requires a matching
 rebuilt package with the additive running-image binding.
 
+Running templates allow at most 4096 UTF-8 bytes per slot, matching the native
+binding, and 16384 UTF-16 units across all slots. Malformed Unicode and over-limit
+templates reject before reading the session or dispatching work to a worker.
+
 These explicit images are export inputs and do not change Markdown, the live
 preview, session asset grants or the source/layout token. Exact non-shared
 `Uint8Array` views are deeply copied before enqueueing. Admission allows at most

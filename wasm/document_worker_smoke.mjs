@@ -82,6 +82,29 @@ if (!isMainThread) {
       assert.notDeepEqual(actual.bytes, defaultPdf.bytes, "explicit paper geometry must affect the PDF");
       console.log("document-worker: configured PDF paper/margins parity PASS");
     }
+    for (const running of [
+      { header: { left: "{title}", right: "{author}", rule: true },
+        footer: { center: "{page} / {pages} · {date}" } },
+      { header: { left: "{title}", image: { dest: "pixel.png", position: "right", heightPt: 24 } },
+        footer: { image: { dest: "pixel.png", heightPt: 16 }, center: "{page}" } },
+    ]) {
+      // The logo need not appear in the Markdown. Hold every other setting
+      // fixed so successful parity cannot hide a silently dropped running band.
+      const options = { title: "Publication", author: "Writer", metadataEpochSeconds: 0,
+        running, pdfImages: [{ destination: "pixel.png", bytes: png }] };
+      const expected = await direct.renderPdf(source, options);
+      const actual = await worker.renderPdf(source, options);
+      assert.deepEqual(actual.bytes, expected.bytes, "PDF running content parity");
+      assert.deepEqual(actual.diagnostics, expected.diagnostics);
+      const plain = await direct.renderPdf(source, { ...options, running: undefined });
+      assert.notDeepEqual(actual.bytes, plain.bytes, "running content must affect the PDF");
+      const skippedOptions = { ...options, running: { ...running, skipFirstPage: true } };
+      const skipped = await worker.renderPdf(source, skippedOptions);
+      assert.deepEqual(skipped.bytes, (await direct.renderPdf(source, skippedOptions)).bytes);
+      assert.deepEqual(skipped.bytes, plain.bytes, "skipped single-page content adds no running resources");
+      assert.ok(png.length > 0, "running-logo input bytes remain owned by the caller");
+      console.log("document-worker: PDF running text/logo/skip-first parity PASS");
+    }
     const publication = "# Field guide\n\n![Pixel](pixel.png)\n\n## Chapter\n\nBook text.\n\n### Detail\n";
     const epubOptions = { title: "Field guide", lang: "en", customCss: "p { color: navy; }",
       toc: true, tocDepth: 2, pdfImages: [{ destination: "pixel.png", bytes: png }] };

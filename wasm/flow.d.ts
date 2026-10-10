@@ -442,8 +442,8 @@ export interface FlowSvgExportOptions {
 export interface FlowPdfExportOptions extends FlowExportOptions {
   /** Shared native paper contract. Copied before enqueue; units are points. */
   page?: FmdPdfPage;
-  /** At most 4096 UTF-16 units per slot, 16384 combined. Unknown template tokens
-   * remain literal. skipFirstPage=true requires a nonempty band or rule. */
+  /** At most 4096 UTF-8 bytes per slot and 16384 UTF-16 units combined. Unknown
+   * tokens stay literal. skipFirstPage=true requires nonempty text, a rule or an image. */
   running?: FmdPdfRunning;
   /** Explicit export-only images, including logos absent from Markdown. Exact
    * Uint8Array views are copied before enqueue. At most 8 MiB each / 32 MiB

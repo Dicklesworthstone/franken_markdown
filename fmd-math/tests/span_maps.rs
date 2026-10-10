@@ -277,3 +277,29 @@ fn text_ligatures_follow_the_preamble() {
         same_defs.canonical_bytes()
     });
 }
+
+/// A rule resolves to a rectangle from its bottom-right corner,
+/// counterclockwise: the path the Reference's `<rect>` becomes, a
+/// `Rectangle` whose vertices are bottom-right, top-right, top-left,
+/// bottom-left (franken_manim fm-15k9).
+#[test]
+fn rule_contours_start_at_the_bottom_right_corner() {
+    let e = engine();
+    let layout = e.typeset(r"\frac{1}{2}", Style::Display).unwrap();
+    let rule = layout.rules[0].clone();
+    let contours = fmd_math::paths::resolve_paths(&e, &layout).unwrap();
+    let (x0, y0) = (rule.x, rule.y);
+    let (x1, y1) = (rule.x + rule.width, rule.y + rule.height);
+    let bar = contours
+        .iter()
+        .find(|c| c.start == (x1, y0))
+        .expect("a contour starting at the rule's bottom-right corner");
+    let corners: Vec<(f64, f64)> = bar
+        .segments
+        .iter()
+        .map(|s| match *s {
+            fmd_math::PathSeg::Line { to } | fmd_math::PathSeg::Quad { to, .. } => to,
+        })
+        .collect();
+    assert_eq!(corners, vec![(x1, y1), (x0, y1), (x0, y0), (x1, y0)]);
+}

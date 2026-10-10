@@ -59,18 +59,21 @@ pub fn resolve_paths(engine: &Engine, layout: &Layout) -> Result<Vec<PathContour
             out.push(PathContour { start, segments });
         }
     }
+    // A rule is a rectangle from its bottom-right corner, counterclockwise:
+    // the path a DVI-to-SVG `<rect>` becomes in manim (a `Rectangle` whose
+    // vertices are bottom-right, top-right, top-left, bottom-left).
     for rule in &layout.rules {
         let x0 = rule.x;
         let y0 = rule.y;
         let x1 = rule.x + rule.width;
         let y1 = rule.y + rule.height;
         out.push(PathContour {
-            start: (x0, y0),
+            start: (x1, y0),
             segments: vec![
-                PathSeg::Line { to: (x1, y0) },
                 PathSeg::Line { to: (x1, y1) },
                 PathSeg::Line { to: (x0, y1) },
                 PathSeg::Line { to: (x0, y0) },
+                PathSeg::Line { to: (x1, y0) },
             ],
         });
     }

@@ -2037,6 +2037,7 @@ fn parse_lines_as_inlines(
                 &chars,
                 scan.byte_len,
                 refs,
+                InlineContext::Prose,
                 profiler,
                 started,
             );
@@ -3970,8 +3971,14 @@ fn parse_inlines_with_refs_profiled_uncached(
     if let Some(tracker) = &mut profiler.destinations {
         tracker.push_chars_text(&bytes, text);
     }
-    let parsed =
-        parse_inlines_chars_with_refs_profiled(&bytes, text.len(), refs, profiler, started);
+    let parsed = parse_inlines_chars_with_refs_profiled(
+        &bytes,
+        text.len(),
+        refs,
+        InlineContext::Prose,
+        profiler,
+        started,
+    );
     if let Some(tracker) = &mut profiler.destinations {
         tracker.pop_chars();
     }
@@ -4004,6 +4011,15 @@ fn record_plain_inline_parse(
     inlines
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InlineContext {
+    Prose,
+    /// An explicit link or image already owns this label. GFM's bare URL/email
+    /// extension must leave its text alone; explicit nested links and angle
+    /// autolinks still participate in CommonMark's inner-link precedence.
+    LinkLabel,
+}
+
 /// Nested-inline entry for spans that already exist as a slice of the parent
 /// run's char buffer (link text, reference-link text, strikethrough inner).
 /// Behaves exactly like `parse_inlines_with_refs_profiled` at depth > 0 — no
@@ -4013,6 +4029,7 @@ fn record_plain_inline_parse(
 fn parse_inlines_chars_nested(
     chars: &[char],
     refs: &ReferenceMap,
+    context: InlineContext,
     profiler: &mut ParseProfiler,
 ) -> Vec<Inline> {
     if profiler.inline_work.exhausted
@@ -4032,7 +4049,7 @@ fn parse_inlines_chars_nested(
         record_plain_inline_chars_parse(chars, profiler, started)
     } else {
         let byte_len = inline_chars_byte_len(chars, profiler.enabled);
-        parse_inlines_chars_with_refs_profiled(chars, byte_len, refs, profiler, started)
+        parse_inlines_chars_with_refs_profiled(chars, byte_len, refs, context, profiler, started)
     };
     profiler.inline_parse_depth -= 1;
     inlines
@@ -4175,6 +4192,7 @@ fn parse_inlines_chars_with_refs_profiled(
     bytes: &[char],
     byte_len: usize,
     refs: &ReferenceMap,
+    context: InlineContext,
     profiler: &mut ParseProfiler,
     started: Option<ParseStageStart>,
 ) -> Vec<Inline> {
@@ -4199,7 +4217,7 @@ fn parse_inlines_chars_with_refs_profiled(
     // they should not pay for the bracket-pair vector; once a bracket candidate
     // exists, all link/reference attempts share the same linear precompute.
     let mut bracket_pairs: Option<BracketPairs> = None;
-    let maybe_bare_email = bytes.contains(&'@');
+    let maybe_bare_email = context == InlineContext::Prose && bytes.contains(&'@');
     let mut buf = String::new();
     let mut i = 0;
     let mut has_emphasis_delimiters = false;
@@ -4400,7 +4418,7 @@ fn parse_inlines_chars_with_refs_profiled(
                 if let Some((start, end, next)) = parse_delim(bytes, i, '~', 2) {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Strikethrough(
-                        parse_inlines_chars_nested(&bytes[start..end], refs, profiler),
+                        parse_inlines_chars_nested(&bytes[start..end], refs, context, profiler),
                     )));
                     i = next;
                 } else {
@@ -4438,7 +4456,7 @@ fn parse_inlines_chars_with_refs_profiled(
             }
             _ => {
                 let mut bare_autolink = None;
-                if inline_chars_maybe_bare_url_start(bytes, i) {
+                if context == InlineContext::Prose && inline_chars_maybe_bare_url_start(bytes, i) {
                     bare_autolink = parse_bare_url_autolink(bytes, i);
                 }
                 if bare_autolink.is_none()
@@ -5077,7 +5095,8 @@ fn parse_link_like(
         return None;
     }
     let mark = profiler.destination_mark();
-    let content = parse_inlines_chars_nested(&chars[i + 1..j], refs, profiler);
+    let content =
+        parse_inlines_chars_nested(&chars[i + 1..j], refs, InlineContext::LinkLabel, profiler);
     let nested_link = !image && contains_link(&content);
     if image || nested_link {
         profiler.destination_rollback(mark);
@@ -5298,7 +5317,12 @@ fn parse_reference_link_like(
     let reference = refs.get(&label)?;
     // Only now, with a real reference, parse the link text in place as content.
     let mark = profiler.destination_mark();
-    let content = parse_inlines_chars_nested(&chars[i + 1..close], refs, profiler);
+    let content = parse_inlines_chars_nested(
+        &chars[i + 1..close],
+        refs,
+        InlineContext::LinkLabel,
+        profiler,
+    );
     let nested_link = !image && contains_link(&content);
     if image || nested_link {
         profiler.destination_rollback(mark);

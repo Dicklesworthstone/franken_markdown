@@ -1,4 +1,4 @@
-//! Recursive inline syntax must remain bounded across every parser entry point.
+//! Link-label precedence and bounded recursion across every parser entry point.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::ast::{Block, Inline};
@@ -109,5 +109,138 @@ fn ordinary_nested_markup_and_long_flat_documents_keep_their_structure() {
             .filter(|inline| matches!(inline, Inline::Link { .. }))
             .count(),
         2048
+    );
+}
+
+#[test]
+fn explicit_link_destinations_win_over_bare_urls_and_emails_in_their_labels() {
+    for label in [
+        "https://example.com",
+        "http://example.com/path?one=1&two=2",
+        "www.example.com",
+        "support@example.com",
+        "write support@example.com or visit https://example.com",
+    ] {
+        let source = format!("[{label}](/chosen-destination \"Chosen title\")");
+        assert_eq!(
+            parse_inlines(&source),
+            vec![Inline::Link {
+                dest: "/chosen-destination".into(),
+                title: Some("Chosen title".into()),
+                content: vec![Inline::Text(label.into())],
+            }],
+            "bare autolinks must not invalidate an explicit link: {source}",
+        );
+    }
+}
+
+#[test]
+fn reference_link_labels_keep_bare_urls_and_emails_as_text() {
+    for label in [
+        "https://example.com",
+        "www.example.com",
+        "support@example.com",
+    ] {
+        for (definition, use_site) in [
+            ("[ref]: /chosen".to_string(), format!("[{label}][ref]")),
+            (format!("[{label}]: /chosen"), format!("[{label}][]")),
+            (format!("[{label}]: /chosen"), format!("[{label}]")),
+        ] {
+            let source = format!("{definition}\n\n{use_site}");
+            assert_eq!(
+                parse_markdown(&source).blocks,
+                vec![Block::Paragraph(vec![Inline::Link {
+                    dest: "/chosen".into(),
+                    title: None,
+                    content: vec![Inline::Text(label.into())],
+                }])],
+                "reference link lost its destination: {source}",
+            );
+        }
+    }
+}
+
+#[test]
+fn rich_link_labels_preserve_formatting_without_creating_nested_autolinks() {
+    let source = "[**visit https://example.com** and ~~write support@example.com~~](/contact)";
+    let html = render_html(source, &HtmlOptions::default()).unwrap();
+    assert!(html.contains(
+        "<a href=\"/contact\"><strong>visit https://example.com</strong> and <del>write support@example.com</del></a>",
+    ));
+    assert_eq!(html.matches("<a href=").count(), 1);
+
+    let reference = format!(
+        "[ref]: /contact\n\n{}[ref]",
+        source.trim_end_matches("(/contact)")
+    );
+    assert_eq!(parse_markdown(source), parse_markdown(&reference));
+}
+
+#[test]
+fn explicit_nested_links_and_angle_autolinks_still_defeat_an_outer_link() {
+    for (source, inner_destination) in [
+        ("[outer [inner](/inside)](/outside)", "/inside"),
+        (
+            "[outer <https://inside.example>](/outside)",
+            "https://inside.example",
+        ),
+        (
+            "[outer ~~<inside@example.com>~~](/outside)",
+            "mailto:inside@example.com",
+        ),
+    ] {
+        let html = render_html(source, &HtmlOptions::default()).unwrap();
+        assert!(html.contains(&format!("<a href=\"{inner_destination}\">")));
+        assert!(!html.contains("href=\"/outside\""));
+        assert!(html.contains("](/outside)"));
+    }
+}
+
+#[test]
+fn image_descriptions_keep_url_text_and_can_still_be_wrapped_in_links() {
+    for label in ["https://example.com", "support@example.com"] {
+        let source = format!("[![{label}](image.svg)](/chosen)");
+        assert_eq!(
+            parse_inlines(&source),
+            vec![Inline::Link {
+                dest: "/chosen".into(),
+                title: None,
+                content: vec![Inline::Image {
+                    dest: "image.svg".into(),
+                    title: None,
+                    alt: label.into(),
+                }],
+            }],
+        );
+        let reference = format!("[image]: image.svg\n\n[![{label}][image]](/chosen)");
+        assert_eq!(parse_markdown(&source), parse_markdown(&reference));
+    }
+}
+
+#[test]
+fn bare_autolinks_remain_active_after_successful_and_rejected_link_labels() {
+    let source = "[https://label.example](/chosen) https://outside.example\n\n\
+                  [outer [inner](/inside)](/outside) support@example.com\n\n\
+                  [https://label.example](/chosen) https://outside.example\n\n\
+                  [https://label.example](/chosen) https://outside.example";
+    let document = parse_markdown(source);
+    let html = render_html(source, &HtmlOptions::default()).unwrap();
+    assert_eq!(html.matches("href=\"/chosen\"").count(), 3);
+    assert_eq!(html.matches("href=\"https://outside.example\"").count(), 3);
+    assert_eq!(
+        html.matches("href=\"mailto:support@example.com\"").count(),
+        1
+    );
+    assert!(!html.contains("href=\"/outside\""));
+    assert_eq!(document.blocks[0], document.blocks[2]);
+    assert_eq!(document.blocks[0], document.blocks[3]);
+    assert_eq!(parse_markdown_profiled(source).document, document);
+    assert_eq!(
+        parse_markdown_spanned(source)
+            .blocks
+            .into_iter()
+            .map(|block| block.node)
+            .collect::<Vec<_>>(),
+        document.blocks,
     );
 }

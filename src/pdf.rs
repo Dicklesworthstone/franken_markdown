@@ -41,6 +41,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 mod inline_image;
+mod joint_pagination;
 mod math;
 mod running;
 mod text_composition;
@@ -3233,6 +3234,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
             table_layout_cache: TableLayoutCache::default(),
             math_renderer: crate::pdf::math::MathRenderer::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
+            paragraph_candidates: joint_pagination::Candidates::new(opts, blocks),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
@@ -3244,6 +3246,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
         layout_blocks(blocks, 0.0, &mut out, &mut cx);
         layout_pdf_notes(blocks, &mut out, &mut cx);
+        joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
         return out;
     }
 
@@ -3293,6 +3296,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         table_layout_cache: TableLayoutCache::default(),
         math_renderer: crate::pdf::math::MathRenderer::default(),
         paragraph_scratch: ParagraphLayoutScratch::new(),
+        paragraph_candidates: joint_pagination::Candidates::new(opts, blocks),
         line_breaks: Vec::new(),
         line_toks: Vec::new(),
         glue_adjustments: Vec::new(),
@@ -3303,6 +3307,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
     };
     for _iter in 0..5 {
         cx.pending_page_break = false;
+        cx.paragraph_candidates.clear();
         cx.list_stack.clear();
         cx.next_bg = 0;
         cx.next_flow = 0;
@@ -3310,6 +3315,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
         layout_blocks(blocks, 0.0, &mut out, &mut cx);
         layout_pdf_notes(blocks, &mut out, &mut cx);
+        joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
 
         // Run pagination to find the resulting page of each heading
         let heading_metas = heading_metadata(&out);
@@ -4121,6 +4127,9 @@ struct LayoutCx<'a> {
     /// render-call-local and deterministic.
     paragraph_scratch: ParagraphLayoutScratch,
     line_breaks: Vec<LineBreak>,
+    /// Same-measure paragraph shapes retained only for the opt-in joint page
+    /// planner. Selection waits until block layout has finalized metadata.
+    paragraph_candidates: joint_pagination::Candidates,
     /// Reused physical-line token workspace. Paragraph breaking returns item
     /// ranges, then PDF layout maps those ranges back to styled tokens; this
     /// buffer avoids allocating a new token vector for every emitted line.
@@ -4593,7 +4602,10 @@ fn layout_simple_text_paragraph(
         kind: FlowKind::Paragraph,
     };
     let policy = ParagraphPolicy::for_flow(flow.kind);
-    let cacheable = text.len() <= SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_TEXT_BYTES;
+    // A baseline-only cache hit would hide alternatives from later occurrences
+    // of the same paragraph. The ordinary cached rendering path is unchanged.
+    let cacheable = text.len() <= SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_TEXT_BYTES
+        && !cx.paragraph_candidates.enabled();
 
     if cacheable {
         let key = SimpleParagraphLayoutKey::new(
@@ -19324,9 +19336,84 @@ fn layout_inlines(
         return;
     }
 
-    let n = cx.line_breaks.len();
-    for i in 0..n {
-        let lb = cx.line_breaks[i];
+    let breaks = std::mem::take(&mut cx.line_breaks);
+    let baseline_count = breaks.len();
+    let variants = if cx.paragraph_candidates.enabled()
+        && flow.kind == FlowKind::Paragraph
+        && cx.list_stack.is_empty()
+        && toks.iter().all(|tok| !is_inline_object(tok.slot))
+        && cx
+            .paragraph_candidates
+            .begin_measure(built.items.len(), baseline_count)
+    {
+        Some(crate::layout::break_paragraph_candidates(
+            &built.items,
+            content_w,
+            &mut cx.paragraph_scratch,
+        ))
+    } else {
+        None
+    };
+    let spec = ParagraphPaintSpec {
+        left,
+        size,
+        gap_after,
+        content_w,
+        policy,
+        flow,
+    };
+    emit_broken_paragraph(&built, &breaks, spec, out, cx);
+    if let Some(variants) = variants {
+        let baseline_demerits = breaks.last().map_or(0, |line| line.demerits);
+        let mut alternatives = Vec::new();
+        for variant in variants.variants {
+            if variant.line_count < 4 || variant.line_count == baseline_count {
+                continue;
+            }
+            let mut lines = Vec::with_capacity(variant.line_count);
+            emit_broken_paragraph(&built, &variant.lines, spec, &mut lines, cx);
+            alternatives.push(joint_pagination::Alternative {
+                lines,
+                extra_demerits: variant.demerits.saturating_sub(baseline_demerits),
+            });
+        }
+        cx.paragraph_candidates
+            .insert(flow.group, baseline_count, alternatives);
+    }
+    cx.line_breaks = breaks;
+}
+
+#[derive(Clone, Copy)]
+struct ParagraphPaintSpec {
+    left: f32,
+    size: f32,
+    gap_after: f32,
+    content_w: LayoutUnit,
+    policy: ParagraphPolicy,
+    flow: FlowSpec,
+}
+
+/// Paint the same measured KP shape for both the ordinary baseline and joint
+/// pagination alternatives. All glyph, link and justification handling has one
+/// owner, so a chosen alternative cannot lose inline content or styling.
+fn emit_broken_paragraph(
+    built: &BuiltParagraph,
+    breaks: &[LineBreak],
+    spec: ParagraphPaintSpec,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+) {
+    let ParagraphPaintSpec {
+        left,
+        size,
+        gap_after,
+        content_w,
+        policy,
+        flow,
+    } = spec;
+    let start = out.len();
+    let n = breaks.len();
+    for (i, lb) in breaks.iter().enumerate() {
         // Justifier target = measure + right optical-margin credit + left
         // hang. Microtype protrusion: the breaker admitted the line against
         // content + protrusion credit, so the justifier must target the same
@@ -19350,10 +19437,10 @@ fn layout_inlines(
         } else {
             crate::layout::LayoutUnit::ZERO
         };
-        let hang = lu_from_points_f32(line_left_hang(&built, &lb, size));
+        let hang = lu_from_points_f32(line_left_hang(built, lb, size));
         line_tokens_for_break_into(
-            &built,
-            &lb,
+            built,
+            lb,
             content_w + right_protrusion + hang,
             policy.justify && i + 1 < n,
             policy.expansion_permilli(),
@@ -19369,7 +19456,7 @@ fn layout_inlines(
             policy.microtype.max_expansion_per_mille,
             &cx.links.targets,
         );
-        if policy.justify && i + 1 < n && !chosen_forced_break(&built.items, &lb) {
+        if policy.justify && i + 1 < n && !chosen_forced_break(&built.items, lb) {
             true_up_justified_line(
                 &mut segs,
                 left + (content_w + right_protrusion).to_points_f32(),
@@ -29111,9 +29198,7 @@ fn exact_height_page_breaks_reserving(
     page: PageGeom,
     reserve: impl Fn(usize) -> f32,
 ) -> Option<PageBreakPlan> {
-    use crate::pagination::height::{
-        BlockCandidates, BlockPolicy, BlockVariant, HeightPaginationOptions, plan_blocks,
-    };
+    use crate::pagination::height::{BlockCandidates, BlockPolicy, plan_blocks};
 
     if lines.is_empty() {
         return Some(PageBreakPlan { ends: Vec::new() });
@@ -29129,72 +29214,19 @@ fn exact_height_page_breaks_reserving(
         if end <= start {
             return None;
         }
-        let mut fragment_heights = Vec::with_capacity(end - start);
-        for line in &lines[start..end] {
-            let points = (line_leading(line) + line.gap_after).max(0.001);
-            fragment_heights.push(lu_from_points_f32(points));
-        }
-        let reservations: Vec<f32> = (start..end).map(&reserve).collect();
-        let fragment_reservations = if reservations.iter().all(|&points| points == 0.0) {
-            Vec::new()
-        } else {
-            reservations.into_iter().map(lu_from_points_f32).collect()
-        };
-
-        let mut split_costs = Vec::with_capacity(end.saturating_sub(start + 1));
-        for candidate in (start + 1)..end {
-            if pdf_split_is_hard_forbidden(lines, candidate) {
-                split_costs.push(None);
-            } else {
-                split_costs.push(Some(break_penalty(lines, candidate).round() as i64));
-            }
-        }
-
         blocks.push(BlockCandidates {
-            variants: vec![BlockVariant {
-                demerits: 0,
-                fragment_heights,
-                continuation_prefix: pdf_table_continuation_prefix(lines, start, end),
-                fragment_reservations,
-                split_costs,
-            }],
+            variants: vec![joint_pagination::block_variant(
+                lines, start, end, 0, &reserve,
+            )],
         });
-
-        let first = &lines[start];
-        let mut policy = if first.flow.kind == FlowKind::Paragraph {
-            BlockPolicy::paragraph()
-        } else {
-            BlockPolicy::default()
-        };
-        policy.break_before = first.page_break_before;
-        policy.break_before_cost = if start == 0 || first.page_break_before {
-            0
-        } else {
-            break_penalty(lines, start).round() as i64
-        };
-        if first.flow.kind == FlowKind::Heading {
-            policy.keep_together = true;
-            policy.keep_with_next = true;
-        }
+        let policy = joint_pagination::block_policy(lines, start);
 
         spans.push((start, end));
         policies.push(policy);
         start = end;
     }
 
-    let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
-    let plan = plan_blocks(
-        &blocks,
-        &policies,
-        HeightPaginationOptions {
-            page_capacity: lu_from_points_f32(full_capacity),
-            page_cost: PAGE_COUNT_DEMERITS.round() as u64,
-            unused_height_cost: 10_000,
-            penalize_last_page: false,
-            ..HeightPaginationOptions::default()
-        },
-    )
-    .ok()?;
+    let plan = plan_blocks(&blocks, &policies, joint_pagination::options(page)).ok()?;
 
     let mut ends = Vec::with_capacity(plan.page_count);
     for (index, fragment) in plan.fragments.iter().enumerate() {
@@ -33226,6 +33258,7 @@ mod pdf_writer_tests {
             table_layout_cache: TableLayoutCache::default(),
             math_renderer: crate::pdf::math::MathRenderer::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
+            paragraph_candidates: crate::pdf::joint_pagination::Candidates::default(),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
@@ -39835,6 +39868,7 @@ mod table_wrap_tests {
             table_layout_cache: super::TableLayoutCache::default(),
             math_renderer: crate::pdf::math::MathRenderer::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
+            paragraph_candidates: crate::pdf::joint_pagination::Candidates::default(),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
@@ -41844,6 +41878,7 @@ mod coverage_gap_tests {
             table_layout_cache: TableLayoutCache::default(),
             math_renderer: crate::pdf::math::MathRenderer::default(),
             paragraph_scratch: ParagraphLayoutScratch::new(),
+            paragraph_candidates: crate::pdf::joint_pagination::Candidates::default(),
             line_breaks: Vec::new(),
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),

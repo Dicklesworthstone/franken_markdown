@@ -320,6 +320,103 @@ fn left_right_delimiters_cover_the_rule_19_target() {
     assert!(small.paths.is_empty());
 }
 
+/// The vertical extent of a drawn path, ems.
+fn path_extent(l: &Layout, i: usize) -> (f64, f64) {
+    let mut ys = Vec::new();
+    for c in &l.paths[i].contours {
+        ys.push(c.start.1);
+        for s in &c.segments {
+            match s {
+                fmd_math::PathSeg::Line { to } => ys.push(to.1),
+                fmd_math::PathSeg::Quad { ctrl, to } => ys.extend([ctrl.1, to.1]),
+            }
+        }
+    }
+    let lo = ys.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    (lo, hi)
+}
+
+#[test]
+fn delimiters_take_tex_variant_sizes() {
+    // Real TeX (LaTeX with amsmath, 10 pt) sets each of these delimiters at
+    // a cmex10 variant or extensible size, which here also bounds the box:
+    // height = axis + total / 2, depth = total / 2 - axis. The totals in ems
+    // are the TeX boxes' height plus depth over 10 pt. The axis-centred
+    // delimiter tops every box, so the height pins its size; the depth
+    // need only cover it, since content can reach lower here than in TeX
+    // (the face's script k in \binom dips below the baseline, where
+    // cmmi7's k has no depth).
+    use Style::{Display, Text};
+    let e = engine();
+    for (tex, style, total) in [
+        (
+            r"\left[\begin{array}{c}\quad \\\end{array}\right]",
+            Display,
+            1.2,
+        ),
+        (
+            r"\left[\begin{array}{c}\quad \\\quad \\\end{array}\right]",
+            Display,
+            2.4,
+        ),
+        (
+            r"\left[\begin{array}{c}\quad \\\quad \\\quad \\\end{array}\right]",
+            Display,
+            3.6,
+        ),
+        (
+            r"\left[\begin{array}{c}\quad \\\quad \\\quad \\\quad \\\quad \\\end{array}\right]",
+            Display,
+            6.0,
+        ),
+        (r"\begin{pmatrix}1\\2\\3\end{pmatrix}", Display, 3.6),
+        (
+            r"\left\{\begin{matrix}a\\b\\c\\d\end{matrix}\right.",
+            Display,
+            4.8,
+        ),
+        (
+            r"\left\lfloor\begin{matrix}a\\b\\c\end{matrix}\right\rfloor",
+            Display,
+            3.6,
+        ),
+        (r"\binom{n}{k}", Text, 1.2),
+        (r"\binom{n}{k}", Display, 2.4),
+        (r"\Big|", Text, 1.8),
+    ] {
+        let l = e.typeset(tex, style).unwrap();
+        let half = l.height - CM.axis_height;
+        assert!(
+            (half - total / 2.0).abs() < 1e-6 && l.depth + CM.axis_height > total / 2.0 - 1e-6,
+            "{tex} in {style:?}: {} + {} against TeX's {total} em",
+            l.height,
+            l.depth
+        );
+    }
+    // A fraction in parentheses: TeX's 1.8 em variant, drawn. The box's
+    // depth is the fraction's.
+    let l = e
+        .typeset(r"\left(\frac{a}{x}\right)", Style::Display)
+        .unwrap();
+    for i in 0..2 {
+        let (lo, hi) = path_extent(&l, i);
+        assert!((hi - lo - 1.8).abs() < 1e-9, "paren {i}: {lo}..{hi}");
+        assert!(((hi + lo) / 2.0 - CM.axis_height).abs() < 1e-9);
+    }
+    // Angles have no extensible recipe: past five rows TeX's angle stays at
+    // its largest variant, 3.0 em, while the matrix grows.
+    let l = e
+        .typeset(
+            r"\left\langle\begin{matrix}a\\b\\c\\d\\e\end{matrix}\right\rangle",
+            Style::Display,
+        )
+        .unwrap();
+    let (lo, hi) = path_extent(&l, 0);
+    assert!((hi - lo - 3.0).abs() < 1e-9, "angle: {lo}..{hi}");
+    assert!(l.height + l.depth > 5.0);
+}
+
 #[test]
 fn null_delimiter_occupies_nulldelimiterspace() {
     let e = engine();

@@ -2348,8 +2348,10 @@ impl Engine {
         })
     }
 
-    /// The ADR-0005 delimiter mechanism, complete: natural glyph if it
-    /// covers the target; uniform scaling up to the `1.25×` ceiling; the
+    /// The ADR-0005 delimiter mechanism, complete, at the size TeX's
+    /// variant search picks for the target ([`tex_delimiter_total`]):
+    /// natural glyph if it covers that size; uniform scaling up to the
+    /// `1.25×` ceiling; the
     /// parametric drawn-path construction beyond (the mainline — stroke
     /// weights calibrated against the authored glyphs so the threshold
     /// seam is invisible at a glance, and no requested size can fail).
@@ -2364,6 +2366,13 @@ impl Engine {
     ) -> Result<MBox, MathError> {
         let Some(ch) = delim.ch else {
             return Ok(kern_box(self.consts.null_delimiter_space * ctx.size()));
+        };
+        // TeX sets the variant it finds for the target, not the target:
+        // every mechanism below draws at that total.
+        let target_total = if ctx.size() > 0.0 {
+            tex_delimiter_total(ch, target_total / ctx.size()) * ctx.size()
+        } else {
+            target_total
         };
         let Some((face, gid)) = self
             .faces
@@ -2472,6 +2481,44 @@ fn fixed_delim_target(size: DelimSize) -> f64 {
         DelimSize::BBig => 1.8,
         DelimSize::Bigg => 2.4,
         DelimSize::BBigg => 3.0,
+    }
+}
+
+/// TeX's `var_delimiter` (tex.web §706–§713) over cmex10: the total height
+/// plus depth, in ems, of the variant TeX sets for delimiter `ch` when it
+/// must cover `target` ems. A target within the small variant (cmr10's and
+/// cmsy10's delimiters are all 1.0 em) is the face's own glyph and comes
+/// back unchanged. Past it TeX takes the first of cmex10's successors, 1.2,
+/// 1.8, 2.4 and 3.0 em, that covers the target. Past those it builds the
+/// extensible recipe: its fixed pieces plus as many repeaters as cover the
+/// target. A brace repeats on both sides of its middle piece, 2 × 0.3 em
+/// per step. Angles and slashes have no recipe, so TeX stops at their
+/// largest variant even when it falls short. Bars have no successors, only
+/// the repeater. Characters TeX does not chain keep the exact target.
+fn tex_delimiter_total(ch: char, target: f64) -> f64 {
+    // (successors, extensible recipe as (fixed pieces, step)), ems.
+    const SUCCESSORS: &[f64] = &[1.2, 1.8, 2.4, 3.0];
+    let (successors, recipe): (&[f64], Option<(f64, f64)>) = match ch {
+        '(' | ')' | '[' | ']' | '{' | '}' => (SUCCESSORS, Some((3.6, 0.6))),
+        '⌈' | '⌉' | '⌊' | '⌋' => (SUCCESSORS, Some((1.8, 0.6))),
+        '√' => (SUCCESSORS, Some((2.4, 0.6))),
+        '⟨' | '⟩' | '〈' | '〉' | '/' | '\\' => (SUCCESSORS, None),
+        '|' | '‖' => (&[], Some((0.0, 0.6))),
+        _ => return target,
+    };
+    if !target.is_finite() || target <= 1.0 {
+        return target;
+    }
+    // TeX compares scaled points exactly. In decimal ems an exact hit such
+    // as `\Big|`'s 1.8 em is 3 × 0.6 only up to rounding, so the
+    // comparisons forgive 1e-9 em.
+    let need = target - 1e-9;
+    if let Some(&size) = successors.iter().find(|&&size| size >= need) {
+        return size;
+    }
+    match recipe {
+        Some((fixed, step)) => fixed + ((need - fixed) / step).ceil().max(0.0) * step,
+        None => successors.last().copied().unwrap_or(target),
     }
 }
 

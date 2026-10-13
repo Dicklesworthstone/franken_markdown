@@ -4,12 +4,14 @@ import { File } from "node:buffer";
 import { createBookCollection, readPortableBookProject } from "../demo/book_collection.mjs";
 import { createBookPreviewControls } from "../demo/book_preview_controls.mjs";
 import { createBookWorkerClient, createRetainedBookPreview, installBookWorker } from "../book_worker.mjs";
-import { renderBookPreview } from "../book_site_preview.mjs";
+import { renderBookPreview, renderBookSessionChapterPreview } from "../book_site_preview.mjs";
 import { nativeFixture } from "./book_retained_fixture.mjs";
 
 // Complete production collection, client, protocol, native facade, ZIP codec,
 // frame serializer and preview controller. Only DOM/editor and native ABI are
 // adapters here. Transport uses actual structuredClone transfer ownership.
+// This older native ABI intentionally exercises selected-preview ZIP fallback;
+// book_chapter_controls.test.mjs covers the direct native chapter route.
 class Element extends EventTarget {
   value = ""; checked = false; disabled = false; textContent = ""; srcdoc = "";
   children = []; attrs = {}; contentWindow = {};
@@ -41,7 +43,7 @@ function fixture(t, { legacy = false } = {}) {
   const timers = { setTimeout(fn, delay) { const id = ++timerId; tasks.set(id, { fn, delay }); return id; },
     clearTimeout(id) { tasks.delete(id); } };
   const client = createBookWorkerClient({ retainPreview: true, workerFactory() {
-    const native = nativeFixture(), retained = createRetainedBookPreview(native.engine, renderBookPreview);
+    const native = nativeFixture(), retained = createRetainedBookPreview(native.engine, renderBookPreview, renderBookSessionChapterPreview);
     let handler;
     const endpoint = new Element(); endpoint.stats = native.stats; endpoint.terminated = 0;
     endpoint.postMessage = (message, transfer) => {
@@ -112,7 +114,7 @@ test("publisher builds, source input and include edits reuse the existing native
   assert.equal(f.endpoints.length, 1); assert.equal(f.endpoints[0].stats.creates, 1);
   assert.equal(f.endpoints[0].stats.updates.length, 1);
   assert.deepEqual(f.endpoints[0].stats.updates[0].changes, [f.collection.files[0], f.collection.files[2]].map(({ path, source }) => ({ path, source })));
-  assert.notDeepEqual(first, second); assert.match(second.pages[0].html, /# Edited/);
+  assert.notDeepEqual(first, second); assert.match(second.html, /# Edited/);
   await f.preview.build(); assert.equal(f.endpoints[0].stats.updates.length, 1);
 });
 
@@ -134,7 +136,7 @@ test("an edit cancels active work, while a subsequent retry builds the current s
   const f = fixture(t), pending = f.preview.build();
   f.type("newest"); await assert.rejects(pending, { code: "EXPORT_CANCELLED" });
   assert.equal(f.endpoints[0].terminated, 1);
-  assert.match((await f.preview.build()).pages[0].html, /newest/);
+  assert.match((await f.preview.build()).html, /newest/);
 });
 
 test("silent editor changes cannot publish a completed cached preview", async t => {

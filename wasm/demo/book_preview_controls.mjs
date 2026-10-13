@@ -1,5 +1,7 @@
 import { bookPreviewFrame } from "../book_preview_frame.mjs";
 import { parseBookPreview, resolveBookPreviewLink } from "../book_site_preview.mjs";
+import { parseBookChapterPreview } from "../book_session.mjs";
+import { createBookCollectionCapture } from "../book_worker.mjs";
 
 const failure = (code, message) => Object.assign(new Error(message), { code });
 const blank =
@@ -52,6 +54,11 @@ export function createBookPreviewControls({
     stamp = null,
     selected = 0,
     channel = null;
+  // Keep capture ownership with this controller. The helper reuses the worker's
+  // acknowledged source baseline, never an independent image/font or HTML cache.
+  const captureBook = createBookCollectionCapture(collection, worker);
+  const chapterPreview = worker.supportsChapterPreview === true;
+  let selectedSource = null, previewMode = null;
   let configurationRevision = collection.renderConfigurationRevision;
   const unlisten = [];
   const alive = () => {
@@ -78,6 +85,7 @@ export function createBookPreviewControls({
     else worker.cancel();
     busy = false;
     preview = null;
+    previewMode = null;
     stamp = null;
     channel = null;
     el["preview-frame"].srcdoc = blank;
@@ -100,13 +108,16 @@ export function createBookPreviewControls({
     current();
     if (!Number.isInteger(index) || index < 0 || index >= preview.pages.length)
       throw failure("INVALID_SELECTION", "Choose a preview chapter.");
+    if (chapterPreview && index !== preview.selected)
+      throw failure("INVALID_SELECTION", "This chapter has not been rendered for the current source.");
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
     const page = preview.pages[index],
-      document = bookPreviewFrame(page.html, token, fragment);
+      document = bookPreviewFrame(chapterPreview ? preview.html : page.html, token, fragment);
     timers.clearTimeout(deadline);
     selected = index;
+    selectedSource = page.source;
     channel = token;
     el["preview-pages"].value = String(index);
     el["preview-frame"].srcdoc = document;
@@ -125,7 +136,21 @@ export function createBookPreviewControls({
     }, frameTimeoutMs);
     buttons();
   }
-  async function build() {
+  function navigate(index, fragment = "") {
+    current();
+    if (!Number.isInteger(index) || index < 0 || index >= preview.pages.length)
+      throw failure("INVALID_SELECTION", "Choose a preview chapter.");
+    if (chapterPreview && index !== preview.selected) {
+      // Source identity, not an old numeric slot, determines the target if the
+      // collection changes during capture. Late failures are handled by their
+      // own generation and must not overwrite a newer reader's status.
+      void renderSelection(preview.pages[index].source, fragment).catch(() => {});
+    } else show(index, fragment);
+  }
+  function build() {
+    return renderSelection();
+  }
+  async function renderSelection(requestedSource, fragment = "") {
     let ticket = null;
     try {
       alive();
@@ -134,19 +159,34 @@ export function createBookPreviewControls({
       retire(true);
       capturing = true;
       try { controls.captureProject(); } finally { capturing = false; }
-      const input = collection.snapshot(),
-        captured = controls.checkpoint();
+      alive();
+      const input = captureBook(), captured = controls.checkpoint();
+      // Preserve the current chapter across reorder/source edits. If it was
+      // removed, an explicit rebuild chooses the nearest remaining chapter;
+      // navigation to a removed source instead fails rather than opening another.
+      const target = requestedSource ?? selectedSource;
+      let index = input.files.findIndex(file => file.path === target);
+      if (index < 0 && requestedSource !== undefined)
+        throw failure("STALE_SOURCE", "The requested chapter was removed; rebuild the preview.");
+      if (index < 0) index = Math.min(selected, input.files.length - 1);
       ticket = ++generation;
       busy = true;
       buttons();
-      el["preview-status"].textContent =
-        "Rendering the complete book site in a worker. Edits cancel this snapshot.";
-      const result = await worker.render(input.files, "preview", input.options);
+      el["preview-status"].textContent = chapterPreview
+        ? "Rendering the selected chapter in a worker. Edits cancel this snapshot."
+        : "Rendering the complete book site in a worker. Edits cancel this snapshot.";
+      const format = chapterPreview ? "chapter-preview" : "preview";
+      const result = await input.render(format, chapterPreview ? { selectedChapter: index } : undefined);
       if (disposed || suspended || ticket !== generation || captured !== controls.checkpoint())
         throw failure("STALE_SOURCE", "The book changed while its preview was rendering.");
-      if (result.format !== "book-preview")
+      if (result.format !== `book-${format}`)
         throw failure("INVALID_BOOK_PREVIEW", "The worker returned a different output format.");
-      const decoded = parseBookPreview(result.bytes);
+      if (chapterPreview && (result.selectedChapter !== index
+          || !["native-chapter", "site-fallback"].includes(result.previewMode)))
+        throw failure("INVALID_BOOK_PREVIEW", "The worker returned an invalid chapter selection or mode.");
+      const decoded = chapterPreview
+        ? parseBookChapterPreview(result.bytes, index, input.files.length)
+        : parseBookPreview(result.bytes);
       // The native mapping must describe this exact collection, not a preview
       // cached for a different book. HTML filenames themselves remain Rust-owned.
       if (
@@ -159,6 +199,7 @@ export function createBookPreviewControls({
         );
       }
       preview = decoded;
+      previewMode = chapterPreview ? result.previewMode : null;
       stamp = captured;
       busy = false;
       el["preview-pages"].replaceChildren(
@@ -169,7 +210,7 @@ export function createBookPreviewControls({
           return option;
         }),
       );
-      show(Math.min(selected, preview.pages.length - 1));
+      show(index, fragment);
       return preview;
     } catch (error) {
       if (!disposed && (ticket === null || ticket === generation)) {
@@ -261,9 +302,9 @@ export function createBookPreviewControls({
     buttons();
     el["preview-status"].textContent = "Preview cancelled and cleared. Automatic preview is off.";
   });
-  on(el["preview-pages"], "change", () => invoke(() => show(Number(el["preview-pages"].value))));
-  on(el["preview-previous"], "click", () => invoke(() => show(selected - 1)));
-  on(el["preview-next"], "click", () => invoke(() => show(selected + 1)));
+  on(el["preview-pages"], "change", () => invoke(() => navigate(Number(el["preview-pages"].value))));
+  on(el["preview-previous"], "click", () => invoke(() => navigate(selected - 1)));
+  on(el["preview-next"], "click", () => invoke(() => navigate(selected + 1)));
   on(window, "message", (event) => {
     const message = event.data;
     if (
@@ -282,7 +323,7 @@ export function createBookPreviewControls({
         timers.clearTimeout(deadline);
         deadline = null;
         el["preview-status"].textContent =
-          `Reviewing ${preview.pages[selected].source} (${selected + 1}/${preview.pages.length}). HTML-site preview, not PDF pagination. External resources and active content are disabled.`;
+          `Reviewing ${preview.pages[selected].source} (${selected + 1}/${preview.pages.length}). HTML-site preview, not PDF pagination. External resources and active content are disabled.${previewMode === "site-fallback" ? " This older renderer uses the whole-site fallback." : ""}`;
       } else if (message.kind === "link") {
         const destination = resolveBookPreviewLink(
           preview,
@@ -294,7 +335,7 @@ export function createBookPreviewControls({
             "That link is external, unresolved, or not a book chapter. No navigation was performed.";
           return;
         }
-        show(
+        navigate(
           preview.pages.findIndex((page) => page.path === destination.path),
           destination.fragment,
         );

@@ -418,6 +418,90 @@ fn delimiters_take_tex_variant_sizes() {
 }
 
 #[test]
+fn delimiters_take_tex_box_widths() {
+    // Real TeX's \wd of each box (LaTeX with amsmath, 10 pt, in ems). The
+    // content is digits and array columns, whose widths fmd-math already
+    // shares with TeX, so each total is the content plus the delimiters'
+    // cmex10 widths: `\big`'s 0.4167 em bracket, the extensible bracket's
+    // 0.6667, the 2.4 em paren's 0.7361 and so on.
+    use Style::{Display, Text};
+    let e = engine();
+    for (tex, style, width) in [
+        (
+            r"\left[\begin{array}{cc}3&1\\0&2\end{array}\right]",
+            Display,
+            4.055563,
+        ),
+        (
+            r"\left[\begin{array}{c}1\end{array}\right]",
+            Display,
+            2.333339,
+        ),
+        (
+            r"\left[\begin{array}{c}1\\2\\3\end{array}\right]",
+            Display,
+            2.833339,
+        ),
+        (r"\begin{pmatrix}1&2\\3&4\end{pmatrix}", Display, 3.472232),
+        (
+            r"\left\{\begin{array}{c}1\\2\\3\\4\end{array}\right.",
+            Display,
+            2.508891,
+        ),
+        (
+            r"\left|\begin{array}{c}1\\2\end{array}\right|",
+            Display,
+            2.166667,
+        ),
+        (
+            r"\left\langle\begin{array}{c}1\\2\end{array}\right\rangle",
+            Display,
+            3.000005,
+        ),
+        (
+            r"\left\lfloor\begin{array}{c}1\\2\end{array}\right\rfloor",
+            Display,
+            2.666673,
+        ),
+        (r"\Big(1\Big)", Text, 1.694447),
+    ] {
+        let l = e.typeset(tex, style).unwrap();
+        assert!(
+            (l.width - width).abs() < 1e-4,
+            "{tex} in {style:?}: {} against TeX's {width} em",
+            l.width
+        );
+    }
+    // The ink faces the content as cmex's does: a 2.4 em bracket's ink ends
+    // 0.0148 em (bracketleftbigg's right bearing) before its box does.
+    let l = e
+        .typeset(
+            r"\left[\begin{array}{cc}3&1\\0&2\end{array}\right]",
+            Style::Display,
+        )
+        .unwrap();
+    let (x0, x1) = path_x_extent(&l, 0);
+    assert!((0.527781 - x1 - 0.014781).abs() < 1e-6, "ink {x0}..{x1}");
+}
+
+/// The horizontal ink extent of a drawn path's line and control points, ems.
+fn path_x_extent(l: &Layout, i: usize) -> (f64, f64) {
+    let mut xs = Vec::new();
+    for c in &l.paths[i].contours {
+        xs.push(c.start.0);
+        for s in &c.segments {
+            match s {
+                fmd_math::PathSeg::Line { to } => xs.push(to.0),
+                fmd_math::PathSeg::Quad { ctrl, to } => xs.extend([ctrl.0, to.0]),
+            }
+        }
+    }
+    let lo = xs.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    (lo, hi)
+}
+
+#[test]
 fn null_delimiter_occupies_nulldelimiterspace() {
     let e = engine();
     let with_null = e.typeset(r"\left. x \right.", Style::Display).unwrap();

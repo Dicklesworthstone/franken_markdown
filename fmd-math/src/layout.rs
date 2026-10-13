@@ -2387,13 +2387,20 @@ impl Engine {
                 let total = target_total.max(0.7 * ctx.size());
                 let axis = self.consts.axis_height * ctx.size();
                 let dy = axis - total / 2.0;
+                let (width, dx) = framed(
+                    ch,
+                    total,
+                    ctx.size(),
+                    d.width,
+                    contour_x_extent(&d.contours),
+                );
                 return Ok(MBox {
                     kind: BoxKind::Horizontal,
-                    width: d.width,
+                    width,
                     height: total + dy,
                     depth: (-dy).max(0.0),
                     children: vec![Positioned {
-                        dx: 0.0,
+                        dx,
                         dy,
                         node: MNode::Path {
                             contours: d.contours,
@@ -2421,13 +2428,20 @@ impl Engine {
             // the construction on the axis exactly as a glyph would be.
             let axis = self.consts.axis_height * ctx.size();
             let dy = axis - target_total / 2.0;
+            let (width, dx) = framed(
+                ch,
+                target_total,
+                ctx.size(),
+                d.width,
+                contour_x_extent(&d.contours),
+            );
             return Ok(MBox {
                 kind: BoxKind::Horizontal,
-                width: d.width,
+                width,
                 height: target_total + dy,
                 depth: (-dy).max(0.0),
                 children: vec![Positioned {
-                    dx: 0.0,
+                    dx,
                     dy,
                     node: MNode::Path {
                         contours: d.contours,
@@ -2441,13 +2455,23 @@ impl Engine {
         let gd = m.depth * size;
         let axis = self.consts.axis_height * ctx.size();
         let dy = axis - (gh - gd) / 2.0;
+        let ink = self.faces.font(face).and_then(|font| {
+            let upm = f64::from(font.units_per_em.max(1));
+            font.glyph_bbox(gid).map(|bbox| {
+                (
+                    f64::from(bbox[0]) / upm * size,
+                    f64::from(bbox[2]) / upm * size,
+                )
+            })
+        });
+        let (width, dx) = framed(ch, target_total, ctx.size(), m.advance * size, ink);
         Ok(MBox {
             kind: BoxKind::Horizontal,
-            width: m.advance * size,
+            width,
             height: gh + dy,
             depth: (gd - dy).max(0.0),
             children: vec![Positioned {
-                dx: 0.0,
+                dx,
                 dy,
                 node: MNode::Glyph {
                     face,
@@ -2520,6 +2544,155 @@ fn tex_delimiter_total(ch: char, target: f64) -> f64 {
         Some((fixed, step)) => fixed + ((need - fixed) / step).ceil().max(0.0) * step,
         None => successors.last().copied().unwrap_or(target),
     }
+}
+
+/// The cmex10 frame of the variant TeX sets for `ch` at `total` ems: its box
+/// width (the TFM width; for an extensible, its repeater's, as tex.web §713
+/// builds it) and the left and right edges of its ink (cmex10.afm, the union
+/// of an extensible's pieces), in ems. `None` for the small variant, which
+/// is the face's own glyph, and for characters TeX does not chain. Rows run
+/// 1.2, 1.8, 2.4 and 3.0 em, then the extensible.
+fn tex_delimiter_frame(ch: char, total: f64) -> Option<(f64, f64, f64)> {
+    type Frame = (f64, f64, f64);
+    let frames: &[Frame] = match ch {
+        '(' => &[
+            (0.458336, 0.152, 0.413),
+            (0.597224, 0.180, 0.560),
+            (0.736115, 0.208, 0.700),
+            (0.791670, 0.236, 0.757),
+            (0.875003, 0.291, 0.842),
+        ],
+        ')' => &[
+            (0.458336, 0.044, 0.305),
+            (0.597224, 0.036, 0.416),
+            (0.736115, 0.035, 0.527),
+            (0.791670, 0.034, 0.555),
+            (0.875003, 0.032, 0.583),
+        ],
+        '[' => &[
+            (0.416669, 0.202, 0.394),
+            (0.472224, 0.226, 0.453),
+            (0.527781, 0.250, 0.513),
+            (0.583336, 0.275, 0.571),
+            (0.666669, 0.326, 0.659),
+        ],
+        ']' => &[
+            (0.416669, 0.022, 0.214),
+            (0.472224, 0.018, 0.245),
+            (0.527781, 0.014, 0.277),
+            (0.583336, 0.011, 0.307),
+            (0.666669, 0.007, 0.340),
+        ],
+        '⌊' | '⌈' => &[
+            (0.472224, 0.202, 0.449),
+            (0.527781, 0.226, 0.509),
+            (0.583336, 0.250, 0.568),
+            (0.638891, 0.275, 0.627),
+            (0.666669, 0.326, 0.659),
+        ],
+        '⌋' | '⌉' => &[
+            (0.472224, 0.022, 0.269),
+            (0.527781, 0.018, 0.301),
+            (0.583336, 0.014, 0.332),
+            (0.638891, 0.011, 0.363),
+            (0.666669, 0.007, 0.340),
+        ],
+        '{' | '}' => &[
+            (0.583336, 0.113, 0.469),
+            (0.666669, 0.119, 0.547),
+            (0.750002, 0.131, 0.618),
+            (0.805560, 0.144, 0.661),
+            (0.888891, 0.170, 0.718),
+        ],
+        '⟨' | '〈' => &[
+            (0.472224, 0.098, 0.393),
+            (0.611113, 0.112, 0.522),
+            (0.750002, 0.125, 0.652),
+            (0.805560, 0.139, 0.697),
+        ],
+        '⟩' | '〉' => &[
+            (0.472224, 0.078, 0.373),
+            (0.611113, 0.088, 0.498),
+            (0.750002, 0.097, 0.624),
+            (0.805560, 0.108, 0.666),
+        ],
+        '/' | '\\' => &[
+            (0.577779, 0.056, 0.521),
+            (0.811114, 0.056, 0.754),
+            (1.044447, 0.056, 0.987),
+            (1.277781, 0.056, 1.221),
+        ],
+        // Bars have no successors: past the small variant they are built.
+        '|' => return (total > 1.0 + 1e-9).then_some((0.333334, 0.145, 0.188)),
+        '‖' => return (total > 1.0 + 1e-9).then_some((0.555557, 0.145, 0.410)),
+        _ => return None,
+    };
+    if let Some(i) = [1.2, 1.8, 2.4, 3.0]
+        .iter()
+        .position(|size| (total - size).abs() < 1e-9)
+    {
+        return frames.get(i).copied();
+    }
+    // Past 3.0 em only an extensible recipe (a fifth row) reaches.
+    if total > 3.0 {
+        frames.get(4).copied()
+    } else {
+        None
+    }
+}
+
+/// The box width and ink offset for a delimiter construction of box width
+/// `width` and ink `[x0, x1]` (absolute units), when TeX's variant at
+/// `total` has a cmex10 frame: the box takes TeX's width, and the ink edge
+/// that faces the content lands where cmex's does (the right edge of an
+/// opening delimiter, the left of a closing one, the centre of a bar or
+/// slash), so the gap to the content is TeX's whatever the drawn ink's
+/// weight. Without a frame the construction keeps its own box.
+fn framed(ch: char, total: f64, em: f64, width: f64, ink: Option<(f64, f64)>) -> (f64, f64) {
+    let (Some((advance, cx0, cx1)), Some((x0, x1))) = (tex_delimiter_frame(ch, total / em), ink)
+    else {
+        return (width, 0.0);
+    };
+    let dx = match ch {
+        '(' | '[' | '{' | '⌈' | '⌊' | '⟨' | '〈' => cx1 * em - x1,
+        ')' | ']' | '}' | '⌉' | '⌋' | '⟩' | '〉' => cx0 * em - x0,
+        _ => (cx0 + cx1) / 2.0 * em - (x0 + x1) / 2.0,
+    };
+    (advance * em, dx)
+}
+
+/// The horizontal ink extent of quadratic contours: line ends, and each
+/// quad's true extremum where it bulges past its ends (a control point
+/// alone would overstate a curve's reach).
+fn contour_x_extent(contours: &[crate::mbox::PathContour]) -> Option<(f64, f64)> {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    let mut take = |x: f64| {
+        lo = lo.min(x);
+        hi = hi.max(x);
+    };
+    for contour in contours {
+        let mut at = contour.start.0;
+        take(at);
+        for seg in &contour.segments {
+            match seg {
+                crate::mbox::PathSeg::Line { to } => at = to.0,
+                crate::mbox::PathSeg::Quad { ctrl, to } => {
+                    let denom = at - 2.0 * ctrl.0 + to.0;
+                    if denom != 0.0 {
+                        let t = (at - ctrl.0) / denom;
+                        if t > 0.0 && t < 1.0 {
+                            let u = 1.0 - t;
+                            take(u * u * at + 2.0 * t * u * ctrl.0 + t * t * to.0);
+                        }
+                    }
+                    at = to.0;
+                }
+            }
+            take(at);
+        }
+    }
+    (lo <= hi).then_some((lo, hi))
 }
 
 fn text_face(ctx: LayCtx) -> FaceId {

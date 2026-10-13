@@ -350,7 +350,7 @@ impl Engine {
                     }));
                 }
                 _ => {
-                    let laid = self.lay_node(node, ctx)?;
+                    let laid = lone_op_box(node, self.lay_node(node, ctx)?);
                     laid_items.push(LineItem::Atom {
                         laid,
                         class: class.unwrap_or(AtomClass::Ord),
@@ -455,7 +455,7 @@ impl Engine {
     /// clean_boxes instead (fraction parts, scripts, limits, radicands,
     /// accent bases), `lay_node(..).boxx` already leaves it out (§720).
     fn formula_box(&self, node: &Node, ctx: LayCtx) -> Result<MBox, MathError> {
-        let laid = self.lay_node(node, ctx)?;
+        let laid = lone_op_box(node, self.lay_node(node, ctx)?);
         let mut boxx = laid.boxx;
         if laid.char_glyph.is_some() && !ctx.text_mode {
             boxx.width += laid.italic;
@@ -912,7 +912,10 @@ impl Engine {
         })
     }
 
-    /// A big-operator glyph, axis-centered, optionally display-scaled.
+    /// A big-operator glyph, axis-centered, optionally display-scaled. Where
+    /// cmex10 has the operator, the box is TeX's: the TFM width and italic
+    /// correction of the text or display variant, with the glyph's ink
+    /// centered on cmex's ([`tex_op_frame`]).
     fn op_glyph(&self, ch: char, span: Span, ctx: LayCtx, scale: f64) -> Result<Laid, MathError> {
         let (face, gid, mapped) = self.resolve_math_char(ch, span, ctx)?;
         let metrics = self.metrics_of(face, gid);
@@ -922,13 +925,31 @@ impl Engine {
         let axis = self.consts.axis_height * ctx.size();
         // Center the ink on the math axis.
         let dy = axis - (gh - gd) / 2.0;
+        let ink = self.faces.font(face).and_then(|font| {
+            let upm = f64::from(font.units_per_em.max(1));
+            font.glyph_bbox(gid).map(|bbox| {
+                (
+                    f64::from(bbox[0]) / upm * size,
+                    f64::from(bbox[2]) / upm * size,
+                )
+            })
+        });
+        let em = ctx.size();
+        let (width, italic, dx) = match (tex_op_frame(ch, ctx.style.style == Style::Display), ink) {
+            (Some((width, italic, x0, x1)), Some((g0, g1))) => (
+                width * em,
+                italic * em,
+                (x0 + x1) / 2.0 * em - (g0 + g1) / 2.0,
+            ),
+            _ => (metrics.advance * size, metrics.italic * size, 0.0),
+        };
         let boxx = MBox {
             kind: BoxKind::Horizontal,
-            width: metrics.advance * size,
+            width,
             height: gh + dy,
             depth: (gd - dy).max(0.0),
             children: vec![Positioned {
-                dx: 0.0,
+                dx,
                 dy,
                 node: MNode::Glyph {
                     face,
@@ -941,7 +962,7 @@ impl Engine {
         };
         Ok(Laid {
             boxx,
-            italic: metrics.italic * size,
+            italic,
             char_glyph: None,
         })
     }
@@ -2639,6 +2660,42 @@ fn tex_delimiter_frame(ch: char, total: f64) -> Option<(f64, f64, f64)> {
     } else {
         None
     }
+}
+
+/// cmex10's frame for big operator `ch` in its text or display variant: the
+/// TFM width and italic correction, and the left and right edges of its ink
+/// (cmex10.afm), in ems. `None` where cmex10 has no single character
+/// (amsmath builds `\iint` and its kin from `\int`).
+fn tex_op_frame(ch: char, display: bool) -> Option<(f64, f64, f64, f64)> {
+    type Frame = (f64, f64, f64, f64);
+    let [text, shown]: [Frame; 2] = match ch {
+        '∑' => [(1.055559, 0.0, 0.056, 0.999), (1.444448, 0.0, 0.056, 1.387)],
+        '∏' | '∐' => [(0.944447, 0.0, 0.056, 0.887), (1.277781, 0.0, 0.056, 1.221)],
+        '∫' | '∮' => [
+            (0.472223, 0.194446, 0.056, 0.609),
+            (0.555557, 0.444446, 0.056, 0.943),
+        ],
+        '⋃' | '⋂' | '⨄' | '⋀' | '⋁' | '⨆' => {
+            [(0.833336, 0.0, 0.056, 0.776), (1.111115, 0.0, 0.056, 1.054)]
+        }
+        '⨀' | '⨁' | '⨂' => [(1.111115, 0.0, 0.056, 1.054), (1.511116, 0.0, 0.056, 1.454)],
+        _ => return None,
+    };
+    Some(if display { shown } else { text })
+}
+
+/// A big operator set without scripts keeps its italic correction in its
+/// box, as TeX's clean_box of the operator character does (tex.web §749):
+/// a lone display `\int` is cmex's 0.5556 em width plus its 0.4444 em
+/// correction. A scripted operator reaches the line as a script box, which
+/// places δ itself (the superscript sits δ further right than the
+/// subscript).
+fn lone_op_box(node: &Node, mut laid: Laid) -> Laid {
+    if matches!(node.kind, NodeKind::BigOp { .. }) {
+        laid.boxx.width += laid.italic;
+        laid.italic = 0.0;
+    }
+    laid
 }
 
 /// The box width and ink offset for a delimiter construction of box width

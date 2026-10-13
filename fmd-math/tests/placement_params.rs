@@ -502,6 +502,44 @@ fn path_x_extent(l: &Layout, i: usize) -> (f64, f64) {
 }
 
 #[test]
+fn big_operators_take_tex_box_widths() {
+    // Real TeX's \wd (LaTeX with amsmath, 10 pt, in ems) of each operator
+    // alone: cmex10's TFM width plus, for the integrals, the italic
+    // correction TeX's clean_box keeps (display \int: 0.5556 + 0.4444).
+    use Style::{Display, Text};
+    let e = engine();
+    for (tex, style, width) in [
+        (r"\int", Display, 1.000002),
+        (r"\int", Text, 0.666667),
+        (r"\oint", Display, 1.000002),
+        (r"\sum", Display, 1.444447),
+        (r"\sum", Text, 1.055559),
+        (r"\prod", Display, 1.277780),
+        (r"\bigcup", Display, 1.111115),
+        (r"\bigoplus", Display, 1.511116),
+    ] {
+        let l = e.typeset(tex, style).unwrap();
+        assert!(
+            (l.width - width).abs() < 1e-4,
+            "{tex} in {style:?}: {} against TeX's {width} em",
+            l.width
+        );
+    }
+    // What follows a lone operator starts where TeX's does: the box, then
+    // the Op-Ord thin space (\int x is 1.0 + 0.1667 + x in TeX).
+    let l = e.typeset(r"\int x", Style::Display).unwrap();
+    let x = l.glyphs.iter().find(|g| g.ch != '∫').unwrap();
+    assert!((x.x - (1.000002 + 1.0 / 6.0)).abs() < 1e-4, "x at {}", x.x);
+    // Scripts sit where rule 13 puts them on a nolimits operator: the
+    // subscript at the TFM width, the superscript the italic correction
+    // further right (display \int: 0.5556 and 1.0).
+    let l = e.typeset(r"\int_0^1", Style::Display).unwrap();
+    let at = |ch: char| l.glyphs.iter().find(|g| g.ch == ch).unwrap().x;
+    assert!((at('0') - 0.555557).abs() < 1e-4, "sub at {}", at('0'));
+    assert!((at('1') - 1.000003).abs() < 1e-4, "sup at {}", at('1'));
+}
+
+#[test]
 fn null_delimiter_occupies_nulldelimiterspace() {
     let e = engine();
     let with_null = e.typeset(r"\left. x \right.", Style::Display).unwrap();

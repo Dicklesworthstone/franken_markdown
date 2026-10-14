@@ -75,32 +75,67 @@
     return rows;
   }
 
+  // The original term-only parser remains public for existing embedders. The
+  // reader uses the same lexer with explicit, bounded query operators enabled.
   function parseQuery(query) {
+    return queryParts(query, false).map((part) => part.value);
+  }
+
+  function parseSearchQuery(query) {
+    const parts = queryParts(query, true), terms = [], excluded = [], filters = [];
+    for (const part of parts) {
+      if (part.field) filters.push(part);
+      else (part.exclude ? excluded : terms).push(part.value);
+    }
+    if (!terms.length && !filters.some((part) => !part.exclude) && parts.length)
+      fail("Add a search word, phrase, path: or title: filter before exclusions.");
+    return { terms, excluded, filters };
+  }
+
+  function queryParts(query, operators) {
     if (typeof query !== "string" || query.length > LIMITS.query)
       fail("Search is limited to 512 characters.");
-    const terms = [];
+    const parts = [];
     let position = 0;
     while (position < query.length) {
       while (position < query.length && /\s/u.test(query[position])) position++;
       if (position === query.length) break;
-      let term = "";
+      let field = "", exclude = false;
+      if (operators && query[position] === "-" && position + 1 < query.length &&
+          !/\s/u.test(query[position + 1])) {
+        exclude = true;
+        position++;
+      }
+      if (operators) {
+        const prefix = /^(path|title):/i.exec(query.slice(position));
+        if (prefix) {
+          field = prefix[1].toLowerCase();
+          position += prefix[0].length;
+        }
+      }
+      let value = "";
       if (query[position] === '"') {
         const end = query.indexOf('"', ++position);
         if (end < 0) fail("Close the quotation mark to search for a phrase.");
-        term = query.slice(position, end);
+        value = query.slice(position, end);
         position = end + 1;
         if (position < query.length && !/\s/u.test(query[position]))
           fail("Separate phrases and words with spaces.");
       } else {
         const start = position;
         while (position < query.length && !/\s/u.test(query[position])) position++;
-        term = query.slice(start, position);
+        value = query.slice(start, position);
       }
-      term = normalize(term).trim();
-      if (term && !terms.includes(term)) terms.push(term);
-      if (terms.length > LIMITS.terms) fail("Use at most eight search words or phrases.");
+      value = normalize(value).trim();
+      if (!value) {
+        if (field || exclude) fail("Give each search filter or exclusion a nonempty value.");
+        continue;
+      }
+      if (!parts.some((part) => part.value === value && part.field === field &&
+          part.exclude === exclude)) parts.push({ value, field, exclude });
+      if (parts.length > LIMITS.terms) fail("Use at most eight search words, phrases or filters.");
     }
-    return terms;
+    return parts;
   }
 
   // Folding final sigma makes caseless matching independent of word context.
@@ -184,16 +219,17 @@
     }
   }
 
-  function matcher(terms) {
-    const longest = Math.max(...terms.map((term) => term.length)),
-      all = (1 << terms.length) - 1;
+  function matcher(terms, positiveCount = terms.length) {
+    const longest = Math.max(1, ...terms.map((term) => term.length)),
+      all = (1 << positiveCount) - 1,
+      forbidden = ((1 << terms.length) - 1) ^ all;
     let tail = "",
       segments = [],
       head = "",
       length = 0,
       mask = 0,
       offset = -1;
-    const offsets = terms.map(() => -1);
+    const offsets = Array(positiveCount).fill(-1);
     return {
       add(chunk) {
         const window = tail + chunk.body;
@@ -203,6 +239,8 @@
           let at = window.indexOf(terms[i]);
           if (at < 0) continue;
           mask |= 1 << i;
+          // Exclusions decide membership, never snippet offsets or ranking.
+          if (i >= positiveCount) continue;
           for (const segment of segments) {
             if (at >= segment.length) {
               at -= segment.length;
@@ -230,17 +268,20 @@
           segments[0].from += drop;
           segments[0].length -= drop;
         }
-        // Once all terms occur and exact equality is impossible, later text
-        // cannot change membership, ranking, or the earliest source offset.
-        return mask === all && length > longest + 2;
+        // A negative match rejects the section immediately. In its absence we
+        // MUST scan the remaining source when exclusions exist: a match at EOF
+        // invalidates even an exact heading or an earlier complete passage.
+        return Boolean(mask & forbidden) ||
+          (!forbidden && mask === all && length > longest + 2);
       },
       result() {
         return {
-          mask,
+          mask: mask & all,
+          excluded: Boolean(mask & forbidden),
           offset,
           offsets,
-          prefix: head.startsWith(terms[0]),
-          exact: terms.length === 1 && length === head.length && head.trim() === terms[0],
+          prefix: positiveCount > 0 && head.startsWith(terms[0]),
+          exact: positiveCount === 1 && length === head.length && head.trim() === terms[0],
         };
       },
     };
@@ -260,18 +301,20 @@
   }
 
   async function search(rows, query, options = {}) {
-    const terms = parseQuery(query);
+    const { terms, excluded, filters } = parseSearchQuery(query);
+    const matchingTerms = terms.concat(excluded);
     const cancelled = options.cancelled || (() => false);
     const yieldTask = options.yieldTask || (() => new Promise((resolve) => setTimeout(resolve, 0)));
-    if (!terms.length) return { results: [], total: 0, terms };
+    if (!terms.length && !filters.length) return { results: [], total: 0, terms };
     const results = [],
       all = (1 << terms.length) - 1;
     let total = 0,
       work = 0,
       visited = 0;
-    const scan = async (value) => {
+    const scan = async (value, needles = matchingTerms, positiveCount = terms.length) => {
       if (cancelled()) return null;
-      const match = matcher(terms);
+      const match = matcher(needles, positiveCount);
+      if (!needles.length) return match.result();
       for (const chunk of normalizedChunks(value)) {
         const done = match.add(chunk);
         work += chunk.work;
@@ -287,7 +330,18 @@
     };
     // Prepared rows are chapter-contiguous. Keep only the last title summary,
     // not another full-sized lowercase copy or one cache entry per paragraph.
-    let lastTitle, titleMatch;
+    let lastTitle, titleMatch, lastPage, chapterAllowed = true;
+    const admitsChapter = async (row) => {
+      for (const filter of filters) {
+        // Metadata uses the same bounded Unicode scanner as body text. Source
+        // paths are literal text, not regexes, globs, URLs or filesystem reads.
+        const value = text(filter.field === "path" ? row.source : row.title);
+        const result = await scan(value, [filter.value], 1);
+        if (!result) return null;
+        if (Boolean(result.mask) === filter.exclude) return false;
+      }
+      return true;
+    };
     // A section is the contiguous run owned by one emitted anchor. Match all
     // its entries together, but keep each phrase inside a real entry: joining
     // strings would manufacture phrases and lose the original source offsets.
@@ -295,6 +349,7 @@
       representative = null,
       partial = null,
       coverage = 0,
+      sectionExcluded = false,
       witnesses = [];
     const witness = (row, match, i, inTitle = false) => ({
       row, offset: match.offsets[i], inTitle,
@@ -312,7 +367,7 @@
       return selected;
     };
     const flush = () => {
-      if (coverage === all && (representative || partial)) {
+      if (!sectionExcluded && coverage === all && (representative || partial)) {
         const result = representative || {
           row: partial.row, score: -1, offset: partial.offset,
           titleOffset: partial.titleOffset, passages: passages(witnesses),
@@ -322,22 +377,47 @@
       }
       representative = partial = null;
       coverage = 0;
+      sectionExcluded = false;
       witnesses = [];
     };
     for (const row of rows) {
       if (cancelled()) return null;
+      // Count skipped rows too: filters and a rejected section must never turn
+      // a large index into an uninterruptible metadata-only loop.
+      if (++visited >= 128) {
+        await yieldTask();
+        work = 0;
+        visited = 0;
+        if (cancelled()) return null;
+      }
       const key = row.page + "#" + row.anchor;
       if (key !== section) {
         flush();
         section = key;
       }
+      if (row.page !== lastPage) {
+        chapterAllowed = await admitsChapter(row);
+        if (chapterAllowed === null) return null;
+        lastPage = row.page;
+      }
+      if (!chapterAllowed || sectionExcluded) continue;
       if (row.title !== lastTitle) {
         titleMatch = await scan(row.title);
         if (!titleMatch) return null;
         lastTitle = row.title;
       }
+      if (titleMatch.excluded) {
+        // Every section inherits the chapter title, including empty chapters.
+        chapterAllowed = false;
+        sectionExcluded = true;
+        continue;
+      }
       const body = row.text === lastTitle ? titleMatch : await scan(row.text);
       if (!body || cancelled()) return null;
+      if (body.excluded) {
+        sectionExcluded = true;
+        continue;
+      }
       coverage |= body.mask | titleMatch.mask;
       const local = [];
       let bodyTerms = 0;
@@ -364,14 +444,8 @@
           (body.exact ? 30 : 0) +
           (inBody && body.prefix ? 5 : 0);
         const result = { row, score, offset: body.offset, titleOffset: titleMatch.offset,
-          passages: passages(local) };
+          passages: terms.length ? passages(local) : [{ row, offset: 0, inTitle: false }] };
         if (!representative || compare(result, representative) < 0) representative = result;
-      }
-      visited++;
-      if (visited >= 128) {
-        await yieldTask();
-        work = 0;
-        visited = 0;
       }
     }
     if (cancelled()) return null;
@@ -407,6 +481,12 @@
     const input = get("query"),
       form = get("search-form"),
       status = get("status");
+    const help = get("search-help");
+    if (help) help.textContent =
+      'All words must match within a section or its chapter title. Quote phrases. ' +
+      'Narrow chapters with path:guide/ or title:"User Guide"; exclude sections with ' +
+      '-obsolete or -"old API". Quote a leading operator to search for it literally. ' +
+      'Search runs locally; no network connection is needed.';
     const list = get("results"),
       previous = get("previous"),
       next = get("next");
@@ -456,7 +536,9 @@
         detail.textContent = result.passages.map((hit) =>
           excerpt(hit.inTitle ? hit.row.title : hit.row.text, answer.terms, hit.offset)
         ).join("\n…\n");
-        item.append(link, detail);
+        const source = document.createElement("p");
+        source.textContent = "Source: " + excerpt(row.source, [], 0);
+        item.append(link, detail, source);
         list.append(item);
       }
       list.start = start + 1;
@@ -554,7 +636,7 @@
     };
   }
 
-  const api = Object.freeze({ LIMITS, prepare, parseQuery, search, excerpt, mount });
+  const api = Object.freeze({ LIMITS, prepare, parseQuery, parseSearchQuery, search, excerpt, mount });
   if (typeof module === "object" && module.exports) module.exports = api;
   else if (typeof document === "object") mount(document);
 })();

@@ -16,6 +16,7 @@ import { createBookSearchControls } from "./book_search_controls.mjs";
 import { createBookSourceHistoryControls } from "./book_source_history.mjs";
 
 import { createBookFileControls } from "./book_file_controls.mjs";
+import { createBookDirectoryControls } from "./book_directory_controls.mjs";
 import { createBookEditionControls } from "./book_edition_controls.mjs";
 
 const collection = createBookCollection();
@@ -28,6 +29,7 @@ let library = null,
   search = null,
   sourceHistory = null,
   projectFiles = null,
+  sourceDirectory = null,
   edition = null,
   inspection = null,
   links = null;
@@ -50,6 +52,15 @@ try {
   const status = document.querySelector("#book-file-status") ?? document.querySelector("#status");
   if (status) status.textContent =
     "Connected project files are unavailable. Source imports/downloads, local-library saves and portable backups remain available.";
+}
+// Folder ownership follows the collection's project epoch, including identical
+// project replacements through file/library/portable routes. It owns no worker.
+try {
+  sourceDirectory = createBookDirectoryControls({ root: document, controls, collection, window });
+} catch {
+  const status = document.querySelector("#book-directory-status") ?? document.querySelector("#status");
+  if (status) status.textContent =
+    "Direct source-folder saving is unavailable. Project files, source downloads and portable backups remain available.";
 }
 // Source history owns no renderer and survives presentation/resource edits.
 try {
@@ -182,6 +193,7 @@ try {
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
     edition?.suspend();
+    sourceDirectory?.suspend();
     projectFiles?.suspend();
     sourceHistory?.suspend();
     publicationControls?.suspend();
@@ -196,6 +208,7 @@ window.addEventListener("pagehide", (event) => {
     controls.suspend();
   } else {
     edition?.dispose();
+    sourceDirectory?.dispose();
     projectFiles?.dispose();
     sourceHistory?.dispose();
     publicationControls?.dispose();
@@ -213,6 +226,7 @@ window.addEventListener("pagehide", (event) => {
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
     edition?.resume();
+    sourceDirectory?.resume();
     projectFiles?.resume();
     sourceHistory?.resume();
     publicationControls?.resume();

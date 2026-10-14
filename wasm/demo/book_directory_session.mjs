@@ -130,7 +130,7 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
   function report(job, outcome) {
     return Object.freeze({ outcome, current: current(job), folder: job.target?.name ?? null,
       files: Object.freeze(job.writes.map(item => Object.freeze({ path: item.path,
-        status: item.verified ? "verified" : item.closing ? "uncertain" : item.created ? "created-unverified" : "not-saved" }))),
+        status: item.verified ? "verified" : item.closing ? "uncertain" : item.created ? "created-unverified" : item.abortFailed ? "abort-unverified" : "not-saved" }))),
       createdDirectories: Object.freeze([...job.directories]),
       verified: job.writes.filter(item => item.verified).length });
   }
@@ -150,13 +150,13 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
       const result = report(job, uncertain ? "uncertain" : job.writes.some(item => item.verified) ? "partial" : "stopped");
       error.receipt = result;
       if (!disposed) {
-        receipt = result;
+        if (job.writes.length || !receipt) receipt = result;
         if (job.target && connection === job.target) {
           if (uncertain) problem = "uncertain";
           else if (error.code === "DIRECTORY_CHANGED" || error.code === "INVALID_UNICODE") problem = "conflict";
           else if (job.directories.length || job.writes.some(item => item.created || item.abortFailed)) problem = "needs-review";
         }
-        message = `${error.code}: ${error.message} ${result.verified} file(s) verified; unclosed streams were aborted. No rollback or deletion was attempted.`;
+        message = `${error.code}: ${error.message} ${result.verified} file(s) verified; abort was requested for unclosed streams. No rollback or deletion was attempted.`;
       }
       throw error;
     } finally { await stop(job); if (active === job) active = null; announce(); }
@@ -176,6 +176,7 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
       catch (error) {
         if (error?.name !== "NotFoundError") throw error;
         if (!create) return null;
+        fence(job);
         job.directories.push(parts.slice(0, i + 1).join("/"));
         parent = directory(await parent.getDirectoryHandle(parts[i], { create: true }), parts[i]);
       }
@@ -257,6 +258,8 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
         if (problem || !pathSetMatches(job.snapshot))
           throw fail("DIRECTORY_REVIEW_REQUIRED", "Source paths or disk state changed. Review and reconnect the folder before saving.");
         const changedFiles = job.snapshot.files.filter(file => file.source !== target.entries.get(file.path).source);
+        job.writes = changedFiles.map(file => ({ path: file.path, file, expected: target.entries.get(file.path),
+          created: false, stream: null, closing: false, verified: false }));
         if (changedFiles.length) {
           // Request permission while still in the initiating user action.
           if (typeof target.root.requestPermission !== "function"
@@ -270,11 +273,9 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
         }
         // Preflight the WHOLE reviewed source set, including unchanged files.
         for (const file of job.snapshot.files) await compare(job, target, file.path, target.entries.get(file.path));
-        for (const file of changedFiles) {
+        for (const item of job.writes) {
           fence(job);
-          const item = { path: file.path, file, expected: target.entries.get(file.path), created: false,
-            stream: null, closing: false, verified: false };
-          job.writes.push(item);
+          const file = item.file;
           if (!item.expected.handle) {
             item.created = true; // Even a rejected creation can have left an entry.
             const handle = await locate(job, target, file.path, true); fence(job);

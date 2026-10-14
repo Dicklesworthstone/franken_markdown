@@ -352,3 +352,38 @@ test("invalid limits, empty books and unavailable pickers return explicit errors
   const empty = createBookDirectorySession({ read: () => ({ files: [], stamp: "0" }) });
   await assert.rejects(empty.bind(() => {}, yes), { code: "NO_SOURCE_FILES" }); empty.dispose();
 });
+
+test("cancelling a missing-parent lookup cannot proceed to directory creation", async t => {
+  const h = fixture(t); h.setFiles([{ path: "new/file.md", source: "ours" }]); await h.connect();
+  let checked = 0;
+  h.disk.hook = async op => { if (op === "directory" && ++checked === 2) h.session.detach(); };
+  // First lookup belongs to the all-source preflight; second would create.
+  await assert.rejects(h.session.save(yes), { code: "STALE_SOURCE" });
+  assert(!h.disk.log.some(([op]) => op === "mkdir")); assert(!h.disk.files.has("new/file.md"));
+});
+
+test("a stopped batch reports intended but not yet attempted files", async t => {
+  const h = fixture(t); await h.connect(); h.edit("a.md", "A!"); h.edit("b.md", "B!");
+  h.disk.hook = async op => { if (op === "writer") throw error("NoModificationAllowedError"); };
+  await assert.rejects(h.session.save(yes), error => {
+    assert.deepEqual(error.receipt.files, [{ path: "a.md", status: "not-saved" }, { path: "b.md", status: "not-saved" }]); return true;
+  });
+});
+
+test("a rejected retry does not erase the last uncertain-save receipt", async t => {
+  const h = fixture(t); await h.connect(); h.edit("a.md", "ours");
+  h.disk.hook = async op => { if (op === "closed") throw error("AbortError"); };
+  await assert.rejects(h.session.save(yes)); const receipt = h.session.state.receipt;
+  await assert.rejects(h.session.save(yes), { code: "DIRECTORY_REVIEW_REQUIRED" });
+  assert.equal(h.session.state.receipt, receipt); assert.equal(receipt.files[0].status, "uncertain");
+});
+
+test("failed stream aborts are visible and require review instead of claiming cleanup succeeded", async t => {
+  const h = fixture(t); await h.connect(); h.edit("a.md", "ours");
+  h.disk.hook = async op => { if (op === "write" || op === "abort") throw error("QuotaExceededError"); };
+  await assert.rejects(h.session.save(yes), error => {
+    assert.equal(error.receipt.files[0].status, "abort-unverified"); return true;
+  });
+  assert.equal(h.session.state.phase, "needs-review"); assert.match(h.session.state.message, /abort was requested/);
+  assert.equal(h.disk.text("a.md"), "A");
+});

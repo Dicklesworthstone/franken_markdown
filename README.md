@@ -25,12 +25,12 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/
 >
 > | Channel | Surface | Version | Where to verify |
 > |---|---|---|---|
-> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.5.0`** | `Cargo.toml` `version` field |
-> | **GitHub Release** | `fmd` CLI archives (5 platforms, `.sha256` sidecars) | **`v0.5.0`** (2026-10-02) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.5.0 |
-> | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.3.3, `fmd-math` 0.1.2) | **`0.5.0`** | https://crates.io/crates/franken_markdown |
+> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.6.0`** | `Cargo.toml` `version` field |
+> | **GitHub Release** | `fmd` CLI archives (5 platforms, `.sha256` sidecars) | **`v0.6.0`** (2026-10-14) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.6.0 |
+> | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.3.4, `fmd-math` 0.2.0) | **`0.6.0`** | https://crates.io/crates/franken_markdown |
 > | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.4.4`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
 >
-> The latest tagged release is **v0.5.0**, available on GitHub Releases and crates.io. It adds multi-chapter books (PDF, EPUB, offline sites), the interactive native-WASM workspace, exact pagination, typeset display math, running headers/footers and many more incremental lexers; see CHANGELOG.md for breaking changes. npm remains at **0.4.4** pending publishing authentication; the verified **0.5.0 npm tarball** is attached to the GitHub release. Build the in-tree source with `cargo install --path .` or `cargo build --release --bin fmd`.
+> The latest tagged release is **v0.6.0**, available on GitHub Releases and crates.io. It adds book editions published in one pass (PDF, EPUB, site), retained book sessions and publishing profiles, page-bottom PDF footnotes, inline math and images in PDF, Mermaid figures, emoji, and much closer TeX spacing in fmd-math; see CHANGELOG.md for breaking changes. npm remains at **0.4.4** pending publishing authentication; the verified **0.6.0 npm tarball** is attached to the GitHub release. Build the in-tree source with `cargo install --path .` or `cargo build --release --bin fmd`.
 > The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
@@ -414,8 +414,8 @@ cargo build --release --bin fmd
 cargo install --path .
 fmd --help
 
-# Or install the published crates.io package. As checked on October 2, 2026, this
-# installs 0.5.0 (fmd-font 0.3.3 and fmd-math 0.1.2 are on crates.io too).
+# Or install the published crates.io package. As checked on October 14, 2026, this
+# installs 0.6.0 (fmd-font 0.3.4 and fmd-math 0.2.0 are on crates.io too).
 cargo install franken_markdown
 ```
 

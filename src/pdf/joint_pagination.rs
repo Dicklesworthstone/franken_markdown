@@ -4,7 +4,9 @@
 //! choice happens after block layout has finalized gaps and chapter boundaries.
 //! Only ordinary paragraphs with at least four lines in every offered shape
 //! participate. That keeps the existing short-caption, list, and heading
-//! boundary costs independent of choices in preceding blocks.
+//! boundary costs independent of choices in preceding blocks. Prepared page
+//! notes reserve their unchanged measured bodies at each alternative's first
+//! citation; selecting a shape never turns the note region into body content.
 
 use super::*;
 use crate::pagination::height::{
@@ -50,9 +52,11 @@ impl Candidates {
                 && !opts.gradual_demerits
                 && !opts.river_penalty
                 && !opts.pareto_line_breaking
-                // Notes retain their measured baseline: a reflowed citation
-                // would need a correspondingly re-anchored foot reservation.
-                && collect_pdf_footnote_defs(blocks).is_empty(),
+                // The public PDF path prepares numbered, linked citations.
+                // Keep legacy unprepared definitions on their baseline path.
+                && collect_pdf_footnote_defs(blocks)
+                    .iter()
+                    .all(|(id, _)| page_note_number(id).is_some()),
             ..Self::default()
         }
     }
@@ -243,10 +247,64 @@ fn cost_context(line: &Line) -> Line {
     }
 }
 
+/// The exact linked citation sequence, including repeated references. A
+/// different sequence cannot safely reuse the original first-reference map.
+fn note_references(lines: &[Line]) -> impl Iterator<Item = u32> + '_ {
+    lines
+        .iter()
+        .flat_map(|line| &line.segs)
+        .filter_map(seg_page_note)
+}
+
+/// Re-anchor first-cited note bodies to the physical lines of one measured
+/// alternative. Notes first cited in another block do not reserve space again.
+/// Preserve the production reserve's summation order and separator-per-citing-
+/// line policy: regrouping citations can change separator cost, not note text.
+fn shape_note_reservations(
+    lines: &[Line],
+    notes: &PageNotes,
+    start: usize,
+    end: usize,
+    shape: &[Line],
+) -> Option<Vec<f32>> {
+    if !note_references(&lines[start..end]).eq(note_references(shape)) {
+        return None;
+    }
+    let first_refs = notes.notes_in(start, end);
+    if first_refs.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut pending: BTreeMap<u32, std::ops::Range<usize>> = first_refs
+        .iter()
+        .map(|(_, range)| (lines[range.start].flow.note, range.clone()))
+        .collect();
+    let height = |line: &Line| line_leading(line) + line.gap_after;
+    let separator = height(&lines[notes.separator]);
+    let mut reservations = vec![0.0; shape.len()];
+    for (index, line) in shape.iter().enumerate() {
+        let first_here: Vec<_> = line
+            .segs
+            .iter()
+            .filter_map(seg_page_note)
+            .filter_map(|number| pending.remove(&number))
+            .collect();
+        if !first_here.is_empty() {
+            reservations[index] = separator
+                + first_here
+                    .iter()
+                    .flat_map(|range| &lines[range.clone()])
+                    .map(height)
+                    .sum::<f32>();
+        }
+    }
+    // A missing first citation must never silently drop its reserved body.
+    pending.is_empty().then_some(reservations)
+}
+
 /// Atomically select and install paragraph shapes before every consumer of
 /// layout, including the TOC fixpoint, page-budget fitting and text verification.
 pub(super) fn apply(lines: &mut Vec<Line>, page: PageGeom, candidates: &Candidates) {
-    if candidates.paragraphs.is_empty() || PageNotes::scan(lines).is_some() {
+    if candidates.paragraphs.is_empty() {
         return;
     }
     if let Some(selected) = select(lines, page, candidates) {
@@ -255,26 +313,44 @@ pub(super) fn apply(lines: &mut Vec<Line>, page: PageGeom, candidates: &Candidat
 }
 
 fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec<Line>> {
+    let notes = PageNotes::scan(lines);
+    let body_end = notes.as_ref().map_or(lines.len(), |notes| notes.body_end);
+    let body = &lines[..body_end];
     let mut choices = Vec::<Choices>::new();
     let mut blocks = Vec::<BlockCandidates>::new();
     let mut policies = Vec::new();
     let mut start = 0;
     let mut any_alternatives = false;
-    while start < lines.len() {
-        let end = pdf_height_block_end(lines, start);
+    while start < body.len() {
+        let end = pdf_height_block_end(body, start);
         if end <= start {
             return None;
         }
-        let mut variants = vec![block_variant(lines, start, end, 0, |_| 0.0)];
+        let mut variants = vec![block_variant(body, start, end, 0, |line| {
+            notes
+                .as_ref()
+                .map_or(0.0, |notes| notes.line_reserve(lines, line))
+        })];
         let mut alternatives = Vec::new();
-        if let Some(paragraph) = candidates.paragraphs.get(&lines[start].flow.group)
-            && eligible(&lines[start..end], paragraph)
+        if let Some(paragraph) = candidates.paragraphs.get(&body[start].flow.group)
+            && eligible(&body[start..end], paragraph)
         {
             for alternative in &paragraph.alternatives {
                 if alternative.lines.len() < 4 {
                     continue;
                 }
-                let shape = finalized_shape(&lines[start..end], alternative);
+                let shape = finalized_shape(&body[start..end], alternative);
+                let reservations = if let Some(notes) = &notes {
+                    let Some(reservations) = shape_note_reservations(lines, notes, start, end, &shape)
+                    else {
+                        // Losing/reordering a citation must not make an
+                        // apparently cheaper but semantically different shape.
+                        continue;
+                    };
+                    reservations
+                } else {
+                    Vec::new()
+                };
                 // Heading penalties inspect the three preceding physical
                 // lines. Include that real context when pricing each shape.
                 // The >=4-line eligibility rule keeps costs at the *next*
@@ -287,7 +363,7 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
                     .collect();
                 contextual.extend(shape.iter().cloned());
                 let shape_end = contextual.len();
-                if let Some(next) = lines.get(end) {
+                if let Some(next) = body.get(end) {
                     contextual.push(cost_context(next));
                 }
                 variants.push(block_variant(
@@ -295,14 +371,14 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
                     prefix_len,
                     shape_end,
                     alternative.extra_demerits,
-                    |_| 0.0,
+                    |line| reservations.get(line - prefix_len).copied().unwrap_or(0.0),
                 ));
                 alternatives.push(shape);
             }
         }
         any_alternatives |= !alternatives.is_empty();
         blocks.push(BlockCandidates { variants });
-        policies.push(block_policy(lines, start));
+        policies.push(block_policy(body, start));
         choices.push(Choices {
             start,
             end,
@@ -330,6 +406,10 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
         }
     }
 
+    // Measured note bodies and their separator remain in the trailing region.
+    // They are reserved by body citations, never offered as normal page blocks.
+    selected.extend(lines[body_end..].iter().cloned());
+
     // The remaining PDF pipeline takes flattened lines. Certify that its
     // existing planner reproduces the same page boundaries after substitution;
     // a new context-sensitive policy cannot silently invalidate this bridge.
@@ -343,7 +423,17 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
             expected_ends.push(offsets[fragment.block_index] + fragment.fragment_end);
         }
     }
-    let reproduced = exact_height_page_breaks(&selected, page)?;
+    // Re-scan after substitution: both body indices and note-region offsets
+    // may have moved. Use the emitter's footnote-aware planner, not the
+    // no-reservation bridge, to certify the chosen boundaries.
+    let reproduced = if notes.is_some() {
+        let selected_notes = PageNotes::scan(&selected)?;
+        exact_height_page_breaks_reserving(&selected[..selected_notes.body_end], page, |line| {
+            selected_notes.line_reserve(&selected, line)
+        })?
+    } else {
+        exact_height_page_breaks(&selected, page)?
+    };
     if reproduced.ends != expected_ends {
         return None;
     }
@@ -353,3 +443,7 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
 #[cfg(test)]
 #[path = "joint_pagination_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "joint_pagination_note_tests.rs"]
+mod note_tests;

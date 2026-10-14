@@ -114,6 +114,19 @@ const callbacks = (elements) =>
     [...element.listeners.values()].flatMap((set) => [...set]),
   );
 
+// The navigation feature adds two composition listeners. Pin their exact
+// ownership, not just a larger count: missing, duplicate and unexpected
+// registrations must all fail, while every existing disposal assertion stays.
+const mountedListeners = [
+  "next:click", "previous:click", "query:compositionend", "query:compositionstart",
+  "query:input", "query:keydown", "search-form:submit",
+];
+const listenerInventory = (elements) => Object.entries(elements).flatMap(([id, element]) =>
+  [...element.listeners.entries()].flatMap(([type, handlers]) =>
+    [...handlers].map(() => `${id}:${type}`)),
+).sort();
+const assertMounted = (elements) => assert.deepEqual(listenerInventory(elements), mountedListeners);
+
 test("recorded source offsets make snippet extraction independent of document length", () => {
   const { api, context } = fixture("");
   const prefix = "İ🙂".repeat(100000),
@@ -190,7 +203,8 @@ test("dispose removes listeners, cancels pending work and makes captured callbac
   const f = fixture("x".repeat(100000) + "needle");
   const controller = f.api.mount(f.document);
   const oldCallbacks = callbacks(f.elements);
-  assert.equal(oldCallbacks.length, 5);
+  assertMounted(f.elements);
+  assert.equal(oldCallbacks.length, mountedListeners.length);
   f.elements.query.value = "needle";
   f.elements["search-form"].dispatch("submit");
   await until(f.clock, () => f.clock.jobs.size > 0);
@@ -211,13 +225,34 @@ test("disposing an old controller twice cannot erase a remounted controller's re
   const first = f.api.mount(f.document);
   first.dispose();
   const second = f.api.mount(f.document);
-  assert.equal(callbacks(f.elements).length, 5);
+  assertMounted(f.elements);
   f.elements.query.value = "needle";
   f.elements["search-form"].dispatch("submit");
   await until(f.clock, () => /^Results/u.test(f.elements.status.textContent));
   first.dispose();
   assert.equal(f.elements.results.children.length, 1);
-  assert.equal(callbacks(f.elements).length, 5);
+  assertMounted(f.elements);
   second.dispose();
   assert.equal(callbacks(f.elements).length, 0);
+});
+
+test("disposing during composition fences captured finalization and leaves no draft timer", async () => {
+  const f = fixture("中文");
+  const controller = f.api.mount(f.document);
+  assertMounted(f.elements);
+  f.elements.query.dispatch("compositionstart");
+  f.elements.query.value = "中";
+  f.elements.query.dispatch("input", { isComposing: true });
+  const finalizers = [...f.elements.query.listeners.get("compositionend")];
+  assert.equal(f.clock.jobs.size, 0);
+  controller.dispose();
+  f.elements.status.textContent = "disposed during composition";
+  for (const finalize of finalizers) finalize({});
+  f.elements.query.dispatch("compositionend");
+  f.elements.query.dispatch("input");
+  await drain(f.clock);
+  assert.deepEqual(listenerInventory(f.elements), []);
+  assert.equal(f.elements.query.value, "中");
+  assert.equal(f.elements.status.textContent, "disposed during composition");
+  assert.equal(f.elements.results.children.length, 0);
 });

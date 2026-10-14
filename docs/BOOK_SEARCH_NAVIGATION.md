@@ -77,8 +77,8 @@ filter/Unicode queries, initial bookmarks, page admission, Back/Forward, draft
 isolation, deduplication, denied history, opaque contexts, untrusted prefill
 origins, stale scans/errors, silent edits, composition, disposal and remounting.
 Together with the 12 untouched baseline tests and 20 scoped-query regressions,
-all 54 Node tests pass. The scoped tests include 600 independent whole-section
-membership comparisons across 120 generated books.
+the initial focused run passed 54 Node tests. The scoped tests include 600
+independent whole-section membership comparisons across 120 generated books.
 
 The offline Chromium runner uses the complete production script with real DOM
 controls in an `about:blank` fixture, matching the search page's restrictive CSP.
@@ -93,3 +93,22 @@ normal package startup, native operating-system IMEs, or native/WASM publication
 generation. URL history logic is fixture-tested in Node, not represented as a
 real-browser history pass. Rust/Cargo and the prescribed remote build tools were
 unavailable; no native build, PDF, typography or font-rendering result is claimed.
+
+## Expanded compatibility run
+
+The complete seven-file `book_site_search*.test.mjs` set now passes **93 tests**,
+including the pre-existing streaming, Unicode, section and lifecycle suites.
+The imported upstream fixtures were verified against their Git blob identities.
+Before adapting lifecycle expectations, that expanded run passed 90 of 92 tests;
+two assertions expected exactly five listeners, before the composition feature
+added `compositionstart` and `compositionend`.
+
+The lifecycle suite now pins the exact seven element/event registrations, rather
+than merely raising a count or allowing arbitrary listeners. Its original zero-
+listener disposal, stale-callback, timer and remount assertions remain. One new
+test disposes a composing reader and invokes its captured finalization callback.
+Three separately injected mutations (missing, duplicate and unremoved composition
+listeners) each fail the strengthened suite. The unmodified production script
+then passes all 93 tests again. No production gate, work bound, result expectation
+or normalization test was relaxed; the 25 Chromium checks retain the validation
+boundary described above.

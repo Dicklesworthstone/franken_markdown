@@ -10,7 +10,7 @@ import {
   createBookLinkPanel,
 } from "./book_inspection_controls.mjs";
 import { createBookLibraryControls } from "./book_library_controls.mjs";
-import { createBookPdfControls, createBookPdfPanel } from "./book_pdf_controls.mjs";
+import { createBookPdfControls, createBookPdfPanel, createBookPublicationControls } from "./book_pdf_controls.mjs";
 import { createBookPreviewControls } from "./book_preview_controls.mjs";
 import { createBookSearchControls } from "./book_search_controls.mjs";
 
@@ -18,6 +18,7 @@ const collection = createBookCollection();
 let library = null,
   preview = null,
   pdfProof = null,
+  publicationControls = null,
   fontControls = null,
   imageControls = null,
   search = null,
@@ -30,6 +31,14 @@ const controls = createBookControls({
   confirm: (text) => window.confirm(text),
   onProjectReplaced: () => library?.detach(),
 });
+// Data-only publishing authoring does not require a worker or generated WASM.
+try {
+  publicationControls = createBookPublicationControls({ root: document, controls, collection });
+} catch {
+  const status = document.querySelector("#book-publication-status");
+  if (status) status.textContent =
+    "Publishing-profile controls are unavailable. Applied settings, source editing and ordinary publication remain available.";
+}
 // Image-byte edits reuse the collection's source/resource ownership. They do
 // not start or cancel any of the publisher's independently owned workers.
 try {
@@ -132,6 +141,7 @@ try {
 }
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
+    publicationControls?.suspend();
     imageControls?.suspend();
     fontControls?.suspend();
     pdfProof?.suspend();
@@ -142,6 +152,7 @@ window.addEventListener("pagehide", (event) => {
     library?.suspend();
     controls.suspend();
   } else {
+    publicationControls?.dispose();
     imageControls?.dispose();
     fontControls?.dispose();
     pdfProof?.dispose();
@@ -155,6 +166,7 @@ window.addEventListener("pagehide", (event) => {
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
+    publicationControls?.resume();
     imageControls?.resume();
     fontControls?.resume();
     pdfProof?.resume();

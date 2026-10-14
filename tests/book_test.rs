@@ -186,7 +186,8 @@ fn html_pages_get_sidebar_with_current_marker() {
     .expect("render");
     let out = inject_book_nav(&page, &b, "intro.html");
     assert!(out.contains("fmd-book-nav"));
-    assert!(out.contains("<li class=\"current\"><a href=\"intro.html\">"));
+    // The current chapter also carries aria-current="page" (640874d).
+    assert!(out.contains("<li class=\"current\"><a href=\"intro.html\" aria-current=\"page\">"));
     assert!(out.contains("<a href=\"guide.html\">Advanced Guide</a>"));
     assert!(out.contains("Getting Started"));
     // Nav injection precedes the main content.

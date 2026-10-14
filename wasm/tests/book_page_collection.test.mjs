@@ -96,7 +96,8 @@ test("page-bearing projects require v3 and malformed geometry rejects before rep
     assert.throws(() => book.replaceProject({ schemaVersion: 3, files: [], options: { page: geometry } }));
     assert.deepEqual(book.snapshot(), before); assert.equal(book.revision, revision);
   }
-  assert.throws(() => normalizeBookProject({ schemaVersion: 4, files: [] }), { code: "INVALID_PROJECT" });
+  // Version 4 (publishing profiles, a3ca221) is the newest supported schema.
+  assert.throws(() => normalizeBookProject({ schemaVersion: 5, files: [] }), { code: "INVALID_PROJECT" });
 });
 
 test("stale, disposed and reentrant page transactions cannot overwrite newer state", () => {

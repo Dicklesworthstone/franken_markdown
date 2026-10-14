@@ -14,6 +14,12 @@ function boot(failImages = false) {
     calls.push({ name, argument });
     if (name === "createBookImageControls" && failImages) throw Error("intentional initialization failure");
     const instance = Object.fromEntries(["suspend", "resume", "dispose", "detach"].map(method => [method, () => calls.push({ name: `${name}.${method}` })]));
+    // Like the real module, connected project files hand later workbench
+    // components a descriptor-preserving facade of the controls.
+    if (name === "createBookFileControls") {
+      instance.controls = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(argument.controls)));
+      instances.set("connectedControls", instance.controls);
+    }
     instances.set(name, instance);
     return instance;
   }]));
@@ -27,7 +33,11 @@ test("publisher constructs image controls with the existing collection and sourc
   const call = f.calls.find(call => call.name === "createBookImageControls");
   assert(call, "publisher never constructs image management");
   assert.equal(call.argument.collection, f.instances.get("createBookCollection"));
-  assert.equal(call.argument.controls, f.instances.get("createBookControls"));
+  // Image management gets the connected-files facade over the same controls.
+  const files = f.calls.find(call => call.name === "createBookFileControls");
+  assert.equal(files?.argument.controls, f.instances.get("createBookControls"));
+  assert(f.instances.get("connectedControls"), "publisher never connects project files");
+  assert.equal(call.argument.controls, f.instances.get("connectedControls"));
   assert.equal(call.argument.confirm("remove?"), true);
   assert.equal(call.argument.worker, undefined, "byte authorization must not own another renderer");
   assert.equal(f.calls.filter(call => call.name === "createBookImagePanel").length, 1);

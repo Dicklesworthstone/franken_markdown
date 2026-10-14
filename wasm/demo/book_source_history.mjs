@@ -43,13 +43,39 @@ function splice(source, change, undo) {
 }
 const entryBytes = changes => changes.reduce((sum, change) => sum + 2 * (change.removed.length + change.inserted.length), 0);
 
+// Structural entries refer to unchanged text by position in the opposite tree.
+// A reorder or rename retains path/role metadata, not another copy of every
+// chapter. Only genuinely added/deleted/changed text contributes payload bytes.
+// Exact source equality is sufficient: identical-text files need no unique IDs.
+function treeSide(from, to) {
+  const sourceIndex = new Map(from.map((file, index) => [file.source, index]));
+  return Object.freeze(to.map(file => Object.freeze({
+    path: file.path, ...(file.role === "include" ? { role: file.role } : {}),
+    ...(sourceIndex.has(file.source) ? { from: sourceIndex.get(file.source) } : { source: file.source }),
+  })));
+}
+const treeBytes = side => side.reduce((sum, file) =>
+  sum + 16 + 2 * (file.path.length + (file.source?.length ?? 0)), 0);
+function applyTree(current, side) {
+  return Object.freeze(side.map(file => Object.freeze({
+    path: file.path, ...(file.role === "include" ? { role: file.role } : {}),
+    source: Object.hasOwn(file, "from") ? current[file.from].source : file.source,
+  })));
+}
+
 /** Retains ONE current source snapshot plus bounded replacement deltas, not a
  * whole-book copy per keystroke. bytes bounds UTF-16 delta payloads, excluding
  * the current snapshot, engine string representation and JS object overhead.
+ * Opt-in structural entries also charge path strings and 16 bytes per slot.
+ * Hosts enabling trackStructure must replay complete trees atomically and reset
+ * on project replacement. The default source-only API keeps its old boundaries.
  * No assets or settings are accepted. Plans never change history until a host
  * has installed the exact result and calls commit; failed writes remain retryable.
  */
-export function createBookSourceHistory(files, limits = BOOK_SOURCE_HISTORY_LIMITS) {
+export function createBookSourceHistory(files, limits = BOOK_SOURCE_HISTORY_LIMITS,
+  { trackStructure = false } = {}) {
+  if (typeof trackStructure !== "boolean")
+    throw failure("INVALID_HISTORY_OPTIONS", "trackStructure must be a boolean.");
   const cap = { ...BOOK_SOURCE_HISTORY_LIMITS, ...limits };
   for (const key of Object.keys(BOOK_SOURCE_HISTORY_LIMITS)) {
     if (!Number.isSafeInteger(cap[key]) || cap[key] < 1 || cap[key] > BOOK_SOURCE_HISTORY_LIMITS[key])
@@ -81,7 +107,17 @@ export function createBookSourceHistory(files, limits = BOOK_SOURCE_HISTORY_LIMI
           || typeof label !== "string" || label.length > 256)
         throw failure("INVALID_HISTORY_GROUP", "Use bounded history group and label strings.");
       const next = capture(value);
-      if (!sameSet(current, next)) { clear(next); lost = 0; return "source-set-changed"; }
+      if (!sameSet(current, next)) {
+        if (!trackStructure) { clear(next); lost = 0; return "source-set-changed"; }
+        const undo = treeSide(next, current), redo = treeSide(current, next);
+        const entry = Object.freeze({ tree: Object.freeze({ undo, redo }),
+          bytes: treeBytes(undo) + treeBytes(redo), group: null, label });
+        pending = null; grouping = null;
+        for (const old of future) bytes -= old.bytes;
+        future = []; past.push(entry); bytes += entry.bytes; current = next;
+        trim();
+        return "structure-recorded";
+      }
       const changes = [];
       for (let i = 0; i < next.length; i++) {
         const change = difference(current[i].source, next[i].source, i);
@@ -94,7 +130,7 @@ export function createBookSourceHistory(files, limits = BOOK_SOURCE_HISTORY_LIMI
       const previous = past.at(-1);
       // A group can merge one edited source only. A multi-file replacement is
       // always one isolated transaction, even when a caller reuses a group key.
-      if (group !== null && grouping === group && previous?.group === group
+      if (group !== null && grouping === group && previous?.group === group && !previous.tree
           && changes.length === 1 && previous.changes.length === 1
           && changes[0].index === previous.changes[0].index) {
         const index = changes[0].index;
@@ -117,13 +153,16 @@ export function createBookSourceHistory(files, limits = BOOK_SOURCE_HISTORY_LIMI
       if (direction !== "undo" && direction !== "redo") throw failure("INVALID_HISTORY_DIRECTION", "Choose undo or redo.");
       const entry = (direction === "undo" ? past : future).at(-1);
       if (!entry) throw failure("NO_HISTORY", "No source edit is available in this direction.");
-      const next = current.slice();
-      for (const change of entry.changes) {
+      const next = entry.tree ? applyTree(current, entry.tree[direction]) : current.slice();
+      if (!entry.tree) for (const change of entry.changes) {
         const file = current[change.index];
         next[change.index] = Object.freeze({ ...file, source: splice(file.source, change, direction === "undo") });
       }
+      const changed = entry.tree ? next.flatMap((file, index) =>
+        !current[index] || !sameSource([current[index]], [file]) ? [index] : [])
+        : entry.changes.map(change => change.index);
       const plan = Object.freeze({ direction, label: entry.label, files: Object.freeze(next),
-        changed: Object.freeze(entry.changes.map(change => change.index)) });
+        ...(entry.tree ? { structure: true } : {}), changed: Object.freeze(changed) });
       pending = { plan, entry };
       return plan;
     },

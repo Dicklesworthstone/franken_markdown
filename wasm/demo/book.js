@@ -13,6 +13,7 @@ import { createBookLibraryControls } from "./book_library_controls.mjs";
 import { createBookPdfControls, createBookPdfPanel, createBookPublicationControls } from "./book_pdf_controls.mjs";
 import { createBookPreviewControls } from "./book_preview_controls.mjs";
 import { createBookSearchControls } from "./book_search_controls.mjs";
+import { createBookSourceHistoryControls } from "./book_source_history.mjs";
 
 const collection = createBookCollection();
 let library = null,
@@ -22,6 +23,7 @@ let library = null,
   fontControls = null,
   imageControls = null,
   search = null,
+  sourceHistory = null,
   inspection = null,
   links = null;
 const controls = createBookControls({
@@ -29,8 +31,16 @@ const controls = createBookControls({
   worker: createBookWorker({ retainBook: true }),
   collection,
   confirm: (text) => window.confirm(text),
-  onProjectReplaced: () => library?.detach(),
+  onProjectReplaced: () => { library?.detach(); sourceHistory?.reset(); },
 });
+// Source history owns no renderer and survives presentation/resource edits.
+try {
+  sourceHistory = createBookSourceHistoryControls({ root: document, controls, collection });
+} catch {
+  const status = document.querySelector("#book-history-status") ?? document.querySelector("#status");
+  if (status) status.textContent =
+    "Book-wide source history is unavailable. Source editing, replacement-specific undo, saves and publication remain available.";
+}
 // Data-only publishing authoring does not require a worker or generated WASM.
 try {
   publicationControls = createBookPublicationControls({ root: document, controls, collection });
@@ -141,6 +151,7 @@ try {
 }
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
+    sourceHistory?.suspend();
     publicationControls?.suspend();
     imageControls?.suspend();
     fontControls?.suspend();
@@ -152,6 +163,7 @@ window.addEventListener("pagehide", (event) => {
     library?.suspend();
     controls.suspend();
   } else {
+    sourceHistory?.dispose();
     publicationControls?.dispose();
     imageControls?.dispose();
     fontControls?.dispose();
@@ -166,6 +178,7 @@ window.addEventListener("pagehide", (event) => {
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
+    sourceHistory?.resume();
     publicationControls?.resume();
     imageControls?.resume();
     fontControls?.resume();

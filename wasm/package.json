@@ -178,6 +178,7 @@
     "demo/book_preview_controls.mjs",
     "PREVIEW.md",
     "demo/book_source_search.mjs",
+    "demo/book_source_history.mjs",
     "demo/book_search_controls.mjs",
     "BOOK_EDITING.md",
     "book_inspection.mjs",

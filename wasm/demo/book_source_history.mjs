@@ -81,7 +81,7 @@ export function createBookSourceHistory(files, limits = BOOK_SOURCE_HISTORY_LIMI
           || typeof label !== "string" || label.length > 256)
         throw failure("INVALID_HISTORY_GROUP", "Use bounded history group and label strings.");
       const next = capture(value);
-      if (!sameSet(current, next)) { clear(next); return "source-set-changed"; }
+      if (!sameSet(current, next)) { clear(next); lost = 0; return "source-set-changed"; }
       const changes = [];
       for (let i = 0; i < next.length; i++) {
         const change = difference(current[i].source, next[i].source, i);
@@ -142,4 +142,196 @@ export function createBookSourceHistory(files, limits = BOOK_SOURCE_HISTORY_LIMI
     },
   };
   return Object.freeze(api);
+}
+
+/** Wire chronological source undo to the existing atomic applySources host.
+ * This controller has no worker, asset store, project serializer or persistence.
+ * The host must capture normal input before notifying collection subscribers.
+ */
+export function createBookSourceHistoryControls({ root, controls, collection,
+  limits = BOOK_SOURCE_HISTORY_LIMITS, now = () => performance.now() }) {
+  const editor = root.querySelector("#chapter-source"), path = root.querySelector("#chapter-path");
+  const role = root.querySelector("#source-role");
+  if (!editor?.parentElement || !path || !role || typeof controls?.applySources !== "function"
+      || typeof controls?.checkpoint !== "function" || typeof collection?.subscribe !== "function")
+    throw new TypeError("Book source history requires the source editor and its transaction host.");
+  if (root.querySelector("#book-source-history")) throw new Error("Book source history is already installed.");
+  const history = createBookSourceHistory(collection.files, limits);
+  const panel = root.createElement("div"); panel.id = "book-source-history";
+  const make = (tag, id, text) => {
+    const node = root.createElement(tag); node.id = `book-history-${id}`; node.textContent = text;
+    panel.appendChild(node); return node;
+  };
+  make("h3", "title", "Book-wide source undo");
+  panel.setAttribute("aria-labelledby", "book-history-title");
+  const undo = make("button", "undo", "Undo source edit"), redo = make("button", "redo", "Redo source edit");
+  const clear = make("button", "clear", "Clear source history");
+  for (const node of [undo, redo, clear]) { node.type = "button"; node.setAttribute("aria-describedby", "book-history-help book-history-status"); }
+  undo.setAttribute("aria-keyshortcuts", "Control+z Meta+z");
+  redo.setAttribute("aria-keyshortcuts", "Control+Shift+z Meta+Shift+z Control+y");
+  make("p", "help", "Undo typing and source transactions across chapters and include files. In the source editor use Ctrl/Cmd+Z, Shift+Ctrl/Cmd+Z, or Ctrl+Y. Settings and image/font grants are never restored. Source additions, removals, renames, role/order changes and different-source project recovery reset history. History is session-only, not a saved backup; page suspension clears it.");
+  const status = make("p", "status", ""); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
+  editor.parentElement.insertBefore(panel, editor.nextSibling);
+  let disposed = false, suspended = false, composing = false, installing = false;
+  let config = collection.renderConfigurationRevision, serial = 0, context = null;
+  let before = null, burst = null, compositionGroup = null, compositionTail = null;
+  let message = "Source history starts at the current book.";
+  const unlisten = [];
+  const blocked = () => disposed || suspended || composing || installing || controls.sourceBusy;
+  function check() {
+    if (disposed || suspended) throw failure("HISTORY_CLOSED", "Source history is not active.");
+    if (composing || installing || controls.sourceBusy) throw failure("BOOK_BUSY", "Finish importing or composing text before undo/redo.");
+  }
+  function breakGroup() {
+    burst = null; before = null; context = null; compositionTail = null;
+    if (!disposed) history.breakGroup();
+  }
+  function refresh() {
+    if (disposed) return;
+    const state = history.state, disabled = blocked();
+    undo.disabled = disabled || !state.undo; redo.disabled = disabled || !state.redo;
+    clear.disabled = disabled || (!state.undo && !state.redo);
+    status.textContent = `${message} ${state.undo} undo / ${state.redo} redo; ${state.bytes.toLocaleString()} retained delta bytes.`
+      + (state.discarded ? ` ${state.discarded} older entries exceeded the history budget.` : "");
+  }
+  function reset(text) {
+    history.reset(collection.files); config = collection.renderConfigurationRevision;
+    breakGroup(); message = text; refresh();
+  }
+  function observe() {
+    if (disposed || suspended || installing) return;
+    const files = collection.files, nextConfig = collection.renderConfigurationRevision;
+    if (nextConfig !== config) {
+      config = nextConfig;
+      if (!history.matches(files)) {
+        reset("Source structure or project changed; history starts from this source set."); return;
+      }
+      breakGroup(); // Presentation/resource changes do not erase source recovery.
+    } else {
+      const previous = history.state.discarded;
+      const result = history.record(files, context ?? { label: "Book source transaction" });
+      if (result === "source-set-changed") message = "Source membership changed; history was reset.";
+      else if (result === "recorded") message = history.state.discarded !== previous
+        ? "Source edit recorded within the history budget." : "Source edit recorded.";
+    }
+    refresh();
+  }
+  function aligned() {
+    // Never replace undispatched keystrokes. Unlike captureProject this does
+    // not require current drafts/settings to validate before undo can repair
+    // them, and never clones resource payloads or serializes a whole project.
+    const index = controls.currentChapter, file = collection.files[index];
+    if (file && (editor.value !== file.source.replace(/\r\n?/g, "\n") || path.value !== file.path
+        || role.value !== (file.role ?? "chapter")))
+      throw failure("STALE_SOURCE", "The source editor has uncaptured changes. Finish the input before undo/redo; no text was overwritten.");
+  }
+  function step(direction) {
+    check(); aligned(); observe(); breakGroup();
+    const checkpoint = controls.checkpoint(), old = collection.files, plan = history.plan(direction);
+    check();
+    let installed;
+    installing = true;
+    try {
+      installed = controls.applySources(plan.files, checkpoint);
+      if (disposed) throw failure("HISTORY_CLOSED", "Source history was disposed during the transaction.");
+      if (suspended || installed !== collection.revision)
+        throw failure("HISTORY_CONFLICT", "Another change followed the source transaction; review current source before continuing.");
+      history.commit(plan, collection.files);
+      config = collection.renderConfigurationRevision;
+    } catch (error) {
+      if (!disposed && !suspended && !history.matches(collection.files))
+        reset("Source changed during undo/redo; history was reset without overwriting the newer state.");
+      throw error;
+    } finally { installing = false; if (!disposed) refresh(); }
+    // The host's original-source navigation handles CRLF and updates the actual
+    // editor, not merely its model. A navigation failure cannot undo a successful
+    // transaction, so report that separately without replaying the source again.
+    const index = plan.changed.includes(controls.currentChapter) ? controls.currentChapter : plan.changed[0];
+    const target = plan.files[index].source;
+    let offset = difference(old[index].source, target, index)?.start ?? 0;
+    if (offset > 0 && /[\udc00-\udfff]/.test(target[offset] ?? "") && /[\ud800-\udbff]/.test(target[offset - 1])) offset--;
+    message = `${direction === "undo" ? "Undid" : "Redid"} ${plan.label} in ${plan.changed.length} source file(s). Settings and resources were preserved.`;
+    try { controls.selectSourceRange?.(index, offset, offset, controls.checkpoint()); }
+    catch { message += " Source was changed, but automatic cursor navigation was unavailable."; }
+    refresh(); return installed;
+  }
+  function invoke(work) {
+    try { return work(); }
+    catch (error) { if (!disposed) { message = `${error.code ?? "HISTORY_ERROR"}: ${error.message}`; refresh(); } }
+  }
+  function on(node, type, listener, options) {
+    if (!node) return;
+    node.addEventListener(type, listener, options);
+    unlisten.push(() => node.removeEventListener(type, listener, options));
+  }
+  const historyDirection = type => type === "historyUndo" ? "undo" : type === "historyRedo" ? "redo" : null;
+  on(editor, "beforeinput", event => {
+    const direction = historyDirection(event.inputType);
+    if (direction && event.cancelable && !composing && !event.isComposing) {
+      event.preventDefault(); invoke(() => step(direction)); return;
+    }
+    before = { start: editor.selectionStart, end: editor.selectionEnd, type: event.inputType };
+  }, true);
+  on(editor, "input", event => {
+    if (disposed || suspended) return;
+    const time = now(), file = collection.files[controls.currentChapter];
+    const type = event.inputType ?? before?.type ?? "";
+    const isTyping = ["insertText", "deleteContentBackward", "deleteContentForward"].includes(type);
+    let group = null;
+    if (composing || event.isComposing) group = compositionGroup ??= `composition-${++serial}`;
+    else if (compositionTail && ["insertFromComposition", "insertCompositionText"].includes(type)) group = compositionTail;
+    else if (isTyping && before && Number.isFinite(time)) {
+      const adjacent = burst && burst.path === file?.path && burst.type === type
+        && time >= burst.time && time - burst.time <= 1000
+        && before.start === before.end && before.start === burst.end;
+      group = adjacent ? burst.group : `typing-${++serial}`;
+    }
+    context = { group, label: composing || event.isComposing ? "Text composition" : "Source edit" };
+    burst = isTyping ? { group, path: file?.path, time, type, end: editor.selectionEnd } : null;
+    before = null; compositionTail = null;
+  }, true); // Reserve the group BEFORE the existing input-capture listener.
+  on(editor, "input", () => { observe(); context = null; });
+  on(editor, "compositionstart", () => {
+    breakGroup(); composing = true; compositionGroup = `composition-${++serial}`; refresh();
+  }, true);
+  on(editor, "compositionend", () => {
+    composing = false; compositionTail = compositionGroup; compositionGroup = null;
+    burst = null; refresh();
+  });
+  on(editor, "keydown", event => {
+    if (event.defaultPrevented || event.isComposing || composing) return;
+    const key = event.key?.toLowerCase();
+    const command = (event.ctrlKey || event.metaKey) && !event.altKey;
+    const direction = command && key === "z" ? (event.shiftKey ? "redo" : "undo")
+      : event.ctrlKey && !event.metaKey && !event.altKey && key === "y" ? "redo" : null;
+    if (direction) { event.preventDefault(); invoke(() => step(direction)); }
+    else if (["arrowleft", "arrowright", "arrowup", "arrowdown", "home", "end", "pageup", "pagedown"].includes(key)) breakGroup();
+  });
+  for (const type of ["pointerdown", "blur"]) on(editor, type, breakGroup);
+  on(root.querySelector("#chapters"), "change", breakGroup);
+  on(undo, "click", () => invoke(() => step("undo")));
+  on(redo, "click", () => invoke(() => step("redo")));
+  on(clear, "click", () => invoke(() => { check(); reset("Source history cleared. The book is unchanged."); }));
+  const unsubscribe = collection.subscribe(observe), unsubscribeBusy = controls.subscribeSourceState?.(refresh);
+  refresh();
+  return Object.freeze({
+    undo: () => step("undo"), redo: () => step("redo"),
+    get state() { return history.state; },
+    clear() { check(); reset("Source history starts at the current book."); },
+    // A successful project import may notify while its source host is busy.
+    reset() { if (!disposed && !suspended) reset("Source history starts at the imported book."); },
+    suspend() {
+      if (disposed) return;
+      suspended = true; composing = false; compositionGroup = null;
+      breakGroup(); history.reset([]); message = "Source history cleared on suspension; current book source is retained."; refresh();
+    },
+    resume() { if (!disposed) { suspended = false; reset("Source history starts at the resumed book."); } },
+    dispose() {
+      if (disposed) return;
+      disposed = true; unsubscribe(); unsubscribeBusy?.();
+      for (const remove of unlisten) remove();
+      history.dispose(); context = before = burst = compositionGroup = compositionTail = null;
+      undo.disabled = redo.disabled = clear.disabled = true;
+    },
+  });
 }

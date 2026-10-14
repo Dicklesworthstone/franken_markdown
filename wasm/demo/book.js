@@ -1,5 +1,5 @@
 import { createBookWorker } from "../book-worker.js";
-import { createBookCollection } from "./book_collection.mjs";
+import { createBookCollection, normalizeBookProject, readBookProject, serializeBookProject } from "./book_collection.mjs";
 import { createBookControls } from "./book_controls.mjs";
 import { createBookImageControls, createBookImagePanel } from "./book_image_controls.mjs";
 import { createBookFontControls, createBookFontPanel } from "./book_font_controls.mjs";
@@ -15,6 +15,8 @@ import { createBookPreviewControls } from "./book_preview_controls.mjs";
 import { createBookSearchControls } from "./book_search_controls.mjs";
 import { createBookSourceHistoryControls } from "./book_source_history.mjs";
 
+import { createBookFileControls } from "./book_file_controls.mjs";
+
 const collection = createBookCollection();
 let library = null,
   preview = null,
@@ -24,15 +26,29 @@ let library = null,
   imageControls = null,
   search = null,
   sourceHistory = null,
+  projectFiles = null,
   inspection = null,
   links = null;
-const controls = createBookControls({
+let controls = createBookControls({
   root: document,
   worker: createBookWorker({ retainBook: true }),
   collection,
   confirm: (text) => window.confirm(text),
-  onProjectReplaced: () => { library?.detach(); sourceHistory?.reset(); },
+  onProjectReplaced: () => { projectFiles?.detach(); library?.detach(); sourceHistory?.reset(); },
 });
+// Install file ownership before other components receive the source host, so
+// library/new-book recovery cannot retain an unrelated disk-write connection.
+try {
+  projectFiles = createBookFileControls({ root: document, controls, collection, window,
+    projectCodec: { normalizeBookProject, readBookProject, serializeBookProject },
+    onProjectOpened: () => { library?.detach(); sourceHistory?.reset(); },
+  });
+  controls = projectFiles.controls;
+} catch {
+  const status = document.querySelector("#book-file-status") ?? document.querySelector("#status");
+  if (status) status.textContent =
+    "Connected project files are unavailable. Source imports/downloads, local-library saves and portable backups remain available.";
+}
 // Source history owns no renderer and survives presentation/resource edits.
 try {
   sourceHistory = createBookSourceHistoryControls({ root: document, controls, collection });
@@ -151,6 +167,7 @@ try {
 }
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
+    projectFiles?.suspend();
     sourceHistory?.suspend();
     publicationControls?.suspend();
     imageControls?.suspend();
@@ -163,6 +180,7 @@ window.addEventListener("pagehide", (event) => {
     library?.suspend();
     controls.suspend();
   } else {
+    projectFiles?.dispose();
     sourceHistory?.dispose();
     publicationControls?.dispose();
     imageControls?.dispose();
@@ -178,6 +196,7 @@ window.addEventListener("pagehide", (event) => {
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
+    projectFiles?.resume();
     sourceHistory?.resume();
     publicationControls?.resume();
     imageControls?.resume();

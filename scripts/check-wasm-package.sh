@@ -141,7 +141,7 @@ cp wasm/demo/demo.js "$package_dir/demo/demo.js"
 cp wasm/demo/web-component.html "$package_dir/demo/web-component.html"
 cp wasm/demo/sample.md "$package_dir/demo/sample.md"
 cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs wasm/demo/flow_reading_controls.mjs wasm/demo/flow_preview_export.mjs wasm/demo/flow_export_controls.mjs "$package_dir/demo/"
-for file in book.html book.js book_pdf_controls.mjs book_collection.mjs book_font_assets.mjs book_font_authoring.mjs book_font_controls.mjs book_image_controls.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_search_controls.mjs book_source_search.mjs book_source_history.mjs book_inspection_controls.mjs flow-source.js source_commands.mjs source_formatting.mjs SOURCE_FORMATTING.md flow_document.mjs flow_file_session.mjs flow_file_controls.mjs flow_render_settings.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
+for file in book.html book.js book_pdf_controls.mjs book_collection.mjs book_font_assets.mjs book_font_authoring.mjs book_font_controls.mjs book_image_controls.mjs book_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_search_controls.mjs book_source_search.mjs book_source_history.mjs book_file_session.mjs book_file_controls.mjs book_inspection_controls.mjs flow-source.js source_commands.mjs source_formatting.mjs SOURCE_FORMATTING.md flow_document.mjs flow_file_session.mjs flow_file_controls.mjs flow_render_settings.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
   cp "wasm/demo/$file" "$package_dir/demo/$file"
 done
 
@@ -267,6 +267,7 @@ node --test wasm/tests/book_pdf*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_retained_exports.test.mjs wasm/tests/book_publishing_retention.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_portable*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_source_history*.test.mjs 2>&1 | tee -a "$LEDGER"
+node --test wasm/tests/book_file_*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/document_comparison.test.mjs wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs 2>&1 | tee -a "$LEDGER"
 node wasm/document_worker_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 

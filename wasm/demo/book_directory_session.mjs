@@ -243,7 +243,7 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
       if (typeof apply !== "function")
         throw fail("DIRECTORY_REFRESH_UNAVAILABLE", "The source host does not support atomic source-only refresh.");
       const entries = new Map(), next = [], changes = [];
-      const merge = mergeText ? createBookSourceMerger() : null, decisions = new Map();
+      const merge = mergeText ? createBookSourceMerger() : null, decisions = new Map(), edited = new Map();
       let diskBytes = 0, mergedBytes = 0, conflicts = 0, changedSources = 0;
       for (const file of job.snapshot.files) {
         const value = await disk(await locate(job, target, file.path)); fence(job);
@@ -300,15 +300,24 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
         for (let i = 0; i < conflicts; i++) {
           const item = own(approval, String(i)), path = own(item, "path"), choice = own(item, "choice");
           const file = unresolved.get(path);
-          if (!file || decisions.has(path) || (choice !== "local" && choice !== "disk")
+          if (!file || decisions.has(path) || (choice !== "local" && choice !== "disk" && choice !== "edited")
               || (choice === "disk" && file.disk === null))
-            throw fail("UNRESOLVED_SOURCE_CONFLICT", "Choose local or existing disk source exactly once for every conflict. No source is deleted.");
+            throw fail("UNRESOLVED_SOURCE_CONFLICT", "Choose local, existing disk or an edited source exactly once for every conflict. No source is deleted.");
+          if (choice === "edited") {
+            // Capture the owned primitive once. Never coerce source or execute
+            // an accessor, and validate the COMPLETE UTF-8 result below before
+            // any source installation or disk-baseline acknowledgement.
+            const source = own(item, "source");
+            if (typeof source !== "string")
+              throw fail("UNRESOLVED_SOURCE_CONFLICT", "An edited resolution must supply its complete source string.");
+            edited.set(path, source);
+          }
           decisions.set(path, choice);
         }
         mergedBytes = 0; changedSources = 0;
         for (let i = 0; i < next.length; i++) {
           const file = changes[i], choice = decisions.get(file.path);
-          const source = choice ? file[choice] : next[i].source;
+          const source = choice === "edited" ? edited.get(file.path) : choice ? file[choice] : next[i].source;
           mergedBytes += utf8(source, cap.fileBytes).length + utf8(file.path, cap.pathBytes).length;
           if (mergedBytes > cap.sourceBytes) throw fail("BOOK_LIMIT", "The resolved source set exceeds its aggregate byte limit.");
           next[i] = Object.freeze({ path: file.path, source });
@@ -385,7 +394,8 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
     /** Explicitly opt into bounded line merges and reviewed conflict choices.
      * Approval is an array of {path, choice: "local" | "disk"} covering every
      * conflict, or an empty array for a conflict-free review. false cancels.
-     * Absent disk sources can only be kept locally; source deletion is separate.
+     * A manual result uses {path, choice: "edited", source: "complete text"}.
+     * Absent disk sources can be kept or edited; source deletion is separate.
      */
     reconcile: (confirm, apply) => refreshSources(confirm, apply, true),
     save(confirm) {

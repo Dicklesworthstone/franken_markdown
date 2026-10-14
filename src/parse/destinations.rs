@@ -122,7 +122,9 @@ pub(super) struct DestinationTracker {
     source_address: usize,
     source_len: usize,
     text: BTreeMap<usize, TextMap>,
-    text_order: Vec<usize>,
+    // A parser scope may register the same allocation more than once. Keep
+    // the displaced map so unwinding restores its caller's source identity.
+    text_order: Vec<(usize, Option<TextMap>)>,
     chars: Vec<CharMap>,
     spans: Vec<DestinationSpan>,
 }
@@ -144,8 +146,12 @@ impl DestinationTracker {
     }
 
     pub(super) fn restore(&mut self, checkpoint: usize) {
-        for address in self.text_order.drain(checkpoint..) {
-            self.text.remove(&address);
+        for (address, previous) in self.text_order.drain(checkpoint..).rev() {
+            if let Some(map) = previous {
+                self.text.insert(address, map);
+            } else {
+                self.text.remove(&address);
+            }
         }
     }
 
@@ -196,16 +202,18 @@ impl DestinationTracker {
                 }
             }
         }
-        if !runs.is_empty() {
+        if !output.is_empty() {
             let address = output.as_ptr() as usize;
-            self.text.insert(
+            // An entirely synthesized replacement must shadow an older map
+            // too; otherwise reused storage can acquire an invented origin.
+            let previous = self.text.insert(
                 address,
                 TextMap {
                     len: output.len(),
                     runs,
                 },
             );
-            self.text_order.push(address);
+            self.text_order.push((address, previous));
         }
     }
 
@@ -230,6 +238,8 @@ impl DestinationTracker {
                 output,
                 &[(output.len() - common, &original[original.len() - common..])],
             );
+        } else {
+            self.map_parts(output, &[]);
         }
     }
 
@@ -407,6 +417,67 @@ impl ParseProfiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_registration_restores_each_displaced_utf8_origin() {
+        let source = "同.png 同.png 同.png";
+        let len = "同.png".len();
+        let copied = source[..len].to_string();
+        let mut tracker = DestinationTracker::new(source);
+        let root = tracker.checkpoint();
+        tracker.map_parts(&copied, &[(0, &source[..len])]);
+        let outer = tracker.checkpoint();
+        let second = len + 1;
+        tracker.map_parts(&copied, &[(0, &source[second..second + len])]);
+        let inner = tracker.checkpoint();
+        let third = second * 2;
+        tracker.map_parts(&copied, &[(0, &source[third..third + len])]);
+        assert_eq!(tracker.text_range(&copied), Some(third..third + len));
+        tracker.restore(inner);
+        assert_eq!(tracker.text_range(&copied), Some(second..second + len));
+        tracker.restore(outer);
+        assert_eq!(tracker.text_range(&copied), Some(0..len));
+        assert_eq!(tracker.text_range(&copied["同".len()..]), Some(3..len));
+        tracker.restore(root);
+        assert_eq!(tracker.text_range(&copied), None);
+        assert!(tracker.text.is_empty());
+        assert!(tracker.text_order.is_empty());
+    }
+
+    #[test]
+    fn one_restore_unwinds_repeated_registration_in_reverse_order() {
+        let source = "same same same";
+        let copied = source[..4].to_string();
+        let mut tracker = DestinationTracker::new(source);
+        tracker.map_parts(&copied, &[(0, &source[..4])]);
+        let checkpoint = tracker.checkpoint();
+        tracker.map_parts(&copied, &[(0, &source[5..9])]);
+        tracker.map_parts(&copied, &[(0, &source[10..14])]);
+        tracker.restore(checkpoint);
+        assert_eq!(tracker.text_range(&copied), Some(0..4));
+        // Restoring the same checkpoint is idempotent.
+        tracker.restore(checkpoint);
+        assert_eq!(tracker.text_range(&copied), Some(0..4));
+    }
+
+    #[test]
+    fn synthesized_replacements_hide_stale_origins_until_scope_exit() {
+        let source = "asset.png";
+        let copied = source.to_string();
+        let mut tracker = DestinationTracker::new(source);
+        tracker.map_parts(&copied, &[(0, source)]);
+        let checkpoint = tracker.checkpoint();
+        tracker.map_parts(&copied, &[]);
+        assert_eq!(tracker.text_range(&copied), None);
+        assert_eq!(tracker.text_range(&copied[6..]), None);
+        tracker.restore(checkpoint);
+        assert_eq!(tracker.text_range(&copied), Some(0..source.len()));
+
+        tracker.map_suffix(&copied, "unmapped");
+        assert_eq!(tracker.text_range(&copied), None);
+        tracker.restore(checkpoint);
+        assert_eq!(tracker.text_range(&copied), Some(0..source.len()));
+    }
 
     fn tokens(source: &str) -> Vec<(&str, String)> {
         destination_spans(source)

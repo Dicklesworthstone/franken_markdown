@@ -39,9 +39,10 @@ impl SharedImages {
     fn intern(&mut self, owner: usize, resource: Resource, hash: u64) -> Result<&str> {
         let key = (resource.media_type, resource.bytes.len(), hash);
         let existing = self.buckets.get(&key).and_then(|indices| {
-            indices.iter().copied().find(|&index| {
-                self.resources[index].1.bytes == resource.bytes
-            })
+            indices
+                .iter()
+                .copied()
+                .find(|&index| self.resources[index].1.bytes == resource.bytes)
         });
         if let Some(index) = existing {
             return Ok(&self.resources[index].1.href);
@@ -51,7 +52,9 @@ impl SharedImages {
         if self.resources.len() >= MAX_RESOURCES
             || resource.bytes.len() > MAX_IMAGE_BYTES.saturating_sub(self.bytes)
         {
-            return Err(invalid("book exceeds 4096 unique images or 128 MiB of image payloads"));
+            return Err(invalid(
+                "book exceeds 4096 unique images or 128 MiB of image payloads",
+            ));
         }
         self.bytes += resource.bytes.len();
         let index = self.resources.len();
@@ -81,9 +84,8 @@ fn rewrite_sources(html: &str, aliases: &BTreeMap<String, String>) -> String {
             break;
         };
         let tag = &rest[..=end];
-        let replacement = source_range(tag).and_then(|range| {
-            aliases.get(&tag[range.clone()]).map(|href| (range, href))
-        });
+        let replacement = source_range(tag)
+            .and_then(|range| aliases.get(&tag[range.clone()]).map(|href| (range, href)));
         if let Some((range, href)) = replacement {
             output.push_str(&tag[..range.start]);
             output.push_str(href);
@@ -100,7 +102,9 @@ fn rewrite_sources(html: &str, aliases: &BTreeMap<String, String>) -> String {
 // Read the renderer's quoted attribute grammar, without interpreting entities
 // or user HTML. The extractor's generated resource paths need no XML decoding.
 fn source_range(tag: &str) -> Option<Range<usize>> {
-    if !tag.strip_prefix("<img").and_then(|rest| rest.as_bytes().first())
+    if !tag
+        .strip_prefix("<img")
+        .and_then(|rest| rest.as_bytes().first())
         .is_some_and(u8::is_ascii_whitespace)
     {
         return None;
@@ -112,9 +116,10 @@ fn source_range(tag: &str) -> Option<Range<usize>> {
             index += 1;
         }
         let name = index;
-        while bytes.get(index).is_some_and(|byte| {
-            !byte.is_ascii_whitespace() && !matches!(byte, b'=' | b'/' | b'>')
-        }) {
+        while bytes
+            .get(index)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'=' | b'/' | b'>'))
+        {
             index += 1;
         }
         if index == name {

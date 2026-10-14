@@ -25,8 +25,12 @@ impl BookSourceSetUpdate {
     pub fn to_json(&self) -> String {
         format!(
             "{{\"schema\":\"fmd-book-source-set-v1\",\"revision\":{},\"source_length\":{},\"chapter_count\":{},\"resource_count\":{},\"changed\":{},\"reparsed_chapter_count\":{}}}",
-            self.revision, self.source_length, self.chapter_count, self.resource_count,
-            self.changed, self.reparsed_chapter_count,
+            self.revision,
+            self.source_length,
+            self.chapter_count,
+            self.resource_count,
+            self.changed,
+            self.reparsed_chapter_count,
         )
     }
 }
@@ -132,8 +136,8 @@ fn same_capture(old: &[BookInput], new: &[BookInput]) -> Result<bool> {
         return Ok(false);
     }
     for (before, after) in old.iter().zip(new) {
-        let path = paths::source_path(&after.path)
-            .ok_or_else(|| invalid("invalid source-set path"))?;
+        let path =
+            paths::source_path(&after.path).ok_or_else(|| invalid("invalid source-set path"))?;
         if before.path != path || before.source != after.source {
             return Ok(false);
         }

@@ -49,7 +49,10 @@ fn assert_zip_page(archive: &[u8], name: &str, expected: &[u8]) {
             let mut wrapped = vec![0x78, 0x9c];
             wrapped.extend_from_slice(&archive[start..start + size]);
             wrapped.extend_from_slice(&((b << 16) | a).to_be_bytes());
-            assert_eq!(zlib_decompress(&wrapped, expected.len()).as_deref(), Some(expected));
+            assert_eq!(
+                zlib_decompress(&wrapped, expected.len()).as_deref(),
+                Some(expected)
+            );
             return;
         }
         at = start + size;
@@ -63,7 +66,11 @@ fn selected_html_is_byte_identical_to_the_real_site_archive_member() {
     let archive = renderer.render_site().unwrap();
     for index in 0..renderer.book.chapters.len() {
         let html = renderer.render_chapter_html(index).unwrap();
-        assert_zip_page(&archive, &renderer.book.chapters[index].out_name, html.as_bytes());
+        assert_zip_page(
+            &archive,
+            &renderer.book.chapters[index].out_name,
+            html.as_bytes(),
+        );
         assert_eq!(renderer.render_chapter_html(index).unwrap(), html);
     }
 }
@@ -79,18 +86,28 @@ fn chapter_preview_preserves_links_images_language_and_is_read_only() {
     assert!(html.contains("data:image/svg+xml;base64,"));
     assert!(html.contains("fmd-book-nav"));
     assert!(!html.contains("UnselectedBodySentinel"));
-    assert!(renderer.render_chapter_html(1).unwrap().contains("lang=\"de\""));
+    assert!(
+        renderer
+            .render_chapter_html(1)
+            .unwrap()
+            .contains("lang=\"de\"")
+    );
     assert_eq!(renderer.book.chapters[0].doc, original);
     assert_eq!(renderer.options.pdf_image_assets, assets);
-    assert_eq!(renderer.render_chapter_preview(0).unwrap(), renderer.render_chapter_preview(0).unwrap());
+    assert_eq!(
+        renderer.render_chapter_preview(0).unwrap(),
+        renderer.render_chapter_preview(0).unwrap()
+    );
 }
 
 #[test]
 fn large_book_map_is_complete_but_only_selected_body_is_rendered() {
-    let inputs: Vec<_> = (0..129).map(|index| BookInput {
-        path: format!("chapter-{index}.md"),
-        source: format!("# Chapter {index}\n\nBodySentinel{index:04}\n"),
-    }).collect();
+    let inputs: Vec<_> = (0..129)
+        .map(|index| BookInput {
+            path: format!("chapter-{index}.md"),
+            source: format!("# Chapter {index}\n\nBodySentinel{index:04}\n"),
+        })
+        .collect();
     let mut renderer = BookRenderer::new(&inputs).unwrap();
     renderer.options_mut().custom_css = Some(String::new());
     let json = String::from_utf8(renderer.render_chapter_preview(128).unwrap()).unwrap();
@@ -106,10 +123,27 @@ fn preview_admits_exact_page_and_json_boundaries() {
     let renderer = renderer();
     let html = renderer.render_chapter_html(0).unwrap();
     let expected = renderer.render_chapter_preview(0).unwrap();
-    assert_eq!(renderer.chapter_preview_with_limits(0, html.len(), expected.len()).unwrap(), expected);
-    assert!(renderer.chapter_preview_with_limits(0, html.len() - 1, expected.len()).is_err());
-    assert!(renderer.chapter_preview_with_limits(0, html.len(), expected.len() - 1).is_err());
-    assert!(renderer.chapter_preview_with_limits(0, html.len(), 1).is_err());
+    assert_eq!(
+        renderer
+            .chapter_preview_with_limits(0, html.len(), expected.len())
+            .unwrap(),
+        expected
+    );
+    assert!(
+        renderer
+            .chapter_preview_with_limits(0, html.len() - 1, expected.len())
+            .is_err()
+    );
+    assert!(
+        renderer
+            .chapter_preview_with_limits(0, html.len(), expected.len() - 1)
+            .is_err()
+    );
+    assert!(
+        renderer
+            .chapter_preview_with_limits(0, html.len(), 1)
+            .is_err()
+    );
 }
 
 #[test]
@@ -138,7 +172,8 @@ fn invalid_index_metadata_and_mutable_assets_are_rejected_without_poisoning() {
     assert!(renderer.render_chapter_preview(0).is_err());
     renderer.book.chapters[1].title = title;
     renderer.options.pdf_image_assets.push(PdfImageAsset {
-        destination: "invalid".into(), bytes: Vec::new(),
+        destination: "invalid".into(),
+        bytes: Vec::new(),
     });
     assert!(renderer.render_chapter_preview(0).is_err());
     renderer.options.pdf_image_assets.pop();
@@ -148,14 +183,32 @@ fn invalid_index_metadata_and_mutable_assets_are_rejected_without_poisoning() {
 #[test]
 fn workspace_include_edits_reach_selected_preview_without_recreating_options() {
     let mut workspace = BookWorkspace::from_sources(
-        &[BookInput { path: "start.md".into(), source: "# Start\n\n{{#include shared.md}}\n".into() }],
-        &[BookInput { path: "shared.md".into(), source: "Original snippet".into() }],
-    ).unwrap();
+        &[BookInput {
+            path: "start.md".into(),
+            source: "# Start\n\n{{#include shared.md}}\n".into(),
+        }],
+        &[BookInput {
+            path: "shared.md".into(),
+            source: "Original snippet".into(),
+        }],
+    )
+    .unwrap();
     workspace.options_mut().custom_css = Some(".fmd{color:purple}".into());
-    assert!(workspace.render_chapter_html(0).unwrap().contains("Original snippet"));
-    workspace.update_sources_at_revision(
-        &[BookInput { path: "shared.md".into(), source: "Changed snippet".into() }], 0,
-    ).unwrap();
+    assert!(
+        workspace
+            .render_chapter_html(0)
+            .unwrap()
+            .contains("Original snippet")
+    );
+    workspace
+        .update_sources_at_revision(
+            &[BookInput {
+                path: "shared.md".into(),
+                source: "Changed snippet".into(),
+            }],
+            0,
+        )
+        .unwrap();
     let html = workspace.render_chapter_html(0).unwrap();
     assert!(html.contains("Changed snippet"));
     assert!(!html.contains("Original snippet"));

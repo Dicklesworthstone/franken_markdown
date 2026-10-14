@@ -160,7 +160,9 @@ fn prepare_book_with_budget(
         // image copies to the publication. Only the externalized XHTML and
         // unique image payloads are retained in the archive.
         if page.len() > MAX_BOOK_BYTES {
-            return Err(invalid("one chapter render exceeds the 256 MiB scratch limit"));
+            return Err(invalid(
+                "one chapter render exceeds the 256 MiB scratch limit",
+            ));
         }
         let body = extract_main_body(&page)
             .ok_or_else(|| invalid("HTML renderer <main> wrapper not found"))?;
@@ -195,9 +197,12 @@ fn prepare_book_with_budget(
     // and ZIP writer then declare/write it exactly once, while every chapter
     // may reference it. SVG/MathML flags remain properties of each chapter.
     for (owner, resource) in images.finish() {
-        chapters.get_mut(owner)
+        chapters
+            .get_mut(owner)
             .ok_or_else(|| invalid("invalid shared image owner"))?
-            .content.resources.push(resource);
+            .content
+            .resources
+            .push(resource);
     }
     // Collect every chapter before subsetting: later chapters and titles may
     // introduce glyphs not present in the first. Fonts are never duplicated per
@@ -240,7 +245,11 @@ fn check_output(book: &PreparedBook, byte_limit: usize) -> Result<usize> {
     .into_iter()
     .chain(book.chapters.iter().map(|chapter| chapter.xhtml.len()))
     .chain(book.chapters.iter().flat_map(|chapter| {
-        chapter.content.resources.iter().map(|resource| resource.bytes.len())
+        chapter
+            .content
+            .resources
+            .iter()
+            .map(|resource| resource.bytes.len())
     })) {
         add_bytes(&mut total, size, byte_limit)?;
     }
@@ -252,7 +261,9 @@ fn add_bytes(total: &mut usize, count: usize, byte_limit: usize) -> Result<()> {
         .checked_add(count)
         .ok_or_else(|| invalid("book size overflow"))?;
     if next > byte_limit {
-        return Err(invalid(&format!("rendered book exceeds the {byte_limit}-byte limit")));
+        return Err(invalid(&format!(
+            "rendered book exceeds the {byte_limit}-byte limit"
+        )));
     }
     *total = next;
     Ok(())

@@ -360,7 +360,9 @@ fn push_book_outline(headings: &[BookHeading], out: &mut String) {
     if headings.is_empty() {
         return;
     }
-    out.push_str("<details class=\"fmd-book-outline\" open>\n<summary>On this page</summary>\n<ol>\n");
+    out.push_str(
+        "<details class=\"fmd-book-outline\" open>\n<summary>On this page</summary>\n<ol>\n",
+    );
     // Track actual ancestors, not numeric depth. A jump from h2 to h5 opens
     // one child list, never three empty list items. Its following h4 is a
     // sibling under h2. Clamp host-built levels to bound the stack to six.
@@ -444,8 +446,7 @@ mod navigation_tests {
     use super::*;
     use crate::{HtmlOptions, render_html_document};
 
-    const PAGE: &str =
-        "<!doctype html><html><head><style>body{margin:0}</style></head><body><main class=\"fmd\">Body</main></body></html>";
+    const PAGE: &str = "<!doctype html><html><head><style>body{margin:0}</style></head><body><main class=\"fmd\">Body</main></body></html>";
 
     fn fixture() -> Book {
         build_book(&[
@@ -584,9 +585,9 @@ mod navigation_tests {
         book.chapters[0].title = "<script>alert(1)</script> & Previous".into();
         let html = inject_book_nav(PAGE, &book, "alpha.html");
         assert!(!html.contains("<script>"));
-        assert!(html.contains(
-            "Previous chapter: &lt;script&gt;alert(1)&lt;/script&gt; &amp; Previous"
-        ));
+        assert!(
+            html.contains("Previous chapter: &lt;script&gt;alert(1)&lt;/script&gt; &amp; Previous")
+        );
         let mut out = String::new();
         push_book_outline(
             &[BookHeading {

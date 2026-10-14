@@ -9,6 +9,8 @@ use crate::{
     ZipWriter, render_html_document,
 };
 
+#[path = "chapter_preview.rs"]
+mod chapter_preview;
 #[path = "pdf_links.rs"]
 mod pdf_links;
 #[path = "site_publication.rs"]
@@ -17,8 +19,6 @@ mod site_publication;
 pub(crate) mod site_search;
 #[path = "source_bundle.rs"]
 mod source_bundle;
-#[path = "chapter_preview.rs"]
-mod chapter_preview;
 
 const MAX_CHAPTERS: usize = 4096;
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;

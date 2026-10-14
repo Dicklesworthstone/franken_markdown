@@ -36,8 +36,7 @@ fn decode_component(raw: &str) -> Option<String> {
     let decoded = String::from_utf8(decoded).ok()?;
     // Encoded separators are not aliases for directory boundaries. Decode
     // once, so a literal filename containing "%2F" remains distinguishable.
-    (!decoded.contains(['/', '\\']) && !decoded.chars().any(char::is_control))
-        .then_some(decoded)
+    (!decoded.contains(['/', '\\']) && !decoded.chars().any(char::is_control)).then_some(decoded)
 }
 
 fn drive(part: &str) -> bool {
@@ -98,7 +97,10 @@ fn file_uri(uri: &str) -> Option<(FileKey, bool)> {
     } else {
         authority.to_ascii_lowercase()
     };
-    let mut key = FileKey { authority, parts: Vec::new() };
+    let mut key = FileKey {
+        authority,
+        parts: Vec::new(),
+    };
     let directory = append(&mut key.parts, path)?;
     Some((key, directory))
 }
@@ -108,7 +110,10 @@ fn addressed(origin: &str, destination: &str) -> Option<(FileKey, bool)> {
         return None;
     }
     let path = destination.split(['?', '#']).next()?;
-    if path.get(..5).is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:")) {
+    if path
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))
+    {
         return file_uri(path);
     }
     // Other schemes and protocol-relative network URLs never acquire access
@@ -129,9 +134,9 @@ fn addressed(origin: &str, destination: &str) -> Option<(FileKey, bool)> {
     Some((key, directory))
 }
 
-fn select<'a>(mut matches: impl Iterator<Item = (&'a str, &'a Buffer)>)
-    -> Result<Option<Target<'a>>, Failure>
-{
+fn select<'a>(
+    mut matches: impl Iterator<Item = (&'a str, &'a Buffer)>,
+) -> Result<Option<Target<'a>>, Failure> {
     let Some((uri, buffer)) = matches.next() else {
         return Ok(None);
     };
@@ -141,7 +146,10 @@ fn select<'a>(mut matches: impl Iterator<Item = (&'a str, &'a Buffer)>)
         return Ok(None);
     }
     if !buffer.synchronized {
-        return Err((-32801, "target document requires full-text resynchronization"));
+        return Err((
+            -32801,
+            "target document requires full-text resynchronization",
+        ));
     }
     Ok(Some((uri, &buffer.text)))
 }
@@ -184,9 +192,11 @@ pub(super) fn resolve<'a>(
         candidate.parts.push(name.to_string());
         candidates.push(candidate);
     }
-    select(opened.iter().filter_map(|(key, uri, buffer)| {
-        candidates.contains(key).then_some((*uri, *buffer))
-    }))
+    select(
+        opened
+            .iter()
+            .filter_map(|(key, uri, buffer)| candidates.contains(key).then_some((*uri, *buffer))),
+    )
 }
 
 #[cfg(test)]

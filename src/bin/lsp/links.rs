@@ -14,10 +14,10 @@ use super::{
 };
 use std::collections::BTreeMap;
 
-#[path = "link_structure.rs"]
-mod structure;
 #[path = "reference_links.rs"]
 mod references;
+#[path = "link_structure.rs"]
+mod structure;
 
 const MAX_BLOCK_BYTES: usize = 64 * 1024;
 const MAX_DESTINATION_BYTES: usize = 8192;
@@ -239,10 +239,18 @@ fn request_resolving<'a>(
         .map(|block| (block.span, block.node))
         .unzip();
     let original = Document { blocks };
-    let definition_source = DefinitionSource { uri, source, document: &original, spans: &spans, owner };
+    let definition_source = DefinitionSource {
+        uri,
+        source,
+        document: &original,
+        spans: &spans,
+        owner,
+    };
     let Some(token) = token else {
         if !completing {
-            if let Some(destination) = references::destination(source, span, offset, &original, owner)? {
+            if let Some(destination) =
+                references::destination(source, span, offset, &original, owner)?
+            {
                 return definition_source.resolve(&destination, &resolve);
             }
         }
@@ -288,7 +296,9 @@ fn request_resolving<'a>(
     }
     // Existing links use the parser-decoded destination (including entities).
     // An unfinished completion has only its verified lexical URL available.
-    let address = destination.as_deref().unwrap_or(&source[token.start..token.end]);
+    let address = destination
+        .as_deref()
+        .unwrap_or(&source[token.start..token.end]);
     if !address.is_empty() && !address.starts_with(['#', '?']) {
         let Some((_, target_source)) = resolve(address)? else {
             return Ok(empty(completing));
@@ -298,8 +308,12 @@ fn request_resolving<'a>(
         }
         // Targets are analyzed as authored: injecting a synthetic reference
         // could incorrectly make an unreferenced footnote become published.
-        analysis = analyze_document_links(&parse_markdown(target_source))
-            .map_err(|_| (-32803, "target link analysis could not complete within its limits"))?;
+        analysis = analyze_document_links(&parse_markdown(target_source)).map_err(|_| {
+            (
+                -32803,
+                "target link analysis could not complete within its limits",
+            )
+        })?;
     }
     let Some(prefix) = prefix_text(&source[fragment + 1..offset]) else {
         return Ok(completion_list(Vec::new(), true));
@@ -378,13 +392,18 @@ impl DefinitionSource<'_> {
             return Ok(Json::Null);
         }
         let target = match reference.target_block_index {
-            Some(target) => *self.spans.get(target)
+            Some(target) => *self
+                .spans
+                .get(target)
                 .ok_or((-32803, "invalid navigation source owner"))?,
             None => SourceSpan::new(0, 0),
         };
         Ok(object([
             ("uri", string(self.uri)),
-            ("range", range(&LineIndex::new(self.source), self.source, target)),
+            (
+                "range",
+                range(&LineIndex::new(self.source), self.source, target),
+            ),
         ]))
     }
 }
@@ -393,7 +412,9 @@ impl DefinitionSource<'_> {
 // headings merged across buffers. IDs and ambiguity come from the core analyzer.
 fn remote_definition(uri: &str, source: &str, destination: &str) -> Result<Json, Failure> {
     let index = LineIndex::new(source);
-    let fragment = destination.split_once('#').map_or("", |(_, fragment)| fragment);
+    let fragment = destination
+        .split_once('#')
+        .map_or("", |(_, fragment)| fragment);
     let target = if fragment.is_empty() {
         SourceSpan::new(0, 0)
     } else {
@@ -406,15 +427,21 @@ fn remote_definition(uri: &str, source: &str, destination: &str) -> Result<Json,
             .into_iter()
             .map(|block| (block.span, block.node))
             .unzip();
-        let analysis = analyze_document_links(&Document { blocks })
-            .map_err(|_| (-32803, "target link analysis could not complete within its limits"))?;
+        let analysis = analyze_document_links(&Document { blocks }).map_err(|_| {
+            (
+                -32803,
+                "target link analysis could not complete within its limits",
+            )
+        })?;
         let Some(anchor) = analysis.anchors.iter().find(|anchor| anchor.id == id) else {
             return Ok(Json::Null);
         };
         if anchor.occurrences != 1 {
             return Ok(Json::Null);
         }
-        *spans.get(anchor.block_index).ok_or((-32803, "invalid target source owner"))?
+        *spans
+            .get(anchor.block_index)
+            .ok_or((-32803, "invalid target source owner"))?
     };
     Ok(object([
         ("uri", string(uri)),

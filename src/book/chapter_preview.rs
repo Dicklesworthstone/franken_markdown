@@ -139,7 +139,9 @@ fn preview_paths(renderer: &BookRenderer, selected: usize) -> Result<Vec<String>
             || chapter.out_name.eq_ignore_ascii_case("index.html")
             || !names.insert(chapter.out_name.to_ascii_lowercase())
         {
-            return Err(invalid("invalid, nonportable, or colliding HTML output filename"));
+            return Err(invalid(
+                "invalid, nonportable, or colliding HTML output filename",
+            ));
         }
     }
     Ok(sources)
@@ -147,7 +149,9 @@ fn preview_paths(renderer: &BookRenderer, selected: usize) -> Result<Vec<String>
 
 fn admit(current: usize, extra: usize, limit: usize) -> Result<()> {
     if current.checked_add(extra).is_none_or(|total| total > limit) {
-        return Err(invalid("chapter preview JSON exceeds the message byte limit"));
+        return Err(invalid(
+            "chapter preview JSON exceeds the message byte limit",
+        ));
     }
     Ok(())
 }

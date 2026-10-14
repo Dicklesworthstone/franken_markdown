@@ -60,7 +60,7 @@ async function bootstrap(fail = false) {
     },
   };
   const dependencies = {
-    'book-worker.js': 'export const createBookWorker = () => globalThis.__bookPdfBoot.worker();',
+    'book-worker.js': 'export const createBookWorker = () => globalThis.__bookPdfBoot.worker(); export const createBookPublicationWorker = () => globalThis.__bookPdfBoot.worker();',
     'demo/book_collection.mjs': 'export const createBookCollection = () => ({identity:"collection"}); export const normalizeBookProject = value => value; export const readBookProject = value => value; export const serializeBookProject = value => value;',
     'demo/book_controls.mjs': 'export const createBookControls = options => globalThis.__bookPdfBoot.create("controls", options);',
     'demo/book_pdf_controls.mjs': 'export const createBookPdfPanel = () => {}; export const createBookPdfControls = options => globalThis.__bookPdfBoot.create("pdf", options); export const createBookPublicationControls = options => globalThis.__bookPdfBoot.create("publication", options);',
@@ -68,6 +68,8 @@ async function bootstrap(fail = false) {
     // (edf4c26, d16708b). Like the real module, file controls hand later
     // components a descriptor-preserving facade of the controls.
     'demo/book_source_history.mjs': 'export const createBookSourceHistoryControls = options => globalThis.__bookPdfBoot.create("history", options);',
+    // Edition publishing joined the publisher in d510546.
+    'demo/book_edition_controls.mjs': 'export const createBookEditionControls = options => globalThis.__bookPdfBoot.create("edition", options);',
     'demo/book_file_controls.mjs': 'export const createBookFileControls = options => { const files = globalThis.__bookPdfBoot.create("files", options); files.controls = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(options.controls))); return files; };',
     // Font and image authoring joined the publisher after this stub list
     // (d15040f, f905593); each is an independent subsystem like the others.

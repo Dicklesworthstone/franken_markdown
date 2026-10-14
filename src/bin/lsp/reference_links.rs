@@ -23,7 +23,10 @@ struct Candidate {
 
 fn candidates(source: &str, span: SourceSpan, offset: usize) -> Result<Vec<Candidate>, Failure> {
     if span.len() > MAX_BLOCK_BYTES {
-        return Err((-32803, "reference navigation source block exceeds its budget"));
+        return Err((
+            -32803,
+            "reference navigation source block exceeds its budget",
+        ));
     }
     if source.get(span.start..span.end).is_none() || offset < span.start || offset > span.end {
         return Ok(Vec::new());
@@ -61,12 +64,20 @@ fn candidates(source: &str, span: SourceSpan, offset: usize) -> Result<Vec<Candi
             continue;
         }
         if end - open > MAX_DESTINATION_BYTES {
-            return Err((-32803, "reference use exceeds the 8192-byte navigation budget"));
+            return Err((
+                -32803,
+                "reference use exceeds the 8192-byte navigation budget",
+            ));
         }
         if found.len() >= MAX_CANDIDATES {
-            return Err((-32803, "reference navigation has too many candidate contexts"));
+            return Err((
+                -32803,
+                "reference navigation has too many candidate contexts",
+            ));
         }
-        found.push(Candidate { suffix: close + 1..end });
+        found.push(Candidate {
+            suffix: close + 1..end,
+        });
     }
     Ok(found)
 }
@@ -83,7 +94,10 @@ pub(super) fn destination(
         return Ok(None);
     }
     let Some(probe) = unique_probe(source, original) else {
-        return Err((-32803, "reference navigation could not allocate a unique source probe"));
+        return Err((
+            -32803,
+            "reference navigation could not allocate a unique source probe",
+        ));
     };
     let mut selected = None;
     for candidate in candidates {
@@ -97,8 +111,12 @@ pub(super) fn destination(
         if !matches_probe(&probed, original, owner, &probe) {
             continue;
         }
-        let analysis = analyze_document_links(&probed)
-            .map_err(|_| (-32803, "reference link analysis could not complete within its limits"))?;
+        let analysis = analyze_document_links(&probed).map_err(|_| {
+            (
+                -32803,
+                "reference link analysis could not complete within its limits",
+            )
+        })?;
         if !analysis.references.iter().any(|reference| {
             reference.block_index == owner
                 && reference.kind == ReferenceKind::Link
@@ -107,7 +125,8 @@ pub(super) fn destination(
             continue;
         }
         let mut destination = None;
-        if let (Some(block), Some(old)) = (probed.blocks.get_mut(owner), original.blocks.get(owner)) {
+        if let (Some(block), Some(old)) = (probed.blocks.get_mut(owner), original.blocks.get(owner))
+        {
             structure::restore_reference(block, old, &probe, &mut destination);
         }
         if &probed != original {

@@ -30,7 +30,11 @@ pub(super) fn count_block(block: &Block, probe: &str) -> usize {
         Block::BlockQuote(blocks) | Block::FootnoteDefinition { blocks, .. } => {
             count(blocks, probe)
         }
-        Block::List(list) => list.items.iter().map(|item| count(&item.blocks, probe)).sum(),
+        Block::List(list) => list
+            .items
+            .iter()
+            .map(|item| count(&item.blocks, probe))
+            .sum(),
         Block::Table(table) => table
             .head
             .iter()
@@ -94,24 +98,51 @@ fn restore_block(
             restore_inlines(items, old, probe, destination, reference_title);
         }
         (Block::BlockQuote(blocks), Block::BlockQuote(old))
-        | (Block::FootnoteDefinition { blocks, .. }, Block::FootnoteDefinition { blocks: old, .. }) => {
+        | (
+            Block::FootnoteDefinition { blocks, .. },
+            Block::FootnoteDefinition { blocks: old, .. },
+        ) => {
             restore_blocks(blocks, old, probe, destination, reference_title);
         }
         (Block::List(list), Block::List(old)) if list.items.len() == old.items.len() => {
             for (item, old) in list.items.iter_mut().zip(&old.items) {
-                restore_blocks(&mut item.blocks, &old.blocks, probe, destination, reference_title);
+                restore_blocks(
+                    &mut item.blocks,
+                    &old.blocks,
+                    probe,
+                    destination,
+                    reference_title,
+                );
             }
         }
         (Block::Table(table), Block::Table(old)) if table.rows.len() == old.rows.len() => {
-            restore_cells(&mut table.head, &old.head, probe, destination, reference_title);
+            restore_cells(
+                &mut table.head,
+                &old.head,
+                probe,
+                destination,
+                reference_title,
+            );
             for (row, old) in table.rows.iter_mut().zip(&old.rows) {
                 restore_cells(row, old, probe, destination, reference_title);
             }
         }
         (Block::DefinitionList(items), Block::DefinitionList(old)) if items.len() == old.len() => {
             for (item, old) in items.iter_mut().zip(old) {
-                restore_cells(&mut item.terms, &old.terms, probe, destination, reference_title);
-                restore_cells(&mut item.definitions, &old.definitions, probe, destination, reference_title);
+                restore_cells(
+                    &mut item.terms,
+                    &old.terms,
+                    probe,
+                    destination,
+                    reference_title,
+                );
+                restore_cells(
+                    &mut item.definitions,
+                    &old.definitions,
+                    probe,
+                    destination,
+                    reference_title,
+                );
             }
         }
         _ => {}
@@ -159,8 +190,16 @@ fn restore_inlines(
     for (item, original) in items.iter_mut().zip(original) {
         match (item, original) {
             (
-                Inline::Link { dest, title, content },
-                Inline::Link { dest: old, title: old_title, content: old_content },
+                Inline::Link {
+                    dest,
+                    title,
+                    content,
+                },
+                Inline::Link {
+                    dest: old,
+                    title: old_title,
+                    content: old_content,
+                },
             ) => {
                 if dest.as_str() == probe {
                     *destination = Some(old.clone());

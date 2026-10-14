@@ -1,24 +1,43 @@
 //! Exercise the real export pipeline at small, exact admission boundaries.
 use super::*;
-use franken_markdown::{BookInput, FontAssetSlot, FontAssets, FontFamily, build_book};
 use franken_markdown::fonts::{self, FontStyle};
+use franken_markdown::{BookInput, FontAssetSlot, FontAssets, FontFamily, build_book};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 
 fn book() -> Result<Book> {
     build_book(&[
-        BookInput { path: "one.md".into(), source: "# One\n\nFirst chapter.".into() },
-        BookInput { path: "two.md".into(), source: "# Two\n\nSecond chapter.".into() },
+        BookInput {
+            path: "one.md".into(),
+            source: "# One\n\nFirst chapter.".into(),
+        },
+        BookInput {
+            path: "two.md".into(),
+            source: "# Two\n\nSecond chapter.".into(),
+        },
     ])
 }
 
 fn emitted_size(book: &PreparedBook) -> usize {
-    book.opf.len() + book.nav.len() + book.css.len() + CONTAINER_XML.len()
-        + MIMETYPE.len() + book.fonts.byte_len()
-        + book.chapters.iter().map(|chapter| {
-            chapter.xhtml.len() + chapter.content.resources.iter()
-                .map(|resource| resource.bytes.len()).sum::<usize>()
-        }).sum::<usize>()
+    book.opf.len()
+        + book.nav.len()
+        + book.css.len()
+        + CONTAINER_XML.len()
+        + MIMETYPE.len()
+        + book.fonts.byte_len()
+        + book
+            .chapters
+            .iter()
+            .map(|chapter| {
+                chapter.xhtml.len()
+                    + chapter
+                        .content
+                        .resources
+                        .iter()
+                        .map(|resource| resource.bytes.len())
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
 }
 
 #[test]
@@ -60,7 +79,10 @@ fn fonts_and_their_inserted_stylesheet_links_count_in_the_same_budget() -> TestR
 fn metadata_and_navigation_cannot_bypass_font_free_admission() -> TestResult {
     let mut book = book()?;
     book.chapters[0].title = "<&> ".repeat(128);
-    let opts = HtmlOptions { title: Some("<&> ".repeat(128)), ..HtmlOptions::default() };
+    let opts = HtmlOptions {
+        title: Some("<&> ".repeat(128)),
+        ..HtmlOptions::default()
+    };
     let prepared = prepare_book(&book, &opts)?;
     let exact = emitted_size(&prepared);
     let without_metadata = exact - prepared.opf.len() - prepared.nav.len();
@@ -72,22 +94,37 @@ fn metadata_and_navigation_cannot_bypass_font_free_admission() -> TestResult {
 
 #[test]
 fn repeated_base64_images_are_not_charged_as_retained_publication_bytes() -> TestResult {
-    let mut source = String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\">");
+    let mut source =
+        String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\">");
     for _ in 0..256 {
         source.push_str("<rect width=\"1\" height=\"1\"/>");
     }
     source.push_str("</svg>");
-    let book = build_book(&(0..8).map(|index| BookInput {
-        path: format!("part-{index}.md"),
-        source: "# Illustration\n\n![shared](figure.svg)".into(),
-    }).collect::<Vec<_>>())?;
+    let book = build_book(
+        &(0..8)
+            .map(|index| BookInput {
+                path: format!("part-{index}.md"),
+                source: "# Illustration\n\n![shared](figure.svg)".into(),
+            })
+            .collect::<Vec<_>>(),
+    )?;
     let opts = HtmlOptions {
-        image_assets: vec![PdfImageAsset { destination: "figure.svg".into(), bytes: source.into_bytes() }],
+        image_assets: vec![PdfImageAsset {
+            destination: "figure.svg".into(),
+            bytes: source.into_bytes(),
+        }],
         ..HtmlOptions::default()
     };
     let prepared = prepare_book(&book, &opts)?;
     let exact = emitted_size(&prepared);
-    assert_eq!(prepared.chapters.iter().map(|chapter| chapter.content.resources.len()).sum::<usize>(), 1);
+    assert_eq!(
+        prepared
+            .chapters
+            .iter()
+            .map(|chapter| chapter.content.resources.len())
+            .sum::<usize>(),
+        1
+    );
     let payload = prepared.chapters[0].content.resources[0].bytes.len();
     assert!(payload > 0);
     assert!(check_output(&prepared, exact - payload).is_err());
@@ -96,10 +133,14 @@ fn repeated_base64_images_are_not_charged_as_retained_publication_bytes() -> Tes
     // This is the representation that the old cumulative gate charged.
     let mut html_opts = opts.clone();
     html_opts.custom_css = Some(String::new());
-    let transient: usize = book.chapters.iter().map(|chapter| {
-        html_opts.title = Some(chapter.title.clone());
-        franken_markdown::html::render(&chapter.doc, &html_opts).len()
-    }).sum();
+    let transient: usize = book
+        .chapters
+        .iter()
+        .map(|chapter| {
+            html_opts.title = Some(chapter.title.clone());
+            franken_markdown::html::render(&chapter.doc, &html_opts).len()
+        })
+        .sum();
     assert!(transient > exact);
     Ok(())
 }

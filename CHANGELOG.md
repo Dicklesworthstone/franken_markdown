@@ -9,103 +9,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-14
+
+A feature release (139 commits since 0.5.0). It changes the public Rust
+API, the `fmd-math` API and some default output, so it is a minor-version bump.
+`fmd-font` 0.3.4 and `fmd-math` 0.2.0 ship with it.
+
+### Security
+
+- Default (safe) HTML now emits the raw-HTML subset GitHub's sanitizer allows,
+  re-serialized as live markup. Only a few attributes survive, `href`/`src` pass
+  the safe-URL policy, `<script>`, `<iframe>`, `<style>`, event handlers and
+  other tags stay escaped text, and nesting is capped at 32 levels. Review this
+  if your policy for untrusted Markdown is stricter than GitHub's (109537b,
+  3b62050, fa5e904).
+- SVG data-URI images check byte budgets before each write and reject a
+  declared MIME type that does not match the data (a58201c, 2ce5fc6). EPUB book
+  exports count all content against the 256 MiB ceiling, including books
+  without embedded fonts (1ff975f).
+
+### Breaking changes
+
+- `fmd-math` 0.2.0: `Layout` has a new public `order: Vec<Placed>` field (TeX's
+  emission order; new `Placed` enum) and `MathConstants` has new
+  `display_integral_scale`, `script_space` and `jot` fields; struct literals
+  must set them. `MacroSet::canonical_bytes` gains a record when ligatures are
+  off (the default pack), so cache keys built from it change. Layout
+  coordinates move as boxes follow TeX (see Fixed), and rule contours start
+  at the bottom-right corner (9abff25, 68fe29b, 57da845, 66d6087, 3ed1d33,
+  a81fa70).
+- Public structs gained fields: `PdfRunningBand.image`, `FmdConfig.render` and
+  five typography and font-format fields on `WasmRenderOptions`. Construct them
+  with `..Default::default()` (f444bba, 22d501e, 21a18a8).
+- The `wasm-bindgen` feature alone no longer exports `FmdFlowSession` or the
+  book and interactive-workspace bindings. Enable `wasm-flow`, `wasm-book`,
+  `wasm-workspace`, or `wasm-full` for all three, as the package builders do.
+  Calls to a missing binding reject with `UNSUPPORTED_WASM_PACKAGE` (#16,
+  a787b1a, f800a09, a3e996c; see docs/WASM_PROFILES.md).
+- Default PDF and SVG bytes change: page-bottom footnotes with superscript
+  marks instead of `[1]`, typeset inline math, drawn inline images, lowered raw
+  HTML, Mermaid figures, and new PDF heading and link tags. A link to `#notes`
+  resolves only when the host renders `doc.with_endnotes()`. Pin 0.5.0 if you
+  depend on byte-identical PDFs (2a80cd8, fc973ad).
+
+### Highlights
+
+- **Book publishing:** atomic multi-format editions, retained workers, chapter
+  previews, publishing profiles, outlines, scoped search, undo/redo and saving.
+- **PDF:** page-bottom footnotes, inline math and images, Mermaid figures,
+  emoji, header/footer logos, and paper sizes and margins.
+- **Browser and editors:** syntax-highlighted flow sessions, separate WASM
+  build profiles, and cross-buffer link navigation in `fmd-lsp`.
+- **fmd-math 0.2.0:** box sizes and spacing much closer to TeX's.
+
 ### Added
 
-- Native PDF and SVG output draw ~360 common emoji (🚀 ✅ ❌ ⚠️ 🎉 💡 📦 👍 …)
-  with a curated monochrome Noto Emoji face instead of `.notdef` boxes
-  (`emoji-face` cargo feature, enabled by `cli`; see docs/EMOJI_FALLBACK.md).
-  The face is embedded only in documents that use it. Core and WASM builds
-  are unchanged.
-- PDF and SVG posters draw Mermaid flowchart and sequence fences as vector
-  figures with the same diagram compiler HTML uses, instead of printing their
-  source.
-  Mermaid types the compiler does not support (pie, classDiagram, gantt, ...)
-  now stay highlighted code in HTML and PDF rather than being misread as
-  flowchart nodes.
-- PDF footnotes print at the foot of the page carrying their first
-  reference, under a short rule at footnote size, and each superscript mark
-  links to its note (docs/PDF_FOOTNOTES.md). Unreferenced notes and notes
-  taller than 40% of a page keep the trailing Notes section; hosts that want
-  endnotes render `doc.with_endnotes()`. `fmd verify` counts note marks as
-  resolved anchors. `--pdf-optimal-pagination` reserves each note's space
-  with the line citing it in the exact page planner.
-- Native config keys for render defaults: `lang`, `toc`, `toc_depth`,
-  `font_scale`, `html_font_format`, `microtype`, `pdf_page_numbers`,
-  `pdf_optimal_pagination` and the three `typography_*` switches. Flags win,
-  then frontmatter (`lang`/`toc`/`toc_depth`), then config; `config show
-  --json` reports them under `render`. `FmdConfig` gains a public `render`
-  field.
-- `fmd batch --to epub` and `--to svg` write one EPUB or SVG per input file
-  (local images embedded, render style flags honored); `--to
-  interactive-html` is refused with a pointer to `fmd render`.
-- WASM/browser and MCP PDF options gain the typography and pagination
-  switches the CLI already had: `typography: {homogeneous, antiriver,
-  pareto}`, `optimalPagination` and `microtype: "expansion"` in
-  `renderPdf`, and `typographyAntiriver` / `typographyPareto` /
-  `optimalPagination` MCP arguments. `renderHtml` accepts `htmlFontFormat`
-  (`woff1`, `woff2`, `ttf`). Rust hosts set the same through
-  `WasmRenderOptions` fields or `apply_typography_tokens`.
+- **Book editions:** `createBookPublicationWorker` publishes PDF, EPUB and HTML
+  site from one captured input over one worker; later formats reuse that input
+  without resending sources, fonts or images, and output is returned only when
+  the whole edition succeeds (941042e, 98fccf3; see wasm/BOOK_PUBLICATION.md).
+- **Retained book sessions:** opt-in `retainBook` workers keep one native book
+  across formats, `renderSources` sends only changed chapter/include text, and
+  `replaceSources` changes chapter membership and order in one transaction
+  (0d81423, 9b9b826, 4a5a24f, 228d42d, 8ebb265, f6b833f). The reader renders
+  one chapter at a time without building the site ZIP (24d96e3, 6410bcb,
+  3ed8595, 36c5957).
+- **Publishing profiles:** `FmdBook.setPdfOptions`/`setHtmlFontFormat` set
+  typography, text sizes, TOC depth, page targets, code line numbers, metadata
+  epoch and running headers/footers for browser books. Profiles survive
+  workers, save in source and portable projects, and have a workbench panel
+  (6069490, f8a3da6, a3ca221, b28ebac).
+- **Book navigation and search:** HTML sites and previews show the current
+  chapter's section outline, previous/next links and `aria-current="page"`;
+  hosts can call `chapter_outline` (640874d). Offline search matches whole
+  sections, treats composed and decomposed Unicode alike, takes `path:`/`title:`
+  filters and `-word`/`-"phrase"` exclusions, and keeps bookmarkable query
+  links with Back/Forward (7f1ddd0, ccea282, 6663914, 3740805).
+- **Book workbench:** book-wide undo/redo across chapters and includes
+  (Ctrl/Cmd+Z, Shift+Ctrl/Cmd+Z, Ctrl+Y), and Open, Save, Save as, Reload and
+  Disconnect for source-project files; saving will not overwrite a file changed
+  elsewhere without consent (96414b8, edf4c26, 3174623, d16708b). EPUB stores an
+  image shared by several chapters once (c690d82).
+- **Flow engine and browser editor:** opt-in syntax highlighting of fenced code
+  in the flow display list and Canvas preview, kept across edits; workers take
+  `initialCodeHighlighting` (84206bf, 0860ff1, 38f532e, 8140cce, aefeaf9,
+  398fc54). Persistent sessions export SVG, and PDF with paper, margins and
+  running bands; stateless PDF workers take running bands and logos (f23ad77,
+  4642f47, 126a530). The raw WASM is 323 KB smaller with one reflow engine
+  (42a3fe3) and uses wasm-bindgen 0.2.129 (df90e2b).
+- **PDF footnotes and pagination:** notes sit at the foot of the page citing
+  them, each superscript mark links to its note, and notes taller than 40% of a
+  page or unreferenced stay in the trailing Notes section (fc973ad, cd71c04;
+  see docs/PDF_FOOTNOTES.md). `--pdf-optimal-pagination` reserves note space
+  and may pick a paragraph shape one line shorter or longer (e9d0084, ef89e0b).
+- **PDF inline math and images:** `$…$` is typeset with fmd-math as an
+  unbreakable `/Formula` box with its source as `/Alt`, and a new
+  `math_overflow` warning names formulas wider than the measure (f059cac).
+  Images in paragraphs, headings, lists and table cells are drawn instead of
+  their alt text and tagged `/Figure` (b5b45af).
+- **PDF running images:** `--pdf-header-image`/`--pdf-footer-image DEST` draw a
+  PNG, JPEG or SVG logo from `--pdf-image DEST=PATH`, placed and sized with
+  `--pdf-{header,footer}-image-position` and `-image-height-pt`; also in watch,
+  batch, the browser APIs and MCP (f444bba).
+- **Mermaid and emoji:** PDF and SVG draw flowchart and sequence fences as
+  vector figures (101de1f, fb4ddca). HTML and EPUB turn `:rocket:` shortcodes
+  into emoji (49ef49a, f4568a4). Native PDF and SVG draw ~360 common emoji with
+  a curated Noto Emoji face, embedded only when used; `fmd-font` 0.3.4 exposes
+  it as `bundled::NOTO_EMOJI_CURATED` behind a new `emoji-face` feature
+  (ac5bc68; see docs/EMOJI_FALLBACK.md).
+- **Raw HTML in paged output:** PDF, SVG and EPUB lower the GitHub subset to
+  native nodes; digit-only `<sup>`/`<sub>` become Unicode digits (x², H₂O)
+  (109537b, 06dbd52). CommonMark conformance rises to 589/652 (3b62050).
+- **CLI:** `--page-size letter|a4|a5|legal|tabloid|WxH` and
+  `--margin-{top,right,bottom,left}-pt` in render, watch, batch and book
+  (c105648). Config keys set render defaults (`lang`, `toc`, `font_scale`,
+  `microtype`, `typography_*`, `page_size`, ...); flags and frontmatter win
+  (22d501e). `fmd batch --to epub|svg` writes one file per input (bfe2b98).
+  WASM `renderPdf`/`renderHtml` and MCP accept the typography, optimal
+  pagination, expansion and HTML font-format options (21a18a8).
+- **LSP:** inline and reference links resolve and complete across open buffers
+  and inside quotes, lists, tables and footnotes; `workspace/symbol` ranks
+  headings from all open buffers (21722ed, 30b0b8b, 357ebed, 5aacee6).
+- **fmd-math:** `\pmod`, `\tbinom` and `\dbinom`; text mode sets TeX's quote
+  and dash ligatures unless the macro set disables them, as the default pack
+  does; `MacroSet::ligatures()` reports which (973ba20, a8aab0d, 0a02812,
+  3ed1d33).
 
 ### Fixed
 
-- `fmd watch` and `fmd batch` now accept the same rendering flags as
-  `fmd render` (`--title`, `--lang`, `--toc`, `--font-scale`, `--profile`,
-  every `--pdf-*` page/running-header/font/image flag, `--microtype` and the
-  typography switches). Previously watch hard-coded them off and batch
-  rendered with only the theme. Batch refuses `--pdf-a` and `--svg-width-pt`
-  with a usage error instead of ignoring them.
-
-- `--profile` (and `HtmlOptions::profile` / `PdfOptions::profile`) was parsed
-  but never read. An explicit `commonmark-gfm` profile now renders exactly
-  GitHub's dialect: definition lists stay their literal paragraph text,
-  while footnotes and alerts, which GitHub renders, are kept. No profile and
-  `gfm-plus` keep every construct, as before. Library callers can apply the
-  same transform with `apply_profile`.
-
-- `fmd --to svg` now draws the same images (auto-loaded local files,
-  `--pdf-image`, remote fetches) and host fonts (`--pdf-font`) as PDF, and
-  reports missing images and other recoverable problems as warnings naming
-  the image. It previously ignored all of them silently. New
-  `--svg-width-pt` sets the poster width.
-
-### Changed
-
-- PDF and SVG footnote references are typeset as superscript numerals
-  (`claim¹`) instead of bracketed `[1]`, and each endnote starts with the
-  same superscript label.
-
-### Added
-
-- HTML emoji shortcodes: GitHub's `:rocket:`-style aliases (1,913 from
-  gemoji, MIT, regenerated by `scripts/generate-emoji-shortcodes.py`) become
-  Unicode emoji in HTML and EPUB prose, headings, tables and link text. Code
-  spans, code blocks, URLs and unknown names stay literal. PDF keeps the
-  shortcode text, since it bundles no emoji face (see
-  `docs/EMOJI_FALLBACK.md`).
-
-- PDF inline images: images inside paragraphs, headings, lists and table
-  cells (badge rows, icons in prose) are drawn as unbreakable boxes in the
-  Knuth-Plass paragraph instead of printing their alt text. PNG, JPEG and SVG
-  assets are supported (SVG badge text is subset like other SVG text), links
-  around an image stay clickable, each image is tagged `/Figure` with its alt
-  text, and images taller than the text open extra line space. A paragraph of
-  several large pictures keeps one figure line per picture. Unresolved images
-  still fall back to their alt text.
-
-### Changed
-
-- Raw HTML without `--allow-html` is no longer printed as literal tags; fmd
-  sanitizes it the way GitHub does. HTML output keeps an allowlisted subset
-  as balanced, re-serialized markup (`<div align>`, `<p>`, headings,
-  `<img src width height>`, `<a href>`, `<b>`/`<i>`/`<kbd>`/`<sub>`/`<sup>`,
-  `<details>`/`<summary>`, lists, tables, ...): only `align`, `title`, `lang`,
-  `dir` and a few per-element attributes survive, URLs pass the safe-URL
-  policies, local `<img src>` assets embed like Markdown images, and open
-  elements close at the end of their container so a stray closing tag can
-  never end renderer markup. PDF, SVG and EPUB lower the same subset to
-  native Markdown nodes. Comments disappear everywhere, and any other tag
-  (`<script>`, `<iframe>`, ...) is still escaped as visible text. CommonMark
-  conformance rises from 578 to 589/652 as a side effect.
+- `install.sh` took the release body as the version on compact latest-release
+  JSON; it now reads the top-level `tag_name` (#17, 2ed6a33). Piped installs
+  work under macOS Bash 3.2 (856441a).
+- `fmd watch` and `fmd batch` accept the same rendering flags as `fmd render`,
+  and batch refuses `--pdf-a`, `--svg-width-pt` and `--to interactive-html`
+  instead of ignoring them (5c54572, bfe2b98). `fmd --to svg` uses host images
+  and fonts like PDF, prints warnings and gains `--svg-width-pt` (cf711db).
+- `--profile commonmark-gfm` was a no-op; it now keeps definition lists as
+  literal text, as GitHub does (0d26725). `fmd help book` lists the real flags
+  (26edc68).
+- Tagged PDF: headings get `/H1`-`/H6` from their source level, and links are
+  `/Link` runs inside their paragraph instead of whole lines (3f70995, 90ce7d6).
+- Unsupported Mermaid types (pie, gantt, ...) stay highlighted code instead of
+  being read as flowcharts (101de1f).
+- Parser: bare autolinks no longer swallow explicit or reference link labels,
+  and nested scopes restore link source origins (148ec6c, db8473c).
+- `fmd-math` follows TeX's measured boxes: italic corrections after lone
+  characters (`f(`), `\scriptspace`, null-delimiter space by `\frac`, spacing
+  across explicit glue, and text-mode spaces (7bf65e8, 4c8caa2, 57da845,
+  656af88, a3578a0); cmex10 sizes and widths for display integrals, `\big` to
+  `\Bigg`, delimiters and big operators, LaTeX struts in arrays and cases, and
+  1.8 em brace fills (68fe29b, 2244415, e0dd66e, 29385b3, 80cbadc, bd00a24,
+  f84a459); `\vec`, primes, ellipsis dots, `\vdots`/`\ddots` and `\root`
+  degrees as TeX draws them, and tall drawn parentheses no longer break apart
+  (3337884, 8798a86, 973ba20, d45a8a4, bfb3221, a8aab0d); multi-line `Tex`
+  rows align at `&` like `align*`, open up by `\jot`, and a trailing `\\` adds
+  no row (66d6087, 798de11, e4e8e2e).
+- iOS app: document commands and async open/save results stay in their own
+  window, and Command-O opens a document (80c95bf).
 
 ## [0.5.0] - 2026-10-02
 
@@ -516,7 +576,8 @@ API and some default output, so it is a minor-version bump.
   - WASM compilation target with byte-for-byte output parity.
   - CommonMark 0.31.2 conformance test harness and verification test suite.
 
-[Unreleased]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.3...v0.4.4

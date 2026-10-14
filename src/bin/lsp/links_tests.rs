@@ -176,7 +176,10 @@ fn nested_targets_keep_their_real_enclosing_source_block() -> TestResult {
     let nested = call("textDocument/definition", "# Target\n\n> [go](#tar¦get)")?;
     assert_eq!(
         nested.get("range").and_then(|r| r.get("start")),
-        Some(&position(Position { line: 0, character: 0 }))
+        Some(&position(Position {
+            line: 0,
+            character: 0
+        }))
     );
     Ok(())
 }

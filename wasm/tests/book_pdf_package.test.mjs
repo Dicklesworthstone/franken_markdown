@@ -11,7 +11,9 @@ const read = path => readFileSync(path, 'utf8');
 // The proof helpers' full relative import closure, plus their documentation.
 const required = [
   'book_pdf_proof.mjs', 'book_session.mjs', 'book_worker.mjs', 'book_retained.mjs', 'pdf_page.mjs',
-  'demo/book_pdf_controls.mjs', 'BOOK_PDF_PROOF.md',
+  // book_pdf_controls.mjs reads publishing-profile fields from the collection
+  // module (a3ca221), which in turn uses the font asset store.
+  'demo/book_pdf_controls.mjs', 'demo/book_collection.mjs', 'demo/book_font_assets.mjs', 'BOOK_PDF_PROOF.md',
 ];
 
 test('PDF proof runtime closure and documentation are declared in the published package', () => {
@@ -59,9 +61,14 @@ async function bootstrap(fail = false) {
   };
   const dependencies = {
     'book-worker.js': 'export const createBookWorker = () => globalThis.__bookPdfBoot.worker();',
-    'demo/book_collection.mjs': 'export const createBookCollection = () => ({identity:"collection"});',
+    'demo/book_collection.mjs': 'export const createBookCollection = () => ({identity:"collection"}); export const normalizeBookProject = value => value; export const readBookProject = value => value; export const serializeBookProject = value => value;',
     'demo/book_controls.mjs': 'export const createBookControls = options => globalThis.__bookPdfBoot.create("controls", options);',
-    'demo/book_pdf_controls.mjs': 'export const createBookPdfPanel = () => {}; export const createBookPdfControls = options => globalThis.__bookPdfBoot.create("pdf", options);',
+    'demo/book_pdf_controls.mjs': 'export const createBookPdfPanel = () => {}; export const createBookPdfControls = options => globalThis.__bookPdfBoot.create("pdf", options); export const createBookPublicationControls = options => globalThis.__bookPdfBoot.create("publication", options);',
+    // Source history and connected project files joined the publisher later
+    // (edf4c26, d16708b). Like the real module, file controls hand later
+    // components a descriptor-preserving facade of the controls.
+    'demo/book_source_history.mjs': 'export const createBookSourceHistoryControls = options => globalThis.__bookPdfBoot.create("history", options);',
+    'demo/book_file_controls.mjs': 'export const createBookFileControls = options => { const files = globalThis.__bookPdfBoot.create("files", options); files.controls = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(options.controls))); return files; };',
     // Font and image authoring joined the publisher after this stub list
     // (d15040f, f905593); each is an independent subsystem like the others.
     'demo/book_image_controls.mjs': 'export const createBookImagePanel = () => {}; export const createBookImageControls = options => globalThis.__bookPdfBoot.create("images", options);',

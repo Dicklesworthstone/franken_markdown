@@ -1,4 +1,4 @@
-import { createBookWorker } from "../book-worker.js";
+import { createBookWorker, createBookPublicationWorker } from "../book-worker.js";
 import { createBookCollection, normalizeBookProject, readBookProject, serializeBookProject } from "./book_collection.mjs";
 import { createBookControls } from "./book_controls.mjs";
 import { createBookImageControls, createBookImagePanel } from "./book_image_controls.mjs";
@@ -16,6 +16,7 @@ import { createBookSearchControls } from "./book_search_controls.mjs";
 import { createBookSourceHistoryControls } from "./book_source_history.mjs";
 
 import { createBookFileControls } from "./book_file_controls.mjs";
+import { createBookEditionControls } from "./book_edition_controls.mjs";
 
 const collection = createBookCollection();
 let library = null,
@@ -27,6 +28,7 @@ let library = null,
   search = null,
   sourceHistory = null,
   projectFiles = null,
+  edition = null,
   inspection = null,
   links = null;
 let controls = createBookControls({
@@ -56,6 +58,18 @@ try {
   const status = document.querySelector("#book-history-status") ?? document.querySelector("#status");
   if (status) status.textContent =
     "Book-wide source history is unavailable. Source editing, replacement-specific undo, saves and publication remain available.";
+}
+// One edition owns a separate publisher; ordinary exports and proofs retain
+// their existing clients. Creating the publisher does not start a worker.
+let editionPublisher = null;
+try {
+  editionPublisher = createBookPublicationWorker();
+  edition = createBookEditionControls({ root: document, controls, collection, publisher: editionPublisher });
+} catch {
+  editionPublisher?.dispose();
+  const status = document.querySelector("#book-edition-status") ?? document.querySelector("#status");
+  if (status) status.textContent =
+    "Multi-format editions are unavailable. Individual PDF/EPUB/site exports, source editing and project saves remain available.";
 }
 // Data-only publishing authoring does not require a worker or generated WASM.
 try {
@@ -167,6 +181,7 @@ try {
 }
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
+    edition?.suspend();
     projectFiles?.suspend();
     sourceHistory?.suspend();
     publicationControls?.suspend();
@@ -180,6 +195,7 @@ window.addEventListener("pagehide", (event) => {
     library?.suspend();
     controls.suspend();
   } else {
+    edition?.dispose();
     projectFiles?.dispose();
     sourceHistory?.dispose();
     publicationControls?.dispose();
@@ -196,6 +212,7 @@ window.addEventListener("pagehide", (event) => {
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
+    edition?.resume();
     projectFiles?.resume();
     sourceHistory?.resume();
     publicationControls?.resume();

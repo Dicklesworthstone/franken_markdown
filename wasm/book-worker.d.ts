@@ -157,3 +157,43 @@ export function createBookWorker(options?: {
   /** Release idle retained books after this delay. Default 30000; 1..600000 ms. */
   idleTimeoutMs?: number;
 }): BookWorker;
+
+/** One captured edition, returned only after every selected export succeeds.
+ * Outputs are separate native files, not a new wrapper archive. Containers are
+ * frozen; byte views are caller-owned and may be modified after receipt. */
+export interface BookPublicationOutput {
+  readonly format: "book-publication";
+  readonly sourceLength: number;
+  /** Sum of the returned output view lengths, not a renderer heap estimate. */
+  readonly byteLength: number;
+  readonly outputs: ReadonlyArray<Omit<BookOutput, "filename">>;
+}
+export interface BookPublicationWorker {
+  /** Covers the whole edition, not just the currently executing format. */
+  readonly busy: boolean;
+  /** Capture sources, settings, images and fonts before asynchronous startup.
+   * Formats default to ["pdf", "epub", "site"]; supply 1..3 unique formats.
+   * Later formats reuse the exact acknowledged capture through source deltas.
+   * No partial output on errors, cancellation, timeout or aggregate overflow.
+   * A fresh private worker is disposed after each edition, including success.
+   * Rebuild older workers without retained source-capture support; no fallback
+   * to independently captured per-format publications occurs. */
+  render(
+    files: readonly BookFile[],
+    formats?: readonly BookFormat[],
+    options?: BookOptions,
+    request?: { signal?: AbortSignal },
+  ): Promise<BookPublicationOutput>;
+  /** Cancel the complete edition; the publisher remains reusable. */
+  cancel(): void;
+  /** Idempotent and permanent; terminates any active private worker. */
+  dispose(): void;
+}
+export function createBookPublicationWorker(options?: {
+  workerFactory?: () => Worker;
+  /** Shared deadline across capture/startup and ALL formats. Default 120000;
+   * allowed 1..600000 ms. Expiration terminates the private worker. */
+  timeoutMs?: number;
+  /** Combined output ceiling, default/maximum 128 MiB; not a heap bound. */
+  maxOutputBytes?: number;
+}): BookPublicationWorker;

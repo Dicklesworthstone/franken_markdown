@@ -9,6 +9,8 @@ const TYPES = Object.freeze({
 });
 const DEFAULT_FORMATS = Object.freeze(["pdf", "epub", "site"]);
 const error = (code, message) => Object.assign(new Error(message), { code });
+const clock = () => typeof performance === "object" && typeof performance.now === "function"
+  ? performance.now() : Date.now();
 
 function publicationFormats(value) {
   const count = Array.isArray(value) ? Object.getOwnPropertyDescriptor(value, "length")?.value : -1;
@@ -69,13 +71,20 @@ export function createBookPublicationClient({
     if (disposed) return Promise.reject(error("SESSION_DISPOSED", "Book publisher is disposed."));
     if (active) return Promise.reject(error("BOOK_BUSY", "A book publication is already running."));
     return new Promise((resolve, reject) => {
-      let settled = false, client = null, timer = null, signal;
+      let settled = false, client = null, timer = null, signal, deadline = Infinity;
       let outputs = [], total = 0, sourceLength = null, revision = 0;
       const retire = (owned) => {
         try { owned?.dispose(); } catch { /* Cleanup must not hide the primary result. */ }
       };
       const onAbort = () => finish(error("EXPORT_CANCELLED", "Book publication cancelled; no outputs were published."));
       const operation = { cancel: onAbort };
+      const expired = () => finish(error("EXPORT_TIMEOUT", "Book publication exceeded its shared time budget."));
+      const stopped = () => {
+        // Timers cannot interrupt synchronous capture/copying or a custom
+        // endpoint's microtask chain. Refuse late results at phase boundaries.
+        if (!settled && clock() >= deadline) expired();
+        return settled;
+      };
       function finish(cause, result, failed = true) {
         if (settled) return;
         settled = true;
@@ -106,12 +115,13 @@ export function createBookPublicationClient({
         if (signal?.aborted) { onAbort(); return; }
         // One deadline covers capture, initialization and every format, not a
         // fresh timeout per output. Disposing the client terminates Rust work.
-        timer = setTimeout(() => finish(error("EXPORT_TIMEOUT", "Book publication exceeded its shared time budget.")), timeoutMs);
+        deadline = clock() + timeoutMs;
+        timer = setTimeout(expired, timeoutMs);
         input = captureInput(files, options);
-        if (settled) return;
+        if (stopped()) return;
         if (signal?.aborted) { onAbort(); return; }
         const created = createClient();
-        if (settled) { retire(created); return; }
+        if (stopped()) { retire(created); return; }
         client = created;
         if (!client || ["render", "renderSourceUpdate", "dispose"].some(key => typeof client[key] !== "function"))
           throw error("WORKER_FAILED", "Publication requires an owned retained source-update client.");
@@ -122,13 +132,16 @@ export function createBookPublicationClient({
       void (async () => {
         try {
           for (let index = 0; index < selected.length; index++) {
-            if (settled) return;
+            if (stopped()) return;
+            if (total >= maxOutputBytes)
+              throw error("OUTPUT_LIMIT", "No output budget remains for the next publication format.");
             const format = selected[index];
             const result = index === 0
               ? await client.render(input.files, format, input.options, { signal })
               : await client.renderSourceUpdate([], format, { expectedRevision: revision }, { signal });
-            if (settled) return;
+            if (stopped()) return;
             const admitted = publicationOutput(result, format, maxOutputBytes - total, revision, sourceLength);
+            if (stopped()) return;
             revision = admitted.revision;
             sourceLength = admitted.output.sourceLength;
             total += admitted.output.bytes.byteLength;

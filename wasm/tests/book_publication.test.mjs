@@ -262,6 +262,7 @@ test("dispose is permanent and idempotent while ordinary cancel leaves the publi
 
 test("one shared deadline remains armed across all formats and is removed after cancellation", async (t) => {
   const jobs = new Map(), scheduled = [];
+  t.mock.method(performance, "now", () => 0);
   t.mock.method(globalThis, "setTimeout", (fn, ms) => { const id = {}; jobs.set(id, fn); scheduled.push(ms); return id; });
   t.mock.method(globalThis, "clearTimeout", id => jobs.delete(id));
   const gate = deferred();
@@ -384,4 +385,35 @@ test("actual retained-session code renders all formats through one native book a
   assert.equal(disposed, 1);
   assert.deepEqual(calls, ["pdf", "epub", "site"]);
   assert.equal(result.outputs.length, 3);
+});
+
+
+test("an exhausted aggregate budget refuses the next native export before starting it", async () => {
+  const f = fixture({ maxOutputBytes: 3 });
+  await assert.rejects(f.publisher.render(files()), code("OUTPUT_LIMIT"));
+  assert.equal(f.calls.length, 1);
+  assert.equal((await fixture({ maxOutputBytes: 3 }).publisher.render(files(), ["pdf"])).byteLength, 3);
+});
+
+test("synchronous input capture consumes the same deadline and can fail before a worker is created", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const f = fixture({ timeoutMs: 25, captureInput(files, options) {
+    now = 25; return capture(files, options);
+  } });
+  await assert.rejects(f.publisher.render(files()), code("EXPORT_TIMEOUT"));
+  assert.equal(f.clients.length, 0);
+  assert.equal(f.publisher.busy, false);
+});
+
+test("immediately fulfilled endpoint promises cannot bypass the shared deadline", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const f = fixture({ timeoutMs: 25, handler(kind, args) {
+    now += 13;
+    return Promise.resolve(receipt(args[1], kind === "render" ? 1 : 2));
+  } });
+  await assert.rejects(f.publisher.render(files()), code("EXPORT_TIMEOUT"));
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.clients[0].disposed, 1);
 });

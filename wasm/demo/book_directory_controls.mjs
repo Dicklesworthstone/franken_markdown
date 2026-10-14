@@ -1,15 +1,16 @@
-import { BookDirectoryError, createBookDirectorySession } from "./book_directory_session.mjs";
+import { BOOK_DIRECTORY_LIMITS, BookDirectoryError, createBookDirectorySession } from "./book_directory_session.mjs";
 
-/** Source-folder saves use the existing publisher's capture/checkpoint route.
+/** Source-folder saves capture source without applying publishing drafts.
  * This controller never opens a project, installs disk source, acquires images
  * or fonts, starts a renderer, or owns the connected source-project JSON file.
  */
 export function createBookDirectoryControls({ root, controls, collection, window }) {
-  if (![controls?.captureProject, controls?.checkpoint, collection?.subscribe].every(fn => typeof fn === "function")
+  if (![controls?.checkpoint, collection?.subscribe].every(fn => typeof fn === "function")
       || !Number.isSafeInteger(collection?.sourceProjectRevision))
     throw new TypeError("Source folders require a source host with project identity tracking.");
   const section = root.querySelector("#publish-title")?.parentElement;
-  if (!section || root.querySelector("#book-directory")) throw new Error("Missing or duplicate source-folder panel.");
+  const editor = root.querySelector("#chapter-source"), pathEditor = root.querySelector("#chapter-path");
+  if (!section || !editor || !pathEditor || root.querySelector("#book-directory")) throw new Error("Missing or duplicate source-folder panel.");
   const panel = root.createElement("div"); panel.id = "book-directory";
   panel.setAttribute("aria-labelledby", "book-directory-title");
   const make = (tag, id, text) => {
@@ -18,7 +19,7 @@ export function createBookDirectoryControls({ root, controls, collection, window
     panel.appendChild(node); return node;
   };
   make("h3", "title", "Connected source folder");
-  make("p", "help", "Write chapters and include-only sources back to their relative paths in a folder you choose. First import or author the sources in this book, then review the folder. Existing differing files are overwrite candidates, not automatic imports. Connecting never writes. Save lists every create/replace before approval. Only source bytes are saved: keep a source-project file for chapter order, roles and publishing settings, or a portable backup for images and fonts.");
+  make("p", "help", "Write chapters and include-only sources back to their relative paths in a folder you choose. First import or author the sources in this book, then review the folder. Existing differing files are overwrite candidates, not automatic imports. Connecting never writes. Save lists every create/replace before approval. Current editor text is included without applying publishing drafts, changing the source tree or starting a renderer. Untouched imported BOMs and line endings are preserved. Only source bytes are saved: keep a source-project file for chapter order, roles and publishing settings, or a portable backup for images and fonts.");
   const buttons = Object.fromEntries([["review", "Review / reconnect source folder"], ["save", "Save source files to folder"],
     ["disconnect", "Disconnect / stop folder access"], ["approve", "Approve reviewed folder"], ["decline", "Cancel review"]].map(([id, text]) => {
     const node = make("button", id, text); node.type = "button";
@@ -68,17 +69,37 @@ export function createBookDirectoryControls({ root, controls, collection, window
     ].join("\n");
     else receiptText.textContent = "No source-folder save receipt yet.";
   }
-  session = createBookDirectorySession({
-    read: () => ({ files: collection.files, stamp: JSON.stringify([collection.sourceProjectRevision, controls.checkpoint()]) }),
-    isBlocked: blocked, onState: refresh,
-  });
+  function readSources() {
+    const before = controls.checkpoint(), epoch = collection.sourceProjectRevision;
+    const original = collection.files, selected = controls.currentChapter;
+    if (!Array.isArray(original) || original.length > BOOK_DIRECTORY_LIMITS.files)
+      throw new BookDirectoryError("BOOK_LIMIT", "Too many source files for one source-folder save.");
+    const files = original.map(file => ({ path: file.path, source: file.source }));
+    if (files.length) {
+      if (!Number.isInteger(selected) || selected < 0 || selected >= files.length)
+        throw new BookDirectoryError("INVALID_SOURCE", "Choose a current source before saving its folder.");
+      const raw = editor.value, name = pathEditor.value, file = files[selected];
+      if (typeof raw !== "string" || typeof name !== "string" || typeof file.source !== "string")
+        throw new BookDirectoryError("INVALID_SOURCE", "The current source editor is not readable.");
+      // Displaying an imported CRLF/CR source in a textarea normalizes its view
+      // to LF. Do not mistake that view for an edit or alter the stored bytes.
+      // A real edit saves the current raw string, including undispatched input.
+      if (raw !== file.source && raw !== file.source.replace(/\r\n?/g, "\n")) file.source = raw;
+      file.path = name;
+    }
+    if (before !== controls.checkpoint() || epoch !== collection.sourceProjectRevision)
+      throw new BookDirectoryError("STALE_SOURCE", "The editor changed while capturing source files.");
+    return { files, stamp: JSON.stringify([epoch, before]) };
+  }
+  session = createBookDirectorySession({ read: readSources, isBlocked: blocked, onState: refresh });
   function admitted() {
     if (disposed || suspended) throw new BookDirectoryError("SESSION_DISPOSED", "Source-folder access is not active.");
     if (blocked() || session.state.busy) throw new BookDirectoryError("DIRECTORY_BUSY", "Finish importing, text composition or the current folder operation first.");
-    // Reuse normal source/project admission; do not capture textarea drafts by
-    // bypassing their host, and keep the picker inside the initiating gesture.
-    controls.captureProject();
-    if (blocked()) throw new BookDirectoryError("DIRECTORY_BUSY", "The source host became busy while capturing input.");
+    // Source saving is not project export: captureProject also applies setting
+    // drafts and can reject a valid manuscript because of unrelated metadata.
+    // The disk session admits our read-only source snapshot (all paths, Unicode
+    // and byte budgets) synchronously before calling a picker or permission API.
+    // It rechecks this same live editor capture after every asynchronous step.
   }
   function confirm(kind, value) {
     if (blocked()) return Promise.resolve(false);

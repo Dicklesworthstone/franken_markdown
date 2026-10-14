@@ -77,6 +77,7 @@ function fixture(t, { available = true, captureError = false } = {}) {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
   const controls = {
+    get currentChapter() { return active; },
     get sourceBusy() { return busy; },
     checkpoint: () => JSON.stringify([revision, active, el("chapter-source").value, el("chapter-path").value, el("title").value]),
     captureProject() {
@@ -126,10 +127,11 @@ test("an accessible source-folder panel is installed without I/O or permission r
   assert.equal(h.permissions, 0); assert.equal(h.captures, 0); assert.equal(h.writes, 0);
 });
 
-test("review captures ordinary editor input before picking and requires a separate connect approval", async t => {
+test("review snapshots raw editor input without applying it and requires a separate connect approval", async t => {
   const h = fixture(t); h.edit("uncaptured edit", false);
   const result = h.ui.bind(); await awaitingReview(h);
-  assert.deepEqual(h.calls.slice(0, 2), ["capture", "picker"]);
+  assert.deepEqual(h.calls, ["picker"]);
+  assert.equal(h.captures, 0); assert.equal(h.files[0].source, "\ufeff# A\r\n");
   assert.equal(h.ui.state.folder, null); assert.equal(h.writes, 0);
   assert.match(h.el("book-directory-review-list").textContent, /replace: a.md/);
   assert.match(h.el("book-directory-review-list").textContent, /unchanged: parts\/shared.txt/);
@@ -242,9 +244,11 @@ test("unsupported browsers retain an explicit fallback without enabling folder o
   await assert.rejects(h.ui.bind(), { code: "DIRECTORY_ACCESS_UNAVAILABLE" }); assert.equal(h.permissions, 0);
 });
 
-test("invalid ordinary capture prevents even the directory picker from opening", t => {
-  const h = fixture(t, { captureError: true });
-  assert.throws(() => h.ui.bind(), { code: "INVALID_PROJECT" }); assert.deepEqual(h.calls, ["capture"]);
+test("invalid project drafts do not block saving valid raw source or trigger project capture", async t => {
+  const h = fixture(t, { captureError: true }); h.edit("recover this raw source", false);
+  const before = h.files; await approve(h, () => h.ui.bind()); await approve(h, () => h.ui.save());
+  assert.equal(h.text("a.md"), "recover this raw source"); assert.equal(h.captures, 0);
+  assert.deepEqual(h.files, before); assert.deepEqual(h.calls, ["picker"]);
 });
 
 test("beforeunload warns for dirty folder sources but does not steal project-save keyboard shortcuts", async t => {

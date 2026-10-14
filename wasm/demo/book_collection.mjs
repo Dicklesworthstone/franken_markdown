@@ -66,9 +66,45 @@ function sourceFiles(value) {
     return { path, source, ...(role === "include" ? { role } : {}) };
   });
 }
+// Canonical, data-only fields already supported by the native book facade.
+// Deliberately excludes assets, include policy, CSS and metadata/page controls.
+export const BOOK_PUBLICATION_FIELDS = Object.freeze([
+  "typography", "baseFontSize", "headingScale", "tableFontSize", "tocDepth",
+  "fitToPages", "codeLineNumbers", "metadataEpochSeconds", "running", "htmlFontFormat",
+]);
+function settingRecord(value, keys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+    throw bookError("INVALID_OPTIONS", "Book settings must be a plain data object.");
+  const result = {};
+  for (const key of Reflect.ownKeys(value)) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (!keys.includes(key) || !field || !Object.hasOwn(field, "value"))
+      throw bookError("INVALID_OPTIONS", "Unsupported book setting or accessor; resources require separate authorization.");
+    result[key] = field.value;
+  }
+  return result;
+}
+const publicationFields = options => Object.fromEntries(BOOK_PUBLICATION_FIELDS
+  .filter(key => options[key] !== undefined).map(key => [key, options[key]]));
+/** Validate with the production book facade, without inspecting or copying any
+ * authorized resources. Running image destinations are references, not grants.
+ * A source-only restore can keep a reference until that image is reauthorized. */
+export function normalizeBookPublication(value = {}) {
+  const input = settingRecord(value, BOOK_PUBLICATION_FIELDS);
+  const normalized = prepareBookInput([{ path: "validation.md", source: "" }], input).options;
+  for (const band of [normalized.running?.header, normalized.running?.footer]) {
+    if (band?.image) {
+      bookPath(band.image.dest);
+      if (!/\.(png|jpe?g|svg)$/i.test(band.image.dest))
+        throw bookError("INVALID_IMAGE", "Running images must reference a book PNG, JPEG or SVG path.");
+    }
+  }
+  // The facade owns/freezes nested bands and images. Primitive defaults remain
+  // absent, preserving the legacy native ABI when no profile is requested.
+  return Object.freeze(publicationFields(normalized));
+}
 function settings(value = {}) {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw bookError("INVALID_OPTIONS", "Invalid book settings.");
   const defaults = {
     title: "My book",
     author: "",
@@ -79,12 +115,11 @@ function settings(value = {}) {
     toc: true,
     pageNumbers: true,
   };
-  if (Object.keys(value).some((key) => key !== "page" && !Object.hasOwn(defaults, key)))
-    throw bookError(
-      "INVALID_OPTIONS",
-      "Unsupported project settings; assets cannot be restored from a source project.",
-    );
-  const next = { ...defaults, ...value };
+  const input = settingRecord(value, [...Object.keys(defaults), "page", ...BOOK_PUBLICATION_FIELDS]);
+  const publication = normalizeBookPublication(publicationFields(input));
+  const next = { ...defaults, ...input };
+  for (const key of BOOK_PUBLICATION_FIELDS) delete next[key];
+  Object.assign(next, publication);
   for (const key of ["title", "author", "lang"]) bookTextBytes(next[key], 4096);
   if (!Number.isFinite(next.fontScale) || next.fontScale < 0.5 || next.fontScale > 3)
     throw bookError("INVALID_OPTIONS", "Font scale must be between 0.5 and 3.");
@@ -103,7 +138,7 @@ export function normalizeBookProject(project) {
     !project ||
     typeof project !== "object" ||
     Array.isArray(project) ||
-    ![1, 2, 3].includes(project.schemaVersion) ||
+    ![1, 2, 3, 4].includes(project.schemaVersion) ||
     Object.keys(project).some((key) => !["schemaVersion", "files", "options"].includes(key))
   ) {
     throw bookError("INVALID_PROJECT", "Unsupported source-project schema.");
@@ -117,6 +152,9 @@ export function normalizeBookProject(project) {
   ) {
     throw bookError("INVALID_PROJECT", "Source roles require project schema version 2.");
   }
+  if (project.schemaVersion < 4 && project.options &&
+      BOOK_PUBLICATION_FIELDS.some(key => Object.hasOwn(project.options, key)))
+    throw bookError("INVALID_PROJECT", "Publishing profiles require source-project schema version 4.");
   const options = settings(project.options);
   if (project.schemaVersion < 3 && options.page !== undefined)
     throw bookError("INVALID_PROJECT", "PDF page settings require source-project schema version 3.");
@@ -285,7 +323,8 @@ export function createBookCollection() {
       ...(role === "include" ? { role } : {}),
     }));
   const project = () => ({
-    schemaVersion: options.page !== undefined ? 3 : files.some((file) => file.role === "include") ? 2 : 1,
+    schemaVersion: BOOK_PUBLICATION_FIELDS.some(key => options[key] !== undefined) ? 4
+      : options.page !== undefined ? 3 : files.some((file) => file.role === "include") ? 2 : 1,
     files: sources(),
     options,
   });
@@ -429,6 +468,27 @@ export function createBookCollection() {
       const next = settings({ ...options, page });
       fence();
       if (JSON.stringify(next.page) === JSON.stringify(options.page)) return revision;
+      const installed = revision + 1;
+      options = next;
+      changed();
+      return installed;
+    },
+    /** Replace only the publishing profile as one revision. This never reads
+     * resource bytes or changes metadata, page geometry, source or ordering.
+     * Empty/undefined resets to native defaults without resetting paper size. */
+    setPublication(value, expectedRevision) {
+      const fence = () => {
+        alive();
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== revision)
+          throw bookError("STALE_SOURCE", "The book changed; its publishing profile was not replaced.");
+      };
+      fence();
+      const publication = normalizeBookPublication(value);
+      fence(); // Proxy introspection can reenter the host during admission.
+      if (JSON.stringify(publication) === JSON.stringify(publicationFields(options))) return revision;
+      const next = { ...options };
+      for (const key of BOOK_PUBLICATION_FIELDS) delete next[key];
+      Object.assign(next, publication);
       const installed = revision + 1;
       options = next;
       changed();

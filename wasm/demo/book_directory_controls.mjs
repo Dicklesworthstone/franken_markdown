@@ -1,8 +1,8 @@
 import { BOOK_DIRECTORY_LIMITS, BookDirectoryError, createBookDirectorySession } from "./book_directory_session.mjs";
 
 /** Source-folder saves capture source without applying publishing drafts.
- * This controller never opens a project, installs disk source, acquires images
- * or fonts, starts a renderer, or owns the connected source-project JSON file.
+ * Refresh uses the existing atomic source transaction, never project recovery.
+ * Neither path acquires resources, starts rendering, nor owns a project file.
  */
 export function createBookDirectoryControls({ root, controls, collection, window }) {
   if (![controls?.checkpoint, collection?.subscribe].every(fn => typeof fn === "function")
@@ -19,8 +19,8 @@ export function createBookDirectoryControls({ root, controls, collection, window
     panel.appendChild(node); return node;
   };
   make("h3", "title", "Connected source folder");
-  make("p", "help", "Write chapters and include-only sources back to their relative paths in a folder you choose. First import or author the sources in this book, then review the folder. Existing differing files are overwrite candidates, not automatic imports. Connecting never writes. Save lists every create/replace before approval. Current editor text is included without applying publishing drafts, changing the source tree or starting a renderer. Untouched imported BOMs and line endings are preserved. Only source bytes are saved: keep a source-project file for chapter order, roles and publishing settings, or a portable backup for images and fonts.");
-  const buttons = Object.fromEntries([["review", "Review / reconnect source folder"], ["save", "Save source files to folder"],
+  make("p", "help", "Write chapters and include-only sources back to their relative paths in a folder you choose. First import or author the sources in this book, then review the folder. Existing differing files are overwrite candidates, not automatic imports. Connecting never writes. Save lists every create/replace before approval. Saving includes current editor text without applying publishing drafts, changing the source tree or starting a renderer. Review external source changes to import disk-only edits while keeping local-only edits. Divergent edits stop the entire refresh; no within-file merge is attempted. Untouched imported BOMs and line endings are preserved. Only source bytes are saved: keep a source-project file for chapter order, roles and publishing settings, or a portable backup for images and fonts.");
+  const buttons = Object.fromEntries([["review", "Review / reconnect source folder"], ["save", "Save source files to folder"], ["refresh", "Review external source changes"],
     ["disconnect", "Disconnect / stop folder access"], ["approve", "Approve reviewed folder"], ["decline", "Cancel review"]].map(([id, text]) => {
     const node = make("button", id, text); node.type = "button";
     node.setAttribute("aria-describedby", "book-directory-help book-directory-status"); return [id, node];
@@ -51,12 +51,13 @@ export function createBookDirectoryControls({ root, controls, collection, window
     const disabled = blocked();
     buttons.review.disabled = disabled || !!value.busy || !available || !value.files;
     buttons.save.disabled = disabled || !value.canSave;
+    buttons.refresh.disabled = disabled || !value.canRefresh || typeof controls.applySources !== "function";
     buttons.disconnect.disabled = suspended || (!value.folder && !value.busy);
     for (const name of ["approve", "decline"]) buttons[name].hidden = !pending;
     buttons.approve.disabled = disabled || !pending;
     buttons.decline.disabled = !pending;
     status.textContent = pending
-      ? `${pending.kind === "bind" ? "Folder connection" : "Source-file save"} awaits approval. Review every listed create/replace; Cancel leaves disk content unchanged.`
+      ? `${pending.kind === "bind" ? "Folder connection" : pending.kind === "refresh" ? "External-source refresh" : "Source-file save"} awaits approval. ${pending.kind === "refresh" ? "Review every source action; Cancel leaves editor and disk unchanged." : "Review every listed create/replace; Cancel leaves disk content unchanged."}`
       : `${value.folder ?? "No connected folder"} — ${value.phase}${value.busy ? ` (${value.busy})` : ""}. ${value.message}`;
     if (!available) status.textContent += " Direct folder access is unavailable here; ordinary imports, project downloads and portable backups remain available.";
     if (value.phase === "needs-review") status.textContent += " Use Review / reconnect source folder to admit the current path set explicitly.";
@@ -104,24 +105,61 @@ export function createBookDirectoryControls({ root, controls, collection, window
   function confirm(kind, value) {
     if (blocked()) return Promise.resolve(false);
     if (pending) throw new BookDirectoryError("DIRECTORY_BUSY", "Another folder review is pending.");
-    reviewText.textContent = [
+    reviewText.textContent = kind === "refresh" ? refreshReview(value) : [
       `${kind === "bind" ? "Connect" : "Write to"} folder: ${value.folder}`,
       ...value.files.map(file => `${file.action}: ${file.path} (${file.bytes} outgoing UTF-8 bytes)`),
       kind === "bind" ? "Approval connects these exact paths without writing any file. A later Save asks again before writing."
         : "Approval writes every listed create/replace from the captured book. Unchanged files and all unlisted files are left alone. Multiple files are not committed atomically.",
       "Source files only: no project metadata, chapter order, roles, images, fonts or permissions are saved.",
     ].join("\n");
-    buttons.approve.textContent = kind === "bind" ? "Connect reviewed source paths" : "Write reviewed source files";
+    buttons.approve.textContent = kind === "bind" ? "Connect reviewed source paths" : kind === "refresh" ? "Apply reviewed disk-only changes" : "Write reviewed source files";
     return new Promise(resolve => {
       pending = { kind, resolve, focus: root.activeElement };
       refresh(); buttons.approve.focus?.();
+    });
+  }
+  function refreshReview(value) {
+    return [
+      `External source review: ${value.folder}; ${value.changedSources} disk-only changes, ${value.conflicts} conflicts.`,
+      ...value.files.map(file => `${file.action}: ${file.path} (editor ${file.editorBytes} bytes; disk ${file.diskBytes ?? "missing"})`),
+      "This is a per-file action review, not a text diff. No within-file merge is attempted.",
+      value.conflicts ? "Nothing can be applied while a file is missing or both versions differ. Resolve the source versions and review again."
+        : "Approval applies disk-only edits as one source transaction, keeps editor-only changes, and updates the comparison baseline. Disk files are never written.",
+      "Source order/roles, publishing settings and resource authority remain current. New or removed files require ordinary source import and folder review.",
+    ].join("\n");
+  }
+  function sourceStructure() {
+    const files = collection.files, index = controls.currentChapter, file = files[index];
+    const role = root.querySelector("#source-role");
+    if (file && (pathEditor.value !== file.path || (role && role.value !== (file.role ?? "chapter"))))
+      throw new BookDirectoryError("DIRECTORY_SOURCE_DRAFT", "Finish the current source path/role edit before importing external text.");
+    return files;
+  }
+  function refreshSources() {
+    admitted();
+    if (typeof controls.applySources !== "function")
+      throw new BookDirectoryError("DIRECTORY_REFRESH_UNAVAILABLE", "The source host does not support atomic source-only refresh.");
+    sourceStructure();
+    return session.refresh(value => confirm("refresh", value), (next, stamp) => {
+      const [epoch, checkpoint] = JSON.parse(stamp), files = sourceStructure();
+      if (epoch !== collection.sourceProjectRevision || checkpoint !== controls.checkpoint())
+        throw new BookDirectoryError("STALE_SOURCE", "The book changed before source refresh.");
+      if (files.length !== next.length || files.some((file, i) => file.path !== next[i].path))
+        throw new BookDirectoryError("DIRECTORY_SOURCE_DRAFT", "Source structure changed; no disk source was applied.");
+      // Keep every existing role and order. Local-only raw editor text from
+      // readSources is included in the same atomic transaction, not discarded
+      // by showChapter while another source's disk edit is being installed.
+      controls.applySources(next.map((file, i) => ({ ...files[i], source: file.source })), checkpoint);
+      return JSON.stringify([collection.sourceProjectRevision, controls.checkpoint()]);
     });
   }
   function bind() { admitted(); return session.bind(available ? () => window.showDirectoryPicker({ mode: "read" }) : null, value => confirm("bind", value)); }
   function save() { admitted(); return session.save(value => confirm("save", value)); }
   function detach() { if (!disposed) { finish(false); session.detach(); reviewText.textContent = "Folder review cancelled; no source was imported or replaced."; } }
   function invoke(work) {
-    const report = error => { if (!disposed && !suspended) { refresh(); status.textContent += ` ${error.code ?? "DIRECTORY_ERROR"}: ${error.message}`; } };
+    const report = error => { if (!disposed && !suspended) { refresh();
+      if (error.code === "DIRECTORY_SOURCE_CONFLICT" && error.review) reviewText.textContent = refreshReview(error.review);
+      status.textContent += ` ${error.code ?? "DIRECTORY_ERROR"}: ${error.message}`; } };
     try { Promise.resolve(work()).catch(report); } catch (error) { report(error); }
   }
   function on(node, type, listener) {
@@ -129,6 +167,7 @@ export function createBookDirectoryControls({ root, controls, collection, window
   }
   on(buttons.review, "click", () => invoke(bind));
   on(buttons.save, "click", () => invoke(save));
+  on(buttons.refresh, "click", () => invoke(refreshSources));
   on(buttons.disconnect, "click", detach);
   on(buttons.approve, "click", () => { if (!blocked()) finish(true, true); });
   on(buttons.decline, "click", () => finish(false, true));
@@ -162,7 +201,7 @@ export function createBookDirectoryControls({ root, controls, collection, window
     refresh();
   });
   refresh();
-  return Object.freeze({ bind, save, detach, get state() { return session.state; },
+  return Object.freeze({ bind, save, refresh: refreshSources, detach, get state() { return session.state; },
     suspend() { if (!disposed) { suspended = true; composing.clear(); detach(); refresh(); } },
     resume() { if (!disposed) { suspended = false; projectEpoch = collection.sourceProjectRevision; refresh(); } },
     dispose() {

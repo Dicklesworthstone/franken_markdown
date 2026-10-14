@@ -52,12 +52,20 @@ async function bootstrap(failFonts) {
   copyFileSync(join(wasm, "demo/book.js"), join(stage, "demo/book.js"));
   const configs = {}, events = {}, workers = [], calls = [], statuses = new Map();
   const collection = {}, controls = {};
+  let connected = null;
   const lifecycle = name => Object.fromEntries(["suspend", "resume", "dispose", "detach"].map(method => [method, () => calls.push(`${name}.${method}`)]));
   Object.assign(controls, lifecycle("controls"));
   const stubs = {
     createBookWorker() { const worker = { id: workers.length, ...lifecycle(`worker${workers.length}`) }; workers.push(worker); return worker; },
     createBookCollection() { return collection; },
     createBookControls(options) { configs.controls = options; return controls; },
+    // Like the real module: later workbench components receive a
+    // descriptor-preserving facade of the controls, not the controls object.
+    createBookFileControls(options) {
+      configs.createBookFileControls = options;
+      connected = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(options.controls)));
+      return { controls: connected, ...lifecycle("createBookFileControls") };
+    },
   };
   for (const match of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*["']([^"']+)["']/g)) {
     const names = match[1].split(",").map(x => x.trim()).filter(Boolean);
@@ -75,13 +83,17 @@ async function bootstrap(failFonts) {
   globalThis.document = { querySelector(id) { if (!statuses.has(id)) statuses.set(id, {}); return statuses.get(id); } };
   try { await import(pathToFileURL(join(stage, "demo/book.js"))); }
   finally { for (const [key, descriptor] of prior) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); } }
-  return { configs, events, workers, calls, statuses, collection, controls };
+  return { configs, events, workers, calls, statuses, collection, controls, connected };
 }
 
 test("publisher owns a separate font worker and forwards lifecycle before disposing its collection", async () => {
   const f = await bootstrap(false), fonts = f.configs.createBookFontControls;
   assert(fonts, "publisher never initializes font authoring");
-  assert.equal(fonts.collection, f.collection); assert.equal(fonts.controls, f.controls);
+  assert.equal(fonts.collection, f.collection);
+  // Font authoring gets the connected-files facade over the same controls.
+  assert.equal(f.configs.createBookFileControls.controls, f.controls);
+  assert(f.connected, "publisher never connects project files");
+  assert.equal(fonts.controls, f.connected);
   for (const key of ["controls", "createBookPdfControls", "createBookPreviewControls", "createBookInspectionControls", "createBookLinkControls"])
     assert.notEqual(fonts.worker, f.configs[key].worker, `font worker is shared with ${key}`);
   f.events.pagehide({ persisted: true });

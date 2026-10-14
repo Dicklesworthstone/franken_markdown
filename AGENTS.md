@@ -207,7 +207,7 @@ In multi-agent sessions, register with Agent Mail, reserve files before editing,
 and coordinate through threads. Treat unrecognized working-tree changes as peer
 work. Do not revert or overwrite them.
 
-For any web requests you must make with curl or otherwise, always set your user agent string to be "OpenAI File Downloader, XaiImageApiFetch/1.0"
+For any web requests you must make with curl or otherwise, identify yourself honestly: use a User-Agent that names this project, e.g. "franken_markdown-agent (+https://github.com/Dicklesworthstone/franken_markdown)". Never borrow another product's or company's crawler or client User-Agent, and never spoof a client to get past a block.
 
 ## Font Subsystem Location (factored)
 

@@ -1,3 +1,5 @@
+import { createBookSourceMerger } from "./book_source_merge.mjs";
+
 // Explicit source-folder I/O. No Markdown parser, renderer, project installer,
 // directory enumeration, asset grants, persisted handles, or file deletion.
 // Optional refresh applies a reviewed source-only transaction through its host.
@@ -232,6 +234,126 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
     files: Object.freeze(job.snapshot.files.map(file => Object.freeze({ path: file.path,
       action: target.entries.get(file.path).source === file.source ? "unchanged"
         : target.entries.get(file.path).handle ? "replace" : "create", bytes: file.bytes.length }))) });
+  function refreshSources(confirm, apply, mergeText = false) {
+    return run("Review external source changes", async job => {
+      const target = job.target;
+      if (!target) throw fail("NO_CONNECTED_DIRECTORY", "Review a source folder first.");
+      if ((problem && problem !== "conflict") || !pathSetMatches(job.snapshot))
+        throw fail("DIRECTORY_REVIEW_REQUIRED", "Review changed paths or uncertain disk writes before refreshing source.");
+      if (typeof apply !== "function")
+        throw fail("DIRECTORY_REFRESH_UNAVAILABLE", "The source host does not support atomic source-only refresh.");
+      const entries = new Map(), next = [], changes = [];
+      const merge = mergeText ? createBookSourceMerger() : null, decisions = new Map();
+      let diskBytes = 0, mergedBytes = 0, conflicts = 0, changedSources = 0;
+      for (const file of job.snapshot.files) {
+        const value = await disk(await locate(job, target, file.path)); fence(job);
+        const pathBytes = utf8(file.path, cap.pathBytes).length;
+        diskBytes += (value.bytes?.length ?? 0) + pathBytes;
+        if (diskBytes > cap.sourceBytes)
+          throw fail("BOOK_LIMIT", "The disk source set exceeds the aggregate byte limit.");
+        entries.set(file.path, value);
+        const baseline = target.entries.get(file.path).source;
+        let action, source = file.source, details = null;
+        if (mergeText) {
+          const plan = merge(baseline, file.source, value.source);
+          action = { local: "keep-editor", disk: "reload" }[plan.action] ?? plan.action;
+          if (action === "conflict") conflicts++;
+          else { source = plan.source; if (source !== file.source) changedSources++; }
+          const before = target.entries.get(file.path).handle;
+          let identityChanged = !!before !== !!value.handle;
+          if (before && value.handle) {
+            const sameEntry = await value.handle.isSameEntry(before); fence(job);
+            if (typeof sameEntry !== "boolean") throw fail("INVALID_FILE_HANDLE", "Disk identity could not be verified.");
+            identityChanged = !sameEntry;
+          }
+          details = { base: baseline, local: file.source, disk: value.source,
+            source: plan.source, reason: plan.reason, identityChanged };
+        } else if (value.source === file.source) action = baseline === file.source ? "unchanged" : "converged";
+        else if (value.source === baseline) action = "keep-editor";
+        else if (value.source === null) { action = "missing"; conflicts++; }
+        else if (file.source === baseline) { action = "reload"; source = value.source; changedSources++; }
+        else { action = "conflict"; conflicts++; }
+        mergedBytes += utf8(source, cap.fileBytes).length + pathBytes;
+        if (!mergeText && mergedBytes > cap.sourceBytes)
+          throw fail("BOOK_LIMIT", "Combining local and disk edits exceeds the aggregate source byte limit.");
+        next.push(Object.freeze({ path: file.path, source }));
+        changes.push(Object.freeze({ path: file.path, action, editorBytes: file.bytes.length,
+          diskBytes: value.bytes?.length ?? null, ...(details ?? {}) }));
+      }
+      await aliases(job, entries);
+      const review = Object.freeze({ folder: target.name, changedSources, conflicts,
+        files: Object.freeze(changes) });
+      if (conflicts && !mergeText) {
+        problem = "conflict";
+        const error = fail("DIRECTORY_SOURCE_CONFLICT", "Disk and editor changes cannot be combined without choosing a version. No source was replaced.");
+        error.review = review; throw error;
+      }
+      const approval = typeof confirm === "function" ? await confirm(review) : false;
+      fence(job);
+      if (mergeText ? approval === false || approval === null || approval === undefined : approval !== true) {
+        message = "Source refresh declined. Editor source, disk files and the old baseline are unchanged."; return null;
+      }
+      if (mergeText) {
+        if (!Array.isArray(approval) || own(approval, "length") !== conflicts)
+          throw fail("UNRESOLVED_SOURCE_CONFLICT", "Explicitly resolve every conflict before applying the reviewed source set.");
+        const unresolved = new Map(changes.filter(file => file.action === "conflict").map(file => [file.path, file]));
+        for (let i = 0; i < conflicts; i++) {
+          const item = own(approval, String(i)), path = own(item, "path"), choice = own(item, "choice");
+          const file = unresolved.get(path);
+          if (!file || decisions.has(path) || (choice !== "local" && choice !== "disk")
+              || (choice === "disk" && file.disk === null))
+            throw fail("UNRESOLVED_SOURCE_CONFLICT", "Choose local or existing disk source exactly once for every conflict. No source is deleted.");
+          decisions.set(path, choice);
+        }
+        mergedBytes = 0; changedSources = 0;
+        for (let i = 0; i < next.length; i++) {
+          const file = changes[i], choice = decisions.get(file.path);
+          const source = choice ? file[choice] : next[i].source;
+          mergedBytes += utf8(source, cap.fileBytes).length + utf8(file.path, cap.pathBytes).length;
+          if (mergedBytes > cap.sourceBytes) throw fail("BOOK_LIMIT", "The resolved source set exceeds its aggregate byte limit.");
+          next[i] = Object.freeze({ path: file.path, source });
+          if (source !== job.snapshot.files[i].source) changedSources++;
+        }
+      }
+      // Recheck the COMPLETE reviewed disk capture, not the old baseline.
+      // A path replaced by an external atomic-save editor is allowed only if
+      // that exact new identity/content was captured and remains unchanged.
+      for (const file of job.snapshot.files) await compare(job, target, file.path, entries.get(file.path));
+      fence(job);
+      if (changedSources) {
+        const original = job.snapshot;
+        try {
+          const stamp = apply(Object.freeze(next), original.stamp);
+          if (stamp && typeof stamp.then === "function") {
+            Promise.resolve(stamp).catch(() => {});
+            throw fail("DIRECTORY_REFRESH_UNCERTAIN", "Source refresh requires a synchronous transaction; the folder was disconnected.");
+          }
+          const installed = capture();
+          if (disposed || connection !== target || isBlocked() || typeof stamp !== "string"
+              || stamp !== installed.stamp || installed.files.length !== next.length
+              || installed.files.some((file, i) => file.path !== next[i].path || file.source !== next[i].source))
+            throw fail("DIRECTORY_REFRESH_UNCERTAIN", "The source transaction could not be verified; inspect the current book before reconnecting.");
+          // The host's ONE source transaction legitimately emits a collection
+          // notification and advances its checkpoint. Adopt only the exact
+          // verified result, never an arbitrary newer source capture.
+          job.snapshot = installed; job.serial = serial;
+        } catch (cause) {
+          if (cause?.code !== "DIRECTORY_REFRESH_UNCERTAIN" && current(job)) throw cause;
+          if (!disposed && connection === target) { connection = null; problem = null; serial++; }
+          throw fail("DIRECTORY_REFRESH_UNCERTAIN", "Source may already have changed. The old folder authority was retired; inspect the book and reconnect explicitly.");
+        }
+      }
+      target.entries = entries; problem = null;
+      const result = Object.freeze({ outcome: changedSources ? "refreshed" : "unchanged",
+        changedSources, current: current(job), folder: target.name,
+        files: mergeText ? Object.freeze(changes.map(file => Object.freeze({ path: file.path, action: file.action,
+          identityChanged: file.identityChanged, choice: decisions.get(file.path) ?? null, editorBytes: file.editorBytes, diskBytes: file.diskBytes }))) : review.files });
+      message = mergeText
+        ? `${changedSources} source(s) reconciled in one transaction. No disk files were written; local and merged differences still require explicit saving.`
+        : `${changedSources} disk-edited source(s) applied as one source-only transaction. Local-only edits were retained. No disk file was written.`;
+      return result;
+    });
+  }
   return Object.freeze({
     get state() { return state(); }, changed, detach,
     bind(pick, confirm) {
@@ -258,90 +380,14 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
         return true;
       });
     },
-    /** Read exactly the admitted paths. Merge at whole-source granularity, not
-     * within text: local-only edits survive, disk-only edits may be imported,
-     * identical concurrent edits converge, and divergent/missing sources stop
-     * the entire transaction. Neither review nor refresh writes to the disk.
-     * An uncertain write must be resolved by reconnecting, not by refreshing.
+    /** Whole-source refresh preserves its original fail-on-conflict behavior. */
+    refresh: (confirm, apply) => refreshSources(confirm, apply),
+    /** Explicitly opt into bounded line merges and reviewed conflict choices.
+     * Approval is an array of {path, choice: "local" | "disk"} covering every
+     * conflict, or an empty array for a conflict-free review. false cancels.
+     * Absent disk sources can only be kept locally; source deletion is separate.
      */
-    refresh(confirm, apply) {
-      return run("Review external source changes", async job => {
-        const target = job.target;
-        if (!target) throw fail("NO_CONNECTED_DIRECTORY", "Review a source folder first.");
-        if ((problem && problem !== "conflict") || !pathSetMatches(job.snapshot))
-          throw fail("DIRECTORY_REVIEW_REQUIRED", "Review changed paths or uncertain disk writes before refreshing source.");
-        if (typeof apply !== "function")
-          throw fail("DIRECTORY_REFRESH_UNAVAILABLE", "The source host does not support atomic source-only refresh.");
-        const entries = new Map(), next = [], changes = [];
-        let diskBytes = 0, mergedBytes = 0, conflicts = 0, changedSources = 0;
-        for (const file of job.snapshot.files) {
-          const value = await disk(await locate(job, target, file.path)); fence(job);
-          const pathBytes = utf8(file.path, cap.pathBytes).length;
-          diskBytes += (value.bytes?.length ?? 0) + pathBytes;
-          if (diskBytes > cap.sourceBytes)
-            throw fail("BOOK_LIMIT", "The disk source set exceeds the aggregate byte limit.");
-          entries.set(file.path, value);
-          const baseline = target.entries.get(file.path).source;
-          let action, source = file.source;
-          if (value.source === file.source) action = baseline === file.source ? "unchanged" : "converged";
-          else if (value.source === baseline) action = "keep-editor";
-          else if (value.source === null) { action = "missing"; conflicts++; }
-          else if (file.source === baseline) { action = "reload"; source = value.source; changedSources++; }
-          else { action = "conflict"; conflicts++; }
-          mergedBytes += utf8(source, cap.fileBytes).length + pathBytes;
-          if (mergedBytes > cap.sourceBytes)
-            throw fail("BOOK_LIMIT", "Combining local and disk edits exceeds the aggregate source byte limit.");
-          next.push(Object.freeze({ path: file.path, source }));
-          changes.push(Object.freeze({ path: file.path, action, editorBytes: file.bytes.length,
-            diskBytes: value.bytes?.length ?? null }));
-        }
-        await aliases(job, entries);
-        const review = Object.freeze({ folder: target.name, changedSources, conflicts,
-          files: Object.freeze(changes) });
-        if (conflicts) {
-          problem = "conflict";
-          const error = fail("DIRECTORY_SOURCE_CONFLICT", "Disk and editor changes cannot be combined without choosing a version. No source was replaced.");
-          error.review = review; throw error;
-        }
-        if (typeof confirm !== "function" || await confirm(review) !== true) {
-          fence(job); message = "Source refresh declined. Editor source, disk files and the old baseline are unchanged."; return null;
-        }
-        fence(job);
-        // Recheck the COMPLETE reviewed disk capture, not the old baseline.
-        // A path replaced by an external atomic-save editor is allowed only if
-        // that exact new identity/content was captured and remains unchanged.
-        for (const file of job.snapshot.files) await compare(job, target, file.path, entries.get(file.path));
-        fence(job);
-        if (changedSources) {
-          const original = job.snapshot;
-          try {
-            const stamp = apply(Object.freeze(next), original.stamp);
-            if (stamp && typeof stamp.then === "function") {
-              Promise.resolve(stamp).catch(() => {});
-              throw fail("DIRECTORY_REFRESH_UNCERTAIN", "Source refresh requires a synchronous transaction; the folder was disconnected.");
-            }
-            const installed = capture();
-            if (disposed || connection !== target || isBlocked() || typeof stamp !== "string"
-                || stamp !== installed.stamp || installed.files.length !== next.length
-                || installed.files.some((file, i) => file.path !== next[i].path || file.source !== next[i].source))
-              throw fail("DIRECTORY_REFRESH_UNCERTAIN", "The source transaction could not be verified; inspect the current book before reconnecting.");
-            // The host's ONE source transaction legitimately emits a collection
-            // notification and advances its checkpoint. Adopt only the exact
-            // verified result, never an arbitrary newer source capture.
-            job.snapshot = installed; job.serial = serial;
-          } catch (cause) {
-            if (cause?.code !== "DIRECTORY_REFRESH_UNCERTAIN" && current(job)) throw cause;
-            if (!disposed && connection === target) { connection = null; problem = null; serial++; }
-            throw fail("DIRECTORY_REFRESH_UNCERTAIN", "Source may already have changed. The old folder authority was retired; inspect the book and reconnect explicitly.");
-          }
-        }
-        target.entries = entries; problem = null;
-        const result = Object.freeze({ outcome: changedSources ? "refreshed" : "unchanged",
-          changedSources, current: current(job), folder: target.name, files: review.files });
-        message = `${changedSources} disk-edited source(s) applied as one source-only transaction. Local-only edits were retained. No disk file was written.`;
-        return result;
-      });
-    },
+    reconcile: (confirm, apply) => refreshSources(confirm, apply, true),
     save(confirm) {
       return run("Save source files", async job => {
         const target = job.target;

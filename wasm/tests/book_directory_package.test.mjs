@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const root = new URL("../", import.meta.url);
-const modules = ["book_directory_session.mjs", "book_directory_controls.mjs"];
+const modules = ["book_directory_session.mjs", "book_source_merge.mjs", "book_directory_controls.mjs"];
 
 test("both assemblers and the manifest ship the complete folder runtime and its guide", async () => {
   const manifest = JSON.parse(await readFile(new URL("package.json", root), "utf8"));

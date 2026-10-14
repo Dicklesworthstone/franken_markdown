@@ -250,59 +250,155 @@ pub fn book_pdf_document(book: &Book) -> Document {
     merge::assemble(book)
 }
 
-/// Inject the shared sidebar into a rendered chapter page. Deterministic
-/// string surgery on OUR OWN emitter output: the nav goes right after
-/// `<body …>`; its CSS appends to the document's own `</style>` boundary.
-/// The emitter shape is pinned by tests/smoke_test.rs, so drift fails loudly.
+/// Collect body headings with the same collision-safe anchors as HTML search.
+/// Includes headings inside lists and quotes; footnote bodies are not sections
+/// of the chapter body. This does not mutate the source document or invent a
+/// second slug algorithm. The existing tuple-only [`chapter_headings`] API is
+/// retained for callers that do not need destinations.
+#[must_use]
+pub fn chapter_outline(doc: &Document) -> Vec<BookHeading> {
+    crate::search_index::build_search_index(doc)
+        .entries
+        .into_iter()
+        .filter(|entry| entry.kind == crate::search_index::EntryKind::Heading)
+        .map(|entry| BookHeading {
+            level: entry.level.unwrap_or(1),
+            text: entry.text,
+            anchor: entry.anchor,
+        })
+        .collect()
+}
+
+/// Inject chapter navigation, an expandable current-chapter outline, and
+/// previous/next reading-order links into the renderer's HTML output. The
+/// selected chapter is marked with `aria-current="page"`; unknown pages get
+/// only the shared chapter list. No JavaScript or network access is required.
+///
+/// Only the current chapter's body is inspected for sections. Navigation CSS
+/// stays inside the existing head, even when raw body HTML contains styles.
+/// Fragments without a head retain functional, unstyled navigation. Missing
+/// renderer `<main>` wrappers retain the existing explicit diagnostic comment.
 #[must_use]
 pub fn inject_book_nav(rendered: &str, book: &Book, current_page: &str) -> String {
+    let selected = book
+        .chapters
+        .iter()
+        .position(|chapter| chapter.out_name == current_page);
     let mut nav = String::from("<nav class=\"fmd-book-nav\" aria-label=\"Book contents\">\n<ul>\n");
-    for chapter in &book.chapters {
-        let current = if chapter.out_name == current_page {
-            " class=\"current\""
+    for (index, chapter) in book.chapters.iter().enumerate() {
+        let (current, aria) = if Some(index) == selected {
+            (" class=\"current\"", " aria-current=\"page\"")
         } else {
-            ""
+            ("", "")
         };
         nav.push_str(&format!(
-            "<li{current}><a href=\"{}\">{}</a></li>\n",
+            "<li{current}><a href=\"{}\"{aria}>{}</a></li>\n",
             escape_attr(&chapter.out_name),
             escape_text(&chapter.title),
         ));
     }
-    nav.push_str("</ul>\n</nav>\n");
-    // The nav CSS goes into the document's existing <head> <style> block (just
-    // before the closing </style>) so the page stays spec-valid HTML; the nav
-    // element itself goes immediately before <main> in the body.
-    let nav_css = "\n.fmd-book-nav{border:1px solid var(--fmd-border, #d1d9e0);border-radius:8px;padding:0.75rem 1rem;margin-bottom:1.25rem;font-size:0.9em}\n.fmd-book-nav ul{margin:0;padding-left:1.1rem}\n.fmd-book-nav .current{font-weight:700}\n.fmd-book-nav .current>a{text-decoration:none}\n";
-    let mut out = String::with_capacity(rendered.len() + nav.len() + nav_css.len());
-    let main_pos = rendered.find("<main class=\"fmd\">");
-    let style_end = rendered.rfind("</style>");
-    match (main_pos, style_end) {
-        (Some(main), Some(style)) if style < main => {
-            // Insert CSS into the head's style block, nav before <main>.
-            out.push_str(&rendered[..style]);
-            out.push_str(nav_css);
-            out.push_str(&rendered[style..main]);
-            out.push_str(&nav);
-            out.push_str(&rendered[main..]);
-        }
-        (Some(main), _) => {
-            // No style block found (custom CSS mode?): inline the style with
-            // the nav in the body — invalid but visible; log via comment.
-            out.push_str(&rendered[..main]);
-            out.push_str(&nav);
-            out.push_str("<style>");
-            out.push_str(nav_css);
-            out.push_str("</style>");
-            out.push_str(&rendered[main..]);
-        }
-        _ => {
-            // Emitter drift: fail loudly rather than silently dropping the nav.
-            out.push_str(rendered);
-            out.push_str("<!-- fmd-book-nav: injection point not found -->\n");
+    nav.push_str("</ul>\n");
+    if let Some(index) = selected {
+        let headings = chapter_outline(&book.chapters[index].doc);
+        push_book_outline(&headings, &mut nav);
+        nav.push_str(&format!(
+            "<p class=\"fmd-book-position\">Chapter {} of {}</p>\n",
+            index + 1,
+            book.chapters.len(),
+        ));
+        if book.chapters.len() > 1 {
+            nav.push_str("<div class=\"fmd-book-sequence\">\n");
+            if let Some(previous) = index.checked_sub(1).and_then(|i| book.chapters.get(i)) {
+                push_book_neighbor(previous, "prev", "Previous chapter", &mut nav);
+            }
+            if let Some(next) = book.chapters.get(index + 1) {
+                push_book_neighbor(next, "next", "Next chapter", &mut nav);
+            }
+            nav.push_str("</div>\n");
         }
     }
+    nav.push_str("</nav>\n");
+
+    let mut out = String::with_capacity(rendered.len() + nav.len() + BOOK_NAV_CSS.len() + 32);
+    let Some(main) = rendered.find("<main class=\"fmd\">") else {
+        out.push_str(rendered);
+        out.push_str("<!-- fmd-book-nav: injection point not found -->\n");
+        return out;
+    };
+    let prefix = &rendered[..main];
+    if let Some(head) = prefix.find("</head>") {
+        if let Some(style) = prefix[..head].rfind("</style>") {
+            out.push_str(&prefix[..style]);
+            out.push_str(BOOK_NAV_CSS);
+            out.push_str(&prefix[style..]);
+        } else {
+            out.push_str(&prefix[..head]);
+            out.push_str("<style>");
+            out.push_str(BOOK_NAV_CSS);
+            out.push_str("</style>\n");
+            out.push_str(&prefix[head..]);
+        }
+    } else {
+        out.push_str(prefix);
+    }
+    out.push_str(&nav);
+    out.push_str(&rendered[main..]);
     out
+}
+
+const BOOK_NAV_CSS: &str = "\n.fmd-book-nav{border:1px solid var(--fmd-border, #d1d9e0);border-radius:8px;padding:0.75rem 1rem;margin-bottom:1.25rem;font-size:0.9em;overflow-wrap:anywhere}\n.fmd-book-nav ul,.fmd-book-outline ol{margin:0;padding-left:1.1rem}\n.fmd-book-nav .current{font-weight:700}\n.fmd-book-nav .current>a{text-decoration:none}\n.fmd-book-outline{margin-top:0.75rem}\n.fmd-book-outline summary{cursor:pointer;font-weight:600;margin-bottom:0.35rem}\n.fmd-book-position{margin:0.75rem 0 0.35rem;font-size:0.9em}\n.fmd-book-sequence{display:flex;flex-wrap:wrap;gap:0.5rem 1rem;justify-content:space-between}\n.fmd-book-sequence a{max-width:100%}\n.fmd-book-sequence a[rel=next]{margin-left:auto;text-align:right}\n";
+
+fn push_book_neighbor(chapter: &BookChapter, rel: &str, label: &str, out: &mut String) {
+    out.push_str(&format!(
+        "<a rel=\"{rel}\" href=\"{}\">{label}: {}</a>\n",
+        escape_attr(&chapter.out_name),
+        escape_text(&chapter.title),
+    ));
+}
+
+fn push_book_outline(headings: &[BookHeading], out: &mut String) {
+    if headings.is_empty() {
+        return;
+    }
+    out.push_str("<details class=\"fmd-book-outline\" open>\n<summary>On this page</summary>\n<ol>\n");
+    // Track actual ancestors, not numeric depth. A jump from h2 to h5 opens
+    // one child list, never three empty list items. Its following h4 is a
+    // sibling under h2. Clamp host-built levels to bound the stack to six.
+    let mut levels: Vec<u8> = Vec::with_capacity(6);
+    for heading in headings {
+        let level = heading.level.clamp(1, 6);
+        if let Some(&previous) = levels.last() {
+            if level > previous {
+                out.push_str("\n<ol>\n");
+                levels.push(level);
+            } else {
+                while levels.len() > 1 && level <= levels[levels.len() - 2] {
+                    out.push_str("</li>\n</ol>\n");
+                    levels.pop();
+                }
+                out.push_str("</li>\n");
+                if let Some(current) = levels.last_mut() {
+                    *current = level;
+                }
+            }
+        } else {
+            levels.push(level);
+        }
+        let label = if heading.text.is_empty() {
+            "Untitled section"
+        } else {
+            &heading.text
+        };
+        out.push_str(&format!(
+            "<li><a href=\"#{}\">{}</a>",
+            escape_attr(&heading.anchor),
+            escape_text(label),
+        ));
+    }
+    for _ in levels {
+        out.push_str("</li>\n</ol>\n");
+    }
+    out.push_str("</details>\n");
 }
 
 /// Public for the CLI's index redirect.
@@ -339,4 +435,219 @@ fn escape_text(s: &str) -> String {
 pub fn resolve_book_destination(source_path: &str, destination: &str) -> Option<(String, String)> {
     let source = paths::source_path(source_path)?;
     paths::destination(&source, destination)
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use crate::{HtmlOptions, render_html_document};
+
+    const PAGE: &str =
+        "<!doctype html><html><head><style>body{margin:0}</style></head><body><main class=\"fmd\">Body</main></body></html>";
+
+    fn fixture() -> Book {
+        build_book(&[
+            BookInput {
+                path: "zeta.md".into(),
+                source: "# First\n\n## First section\n".into(),
+            },
+            BookInput {
+                path: "alpha.md".into(),
+                source: "# Middle\n\n## Middle section\n".into(),
+            },
+            BookInput {
+                path: "guide/last.md".into(),
+                source: "# Last\n\n## Last section\n".into(),
+            },
+        ])
+        .expect("valid book")
+    }
+
+    #[test]
+    fn neighbors_follow_reading_order_not_path_sorting() {
+        let book = fixture();
+        let original = book.chapters[1].doc.clone();
+        let html = inject_book_nav(PAGE, &book, "alpha.html");
+        assert!(html.contains(
+            "<li class=\"current\"><a href=\"alpha.html\" aria-current=\"page\">Middle</a>"
+        ));
+        assert_eq!(html.matches("aria-current=\"page\"").count(), 1);
+        assert!(html.contains("Chapter 2 of 3"));
+        assert!(html.contains("<a rel=\"prev\" href=\"zeta.html\">Previous chapter: First</a>"));
+        assert!(html.contains("<a rel=\"next\" href=\"guide__last.html\">Next chapter: Last</a>"));
+        assert!(html.contains("href=\"#middle-section\""));
+        assert!(!html.contains("href=\"#first-section\""));
+        assert!(!html.contains("href=\"#last-section\""));
+        assert_eq!(book.chapters[1].doc, original);
+        assert_eq!(html, inject_book_nav(PAGE, &book, "alpha.html"));
+    }
+
+    #[test]
+    fn first_and_last_chapters_never_wrap_or_link_outside_the_book() {
+        let book = fixture();
+        let first = inject_book_nav(PAGE, &book, "zeta.html");
+        assert!(!first.contains("rel=\"prev\""));
+        assert!(first.contains("rel=\"next\" href=\"alpha.html\""));
+        assert!(first.contains("Chapter 1 of 3"));
+        let last = inject_book_nav(PAGE, &book, "guide__last.html");
+        assert!(last.contains("rel=\"prev\" href=\"alpha.html\""));
+        assert!(!last.contains("rel=\"next\""));
+        assert!(last.contains("Chapter 3 of 3"));
+    }
+
+    #[test]
+    fn unknown_empty_and_single_chapter_books_have_no_phantom_neighbors() {
+        let mut book = fixture();
+        let unknown = inject_book_nav(PAGE, &book, "missing.html");
+        assert!(!unknown.contains("aria-current="));
+        assert!(!unknown.contains("<details"));
+        assert!(!unknown.contains("rel=\"prev\""));
+        assert!(!unknown.contains("rel=\"next\""));
+        assert!(!unknown.contains("Chapter 1 of"));
+        book.chapters.truncate(1);
+        let single = inject_book_nav(PAGE, &book, "zeta.html");
+        assert!(single.contains("Chapter 1 of 1"));
+        assert!(!single.contains("rel=\"prev\""));
+        assert!(!single.contains("rel=\"next\""));
+        book.chapters.clear();
+        let empty = inject_book_nav(PAGE, &book, "zeta.html");
+        assert!(!empty.contains("<a "));
+        assert!(!empty.contains("<details"));
+    }
+
+    #[test]
+    fn outline_targets_real_duplicate_and_nested_heading_ids() {
+        let source = "# Repeat\n\n# Repeat-2\n\n# Repeat\n\n> ## Nested\n\n# 中\n\n```md\n# Not a heading\n```\n";
+        let book = build_book(&[BookInput {
+            path: "chapter.md".into(),
+            source: source.into(),
+        }])
+        .expect("valid chapter");
+        let chapter = &book.chapters[0];
+        let headings = chapter_outline(&chapter.doc);
+        assert_eq!(
+            headings
+                .iter()
+                .map(|entry| entry.anchor.as_str())
+                .collect::<Vec<_>>(),
+            ["repeat", "repeat-2", "repeat-3", "nested", "section"]
+        );
+        let rendered = render_html_document(
+            &chapter.doc,
+            &HtmlOptions {
+                custom_css: Some(String::new()),
+                ..HtmlOptions::default()
+            },
+        )
+        .expect("HTML renderer");
+        let with_nav = inject_book_nav(&rendered, &book, &chapter.out_name);
+        for heading in headings {
+            assert!(rendered.contains(&format!("id=\"{}\"", escape_attr(&heading.anchor))));
+            assert!(with_nav.contains(&format!("href=\"#{}\"", escape_attr(&heading.anchor))));
+        }
+        assert!(!with_nav.contains("href=\"#not-a-heading\""));
+    }
+
+    #[test]
+    fn skipped_levels_form_real_ancestor_lists_without_empty_items() {
+        let headings: Vec<_> = [3, 5, 4, 2, 2, 6, 1]
+            .into_iter()
+            .enumerate()
+            .map(|(index, level)| BookHeading {
+                level,
+                text: index.to_string(),
+                anchor: format!("s{index}"),
+            })
+            .collect();
+        let mut out = String::new();
+        push_book_outline(&headings, &mut out);
+        assert_eq!(
+            out,
+            concat!(
+                "<details class=\"fmd-book-outline\" open>\n<summary>On this page</summary>\n<ol>\n",
+                "<li><a href=\"#s0\">0</a>\n<ol>\n",
+                "<li><a href=\"#s1\">1</a></li>\n",
+                "<li><a href=\"#s2\">2</a></li>\n</ol>\n</li>\n",
+                "<li><a href=\"#s3\">3</a></li>\n",
+                "<li><a href=\"#s4\">4</a>\n<ol>\n",
+                "<li><a href=\"#s5\">5</a></li>\n</ol>\n</li>\n",
+                "<li><a href=\"#s6\">6</a></li>\n</ol>\n</details>\n",
+            )
+        );
+    }
+
+    #[test]
+    fn hostile_labels_and_anchors_cannot_become_navigation_markup() {
+        let mut book = fixture();
+        book.chapters[0].title = "<script>alert(1)</script> & Previous".into();
+        let html = inject_book_nav(PAGE, &book, "alpha.html");
+        assert!(!html.contains("<script>"));
+        assert!(html.contains(
+            "Previous chapter: &lt;script&gt;alert(1)&lt;/script&gt; &amp; Previous"
+        ));
+        let mut out = String::new();
+        push_book_outline(
+            &[BookHeading {
+                level: 255,
+                text: "<img src=x> &".into(),
+                anchor: "\" data-x=\"bad&".into(),
+            }],
+            &mut out,
+        );
+        assert!(out.contains("href=\"#&quot; data-x=&quot;bad&amp;\""));
+        assert!(out.contains("&lt;img src=x&gt; &amp;"));
+        assert_eq!(out.matches("<ol>").count(), 1);
+    }
+
+    #[test]
+    fn headings_without_visible_text_still_have_named_links() {
+        let mut out = String::new();
+        push_book_outline(
+            &[BookHeading {
+                level: 0,
+                text: String::new(),
+                anchor: "section".into(),
+            }],
+            &mut out,
+        );
+        assert!(out.contains("<a href=\"#section\">Untitled section</a>"));
+        out.clear();
+        push_book_outline(&[], &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn navigation_styles_stay_in_the_head_when_body_html_has_styles() {
+        let source = "<html><head><style>head{}</style></head><body><main class=\"fmd\"><style>body{}</style>Keep me</main></body></html>";
+        let html = inject_book_nav(source, &fixture(), "alpha.html");
+        assert!(html.find(BOOK_NAV_CSS).unwrap() < html.find("</head>").unwrap());
+        assert_eq!(html.matches("<style>").count(), 2);
+        let main = source.find("<main").unwrap();
+        assert!(html.ends_with(&source[main..]));
+    }
+
+    #[test]
+    fn stylesheet_free_pages_get_head_css_but_fragments_do_not_get_body_styles() {
+        let book = fixture();
+        let page = "<html><head><title>T</title></head><body><main class=\"fmd\">Body</main></body></html>";
+        let html = inject_book_nav(page, &book, "alpha.html");
+        assert!(html.find("<style>").unwrap() < html.find("</head>").unwrap());
+        assert_eq!(html.matches("<style>").count(), 1);
+        let fragment = "<main class=\"fmd\">Body</main>";
+        let html = inject_book_nav(fragment, &book, "alpha.html");
+        assert!(html.contains("rel=\"next\""));
+        assert!(!html.contains("<style>"));
+        assert!(html.ends_with(fragment));
+    }
+
+    #[test]
+    fn missing_main_keeps_the_original_and_the_existing_diagnostic() {
+        let source = "<html><head></head><body>Unrecognized emitter</body></html>";
+        assert_eq!(
+            inject_book_nav(source, &fixture(), "alpha.html"),
+            format!("{source}<!-- fmd-book-nav: injection point not found -->\n")
+        );
+    }
 }

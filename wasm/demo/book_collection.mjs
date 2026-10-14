@@ -66,6 +66,52 @@ function sourceFiles(value) {
     return { path, source, ...(role === "include" ? { role } : {}) };
   });
 }
+// Source-tree replay restores editor drafts, not publication-ready projects.
+// Like edit(), it keeps incomplete/duplicate paths and exact UTF-16 text. The
+// existing project/snapshot admission still rejects invalid publication input.
+// No resource, configuration, filesystem or parser authority enters this API.
+function sourceTree(value) {
+  const invalid = () => bookError("INVALID_SOURCE_TREE", "Use owned path/source records with optional chapter or include roles.");
+  const data = (object, key) => {
+    const field = Object.getOwnPropertyDescriptor(object, key);
+    if (!field || !Object.hasOwn(field, "value")) throw invalid();
+    return field.value;
+  };
+  if (!Array.isArray(value)) throw invalid();
+  const count = data(value, "length");
+  if (count > L.chapters + L.includeSources)
+    throw bookError("BOOK_LIMIT", "Use at most 128 chapters and 128 include-only sources.");
+  const encoder = new TextEncoder();
+  const size = (text, limit) => {
+    if (typeof text !== "string") throw invalid();
+    // UTF-8 cannot be shorter than its UTF-16 code-unit count. Bound allocation
+    // first. Replacement encoding is only accounting for unfinished surrogates;
+    // the original string, including incomplete composition, is never rewritten.
+    if (text.length > limit) throw bookError("BOOK_LIMIT", "Source-tree text exceeds its byte limit.");
+    const bytes = encoder.encode(text).length;
+    if (bytes > limit) throw bookError("BOOK_LIMIT", "Source-tree text exceeds its byte limit.");
+    return bytes;
+  };
+  let total = 0, chapters = 0, includes = 0;
+  const next = [];
+  for (let i = 0; i < count; i++) {
+    const file = data(value, String(i));
+    if (!file || typeof file !== "object" || Array.isArray(file)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(file))) throw invalid();
+    if (Reflect.ownKeys(file).some(key => !["path", "source", "role"].includes(key))) throw invalid();
+    const path = data(file, "path"), source = data(file, "source");
+    const role = Object.hasOwn(file, "role") ? data(file, "role") : "chapter";
+    if (role !== "chapter" && role !== "include") throw invalid();
+    if (role === "include") includes++; else chapters++;
+    if (chapters > L.chapters || includes > L.includeSources)
+      throw bookError("BOOK_LIMIT", "Use at most 128 chapters and 128 include-only sources.");
+    total += size(path, 1024) + size(source, L.chapterBytes);
+    if (total > L.sourceBytes) throw bookError("BOOK_LIMIT", "Workbench source and paths exceed 16 MiB.");
+    next.push({ path, source, ...(role === "include" ? { role } : {}) });
+  }
+  return next;
+}
+
 // Canonical, data-only fields already supported by the native book facade.
 // Deliberately excludes assets, include policy, CSS and metadata/page controls.
 export const BOOK_PUBLICATION_FIELDS = Object.freeze([
@@ -298,6 +344,7 @@ export function createBookCollection() {
     options = settings(),
     revision = 0,
     configurationRevision = 0,
+    projectRevision = 0,
     disposed = false;
   let fonts = createBookFontStore();
   const listeners = new Set();
@@ -339,6 +386,12 @@ export function createBookCollection() {
     get renderConfigurationRevision() {
       alive();
       return configurationRevision;
+    },
+    // Project replacement is an identity boundary even for identical sources.
+    // Structural edits and history replay keep this in-session identity stable.
+    get sourceProjectRevision() {
+      alive();
+      return projectRevision;
     },
     get files() {
       alive();
@@ -605,6 +658,7 @@ export function createBookCollection() {
       images = value.images;
       fonts = value.fonts;
       oldFonts.dispose();
+      projectRevision++;
       changed();
       return installed;
     },
@@ -636,6 +690,29 @@ export function createBookCollection() {
       changed(true);
       return installed;
     },
+    /** Install an entire source tree in ONE revision, preserving current
+     * settings, images, fonts and project identity. This is draft restoration:
+     * it never authorizes a resource or relaxes publication validation. */
+    replaceSourceTree(value, expectedRevision) {
+      const fence = () => {
+        alive();
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== revision)
+          throw bookError("STALE_SOURCE", "The book changed; no source tree was installed.");
+      };
+      fence();
+      const next = sourceTree(value);
+      fence();
+      const sameStructure = next.length === files.length && next.every((file, i) =>
+        file.path === files[i].path && file.role === files[i].role);
+      if (sameStructure && next.every((file, i) => file.source === files[i].source)) return revision;
+      // Reordered unchanged files keep their exact imported-byte/editor-view
+      // relationship. New/restored text establishes its own newline baseline.
+      const installed = revision + 1;
+      files = next.map(file => files.find(old => old.path === file.path
+        && old.role === file.role && old.source === file.source) ?? remember(file));
+      changed(sameStructure);
+      return installed;
+    },
     replaceProject(project) {
       alive();
       const value = normalizeBookProject(project);
@@ -643,6 +720,7 @@ export function createBookCollection() {
       options = value.options;
       images = [];
       fonts.clear();
+      projectRevision++;
       changed();
     },
     dispose() {

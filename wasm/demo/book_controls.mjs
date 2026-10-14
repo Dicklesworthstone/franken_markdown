@@ -613,6 +613,28 @@ export function createBookControls({
       if (Number.isFinite(scroll)) editor.scrollTop = scroll;
       return revision;
     },
+    /** Replay a complete bounded editor tree, including drafts and empty books.
+     * This is not project recovery: current settings, image/font authority and
+     * connected-file identity remain owned by the existing collection. */
+    applySourceTree(files, checkpoint) {
+      alive();
+      if (reading || composing)
+        throw bookError("BOOK_BUSY", "Finish importing or composing text before restoring source structure.");
+      if (checkpoint !== JSON.stringify([collection.revision, signature()]))
+        throw bookError("STALE_SOURCE", "The editor changed; no source-tree transaction was installed.");
+      const selected = collection.files[active], editor = el["chapter-source"];
+      const start = editor.selectionStart, end = editor.selectionEnd, scroll = editor.scrollTop;
+      const revision = collection.replaceSourceTree(files, collection.revision);
+      const next = collection.files;
+      const found = selected ? next.findIndex(file => file.path === selected.path) : -1;
+      active = found >= 0 ? found : Math.max(0, Math.min(active, next.length - 1));
+      showChapter();
+      if (Number.isInteger(start) && Number.isInteger(end))
+        editor.setSelectionRange(found >= 0 ? Math.min(start, editor.value.length) : 0,
+          found >= 0 ? Math.min(end, editor.value.length) : 0);
+      if (Number.isFinite(scroll)) editor.scrollTop = found >= 0 ? scroll : 0;
+      return revision;
+    },
     /** Search offsets address original source, not the textarea's normalized
      * view. Validate everything before changing the active chapter or focus. */
     selectSourceRange(index, start, end, checkpoint) {

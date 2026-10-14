@@ -183,7 +183,8 @@ export function createBookSourceHistory(files, limits = BOOK_SOURCE_HISTORY_LIMI
   return Object.freeze(api);
 }
 
-/** Wire chronological source undo to the existing atomic applySources host.
+/** Wire chronological source undo to the existing atomic source host. Tree
+ * replay is enabled only with both applySourceTree and a project identity epoch.
  * This controller has no worker, asset store, project serializer or persistence.
  * The host must capture normal input before notifying collection subscribers.
  */
@@ -195,20 +196,26 @@ export function createBookSourceHistoryControls({ root, controls, collection,
       || typeof controls?.checkpoint !== "function" || typeof collection?.subscribe !== "function")
     throw new TypeError("Book source history requires the source editor and its transaction host.");
   if (root.querySelector("#book-source-history")) throw new Error("Book source history is already installed.");
-  const history = createBookSourceHistory(collection.files, limits);
+  const structural = typeof controls.applySourceTree === "function"
+    && Number.isSafeInteger(collection.sourceProjectRevision);
+  const history = createBookSourceHistory(collection.files, limits, { trackStructure: structural });
+  let projectRevision = collection.sourceProjectRevision;
   const panel = root.createElement("div"); panel.id = "book-source-history";
   const make = (tag, id, text) => {
     const node = root.createElement(tag); node.id = `book-history-${id}`; node.textContent = text;
     panel.appendChild(node); return node;
   };
-  make("h3", "title", "Book-wide source undo");
+  make("h3", "title", structural ? "Book-wide source and structure undo" : "Book-wide source undo");
   panel.setAttribute("aria-labelledby", "book-history-title");
   const undo = make("button", "undo", "Undo source edit"), redo = make("button", "redo", "Redo source edit");
   const clear = make("button", "clear", "Clear source history");
   for (const node of [undo, redo, clear]) { node.type = "button"; node.setAttribute("aria-describedby", "book-history-help book-history-status"); }
   undo.setAttribute("aria-keyshortcuts", "Control+z Meta+z");
   redo.setAttribute("aria-keyshortcuts", "Control+Shift+z Meta+Shift+z Control+y");
-  make("p", "help", "Undo typing and source transactions across chapters and include files. In the source editor use Ctrl/Cmd+Z, Shift+Ctrl/Cmd+Z, or Ctrl+Y. Settings and image/font grants are never restored. Source additions, removals, renames, role/order changes and different-source project recovery reset history. History is session-only, not a saved backup; page suspension clears it.");
+  make("p", "help", "Undo typing and source transactions across chapters and include files. In the source editor use Ctrl/Cmd+Z, Shift+Ctrl/Cmd+Z, or Ctrl+Y. Settings and image/font grants are never restored. "
+    + (structural ? "Chapter/include additions, deletions, renames, role and order changes are undoable, including an empty book. Opening or replacing a project starts a new history even when its text is identical. "
+      : "Source additions, removals, renames, role/order changes and different-source project recovery reset history. ")
+    + "History is session-only, not a saved backup; page suspension clears it.");
   const status = make("p", "status", ""); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   editor.parentElement.insertBefore(panel, editor.nextSibling);
   let disposed = false, suspended = false, composing = false, installing = false;
@@ -235,23 +242,32 @@ export function createBookSourceHistoryControls({ root, controls, collection,
   }
   function reset(text) {
     history.reset(collection.files); config = collection.renderConfigurationRevision;
+    projectRevision = collection.sourceProjectRevision;
     breakGroup(); message = text; refresh();
   }
   function observe() {
     if (disposed || suspended || installing) return;
+    if (structural && collection.sourceProjectRevision !== projectRevision) {
+      reset("Project replaced; history starts at this book. Earlier projects cannot be restored by undo.");
+      return;
+    }
     const files = collection.files, nextConfig = collection.renderConfigurationRevision;
-    if (nextConfig !== config) {
+    const configurationChanged = nextConfig !== config;
+    if (configurationChanged) {
       config = nextConfig;
-      if (!history.matches(files)) {
+      if (!structural && !history.matches(files)) {
         reset("Source structure or project changed; history starts from this source set."); return;
       }
-      breakGroup(); // Presentation/resource changes do not erase source recovery.
-    } else {
-      const previous = history.state.discarded;
-      const result = history.record(files, context ?? { label: "Book source transaction" });
-      if (result === "source-set-changed") message = "Source membership changed; history was reset.";
-      else if (result === "recorded") message = history.state.discarded !== previous
-        ? "Source edit recorded within the history budget." : "Source edit recorded.";
+      breakGroup(); // Structure/resource changes split typing, not source recovery.
+    }
+    const previous = history.state.discarded;
+    const result = history.record(files, context ?? {
+      label: structural && configurationChanged ? "Book structure edit" : "Book source transaction",
+    });
+    if (result === "source-set-changed") message = "Source membership changed; history was reset.";
+    else if (result === "structure-recorded" || result === "recorded") {
+      message = result === "structure-recorded" ? "Book structure recorded for undo." : "Source edit recorded.";
+      if (history.state.discarded !== previous) message += " Older recovery exceeded the history budget.";
     }
     refresh();
   }
@@ -260,8 +276,8 @@ export function createBookSourceHistoryControls({ root, controls, collection,
     // not require current drafts/settings to validate before undo can repair
     // them, and never clones resource payloads or serializes a whole project.
     const index = controls.currentChapter, file = collection.files[index];
-    if (file && (editor.value !== file.source.replace(/\r\n?/g, "\n") || path.value !== file.path
-        || role.value !== (file.role ?? "chapter")))
+    if ((!file && (editor.value || path.value)) || (file && (editor.value !== file.source.replace(/\r\n?/g, "\n") || path.value !== file.path
+        || role.value !== (file.role ?? "chapter"))))
       throw failure("STALE_SOURCE", "The source editor has uncaptured changes. Finish the input before undo/redo; no text was overwritten.");
   }
   function step(direction) {
@@ -271,20 +287,29 @@ export function createBookSourceHistoryControls({ root, controls, collection,
     let installed;
     installing = true;
     try {
-      installed = controls.applySources(plan.files, checkpoint);
+      installed = structural ? controls.applySourceTree(plan.files, checkpoint)
+        : controls.applySources(plan.files, checkpoint);
       if (disposed) throw failure("HISTORY_CLOSED", "Source history was disposed during the transaction.");
-      if (suspended || installed !== collection.revision)
+      if (suspended || installed !== collection.revision
+          || (structural && collection.sourceProjectRevision !== projectRevision))
         throw failure("HISTORY_CONFLICT", "Another change followed the source transaction; review current source before continuing.");
       history.commit(plan, collection.files);
       config = collection.renderConfigurationRevision;
     } catch (error) {
-      if (!disposed && !suspended && !history.matches(collection.files))
+      if (!disposed && !suspended && (!history.matches(collection.files)
+          || (structural && collection.sourceProjectRevision !== projectRevision)))
         reset("Source changed during undo/redo; history was reset without overwriting the newer state.");
       throw error;
     } finally { installing = false; if (!disposed) refresh(); }
     // The host's original-source navigation handles CRLF and updates the actual
     // editor, not merely its model. A navigation failure cannot undo a successful
     // transaction, so report that separately without replaying the source again.
+    if (plan.structure) {
+      // The tree host keeps a surviving selection, or clamps it after deletion.
+      // An empty book has no navigable offset and is still a successful undo.
+      message = `${direction === "undo" ? "Undid" : "Redid"} ${plan.label}; ${plan.files.length} source file(s). Settings and resources were preserved.`;
+      refresh(); return installed;
+    }
     const index = plan.changed.includes(controls.currentChapter) ? controls.currentChapter : plan.changed[0];
     const target = plan.files[index].source;
     let offset = difference(old[index].source, target, index)?.start ?? 0;
@@ -337,6 +362,10 @@ export function createBookSourceHistoryControls({ root, controls, collection,
     composing = false; compositionTail = compositionGroup; compositionGroup = null;
     burst = null; refresh();
   });
+  if (structural) {
+    on(path, "compositionstart", () => { breakGroup(); composing = true; refresh(); }, true);
+    on(path, "compositionend", () => { composing = false; breakGroup(); refresh(); });
+  }
   on(editor, "keydown", event => {
     if (event.defaultPrevented || event.isComposing || composing) return;
     const key = event.key?.toLowerCase();

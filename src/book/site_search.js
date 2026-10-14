@@ -486,6 +486,7 @@
       'All words must match within a section or its chapter title. Quote phrases. ' +
       'Narrow chapters with path:guide/ or title:"User Guide"; exclude sections with ' +
       '-obsolete or -"old API". Quote a leading operator to search for it literally. ' +
+      'Press Search or Enter to save a search in the address bar. ' +
       'Search runs locally; no network connection is needed.';
     const list = get("results"),
       previous = get("previous"),
@@ -498,15 +499,74 @@
       input.disabled = true;
       return null;
     }
+    // This becomes a reusable page control, like the existing pager. Disposal
+    // hides it; remounting the same document reuses its ID instead of appending
+    // another link. It never contains book text or a caller-supplied address.
+    let permalink = get("search-permalink");
+    if (!permalink) {
+      permalink = document.createElement("a");
+      permalink.id = "search-permalink";
+      form.append(permalink);
+    }
+    permalink.textContent = "Link to these results";
+    permalink.hidden = true;
+    const view = document.defaultView;
+    const pageAddress = () => {
+      try {
+        const url = new URL(document.location.href);
+        return ["file:", "https:", "http:"].includes(url.protocol) ? url : null;
+      } catch (_) {
+        return null;
+      }
+    };
+    const originalAddress = pageAddress();
+    const samePage = (url) => url && originalAddress &&
+      url.protocol === originalAddress.protocol && url.host === originalAddress.host &&
+      url.pathname === originalAddress.pathname;
+    const resultAddress = (query, page) => {
+      const url = pageAddress();
+      if (!samePage(url)) return null;
+      url.searchParams.delete("page");
+      if (query.trim()) {
+        url.searchParams.set("q", query);
+        if (page > 0) url.searchParams.set("page", String(page + 1));
+      } else {
+        url.searchParams.delete("q");
+      }
+      return url.href;
+    };
+    const remember = (query, page) => {
+      try {
+        const href = resultAddress(query, page);
+        if (href && href !== document.location.href && view?.history)
+          view.history.pushState(null, "", href);
+      } catch (_) {
+        // Local/embedded contexts may refuse History API writes. Search and
+        // the explicit permalink still work; history is never a render gate.
+      }
+    };
+    const requested = (raw) => {
+      try {
+        const url = new URL(raw), number = url.searchParams.get("page") || "1";
+        return {
+          query: (url.searchParams.get("q") || "").slice(0, LIMITS.query + 1),
+          page: /^[1-9][0-9]{0,8}$/.test(number)
+            ? Math.min(Number(number) - 1, Math.ceil(LIMITS.results / LIMITS.page) - 1) : 0,
+        };
+      } catch (_) {
+        return { query: "", page: 0 };
+      }
+    };
     let generation = 0,
       timer,
       answer = null,
+      answerQuery = "",
       page = 0,
+      composing = false,
       disposed = false;
     const listeners = [];
     const listen = (element, type, callback) => {
-      // The guard also fences callbacks already captured by a dispatcher when
-      // disposal removes the listener, not just future DOM event dispatches.
+      // Fence callbacks already captured by a dispatcher before disposal too.
       const handler = (event) => {
         if (!disposed) callback(event);
       };
@@ -515,14 +575,15 @@
     };
     const clear = () => {
       answer = null;
+      answerQuery = "";
       page = 0;
       list.replaceChildren();
+      permalink.hidden = true;
       previous.disabled = next.disabled = true;
     };
     const show = () => {
-      if (disposed) return;
+      if (disposed || composing || !answer || input.value !== answerQuery) return;
       list.replaceChildren();
-      if (!answer) return;
       const start = page * LIMITS.page;
       for (const result of answer.results.slice(start, start + LIMITS.page)) {
         const row = result.row,
@@ -551,73 +612,103 @@
         : "No matching sections.";
       previous.disabled = page === 0;
       next.disabled = end === answer.results.length;
+      const href = resultAddress(answerQuery, page);
+      if (href) permalink.href = href;
+      permalink.hidden = !href;
     };
-    const run = async (token) => {
-      if (disposed || token !== generation) return;
+    const run = async (token, requestedPage = 0, save = false) => {
+      if (disposed || composing || token !== generation) return;
+      const query = input.value;
       clear();
-      if (!input.value.trim()) {
+      if (!query.trim()) {
         status.textContent = "Enter words or a quoted phrase to search this book.";
+        if (save) remember("", 0);
         return;
       }
+      const stale = () => disposed || composing || token !== generation || input.value !== query;
       status.textContent = "Searching…";
       try {
-        const result = await search(rows, input.value, {
-          cancelled: () => disposed || token !== generation,
-        });
-        if (disposed || token !== generation || !result) return;
+        const result = await search(rows, query, { cancelled: stale });
+        if (stale() || !result) return;
         answer = result;
+        answerQuery = query;
+        page = Math.min(requestedPage, Math.max(0, Math.ceil(answer.results.length / LIMITS.page) - 1));
         show();
+        if (save) remember(query, page);
       } catch (error) {
-        if (!disposed && token === generation) {
+        if (!stale()) {
           clear();
           status.textContent = error.message;
         }
       }
     };
-    listen(form, "submit", (event) => {
-      event.preventDefault();
-      clearTimeout(timer);
-      void run(++generation);
-    });
-    listen(input, "input", () => {
+    const schedule = (event) => {
       clearTimeout(timer);
       const token = ++generation;
       clear();
+      if (composing || event?.isComposing) {
+        status.textContent = "Finish composing to search this book.";
+        return;
+      }
       status.textContent = input.value.trim()
         ? "Ready to search…"
         : "Enter words or a quoted phrase to search this book.";
-      timer = setTimeout(() => {
-        void run(token);
-      }, 150);
+      timer = setTimeout(() => { void run(token); }, 150);
+    };
+    listen(form, "submit", (event) => {
+      event.preventDefault();
+      if (composing || event.isComposing) return;
+      clearTimeout(timer);
+      void run(++generation, 0, true);
+    });
+    listen(input, "input", schedule);
+    listen(input, "compositionstart", () => {
+      composing = true;
+      schedule();
+    });
+    listen(input, "compositionend", () => {
+      composing = false;
+      schedule();
     });
     listen(input, "keydown", (event) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !composing && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();
         clearTimeout(timer);
         generation++;
         input.value = "";
         clear();
+        remember("", 0);
         status.textContent = "Search cleared.";
       }
     });
     listen(previous, "click", () => {
-      if (page > 0) {
+      if (!composing && answer && input.value === answerQuery && page > 0) {
         page--;
         show();
+        remember(answerQuery, page);
       }
     });
     listen(next, "click", () => {
-      if (answer && (page + 1) * LIMITS.page < answer.results.length) {
+      if (!composing && answer && input.value === answerQuery &&
+          (page + 1) * LIMITS.page < answer.results.length) {
         page++;
         show();
+        remember(answerQuery, page);
       }
     });
+    const restore = (raw) => {
+      clearTimeout(timer);
+      const state = requested(raw);
+      composing = false;
+      input.value = state.query;
+      void run(++generation, state.page);
+    };
+    if (view?.addEventListener) listen(view, "popstate", () => {
+      const url = pageAddress();
+      if (samePage(url)) restore(url.href);
+    });
     try {
-      const query = new URL(address || document.location.href).searchParams.get("q");
-      if (query !== null) {
-        input.value = query.slice(0, LIMITS.query + 1);
-        void run(++generation);
-      }
+      restore(address || document.location.href);
     } catch (_) {
       /* An opaque local origin does not prevent explicit searches. */
     }

@@ -418,9 +418,8 @@ fn extra_state_typography_modes_keep_their_measured_paragraph_shapes() {
 }
 
 #[test]
-fn container_and_footnote_layouts_keep_their_existing_pdf_semantics() {
+fn list_and_footnote_layouts_keep_their_existing_pdf_semantics() {
     for source in [
-        format!("> {PROSE}"),
         format!("- {PROSE}"),
         format!("{PROSE} A note[^one].\n\n[^one]: Keep the note with its citation."),
         String::from("Short paragraph.\n\n| Head |\n| --- |\n| Cell |"),
@@ -433,7 +432,279 @@ fn container_and_footnote_layouts_keep_their_existing_pdf_semantics() {
         assert_eq!(
             baseline_pdf(&baseline, &opts, &faces, page),
             render(&doc, &opts, crate::PdfASettings::OFF).unwrap(),
-            "container, note and short-caption handling must retain its measured layout",
+            "list, note and short-caption handling must retain its measured layout",
+        );
+    }
+}
+
+#[test]
+fn quote_candidate_admission_requires_consistent_complete_ancestry() {
+    let doc = crate::parse_markdown(&compactable_prose());
+    let opts = options_for(440.0, 196.0);
+    let faces = Faces::load(&opts).unwrap();
+    let (baseline, candidates) = unselected(&doc, &opts, &faces, PageGeom::from_theme(&opts.theme));
+    let paragraph = candidates.paragraphs.get(&baseline[0].flow.group).unwrap();
+    assert!(eligible(&baseline, paragraph));
+    assert!(!eligible(&[], paragraph));
+
+    for depth in 1..=4 {
+        let bars: Vec<_> = (0..depth)
+            .map(|level| (level, 4.0 + level as f32 * 6.0))
+            .collect();
+        let mut quoted = baseline.clone();
+        for line in &mut quoted {
+            line.quote_bars.clone_from(&bars);
+        }
+        assert!(eligible(&quoted, paragraph));
+
+        // Neither equal indentation with different owners nor a partial
+        // ancestor path may merge distinct quotes into one replacement.
+        let mut wrong_owner = quoted.clone();
+        wrong_owner[1].quote_bars[0].0 += 100;
+        assert!(!eligible(&wrong_owner, paragraph));
+        let mut wrong_gutter = quoted.clone();
+        wrong_gutter[1].quote_bars[0].1 += 1.0;
+        assert!(!eligible(&wrong_gutter, paragraph));
+        let mut missing_ancestor = quoted.clone();
+        missing_ancestor[1].quote_bars.pop();
+        assert!(!eligible(&missing_ancestor, paragraph));
+
+        // Quote support does not admit list markers or a crossing of an
+        // explicit chapter boundary into a paragraph alternative.
+        quoted[1].page_break_before = true;
+        assert!(!eligible(&quoted, paragraph));
+        quoted[1].page_break_before = false;
+        quoted[0].list_path.push(ListMark { list: 1, item: 1 });
+        assert!(!eligible(&quoted, paragraph));
+    }
+}
+
+#[test]
+fn finalized_quote_shape_preserves_segments_and_nested_structure() {
+    let source = format!("[{}](https://example.com/river)", compactable_prose());
+    let doc = crate::parse_markdown(&source);
+    let opts = options_for(440.0, 196.0);
+    let faces = Faces::load(&opts).unwrap();
+    let (mut baseline, candidates) =
+        unselected(&doc, &opts, &faces, PageGeom::from_theme(&opts.theme));
+    let bars = vec![(0, 12.0), (1, 24.0)];
+    for line in &mut baseline {
+        line.quote_bars.clone_from(&bars);
+    }
+    baseline[0].page_break_before = true;
+    baseline.last_mut().unwrap().gap_after += 11.0;
+    let paragraph = candidates.paragraphs.get(&baseline[0].flow.group).unwrap();
+    let alternative = paragraph
+        .alternatives
+        .iter()
+        .find(|shape| shape.lines.len() == 13)
+        .unwrap();
+    let selected = finalized_shape(&baseline, alternative);
+    assert_eq!(selected.len(), 13);
+
+    for (index, (line, measured)) in selected.iter().zip(&alternative.lines).enumerate() {
+        assert_eq!(line.quote_bars, bars);
+        assert_eq!(line.flow.group, baseline[0].flow.group);
+        assert_eq!(line.flow.index, index);
+        assert_eq!(line.flow.count, selected.len());
+        assert_eq!(line.page_break_before, index == 0);
+        let expected_gap = if index + 1 == selected.len() {
+            baseline.last().unwrap().gap_after
+        } else {
+            0.0
+        };
+        assert_eq!(line.gap_after, expected_gap);
+        assert_eq!(line.size, measured.size);
+        assert_eq!(line.segs.len(), measured.segs.len());
+        for (seg, original) in line.segs.iter().zip(&measured.segs) {
+            assert_eq!(seg.x, original.x);
+            assert_eq!(seg.width, original.width);
+            assert_eq!(seg.text, original.text);
+            assert_eq!(seg.text_hash, original.text_hash);
+            assert_eq!(seg.slot, original.slot);
+            assert_eq!(seg.link, original.link);
+            assert_eq!(seg.fill, original.fill);
+            assert_eq!(seg.strike, original.strike);
+            assert_eq!(seg.task, original.task);
+            assert_eq!(seg.expansion_permille, original.expansion_permille);
+        }
+    }
+    // Installing decorations must not mutate the cached measured alternative.
+    assert!(alternative.lines.iter().all(|line| line.quote_bars.is_empty()));
+}
+
+#[test]
+fn quoted_joint_selection_saves_a_page_without_losing_quote_tags() {
+    // Isolate container transfer from the paragraph solver with the existing
+    // measured 14 -> 13-line fixture. Quotes are post-shaping decorations;
+    // adding them must not disable this already certified page-saving shape.
+    let source = compactable_prose();
+    let doc = crate::parse_markdown(&source);
+    let opts = options_for(440.0, 196.0);
+    let faces = Faces::load(&opts).unwrap();
+    let page = PageGeom::from_theme(&opts.theme);
+    let (mut baseline, candidates) = unselected(&doc, &opts, &faces, page);
+    let bars = vec![(0, 12.0), (1, 24.0)];
+    for line in &mut baseline {
+        line.quote_bars.clone_from(&bars);
+    }
+    let original = baseline_pdf(&baseline, &opts, &faces, page);
+    assert_eq!(emitted_pages(&original).len(), 2);
+    let mut selected = baseline.clone();
+    apply(&mut selected, page, &candidates);
+    assert_eq!(selected.len(), 13);
+    assert!(selected.iter().all(|line| line.quote_bars == bars));
+    assert_eq!(exact_height_page_breaks(&selected, page).unwrap().ends, [13]);
+    let texts: Vec<String> = selected
+        .iter()
+        .map(|line| line.segs.iter().map(seg_display_text).collect())
+        .collect();
+    assert_eq!(rejoin_lines(texts.iter().map(String::as_str)), source);
+
+    let pdf = baseline_pdf(&selected, &opts, &faces, page);
+    assert_eq!(emitted_pages(&pdf).len(), 1);
+    assert_eq!(
+        String::from_utf8_lossy(&pdf).matches("/S /BlockQuote").count(),
+        2
+    );
+    assert_eq!(pdf, baseline_pdf(&selected, &opts, &faces, page));
+    assert_eq!(
+        pdf,
+        serialize(
+            &selected,
+            &opts,
+            &faces,
+            page,
+            None,
+            crate::PdfASettings::OFF,
+            PdfEmitOptions::monolithic(),
+            &mut PdfProfiler::disabled(),
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn parsed_nested_quotes_admit_candidates_and_keep_native_emission_in_sync() {
+    let prose = compactable_prose();
+    for depth in 1..=2 {
+        let source = format!("{}{prose}", "> ".repeat(depth));
+        let doc = crate::parse_markdown(&source);
+        let opts = options_for(440.0, 196.0);
+        let faces = Faces::load(&opts).unwrap();
+        let page = PageGeom::from_theme(&opts.theme);
+        let (baseline, candidates) = unselected(&doc, &opts, &faces, page);
+        assert_eq!(baseline[0].quote_bars.len(), depth);
+        let paragraph = candidates
+            .paragraphs
+            .get(&baseline[0].flow.group)
+            .expect("quoted prose retains measured paragraph alternatives");
+        assert!(eligible(&baseline, paragraph));
+        let selected = layout(&doc.blocks, &opts, &faces, page);
+        assert!(
+            selected
+                .iter()
+                .all(|line| line.quote_bars == baseline[0].quote_bars)
+        );
+        let pdf = crate::render_pdf(&source, &opts).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&pdf).matches("/S /BlockQuote").count(),
+            depth
+        );
+        assert_eq!(
+            pdf,
+            crate::render_pdf_emitted(&source, &opts, PdfEmitOptions::monolithic()).unwrap()
+        );
+        let verified = verification_text_layer(&doc, &opts).unwrap();
+        assert_eq!(verified.page_count, emitted_pages(&pdf).len());
+        assert_eq!(
+            rejoin_lines(
+                verified
+                    .pages
+                    .iter()
+                    .flat_map(|page| &page.runs)
+                    .map(|run| run.text.as_str())
+            ),
+            prose
+        );
+    }
+}
+
+#[test]
+fn quoted_footnotes_keep_note_bodies_on_their_first_citation_page() {
+    let source = format!(
+        "> {} A note[^one].\n\n[^one]: The original note body remains intact.",
+        compactable_prose()
+    );
+    let parsed = crate::parse_markdown(&source);
+    let doc = crate::footnotes::for_pdf_paged(&parsed);
+    let opts = options_for(440.0, 196.0);
+    let faces = Faces::load(&opts).unwrap();
+    let page = PageGeom::from_theme(&opts.theme);
+    let (baseline, _) = unselected(&doc, &opts, &faces, page);
+    let baseline_notes = PageNotes::scan(&baseline).unwrap();
+    let selected = layout(&doc.blocks, &opts, &faces, page);
+    let notes = PageNotes::scan(&selected).unwrap();
+    assert_eq!(notes.first_refs.len(), 1);
+    let note_signature = |lines: &[Line]| {
+        lines
+            .iter()
+            .map(|line| {
+                (
+                    line.flow.note,
+                    line.size,
+                    line.gap_after,
+                    line.segs.iter().map(seg_display_text).collect::<String>(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        note_signature(&selected[notes.body_end..]),
+        note_signature(&baseline[baseline_notes.body_end..])
+    );
+    assert!(
+        selected[..notes.body_end]
+            .iter()
+            .all(|line| line.quote_bars == baseline[0].quote_bars)
+    );
+    let pages = paginate_lines_for_options(&selected, page, &opts);
+    let (citation, range) = &notes.first_refs[0];
+    let citation_page = pages
+        .iter()
+        .position(|placed| {
+            placed
+                .iter()
+                .any(|p| std::ptr::eq(p.line, &selected[*citation]))
+        })
+        .unwrap();
+    for note_line in &selected[range.clone()] {
+        assert!(pages[citation_page].iter().any(|p| std::ptr::eq(p.line, note_line)));
+    }
+    let pdf = crate::render_pdf(&source, &opts).unwrap();
+    assert_eq!(emitted_pages(&pdf).len(), pages.len());
+    assert_eq!(verification_text_layer(&parsed, &opts).unwrap().page_count, pages.len());
+}
+
+#[test]
+fn quotes_keep_baseline_layout_when_joint_selection_is_disabled() {
+    let doc = crate::parse_markdown(&format!("> > {}", compactable_prose()));
+    for mode in 0..4 {
+        let mut opts = options_for(440.0, 196.0);
+        match mode {
+            0 => opts.optimal_pagination = false,
+            1 => opts.gradual_demerits = true,
+            2 => opts.river_penalty = true,
+            _ => opts.pareto_line_breaking = true,
+        }
+        let faces = Faces::load(&opts).unwrap();
+        let page = PageGeom::from_theme(&opts.theme);
+        let (baseline, candidates) = unselected(&doc, &opts, &faces, page);
+        assert!(!candidates.enabled());
+        assert!(candidates.paragraphs.is_empty());
+        assert_eq!(
+            baseline_pdf(&baseline, &opts, &faces, page),
+            render(&doc, &opts, crate::PdfASettings::OFF).unwrap()
         );
     }
 }

@@ -2,8 +2,8 @@
 //!
 //! Shaping happens while the paragraph's tokens and fonts are available; the
 //! choice happens after block layout has finalized gaps and chapter boundaries.
-//! Only ordinary paragraphs with at least four lines in every offered shape
-//! participate. That keeps the existing short-caption, list, and heading
+//! Ordinary and blockquoted paragraphs with at least four lines in every
+//! offered shape participate. That keeps the short-caption, list, and heading
 //! boundary costs independent of choices in preceding blocks. Prepared page
 //! notes reserve their unchanged measured bodies at each alternative's first
 //! citation; selecting a shape never turns the note region into body content.
@@ -191,7 +191,11 @@ fn eligible(lines: &[Line], paragraph: &Paragraph) -> bool {
                 && !line.rule
                 && line.bg == 0
                 && !line.shade
-                && line.quote_bars.is_empty()
+                // A quote decorates the already measured paragraph; it does
+                // not change its glyph positions here. All physical lines
+                // must belong to the same complete ancestry, including nested
+                // quote IDs and gutter coordinates, before transferring it.
+                && line.quote_bars == lines[0].quote_bars
                 && line.list_path.is_empty()
                 && line.table_cols.is_empty()
                 && line.image.is_none()
@@ -214,6 +218,12 @@ fn finalized_shape(baseline: &[Line], alternative: &Alternative) -> Vec<Line> {
             count,
             ..first.flow
         };
+        // Quotes stamp their ancestor bars after paragraph shaping. Carry
+        // that full path to every replacement line: it owns both the painted
+        // gutter/background and the tagged-PDF BlockQuote structure. The
+        // alternative was measured at this quote's inset, so never translate
+        // or reshape its segments when installing the decoration.
+        line.quote_bars.clone_from(&first.quote_bars);
         line.page_break_before = index == 0 && first.page_break_before;
         line.gap_after = if index + 1 == count { gap_after } else { 0.0 };
     }

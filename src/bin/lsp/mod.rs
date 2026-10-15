@@ -165,6 +165,8 @@ impl Server {
                             ("foldingRangeProvider", Json::Bool(true)),
                             ("selectionRangeProvider", Json::Bool(true)),
                             ("definitionProvider", Json::Bool(true)),
+                            ("referencesProvider", Json::Bool(true)),
+                            ("documentHighlightProvider", Json::Bool(true)),
                             (
                                 "completionProvider",
                                 object([
@@ -232,6 +234,8 @@ impl Server {
                     | "textDocument/selectionRange"
                     | "textDocument/completion"
                     | "textDocument/definition"
+                    | "textDocument/references"
+                    | "textDocument/documentHighlight"
             ) {
                 return vec![match self.navigate(method, params) {
                     Ok(result) => response(id, result),
@@ -266,7 +270,10 @@ impl Server {
         }
         if matches!(
             method,
-            "textDocument/completion" | "textDocument/definition"
+            "textDocument/completion"
+                | "textDocument/definition"
+                | "textDocument/references"
+                | "textDocument/documentHighlight"
         ) {
             return links::request_in_workspace(method, params, uri, &buffer.text, &self.documents);
         }

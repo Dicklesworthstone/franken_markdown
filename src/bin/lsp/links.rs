@@ -18,6 +18,8 @@ use std::collections::BTreeMap;
 mod references;
 #[path = "link_structure.rs"]
 mod structure;
+#[path = "usages.rs"]
+mod usages;
 
 const MAX_BLOCK_BYTES: usize = 64 * 1024;
 const MAX_DESTINATION_BYTES: usize = 8192;
@@ -190,6 +192,9 @@ pub fn request_in_workspace(
     source: &str,
     documents: &BTreeMap<String, Buffer>,
 ) -> Result<Json, Failure> {
+    if matches!(method, "textDocument/references" | "textDocument/documentHighlight") {
+        return usages::request(method, params, uri, documents);
+    }
     request_resolving(method, params, uri, source, |destination| {
         workspace_links::resolve(documents, uri, destination)
     })

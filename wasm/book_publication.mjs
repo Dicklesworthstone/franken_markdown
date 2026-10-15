@@ -61,24 +61,30 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
  * is no fallback to unchecked output. The default remains non-strict.
  * When supplied, checkRetainedLinks must also validate the final native capture
  * before any result escapes. Public factories always install this second gate.
+ * Worker loss may restart the WHOLE edition from this same owned input, within
+ * the original deadline. No native mutation or partial output is replayed into
+ * a surviving session. Invalid output/verification and cancellation never retry.
  * No partial output is published on failure, cancellation or timeout.
  */
 export function createBookPublicationClient({
   createClient, captureInput, checkLinks, checkRetainedLinks, timeoutMs = 120000, maxOutputBytes = LIMIT,
+  maxWorkerRetries = 1,
 } = {}) {
   if (typeof createClient !== "function" || typeof captureInput !== "function"
       || (checkLinks !== undefined && typeof checkLinks !== "function")
       || (checkRetainedLinks !== undefined && typeof checkRetainedLinks !== "function")
       || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000
-      || !Number.isInteger(maxOutputBytes) || maxOutputBytes < 1 || maxOutputBytes > LIMIT)
-    throw error("INVALID_OPTIONS", "Invalid publication factory, capture, deadline or combined output limit.");
+      || !Number.isInteger(maxOutputBytes) || maxOutputBytes < 1 || maxOutputBytes > LIMIT
+      || !Number.isInteger(maxWorkerRetries) || maxWorkerRetries < 0 || maxWorkerRetries > 2)
+    throw error("INVALID_OPTIONS", "Invalid publication factory, capture, deadline, output limit or worker retry limit.");
   let active = null, disposed = false;
 
   function render(files, formats = DEFAULT_FORMATS, options = {}, request = {}) {
     if (disposed) return Promise.reject(error("SESSION_DISPOSED", "Book publisher is disposed."));
     if (active) return Promise.reject(error("BOOK_BUSY", "A book publication is already running."));
     return new Promise((resolve, reject) => {
-      let settled = false, client = null, timer = null, signal, deadline = Infinity;
+      let settled = false, client = null, timer = null, signal, onProgress, deadline = Infinity;
+      let retryTimer = null, wakeRetry = null;
       let outputs = [], total = 0, sourceLength = null, revision = 0, linkReport;
       const abort = new AbortController();
       const retire = (owned) => {
@@ -93,11 +99,26 @@ export function createBookPublicationClient({
         if (!settled && clock() >= deadline) expired();
         return settled;
       };
+      function progress(phase, attempt, completedFormats, format, retryCode) {
+        if (stopped() || !onProgress) return;
+        try {
+          // No source, asset bytes, handles, partial output or verification
+          // authority escapes through observers. Exceptions cannot fail a job.
+          const pending = onProgress(Object.freeze({ phase, attempt,
+            maxAttempts: maxWorkerRetries + 1, completedFormats, totalFormats: selected.length,
+            ...(format === undefined ? {} : { format }),
+            ...(retryCode === undefined ? {} : { retryCode }),
+          }));
+          pending?.catch?.(() => {});
+        } catch { /* Observers may cancel/reenter, but cannot substitute results. */ }
+      }
       function finish(cause, result, failed = true) {
         if (settled) return;
         settled = true;
         if (active === operation) active = null;
         clearTimeout(timer);
+        clearTimeout(retryTimer);
+        const wake = wakeRetry; wakeRetry = null; retryTimer = null; wake?.();
         try { signal?.removeEventListener("abort", onAbort); } catch { /* Still retire the worker. */ }
         const owned = client;
         client = null;
@@ -121,6 +142,9 @@ export function createBookPublicationClient({
           throw error("INVALID_OPTIONS", "strictLinks must be a boolean.");
         if (strictLinks && typeof checkLinks !== "function")
           throw error("UNSUPPORTED_BOOK_VERIFICATION", "This publisher has no native navigation checker; rebuild the matching package.");
+        onProgress = request?.onProgress;
+        if (onProgress !== undefined && typeof onProgress !== "function")
+          throw error("INVALID_OPTIONS", "onProgress must be a function.");
         signal = request?.signal;
         if (signal !== undefined && (signal === null || typeof signal.aborted !== "boolean"
             || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function"))
@@ -142,80 +166,115 @@ export function createBookPublicationClient({
         return;
       }
       void (async () => {
-        try {
-          if (strictLinks) {
-            // Share immutable strings, never the mutable source containers or
-            // asset/settings authority held for the subsequent publication.
-            const sources = files => files.map(({ path, source }) => ({ path, source }));
-            const checked = await checkLinks(sources(input.files), {
-              includeSources: sources(input.options.includeSources ?? []),
-              expandIncludes: input.options.expandIncludes,
-            }, { signal: abort.signal });
-            if (stopped()) return;
-            const report = checked?.report;
-            if (!Number.isSafeInteger(checked?.sourceLength) || checked.sourceLength < 0
-                || checked.sourceLength > 64 * 1024 * 1024
-                || report?.schema !== "fmd-book-link-report-v1" || report.scope !== "expanded-html-navigation"
-                || report.summary?.chapters !== input.files.length
-                || !Number.isSafeInteger(report.summary?.findings) || report.summary.findings < 0
-                || report.summary.findings > 4096)
-              throw error("INVALID_LINK_REPORT", "Publication verification returned an invalid receipt.");
-            linkReport = report;
-            if (report.summary.findings > 0) {
-              throw Object.assign(error("BOOK_LINKS_FAILED",
-                `Strict publication refused: ${report.summary.findings} internal navigation findings. Repair the book or explicitly disable strict checking.`), { linkReport });
+        for (let attempt = 1; !stopped(); attempt++) {
+          try {
+            if (strictLinks) {
+              progress("checking-links", attempt, 0);
+              if (stopped()) return;
+              // Share immutable strings, never the mutable source containers or
+              // asset/settings authority held for the subsequent publication.
+              const sources = files => files.map(({ path, source }) => ({ path, source }));
+              const checked = await checkLinks(sources(input.files), {
+                includeSources: sources(input.options.includeSources ?? []),
+                expandIncludes: input.options.expandIncludes,
+              }, { signal: abort.signal });
+              if (stopped()) return;
+              const report = checked?.report;
+              if (!Number.isSafeInteger(checked?.sourceLength) || checked.sourceLength < 0
+                  || checked.sourceLength > 64 * 1024 * 1024
+                  || report?.schema !== "fmd-book-link-report-v1" || report.scope !== "expanded-html-navigation"
+                  || report.summary?.chapters !== input.files.length
+                  || !Number.isSafeInteger(report.summary?.findings) || report.summary.findings < 0
+                  || report.summary.findings > 4096)
+                throw error("INVALID_LINK_REPORT", "Publication verification returned an invalid receipt.");
+              linkReport = report;
+              if (report.summary.findings > 0) {
+                throw Object.assign(error("BOOK_LINKS_FAILED",
+                  `Strict publication refused: ${report.summary.findings} internal navigation findings. Repair the book or explicitly disable strict checking.`), { linkReport });
+              }
+              // Every rendered format must attest the source byte metric that
+              // the native checker verified, not merely agree with one another.
+              sourceLength = checked.sourceLength;
             }
-            // Every rendered format must attest the source byte metric that
-            // the native checker verified, not merely agree with one another.
-            sourceLength = checked.sourceLength;
-          }
-          const created = createClient({ strictLinks: strictLinks === true });
-          if (stopped()) { retire(created); return; }
-          client = created;
-          if (!client || ["render", "renderSourceUpdate", "dispose"].some(key => typeof client[key] !== "function"))
-            throw error("WORKER_FAILED", "Publication requires an owned retained source-update client.");
-          for (let index = 0; index < selected.length; index++) {
-            if (stopped()) return;
-            if (total >= maxOutputBytes)
-              throw error("OUTPUT_LIMIT", "No output budget remains for the next publication format.");
-            const format = selected[index];
-            const result = index === 0
-              ? await client.render(input.files, format, input.options, { signal: abort.signal })
-              : await client.renderSourceUpdate([], format, { expectedRevision: revision }, { signal: abort.signal });
-            if (stopped()) return;
-            const admitted = publicationOutput(result, format, maxOutputBytes - total, revision, sourceLength);
-            if (stopped()) return;
-            revision = admitted.revision;
-            sourceLength = admitted.output.sourceLength;
-            total += admitted.output.bytes.byteLength;
-            outputs.push(admitted.output);
-          }
-          if (strictLinks && checkRetainedLinks) {
-            // Verify the actual retained renderer, not just a second parse of
-            // equally long source. All selected bytes remain private until this
-            // revision-fenced native check agrees with the early preflight.
-            const retained = await checkRetainedLinks(client, {
-              paths: input.files.map(file => file.path), sourceLength,
-              expectedRevision: revision,
-            }, { signal: abort.signal });
-            if (stopped()) return;
-            if (retained?.summary?.findings > 0) {
-              throw Object.assign(error("BOOK_LINKS_FAILED",
-                `Strict publication refused: ${retained.summary.findings} internal navigation findings in the retained publication.`),
-                { linkReport: retained });
+            const created = createClient({ strictLinks: strictLinks === true });
+            if (stopped()) { retire(created); return; }
+            client = created;
+            if (!client || ["render", "renderSourceUpdate", "dispose"].some(key => typeof client[key] !== "function"))
+              throw error("WORKER_FAILED", "Publication requires an owned retained source-update client.");
+            for (let index = 0; index < selected.length; index++) {
+              if (stopped()) return;
+              if (total >= maxOutputBytes)
+                throw error("OUTPUT_LIMIT", "No output budget remains for the next publication format.");
+              const format = selected[index];
+              progress("rendering", attempt, index, format);
+              if (stopped()) return;
+              const result = index === 0
+                ? await client.render(input.files, format, input.options, { signal: abort.signal })
+                : await client.renderSourceUpdate([], format, { expectedRevision: revision }, { signal: abort.signal });
+              if (stopped()) return;
+              const admitted = publicationOutput(result, format, maxOutputBytes - total, revision, sourceLength);
+              if (stopped()) return;
+              revision = admitted.revision;
+              sourceLength = admitted.output.sourceLength;
+              total += admitted.output.bytes.byteLength;
+              outputs.push(admitted.output);
             }
-            if (!sameNavigationReport(linkReport, retained))
-              throw error("BOOK_VERIFICATION_MISMATCH",
-                "The retained publication's navigation differs from its source preflight; no edition was published.");
-            linkReport = retained;
+            if (strictLinks && checkRetainedLinks) {
+              progress("verifying-publication", attempt, selected.length);
+              if (stopped()) return;
+              // Verify the actual retained renderer, not just a second parse of
+              // equally long source. All selected bytes remain private until this
+              // revision-fenced native check agrees with the early preflight.
+              const retained = await checkRetainedLinks(client, {
+                paths: input.files.map(file => file.path), sourceLength,
+                expectedRevision: revision,
+              }, { signal: abort.signal });
+              if (stopped()) return;
+              if (retained?.summary?.findings > 0) {
+                throw Object.assign(error("BOOK_LINKS_FAILED",
+                  `Strict publication refused: ${retained.summary.findings} internal navigation findings in the retained publication.`),
+                  { linkReport: retained });
+              }
+              if (!sameNavigationReport(linkReport, retained))
+                throw error("BOOK_VERIFICATION_MISMATCH",
+                  "The retained publication's navigation differs from its source preflight; no edition was published.");
+              linkReport = retained;
+            }
+            const result = Object.freeze({
+              format: "book-publication", sourceLength, byteLength: total,
+              outputs: Object.freeze(outputs),
+              ...(linkReport ? { linkReport } : {}),
+            });
+            finish(null, result, false);
+            return;
+          } catch (cause) {
+            if (stopped()) return;
+            let retryCode;
+            try { retryCode = cause?.code; } catch { /* Keep the original failure. */ }
+            // Only endpoint loss is recoverable. In particular, malformed
+            // receipts, native transaction errors, stale revisions, findings,
+            // unsupported binaries, output limits and timeouts stay failures.
+            if (attempt > maxWorkerRetries
+                || !["WORKER_FAILED", "BOOK_CAPTURE_EXPIRED"].includes(retryCode)) {
+              finish(cause); return;
+            }
+            const owned = client; client = null;
+            // Never combine files/reports from different native sessions. Drop
+            // all private results, but keep the original normalized capture.
+            outputs = []; total = 0; sourceLength = null; revision = 0; linkReport = undefined;
+            retire(owned);
+            progress("retrying", attempt + 1, 0, undefined, retryCode);
+            if (stopped()) return;
+            // Bounded backoff shares the same deadline and cancellation. Wake
+            // the pending frame on finish so no abandoned retry keeps input alive.
+            await new Promise(resolve => {
+              wakeRetry = resolve;
+              retryTimer = setTimeout(() => {
+                retryTimer = null; wakeRetry = null; resolve();
+              }, 100 * 2 ** (attempt - 1));
+            });
           }
-          const result = Object.freeze({
-            format: "book-publication", sourceLength, byteLength: total,
-            outputs: Object.freeze(outputs),
-            ...(linkReport ? { linkReport } : {}),
-          });
-          finish(null, result, false);
-        } catch (cause) { finish(cause); }
+        }
       })();
     });
   }

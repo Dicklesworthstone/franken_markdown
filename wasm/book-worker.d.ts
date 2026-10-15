@@ -194,6 +194,20 @@ export interface BookPublicationOutput {
    * Scope is local expanded HTML navigation, not output-format conformance. */
   readonly linkReport?: BookLinkReport;
 }
+/** Read-only phase metadata; never partial files, sources, assets or save authority.
+ * Counts describe the current attempt. A restart discards earlier private outputs. */
+export interface BookPublicationProgress {
+  readonly phase: "checking-links" | "rendering" | "verifying-publication" | "retrying";
+  /** One-based attempt. A retrying event identifies the upcoming attempt. */
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  readonly completedFormats: number;
+  readonly totalFormats: number;
+  /** Present during rendering only. */
+  readonly format?: BookFormat;
+  /** Present during retrying only; other failures are never retried. */
+  readonly retryCode?: "WORKER_FAILED" | "BOOK_CAPTURE_EXPIRED";
+}
 export interface BookPublicationRequest {
   signal?: AbortSignal;
   /** Verify internal navigation before creating a renderer. Default false.
@@ -201,6 +215,9 @@ export interface BookPublicationRequest {
    * no unchecked fallback. Canonical chapter paths are required by the decoder.
    * BOOK_LINKS_FAILED carries a deeply frozen BookLinkReport as linkReport. */
   strictLinks?: boolean;
+  /** Observers may cancel the publisher; exceptions/rejections are ignored.
+   * No progress notification makes an output downloadable or verified. */
+  onProgress?: (progress: BookPublicationProgress) => void | Promise<void>;
 }
 export interface BookPublicationWorker {
   /** Covers the whole edition, not just the currently executing format. */
@@ -211,7 +228,9 @@ export interface BookPublicationWorker {
    * No partial output on errors, cancellation, timeout or aggregate overflow.
    * A fresh private worker is disposed after each edition, including success.
    * Rebuild older workers without retained source-capture support; no fallback
-   * to independently captured per-format publications occurs. */
+   * to independently captured per-format publications occurs. Recoverable worker
+   * loss restarts the WHOLE edition from its original capture, not newer input.
+   * Both strict verification gates rerun; outputs from attempts never mix. */
   render(
     files: readonly BookFile[],
     formats?: readonly BookFormat[],
@@ -226,8 +245,14 @@ export interface BookPublicationWorker {
 export function createBookPublicationWorker(options?: {
   workerFactory?: () => Worker;
   /** Shared deadline across capture, optional verification and ALL formats. Default 120000;
-   * allowed 1..600000 ms. Expiration terminates the private worker. */
+   * allowed 1..600000 ms. Includes recovery/backoff; retries do not reset it.
+   * Expiration terminates the private worker and never triggers a retry. */
   timeoutMs?: number;
   /** Combined output ceiling, default/maximum 128 MiB; not a heap bound. */
   maxOutputBytes?: number;
+  /** Restart after WORKER_FAILED or BOOK_CAPTURE_EXPIRED. Default 1; integer
+   * 0..2. Zero disables recovery. Fresh workers use the same owned capture;
+   * prior private outputs are discarded. Backoff is 100 ms, then 200 ms.
+   * Cancellation, native/protocol/verification faults and limits never retry. */
+  maxWorkerRetries?: number;
 }): BookPublicationWorker;

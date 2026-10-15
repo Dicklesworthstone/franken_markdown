@@ -17,7 +17,8 @@ export function createBookWorker(options = {}) {
  * The ordinary createBookWorker API and its retention policy are unchanged.
  */
 export function createBookPublicationWorker(options = {}) {
-  const { workerFactory, timeoutMs = 120000, maxOutputBytes = 128 * 1024 * 1024 } = options;
+  const { workerFactory, timeoutMs = 120000, maxOutputBytes = 128 * 1024 * 1024,
+    maxWorkerRetries = 1 } = options;
   if (workerFactory !== undefined && typeof workerFactory !== "function")
     throw Object.assign(new TypeError("workerFactory must be a function"), { code: "INVALID_OPTIONS" });
   const factory = workerFactory ??
@@ -34,6 +35,7 @@ export function createBookPublicationWorker(options = {}) {
     checkRetainedLinks: createBookPublicationRetainedLinkCheck({ parseReport: parseBookLinkReport }),
     timeoutMs,
     maxOutputBytes,
+    maxWorkerRetries,
     createClient: ({ strictLinks }) => createBookWorkerClient({
       workerFactory: factory, timeoutMs, retainBook: true,
       // A small publication budget must not truncate the final report. The

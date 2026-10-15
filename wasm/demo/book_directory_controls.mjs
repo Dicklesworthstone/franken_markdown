@@ -1,3 +1,4 @@
+import { createBookSourceMerger } from "./book_source_merge.mjs";
 import { BOOK_DIRECTORY_LIMITS, BookDirectoryError, createBookDirectorySession } from "./book_directory_session.mjs";
 
 /** Source-folder saves capture source without applying publishing drafts.
@@ -19,9 +20,9 @@ export function createBookDirectoryControls({ root, controls, collection, window
     panel.appendChild(node); return node;
   };
   make("h3", "title", "Connected source folder");
-  make("p", "help", "Write chapters and include-only sources back to their relative paths in a folder you choose. First import or author the sources in this book, then review the folder. Existing differing files are overwrite candidates, not automatic imports. Connecting never writes. Save lists every create/replace before approval. Saving includes current editor text without applying publishing drafts, changing the source tree or starting a renderer. Review external source changes to import disk-only edits while keeping local-only edits. Divergent edits stop the entire refresh; no within-file merge is attempted. Untouched imported BOMs and line endings are preserved. Only source bytes are saved: keep a source-project file for chapter order, roles and publishing settings, or a portable backup for images and fonts.");
+  make("p", "help", "Write chapters and include-only sources back to their relative paths in a folder you choose. First import or author the sources in this book, then review the folder. Existing differing files are overwrite candidates, not automatic imports. Connecting never writes. Save lists every create/replace before approval. Saving includes current editor text without applying publishing drafts, changing the source tree or starting a renderer. Review external source changes to import disk-only edits while keeping local-only edits. The ordinary refresh stops on divergent edits. Reconcile external edits can combine separate line changes and review overlapping regions; it never writes disk files. Untouched imported BOMs and line endings are preserved. Only source bytes are saved: keep a source-project file for chapter order, roles and publishing settings, or a portable backup for images and fonts.");
   const buttons = Object.fromEntries([["review", "Review / reconnect source folder"], ["save", "Save source files to folder"], ["refresh", "Review external source changes"],
-    ["disconnect", "Disconnect / stop folder access"], ["approve", "Approve reviewed folder"], ["decline", "Cancel review"]].map(([id, text]) => {
+    ["reconcile", "Reconcile external edits"], ["disconnect", "Disconnect / stop folder access"], ["approve", "Approve reviewed folder"], ["decline", "Cancel review"]].map(([id, text]) => {
     const node = make("button", id, text); node.type = "button";
     node.setAttribute("aria-describedby", "book-directory-help book-directory-status"); return [id, node];
   }));
@@ -29,6 +30,7 @@ export function createBookDirectoryControls({ root, controls, collection, window
   const reviewText = make("pre", "review-list", "No folder review is pending.");
   reviewText.setAttribute("aria-label", "Exact source-folder review paths and actions");
   buttons.approve.setAttribute("aria-describedby", "book-directory-review-list book-directory-limits");
+  const mergeBox = make("div", "merge", ""); mergeBox.hidden = true;
   const receiptText = make("pre", "receipt", "No source-folder save receipt yet.");
   receiptText.setAttribute("aria-label", "Last source-folder save receipt");
   make("p", "limits", "Each file is staged and read back, but multiple closes are NOT an atomic save or an OS-wide lock. An external editor can race the final checks. On failure, inspect the receipt: some files may be verified, uncertain, or created but unverified. Empty new files/directories can remain. Nothing is rolled back or deleted. Renaming/removing a source never deletes its old disk file. Path changes, conflicts and uncertain saves need explicit folder review. Limits: 256 sources, 4 MiB each, 16 MiB combined source/path bytes. Handles are session-only and disconnected on project replacement or page suspension.");
@@ -42,6 +44,8 @@ export function createBookDirectoryControls({ root, controls, collection, window
   function finish(approved, restoreFocus = false) {
     if (!pending) return;
     const previous = pending; pending = null;
+    mergeBox.textContent = ""; mergeBox.hidden = true;
+    for (const node of composing) if (node.id?.startsWith("book-directory-merge-")) composing.delete(node);
     previous.resolve(approved);
     if (restoreFocus && previous.focus?.isConnected !== false) previous.focus?.focus?.();
     refresh();
@@ -52,12 +56,13 @@ export function createBookDirectoryControls({ root, controls, collection, window
     buttons.review.disabled = disabled || !!value.busy || !available || !value.files;
     buttons.save.disabled = disabled || !value.canSave;
     buttons.refresh.disabled = disabled || !value.canRefresh || typeof controls.applySources !== "function";
+    buttons.reconcile.disabled = buttons.refresh.disabled;
     buttons.disconnect.disabled = suspended || (!value.folder && !value.busy);
     for (const name of ["approve", "decline"]) buttons[name].hidden = !pending;
-    buttons.approve.disabled = disabled || !pending;
+    buttons.approve.disabled = disabled || !pending || (pending.kind === "merge" && !mergeReady(pending.entries));
     buttons.decline.disabled = !pending;
     status.textContent = pending
-      ? `${pending.kind === "bind" ? "Folder connection" : pending.kind === "refresh" ? "External-source refresh" : "Source-file save"} awaits approval. ${pending.kind === "refresh" ? "Review every source action; Cancel leaves editor and disk unchanged." : "Review every listed create/replace; Cancel leaves disk content unchanged."}`
+      ? `${pending.kind === "bind" ? "Folder connection" : ["refresh", "merge"].includes(pending.kind) ? "External-source refresh" : "Source-file save"} awaits approval. ${["refresh", "merge"].includes(pending.kind) ? "Review every source action; Cancel leaves editor and disk unchanged." : "Review every listed create/replace; Cancel leaves disk content unchanged."}`
       : `${value.folder ?? "No connected folder"} — ${value.phase}${value.busy ? ` (${value.busy})` : ""}. ${value.message}`;
     if (!available) status.textContent += " Direct folder access is unavailable here; ordinary imports, project downloads and portable backups remain available.";
     if (value.phase === "needs-review") status.textContent += " Use Review / reconnect source folder to admit the current path set explicitly.";
@@ -105,17 +110,94 @@ export function createBookDirectoryControls({ root, controls, collection, window
   function confirm(kind, value) {
     if (blocked()) return Promise.resolve(false);
     if (pending) throw new BookDirectoryError("DIRECTORY_BUSY", "Another folder review is pending.");
-    reviewText.textContent = kind === "refresh" ? refreshReview(value) : [
+    const entries = kind === "merge" ? mergeReview(value) : null;
+    reviewText.textContent = kind === "merge" ? [
+      `Source reconciliation: ${value.folder}; ${value.changedSources} automatic source changes, ${value.conflicts} files need explicit choices.`,
+      ...value.files.map(file => `${file.action}: ${file.path} (editor ${file.editorBytes} bytes; disk ${file.diskBytes ?? "missing"})`),
+      "Excerpts below are not complete diffs. Whole-file choices discard the other version's edits; region choices preserve all non-conflicting changes.",
+      "Approval installs the complete reviewed source set in one transaction, without writing disk files or changing source order, roles, settings or resource grants.",
+    ].join("\n") : kind === "refresh" ? refreshReview(value) : [
       `${kind === "bind" ? "Connect" : "Write to"} folder: ${value.folder}`,
       ...value.files.map(file => `${file.action}: ${file.path} (${file.bytes} outgoing UTF-8 bytes)`),
       kind === "bind" ? "Approval connects these exact paths without writing any file. A later Save asks again before writing."
         : "Approval writes every listed create/replace from the captured book. Unchanged files and all unlisted files are left alone. Multiple files are not committed atomically.",
       "Source files only: no project metadata, chapter order, roles, images, fonts or permissions are saved.",
     ].join("\n");
-    buttons.approve.textContent = kind === "bind" ? "Connect reviewed source paths" : kind === "refresh" ? "Apply reviewed disk-only changes" : "Write reviewed source files";
+    buttons.approve.textContent = kind === "bind" ? "Connect reviewed source paths" : kind === "refresh" ? "Apply reviewed disk-only changes" : kind === "merge" ? "Apply reviewed reconciliation" : "Write reviewed source files";
     return new Promise(resolve => {
-      pending = { kind, resolve, focus: root.activeElement };
+      pending = { kind, resolve, entries, focus: root.activeElement };
       refresh(); buttons.approve.focus?.();
+    });
+  }
+  function mergeReview(value) {
+    mergeBox.textContent = ""; mergeBox.hidden = false;
+    const planner = createBookSourceMerger(), entries = [];
+    let remaining = 256;
+    const append = (parent, tag, text) => {
+      const node = root.createElement(tag);
+      if (text !== undefined) node.textContent = text;
+      parent.appendChild(node); return node;
+    };
+    const select = (parent, id, label, choices) => {
+      const node = append(parent, "select"); node.id = `book-directory-merge-${id}`;
+      node.setAttribute("aria-label", label);
+      for (const [value, text] of choices) { const option = append(node, "option", text); option.value = value; }
+      node.value = ""; return node;
+    };
+    const excerpt = (parent, label, source) => {
+      const chunks = [];
+      if (source === null) chunks.push("(absent file)");
+      else for (const ch of source) { if (chunks.length === 1024) { chunks.push("\n… (excerpt)"); break; } chunks.push(ch); }
+      append(parent, "pre", `${label}:\n${chunks.join("")}`);
+    };
+    for (const file of value.files) {
+      if (file.action !== "conflict") continue;
+      const at = entries.length, box = append(mergeBox, "fieldset");
+      append(box, "legend", `${file.path}: ${file.reason}`);
+      for (const side of ["base", "local", "disk"]) excerpt(box, side, file[side]);
+      const plan = remaining && file.reason === "overlapping-edits" ? planner.plan(file.base, file.local, file.disk) : null;
+      const detailed = plan && (plan.action === "merged" || (plan.conflicts && plan.conflicts.length <= remaining));
+      if (detailed) remaining -= plan.conflicts?.length ?? 0;
+      const choices = [["", "Choose a resolution"], ["local", "Keep complete editor version"]];
+      if (file.disk !== null) choices.push(["disk", "Use complete disk version"]);
+      choices.push(["edited", "Edit a complete replacement"]);
+      if (detailed) choices.push(["regions", "Resolve conflicting regions; keep other edits"]);
+      const choice = select(box, `${at}-choice`, `Resolution for ${file.path}`, choices);
+      const manual = append(box, "textarea"); manual.id = `book-directory-merge-${at}-source`;
+      manual.setAttribute("aria-label", `Complete replacement source for ${file.path}`);
+      manual.value = file.local; manual.maxLength = BOOK_DIRECTORY_LIMITS.fileBytes; manual.rows = 8; manual.hidden = true;
+      const regions = append(box, "div"); regions.hidden = true;
+      const hunks = [];
+      if (detailed) for (const hunk of plan.conflicts ?? []) {
+        const group = append(regions, "fieldset");
+        append(group, "legend", `Conflict ${hunk.index + 1}: base lines ${hunk.startLine + 1}–${Math.max(hunk.startLine + 1, hunk.endLine)}`);
+        for (const side of ["base", "local", "disk"]) excerpt(group, side, hunk[side]);
+        hunks.push(select(group, `${at}-hunk-${hunk.index}`, `Conflict ${hunk.index + 1} in ${file.path}`,
+          [["", "Choose this region"], ["local", "Keep editor region"], ["disk", "Use disk region"]]));
+      }
+      entries.push({ file, choice, manual, regions, hunks, plan: detailed ? plan : null });
+    }
+    return entries;
+  }
+  function mergeReady(entries) {
+    return entries.every(entry => {
+      const choice = entry.choice.value;
+      return choice === "local" || (choice === "disk" && entry.file.disk !== null) || choice === "edited"
+        || (choice === "regions" && entry.plan && entry.hunks.every(hunk => ["local", "disk"].includes(hunk.value)));
+    });
+  }
+  function mergeChoices(entries) {
+    if (!mergeReady(entries)) throw new BookDirectoryError("UNRESOLVED_SOURCE_CONFLICT", "Choose every conflicting file and region before approval.");
+    return entries.map(entry => {
+      const choice = entry.choice.value, path = entry.file.path;
+      if (choice === "regions") return { path, choice: "edited", source: entry.plan.action === "merged" ? entry.plan.source
+        : entry.plan.resolve(entry.hunks.map((hunk, index) => ({ index, choice: hunk.value }))) };
+      if (choice === "edited") {
+        const displayed = entry.manual.value;
+        // An untouched textarea normalizes CRLF/CR. Preserve its original source.
+        return { path, choice, source: displayed === entry.file.local.replace(/\r\n?/g, "\n") ? entry.file.local : displayed };
+      }
+      return { path, choice };
     });
   }
   function refreshReview(value) {
@@ -135,12 +217,13 @@ export function createBookDirectoryControls({ root, controls, collection, window
       throw new BookDirectoryError("DIRECTORY_SOURCE_DRAFT", "Finish the current source path/role edit before importing external text.");
     return files;
   }
-  function refreshSources() {
+  function refreshSources(merging = false) {
     admitted();
     if (typeof controls.applySources !== "function")
       throw new BookDirectoryError("DIRECTORY_REFRESH_UNAVAILABLE", "The source host does not support atomic source-only refresh.");
     sourceStructure();
-    return session.refresh(value => confirm("refresh", value), (next, stamp) => {
+    const request = merging ? session.reconcile : session.refresh;
+    return request(value => confirm(merging ? "merge" : "refresh", value), (next, stamp) => {
       const [epoch, checkpoint] = JSON.parse(stamp), files = sourceStructure();
       if (epoch !== collection.sourceProjectRevision || checkpoint !== controls.checkpoint())
         throw new BookDirectoryError("STALE_SOURCE", "The book changed before source refresh.");
@@ -168,8 +251,21 @@ export function createBookDirectoryControls({ root, controls, collection, window
   on(buttons.review, "click", () => invoke(bind));
   on(buttons.save, "click", () => invoke(save));
   on(buttons.refresh, "click", () => invoke(refreshSources));
+  on(buttons.reconcile, "click", () => invoke(() => refreshSources(true)));
   on(buttons.disconnect, "click", detach);
-  on(buttons.approve, "click", () => { if (!blocked()) finish(true, true); });
+  on(buttons.approve, "click", () => {
+    if (blocked() || !pending) return;
+    try { finish(pending.kind === "merge" ? mergeChoices(pending.entries) : true, true); }
+    catch (error) { status.textContent = `${error.code ?? "INVALID_RESOLUTION"}: ${error.message}`; }
+  });
+  for (const type of ["input", "change"]) on(mergeBox, type, () => {
+    if (pending?.kind !== "merge") return;
+    for (const entry of pending.entries) {
+      entry.manual.hidden = entry.choice.value !== "edited";
+      entry.regions.hidden = entry.choice.value !== "regions";
+    }
+    refresh();
+  });
   on(buttons.decline, "click", () => finish(false, true));
   on(root, "keydown", event => {
     if (pending && !event.defaultPrevented && event.key === "Escape") { event.preventDefault(); finish(false, true); }
@@ -179,6 +275,9 @@ export function createBookDirectoryControls({ root, controls, collection, window
   });
   on(root, "compositionstart", event => {
     if (sourceFields.has(event.target?.id)) { composing.add(event.target); finish(false); session.changed(); refresh(); }
+    else if (pending?.kind === "merge" && event.target?.id?.startsWith("book-directory-merge-")) {
+      composing.add(event.target); refresh();
+    }
   });
   on(root, "compositionend", event => { composing.delete(event.target); refresh(); });
   on(window, "beforeunload", event => {
@@ -201,7 +300,7 @@ export function createBookDirectoryControls({ root, controls, collection, window
     refresh();
   });
   refresh();
-  return Object.freeze({ bind, save, refresh: refreshSources, detach, get state() { return session.state; },
+  return Object.freeze({ bind, save, refresh: () => refreshSources(), reconcile: () => refreshSources(true), detach, get state() { return session.state; },
     suspend() { if (!disposed) { suspended = true; composing.clear(); detach(); refresh(); } },
     resume() { if (!disposed) { suspended = false; projectEpoch = collection.sourceProjectRevision; refresh(); } },
     dispose() {

@@ -132,7 +132,7 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     if (b.start === b.end) return b.start >= a.start && b.start <= a.end;
     return a.start < b.end && b.start < a.end;
   }
-  return (base, local, disk) => {
+  function reconcile(base, local, disk, detailed) {
     if (typeof local !== "string" || ![base, disk].every(text => text === null || typeof text === "string")
         || [base, local, disk].some(text => text !== null && text.length > MAX_UNITS)) throw invalid();
     if (local === disk) return result("unchanged", local);
@@ -144,6 +144,7 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     if (!right) return conflict("merge-budget");
     const a = changes(old, left), b = a && changes(old, right);
     if (!b) return conflict("merge-budget");
+    if (detailed) return mergePlan(old, a, b);
     const edits = [];
     let i = 0, j = 0;
     while (i < a.length || j < b.length) {
@@ -165,5 +166,98 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     for (; cursor < old.length; cursor++) append(old[cursor]);
     if (units > MAX_UNITS) return conflict("merge-size");
     return result("merged", output.join(""));
-  };
+  }
+  // Ordinary callers retain the original three-field result contract. Detailed
+  // planning uses the very same diff and shared allowance, never a second grammar.
+  return Object.freeze(Object.assign((base, local, disk) => reconcile(base, local, disk, false), {
+    plan: (base, local, disk) => reconcile(base, local, disk, true),
+  }));
+}
+
+const owned = (value, key) => {
+  const field = value && Object.getOwnPropertyDescriptor(value, key);
+  if (!field || !Object.hasOwn(field, "value")) throw invalid();
+  return field.value;
+};
+function resolutionText(text) {
+  if (typeof text !== "string" || text.length > MAX_UNITS) throw invalid();
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(++i);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) throw invalid();
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) throw invalid();
+  }
+  return text;
+}
+
+// Connected overlap components, not the first conflicting pair: one deletion
+// may intersect several edits from the other side. An insertion on a boundary
+// connects both neighboring ranges; adjacent replacements remain independent.
+function mergePlan(base, local, disk) {
+  const pieces = [], conflicts = [];
+  let i = 0, j = 0, cursor = 0, group = null;
+  function slice(start, end, edits) {
+    const text = [];
+    let at = start;
+    for (const edit of edits) {
+      for (; at < edit.start; at++) text.push(base[at]);
+      for (const line of edit.lines) text.push(line);
+      at = edit.end;
+    }
+    for (; at < end; at++) text.push(base[at]);
+    return text.join("");
+  }
+  function finish() {
+    if (!group) return true;
+    const { start, end, sides } = group;
+    pieces.push(slice(cursor, start, [])); cursor = end;
+    const left = slice(start, end, sides[0]), right = slice(start, end, sides[1]);
+    if (!sides[0].length) pieces.push(right);
+    else if (!sides[1].length || left === right) pieces.push(left);
+    else {
+      if (conflicts.length === 256) return false;
+      const index = conflicts.length;
+      conflicts.push(Object.freeze({ index, startLine: start, endLine: end,
+        base: slice(start, end, []), local: left, disk: right }));
+      pieces.push(index);
+    }
+    return true;
+  }
+  while (i < local.length || j < disk.length) {
+    const side = i < local.length && (j === disk.length || local[i].start <= disk[j].start) ? 0 : 1;
+    const edit = side ? disk[j++] : local[i++], point = edit.start === edit.end;
+    if (!group || edit.start > group.end || (edit.start === group.end && !point && !group.point)) {
+      if (!finish()) return conflict("merge-hunks");
+      group = { start: edit.start, end: edit.end, point, sides: [[], []] };
+    } else if (edit.end > group.end) { group.end = edit.end; group.point = point; }
+    else if (edit.end === group.end && point) group.point = true;
+    group.sides[side].push(edit);
+  }
+  if (!finish()) return conflict("merge-hunks");
+  pieces.push(slice(cursor, base.length, []));
+  const frozen = Object.freeze(conflicts);
+  function resolve(choices) {
+    if (!Array.isArray(choices) || owned(choices, "length") !== frozen.length) throw invalid();
+    const chosen = new Map();
+    for (let at = 0; at < frozen.length; at++) {
+      const item = owned(choices, String(at)), index = owned(item, "index"), choice = owned(item, "choice");
+      if (!Number.isInteger(index) || index < 0 || index >= frozen.length || chosen.has(index)
+          || !["local", "disk", "edited"].includes(choice)) throw invalid();
+      chosen.set(index, choice === "edited" ? resolutionText(owned(item, "source")) : frozen[index][choice]);
+    }
+    let units = 0;
+    const text = pieces.map(piece => {
+      const value = typeof piece === "string" ? piece : chosen.get(piece);
+      units += value.length;
+      if (units > MAX_UNITS) throw invalid();
+      return value;
+    });
+    return text.join("");
+  }
+  if (!conflicts.length) {
+    try { return result("merged", resolve([])); }
+    catch { return conflict("merge-size"); }
+  }
+  return Object.freeze({ ...conflict("overlapping-edits"), conflicts: frozen, resolve });
 }

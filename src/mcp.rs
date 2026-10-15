@@ -688,7 +688,7 @@ mod tests {
         let JsonValue::Array(tools) = list.get("tools").expect("tools") else {
             panic!("tools array")
         };
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         let names: Vec<_> = tools
             .iter()
             .filter_map(|tool| tool.get("name").and_then(JsonValue::as_str))
@@ -699,6 +699,7 @@ mod tests {
             "fmd.verify",
             "fmd.capabilities",
             "fmd.render_file",
+            "fmd.render_book",
         ] {
             assert!(names.contains(&name));
         }

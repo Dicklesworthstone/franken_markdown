@@ -19,6 +19,9 @@ pub(super) mod resources;
 #[path = "file_options.rs"]
 pub(super) mod file_options;
 
+#[path = "book_tools.rs"]
+mod book_tools;
+
 #[path = "page.rs"]
 mod page;
 
@@ -220,6 +223,12 @@ const FILE_FIELDS: &[Field] = &[
 ];
 const TOOLS: &[ToolSpec] = &[
     (
+        "fmd.render_book",
+        "Publish explicitly supplied chapters and include sources as a PDF book, EPUB, or HTML-site ZIP. to=all parses once and returns all three. Artifact data is base64 inside a JSON receipt; no file or network access.",
+        book_tools::SOURCE_FIELDS,
+        &["chapters"],
+    ),
+    (
         "fmd.render_html",
         "Render Markdown to self-contained HTML with inlined fonts and styles.",
         HTML_FIELDS,
@@ -254,6 +263,7 @@ const TOOLS: &[ToolSpec] = &[
 fn integer_bounds(name: &str) -> (u64, u64) {
     match name {
         "tocDepth" => (1, 6),
+        "maxOutputBytes" => (1, book_tools::MAX_OUTPUT_BYTES),
         "fitToPages" => (1, MAX_SAFE_INTEGER.min(usize::MAX as u64)),
         _ => (0, MAX_SAFE_INTEGER),
     }
@@ -270,6 +280,9 @@ fn number_bounds(name: &str) -> Option<(f64, f64)> {
 }
 
 fn fields_for(name: &str, base: &[Field]) -> Vec<Field> {
+    if name == "fmd.render_book" {
+        return book_tools::fields();
+    }
     if name == "fmd.render_file" {
         return file_options::fields();
     }
@@ -293,9 +306,13 @@ pub fn tools_list_result() -> JsonValue {
         .map(|(name, description, fields, required)| {
             let fields = fields_for(name, fields);
             let file_tool = *name == "fmd.render_file";
+            let book_tool = *name == "fmd.render_book";
             let properties = fields
                 .iter()
                 .map(|(name, kind, description)| {
+                    if book_tool && let Some(schema) = book_tools::schema(name) {
+                        return ((*name).to_owned(), schema);
+                    }
                     if matches!(*name, "images" | "fonts") {
                         return ((*name).to_owned(), resources::schema(name));
                     }
@@ -419,10 +436,10 @@ fn validate_arguments(
     }
     for name in required {
         if !args.contains_key(*name) {
-            let reason = if *name == "markdown" {
-                "missing_markdown"
-            } else {
-                "missing_path"
+            let reason = match *name {
+                "markdown" => "missing_markdown",
+                "chapters" => "missing_chapters",
+                _ => "missing_path",
             };
             return Err(invalid_options(
                 format!("Missing required argument: '{name}'"),
@@ -719,13 +736,14 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
         }
         "fmd.capabilities" => {
             let json = format!(
-                "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"mcp\":\"available_stdio_jsonrpc\",\"mcp_resources\":\"available_explicit_base64_bytes\"}}}}",
+                "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"mcp\":\"available_stdio_jsonrpc\",\"mcp_resources\":\"available_explicit_base64_bytes\",\"mcp_book\":\"available_explicit_sources\"}}}}",
                 env!("CARGO_PKG_VERSION"),
                 Theme::default().to_config_json()
             );
             Ok(wrap_text_content(&json))
         }
         "fmd.render_file" => super::file_render::render_file(args, limit),
+        "fmd.render_book" => book_tools::render(args, limit),
         _ => Err((
             METHOD_NOT_FOUND,
             format!("Unknown tool: '{name}'"),

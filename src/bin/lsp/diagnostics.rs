@@ -7,12 +7,12 @@
 
 use std::collections::BTreeSet;
 
-use franken_markdown::book::validation::analyze_document_links;
+use franken_markdown::book::validation::{DocumentLinkAnalysis, analyze_document_links};
 use franken_markdown::{DiagnosticSeverity, Document, SourceSpan, parse_markdown_spanned};
 
 use super::{Buffer, Json, LineIndex, notification, number, object, position, string};
 
-const MAX_DIAGNOSTICS: usize = 1024;
+pub(super) const MAX_DIAGNOSTICS: usize = 1024;
 const MAX_MESSAGE_CHARS: usize = 512;
 
 fn bounded_message(message: &str) -> String {
@@ -25,7 +25,7 @@ fn bounded_message(message: &str) -> String {
     result
 }
 
-fn finding(
+pub(super) fn finding(
     source: &str,
     index: &LineIndex,
     span: SourceSpan,
@@ -54,12 +54,20 @@ fn finding(
     value
 }
 
-pub(super) fn publish(uri: &str, buffer: &Buffer) -> Json {
+/// One admitted source revision. No source body or AST is duplicated in the
+/// cache; retain just source ownership, publication analysis and local findings.
+pub(super) struct Snapshot {
+    pub version: i32,
+    pub spans: Vec<SourceSpan>,
+    pub links: Option<DocumentLinkAnalysis>,
+    pub inventory_complete: bool,
+    pub local: Vec<Json>,
+}
+
+pub(super) fn snapshot(buffer: &Buffer) -> Snapshot {
     let document = parse_markdown_spanned(&buffer.text);
     let index = LineIndex::new(&buffer.text);
     let source = buffer.text.as_str();
-    // Retain one extra item only to distinguish exactly-at-limit from actual
-    // truncation. The final wire array never exceeds MAX_DIAGNOSTICS.
     let mut findings: Vec<_> = document
         .diagnostics
         .iter()
@@ -78,23 +86,29 @@ pub(super) fn publish(uri: &str, buffer: &Buffer) -> Json {
             )
         })
         .collect();
-
+    let (spans, blocks): (Vec<_>, Vec<_>) = document
+        .blocks
+        .into_iter()
+        .map(|block| (block.span, block.node))
+        .unzip();
+    let plain = Document { blocks };
+    let (links, inventory_complete) = if findings.len() > MAX_DIAGNOSTICS {
+        (None, false)
+    } else {
+        match DocumentLinkAnalysis::with_file_references(&plain) {
+            Ok(report) => (Some(report), true),
+            // A file-inventory limit must not suppress ordinary local findings.
+            // The same parsed AST is reused; no second Markdown parse occurs.
+            Err(_) => (analyze_document_links(&plain).ok(), false),
+        }
+    };
     if findings.len() <= MAX_DIAGNOSTICS {
-        // Move the original AST rather than cloning whole nested documents.
-        let (spans, blocks): (Vec<_>, Vec<_>) = document
-            .blocks
-            .into_iter()
-            .map(|block| (block.span, block.node))
-            .unzip();
-        let plain = Document { blocks };
-        match analyze_document_links(&plain) {
-            Ok(report) => {
+        match &links {
+            Some(report) => {
                 let mut seen = BTreeSet::new();
-                for reference in report.references {
-                    let Some(issue) = reference.finding else { continue; };
-                    // The shared report owns true top-level provenance even
-                    // when note emission moves its body later in reading order.
-                    if !seen.insert((reference.block_index, issue.code, issue.destination.clone())) {
+                for reference in &report.references {
+                    let Some(issue) = &reference.finding else { continue; };
+                    if !seen.insert((reference.block_index, issue.code, issue.destination.as_str())) {
                         continue;
                     }
                     let Some(span) = spans.get(reference.block_index).copied()
@@ -105,8 +119,6 @@ pub(super) fn publish(uri: &str, buffer: &Buffer) -> Json {
                             Some("link_analysis_incomplete")));
                         break;
                     };
-                    // Bound before formatting: many references to one long
-                    // target must not multiply it into a huge response.
                     let mut characters = issue.destination.chars();
                     let mut destination: String = characters.by_ref().take(160).collect();
                     if characters.next().is_some() { destination.push('…'); }
@@ -116,18 +128,32 @@ pub(super) fn publish(uri: &str, buffer: &Buffer) -> Json {
                     if findings.len() > MAX_DIAGNOSTICS { break; }
                 }
             }
-            Err(_) => findings.push(finding(source, &index, SourceSpan::new(0, 0), 2,
+            None => findings.push(finding(source, &index, SourceSpan::new(0, 0), 2,
                 "Internal-link analysis exceeded its admission limits. Link verification is incomplete; parser diagnostics are retained.",
                 Some("link_analysis_incomplete"))),
         }
     }
+    cap(source, &index, &mut findings);
+    Snapshot {
+        version: buffer.version,
+        spans,
+        links,
+        inventory_complete,
+        local: findings,
+    }
+}
 
+fn cap(source: &str, index: &LineIndex, findings: &mut Vec<Json>) {
     if findings.len() > MAX_DIAGNOSTICS {
         findings.truncate(MAX_DIAGNOSTICS - 1);
-        findings.push(finding(source, &index, SourceSpan::new(0, 0), 2,
+        findings.push(finding(source, index, SourceSpan::new(0, 0), 2,
             "Additional diagnostics were omitted after reaching the 1024-item limit. Fix the displayed findings to reveal more.",
             Some("diagnostics_truncated")));
     }
+}
+
+pub(super) fn publication(uri: &str, buffer: &Buffer, mut findings: Vec<Json>) -> Json {
+    cap(&buffer.text, &LineIndex::new(&buffer.text), &mut findings);
     notification(
         "textDocument/publishDiagnostics",
         object([
@@ -136,6 +162,11 @@ pub(super) fn publish(uri: &str, buffer: &Buffer) -> Json {
             ("diagnostics", Json::Array(findings)),
         ]),
     )
+}
+
+#[cfg(test)]
+fn publish(uri: &str, buffer: &Buffer) -> Json {
+    publication(uri, buffer, snapshot(buffer).local)
 }
 
 #[cfg(test)]

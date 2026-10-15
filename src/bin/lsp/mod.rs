@@ -7,6 +7,7 @@ mod navigation;
 #[cfg(test)]
 mod tests;
 mod text;
+mod workspace_diagnostics;
 mod workspace_links;
 mod workspace_symbols;
 
@@ -96,6 +97,7 @@ enum Phase {
 struct Server {
     phase: Phase,
     documents: BTreeMap<String, Buffer>,
+    diagnostics: workspace_diagnostics::Workspace,
     exit: Option<bool>,
     hierarchical_symbols: bool,
     folding_limit: Option<usize>,
@@ -214,6 +216,7 @@ impl Server {
             if let Some(id) = id {
                 self.phase = Phase::Shutdown;
                 self.documents.clear();
+                self.diagnostics.clear();
                 return vec![response(id, Json::Null)];
             }
             return Vec::new();
@@ -312,9 +315,8 @@ impl Server {
             version,
             synchronized: true,
         };
-        let report = diagnostics::publish(uri, &buffer);
         self.documents.insert(uri.to_string(), buffer);
-        Ok(vec![report])
+        Ok(self.diagnostics.refresh(&self.documents, Some(uri)))
     }
 
     fn change(&mut self, params: &Json) -> Result<Vec<Json>, &'static str> {
@@ -343,8 +345,12 @@ impl Server {
             changes,
             MAX_SESSION_BYTES.saturating_sub(other_bytes),
         ) {
-            Ok(()) => Ok(vec![diagnostics::publish(uri, buffer)]),
-            Err(reason) if !buffer.synchronized => Ok(vec![log(reason), clear_diagnostics(uri)]),
+            Ok(()) => Ok(self.diagnostics.refresh(&self.documents, Some(uri))),
+            Err(reason) if !buffer.synchronized => {
+                let mut replies = vec![log(reason), clear_diagnostics(uri)];
+                replies.extend(self.diagnostics.refresh(&self.documents, None));
+                Ok(replies)
+            }
             Err(reason) => Err(reason),
         }
     }
@@ -353,7 +359,9 @@ impl Server {
         let document = params.get("textDocument").ok_or("missing textDocument")?;
         let uri = text_field(document, "uri")?;
         self.documents.remove(uri);
-        Ok(vec![clear_diagnostics(uri)])
+        let mut replies = vec![clear_diagnostics(uri)];
+        replies.extend(self.diagnostics.refresh(&self.documents, None));
+        Ok(replies)
     }
 }
 

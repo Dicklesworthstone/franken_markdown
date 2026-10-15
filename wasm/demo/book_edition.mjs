@@ -226,3 +226,144 @@ export function createBookEditionSession({
     },
   });
 }
+
+// Packaging, not rendering: store the native publication Blobs byte-for-byte.
+// Fixed entry names/order and a fixed DOS date make the archive deterministic.
+// No source project, resource grants, file handles or URLs enter the manifest.
+export const BOOK_EDITION_BUNDLE_LIMIT = EDITION_LIMIT + 8192;
+const BUNDLE_CHUNK = 256 * 1024;
+const CRC_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
+  for (let bit = 0; bit < 8; bit++) value = (value >>> 1) ^ ((value & 1) ? 0xedb88320 : 0);
+  return value >>> 0;
+});
+function bundleCheck(signal) {
+  if (signal.aborted) throw fail("EXPORT_CANCELLED", "Edition packaging cancelled.");
+}
+function zipRecord(name, size, crc, offset) {
+  const central = offset !== undefined, base = central ? 46 : 30;
+  const bytes = new Uint8Array(base + name.length), view = new DataView(bytes.buffer);
+  const u16 = (at, value) => view.setUint16(at, value, true);
+  const u32 = (at, value) => view.setUint32(at, value, true);
+  u32(0, central ? 0x02014b50 : 0x04034b50);
+  if (central) u16(4, 20); // Made by ZIP 2.0, portable DOS attributes.
+  const start = central ? 6 : 4;
+  u16(start, 20); u16(start + 2, 0x800); // UTF-8; method/time stay STORE/zero.
+  u16(start + 8, 33); // 1980-01-01, independent of clocks and local timezone.
+  u32(start + 10, crc); u32(start + 14, size); u32(start + 18, size);
+  u16(start + 22, name.length);
+  if (central) u32(42, offset);
+  for (let i = 0; i < name.length; i++) bytes[base + i] = name.charCodeAt(i);
+  return bytes;
+}
+
+/** Build a delivery ZIP from 1..3 already rendered immutable Blobs. Accepts
+ * [{format: "pdf"|"epub"|"site", blob}], never arbitrary archive paths.
+ * The manifest records SHA-256 and byte lengths of the EXACT contained files;
+ * checksums detect corruption, not authorship or authenticity. No native render,
+ * network access, output parsing, compression, persistence or download occurs.
+ * At most 128 MiB of publications plus 8 KiB of archive/manifest overhead.
+ * One file is read for hashing at a time; CRC traversal yields every 256 KiB,
+ * and cancellation settles even while an underlying digest is still running.
+ */
+export async function createBookEditionBundle(outputs, {
+  signal = new AbortController().signal, crypto = globalThis.crypto, sourceLength = 0,
+} = {}) {
+  if (!signal || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function"
+      || typeof signal.removeEventListener !== "function")
+    throw fail("INVALID_OPTIONS", "Edition packaging requires an AbortSignal.");
+  bundleCheck(signal);
+  if (!Number.isSafeInteger(sourceLength) || sourceLength < 0 || sourceLength > 64 * 1024 * 1024)
+    throw fail("INVALID_OPTIONS", "Invalid captured edition source length.");
+  const count = Array.isArray(outputs) ? Object.getOwnPropertyDescriptor(outputs, "length")?.value : -1;
+  if (!Number.isInteger(count) || count < 1 || count > 3)
+    throw fail("INVALID_FORMAT", "Package one through three rendered edition formats.");
+  const owned = new Map();
+  let total = 0;
+  for (let i = 0; i < count; i++) {
+    const field = Object.getOwnPropertyDescriptor(outputs, String(i));
+    const value = field && Object.hasOwn(field, "value") ? field.value : null;
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+        || Reflect.ownKeys(value).some(key => key !== "format" && key !== "blob"))
+      throw fail("INVALID_FORMAT", "Use plain format/Blob records without accessors.");
+    const fields = Object.getOwnPropertyDescriptors(value);
+    if (!fields.format || !Object.hasOwn(fields.format, "value")
+        || !fields.blob || !Object.hasOwn(fields.blob, "value"))
+      throw fail("INVALID_FORMAT", "Use plain format/Blob records without accessors.");
+    const format = fields.format.value;
+    if (typeof format !== "string" || !Object.hasOwn(FORMATS, format) || owned.has(format))
+      throw fail("INVALID_FORMAT", "Package each supported edition format at most once.");
+    let blob, size, type;
+    try {
+      // Intrinsics reject lookalikes and ignore subclass size/read/slice overrides.
+      const input = fields.blob.value;
+      size = Object.getOwnPropertyDescriptor(Blob.prototype, "size").get.call(input);
+      type = Object.getOwnPropertyDescriptor(Blob.prototype, "type").get.call(input);
+      blob = Blob.prototype.slice.call(input, 0, size, type);
+    } catch { throw fail("INVALID_BLOB", "Edition outputs must be immutable publication Blobs."); }
+    if (size < 1 || type !== FORMATS[format].mimeType)
+      throw fail("INVALID_BLOB", "An edition Blob has an empty payload or mismatched media type.");
+    total += size;
+    if (total > EDITION_LIMIT) throw fail("OUTPUT_LIMIT", "Combined edition output exceeds 128 MiB.");
+    owned.set(format, { format, blob, byteLength: size, ...FORMATS[format] });
+  }
+  // Complete admission precedes any hashing or payload read. The captured
+  // data cannot be retargeted by edits to the caller's containers while awaiting.
+  const subtle = crypto?.subtle;
+  if (typeof subtle?.digest !== "function")
+    throw fail("CRYPTO_UNAVAILABLE", "SHA-256 needs Web Crypto in a secure context; individual edition downloads remain available.");
+  const digest = subtle.digest.bind(subtle);
+  const wait = async pending => {
+    try { const result = await waitFor(pending, signal); bundleCheck(signal); return result; }
+    catch (cause) { bundleCheck(signal); throw cause; }
+  };
+  async function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (let offset = 0; offset < bytes.length; offset += BUNDLE_CHUNK) {
+      bundleCheck(signal);
+      const end = Math.min(offset + BUNDLE_CHUNK, bytes.length);
+      for (let i = offset; i < end; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 255] ^ (crc >>> 8);
+      if (end < bytes.length) await wait(new Promise(resolve => setTimeout(resolve, 0)));
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+  const entries = [], receipts = [];
+  // Canonical order also makes reordered selection controls yield the same ZIP.
+  for (const format of Object.keys(FORMATS)) {
+    const output = owned.get(format);
+    if (!output) continue;
+    bundleCheck(signal);
+    const bytes = new Uint8Array(await wait(Blob.prototype.arrayBuffer.call(output.blob)));
+    const hash = await wait(digest("SHA-256", bytes));
+    if (!(hash instanceof ArrayBuffer) || hash.byteLength !== 32)
+      throw fail("BUNDLE_DIGEST_FAILED", "SHA-256 returned an invalid receipt.");
+    const sha256 = Array.from(new Uint8Array(hash), value => value.toString(16).padStart(2, "0")).join("");
+    const crc = await crc32(bytes);
+    entries.push({ name: output.filename, size: output.byteLength, blob: output.blob, crc });
+    receipts.push(Object.freeze({ format, filename: output.filename, mimeType: output.mimeType,
+      byteLength: output.byteLength, sha256 }));
+  }
+  const manifest = Object.freeze({ schema: "fmd-book-edition-v1", sourceLength,
+    files: Object.freeze(receipts) });
+  const manifestBytes = new TextEncoder().encode(JSON.stringify(manifest, null, 2) + "\n");
+  entries.push({ name: "manifest.json", size: manifestBytes.length,
+    blob: new Blob([manifestBytes], { type: "application/json" }), crc: await crc32(manifestBytes) });
+  const parts = [], directory = [];
+  let offset = 0, directorySize = 0;
+  for (const entry of entries) {
+    const local = zipRecord(entry.name, entry.size, entry.crc);
+    const central = zipRecord(entry.name, entry.size, entry.crc, offset);
+    parts.push(local, entry.blob); directory.push(central);
+    offset += local.length + entry.size; directorySize += central.length;
+  }
+  const end = new Uint8Array(22), view = new DataView(end.buffer);
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(8, entries.length, true); view.setUint16(10, entries.length, true);
+  view.setUint32(12, directorySize, true); view.setUint32(16, offset, true);
+  if (offset + directorySize + end.length > BOOK_EDITION_BUNDLE_LIMIT)
+    throw fail("OUTPUT_LIMIT", "Edition archive exceeds its payload and metadata budget.");
+  bundleCheck(signal);
+  const blob = new Blob([...parts, ...directory, end], { type: "application/zip" });
+  return Object.freeze({ format: "book-edition-bundle", filename: "book-edition.zip",
+    mimeType: "application/zip", byteLength: blob.size, blob, manifest });
+}

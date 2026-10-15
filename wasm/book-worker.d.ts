@@ -1,4 +1,4 @@
-import type { BookChapterPreviewOutput, BookFile, BookLinksOutput, BookOptions, BookOutput } from "./book.js";
+import type { BookChapterPreviewOutput, BookFile, BookLinkReport, BookLinksOutput, BookOptions, BookOutput } from "./book.js";
 export type BookFormat = "pdf" | "epub" | "site";
 export type BookWorkerFormat = BookFormat | "preview" | "chapter-preview" | "inspection" | "links";
 /** A transport capture revision is local to this worker client, not a native
@@ -190,6 +190,17 @@ export interface BookPublicationOutput {
   /** Sum of the returned output view lengths, not a renderer heap estimate. */
   readonly byteLength: number;
   readonly outputs: ReadonlyArray<Omit<BookOutput, "filename">>;
+  /** Present only after strict verification of this exact captured source.
+   * Scope is local expanded HTML navigation, not output-format conformance. */
+  readonly linkReport?: BookLinkReport;
+}
+export interface BookPublicationRequest {
+  signal?: AbortSignal;
+  /** Verify internal navigation before creating a renderer. Default false.
+   * Missing capability, invalid/incomplete reports and findings refuse output;
+   * no unchecked fallback. Canonical chapter paths are required by the decoder.
+   * BOOK_LINKS_FAILED carries a deeply frozen BookLinkReport as linkReport. */
+  strictLinks?: boolean;
 }
 export interface BookPublicationWorker {
   /** Covers the whole edition, not just the currently executing format. */
@@ -205,7 +216,7 @@ export interface BookPublicationWorker {
     files: readonly BookFile[],
     formats?: readonly BookFormat[],
     options?: BookOptions,
-    request?: { signal?: AbortSignal },
+    request?: BookPublicationRequest,
   ): Promise<BookPublicationOutput>;
   /** Cancel the complete edition; the publisher remains reusable. */
   cancel(): void;
@@ -214,7 +225,7 @@ export interface BookPublicationWorker {
 }
 export function createBookPublicationWorker(options?: {
   workerFactory?: () => Worker;
-  /** Shared deadline across capture/startup and ALL formats. Default 120000;
+  /** Shared deadline across capture, optional verification and ALL formats. Default 120000;
    * allowed 1..600000 ms. Expiration terminates the private worker. */
   timeoutMs?: number;
   /** Combined output ceiling, default/maximum 128 MiB; not a heap bound. */

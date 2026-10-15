@@ -1,6 +1,6 @@
 import { createBookWorkerClient } from "./book_worker.mjs";
-import { prepareBookInput } from "./book_session.mjs";
-import { createBookPublicationClient } from "./book_publication.mjs";
+import { prepareBookInput, parseBookLinkReport, bookTextBytes } from "./book_session.mjs";
+import { createBookPublicationClient, createBookPublicationLinkCheck } from "./book_publication.mjs";
 
 /** Importing this module never initializes WASM on the UI thread. */
 export function createBookWorker(options = {}) {
@@ -24,6 +24,13 @@ export function createBookPublicationWorker(options = {}) {
     (() => new Worker(new URL("./book_worker_entry.js", import.meta.url), { type: "module" }));
   return createBookPublicationClient({
     captureInput: prepareBookInput,
+    checkLinks: createBookPublicationLinkCheck({
+      parseReport: parseBookLinkReport,
+      textBytes: bookTextBytes,
+      createClient: () => createBookWorkerClient({
+        workerFactory: factory, timeoutMs, maxOutputBytes: 4 * 1024 * 1024,
+      }),
+    }),
     timeoutMs,
     maxOutputBytes,
     createClient: () => createBookWorkerClient({

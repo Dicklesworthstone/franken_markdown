@@ -56,12 +56,16 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
  * A publication owns a fresh retained client exclusively until all requested
  * outputs are admitted. Later formats use empty source deltas against its exact
  * acknowledged capture; images, fonts and unchanged sources are not resent.
+ * request.strictLinks opts into the injected native navigation check before
+ * any renderer is created. Verification shares the capture and deadline; there
+ * is no fallback to unchecked output. The default remains non-strict.
  * No partial output is published on failure, cancellation or timeout.
  */
 export function createBookPublicationClient({
-  createClient, captureInput, timeoutMs = 120000, maxOutputBytes = LIMIT,
+  createClient, captureInput, checkLinks, timeoutMs = 120000, maxOutputBytes = LIMIT,
 } = {}) {
   if (typeof createClient !== "function" || typeof captureInput !== "function"
+      || (checkLinks !== undefined && typeof checkLinks !== "function")
       || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000
       || !Number.isInteger(maxOutputBytes) || maxOutputBytes < 1 || maxOutputBytes > LIMIT)
     throw error("INVALID_OPTIONS", "Invalid publication factory, capture, deadline or combined output limit.");
@@ -72,7 +76,8 @@ export function createBookPublicationClient({
     if (active) return Promise.reject(error("BOOK_BUSY", "A book publication is already running."));
     return new Promise((resolve, reject) => {
       let settled = false, client = null, timer = null, signal, deadline = Infinity;
-      let outputs = [], total = 0, sourceLength = null, revision = 0;
+      let outputs = [], total = 0, sourceLength = null, revision = 0, linkReport;
+      const abort = new AbortController();
       const retire = (owned) => {
         try { owned?.dispose(); } catch { /* Cleanup must not hide the primary result. */ }
       };
@@ -94,6 +99,10 @@ export function createBookPublicationClient({
         const owned = client;
         client = null;
         outputs = [];
+        input = null;
+        // A publication owns the source-only checker as well as the renderer.
+        // Cancel native verification even when no render client exists yet.
+        if (failed) abort.abort(cause);
         retire(owned);
         if (failed) reject(cause);
         else resolve(result);
@@ -101,9 +110,14 @@ export function createBookPublicationClient({
       // Reserve before format proxies, option/source getters, signal adapters
       // or the worker factory can reenter this public operation.
       active = operation;
-      let selected, input;
+      let selected, input, strictLinks;
       try {
         selected = publicationFormats(formats);
+        strictLinks = request?.strictLinks;
+        if (strictLinks !== undefined && typeof strictLinks !== "boolean")
+          throw error("INVALID_OPTIONS", "strictLinks must be a boolean.");
+        if (strictLinks && typeof checkLinks !== "function")
+          throw error("UNSUPPORTED_BOOK_VERIFICATION", "This publisher has no native navigation checker; rebuild the matching package.");
         signal = request?.signal;
         if (signal !== undefined && (signal === null || typeof signal.aborted !== "boolean"
             || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function"))
@@ -120,25 +134,51 @@ export function createBookPublicationClient({
         input = captureInput(files, options);
         if (stopped()) return;
         if (signal?.aborted) { onAbort(); return; }
-        const created = createClient();
-        if (stopped()) { retire(created); return; }
-        client = created;
-        if (!client || ["render", "renderSourceUpdate", "dispose"].some(key => typeof client[key] !== "function"))
-          throw error("WORKER_FAILED", "Publication requires an owned retained source-update client.");
       } catch (cause) {
         finish(cause);
         return;
       }
       void (async () => {
         try {
+          if (strictLinks) {
+            // Share immutable strings, never the mutable source containers or
+            // asset/settings authority held for the subsequent publication.
+            const sources = files => files.map(({ path, source }) => ({ path, source }));
+            const checked = await checkLinks(sources(input.files), {
+              includeSources: sources(input.options.includeSources ?? []),
+              expandIncludes: input.options.expandIncludes,
+            }, { signal: abort.signal });
+            if (stopped()) return;
+            const report = checked?.report;
+            if (!Number.isSafeInteger(checked?.sourceLength) || checked.sourceLength < 0
+                || checked.sourceLength > 64 * 1024 * 1024
+                || report?.schema !== "fmd-book-link-report-v1" || report.scope !== "expanded-html-navigation"
+                || report.summary?.chapters !== input.files.length
+                || !Number.isSafeInteger(report.summary?.findings) || report.summary.findings < 0
+                || report.summary.findings > 4096)
+              throw error("INVALID_LINK_REPORT", "Publication verification returned an invalid receipt.");
+            linkReport = report;
+            if (report.summary.findings > 0) {
+              throw Object.assign(error("BOOK_LINKS_FAILED",
+                `Strict publication refused: ${report.summary.findings} internal navigation findings. Repair the book or explicitly disable strict checking.`), { linkReport });
+            }
+            // Every rendered format must attest the source byte metric that
+            // the native checker verified, not merely agree with one another.
+            sourceLength = checked.sourceLength;
+          }
+          const created = createClient();
+          if (stopped()) { retire(created); return; }
+          client = created;
+          if (!client || ["render", "renderSourceUpdate", "dispose"].some(key => typeof client[key] !== "function"))
+            throw error("WORKER_FAILED", "Publication requires an owned retained source-update client.");
           for (let index = 0; index < selected.length; index++) {
             if (stopped()) return;
             if (total >= maxOutputBytes)
               throw error("OUTPUT_LIMIT", "No output budget remains for the next publication format.");
             const format = selected[index];
             const result = index === 0
-              ? await client.render(input.files, format, input.options, { signal })
-              : await client.renderSourceUpdate([], format, { expectedRevision: revision }, { signal });
+              ? await client.render(input.files, format, input.options, { signal: abort.signal })
+              : await client.renderSourceUpdate([], format, { expectedRevision: revision }, { signal: abort.signal });
             if (stopped()) return;
             const admitted = publicationOutput(result, format, maxOutputBytes - total, revision, sourceLength);
             if (stopped()) return;
@@ -150,6 +190,7 @@ export function createBookPublicationClient({
           const result = Object.freeze({
             format: "book-publication", sourceLength, byteLength: total,
             outputs: Object.freeze(outputs),
+            ...(linkReport ? { linkReport } : {}),
           });
           finish(null, result, false);
         } catch (cause) { finish(cause); }
@@ -162,4 +203,46 @@ export function createBookPublicationClient({
     get busy() { return active !== null; },
     dispose() { disposed = true; active?.cancel(); },
   });
+}
+
+/** Source-only native-check adapter used by the public worker factory.
+ * parseReport and textBytes are the EXISTING book-session decoder/UTF-8 policy,
+ * not a second Markdown parser or optimistic worker-supplied summary. Separate
+ * checker ownership avoids decoding/transferring publication image/font bytes.
+ */
+export function createBookPublicationLinkCheck({ createClient, parseReport, textBytes }) {
+  if ([createClient, parseReport, textBytes].some(fn => typeof fn !== "function"))
+    throw error("INVALID_OPTIONS", "Native publication checks require a worker and the book report decoder.");
+  return async (files, options, { signal }) => {
+    const paths = files.map(file => file.path);
+    const sourceLength = [...files, ...options.includeSources]
+      .reduce((sum, file) => sum + textBytes(file.source), 0);
+    let client = null;
+    const release = () => {
+      const owned = client; client = null;
+      try { owned?.dispose(); } catch { /* Preserve the check or cancellation result. */ }
+    };
+    const cancelled = () => {
+      if (signal.aborted) throw signal.reason ?? error("EXPORT_CANCELLED", "Publication verification cancelled.");
+    };
+    try {
+      cancelled();
+      signal.addEventListener("abort", release, { once: true });
+      client = createClient();
+      cancelled();
+      if (!client || ["render", "dispose"].some(key => typeof client[key] !== "function"))
+        throw error("WORKER_FAILED", "Publication verification requires an owned checker client.");
+      const output = await client.render(files, "links", options, { signal });
+      cancelled();
+      if (output?.format !== "book-links" || output.mimeType !== "application/json"
+          || output.sourceLength !== sourceLength)
+        throw error("INVALID_LINK_REPORT", "Navigation verification does not match the captured source.");
+      const report = parseReport(output.bytes, paths);
+      cancelled();
+      return Object.freeze({ report, sourceLength });
+    } finally {
+      signal.removeEventListener("abort", release);
+      release();
+    }
+  };
 }

@@ -67,11 +67,53 @@ renderer startup and every output; verification does not reset the timer.
 Cancellation disposes a checker immediately even while its endpoint is pending.
 Late replies/errors cannot start a renderer or disturb a newer edition.
 
+## Publishing workbench
+
+**Publish a complete edition** now starts with **Require clean internal navigation
+before publishing** selected. A failed check displays the chapter, finding code,
+destination and explanation without creating any publication download. Repair the
+source and prepare again, or explicitly deselect the checkbox to publish an
+unchecked edition. Disabling verification is never an automatic error fallback.
+An older publisher that silently ignores a strict request is refused before any
+object URL is allocated; rebuild matching worker scripts instead.
+
+The panel displays up to 100 findings as inert text. The full bounded native
+report, not a shortened report or a recalculated optimistic result, remains on
+`controls.state.linkReport`. Reports state their checked, external and unchecked
+counts and expressly do not certify output conformance or asset completeness.
+The existing standalone book-link-checking panel remains available for inspection.
+
+`createBookEditionSession` accepts `strictLinks` (default `false` for standalone
+compatibility), exposes `setStrictLinks(boolean)`, and includes `strictLinks` and
+`linkReport` in its state. The workbench explicitly enables it by default. Changing
+the policy retires pending work, the report, native downloads and derived delivery
+ZIPs. The checkbox participates in the raw-editor checkpoint even when changed
+programmatically without a DOM event. Reports from failed checks are invalidated
+on edits and resource changes too; late failures cannot replace a newer verdict.
+This is a session policy, not a persisted source-project setting.
+
+Checks are neither rerun nor claimed again when packaging the same immutable
+ready edition into its delivery ZIP. That ZIP's manifest continues to describe
+byte integrity only. No new claim of PDF/EPUB conformance or signed verification
+is inserted into the manifest.
+
 ## Validation
 
-`node --test wasm/tests/book_publication_links.test.mjs` runs the production
-coordinator and source-only adapter with explicit native-transport and decoder
-boundary doubles. It covers ordering, all finding codes, input ownership,
-source metrics, cancellation/reentrancy, deadlines and rejection/retry behavior.
+Run:
+
+```sh
+node --test wasm/tests/book_edition.test.mjs \
+  wasm/tests/book_publication_links.test.mjs \
+  wasm/tests/book_edition_verification.test.mjs
+```
+
+The unchanged existing edition suite contains 36 cases. The two new suites add
+28 publication/preflight and 26 workbench/session cases, for 90 passing tests in
+the development environment. The tests run the production
+coordinator, source-only adapter, edition session and workbench controller with explicit native-transport and decoder
+boundary doubles plus explicit DOM/source/URL adapters. They cover ordering,
+all finding codes, input ownership, source metrics, cancellation/reentrancy,
+deadlines, rejection/retry, policy changes, stale-report handling, safe bounded
+finding display and derived-bundle invalidation.
 These are JavaScript orchestration tests, not native Markdown-semantic tests,
 generated-WASM execution, browser acceptance or publication conformance.

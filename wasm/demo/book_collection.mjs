@@ -106,7 +106,7 @@ function sourceTree(value) {
     if (chapters > L.chapters || includes > L.includeSources)
       throw bookError("BOOK_LIMIT", "Use at most 128 chapters and 128 include-only sources.");
     total += size(path, 1024) + size(source, L.chapterBytes);
-    if (total > L.sourceBytes) throw bookError("BOOK_LIMIT", "Workbench source and paths exceed 16 MiB.");
+    if (total > L.sourceBytes) throw bookError("BOOK_LIMIT", "Source-tree text exceeds its byte limit.");
     next.push({ path, source, ...(role === "include" ? { role } : {}) });
   }
   return next;
@@ -344,6 +344,7 @@ export function createBookCollection() {
     options = settings(),
     revision = 0,
     configurationRevision = 0,
+    resourceRevision = 0,
     projectRevision = 0,
     disposed = false;
   let fonts = createBookFontStore();
@@ -351,9 +352,10 @@ export function createBookCollection() {
   const alive = () => {
     if (disposed) throw bookError("SESSION_DISPOSED", "Book collection is disposed.");
   };
-  function changed(sourceOnly = false) {
+  function changed(sourceOnly = false, sourcesOnly = sourceOnly) {
     revision++;
     if (!sourceOnly) configurationRevision++;
+    if (!sourcesOnly) resourceRevision++;
     for (const listener of listeners) {
       try {
         listener();
@@ -386,6 +388,13 @@ export function createBookCollection() {
     get renderConfigurationRevision() {
       alive();
       return configurationRevision;
+    },
+    // Presentation and authorized byte identity, independent of source shape.
+    // Every resource/settings/project replacement advances this before observers
+    // run. Source-tree edits cannot authorize resources and keep it stable.
+    get renderResourceRevision() {
+      alive();
+      return resourceRevision;
     },
     // Project replacement is an identity boundary even for identical sources.
     // Structural edits and history replay keep this in-session identity stable.
@@ -459,7 +468,7 @@ export function createBookCollection() {
         .map((image) => ({ ...image, bytes: image.bytes.slice() }));
       files = [...files, ...next.slice(files.length).map(remember)];
       images = [...images, ...added];
-      changed();
+      changed(false, added.length === 0);
     },
     edit(index, path, sourceView) {
       alive();
@@ -471,7 +480,7 @@ export function createBookCollection() {
       const source = sourceView === file.view ? file.original : sourceView;
       if (path === file.path && source === file.source) return;
       files[index] = { ...file, path, source };
-      changed(path === file.path);
+      changed(path === file.path, true);
     },
     setRole(index, role) {
       alive();
@@ -484,7 +493,7 @@ export function createBookCollection() {
       // Validate before mutation, preserving the imported bytes/view relation.
       const validated = sourceFiles(next);
       files[index] = { ...file, role: validated[index].role };
-      changed();
+      changed(false, true);
     },
     move(index, delta) {
       alive();
@@ -494,13 +503,13 @@ export function createBookCollection() {
       const next = index + delta;
       if (next < 0 || next >= files.length) return index;
       [files[index], files[next]] = [files[next], files[index]];
-      changed();
+      changed(false, true);
       return next;
     },
     remove(index) {
       alive();
       files.splice(indexOf(index, files.length), 1);
-      changed();
+      changed(false, true);
     },
     configure(value) {
       alive();
@@ -710,7 +719,7 @@ export function createBookCollection() {
       const installed = revision + 1;
       files = next.map(file => files.find(old => old.path === file.path
         && old.role === file.role && old.source === file.source) ?? remember(file));
-      changed(sameStructure);
+      changed(sameStructure, true);
       return installed;
     },
     replaceProject(project) {

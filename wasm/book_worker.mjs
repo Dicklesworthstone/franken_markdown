@@ -666,30 +666,51 @@ export function createRetainedBookPreview(engine, renderPreview, renderChapterPr
   });
 }
 
+/** The lifetime fence used by workbench preview/proof/export controllers.
+ * A source-set-capable worker may retain resources across structural source
+ * edits. Legacy hosts/workers keep their previous configuration-wide fence.
+ * An invalid new fence is never evidence that resources are unchanged.
+ */
+export function bookCollectionResourceRevision(collection, worker) {
+  const resource = collection.renderResourceRevision;
+  if (resource === undefined || worker.supportsSourceSet !== true
+      || typeof worker.renderSourceSet !== "function") return collection.renderConfigurationRevision;
+  return Number.isSafeInteger(resource) && resource >= 0 ? resource : NaN;
+}
+
 /** Workbench capture selection. Only scalar ownership/configuration fences live
  * here; source baselines belong to the worker client's expiring idle entry.
- * The host must advance renderConfigurationRevision for any setting, asset or
- * source membership/order change. Legacy adapters retain full snapshot behavior.
- * Returns a one-use task so all existing editor/output checkpoint fences remain
- * at their call sites, before and after the asynchronous renderer boundary.
+ * Configuration advances for source shape, settings and assets. The optional
+ * resource revision advances only for settings, assets and project replacement.
+ * Returns a one-use task; editor/output checkpoint fences stay at call sites.
  */
 export function createBookCollectionCapture(collection, worker) {
   let previous = null, serial = 0;
   return function capture() {
     const revision = collection.revision, configuration = collection.renderConfigurationRevision;
+    const resource = collection.renderResourceRevision;
     const expectedRevision = worker.retainedInputRevision;
-    const sourceOnly = Number.isSafeInteger(configuration) && configuration >= 0
+    const baseline = Number.isSafeInteger(configuration) && configuration >= 0
       && Number.isSafeInteger(expectedRevision) && expectedRevision > 0
-      && previous?.configuration === configuration && previous?.transport === expectedRevision
-      && typeof worker.renderSources === "function" && typeof collection.project === "function";
+      && previous?.transport === expectedRevision && typeof collection.project === "function";
+    const sameResource = resource === undefined ? previous?.resource === undefined
+      : Number.isSafeInteger(resource) && resource >= 0 && previous?.resource === resource;
+    const sourceOnly = baseline && sameResource && previous?.configuration === configuration
+      && typeof worker.renderSources === "function";
+    const sourceSet = baseline && sameResource && resource !== undefined
+      && previous?.configuration !== configuration && worker.supportsSourceSet === true
+      && typeof worker.renderSourceSet === "function";
+    const sourceMethod = sourceOnly ? "renderSources" : sourceSet ? "renderSourceSet" : null;
+    const current = () => collection.revision === revision
+      && collection.renderConfigurationRevision === configuration && collection.renderResourceRevision === resource;
     const fence = () => {
-      if (collection.revision !== revision || collection.renderConfigurationRevision !== configuration)
+      if (!current())
         throw bookError("STALE_SOURCE", "The book changed during publication capture; capture it again.");
     };
     let input;
-    if (sourceOnly) {
-      // project() is the collection's validated source-only serialization, not
-      // snapshot(): no image/font store is read or cloned for an ordinary edit.
+    if (sourceMethod) {
+      // project() owns source-only serialization, not snapshot(): source edits,
+      // including structural changes, never read or clone an image/font store.
       const project = collection.project();
       if (!Array.isArray(project?.files) || project.files.length > 4096
           || project.files.some(file => !file || (file.role !== undefined
@@ -711,16 +732,15 @@ export function createBookCollectionCapture(collection, worker) {
         const ticket = ++serial;
         fence();
         try {
-          const result = sourceOnly
-            ? await worker.renderSources(input.files, format, {
+          const result = sourceMethod
+            ? await worker[sourceMethod](input.files, format, {
               includeSources: input.options.includeSources, expectedRevision }, request)
             : await worker.render(input.files, format, input.options, request);
           if (ticket === serial) {
             const transport = result.retainedInputRevision;
             previous = Number.isSafeInteger(transport) && transport > 0
-              && worker.retainedInputRevision === transport
-              && collection.revision === revision && collection.renderConfigurationRevision === configuration
-              ? { configuration, transport } : null;
+              && worker.retainedInputRevision === transport && current()
+              ? { configuration, resource, transport } : null;
           }
           return result;
         } catch (error) {

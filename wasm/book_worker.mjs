@@ -173,6 +173,35 @@ function prepareSourceCapture(files, options) {
   const input = prepareBookInput(files, { includeSources: value.includeSources ?? [] });
   return { expectedRevision, sources: captureSources(input) };
 }
+// Complete source-only replacement is explicit: omitting includeSources revokes
+// all previous include resources, while images/fonts/settings remain unchanged.
+function prepareBookSourceSet(files, options) {
+  const { expectedRevision, sources } = prepareSourceCapture(files, options);
+  const paths = new Set();
+  for (const file of [...sources.files, ...sources.includeSources]) {
+    if (paths.has(file.path))
+      throw bookError("DUPLICATE_BOOK_SOURCE", "Use each source path once across chapters and includes.");
+    paths.add(file.path);
+  }
+  return { expectedRevision, ...sources };
+}
+
+/** Rebuild the entire source collection without retransferring authorized assets.
+ * This admits the complete aggregate budget and retained include policy before
+ * native replacement. Never mutate the previous successful source capture.
+ */
+export function applyBookSourceSet(input, value) {
+  const replacement = deltaRecord(value, ["expectedRevision", "files", "includeSources"]);
+  const prepared = prepareBookSourceSet(replacement.files, {
+    expectedRevision: replacement.expectedRevision, includeSources: replacement.includeSources,
+  });
+  const next = prepareBookInput(prepared.files, { ...input.options,
+    includeSources: prepared.includeSources, images: [], fontAssets: [] });
+  next.options.images = input.options.images;
+  next.options.fontAssets = input.options.fontAssets;
+  return next;
+}
+
 function sourceChanges(before, after) {
   const changes = [];
   for (const key of ["files", "includeSources"]) {
@@ -356,6 +385,8 @@ export function createBookWorkerClient({
               throw bookError("WORKER_PROTOCOL_ERROR", "Book worker acknowledged a different input capture.");
             inputRevision = id;
           }
+          if (sourceOnly === 3 && data.sourceSetApplied !== true)
+            throw bookError("WORKER_PROTOCOL_ERROR", "Book worker did not acknowledge the source-set replacement.");
           if (sourceOnly && inputRevision === null)
             throw bookError("WORKER_PROTOCOL_ERROR", "Book worker did not acknowledge the source delta.");
           checkedOutput(data.bytes, data.sourceLength, maxOutputBytes);
@@ -392,9 +423,10 @@ export function createBookWorkerClient({
         if (sourceOnly) {
           // Validate before claiming the idle endpoint. A stale caller does not
           // destroy the newer capture, and Proxy reentry cannot steal a job.
+          const sourceSet = sourceOnly === 3 ? prepareBookSourceSet(files, options) : null;
           const capture = sourceOnly === 2 ? prepareSourceCapture(files, options) : null;
-          const sourceUpdate = capture ? { expectedRevision: capture.expectedRevision }
-            : prepareBookSourceUpdate(files, options);
+          const sourceUpdate = sourceSet ?? (capture ? { expectedRevision: capture.expectedRevision }
+            : prepareBookSourceUpdate(files, options));
           if (settled) return;
           if (!idle)
             throw bookError("BOOK_CAPTURE_EXPIRED", "The retained book was released; render the complete current snapshot first.");
@@ -402,12 +434,17 @@ export function createBookWorkerClient({
             throw bookError("UNSUPPORTED_BOOK_SOURCE_DELTA", "This worker does not support source deltas; use render() or rebuild the matching worker.");
           if (sourceUpdate.expectedRevision !== idle.inputRevision)
             throw bookError("STALE_BOOK_CAPTURE", "The retained input changed; refresh its revision before applying source changes.");
-          if (capture) {
+          if (sourceSet) {
+            // Keep the idle baseline separate from containers passed to a
+            // Worker-compatible embedding's caller-controlled postMessage hook.
+            sources = captureSources({ files: sourceSet.files,
+              options: { includeSources: sourceSet.includeSources } });
+          } else if (capture) {
             sourceUpdate.files = sourceChanges(idle.sources, capture.sources);
             sources = capture.sources;
           } else sources = updateCapturedSources(idle.sources, sourceUpdate.files);
           if (selected !== undefined) chapterSelection(format, selected, sources.files.length);
-          input = { sourceUpdate };
+          input = sourceSet ? { sourceSet } : { sourceUpdate };
           worker = takeIdle();
           if (!worker)
             throw bookError("BOOK_CAPTURE_EXPIRED", "The retained endpoint could not be reclaimed; render the complete snapshot again.");
@@ -489,9 +526,13 @@ export function createBookWorkerClient({
   return Object.freeze({
     // Protocol support, not a claim about the loaded native package.
     supportsChapterPreview: true,
+    supportsSourceSet: true,
     render: (files, format, options, request) => run(files, format, options, request),
     renderSourceUpdate: (files, format, options, request) => run(files, format, options, request, true),
     renderSources: (files, format, options, request) => run(files, format, options, request, 2),
+    // Full chapter/include replacement; presentation settings and assets remain
+    // owned by the retained worker. The expected revision is a transport fence.
+    renderSourceSet: (files, format, options, request) => run(files, format, options, request, 3),
     cancel,
     cancelPending,
     get hasRetainedPreview() { return ["preview", "chapter-preview"].includes(idle?.format); },
@@ -557,14 +598,18 @@ export function installBookWorker(scope, engine) {
       owned = true;
       const mode = data.retainBook ? "book" : data.retainPreview ? "preview" : null;
       let input;
-      if (Object.hasOwn(data, "sourceUpdate")) {
-        if (!mode || Object.hasOwn(data, "files") || Object.hasOwn(data, "options"))
-          throw bookError("WORKER_PROTOCOL_ERROR", "A source delta must not include a full snapshot or change resource authority.");
-        if (!capture || capture.mode !== mode || data.sourceUpdate?.expectedRevision !== capture.id)
+      const sourceSet = Object.hasOwn(data, "sourceSet");
+      if (sourceSet || Object.hasOwn(data, "sourceUpdate")) {
+        if (!mode || Object.hasOwn(data, "files") || Object.hasOwn(data, "options")
+            || (sourceSet && Object.hasOwn(data, "sourceUpdate")))
+          throw bookError("WORKER_PROTOCOL_ERROR", "A source mutation must not include another snapshot or change presentation/asset authority.");
+        const mutation = sourceSet ? data.sourceSet : data.sourceUpdate;
+        if (!capture || capture.mode !== mode || mutation?.expectedRevision !== capture.id)
           throw bookError("STALE_BOOK_CAPTURE", "Source delta does not match the retained worker input.");
         if (data.id <= capture.id)
           throw bookError("STALE_BOOK_CAPTURE", "Source delta request IDs must advance the retained capture.");
-        input = applyBookSourceUpdate(capture.input, data.sourceUpdate);
+        input = sourceSet ? applyBookSourceSet(capture.input, mutation)
+          : applyBookSourceUpdate(capture.input, mutation);
       } else {
         if (capture && capture.mode !== mode) releaseCapture();
         input = prepareBookInput(
@@ -591,6 +636,7 @@ export function installBookWorker(scope, engine) {
         // output validation all succeed. Keep one input, sharing its assets.
         capture = { id: data.id, mode, input };
         envelope.retainedInputRevision = data.id;
+        if (sourceSet) envelope.sourceSetApplied = true;
       }
       scope.postMessage({ ...envelope, bytes, sourceLength: result.sourceLength }, [bytes.buffer]);
     } catch (error) {

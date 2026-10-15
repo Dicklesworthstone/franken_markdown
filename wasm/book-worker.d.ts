@@ -42,6 +42,8 @@ export interface BookWorker {
   /** True for the selected-chapter worker protocol. Not a native ABI claim;
    * older custom worker adapters may omit this capability marker. */
   readonly supportsChapterPreview?: boolean;
+  /** Full source-collection replacement protocol, not a native ABI claim. */
+  readonly supportsSourceSet?: boolean;
   /** Whether an idle book last used for preview is currently retained. */
   readonly hasRetainedPreview: boolean;
   /** Whether any idle native book is retained, including preview-only mode. */
@@ -119,9 +121,25 @@ export interface BookWorker {
   /** Capture complete current chapter/include text, then send only changed
    * strings against the idle source baseline. No images/fonts/settings are
    * read or transferred. Membership/order/roles must remain identical; use
-   * render() for structural or configuration changes. The source baseline
+   * renderSourceSet() for structural changes or render() for configuration changes. The source baseline
    * shares the idle worker lifetime and is released on expiry/cancellation. */
   renderSources(
+    files: readonly BookFile[],
+    format: BookFormat | "preview" | "chapter-preview",
+    options: { expectedRevision: number; includeSources?: readonly BookFile[] },
+    request?: BookChapterPreviewRequest,
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput>;
+  /** Replace the COMPLETE chapter/include collection against an idle capture.
+   * Supports additions, removals, reordering and chapter/include role changes.
+   * includeSources defaults to [] and revokes every previous include resource.
+   * Source keys must be unique across both roles. Retained settings, fonts and
+   * images cannot be changed here and their bytes are never retransferred.
+   * A matching worker must explicitly acknowledge replacement. Native capability
+   * gaps may reconstruct from the new capture; other failures never fall back.
+   * After success, renderSources/renderSourceUpdate use the new source baseline.
+   * selectedChapter addresses the NEW chapter order. Revision, cancellation,
+   * expiry and failure handling match renderSourceUpdate(). */
+  renderSourceSet(
     files: readonly BookFile[],
     format: BookFormat | "preview" | "chapter-preview",
     options: { expectedRevision: number; includeSources?: readonly BookFile[] },

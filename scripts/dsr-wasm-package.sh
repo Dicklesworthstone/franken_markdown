@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export RCH_CARGO_WRAPPER_BYPASS=1
-export CARGO_HTTP_USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
+export CARGO_HTTP_USER_AGENT='franken_markdown-build (+https://github.com/Dicklesworthstone/franken_markdown)'
 TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 mkdir -p "$ROOT/tests/artifacts/wasm"
 ART="$(mktemp -d "$ROOT/tests/artifacts/wasm/dsr.XXXXXXXX")"

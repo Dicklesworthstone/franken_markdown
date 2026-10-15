@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export RCH_CARGO_WRAPPER_BYPASS=1
-export CARGO_HTTP_USER_AGENT='OpenAI File Downloader, XaiImageApiFetch/1.0'
+export CARGO_HTTP_USER_AGENT='franken_markdown-build (+https://github.com/Dicklesworthstone/franken_markdown)'
 for tool in cargo rustc rustup wasm-bindgen node git; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     printf 'WASM profiles: missing required tool %s\n' "$tool" >&2

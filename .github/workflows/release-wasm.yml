@@ -8,8 +8,8 @@ permissions:
   id-token: write
 
 env:
-  CARGO_HTTP_USER_AGENT: "OpenAI File Downloader, XaiImageApiFetch/1.0"
-  npm_config_user_agent: "OpenAI File Downloader, XaiImageApiFetch/1.0"
+  CARGO_HTTP_USER_AGENT: "franken_markdown-release (+https://github.com/Dicklesworthstone/franken_markdown)"
+  npm_config_user_agent: "franken_markdown-release (+https://github.com/Dicklesworthstone/franken_markdown)"
 
 jobs:
   publish-wasm:

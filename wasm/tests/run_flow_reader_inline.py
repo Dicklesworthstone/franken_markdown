@@ -15,7 +15,7 @@ sources = {name: (root / name).read_text(encoding="utf-8") for name in [
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(executable_path=args.chromium, headless=True, args=["--no-sandbox"])
     try:
-        page = browser.new_page(user_agent="OpenAI File Downloader, XaiImageApiFetch/1.0")
+        page = browser.new_page(user_agent="franken_markdown-test (+https://github.com/Dicklesworthstone/franken_markdown)")
         page.route("**/*", lambda route: route.abort())
         page.set_content("<!doctype html><html lang='en'><body></body></html>")
         results = page.evaluate("""async sources => {

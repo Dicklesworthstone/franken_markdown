@@ -44,6 +44,46 @@ validate links, image availability, font coverage, or visual fidelity. Use the
 book link validator separately and independently validate generated artifacts.
 No filesystem, network, clock, dependency, or native-only assumption is added.
 
+## MCP publishing
+
+`fmd.render_book` now accepts the existing single-document `pdfA` and
+`pdfAStrict` options when `to` is `pdf` or `all`:
+
+```json
+{
+  "name": "fmd.render_book",
+  "arguments": {
+    "chapters": [
+      {"path": "intro.md", "markdown": "# Intro\n\n[Next](end.md#end)"},
+      {"path": "end.md", "markdown": "# End"}
+    ],
+    "to": "all",
+    "pdfA": "2b",
+    "pdfAStrict": true,
+    "strictLinks": true,
+    "metadataEpochSeconds": 1700000000
+  }
+}
+```
+
+The existing option parser validates the profile and strictness before source
+processing or asset decoding. The parsed profile is retained and passed to the
+same book renderer; it is never discarded or replaced by a flat-document path.
+Both fields require a PDF consumer; even `pdfA: "off"` on EPUB/site-only requests
+is refused. `fmd.verify_book` remains source-only and accepts neither flag.
+
+`strictLinks` and `pdfAStrict` are independent. The former checks the expanded
+book's navigation before assets or rendering; the latter applies the PDF/A
+writer's strict policy. A failure returns no partial multi-format result. With
+`to: "all"`, only PDF changes: EPUB/site still consume the same transferred
+font/image payloads and retain their ordinary byte output.
+
+An enabled PDF/A output entry retains `format: "pdf"`, `application/pdf` and
+base64 encoding and adds `pdfA: "2b"` plus the `pdfAStrict` boolean. These report
+requested emission settings, **not validation or certification**. OFF/omitted
+keeps the original receipt. `maxOutputBytes` includes archival objects and still
+limits the aggregate raw PDF/EPUB/site bytes, not each artifact separately.
+
 ## Verification status
 
 `tests/book_pdfa_test.rs` contains nine real-renderer integration tests covering
@@ -51,6 +91,11 @@ ordinary-byte parity, archival metadata, classic-xref validity, actual bound
 chapter destinations, preservation of existing page/font streams, TOC and note
 handling, includes, image routing, deterministic explicit metadata and geometry,
 strict refusal, and reuse after failure. Existing book navigation tests remain.
+Nine MCP regressions in `tests/mcp_book_pdfa_test.rs` cover direct-core parity,
+option rejection, deterministic receipts, multi-format asset reuse, aggregate
+limits and a real framed-session refusal/repair sequence. The existing thirteen
+publishing tests remain; the former PDF/A exclusion checks now assert the new
+schema and retain the rejection of fields on outputs without a PDF consumer.
 
 Rust/Cargo/rustfmt and an admitted DSR/RCH host were not available in the
 authoring environment. These Rust tests have **not run**. Source/diff checks and
@@ -61,6 +106,7 @@ Run through the project's admitted build environment:
 
 ```sh
 cargo test --locked --test book_pdfa_test
+cargo test --locked --features mcp --test mcp_book_pdfa_test --test mcp_book_test --test mcp_book_verify_test
 cargo check --locked --no-default-features --lib
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check

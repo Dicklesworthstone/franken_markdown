@@ -1,6 +1,9 @@
 //! Transactional admission for the reusable book's PDF publishing options.
 //! Validation builds a small candidate, never clones retained fonts or images.
 
+#[path = "browser_archival.rs"]
+mod archival;
+
 use crate::wasm::WasmRenderOptions;
 use crate::{PdfRunningBand, PdfRunningContent, RenderError, Result};
 

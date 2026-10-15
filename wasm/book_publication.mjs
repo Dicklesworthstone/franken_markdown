@@ -59,13 +59,16 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
  * request.strictLinks opts into the injected native navigation check before
  * any renderer is created. Verification shares the capture and deadline; there
  * is no fallback to unchecked output. The default remains non-strict.
+ * When supplied, checkRetainedLinks must also validate the final native capture
+ * before any result escapes. Public factories always install this second gate.
  * No partial output is published on failure, cancellation or timeout.
  */
 export function createBookPublicationClient({
-  createClient, captureInput, checkLinks, timeoutMs = 120000, maxOutputBytes = LIMIT,
+  createClient, captureInput, checkLinks, checkRetainedLinks, timeoutMs = 120000, maxOutputBytes = LIMIT,
 } = {}) {
   if (typeof createClient !== "function" || typeof captureInput !== "function"
       || (checkLinks !== undefined && typeof checkLinks !== "function")
+      || (checkRetainedLinks !== undefined && typeof checkRetainedLinks !== "function")
       || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000
       || !Number.isInteger(maxOutputBytes) || maxOutputBytes < 1 || maxOutputBytes > LIMIT)
     throw error("INVALID_OPTIONS", "Invalid publication factory, capture, deadline or combined output limit.");
@@ -166,7 +169,7 @@ export function createBookPublicationClient({
             // the native checker verified, not merely agree with one another.
             sourceLength = checked.sourceLength;
           }
-          const created = createClient();
+          const created = createClient({ strictLinks: strictLinks === true });
           if (stopped()) { retire(created); return; }
           client = created;
           if (!client || ["render", "renderSourceUpdate", "dispose"].some(key => typeof client[key] !== "function"))
@@ -186,6 +189,25 @@ export function createBookPublicationClient({
             sourceLength = admitted.output.sourceLength;
             total += admitted.output.bytes.byteLength;
             outputs.push(admitted.output);
+          }
+          if (strictLinks && checkRetainedLinks) {
+            // Verify the actual retained renderer, not just a second parse of
+            // equally long source. All selected bytes remain private until this
+            // revision-fenced native check agrees with the early preflight.
+            const retained = await checkRetainedLinks(client, {
+              paths: input.files.map(file => file.path), sourceLength,
+              expectedRevision: revision,
+            }, { signal: abort.signal });
+            if (stopped()) return;
+            if (retained?.summary?.findings > 0) {
+              throw Object.assign(error("BOOK_LINKS_FAILED",
+                `Strict publication refused: ${retained.summary.findings} internal navigation findings in the retained publication.`),
+                { linkReport: retained });
+            }
+            if (!sameNavigationReport(linkReport, retained))
+              throw error("BOOK_VERIFICATION_MISMATCH",
+                "The retained publication's navigation differs from its source preflight; no edition was published.");
+            linkReport = retained;
           }
           const result = Object.freeze({
             format: "book-publication", sourceLength, byteLength: total,
@@ -244,5 +266,53 @@ export function createBookPublicationLinkCheck({ createClient, parseReport, text
       signal.removeEventListener("abort", release);
       release();
     }
+  };
+}
+
+
+// Compare the admitted navigation contract, not raw JSON key order or a
+// worker-supplied optimistic summary. Strict preflight has no findings. The
+// decoder owns individual report validity and recomputes these counters.
+function sameNavigationReport(before, after) {
+  if (!before || !after || after.schema !== before.schema || after.scope !== before.scope
+      || !before.summary || !after.summary
+      || !Array.isArray(before.chapters) || !Array.isArray(after.chapters)
+      || before.chapters.length !== after.chapters.length) return false;
+  for (const key of ["chapters", "checked", "external", "unchecked", "findings"])
+    if (after.summary[key] !== before.summary[key]) return false;
+  return before.chapters.every((chapter, i) => {
+    const other = after.chapters[i];
+    return other && ["path", "checked", "external", "unchecked"].every(key => chapter[key] === other[key])
+      && Array.isArray(chapter.findings) && chapter.findings.length === 0
+      && Array.isArray(other.findings) && other.findings.length === 0;
+  });
+}
+
+/** Final gate over the exact privately retained publication. The caller owns
+ * the client: never dispose it here or create a replacement native book. Use
+ * only an empty source delta and the last acknowledged capture revision. The
+ * coordinator's deadline/abort disposes the endpoint on every failed outcome.
+ */
+export function createBookPublicationRetainedLinkCheck({ parseReport }) {
+  if (typeof parseReport !== "function")
+    throw error("INVALID_OPTIONS", "Retained publication verification requires the book report decoder.");
+  return async (client, { paths, sourceLength, expectedRevision }, { signal }) => {
+    const cancelled = () => {
+      if (signal.aborted) throw signal.reason ?? error("EXPORT_CANCELLED", "Publication verification cancelled.");
+    };
+    cancelled();
+    if (typeof client?.renderSourceUpdate !== "function")
+      throw error("UNSUPPORTED_BOOK_VERIFICATION", "Rebuild the matching worker for retained publication verification.");
+    const output = await client.renderSourceUpdate([], "links", { expectedRevision }, { signal });
+    cancelled();
+    const revision = output?.retainedInputRevision;
+    if (!Number.isSafeInteger(revision) || revision <= expectedRevision)
+      throw error("INVALID_LINK_REPORT", "Retained navigation verification lacks a fresh capture receipt.");
+    if (output.format !== "book-links" || output.mimeType !== "application/json"
+        || output.sourceLength !== sourceLength)
+      throw error("INVALID_LINK_REPORT", "Retained navigation verification does not match the published capture.");
+    const report = parseReport(output.bytes, paths);
+    cancelled();
+    return report;
   };
 }

@@ -97,6 +97,33 @@ ready edition into its delivery ZIP. That ZIP's manifest continues to describe
 byte integrity only. No new claim of PDF/EPUB conformance or signed verification
 is inserted into the manifest.
 
+## Final verification of the retained publication
+
+Strict publication also checks the **actual native book used for every selected
+format** before exposing any bytes. The early source-only check still rejects
+broken source before image/font decoding and rendering. After the selected
+exports succeed privately, an empty retained source delta runs `validateLinks`
+against the last acknowledged `retainedInputRevision`. No source, options or
+assets are resent, and no replacement native book is created for this check.
+
+The existing decoder validates the report against the captured chapter order.
+Its native source length must match the publications, and its revision must
+advance. Findings refuse the complete edition with `BOOK_LINKS_FAILED`; a clean
+report whose chapter counters differ from the early check refuses it with
+`BOOK_VERIFICATION_MISMATCH`. Missing retained-check support, malformed JSON,
+native failures and stale receipts are errors, not an unchecked fallback.
+Successful strict results expose this final, retained-book report.
+
+The same deadline and cancellation cover this final gate. Even already rendered
+outputs remain private while verification is pending; cancellation retires the
+owned worker and never publishes a partial edition. Non-strict calls do not
+perform either check. This is still navigation analysis, not byte-level
+PDF/EPUB validation, a source cryptographic attestation or asset verification.
+The private strict worker admits up to four MiB for a report even when the
+publication output budget is smaller. The coordinator still enforces the exact
+requested combined publication ceiling; report bytes do not consume or increase
+that ceiling. Non-strict worker receive limits are unchanged.
+
 ## Validation
 
 Run:
@@ -104,16 +131,23 @@ Run:
 ```sh
 node --test wasm/tests/book_edition.test.mjs \
   wasm/tests/book_publication_links.test.mjs \
-  wasm/tests/book_edition_verification.test.mjs
+  wasm/tests/book_edition_verification.test.mjs \
+  wasm/tests/book_publication_retained_verification.test.mjs
 ```
 
-The unchanged existing edition suite contains 36 cases. The two new suites add
-28 publication/preflight and 26 workbench/session cases, for 90 passing tests in
-the development environment. The tests run the production
-coordinator, source-only adapter, edition session and workbench controller with explicit native-transport and decoder
-boundary doubles plus explicit DOM/source/URL adapters. They cover ordering,
-all finding codes, input ownership, source metrics, cancellation/reentrancy,
-deadlines, rejection/retry, policy changes, stale-report handling, safe bounded
-finding display and derived-bundle invalidation.
-These are JavaScript orchestration tests, not native Markdown-semantic tests,
-generated-WASM execution, browser acceptance or publication conformance.
+The three new suites contain 28 early-preflight, 26 workbench/session and 27
+retained-verification cases. All 81 passed together on the updated production
+sources. They execute the coordinator, both checker adapters, edition session and
+workbench controller with explicit native-transport/decoder and DOM/source/URL
+boundary doubles. The final suite also loads the unchanged public factory body
+with transport imports replaced by adapters, checking both gates, worker cleanup,
+small receive/output budgets and non-strict compatibility.
+
+Coverage includes all finding codes, input ownership, source metrics, final
+capture revisions, report agreement, cancellation/reentrancy, shared deadlines,
+rejection/retry, policy changes, stale-report handling, safe bounded finding
+display and derived-bundle invalidation. The 36 older edition cases passed during
+prior patch validation; they were not rerun for this update. These are JavaScript
+orchestration tests, not native Markdown-semantic tests, generated-WASM execution,
+real browser acceptance or publication conformance. Rust, TypeScript and full
+repository/package gates have not run for this update.

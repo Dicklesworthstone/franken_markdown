@@ -1,6 +1,6 @@
 import { createBookWorkerClient } from "./book_worker.mjs";
 import { prepareBookInput, parseBookLinkReport, bookTextBytes } from "./book_session.mjs";
-import { createBookPublicationClient, createBookPublicationLinkCheck } from "./book_publication.mjs";
+import { createBookPublicationClient, createBookPublicationLinkCheck, createBookPublicationRetainedLinkCheck } from "./book_publication.mjs";
 
 /** Importing this module never initializes WASM on the UI thread. */
 export function createBookWorker(options = {}) {
@@ -31,10 +31,15 @@ export function createBookPublicationWorker(options = {}) {
         workerFactory: factory, timeoutMs, maxOutputBytes: 4 * 1024 * 1024,
       }),
     }),
+    checkRetainedLinks: createBookPublicationRetainedLinkCheck({ parseReport: parseBookLinkReport }),
     timeoutMs,
     maxOutputBytes,
-    createClient: () => createBookWorkerClient({
-      workerFactory: factory, timeoutMs, maxOutputBytes, retainBook: true,
+    createClient: ({ strictLinks }) => createBookWorkerClient({
+      workerFactory: factory, timeoutMs, retainBook: true,
+      // A small publication budget must not truncate the final report. The
+      // coordinator still enforces the original combined output ceiling before
+      // retaining each publication; this is only the private receive limit.
+      maxOutputBytes: strictLinks ? Math.max(maxOutputBytes, 4 * 1024 * 1024) : maxOutputBytes,
       // Only the publication deadline may expire this private capture. The
       // coordinator always disposes the client; no idle worker survives it.
       idleTimeoutMs: 600000,

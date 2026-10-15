@@ -40,13 +40,14 @@ function waitFor(pending, signal) {
  */
 export function createBookEditionSession({
   publisher, capture, checkpoint, isBlocked = () => false, urls = URL, onState = () => {},
+  crypto = globalThis.crypto,
 } = {}) {
   if (!publisher || ["render", "cancel", "dispose"].some(key => typeof publisher[key] !== "function")
       || [capture, checkpoint, isBlocked, onState].some(fn => typeof fn !== "function")
       || !urls || ["createObjectURL", "revokeObjectURL"].some(key => typeof urls[key] !== "function"))
     throw fail("INVALID_OPTIONS", "Edition sessions require a publisher, source host and URL owner.");
   let disposed = false, suspended = false, capturing = false;
-  let active = null, ready = null, formats = selectedFormats(["pdf", "epub", "site"]);
+  let active = null, ready = null, packing = null, formats = selectedFormats(["pdf", "epub", "site"]);
   let phase = "idle", errorCode = null;
   let message = "Select formats and prepare one edition. No files are saved automatically.";
   const blocked = () => {
@@ -54,8 +55,10 @@ export function createBookEditionSession({
   };
   function state() {
     return Object.freeze({
-      phase, busy: active !== null,
-      canPrepare: !disposed && !suspended && !active && formats.length > 0 && !blocked(),
+      phase, busy: active !== null || packing !== null, bundleBusy: packing !== null,
+      canPrepare: !disposed && !suspended && !active && !packing && formats.length > 0 && !blocked(),
+      canBundle: !!ready && !active && !packing && !ready.bundleByteLength && current(ready),
+      bundleByteLength: ready?.bundleByteLength ?? 0,
       formats,
       downloads: Object.freeze(ready ? ready.downloads.slice() : []),
       byteLength: ready?.byteLength ?? 0, sourceLength: ready?.sourceLength ?? 0,
@@ -69,16 +72,19 @@ export function createBookEditionSession({
     if (!record) return;
     const owned = record.urls.splice(0);
     record.downloads = [];
+    record.blobs = [];
     for (const url of owned) {
       try { urls.revokeObjectURL(url); } catch { /* Retire all URLs even if one adapter fails. */ }
     }
   }
   function retire(code, text, nextPhase = "idle") {
-    const job = active, previous = ready;
-    active = ready = null;
+    const job = active, previous = ready, bundle = packing;
+    active = ready = packing = null;
     phase = nextPhase; message = text; errorCode = null;
     release(previous);
     release(job);
+    release(bundle);
+    bundle?.abort.abort(fail(code, text));
     if (job) {
       job.abort.abort(fail(code, text));
       try { publisher.cancel(); } catch { /* Source and URLs are still retired. */ }
@@ -106,7 +112,7 @@ export function createBookEditionSession({
   }
   async function prepare() {
     alive();
-    if (active) throw fail("BOOK_BUSY", "An edition is already being prepared.");
+    if (active || packing) throw fail("BOOK_BUSY", "An edition or its delivery bundle is already being prepared.");
     if (blocked()) throw fail("BOOK_BUSY", "Finish importing or composing text before publishing.");
     if (!formats.length) throw fail("INVALID_FORMAT", "Select at least one publication format.");
     release(ready); ready = null;
@@ -157,6 +163,9 @@ export function createBookEditionSession({
         job.downloads.push(Object.freeze({ format, filename, href, mimeType, byteLength: blob.size }));
       }
       fence(job);
+      // Keep the same immutable Blobs used by the individual downloads. Bundle
+      // preparation neither rerenders nor asks output.blob() for different bytes.
+      job.blobs = blobs.map(({ format, blob }) => ({ format, blob }));
       job.byteLength = total; job.sourceLength = result.sourceLength;
       ready = job; active = null; phase = "ready";
       message = `Edition ready: ${selected.length} files, ${total} bytes. Use each download link to save it; preparation alone saves nothing.`;
@@ -175,9 +184,65 @@ export function createBookEditionSession({
       throw cause;
     }
   }
+  async function prepareBundle() {
+    alive();
+    if (active || packing) throw fail("BOOK_BUSY", "An edition or its delivery bundle is already being prepared.");
+    if (!ready) throw fail("NO_EDITION", "Prepare an edition before packaging its delivery ZIP.");
+    if (!current(ready)) {
+      retire("STALE_SOURCE", "The edition changed; prepare current publications before packaging.");
+      throw fail("STALE_SOURCE", "The edition changed; no delivery ZIP was prepared.");
+    }
+    if (ready.bundleByteLength) return state();
+    const publication = ready, job = { abort: new AbortController(), urls: [], downloads: [] };
+    packing = job; phase = "bundling"; errorCode = null;
+    message = "Packaging the exact edition files and SHA-256 manifest. Individual downloads remain available.";
+    const check = () => {
+      alive();
+      if (packing !== job || ready !== publication || job.abort.signal.aborted)
+        throw job.abort.signal.reason ?? fail("STALE_SOURCE", "This edition bundle was retired.");
+      if (!current(publication)) throw fail("STALE_SOURCE", "The book or editor changed during packaging.");
+    };
+    announce();
+    try {
+      check();
+      const result = await waitFor(createBookEditionBundle(publication.blobs, {
+        signal: job.abort.signal, crypto, sourceLength: publication.sourceLength,
+      }), job.abort.signal);
+      check();
+      const href = urls.createObjectURL(result.blob);
+      job.urls.push(href);
+      check();
+      const download = Object.freeze({ format: "bundle", filename: result.filename, href,
+        mimeType: result.mimeType, byteLength: result.byteLength });
+      // Transfer URL ownership only after the final source/lifecycle fence.
+      publication.urls.push(href); job.urls = [];
+      publication.downloads.push(download); publication.bundleByteLength = result.byteLength;
+      packing = null; phase = "ready";
+      message = `Delivery ZIP ready: ${result.byteLength} bytes, containing the exact edition files and SHA-256 manifest. Click its download link to save it. Checksums are not signatures.`;
+      announce();
+      return state();
+    } catch (cause) {
+      release(job);
+      if (packing === job) {
+        packing = null;
+        job.abort.abort(cause);
+        if (!current(publication)) {
+          retire("STALE_SOURCE", "The edition changed during packaging; all stale downloads were retired.");
+        } else {
+          // Crypto/packaging/URL failure must not destroy a valid rendered edition.
+          phase = "ready";
+          errorCode = typeof cause?.code === "string" ? cause.code : "BUNDLE_FAILED";
+          message = `${errorCode}: ${cause?.message ?? "Edition packaging failed."} Individual edition downloads remain available; packaging can be retried.`;
+          announce();
+        }
+      }
+      throw cause;
+    }
+  }
   return Object.freeze({
     get state() { return state(); },
     prepare,
+    prepareBundle,
     setFormats(value) {
       alive();
       const next = selectedFormats(value);

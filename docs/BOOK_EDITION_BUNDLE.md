@@ -38,9 +38,33 @@ without waiting for an uncooperative digest; underlying Web Crypto work may
 finish later and its result is ignored. SHA-256 requires Web Crypto in a secure
 context. A missing crypto capability is an explicit `CRYPTO_UNAVAILABLE` error.
 
+## Workbench integration
+
+In **Publish a complete edition**, choose formats and prepare the edition.
+Then choose **Prepare delivery ZIP + SHA-256 manifest** and use the new
+`book-edition.zip` download link. The separate publication links remain usable.
+No additional native rendering, source capture or image/font transfer occurs.
+
+`createBookEditionSession` and `createBookEditionControls` expose
+`prepareBundle()`. State includes `canBundle`, `bundleBusy` and
+`bundleByteLength`; existing `byteLength` still counts native publication bytes
+only. `busy` covers either native publication or packaging. Repeated packaging
+of the same ready edition returns its existing download without hashing again.
+The optional `crypto` adapter defaults to `globalThis.crypto`.
+
+Every edit, resource/selection change, import/composition notification, cancel,
+suspension or disposal retires pending packaging and owned URLs. Raw editor
+checkpoints are rechecked before packaging, after hashing, after URL creation
+and on normal/auxiliary download activation. An old digest or link cannot
+invalidate a newer edition. Crypto, archive or URL failures preserve current
+individual downloads and permit retry; stale output never survives a retry.
+
 ## Validation
 
-Run `node --test wasm/tests/book_edition_bundle.test.mjs`. The test inputs are
+Run `node --test wasm/tests/book_edition.test.mjs wasm/tests/book_edition_bundle.test.mjs`.
+The original edition suite remains unchanged. Together these exercise the
+existing edition ownership contract and the delivery ZIP writer.
+The test inputs are
 opaque binary fixtures, not substitutes for the native renderer. The tests use
 an independent ZIP central-directory reader, a separate bitwise CRC and Node
 SHA-256 to verify archive structure, exact payloads, receipts, deterministic

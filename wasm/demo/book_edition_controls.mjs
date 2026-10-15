@@ -19,7 +19,7 @@ export function createBookEditionPanel(root) {
   panel.setAttribute("aria-labelledby", "book-edition-title");
   const heading = make("h3", "book-edition-title", "Publish a complete edition");
   const help = make("p", "book-edition-help",
-    "Prepare selected formats from one captured book, including applied settings and currently authorized images/fonts. All selected formats must succeed before any edition download appears. These are separate published files, not an editable project or portable backup. No file is saved automatically. The combined output limit is 128 MiB with one two-minute publication deadline.");
+    "Prepare selected formats from one captured book, including applied settings and currently authorized images/fonts. All selected formats must succeed before any edition download appears. After rendering, optionally package the exact published files in one delivery ZIP with a SHA-256 manifest. Packaging does not rerender. Checksums detect changes; they are not signatures. These downloads are not an editable project or portable backup. SHA-256 packaging requires a secure browser context. No file is saved automatically. The combined output limit is 128 MiB with one two-minute publication deadline.");
   const formats = make("fieldset", "book-edition-formats");
   formats.append(make("legend", null, "Formats in this edition"));
   for (const [key, text] of choices) {
@@ -32,7 +32,10 @@ export function createBookEditionPanel(root) {
   const cancel = make("button", "book-edition-cancel", "Cancel / discard edition");
   prepare.type = cancel.type = "button"; cancel.disabled = true;
   prepare.setAttribute("aria-describedby", "book-edition-help book-edition-status");
-  actions.append(prepare, cancel);
+  const bundle = make("button", "book-edition-bundle", "Prepare delivery ZIP + SHA-256 manifest");
+  bundle.type = "button"; bundle.disabled = true;
+  bundle.setAttribute("aria-describedby", "book-edition-help book-edition-status");
+  actions.append(prepare, bundle, cancel);
   const status = make("p", "book-edition-status");
   status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   status.setAttribute("aria-atomic", "true");
@@ -48,13 +51,13 @@ export function createBookEditionPanel(root) {
  * the ordinary export, preview, PDF-proof, inspection or font workers.
  * Source capture uses the existing source host and collection normalizer.
  */
-export function createBookEditionControls({ root, controls, collection, publisher, urls = URL }) {
+export function createBookEditionControls({ root, controls, collection, publisher, urls = URL, crypto = globalThis.crypto }) {
   if (!controls || ["captureProject", "checkpoint", "subscribeSourceState"].some(key => typeof controls[key] !== "function")
       || !collection || ["snapshot", "subscribe"].some(key => typeof collection[key] !== "function"))
     throw fail("INVALID_OPTIONS", "Edition controls require the workbench source host and collection.");
   const panel = createBookEditionPanel(root);
   if (mounted.has(panel)) throw fail("ALREADY_MOUNTED", "Edition controls are already installed.");
-  const names = ["prepare", "cancel", "formats", "status", "downloads", ...choices.map(([key]) => key)];
+  const names = ["prepare", "bundle", "cancel", "formats", "status", "downloads", ...choices.map(([key]) => key)];
   const el = Object.fromEntries(names.map(key => [key, root.querySelector(`#book-edition-${key}`)]));
   if (Object.values(el).some(node => !node)) throw fail("MISSING_CONTROLS", "Edition controls are incomplete.");
   let disposed = false, suspended = false, session = null;
@@ -72,6 +75,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
   function show(state) {
     const inactive = disposed || suspended || state.phase === "disposed" || state.phase === "suspended";
     el.prepare.disabled = inactive || !state.canPrepare;
+    el.bundle.disabled = inactive || !state.canBundle;
     el.cancel.disabled = inactive || (!state.busy && state.downloads.length === 0);
     el.formats.disabled = inactive;
     panel.setAttribute("aria-busy", String(state.busy));
@@ -107,12 +111,16 @@ export function createBookEditionControls({ root, controls, collection, publishe
     syncSelection();
     return session.prepare();
   }
+  async function prepareBundle() {
+    syncSelection();
+    return session.prepareBundle();
+  }
   function report(cause) {
     if (!disposed && !suspended && !session.state.busy && session.state.downloads.length === 0 && session.state.phase !== "error")
       el.status.textContent = `${cause?.code ?? "EDITION_FAILED"}: ${cause?.message ?? "Edition preparation failed."}`;
   }
   try {
-    session = createBookEditionSession({ publisher, urls, checkpoint, isBlocked: blocked, onState: show,
+    session = createBookEditionSession({ publisher, urls, crypto, checkpoint, isBlocked: blocked, onState: show,
       capture() {
         controls.captureProject();
         const before = checkpoint();
@@ -125,6 +133,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
     unlisten.push(collection.subscribe(() => session.changed()));
     unlisten.push(controls.subscribeSourceState(() => session.invalidate()));
     listen(el.prepare, "click", () => { void prepare().catch(report); });
+    listen(el.bundle, "click", () => { void prepareBundle().catch(report); });
     listen(el.cancel, "click", () => session.cancel());
     // Capture before other components can reject a half-edited path/setting.
     // Any workbench input is conservative invalidation, including unapplied drafts.
@@ -170,6 +179,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
   }
   return Object.freeze({
     prepare,
+    prepareBundle,
     get state() { return session.state; },
     suspend() {
       if (disposed || suspended) return;

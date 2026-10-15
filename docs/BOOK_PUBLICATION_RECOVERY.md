@@ -64,21 +64,58 @@ try {
 }
 ```
 
+## Workbench status and cancellation
+
+The edition session forwards these phases to the workbench's existing live status
+region. Authors see the current format and its position in the selected edition,
+initial navigation checking, final verification, and an explicit restart message
+with attempt counts. These are stage counts, not invented render percentages.
+The same captured book is used after recovery; preparation never saves a file.
+
+`state.publicationProgress` contains the current frozen display metadata while
+the job is current, or `null` otherwise. The session stays `busy` through all
+phases and backoff. Cancel remains available, and preparation/bundling remain
+unavailable until appropriate. No download URL or clean-verification badge is
+created by a progress notification, including `verifying-publication`.
+
+Progress is bound to the exact source/editor checkpoint and edition job. Raw
+edits, source/resource changes, changed format/verification policy, composition,
+suspension and disposal retire work through the existing host paths. Even an
+unnotified edit discovered by a progress callback cancels the publisher before
+its next native operation. View callbacks are rechecked too. Late callbacks from
+cancelled or older jobs cannot repaint a new edition or a finished delivery ZIP.
+
+Metadata admission copies only bounded primitive fields without invoking
+accessors. Malformed, duplicate and out-of-order events are ignored; this optional
+channel cannot substitute for output/report validation. Older publishers that do
+not send progress still work under the existing strict/non-strict result policy.
+The unchanged controller uses its existing `role="status"`, polite live region,
+buttons, source subscriptions and atomic download display; no new DOM surface,
+worker, parser, persistence path or automatic retry of filesystem writes exists.
+
 ## Verification
 
 ```sh
 node --test wasm/tests/book_publication_recovery.test.mjs \
-  wasm/tests/book_publication_retained_verification.test.mjs
+  wasm/tests/book_publication_retained_verification.test.mjs \
+  wasm/tests/book_publication_workbench_progress.test.mjs
 ```
 
-74 Node tests passed: 47 new recovery/progress cases and 27 unchanged retained
-verification regressions. The complete production coordinator and both checker
-adapters execute via normal imports. A public-factory test executes the actual
+103 Node tests passed together: 47 recovery/progress cases, 27 unchanged retained
+verification regressions, and 29 new workbench progress cases. The complete
+production coordinator and both checker adapters execute via normal imports. A public-factory test executes the actual
 entry module in a VM with explicit transport/capture/decoder boundaries. Cases
 cover every failing phase, whole-edition replacement, exact source/assets across
 host edits, report refusal, output budgets, backoff cancellation, shared deadlines,
 late settlement, observer reentry and retry opt-out. The new test is included by
-the existing `book_publication*.test.mjs` gate wildcard.
+the existing `book_publication*.test.mjs` gate wildcard. The workbench cases run
+the complete production coordinator/session and unchanged controller through
+normal imports with explicit DOM/source-host/URL and native engine boundaries.
+They exercise live status/buttons/download gating, retry at an actual coordinator
+backoff, cancellation/composition/policy/lifecycle changes, unnotified raw edits,
+observer reentry, hostile/late metadata, legacy publishers and delivery bundling.
+The unchanged controller and retained-verification test blobs were checked against
+main; no golden, test gate or existing regression was changed.
 
 The native renderer and report generation are explicit test doubles. This is not
 Rust/WASM rendering parity, output-format conformance, a browser acceptance run,

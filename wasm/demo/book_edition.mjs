@@ -41,6 +41,57 @@ function editionLinkReport(report, paths, clean) {
   if (count !== report.summary.findings) throw invalid();
   return report;
 }
+// Optional display metadata is not a publication/verification receipt. Copy
+// only bounded primitive data fields; no source, output, accessor or HTML enters
+// session state. Ignore malformed, duplicate and out-of-order notifications.
+function editionProgress(value, selected, checking, previous) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+    const allowed = ["phase", "attempt", "maxAttempts", "completedFormats", "totalFormats", "format", "retryCode"];
+    const data = {};
+    for (const key of Reflect.ownKeys(value)) {
+      const field = Object.getOwnPropertyDescriptor(value, key);
+      if (!allowed.includes(key) || !field || !Object.hasOwn(field, "value")) return null;
+      data[key] = field.value;
+    }
+    const { phase, attempt, maxAttempts, completedFormats, totalFormats, format, retryCode } = data;
+    if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3
+        || !Number.isInteger(attempt) || attempt < 1 || attempt > maxAttempts
+        || totalFormats !== selected.length || !Number.isInteger(completedFormats)
+        || completedFormats < 0 || completedFormats > totalFormats) return null;
+    if (phase === "rendering") {
+      if (completedFormats >= totalFormats || format !== selected[completedFormats] || retryCode !== undefined) return null;
+    } else {
+      if (format !== undefined) return null;
+      if (phase === "retrying") {
+        if (attempt < 2 || completedFormats !== 0
+            || !["WORKER_FAILED", "BOOK_CAPTURE_EXPIRED"].includes(retryCode)) return null;
+      } else if ((phase !== "checking-links" && phase !== "verifying-publication") || !checking
+          || retryCode !== undefined || completedFormats !== (phase === "checking-links" ? 0 : totalFormats)) return null;
+    }
+    const step = item => item.phase === "retrying" ? -1 : item.phase === "checking-links" ? 0
+      : item.phase === "rendering" ? item.completedFormats + 1 : totalFormats + 1;
+    if (previous) {
+      if (maxAttempts !== previous.maxAttempts || attempt < previous.attempt || attempt > previous.attempt + 1
+          || (attempt > previous.attempt && phase !== "retrying")
+          || (attempt === previous.attempt && step(data) <= step(previous))) return null;
+    } else if (attempt !== 1 && !(attempt === 2 && phase === "retrying")) return null;
+    return Object.freeze({ phase, attempt, maxAttempts, completedFormats, totalFormats,
+      ...(phase === "rendering" ? { format } : {}), ...(phase === "retrying" ? { retryCode } : {}) });
+  } catch { return null; }
+}
+function editionProgressMessage(progress) {
+  const { phase, attempt, maxAttempts, completedFormats, totalFormats, format } = progress;
+  const prefix = attempt > 1 ? `Attempt ${attempt} of ${maxAttempts}: ` : "";
+  const text = phase === "retrying"
+    ? `The publication worker was lost. Restarting the complete edition (attempt ${attempt} of ${maxAttempts}) from the same captured book.`
+    : phase === "checking-links" ? `${prefix}Checking internal navigation before rendering.`
+      : phase === "verifying-publication" ? `${prefix}Verifying the rendered edition before releasing downloads.`
+        : `${prefix}Rendering ${format === "site" ? "HTML-site ZIP" : format.toUpperCase()} (${completedFormats + 1} of ${totalFormats}).`;
+  return `${text} No edition downloads are ready yet.`;
+}
+
 function waitFor(pending, signal) {
   return new Promise((resolve, reject) => {
     const cleanup = () => signal.removeEventListener("abort", abort);
@@ -76,12 +127,15 @@ export function createBookEditionSession({
     try { return !!isBlocked(); } catch { return true; }
   };
   function state() {
+    const job = active;
+    const publicationProgress = job?.progress && current(job) && active === job ? job.progress : null;
     return Object.freeze({
       phase, busy: active !== null || packing !== null, bundleBusy: packing !== null,
       canPrepare: !disposed && !suspended && !active && !packing && formats.length > 0 && !blocked(),
       canBundle: !!ready && !active && !packing && !ready.bundleByteLength && current(ready),
       bundleByteLength: ready?.bundleByteLength ?? 0,
       formats, strictLinks,
+      publicationProgress,
       // Raw edits without notifications must not leave a visible clean verdict.
       linkReport: verification && current(verification) ? verification.report : null,
       downloads: Object.freeze(ready ? ready.downloads.slice() : []),
@@ -155,6 +209,29 @@ export function createBookEditionSession({
       job.paths = input.files.map(file => file.path);
       const pending = publisher.render(input.files, selected, input.options, {
         signal: job.abort.signal, ...(checking ? { strictLinks: true } : {}),
+        onProgress(value) {
+          // A retired publisher may still call its observer. It cannot repaint
+          // the next job or renew the source/resource authority of this one.
+          const check = () => {
+            if (active !== job || job.abort.signal.aborted) return false;
+            try { fence(job); return true; }
+            catch {
+              if (active === job)
+                retire("STALE_SOURCE", "The book or editor changed during publication. Prepare a new edition from the current capture.");
+              return false;
+            }
+          };
+          if (!check()) return;
+          const next = editionProgress(value, selected, checking, job.progress);
+          // Proxy inspection and view observers can reenter the source host.
+          if (!check() || !next) return;
+          job.progress = next;
+          message = editionProgressMessage(next);
+          announce();
+          // Throwing from an observer would be ignored by the coordinator.
+          // Explicit cancellation here stops work before its next native phase.
+          check();
+        },
       });
       input = null; // Do not retain an extra resource snapshot while awaiting the worker.
       const result = await waitFor(pending, job.abort.signal);

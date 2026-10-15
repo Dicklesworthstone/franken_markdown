@@ -27,6 +27,8 @@ export function createBookFontStore() {
     snapshot(){counters.fontsRead++;return structuredClone([...data.values()])},
     remove(slot){return data.delete(slot)},clear(){const changed=data.size>0;data.clear();return changed},dispose(){data.clear()}};
 }
+// This fixture worker has no source-set capability: retain its legacy fence.
+export const bookCollectionResourceRevision = collection => collection.renderConfigurationRevision;
 export const createBookCollectionCapture = collection => () => {
   const input=collection.snapshot();return {...input,render(){counters.rendered++;throw new Error('No renderer in this fixture')}};
 };

@@ -123,7 +123,6 @@ test("resource and presentation changes immediately release idle native state", 
     f => f.collection.setFonts([{ slot: "body-regular", name: "Test.ttf", bytes: new Uint8Array([3]) }], f.collection.revision),
     f => f.collection.setPage({ size: "a4" }, f.collection.revision),
     f => f.collection.configure({ ...f.collection.options, title: "New" }),
-    f => f.collection.move(0, 1), f => f.collection.setRole(1, "include"),
     f => f.collection.replaceProject(f.collection.project())];
   for (const mutate of mutations) {
     const f = fixture(t); await f.preview.build(); mutate(f);

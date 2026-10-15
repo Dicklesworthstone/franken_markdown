@@ -1,4 +1,4 @@
-import { bookError, createBookCollectionCapture } from "../book_worker.mjs";
+import { bookError, createBookCollectionCapture, bookCollectionResourceRevision } from "../book_worker.mjs";
 import { normalizePdfPage } from "../pdf_page.mjs";
 import {
   createBookCollection,
@@ -70,7 +70,7 @@ export function createBookControls({
   let portableAbort = null;
   let lastSourceBusy = false;
   let composing = false;
-  let configurationRevision = collection.renderConfigurationRevision;
+  let resourceRevision = bookCollectionResourceRevision(collection, worker);
   let disposed = false,
     active = 0,
     generation = 0,
@@ -379,12 +379,12 @@ export function createBookControls({
     unlisten.push(() => el[id].removeEventListener(type, handler));
   }
   const unsubscribe = collection.subscribe(() => {
-    const next = collection.renderConfigurationRevision;
-    const sourceOnly = Number.isSafeInteger(next) && next === configurationRevision;
-    configurationRevision = next;
+    const next = bookCollectionResourceRevision(collection, worker);
+    const sourcesOnly = Number.isSafeInteger(next) && next === resourceRevision;
+    resourceRevision = next;
     // Retire every prepared download and in-flight job. Only an already-idle
-    // source-compatible native book survives for the next publication format.
-    invalidate(sourceOnly);
+    // resource-compatible native book survives text or structural source edits.
+    invalidate(sourcesOnly);
     list();
   });
   on("chapter-source", "compositionstart", () => {
@@ -400,7 +400,7 @@ export function createBookControls({
   on("chapter-path", "input", () => invoke(capture));
   on("source-role", "change", () =>
     invoke(() => {
-      invalidate();
+      invalidate(true);
       try {
         capture();
       } finally {

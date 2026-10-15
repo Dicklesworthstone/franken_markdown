@@ -1,7 +1,7 @@
 import { bookPreviewFrame } from "../book_preview_frame.mjs";
 import { parseBookPreview, resolveBookPreviewLink } from "../book_site_preview.mjs";
 import { parseBookChapterPreview } from "../book_session.mjs";
-import { createBookCollectionCapture } from "../book_worker.mjs";
+import { createBookCollectionCapture, bookCollectionResourceRevision } from "../book_worker.mjs";
 
 const failure = (code, message) => Object.assign(new Error(message), { code });
 const blank =
@@ -59,7 +59,7 @@ export function createBookPreviewControls({
   const captureBook = createBookCollectionCapture(collection, worker);
   const chapterPreview = worker.supportsChapterPreview === true;
   let selectedSource = null, previewMode = null;
-  let configurationRevision = collection.renderConfigurationRevision;
+  let resourceRevision = bookCollectionResourceRevision(collection, worker);
   const unlisten = [];
   const alive = () => {
     if (disposed || suspended) throw failure("PREVIEW_CLOSED", "Book preview is not active.");
@@ -257,10 +257,10 @@ export function createBookPreviewControls({
   el["preview-frame"].removeAttribute("src");
   el["preview-auto"].checked = false;
   const unsubscribe = collection.subscribe(() => {
-    const next = collection.renderConfigurationRevision;
-    const sourceOnly = Number.isSafeInteger(next) && next === configurationRevision;
-    configurationRevision = next;
-    changed(sourceOnly);
+    const next = bookCollectionResourceRevision(collection, worker);
+    const sourcesOnly = Number.isSafeInteger(next) && next === resourceRevision;
+    resourceRevision = next;
+    changed(sourcesOnly);
   });
   const unsubscribeSource = controls.subscribeSourceState?.(() => {
     if (controls.sourceBusy) changed();

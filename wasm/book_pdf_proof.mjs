@@ -1,7 +1,7 @@
 // A complete book PDF retained once for preview and exact-byte download.
 // The host owns source/settings/resources; this session owns a dedicated book
 // worker client. No Markdown/PDF parser, alternative renderer or network access.
-import { createBookCollectionCapture } from "./book_worker.mjs";
+import { createBookCollectionCapture, bookCollectionResourceRevision } from "./book_worker.mjs";
 
 const MAX_BYTES = 128 * 1024 * 1024;
 const failure = (code, message) => Object.assign(new Error(message), { code });
@@ -49,7 +49,7 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
 
   const capturePublication = createBookCollectionCapture(collection, worker);
   let pending = null, retained = null, disposed = false, suspended = false;
-  let configurationRevision = collection.renderConfigurationRevision;
+  let resourceRevision = bookCollectionResourceRevision(collection, worker);
   const listeners = new Set();
   const notify = () => {
     for (const listener of listeners) {
@@ -94,18 +94,18 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
     return null;
   }
   const unsubscribe = collection.subscribe(() => {
-    const next = collection.renderConfigurationRevision;
-    const sourceOnly = Number.isSafeInteger(next) && next === configurationRevision;
-    configurationRevision = next;
+    const next = bookCollectionResourceRevision(collection, worker);
+    const sourcesOnly = Number.isSafeInteger(next) && next === resourceRevision;
+    resourceRevision = next;
     // captureProject synchronously installs the current raw editor text. It is
     // part of this capture, not a stale edit. Admission is reserved throughout;
     // the final checkpoint and snapshot are validated after capture returns.
     if (pending?.capturing) {
       retained = null;
-      if (!sourceOnly) releaseIdle();
+      if (!sourcesOnly) releaseIdle();
       return;
     }
-    invalidate(undefined, sourceOnly);
+    invalidate(undefined, sourcesOnly);
   });
   const unsubscribeSource = controls.subscribeSourceState(() => {
     if (controls.sourceBusy) invalidate("Book import or text composition started; the PDF proof was retired.");

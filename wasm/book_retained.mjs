@@ -107,7 +107,7 @@ export function createRetainedBook(engine, renderPreview, renderChapterPreview) 
         throw error("UNSUPPORTED_BOOK_LINKS", "Rebuild the matching native book for retained navigation checks.");
       // Native exporters still own every byte. Legacy preview keeps its full
       // ZIP contract; selected previews render one chapter on capable packages.
-      // No rendered HTML is retained between requests.
+      // This raw adapter retains no output; the worker cache below owns wire bytes.
       const result = format === "chapter-preview"
         ? await renderChapterPreview(session, selected)
         : format === "preview"
@@ -133,6 +133,8 @@ export const BOOK_OUTPUT_CACHE_LIMITS = Object.freeze({
   maxBytes: 32 * 1024 * 1024,
   maxEntryBytes: 16 * 1024 * 1024,
   maxEntries: 64,
+  maxSnapshots: 8,
+  maxHistoryUnits: 8 * 1024 * 1024,
 });
 const optionKeys = new Set([
   "title", "author", "lang", "customCss", "toc", "pageNumbers", "font", "darkMode",
@@ -181,21 +183,55 @@ function workerOutput(result, format) {
  * BookOutput API is unchanged. Inputs MUST be complete, normalized, worker-owned
  * captures, as supplied by installBookWorker, not mutable caller asset views.
  * Only exact full-book equality permits reuse: includes/order/settings/resources
- * all participate. No Markdown, include graph, SVG or PDF interpretation occurs.
+ * all participate. A bounded source-state history also reuses exact undo/redo
+ * revisits. No Markdown, include graph, SVG or PDF interpretation occurs.
  * The existing full-preview codec can share the same cached native site export.
  */
 export function createCachedBookRenderer(renderer, renderPreview, requestedLimits = {}) {
   if (typeof renderer?.render !== "function" || typeof renderer?.clear !== "function"
       || typeof renderPreview !== "function")
     throw new TypeError("The output cache requires an owned renderer and the existing preview codec.");
-  const limits = outputCacheLimits(requestedLimits), outputs = new Map();
-  let input = null, bytes = 0, busy = false, generation = 0;
+  const limits = outputCacheLimits(requestedLimits), outputs = new Map(), history = new Map();
+  let input = null, current = null, bytes = 0, historyUnits = 0, busy = false, generation = 0;
   let hits = 0, misses = 0, evictions = 0;
-  function discard() { outputs.clear(); bytes = 0; input = null; }
+  function discard() {
+    outputs.clear(); history.clear(); current = null; input = null; bytes = 0; historyUnits = 0;
+  }
   function clear() { generation++; discard(); renderer.clear(); }
-  function evict(key) {
-    const entry = outputs.get(key);
-    if (entry) { bytes -= entry.bytes.byteLength; outputs.delete(key); evictions++; }
+  function evict(entry) {
+    if (!outputs.delete(entry)) return;
+    bytes -= entry.value.bytes.byteLength; entry.owner.entries.delete(entry.key); evictions++;
+    if (!entry.owner.entries.size && history.delete(entry.owner)) historyUnits -= entry.owner.units;
+  }
+  function retire(bucket) {
+    if (history.delete(bucket)) historyUnits -= bucket.units;
+    for (const entry of bucket.entries.values()) evict(entry);
+  }
+  function sourceKey(files, includes) {
+    const copy = list => Object.freeze(list.map(({ path, source }) => Object.freeze({ path, source })));
+    const key = { files: copy(files), includes: copy(includes), entries: new Map(), units: 0 };
+    for (const list of [key.files, key.includes]) for (const file of list)
+      key.units += file.path.length + file.source.length;
+    return key;
+  }
+  function selectSources(files, includes) {
+    const matches = key => sameSources(key.files, files) && sameSources(key.includes, includes);
+    if (current && matches(current)) return current;
+    let found;
+    for (const key of history.keys()) if (matches(key)) { found = key; break; }
+    // Own small key containers before retiring anything. Immutable strings are
+    // shared; no concatenated mega-key, probabilistic hash, or asset copy exists.
+    const next = found ?? sourceKey(files, includes), previous = current;
+    if (found) { history.delete(found); historyUnits -= found.units; }
+    current = next;
+    if (previous?.entries.size) {
+      if (limits.maxSnapshots > 1 && limits.maxHistoryUnits && previous.units <= limits.maxHistoryUnits) {
+        history.set(previous, true); historyUnits += previous.units;
+      } else retire(previous);
+    }
+    while (history.size >= limits.maxSnapshots || historyUnits > limits.maxHistoryUnits)
+      retire(history.keys().next().value);
+    return next;
   }
   async function render(files, options, format = "preview", selected = 0) {
     if (busy) throw error("BOOK_BUSY", "A cached book is already rendering.");
@@ -209,29 +245,33 @@ export function createCachedBookRenderer(renderer, renderPreview, requestedLimit
       if (ticket !== generation) throw error("EXPORT_CANCELLED", "Cached book was released during export.");
     };
     try {
-      // Unknown future options disable output reuse rather than accidentally
-      // treating an unrecognized dependency as irrelevant to rendered bytes.
-      const cacheable = Reflect.ownKeys(options).every(key => optionKeys.has(key));
-      if (!cacheable || (input && (!sameOptions(input.options, options)
-          || !sameSources(input.files, files)
-          || !sameSources(input.options.includeSources, options.includeSources)))) discard();
+      // History spans source edits only. Any presentation/resource change,
+      // revocation or unknown future dependency retires ALL previous states.
+      let cacheable = limits.maxSnapshots && limits.maxEntries && limits.maxBytes && limits.maxEntryBytes
+        && Reflect.ownKeys(options).every(key => optionKeys.has(key));
+      if (!cacheable || (input && !sameOptions(input.options, options))) discard();
+      let bucket = null;
+      if (cacheable) {
+        try { bucket = selectSources(files, options.includeSources); }
+        catch { discard(); cacheable = false; } // Key allocation is optional too.
+      }
       async function load(kind, chapter, produce) {
         const key = kind === "chapter-preview" ? `${kind}:${chapter}` : kind;
-        const old = outputs.get(key);
+        const old = bucket?.entries.get(key);
         if (old) {
           let owned;
-          try { owned = copyBytes(old.bytes); } catch { evict(key); }
+          try { owned = copyBytes(old.value.bytes); } catch { evict(old); }
           if (owned) {
-            outputs.delete(key); outputs.set(key, old); hits++;
+            outputs.delete(old); outputs.set(old, true); hits++;
             // Cache hits retain the same asynchronous cancellation boundary.
             await Promise.resolve(); fence();
-            return Object.freeze({ ...old, bytes: owned });
+            return Object.freeze({ ...old.value, bytes: owned });
           }
         }
         misses++;
         const output = workerOutput(await produce(), kind);
         fence();
-        if (cacheable && limits.maxEntries && output.bytes.byteLength <= limits.maxEntryBytes
+        if (cacheable && output.bytes.byteLength <= limits.maxEntryBytes
             && output.bytes.byteLength <= limits.maxBytes) {
           let owned;
           // Admission is optional: allocation failure must not discard an
@@ -240,11 +280,15 @@ export function createCachedBookRenderer(renderer, renderPreview, requestedLimit
           if (owned) {
             while (outputs.size >= limits.maxEntries || owned.byteLength > limits.maxBytes - bytes)
               evict(outputs.keys().next().value);
-            outputs.set(key, Object.freeze({ ...output, bytes: owned })); bytes += owned.byteLength;
+            const entry = { owner: bucket, key, value: Object.freeze({ ...output, bytes: owned }) };
+            bucket.entries.set(key, entry); outputs.set(entry, true); bytes += owned.byteLength;
           }
         }
         return output;
       }
+      // A history hit need not mutate the native book back to the old state.
+      // Every miss passes a COMPLETE capture to createRetainedBook, whose own
+      // baseline tracks the actual native state, not transport request IDs.
       const result = await load(format, selected, () => format === "preview"
         ? renderPreview({ renderBookSite: () => load("site", 0,
           () => renderer.render(files, options, "site")) }, files, options)
@@ -258,6 +302,7 @@ export function createCachedBookRenderer(renderer, renderPreview, requestedLimit
     } finally { busy = false; }
   }
   return Object.freeze({ render, clear,
-    get cacheStats() { return Object.freeze({ entries: outputs.size, bytes, hits, misses, evictions }); },
+    get cacheStats() { return Object.freeze({ entries: outputs.size, bytes, hits, misses, evictions,
+      snapshots: history.size + Number(Boolean(current?.entries.size)), historyUnits }); },
   });
 }

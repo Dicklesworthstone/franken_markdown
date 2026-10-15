@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { Worker } from "node:worker_threads";
 import { createRetainedBook, createCachedBookRenderer, BOOK_OUTPUT_CACHE_LIMITS } from "../book_retained.mjs";
 
 const encode = value => new TextEncoder().encode(JSON.stringify(value));
@@ -287,4 +288,202 @@ test("actual worker bootstrap installs the cache for both book and preview reten
   const run = spawnSync(process.execPath, ["--experimental-vm-modules", "--input-type=module", "-e", program], { encoding: "utf8", timeout: 10000 });
   assert.equal(run.status, 0, run.stderr || run.stdout);
   assert(readFileSync(entry, "utf8").includes("createCachedBookRenderer"));
+});
+
+const state = text => { const value = capture(); value.files[0].source = text; return value; };
+const keyUnits = value => [...value.files, ...value.options.includeSources]
+  .reduce((sum, file) => sum + file.path.length + file.source.length, 0);
+
+test("undo and redo reuse complete prior source states without replaying native transactions", async () => {
+  const h = fixture(), a = state("A"), b = state("B");
+  for (const value of [a, b, a, b, a]) {
+    const result = await h.render(structuredClone(value));
+    assert.deepEqual(result.bytes, (await h.fresh(value, "pdf")).bytes);
+  }
+  assert.equal(h.stats.exports.length, 2); assert.equal(h.stats.updates, 1);
+  assert.equal(h.cached.cacheStats.snapshots, 2); assert.equal(h.cached.cacheStats.historyUnits, keyUnits(b));
+  h.cached.clear(); assert.equal(h.cached.cacheStats.snapshots, 0); assert.equal(h.cached.cacheStats.historyUnits, 0);
+});
+
+test("a new format after a historical hit synchronizes against actual native state", async () => {
+  const h = fixture(), a = state("A"), b = state("B"), c = state("C");
+  b.files[1].source = "B also changed this chapter";
+  await h.render(a); await h.render(b); await h.render(structuredClone(a));
+  assert.equal(h.stats.updates, 1); // Native state is B while the returned capture is A.
+  const result = await h.render(c, "epub");
+  assert.deepEqual(result.bytes, (await h.fresh(c, "epub")).bytes);
+  assert.equal(h.stats.updates, 2); assert.equal(h.stats.exports.length, 3); h.cached.clear();
+});
+
+test("structural undo restores the whole navigation source set, not only selected text", async () => {
+  const h = fixture(), a = capture(), b = capture();
+  b.files.reverse(); b.files.push(file("new.md", "A new chapter"));
+  b.options.includeSources.push(file("extra.txt", "New include"));
+  for (const input of [a, b, a, b]) {
+    const result = await h.render(structuredClone(input), "chapter-preview", 0);
+    assert.deepEqual(result.bytes, (await h.fresh(input, "chapter-preview", 0)).bytes);
+  }
+  assert.equal(h.stats.replacements, 1); assert.equal(h.stats.exports.length, 2); h.cached.clear();
+});
+
+test("same-length and concatenation-colliding texts remain distinct exact source keys", async () => {
+  const h = fixture(), variants = [state("ab"), state("a"), state("é"), state("e\u0301"), state("\ufeffx\r\n"), state("x\n")];
+  variants[0].files[1].source = "c"; variants[1].files[1].source = "bc";
+  const initial = [];
+  for (const input of variants) initial.push((await h.render(input)).bytes.slice());
+  for (let i = variants.length - 1; i >= 0; i--) {
+    const result = await h.render(structuredClone(variants[i])); assert.deepEqual(result.bytes, initial[i]);
+  }
+  assert.equal(h.stats.exports.length, variants.length); h.cached.clear();
+});
+
+test("history snapshot eviction respects revisits rather than first insertion", async () => {
+  const h = fixture({ maxSnapshots: 2 });
+  for (const text of ["A", "B", "A", "C", "B"]) await h.render(state(text));
+  assert.equal(h.stats.exports.length, 4); assert.equal(h.cached.cacheStats.snapshots, 2);
+  assert.equal(h.cached.cacheStats.historyUnits, keyUnits(state("C"))); h.cached.clear();
+});
+
+test("historical source keys have an independent UTF-16-unit budget", async () => {
+  const units = keyUnits(state("A")), h = fixture({ maxHistoryUnits: units });
+  for (const text of ["A", "B", "C", "B", "A"]) {
+    await h.render(state(text)); assert(h.cached.cacheStats.historyUnits <= units);
+    assert(h.cached.cacheStats.snapshots <= 2);
+  }
+  assert.equal(h.stats.exports.length, 4); h.cached.clear();
+});
+
+test("large current books remain hot-cacheable without retaining them in history", async () => {
+  const small = state("A"), large = state("large\r\n😀".repeat(10000));
+  const h = fixture({ maxHistoryUnits: keyUnits(small) });
+  for (const value of [large, large, small, large, large]) await h.render(structuredClone(value));
+  assert.equal(h.stats.exports.length, 3);
+  assert(h.cached.cacheStats.historyUnits <= keyUnits(small)); h.cached.clear();
+});
+
+test("zero history or one snapshot retains ordinary current-capture caching", async () => {
+  for (const limits of [{ maxSnapshots: 1 }, { maxHistoryUnits: 0 }]) {
+    const h = fixture(limits);
+    for (const text of ["A", "A", "B", "B", "A"]) await h.render(state(text));
+    assert.equal(h.stats.exports.length, 3); assert.equal(h.cached.cacheStats.snapshots, 1);
+    assert.equal(h.cached.cacheStats.historyUnits, 0); h.cached.clear();
+  }
+  const disabled = fixture({ maxSnapshots: 0 }); await disabled.render(); await disabled.render();
+  assert.equal(disabled.stats.exports.length, 2); assert.equal(disabled.cached.cacheStats.entries, 0); disabled.cached.clear();
+});
+
+test("global output eviction releases empty historical source keys and their charge", async () => {
+  const h = fixture({ maxEntries: 1 });
+  for (const text of ["A", "B", "C", "A"]) {
+    await h.render(state(text)); assert.equal(h.cached.cacheStats.entries, 1);
+    assert.equal(h.cached.cacheStats.snapshots, 1); assert.equal(h.cached.cacheStats.historyUnits, 0);
+  }
+  assert.equal(h.stats.exports.length, 4); h.cached.clear();
+});
+
+test("options and resource revocation erase every historical output, even after restoring old values", async () => {
+  for (const change of [input => { input.options.images = []; }, input => { input.options.fontAssets = []; },
+    input => { input.options.title = "New title"; }]) {
+    const h = fixture(); await h.render(state("A")); await h.render(state("B"));
+    const changed = state("A"); change(changed); await h.render(changed);
+    assert.equal(h.cached.cacheStats.snapshots, 1); assert.equal(h.cached.cacheStats.historyUnits, 0);
+    await h.render(state("A")); assert.equal(h.stats.exports.length, 4);
+    assert.equal(h.stats.creates, 3); h.cached.clear();
+  }
+});
+
+test("unknown options and failures cannot leave reusable history behind", async () => {
+  const h = fixture(); await h.render(state("A")); await h.render(state("B"));
+  const unknown = state("C"); unknown.options.future = true; await h.render(unknown);
+  assert.equal(h.cached.cacheStats.snapshots, 0); assert.equal(h.cached.cacheStats.historyUnits, 0);
+  await h.render(state("A")); await h.render(state("B")); h.hooks.fail = true;
+  await assert.rejects(h.render(state("C")), code("NATIVE_FAILURE"));
+  assert.equal(h.cached.cacheStats.snapshots, 0); assert.equal(h.cached.cacheStats.historyUnits, 0);
+  h.hooks.fail = false; await h.render(state("A")); assert.equal(h.stats.creates, 2); h.cached.clear();
+});
+
+test("clear during a historical hit cancels output and destroys all old source keys", async () => {
+  const h = fixture(); await h.render(state("A")); await h.render(state("B"));
+  const pending = h.render(state("A")), rejected = assert.rejects(pending, code("EXPORT_CANCELLED"));
+  h.cached.clear(); await rejected;
+  assert.equal(h.cached.cacheStats.snapshots, 0); assert.equal(h.cached.cacheStats.historyUnits, 0);
+  await h.render(state("A")); assert.equal(h.stats.exports.length, 3); h.cached.clear();
+});
+
+test("old binaries can reuse history and still reconstruct the next uncached source set", async () => {
+  const h = fixture({}, { old: true }), a = capture(), b = capture(), c = capture();
+  b.files.reverse(); c.files.push(file("new.md"));
+  for (const input of [a, b, a, c]) {
+    const result = await h.render(structuredClone(input));
+    assert.deepEqual(result.bytes, (await h.fresh(input, "pdf")).bytes);
+  }
+  assert.equal(h.stats.creates, 3); assert.equal(h.stats.exports.length, 3); h.cached.clear();
+});
+
+test("500 seeded source/format/history transitions match fresh uncached output within all budgets", async () => {
+  const h = fixture({ maxSnapshots: 3, maxEntries: 6, maxBytes: 12000, maxEntryBytes: 8000, maxHistoryUnits: 2000 });
+  const variants = [capture(), ...Object.values(sourceChanges).map(change => { const input = capture(); change(input); return input; })];
+  let seed = 0x5eadcafe;
+  const next = max => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % max; };
+  const formats = ["pdf", "epub", "site", "preview", "links", "chapter-preview"];
+  await h.render(); await h.render();
+  for (let i = 0; i < 500; i++) {
+    const input = structuredClone(variants[next(variants.length)]), format = formats[next(formats.length)];
+    const selected = format === "chapter-preview" ? next(input.files.length) : undefined;
+    if (i % 31 === 0) input.options.images = [];
+    if (i % 47 === 0) h.cached.clear();
+    const actual = await h.render(input, format, selected), expected = await h.fresh(input, format, selected);
+    assert.deepEqual(actual.bytes, expected.bytes, `transition ${i}`);
+    assert.equal(actual.sourceLength, expected.sourceLength);
+    const stats = h.cached.cacheStats;
+    assert(stats.bytes <= 12000 && stats.entries <= 6 && stats.snapshots <= 3 && stats.historyUnits <= 2000);
+  }
+  assert(h.cached.cacheStats.hits > 0); h.cached.clear();
+});
+
+test("real worker-thread transfers preserve historical bytes and later native synchronization", async t => {
+  const moduleUrl = new URL("../book_retained.mjs", import.meta.url).href;
+  const source = `
+    import {parentPort} from 'node:worker_threads';
+    import {createRetainedBook,createCachedBookRenderer} from ${JSON.stringify(moduleUrl)};
+    let exports=0,updates=0;
+    const engine={async createBook(files,options){
+      let value=structuredClone({files,options}),revision=0;
+      const output=()=>{exports++;return {bytes:new TextEncoder().encode(JSON.stringify(value)),sourceLength:0}};
+      return {get sourceRevision(){return revision},updateSources(changes,{expectedRevision}){
+        if(expectedRevision!==revision)throw Error('wrong native baseline');
+        const apply=list=>list.map(file=>({...file,source:changes.find(c=>c.path===file.path)?.source??file.source}));
+        value.files=apply(value.files);value.options.includeSources=apply(value.options.includeSources);revision++;updates++;
+      },renderPdf:output,renderEpub:output,dispose(){}};
+    }};
+    const preview=async()=>{throw Error('no preview in this transport fixture')};
+    const cached=createCachedBookRenderer(createRetainedBook(engine,preview),preview);
+    parentPort.on('message',async message=>{
+      try{
+        if(message.clear){cached.clear();parentPort.postMessage({cleared:true,stats:cached.cacheStats});return}
+        const result=await cached.render(message.input.files,message.input.options,message.format);
+        parentPort.postMessage({...result,exports,updates,stats:cached.cacheStats},[result.bytes.buffer]);
+      }catch(error){parentPort.postMessage({error:error.message})}
+    });
+  `;
+  const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(source)}`));
+  t.after(() => worker.terminate());
+  const send = message => new Promise((resolve, reject) => {
+    const cleanup = () => { clearTimeout(timer); worker.off("message", got); worker.off("error", failed); };
+    const got = value => { cleanup(); value.error ? reject(Error(value.error)) : resolve(value); };
+    const failed = error => { cleanup(); reject(error); };
+    const timer = setTimeout(() => failed(Error("worker fixture timed out")), 5000);
+    worker.once("message", got); worker.once("error", failed); worker.postMessage(message);
+  });
+  const a = state("A"), b = state("B"); b.files[1].source = "Changed on B";
+  const first = await send({ input: a, format: "pdf" }); first.bytes.fill(0);
+  await send({ input: b, format: "pdf" });
+  const undo = await send({ input: a, format: "pdf" });
+  assert.equal(undo.exports, 2); assert.equal(undo.updates, 1);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(undo.bytes)).files, a.files);
+  const next = await send({ input: a, format: "epub" });
+  assert.equal(next.exports, 3); assert.equal(next.updates, 2);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(next.bytes)).files, a.files);
+  const cleared = await send({ clear: true }); assert.equal(cleared.stats.snapshots, 0);
+  const reopened = await send({ input: a, format: "pdf" }); assert.equal(reopened.exports, 4);
 });

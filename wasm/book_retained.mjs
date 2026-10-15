@@ -11,7 +11,7 @@ function sameOptions(a, b) {
   for (const key of ["title", "author", "lang", "customCss", "toc", "pageNumbers", "font",
     "darkMode", "fontScale", "expandIncludes", "typography", "baseFontSize", "headingScale",
     "tableFontSize", "tocDepth", "fitToPages", "codeLineNumbers", "metadataEpochSeconds",
-    "htmlFontFormat"]) {
+    "htmlFontFormat", "pdfA", "pdfAStrict"]) {
     if (a[key] !== b[key]) return false;
   }
   if (JSON.stringify(a.page) !== JSON.stringify(b.page)
@@ -115,6 +115,9 @@ export function createRetainedBook(engine, renderPreview, renderChapterPreview) 
           : await session[methods[format]]();
       if (ticket !== generation)
         throw error("EXPORT_CANCELLED", "Retained book was released during export.");
+      if (format === "pdf" && options.pdfA === "2b"
+          && (result.pdfA !== "2b" || result.pdfAStrict !== options.pdfAStrict))
+        throw error("UNSUPPORTED_BOOK_PDFA", "The book renderer did not acknowledge the requested PDF/A emission policy.");
       cached.input = input;
       return result;
     } catch (cause) {
@@ -141,6 +144,7 @@ const optionKeys = new Set([
   "fontScale", "expandIncludes", "typography", "baseFontSize", "headingScale",
   "tableFontSize", "tocDepth", "fitToPages", "codeLineNumbers", "metadataEpochSeconds",
   "htmlFontFormat", "page", "running", "images", "fontAssets", "includeSources",
+  "pdfA", "pdfAStrict",
 ]);
 const sameSources = (a, b) => samePaths(a, b) && a.every((file, i) => file.source === b[i].source);
 const copyBytes = bytes => {
@@ -176,7 +180,14 @@ function workerOutput(result, format) {
     throw error("WORKER_PROTOCOL_ERROR", "Invalid chapter-preview capability receipt.");
   // BookOutput helpers close over their buffers. Do not retain the object or
   // its closures, and never return them with an unrelated cloned byte view.
-  return Object.freeze({ bytes, sourceLength, ...(previewMode === undefined ? {} : { previewMode }) });
+  const archive = {};
+  if (result.pdfA !== undefined || result.pdfAStrict !== undefined) {
+    if (format !== "pdf" || result.pdfA !== "2b" || typeof result.pdfAStrict !== "boolean")
+      throw error("WORKER_PROTOCOL_ERROR", "Invalid book PDF/A emission receipt.");
+    archive.pdfA = result.pdfA; archive.pdfAStrict = result.pdfAStrict;
+  }
+  return Object.freeze({ bytes, sourceLength, ...archive,
+    ...(previewMode === undefined ? {} : { previewMode }) });
 }
 
 /** Worker-only wire-output adapter over a retained renderer. The public native

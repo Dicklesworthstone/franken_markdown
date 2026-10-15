@@ -41,7 +41,7 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     if (!n || !m) return [{ start, end: start + n, lines: next.slice(start, start + m) }];
     // Charge allocations, not just comparisons; a very narrow table is bounded.
     const size = (n + 1) * (m + 1);
-    if (size > cells) return null;
+    if (size > cells) return sparseChanges(base, next, start, n, m);
     cells -= size;
     const row = m + 1, lcs = new Uint32Array(size);
     for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
@@ -62,6 +62,66 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     }
     if (edit) out.push(edit);
     return out;
+  }
+  // A distant pair of tiny edits need not allocate the entire rectangle
+  // between them. Explore shortest edit paths by distance instead. Keep the
+  // historical LCS/tie policy above whenever that matrix fits. Both paths
+  // share one allowance: charge every retained frontier cell and every line
+  // comparison BEFORE work. Dense edits still refuse instead of guessing.
+  function sparseChanges(base, next, start, n, m) {
+    const trace = [];
+    function step(previous, d, i) {
+      const k = 2 * i - d;
+      const across = i ? previous[i - 1] : -1;
+      const down = i < d ? previous[i] : -1;
+      const canAcross = across >= 0 && across < n && across + 1 - k >= 0 && across + 1 - k <= m;
+      const canDown = down >= 0 && down <= n && down - k > 0 && down - k <= m;
+      if (!canAcross && !canDown) return -1;
+      return canDown && (!canAcross || across < down) ? 1 : 0;
+    }
+    for (let d = 0; d <= n + m; d++) {
+      if (d + 1 > cells) { cells = 0; return null; }
+      cells -= d + 1;
+      const frontier = new Int32Array(d + 1).fill(-1);
+      const previous = trace.at(-1);
+      trace.push(frontier);
+      for (let i = 0; i <= d; i++) {
+        const down = d ? step(previous, d, i) : 0;
+        if (down < 0) continue;
+        let x = d ? down ? previous[i] : previous[i - 1] + 1 : 0;
+        let y = x - (2 * i - d);
+        while (x < n && y < m) {
+          if (!cells) return null;
+          cells--;
+          if (base[start + x] !== next[start + y]) break;
+          x++; y++;
+        }
+        frontier[i] = x;
+        if (x !== n || y !== m) continue;
+        // Backtrack only the edit steps; equal runs need no operation objects.
+        // Each predecessor comes from a fully explored earlier frontier.
+        const reversed = [];
+        for (let depth = d; depth > 0; depth--) {
+          const index = (x - y + depth) / 2, prior = trace[depth - 1];
+          const insert = step(prior, depth, index);
+          const px = insert ? prior[index] : prior[index - 1];
+          const py = px - (2 * index - depth + (insert ? 1 : -1));
+          reversed.push({ start: start + px, end: start + px + (insert ? 0 : 1),
+            lines: insert ? [next[start + py]] : [] });
+          x = px; y = py;
+        }
+        const edits = [];
+        for (let j = reversed.length - 1; j >= 0; j--) {
+          const edit = reversed[j], last = edits.at(-1);
+          if (last && last.end === edit.start) {
+            last.end = edit.end;
+            for (const line of edit.lines) last.lines.push(line);
+          } else edits.push(edit);
+        }
+        return edits;
+      }
+    }
+    return null;
   }
   const identical = (a, b) => a.start === b.start && a.end === b.end
     && a.lines.length === b.lines.length && a.lines.every((line, i) => line === b.lines[i]);

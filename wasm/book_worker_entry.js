@@ -1,10 +1,13 @@
 import * as book from "./book.js";
 import { inspectBook } from "./book_inspection.mjs";
 import { renderBookPreview, renderBookSelectedPreview, renderBookSessionChapterPreview } from "./book_site_preview.mjs";
-import { createRetainedBook, installBookWorker } from "./book_worker.mjs";
+import { installBookWorker } from "./book_worker.mjs";
+import { createRetainedBook, createCachedBookRenderer } from "./book_retained.mjs";
 import * as documents from "./franken_markdown.js";
 
-const retained = createRetainedBook(book, renderBookPreview, renderBookSessionChapterPreview);
+const retained = createCachedBookRenderer(
+  createRetainedBook(book, renderBookPreview, renderBookSessionChapterPreview), renderBookPreview,
+);
 installBookWorker(self, {
   ...book,
   renderBookPreview: (files, options) => renderBookPreview(book, files, options),

@@ -1,10 +1,15 @@
 // Recovery/autosave orchestration. Hosts own editing and explicit confirmation;
 // the store owns atomic revisions. No Markdown rendering or database emulation.
 import { bookError } from "../book_worker.mjs";
+import { captureBookSourceTreeForMerge, planBookSourceTreeMerge } from "./book_source_merge.mjs";
+
+const sameSources = (a, b) => a.length === b.length && a.every((file, i) =>
+  file.path === b[i].path && file.source === b[i].source && (file.role ?? "chapter") === (b[i].role ?? "chapter"));
 
 export function createBookLibrarySession({
   store,
   host,
+  sources = null,
   confirm = () => false,
   onState = () => {},
   debounceMs = 1000,
@@ -12,6 +17,10 @@ export function createBookLibrarySession({
 }) {
   if (!Number.isInteger(debounceMs) || debounceMs < 1 || debounceMs > 60000)
     throw bookError("INVALID_OPTIONS", "Invalid autosave delay.");
+  if (sources && (![sources.read, sources.apply].every(value => typeof value === "function")
+      || (sources.isBlocked !== undefined && typeof sources.isBlocked !== "function")))
+    throw bookError("INVALID_OPTIONS", "Source reconciliation requires a read-only snapshot and synchronous tree host.");
+  let mergeBase = null;
   let binding = null,
     name = "My book",
     entries = [],
@@ -37,6 +46,7 @@ export function createBookLibrarySession({
       conflict,
       suspended,
       composing,
+      canReconcile: !!sources && !!binding && !disposed && !suspended && !busy && !composing && !sources.isBlocked?.(),
       message,
     });
   const emit = () => {
@@ -137,6 +147,7 @@ export function createBookLibrarySession({
         project = host.captureProject(),
         stamp = host.checkpoint(),
         capturedName = name;
+      const baseFiles = sources ? captureBookSourceTreeForMerge(project.files) : null;
       const previous = copy ? null : binding;
       message =
         "Saving a captured source snapshot. Waiting for the storage transaction to complete.";
@@ -157,6 +168,7 @@ export function createBookLibrarySession({
         return receipt;
       }
       binding = { id: receipt.id, revision: receipt.revision };
+      mergeBase = baseFiles && { ...binding, files: baseFiles };
       conflict = false;
       dirty = stamp !== host.checkpoint() || capturedName !== name;
       if (capturedName === name) name = receipt.name;
@@ -166,11 +178,112 @@ export function createBookLibrarySession({
       return receipt;
     });
   }
+  function sourceCapture() {
+    const value = sources.read();
+    if (!value || typeof value.stamp !== "string" || !Number.isSafeInteger(value.identity) || value.identity < 0)
+      throw bookError("INVALID_SOURCE_TREE_MERGE", "Source snapshots require a checkpoint and project identity.");
+    return { files: captureBookSourceTreeForMerge(value.files), stamp: value.stamp, identity: value.identity };
+  }
+  /** Source-only reconciliation never saves or imports publishing settings.
+   * read() is nonmutating; apply(files, stamp) returns the new read().stamp
+   * synchronously, preserving project identity, settings and resource grants.
+   */
+  async function reconcile(approve) {
+    return run(async () => {
+      autosave = false;
+      if (!sources || !binding)
+        throw bookError("LIBRARY_RECONCILE_UNAVAILABLE", "Save or open a named book with a source-tree host before merging.");
+      if (sources.isBlocked?.()) throw bookError("BOOK_BUSY", "Finish source importing or composition before merging.");
+      const target = { ...binding }, generation = documentGeneration, life = lifecycle;
+      const capturedName = name, stamp = host.checkpoint(), local = sourceCapture();
+      function fence() {
+        guard(stamp, generation, life, capturedName);
+        const value = sourceCapture();
+        if (composing || sources.isBlocked?.() || binding?.id !== target.id || binding?.revision !== target.revision
+            || value.identity !== local.identity || value.stamp !== local.stamp || !sameSources(value.files, local.files))
+          throw bookError("STALE_SOURCE", "The source tree or library binding changed during merge review. Nothing was replaced.");
+      }
+      fence();
+      let baseline = mergeBase;
+      if (!baseline || baseline.id !== target.id || baseline.revision !== target.revision) {
+        // Historical recovery may display a snapshot older than the observed
+        // head. Only the EXACT observed revision is a valid common ancestor.
+        let savedBase;
+        try { savedBase = await store.read(target.id, target.revision); }
+        catch (error) {
+          fence();
+          if (error?.code !== "LIBRARY_NOT_FOUND") throw error;
+          throw bookError("LIBRARY_CONFLICT", "The common source revision is no longer retained. Save a separate copy; no merge was guessed.");
+        }
+        fence();
+        if (savedBase.id !== target.id || savedBase.snapshotRevision !== target.revision)
+          throw bookError("LIBRARY_CONFLICT", "The exact common source revision could not be read.");
+        baseline = { ...target, files: captureBookSourceTreeForMerge(savedBase.project.files) };
+      }
+      const latest = await store.read(target.id); fence();
+      if (latest.id !== target.id || !Number.isSafeInteger(latest.revision) || latest.revision < target.revision
+          || latest.snapshotRevision !== latest.revision)
+        throw bookError("LIBRARY_CONFLICT", "The current saved head could not be verified.");
+      const incoming = captureBookSourceTreeForMerge(latest.project.files);
+      const plan = planBookSourceTreeMerge(baseline.files, local.files, incoming);
+      const review = Object.freeze({ id: target.id, baseRevision: target.revision, revision: latest.revision,
+        name: capturedName, savedName: latest.name, scope: "sources-only",
+        changes: plan.changes, conflicts: plan.conflicts, order: plan.order });
+      message = "Review source changes from the saved book. No editor or stored source has changed; autosave is off.";
+      emit(); fence();
+      const choices = typeof approve === "function" ? await approve(review) : false;
+      fence();
+      if (choices === false || choices === null || choices === undefined) {
+        message = "Source merge cancelled. The editor, common ancestor and observed save revision are unchanged. Autosave remains off.";
+        return null;
+      }
+      const next = plan.resolve(choices);
+      // Recheck after human review. There is deliberately no storage lock held
+      // over editor work; the next Save still uses the store's revision CAS.
+      const checked = await store.read(target.id); fence();
+      if (checked.id !== target.id || checked.revision !== latest.revision
+          || checked.snapshotRevision !== latest.revision || checked.name !== latest.name
+          || !sameSources(captureBookSourceTreeForMerge(checked.project.files), incoming))
+        throw bookError("LIBRARY_CONFLICT", "The saved book changed during review. Review its new head; nothing was replaced.");
+      const changed = !sameSources(local.files, next);
+      if (changed) {
+        try {
+          const applied = sources.apply(next, local.stamp);
+          if (applied && typeof applied.then === "function") {
+            Promise.resolve(applied).catch(() => {});
+            throw bookError("LIBRARY_RECONCILE_UNCERTAIN", "A source transaction must be synchronous.");
+          }
+          const installed = sourceCapture();
+          if (disposed || suspended || composing || sources.isBlocked?.() || documentGeneration !== generation
+              || lifecycle !== life || name !== capturedName || binding?.id !== target.id || binding?.revision !== target.revision
+              || installed.identity !== local.identity || typeof applied !== "string" || applied !== installed.stamp
+              || !sameSources(installed.files, next))
+            throw bookError("LIBRARY_RECONCILE_UNCERTAIN", "The complete source transaction could not be verified.");
+        } catch (error) {
+          let unchanged = false;
+          try { fence(); unchanged = true; } catch { /* Never guess which tree was installed. */ }
+          if (unchanged && error?.code !== "LIBRARY_RECONCILE_UNCERTAIN") throw error;
+          if (!disposed && binding?.id === target.id && documentGeneration === generation) {
+            binding = null; mergeBase = null; conflict = false; dirty = true; documentGeneration++;
+          }
+          throw bookError("LIBRARY_RECONCILE_UNCERTAIN", "Source may have changed. The old save binding was retired; inspect the editor and save a separate copy.");
+        }
+      }
+      binding = { id: target.id, revision: latest.revision };
+      // Baseline is the observed SAVED tree, never the still-unsaved merge.
+      mergeBase = { ...binding, files: incoming };
+      conflict = false; dirty = true;
+      message = `Reviewed source from saved revision ${latest.revision} ${changed ? "applied in one source-tree transaction" : "acknowledged without changing source"}. Nothing was saved. Current publishing settings, assets and local name were kept; incoming settings were not imported. Save separately; autosave remains off.`;
+      return Object.freeze({ outcome: changed ? "reconciled" : "unchanged", id: target.id,
+        baseRevision: target.revision, revision: latest.revision, files: next.length, saved: false });
+    });
+  }
   return Object.freeze({
     get state() {
       return state();
     },
     save,
+    reconcile,
     changed() {
       if (disposed) return;
       dirty = true;
@@ -239,6 +352,8 @@ export function createBookLibrarySession({
           capturedName = name;
         const saved = await store.read(id, revision);
         guard(stamp, generation, life, capturedName);
+        const baseFiles = sources && saved.snapshotRevision === saved.revision
+          ? captureBookSourceTreeForMerge(saved.project.files) : null;
         const approved = await confirm(
           `Open “${saved.name}”, revision ${saved.snapshotRevision}? This replaces the current editor, including unsaved edits, and revokes all image access. Download or save current work first.`,
         );
@@ -250,6 +365,7 @@ export function createBookLibrarySession({
         host.replaceProject(saved.project, stamp);
         documentGeneration++;
         binding = { id: saved.id, revision: saved.revision };
+        mergeBase = baseFiles && { ...binding, files: baseFiles };
         name = saved.name;
         conflict = false;
         dirty = saved.snapshotRevision !== saved.revision;
@@ -277,6 +393,7 @@ export function createBookLibrarySession({
         host.replaceProject({ schemaVersion: 1, files: [], options: {} }, stamp);
         documentGeneration++;
         binding = null;
+        mergeBase = null;
         name = "My book";
         dirty = false;
         conflict = false;
@@ -311,6 +428,7 @@ export function createBookLibrarySession({
         entries = entries.filter((value) => value.id !== id);
         if (binding?.id === id) {
           binding = null;
+          mergeBase = null;
           autosave = false;
           conflict = false;
           dirty = true;
@@ -325,6 +443,7 @@ export function createBookLibrarySession({
       if (disposed) return;
       documentGeneration++;
       binding = null;
+      mergeBase = null;
       autosave = false;
       conflict = false;
       dirty = true;
@@ -362,6 +481,7 @@ export function createBookLibrarySession({
     dispose() {
       if (disposed) return;
       disposed = true;
+      mergeBase = null;
       lifecycle++;
       clearTimer();
       store.close();

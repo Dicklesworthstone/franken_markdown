@@ -6,9 +6,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use crate::book::{Book, paths};
+use crate::book::{Book, BookRenderer, paths};
 use crate::search_index::{EntryKind, build_search_index};
-use crate::{Block, Document, Inline, PdfOptions, RenderError, Result, render_pdf_document};
+use crate::{
+    Block, Document, Inline, PdfASettings, PdfOptions, RenderError, Result, render_pdf_document,
+    render_pdf_document_pdfa,
+};
 
 #[path = "pdf_link_wire.rs"]
 mod wire;
@@ -44,9 +47,76 @@ pub(super) fn render_report(
     Ok((bytes, warnings))
 }
 
+impl BookRenderer {
+    /// Render the retained book with its current options and explicit PDF/A settings.
+    ///
+    /// Uses the same chapter-local images, citations, landing headings and bound
+    /// PDF destinations as [`BookRenderer::render_pdf`]. `PdfASettings::OFF`
+    /// preserves ordinary output. PDF/A adds the existing writer's identification
+    /// and output intent; it is not an independent conformance certification.
+    /// No source is reparsed, and no settings or assets are changed by this call.
+    ///
+    /// # Errors
+    /// Propagates book, asset, font, renderer and navigation-binding failures.
+    /// Strict PDF/A checks the assembled source before footnote transformation;
+    /// forbidden URI actions cannot hide in unpublished notes. Strict mode with
+    /// an `Off` profile is rejected rather than silently ignored.
+    pub fn render_pdf_pdfa(&self, settings: PdfASettings) -> Result<Vec<u8>> {
+        self.render_pdf_with_options(&self.options().pdf_options(), settings)
+    }
+
+    /// Render this parsed book with caller-borrowed PDF options and PDF/A settings.
+    ///
+    /// Unlike the retained-options convenience methods, this accepts every
+    /// [`PdfOptions`] field and borrows image/font payloads without first cloning
+    /// them into the retained options. It never updates `self.options()`.
+    /// Chapter-local navigation still goes through the book's shared pipeline;
+    /// a merged-document render is not an equivalent replacement.
+    ///
+    /// # Errors
+    /// See [`BookRenderer::render_pdf_pdfa`].
+    pub fn render_pdf_with_options(
+        &self,
+        options: &PdfOptions,
+        settings: PdfASettings,
+    ) -> Result<Vec<u8>> {
+        if settings.strict && !settings.mode.is_a2b() {
+            return Err(crate::pdfa::pdfa_reject(
+                "pdf_a_strict_without_profile",
+                "strict PDF/A requires the 2b profile",
+            ));
+        }
+        let document = super::book_pdf_document_with_assets(self.book(), &options.image_assets)?;
+        if settings.strict {
+            // The navigation path can move/drop footnote bodies before calling
+            // the document renderer. Validate the original assembled source too,
+            // so adding an internal link cannot change strict-mode acceptance.
+            crate::validate_doc_pdfa_strict(&document)?;
+        }
+        let plan = prepare(self.book(), document, options)?;
+        if settings.mode.is_a2b() {
+            render_plan_with(plan, options, |document, options| {
+                render_pdf_document_pdfa(document, options, settings)
+            })
+        } else {
+            render_plan(plan, options)
+        }
+    }
+}
+
 fn render_plan(plan: Plan, options: &PdfOptions) -> Result<Vec<u8>> {
+    render_plan_with(plan, options, render_pdf_document)
+}
+
+// Keep heading provenance and annotation binding identical for both writers.
+// The emitter runs exactly once, before binding into its reserved URI space.
+fn render_plan_with(
+    plan: Plan,
+    options: &PdfOptions,
+    emit: impl FnOnce(&Document, &PdfOptions) -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
     if plan.targets.is_empty() {
-        return render_pdf_document(&plan.document, options);
+        return emit(&plan.document, options);
     }
     let origins = crate::footnotes::heading_origins_for_pdf(&plan.document);
     let prepared = crate::footnotes::for_pdf(&plan.document);
@@ -81,7 +151,7 @@ fn render_plan(plan: Plan, options: &PdfOptions) -> Result<Vec<u8>> {
             )
         })
         .collect();
-    let bytes = render_pdf_document(&prepared, options)?;
+    let bytes = emit(&prepared, options)?;
     wire::bind(bytes, &targets, heading_count, options.toc)
 }
 

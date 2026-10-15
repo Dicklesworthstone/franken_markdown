@@ -27,6 +27,8 @@ export interface BookChapterWorkerOutput extends Omit<BookChapterPreviewOutput, 
    * Native render/limit/protocol failures never trigger that larger operation. */
   readonly previewMode: "native-chapter" | "site-fallback";
 }
+/** Navigation report from an explicitly revision-fenced retained source operation. */
+export interface BookRetainedLinksOutput extends Omit<BookLinksOutput, "filename">, BookWorkerCapture {}
 export interface BookInspectionOutput {
   readonly format: "book-inspection";
   readonly mimeType: "application/json";
@@ -106,7 +108,9 @@ export interface BookWorker {
   >;
   /** Export after selective text changes to exact retained chapter/include keys.
    * Sends only changes; no settings, unchanged sources, image or font bytes.
-   * [] re-exports unchanged source. Paths/order/roles/resources cannot change.
+   * [] re-exports unchanged source. "links" calls native validation without
+   * rerendering or reparsing; its response is capped at 4 MiB.
+   * Paths/order/roles/resources cannot change.
    * Requires a negotiated idle retainedInputRevision. Stale local revisions
    * fail without discarding the newer capture. After expiry/worker failure,
    * supply a complete current snapshot with render(); no implicit retry occurs.
@@ -114,10 +118,10 @@ export interface BookWorker {
    * timeout still terminate synchronous rendering. Output is always complete. */
   renderSourceUpdate(
     changes: readonly BookFile[],
-    format: BookFormat | "preview" | "chapter-preview",
+    format: BookFormat | "preview" | "chapter-preview" | "links",
     options: { expectedRevision: number },
     request?: BookChapterPreviewRequest,
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput>;
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput>;
   /** Capture complete current chapter/include text, then send only changed
    * strings against the idle source baseline. No images/fonts/settings are
    * read or transferred. Membership/order/roles must remain identical; use
@@ -125,10 +129,10 @@ export interface BookWorker {
    * shares the idle worker lifetime and is released on expiry/cancellation. */
   renderSources(
     files: readonly BookFile[],
-    format: BookFormat | "preview" | "chapter-preview",
+    format: BookFormat | "preview" | "chapter-preview" | "links",
     options: { expectedRevision: number; includeSources?: readonly BookFile[] },
     request?: BookChapterPreviewRequest,
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput>;
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput>;
   /** Replace the COMPLETE chapter/include collection against an idle capture.
    * Supports additions, removals, reordering and chapter/include role changes.
    * includeSources defaults to [] and revokes every previous include resource.
@@ -141,10 +145,10 @@ export interface BookWorker {
    * expiry and failure handling match renderSourceUpdate(). */
   renderSourceSet(
     files: readonly BookFile[],
-    format: BookFormat | "preview" | "chapter-preview",
+    format: BookFormat | "preview" | "chapter-preview" | "links",
     options: { expectedRevision: number; includeSources?: readonly BookFile[] },
     request?: BookChapterPreviewRequest,
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput>;
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput>;
   /** Terminates running AND retained idle workers. The client can render again. */
   cancel(): void;
   /** Cancel in-flight work, but keep an already-idle book. Hosts must use
@@ -167,7 +171,8 @@ export function createBookWorker(options?: {
    * Takes precedence over retainPreview. Text edits use updateSources; source
    * membership/order changes use replaceSources. Old edit APIs reconstruct from
    * the current snapshot. Settings or assets changes also reconstruct.
-   * Inspection and links remain one-shot, source-only, and release idle state.
+   * Full render() inspection/links remain source-only and release idle state.
+   * Source-delta/set "links" checks reuse the retained native publication.
    * Failures/cancellation retire the session; no queue or persistence is added.
    * A matching worker script is required; unsupported responses fail explicitly.
    */

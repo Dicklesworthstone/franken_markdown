@@ -292,7 +292,10 @@ export function createBookWorkerClient({
     if (active) throw bookError("BOOK_BUSY", "A book export is already running.");
     const [, mimeType, extension] = formatInfo(format);
     const selected = chapterSelection(format, selectedChapter);
-    const retainingBook = retainBook && retainedFormats.has(format);
+    // Full links requests remain source-only and one-shot. Only an explicit
+    // revision-fenced delta may check the already-authorized publication.
+    const retainingBook = retainBook && (retainedFormats.has(format)
+      || (format === "links" && sourceOnly));
     const retainingPreview = !retainingBook && retainPreview && ["preview", "chapter-preview"].includes(format);
     const retaining = retainingBook || retainingPreview;
     if (sourceOnly && !retaining)
@@ -389,7 +392,8 @@ export function createBookWorkerClient({
             throw bookError("WORKER_PROTOCOL_ERROR", "Book worker did not acknowledge the source-set replacement.");
           if (sourceOnly && inputRevision === null)
             throw bookError("WORKER_PROTOCOL_ERROR", "Book worker did not acknowledge the source delta.");
-          checkedOutput(data.bytes, data.sourceLength, maxOutputBytes);
+          checkedOutput(data.bytes, data.sourceLength,
+            format === "links" ? Math.min(maxOutputBytes, 4 * 1024 * 1024) : maxOutputBytes);
           if (selected !== undefined) {
             if (data.selectedChapter !== selected)
               throw bookError("WORKER_PROTOCOL_ERROR", "Book worker replied for a different chapter.");
@@ -576,7 +580,9 @@ export function installBookWorker(scope, engine) {
       if (data.retainBook && data.retainPreview)
         throw bookError("WORKER_PROTOCOL_ERROR", "Choose one book retention mode.");
       if (data.retainBook) {
-        if (!retainedFormats.has(data.format) || typeof engine.renderRetainedBook !== "function")
+        const retainedLinks = data.format === "links"
+          && (Object.hasOwn(data, "sourceUpdate") || Object.hasOwn(data, "sourceSet"));
+        if ((!retainedFormats.has(data.format) && !retainedLinks) || typeof engine.renderRetainedBook !== "function")
           throw bookError("UNSUPPORTED_RETAINED_BOOK", "Rebuild the matching worker for retained publications.");
         method = "renderRetainedBook";
         envelope.retainedBook = true;
@@ -623,7 +629,8 @@ export function installBookWorker(scope, engine) {
       if (data.retainBook) args.push(data.format);
       if (selected !== undefined) args.push(selected);
       const result = await engine[method](...args);
-      checkedOutput(result.bytes, result.sourceLength, data.maxOutputBytes);
+      checkedOutput(result.bytes, result.sourceLength,
+        data.format === "links" ? Math.min(data.maxOutputBytes, 4 * 1024 * 1024) : data.maxOutputBytes);
       if (selected !== undefined) {
         checkedChapterPreview(result, selected, input.files.length);
         envelope.selectedChapter = selected;

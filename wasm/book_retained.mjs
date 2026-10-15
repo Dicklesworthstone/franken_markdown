@@ -1,7 +1,7 @@
 // Worker-private session reuse. Inputs are owned, normalized snapshots from the
 // transport; only the native BookSession parses Markdown or resolves includes.
 const error = (code, message) => Object.assign(new Error(message), { code });
-const methods = Object.freeze({ pdf: "renderPdf", epub: "renderEpub", site: "renderSite" });
+const methods = Object.freeze({ pdf: "renderPdf", epub: "renderEpub", site: "renderSite", links: "validateLinks" });
 
 function samePaths(left, right) {
   return left.length === right.length && left.every((file, i) => file.path === right[i].path);
@@ -59,7 +59,7 @@ function synchronize(session, before, input) {
   }
 }
 
-/** One retained native book shared by PDF, EPUB, site and HTML-preview exports.
+/** One retained native book shared by publications, HTML previews and link checks.
  * Each call receives the complete next source capture and presentation profile.
  * Source-only edits reuse native transactions. Settings or asset changes rebuild
  * explicitly, including revocation. Old edit APIs reconstruct from current input.
@@ -78,7 +78,7 @@ export function createRetainedBook(engine, renderPreview, renderChapterPreview) 
   async function render(files, options, format = "preview", selected = 0) {
     if (busy) throw error("BOOK_BUSY", "A retained book is already rendering.");
     if (format !== "preview" && format !== "chapter-preview" && !Object.hasOwn(methods, format))
-      throw error("INVALID_FORMAT", "Retained books support pdf, epub, site, preview or chapter-preview.");
+      throw error("INVALID_FORMAT", "Retained books support pdf, epub, site, preview, chapter-preview or links.");
     if (format === "chapter-preview") {
       if (typeof renderChapterPreview !== "function")
         throw error("UNSUPPORTED_BOOK_CHAPTER_PREVIEW", "Rebuild the matching worker for chapter previews.");
@@ -103,6 +103,8 @@ export function createRetainedBook(engine, renderPreview, renderChapterPreview) 
         cached = { session, input };
       }
       const session = cached.session;
+      if (format === "links" && typeof session.validateLinks !== "function")
+        throw error("UNSUPPORTED_BOOK_LINKS", "Rebuild the matching native book for retained navigation checks.");
       // Native exporters still own every byte. Legacy preview keeps its full
       // ZIP contract; selected previews render one chapter on capable packages.
       // No rendered HTML is retained between requests.

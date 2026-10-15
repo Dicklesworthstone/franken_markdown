@@ -67,6 +67,61 @@ pub struct DocumentLinkAnalysis {
 }
 
 impl DocumentLinkAnalysis {
+    /// Resolve a destination's fragment against this exact analyzed document.
+    ///
+    /// A host must first select and authorize the target document. The path,
+    /// query and scheme before `#` are deliberately NOT resolved or fetched.
+    /// Missing/empty fragments address the document root (`Ok(None)`); other
+    /// fragments use the book validator's single-pass percent/UTF-8 decoder.
+    /// Only emitted, unambiguous anchors resolve, including referenced notes.
+    /// No synthetic reference is inserted into the target document, and no
+    /// parsing, rendering or font loading is repeated for subsequent lookups.
+    ///
+    /// Analyses produced by the public constructors have anchors sorted by ID;
+    /// callers modifying the public `anchors` vector must preserve that order.
+    ///
+    /// # Errors
+    /// Returns a stable `(code, message)` for `invalid_fragment`, `missing_anchor`,
+    /// `ambiguous_anchor`, or `fragment_limit` (destination over 8192 bytes).
+    /// Errors never allocate or echo a copy of the caller's destination.
+    pub fn resolve_fragment(
+        &self,
+        destination: &str,
+    ) -> std::result::Result<Option<&DocumentAnchor>, (&'static str, &'static str)> {
+        if destination.len() > 8192 {
+            return Err(("fragment_limit", "The link destination exceeds 8192 bytes."));
+        }
+        let destination =
+            destination.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+        let Some((_, fragment)) = destination.split_once('#') else {
+            return Ok(None);
+        };
+        if fragment.is_empty() {
+            return Ok(None);
+        }
+        let id = super::decode(fragment).ok_or((
+            "invalid_fragment",
+            "This fragment is not valid percent-encoded UTF-8.",
+        ))?;
+        let index = self
+            .anchors
+            .binary_search_by(|anchor| anchor.id.as_str().cmp(id.as_str()))
+            .map_err(|_| {
+                (
+                    "missing_anchor",
+                    "The target chapter has no emitted heading or referenced-footnote anchor with this ID.",
+                )
+            })?;
+        let anchor = &self.anchors[index];
+        if anchor.occurrences != 1 {
+            return Err((
+                "ambiguous_anchor",
+                "More than one emitted element uses this anchor; rename the colliding heading or note.",
+            ));
+        }
+        Ok(Some(anchor))
+    }
+
     /// Include emitted relative/absolute file links alongside internal navigation.
     ///
     /// This is a source-owned inventory for editors and host-authorized workspaces,

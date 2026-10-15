@@ -44,11 +44,11 @@ fn mcp_tools_list_schema_contract() {
         })
         .expect("tools array");
 
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 7);
     let names: std::collections::BTreeSet<_> = tools.iter()
         .map(|tool| tool.get("name").and_then(JsonValue::as_str).unwrap()).collect();
     assert_eq!(names, ["fmd.capabilities", "fmd.render_book", "fmd.render_file",
-        "fmd.render_html", "fmd.render_pdf", "fmd.verify"].into_iter().collect());
+        "fmd.render_html", "fmd.render_pdf", "fmd.verify", "fmd.verify_book"].into_iter().collect());
     for tool in tools {
         assert!(tool.get("name").is_some());
         assert!(tool.get("description").is_some());

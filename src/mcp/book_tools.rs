@@ -6,12 +6,13 @@
 use std::collections::BTreeMap;
 
 use crate::book::{BookInput, BookRenderer, render_book_pdf, render_book_site};
+use crate::book::validation::LinkReport;
 use crate::mcp::ERROR_INPUT_ERROR;
 use crate::{HtmlOptions, PdfOptions};
 
 use super::{
     ERROR_INPUT_TOO_LARGE, ERROR_RENDER_FAILED, Field, HTML_FIELDS, JsonValue as Json,
-    PDF_FIELDS, ToolError, base64_encode, html_options, invalid_options, pdf_options,
+    PDF_FIELDS, ToolError, base64_encode, boolean, html_options, invalid_options, pdf_options,
     resources, string, wrap_text_content,
 };
 
@@ -26,6 +27,7 @@ pub(super) const SOURCE_FIELDS: &[Field] = &[
     ("includeSources", "array", "Additional path/markdown sources available only to explicit includes"),
 ];
 const PUBLICATION_FIELDS: &[Field] = &[
+    ("strictLinks", "boolean", "Reject broken chapter/anchor/note navigation before rendering; does not check external URLs, assets or output conformance"),
     ("to", "string", "Book output: pdf (default), epub, site (ZIP), or all"),
     ("maxOutputBytes", "integer", "Aggregate artifact bytes before base64, 1..33554432; default 16777216"),
 ];
@@ -203,9 +205,46 @@ fn renderer(args: &Json, limit: u64) -> Result<BookRenderer, ToolError> {
     BookRenderer::from_sources(&chapters, &includes).map_err(input_error)
 }
 
+fn link_analysis_error(error: crate::RenderError) -> ToolError {
+    (ERROR_RENDER_FAILED, format!("Book link analysis did not complete: {error}"),
+        "book_link_analysis_failed")
+}
+
+fn link_report(renderer: &BookRenderer) -> Result<LinkReport, ToolError> {
+    renderer.validate_links().map_err(link_analysis_error)
+}
+
+/// Source-only navigation verification. Findings are successful report data;
+/// an admission/analysis failure is an error, never an empty clean report.
+pub(super) fn verify(args: &Json, limit: u64) -> Result<Json, ToolError> {
+    let renderer = renderer(args, limit)?;
+    let report = link_report(&renderer)?;
+    let json = report.to_json().map_err(link_analysis_error)?;
+    Ok(wrap_text_content(&json))
+}
+
+fn enforce_links(renderer: &BookRenderer) -> Result<(), ToolError> {
+    let report = link_report(renderer)?;
+    if let Some((chapter, issue)) = report.chapters.iter()
+        .find_map(|chapter| chapter.findings.first().map(|issue| (chapter, issue)))
+    {
+        // Keep a bounded actionable preview in the error; the complete,
+        // machine-readable findings are available through fmd.verify_book.
+        let path: String = chapter.path.chars().take(96).collect();
+        let destination: String = issue.destination.chars().take(128).collect();
+        return Err((ERROR_RENDER_FAILED, format!(
+            "Book navigation has {} finding(s). First: {} in {path:?}, target {destination:?}. Run fmd.verify_book with the same chapters/includeSources for the complete report.",
+            report.finding_count(), issue.code), "book_links_failed"));
+    }
+    Ok(())
+}
+
 pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
     let mut publication = Publication::prepare(args)?;
     let renderer = renderer(args, limit)?;
+    if boolean(args, "strictLinks") {
+        enforce_links(&renderer)?;
+    }
     let assets = resources::parse(args)?;
     // Transfer ownership between format options rather than copying the image
     // and font payloads for a multi-format request.

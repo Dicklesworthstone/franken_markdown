@@ -223,6 +223,12 @@ const FILE_FIELDS: &[Field] = &[
 ];
 const TOOLS: &[ToolSpec] = &[
     (
+        "fmd.verify_book",
+        "Check chapter, heading and footnote navigation in explicitly supplied chapters/include sources. Returns the shared expanded-html-navigation report; no rendering, assets, file reads or network requests. Findings are report data, not a PDF/EPUB conformance claim.",
+        book_tools::SOURCE_FIELDS,
+        &["chapters"],
+    ),
+    (
         "fmd.render_book",
         "Publish explicitly supplied chapters and include sources as a PDF book, EPUB, or HTML-site ZIP. to=all parses once and returns all three. Artifact data is base64 inside a JSON receipt; no file or network access.",
         book_tools::SOURCE_FIELDS,
@@ -306,7 +312,7 @@ pub fn tools_list_result() -> JsonValue {
         .map(|(name, description, fields, required)| {
             let fields = fields_for(name, fields);
             let file_tool = *name == "fmd.render_file";
-            let book_tool = *name == "fmd.render_book";
+            let book_tool = matches!(*name, "fmd.render_book" | "fmd.verify_book");
             let properties = fields
                 .iter()
                 .map(|(name, kind, description)| {
@@ -744,6 +750,7 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
         }
         "fmd.render_file" => super::file_render::render_file(args, limit),
         "fmd.render_book" => book_tools::render(args, limit),
+        "fmd.verify_book" => book_tools::verify(args, limit),
         _ => Err((
             METHOD_NOT_FOUND,
             format!("Unknown tool: '{name}'"),

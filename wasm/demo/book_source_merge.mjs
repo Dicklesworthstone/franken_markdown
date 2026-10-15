@@ -261,3 +261,210 @@ function mergePlan(base, local, disk) {
   }
   return Object.freeze({ ...conflict("overlapping-edits"), conflicts: frozen, resolve });
 }
+
+// Source-project reconciliation adds membership, roles and reading order to the
+// same exact-text merger. It carries no settings, resource bytes or authority.
+export const BOOK_SOURCE_TREE_MERGE_LIMITS = Object.freeze({
+  chapters: 128, includeSources: 128, fileBytes: MAX_UNITS,
+  sourceBytes: 16 * 1024 * 1024, pathBytes: 1024,
+});
+const treeError = (code, message) => Object.assign(new Error(message), { code });
+const invalidTree = () => treeError("INVALID_SOURCE_TREE_MERGE", "Use complete owned source trees and an explicit choice for every conflict.");
+const treeLimit = () => treeError("BOOK_LIMIT", "The reconciled source tree exceeds its source, path or role limits.");
+function treeOwn(value, key) {
+  const field = value && Object.getOwnPropertyDescriptor(value, key);
+  if (!field || !Object.hasOwn(field, "value")) throw invalidTree();
+  return field.value;
+}
+function treeLimits(limits) {
+  if (!limits || typeof limits !== "object" || Array.isArray(limits)) throw invalidTree();
+  const cap = { ...BOOK_SOURCE_TREE_MERGE_LIMITS };
+  for (const key of Reflect.ownKeys(limits)) {
+    if (!Object.hasOwn(cap, key)) throw invalidTree();
+    const value = treeOwn(limits, key);
+    if (!Number.isSafeInteger(value) || value < 1 || value > cap[key]) throw invalidTree();
+    cap[key] = value;
+  }
+  return cap;
+}
+function treeBytes(text, limit) {
+  if (typeof text !== "string") throw invalidTree();
+  if (text.length > limit) throw treeLimit();
+  try { resolutionText(text); } catch { throw invalidTree(); }
+  const bytes = new TextEncoder().encode(text).length;
+  if (bytes > limit) throw treeLimit();
+  return bytes;
+}
+const treeFile = (path, source, role) => Object.freeze({ path, source,
+  ...(role === "include" ? { role } : {}) });
+const treeRole = file => file?.role ?? "chapter";
+const equalTreeFile = (a, b) => a === b || (!!a && !!b && a.path === b.path
+  && a.source === b.source && treeRole(a) === treeRole(b));
+const pathOrder = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+
+/** Own and bound a source-only merge baseline. Invalid editor drafts must be
+ * repaired first; unlike undo, reconciliation must identify unique paths.
+ * Paths and source are never Unicode-normalized or newline-normalized.
+ */
+export function captureBookSourceTreeForMerge(value, limits = BOOK_SOURCE_TREE_MERGE_LIMITS) {
+  const cap = treeLimits(limits);
+  if (!Array.isArray(value)) throw invalidTree();
+  const count = treeOwn(value, "length");
+  if (count > cap.chapters + cap.includeSources) throw treeLimit();
+  const files = [], paths = new Set();
+  let bytes = 0, chapters = 0, includes = 0;
+  for (let i = 0; i < count; i++) {
+    const file = treeOwn(value, String(i));
+    if (!file || typeof file !== "object" || Array.isArray(file)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(file))
+        || Reflect.ownKeys(file).some(key => !["path", "source", "role"].includes(key))) throw invalidTree();
+    const path = treeOwn(file, "path"), source = treeOwn(file, "source");
+    const givenRole = Object.hasOwn(file, "role") ? treeOwn(file, "role") : undefined;
+    const role = givenRole === undefined ? "chapter" : givenRole;
+    if (typeof path !== "string" || !path || path !== path.trim()
+        || /[\\\x00-\x1f\x7f<>:"|?*#%]/.test(path)
+        || path.split("/").some(part => !part || part === "." || part === ".." || /[. ]$/.test(part))
+        || !["chapter", "include"].includes(role)
+        || (role === "chapter" && !/\.(md|markdown)$/i.test(path)) || paths.has(path)) throw invalidTree();
+    paths.add(path);
+    if (role === "include") includes++; else chapters++;
+    if (chapters > cap.chapters || includes > cap.includeSources) throw treeLimit();
+    bytes += treeBytes(path, cap.pathBytes) + treeBytes(source, cap.fileBytes);
+    if (bytes > cap.sourceBytes) throw treeLimit();
+    files.push(treeFile(path, source, role));
+  }
+  return Object.freeze(files);
+}
+
+const indexTree = files => new Map(files.map((file, index) => [file.path, index]));
+const relativeOrder = (index, a, b) => index.has(a) && index.has(b)
+  ? index.get(a) < index.get(b) ? -1 : 1 : 0;
+function movedInTree(path, base, side) {
+  for (const other of base.keys()) if (other !== path && side.has(other)
+      && relativeOrder(base, path, other) !== relativeOrder(side, path, other)) return true;
+  return false;
+}
+// Merge pairwise precedence, not absolute indices (insertions shift indices).
+// A deterministic topological order retains independent reorders and insertion
+// anchors. Concurrent incompatible precedence/cycles require an explicit order.
+// There are at most 768 candidate paths, hence at most 294,528 comparisons/edges.
+function mergedTreeOrder(paths, base, local, incoming) {
+  const edges = paths.map(() => []), degree = new Uint16Array(paths.length);
+  for (let i = 0; i < paths.length; i++) for (let j = i + 1; j < paths.length; j++) {
+    const b = relativeOrder(base, paths[i], paths[j]);
+    const l = relativeOrder(local, paths[i], paths[j]);
+    const r = relativeOrder(incoming, paths[i], paths[j]);
+    let direction;
+    if (!l || !r) direction = l || r || b;
+    else if (l === r || r === b) direction = l;
+    else if (l === b) direction = r;
+    else return null;
+    if (!direction) continue;
+    const from = direction < 0 ? i : j, to = direction < 0 ? j : i;
+    edges[from].push(to); degree[to]++;
+  }
+  const order = [], used = new Uint8Array(paths.length);
+  for (let n = 0; n < paths.length; n++) {
+    let next = -1;
+    for (let i = 0; i < paths.length; i++) if (!used[i] && !degree[i]) { next = i; break; }
+    if (next < 0) return null;
+    used[next] = 1; order.push(paths[next]);
+    for (const to of edges[next]) degree[to]--;
+  }
+  return Object.freeze(order);
+}
+
+/** A plan is immutable and reusable. Approval is [{index, choice}], exactly one
+ * per conflict. local/incoming select that side; source conflicts also accept
+ * edited + source, or regions + choices understood by the existing text plan
+ * (local/disk/edited). Renames are deletion/addition, never guessed identities.
+ * Current settings and resources are outside this API and cannot be restored.
+ */
+export function planBookSourceTreeMerge(baseFiles, localFiles, incomingFiles,
+  limits = BOOK_SOURCE_TREE_MERGE_LIMITS) {
+  const cap = treeLimits(limits);
+  const base = captureBookSourceTreeForMerge(baseFiles, cap);
+  const local = captureBookSourceTreeForMerge(localFiles, cap);
+  const incoming = captureBookSourceTreeForMerge(incomingFiles, cap);
+  const trees = [base, local, incoming], maps = trees.map(files => new Map(files.map(file => [file.path, file])));
+  const indices = trees.map(indexTree), paths = [...new Set(trees.flatMap(files => files.map(file => file.path)))].sort(pathOrder);
+  const conflicts = [], changes = [], instructions = [], regionResolvers = new Map();
+  const textMerger = createBookSourceMerger();
+  let regions = 0;
+  function requireChoice(kind, path, b, l, r, details = {}) {
+    const index = conflicts.length;
+    conflicts.push(Object.freeze({ index, kind, path, base: b, local: l, incoming: r, ...details }));
+    return Object.freeze({ conflict: index });
+  }
+  for (const path of paths) {
+    const [b, l, r] = maps.map(map => map.get(path) ?? null);
+    const firstConflict = conflicts.length;
+    let instruction, proposed;
+    if (!l || !r) {
+      const present = l ?? r;
+      if (!b || !present) proposed = present;
+      else if (equalTreeFile(b, present) && !movedInTree(path, indices[0], indices[l ? 1 : 2])) proposed = null;
+      else instruction = { path, membership: requireChoice("membership", path, b, l, r,
+        { reason: "delete-versus-edit" }) };
+      instruction ??= { path, file: proposed };
+    } else {
+      const text = textMerger.plan(b?.source ?? null, l.source, r.source);
+      let source = text.source, role = treeRole(l);
+      if (text.action === "conflict") {
+        const detailed = text.conflicts && regions + text.conflicts.length <= 256;
+        source = requireChoice("source", path, b?.source ?? null, l.source, r.source,
+          { reason: text.reason, hunks: detailed ? text.conflicts : null });
+        if (detailed) { regions += text.conflicts.length; regionResolvers.set(source.conflict, text.resolve); }
+      }
+      if (treeRole(l) !== treeRole(r)) {
+        if (b && treeRole(l) === treeRole(b)) role = treeRole(r);
+        else if (!b || treeRole(r) !== treeRole(b))
+          role = requireChoice("role", path, b ? treeRole(b) : null, treeRole(l), treeRole(r));
+      }
+      instruction = { path, source, role };
+      if (conflicts.length === firstConflict) proposed = treeFile(path, source, role);
+    }
+    instructions.push(instruction);
+    changes.push(Object.freeze({ path, base: b, local: l, incoming: r,
+      action: conflicts.length !== firstConflict ? "resolve" : equalTreeFile(l, proposed) ? "unchanged"
+        : !proposed ? "remove" : !l ? "add" : "update",
+      proposed: proposed ?? null }));
+  }
+  const candidates = instructions.filter(item => !Object.hasOwn(item, "file") || item.file).map(item => item.path);
+  const automaticOrder = mergedTreeOrder(candidates, ...indices);
+  const orders = trees.map(files => Object.freeze(files.map(file => file.path)));
+  const orderChoice = automaticOrder === null
+    ? requireChoice("order", null, ...orders, { reason: "incompatible-order" }) : null;
+  const order = Object.freeze({ base: orders[0], local: orders[1], incoming: orders[2], merged: automaticOrder });
+  const frozen = Object.freeze(conflicts);
+  function resolve(choices) {
+    if (!Array.isArray(choices) || treeOwn(choices, "length") !== frozen.length) throw invalidTree();
+    const selected = new Map();
+    for (let i = 0; i < frozen.length; i++) {
+      const item = treeOwn(choices, String(i)), index = treeOwn(item, "index"), choice = treeOwn(item, "choice");
+      if (!Number.isInteger(index) || index < 0 || index >= frozen.length || selected.has(index)) throw invalidTree();
+      const entry = frozen[index];
+      if (choice === "local" || choice === "incoming") selected.set(index, entry[choice]);
+      else if (choice === "edited" && entry.kind === "source") {
+        const source = treeOwn(item, "source"); treeBytes(source, cap.fileBytes); selected.set(index, source);
+      } else if (choice === "regions" && entry.kind === "source" && regionResolvers.has(index)) {
+        let source;
+        try { source = regionResolvers.get(index)(treeOwn(item, "regions")); } catch { throw invalidTree(); }
+        treeBytes(source, cap.fileBytes); selected.set(index, source);
+      } else throw invalidTree();
+    }
+    const value = field => field && typeof field === "object" && Object.hasOwn(field, "conflict")
+      ? selected.get(field.conflict) : field;
+    const files = new Map();
+    for (const item of instructions) {
+      const file = Object.hasOwn(item, "membership") ? value(item.membership)
+        : Object.hasOwn(item, "file") ? item.file : treeFile(item.path, value(item.source), value(item.role));
+      if (file) files.set(item.path, file);
+    }
+    // An explicit order uses that complete side first and appends surviving
+    // other-side-only paths in their order. A choice cannot discard any source.
+    const paths = automaticOrder ?? [...new Set([...value(orderChoice), ...orders[1], ...orders[2], ...orders[0]])];
+    return captureBookSourceTreeForMerge(paths.filter(path => files.has(path)).map(path => files.get(path)), cap);
+  }
+  return Object.freeze({ changes: Object.freeze(changes), conflicts: frozen, order, resolve });
+}

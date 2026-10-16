@@ -306,7 +306,7 @@ test("batch/worker option validation rejects unsupported keys and accessors", ()
   assert.throws(() => h.batch([], { get concurrency() { reads++; return 1; } }), DocumentBatchError);
   assert.equal(reads, 0);
   assert.throws(() => h.batch(null), DocumentBatchError);
-  assert.throws(() => h.batch({ async *[Symbol.asyncIterator]() {} }), DocumentBatchError);
+  assert.throws(() => h.batch({ [Symbol.asyncIterator]: true }), DocumentBatchError);
 });
 
 test("worker settings are copied once, frozen, and passed to every replacement", async () => {

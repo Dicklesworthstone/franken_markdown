@@ -36,9 +36,11 @@ export function createBatchIterator(documents, options, createRenderer) {
   if (signal !== undefined && (!signal || typeof signal.aborted !== "boolean"
       || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function"))
     fail("INVALID_OPTIONS", "signal must be an AbortSignal");
-  const iterate = documents?.[Symbol.iterator];
+  const asyncMethod = documents?.[Symbol.asyncIterator];
+  const asynchronous = asyncMethod !== undefined && asyncMethod !== null;
+  const iterate = asynchronous ? asyncMethod : documents?.[Symbol.iterator];
   if (typeof iterate !== "function")
-    fail("INVALID_OPTIONS", "documents must be a synchronous iterable");
+    fail("INVALID_OPTIONS", "documents must be a synchronous or asynchronous iterable");
 
   // A factory must not lend one live/terminated endpoint to several owners.
   // Throw BEFORE returning a duplicate: the existing renderer must not terminate
@@ -60,6 +62,20 @@ export function createBatchIterator(documents, options, createRenderer) {
   // or WASM starts until a document is actually admitted by next().
   const lanes = [{ renderer: createRenderer(configuration) }];
   let stopped = false, failed = false, interruption;
+  const waiting = new Set();
+  // Unlike repeatedly racing one long-lived cancellation promise, this retains
+  // no per-document reactions after a wait completes. Only live waits are owned.
+  function waitFor(pending) {
+    return new Promise((resolve, reject) => {
+      const cancel = () => { waiting.delete(cancel); resolve(); };
+      waiting.add(cancel);
+      Promise.resolve(pending).then(
+        value => { waiting.delete(cancel); resolve(value); },
+        error => { waiting.delete(cancel); reject(error); },
+      );
+      if (stopped) cancel();
+    });
+  }
   function stop(reason, isFailure = false) {
     if (stopped) return;
     stopped = true;
@@ -68,6 +84,7 @@ export function createBatchIterator(documents, options, createRenderer) {
     for (const lane of lanes) {
       try { lane.renderer?.dispose(); } catch { /* Still release other lanes. */ }
     }
+    for (const cancel of waiting) cancel();
   }
   function interrupted() {
     if (failed) throw interruption;
@@ -118,10 +135,32 @@ export function createBatchIterator(documents, options, createRenderer) {
       if (!iterator || typeof iterator.next !== "function")
         fail("INVALID_OPTIONS", "documents returned an invalid iterator");
       const window = [], available = [...lanes];
-      let index = 0;
+      let index = 0, pull;
       while (!interrupted()) {
         while (!exhausted && window.length < concurrency) {
-          const step = iterator.next();
+          let step;
+          if (asynchronous) {
+            // At most one next() is outstanding, and its reserved slot counts
+            // against the window. Observe failure immediately, even if canceled.
+            pull ??= Promise.resolve(iterator.next()).then(
+              value => ({ kind: "input", value }),
+              error => ({ kind: "error", error }),
+            );
+            // A slow network/file producer must not hold a completed head hostage
+            // merely because the window has spare capacity. Keep the pending pull
+            // across this yield; do not start another until it has been consumed.
+            const ready = await waitFor(window.length
+              ? Promise.race([pull, window[0].pending.then(() => ({ kind: "output" }))])
+              : pull);
+            if (interrupted()) return;
+            if (ready.kind === "output") break;
+            pull = undefined;
+            if (ready.kind === "error") throw ready.error;
+            step = ready.value;
+          } else {
+            // Preserve immediate admission/snapshots for synchronous iterables.
+            step = iterator.next();
+          }
           if (!step || typeof step !== "object" || typeof step.then === "function")
             fail("INVALID_OPTIONS", "document iterator returned an invalid step");
           if (interrupted()) return;
@@ -135,7 +174,7 @@ export function createBatchIterator(documents, options, createRenderer) {
         }
         if (!window.length) break;
         const entry = window.shift();
-        const receipt = await entry.pending;
+        const receipt = await waitFor(entry.pending);
         if (interrupted()) return;
         yield receipt;
         // Only consumer demand opens a slot. A slow first document or paused
@@ -151,8 +190,13 @@ export function createBatchIterator(documents, options, createRenderer) {
         try { signal.removeEventListener("abort", onAbort); } catch { /* Already closed. */ }
       }
       if (iterator && !exhausted) {
-        try { iterator.return?.(); }
-        catch (error) { if (!caught && !failed) throw error; }
+        try {
+          // Request cleanup exactly once, but do not let an uncooperative source
+          // keep owned workers or the consumer open. Async generators can queue
+          // return() behind a stalled next(); the producer must cancel its own I/O.
+          // Observe asynchronous cleanup rejection without masking the cause.
+          Promise.resolve(iterator.return?.()).catch(() => {});
+        } catch (error) { if (!caught && !failed) throw error; }
       }
     }
   }

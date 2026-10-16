@@ -117,6 +117,7 @@ function sourceTree(value) {
 export const BOOK_PUBLICATION_FIELDS = Object.freeze([
   "typography", "baseFontSize", "headingScale", "tableFontSize", "tocDepth",
   "fitToPages", "codeLineNumbers", "metadataEpochSeconds", "running", "htmlFontFormat",
+  "pdfA", "pdfAStrict",
 ]);
 function settingRecord(value, keys) {
   if (!value || typeof value !== "object" || Array.isArray(value)
@@ -184,7 +185,7 @@ export function normalizeBookProject(project) {
     !project ||
     typeof project !== "object" ||
     Array.isArray(project) ||
-    ![1, 2, 3, 4].includes(project.schemaVersion) ||
+    ![1, 2, 3, 4, 5].includes(project.schemaVersion) ||
     Object.keys(project).some((key) => !["schemaVersion", "files", "options"].includes(key))
   ) {
     throw bookError("INVALID_PROJECT", "Unsupported source-project schema.");
@@ -198,6 +199,11 @@ export function normalizeBookProject(project) {
   ) {
     throw bookError("INVALID_PROJECT", "Source roles require project schema version 2.");
   }
+  // Archival intent must never be silently dropped by an older workbench.
+  // Keep it behind a source-project version even when an input spells OFF.
+  if (project.schemaVersion < 5 && project.options &&
+      ["pdfA", "pdfAStrict"].some(key => Object.hasOwn(project.options, key)))
+    throw bookError("INVALID_PROJECT", "PDF/A emission settings require source-project schema version 5.");
   if (project.schemaVersion < 4 && project.options &&
       BOOK_PUBLICATION_FIELDS.some(key => Object.hasOwn(project.options, key)))
     throw bookError("INVALID_PROJECT", "Publishing profiles require source-project schema version 4.");
@@ -372,7 +378,8 @@ export function createBookCollection() {
       ...(role === "include" ? { role } : {}),
     }));
   const project = () => ({
-    schemaVersion: BOOK_PUBLICATION_FIELDS.some(key => options[key] !== undefined) ? 4
+    schemaVersion: options.pdfA === "2b" ? 5
+      : BOOK_PUBLICATION_FIELDS.some(key => options[key] !== undefined) ? 4
       : options.page !== undefined ? 3 : files.some((file) => file.role === "include") ? 2 : 1,
     files: sources(),
     options,

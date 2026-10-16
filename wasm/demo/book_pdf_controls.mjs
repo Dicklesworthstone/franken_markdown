@@ -278,6 +278,13 @@ export function createBookPublicationPanel(root) {
   check(layout, "codeLineNumbers", "PDF code line numbers");
   select(layout, "htmlFontFormat", "HTML-site embedded font format (EPUB stays TrueType)",
     [["", "Native default"], ["ttf", "TrueType"], ["woff1", "WOFF"], ["woff2", "WOFF2"]]);
+  const archival = make("fieldset"); make("legend", null, "PDF archival emission", archival);
+  const policy = select(archival, "pdfPolicy", "PDF output policy", [
+    ["off", "Ordinary PDF (default)"], ["2b", "PDF/A-2b emission"],
+    ["2b-strict", "PDF/A-2b emission with strict writer policy"],
+  ]);
+  policy.setAttribute("aria-describedby", `${publicationId("archival-help")} ${publicationId("status")}`);
+  make("p", "archival-help", "PDF only: EPUB and HTML output are unchanged. These are native writer settings, not PDF/A validation or certification. Strict writer policy is separate from checking internal book links. Unsupported packages or rejected archival exports fail without falling back to ordinary PDF. Applied archival settings require source-project version 5; older workbenches must be upgraded to reopen those projects.", archival);
   const quality = make("fieldset"); make("legend", null, "Optional native typography", quality);
   make("p", null, "These switches request the native layout algorithms; they do not guarantee a page count or faster rendering. Inspect the actual PDF proof.", quality);
   for (const [token, label] of PUBLICATION_FLAGS) check(quality, `type-${token}`, label);
@@ -322,7 +329,7 @@ export function createBookPublicationControls({ root, controls, collection }) {
   const panel = createBookPublicationPanel(root);
   const checkIds = ["codeLineNumbers", "skipFirstPage", ...PUBLICATION_FLAGS.map(([token]) => `type-${token}`),
     ...PUBLICATION_BANDS.map(band => `${band}-rule`)];
-  const valueIds = [...PUBLICATION_NUMBERS.map(([id]) => id), "htmlFontFormat",
+  const valueIds = [...PUBLICATION_NUMBERS.map(([id]) => id), "htmlFontFormat", "pdfPolicy",
     ...PUBLICATION_BANDS.flatMap(band => [...PUBLICATION_SLOTS, "image", "position", "height"].map(slot => `${band}-${slot}`))];
   const ids = [...checkIds, ...valueIds, "apply", "discard", "defaults", "status", "resources", "current"];
   const el = Object.fromEntries(ids.map(id => [id, root.querySelector(`#${publicationId(id)}`)]));
@@ -353,6 +360,7 @@ export function createBookPublicationControls({ root, controls, collection }) {
     for (const [id] of PUBLICATION_NUMBERS) el[id].value = value[id] === undefined ? "" : String(value[id]);
     el.codeLineNumbers.checked = value.codeLineNumbers === true;
     el.htmlFontFormat.value = value.htmlFontFormat ?? "";
+    el.pdfPolicy.value = value.pdfA === "2b" ? (value.pdfAStrict ? "2b-strict" : "2b") : "off";
     const flags = new Set((value.typography ?? "").split(",").map(token => token.trim()));
     for (const [token] of PUBLICATION_FLAGS) el[`type-${token}`].checked = flags.has(token);
     el.skipFirstPage.checked = value.running?.skipFirstPage === true;
@@ -414,6 +422,15 @@ export function createBookPublicationControls({ root, controls, collection }) {
       : PUBLICATION_FLAGS.filter(([token]) => el[`type-${token}`].checked).map(([token]) => token).join(",");
     value.codeLineNumbers = el.codeLineNumbers.checked;
     value.htmlFontFormat = el.htmlFontFormat.value || undefined;
+    // One selection represents both native fields, so the UI cannot stage an
+    // impossible OFF/strict combination. Missing/unknown values fail closed.
+    const policy = el.pdfPolicy.value;
+    if (!["off", "2b", "2b-strict"].includes(policy))
+      throw publicationFailure("INVALID_OPTIONS", "Choose a supported PDF output policy.");
+    if (policy !== "off") {
+      value.pdfA = "2b";
+      value.pdfAStrict = policy === "2b-strict";
+    }
     const running = { skipFirstPage: el.skipFirstPage.checked };
     for (const band of PUBLICATION_BANDS) {
       const data = Object.fromEntries(PUBLICATION_SLOTS.map(slot => {

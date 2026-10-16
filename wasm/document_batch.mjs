@@ -26,10 +26,13 @@ function record(value, keys, label) {
 /** Internal adapter seam. The public document-batch entry supplies the existing
  * stateless renderer, including its validation, snapshots and worker protocol. */
 export function createBatchIterator(documents, options, createRenderer) {
-  const settings = record(options, ["concurrency", "worker", "signal"], "batch option");
+  const settings = record(options, ["concurrency", "worker", "signal", "order"], "batch option");
   const concurrency = settings.concurrency ?? 2;
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8)
     fail("INVALID_OPTIONS", "concurrency must be an integer from 1 through 8");
+  const order = settings.order ?? "input";
+  if (order !== "input" && order !== "completion")
+    fail("INVALID_OPTIONS", "order must be input or completion");
   const worker = record(settings.worker ?? {},
     ["workerFactory", "timeoutMs", "maxPendingBytes", "maxOutputBytes"], "batch worker option");
   const signal = settings.signal;
@@ -134,8 +137,32 @@ export function createBatchIterator(documents, options, createRenderer) {
       iterator = iterate.call(documents);
       if (!iterator || typeof iterator.next !== "function")
         fail("INVALID_OPTIONS", "documents returned an invalid iterator");
-      const window = [], available = [...lanes];
-      let index = 0, pull;
+      const window = [], available = [...lanes], completed = [];
+      let index = 0, pull, completionSignal, wakeCompletion;
+      function outputReady() {
+        if (order === "input") {
+          const entry = window[0];
+          return entry.pending.then(() => entry);
+        }
+        if (completed.length) return Promise.resolve(completed[0]);
+        completionSignal ??= new Promise(resolve => { wakeCompletion = resolve; });
+        return completionSignal;
+      }
+      function admit(lane, value) {
+        const entry = { lane, pending: submit(lane, value, index++) };
+        window.push(entry);
+        if (order === "completion") {
+          // Subscribe exactly once per document. Repeated Promise.race(window)
+          // would accumulate handlers on a slow lane as faster lanes are reused.
+          entry.pending.then(() => {
+            if (stopped) return;
+            completed.push(entry);
+            const wake = wakeCompletion;
+            completionSignal = wakeCompletion = undefined;
+            wake?.(entry);
+          });
+        }
+      }
       while (!interrupted()) {
         while (!exhausted && window.length < concurrency) {
           let step;
@@ -150,7 +177,7 @@ export function createBatchIterator(documents, options, createRenderer) {
             // merely because the window has spare capacity. Keep the pending pull
             // across this yield; do not start another until it has been consumed.
             const ready = await waitFor(window.length
-              ? Promise.race([pull, window[0].pending.then(() => ({ kind: "output" }))])
+              ? Promise.race([pull, outputReady().then(() => ({ kind: "output" }))])
               : pull);
             if (interrupted()) return;
             if (ready.kind === "output") break;
@@ -169,13 +196,16 @@ export function createBatchIterator(documents, options, createRenderer) {
             fail("BUDGET_EXCEEDED", "document batch index exhausted");
           let lane = available.shift();
           if (!lane) { lane = { renderer: null }; lanes.push(lane); }
-          window.push({ lane, pending: submit(lane, step.value, index++) });
+          admit(lane, step.value);
           if (interrupted()) return;
         }
         if (!window.length) break;
-        const entry = window.shift();
+        const entry = await waitFor(outputReady());
+        if (interrupted()) return;
         const receipt = await waitFor(entry.pending);
         if (interrupted()) return;
+        window.splice(window.indexOf(entry), 1);
+        if (order === "completion") completed.shift();
         yield receipt;
         // Only consumer demand opens a slot. A slow first document or paused
         // consumer never causes a completed-output queue to grow without bound.

@@ -5,8 +5,9 @@ import { createBatchIterator } from "./document_batch.mjs";
 export { DocumentBatchError } from "./document_batch.mjs";
 export { FlowWorkerError } from "./document_worker.mjs";
 
-/** Render a pull-driven sequence of independent documents using bounded owned
- * workers. Results settle in input order; no failed document is replayed. */
+/** Render a synchronous or asynchronous sequence using bounded owned workers.
+ * Results settle in input order by default; order: "completion" delivers each
+ * result as it finishes. No failed document is replayed. */
 export function renderDocumentBatch(documents, options = {}) {
   return createBatchIterator(documents, options, createWorkerRenderer);
 }

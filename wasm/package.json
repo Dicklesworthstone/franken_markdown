@@ -10,7 +10,8 @@
     "./book_worker_entry.js",
     "./demo/book.js",
     "./document_worker_entry.js",
-    "./demo/demo.js"
+    "./demo/demo.js",
+    "./document_inspector_worker.js"
   ],
   "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
   "author": "Jeffrey Emanuel",
@@ -94,7 +95,12 @@
     "./interactive/exporter": {
       "types": "./native_workspace.d.ts",
       "import": "./native_workspace.js"
-    }
+    },
+    "./document-inspector": {
+      "types": "./document-inspector.d.ts",
+      "import": "./document-inspector.js"
+    },
+    "./document-inspector/worker": "./document_inspector_worker.js"
   },
   "files": [
     "franken_markdown.js",
@@ -229,6 +235,11 @@
     "NATIVE_WORKSPACE.md",
     "demo/review.html",
     "demo/revision_review.mjs",
-    "demo/REVISION_REVIEW.md"
+    "demo/REVISION_REVIEW.md",
+    "document-inspector.js",
+    "document-inspector.d.ts",
+    "document_inspector.mjs",
+    "document_inspector_worker.js",
+    "DOCUMENT_INSPECTION.md"
   ]
 }

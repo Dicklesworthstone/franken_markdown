@@ -24,6 +24,7 @@ for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts 
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
+  document-inspector.js document-inspector.d.ts document_inspector.mjs document_inspector_worker.js DOCUMENT_INSPECTION.md \
   document-batch.js document-batch.d.ts document_batch.mjs DOCUMENT_BATCH.md \
   document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs pdf_running.mjs \
   package.json README.md; do
@@ -55,6 +56,8 @@ node --test wasm/interactive_preview.test.mjs wasm/native_workspace_preview.test
 node --test wasm/native_workspace_export_worker.test.mjs wasm/native_workspace_exports.test.mjs
 node wasm/native_workspace_smoke.mjs "$PACKAGE" "$ART/parity/native-workspace.html"
 node wasm/document_worker_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
+node --test wasm/document_inspector*.test.mjs
+node wasm/document_inspector_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/document_publication_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_worker_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"

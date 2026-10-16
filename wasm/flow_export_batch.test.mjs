@@ -4,6 +4,7 @@ import { Worker } from "node:worker_threads";
 import {
   FLOW_EXPORT_BATCH_LIMIT,
   normalizeFlowExportBatch,
+  validateFlowExportBatchResult,
   withFlowExports,
 } from "./flow_export.mjs";
 import { createWorkerFlowSessionWith } from "./flow_worker_session.mjs";
@@ -121,11 +122,13 @@ test("direct multi-format export captures one image inventory and returns ordere
   assert.equal(f.calls.length, 4);
   for (const call of f.calls) {
     assert.equal(call.source, f.session.source);
-    assert.deepEqual(call.options.pdfImages.map(asset => asset.destination), ["body.png", "logo.png"]);
+    assert.deepEqual(call.options.pdfImages.map(asset => asset.destination),
+      call.format === "pdf" ? ["body.png", "logo.png"] : ["body.png"]);
   }
+  assert.deepEqual(results.map(result => result.assetCount), [1, 2, 1, 1]);
+  assert.deepEqual(results.map(result => result.assetBytes), [3, 5, 3, 3]);
   for (const result of results) {
     assert.equal(result.revision, "7"); assert.equal(result.layoutRevision, "9");
-    assert.equal(result.assetCount, 2); assert.equal(result.assetBytes, 5);
     assert(Object.isFrozen(result)); assert(result.bytes instanceof Uint8Array);
   }
   assert(Object.isFrozen(results));
@@ -156,15 +159,20 @@ test("a source/layout change during any renderer invalidates the entire direct b
   assert.deepEqual(f.calls.map(call => call.format), ["html"]);
 });
 
-test("combined-output validation rejects a batch beyond its aggregate publication cap", async () => {
+test("combined-output validation rejects a batch beyond its aggregate publication cap", () => {
   const f = directFixture();
-  const huge = new Uint8Array(FLOW_EXPORT_BATCH_LIMIT / 2 + 1); huge[0] = 1;
-  const renderer = format => async () => ({ format, mimeType: MIME[format], bytes: huge, diagnostics: [] });
-  const api = withFlowExports(f.session, { html: renderer("html"), pdf: renderer("pdf") });
-  await assert.rejects(api.exportDocuments([
-    { format: "html", options: { maxOutputBytes: 64 * 1024 * 1024 } },
-    { format: "pdf", options: { maxOutputBytes: 64 * 1024 * 1024 } },
-  ], f.session.token), code("BUDGET_EXCEEDED"));
+  const [requests, expected] = normalizeFlowExportBatch([
+    { format: "html", options: {} },
+    { format: "pdf", options: {} },
+    { format: "epub", options: {} },
+  ], f.session.token);
+  const bytes = new Uint8Array(43 * 1024 * 1024); bytes[0] = 1;
+  const outputs = requests.map(({ format }) => ({
+    schemaVersion: 1, ...expected, format, mimeType: MIME[format], font: "serif",
+    sourceLengthBytes: 1, assetCount: 0, assetBytes: 0, bytes, diagnostics: [],
+  }));
+  assert(outputs.reduce((sum, value) => sum + value.bytes.length, 0) > FLOW_EXPORT_BATCH_LIMIT);
+  assert.throws(() => validateFlowExportBatchResult(outputs, requests, expected), code("BUDGET_EXCEEDED"));
 });
 
 test("worker negotiates one multi-format RPC and an edit cannot interleave between its renders", async t => {

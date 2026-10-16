@@ -272,7 +272,7 @@ function byteView(value, max, code = "INVALID_WASM_RESPONSE") {
 function sameBytes(a, b) {
   return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
-function collectImages(session, expected, extraImages = []) {
+function collectImages(session, expected) {
   const images = new Map();
   let offset = 0,
     total = null,
@@ -344,8 +344,50 @@ function collectImages(session, expected, extraImages = []) {
     }
     offset = page.nextOffset;
   } while (offset !== null);
-  for (const image of extraImages) addImage(image.destination, image.bytes);
-  return { pdfImages: [...images.values()], assetBytes: retained };
+  return {
+    pdfImages: [...images.values()],
+    assetBytes: retained,
+    occurrences,
+    processed,
+    destinationUnits,
+  };
+}
+function mergeExplicitImages(base, extraImages = []) {
+  if (!extraImages.length) return base;
+  const images = new Map(base.pdfImages.map((image) => [image.destination, image]));
+  let occurrences = base.occurrences,
+    processed = base.processed,
+    retained = base.assetBytes,
+    destinationUnits = base.destinationUnits;
+  for (const image of extraImages) {
+    if (++occurrences > IMAGE_COUNT) fail("BUDGET_EXCEEDED", "export image count exceeded");
+    processed += image.bytes.length;
+    if (processed > 64 * 1024 * 1024)
+      fail("BUDGET_EXCEEDED", "export image copy/compare work limit exceeded");
+    const previous = images.get(image.destination);
+    if (previous) {
+      if (!sameBytes(previous.bytes, image.bytes))
+        fail("AMBIGUOUS_EXPORT_ASSET", "one image destination has different occurrence or explicit payloads");
+      continue;
+    }
+    if (image.bytes.length > IMAGE_BYTES - retained)
+      fail("BUDGET_EXCEEDED", "export image payload limit exceeded");
+    destinationUnits += image.destination.length;
+    if (destinationUnits > 64 * 1024)
+      fail("BUDGET_EXCEEDED", "export image destination limit exceeded");
+    retained += image.bytes.length;
+    images.set(image.destination, {
+      destination: image.destination,
+      bytes: new Uint8Array(image.bytes),
+    });
+  }
+  return {
+    pdfImages: [...images.values()],
+    assetBytes: retained,
+    occurrences,
+    processed,
+    destinationUnits,
+  };
 }
 function checkDiagnostics(value, sourceLength) {
   if (!Array.isArray(value) || value.length > DIAGNOSTICS)
@@ -462,11 +504,13 @@ export function withFlowExports(session, renderers, font = "sans") {
       const source = sourceText(session.source);
       const sourceLengthBytes = new TextEncoder().encode(source).length;
       const pdf = jobs.find((job) => job.format === "pdf");
-      const assets = collectImages(session, expected, pdf?.options.pdfImages);
+      const baseAssets = collectImages(session, expected);
+      const pdfAssets = pdf ? mergeExplicitImages(baseAssets, pdf.options.pdfImages) : baseAssets;
       fence(session, expected);
       const results = [];
       for (const { format, options, render } of jobs) {
         const { maxOutputBytes, ...settings } = options;
+        const assets = format === "pdf" ? pdfAssets : baseAssets;
         const output = await render(source, {
           ...settings,
           font,

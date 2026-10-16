@@ -24,6 +24,7 @@ for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts 
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
+  document-batch.js document-batch.d.ts document_batch.mjs DOCUMENT_BATCH.md \
   document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs pdf_running.mjs \
   package.json README.md; do
   cp "wasm/$file" "$PACKAGE/$file"
@@ -47,6 +48,7 @@ node --test wasm/tests/book_publication*.test.mjs
 node --test wasm/tests/book_edition*.test.mjs
 node --test wasm/tests/book_file_*.test.mjs
 node --test wasm/tests/book_directory_*.test.mjs
+node --test wasm/document_batch*.test.mjs
 node --test wasm/document_comparison.test.mjs wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs
 node --test wasm/interactive.test.mjs wasm/interactive_runtime.test.mjs wasm/interactive_export.test.mjs wasm/native_workspace_page.test.mjs wasm/native_workspace_images.test.mjs wasm/native_workspace_settings.test.mjs wasm/native_workspace_source.test.mjs wasm/native_workspace_publishing.test.mjs
 node --test wasm/interactive_preview.test.mjs wasm/native_workspace_preview.test.mjs wasm/native_workspace_preview_package.test.mjs

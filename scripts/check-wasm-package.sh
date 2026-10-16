@@ -129,6 +129,7 @@ for file in interactive.js interactive.d.ts interactive_runtime.mjs interactive_
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
+  document-batch.js document-batch.d.ts document_batch.mjs DOCUMENT_BATCH.md \
   document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs pdf_running.mjs; do
   cp "wasm/$file" "$package_dir/$file"
 done
@@ -271,6 +272,7 @@ node --test wasm/tests/book_publication*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_edition*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_file_*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/tests/book_directory_*.test.mjs 2>&1 | tee -a "$LEDGER"
+node --test wasm/document_batch*.test.mjs 2>&1 | tee -a "$LEDGER"
 node --test wasm/document_comparison.test.mjs wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs 2>&1 | tee -a "$LEDGER"
 node wasm/document_worker_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 

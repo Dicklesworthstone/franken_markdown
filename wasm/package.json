@@ -83,6 +83,10 @@
       "import": "./document_worker.mjs"
     },
     "./document-worker/worker": "./document_worker_entry.js",
+    "./document-batch": {
+      "types": "./document-batch.d.ts",
+      "import": "./document-batch.js"
+    },
     "./interactive": {
       "types": "./interactive.d.ts",
       "import": "./interactive.js"
@@ -204,6 +208,10 @@
     "document_worker_entry.js",
     "document-worker.d.ts",
     "DOCUMENT_WORKER.md",
+    "document-batch.js",
+    "document-batch.d.ts",
+    "document_batch.mjs",
+    "DOCUMENT_BATCH.md",
     "pdf_page.mjs",
     "pdf_running.mjs",
     "interactive.js",

@@ -31,10 +31,10 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     }
     return out;
   }
-  function changes(base, next) {
+  function changes(base, next, trim = true) {
     let start = 0, end = 0;
-    while (start < base.length && start < next.length && base[start] === next[start]) start++;
-    while (end < base.length - start && end < next.length - start
+    while (trim && start < base.length && start < next.length && base[start] === next[start]) start++;
+    while (trim && end < base.length - start && end < next.length - start
         && base[base.length - 1 - end] === next[next.length - 1 - end]) end++;
     const n = base.length - start - end, m = next.length - start - end;
     if (!n && !m) return [];
@@ -132,6 +132,66 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     if (b.start === b.end) return b.start >= a.start && b.start <= a.end;
     return a.start < b.end && b.start < a.end;
   }
+  // Refine only one physical source line. Whitespace-delimited runs are
+  // indivisible: never splice a word, combining sequence, emoji, identifier or
+  // Markdown destination into a third spelling. CRLF is one exact token.
+  // No locale/Intl segmentation, normalization or Markdown interpretation.
+  function refineParagraph(base, local, disk) {
+    const values = [base, local, disk];
+    const cost = values.reduce((sum, text) => sum + text.length, 0);
+    if (cost > cells) return null;
+    cells -= cost; // Charge the scan before allocating any token arrays.
+    const tokens = [];
+    for (const text of values) {
+      const pattern = /\r\n|[ \t\v\f]+|[^ \t\v\f\r\n]+|[\r\n]/g;
+      const parts = [];
+      let match;
+      while ((match = pattern.exec(text))) {
+        if (!cells) return null;
+        cells--; parts.push(match[0]);
+        if (/^[\r\n]/.test(match[0]) && pattern.lastIndex !== text.length) return null;
+      }
+      tokens.push(parts);
+    }
+    // A duplicate word/space can admit different alignments. Require the same
+    // clean result with forward AND reverse diffs, including the cross pairs;
+    // do not trim common ends here, which would conceal duplicate alignments.
+    // ambiguity or exhausted work keeps the original whole-line conflict.
+    const count = tokens.reduce((sum, parts) => sum + parts.length, 0);
+    if (count > cells) return null;
+    cells -= count;
+    const repeated = new Set();
+    for (const parts of tokens) {
+      const seen = new Set();
+      for (const part of parts) if (!/^[ \t\v\f\r\n]+$/.test(part)) {
+        if (seen.has(part)) repeated.add(part);
+        else seen.add(part);
+      }
+    }
+    const reversed = tokens.map(parts => parts.slice().reverse());
+    const a = changes(tokens[0], tokens[1], false), b = a && changes(tokens[0], tokens[2], false);
+    const ar = b && changes(reversed[0], reversed[1], false), br = ar && changes(reversed[0], reversed[2], false);
+    if (!br) return null;
+    const forward = edits => edits.slice().reverse().map(edit => ({
+      start: tokens[0].length - edit.end, end: tokens[0].length - edit.start,
+      lines: edit.lines.slice().reverse(),
+    }));
+    const lefts = [a, forward(ar)], rights = [b, forward(br)];
+    // Moving/adding/removing a repeated word has no stable occurrence identity.
+    // Keep that line explicit even when the two extreme alignments happen to
+    // agree. Repeated words that remain untouched are useful normal context.
+    for (const edits of [...lefts, ...rights]) for (const edit of edits) {
+      if (edit.lines.some(token => repeated.has(token))) return null;
+      for (let i = edit.start; i < edit.end; i++) if (repeated.has(tokens[0][i])) return null;
+    }
+    let source = null;
+    for (const left of lefts) for (const right of rights) {
+      const merged = mergePlan(tokens[0], left, right);
+      if (merged.action !== "merged" || (source !== null && source !== merged.source)) return null;
+      source = merged.source;
+    }
+    return source;
+  }
   function reconcile(base, local, disk, detailed) {
     if (typeof local !== "string" || ![base, disk].every(text => text === null || typeof text === "string")
         || [base, local, disk].some(text => text !== null && text.length > MAX_UNITS)) throw invalid();
@@ -144,13 +204,16 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     if (!right) return conflict("merge-budget");
     const a = changes(old, left), b = a && changes(old, right);
     if (!b) return conflict("merge-budget");
-    if (detailed) return mergePlan(old, a, b);
+    if (detailed) return mergePlan(old, a, b, refineParagraph);
     const edits = [];
     let i = 0, j = 0;
     while (i < a.length || j < b.length) {
       const x = a[i], y = b[j];
       if (x && y && overlaps(x, y)) {
-        if (!identical(x, y)) return conflict("overlapping-edits");
+        if (!identical(x, y)) {
+          const planned = mergePlan(old, a, b, refineParagraph);
+          return result(planned.action, planned.source, planned.reason);
+        }
         edits.push(x); i++; j++;
       } else if (x && (!y || x.start < y.start)) { edits.push(x); i++; }
       else { edits.push(y); j++; }
@@ -194,7 +257,7 @@ function resolutionText(text) {
 // Connected overlap components, not the first conflicting pair: one deletion
 // may intersect several edits from the other side. An insertion on a boundary
 // connects both neighboring ranges; adjacent replacements remain independent.
-function mergePlan(base, local, disk) {
+function mergePlan(base, local, disk, refine = null) {
   const pieces = [], conflicts = [];
   let i = 0, j = 0, cursor = 0, group = null;
   function slice(start, end, edits) {
@@ -216,10 +279,13 @@ function mergePlan(base, local, disk) {
     if (!sides[0].length) pieces.push(right);
     else if (!sides[1].length || left === right) pieces.push(left);
     else {
+      const original = slice(start, end, []);
+      const merged = refine && end === start + 1 ? refine(original, left, right) : null;
+      if (merged !== null) { pieces.push(merged); return true; }
       if (conflicts.length === 256) return false;
       const index = conflicts.length;
       conflicts.push(Object.freeze({ index, startLine: start, endLine: end,
-        base: slice(start, end, []), local: left, disk: right }));
+        base: original, local: left, disk: right }));
       pieces.push(index);
     }
     return true;

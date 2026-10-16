@@ -96,3 +96,63 @@ real PDF bytes, PDF/A conformance, visual quality, browser acceptance or a full
 repository/package build. Native tests from the earlier archival API change were
 not run here. No existing regression, golden, test gate or dependency was changed.
 The new tests are included by the existing `book_pdf*.test.mjs` package wildcard.
+
+## Atomic multi-format editions and worker recovery
+
+The complete-edition API accepts the same captured book policy:
+
+```js
+import { createBookPublicationWorker } from './book-worker.js';
+const publisher = createBookPublicationWorker();
+try {
+  const edition = await publisher.render(chapters, ['epub', 'pdf', 'site'], {
+    includeSources, pdfA: '2b', pdfAStrict: true,
+  }, { strictLinks: true });
+  const pdf = edition.outputs.find(output => output.format === 'book-pdf');
+  // pdf.pdfA === '2b'; pdf.pdfAStrict === true
+  // edition.linkReport describes navigation, not PDF/A conformance.
+} finally {
+  publisher.dispose();
+}
+```
+
+The coordinator keeps an independent copy of the admitted scalar policy before
+passing the capture to any client. Each PDF receipt must agree with that policy;
+missing/mismatched archival receipts fail the entire edition. Unexpected PDF/A
+metadata on ordinary PDFs or non-PDF outputs also fails. Successful PDF receipts
+survive the coordinator's owned-byte copy and client disposal. EPUB/site outputs
+never acquire an archival claim. Selecting only non-PDF formats still uses their
+existing exporters, even when the book has a saved archival policy.
+
+Worker loss restarts the whole edition with the same policy, input and original
+deadline. Both navigation checks run again when strictLinks is selected. A native
+archival refusal, missing capability or invalid receipt is terminal; automatic
+recovery cannot downgrade archival output to ordinary PDF. An already rendered
+EPUB stays private if a later PDF fails. The combined output ceiling and all
+cancellation/verification gates remain unchanged.
+
+An additional 27 complete-edition tests exercise the actual public
+`createBookPublicationWorker` through normal imports, both existing checker
+adapters and the existing report decoder. Real Node workers run the production
+session/transport/cache modules around the same explicit native boundary double.
+They cover PDF/EPUB/site ordering, independently owned receipts, source/resource
+capture, strict and non-strict navigation, actual worker-process failures during
+preflight/export/final verification, whole-edition recovery, capability/native
+refusal without retry, cancellation and output limits. Separate injected clients
+exercise coordinator admission independently of the worker's own policy check.
+
+```sh
+node --test wasm/tests/book_pdfa*.test.mjs wasm/tests/book_pdf_page.test.mjs \
+  wasm/tests/book_publication_pdfa.test.mjs \
+  wasm/tests/book_publication_retained_verification.test.mjs
+```
+
+122 tests passed together: 76 new tests plus 19 unchanged geometry and 27
+unchanged retained-verification regressions. The latter regression file and
+public factory were also verified against their original Git blob hashes. Before
+the coordinator change, 21 of the 27 new edition cases failed on missing receipt
+propagation or acceptance of invalid policy receipts; all 27 pass after it.
+No existing regression was edited. This remains JS/protocol qualification with
+explicit native doubles, not a compiled-WASM or real-browser/conformance run.
+Workbench profile controls and source-project persistence are not added here;
+this change exposes the policy through the public book and publication APIs.

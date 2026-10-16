@@ -27,7 +27,7 @@ function publicationFormats(value) {
   return formats;
 }
 
-function publicationOutput(value, format, remaining, previousRevision, sourceLength) {
+function publicationOutput(value, format, remaining, previousRevision, sourceLength, archive) {
   const bytes = value?.bytes, revision = value?.retainedInputRevision;
   if (!Number.isSafeInteger(revision) || revision < 1)
     throw error("UNSUPPORTED_BOOK_PUBLICATION", "Rebuild the matching worker for captured multi-format publication.");
@@ -40,6 +40,16 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
     throw error("WORKER_PROTOCOL_ERROR", "Publication output does not match the captured book and requested format.");
   if (bytes.byteLength === 0 || bytes.byteLength > remaining)
     throw error("OUTPUT_LIMIT", "Combined publication output is empty or exceeds its byte limit.");
+  // Keep the PDF exporter receipt bound to the original capture, not a
+  // mutable option container or an optimistic field on a later result. The
+  // worker has its own check; this gate also covers injected/older clients.
+  const policy = format === "pdf" ? archive : null;
+  const pdfA = value.pdfA, pdfAStrict = value.pdfAStrict;
+  if (policy) {
+    if (pdfA !== policy.pdfA || pdfAStrict !== policy.pdfAStrict)
+      throw error("UNSUPPORTED_BOOK_PDFA", "The publication did not acknowledge the captured PDF/A emission policy; no edition was published.");
+  } else if (pdfA !== undefined || pdfAStrict !== undefined)
+    throw error("WORKER_PROTOCOL_ERROR", "An edition output claims an unrequested PDF/A emission policy.");
   // Own exactly this view before another export or disposal can recycle its
   // backing storage. The aggregate limit is an output limit, not a heap bound.
   const owned = bytes.slice(), [mimeType, extension] = TYPES[format];
@@ -47,7 +57,7 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
     revision,
     output: Object.freeze({
       format: `book-${format}`, bytes: owned, sourceLength: value.sourceLength,
-      mimeType, extension, blob: () => new Blob([owned], { type: mimeType }),
+      mimeType, extension, ...(policy ?? {}), blob: () => new Blob([owned], { type: mimeType }),
     }),
   };
 }
@@ -134,7 +144,7 @@ export function createBookPublicationClient({
       // Reserve before format proxies, option/source getters, signal adapters
       // or the worker factory can reenter this public operation.
       active = operation;
-      let selected, input, strictLinks;
+      let selected, input, strictLinks, archive;
       try {
         selected = publicationFormats(formats);
         strictLinks = request?.strictLinks;
@@ -160,6 +170,11 @@ export function createBookPublicationClient({
         timer = setTimeout(expired, timeoutMs);
         input = captureInput(files, options);
         if (stopped()) return;
+        // captureInput owns policy admission. Preserve only its normalized
+        // primitives here before a client or observer can inspect the capture.
+        // A worker restart must not reinterpret or downgrade this policy.
+        archive = input.options.pdfA === "2b"
+          ? Object.freeze({ pdfA: "2b", pdfAStrict: input.options.pdfAStrict === true }) : null;
         if (signal?.aborted) { onAbort(); return; }
       } catch (cause) {
         finish(cause);
@@ -212,7 +227,7 @@ export function createBookPublicationClient({
                 ? await client.render(input.files, format, input.options, { signal: abort.signal })
                 : await client.renderSourceUpdate([], format, { expectedRevision: revision }, { signal: abort.signal });
               if (stopped()) return;
-              const admitted = publicationOutput(result, format, maxOutputBytes - total, revision, sourceLength);
+              const admitted = publicationOutput(result, format, maxOutputBytes - total, revision, sourceLength, archive);
               if (stopped()) return;
               revision = admitted.revision;
               sourceLength = admitted.output.sourceLength;

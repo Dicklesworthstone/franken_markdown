@@ -104,10 +104,10 @@ function runningCharge(value) {
   }
   return charge;
 }
-function normalize(format, source, options) {
+function normalize(format, source, options, knownSourceLength) {
   if (typeof format !== "string" || !Object.hasOwn(FORMATS, format))
     fail("INVALID_OPTIONS", "unsupported document format");
-  const sourceLength = text(source, DOCUMENT_SOURCE_LIMIT, "Markdown");
+  const sourceLength = knownSourceLength ?? text(source, DOCUMENT_SOURCE_LIMIT, "Markdown");
   const out = record(options, SETTINGS[format], "render option");
   for (const [key, value] of Object.entries(out)) {
     if (key === "pdfImages" || key === "fontAssets") out[key] = assets(value, key === "fontAssets");
@@ -268,6 +268,128 @@ function ownedOutput(output) {
       ...(scope === undefined ? {} : { scope }),
     })) };
 }
+// A publication admits one source and one set of format-specific options. All
+// targets validate before snapshotting, queueing or rendering anything. Sharing
+// an exact asset view saves a copy, but never grants another format its key.
+function publicationAsset(cache, view, capture) {
+  try {
+    Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(view.buffer);
+  } catch { fail("INVALID_OPTIONS", "publication assets must not use shared memory"); }
+  let ranges = cache.get(view.buffer);
+  if (!ranges) { ranges = new Map(); cache.set(view.buffer, ranges); }
+  const key = `${view.byteOffset}:${view.byteLength}`;
+  if (ranges.has(key)) return { fresh: false, view: ranges.get(key) };
+  const owned = capture ? new Uint8Array(bytes(view, 32 * 1024 * 1024)) : view;
+  ranges.set(key, owned);
+  return { fresh: true, view: owned };
+}
+function publicationInput(source, targets) {
+  const sourceLength = text(source, DOCUMENT_SOURCE_LIMIT, "Markdown");
+  if (!Array.isArray(targets) || targets.length < 1 || targets.length > 5)
+    fail("INVALID_OPTIONS", "publication requires one through five distinct format targets");
+  const seen = new Set(), cache = new Map(), owned = [];
+  let charge = 512 + 2 * source.length;
+  for (let index = 0; index < targets.length; index++) {
+    const field = Object.getOwnPropertyDescriptor(targets, String(index));
+    if (!field || !Object.hasOwn(field, "value"))
+      fail("INVALID_OPTIONS", "publication targets must be dense data");
+    const target = record(field.value, ["format", "options"], "publication target");
+    const input = normalize(target.format, source, target.options === undefined ? {} : target.options, sourceLength);
+    if (seen.has(input.format)) fail("INVALID_OPTIONS", "duplicate publication format");
+    seen.add(input.format);
+    // Count the source only once, while retaining per-target record/string costs.
+    charge += input.charge - 2 * source.length + 128 + 2 * input.format.length;
+    for (const key of ["pdfImages", "fontAssets"]) {
+      for (const item of input.options[key] ?? []) {
+        if (!publicationAsset(cache, item.bytes, false).fresh) charge -= item.bytes.byteLength;
+      }
+    }
+    owned.push({ format: input.format, options: input.options });
+  }
+  return { source, sourceLength, targets: owned, charge };
+}
+function publicationSnapshot(input, maxOutputBytes) {
+  const cache = new Map(), transfer = [];
+  const targets = input.targets.map(target => {
+    const options = { ...target.options };
+    for (const key of ["pdfImages", "fontAssets"]) {
+      if (!options[key]) continue;
+      options[key] = Object.freeze(options[key].map(item => {
+        const asset = publicationAsset(cache, item.bytes, true);
+        if (asset.fresh) transfer.push(asset.view.buffer);
+        return Object.freeze({ ...item, bytes: asset.view });
+      }));
+    }
+    return Object.freeze({ format: target.format, options: Object.freeze(options) });
+  });
+  return { args: ["publish", input.source, Object.freeze(targets), maxOutputBytes], transfer };
+}
+function publicationDiagnosticBudget(outputs) {
+  let count = 0, units = 0;
+  for (const output of outputs) {
+    count += output.diagnostics.length;
+    for (const item of output.diagnostics) units += item.message.length + (item.code?.length ?? 0);
+  }
+  if (count > 1024 || units > 65536)
+    fail("BUDGET_EXCEEDED", "combined publication diagnostic limit exceeded");
+}
+function publicationEnvelope(value, max, expected) {
+  if (!value || value.format !== "document-publication"
+      || !Number.isSafeInteger(value.sourceLength) || value.sourceLength < 0
+      || value.sourceLength > DOCUMENT_SOURCE_LIMIT
+      || !Array.isArray(value.outputs) || value.outputs.length < 1 || value.outputs.length > 5
+      || (expected !== undefined && (value.sourceLength !== expected.sourceLength
+        || value.outputs.length !== expected.formats.length)))
+    fail("WORKER_PROTOCOL_ERROR", "invalid publication envelope");
+  const formats = new Set(), buffers = new Set();
+  let total = 0;
+  for (let index = 0; index < value.outputs.length; index++) {
+    const output = value.outputs[index];
+    if (!output || typeof output.format !== "string" || !Object.hasOwn(FORMATS, output.format)
+        || formats.has(output.format)
+        || (expected !== undefined && output.format !== expected.formats[index]))
+      fail("WORKER_PROTOCOL_ERROR", "publication target identity mismatch");
+    formats.add(output.format);
+    result(output, output.format, max - total, value.sourceLength);
+    let size;
+    try { size = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(output.bytes.buffer); }
+    catch { fail("WORKER_PROTOCOL_ERROR", "publication output must not be shared"); }
+    if (output.bytes.byteOffset !== 0 || output.bytes.byteLength !== size || buffers.has(output.bytes.buffer))
+      fail("WORKER_PROTOCOL_ERROR", "publication requires distinct exact owned output buffers");
+    buffers.add(output.bytes.buffer);
+    total += output.bytes.byteLength;
+  }
+  if (value.totalBytes !== total) fail("WORKER_PROTOCOL_ERROR", "publication byte total mismatch");
+  publicationDiagnosticBudget(value.outputs);
+  return value;
+}
+function publicationHelpers(value, max, expected) {
+  publicationEnvelope(value, max, expected);
+  return Object.freeze({ format: "document-publication", sourceLength: value.sourceLength,
+    totalBytes: value.totalBytes, outputs: Object.freeze(value.outputs.map(helpers)) });
+}
+async function publishInWorker(engine, input, max) {
+  for (const target of input.targets) {
+    if (typeof engine?.[FORMATS[target.format][0]] !== "function")
+      fail("UNSUPPORTED_WASM_PACKAGE", "Publication requires matching bindings for every requested format");
+  }
+  const outputs = [];
+  let totalBytes = 0;
+  // Use the existing native renderers sequentially. This captures one revision,
+  // not one shared AST or incremental typesetting. Nothing is published until
+  // every output succeeds; keep copies independent of reused native storage.
+  for (const target of input.targets) {
+    const output = await engine[FORMATS[target.format][0]](input.source, target.options);
+    result(output, target.format, max - totalBytes, input.sourceLength);
+    publicationDiagnosticBudget([...outputs, output]);
+    totalBytes += output.bytes.byteLength;
+    outputs.push(ownedOutput(output));
+  }
+  const value = { format: "document-publication", sourceLength: input.sourceLength, totalBytes, outputs };
+  publicationEnvelope(value, max);
+  return { state: null, value, transfer: outputs.map(output => output.bytes.buffer) };
+}
+
 async function compareInWorker(engine, input, max) {
   if (typeof engine.semanticDiff !== "function" || typeof engine.renderSemanticDiff !== "function")
     fail("UNSUPPORTED_WASM_PACKAGE", "Revision comparison requires matching semantic-diff WASM bindings");
@@ -318,6 +440,7 @@ export function createWorkerRenderer(options = {}) {
           rpc = new OwnedWorkerRpc(worker, limits, (state, method, value) => {
             if (state !== null) fail("WORKER_PROTOCOL_ERROR", "unexpected document state");
             if (method === "compare") comparisonEnvelope(value, maxOutputBytes);
+            else if (method === "publish") publicationEnvelope(value, maxOutputBytes);
             else result(value, method, maxOutputBytes);
           });
         } catch (error) {
@@ -328,12 +451,17 @@ export function createWorkerRenderer(options = {}) {
         }
       }
       const expected = format === "compare"
-        ? { oldSourceLength: input.oldSourceLength, newSourceLength: input.newSourceLength } : input.sourceLength;
-      const prepare = () => format === "compare"
-        ? { args: [input.oldMarkdown, input.newMarkdown, input.options, maxOutputBytes] }
-        : snapshot(input, maxOutputBytes);
+        ? { oldSourceLength: input.oldSourceLength, newSourceLength: input.newSourceLength }
+        : format === "publish" ? { sourceLength: input.sourceLength, formats: input.targets.map(target => target.format) }
+        : input.sourceLength;
+      const prepare = () => {
+        if (format === "compare") return { args: [input.oldMarkdown, input.newMarkdown, input.options, maxOutputBytes] };
+        if (format === "publish") return publicationSnapshot(input, maxOutputBytes);
+        return snapshot(input, maxOutputBytes);
+      };
       return rpc.request(format, input.charge, prepare, controls).then(value => {
         try {
+          if (format === "publish") return publicationHelpers(value, maxOutputBytes, expected);
           return format === "compare" ? comparisonHelpers(value, maxOutputBytes, expected)
             : helpers(result(value, format, maxOutputBytes, expected));
         }
@@ -344,6 +472,9 @@ export function createWorkerRenderer(options = {}) {
   const render = (format, source, options = {}, controls = {}) =>
     execute(format, () => normalize(format, source, options), controls);
   const api = {
+    publish(source, targets, controls = {}) {
+      return execute("publish", () => publicationInput(source, targets), controls);
+    },
     compare(oldMarkdown, newMarkdown, options = {}, controls = {}) {
       return execute("compare", () => comparisonInput(oldMarkdown, newMarkdown, options), controls);
     },
@@ -366,13 +497,15 @@ export function installDocumentWorker(endpoint, loadRenderer) {
   return serveOwnedWorker(endpoint, async (method, args) => {
     if (!Array.isArray(args) || args.length !== 4 || (method !== "compare" && method !== args[0]))
       fail("WORKER_PROTOCOL_ERROR", "invalid document request");
-    const input = method === "compare" ? comparisonInput(args[0], args[1], args[2]) : normalize(args[0], args[1], args[2]);
+    const input = method === "compare" ? comparisonInput(args[0], args[1], args[2])
+      : method === "publish" ? publicationInput(args[1], args[2]) : normalize(args[0], args[1], args[2]);
     if (input.charge > 64 * 1024 * 1024) fail("BUDGET_EXCEEDED", "document ingress limit exceeded");
     const max = integer(args[3], 1, DOCUMENT_OUTPUT_LIMIT, "maxOutputBytes");
     try {
       renderer ??= Promise.resolve().then(loadRenderer);
       const engine = await renderer;
       if (method === "compare") return await compareInWorker(engine, input, max);
+      if (method === "publish") return await publishInWorker(engine, input, max);
       const output = await engine[FORMATS[method][0]](input.source, input.options);
       result(output, method, max, input.sourceLength);
       // Never detach a binding's storage. Only transfer the owned boundary copy;

@@ -36,3 +36,20 @@ test("worker fixes its loader in code and package entry does not import WASM", a
   assert.match(await read("./document_inspector_worker.js"), /installDocumentInspector\(self, \(\) => import\("\.\/franken_markdown\.js"\)\)/);
   assert.doesNotMatch(await read("./document-inspector.js"), /import\s+.*franken_markdown/);
 });
+
+test("Document Lab ships with the demo, preserves existing rendering, and states audit scope", async () => {
+  const manifest = JSON.parse(await read("./package.json"));
+  assert.ok(manifest.files.includes("demo/document_lab.mjs"));
+  assert.ok(manifest.sideEffects.includes("./demo/document_lab.mjs"));
+  const html = await read("./demo/index.html");
+  for (const id of ["document-lab", "open-document-lab", "inspect-document", "download-inspection",
+    "inspection-status", "inspection-results", "inspection-metrics", "inspection-structure",
+    "inspection-outline", "inspection-quality", "inspection-accessibility", "markdown", "render", "download-pdf"])
+    assert.equal(html.split(`id="${id}"`).length - 1, 1, id);
+  assert.match(html, /src="\.\/document_lab\.mjs"/);
+  assert.match(html, /src="\.\/demo\.js"/);
+  assert.match(html, /id="preview"[^>]+sandbox=""/);
+  assert.match(html, /No findings is not PDF\/UA certification/);
+  for (const script of ["../scripts/check-wasm-package.sh", "../scripts/dsr-wasm-package.sh"])
+    assert.match(await read(script), /cp wasm\/demo\/document_lab\.mjs/);
+});

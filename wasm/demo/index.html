@@ -280,6 +280,26 @@
         color: var(--muted);
       }
 
+      .document-lab {
+        margin: 0 12px 12px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        overflow-wrap: anywhere;
+      }
+
+      .document-lab summary { cursor: pointer; font-weight: 650; min-height: 32px; }
+      .document-lab p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+      .document-lab .button { min-height: 44px; }
+      .document-lab .actions { flex-wrap: wrap; }
+      .inspection-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 20px; }
+      .document-lab h3 { font-size: 14px; }
+      .document-lab dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; }
+      .document-lab dd { margin: 0; }
+      .document-lab li { margin-block: 8px; }
+      .document-lab [hidden] { display: none; }
+
       @media (max-width: 980px) {
         .topbar,
         .workspace {
@@ -318,6 +338,7 @@
           <span id="status" class="status">loading wasm package</span>
         </div>
         <div class="actions">
+          <a id="open-document-lab" href="#document-lab">Document Lab</a>
           <a href="./review.html" target="_blank" rel="noopener noreferrer">Compare revisions</a>
           <button id="render" class="button primary" type="button">Render</button>
           <button id="download-pdf" class="button secondary" type="button">Download PDF</button>
@@ -389,8 +410,44 @@
           </div>
         </section>
       </section>
+      <details id="document-lab" class="document-lab">
+        <summary>Document Lab — inspect the current draft</summary>
+        <p>Readability estimates, document structure, source-quality findings and the native accessibility audit.
+          This checks source with the engine’s default options, not the rendered preview or export settings.
+          No findings is not PDF/UA certification. Reports may contain document text.</p>
+        <div class="actions">
+          <button id="inspect-document" class="button primary" type="button">Inspect current draft</button>
+          <button id="download-inspection" class="button secondary" type="button" disabled>Download inspection JSON</button>
+        </div>
+        <p id="inspection-status" role="status" aria-live="polite">No inspection yet.</p>
+        <div id="inspection-results" hidden>
+          <div class="inspection-grid">
+            <section aria-label="Document metrics">
+              <h3>Metrics and estimates</h3>
+              <dl id="inspection-metrics"></dl>
+              <h3>Structural inventory</h3>
+              <dl id="inspection-structure"></dl>
+            </section>
+            <section aria-label="Document outline">
+              <h3>Native document outline</h3>
+              <ol id="inspection-outline"></ol>
+            </section>
+            <section aria-label="Source quality findings">
+              <h3>Source quality</h3>
+              <ul id="inspection-quality"></ul>
+            </section>
+            <section aria-label="Accessibility source findings">
+              <h3>Accessibility source audit</h3>
+              <ul id="inspection-accessibility"></ul>
+            </section>
+          </div>
+          <p>Lists show up to 100 entries; long text is shortened for display. The JSON retains the complete reports.
+            Findings are document-level; no source positions or conformance verdicts are inferred.</p>
+        </div>
+      </details>
     </main>
 
     <script type="module" src="./demo.js"></script>
+    <script type="module" src="./document_lab.mjs"></script>
   </body>
 </html>

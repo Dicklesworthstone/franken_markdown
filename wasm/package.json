@@ -11,7 +11,8 @@
     "./demo/book.js",
     "./document_worker_entry.js",
     "./demo/demo.js",
-    "./document_inspector_worker.js"
+    "./document_inspector_worker.js",
+    "./demo/document_lab.mjs"
   ],
   "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
   "author": "Jeffrey Emanuel",
@@ -240,6 +241,7 @@
     "document-inspector.d.ts",
     "document_inspector.mjs",
     "document_inspector_worker.js",
-    "DOCUMENT_INSPECTION.md"
+    "DOCUMENT_INSPECTION.md",
+    "demo/document_lab.mjs"
   ]
 }

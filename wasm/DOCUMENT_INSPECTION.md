@@ -25,6 +25,29 @@ try {
 }
 ```
 
+## Document Lab in the browser demo
+
+Open the assembled package's `demo/index.html`, choose **Document Lab**, then
+**Inspect current draft**. The panel shows native metrics, readability estimates,
+structural counts, an outline, source-quality findings and accessibility findings.
+The inspection is explicit; opening the panel does not initialize WASM or start
+analysis. It has its own worker and does not cancel the existing HTML/PDF jobs.
+
+Edits and composition invalidate displayed results, abort pending inspection and
+remove any old download URL. A late completion or failure cannot replace a newer
+report. Source spelling is checked again before report display and download, so
+a programmatic edit without an input event cannot download an older report.
+Cancellation, page hide and disposal release owned work; returning from the
+back-forward cache requires a fresh inspection. The editor source is preserved.
+
+**Download inspection JSON** saves the complete report only for the current
+inspected draft. The visible lists are capped at 100 entries each and individual
+text at 2048 code units; these display limits do not remove anything from JSON.
+All report text is inserted as text, never HTML, and outline entries do not invent
+source offsets. Rendering controls, including raw-HTML trust, do not grant
+inspection additional authority. No automatic upload, persistence or download
+is performed.
+
 ## Report meaning and ownership
 
 The result schema is `fmd-document-inspection-v1`. `sourceLength` counts UTF-8

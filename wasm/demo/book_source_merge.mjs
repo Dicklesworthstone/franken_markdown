@@ -136,7 +136,7 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
   // indivisible: never splice a word, combining sequence, emoji, identifier or
   // Markdown destination into a third spelling. CRLF is one exact token.
   // No locale/Intl segmentation, normalization or Markdown interpretation.
-  function refineParagraph(base, local, disk) {
+  function refineParagraph(base, local, disk, regions = false) {
     const values = [base, local, disk];
     const cost = values.reduce((sum, text) => sum + text.length, 0);
     if (cost > cells) return null;
@@ -184,15 +184,29 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
       if (edit.lines.some(token => repeated.has(token))) return null;
       for (let i = edit.start; i < edit.end; i++) if (repeated.has(tokens[0][i])) return null;
     }
-    let source = null;
+    let source = null, clean = true;
     for (const left of lefts) for (const right of rights) {
       const merged = mergePlan(tokens[0], left, right);
-      if (merged.action !== "merged" || (source !== null && source !== merged.source)) return null;
-      source = merged.source;
+      if (merged.action !== "merged" || (source !== null && source !== merged.source)) clean = false;
+      else source = merged.source;
     }
-    return source;
+    if (clean) return source;
+    // Region review is opt-in. Unlike an automatic clean result, a partial
+    // plan needs identical edit coordinates in both orientations: otherwise
+    // the scope of an explicit choice would depend on a diff tie-break.
+    const same = (x, y) => x.length === y.length && x.every((edit, i) => identical(edit, y[i]));
+    if (!regions || !same(...lefts) || !same(...rights)) return null;
+    const planned = mergePlan(tokens[0], a, b);
+    if (!planned.conflicts || planned.conflicts.some(hunk =>
+        [hunk.base, hunk.local, hunk.disk].some(text => /[\r\n]/.test(text)))) return null;
+    if (tokens[0].length + 1 > cells) return null;
+    cells -= tokens[0].length + 1;
+    const columns = [0];
+    for (const token of tokens[0]) columns.push(columns.at(-1) + token.length);
+    return Object.freeze({ ...planned, conflicts: Object.freeze(planned.conflicts.map(hunk =>
+      Object.freeze({ ...hunk, startColumn: columns[hunk.startLine], endColumn: columns[hunk.endLine] }))) });
   }
-  function reconcile(base, local, disk, detailed) {
+  function reconcile(base, local, disk, detailed, paragraphs = false) {
     if (typeof local !== "string" || ![base, disk].every(text => text === null || typeof text === "string")
         || [base, local, disk].some(text => text !== null && text.length > MAX_UNITS)) throw invalid();
     if (local === disk) return result("unchanged", local);
@@ -204,7 +218,8 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     if (!right) return conflict("merge-budget");
     const a = changes(old, left), b = a && changes(old, right);
     if (!b) return conflict("merge-budget");
-    if (detailed) return mergePlan(old, a, b, refineParagraph);
+    if (detailed) return mergePlan(old, a, b, paragraphs
+      ? (base, local, disk) => refineParagraph(base, local, disk, true) : refineParagraph);
     const edits = [];
     let i = 0, j = 0;
     while (i < a.length || j < b.length) {
@@ -234,6 +249,9 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
   // planning uses the very same diff and shared allowance, never a second grammar.
   return Object.freeze(Object.assign((base, local, disk) => reconcile(base, local, disk, false), {
     plan: (base, local, disk) => reconcile(base, local, disk, true),
+    // Explicitly opt in to smaller conflicts within a paragraph. Original
+    // .plan callers retain complete line regions and their resolution scope.
+    planParagraphs: (base, local, disk) => reconcile(base, local, disk, true, true),
   }));
 }
 
@@ -281,7 +299,16 @@ function mergePlan(base, local, disk, refine = null) {
     else {
       const original = slice(start, end, []);
       const merged = refine && end === start + 1 ? refine(original, left, right) : null;
-      if (merged !== null) { pieces.push(merged); return true; }
+      if (typeof merged === "string") { pieces.push(merged); return true; }
+      if (merged && conflicts.length + merged.conflicts.length <= 256) {
+        const offset = conflicts.length;
+        for (const hunk of merged.conflicts) conflicts.push(Object.freeze({ ...hunk,
+          index: offset + hunk.index, startLine: start, endLine: end }));
+        pieces.push({ offset, count: merged.conflicts.length, resolve: merged.resolve });
+        return true;
+      }
+      // An oversized nested plan falls back to this complete line, never a
+      // truncated set of word choices or an unbounded recursive review.
       if (conflicts.length === 256) return false;
       const index = conflicts.length;
       conflicts.push(Object.freeze({ index, startLine: start, endLine: end,
@@ -305,16 +332,19 @@ function mergePlan(base, local, disk, refine = null) {
   const frozen = Object.freeze(conflicts);
   function resolve(choices) {
     if (!Array.isArray(choices) || owned(choices, "length") !== frozen.length) throw invalid();
-    const chosen = new Map();
+    const chosen = new Map(), decisions = new Map();
     for (let at = 0; at < frozen.length; at++) {
       const item = owned(choices, String(at)), index = owned(item, "index"), choice = owned(item, "choice");
       if (!Number.isInteger(index) || index < 0 || index >= frozen.length || chosen.has(index)
           || !["local", "disk", "edited"].includes(choice)) throw invalid();
       chosen.set(index, choice === "edited" ? resolutionText(owned(item, "source")) : frozen[index][choice]);
+      decisions.set(index, { choice, source: chosen.get(index) });
     }
     let units = 0;
     const text = pieces.map(piece => {
-      const value = typeof piece === "string" ? piece : chosen.get(piece);
+      const value = typeof piece === "string" ? piece : typeof piece === "number" ? chosen.get(piece)
+        : piece.resolve(Array.from({ length: piece.count }, (_, index) =>
+          ({ index, ...decisions.get(piece.offset + index) })));
       units += value.length;
       if (units > MAX_UNITS) throw invalid();
       return value;
@@ -474,7 +504,7 @@ export function planBookSourceTreeMerge(baseFiles, localFiles, incomingFiles,
         { reason: "delete-versus-edit" }) };
       instruction ??= { path, file: proposed };
     } else {
-      const text = textMerger.plan(b?.source ?? null, l.source, r.source);
+      const text = textMerger.planParagraphs(b?.source ?? null, l.source, r.source);
       let source = text.source, role = treeRole(l);
       if (text.action === "conflict") {
         const detailed = text.conflicts && regions + text.conflicts.length <= 256;

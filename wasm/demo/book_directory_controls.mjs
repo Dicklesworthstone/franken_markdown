@@ -20,7 +20,7 @@ export function createBookDirectoryControls({ root, controls, collection, window
     panel.appendChild(node); return node;
   };
   make("h3", "title", "Connected source folder");
-  make("p", "help", "Write chapters and include-only sources back to their relative paths in a folder you choose. First import or author the sources in this book, then review the folder. Existing differing files are overwrite candidates, not automatic imports. Connecting never writes. Save lists every create/replace before approval. Saving includes current editor text without applying publishing drafts, changing the source tree or starting a renderer. Review external source changes to import disk-only edits while keeping local-only edits. The ordinary refresh stops on divergent edits. Reconcile external edits can combine separate line changes and review overlapping regions; it never writes disk files. Untouched imported BOMs and line endings are preserved. Only source bytes are saved: keep a source-project file for chapter order, roles and publishing settings, or a portable backup for images and fonts.");
+  make("p", "help", "Write chapters and include-only sources back to their relative paths in a folder you choose. First import or author the sources in this book, then review the folder. Existing differing files are overwrite candidates, not automatic imports. Connecting never writes. Save lists every create/replace before approval. Saving includes current editor text without applying publishing drafts, changing the source tree or starting a renderer. Review external source changes to import disk-only edits while keeping local-only edits. The ordinary refresh stops on divergent edits. Reconcile external edits can combine independent line and paragraph changes and review overlapping word regions; it never writes disk files. Untouched imported BOMs and line endings are preserved. Only source bytes are saved: keep a source-project file for chapter order, roles and publishing settings, or a portable backup for images and fonts.");
   const buttons = Object.fromEntries([["review", "Review / reconnect source folder"], ["save", "Save source files to folder"], ["refresh", "Review external source changes"],
     ["reconcile", "Reconcile external edits"], ["disconnect", "Disconnect / stop folder access"], ["approve", "Approve reviewed folder"], ["decline", "Cancel review"]].map(([id, text]) => {
     const node = make("button", id, text); node.type = "button";
@@ -155,7 +155,7 @@ export function createBookDirectoryControls({ root, controls, collection, window
       const at = entries.length, box = append(mergeBox, "fieldset");
       append(box, "legend", `${file.path}: ${file.reason}`);
       for (const side of ["base", "local", "disk"]) excerpt(box, side, file[side]);
-      const plan = remaining && file.reason === "overlapping-edits" ? planner.plan(file.base, file.local, file.disk) : null;
+      const plan = remaining && file.reason === "overlapping-edits" ? planner.planParagraphs(file.base, file.local, file.disk) : null;
       const detailed = plan && (plan.action === "merged" || (plan.conflicts && plan.conflicts.length <= remaining));
       if (detailed) remaining -= plan.conflicts?.length ?? 0;
       const choices = [["", "Choose a resolution"], ["local", "Keep complete editor version"]];
@@ -170,7 +170,10 @@ export function createBookDirectoryControls({ root, controls, collection, window
       const hunks = [];
       if (detailed) for (const hunk of plan.conflicts ?? []) {
         const group = append(regions, "fieldset");
-        append(group, "legend", `Conflict ${hunk.index + 1}: base lines ${hunk.startLine + 1}–${Math.max(hunk.startLine + 1, hunk.endLine)}`);
+        const location = hunk.startColumn === undefined
+          ? `base lines ${hunk.startLine + 1}–${Math.max(hunk.startLine + 1, hunk.endLine)}`
+          : `base line ${hunk.startLine + 1}, UTF-16 offsets [${hunk.startColumn}, ${hunk.endColumn})`;
+        append(group, "legend", `Conflict ${hunk.index + 1}: ${location}`);
         for (const side of ["base", "local", "disk"]) excerpt(group, side, hunk[side]);
         hunks.push(select(group, `${at}-hunk-${hunk.index}`, `Conflict ${hunk.index + 1} in ${file.path}`,
           [["", "Choose this region"], ["local", "Keep editor region"], ["disk", "Use disk region"]]));

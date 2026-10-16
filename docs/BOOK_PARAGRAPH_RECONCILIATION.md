@@ -75,3 +75,56 @@ Rust/WASM rendering, package assembly and the full repository suite were not run
 for this algorithm change. Existing callers were inspected, not simulated as
 browser end-to-end proof. Beads was read but not mutated: `br` is unavailable in
 this execution environment.
+
+## Resolve a disputed word without discarding surrounding edits
+
+The additive `merger.planParagraphs(base, local, incoming)` review API can expose
+several explicit conflicts inside one source line. Choosing a word version keeps
+non-conflicting word changes from both sides. For example, local changes `red`
+to `green` and `blue` to `gold`, while incoming changes `blue` to `small` and
+`tall` to `short`. Selecting the local disputed word produces `green ... gold ...
+short`, not the complete local paragraph that would lose the incoming `short`.
+
+The original callable merger and `.plan()` retain their existing resolution
+scope. The connected-folder controller opts into `planParagraphs` for its
+**Resolve conflicting regions; keep other edits** review. The source-tree planner
+uses the same API for the local library's existing region resolution. Whole-file
+version choices deliberately remain whole-file choices. No automatic approval,
+source installation, disk write or storage save is introduced.
+
+A partial paragraph plan requires identical forward/reverse edit coordinates,
+not merely identical clean output. Changed repeated words, ambiguous whitespace
+alignment, conflicting line terminators and insufficient work retain complete
+line choices. Both automatic and partial refinement spend the same allowance.
+The aggregate 256-region ceiling includes word and line regions; a next nested
+plan that will not fit remains one whole-line conflict rather than being truncated.
+
+Word regions retain the original zero-based `startLine` / exclusive `endLine`
+containing range, and add zero-based `startColumn` / exclusive `endColumn` UTF-16
+code-unit offsets within that original line. These are source offsets, not visual
+columns or grapheme counts. The folder review labels them explicitly. Conflict
+text is complete, immutable and exact; display excerpts still grant no authority.
+The same `resolve([{index, choice: "local" | "disk" | "edited", source?}])`
+contract handles mixed line/word regions. Each region requires a decision;
+manual replacements preserve existing Unicode and aggregate-output validation.
+
+```sh
+node --test wasm/tests/book_directory_merge*.test.mjs
+```
+
+For these changes, 77 tests passed together: the earlier 50 plus 17 partial-plan
+and 10 controller cases. The 27 new cases were also executed on `1a60a56` sources:
+19 failed and 8 passed before the region implementation. New coverage includes
+multiple disputes, side-order reversal, 200 generated paragraph scenarios,
+UTF-16 offsets, mixed word/line indices, source-tree roles and limits, and the
+nested region ceiling. All previously reconstructed existing tests remain
+byte-identical; no old assertion was weakened.
+
+Controller tests copy/import the complete production UI and merge modules without
+rewriting their source. The DOM, source host and directory-session boundary are
+explicit adapters: they exercise displayed regions, mandatory choices, exact
+approval output, cancellation, source input, project replacement, import/busy,
+suspension, disposal and composition. They do not execute the real disk session,
+OS file handles, browser APIs or IndexedDB. Library source-tree resolution is
+executed; its full UI/storage session is not. Those boundaries, full repository
+and package gates, and compiled Rust/WASM qualification remain unrun.

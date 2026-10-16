@@ -21,6 +21,20 @@ try {
 }
 ```
 
+For multi-format publication, use `exportDocuments(requests, token)`. Formats
+must be unique and the batch contains one to four requests. The session validates
+the complete request before rendering, captures source and retained image assets
+once, then renders in caller order. A source/layout change or failure in any
+renderer rejects the whole operation; no partial result array is published.
+Synchronous sessions hold their one export slot for the complete batch.
+
+Worker sessions expose the same method when `supportsExportBatches` is true.
+The whole publication is one queued RPC, so edits cannot interleave between
+formats and one abort/deadline governs the complete batch. Older workers fail
+explicitly rather than decomposing the request into separately observable
+exports. Individual outputs keep their own `maxOutputBytes` cap, while combined
+returned bytes are capped at 128 MiB.
+
 The same `exportDocument(format, options, token)` method exists on synchronous
 sessions, but it returns a Promise. That Promise does NOT make synchronous WASM
 execution nonblocking: use a worker session for UI applications. Worker exports

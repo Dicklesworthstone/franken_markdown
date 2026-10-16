@@ -3,7 +3,7 @@
 // shared with the synchronous facade rather than delegated to UTF-8 coercion.
 
 import { normalizeAssetBatch } from "./flow_asset_batch.mjs";
-import { normalizeFlowExport } from "./flow_export.mjs";
+import { normalizeFlowExport, normalizeFlowExportBatch } from "./flow_export.mjs";
 import { outlineGlyphIds } from "./flow_outlines.mjs";
 import {
   FLOW_ASSET_LIMIT,
@@ -43,6 +43,7 @@ const ARITIES = Object.freeze({
   assetBytes: 2,
   glyphOutlines: 2,
   exportDocument: 3,
+  exportDocuments: 2,
 });
 
 export function fields(value, allowed, name) {
@@ -144,6 +145,8 @@ export function normalizeFlowRequest(method, args) {
       return [];
     case "exportDocument":
       return normalizeFlowExport(args[0], args[1], args[2]);
+    case "exportDocuments":
+      return normalizeFlowExportBatch(args[0], args[1]);
     case "edit":
     case "editBytes":
       range(args[0], args[1]);

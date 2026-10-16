@@ -375,6 +375,13 @@ export interface FlowSession {
     options: FlowExportOptionsByFormat[F] | undefined,
     token: FlowTokenInput,
   ): Promise<FlowExportResult>;
+  /** One revision-fenced publication transaction. All requests are admitted
+   * before work, retained source/assets are captured once, and no result array
+   * is returned unless every requested renderer succeeds. Formats are unique. */
+  exportDocuments(
+    requests: readonly FlowExportRequest[],
+    token: FlowTokenInput,
+  ): Promise<readonly FlowExportResult[]>;
   /** Idempotent; releases Rust-owned source, display and font-run cache. */
   dispose(): void;
 }
@@ -466,6 +473,12 @@ export interface FlowExportOptionsByFormat {
   epub: FlowEpubExportOptions;
   svg: FlowSvgExportOptions;
 }
+export type FlowExportRequest = {
+  [F in FlowExportFormat]: {
+    readonly format: F;
+    readonly options?: FlowExportOptionsByFormat[F];
+  };
+}[FlowExportFormat];
 export interface FlowExportDiagnostic {
   readonly severity: "warning" | "error";
   /** Original source UTF-8 byte offsets, not Canvas fragment coordinates. */

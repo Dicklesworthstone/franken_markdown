@@ -82,9 +82,14 @@ export function createBookPdfControls({ root, controls, collection, worker,
     releaseView();
     if (!disposed) { el.status.textContent = message; refresh(); }
   }
+  // Describe only the receipt admitted with these exact retained bytes, not
+  // the live/draft profile. Emission is not independent conformance validation.
+  const emissionStatus = proof => proof.pdfA === "2b"
+    ? ` Writer receipt: PDF/A-2b${proof.pdfAStrict ? " with strict policy" : ""}. Not independent conformance validation.` : "";
   function show(proof) {
     if (proof === shown && url !== null) {
-      el.status.textContent = `Current PDF proof reused without rendering: ${proof.size.toLocaleString()} bytes. Nothing has been saved yet.`;
+      el.status.textContent = `Current PDF proof reused without rendering: ${proof.size.toLocaleString()} bytes. Nothing has been saved yet.`
+        + emissionStatus(proof);
       return;
     }
     releaseView();
@@ -120,7 +125,8 @@ export function createBookPdfControls({ root, controls, collection, worker,
       url = next;
       next = null;
       el.status.textContent = `PDF generated from ${proof.chapters} chapters: ${proof.size.toLocaleString()} bytes. Download this proof preserves exactly this output. Nothing has been saved yet.`
-        + (embedded ? " Embedded viewing is provided by your browser." : " Embedded viewing is unavailable; download the PDF to inspect it.");
+        + (embedded ? " Embedded viewing is provided by your browser." : " Embedded viewing is unavailable; download the PDF to inspect it.")
+        + emissionStatus(proof);
       refresh();
     } catch (reason) {
       if (next !== null) urls.revokeObjectURL(next);

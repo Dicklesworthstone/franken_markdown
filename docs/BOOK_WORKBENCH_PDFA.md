@@ -78,3 +78,44 @@ IndexedDB/browser acceptance, compiled Rust/WASM execution, visual output and
 PDF/A conformance were not run here. Local-library routing was inspected; its
 shared codec was exercised, not a browser database transaction. No native build,
 new dependency, parser, package gate, Actions workflow or release was added.
+
+## Retained PDF proofs and exact-byte downloads
+
+The proof session captures the applied archival policy before invoking its worker
+or notifying observers. A PDF header alone is not sufficient: an archival result
+must acknowledge the exact profile and strictness before its bytes can become a
+retained proof. Missing or mismatched receipts fail with `UNSUPPORTED_BOOK_PDFA`;
+unsolicited archival fields on an ordinary proof fail with `INVALID_BOOK_PDF`.
+No failed receipt creates a viewer/download URL or becomes the current proof.
+A completed-but-invalid idle worker is released, and retry is explicit.
+
+Successful proof objects retain `pdfA`/`pdfAStrict` with an owned Blob of the exact
+returned byte view. The viewer status reports that receipt on initial display
+and reuse, while explicitly distinguishing it from independent conformance
+validation. It never labels a proof from the current draft or live option object.
+Changing a draft alone does not relabel existing output. Applying a changed
+profile releases the old proof and download URL; source-only edits keep the
+correct native policy through the existing retained-worker transport.
+
+```sh
+node --test wasm/tests/book_publication_archival*.test.mjs \
+  wasm/tests/book_publication_project.test.mjs \
+  wasm/tests/book_publication_controls.test.mjs \
+  wasm/tests/book_pdf_archival*.test.mjs wasm/tests/book_pdf_proof.test.mjs
+```
+
+116 tests passed together: 65 new tests across the authoring/persistence/proof
+integration and 51 existing regressions. The 23 new proof cases include the real
+profile/proof controllers, receipt failure, byte-view ownership, URL lifecycle,
+policy/source races, suspension and an explicit old-package refusal. Before the
+proof change, 20 of those 23 tests failed; all 23 pass after it. The existing 14
+proof regressions and their source/worker helper remain byte-identical to main.
+
+Two integration cases use real Node worker threads, transferable buffers and the
+production collection/profile/proof/session/transport/cache modules. They exercise
+include deltas, source-set reordering, source-project restore with resource
+revocation, strictness changes and explicit ordinary-mode recovery after an old
+native-package refusal. Only the native renderer is the existing explicit test
+double; its header-prefixed JSON observations are envelope probes, not real PDF
+artifacts. No compiled-WASM, native output fidelity, browser viewer, IndexedDB
+transaction or conformance claim follows from these tests.

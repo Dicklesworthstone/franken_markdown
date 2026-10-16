@@ -98,10 +98,13 @@ export function createBatchIterator(documents, options, createRenderer) {
   function submit(lane, item, index) {
     let name, pending;
     try {
-      const job = record(item, ["format", "source", "options", "controls", "name"], "batch document");
+      const job = record(item, ["format", "targets", "source", "options", "controls", "name"], "batch document");
       if (job.name !== undefined && (typeof job.name !== "string" || job.name.length > 4096))
         fail("INVALID_OPTIONS", "document name must be a string of at most 4096 code units");
       name = job.name;
+      const publication = Object.hasOwn(job, "targets");
+      if (publication && (Object.hasOwn(job, "format") || Object.hasOwn(job, "options")))
+        fail("INVALID_OPTIONS", "publication targets cannot be combined with format or top-level options");
       if (interrupted()) fail("ABORTED", "document batch was closed before admission");
       if (lane.renderer?.disposed) {
         const previous = lane.renderer;
@@ -109,9 +112,14 @@ export function createBatchIterator(documents, options, createRenderer) {
         previous.dispose();
       }
       lane.renderer ??= createRenderer(configuration);
-      // Do not defer this call to a promise reaction: render() validates and
-      // snapshots source options/assets synchronously at admission.
-      pending = lane.renderer.render(job.format, job.source, job.options, job.controls);
+      // Both methods capture source/options/assets synchronously at admission.
+      // A whole publication uses one lane/window slot, not a separate batch or
+      // hidden per-format queue, and yields exactly one all-or-nothing receipt.
+      if (publication) {
+        if (typeof lane.renderer.publish !== "function")
+          fail("UNSUPPORTED_WORKER_API", "publication jobs require matching document-worker bindings");
+        pending = lane.renderer.publish(job.source, job.targets, job.controls);
+      } else pending = lane.renderer.render(job.format, job.source, job.options, job.controls);
     } catch (reason) {
       pending = Promise.reject(reason);
     }

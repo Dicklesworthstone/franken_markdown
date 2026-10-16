@@ -117,3 +117,77 @@ The package exports `DocumentBatchItem`, `DocumentBatchOptions`,
 `DocumentBatchReceipt` and `DocumentBatchIterator` types. Input options remain
 correlated with their format; successful outputs preserve format-specific types,
 and rejected reasons are `unknown` rather than an assumed error shape.
+
+## Coherent multi-format publications
+
+Use `targets` instead of `format` to publish one document to several formats as
+one operation. Each target has its own `format` and optional `options`; there must
+be 1..5 distinct formats. `format` and top-level `options` cannot be combined with
+`targets`. Publication jobs and ordinary single-format jobs may share a stream.
+
+```js
+const targets = [
+  { format: "html", options: { title: "Guide", toc: true } },
+  { format: "pdf", options: { title: "Guide", page: { size: "a4" },
+    running: { footer: { right: "{page} / {pages}" } } } },
+  { format: "epub", options: { title: "Guide", toc: true } },
+];
+
+for await (const receipt of renderDocumentBatch([
+  { name: "guide", source: "# Guide\n\nOne captured revision.", targets },
+  { name: "preview", source: "# Preview", format: "html" },
+], { concurrency: 2, order: "completion" })) {
+  if (receipt.status === "rejected") {
+    console.error(receipt.name, receipt.reason);
+    continue;
+  }
+  const outputs = receipt.value.format === "document-publication"
+    ? receipt.value.outputs : [receipt.value];
+  for (const output of outputs) {
+    // Include format in the base name: html and interactive-html both end in .html.
+    console.log(output.filename(`${receipt.name}-${output.format}`), output.bytes);
+  }
+}
+```
+
+A publication consumes **one batch slot and one worker request**, regardless of
+its target count. Its source, all target settings and exact asset views are
+captured together at admission. Outputs preserve target order inside the
+publication; batch ordering controls when whole publication receipts are delivered.
+The existing native renderers run sequentially, not from a shared AST. There is
+no claim of incremental typesetting or faster native rendering.
+
+All targets validate before rendering starts. Artifact buffers are returned only
+when every target succeeds. A later failure, cancellation or deadline discards
+the unpublished result set instead of returning a partial edition. Other batch
+jobs continue after a per-job failure, and a failed publication is never replayed.
+This is atomic **result delivery**, not a filesystem transaction or an atomic
+snapshot of the entire batch. The host still owns saving or distributing bytes.
+
+`maxOutputBytes` applies to the **sum** of a publication's artifact bytes, not to
+each format independently. The combined diagnostics also stay within 1024 entries
+and 65536 message/code UTF-16 units. The worker ingress budget charges the source
+once and deduplicates only identical buffer/offset/length asset views. Per-target
+asset keys and options remain separate: supplying a PDF logo does not grant HTML,
+SVG or EPUB that resource. Shared or detached asset buffers are rejected.
+
+The same operation is available without a batch:
+
+```js
+import { createWorkerRenderer } from "@franken-suite/franken-markdown/document-worker";
+const renderer = createWorkerRenderer();
+try {
+  const edition = await renderer.publish("# Guide", targets, { timeoutMs: 30000 });
+  console.log(edition.sourceLength, edition.totalBytes, edition.outputs);
+} finally {
+  renderer.dispose();
+}
+```
+
+`publish` uses one deadline covering queue wait, initialization and all target
+renders. A matching worker JavaScript package is required; there is no silent
+single-format fallback. `DocumentPublicationTarget` and `DocumentPublication`
+are exported by the document-worker types. The batch types add
+`DocumentBatchPublicationItem` and `DocumentBatchJob`, while preserving existing
+single-format result inference. Publication-only inputs infer publication results;
+mixed inputs narrow on `value.format === "document-publication"`.

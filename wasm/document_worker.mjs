@@ -67,7 +67,10 @@ function bytes(value, max) {
       if (Object.prototype.toString.call(value.buffer) !== "[object ArrayBuffer]") throw new Error();
       view = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     } else if (Object.prototype.toString.call(value) === "[object ArrayBuffer]") {
-      view = new Uint8Array(value);
+      // Pin the admitted range. A length-tracking view of a resizable buffer
+      // could grow during workerFactory/signal callbacks after byte charging.
+      const length = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(value);
+      view = new Uint8Array(value, 0, length);
     } else throw new Error();
   } catch { fail("INVALID_OPTIONS", "assets require non-shared, non-detached buffer bytes"); }
   if (!view.byteLength || view.byteLength > max) fail("BUDGET_EXCEEDED", "asset byte limit exceeded");

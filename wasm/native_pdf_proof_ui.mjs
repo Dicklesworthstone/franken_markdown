@@ -1,7 +1,7 @@
 // Serialized into native workspaces before the editor controller. Keep this
 // registration and its closures import-free; all source access belongs to the
 // controller's lossless source anchor, never a second textarea interpretation.
-export function registerNativePdfProof(createSession, runtime) {
+export function registerNativePdfProof(createSession, runtime, installTools) {
   if (!runtime || typeof runtime.beginExportDocument !== 'function') return;
   let installed = false;
   Object.defineProperty(runtime, 'installPdfProof', {value(host) {
@@ -180,5 +180,8 @@ export function registerNativePdfProof(createSession, runtime) {
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, {once: true});
     else install();
+    // Optional tools reuse the controller's exact-source host. They do not
+    // acquire native rendering authority or reconstruct textarea contents.
+    if (typeof installTools === 'function') installTools(host);
   }});
 }

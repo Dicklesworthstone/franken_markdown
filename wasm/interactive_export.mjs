@@ -5,6 +5,11 @@ import {createWorkspacePreviewWorker} from './interactive_preview.mjs';
 import {pdfPageGeometry} from './pdf_page.mjs';
 import {createNativePdfProof} from './native_pdf_proof.mjs';
 import {registerNativePdfProof} from './native_pdf_proof_ui.mjs';
+import {installNativeSourceProjectDownload} from './native_source_project_ui.mjs';
+import {createNativeSourceProjectCodec, readNativeSourceProject} from './native_source_project.mjs';
+
+export {readNativeSourceProject, NATIVE_SOURCE_PROJECT_LIMITS} from './native_source_project.mjs';
+const sourceProjects = createNativeSourceProjectCodec();
 
 const MiB = 1024 * 1024;
 const SLOTS = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
@@ -144,6 +149,14 @@ function captureOptions(input) {
   };
 }
 
+/** Preserve source, resources and settings without executable runtime bytes.
+ * This does not initialize a renderer or grant raw-HTML/file/network authority.
+ */
+export function createNativeSourceProject(markdown, options = {}) {
+  textSize(markdown, NATIVE_WORKSPACE_LIMITS.sourceBytes, 'workspace source');
+  return sourceProjects.encode({source: markdown, ...captureOptions(options)});
+}
+
 function takeShell(result) {
   try {
     const bytes = result?.bytes;
@@ -184,7 +197,9 @@ function assemble(shell, preview, payload, source) {
     + '<script id="fmd-native-bootstrap">\n;(' + bootNativeWorkspace.toString() + ')('
     + createNativeWorkspaceRenderer.toString() + ', ' + createWorkspacePreviewWorker.toString() + ');\n;('
     + registerNativePdfProof.toString() + ')(' + createNativePdfProof.toString()
-    + ', window.__fmdNativeRuntime);\n</script>\n';
+    + ', window.__fmdNativeRuntime, function(host) { ('
+    + installNativeSourceProjectDownload.toString() + ')(' + createNativeSourceProjectCodec.toString()
+    + ', window.__fmdNativeRuntime, host); });\n</script>\n';
   // These offsets refer to the original shell. Assembly never searches the
   // newly injected source, binary, binding text or rendered document for tags.
   const output = shell.slice(0, previewStart + appStart.length) + frame
@@ -216,7 +231,12 @@ export async function createWorkspaceExporterWithLoader(runtime, load) {
   for (const key of ['renderInteractiveHtmlConfigured', 'renderHtmlConfiguredAdvanced', 'renderPdfConfiguredMulti']) {
     if (typeof engine?.[key] !== 'function') throw Object.assign(new Error(`Matching WASM bindings required: ${key}`), {code: 'UNSUPPORTED_WASM_PACKAGE'});
   }
-  return Object.freeze({
+  const exporter = Object.freeze({
+    renderProject(input) {
+      const project = readNativeSourceProject(input);
+      // Project data can never replace this factory's explicitly trusted engine.
+      return exporter.render(project.source, project.options);
+    },
     render(markdown, options = {}) {
       const sourceLength = textSize(markdown, NATIVE_WORKSPACE_LIMITS.sourceBytes, 'workspace source');
       const prepared = captureOptions(options);
@@ -236,6 +256,7 @@ export async function createWorkspaceExporterWithLoader(runtime, load) {
         blob: () => new Blob([bytes], {type: 'text/html;charset=utf-8'}), filename});
     },
   });
+  return exporter;
 }
 
 async function loadRuntime(owned) {

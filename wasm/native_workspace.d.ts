@@ -30,12 +30,50 @@ export interface FmdNativeWorkspaceOutput extends FmdRenderOutput {
   extension: 'html';
 }
 
+/** Complete data-only project. No executable JavaScript, WASM or file handles. */
+export interface FmdNativeSourceProjectOutput {
+  readonly schema: 'fmd-native-source-project-v1';
+  readonly format: 'native-source-project';
+  readonly mimeType: 'application/json';
+  readonly extension: 'json';
+  readonly sourceLength: number;
+  /** Owned UTF-8 JSON. Mutating bytes changes text()/blob(), as with render output. */
+  readonly bytes: Uint8Array;
+  text(): string;
+  blob(): Blob;
+  /** Uses the .fmd.json suffix. */
+  filename(baseName?: string): string;
+}
+export type FmdNativeSourceProjectInput = string | Uint8Array | ArrayBuffer | ArrayBufferView;
+export interface FmdNativeSourceProject {
+  readonly source: string;
+  /** Compatible with native-workspace rendering and direct HTML/PDF rendering.
+   * Options, arrays and image/font bytes are fresh, editable host-owned copies.
+   * The runtime/backend is always selected explicitly by the host, not this data.
+   */
+  readonly options: FmdNativeWorkspaceOptions;
+}
+
+/** Synchronous data-only packaging; does not initialize WASM or start a worker. */
+export function createNativeSourceProject(markdown: string,
+  options?: FmdNativeWorkspaceOptions): FmdNativeSourceProjectOutput;
+/** Strict UTF-8/JSON/schema/geometry/resource admission, with no rendering or I/O. */
+export function readNativeSourceProject(input: FmdNativeSourceProjectInput): FmdNativeSourceProject;
+export const NATIVE_SOURCE_PROJECT_LIMITS: Readonly<{
+  sourceBytes: number; assetBytes: number; totalAssetBytes: number; imageCount: number;
+  destinationBytes: number; totalDestinationBytes: number; outputBytes: number;
+}>;
+
 export interface FmdNativeWorkspaceExporter {
   /** Pure synchronous export once the selected runtime has initialized.
    * Source and assets are not rewritten or retained between render calls.
    * The output contains the engine, source, resources and editable application.
    */
   render(markdown: string, options?: FmdNativeWorkspaceOptions): FmdNativeWorkspaceOutput;
+  /** Read a data-only project and render it using this factory's trusted engine.
+   * This never imports code, selects a runtime or rewrites source from the file.
+   */
+  renderProject(input: FmdNativeSourceProjectInput): FmdNativeWorkspaceOutput;
 }
 
 /** Initialize one isolated runtime and reuse the exporter across documents.

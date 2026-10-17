@@ -11,6 +11,8 @@ use super::{
 use crate::wasm;
 use crate::{PageMargins, PageSize, PageStyle};
 
+mod archival;
+
 /// Render using the ordinary PDF engine with explicit paper and margins.
 ///
 /// `page_geometry` is empty for the existing theme defaults, or exactly six

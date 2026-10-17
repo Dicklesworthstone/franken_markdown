@@ -19,7 +19,7 @@ export function createBookEditionPanel(root) {
   panel.setAttribute("aria-labelledby", "book-edition-title");
   const heading = make("h3", "book-edition-title", "Publish a complete edition");
   const help = make("p", "book-edition-help",
-    "Prepare selected formats from one captured book, including applied settings and currently authorized images/fonts. All selected formats must succeed before any edition download appears. After rendering, optionally package the exact published files in one delivery ZIP with a SHA-256 manifest. Packaging does not rerender. Checksums detect changes; they are not signatures. These downloads are not an editable project or portable backup. SHA-256 packaging requires a secure browser context. No file is saved automatically. The combined output limit is 128 MiB with one two-minute publication deadline.");
+    "Prepare selected formats from one captured book, including applied settings and currently authorized images/fonts. Internal navigation is checked by default before rendering; repair findings or explicitly turn the check off. External links, asset completeness and PDF/EPUB conformance are outside this check. Verification and all selected formats must succeed before any edition download appears. After rendering, optionally package the exact published files in one delivery ZIP with a SHA-256 manifest. Packaging does not rerender. Checksums detect changes; they are not signatures. These downloads are not an editable project or portable backup. SHA-256 packaging requires a secure browser context. No file is saved automatically. The combined output limit is 128 MiB with one two-minute publication deadline.");
   const formats = make("fieldset", "book-edition-formats");
   formats.append(make("legend", null, "Formats in this edition"));
   for (const [key, text] of choices) {
@@ -28,6 +28,12 @@ export function createBookEditionPanel(root) {
     input.setAttribute("aria-describedby", "book-edition-help");
     label.append(input, root.createTextNode(` ${text}`)); formats.append(label);
   }
+  const policy = make("p"), label = make("label"), strict = make("input", "book-edition-strict");
+  strict.type = "checkbox"; strict.checked = true;
+  strict.setAttribute("aria-describedby", "book-edition-help");
+  label.append(strict, root.createTextNode(" Require clean internal navigation before publishing")); policy.append(label);
+  const verification = make("div", "book-edition-verification");
+  verification.hidden = true; verification.setAttribute("aria-label", "Edition navigation verification");
   const actions = make("p"), prepare = make("button", "book-edition-prepare", "Prepare selected edition");
   const cancel = make("button", "book-edition-cancel", "Cancel / discard edition");
   prepare.type = cancel.type = "button"; cancel.disabled = true;
@@ -42,7 +48,7 @@ export function createBookEditionPanel(root) {
   const downloads = make("div", "book-edition-downloads");
   downloads.hidden = true; downloads.setAttribute("role", "group");
   downloads.setAttribute("aria-label", "Prepared edition downloads");
-  panel.append(heading, help, formats, actions, status, downloads);
+  panel.append(heading, help, formats, policy, actions, status, verification, downloads);
   parent.append(panel);
   return panel;
 }
@@ -57,7 +63,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
     throw fail("INVALID_OPTIONS", "Edition controls require the workbench source host and collection.");
   const panel = createBookEditionPanel(root);
   if (mounted.has(panel)) throw fail("ALREADY_MOUNTED", "Edition controls are already installed.");
-  const names = ["prepare", "bundle", "cancel", "formats", "status", "downloads", ...choices.map(([key]) => key)];
+  const names = ["prepare", "bundle", "cancel", "formats", "strict", "verification", "status", "downloads", ...choices.map(([key]) => key)];
   const el = Object.fromEntries(names.map(key => [key, root.querySelector(`#book-edition-${key}`)]));
   if (Object.values(el).some(node => !node)) throw fail("MISSING_CONTROLS", "Edition controls are incomplete.");
   let disposed = false, suspended = false, session = null;
@@ -65,21 +71,47 @@ export function createBookEditionControls({ root, controls, collection, publishe
   const unlisten = [], composing = new Set(), finishing = new Map();
   const blocked = () => suspended || composing.size > 0 || controls.sourceBusy
     || !collection.files.some(file => file.role !== "include");
-  const checkpoint = () => JSON.stringify([collection.revision, controls.checkpoint(), selection()]);
+  const checkpoint = () => JSON.stringify([collection.revision, controls.checkpoint(), selection(), el.strict.checked]);
   function clearLinks() {
     // Also strip detached nodes retained by a menu/event handler before revocation.
     for (const link of links) { link.removeAttribute("href"); link.removeAttribute("download"); }
     links = [];
     el.downloads.replaceChildren(); el.downloads.hidden = true;
   }
+  let shownReport = null, shownUnchecked = false;
+  function showVerification(state) {
+    const report = state.linkReport;
+    const unchecked = !state.strictLinks && state.downloads.length > 0;
+    if (report === shownReport && unchecked === shownUnchecked) return;
+    shownReport = report; shownUnchecked = unchecked;
+    const rows = [];
+    const paragraph = text => {
+      const node = root.createElement("p"); node.textContent = text; rows.push(node);
+    };
+    if (report) {
+      const { chapters, checked, findings, external, unchecked } = report.summary;
+      paragraph(`Internal navigation: ${chapters} chapters, ${checked} checked references, ${findings} findings. ${external} external and ${unchecked} other references were not checked. This is not PDF/EPUB conformance or asset verification.`);
+      // Findings are untrusted TEXT, not HTML, URLs or invented source positions.
+      // The complete bounded native report stays available on state.linkReport.
+      let shown = 0;
+      for (const chapter of report.chapters) for (const finding of chapter.findings) {
+        if (shown === 100) break;
+        paragraph(`${chapter.path}: ${finding.code} — ${finding.destination} — ${finding.message}`);
+        shown++;
+      }
+      if (findings > shown) paragraph(`Showing the first ${shown} of ${findings} findings. The complete report is available on the edition state; use the book link checker to inspect all findings.`);
+    } else if (unchecked) paragraph("Internal navigation was not checked for this edition. Verification was explicitly turned off.");
+    el.verification.replaceChildren(...rows); el.verification.hidden = rows.length === 0;
+  }
   function show(state) {
     const inactive = disposed || suspended || state.phase === "disposed" || state.phase === "suspended";
     el.prepare.disabled = inactive || !state.canPrepare;
     el.bundle.disabled = inactive || !state.canBundle;
     el.cancel.disabled = inactive || (!state.busy && state.downloads.length === 0);
-    el.formats.disabled = inactive;
+    el.formats.disabled = inactive; el.strict.disabled = inactive;
     panel.setAttribute("aria-busy", String(state.busy));
     el.status.textContent = state.message;
+    showVerification(state);
     const sameLinks = links.length === state.downloads.length
       && links.every((link, index) => link.getAttribute("href") === state.downloads[index].href);
     if (sameLinks) return;
@@ -105,7 +137,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
     finishing.clear(); composing.clear();
   }
   function selection() { return choices.filter(([key]) => el[key].checked).map(([key]) => key); }
-  function syncSelection() { session.setFormats(selection()); }
+  function syncSelection() { session.setFormats(selection()); session.setStrictLinks(el.strict.checked); }
   async function prepare() {
     // Read checked values even when changed programmatically without an event.
     syncSelection();
@@ -120,7 +152,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
       el.status.textContent = `${cause?.code ?? "EDITION_FAILED"}: ${cause?.message ?? "Edition preparation failed."}`;
   }
   try {
-    session = createBookEditionSession({ publisher, urls, crypto, checkpoint, isBlocked: blocked, onState: show,
+    session = createBookEditionSession({ publisher, urls, crypto, strictLinks: el.strict.checked, checkpoint, isBlocked: blocked, onState: show,
       capture() {
         controls.captureProject();
         const before = checkpoint();
@@ -140,7 +172,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
     const edit = event => {
       if (disposed || suspended) return;
       if (panel.contains(event.target)) {
-        if (choices.some(([key]) => event.target === el[key])) {
+        if (event.target === el.strict || choices.some(([key]) => event.target === el[key])) {
           try { syncSelection(); } catch (cause) { report(cause); }
         }
       } else session.invalidate();

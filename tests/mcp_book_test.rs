@@ -145,7 +145,7 @@ fn unknown_fields_wrong_types_and_unconsumed_options_are_rejected() {
         ("epub", "allowRawHtml", Json::Bool(false), "unsupported_target_option"),
         ("epub", "htmlFontFormat", text("woff2"), "unsupported_target_option"),
         ("site", "metadataEpochSeconds", Json::Number(0.0), "unsupported_target_option"),
-        ("pdf", "pdfA", text("2b"), "invalid_params"),
+        ("site", "pdfA", text("2b"), "unsupported_target_option"),
         ("all", "interactiveHtml", Json::Bool(true), "invalid_params"),
         ("all", "out", text("/not-written/book.pdf"), "invalid_params"),
         ("all", "baseFontSize", text("12"), "invalid_params"),
@@ -207,7 +207,7 @@ fn resource_admission_and_target_option_union_are_preserved() {
 }
 
 #[test]
-fn discovery_has_precise_source_schema_and_no_unsupported_pdfa_claim() {
+fn discovery_has_precise_source_schema_and_explicit_pdfa_options() {
     let result = tools_list_result();
     let tools = array(result.get("tools").unwrap());
     let tool = tools.iter().find(|tool| tool.get("name").and_then(Json::as_str) == Some("fmd.render_book")).unwrap();
@@ -221,8 +221,8 @@ fn discovery_has_precise_source_schema_and_no_unsupported_pdfa_claim() {
     assert_eq!(chapters.get("items").unwrap().get("additionalProperties"), Some(&Json::Bool(false)));
     assert_eq!(array(chapters.get("items").unwrap().get("required").unwrap()), [text("path"), text("markdown")]);
     assert_eq!(properties.get("maxOutputBytes").unwrap().get("maximum").and_then(Json::as_u64), Some(33_554_432));
-    assert!(properties.get("pdfA").is_none());
-    assert!(properties.get("pdfAStrict").is_none());
+    assert_eq!(properties.get("pdfA").unwrap().get("type").and_then(Json::as_str), Some("string"));
+    assert_eq!(properties.get("pdfAStrict").unwrap().get("type").and_then(Json::as_str), Some("boolean"));
     assert!(properties.get("out").is_none());
 }
 

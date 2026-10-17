@@ -65,6 +65,14 @@ export interface BookOptions {
   fontScale?: number;
   toc?: boolean;
   pageNumbers?: boolean;
+  /** Chapter-aware PDF/A-2b emission, not conformance certification. Default off.
+   * Requires FmdBook.renderPdfArchival in the matching WASM package. Includes,
+   * chapter navigation, images/fonts and paper settings use the same book.
+   * EPUB/site/HTML preview bytes are unaffected by this PDF-only policy. */
+  pdfA?: "off" | "2b";
+  /** Apply the native archival writer's strict policy; requires pdfA: "2b".
+   * Independent of publication strictLinks. Failures never downgrade to PDF. */
+  pdfAStrict?: boolean;
   /** Comma-separated homogeneous, antiriver, pareto, optimal-pagination,
    * protrusion or expansion. Unknown tokens fail before WASM initialization.
    * Requires FmdBook.setPdfOptions; old packages fail explicitly.
@@ -116,6 +124,10 @@ export interface BookOutput {
   readonly sourceLength: number;
   /** An owned binary output, valid after session disposal. */
   readonly bytes: Uint8Array;
+  /** Present on archival PDF output only. Records requested emission settings,
+   * NOT independent PDF/A validation or certification. */
+  readonly pdfA?: "2b";
+  readonly pdfAStrict?: boolean;
   blob(): Blob;
   filename(baseName?: string): string;
 }
@@ -188,9 +200,11 @@ export interface BookSession {
   /** Synchronous rendering after asynchronous session creation. An optional
    * page overrides only this export, without reparsing or changing defaults.
    * Omitted/undefined page uses BookOptions.page; page: {} requests Letter
-   * with 72-point margins. No other per-export option is accepted.
+   * with 72-point margins. pdfA/pdfAStrict also override this export only;
+   * explicit pdfA:"off" disables inherited strictness unless explicitly supplied.
+   * Unsupported archival bindings and strict failures never fall back to PDF.
    */
-  renderPdf(options?: Pick<BookOptions, "page">): BookOutput;
+  renderPdf(options?: Pick<BookOptions, "page" | "pdfA" | "pdfAStrict">): BookOutput;
   renderEpub(): BookOutput;
   renderSite(): BookOutput;
   /** Whether this live WASM book implements the additive chapter-preview ABI. */

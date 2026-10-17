@@ -24,11 +24,14 @@ for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts 
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
+  document-inspector.js document-inspector.d.ts document_inspector.mjs document_inspector_worker.js DOCUMENT_INSPECTION.md \
+  document-batch.js document-batch.d.ts document_batch.mjs DOCUMENT_BATCH.md \
   document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs pdf_running.mjs \
   package.json README.md; do
   cp "wasm/$file" "$PACKAGE/$file"
 done
 cp wasm/demo/review.html wasm/demo/revision_review.mjs wasm/demo/REVISION_REVIEW.md "$PACKAGE/demo/"
+cp wasm/demo/document_lab.mjs "$PACKAGE/demo/"
 cp wasm/demo/index.html wasm/demo/demo.js wasm/demo/web-component.html wasm/demo/sample.md "$PACKAGE/demo/"
 cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs wasm/demo/flow_reading_controls.mjs wasm/demo/flow_preview_export.mjs wasm/demo/flow_export_controls.mjs "$PACKAGE/demo/"
 for file in book.html book.js book_pdf_controls.mjs book_collection.mjs book_font_assets.mjs book_font_authoring.mjs book_font_controls.mjs book_image_controls.mjs book_controls.mjs book_edition.mjs book_edition_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_source_search.mjs book_source_history.mjs book_file_session.mjs book_file_controls.mjs book_directory_session.mjs book_source_merge.mjs book_directory_controls.mjs book_search_controls.mjs book_inspection_controls.mjs flow-source.js source_commands.mjs source_formatting.mjs SOURCE_FORMATTING.md flow_document.mjs flow_file_session.mjs flow_file_controls.mjs flow_render_settings.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
@@ -47,12 +50,16 @@ node --test wasm/tests/book_publication*.test.mjs
 node --test wasm/tests/book_edition*.test.mjs
 node --test wasm/tests/book_file_*.test.mjs
 node --test wasm/tests/book_directory_*.test.mjs
+node --test wasm/document_batch*.test.mjs wasm/document_publication.test.mjs
 node --test wasm/document_comparison.test.mjs wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs
 node --test wasm/interactive.test.mjs wasm/interactive_runtime.test.mjs wasm/interactive_export.test.mjs wasm/native_workspace_page.test.mjs wasm/native_workspace_images.test.mjs wasm/native_workspace_settings.test.mjs wasm/native_workspace_source.test.mjs wasm/native_workspace_publishing.test.mjs
 node --test wasm/interactive_preview.test.mjs wasm/native_workspace_preview.test.mjs wasm/native_workspace_preview_package.test.mjs
 node --test wasm/native_workspace_export_worker.test.mjs wasm/native_workspace_exports.test.mjs
 node wasm/native_workspace_smoke.mjs "$PACKAGE" "$ART/parity/native-workspace.html"
 node wasm/document_worker_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
+node --test wasm/document_inspector*.test.mjs
+node wasm/document_inspector_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
+node wasm/document_publication_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_worker_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_outlines_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"

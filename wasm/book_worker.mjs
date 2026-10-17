@@ -52,6 +52,13 @@ function checkedOutput(bytes, sourceLength, maximum) {
   if (bytes.byteLength === 0 || bytes.byteLength > maximum)
     throw bookError("OUTPUT_LIMIT", "Book output is empty or exceeds the output byte limit.");
 }
+// Private scalar policy, independent of option containers passed to host
+// postMessage adapters. A worker must acknowledge it even when the first
+// retained export is EPUB/preview and PDF is requested later by a source delta.
+function archivalPolicy(options) {
+  return options.pdfA === "2b"
+    ? Object.freeze({ pdfA: "2b", pdfAStrict: options.pdfAStrict }) : null;
+}
 function diagnostic(error) {
   // Rust bindings may throw structured JSON strings; preserve the reason code,
   // not an unbounded engine dump or a raw source document.
@@ -264,9 +271,9 @@ export function createBookWorkerClient({
     return entry.worker;
   }
   function releaseIdle() { terminate(takeIdle()); }
-  function keepIdle(worker, format, inputRevision, sources) {
+  function keepIdle(worker, format, inputRevision, sources, archive) {
     if (disposed || active || idle) { terminate(worker); return; }
-    const entry = { worker, format, inputRevision, sources, timer: null, failed: null };
+    const entry = { worker, format, inputRevision, sources, archive, timer: null, failed: null };
     entry.failed = () => { if (idle === entry) releaseIdle(); };
     idle = entry;
     try {
@@ -292,7 +299,10 @@ export function createBookWorkerClient({
     if (active) throw bookError("BOOK_BUSY", "A book export is already running.");
     const [, mimeType, extension] = formatInfo(format);
     const selected = chapterSelection(format, selectedChapter);
-    const retainingBook = retainBook && retainedFormats.has(format);
+    // Full links requests remain source-only and one-shot. Only an explicit
+    // revision-fenced delta may check the already-authorized publication.
+    const retainingBook = retainBook && (retainedFormats.has(format)
+      || (format === "links" && sourceOnly));
     const retainingPreview = !retainingBook && retainPreview && ["preview", "chapter-preview"].includes(format);
     const retaining = retainingBook || retainingPreview;
     if (sourceOnly && !retaining)
@@ -316,6 +326,7 @@ export function createBookWorkerClient({
         retired = false,
         inputRevision = null,
         sources = null,
+        archive = null,
         chapterCount = null;
       const onAbort = () =>
         finish(bookError("EXPORT_CANCELLED", "Book export cancelled; source is unchanged."));
@@ -335,7 +346,7 @@ export function createBookWorkerClient({
             /* Attempt every detach even when a host adapter fails. */
           }
         }
-        if (keep && detached && !disposed) keepIdle(worker, format, inputRevision, sources);
+        if (keep && detached && !disposed) keepIdle(worker, format, inputRevision, sources, archive);
         else terminate(worker);
       }
       function finish(error, result, failed = error !== null) {
@@ -389,7 +400,13 @@ export function createBookWorkerClient({
             throw bookError("WORKER_PROTOCOL_ERROR", "Book worker did not acknowledge the source-set replacement.");
           if (sourceOnly && inputRevision === null)
             throw bookError("WORKER_PROTOCOL_ERROR", "Book worker did not acknowledge the source delta.");
-          checkedOutput(data.bytes, data.sourceLength, maxOutputBytes);
+          if (archive) {
+            if (data.bookPdfA !== archive.pdfA || data.bookPdfAStrict !== archive.pdfAStrict)
+              throw bookError("UNSUPPORTED_BOOK_PDFA", "The worker did not acknowledge the captured PDF/A emission policy; rebuild the matching package.");
+          } else if (data.bookPdfA !== undefined || data.bookPdfAStrict !== undefined)
+            throw bookError("WORKER_PROTOCOL_ERROR", "The worker replied with a different PDF/A emission policy.");
+          checkedOutput(data.bytes, data.sourceLength,
+            format === "links" ? Math.min(maxOutputBytes, 4 * 1024 * 1024) : maxOutputBytes);
           if (selected !== undefined) {
             if (data.selectedChapter !== selected)
               throw bookError("WORKER_PROTOCOL_ERROR", "Book worker replied for a different chapter.");
@@ -402,6 +419,7 @@ export function createBookWorkerClient({
               format: `book-${format}`,
               bytes,
               sourceLength: data.sourceLength,
+              ...(format === "pdf" && archive ? archive : {}),
               ...(selected === undefined ? {} : { selectedChapter: selected, previewMode: data.previewMode }),
               ...(inputRevision === null ? {} : { retainedInputRevision: inputRevision }),
               mimeType,
@@ -445,6 +463,7 @@ export function createBookWorkerClient({
           } else sources = updateCapturedSources(idle.sources, sourceUpdate.files);
           if (selected !== undefined) chapterSelection(format, selected, sources.files.length);
           input = sourceSet ? { sourceSet } : { sourceUpdate };
+          archive = idle.archive;
           worker = takeIdle();
           if (!worker)
             throw bookError("BOOK_CAPTURE_EXPIRED", "The retained endpoint could not be reclaimed; render the complete snapshot again.");
@@ -466,6 +485,7 @@ export function createBookWorkerClient({
           onAbort();
           return;
         }
+        if (!sourceOnly) archive = archivalPolicy(input.options);
         if (!sourceOnly && retaining) sources = captureSources(input);
         if (selected !== undefined) {
           chapterCount = (sourceOnly ? sources.files : input.files).length;
@@ -576,7 +596,9 @@ export function installBookWorker(scope, engine) {
       if (data.retainBook && data.retainPreview)
         throw bookError("WORKER_PROTOCOL_ERROR", "Choose one book retention mode.");
       if (data.retainBook) {
-        if (!retainedFormats.has(data.format) || typeof engine.renderRetainedBook !== "function")
+        const retainedLinks = data.format === "links"
+          && (Object.hasOwn(data, "sourceUpdate") || Object.hasOwn(data, "sourceSet"));
+        if ((!retainedFormats.has(data.format) && !retainedLinks) || typeof engine.renderRetainedBook !== "function")
           throw bookError("UNSUPPORTED_RETAINED_BOOK", "Rebuild the matching worker for retained publications.");
         method = "renderRetainedBook";
         envelope.retainedBook = true;
@@ -619,11 +641,25 @@ export function installBookWorker(scope, engine) {
         );
       }
       if (selected !== undefined) chapterSelection(data.format, selected, input.files.length);
+      const archive = archivalPolicy(input.options);
       const args = [input.files, input.options];
       if (data.retainBook) args.push(data.format);
       if (selected !== undefined) args.push(selected);
       const result = await engine[method](...args);
-      checkedOutput(result.bytes, result.sourceLength, data.maxOutputBytes);
+      checkedOutput(result.bytes, result.sourceLength,
+        data.format === "links" ? Math.min(data.maxOutputBytes, 4 * 1024 * 1024) : data.maxOutputBytes);
+      if (data.format === "pdf") {
+        if (archive && (result.pdfA !== archive.pdfA || result.pdfAStrict !== archive.pdfAStrict))
+          throw bookError("UNSUPPORTED_BOOK_PDFA", "The renderer did not acknowledge the requested PDF/A emission policy.");
+        if (!archive && (result.pdfA !== undefined || result.pdfAStrict !== undefined))
+          throw bookError("WORKER_PROTOCOL_ERROR", "The renderer returned an unrequested PDF/A emission policy.");
+      }
+      // This acknowledges captured settings, not PDF/A certification. For PDF
+      // it additionally requires the actual exporter receipt, never an echo of
+      // unconsumed options. Non-PDF outputs do not receive public PDF metadata.
+      if (archive) {
+        envelope.bookPdfA = archive.pdfA; envelope.bookPdfAStrict = archive.pdfAStrict;
+      }
       if (selected !== undefined) {
         checkedChapterPreview(result, selected, input.files.length);
         envelope.selectedChapter = selected;

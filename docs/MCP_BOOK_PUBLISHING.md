@@ -50,9 +50,10 @@ explicit metadata timestamps. HTML/EPUB use the existing theme and stylesheet
 parser. An explicitly empty `customCss` is preserved. Options must have a real
 consumer in at least one requested output: PDF-only options are rejected for
 EPUB/site, and HTML-only options are rejected for PDF. EPUB does not accept
-raw-HTML pass-through or HTML font-container selection. PDF/A and interactive
-HTML are not offered by this tool; they are not silently downgraded to ordinary
-book PDF or site HTML.
+raw-HTML pass-through or HTML font-container selection. `pdfA: "2b"` and optional
+`pdfAStrict: true` select the chapter-aware archival writer for `pdf` or `all`;
+see `BOOK_PDFA.md`. Both fields are rejected for EPUB/site-only requests, even
+when explicitly off. Interactive HTML is not offered by this tool.
 
 ## Result and limits
 
@@ -62,6 +63,10 @@ aggregate `artifactBytes`, and an `outputs` array. Each output contains `format`
 `mimeType`, `encoding` (`base64`), raw `bytes`, and `data`. Decode `data` once to
 obtain the artifact. The site ZIP includes the book engine's landing page,
 chapter pages, navigation and offline search. No `out` path is accepted.
+An enabled archival PDF additionally reports `pdfA: "2b"` and `pdfAStrict` in
+its output entry. These describe emission settings, not a conformance result.
+Omitted/OFF preserves the original receipt; EPUB/site entries never acquire
+PDF-specific metadata.
 
 At most 4096 total chapter/include sources and 4096 UTF-8 bytes per path are
 admitted. Source text plus logical path bytes share the lower of the server's

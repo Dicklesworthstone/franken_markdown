@@ -6,7 +6,7 @@ import { createBookCollectionCapture, bookCollectionResourceRevision } from "./b
 const MAX_BYTES = 128 * 1024 * 1024;
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
-function pdfResult(result, maximum, metadata) {
+function pdfResult(result, maximum, metadata, archive) {
   const bytes = result?.bytes;
   if (result?.format !== "book-pdf" || result.mimeType !== "application/pdf"
       || result.extension !== "pdf" || !(bytes instanceof Uint8Array)
@@ -19,10 +19,19 @@ function pdfResult(result, maximum, metadata) {
       || result.sourceLength > 64 * 1024 * 1024) {
     throw failure("INVALID_BOOK_PDF", "The book worker did not return an admitted PDF result.");
   }
+  // A PDF header is not evidence that the requested writer policy ran. Bind
+  // the receipt to the policy captured before the worker/observer can reenter.
+  // Missing capability or mismatched strictness cannot become a usable proof.
+  const pdfA = result.pdfA, pdfAStrict = result.pdfAStrict;
+  if (archive) {
+    if (pdfA !== archive.pdfA || pdfAStrict !== archive.pdfAStrict)
+      throw failure("UNSUPPORTED_BOOK_PDFA", "The PDF proof did not acknowledge the captured archival emission policy; no proof was retained.");
+  } else if (pdfA !== undefined || pdfAStrict !== undefined)
+    throw failure("INVALID_BOOK_PDF", "The PDF proof claims an unrequested archival emission policy.");
   // Do not call result.blob(): a host could close over subsequently mutated
   // bytes. Blob takes ownership of this exact view, including its byte offset.
   const blob = new Blob([bytes], { type: "application/pdf" });
-  return Object.freeze({ ...metadata, blob, size: blob.size, sourceLength: result.sourceLength });
+  return Object.freeze({ ...metadata, ...(archive ?? {}), blob, size: blob.size, sourceLength: result.sourceLength });
 }
 
 function filename(title) {
@@ -168,6 +177,10 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
         if (!owns()) throw failure("STALE_SOURCE", "The book changed during PDF capture.");
         const metadata = { filename: filename(input.options.title), chapters: input.files.length,
           revision: operation.revision };
+        // The collection capture already normalized these settings. Keep only
+        // immutable scalar policy, never reread a host-visible option container.
+        const archive = input.options.pdfA === "2b"
+          ? Object.freeze({ pdfA: "2b", pdfAStrict: input.options.pdfAStrict === true }) : null;
         notify();
         if (pending !== operation) return;
         // The production client copies/transfers the admitted book inputs and
@@ -176,7 +189,7 @@ export function createBookPdfProof({ collection, controls, worker, maxOutputByte
           { signal: operation.controller.signal })).then(result => {
           if (pending !== operation) return;
           if (!owns()) throw failure("STALE_SOURCE", "The book changed while its PDF was rendering.");
-          const proof = pdfResult(result, maxOutputBytes, metadata);
+          const proof = pdfResult(result, maxOutputBytes, metadata, archive);
           if (!owns()) throw failure("STALE_SOURCE", "The book changed before its PDF was retained.");
           settle(null, proof, false);
         }, reason => { throw reason; }).catch(reason => settle(reason));

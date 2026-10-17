@@ -10,7 +10,9 @@
     "./book_worker_entry.js",
     "./demo/book.js",
     "./document_worker_entry.js",
-    "./demo/demo.js"
+    "./demo/demo.js",
+    "./document_inspector_worker.js",
+    "./demo/document_lab.mjs"
   ],
   "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
   "author": "Jeffrey Emanuel",
@@ -83,6 +85,10 @@
       "import": "./document_worker.mjs"
     },
     "./document-worker/worker": "./document_worker_entry.js",
+    "./document-batch": {
+      "types": "./document-batch.d.ts",
+      "import": "./document-batch.js"
+    },
     "./interactive": {
       "types": "./interactive.d.ts",
       "import": "./interactive.js"
@@ -90,7 +96,12 @@
     "./interactive/exporter": {
       "types": "./native_workspace.d.ts",
       "import": "./native_workspace.js"
-    }
+    },
+    "./document-inspector": {
+      "types": "./document-inspector.d.ts",
+      "import": "./document-inspector.js"
+    },
+    "./document-inspector/worker": "./document_inspector_worker.js"
   },
   "files": [
     "franken_markdown.js",
@@ -204,6 +215,10 @@
     "document_worker_entry.js",
     "document-worker.d.ts",
     "DOCUMENT_WORKER.md",
+    "document-batch.js",
+    "document-batch.d.ts",
+    "document_batch.mjs",
+    "DOCUMENT_BATCH.md",
     "pdf_page.mjs",
     "pdf_running.mjs",
     "interactive.js",
@@ -221,6 +236,12 @@
     "NATIVE_WORKSPACE.md",
     "demo/review.html",
     "demo/revision_review.mjs",
-    "demo/REVISION_REVIEW.md"
+    "demo/REVISION_REVIEW.md",
+    "document-inspector.js",
+    "document-inspector.d.ts",
+    "document_inspector.mjs",
+    "document_inspector_worker.js",
+    "DOCUMENT_INSPECTION.md",
+    "demo/document_lab.mjs"
   ]
 }

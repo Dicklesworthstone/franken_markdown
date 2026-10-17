@@ -20,6 +20,78 @@ function selectedFormats(value) {
   }
   return Object.freeze(result);
 }
+function editionLinkReport(report, paths, clean) {
+  if (report === undefined || report === null)
+    throw fail("UNSUPPORTED_BOOK_VERIFICATION", "This publisher did not provide native navigation verification; rebuild the matching package.");
+  const invalid = () => fail("INVALID_LINK_REPORT", "Edition navigation verification is invalid or belongs to another chapter capture.");
+  if (report.schema !== "fmd-book-link-report-v1" || report.scope !== "expanded-html-navigation"
+      || !Object.isFrozen(report) || !Object.isFrozen(report.summary)
+      || !Array.isArray(report.chapters) || !Object.isFrozen(report.chapters)
+      || report.chapters.length !== paths.length || report.summary?.chapters !== paths.length
+      || !Number.isSafeInteger(report.summary.findings) || report.summary.findings < 0
+      || report.summary.findings > 4096 || (report.summary.findings === 0) !== clean) throw invalid();
+  let count = 0;
+  for (let i = 0; i < paths.length; i++) {
+    const chapter = report.chapters[i];
+    if (!chapter || chapter.path !== paths[i] || !Object.isFrozen(chapter)
+        || !Array.isArray(chapter.findings) || !Object.isFrozen(chapter.findings)) throw invalid();
+    count += chapter.findings.length;
+    if (count > 4096 || chapter.findings.some(finding => !finding || !Object.isFrozen(finding))) throw invalid();
+  }
+  if (count !== report.summary.findings) throw invalid();
+  return report;
+}
+// Optional display metadata is not a publication/verification receipt. Copy
+// only bounded primitive data fields; no source, output, accessor or HTML enters
+// session state. Ignore malformed, duplicate and out-of-order notifications.
+function editionProgress(value, selected, checking, previous) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+    const allowed = ["phase", "attempt", "maxAttempts", "completedFormats", "totalFormats", "format", "retryCode"];
+    const data = {};
+    for (const key of Reflect.ownKeys(value)) {
+      const field = Object.getOwnPropertyDescriptor(value, key);
+      if (!allowed.includes(key) || !field || !Object.hasOwn(field, "value")) return null;
+      data[key] = field.value;
+    }
+    const { phase, attempt, maxAttempts, completedFormats, totalFormats, format, retryCode } = data;
+    if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3
+        || !Number.isInteger(attempt) || attempt < 1 || attempt > maxAttempts
+        || totalFormats !== selected.length || !Number.isInteger(completedFormats)
+        || completedFormats < 0 || completedFormats > totalFormats) return null;
+    if (phase === "rendering") {
+      if (completedFormats >= totalFormats || format !== selected[completedFormats] || retryCode !== undefined) return null;
+    } else {
+      if (format !== undefined) return null;
+      if (phase === "retrying") {
+        if (attempt < 2 || completedFormats !== 0
+            || !["WORKER_FAILED", "BOOK_CAPTURE_EXPIRED"].includes(retryCode)) return null;
+      } else if ((phase !== "checking-links" && phase !== "verifying-publication") || !checking
+          || retryCode !== undefined || completedFormats !== (phase === "checking-links" ? 0 : totalFormats)) return null;
+    }
+    const step = item => item.phase === "retrying" ? -1 : item.phase === "checking-links" ? 0
+      : item.phase === "rendering" ? item.completedFormats + 1 : totalFormats + 1;
+    if (previous) {
+      if (maxAttempts !== previous.maxAttempts || attempt < previous.attempt || attempt > previous.attempt + 1
+          || (attempt > previous.attempt && phase !== "retrying")
+          || (attempt === previous.attempt && step(data) <= step(previous))) return null;
+    } else if (attempt !== 1 && !(attempt === 2 && phase === "retrying")) return null;
+    return Object.freeze({ phase, attempt, maxAttempts, completedFormats, totalFormats,
+      ...(phase === "rendering" ? { format } : {}), ...(phase === "retrying" ? { retryCode } : {}) });
+  } catch { return null; }
+}
+function editionProgressMessage(progress) {
+  const { phase, attempt, maxAttempts, completedFormats, totalFormats, format } = progress;
+  const prefix = attempt > 1 ? `Attempt ${attempt} of ${maxAttempts}: ` : "";
+  const text = phase === "retrying"
+    ? `The publication worker was lost. Restarting the complete edition (attempt ${attempt} of ${maxAttempts}) from the same captured book.`
+    : phase === "checking-links" ? `${prefix}Checking internal navigation before rendering.`
+      : phase === "verifying-publication" ? `${prefix}Verifying the rendered edition before releasing downloads.`
+        : `${prefix}Rendering ${format === "site" ? "HTML-site ZIP" : format.toUpperCase()} (${completedFormats + 1} of ${totalFormats}).`;
+  return `${text} No edition downloads are ready yet.`;
+}
+
 function waitFor(pending, signal) {
   return new Promise((resolve, reject) => {
     const cleanup = () => signal.removeEventListener("abort", abort);
@@ -40,26 +112,32 @@ function waitFor(pending, signal) {
  */
 export function createBookEditionSession({
   publisher, capture, checkpoint, isBlocked = () => false, urls = URL, onState = () => {},
-  crypto = globalThis.crypto,
+  crypto = globalThis.crypto, strictLinks = false,
 } = {}) {
+  if (typeof strictLinks !== "boolean") throw fail("INVALID_OPTIONS", "strictLinks must be a boolean.");
   if (!publisher || ["render", "cancel", "dispose"].some(key => typeof publisher[key] !== "function")
       || [capture, checkpoint, isBlocked, onState].some(fn => typeof fn !== "function")
       || !urls || ["createObjectURL", "revokeObjectURL"].some(key => typeof urls[key] !== "function"))
     throw fail("INVALID_OPTIONS", "Edition sessions require a publisher, source host and URL owner.");
   let disposed = false, suspended = false, capturing = false;
   let active = null, ready = null, packing = null, formats = selectedFormats(["pdf", "epub", "site"]);
-  let phase = "idle", errorCode = null;
+  let phase = "idle", errorCode = null, verification = null;
   let message = "Select formats and prepare one edition. No files are saved automatically.";
   const blocked = () => {
     try { return !!isBlocked(); } catch { return true; }
   };
   function state() {
+    const job = active;
+    const publicationProgress = job?.progress && current(job) && active === job ? job.progress : null;
     return Object.freeze({
       phase, busy: active !== null || packing !== null, bundleBusy: packing !== null,
       canPrepare: !disposed && !suspended && !active && !packing && formats.length > 0 && !blocked(),
       canBundle: !!ready && !active && !packing && !ready.bundleByteLength && current(ready),
       bundleByteLength: ready?.bundleByteLength ?? 0,
-      formats,
+      formats, strictLinks,
+      publicationProgress,
+      // Raw edits without notifications must not leave a visible clean verdict.
+      linkReport: verification && current(verification) ? verification.report : null,
       downloads: Object.freeze(ready ? ready.downloads.slice() : []),
       byteLength: ready?.byteLength ?? 0, sourceLength: ready?.sourceLength ?? 0,
       errorCode, message,
@@ -80,7 +158,7 @@ export function createBookEditionSession({
   function retire(code, text, nextPhase = "idle") {
     const job = active, previous = ready, bundle = packing;
     active = ready = packing = null;
-    phase = nextPhase; message = text; errorCode = null;
+    phase = nextPhase; message = text; errorCode = null; verification = null;
     release(previous);
     release(job);
     release(bundle);
@@ -115,9 +193,9 @@ export function createBookEditionSession({
     if (active || packing) throw fail("BOOK_BUSY", "An edition or its delivery bundle is already being prepared.");
     if (blocked()) throw fail("BOOK_BUSY", "Finish importing or composing text before publishing.");
     if (!formats.length) throw fail("INVALID_FORMAT", "Select at least one publication format.");
-    release(ready); ready = null;
+    release(ready); ready = null; verification = null;
     const job = { abort: new AbortController(), urls: [], downloads: [], checkpoint: null };
-    const selected = formats;
+    const selected = formats, checking = strictLinks;
     active = job; phase = "busy"; errorCode = null;
     message = `Preparing ${selected.map(format => format.toUpperCase()).join(" + ")} from one captured book. No downloads are ready yet.`;
     announce();
@@ -128,7 +206,33 @@ export function createBookEditionSession({
       try { input = capture(); } finally { capturing = false; }
       owned(job);
       job.checkpoint = checkpoint();
-      const pending = publisher.render(input.files, selected, input.options, { signal: job.abort.signal });
+      job.paths = input.files.map(file => file.path);
+      const pending = publisher.render(input.files, selected, input.options, {
+        signal: job.abort.signal, ...(checking ? { strictLinks: true } : {}),
+        onProgress(value) {
+          // A retired publisher may still call its observer. It cannot repaint
+          // the next job or renew the source/resource authority of this one.
+          const check = () => {
+            if (active !== job || job.abort.signal.aborted) return false;
+            try { fence(job); return true; }
+            catch {
+              if (active === job)
+                retire("STALE_SOURCE", "The book or editor changed during publication. Prepare a new edition from the current capture.");
+              return false;
+            }
+          };
+          if (!check()) return;
+          const next = editionProgress(value, selected, checking, job.progress);
+          // Proxy inspection and view observers can reenter the source host.
+          if (!check() || !next) return;
+          job.progress = next;
+          message = editionProgressMessage(next);
+          announce();
+          // Throwing from an observer would be ignored by the coordinator.
+          // Explicit cancellation here stops work before its next native phase.
+          check();
+        },
+      });
       input = null; // Do not retain an extra resource snapshot while awaiting the worker.
       const result = await waitFor(pending, job.abort.signal);
       fence(job);
@@ -138,6 +242,7 @@ export function createBookEditionSession({
           || !Number.isSafeInteger(result.sourceLength) || result.sourceLength < 0
           || result.sourceLength > 64 * 1024 * 1024)
         throw fail("WORKER_PROTOCOL_ERROR", "The publisher did not return a complete captured edition.");
+      const checked = checking ? editionLinkReport(result.linkReport, job.paths, true) : null;
       // Admit every receipt/Blob before creating even the first download URL.
       let total = 0;
       const blobs = result.outputs.map((output, index) => {
@@ -168,12 +273,21 @@ export function createBookEditionSession({
       job.blobs = blobs.map(({ format, blob }) => ({ format, blob }));
       job.byteLength = total; job.sourceLength = result.sourceLength;
       ready = job; active = null; phase = "ready";
+      verification = checked ? { checkpoint: job.checkpoint, report: checked } : null;
       message = `Edition ready: ${selected.length} files, ${total} bytes. Use each download link to save it; preparation alone saves nothing.`;
       announce();
       return state();
     } catch (cause) {
       release(job);
       if (active === job) {
+        // Only a complete, current report from this operation may be displayed.
+        // Neither stale failures nor an unverified "clean" claim reach the view.
+        if (checking && cause?.code === "BOOK_LINKS_FAILED" && current(job)) {
+          try {
+            verification = { checkpoint: job.checkpoint,
+              report: editionLinkReport(cause.linkReport, job.paths, false) };
+          } catch (invalid) { cause = invalid; }
+        }
         active = null; phase = "error";
         errorCode = typeof cause?.code === "string" ? cause.code : "EDITION_FAILED";
         message = `${errorCode}: ${cause?.message ?? "Edition preparation failed."} No edition downloads were published. Source remains editable.`;
@@ -243,6 +357,13 @@ export function createBookEditionSession({
     get state() { return state(); },
     prepare,
     prepareBundle,
+    setStrictLinks(value) {
+      alive();
+      if (typeof value !== "boolean") throw fail("INVALID_OPTIONS", "strictLinks must be a boolean.");
+      if (value === strictLinks) return;
+      strictLinks = value;
+      retire("EXPORT_CANCELLED", "Navigation verification policy changed. Prepare a new edition.");
+    },
     setFormats(value) {
       alive();
       const next = selectedFormats(value);
@@ -252,12 +373,12 @@ export function createBookEditionSession({
     },
     changed() {
       if (disposed || suspended || capturing) return;
-      if (active || ready) retire("STALE_SOURCE", "The book changed. Prepare a new edition from the current sources, settings and resources.");
+      if (active || ready || verification) retire("STALE_SOURCE", "The book changed. Prepare a new edition from the current sources, settings and resources.");
       else announce();
     },
     invalidate() {
       if (disposed || suspended) return;
-      if (active || ready) retire("STALE_SOURCE", "The editor changed or is busy. Prepare a new edition when editing is complete.");
+      if (active || ready || verification) retire("STALE_SOURCE", "The editor changed or is busy. Prepare a new edition when editing is complete.");
       else announce();
     },
     /** Used immediately before both normal and auxiliary-link activation.

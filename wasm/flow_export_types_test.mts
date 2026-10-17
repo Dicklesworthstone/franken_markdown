@@ -1,4 +1,5 @@
 import type {
+  FlowExportRequest,
   FlowExportResult,
   FlowHtmlExportOptions,
   FlowSession,
@@ -21,7 +22,17 @@ const a: Promise<FlowExportResult> = direct.exportDocument("html", html, direct.
 const b: Promise<FlowExportResult> = worker.exportDocument("pdf", pdf, worker.token, {
   signal: new AbortController().signal,
 });
-void [a, b];
+const batch: readonly FlowExportRequest[] = [
+  { format: "html", options: html },
+  { format: "pdf", options: pdf },
+];
+const c: Promise<readonly FlowExportResult[]> = direct.exportDocuments(batch, direct.token);
+const d: Promise<readonly FlowExportResult[]> = worker.exportDocuments(batch, worker.token, {
+  timeoutMs: 10_000,
+});
+void [a, b, c, d];
+// @ts-expect-error PDF-only options cannot be attached to an HTML batch request
+worker.exportDocuments([{ format: "html", options: { pageNumbers: true } }], worker.token);
 // @ts-expect-error supported formats are explicit
 worker.exportDocument("svg", {}, worker.token);
 // @ts-expect-error no remote custom HTML, code, or asset injection

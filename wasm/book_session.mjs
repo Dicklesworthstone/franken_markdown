@@ -244,8 +244,21 @@ function requireBookOptions(target, settings) {
   }
 }
 
+// PDF/A is an emission policy, not a claim of independent conformance. Keep
+// defaults absent so ordinary captures and old native packages are unchanged.
+function archivalOptions(profile, strict) {
+  if (profile !== undefined && profile !== "off" && profile !== "2b")
+    throw updateError("INVALID_OPTIONS", "pdfA must be off or 2b.");
+  if (strict !== undefined && typeof strict !== "boolean")
+    throw updateError("INVALID_OPTIONS", "pdfAStrict must be a boolean.");
+  if (strict === true && profile !== "2b")
+    throw updateError("INVALID_OPTIONS", "pdfAStrict requires pdfA: 2b.");
+  return profile === "2b" ? { pdfA: "2b", pdfAStrict: strict === true } : {};
+}
+
 function normalizeOptions(value) {
   const options = record(value, "options");
+  const archive = archivalOptions(options.pdfA, options.pdfAStrict);
   const renderOptions = bookRenderOptions(options);
   const page = normalizePdfPage(options.page);
   const font = options.font ?? "sans";
@@ -295,6 +308,7 @@ function normalizeOptions(value) {
     images: normalizedImages,
     fontAssets: fonts.map(fontAsset),
     ...renderOptions,
+    ...archive,
   };
 }
 
@@ -368,7 +382,7 @@ export function bookLinkOptions(options = {}) {
   return { includeSources: options.includeSources, expandIncludes: options.expandIncludes };
 }
 
-function output(bytes, kind, sourceLength) {
+function output(bytes, kind, sourceLength, archive = {}) {
   if (!(bytes instanceof Uint8Array))
     throw new TypeError("renderer did not return Uint8Array bytes");
   const [format, mimeType, extension] = {
@@ -383,6 +397,7 @@ function output(bytes, kind, sourceLength) {
     extension,
     sourceLength,
     bytes,
+    ...archive,
     blob() {
       return new Blob([bytes], { type: mimeType });
     },
@@ -392,22 +407,30 @@ function output(bytes, kind, sourceLength) {
   });
 }
 
-// Export-local options deliberately cannot reset metadata, replace assets, or
-// silently accept misspelled geometry fields. Do not invoke host accessors.
-function exportPage(value, fallback) {
-  const invalid = () => Object.assign(
-    new TypeError("book PDF export options must be a plain data object containing only page"),
-    { code: "INVALID_OPTIONS" },
-  );
+// Export-local policy/page overrides cannot reset metadata or replace assets.
+// Inspect data descriptors only, then reacquire the live native handle.
+function exportPdfOptions(value, fallback) {
+  const invalid = () => Object.assign(new TypeError(
+    "book PDF export options must be a plain data object containing only page, pdfA and pdfAStrict"),
+  { code: "INVALID_OPTIONS" });
   if (!value || typeof value !== "object" || Array.isArray(value)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw invalid();
-  let page;
+  const fields = {};
   for (const key of Reflect.ownKeys(value)) {
     const field = Object.getOwnPropertyDescriptor(value, key);
-    if (key !== "page" || !field || !Object.hasOwn(field, "value")) throw invalid();
-    page = field.value;
+    if (!["page", "pdfA", "pdfAStrict"].includes(key)
+        || !field || !Object.hasOwn(field, "value")) throw invalid();
+    fields[key] = field.value;
   }
-  return page === undefined ? fallback : normalizePdfPage(page);
+  const profile = fields.pdfA === undefined ? fallback.pdfA : fields.pdfA;
+  // Explicit OFF also disables inherited strictness for THIS export only.
+  // An explicitly supplied strict:true with OFF remains an admission error.
+  const strict = fields.pdfAStrict === undefined
+    ? (fields.pdfA === "off" ? false : fallback.pdfAStrict) : fields.pdfAStrict;
+  return {
+    page: fields.page === undefined ? fallback.page : normalizePdfPage(fields.page),
+    ...archivalOptions(profile, strict),
+  };
 }
 
 function updateError(code, message) {
@@ -530,11 +553,12 @@ function sourceSetReport(json, before, submitted, raw) {
 export function createBookBindings(loadBookClass) {
   class BookSession {
     #raw;
-    #page;
+    #pdfOptions;
     #updating = false;
-    constructor(raw, page) {
+    constructor(raw, settings) {
       this.#raw = raw;
-      this.#page = page;
+      this.#pdfOptions = Object.freeze({ page: settings.page,
+        ...archivalOptions(settings.pdfA, settings.pdfAStrict) });
     }
     #live() {
       if (this.#raw === null) throw new Error("book session has been disposed");
@@ -644,10 +668,24 @@ export function createBookBindings(loadBookClass) {
     }
     renderPdf(options = {}) {
       this.#live();
-      const page = exportPage(options, this.#page);
+      const { page, ...archive } = exportPdfOptions(options, this.#pdfOptions);
       // A Proxy trap may dispose the session during admission. Never retain a
       // pre-validation raw handle across caller-controlled object inspection.
       const raw = this.#live();
+      if (archive.pdfA === "2b") {
+        if (typeof raw.renderPdfArchival !== "function") {
+          throw updateError("UNSUPPORTED_BOOK_PDFA",
+            "this WASM build lacks FmdBook.renderPdfArchival; rebuild the matching package for book PDF/A emission");
+        }
+        let bytes;
+        try {
+          bytes = raw.renderPdfArchival(archive.pdfA, archive.pdfAStrict, pdfPageGeometry(page));
+        } catch (error) {
+          if (typeof error === "string") throw new Error(error.slice(0, 2048));
+          throw error;
+        }
+        return output(bytes, "pdf", raw.sourceLength, archive);
+      }
       if (page === undefined) return output(raw.renderPdf(), "pdf", raw.sourceLength);
       if (typeof raw.renderPdfWithPage !== "function") {
         throw Object.assign(new Error(
@@ -791,7 +829,7 @@ export function createBookBindings(loadBookClass) {
         raw.setFont(font.slot, font.bytes);
         if (font.weight !== undefined) raw.setFontWeight(font.slot, font.weight);
       }
-      return new BookSession(raw, settings.page);
+      return new BookSession(raw, settings);
     } catch (error) {
       raw.free();
       if (typeof error === "string") throw new Error(error.slice(0, 2048));

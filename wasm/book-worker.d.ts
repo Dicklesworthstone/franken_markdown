@@ -1,4 +1,4 @@
-import type { BookChapterPreviewOutput, BookFile, BookLinksOutput, BookOptions, BookOutput } from "./book.js";
+import type { BookChapterPreviewOutput, BookFile, BookLinkReport, BookLinksOutput, BookOptions, BookOutput } from "./book.js";
 export type BookFormat = "pdf" | "epub" | "site";
 export type BookWorkerFormat = BookFormat | "preview" | "chapter-preview" | "inspection" | "links";
 /** A transport capture revision is local to this worker client, not a native
@@ -27,6 +27,8 @@ export interface BookChapterWorkerOutput extends Omit<BookChapterPreviewOutput, 
    * Native render/limit/protocol failures never trigger that larger operation. */
   readonly previewMode: "native-chapter" | "site-fallback";
 }
+/** Navigation report from an explicitly revision-fenced retained source operation. */
+export interface BookRetainedLinksOutput extends Omit<BookLinksOutput, "filename">, BookWorkerCapture {}
 export interface BookInspectionOutput {
   readonly format: "book-inspection";
   readonly mimeType: "application/json";
@@ -106,7 +108,9 @@ export interface BookWorker {
   >;
   /** Export after selective text changes to exact retained chapter/include keys.
    * Sends only changes; no settings, unchanged sources, image or font bytes.
-   * [] re-exports unchanged source. Paths/order/roles/resources cannot change.
+   * [] re-exports unchanged source. "links" calls native validation without
+   * rerendering or reparsing; its response is capped at 4 MiB.
+   * Paths/order/roles/resources cannot change.
    * Requires a negotiated idle retainedInputRevision. Stale local revisions
    * fail without discarding the newer capture. After expiry/worker failure,
    * supply a complete current snapshot with render(); no implicit retry occurs.
@@ -114,10 +118,10 @@ export interface BookWorker {
    * timeout still terminate synchronous rendering. Output is always complete. */
   renderSourceUpdate(
     changes: readonly BookFile[],
-    format: BookFormat | "preview" | "chapter-preview",
+    format: BookFormat | "preview" | "chapter-preview" | "links",
     options: { expectedRevision: number },
     request?: BookChapterPreviewRequest,
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput>;
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput>;
   /** Capture complete current chapter/include text, then send only changed
    * strings against the idle source baseline. No images/fonts/settings are
    * read or transferred. Membership/order/roles must remain identical; use
@@ -125,10 +129,10 @@ export interface BookWorker {
    * shares the idle worker lifetime and is released on expiry/cancellation. */
   renderSources(
     files: readonly BookFile[],
-    format: BookFormat | "preview" | "chapter-preview",
+    format: BookFormat | "preview" | "chapter-preview" | "links",
     options: { expectedRevision: number; includeSources?: readonly BookFile[] },
     request?: BookChapterPreviewRequest,
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput>;
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput>;
   /** Replace the COMPLETE chapter/include collection against an idle capture.
    * Supports additions, removals, reordering and chapter/include role changes.
    * includeSources defaults to [] and revokes every previous include resource.
@@ -141,10 +145,10 @@ export interface BookWorker {
    * expiry and failure handling match renderSourceUpdate(). */
   renderSourceSet(
     files: readonly BookFile[],
-    format: BookFormat | "preview" | "chapter-preview",
+    format: BookFormat | "preview" | "chapter-preview" | "links",
     options: { expectedRevision: number; includeSources?: readonly BookFile[] },
     request?: BookChapterPreviewRequest,
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput>;
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput>;
   /** Terminates running AND retained idle workers. The client can render again. */
   cancel(): void;
   /** Cancel in-flight work, but keep an already-idle book. Hosts must use
@@ -167,7 +171,8 @@ export function createBookWorker(options?: {
    * Takes precedence over retainPreview. Text edits use updateSources; source
    * membership/order changes use replaceSources. Old edit APIs reconstruct from
    * the current snapshot. Settings or assets changes also reconstruct.
-   * Inspection and links remain one-shot, source-only, and release idle state.
+   * Full render() inspection/links remain source-only and release idle state.
+   * Source-delta/set "links" checks reuse the retained native publication.
    * Failures/cancellation retire the session; no queue or persistence is added.
    * A matching worker script is required; unsupported responses fail explicitly.
    */
@@ -185,6 +190,34 @@ export interface BookPublicationOutput {
   /** Sum of the returned output view lengths, not a renderer heap estimate. */
   readonly byteLength: number;
   readonly outputs: ReadonlyArray<Omit<BookOutput, "filename">>;
+  /** Present only after strict verification of this exact captured source.
+   * Scope is local expanded HTML navigation, not output-format conformance. */
+  readonly linkReport?: BookLinkReport;
+}
+/** Read-only phase metadata; never partial files, sources, assets or save authority.
+ * Counts describe the current attempt. A restart discards earlier private outputs. */
+export interface BookPublicationProgress {
+  readonly phase: "checking-links" | "rendering" | "verifying-publication" | "retrying";
+  /** One-based attempt. A retrying event identifies the upcoming attempt. */
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  readonly completedFormats: number;
+  readonly totalFormats: number;
+  /** Present during rendering only. */
+  readonly format?: BookFormat;
+  /** Present during retrying only; other failures are never retried. */
+  readonly retryCode?: "WORKER_FAILED" | "BOOK_CAPTURE_EXPIRED";
+}
+export interface BookPublicationRequest {
+  signal?: AbortSignal;
+  /** Verify internal navigation before creating a renderer. Default false.
+   * Missing capability, invalid/incomplete reports and findings refuse output;
+   * no unchecked fallback. Canonical chapter paths are required by the decoder.
+   * BOOK_LINKS_FAILED carries a deeply frozen BookLinkReport as linkReport. */
+  strictLinks?: boolean;
+  /** Observers may cancel the publisher; exceptions/rejections are ignored.
+   * No progress notification makes an output downloadable or verified. */
+  onProgress?: (progress: BookPublicationProgress) => void | Promise<void>;
 }
 export interface BookPublicationWorker {
   /** Covers the whole edition, not just the currently executing format. */
@@ -195,12 +228,14 @@ export interface BookPublicationWorker {
    * No partial output on errors, cancellation, timeout or aggregate overflow.
    * A fresh private worker is disposed after each edition, including success.
    * Rebuild older workers without retained source-capture support; no fallback
-   * to independently captured per-format publications occurs. */
+   * to independently captured per-format publications occurs. Recoverable worker
+   * loss restarts the WHOLE edition from its original capture, not newer input.
+   * Both strict verification gates rerun; outputs from attempts never mix. */
   render(
     files: readonly BookFile[],
     formats?: readonly BookFormat[],
     options?: BookOptions,
-    request?: { signal?: AbortSignal },
+    request?: BookPublicationRequest,
   ): Promise<BookPublicationOutput>;
   /** Cancel the complete edition; the publisher remains reusable. */
   cancel(): void;
@@ -209,9 +244,15 @@ export interface BookPublicationWorker {
 }
 export function createBookPublicationWorker(options?: {
   workerFactory?: () => Worker;
-  /** Shared deadline across capture/startup and ALL formats. Default 120000;
-   * allowed 1..600000 ms. Expiration terminates the private worker. */
+  /** Shared deadline across capture, optional verification and ALL formats. Default 120000;
+   * allowed 1..600000 ms. Includes recovery/backoff; retries do not reset it.
+   * Expiration terminates the private worker and never triggers a retry. */
   timeoutMs?: number;
   /** Combined output ceiling, default/maximum 128 MiB; not a heap bound. */
   maxOutputBytes?: number;
+  /** Restart after WORKER_FAILED or BOOK_CAPTURE_EXPIRED. Default 1; integer
+   * 0..2. Zero disables recovery. Fresh workers use the same owned capture;
+   * prior private outputs are discarded. Backoff is 100 ms, then 200 ms.
+   * Cancellation, native/protocol/verification faults and limits never retry. */
+  maxWorkerRetries?: number;
 }): BookPublicationWorker;

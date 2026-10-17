@@ -12,6 +12,7 @@ import {
 } from "./flow_session.mjs";
 
 export const FLOW_EXPORT_LIMIT = 64 * 1024 * 1024;
+export const FLOW_EXPORT_BATCH_LIMIT = 128 * 1024 * 1024;
 const IMAGE_BYTES = 32 * 1024 * 1024,
   IMAGE_COUNT = 1024,
   DISPLAY_ITEMS = 500000;
@@ -209,6 +210,51 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
   return [format, Object.freeze(result), token(expectedToken)];
 }
 
+// A batch is one immutable publication request over one source/layout token.
+// Each format appears at most once so renderer-specific options and output
+// identity remain unambiguous. Plain-data records prevent accessor execution.
+export function normalizeFlowExportBatch(requests, expectedToken) {
+  if (!Array.isArray(requests) || requests.length < 1 || requests.length > 4)
+    fail("INVALID_OPTIONS", "export batch must contain 1..4 format requests");
+  const expected = token(expectedToken), seen = new Set(), normalized = [];
+  for (let i = 0; i < requests.length; i++) {
+    const entry = Object.getOwnPropertyDescriptor(requests, String(i));
+    if (!entry || !Object.hasOwn(entry, "value"))
+      fail("INVALID_OPTIONS", "export batch must contain data entries without holes or accessors");
+    const request = entry.value;
+    if (!request || typeof request !== "object" || Array.isArray(request)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(request)))
+      fail("INVALID_OPTIONS", "export batch entries must be plain data objects");
+    const owned = {};
+    for (const key of Reflect.ownKeys(request)) {
+      const field = Object.getOwnPropertyDescriptor(request, key);
+      if (typeof key !== "string" || !["format", "options"].includes(key)
+          || !field || !Object.hasOwn(field, "value"))
+        fail("INVALID_OPTIONS", "export batch entry has an unsupported field or accessor");
+      owned[key] = field.value;
+    }
+    if (!Object.hasOwn(owned, "format"))
+      fail("INVALID_OPTIONS", "export batch entry requires format");
+    if (seen.has(owned.format))
+      fail("INVALID_OPTIONS", "export batch formats must be unique");
+    seen.add(owned.format);
+    const options = owned.options ?? {};
+    if (!options || typeof options !== "object" || Array.isArray(options)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(options)))
+      fail("INVALID_OPTIONS", "export batch options must be plain data objects");
+    const data = {};
+    for (const key of Reflect.ownKeys(options)) {
+      const field = Object.getOwnPropertyDescriptor(options, key);
+      if (typeof key !== "string" || !field || !Object.hasOwn(field, "value"))
+        fail("INVALID_OPTIONS", "export batch options cannot contain accessors or symbols");
+      data[key] = field.value;
+    }
+    const [format, value] = normalizeFlowExport(owned.format, data, expected);
+    normalized.push(Object.freeze({ format, options: value }));
+  }
+  return [Object.freeze(normalized), expected];
+}
+
 function byteView(value, max, code = "INVALID_WASM_RESPONSE") {
   if (
     !ArrayBuffer.isView(value) ||
@@ -226,7 +272,7 @@ function byteView(value, max, code = "INVALID_WASM_RESPONSE") {
 function sameBytes(a, b) {
   return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
-function collectImages(session, expected, extraImages = []) {
+function collectImages(session, expected) {
   const images = new Map();
   let offset = 0,
     total = null,
@@ -298,8 +344,50 @@ function collectImages(session, expected, extraImages = []) {
     }
     offset = page.nextOffset;
   } while (offset !== null);
-  for (const image of extraImages) addImage(image.destination, image.bytes);
-  return { pdfImages: [...images.values()], assetBytes: retained };
+  return {
+    pdfImages: [...images.values()],
+    assetBytes: retained,
+    occurrences,
+    processed,
+    destinationUnits,
+  };
+}
+function mergeExplicitImages(base, extraImages = []) {
+  if (!extraImages.length) return base;
+  const images = new Map(base.pdfImages.map((image) => [image.destination, image]));
+  let occurrences = base.occurrences,
+    processed = base.processed,
+    retained = base.assetBytes,
+    destinationUnits = base.destinationUnits;
+  for (const image of extraImages) {
+    if (++occurrences > IMAGE_COUNT) fail("BUDGET_EXCEEDED", "export image count exceeded");
+    processed += image.bytes.length;
+    if (processed > 64 * 1024 * 1024)
+      fail("BUDGET_EXCEEDED", "export image copy/compare work limit exceeded");
+    const previous = images.get(image.destination);
+    if (previous) {
+      if (!sameBytes(previous.bytes, image.bytes))
+        fail("AMBIGUOUS_EXPORT_ASSET", "one image destination has different occurrence or explicit payloads");
+      continue;
+    }
+    if (image.bytes.length > IMAGE_BYTES - retained)
+      fail("BUDGET_EXCEEDED", "export image payload limit exceeded");
+    destinationUnits += image.destination.length;
+    if (destinationUnits > 64 * 1024)
+      fail("BUDGET_EXCEEDED", "export image destination limit exceeded");
+    retained += image.bytes.length;
+    images.set(image.destination, {
+      destination: image.destination,
+      bytes: new Uint8Array(image.bytes),
+    });
+  }
+  return {
+    pdfImages: [...images.values()],
+    assetBytes: retained,
+    occurrences,
+    processed,
+    destinationUnits,
+  };
 }
 function checkDiagnostics(value, sourceLength) {
   if (!Array.isArray(value) || value.length > DIAGNOSTICS)
@@ -360,6 +448,23 @@ export function validateFlowExportResult(value, expected, maxOutputBytes = FLOW_
   return value;
 }
 
+export function validateFlowExportBatchResult(value, requests, expected) {
+  if (!Array.isArray(value) || !Array.isArray(requests) || value.length !== requests.length
+      || value.length < 1 || value.length > 4)
+    fail("INVALID_WASM_RESPONSE", "inconsistent export batch response");
+  let total = 0;
+  for (let i = 0; i < value.length; i++) {
+    const request = requests[i], output = value[i];
+    if (!request || output?.format !== request.format)
+      fail("INVALID_WASM_RESPONSE", "export batch format order mismatched the request");
+    validateFlowExportResult(output, expected, request.options.maxOutputBytes);
+    total += output.bytes.byteLength;
+    if (total > FLOW_EXPORT_BATCH_LIMIT)
+      fail("BUDGET_EXCEEDED", "combined export output budget exceeded");
+  }
+  return value;
+}
+
 export function withFlowExports(session, renderers, font = "sans") {
   if (
     !["sans", "serif"].includes(font) ||
@@ -373,41 +478,55 @@ export function withFlowExports(session, renderers, font = "sans") {
     Object.getPrototypeOf(session),
     Object.getOwnPropertyDescriptors(session),
   );
-  Object.defineProperty(api, "exportDocument", {
-    enumerable: true,
-    async value(format, options, expectedToken) {
-      const [kind, normalized, expected] = normalizeFlowExport(format, options, expectedToken);
+  const convertError = (error) => {
+    if (error instanceof FlowError) return error;
+    if (error instanceof Error && error.code === "UNSUPPORTED_WASM_PACKAGE")
+      return new FlowError(error.code, error.message, { cause: error });
+    if (typeof WebAssembly !== "undefined" && error instanceof WebAssembly.RuntimeError)
+      return new FlowError("WASM_ERROR", "document export trapped; discard this session", { cause: error });
+    return new FlowError(
+      "EXPORT_FAILED",
+      error instanceof Error ? error.message : "document export failed",
+      { cause: error },
+    );
+  };
+  const run = async (requests, expected) => {
+    fence(session, expected);
+    if (busy) fail("EXPORT_BUSY", "one physical document export is already in progress");
+    const jobs = requests.map(({ format, options }) => {
+      const render = renderers[format];
+      if (typeof render !== "function")
+        fail("UNSUPPORTED_WASM_PACKAGE", `this session does not expose ${format} document export`);
+      return { format, options, render };
+    });
+    busy = true;
+    try {
+      const source = sourceText(session.source);
+      const sourceLengthBytes = new TextEncoder().encode(source).length;
+      const pdf = jobs.find((job) => job.format === "pdf");
+      const baseAssets = collectImages(session, expected);
+      const pdfAssets = pdf ? mergeExplicitImages(baseAssets, pdf.options.pdfImages) : baseAssets;
       fence(session, expected);
-      if (busy) fail("EXPORT_BUSY", "one physical document export is already in progress");
-      const render = renderers[kind];
-      if (typeof render !== "function") {
-        fail("UNSUPPORTED_WASM_PACKAGE", `this session does not expose ${kind} document export`);
-      }
-      busy = true;
-      try {
-        const source = sourceText(session.source);
-        const sourceLengthBytes = new TextEncoder().encode(source).length;
-        const assets = collectImages(session, expected, normalized.pdfImages);
-        fence(session, expected);
-        const { maxOutputBytes, ...settings } = normalized;
-        // Own the complete input before the renderer's initialization await. Edits
-        // during that await cannot alter captured source, options or asset payloads.
+      const results = [];
+      for (const { format, options, render } of jobs) {
+        const { maxOutputBytes, ...settings } = options;
+        const assets = format === "pdf" ? pdfAssets : baseAssets;
         const output = await render(source, {
           ...settings,
           font,
-          ...(kind === "svg" ? {} : { allowRawHtml: false }),
+          ...(format === "svg" ? {} : { allowRawHtml: false }),
           pdfImages: assets.pdfImages,
         });
         fence(session, expected);
-        if (!output || output.format !== kind || output.mimeType !== MIME[kind])
+        if (!output || output.format !== format || output.mimeType !== MIME[format])
           fail("INVALID_WASM_RESPONSE", "document renderer returned the wrong format");
         const bytes = byteView(output.bytes, maxOutputBytes);
         checkDiagnostics(output.diagnostics, sourceLengthBytes);
-        const result = {
+        results.push(Object.freeze({
           schemaVersion: 1,
           ...expected,
-          format: kind,
-          mimeType: MIME[kind],
+          format,
+          mimeType: MIME[format],
           font,
           sourceLengthBytes,
           assetCount: assets.pdfImages.length,
@@ -425,28 +544,30 @@ export function withFlowExports(session, renderers, font = "sans") {
               }),
             ),
           ),
-        };
-        return Object.freeze(validateFlowExportResult(result, expected, maxOutputBytes));
-      } catch (error) {
-        if (error instanceof FlowError) throw error;
-        // The public publication wrapper detects a legacy generated package.
-        // Preserve that actionable refusal rather than disguising asset loss.
-        if (error instanceof Error && error.code === "UNSUPPORTED_WASM_PACKAGE") {
-          throw new FlowError(error.code, error.message, { cause: error });
-        }
-        if (typeof WebAssembly !== "undefined" && error instanceof WebAssembly.RuntimeError) {
-          throw new FlowError("WASM_ERROR", "document export trapped; discard this session", {
-            cause: error,
-          });
-        }
-        throw new FlowError(
-          "EXPORT_FAILED",
-          error instanceof Error ? error.message : "document export failed",
-          { cause: error },
-        );
-      } finally {
-        busy = false;
+        }));
       }
+      validateFlowExportBatchResult(results, requests, expected);
+      return Object.freeze(results);
+    } catch (error) {
+      throw convertError(error);
+    } finally {
+      busy = false;
+    }
+  };
+  Object.defineProperties(api, {
+    exportDocument: {
+      enumerable: true,
+      async value(format, options, expectedToken) {
+        const [kind, normalized, expected] = normalizeFlowExport(format, options, expectedToken);
+        return (await run([Object.freeze({ format: kind, options: normalized })], expected))[0];
+      },
+    },
+    exportDocuments: {
+      enumerable: true,
+      async value(requests, expectedToken) {
+        const [normalized, expected] = normalizeFlowExportBatch(requests, expectedToken);
+        return run(normalized, expected);
+      },
     },
   });
   return Object.freeze(api);

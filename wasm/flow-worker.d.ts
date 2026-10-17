@@ -6,6 +6,7 @@ import type {
   FlowEditOptions,
   FlowExportFormat,
   FlowExportOptionsByFormat,
+  FlowExportRequest,
   FlowExportResult,
   FlowGlyphOutlines,
   FlowHit,
@@ -33,6 +34,7 @@ export type {
   FlowExportFormat,
   FlowExportOptions,
   FlowExportOptionsByFormat,
+  FlowExportRequest,
   FlowExportResult,
   FlowGlyphOutlines,
   FlowHit,
@@ -101,6 +103,8 @@ export interface WorkerFlowSession {
   readonly supportsAssetBatches: boolean;
   /** True only when both worker and native package expose atomic source edits. */
   readonly supportsEditBatches: boolean;
+  /** True only when the worker can execute one multi-format publication RPC. */
+  readonly supportsExportBatches: boolean;
   /** False for legacy workers/native packages; enabling has no plain-text fallback. */
   readonly supportsCodeHighlighting: boolean;
   /** Last acknowledged mode, preserved across edits, reflows and asset completion. */
@@ -215,6 +219,13 @@ export interface WorkerFlowSession {
     token: FlowTokenInput,
     control?: FlowWorkerControl,
   ): Promise<FlowExportResult>;
+  /** One queued worker operation and one deadline for all requested formats.
+   * No result array is published unless the complete batch succeeds. */
+  exportDocuments(
+    requests: readonly FlowExportRequest[],
+    token: FlowTokenInput,
+    control?: FlowWorkerControl,
+  ): Promise<readonly FlowExportResult[]>;
   /** Immediate, idempotent termination. Rejects all outstanding operations. */
   dispose(): void;
 }

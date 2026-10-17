@@ -21,6 +21,17 @@ export interface DocumentOutput<K extends DocumentFormat = DocumentFormat> {
   blob(): Blob;
   filename(baseName?: string): string;
 }
+/** One publication target with format-specific options. Formats must be unique. */
+export type DocumentPublicationTarget<K extends DocumentFormat = DocumentFormat> = {
+  [F in K]: { readonly format: F; readonly options?: DocumentOptions[F] };
+}[K];
+/** All requested artifacts from one source snapshot, in target order. */
+export interface DocumentPublication<K extends DocumentFormat = DocumentFormat> {
+  readonly format: "document-publication";
+  readonly sourceLength: number;
+  readonly totalBytes: number;
+  readonly outputs: readonly { [F in K]: DocumentOutput<F> }[K][];
+}
 /** Native semantic report and HTML from one captured pair of source revisions.
  * Two existing native passes run in the worker; no new JavaScript differ is used.
  */
@@ -48,7 +59,7 @@ export interface DocumentWorkerOptions {
   maxPendingOperations?: number;
   /** Charged ingress, default 16 MiB, maximum 64 MiB. Not a WASM heap limit. */
   maxPendingBytes?: number;
-  /** Checked before transfer; default/maximum 64 MiB. Comparisons charge JSON plus HTML together. */
+  /** Checked before transfer; default/maximum 64 MiB. Comparisons and publications charge all their outputs together. */
   maxOutputBytes?: number;
 }
 export interface DocumentWorkerRenderer {
@@ -59,6 +70,13 @@ export interface DocumentWorkerRenderer {
    * Uses the same queue, cancellation and deadline as document renders.
    */
   compare(oldMarkdown: string, newMarkdown: string, options?: FmdDiffOptions, controls?: DocumentControl): Promise<RevisionComparison>;
+  /** Render 1..5 distinct formats from one synchronously captured source/options/assets.
+   * One queue slot and deadline; all outputs succeed or the promise rejects without
+   * partial artifacts. The existing renderers run sequentially, without shared ASTs.
+   * maxOutputBytes and diagnostic limits apply to the complete publication.
+   * Exact asset views are copied once; asset keys remain scoped to their target.
+   */
+  publish<K extends DocumentFormat>(markdown: string, targets: readonly DocumentPublicationTarget<K>[], controls?: DocumentControl): Promise<DocumentPublication<K>>;
   render<K extends DocumentFormat>(format: K, markdown: string, options?: DocumentOptions[K], controls?: DocumentControl): Promise<DocumentOutput<K>>;
   renderHtml(markdown: string, options?: DocumentOptions["html"], controls?: DocumentControl): Promise<DocumentOutput<"html">>;
   renderPdf(markdown: string, options?: DocumentOptions["pdf"], controls?: DocumentControl): Promise<DocumentOutput<"pdf">>;

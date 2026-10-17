@@ -1,4 +1,4 @@
-import { validateFlowExportResult } from "./flow_export.mjs";
+import { validateFlowExportBatchResult, validateFlowExportResult } from "./flow_export.mjs";
 import { sourceText, validateViewportPage } from "./flow_session.mjs";
 import {
   acknowledgedState,
@@ -74,6 +74,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     let supportsViewport = false;
     let supportsAssetBatches = false;
     let supportsEditBatches = false;
+    let supportsExportBatches = false;
     let supportsCodeHighlighting = false;
     let codeHighlighting = false;
     // One monotonic startup budget covers creation AND optional syntax setup.
@@ -135,6 +136,12 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
           throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid edit-batch capability");
         }
         if (
+          result?.supportsExportBatches !== undefined &&
+          typeof result.supportsExportBatches !== "boolean"
+        ) {
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid export-batch capability");
+        }
+        if (
           (result?.supportsCodeHighlighting !== undefined &&
             typeof result.supportsCodeHighlighting !== "boolean") ||
           (result?.supportsCodeHighlighting === true
@@ -146,6 +153,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         supportsCodeHighlighting = result?.supportsCodeHighlighting === true;
         codeHighlighting = supportsCodeHighlighting && result.codeHighlighting;
         supportsEditBatches = result?.supportsEditBatches === true;
+        supportsExportBatches = result?.supportsExportBatches === true;
         supportsViewportDeltas = result?.supportsViewportDeltas === true;
         supportsSnapshotDeltas = result?.supportsSnapshotDeltas === true;
         supportsAssetBatches = result?.supportsAssetBatches === true;
@@ -235,6 +243,11 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         codeHighlighting = result.codeHighlighting;
       }
       if (method === "exportDocument") validateFlowExportResult(result, next.token);
+      if (method === "exportDocuments") {
+        if (!Array.isArray(result) || result.length < 1 || result.length > 4)
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid export-batch acknowledgment");
+        for (const output of result) validateFlowExportResult(output, next.token);
+      }
       if (method === "getSource") sourceText(result);
       state = next;
     });
@@ -261,6 +274,12 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
           throw new FlowWorkerError(
             "UNSUPPORTED_WASM_PACKAGE",
             "this worker does not expose atomic source edit batches",
+          );
+        }
+        if (method === "exportDocuments" && !supportsExportBatches) {
+          throw new FlowWorkerError(
+            "UNSUPPORTED_WASM_PACKAGE",
+            "this worker does not expose atomic multi-format document export",
           );
         }
         if (method === "setCodeHighlighting" && !supportsCodeHighlighting) {
@@ -315,11 +334,15 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
               );
             }
           });
-        if (method !== "exportDocument") return pending;
+        if (!["exportDocument", "exportDocuments"].includes(method)) return pending;
         return pending.then((result) => {
           try {
-            validateFlowExportResult(result, normalized[2], normalized[1].maxOutputBytes);
-            if (result.format !== normalized[0]) throw new Error("unexpected export format");
+            if (method === "exportDocument") {
+              validateFlowExportResult(result, normalized[2], normalized[1].maxOutputBytes);
+              if (result.format !== normalized[0]) throw new Error("unexpected export format");
+            } else {
+              validateFlowExportBatchResult(result, normalized[0], normalized[1]);
+            }
             return result;
           } catch {
             rpc.dispose();
@@ -348,6 +371,10 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       get supportsEditBatches() {
         alive();
         return supportsEditBatches;
+      },
+      get supportsExportBatches() {
+        alive();
+        return supportsExportBatches;
       },
       get supportsCodeHighlighting() {
         alive();
@@ -386,6 +413,9 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       },
       exportDocument(format, options, token, control) {
         return call("exportDocument", [format, options, token], control);
+      },
+      exportDocuments(requests, token, control) {
+        return call("exportDocuments", [requests, token], control);
       },
       edit(start, end, replacement, options, control) {
         return call("edit", [start, end, replacement, options], control);
@@ -521,6 +551,7 @@ export function installFlowWorker(endpoint, createSession) {
           supportsViewport: session.supportsViewport === true,
           supportsAssetBatches: session.supportsAssetBatches === true,
           supportsEditBatches: session.supportsEditBatches === true && typeof session.editMany === "function",
+          supportsExportBatches: typeof session.exportDocuments === "function",
           supportsSnapshotDeltas: true,
           supportsViewportDeltas: session.supportsViewport === true,
         };
@@ -539,6 +570,12 @@ export function installFlowWorker(endpoint, createSession) {
           throw new FlowWorkerError(
             "UNSUPPORTED_WASM_PACKAGE",
             "this native session does not support atomic source edit batches",
+          );
+        }
+        if (method === "exportDocuments" && typeof session.exportDocuments !== "function") {
+          throw new FlowWorkerError(
+            "UNSUPPORTED_WASM_PACKAGE",
+            "this native session does not support atomic multi-format document export",
           );
         }
         if (method === "setCodeHighlighting" && (
@@ -590,6 +627,10 @@ export function installFlowWorker(endpoint, createSession) {
         // Copy a nested result buffer too: never detach alternative backend storage.
         value = { ...value, bytes: new Uint8Array(value.bytes) };
         transfer = [value.bytes.buffer];
+      } else if (method === "exportDocuments") {
+        validateFlowExportBatchResult(value, normalized[0], normalized[1]);
+        value = value.map((output) => ({ ...output, bytes: new Uint8Array(output.bytes) }));
+        transfer = value.map((output) => output.bytes.buffer);
       } else if (value instanceof Uint8Array) {
         // The facade returns owned bytes. Copy again at this ownership boundary
         // so an alternative backend cannot accidentally detach its own storage.

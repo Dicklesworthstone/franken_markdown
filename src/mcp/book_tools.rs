@@ -5,13 +5,14 @@
 
 use std::collections::BTreeMap;
 
-use crate::book::{BookInput, BookRenderer, render_book_pdf, render_book_site};
+use crate::book::{BookInput, BookRenderer, render_book_site};
+use crate::book::validation::LinkReport;
 use crate::mcp::ERROR_INPUT_ERROR;
-use crate::{HtmlOptions, PdfOptions};
+use crate::{HtmlOptions, PdfASettings, PdfOptions};
 
 use super::{
     ERROR_INPUT_TOO_LARGE, ERROR_RENDER_FAILED, Field, HTML_FIELDS, JsonValue as Json,
-    PDF_FIELDS, ToolError, base64_encode, html_options, invalid_options, pdf_options,
+    PDF_FIELDS, ToolError, base64_encode, boolean, html_options, invalid_options, pdf_options,
     resources, string, wrap_text_content,
 };
 
@@ -26,6 +27,7 @@ pub(super) const SOURCE_FIELDS: &[Field] = &[
     ("includeSources", "array", "Additional path/markdown sources available only to explicit includes"),
 ];
 const PUBLICATION_FIELDS: &[Field] = &[
+    ("strictLinks", "boolean", "Reject broken chapter/anchor/note navigation before rendering; does not check external URLs, assets or output conformance"),
     ("to", "string", "Book output: pdf (default), epub, site (ZIP), or all"),
     ("maxOutputBytes", "integer", "Aggregate artifact bytes before base64, 1..33554432; default 16777216"),
 ];
@@ -43,9 +45,8 @@ fn number(value: usize) -> Json {
 pub(super) fn fields() -> Vec<Field> {
     let mut fields = BTreeMap::new();
     for &field in SOURCE_FIELDS.iter().chain(PUBLICATION_FIELDS).chain(HTML_FIELDS).chain(PDF_FIELDS) {
-        // Book PDF navigation uses the dedicated book renderer. Do not route
-        // PDF/A through a merged-document shortcut that loses those bindings.
-        if !matches!(field.0, "markdown" | "interactiveHtml" | "pdfA" | "pdfAStrict") {
+        // Both PDF modes now use the chapter-aware book pipeline.
+        if !matches!(field.0, "markdown" | "interactiveHtml") {
             fields.entry(field.0).or_insert(field);
         }
     }
@@ -110,6 +111,7 @@ struct Publication {
     output_limit: usize,
     html: HtmlOptions,
     pdf: PdfOptions,
+    pdf_a: PdfASettings,
 }
 impl Publication {
     fn prepare(args: &Json) -> Result<Self, ToolError> {
@@ -141,10 +143,10 @@ impl Publication {
         let html = if formats.iter().any(|format| *format != Format::Pdf) {
             html_options(args)?
         } else { HtmlOptions::default() };
-        let pdf = if formats.contains(&Format::Pdf) {
-            pdf_options(args)?.0
-        } else { PdfOptions::default() };
-        Ok(Self { formats, output_limit, html, pdf })
+        let (pdf, pdf_a) = if formats.contains(&Format::Pdf) {
+            pdf_options(args)?
+        } else { (PdfOptions::default(), PdfASettings::OFF) };
+        Ok(Self { formats, output_limit, html, pdf, pdf_a })
     }
 }
 
@@ -203,9 +205,46 @@ fn renderer(args: &Json, limit: u64) -> Result<BookRenderer, ToolError> {
     BookRenderer::from_sources(&chapters, &includes).map_err(input_error)
 }
 
+fn link_analysis_error(error: crate::RenderError) -> ToolError {
+    (ERROR_RENDER_FAILED, format!("Book link analysis did not complete: {error}"),
+        "book_link_analysis_failed")
+}
+
+fn link_report(renderer: &BookRenderer) -> Result<LinkReport, ToolError> {
+    renderer.validate_links().map_err(link_analysis_error)
+}
+
+/// Source-only navigation verification. Findings are successful report data;
+/// an admission/analysis failure is an error, never an empty clean report.
+pub(super) fn verify(args: &Json, limit: u64) -> Result<Json, ToolError> {
+    let renderer = renderer(args, limit)?;
+    let report = link_report(&renderer)?;
+    let json = report.to_json().map_err(link_analysis_error)?;
+    Ok(wrap_text_content(&json))
+}
+
+fn enforce_links(renderer: &BookRenderer) -> Result<(), ToolError> {
+    let report = link_report(renderer)?;
+    if let Some((chapter, issue)) = report.chapters.iter()
+        .find_map(|chapter| chapter.findings.first().map(|issue| (chapter, issue)))
+    {
+        // Keep a bounded actionable preview in the error; the complete,
+        // machine-readable findings are available through fmd.verify_book.
+        let path: String = chapter.path.chars().take(96).collect();
+        let destination: String = issue.destination.chars().take(128).collect();
+        return Err((ERROR_RENDER_FAILED, format!(
+            "Book navigation has {} finding(s). First: {} in {path:?}, target {destination:?}. Run fmd.verify_book with the same chapters/includeSources for the complete report.",
+            report.finding_count(), issue.code), "book_links_failed"));
+    }
+    Ok(())
+}
+
 pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
     let mut publication = Publication::prepare(args)?;
     let renderer = renderer(args, limit)?;
+    if boolean(args, "strictLinks") {
+        enforce_links(&renderer)?;
+    }
     let assets = resources::parse(args)?;
     // Transfer ownership between format options rather than copying the image
     // and font payloads for a multi-format request.
@@ -221,7 +260,7 @@ pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
             publication.html.font_assets = std::mem::take(&mut publication.pdf.font_assets);
         }
         let bytes = match format {
-            Format::Pdf => render_book_pdf(renderer.book(), &publication.pdf),
+            Format::Pdf => renderer.render_pdf_with_options(&publication.pdf, publication.pdf_a),
             Format::Epub => crate::epub::render_book_epub(renderer.book(), &publication.html),
             Format::Site => render_book_site(renderer.book(), &publication.html),
         }.map_err(|error| (ERROR_RENDER_FAILED, format!("Book {} render failed: {error}", format.name()), "render_failed"))?;
@@ -231,13 +270,23 @@ pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
                 "output_too_large"));
         }
         bytes_written += bytes.len();
-        outputs.push(object([
+        let mut output = object([
             ("format", text(format.name())),
             ("mimeType", text(format.mime())),
             ("encoding", text("base64")),
             ("bytes", number(bytes.len())),
             ("data", Json::String(base64_encode(&bytes))),
-        ]));
+        ]);
+        // This describes emission settings, not an independent validation
+        // result. Omitted/OFF keeps the existing receipt byte-for-byte.
+        match &mut output {
+            Json::Object(fields) if format == Format::Pdf && publication.pdf_a.mode.is_a2b() => {
+                fields.insert("pdfA".into(), text(publication.pdf_a.mode.as_str()));
+                fields.insert("pdfAStrict".into(), Json::Bool(publication.pdf_a.strict));
+            }
+            _ => {}
+        }
+        outputs.push(output);
     }
     let result = object([
         ("schema", text("fmd-mcp-book-publication-v1")),

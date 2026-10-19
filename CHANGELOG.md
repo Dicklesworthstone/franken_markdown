@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `fmd-math` sets mathematics in the faces TeX uses. `fmd-font` bundles the AMS
+  Type 1 Computer Modern math fonts, converted to TrueType and renamed (cmmi and
+  cmsy at 10, 7 and 5 pt, cmex10, cmr7 and cmr5; SIL OFL; see
+  `fmd-font/fonts/cm-math/`).
+  - Math letters and lowercase Greek come from cmmi instead of the text italic.
+    θ no longer draws as ϑ, and α no longer reads as a Latin a.
+  - Relations, operators, arrows and `{ } |` come from cmsy instead of the Noto
+    fallback.
+  - Big operators use cmex's own text and display glyphs instead of a scaled
+    fallback glyph.
+  - `\big`-family and `\left…\right` delimiters use cmex's sizes and
+    extensible pieces instead of drawn paths.
+  - Scripts use the optically designed 7- and 5-point cuts.
+  - `\mathcal` is cmsy's calligraphic alphabet.
+  - `\neq`, `\notin` and `\not\equiv` overprint cmsy's negation slash, as TeX
+    does.
+  - Noto Sans Math remains the last-resort fallback.
+  - Layout goldens moved with the faces.
+- `fmd-math` gains an `svg_dump` example for visual checks of layout changes.
+
 ## [0.6.0] - 2026-10-14
 
 A feature release (139 commits since 0.5.0). It changes the public Rust

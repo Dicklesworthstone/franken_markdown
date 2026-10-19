@@ -13,6 +13,7 @@ The full TTFs live here; each rendered PDF embeds only the glyphs it actually us
 | Sans (default) | IBM Plex Sans   | `ibm-plex-sans/IBMPlexSans-{Regular,Bold,Italic,BoldItalic}.ttf` |
 | Serif (LaTeX)  | Computer Modern | `computer-modern/cmun{rm,bx,ti,bi}.ttf` (Roman / Bold / Italic / BoldItalic) |
 | Mono (code)    | CM Typewriter   | `computer-modern/cmuntt.ttf` |
+| Math (fmd-math) | CM math italic / symbols / extension, roman script sizes | `cm-math/FmdCmMath{Italic,Symbols}{10,7,5}.ttf`, `cm-math/FmdCmMathExtension10.ttf`, `cm-math/FmdCmRoman{7,5}.ttf` |
 | Symbol fallback | Noto Sans Math (curated subset) | `noto-sans-math/NotoSansMathSymbols.ttf` |
 | Emoji fallback (native, `emoji-face`) | Noto Emoji, monochrome (curated subset) | `noto-emoji/NotoEmojiCurated.ttf` |
 | Test-only VF | FmdTestVF (synthetic `wght` axis) | `test-variable/FmdTestVF.ttf` |
@@ -44,6 +45,16 @@ are the single source of truth for the fallback repertoire.
 - **Computer Modern Unicode** — the CMU project, packaged as web fonts
   (<https://checkmyworking.com/cm-web-fonts/>), SIL OFL 1.1. License:
   `computer-modern/OFL.txt`.
+- **CM math** — the American Mathematical Society's Type 1 release of Knuth's
+  Computer Modern math fonts (cmmi10/7/5, cmsy10/7/5, cmex10, cmr7/5; © 1997, 2009
+  AMS), SIL OFL 1.1 with Reserved Font Names. License: `cm-math/OFL.txt`. These
+  are the faces TeX sets mathematics in, converted offline to TrueType `glyf`
+  outlines by `scripts/font-oracles/convert-cm-math.py` (fonttools 4.65, cu2qu at
+  most 1/1000 em) and renamed "FMD CM Math …" to honour the Reserved Font
+  Names. `cm-math/PROVENANCE.json` records each input and output SHA-256. Every
+  glyph is addressable at U+F000 + its TFM code position; the characters TeX
+  takes from a face are also mapped at their Unicode codepoints (fmd-math's
+  `faces` module documents the roles). Decided in franken_manim ADR-0028.
 - **Noto Sans Math** — <https://github.com/google/fonts/tree/main/ofl/notosansmath>
   (© The Noto Project Authors), SIL OFL 1.1. License: `noto-sans-math/OFL.txt`.
   Committed as the curated `NotoSansMathSymbols.ttf` subset described above, not

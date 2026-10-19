@@ -18,6 +18,7 @@
 
 use crate::mbox::FaceId;
 use crate::node::MathFont;
+use crate::style::Style;
 
 /// The engine's face roster, in [`FaceId`] order. The set mirrors the
 /// bundled sovereign default (§11.1): CM regular/italic/bold/bold-italic,
@@ -38,19 +39,59 @@ pub const FACE_BOLD_ITALIC: FaceId = FaceId(3);
 pub const FACE_TYPEWRITER: FaceId = FaceId(4);
 /// [`FaceId`] of the sans face (IBM Plex Sans).
 pub const FACE_SANS: FaceId = FaceId(5);
-/// [`FaceId`] of the math-symbol coverage face (Noto Sans Math subset).
+/// [`FaceId`] of the math-symbol coverage face (Noto Sans Math subset), the
+/// last-resort fallback once the CM math faces miss.
 pub const FACE_SYMBOLS: FaceId = FaceId(6);
+/// [`FaceId`] of CM math italic at 10 pt (TeX's cmmi10, family 1): math
+/// letters, lowercase Greek, and the punctuation and relations plain TeX
+/// takes from family 1 (`. , / < >`, `\partial`, `\ell`, `\star`, …).
+pub const FACE_MATH_ITALIC: FaceId = FaceId(7);
+/// [`FaceId`] of CM math symbols at 10 pt (cmsy10, family 2): relations,
+/// binary operators, arrows, `{ } | ‖`, primes and calligraphic capitals.
+pub const FACE_MATH_SYMBOLS: FaceId = FaceId(8);
+/// [`FaceId`] of CM math extension (cmex10, family 3): big operators in
+/// their text and display sizes, delimiter sizes and extensible pieces.
+pub const FACE_MATH_EXTENSION: FaceId = FaceId(9);
+/// [`FaceId`] of cmmi7, the math italic TeX sets first-order scripts in.
+pub const FACE_MATH_ITALIC_7: FaceId = FaceId(10);
+/// [`FaceId`] of cmmi5 (second-order scripts).
+pub const FACE_MATH_ITALIC_5: FaceId = FaceId(11);
+/// [`FaceId`] of cmsy7 (first-order scripts).
+pub const FACE_MATH_SYMBOLS_7: FaceId = FaceId(12);
+/// [`FaceId`] of cmsy5 (second-order scripts).
+pub const FACE_MATH_SYMBOLS_5: FaceId = FaceId(13);
+/// [`FaceId`] of cmr7, the upright face of first-order scripts.
+pub const FACE_ROMAN_7: FaceId = FaceId(14);
+/// [`FaceId`] of cmr5 (second-order scripts).
+pub const FACE_ROMAN_5: FaceId = FaceId(15);
+
+/// The private-use page the CM math faces map their TFM code positions
+/// into: code `c` of cmmi/cmsy/cmex is `U+F000 + c` in that face (ADR-0028).
+pub const TEX_CODE_PAGE: u32 = 0xF000;
+
+/// The character addressing TFM code position `code` of a CM math face.
+#[must_use]
+pub const fn tex_code(code: u8) -> char {
+    match char::from_u32(TEX_CODE_PAGE + code as u32) {
+        Some(ch) => ch,
+        None => '\u{F000}',
+    }
+}
 
 impl FaceSet {
     /// Build a face set from parsed fonts, in [`FaceId`] order: regular,
-    /// italic, bold, bold-italic, typewriter, sans, symbols.
+    /// italic, bold, bold-italic, typewriter, sans, symbols, then the CM
+    /// math faces (math italic, symbols, extension, and the 7/5-point
+    /// italic, symbols and roman cuts). A roster without the CM math faces
+    /// still lays out: resolution falls back across whatever is present.
     #[must_use]
     pub fn from_fonts(fonts: Vec<fmd_font::Font>) -> Self {
         Self { fonts }
     }
 
-    /// The bundled sovereign default: the four CM faces, CM Typewriter,
-    /// IBM Plex Sans, and the Noto math-symbol subset.
+    /// The bundled sovereign default: the four CM text faces, CM
+    /// Typewriter, IBM Plex Sans, the Noto math-symbol subset, and the CM
+    /// math faces TeX sets mathematics in (ADR-0028).
     ///
     /// # Errors
     ///
@@ -66,8 +107,46 @@ impl FaceSet {
             fmd_font::Font::parse(fmd_font::bundled::CM_TYPEWRITER.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::PLEX_REGULAR.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::NOTO_SANS_MATH_SYMBOLS.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_ITALIC_10.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_SYMBOLS_10.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_EXTENSION_10.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_ITALIC_7.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_ITALIC_5.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_SYMBOLS_7.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_SYMBOLS_5.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_7.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_5.to_vec())?,
         ];
         Ok(Self::from_fonts(fonts))
+    }
+
+    /// The optically sized cut TeX sets a script in: cmmi7, cmsy7 and cmr7
+    /// in script style, the 5-point cuts in scriptscript, for a glyph
+    /// resolved from the 10-point math italic, math symbols or roman face.
+    /// `None` outside the script styles, for faces without sized cuts (bold,
+    /// typewriter, cmex — plain TeX scales cmex10 at every size), or when
+    /// the cut lacks the character.
+    #[must_use]
+    pub fn optical(&self, face: FaceId, ch: char, style: Style) -> Option<(FaceId, u16)> {
+        let cut = match (style, face) {
+            (Style::Script, FACE_MATH_ITALIC) => FACE_MATH_ITALIC_7,
+            (Style::Script, FACE_MATH_SYMBOLS) => FACE_MATH_SYMBOLS_7,
+            (Style::Script, FACE_REGULAR) => FACE_ROMAN_7,
+            (Style::ScriptScript, FACE_MATH_ITALIC) => FACE_MATH_ITALIC_5,
+            (Style::ScriptScript, FACE_MATH_SYMBOLS) => FACE_MATH_SYMBOLS_5,
+            (Style::ScriptScript, FACE_REGULAR) => FACE_ROMAN_5,
+            _ => return None,
+        };
+        let gid = self.font(cut)?.glyph_index(ch);
+        (gid != 0).then_some((cut, gid))
+    }
+
+    /// The glyph at TFM code position `code` of `face` (a CM math face), if
+    /// the roster carries that face.
+    #[must_use]
+    pub fn tex_glyph(&self, face: FaceId, code: u8) -> Option<u16> {
+        let gid = self.font(face)?.glyph_index(tex_code(code));
+        (gid != 0).then_some(gid)
     }
 
     /// The font behind a face id, if present.
@@ -177,10 +256,14 @@ pub fn kern_em(font: &fmd_font::Font, left: u16, right: u16) -> f64 {
     f64::from(font.kerning_between_glyphs(left, right)) / upm
 }
 
-/// The TeX math-italic convention for a direct character with no alphabet
-/// override: Latin letters and lowercase Greek render from the italic
-/// face; everything else (digits, uppercase Greek, operators, symbols)
-/// from the regular face — with the roster as fallback either way.
+/// TeX's family assignment for a direct character with no alphabet
+/// override (plain TeX's `\mathcode`s): Latin letters and lowercase Greek
+/// from the math italic (cmmi, family 1); relations, operators, arrows and
+/// `{ } |` from the math symbols (cmsy, family 2), which map exactly the
+/// characters TeX takes from them; `. , / < >` and `\partial`-class
+/// symbols from cmmi; digits, `+ = ( ) [ ]` and uppercase Greek from the
+/// roman face (family 0). The CM text faces and the Noto subset follow as
+/// fallbacks, so a roster without the CM math faces resolves as before.
 #[must_use]
 pub fn default_math_chain(ch: char) -> &'static [FaceId] {
     let italicized = ch.is_ascii_alphabetic()
@@ -193,9 +276,15 @@ pub fn default_math_chain(ch: char) -> &'static [FaceId] {
         || ch == 'φ'
         || ch == 'ϕ';
     if italicized {
-        &[FACE_ITALIC, FACE_REGULAR, FACE_SYMBOLS]
+        &[FACE_MATH_ITALIC, FACE_ITALIC, FACE_REGULAR, FACE_SYMBOLS]
     } else {
-        &[FACE_REGULAR, FACE_SYMBOLS, FACE_ITALIC]
+        &[
+            FACE_MATH_SYMBOLS,
+            FACE_MATH_ITALIC,
+            FACE_REGULAR,
+            FACE_SYMBOLS,
+            FACE_ITALIC,
+        ]
     }
 }
 
@@ -220,9 +309,11 @@ pub fn alphabet_map(font: MathFont, ch: char) -> (char, &'static [FaceId]) {
             blackboard_char(ch),
             &[FACE_SYMBOLS, FACE_REGULAR, FACE_ITALIC],
         ),
+        // `\mathcal` is cmsy's calligraphic capitals in TeX; the CM math
+        // symbols face maps them at the math-script codepoints.
         MathFont::Calligraphic => (
             calligraphic_char(ch),
-            &[FACE_SYMBOLS, FACE_ITALIC, FACE_REGULAR],
+            &[FACE_MATH_SYMBOLS, FACE_SYMBOLS, FACE_ITALIC, FACE_REGULAR],
         ),
     }
 }
@@ -305,17 +396,78 @@ mod tests {
             Ok(f) => f,
             Err(e) => panic!("bundled faces: {e}"),
         };
-        assert_eq!(faces.len(), 7);
-        // Letters italicize; digits stay upright.
+        assert_eq!(faces.len(), 16);
+        // Letters come from the math italic; digits stay upright.
         let Some((face, gid)) = faces.resolve('x', default_math_chain('x')) else {
             panic!("x must resolve");
         };
-        assert_eq!(face, FACE_ITALIC);
+        assert_eq!(face, FACE_MATH_ITALIC);
         assert_ne!(gid, 0);
         let Some((face, _)) = faces.resolve('7', default_math_chain('7')) else {
             panic!("7 must resolve");
         };
         assert_eq!(face, FACE_REGULAR);
+    }
+
+    /// TeX's family for each character class: the glyph source of `≤ ≥ −`
+    /// is cmsy, of Greek and `∂` cmmi, of `( + =` and uppercase Greek the
+    /// roman face — never the Noto fallback (ADR-0028's acceptance).
+    #[test]
+    fn math_characters_resolve_to_the_faces_tex_uses() {
+        let faces = FaceSet::bundled().expect("bundled faces");
+        let source = |ch: char| {
+            faces
+                .resolve(ch, default_math_chain(ch))
+                .map(|(face, _)| face)
+                .unwrap_or_else(|| panic!("{ch:?} must resolve"))
+        };
+        for ch in [
+            '≤', '≥', '−', '∞', '→', '∈', '⋅', '×', '{', '|', '∇', '≡', '′',
+        ] {
+            assert_eq!(source(ch), FACE_MATH_SYMBOLS, "{ch:?}");
+        }
+        for ch in [
+            'α', 'θ', 'ϑ', 'ϕ', 'φ', 'ϵ', 'ε', '∂', 'ℓ', 'x', 'f', '<', ',', '/',
+        ] {
+            assert_eq!(source(ch), FACE_MATH_ITALIC, "{ch:?}");
+        }
+        for ch in ['(', '+', '=', '2', 'Γ', 'Ω'] {
+            assert_eq!(source(ch), FACE_REGULAR, "{ch:?}");
+        }
+        let (cal, chain) = alphabet_map(MathFont::Calligraphic, 'L');
+        assert_eq!(
+            faces.resolve(cal, chain).map(|(f, _)| f),
+            Some(FACE_MATH_SYMBOLS)
+        );
+    }
+
+    /// Scripts take the 7- and 5-point cuts; display/text and faces without
+    /// sized cuts keep their glyph.
+    #[test]
+    fn scripts_take_the_optical_cuts() {
+        let faces = FaceSet::bundled().expect("bundled faces");
+        assert_eq!(
+            faces
+                .optical(FACE_MATH_ITALIC, 'x', Style::Script)
+                .map(|h| h.0),
+            Some(FACE_MATH_ITALIC_7)
+        );
+        assert_eq!(
+            faces
+                .optical(FACE_MATH_SYMBOLS, '−', Style::ScriptScript)
+                .map(|h| h.0),
+            Some(FACE_MATH_SYMBOLS_5)
+        );
+        assert_eq!(
+            faces.optical(FACE_REGULAR, '2', Style::Script).map(|h| h.0),
+            Some(FACE_ROMAN_7)
+        );
+        assert_eq!(faces.optical(FACE_REGULAR, '2', Style::Text), None);
+        assert_eq!(faces.optical(FACE_BOLD, 'x', Style::Script), None);
+        assert!(
+            faces.tex_glyph(FACE_MATH_EXTENSION, 0x5A).is_some(),
+            "display integral"
+        );
     }
 
     #[test]

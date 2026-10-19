@@ -34,8 +34,9 @@ use std::sync::{PoisonError, RwLock};
 use crate::atom::{AtomClass, classify_list, spacing_in_style};
 use crate::error::MathError;
 use crate::faces::{
-    FACE_BOLD, FACE_ITALIC, FACE_REGULAR, FACE_SYMBOLS, FaceSet, GlyphMetrics,
-    accent_spacing_fallback, alphabet_map, default_math_chain, glyph_metrics, kern_em,
+    FACE_BOLD, FACE_ITALIC, FACE_MATH_EXTENSION, FACE_MATH_ITALIC, FACE_MATH_SYMBOLS, FACE_REGULAR,
+    FACE_SYMBOLS, FaceSet, GlyphMetrics, accent_spacing_fallback, alphabet_map, default_math_chain,
+    glyph_metrics, kern_em,
 };
 use crate::mbox::{BoxKind, FaceId, GlueSpec, Layout, MBox, MNode, Positioned};
 use crate::metrics::MathConstants;
@@ -867,6 +868,11 @@ impl Engine {
 
     /// A single-character atom.
     fn char_atom(&self, ch: char, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        if ctx.alphabet.is_none() && !ctx.text_mode {
+            if let Some(laid) = self.negated_relation(ch, span, ctx)? {
+                return Ok(laid);
+            }
+        }
         let (face, gid, mapped) = match self.resolve_math_char(ch, span, ctx) {
             Ok(hit) => hit,
             Err(err) => {
@@ -903,6 +909,12 @@ impl Engine {
                 return Err(err);
             }
         };
+        // Scripts take the optically designed 7- and 5-point cuts, as TeX
+        // does, at the same scaled size.
+        let (face, gid) = self
+            .faces
+            .optical(face, mapped, ctx.style.style)
+            .unwrap_or((face, gid));
         let metrics = self.metrics_of(face, gid);
         let size = ctx.size();
         Ok(Laid {
@@ -912,12 +924,94 @@ impl Engine {
         })
     }
 
-    /// A big-operator glyph, axis-centered, optionally display-scaled. Where
-    /// cmex10 has the operator, the box is TeX's: the TFM width and italic
-    /// correction of the text or display variant, with the glyph's ink
-    /// centered on cmex's ([`tex_op_frame`]).
+    /// Plain TeX's `\not`: cmsy's zero-width negation slash (code 0x36)
+    /// shipped before the relation it overprints, so the box is the
+    /// relation's. `\neq` is `\not=` and `\not\equiv` likewise sets the
+    /// slash at the relation's origin; `\notin` centres it on the `∈`, as
+    /// LaTeX's `\c@ncel` does. `None` for other characters, or when the
+    /// roster has no CM math symbols face (the precomposed glyph then
+    /// resolves through the fallback faces as before).
+    fn negated_relation(
+        &self,
+        ch: char,
+        span: Span,
+        ctx: LayCtx,
+    ) -> Result<Option<Laid>, MathError> {
+        let (base, centred) = match ch {
+            '≠' => ('=', false),
+            '≢' => ('≡', false),
+            '∉' => ('∈', true),
+            _ => return Ok(None),
+        };
+        let Some(gid) = self.faces.tex_glyph(FACE_MATH_SYMBOLS, 0x36) else {
+            return Ok(None);
+        };
+        let (face, gid) = self
+            .faces
+            .optical(
+                FACE_MATH_SYMBOLS,
+                crate::faces::tex_code(0x36),
+                ctx.style.style,
+            )
+            .unwrap_or((FACE_MATH_SYMBOLS, gid));
+        let relation = self.char_atom(base, span, ctx)?;
+        let size = ctx.size();
+        let slash = self.metrics_of(face, gid);
+        let dx = match (
+            centred,
+            self.faces.font(face).and_then(|f| f.glyph_bbox(gid)),
+        ) {
+            (true, Some(bbox)) => {
+                let upm = self
+                    .faces
+                    .font(face)
+                    .map_or(1000.0, |f| f64::from(f.units_per_em.max(1)));
+                relation.boxx.width / 2.0 - f64::from(bbox[0] + bbox[2]) / 2.0 / upm * size
+            }
+            _ => 0.0,
+        };
+        let mut boxx = relation.boxx;
+        boxx.height = boxx.height.max(slash.height * size);
+        boxx.depth = boxx.depth.max(slash.depth * size);
+        let inner = std::mem::take(&mut boxx.children);
+        boxx.children = vec![Positioned {
+            dx,
+            dy: 0.0,
+            node: MNode::Glyph {
+                face,
+                gid,
+                ch,
+                size,
+                span,
+            },
+        }];
+        boxx.children.extend(inner);
+        Ok(Some(Laid {
+            boxx,
+            italic: relation.italic,
+            char_glyph: None,
+        }))
+    }
+
+    /// A big-operator glyph, axis-centered. Where cmex10 has the operator the
+    /// glyph is cmex's own text or display character, at its designed size,
+    /// and the box is TeX's: the TFM width and italic correction of that
+    /// variant ([`tex_op_frame`]). An operator cmex lacks resolves through
+    /// the fallback faces, display-scaled by `scale`, with its ink centered
+    /// on cmex's frame where one exists.
     fn op_glyph(&self, ch: char, span: Span, ctx: LayCtx, scale: f64) -> Result<Laid, MathError> {
-        let (face, gid, mapped) = self.resolve_math_char(ch, span, ctx)?;
+        let display = ctx.style.style == Style::Display;
+        let cmex = big_op_codes(ch).and_then(|(text, shown)| {
+            self.faces
+                .tex_glyph(FACE_MATH_EXTENSION, if display { shown } else { text })
+        });
+        let (face, gid, mapped, scale) = match cmex {
+            Some(gid) => (FACE_MATH_EXTENSION, gid, ch, 1.0),
+            None => {
+                let (face, gid, mapped) = self.resolve_math_char(ch, span, ctx)?;
+                (face, gid, mapped, scale)
+            }
+        };
         let metrics = self.metrics_of(face, gid);
         let size = ctx.size() * scale;
         let gh = metrics.height * size;
@@ -935,7 +1029,7 @@ impl Engine {
             })
         });
         let em = ctx.size();
-        let (width, italic, dx) = match (tex_op_frame(ch, ctx.style.style == Style::Display), ink) {
+        let (width, italic, dx) = match (tex_op_frame(ch, display), ink) {
             (Some((width, italic, x0, x1)), Some((g0, g1))) => (
                 width * em,
                 italic * em,
@@ -1008,6 +1102,10 @@ impl Engine {
                     span: ch_span,
                 });
             };
+            let (face, gid) = self
+                .faces
+                .optical(face, mapped, ctx.style.style)
+                .unwrap_or((face, gid));
             if let Some((pf, pg)) = prev {
                 if pf == face {
                     if let Some(font) = self.faces.font(face) {
@@ -1316,7 +1414,17 @@ impl Engine {
     /// heavy as TeX's stroke).
     fn tex_prime(&self, span: Span, ctx: LayCtx) -> Result<MBox, MathError> {
         let unmapped = MathError::UnmappedChar { ch: '′', span };
-        let Some((face, gid)) = self.faces.resolve('′', &[FACE_REGULAR, FACE_SYMBOLS]) else {
+        // cmsy's own prime at the style's optical size fits the AFM ink
+        // exactly; other faces' primes are fitted to it.
+        let Some((face, gid)) = self
+            .faces
+            .resolve('′', &[FACE_MATH_SYMBOLS, FACE_REGULAR, FACE_SYMBOLS])
+            .map(|(face, gid)| {
+                self.faces
+                    .optical(face, '′', ctx.style.style)
+                    .unwrap_or((face, gid))
+            })
+        else {
             return Err(unmapped);
         };
         let Some(font) = self.faces.font(face) else {
@@ -2395,9 +2503,31 @@ impl Engine {
         } else {
             target_total
         };
+        if ctx.size() > 0.0
+            && let Some(boxx) = self.cmex_delimiter(ch, target_total / ctx.size(), ctx, delim.span)
+        {
+            return Ok(boxx);
+        }
+        // The small variant is the character's own face: cmsy for braces,
+        // bars, angles, floors and ceilings, cmmi for the slash, the roman
+        // face for parentheses and brackets, at the style's optical size.
         let Some((face, gid)) = self
             .faces
-            .resolve(ch, &[FACE_REGULAR, FACE_SYMBOLS, FACE_ITALIC])
+            .resolve(
+                ch,
+                &[
+                    FACE_MATH_SYMBOLS,
+                    FACE_MATH_ITALIC,
+                    FACE_REGULAR,
+                    FACE_SYMBOLS,
+                    FACE_ITALIC,
+                ],
+            )
+            .map(|(face, gid)| {
+                self.faces
+                    .optical(face, ch, ctx.style.style)
+                    .unwrap_or((face, gid))
+            })
         else {
             // No authored glyph at all (e.g. `‖` on a face without it): the
             // drawn construction serves every size, floored at a text-ish
@@ -2504,6 +2634,156 @@ impl Engine {
             }],
         })
     }
+}
+
+impl Engine {
+    /// cmex10's own delimiter at a total TeX's `var_delimiter` lands on
+    /// (`total` ems, from [`tex_delimiter_total`]): a 1.2, 1.8, 2.4 or
+    /// 3.0 em successor glyph, or past those the extensible recipe built
+    /// from cmex's pieces as tex.web §713 stacks them — top, repeaters,
+    /// middle, repeaters, bottom, each piece hanging from the top of its
+    /// slot. Axis-centered; the box width is the glyph's TFM width. `None`
+    /// at the small variant, when the roster lacks cmex10, or when `ch` has
+    /// no cmex form at `total` (the radical's extensible, characters TeX
+    /// does not chain), which leaves the drawn construction to serve.
+    fn cmex_delimiter(&self, ch: char, total: f64, ctx: LayCtx, span: Span) -> Option<MBox> {
+        if total <= 1.0 + 1e-9 {
+            return None;
+        }
+        let size = ctx.size();
+        let top = self.consts.axis_height * size + total * size / 2.0;
+        let piece = |code: u8| self.faces.tex_glyph(FACE_MATH_EXTENSION, code);
+        let glyph = |gid: u16, dy: f64| Positioned {
+            dx: 0.0,
+            dy,
+            node: MNode::Glyph {
+                face: FACE_MATH_EXTENSION,
+                gid,
+                ch,
+                size,
+                span,
+            },
+        };
+        let mut children = Vec::new();
+        let width_gid;
+        if let Some(code) = cmex_successor(ch, total) {
+            let gid = piece(code)?;
+            // The successor's TFM height is its ink top (0.04 em); its box,
+            // height plus depth `total`, centers on the axis.
+            let m = self.metrics_of(FACE_MATH_EXTENSION, gid);
+            children.push(glyph(gid, top - m.height * size));
+            width_gid = gid;
+        } else {
+            let recipe = cmex_recipe(ch)?;
+            let fixed = recipe.top.map_or(0.0, |(_, h)| h)
+                + recipe.mid.map_or(0.0, |(_, h)| h)
+                + recipe.bot.map_or(0.0, |(_, h)| h);
+            let (rep, rep_size) = recipe.rep;
+            let sides = if recipe.mid.is_some() { 2.0 } else { 1.0 };
+            let per_side = ((total - fixed) / (rep_size * sides)).round().max(0.0);
+            // A recipe of at most 3.6 em of fixed pieces plus whole
+            // repeaters: the count is small and exact.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let per_side = per_side as usize;
+            let rep_gid = piece(rep)?;
+            let mut slots: Vec<(u16, f64)> = Vec::new();
+            if let Some((code, h)) = recipe.top {
+                slots.push((piece(code)?, h));
+            }
+            slots.extend(std::iter::repeat_n((rep_gid, rep_size), per_side));
+            if let Some((code, h)) = recipe.mid {
+                slots.push((piece(code)?, h));
+                slots.extend(std::iter::repeat_n((rep_gid, rep_size), per_side));
+            }
+            if let Some((code, h)) = recipe.bot {
+                slots.push((piece(code)?, h));
+            }
+            let mut y = top;
+            for (gid, h) in slots {
+                children.push(glyph(gid, y));
+                y -= h * size;
+            }
+            width_gid = rep_gid;
+        }
+        // TeX's box is the TFM width; the Type 1 advance is that width
+        // rounded to 1/1000 em, which would drift every delimited array.
+        let width = tex_delimiter_frame(ch, total).map_or_else(
+            || self.metrics_of(FACE_MATH_EXTENSION, width_gid).advance,
+            |(advance, _, _)| advance,
+        ) * size;
+        Some(MBox {
+            kind: BoxKind::Horizontal,
+            width,
+            height: top,
+            depth: (total * size - top).max(0.0),
+            children,
+        })
+    }
+}
+
+/// cmex10's successor of `ch` at a `\big`-family total: its code at 1.2,
+/// 1.8, 2.4 or 3.0 em (tex.web's `charlist` from the small variant).
+fn cmex_successor(ch: char, total: f64) -> Option<u8> {
+    let codes: [u8; 4] = match ch {
+        '(' => [0x00, 0x10, 0x12, 0x20],
+        ')' => [0x01, 0x11, 0x13, 0x21],
+        '[' => [0x02, 0x68, 0x14, 0x22],
+        ']' => [0x03, 0x69, 0x15, 0x23],
+        '⌊' => [0x04, 0x6A, 0x16, 0x24],
+        '⌋' => [0x05, 0x6B, 0x17, 0x25],
+        '⌈' => [0x06, 0x6C, 0x18, 0x26],
+        '⌉' => [0x07, 0x6D, 0x19, 0x27],
+        '{' => [0x08, 0x6E, 0x1A, 0x28],
+        '}' => [0x09, 0x6F, 0x1B, 0x29],
+        '⟨' | '〈' => [0x0A, 0x44, 0x1C, 0x2A],
+        '⟩' | '〉' => [0x0B, 0x45, 0x1D, 0x2B],
+        '/' => [0x0E, 0x2E, 0x1E, 0x2C],
+        '\\' => [0x0F, 0x2F, 0x1F, 0x2D],
+        '√' => [0x70, 0x71, 0x72, 0x73],
+        _ => return None,
+    };
+    [1.2, 1.8, 2.4, 3.0]
+        .iter()
+        .position(|size| (total - size).abs() < 1e-9)
+        .map(|i| codes[i])
+}
+
+/// A cmex10 extensible recipe: optional top, middle and bottom pieces and
+/// the repeater, each as (code, nominal total in ems).
+struct CmexRecipe {
+    top: Option<(u8, f64)>,
+    mid: Option<(u8, f64)>,
+    bot: Option<(u8, f64)>,
+    rep: (u8, f64),
+}
+
+/// cmex10's extensible recipes (cmex10.tfm's `exten` table). The radical's
+/// is left to the drawn construction.
+fn cmex_recipe(ch: char) -> Option<CmexRecipe> {
+    let r =
+        |top: Option<u8>, mid: Option<u8>, bot: Option<u8>, rep: u8, sizes: [f64; 4]| CmexRecipe {
+            top: top.map(|c| (c, sizes[0])),
+            mid: mid.map(|c| (c, sizes[1])),
+            bot: bot.map(|c| (c, sizes[2])),
+            rep: (rep, sizes[3]),
+        };
+    const ROUND: [f64; 4] = [1.8, 0.0, 1.8, 0.6];
+    const BRACE: [f64; 4] = [0.9, 1.8, 0.9, 0.3];
+    Some(match ch {
+        '(' => r(Some(0x30), None, Some(0x40), 0x42, ROUND),
+        ')' => r(Some(0x31), None, Some(0x41), 0x43, ROUND),
+        '[' => r(Some(0x32), None, Some(0x34), 0x36, ROUND),
+        ']' => r(Some(0x33), None, Some(0x35), 0x37, ROUND),
+        '⌈' => r(Some(0x32), None, None, 0x36, ROUND),
+        '⌉' => r(Some(0x33), None, None, 0x37, ROUND),
+        '⌊' => r(None, None, Some(0x34), 0x36, ROUND),
+        '⌋' => r(None, None, Some(0x35), 0x37, ROUND),
+        '{' => r(Some(0x38), Some(0x3C), Some(0x3A), 0x3E, BRACE),
+        '}' => r(Some(0x39), Some(0x3D), Some(0x3B), 0x3E, BRACE),
+        '|' => r(None, None, None, 0x0C, ROUND),
+        '‖' => r(None, None, None, 0x0D, ROUND),
+        _ => return None,
+    })
 }
 
 /// σ13/σ14/σ15 selection for rule 18.
@@ -2660,6 +2940,27 @@ fn tex_delimiter_frame(ch: char, total: f64) -> Option<(f64, f64, f64)> {
     } else {
         None
     }
+}
+
+/// cmex10's text and display code positions of a big operator.
+const fn big_op_codes(ch: char) -> Option<(u8, u8)> {
+    Some(match ch {
+        '∑' => (0x50, 0x58),
+        '∏' => (0x51, 0x59),
+        '∫' => (0x52, 0x5A),
+        '∮' => (0x48, 0x49),
+        '⋃' => (0x53, 0x5B),
+        '⋂' => (0x54, 0x5C),
+        '⨄' => (0x55, 0x5D),
+        '⋀' => (0x56, 0x5E),
+        '⋁' => (0x57, 0x5F),
+        '∐' => (0x60, 0x61),
+        '⨀' => (0x4A, 0x4B),
+        '⨁' => (0x4C, 0x4D),
+        '⨂' => (0x4E, 0x4F),
+        '⨆' => (0x46, 0x47),
+        _ => return None,
+    })
 }
 
 /// cmex10's frame for big operator `ch` in its text or display variant: the

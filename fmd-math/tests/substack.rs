@@ -430,11 +430,19 @@ mod layout {
     /// A glyph's advance width in ems (for centering arithmetic).
     fn glyph_advance(e: &Engine, g: &fmd_math::PlacedGlyph) -> f64 {
         // The centering assertion only needs the glyph's own width; read it
-        // back out of a one-glyph layout so the check compares the engine's
-        // own measurements, scaled to the placed size.
+        // back out of a one-glyph layout at the glyph's own style, so the
+        // check compares the engine's measurements of the same optical cut
+        // (scripts take cmmi7/cmr7, not a scaled 10-point glyph).
+        let style = if (g.size - 0.7).abs() < 1e-9 {
+            Style::Script
+        } else if (g.size - 0.5).abs() < 1e-9 {
+            Style::ScriptScript
+        } else {
+            Style::Display
+        };
         let solo = e
-            .typeset(&g.ch.to_string(), Style::Display)
+            .typeset(&g.ch.to_string(), style)
             .expect("solo glyph lays out");
-        solo.width * g.size
+        solo.width * g.size / style.size_factor()
     }
 }

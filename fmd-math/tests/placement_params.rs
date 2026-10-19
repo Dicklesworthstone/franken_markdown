@@ -239,9 +239,13 @@ fn big_op_is_display_scaled_and_axis_centered() {
     let e = engine();
     let display = e.typeset(r"\sum", Style::Display).unwrap();
     let text = e.typeset(r"\sum", Style::Text).unwrap();
-    let ds = display.glyphs[0].size;
-    let ts = text.glyphs[0].size;
-    assert!((ds / ts - CM.display_op_scale).abs() < EPS);
+    // cmex10's display summation (char 0x58) is 1.4 em tall against the
+    // text one's 1.0 em (0x50): two designed glyphs, not one scaled.
+    let ds = display.height + display.depth;
+    let ts = text.height + text.depth;
+    assert!((ds / ts - CM.display_op_scale).abs() < 2e-3, "{ds} / {ts}");
+    assert_eq!(display.glyphs[0].face, fmd_math::faces::FACE_MATH_EXTENSION);
+    assert_ne!(display.glyphs[0].gid, text.glyphs[0].gid);
     // Axis-centered: ink center at σ22.
     let ink_center = (display.height - display.depth) / 2.0;
     assert!((ink_center - CM.axis_height).abs() < 0.02, "{ink_center}");
@@ -254,11 +258,25 @@ fn display_integrals_take_the_cmex_display_size() {
     let e = engine();
     for op in [r"\int", r"\oint", r"\iint"] {
         let display = e.typeset(op, Style::Display).unwrap();
+        // amsmath builds `\iint` from two `\int`s; cmex has no single
+        // character, so it keeps the fallback face's glyph at the display
+        // ratio (the glyph assertion below is for `\int` and `\oint`).
         let text = e.typeset(op, Style::Text).unwrap();
-        let ratio = display.glyphs[0].size / text.glyphs[0].size;
+        // The designed display glyph (cmex 0x5A, 0x49) against the text one
+        // (0x52, 0x48): ink 2.222 em against 1.111 em.
+        let ratio = (display.height + display.depth) / (text.height + text.depth);
         assert!(
-            (ratio - CM.display_integral_scale).abs() < EPS,
+            (ratio - CM.display_integral_scale).abs() < 2e-3,
             "{op}: {ratio}"
+        );
+        assert!(
+            op == r"\iint"
+                || display
+                    .glyphs
+                    .iter()
+                    .all(|g| g.face == fmd_math::faces::FACE_MATH_EXTENSION
+                        && (g.size - 1.0).abs() < EPS),
+            "{op}: cmex's own display glyph, unscaled"
         );
     }
     assert!((CM.display_integral_scale - 2.0).abs() < EPS);
@@ -299,41 +317,52 @@ fn left_right_delimiters_cover_the_rule_19_target() {
     let inner = e.typeset(r"\frac{a}{x}", Style::Display).unwrap();
     let delta = (inner.height - CM.axis_height).max(inner.depth + CM.axis_height);
     let target = (2.0 * delta * CM.delimiter_factor).max(2.0 * delta - CM.delimiter_shortfall);
-    // A display fraction pushes the parens past the 1.25× uniform-scale
-    // ceiling, so the ADR-0005 drawn mainline serves them: two drawn
-    // contours (one per paren), no paren glyphs, and the construct still
-    // covers the rule-19 target.
+    // A display fraction needs more than the 1.0 em small paren, so TeX
+    // takes a cmex10 successor: each paren is cmex's own glyph (no drawn
+    // path, no scaling), and the construct still covers the rule-19 target.
+    let parens: Vec<_> = l
+        .glyphs
+        .iter()
+        .filter(|g| g.ch == '(' || g.ch == ')')
+        .collect();
+    assert_eq!(parens.len(), 2, "one cmex glyph per paren");
     assert!(
-        l.glyphs.iter().all(|g| g.ch != '(' && g.ch != ')'),
-        "parens should be drawn constructions past the ceiling"
+        parens
+            .iter()
+            .all(|g| g.face == fmd_math::faces::FACE_MATH_EXTENSION && (g.size - 1.0).abs() < EPS),
+        "cmex successors, unscaled"
     );
-    assert_eq!(l.paths.len(), 2, "one drawn path per paren");
+    assert!(l.paths.is_empty());
     assert!(l.height + l.depth >= target - 1e-6);
 
-    // Below the ceiling the authored glyph is kept: an inline \left(x\right)
-    // needs no scaling at all.
+    // The small variant is the roman face's own paren: an inline
+    // \left(x\right) needs nothing larger.
     let small = e.typeset(r"\left( x \right)", Style::Text).unwrap();
     assert!(
-        small.glyphs.iter().any(|g| g.ch == '('),
+        small
+            .glyphs
+            .iter()
+            .any(|g| g.ch == '(' && g.face == fmd_math::faces::FACE_REGULAR),
         "natural glyph kept"
     );
     assert!(small.paths.is_empty());
 }
 
-/// The vertical extent of a drawn path, ems.
-fn path_extent(l: &Layout, i: usize) -> (f64, f64) {
-    let mut ys = Vec::new();
-    for c in &l.paths[i].contours {
-        ys.push(c.start.1);
-        for s in &c.segments {
-            match s {
-                fmd_math::PathSeg::Line { to } => ys.push(to.1),
-                fmd_math::PathSeg::Quad { ctrl, to } => ys.extend([ctrl.1, to.1]),
-            }
-        }
+/// The vertical ink extent of the glyphs `keep` selects, ems.
+fn glyph_ink_extent(
+    e: &Engine,
+    l: &Layout,
+    keep: impl Fn(&fmd_math::PlacedGlyph) -> bool,
+) -> (f64, f64) {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for g in l.glyphs.iter().filter(|g| keep(g)) {
+        let font = e.faces().font(g.face).expect("placed face");
+        let bbox = font.glyph_bbox(g.gid).expect("inked glyph");
+        let s = g.size / f64::from(font.units_per_em);
+        lo = lo.min(g.y + f64::from(bbox[1]) * s);
+        hi = hi.max(g.y + f64::from(bbox[3]) * s);
     }
-    let lo = ys.iter().copied().fold(f64::INFINITY, f64::min);
-    let hi = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     (lo, hi)
 }
 
@@ -394,15 +423,16 @@ fn delimiters_take_tex_variant_sizes() {
             l.depth
         );
     }
-    // A fraction in parentheses: TeX's 1.8 em variant, drawn. The box's
-    // depth is the fraction's.
+    // A fraction in parentheses: TeX's 1.8 em variant, cmex's \Big paren
+    // (its ink is the TFM box to Type 1 rounding). The box's depth is the
+    // fraction's.
     let l = e
         .typeset(r"\left(\frac{a}{x}\right)", Style::Display)
         .unwrap();
-    for i in 0..2 {
-        let (lo, hi) = path_extent(&l, i);
-        assert!((hi - lo - 1.8).abs() < 1e-9, "paren {i}: {lo}..{hi}");
-        assert!(((hi + lo) / 2.0 - CM.axis_height).abs() < 1e-9);
+    for paren in ['(', ')'] {
+        let (lo, hi) = glyph_ink_extent(&e, &l, |g| g.ch == paren);
+        assert!((hi - lo - 1.8).abs() < 2e-3, "{paren}: {lo}..{hi}");
+        assert!(((hi + lo) / 2.0 - CM.axis_height).abs() < 2e-3);
     }
     // Angles have no extensible recipe: past five rows TeX's angle stays at
     // its largest variant, 3.0 em, while the matrix grows.
@@ -412,8 +442,8 @@ fn delimiters_take_tex_variant_sizes() {
             Style::Display,
         )
         .unwrap();
-    let (lo, hi) = path_extent(&l, 0);
-    assert!((hi - lo - 3.0).abs() < 1e-9, "angle: {lo}..{hi}");
+    let (lo, hi) = glyph_ink_extent(&e, &l, |g| g.ch == '⟨');
+    assert!((hi - lo - 3.0).abs() < 2e-3, "angle: {lo}..{hi}");
     assert!(l.height + l.depth > 5.0);
 }
 
@@ -480,25 +510,15 @@ fn delimiters_take_tex_box_widths() {
             Style::Display,
         )
         .unwrap();
-    let (x0, x1) = path_x_extent(&l, 0);
+    let bracket = l.glyphs.iter().find(|g| g.ch == '[').expect("cmex bracket");
+    let font = e.faces().font(bracket.face).expect("placed face");
+    let bbox = font.glyph_bbox(bracket.gid).expect("inked glyph");
+    let scale = bracket.size / f64::from(font.units_per_em);
+    let (x0, x1) = (
+        bracket.x + f64::from(bbox[0]) * scale,
+        bracket.x + f64::from(bbox[2]) * scale,
+    );
     assert!((0.527781 - x1 - 0.014781).abs() < 1e-6, "ink {x0}..{x1}");
-}
-
-/// The horizontal ink extent of a drawn path's line and control points, ems.
-fn path_x_extent(l: &Layout, i: usize) -> (f64, f64) {
-    let mut xs = Vec::new();
-    for c in &l.paths[i].contours {
-        xs.push(c.start.0);
-        for s in &c.segments {
-            match s {
-                fmd_math::PathSeg::Line { to } => xs.push(to.0),
-                fmd_math::PathSeg::Quad { ctrl, to } => xs.extend([ctrl.0, to.0]),
-            }
-        }
-    }
-    let lo = xs.iter().copied().fold(f64::INFINITY, f64::min);
-    let hi = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    (lo, hi)
 }
 
 #[test]
@@ -628,7 +648,8 @@ fn spacing_glue_matches_the_table() {
     // In script style the medium space vanishes: x^{a+b}.
     let sup = e.typeset("x^{a+b}", Style::Display).unwrap();
     let sup_ab = e.typeset("x^{ab}", Style::Display).unwrap();
-    let plus_script_w = plus.width * 0.7;
+    // The script's own `+` (cmr7's, the cut TeX sets scripts in).
+    let plus_script_w = e.typeset("+", Style::Script).unwrap().width;
     assert!(
         (sup.width - (sup_ab.width + plus_script_w)).abs() < 0.02,
         "script-style spacing must be suppressed"
@@ -893,7 +914,11 @@ fn ellipses_are_three_thin_spaced_punctuation_dots() {
     // the same with `\ldotp`. Punct-punct glue is a thin space (3 mu) in
     // display and text styles and nothing in script styles.
     let e = engine();
-    for (command, dot) in [(r"\cdots", '⋅'), (r"\ldots", '.'), (r"\hdots", '.')] {
+    for (command, dot, single) in [
+        (r"\cdots", '⋅', r"\cdot"),
+        (r"\ldots", '.', "."),
+        (r"\hdots", '.', "."),
+    ] {
         let xs = |layout: &Layout| -> Vec<f64> {
             layout
                 .glyphs
@@ -909,11 +934,16 @@ fn ellipses_are_three_thin_spaced_punctuation_dots() {
         let (d, s) = (xs(&display), xs(&script));
         assert_eq!(display.glyphs.len(), 3, "{command}: {display:?}");
         assert_eq!(s.len(), 3, "{command}: {script:?}");
-        let advance = (s[1] - s[0]) / glyph_size(&script, dot);
-        assert!(
-            ((s[2] - s[1]) - (s[1] - s[0])).abs() < EPS,
-            "{command}: {s:?}"
-        );
+        // Each size's own dot: scripts set the 7-point cut, so the script
+        // advance is measured at script style, not scaled from 10 points.
+        let advance = e.typeset(single, Style::Display).unwrap().width;
+        let script_advance = e.typeset(single, Style::Script).unwrap().width;
+        for pair in s.windows(2) {
+            assert!(
+                (pair[1] - pair[0] - script_advance).abs() < EPS,
+                "{command}: script dots {s:?} must abut (advance {script_advance})"
+            );
+        }
         for pair in d.windows(2) {
             let gap = pair[1] - pair[0];
             assert!(

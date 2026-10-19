@@ -47,9 +47,17 @@ fn every_delimiter_family_serves_every_size() {
             layout.height + layout.depth >= inner.height + inner.depth - 1e-6,
             "{l}…{r}: delimited construct shorter than its body"
         );
+        // Past the small variant TeX builds the delimiter from cmex: a
+        // successor glyph, the extensible recipe's pieces, or (angles, which
+        // have no recipe) the largest successor. The drawn mainline remains
+        // only for faces without cmex.
         assert!(
-            !layout.paths.is_empty(),
-            "{l}…{r}: a six-deep fraction must engage the drawn mainline"
+            layout
+                .glyphs
+                .iter()
+                .any(|g| g.face == fmd_math::faces::FACE_MATH_EXTENSION)
+                || !layout.paths.is_empty(),
+            "{l}…{r}: a six-deep fraction must take a cmex construction"
         );
     }
 }
@@ -100,18 +108,19 @@ fn drawn_output_is_deterministic_across_runs() {
 
 #[test]
 fn drawn_delimiters_keep_their_source_spans() {
-    // Provenance survives the mechanism switch: the drawn paren's path
+    // Provenance survives the mechanism switch: whatever builds the large
+    // paren (cmex's successor or extensible pieces, or a drawn path)
     // carries the `(` token's span (isolate/t2c keep working).
     let e = engine();
     let src = r"\left( \frac{\frac{1}{2}}{3} \right)";
     let l = e.typeset(src, Style::Display).unwrap();
     assert!(fmd_math::paths::spans_cover(&l, src.len()));
     let open = src.find('(').unwrap();
+    let claims = |span: fmd_math::Span| span.start <= open && open < span.end;
     assert!(
-        l.paths
-            .iter()
-            .any(|p| p.span.start <= open && open < p.span.end),
-        "no drawn path claims the ( token"
+        l.paths.iter().any(|p| claims(p.span))
+            || l.glyphs.iter().any(|g| g.ch == '(' && claims(g.span)),
+        "nothing claims the ( token"
     );
 }
 
@@ -286,15 +295,22 @@ fn cases_left_aligns_behind_one_stretched_brace() {
         0,
         "cases has no right brace"
     );
-    // Left alignment: both x rows start at the same x (the value column).
-    let xs: Vec<&fmd_math::PlacedGlyph> = l.glyphs.iter().filter(|g| g.ch == 'x').collect();
-    let first_col_x = xs.iter().map(|g| g.x).fold(f64::INFINITY, f64::min);
-    let row_starts: Vec<f64> = xs
-        .iter()
-        .filter(|g| (g.x - first_col_x).abs() < 0.6)
-        .map(|g| g.x)
-        .collect();
-    assert!(row_starts.len() >= 2, "two value-column xs");
+    // Left alignment: both rows' value cells start at the same x. A row's
+    // start is its leftmost glyph that is not the brace (`x` in the first
+    // row, `−` in the second).
+    let mut row_starts: std::collections::BTreeMap<i64, f64> = std::collections::BTreeMap::new();
+    for g in l.glyphs.iter().filter(|g| g.ch != '{') {
+        #[allow(clippy::cast_possible_truncation)]
+        let row = (g.y * 1000.0).round() as i64;
+        let start = row_starts.entry(row).or_insert(f64::INFINITY);
+        *start = start.min(g.x);
+    }
+    let starts: Vec<f64> = row_starts.values().copied().collect();
+    assert!(starts.len() >= 2, "two rows: {starts:?}");
+    assert!(
+        starts.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-9),
+        "value cells left-align: {starts:?}"
+    );
 }
 
 #[test]

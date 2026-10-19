@@ -1,0 +1,109 @@
+{
+  "adr": "franken_manim ADR-0028",
+  "tool": "fonttools 4.65.0 (fontTools.t1Lib, cu2qu, fontBuilder)",
+  "script": "scripts/font-oracles/convert-cm-math.py",
+  "cubic_to_quadratic_max_error_em": 0.001,
+  "pua_base": "U+F000",
+  "license": "SIL Open Font License 1.1 (OFL.txt); Reserved Font Names honoured by renaming",
+  "faces": [
+    {
+      "file": "FmdCmMathItalic10.ttf",
+      "family": "FMD CM Math Italic 10",
+      "source": "cmmi10.pfb",
+      "source_font_name": "CMMI10",
+      "source_sha256": "e3661061e8aa474d6de5ffa916edceb0e3d8b998862018c147f0357fce00bcd7",
+      "sha256": "1d14b3d8e91482ac12af4a9ed2970fd07e866b9629a654d5be0db4b1ffbf21cc",
+      "glyphs": 128,
+      "unicode_mapped": 101,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMMI10."
+    },
+    {
+      "file": "FmdCmMathItalic7.ttf",
+      "family": "FMD CM Math Italic 7",
+      "source": "cmmi7.pfb",
+      "source_font_name": "CMMI7",
+      "source_sha256": "5b293a581ddb937b02559c3ce1a60184cc434295533204a2cd3864a6ad8a1f53",
+      "sha256": "cf055194e32127200ef1fe9a280f3f3f33c54de4e4a880a5b960ae401a98942b",
+      "glyphs": 128,
+      "unicode_mapped": 101,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMMI7."
+    },
+    {
+      "file": "FmdCmMathItalic5.ttf",
+      "family": "FMD CM Math Italic 5",
+      "source": "cmmi5.pfb",
+      "source_font_name": "CMMI5",
+      "source_sha256": "35048e58e53f4aa53025069c1d0de33a16d8d4c111bfa329669e6456ec0a967b",
+      "sha256": "2a569e38c613bfa13cdb8cb853e7986135b14aacd7b0b51f9c5ca6c7769f291d",
+      "glyphs": 128,
+      "unicode_mapped": 101,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMMI5."
+    },
+    {
+      "file": "FmdCmMathSymbols10.ttf",
+      "family": "FMD CM Math Symbols 10",
+      "source": "cmsy10.pfb",
+      "source_font_name": "CMSY10",
+      "source_sha256": "62ee8cef552017551cd3e026a483e700730103eceaad959c87b7730017f59cff",
+      "sha256": "9d787e3c402c15201b040fa6e9806ddc96ad385163057ab3e19bdab899a061fa",
+      "glyphs": 128,
+      "unicode_mapped": 128,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMSY10."
+    },
+    {
+      "file": "FmdCmMathSymbols7.ttf",
+      "family": "FMD CM Math Symbols 7",
+      "source": "cmsy7.pfb",
+      "source_font_name": "CMSY7",
+      "source_sha256": "583b65bd1857bffc2ab184fcb4aad4e70e12eb05c9ca9f1c58c9a00a86c8bccf",
+      "sha256": "e4fbf7054c0eccd29c3c2d733dce3ff666986dce4efd91defe96ef77c171b8a8",
+      "glyphs": 128,
+      "unicode_mapped": 128,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMSY7."
+    },
+    {
+      "file": "FmdCmMathSymbols5.ttf",
+      "family": "FMD CM Math Symbols 5",
+      "source": "cmsy5.pfb",
+      "source_font_name": "CMSY5",
+      "source_sha256": "46da57e5a06866efa9a20f3dd350811b5d3279a5ae789af63e530f1f570e3c7f",
+      "sha256": "4b4b73fc0fc817461b478e09dd51d93224a260b07e49b2d22acd9e73eaf4777b",
+      "glyphs": 128,
+      "unicode_mapped": 128,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMSY5."
+    },
+    {
+      "file": "FmdCmMathExtension10.ttf",
+      "family": "FMD CM Math Extension 10",
+      "source": "cmex10.pfb",
+      "source_font_name": "CMEX10",
+      "source_sha256": "791b31aa1db8608d0144b3a40fc0fe53383a60f6b00d0e8fd9f06ac4a11df8cb",
+      "sha256": "5ee9fc49f0e69186626e8b1f7b5a87c6bea0a3afd19679492788b3364c0ac6b6",
+      "glyphs": 128,
+      "unicode_mapped": 14,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMEX10."
+    },
+    {
+      "file": "FmdCmRoman7.ttf",
+      "family": "FMD CM Roman 7",
+      "source": "cmr7.pfb",
+      "source_font_name": "CMR7",
+      "source_sha256": "b37e8671820b0753c6e233eaa3230c6ab9cff04e6c4baee312d60ae261e5aba1",
+      "sha256": "181834b6bb73bada8445e7d451259be6d77da3fc6cceb6afee4ad783a209fd8f",
+      "glyphs": 128,
+      "unicode_mapped": 120,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMR7."
+    },
+    {
+      "file": "FmdCmRoman5.ttf",
+      "family": "FMD CM Roman 5",
+      "source": "cmr5.pfb",
+      "source_font_name": "CMR5",
+      "source_sha256": "84d38aac226b5274baca7a292e2039f5284a35d8a2ae31074a475fad87da310b",
+      "sha256": "bb9312999f9ef570cc79ce599beba77281259214d224caf54d2d48a0b0a139bb",
+      "glyphs": 128,
+      "unicode_mapped": 125,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMR5."
+    }
+  ]
+}

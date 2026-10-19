@@ -618,6 +618,7 @@ fn capabilities_advertise_running_images_and_help_lists_native_controls() {
         .nth(1)
         .unwrap();
     assert!(running.contains("\"images\":true"));
+    assert!(running.contains("\"image_positions\":[\"left\",\"right\"]"));
     for subcommand in ["render", "watch"] {
         let output = command(&root)
             .args([subcommand, "--help"])

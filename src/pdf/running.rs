@@ -554,9 +554,9 @@ fn resolve_image(
 fn does_not_fit(band: &str, side: &str, margin: f32, needed: f32) -> RenderError {
     RenderError::InvalidInput(format!(
         "pdf_running_{band}_does_not_fit: the running {band} needs {needed:.1}pt but the {side} \
-         margin is {margin:.1}pt; increase the {side} margin (native config margin_{side}_pt, \
-         MCP page.margins.{side}Pt, or PageStyle margins) or remove the {band} \
-         (--pdf-{band}-* flags / PdfOptions.running.{band})"
+         margin is {margin:.1}pt; increase the {side} margin (CLI --margin-{side}-pt, native \
+         config margin_{side}_pt, MCP page.margins.{side}Pt, or PageStyle margins) or remove \
+         the {band} (--pdf-{band}-* flags / PdfOptions.running.{band})"
     ))
 }
 
@@ -1074,7 +1074,9 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("pdf_running_header_does_not_fit") && err.contains("margin_top_pt"),
+            err.contains("pdf_running_header_does_not_fit")
+                && err.contains("--margin-top-pt")
+                && err.contains("margin_top_pt"),
             "{err}"
         );
         let mut footer = opts.clone();
@@ -1083,7 +1085,9 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("pdf_running_footer_does_not_fit") && err.contains("margin_bottom_pt"),
+            err.contains("pdf_running_footer_does_not_fit")
+                && err.contains("--margin-bottom-pt")
+                && err.contains("margin_bottom_pt"),
             "{err}"
         );
         let legacy = PdfOptions {

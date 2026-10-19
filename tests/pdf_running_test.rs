@@ -361,6 +361,8 @@ fn cli_band_that_does_not_fit_exits_70_naming_the_margin() {
     assert_eq!(output.status.code(), Some(70));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("margin_top_pt"), "{stderr}");
+    // CLI users fix this with the flag, so the error must name it too.
+    assert!(stderr.contains("--margin-top-pt"), "{stderr}");
 }
 
 /// Font resource names selected (`/Fn size Tf`) inside the page's header

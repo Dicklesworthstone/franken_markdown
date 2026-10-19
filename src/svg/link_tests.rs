@@ -422,7 +422,9 @@ fn svg_links_linked_math_uses_its_actual_height_and_keeps_formula_glyphs() {
     let nav = p.navigation.borrow();
     assert_eq!(nav.regions.len(), 1);
     let rect = nav.regions[0].rect;
-    assert!(rect.top <= 100.0 - above && rect.bottom >= 100.0 + below);
+    // The rect is built as (baseline - ascent) + (ascent + descent): equal to
+    // the formula's extent up to rounding, so compare within an ulp-scale bound.
+    assert!(rect.top <= 100.0 - above + 1e-9 && rect.bottom >= 100.0 + below - 1e-9);
     assert!((rect.right - rect.left - word.w).abs() < 1e-8);
     assert!(p.ops.iter().any(|op| matches!(op, Op::Glyph { .. })));
 }

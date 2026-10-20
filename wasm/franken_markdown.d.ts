@@ -313,6 +313,9 @@ export function init(
 export function capabilities(): Promise<FmdCapabilities>;
 export function accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
 export function documentStats(markdown: string): Promise<FmdDocumentStats>;
+/** Publish ordered chapters with the same PDF typography, running bands and
+ * explicit pdfImages as renderPdf. Advanced settings require matching generated
+ * WASM; older packages reject them with UNSUPPORTED_WASM_PACKAGE. */
 export function renderBookPdf(
   files: FmdBookFile[],
   options?: FmdPdfRenderOptions,

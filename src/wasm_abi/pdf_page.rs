@@ -12,6 +12,8 @@ use crate::wasm;
 use crate::{PageMargins, PageSize, PageStyle};
 
 mod archival;
+mod book_advanced;
+pub use book_advanced::render_book_pdf_configured_advanced;
 
 /// Render using the ordinary PDF engine with explicit paper and margins.
 ///

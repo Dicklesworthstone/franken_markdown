@@ -52,9 +52,13 @@ async function fixture(optional = {}, initialization = undefined) {
   });
   const module = new SourceTextModule(source, { identifier: "production-root" });
   const geometry = new SourceTextModule(paper, { identifier: "production-paper" });
+  const helpers = new Map();
+  for (const name of ["pdf_running.mjs", "render_typography.mjs"])
+    helpers.set(`./${name}`, new SourceTextModule(await readFile(new URL(name, import.meta.url), "utf8")));
   await module.link(specifier => {
     if (specifier === "./pkg/franken_markdown.js") return native;
     if (specifier === "./pdf_page.mjs") return geometry;
+    if (helpers.has(specifier)) return helpers.get(specifier);
     throw new Error(`unexpected import: ${specifier}`);
   });
   await module.evaluate();

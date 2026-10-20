@@ -43,9 +43,13 @@ async function harness({ advanced = true, init, result, invoke } = {}) {
     this.setExport("pdfPageGeometry", () => []);
   }, { context });
   const root = new vm.SourceTextModule(wrapper, { context });
+  const helpers = new Map();
+  for (const name of ["pdf_running.mjs", "render_typography.mjs"])
+    helpers.set(`./${name}`, new vm.SourceTextModule(await readFile(new URL(name, import.meta.url), "utf8"), { context }));
   await root.link(specifier => {
     if (specifier === "./pkg/franken_markdown.js") return bindings;
     if (specifier === "./pdf_page.mjs") return geometry;
+    if (helpers.has(specifier)) return helpers.get(specifier);
     throw new Error(`Unexpected import: ${specifier}`);
   });
   await root.evaluate();

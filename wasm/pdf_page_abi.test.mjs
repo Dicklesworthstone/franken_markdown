@@ -12,7 +12,7 @@ async function fixture({ pageBinding = true, blocked = false, runningBinding = t
   const dir = await mkdtemp(join(tmpdir(), "fmd-pdf-page-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
-  for (const file of ["franken_markdown.js", "pdf_page.mjs"])
+  for (const file of ["franken_markdown.js", "pdf_page.mjs", "pdf_running.mjs", "render_typography.mjs"])
     await copyFile(new URL(`./${file}`, import.meta.url), join(dir, file));
   const unused = ["renderEpubConfigured", "renderInteractiveHtmlConfigured",
     "renderSvgConfigured", "accessibilityAudit", "capabilities", "documentStats", "renderBookPdf",
@@ -262,7 +262,8 @@ test("malformed running options fail before initialization; old packages refuse 
     await assert.rejects(api.renderPdf("x", { running }), TypeError);
   }
   assert.equal(bindings.initCount, 0); assert.equal(bindings.calls.length, 0);
-  await assert.rejects(api.renderBookPdf([{ path: "a.md", source: "# A" }], { running: {} }), TypeError);
+  await assert.rejects(api.renderBookPdf([{ path: "a.md", source: "# A" }],
+    { running: { footer: { center: "{page}" } } }), { code: "UNSUPPORTED_WASM_PACKAGE" });
   const old = await fixture({ runningBinding: false });
   await assert.rejects(old.api.renderPdf("x", { running: { footer: { center: "{page}" } } }),
     { code: "UNSUPPORTED_WASM_PACKAGE" });

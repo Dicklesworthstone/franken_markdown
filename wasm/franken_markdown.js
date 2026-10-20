@@ -1,4 +1,6 @@
 import { pdfPageGeometry } from "./pdf_page.mjs";
+import { normalizePdfRunning } from "./pdf_running.mjs";
+import { normalizeMicrotype, normalizePdfTypography } from "./render_typography.mjs";
 import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
@@ -702,16 +704,15 @@ function bookSiteArguments(files, options) {
 }
 
 export async function renderBookPdf(files, options = {}) {
-  if (typeof wasmBindings.renderBookPdfConfiguredPage !== "function") {
+  if (typeof wasmBindings.renderBookPdfConfiguredPage !== "function"
+      && typeof wasmBindings.renderBookPdfConfiguredAdvanced !== "function") {
     requireBrowserBinding("renderBookPdf", "wasm-book");
-  }
-  if (options?.running != null) {
-    // Refuse rather than silently drop chrome the caller asked for.
-    throw new TypeError("running header/footer is supported by renderPdf, not renderBookPdf yet");
   }
   // Capture source, primitive settings, geometry and owned assets before init.
   const prepared = bookPdfArguments(files, options);
-  const render = prepared.advanced ? wasmBindings.renderBookPdfConfiguredPage
+  const render = prepared.complete
+    ? requireBrowserBinding("renderBookPdfConfiguredAdvanced", "wasm-book with typography and running content")
+    : prepared.advanced ? wasmBindings.renderBookPdfConfiguredPage
     : requireBrowserBinding("renderBookPdf", "wasm-book");
   if (typeof render !== "function") {
     const error = new Error("Book PDF assets, typography, navigation and paper require a WASM package rebuilt from matching source");
@@ -731,8 +732,17 @@ function bookPdfArguments(files, options) {
     allowRawHtml, codeLineNumbers, pdfImages, fontAssets,
     baseFontSize, headingScale, tableFontSize, pageNumbers,
     fontScale, typeSize, lang, toc = true, tocDepth, fitToPages,
-    microtype, microtypeProtrusion,
+    microtype, microtypeProtrusion, typography, optimalPagination, running,
   } = options;
+  if (optimalPagination !== undefined && typeof optimalPagination !== "boolean")
+    throw new TypeError("optimalPagination must be a boolean");
+  const typesetting = typographyOption({
+    typography: typography === undefined ? undefined : normalizePdfTypography(typography),
+    optimalPagination,
+    microtype: microtype === undefined ? undefined : normalizeMicrotype(microtype),
+  });
+  const bands = pdfRunningOption(normalizePdfRunning(running));
+  const complete = typesetting !== undefined || bands !== null;
   const geometry = pdfPageGeometry(page);
   if (!Array.isArray(files) || files.length === 0 || files.length > 4096) {
     throw new RangeError("book needs 1..=4096 source files");
@@ -783,7 +793,7 @@ function bookPdfArguments(files, options) {
   const advanced = geometry.length > 0 || images.length > 0 || fonts.length > 0
     || epoch !== undefined || raw || lineNumbers || base !== undefined || ratio !== undefined
     || table !== undefined || language !== undefined || !toc || depth !== undefined
-    || target !== undefined || protrusion;
+    || target !== undefined || protrusion || complete;
   if (!advanced) {
     return { advanced, args: [paths, sources, heading, writer, family, dark, scale, numbers] };
   }
@@ -797,13 +807,17 @@ function bookPdfArguments(files, options) {
   });
   const ownedFonts = fonts.map(asset => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
   return {
-    advanced,
+    advanced, complete,
     args: [paths, sources, family, dark, heading, writer, epoch, raw, lineNumbers,
       images.map(image => image.destination), flat, lengths,
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
       fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
       fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts),
-      base, ratio, table, numbers, scale, language, toc, depth, target, protrusion, geometry],
+      base, ratio, table, numbers, scale, language, toc, depth, target, protrusion, geometry,
+      ...(complete ? [bands?.slots ?? [], bands?.headerRule ?? false, bands?.footerRule ?? false,
+        bands?.skipFirstPage ?? false, bands?.imageDestinations ?? [],
+        bands?.imagePositions ?? new Uint32Array(), bands?.imageHeights ?? new Uint32Array(),
+        typesetting] : [])],
   };
 }
 

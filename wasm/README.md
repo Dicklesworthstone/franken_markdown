@@ -62,7 +62,7 @@ Every render result has:
 
 ## PDF running logos
 
-Single-document PDFs can repeat a host-supplied logo in either margin band:
+Single-document and book PDFs can repeat a host-supplied logo in either margin band:
 
 ```js
 const pdf = await fmd.renderPdf("# Report\n\nCurrent results.", {
@@ -91,8 +91,14 @@ Logos require the additive `renderPdfConfiguredRunningImages` binding from a
 matching rebuilt package. Older packages continue to handle existing text-only
 requests but reject a requested logo. The separate retained-book API supports
 the same image shape using `options.images` and its additive
-`setPdfOptionsWithRunningImages` binding. The legacy root `renderBookPdf` helper
-continues to reject all running-band options explicitly.
+`setPdfOptionsWithRunningImages` binding. The root `renderBookPdf(files, options)`
+helper accepts the same `running` and `pdfImages` shape as `renderPdf`, including
+host-only logos absent from chapter Markdown. Its additive
+`renderBookPdfConfiguredAdvanced` binding also carries the `typography` switches
+(`homogeneous`, `antiriver`, `pareto`), `optimalPagination`, and
+`microtype: "expansion"`. Older packages reject these requested features with
+`UNSUPPORTED_WASM_PACKAGE`; omitted or disabled settings preserve existing
+book defaults and signatures. See [book publishing](BOOK.md) for an example.
 The stateless `document-worker` supports the same running bands and `pdfImages`
 through `renderPdf` and `render("pdf", ...)`. It captures nested settings before
 queueing and charges their strings and records against the worker ingress budget.

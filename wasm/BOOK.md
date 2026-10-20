@@ -27,6 +27,51 @@ logos before creating a book; ordinary text-only calls keep their existing ABI.
 Changed logo configuration invalidates retained exports like other PDF settings.
 These programmatic options do not add logo controls to the book workbench UI.
 
+## Root PDF helper
+
+The root package's `renderBookPdf(files, options)` also supports advanced PDF
+typography, optimal pagination, and running text or logos. It uses the same
+`FmdPdfRenderOptions` shape as the single-document `renderPdf` helper:
+
+```js
+import { renderBookPdf } from "@franken-suite/franken-markdown";
+
+const pdf = await renderBookPdf([
+  { path: "guide/start.md", source: "# Start\n\n[Next](../end.md#end)" },
+  { path: "end.md", source: "# End\n\nFinal results." },
+], {
+  title: "Manual",
+  metadataEpochSeconds: 0,
+  typography: { homogeneous: true, antiriver: true, pareto: true },
+  optimalPagination: true,
+  microtype: "expansion",
+  pdfImages: [{ destination: "brand.svg", bytes: logoBytes }],
+  running: {
+    header: { image: { dest: "brand.svg", position: "right", heightPt: 24 } },
+    footer: { center: "{page} / {pages}", rule: true },
+    skipFirstPage: true,
+  },
+});
+```
+
+The root helper takes image bytes in `pdfImages`; retained `book`/`book-worker`
+options use `images` and their existing token-string typography setting. These
+are separate option types. Root book source, settings, geometry, and exact asset
+views are captured before asynchronous initialization. Nested typography and
+running records reject accessors, unknown fields, and invalid value types.
+Running templates allow at most 4096 UTF-8 bytes per slot and 16384 UTF-16 units
+in total; image destinations allow 4096 UTF-8 bytes. All assets remain explicit
+host inputs.
+
+The new `renderBookPdfConfiguredAdvanced` binding routes these settings through
+the ordinary book renderer, preserving chapter-relative links and images.
+Older generated packages report `UNSUPPORTED_WASM_PACKAGE` before initialization
+when a requested feature needs this binding. Ordinary requests keep the original
+eight-argument binding; requests for paper, assets, fonts, or earlier configured
+settings keep the existing 29-argument binding. Book contents and page numbers
+remain enabled by default, and omitted, empty, or disabled new settings do not
+change output.
+
 ## Complete workflow
 
 Add `.md`/`.markdown` files, PNG/JPEG/SVG image files, or a folder. Folder import

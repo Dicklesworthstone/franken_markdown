@@ -33,8 +33,10 @@ async function fixture(available = true) {
       `export const ${name} = (...args) => result(${JSON.stringify(name)},args);`).join("\n")}
   `);
   const { state } = await import(url);
-  const source = wrapper.replaceAll('"./pkg/franken_markdown.js"', JSON.stringify(url))
+  let source = wrapper.replaceAll('"./pkg/franken_markdown.js"', JSON.stringify(url))
     .replaceAll('"./pdf_page.mjs"', JSON.stringify(pageModule));
+  for (const name of ["pdf_running.mjs", "render_typography.mjs"])
+    source = source.replaceAll(`"./${name}"`, JSON.stringify(new URL(`../${name}`, import.meta.url).href));
   return { api: await import(asModule(source)), state };
 }
 

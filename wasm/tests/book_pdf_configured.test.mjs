@@ -9,7 +9,7 @@ const pageModule = new URL("../pdf_page.mjs", import.meta.url).href;
 let serial = 0;
 const dataModule = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 
-async function fixture(advanced = true) {
+async function fixture(advanced = true, complete = advanced) {
   const bindingUrl = dataModule(`// isolated generated-binding double ${++serial}
     export const state = { calls: [], loads: 0, freed: 0, wait: null, fail: null, badDiagnostics: false };
     export default async function init() { state.loads++; await state.wait; }
@@ -24,6 +24,7 @@ async function fixture(advanced = true) {
       };
     }
     export const renderBookPdfConfiguredPage = ${advanced ? "(...args) => output('book-advanced', args)" : "undefined"};
+    export const renderBookPdfConfiguredAdvanced = ${complete ? "(...args) => output('book-complete', args)" : "undefined"};
     export const renderBookPdf = (...args) => output('book-legacy', args);
     export const renderPdfConfiguredPage = (...args) => output('pdf-page', args);
     export const renderPdfConfiguredMulti = (...args) => output('pdf', args);
@@ -35,8 +36,10 @@ async function fixture(advanced = true) {
       `export const ${name} = (...args) => output(${JSON.stringify(name)}, args);`).join("\n")}
   `);
   const { state } = await import(bindingUrl);
-  const source = wrapper.replaceAll('"./pkg/franken_markdown.js"', JSON.stringify(bindingUrl))
+  let source = wrapper.replaceAll('"./pkg/franken_markdown.js"', JSON.stringify(bindingUrl))
     .replaceAll('"./pdf_page.mjs"', JSON.stringify(pageModule));
+  for (const name of ["pdf_running.mjs", "render_typography.mjs"])
+    source = source.replaceAll(`"./${name}"`, JSON.stringify(new URL(`../${name}`, import.meta.url).href));
   return { api: await import(dataModule(source)), state };
 }
 
@@ -161,6 +164,130 @@ test("assets and navigation work without explicit geometry", async () => {
   assert.equal(state.calls[1].kind, "book-advanced");
 });
 
+test("root book typography and running logos use all 37 arguments of the additive binding", async () => {
+  const { api, state } = await fixture();
+  const options = { title: "Manual", author: "Writer", metadataEpochSeconds: 0,
+    page: page(), microtype: "expansion", optimalPagination: true,
+    typography: { homogeneous: true, antiriver: true, pareto: true },
+    pdfImages: [{ destination: "brand.svg", bytes: new Uint8Array([1, 2, 3]) }],
+    running: {
+      header: { left: "{title}", right: "{date}", rule: true,
+        image: { dest: " brand.svg ", position: "right", heightPt: 24 } },
+      footer: { center: "{page}/{pages}", image: { dest: "brand.svg" } },
+      skipFirstPage: true,
+    } };
+  await api.renderBookPdf(chapters(), options);
+  const { kind, args } = state.calls[0];
+  assert.equal(kind, "book-complete");
+  assert.equal(args.length, 37);
+  assert.deepEqual(args[9], ["brand.svg"]);
+  assert.deepEqual([...args[10]], [1, 2, 3]);
+  assert.equal(args[21], true, "root book page-number default is retained");
+  assert.equal(args[24], true, "root book TOC default is retained");
+  assert.deepEqual([...args[28]], [720, 540, 18, 24, 30, 36]);
+  assert.deepEqual(args[29], ["{title}", "", "{date}", "", "{page}/{pages}", ""]);
+  assert.deepEqual(args.slice(30, 33), [true, false, true]);
+  assert.deepEqual(args[33], ["brand.svg", "brand.svg"]);
+  assert.deepEqual([...args[34]], [1, 0]);
+  assert.deepEqual([...args[35]], [24, 0]);
+  assert.equal(args[36], "homogeneous,antiriver,pareto,optimal-pagination,expansion");
+});
+
+test("each new book option selects the additive binding; explicit defaults preserve old calls", async () => {
+  const { api, state } = await fixture();
+  for (const options of [
+    { typography: { homogeneous: true } }, { typography: { antiriver: true } },
+    { typography: { pareto: true } }, { optimalPagination: true }, { microtype: "expansion" },
+    { running: { footer: { center: "{page}" } } }, { running: { header: { rule: true } } },
+    { running: { header: { image: { dest: "logo.svg" } } } },
+  ]) {
+    await api.renderBookPdf(chapters(), options);
+    const { kind, args } = state.calls.at(-1);
+    assert.equal(kind, "book-complete");
+    assert.equal(args.length, 37);
+    assert.equal(args[28].length, 0);
+  }
+  for (const options of [
+    { typography: {} }, { typography: { homogeneous: false, antiriver: false, pareto: false } },
+    { optimalPagination: false }, { microtype: "disabled" }, { running: {} },
+    { running: { header: { left: "", rule: false }, skipFirstPage: false } },
+  ]) {
+    await api.renderBookPdf(chapters(), options);
+    assert.equal(state.calls.at(-1).kind, "book-legacy");
+    assert.equal(state.calls.at(-1).args.length, 8);
+  }
+});
+
+test("old book bindings fail clearly for each new setting and keep prior configured exports usable", async () => {
+  for (const configured of [false, true]) {
+    const { api, state } = await fixture(configured, false);
+    for (const options of [{ typography: { pareto: true } }, { optimalPagination: true },
+      { microtype: "expansion" }, { running: { footer: { center: "{page}" } } },
+      { running: { header: { image: { dest: "logo.svg" } } } }]) {
+      await assert.rejects(api.renderBookPdf(chapters(), options),
+        { code: "UNSUPPORTED_WASM_PACKAGE", message: /renderBookPdfConfiguredAdvanced/ });
+    }
+    assert.equal(state.loads, 0);
+    assert.equal(state.calls.length, 0);
+    await api.renderBookPdf(chapters(), configured ? { page: page(), microtype: "protrusion" } : {});
+    assert.equal(state.calls[0].kind, configured ? "book-advanced" : "book-legacy");
+  }
+});
+
+test("new book settings and exact logo views are owned before asynchronous initialization", async () => {
+  const { api, state } = await fixture();
+  let release;
+  state.wait = new Promise(resolve => { release = resolve; });
+  const bytes = new Uint8Array([99, 1, 2, 88]);
+  const options = { typography: { homogeneous: true, antiriver: false }, optimalPagination: true,
+    microtype: "expansion", running: { header: { left: "{title}",
+      image: { dest: "logo.svg", position: "right", heightPt: 24 } }, skipFirstPage: true },
+    pdfImages: [{ destination: "logo.svg", bytes: bytes.subarray(1, 3) }] };
+  const pending = api.renderBookPdf(chapters(), options);
+  options.typography.homogeneous = false;
+  options.typography.pareto = true;
+  options.optimalPagination = false;
+  options.microtype = "disabled";
+  options.running.header.left = "changed";
+  options.running.header.image.dest = "other.svg";
+  options.running.header.image.position = "left";
+  options.running.header.image.heightPt = 1;
+  options.running.skipFirstPage = false;
+  options.pdfImages[0].destination = "other.svg";
+  bytes.fill(9);
+  release();
+  await pending;
+  const { args } = state.calls[0];
+  assert.deepEqual([...args[10]], [1, 2]);
+  assert.deepEqual(args[29], ["{title}", "", "", "", "", ""]);
+  assert.equal(args[32], true);
+  assert.deepEqual(args[33], ["logo.svg", ""]);
+  assert.deepEqual([...args[34]], [1, 0]);
+  assert.deepEqual([...args[35]], [24, 0]);
+  assert.equal(args[36], "homogeneous,optimal-pagination,expansion");
+});
+
+test("malformed book typography and running content fail without evaluating nested accessors", async () => {
+  const { api, state } = await fixture();
+  let getters = 0;
+  const accessor = Object.defineProperty({}, "pareto", { get() { getters++; return true; } });
+  const band = Object.defineProperty({}, "left", { get() { getters++; return "x"; } });
+  for (const options of [
+    { typography: accessor }, { typography: null }, { typography: "pareto" },
+    { typography: { pareto: 1 } }, { typography: { extra: true } },
+    { optimalPagination: "true" }, { microtype: "all" },
+    { running: { header: band } }, { running: { header: { left: "\ud800" } } },
+    { running: { header: { left: "é".repeat(2049) } } }, { running: { skipFirstPage: true } },
+    { running: { footer: { image: { dest: "logo", heightPt: 0 } } } },
+  ]) await assert.rejects(api.renderBookPdf(chapters(), options));
+  assert.equal(getters, 0);
+  assert.equal(state.loads, 0);
+  assert.equal(state.calls.length, 0);
+  const exact = "界".repeat(1365) + "x";
+  await api.renderBookPdf(chapters(), { running: { header: { left: exact } } });
+  assert.equal(state.calls[0].args[29][0], exact);
+});
+
 test("invalid sources, options and assets fail before WASM initialization", async () => {
   const { api, state } = await fixture();
   await assert.rejects(api.renderBookPdf(new Array(4097)), /4096/);
@@ -182,7 +309,8 @@ test("invalid sources, options and assets fail before WASM initialization", asyn
 test("root snapshots top-level getters once and does not consult them again for ABI selection", async () => {
   const { api, state } = await fixture();
   const reads = new Map();
-  const values = { page: page(), toc: false, title: "A", metadataEpochSeconds: 0 };
+  const values = { page: page(), toc: false, title: "A", metadataEpochSeconds: 0,
+    typography: { pareto: true }, optimalPagination: true, running: { footer: { center: "{page}" } } };
   const options = Object.fromEntries([]);
   for (const [key, value] of Object.entries(values)) {
     Object.defineProperty(options, key, { get() {
@@ -192,8 +320,8 @@ test("root snapshots top-level getters once and does not consult them again for 
     } });
   }
   await api.renderBookPdf(chapters(), options);
-  assert.equal(state.calls[0].kind, "book-advanced");
-  assert.deepEqual([...reads.values()], [1, 1, 1, 1]);
+  assert.equal(state.calls[0].kind, "book-complete");
+  assert.deepEqual([...reads.values()], Array(Object.keys(values).length).fill(1));
 });
 
 test("renderer failures do not leak result wrappers and failed diagnostics still free them", async () => {

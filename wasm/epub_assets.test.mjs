@@ -13,6 +13,8 @@ async function fixture({ advanced = true, blocked = false } = {}) {
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
   await copyFile(new URL("./franken_markdown.js", import.meta.url), join(dir, "franken_markdown.js"));
   await copyFile(new URL("./pdf_page.mjs", import.meta.url), join(dir, "pdf_page.mjs"));
+  for (const name of ["pdf_running.mjs", "render_typography.mjs"])
+    await copyFile(new URL(name, import.meta.url), join(dir, name));
   const unused = ["renderHtmlConfiguredAdvanced", "renderInteractiveHtmlConfigured", "renderPdfConfiguredMulti", "renderSvgConfigured", "accessibilityAudit", "capabilities", "documentStats", "renderBookPdf", "renderBookSite", "renderSemanticDiffHtml", "searchIndex", "semanticDiff"];
   await writeFile(join(dir, "pkg/franken_markdown.js"), `
     export const calls = [];

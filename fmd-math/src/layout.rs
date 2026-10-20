@@ -38,7 +38,7 @@ use crate::faces::{
     FACE_SYMBOLS, FaceSet, GlyphMetrics, accent_spacing_fallback, alphabet_map, default_math_chain,
     glyph_metrics, kern_em,
 };
-use crate::mbox::{BoxKind, FaceId, GlueSpec, Layout, MBox, MNode, Positioned};
+use crate::mbox::{BoxKind, Color, FaceId, GlueSpec, Layout, MBox, MNode, Positioned};
 use crate::metrics::MathConstants;
 use crate::node::{
     AccentKind, Delim, DelimSize, FracSpec, FragmentKind, Limits, LineAlign, MathFont, Node,
@@ -162,6 +162,7 @@ impl Engine {
             decl_size: 1.0,
             line_stretch: 1.0,
             align_rows,
+            color: None,
         };
         let rows = items
             .iter()
@@ -198,6 +199,9 @@ struct LayCtx {
     /// Whether stacked `\\` lines are the Tex surface's align* rows, which
     /// amsmath opens up by \jot. False for TexText paragraphs.
     align_rows: bool,
+    /// The `\color` in force, group-scoped like the size declaration;
+    /// `None` leaves the consumer's own colour.
+    color: Option<Color>,
 }
 
 impl LayCtx {
@@ -325,12 +329,18 @@ impl Engine {
                 NodeKind::LineSpacing(stretch) => {
                     ctx.line_stretch = *stretch;
                 }
+                // `\color` colours the rest of the enclosing group; groups
+                // laid below inherit it through the context. A colour xcolor
+                // does not define is the declaration's own precise error.
+                NodeKind::ColorChange(spec) => match &spec.color {
+                    Ok(color) => ctx.color = Some(*color),
+                    Err(error) => return Err(error.clone()),
+                },
                 // `\centering` and friends produce no glyphs; a line's
                 // alignment is applied where lines are stacked
                 // ([`NodeKind::AlignBlock`]), so mid-list the declaration
-                // is inert, exactly like a color declaration.
-                NodeKind::ColorChange(_)
-                | NodeKind::AlignChange(_)
+                // is inert.
+                NodeKind::AlignChange(_)
                 | NodeKind::AlignTab
                 | NodeKind::Fragment(
                     FragmentKind::UnmatchedClose | FragmentKind::RedundantMathShift,
@@ -351,7 +361,10 @@ impl Engine {
                     }));
                 }
                 _ => {
-                    let laid = lone_op_box(node, self.lay_node(node, ctx)?);
+                    let mut laid = lone_op_box(node, self.lay_node(node, ctx)?);
+                    if let Some(color) = ctx.color {
+                        laid.boxx = colored_box(color, laid.boxx);
+                    }
                     laid_items.push(LineItem::Atom {
                         laid,
                         class: class.unwrap_or(AtomClass::Ord),
@@ -818,6 +831,11 @@ impl Engine {
                     char_glyph: None,
                 })
             }
+            // A declaration outside a list colours nothing, but a colour
+            // xcolor does not define is still refused, never dropped.
+            NodeKind::ColorChange(crate::node::ColorSpec {
+                color: Err(error), ..
+            }) => Err(error.clone()),
             NodeKind::Fragment(_)
             | NodeKind::StyleChange(_)
             | NodeKind::SizeChange(_)
@@ -3291,16 +3309,32 @@ fn hcat(boxes: Vec<MBox>) -> MBox {
     }
 }
 
+/// `boxx` laid under a `\color` declaration: the same dimensions, its
+/// primitives coloured unless a nested declaration already coloured them.
+fn colored_box(color: Color, boxx: MBox) -> MBox {
+    MBox {
+        kind: boxx.kind,
+        width: boxx.width,
+        height: boxx.height,
+        depth: boxx.depth,
+        children: vec![Positioned {
+            dx: 0.0,
+            dy: 0.0,
+            node: MNode::Colored(color, boxx),
+        }],
+    }
+}
+
 impl MNode {
     fn box_height(&self) -> f64 {
         match self {
-            Self::Box(b) => b.height,
+            Self::Box(b) | Self::Colored(_, b) => b.height,
             _ => 0.0,
         }
     }
     fn box_depth(&self) -> f64 {
         match self {
-            Self::Box(b) => b.depth,
+            Self::Box(b) | Self::Colored(_, b) => b.depth,
             _ => 0.0,
         }
     }

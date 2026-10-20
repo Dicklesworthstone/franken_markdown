@@ -308,7 +308,7 @@ fn apply_marker<'a>(
 ) -> (Style, Option<&'a str>, Option<f64>) {
     match kind {
         NodeKind::StyleChange(s) => (*s, color, size),
-        NodeKind::ColorChange(c) => (style, Some(c.as_str()), size),
+        NodeKind::ColorChange(c) => (style, Some(c.spec.as_str()), size),
         NodeKind::SizeChange(f) => (style, color, Some(*f)),
         NodeKind::AlignChange(_) | NodeKind::LineSpacing(_) => (style, color, size),
         _ => (style, color, size),

@@ -17,8 +17,8 @@ use crate::atom::{char_class, intrinsic_class};
 use crate::commands::{self, Cmd};
 use crate::error::MathError;
 use crate::node::{
-    AccentKind, Delim, FracSpec, FragmentKind, Limits, LineAlign, Node, NodeKind, SpaceKind, Span,
-    TextStyle,
+    AccentKind, ColorSpec, Delim, FracSpec, FragmentKind, Limits, LineAlign, Node, NodeKind,
+    SpaceKind, Span, TextStyle,
 };
 use crate::token::{Tok, TokKind, lex};
 
@@ -749,11 +749,22 @@ impl<'s> Parser<'s> {
             }
             Cmd::Substack => self.substack(span),
             Cmd::Color => {
-                let (raw, raw_span) = self.raw_group("argument of \\color")?;
-                Ok(Node::new(
-                    NodeKind::ColorChange(raw.trim().to_owned()),
-                    span.union(raw_span),
-                ))
+                let (color, span) = self.color_arguments(name, span)?;
+                Ok(Node::new(NodeKind::ColorChange(color), span))
+            }
+            // xcolor's `\textcolor{c}{body}` is `{\color{c}body}`: a group
+            // that opens with the declaration. TeX strips the argument's
+            // braces, so a braced body's items join that group directly.
+            Cmd::TextColor => {
+                let (color, color_span) = self.color_arguments(name, span)?;
+                let body = self.argument(&format!("argument of \\{name}"))?;
+                let span = color_span.union(body.span);
+                let mut items = vec![Node::new(NodeKind::ColorChange(color), color_span)];
+                match body.kind {
+                    NodeKind::List(body_items) => items.extend(body_items),
+                    _ => items.push(body),
+                }
+                Ok(Node::new(NodeKind::List(items), span))
             }
             Cmd::Ding => {
                 // The pifont escape (fm-j5t.4): a braced decimal code. The
@@ -1051,6 +1062,49 @@ impl<'s> Parser<'s> {
 
     /// A raw `{…}` group returned as source text (environment names, array
     /// column specs, `\color` arguments).
+    /// `\color` / `\textcolor`'s optional `[model]` and braced colour, under
+    /// xcolor's rules ([`crate::color::declaration`]). Returns the
+    /// declaration and the span from the command through the closing brace.
+    fn color_arguments(&mut self, name: &str, span: Span) -> Result<(ColorSpec, Span), MathError> {
+        let model = self.raw_bracket(&format!("the colour model of \\{name}"))?;
+        let (spec, spec_span) = self.raw_group(&format!("argument of \\{name}"))?;
+        // Errors point at the colour itself, just inside its brace.
+        let color = crate::color::declaration(
+            &format!("\\{name}"),
+            model.as_ref().map(|(model, _)| model.as_str()),
+            &spec,
+            spec_span.start + 1,
+        )?;
+        Ok((color, span.union(spec_span)))
+    }
+
+    /// An optional raw `[…]` argument without nesting (a colour model).
+    fn raw_bracket(&mut self, what: &str) -> Result<Option<(String, Span)>, MathError> {
+        self.skip_spaces();
+        if !matches!(self.peek().map(|t| t.kind), Some(TokKind::Char('['))) {
+            return Ok(None);
+        }
+        let open = self.here();
+        self.pos += 1;
+        loop {
+            let Some(tok) = self.next_tok() else {
+                return Err(MathError::Malformed {
+                    what: format!("unclosed '[' in {what}, opened at byte {open}"),
+                    at: self.src.len(),
+                });
+            };
+            if matches!(tok.kind, TokKind::Char(']')) {
+                let raw = self
+                    .src
+                    .get(open + 1..tok.span.start)
+                    .unwrap_or("")
+                    .trim()
+                    .to_owned();
+                return Ok(Some((raw, Span::new(open, tok.span.end))));
+            }
+        }
+    }
+
     fn raw_group(&mut self, what: &str) -> Result<(String, Span), MathError> {
         self.skip_spaces();
         let Some(open) = self.peek().cloned() else {
@@ -1691,6 +1745,22 @@ impl<'s> Parser<'s> {
             // Line-spacing declarations (`\doublespacing`): the marker the
             // multi-line stacker reads.
             Cmd::LineSpacing(stretch) => Ok(Node::new(NodeKind::LineSpacing(stretch), span)),
+            // `\color` is a text-mode declaration too, scoped like `\small`;
+            // `\textcolor{c}{body}` is the group `{\color{c}body}`.
+            Cmd::Color => {
+                let (color, span) = self.color_arguments(name, span)?;
+                Ok(Node::new(NodeKind::ColorChange(color), span))
+            }
+            Cmd::TextColor => {
+                let (color, color_span) = self.color_arguments(name, span)?;
+                let (body, body_span) = self.text_island_argument(name)?;
+                let mut items = vec![Node::new(NodeKind::ColorChange(color), color_span)];
+                items.extend(body);
+                Ok(Node::new(
+                    NodeKind::List(items),
+                    color_span.union(body_span),
+                ))
+            }
             Cmd::Begin => self.environment(span, true),
             Cmd::End => {
                 let (env_name, _) = self.raw_group("environment name after \\end")?;

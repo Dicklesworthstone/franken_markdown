@@ -26,6 +26,17 @@ use crate::node::Span;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FaceId(pub usize);
 
+/// A colour set by `\color` / `\textcolor`: RGB channels from 0 to 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Color {
+    /// Red, 0..1.
+    pub r: f64,
+    /// Green, 0..1.
+    pub g: f64,
+    /// Blue, 0..1.
+    pub b: f64,
+}
+
 /// A positioned glyph in the final layout. Units are ems of the base
 /// (text-style) size; `y` is the baseline-relative vertical position,
 /// positive up; `size` is the glyph's own size factor (1.0 / 0.7 / 0.5 per
@@ -46,6 +57,8 @@ pub struct PlacedGlyph {
     pub size: f64,
     /// Source span of the construct that produced the glyph.
     pub span: Span,
+    /// The colour in force (`\color`), or `None` for the consumer's own.
+    pub color: Option<Color>,
 }
 
 /// A positioned rectangular rule (fraction bars, `\overline`s, radical
@@ -62,6 +75,8 @@ pub struct PlacedRule {
     pub height: f64,
     /// Source span of the construct that produced the rule.
     pub span: Span,
+    /// The colour in force (`\color`), or `None` for the consumer's own.
+    pub color: Option<Color>,
 }
 
 /// One segment of a drawn-path contour.
@@ -101,6 +116,8 @@ pub struct PlacedPath {
     pub contours: Vec<PathContour>,
     /// Source span of the construct that produced the path.
     pub span: Span,
+    /// The colour in force (`\color`), or `None` for the consumer's own.
+    pub color: Option<Color>,
 }
 
 /// One placed primitive: its kind and its index in that kind's [`Layout`]
@@ -202,6 +219,9 @@ pub(crate) enum MNode {
     Glue(GlueSpec),
     /// A nested box.
     Box(MBox),
+    /// A nested box laid while a `\color` declaration was in force: its
+    /// primitives take the colour unless a nested one overrides it.
+    Colored(Color, MBox),
 }
 
 /// How a box stacks its children.
@@ -248,6 +268,12 @@ impl MBox {
     /// `(x, y)`. Children are visited in order, so the builders keep each
     /// box's children in TeX's emission order.
     pub(crate) fn flatten_into(&self, x: f64, y: f64, out: &mut Layout) {
+        self.flatten_colored(x, y, None, out);
+    }
+
+    /// [`Self::flatten_into`] with the colour in force; the innermost
+    /// [`MNode::Colored`] wins, as the innermost `\color` group does in TeX.
+    fn flatten_colored(&self, x: f64, y: f64, color: Option<Color>, out: &mut Layout) {
         for child in &self.children {
             let cx = x + child.dx;
             let cy = y + child.dy;
@@ -268,6 +294,7 @@ impl MBox {
                         y: cy,
                         size: *size,
                         span: *span,
+                        color,
                     });
                 }
                 MNode::Rule {
@@ -282,6 +309,7 @@ impl MBox {
                         width: *width,
                         height: *height,
                         span: *span,
+                        color,
                     });
                 }
                 MNode::Path { contours, span } => {
@@ -308,10 +336,12 @@ impl MBox {
                     out.paths.push(PlacedPath {
                         contours: moved,
                         span: *span,
+                        color,
                     });
                 }
                 MNode::Kern(_) | MNode::Glue(_) => {}
-                MNode::Box(inner) => inner.flatten_into(cx, cy, out),
+                MNode::Box(inner) => inner.flatten_colored(cx, cy, color, out),
+                MNode::Colored(own, inner) => inner.flatten_colored(cx, cy, Some(*own), out),
             }
         }
     }

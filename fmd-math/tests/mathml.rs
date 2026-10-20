@@ -410,6 +410,7 @@ fn to_mathml_with_capacity_is_byte_identical_across_hints() {
         r"\huge x",
         r"\color{red} x + y",
         r"\color{#00ff00} \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}",
+        r"\color[HTML]{00FF00} \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}",
         r"\scriptstyle \color{blue} \tiny x^2 + y^2",
         r"a \color{red} b \color{blue} c",
     ];

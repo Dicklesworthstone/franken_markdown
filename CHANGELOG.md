@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `fmd-math` honours `\color` and `\textcolor`. They used to parse and then be
+  silently ignored, and `\textcolor` failed as untiered.
+  - The colour surface is plain xcolor's: the 19 base names, mixes such as
+    `red!30!blue` and `blue!70`, a leading `-` for the complement, and the
+    `[rgb]`, `[RGB]`, `[HTML]` and `[gray]` models. Mixes are linear in RGB,
+    checked against xcolor v3.02. Anything else is a precise parse error
+    naming the supported set.
+  - Scoping is TeX's: a declaration colours the rest of its group, and
+    `\textcolor{c}{…}` is `{\color{c}…}`. Colour never changes the layout.
+  - API: `PlacedGlyph`, `PlacedRule` and `PlacedPath` gain
+    `color: Option<Color>` (RGB from 0 to 1; `None` keeps the consumer's own
+    colour). `NodeKind::ColorChange` carries the resolved `Color`, and MathML
+    writes `mathcolor="#rrggbb"`. The HTML and PDF math renderers still paint
+    in the theme colour.
+
 ### Changed
 
 - `fmd-math` sets mathematics in the faces TeX uses. `fmd-font` bundles the AMS

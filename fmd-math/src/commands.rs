@@ -106,8 +106,10 @@ pub(crate) enum Cmd {
     /// argument of `\\`-separated lines, stacked centered in script
     /// style (the same grid the `substack` environment produces).
     Substack,
-    /// `\color{…}`.
+    /// `\color[model]{…}`.
     Color,
+    /// `\textcolor[model]{…}{body}`: `{\color{…}body}`.
+    TextColor,
     /// A `\big`-family fixed-size delimiter command; `class` is imposed by
     /// the l/r/m variant, `None` (⇒ Ord) for the plain form.
     SizedDelim {
@@ -687,6 +689,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "underset" => Cmd::Stack(StackKind::Underset),
         "substack" => Cmd::Substack,
         "color" => Cmd::Color,
+        "textcolor" => Cmd::TextColor,
         // ── Sized delimiters ────────────────────────────────────────────
         "big" => Cmd::SizedDelim {
             size: DelimSize::Big,

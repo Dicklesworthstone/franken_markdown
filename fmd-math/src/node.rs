@@ -7,6 +7,8 @@
 //! spans, so no node may ever be constructed without one.
 
 use crate::atom::AtomClass;
+use crate::error::MathError;
+use crate::mbox::Color;
 use crate::style::Style;
 
 /// A half-open byte range `[start, end)` into the source string.
@@ -266,6 +268,18 @@ pub enum StackKind {
     Underset,
 }
 
+/// A `\color` / `\textcolor` argument.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorSpec {
+    /// What MathML's `mathcolor` carries: the argument verbatim, as
+    /// KaTeX-flavoured HTML expects (`steelblue`, `#00ff00`), or `#rrggbb`
+    /// for an explicit `[model]`.
+    pub spec: String,
+    /// xcolor's resolution (`crate::color`), or the precise error that
+    /// layout, which needs real RGB, reports.
+    pub color: Result<Color, MathError>,
+}
+
 /// What a node is. See the module docs; every variant is produced by
 /// [`crate::parse`] / [`crate::parse_text`] with full span provenance.
 #[derive(Clone, Debug, PartialEq)]
@@ -401,8 +415,8 @@ pub enum NodeKind {
     /// LaTeX 10 pt ladder of `size10.clo`).
     SizeChange(f64),
     /// A `\color{…}` marker applying to the remainder of the enclosing
-    /// group. The argument is kept verbatim.
-    ColorChange(String),
+    /// group; `\textcolor` is a group opening with one.
+    ColorChange(ColorSpec),
     /// A line-spacing declaration (`\doublespacing`): multiplies the
     /// \baselineskip of subsequent `\\`-stacked lines in the enclosing
     /// multi-line list (setspace's \baselinestretch, 10 pt ladder value).

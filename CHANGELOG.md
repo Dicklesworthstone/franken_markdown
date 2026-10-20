@@ -22,9 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `\textcolor{c}{…}` is `{\color{c}…}`. Colour never changes the layout.
   - API: `PlacedGlyph`, `PlacedRule` and `PlacedPath` gain
     `color: Option<Color>` (RGB from 0 to 1; `None` keeps the consumer's own
-    colour). `NodeKind::ColorChange` carries the resolved `Color`, and MathML
-    writes `mathcolor="#rrggbb"`. The HTML and PDF math renderers still paint
-    in the theme colour.
+    colour). `NodeKind::ColorChange` carries a `ColorSpec`: the MathML spelling
+    plus the resolved `Color`, or the error that layout reports for a colour
+    xcolor does not define. MathML's `mathcolor` keeps a bare colour verbatim,
+    so HTML still hands CSS names and `#hex` to the browser, and writes
+    `#rrggbb` for an explicit `[model]`. The PDF math renderer still paints in
+    the theme colour.
 
 ### Changed
 

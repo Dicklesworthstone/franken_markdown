@@ -85,3 +85,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await writeFile(process.argv[2], await nativeSourceProjectFixture(), {flag: 'wx'});
   console.log('Retained explicit-adapter source-project fixture:', process.argv[2]);
 }
+
+// The exact explicit adapters used by projectExporterFixtureModule, also useful
+// when executing the shared assembler inside a real disposable worker.
+export async function projectFixtureParts() {
+  const [runtime, preview, proof, proofUI, project, projectUI] = await Promise.all([
+    import(runtimeAdapter), import(previewAdapter), import(proofAdapter),
+    import('./native_pdf_proof_ui.mjs'), import('./native_source_project.mjs'), import('./native_source_project_ui.mjs'),
+  ]);
+  return {bootNativeWorkspace: runtime.bootNativeWorkspace,
+    createNativeWorkspaceRenderer: runtime.createNativeWorkspaceRenderer,
+    createWorkspacePreviewWorker: preview.createWorkspacePreviewWorker,
+    createNativePdfProof: proof.createNativePdfProof, registerNativePdfProof: proofUI.registerNativePdfProof,
+    createNativeSourceProjectCodec: project.createNativeSourceProjectCodec,
+    installNativeSourceProjectDownload: projectUI.installNativeSourceProjectDownload};
+}

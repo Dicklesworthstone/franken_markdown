@@ -150,8 +150,15 @@ fn colour_never_moves_anything() {
 
 #[test]
 fn the_declaration_crosses_line_breaks_and_enters_math_islands() {
+    // A Tex surface's `\\` rows are align* cells, and every cell is a group,
+    // so the declaration ends with its row, as in LaTeX. A TexText
+    // paragraph's `\\` breaks the line inside one group, so it carries on.
     assert_eq!(
         colors(&math(r"\color{red} a \\ b")),
+        vec![('a', RED), ('b', None)]
+    );
+    assert_eq!(
+        colors(&text(r"\color{red} a \\ b")),
         vec![('a', RED), ('b', RED)]
     );
     let layout = text(r"ab \color{blue} $x$ cd");
@@ -195,7 +202,10 @@ fn unsupported_colours_fail_by_name() {
         // A declaration in a script position colours nothing, yet still refuses.
         r"x^\color{steelblue}",
         r"\color[cmyk]{0,1,1,0} x",
-        r"\textcolor{red}",
+        // A missing or unclosed colour argument. (A missing trailing body is
+        // fragment semantics, like every argument: the body may follow.)
+        r"\textcolor",
+        r"\textcolor{red",
         r"\color[RGB {1,2,3} x",
     ] {
         assert!(engine().typeset(src, Style::Display).is_err(), "{src}");

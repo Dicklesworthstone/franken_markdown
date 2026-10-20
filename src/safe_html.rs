@@ -216,6 +216,13 @@ fn markup_at(s: &str) -> Option<(Piece<'_>, usize)> {
 }
 
 fn parse_tag(s: &str) -> Option<(Tag, usize)> {
+    parse_tag_with_image_source(s).map(|(tag, len, _)| (tag, len))
+}
+
+/// Retain the first `src` attribute's original value range for image rebasing.
+/// The range includes its quotes (if any), so an unquoted source can safely
+/// become a quoted URL without changing any neighboring source bytes.
+fn parse_tag_with_image_source(s: &str) -> Option<(Tag, usize, Option<std::ops::Range<usize>>)> {
     let bytes = s.as_bytes();
     let mut i = 1usize;
     let closing = bytes.get(i) == Some(&b'/');
@@ -235,16 +242,20 @@ fn parse_tag(s: &str) -> Option<(Tag, usize)> {
     let name = s[name_start..i].to_ascii_lowercase();
     let mut attrs = Vec::new();
     let mut self_closing = false;
+    let mut image_source = None;
+    let mut saw_source = false;
     loop {
         let before_space = i;
         while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
             i += 1;
         }
         match bytes.get(i)? {
-            b'>' => return Some((tag(name, closing, self_closing, attrs), i + 1)),
+            b'>' => {
+                return Some((tag(name, closing, self_closing, attrs), i + 1, image_source));
+            }
             b'/' if bytes.get(i + 1) == Some(&b'>') && !closing => {
                 self_closing = true;
-                return Some((tag(name, closing, self_closing, attrs), i + 2));
+                return Some((tag(name, closing, self_closing, attrs), i + 2, image_source));
             }
             _ if closing => return None,
             // Attributes must be separated from the name and each other.
@@ -275,6 +286,7 @@ fn parse_tag(s: &str) -> Option<(Tag, usize)> {
             while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
                 j += 1;
             }
+            let value_start = j;
             match *bytes.get(j)? {
                 quote @ (b'"' | b'\'') => {
                     let close = s[j + 1..].find(char::from(quote))?;
@@ -295,9 +307,55 @@ fn parse_tag(s: &str) -> Option<(Tag, usize)> {
                     value = decode_entities(&s[start..j]);
                 }
             }
+            if name == "img" && attr_name == "src" && !saw_source {
+                image_source = Some(value_start..j);
+            }
             i = j;
         }
+        saw_source |= attr_name == "src";
         attrs.push((attr_name, value));
+    }
+}
+
+/// Rewrite actual image source attributes using the same tokenizer and entity
+/// decoding as safe HTML rendering. Everything outside the changed attribute
+/// values stays byte-for-byte intact, including comments and author markup.
+/// A failed callback leaves the caller's source untouched.
+#[cfg(feature = "cli")]
+pub(crate) fn rewrite_image_sources<E>(
+    html: &str,
+    mut rewrite: impl FnMut(&str) -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
+    let mut out = String::new();
+    let mut cursor = 0;
+    let mut last = 0;
+    while let Some(relative) = html[cursor..].find('<') {
+        let start = cursor + relative;
+        let Some((piece, len)) = markup_at(&html[start..]) else {
+            cursor = start + 1;
+            continue;
+        };
+        cursor = start + len;
+        if let Piece::Tag(tag, original) = piece
+            && tag.name == "img"
+            && !tag.closing
+            && let Some(source) = tag.attr("src").map(str::trim).filter(|s| !s.is_empty())
+            && let Some(replacement) = rewrite(source)?
+            && replacement != source
+            && let Some((_, _, Some(range))) = parse_tag_with_image_source(original)
+        {
+            out.push_str(&html[last..start + range.start]);
+            out.push('"');
+            push_escaped(&replacement, &mut out);
+            out.push('"');
+            last = start + range.end;
+        }
+    }
+    if last == 0 {
+        Ok(None)
+    } else {
+        out.push_str(&html[last..]);
+        Ok(Some(out))
     }
 }
 
@@ -1411,6 +1469,49 @@ mod tests {
 
     fn text(value: &str) -> Inline {
         Inline::Text(value.to_string())
+    }
+
+    #[cfg(feature = "cli")]
+    #[test]
+    fn image_rebasing_changes_only_real_source_values_and_decodes_entities() {
+        let raw = "<p align='center'><!-- <img src='comment.svg'> -->&lt;img src='text.svg'&gt;<span title=\"<img src='title.svg'>\">x</span><IMG alt='中 > logo' SRC = 'logo.svg?x=1&amp;y=2' width=80><img data-src='lazy.svg' src=plain.svg><img src=\"first.svg\" src=\"ignored.svg\"></p>";
+        let mut seen = Vec::new();
+        let result = rewrite_image_sources(raw, |source| {
+            seen.push(source.to_owned());
+            Ok::<_, ()>(Some(format!("/chapter/{source}")))
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(seen, ["logo.svg?x=1&y=2", "plain.svg", "first.svg"]);
+        let expected = raw
+            .replace(
+                "'logo.svg?x=1&amp;y=2'",
+                "\"/chapter/logo.svg?x=1&amp;y=2\"",
+            )
+            .replace("src=plain.svg", "src=\"/chapter/plain.svg\"")
+            .replace("src=\"first.svg\"", "src=\"/chapter/first.svg\"");
+        assert_eq!(result, expected);
+    }
+
+    #[cfg(feature = "cli")]
+    #[test]
+    fn image_rebasing_preserves_unsupported_and_unchanged_markup() {
+        let raw = "<imgish src='a'><img src><img src='' src='ignored'><img alt='none'><!-- <img src='hidden'> --><img src='unterminated";
+        assert_eq!(
+            rewrite_image_sources(raw, |_| -> Result<Option<String>, ()> {
+                panic!("unsupported image markup must not request any file")
+            }),
+            Ok(None)
+        );
+        let raw = "<img src='logo.svg'>";
+        assert_eq!(
+            rewrite_image_sources(raw, |source| Ok::<_, ()>(Some(source.into()))),
+            Ok(None)
+        );
+        assert_eq!(
+            rewrite_image_sources(raw, |_| Err::<Option<String>, _>("budget")),
+            Err("budget")
+        );
     }
 
     #[test]

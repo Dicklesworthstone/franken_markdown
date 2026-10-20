@@ -463,6 +463,7 @@ fn discover_images(
             Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
                 image_inlines(inlines, source, requests, warnings)?
             }
+            Block::HtmlBlock(html) => image_html(html, source, requests, warnings)?,
             Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
                 discover_images(inner, source, requests, warnings)?
             }
@@ -503,17 +504,11 @@ fn image_inlines(
     for inline in inlines {
         match inline {
             Inline::Image { dest, .. } => {
-                if let Some((relative, suffix)) = resolve_book_destination(source, dest) {
-                    let key = format!("/{}{suffix}", uri_path(&relative));
-                    requests.insert(relative, key.clone())?;
+                if let Some(key) = image_destination(dest, source, requests, warnings)? {
                     *dest = key;
-                } else if !dest.trim().to_ascii_lowercase().starts_with("data:") {
-                    if warnings.len() >= 4096 {
-                        return Err("book image diagnostics exceed 4096 entries".to_string());
-                    }
-                    warnings.push(format!("image_not_loaded: {source}: {dest}"));
                 }
             }
+            Inline::Html(html) => image_html(html, source, requests, warnings)?,
             Inline::Emphasis(inner)
             | Inline::Strong(inner)
             | Inline::Strikethrough(inner)
@@ -524,6 +519,41 @@ fn image_inlines(
         }
     }
     Ok(())
+}
+
+fn image_html(
+    html: &mut String,
+    source: &str,
+    requests: &mut ImageRequests,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    if let Some(rewritten) = crate::safe_html::rewrite_image_sources(html, |destination| {
+        image_destination(destination, source, requests, warnings)
+    })? {
+        *html = rewritten;
+    }
+    Ok(())
+}
+
+fn image_destination(
+    destination: &str,
+    source: &str,
+    requests: &mut ImageRequests,
+    warnings: &mut Vec<String>,
+) -> Result<Option<String>, String> {
+    if let Some((relative, suffix)) = resolve_book_destination(source, destination) {
+        let key = format!("/{}{suffix}", uri_path(&relative));
+        requests.insert(relative, key.clone())?;
+        Ok(Some(key))
+    } else {
+        if !destination.trim().to_ascii_lowercase().starts_with("data:") {
+            if warnings.len() >= 4096 {
+                return Err("book image diagnostics exceed 4096 entries".to_string());
+            }
+            warnings.push(format!("image_not_loaded: {source}: {destination}"));
+        }
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
@@ -567,6 +597,73 @@ mod tests {
         assert_eq!(uri_path("a/b#c?.svg"), "a/b%23c%3F.svg");
         assert_eq!(uri_path("中.svg"), "%E4%B8%AD.svg");
         assert_eq!(uri_path("percent%20.svg"), "percent%2520.svg");
+    }
+
+    #[test]
+    fn raw_images_share_markdown_resolution_deduplication_and_reference_limits() {
+        let mut requests = ImageRequests::default();
+        let mut warnings = Vec::new();
+        let mut blocks = vec![
+            Block::HtmlBlock(
+                "<p align='center'><img src='figure%20%23.svg?x=1&amp;y=2' width='80'></p>".into(),
+            ),
+            Block::Paragraph(vec![
+                Inline::Html("<img src='figure%20%23.svg?x=1&amp;y=2'>".into()),
+                Inline::Image {
+                    dest: "figure%20%23.svg?x=1&y=2".into(),
+                    alt: "Markdown".into(),
+                    title: None,
+                },
+            ]),
+        ];
+        discover_images(
+            &mut blocks,
+            "guide/chapter.md",
+            &mut requests,
+            &mut warnings,
+        )
+        .unwrap();
+        assert_eq!(requests.count, 1);
+        assert_eq!(
+            requests.files["guide/figure #.svg"],
+            BTreeSet::from(["/guide/figure%20%23.svg?x=1&y=2".into()])
+        );
+        assert!(warnings.is_empty());
+        assert!(
+            matches!(&blocks[0], Block::HtmlBlock(html) if html == "<p align='center'><img src=\"/guide/figure%20%23.svg?x=1&amp;y=2\" width='80'></p>")
+        );
+
+        requests.count = 4096;
+        let mut new_image = "<img src='other.svg'>".to_string();
+        assert!(
+            image_html(
+                &mut new_image,
+                "guide/chapter.md",
+                &mut requests,
+                &mut warnings
+            )
+            .unwrap_err()
+            .contains("4096")
+        );
+        assert_eq!(new_image, "<img src='other.svg'>");
+    }
+
+    #[test]
+    fn raw_images_keep_unsafe_external_and_data_urls_out_of_file_requests() {
+        let mut requests = ImageRequests::default();
+        let mut warnings = Vec::new();
+        let original = "<img src='../../outside.svg'><img src='https://example.test/a.svg'><img src='file:///secret.svg'><img src='data:image/png;base64,AQID'>";
+        let mut html = original.to_string();
+        image_html(&mut html, "guide/chapter.md", &mut requests, &mut warnings).unwrap();
+        assert_eq!(html, original);
+        assert!(requests.files.is_empty());
+        assert_eq!(warnings.len(), 3);
+        warnings.resize(4096, "previous".into());
+        assert!(
+            image_html(&mut html, "guide/chapter.md", &mut requests, &mut warnings)
+                .unwrap_err()
+                .contains("diagnostics exceed 4096")
+        );
     }
 
     #[test]

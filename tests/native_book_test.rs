@@ -226,6 +226,199 @@ fn chapter_local_images_with_identical_basenames_are_packaged_not_lost() {
 }
 
 #[test]
+fn raw_html_chapter_images_reach_html_pdf_and_epub_with_local_identity() {
+    let root = workspace();
+    fs::create_dir_all(root.join("book/a")).unwrap();
+    fs::create_dir_all(root.join("book/b")).unwrap();
+    let first = "# A\n\n<p align='center'><!-- <img src='not-a-file.svg'> --><img src='figure%20%23.svg?x=1&amp;y=2' alt='First' width='80'></p>\n";
+    let second = "# B\n\nInline <img src='figure%20%23.svg?x=1&amp;y=2' alt='Second'> artwork.\n";
+    fs::write(root.join("book/a/start.md"), first).unwrap();
+    fs::write(root.join("book/b/end.md"), second).unwrap();
+    fs::write(root.join("book/a/figure #.svg"), svg(10)).unwrap();
+    fs::write(root.join("book/b/figure #.svg"), svg(20)).unwrap();
+    let sources = [
+        BookInput {
+            path: "a/start.md".into(),
+            source: first.replace(
+                "src='figure%20%23.svg?x=1&amp;y=2'",
+                "src=\"/a/figure%20%23.svg?x=1&amp;y=2\"",
+            ),
+        },
+        BookInput {
+            path: "b/end.md".into(),
+            source: second.replace(
+                "src='figure%20%23.svg?x=1&amp;y=2'",
+                "src=\"/b/figure%20%23.svg?x=1&amp;y=2\"",
+            ),
+        },
+    ];
+    let book = build_book(&sources).unwrap();
+    let images = vec![
+        PdfImageAsset::new("/a/figure%20%23.svg?x=1&y=2", svg(10)),
+        PdfImageAsset::new("/b/figure%20%23.svg?x=1&y=2", svg(20)),
+    ];
+    for target in ["both", "epub"] {
+        let flags = if target == "both" {
+            ["--out-dir", "site"]
+        } else {
+            ["--out", "raw-images.epub"]
+        };
+        let output = fmd(
+            &["book", "book", "--to", target, flags[0], flags[1], "--json"],
+            &root,
+        );
+        succeeded(&output);
+        let receipt = String::from_utf8_lossy(&output.stdout);
+        assert!(receipt.contains("\"images\":2"), "{receipt}");
+        assert!(!receipt.contains("image_unavailable"), "{receipt}");
+        if target == "both" {
+            for (page, own, other) in [
+                ("a__start.html", svg(10), svg(20)),
+                ("b__end.html", svg(20), svg(10)),
+            ] {
+                let html = fs::read_to_string(root.join("site").join(page)).unwrap();
+                assert!(html.contains(&format!(
+                    "data:image/svg+xml;base64,{}",
+                    franken_markdown::html::base64_encode(&own)
+                )));
+                assert!(!html.contains(&format!(
+                    "data:image/svg+xml;base64,{}",
+                    franken_markdown::html::base64_encode(&other)
+                )));
+            }
+            let expected = franken_markdown::book::render_book_pdf(
+                &book,
+                &franken_markdown::PdfOptions {
+                    title: Some("A".into()),
+                    image_assets: images.clone(),
+                    toc: true,
+                    page_numbers: true,
+                    ..franken_markdown::PdfOptions::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(fs::read(root.join("site/book.pdf")).unwrap(), expected);
+        } else {
+            let expected = franken_markdown::epub::render_book_epub(
+                &book,
+                &HtmlOptions {
+                    title: Some("A".into()),
+                    image_assets: images.clone(),
+                    ..HtmlOptions::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(fs::read(root.join("raw-images.epub")).unwrap(), expected);
+        }
+    }
+}
+
+#[test]
+fn raw_html_image_reads_keep_missing_unsafe_and_oversized_assets_bounded() {
+    let root = workspace();
+    fs::create_dir(root.join("book")).unwrap();
+    fs::write(root.join("book/a.md"), "# A\n\n<img src='large.svg' alt='Large'>\n<img src='missing.svg' alt='Missing'>\n<img src='../outside.svg' alt='Outside'>\n<img src='https://invalid.example/image.svg' alt='Remote'>\n").unwrap();
+    fs::write(root.join("book/large.svg"), svg(10)).unwrap();
+    fs::write(root.join("outside.svg"), svg(20)).unwrap();
+    let output = fmd(
+        &[
+            "book",
+            "book",
+            "--to",
+            "html",
+            "--out-dir",
+            "site",
+            "--max-pdf-image-bytes",
+            "4",
+            "--json",
+        ],
+        &root,
+    );
+    succeeded(&output);
+    let receipt = String::from_utf8_lossy(&output.stdout);
+    assert!(receipt.contains("\"images\":0"), "{receipt}");
+    assert!(
+        receipt.contains("image_unavailable: large.svg"),
+        "{receipt}"
+    );
+    assert!(
+        receipt.contains("image_unavailable: missing.svg"),
+        "{receipt}"
+    );
+    assert!(
+        receipt.contains("image_not_loaded: a.md: ../outside.svg"),
+        "{receipt}"
+    );
+    assert!(
+        receipt.contains("image_not_loaded: a.md: https://invalid.example/image.svg"),
+        "{receipt}"
+    );
+    let html = fs::read_to_string(root.join("site/a.html")).unwrap();
+    assert!(!html.contains("data:image/svg+xml;base64,"));
+}
+
+#[test]
+fn raw_html_image_files_are_protected_from_publication_overwrites() {
+    let root = workspace();
+    fs::create_dir(root.join("book")).unwrap();
+    fs::write(
+        root.join("book/a.md"),
+        "# A\n\n<img src='logo.svg' alt='Logo'>\n",
+    )
+    .unwrap();
+    let image = svg(10);
+    fs::write(root.join("book/logo.svg"), &image).unwrap();
+    let output = fmd(
+        &[
+            "book",
+            "book",
+            "--to",
+            "epub",
+            "--out",
+            "book/logo.svg",
+            "--json",
+        ],
+        &root,
+    );
+    failed(&output, 73, "overwrite a book input");
+    assert_eq!(fs::read(root.join("book/logo.svg")).unwrap(), image);
+}
+
+#[cfg(unix)]
+#[test]
+fn raw_html_image_symlinks_do_not_escape_the_book_root() {
+    let root = workspace();
+    fs::create_dir(root.join("book")).unwrap();
+    fs::write(
+        root.join("book/a.md"),
+        "# A\n\n<img src='linked.svg' alt='Logo'>\n",
+    )
+    .unwrap();
+    fs::write(root.join("outside.svg"), svg(10)).unwrap();
+    std::os::unix::fs::symlink("../outside.svg", root.join("book/linked.svg")).unwrap();
+    let output = fmd(
+        &[
+            "book",
+            "book",
+            "--to",
+            "epub",
+            "--out",
+            "book.epub",
+            "--json",
+        ],
+        &root,
+    );
+    succeeded(&output);
+    let receipt = String::from_utf8_lossy(&output.stdout);
+    assert!(receipt.contains("\"images\":0"), "{receipt}");
+    assert!(receipt.contains("symlink component"), "{receipt}");
+    assert!(
+        receipt.contains("image_unavailable: linked.svg"),
+        "{receipt}"
+    );
+}
+
+#[test]
 fn missing_images_are_reported_without_fetching_remote_destinations() {
     let root = workspace();
     fs::create_dir(root.join("book")).unwrap();

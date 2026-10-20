@@ -195,7 +195,8 @@ where
                     // so glyphs, strike marks and link targets share one placement.
                     // Preserve the exact existing RTL right edge without a lossy
                     // subtract/add round trip when alignment is unspecified.
-                    let mut cursor = if rtl && matches!(self.alignment, Align::None | Align::Right)
+                    let mut cursor = if rtl
+                        && matches!(self.alignment, Align::None | Align::Right | Align::Decimal)
                     {
                         x + width
                     } else {

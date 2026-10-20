@@ -172,8 +172,7 @@ fn expression(spec: &str) -> Option<[f64; 3]> {
         return None;
     }
     let mut rgb = base(first)?;
-    loop {
-        let Some(pct) = parts.next() else { break };
+    while let Some(pct) = parts.next() {
         let pct = percent(pct)?;
         let other = base(parts.next().unwrap_or("").trim())?;
         let t = pct / 100.0;
@@ -217,6 +216,7 @@ fn html(spec: &str) -> Option<[f64; 3]> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 

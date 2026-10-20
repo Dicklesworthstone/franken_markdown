@@ -7,6 +7,7 @@
 
 use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, ResumableFlowDisplay};
 
+mod financial;
 mod gutters;
 mod long_content;
 mod styled;
@@ -214,6 +215,7 @@ impl ResumableFlowDisplay {
             .collect();
         let mut y = 0.0;
         let mut table_edges = Vec::new();
+        let mut table_decimals = Vec::new();
         for (block_index, (block, meta)) in self.blocks.iter().zip(&self.metadata).enumerate() {
             let x = gutters.indent(meta);
             let width = options.viewport_width - x;
@@ -223,6 +225,7 @@ impl ResumableFlowDisplay {
             let span = meta.span;
             if !matches!(block, DisplayBlock::TableRow { .. }) {
                 table_edges.clear();
+                table_decimals.clear();
             }
             match block {
                 DisplayBlock::Heading { level, text } => {
@@ -350,7 +353,8 @@ impl ResumableFlowDisplay {
                                         && row_meta.quote_depth == meta.quote_depth)
                             })
                             .map(|(_, row)| row);
-                        table_edges = layout.table_columns(rows, width, styled)?;
+                        (table_edges, table_decimals) =
+                            layout.table_columns(rows, width, styled)?;
                     }
                     let mut height = options.line_height;
                     let mut children = Vec::new();
@@ -368,12 +372,32 @@ impl ResumableFlowDisplay {
                             .get(column)
                             .copied()
                             .unwrap_or(Align::None);
+                        let available = cell_width - 8.0;
+                        let mut text_x = cx + 4.0;
+                        let mut text_width = available;
+                        if !header
+                            && meta
+                                .table_decimal_cells
+                                .get(column)
+                                .copied()
+                                .unwrap_or(false)
+                            && let Some(shared) = table_decimals.get(column)
+                            && shared.before + shared.after <= available
+                            && let Some(measured) =
+                                layout.decimal_measure(text, runs, FlowTextRole::TableCell)?
+                            && measured.before + measured.after <= available
+                        {
+                            let offset = (available - shared.after - measured.before).max(0.0);
+                            text_x += offset;
+                            text_width -= offset;
+                            layout.alignment = Align::Left;
+                        }
                         let used = layout.inline_text(
                             text,
                             runs,
-                            cx + 4.0,
+                            text_x,
                             y + 4.0,
-                            cell_width - 8.0,
+                            text_width,
                             options.body_size,
                             options.line_height,
                             if header {
@@ -399,6 +423,24 @@ impl ResumableFlowDisplay {
                         });
                     }
                     height += 8.0;
+                    let footing_height = financial::footing_height(&meta.table_footing);
+                    for (rule, edges) in meta.table_footing.iter().zip(table_edges.windows(2)) {
+                        let strokes = financial::stroke_count(*rule);
+                        for stroke in 0..strokes {
+                            layout.vector(
+                                DisplayRect::new(
+                                    x + edges[0] + 4.0,
+                                    y + height + stroke as f32 * 2.0,
+                                    (edges[1] - edges[0] - 8.0).max(0.0),
+                                    0.7,
+                                ),
+                                VectorShapeType::HorizontalRule,
+                                "table-border",
+                                span,
+                            )?;
+                        }
+                    }
+                    height += footing_height;
                     for child in &mut children {
                         child.bounds.height = height;
                         layout.vector(
@@ -506,7 +548,7 @@ where
         match self.alignment {
             Align::Left => x,
             Align::Center => x + (width - advance) * 0.5,
-            Align::Right => x + width - advance,
+            Align::Right | Align::Decimal => x + width - advance,
             Align::None => {
                 if direction == Direction::RightToLeft {
                     x + width - advance
@@ -557,12 +599,13 @@ where
         rows: I,
         width: f32,
         styled: bool,
-    ) -> Result<Vec<f32>, FlowLayoutError>
+    ) -> Result<(Vec<f32>, Vec<financial::DecimalMeasure>), FlowLayoutError>
     where
         I: Iterator<Item = (&'b DisplayBlock, &'b BlockMeta)>,
     {
         let mut minimum = Vec::<f64>::new();
         let mut preferred = Vec::<f64>::new();
+        let mut decimals = Vec::<financial::DecimalMeasure>::new();
         for (block, meta) in rows {
             let (cells, role) = match block {
                 DisplayBlock::TableHeader { cells } => (cells, FlowTextRole::TableHeader),
@@ -577,6 +620,7 @@ where
             if cells.len() > minimum.len() {
                 minimum.resize(cells.len(), 1.0);
                 preferred.resize(cells.len(), 1.0);
+                decimals.resize(cells.len(), financial::DecimalMeasure::default());
             }
             for (column, text) in cells.iter().enumerate() {
                 let runs = if styled {
@@ -594,9 +638,23 @@ where
                 };
                 minimum[column] = minimum[column].max(min);
                 preferred[column] = preferred[column].max(ideal);
+                if meta.table_source_row != Some(0)
+                    && meta
+                        .table_decimal_cells
+                        .get(column)
+                        .copied()
+                        .unwrap_or(false)
+                    && let Some(measured) = self.decimal_measure(text, runs, role)?
+                {
+                    decimals[column].before = decimals[column].before.max(measured.before);
+                    decimals[column].after = decimals[column].after.max(measured.after);
+                }
             }
         }
-        table_column_edges(&minimum, &preferred, width)
+        for (ideal, decimal) in preferred.iter_mut().zip(&decimals) {
+            *ideal = (*ideal).max(f64::from(decimal.before + decimal.after));
+        }
+        Ok((table_column_edges(&minimum, &preferred, width)?, decimals))
     }
 
     fn cell_measures(
@@ -1643,7 +1701,7 @@ mod tests {
                 let expected = match align {
                     Align::Left => 4.0,
                     Align::Center => 4.0 + (45.0 - run.bounds.width) * 0.5,
-                    Align::Right => 49.0 - run.bounds.width,
+                    Align::Right | Align::Decimal => 49.0 - run.bounds.width,
                     Align::None => unreachable!(),
                 };
                 assert_eq!(run.bounds.x, expected);

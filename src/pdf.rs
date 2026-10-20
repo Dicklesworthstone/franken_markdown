@@ -40,6 +40,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
+mod financial_tables;
 mod inline_image;
 mod joint_pagination;
 mod math;
@@ -353,6 +354,11 @@ struct Line {
     /// non-table line. Lets the structure-tree builder emit per-cell `/TH`/`/TD`
     /// and merge a cell's wrapped fragments across physical lines.
     table_cols: Vec<u32>,
+    /// Original source row in an explicitly formatted table (header = 0).
+    /// Footing-marker rows do not become accessible data rows.
+    table_source_row: Option<u32>,
+    /// Non-content strokes belonging to this row, never repeated as headers.
+    table_footing: Vec<financial_tables::FootingStroke>,
     segs: Vec<Seg>,
     image: Option<ImageLine>,
 }
@@ -3146,6 +3152,8 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
+                table_source_row: None,
+                table_footing: Vec::new(),
                 segs,
                 page_break_before: false,
                 image: None,
@@ -3549,6 +3557,8 @@ fn page_note_separator(page: PageGeom) -> Line {
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
+        table_source_row: None,
+        table_footing: Vec::new(),
         segs: Vec::new(),
         image: None,
     }
@@ -4022,6 +4032,7 @@ fn align_cache_code(align: Align) -> u8 {
         Align::Left => 1,
         Align::Center => 2,
         Align::Right => 3,
+        Align::Decimal => 4,
     }
 }
 
@@ -4444,6 +4455,8 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         flow: FlowMark::default(),
                         list_path: Vec::new(),
                         table_cols: Vec::new(),
+                        table_source_row: None,
+                        table_footing: Vec::new(),
                         segs,
                         page_break_before: false,
                         image: None,
@@ -4488,6 +4501,8 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     flow: FlowMark::default(),
                     list_path: Vec::new(),
                     table_cols: Vec::new(),
+                    table_source_row: None,
+                    table_footing: Vec::new(),
                     segs,
                     page_break_before: false,
                     image: None,
@@ -4566,6 +4581,8 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
+                table_source_row: None,
+                table_footing: Vec::new(),
                 segs: Vec::new(),
                 image: None,
             });
@@ -4759,6 +4776,8 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
+        table_source_row: None,
+        table_footing: Vec::new(),
         segs: Vec::new(),
         image: None,
     });
@@ -4847,6 +4866,8 @@ fn push_figure_line(
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
+        table_source_row: None,
+        table_footing: Vec::new(),
         segs: Vec::new(),
         image: Some(ImageLine {
             image,
@@ -17664,11 +17685,20 @@ fn is_numeric_cell_text(text: &str) -> bool {
 }
 
 fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec<Line>) {
+    let financial_rows = crate::table_format::financial_rows(table);
+    let row_count = financial_rows.as_ref().map_or(table.rows.len(), Vec::len);
+    let source_cells = |index: usize| {
+        financial_rows
+            .as_ref()
+            .map_or(table.rows[index].as_slice(), |rows| rows[index].cells)
+    };
     let mut size = spec.nominal_size;
-    let ncol = table
-        .head
-        .len()
-        .max(table.rows.iter().map(Vec::len).max().unwrap_or(0));
+    let ncol = table.head.len().max(
+        (0..row_count)
+            .map(|index| source_cells(index).len())
+            .max()
+            .unwrap_or(0),
+    );
     if ncol == 0 {
         return;
     }
@@ -17691,15 +17721,30 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         .iter()
         .map(|cell| cell_tokens(cell, true, faces, &mut *spec.links))
         .collect();
-    let row_toks: Vec<Vec<Vec<Tok>>> = table
-        .rows
-        .iter()
-        .map(|row| {
-            row.iter()
+    let row_toks: Vec<Vec<Vec<Tok>>> = (0..row_count)
+        .map(|index| {
+            source_cells(index)
+                .iter()
                 .map(|cell| cell_tokens(cell, false, faces, &mut *spec.links))
                 .collect()
         })
         .collect();
+    let decimal_cells = financial_rows.as_ref().map(|rows| {
+        rows.iter()
+            .map(|row| {
+                row.cells
+                    .iter()
+                    .enumerate()
+                    .map(|(column, cell)| {
+                        table.align.get(column) == Some(&Align::Decimal)
+                            && crate::table_format::decimal_cell_text(cell)
+                                .and_then(|text| crate::table_format::decimal_anchor(&text))
+                                .is_some()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    });
     if perf {
         let cells = u64::try_from(head_toks.len() + row_toks.iter().map(Vec::len).sum::<usize>())
             .unwrap_or(u64::MAX);
@@ -17739,6 +17784,16 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             }
         }
     }
+    let mut decimal_widths = decimal_cells.as_ref().map(|eligible| {
+        financial_tables::measure_columns(
+            &row_toks,
+            eligible,
+            &mut columns,
+            size,
+            faces,
+            width_cache,
+        )
+    });
 
     let mut gutters = pad * ncol as f32;
     let mut target = (avail - gutters).max(ncol as f32 * TABLE_MIN_COL_WIDTH);
@@ -17800,6 +17855,16 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                     }
                 }
             }
+            decimal_widths = decimal_cells.as_ref().map(|eligible| {
+                financial_tables::measure_columns(
+                    &row_toks,
+                    eligible,
+                    &mut columns,
+                    size,
+                    faces,
+                    width_cache,
+                )
+            });
         }
     }
 
@@ -17849,7 +17914,11 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         .collect();
 
     let link_targets = &spec.links.targets;
-    let row_lines = |cells: &[Vec<Tok>], gap_after: f32, kind: FlowKind, shade: bool| {
+    let row_lines = |cells: &[Vec<Tok>],
+                     gap_after: f32,
+                     kind: FlowKind,
+                     shade: bool,
+                     source_row: Option<usize>| {
         let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
             .map(|k| {
                 let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
@@ -17895,12 +17964,36 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 let cw = colw.get(k).copied().unwrap_or(0.0);
                 let base = tx.get(k).copied().unwrap_or(left);
                 let effective_align = match table.align.get(k) {
+                    Some(Align::Decimal) => Align::Decimal,
                     Some(Align::Right) => Align::Right,
                     Some(Align::Center) => Align::Center,
                     Some(Align::Left) => Align::Left,
                     _ => inferred_align.get(k).copied().unwrap_or(Align::None),
                 };
                 let offset = match effective_align {
+                    Align::Decimal => {
+                        let eligible = source_row
+                            .and_then(|row| decimal_cells.as_ref()?.get(row)?.get(k))
+                            .copied()
+                            .unwrap_or(false);
+                        let decimal = eligible
+                            .then(|| {
+                                let total = decimal_widths.as_ref()?.get(k)?;
+                                if wrapped[k].len() != 1 || total.before + total.after > cw + 0.001
+                                {
+                                    return None;
+                                }
+                                let cell = financial_tables::line_measure(
+                                    cell_line,
+                                    size,
+                                    faces,
+                                    width_cache,
+                                )?;
+                                Some((cw - total.after - cell.before).max(0.0))
+                            })
+                            .flatten();
+                        decimal.unwrap_or_else(|| (cw - cell_line.width).max(0.0))
+                    }
                     Align::Right => (cw - cell_line.width).max(0.0),
                     Align::Center => ((cw - cell_line.width) / 2.0).max(0.0),
                     _ => 0.0,
@@ -17950,6 +18043,10 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 },
                 list_path: Vec::new(),
                 table_cols: cols,
+                table_source_row: financial_rows.as_ref().map(|rows| {
+                    source_row.map_or(0, |index| rows[index].source_index.saturating_add(1) as u32)
+                }),
+                table_footing: Vec::new(),
                 segs,
                 page_break_before: false,
                 image: None,
@@ -17979,12 +18076,20 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
+        table_source_row: None,
+        table_footing: Vec::new(),
         segs: Vec::new(),
         page_break_before: false,
         image: None,
     };
 
-    out.extend(row_lines(&head_toks, 3.0, FlowKind::TableHeader, false));
+    out.extend(row_lines(
+        &head_toks,
+        3.0,
+        FlowKind::TableHeader,
+        false,
+        None,
+    ));
     out.push(rule(3.0));
     let nrows = row_toks.len();
     for (i, row) in row_toks.iter().enumerate() {
@@ -17995,7 +18100,13 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             if i + 1 == nrows { 3.0 } else { 2.5 },
             FlowKind::TableRow,
             i % 2 == 0,
+            Some(i),
         ));
+        if let Some(rows) = &financial_rows
+            && let Some(last) = out.last_mut()
+        {
+            financial_tables::attach_footing(last, &rows[i].rules, &tx, &colw);
+        }
     }
     out.push(rule(0.0));
     gap(out, 8.0);
@@ -19562,6 +19673,8 @@ fn emit_broken_paragraph(
             flow: FlowMark::default(),
             list_path: Vec::new(),
             table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
             segs,
             page_break_before: false,
             image: None,
@@ -19618,6 +19731,8 @@ fn layout_prefixed_inlines(
             flow: FlowMark::default(),
             list_path: Vec::new(),
             table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
             segs: vec![marker],
             image: None,
         });
@@ -19698,6 +19813,8 @@ fn layout_prefixed_inlines(
             flow: FlowMark::default(),
             list_path: Vec::new(),
             table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
             segs,
             page_break_before: false,
             image: None,
@@ -19764,6 +19881,8 @@ fn layout_inlines_greedy(
             flow: FlowMark::default(),
             list_path: Vec::new(),
             table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
             segs,
             page_break_before: false,
             image: None,
@@ -21969,7 +22088,7 @@ fn place_page_notes<'a>(
         y -= line_leading(line);
         placed.push(Placed {
             line,
-            y: y + inline_math_extents(line).1,
+            y: y + inline_math_extents(line).1 + financial_tables::footing_depth(line),
         });
         y -= line.gap_after;
     }
@@ -22717,6 +22836,16 @@ fn generate_page_content(
                 });
             }
         }
+        for stroke in &line.table_footing {
+            append_artifact_rule_stroke(
+                &mut body,
+                palette.rule,
+                0.7,
+                stroke.x1,
+                y - stroke.below,
+                stroke.x2,
+            );
+        }
         if line.rule {
             // A page-note separator is the short rule printed books use.
             let x2 = if line.flow.note == NOTE_SEPARATOR {
@@ -22738,8 +22867,12 @@ fn generate_page_content(
                 x2,
             );
         } else if !line.table_cols.is_empty() {
-            match tbl_group {
-                Some(g) if g == line.flow.group => {
+            match (line.table_source_row, tbl_group) {
+                (Some(source_row), _) => {
+                    tbl_group = Some(line.flow.group);
+                    tbl_row = source_row;
+                }
+                (None, Some(g)) if g == line.flow.group => {
                     let into_body = line.flow.kind == FlowKind::TableRow
                         && prev_table_kind != Some(FlowKind::TableRow);
                     if line.flow.index == 0 || into_body {
@@ -23587,6 +23720,7 @@ fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityE
         if line.rule {
             rules += 1;
         }
+        rules += line.table_footing.len();
         if let Some(image) = &line.image {
             images += 1;
             link_annotations += usize::from(image.link.is_some());
@@ -23968,6 +24102,8 @@ mod font_slot_text_refs_tests {
             flow: FlowMark::default(),
             list_path: Vec::new(),
             table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
             segs,
             page_break_before: false,
             image,
@@ -29877,6 +30013,8 @@ mod keep_with_next_tests {
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -30099,6 +30237,8 @@ mod void_budget_tests {
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -30174,7 +30314,7 @@ mod void_budget_tests {
 
 fn line_leading(line: &Line) -> f32 {
     let (above, below) = inline_math_extents(line);
-    line.size * 1.32 + above + below
+    line.size * 1.32 + above + below + financial_tables::footing_depth(line)
 }
 
 /// Text on an image row is the list marker, aligned to the first normal text
@@ -30207,7 +30347,7 @@ fn place_lines_shrunk<'a>(
         y -= line_leading(line);
         placed.push(Placed {
             line,
-            y: y + inline_math_extents(line).1,
+            y: y + inline_math_extents(line).1 + financial_tables::footing_depth(line),
         });
         y -= line.gap_after;
     }
@@ -30215,7 +30355,7 @@ fn place_lines_shrunk<'a>(
         y -= line_leading(line);
         placed.push(Placed {
             line,
-            y: y + inline_math_extents(line).1,
+            y: y + inline_math_extents(line).1 + financial_tables::footing_depth(line),
         });
         let gap = match shrink_from {
             Some(from) if idx >= from && is_block_boundary(lines, idx) => {
@@ -33324,6 +33464,8 @@ mod pdf_writer_tests {
             flow: FlowMark::default(),
             list_path: Vec::new(),
             table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
             segs: texts
                 .iter()
                 .map(|text| Seg {
@@ -34249,6 +34391,14 @@ mod pdf_writer_tests {
                 "line {line_idx}"
             );
             assert_eq!(actual.rule, expected.rule, "line {line_idx}");
+            assert_eq!(
+                actual.table_source_row, expected.table_source_row,
+                "line {line_idx}"
+            );
+            assert_eq!(
+                actual.table_footing, expected.table_footing,
+                "line {line_idx}"
+            );
             assert_eq!(
                 actual.rule_x.to_bits(),
                 expected.rule_x.to_bits(),
@@ -35185,6 +35335,8 @@ mod pdf_writer_tests {
                 flow: FlowMark::default(),
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
+                table_source_row: None,
+                table_footing: Vec::new(),
                 segs,
                 page_break_before: false,
                 image: None,
@@ -35349,6 +35501,8 @@ mod pdf_writer_tests {
                 flow: FlowMark::default(),
                 list_path,
                 table_cols: Vec::new(),
+                table_source_row: None,
+                table_footing: Vec::new(),
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -35486,6 +35640,8 @@ mod pdf_writer_tests {
                     .map(|&(list, item)| ListMark { list, item })
                     .collect(),
                 table_cols: Vec::new(),
+                table_source_row: None,
+                table_footing: Vec::new(),
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -35603,6 +35759,8 @@ mod pdf_writer_tests {
                     .map(|&(list, item)| ListMark { list, item })
                     .collect(),
                 table_cols: vec![0, 1, 2],
+                table_source_row: None,
+                table_footing: Vec::new(),
                 segs: vec![
                     Seg {
                         x: 0.0,
@@ -35701,6 +35859,8 @@ mod pdf_writer_tests {
                     .map(|&(list, item)| ListMark { list, item })
                     .collect(),
                 table_cols: Vec::new(),
+                table_source_row: None,
+                table_footing: Vec::new(),
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -40670,6 +40830,8 @@ mod coverage_gap_tests {
             flow: FlowMark::default(),
             list_path: Vec::new(),
             table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -42671,6 +42833,8 @@ mod plass_pagination_tests {
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
             segs: Vec::new(),
             page_break_before: false,
             image: None,

@@ -3,6 +3,10 @@
 //! `lib.rs`. Tests may unwrap/panic for clarity.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use franken_markdown::{Block, ast};
+#[path = "../src/table_format.rs"]
+mod table_format;
+
 #[path = "../src/svg.rs"]
 mod svg;
 

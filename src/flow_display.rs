@@ -218,6 +218,10 @@ struct BlockMeta {
     cell_runs: Vec<Vec<FlowInlineRun>>,
     // One allocation per parsed table, shared by its header and all body rows.
     table_alignments: std::sync::Arc<[Align]>,
+    // Opt-in table presentation remains attached to real source rows.
+    table_footing: Vec<crate::table_format::FootingRule>,
+    table_decimal_cells: Vec<bool>,
+    table_source_row: Option<usize>,
     image_link: Option<std::sync::Arc<str>>,
 }
 
@@ -636,6 +640,31 @@ impl ResumableFlowDisplay {
                             children: Vec::new(),
                         });
                     }
+                    let mut footing_height = 0.0_f32;
+                    for (column, rule) in meta.table_footing.iter().enumerate() {
+                        let strokes = match rule {
+                            crate::table_format::FootingRule::None => 0,
+                            crate::table_format::FootingRule::Single => 1,
+                            crate::table_format::FootingRule::Double => 2,
+                        };
+                        if strokes > 0 {
+                            footing_height = footing_height.max(1.0 + strokes as f32 * 2.0);
+                        }
+                        for stroke in 0..strokes {
+                            push_vector(
+                                &mut list,
+                                DisplayRect::new(
+                                    x + column as f32 * cell_width + 4.0,
+                                    y + 20.0 + stroke as f32 * 2.0,
+                                    (cell_width - 8.0).max(0.0),
+                                    0.7,
+                                ),
+                                VectorShapeType::HorizontalRule,
+                                "table-border",
+                                span,
+                            );
+                        }
+                    }
                     list.push_reading_node(AccessibleReadingNode {
                         role: if header {
                             AccessibleReadingRole::TableHeaderRow
@@ -647,7 +676,7 @@ impl ResumableFlowDisplay {
                         bounds,
                         children,
                     });
-                    y += 24.0;
+                    y += 24.0 + footing_height;
                 }
                 DisplayBlock::UnresolvedAsset(asset) => {
                     let result = resolved.get(&asset.id);
@@ -917,13 +946,66 @@ fn prepare_document(
                             FlowDisplayError::BudgetExceeded("table alignment bytes".to_owned())
                         })?;
                     let alignments: std::sync::Arc<[Align]> = table.align.as_slice().into();
-                    for (index, row) in std::iter::once(&table.head)
-                        .chain(table.rows.iter())
-                        .enumerate()
-                    {
+                    if table.align.contains(&Align::Decimal) {
+                        let columns = table
+                            .rows
+                            .iter()
+                            .map(Vec::len)
+                            .chain([table.align.len(), table.head.len()])
+                            .max()
+                            .unwrap_or(0);
+                        table
+                            .rows
+                            .len()
+                            .checked_mul(columns)
+                            .and_then(|cells| {
+                                cells.checked_mul(
+                                    std::mem::size_of::<crate::table_format::FootingRule>()
+                                        + std::mem::size_of::<bool>(),
+                                )
+                            })
+                            .filter(|bytes| *bytes <= limits.max_output_bytes)
+                            .ok_or_else(|| {
+                                FlowDisplayError::BudgetExceeded(
+                                    "financial table metadata bytes".to_owned(),
+                                )
+                            })?;
+                    }
+                    let financial = crate::table_format::financial_rows(table);
+                    let rows = financial.as_ref().map_or(table.rows.len(), Vec::len);
+                    for index in 0..=rows {
+                        let row = if index == 0 {
+                            table.head.as_slice()
+                        } else if let Some(financial) = &financial {
+                            financial[index - 1].cells
+                        } else {
+                            table.rows[index - 1].as_slice()
+                        };
                         let mut cells = Vec::new();
                         let mut row_meta = meta.clone();
                         row_meta.table_alignments = std::sync::Arc::clone(&alignments);
+                        if let Some(financial) = &financial {
+                            row_meta.table_source_row = Some(if index == 0 {
+                                0
+                            } else {
+                                financial[index - 1].source_index + 1
+                            });
+                            if index > 0 {
+                                row_meta.table_footing = financial[index - 1].rules.clone();
+                                row_meta.table_decimal_cells = row
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(column, cell)| {
+                                        table.align.get(column) == Some(&Align::Decimal)
+                                            && crate::table_format::decimal_cell_text(cell)
+                                                .and_then(|text| {
+                                                    crate::table_format::decimal_anchor(&text)
+                                                })
+                                                .is_some()
+                                    })
+                                    .collect();
+                            }
+                        }
                         let mut remaining = output.remaining_bytes();
                         for cell in row {
                             let (text, runs) = inline::collect(&notes.inlines(cell), remaining)?;

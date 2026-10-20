@@ -252,6 +252,8 @@ fn cost_context(line: &Line) -> Line {
         page_break_before: line.page_break_before,
         list_path: Vec::new(),
         table_cols: Vec::new(),
+        table_source_row: None,
+        table_footing: Vec::new(),
         segs: Vec::new(),
         image: None,
     }
@@ -351,7 +353,8 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
                 }
                 let shape = finalized_shape(&body[start..end], alternative);
                 let reservations = if let Some(notes) = &notes {
-                    let Some(reservations) = shape_note_reservations(lines, notes, start, end, &shape)
+                    let Some(reservations) =
+                        shape_note_reservations(lines, notes, start, end, &shape)
                     else {
                         // Losing/reordering a citation must not make an
                         // apparently cheaper but semantically different shape.

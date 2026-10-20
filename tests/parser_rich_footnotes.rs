@@ -27,6 +27,75 @@ use franken_markdown::{
 };
 
 #[test]
+fn explicit_hard_breaks_survive_first_and_continuation_footnote_lines() {
+    for (first, second) in [("  ", "  "), ("\\", "  "), ("  ", "\\")] {
+        let definition = format!(
+            "[^n]: First note line.{first}\n    Second note line.{second}\n    Third note line."
+        );
+        let source = format!("Evidence[^n].\n\n{definition}\n\nOutside.");
+        let document = parse_markdown(&source);
+        let Block::FootnoteDefinition { blocks, .. } = &document.blocks[1] else {
+            panic!("expected note");
+        };
+        assert_eq!(
+            blocks,
+            &[Block::Paragraph(vec![
+                Inline::Text("First note line.".into()),
+                Inline::HardBreak,
+                Inline::Text("Second note line.".into()),
+                Inline::HardBreak,
+                Inline::Text("Third note line.".into()),
+            ])]
+        );
+        assert_eq!(parse_markdown_profiled(&source).document, document);
+        let spanned = parse_markdown_spanned(&source);
+        assert_eq!(
+            spanned.blocks[1].span.slice(&source),
+            Some(definition.as_str())
+        );
+        let html = render_html(&source, &HtmlOptions::default()).unwrap();
+        assert!(html.contains("First note line.<br>\nSecond note line.<br>\nThird note line."));
+        assert!(html.contains("<p>Outside.</p>"));
+    }
+}
+
+#[test]
+fn footnote_hard_breaks_require_source_markers_and_preserve_plain_note_spacing() {
+    for tail in ["\\\\", "&#32;&#32;", "&#92;", " \t"] {
+        let source = format!("[^n]: First{tail}\n    Second");
+        let document = parse_markdown(&source);
+        let Block::FootnoteDefinition { blocks, .. } = &document.blocks[0] else {
+            panic!("expected note");
+        };
+        assert!(
+            matches!(&blocks[0], Block::Paragraph(inlines) if !inlines.iter().any(|inline| matches!(inline, Inline::HardBreak)))
+        );
+    }
+    let document = parse_markdown("[^n]: First\\\\\\\n    Second");
+    let Block::FootnoteDefinition { blocks, .. } = &document.blocks[0] else {
+        panic!("expected note");
+    };
+    assert_eq!(
+        blocks,
+        &[Block::Paragraph(vec![
+            Inline::Text("First\\".into()),
+            Inline::HardBreak,
+            Inline::Text("Second".into()),
+        ])]
+    );
+    assert_eq!(
+        parse_markdown("[^n]: First \n        extra").blocks,
+        parse_markdown("[^n]: First\n        extra").blocks,
+        "plain-note first-line trimming and extra indentation must stay stable"
+    );
+    let single = parse_markdown("[^n]: A single line.  ");
+    assert!(
+        matches!(&single.blocks[0], Block::FootnoteDefinition { blocks, .. }
+        if blocks == &[Block::Paragraph(vec![Inline::Text("A single line.".into())])])
+    );
+}
+
+#[test]
 fn live_reader_preserves_rich_note_blocks_formatting_and_asset_requests() {
     // The same public-API assertions as the existing live-flow regression that
     // exposed the parser's former single-paragraph note implementation.

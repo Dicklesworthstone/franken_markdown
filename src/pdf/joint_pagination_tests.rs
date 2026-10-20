@@ -101,6 +101,65 @@ fn emitted_pages(pdf: &[u8]) -> Vec<usize> {
         .collect()
 }
 
+/// The writer intentionally gives a split block fresh structure containers on
+/// each page. Check the actual paragraph-to-root ancestry on every emitted
+/// page, rather than assuming one container per source quote for the document.
+fn assert_quote_structure_on_every_page(pdf: &[u8], depth: usize) {
+    let text = String::from_utf8_lossy(pdf);
+    let needle = " 0 obj\n<< /Type /StructElem /S /";
+    let mut elements = BTreeMap::new();
+    for (offset, _) in text.match_indices(needle) {
+        let object: usize = text[..offset]
+            .rsplit(|ch: char| !ch.is_ascii_digit())
+            .find(|part| !part.is_empty())
+            .unwrap()
+            .parse()
+            .unwrap();
+        let body = text[offset + needle.len()..].split("\nendobj").next().unwrap();
+        let tag = body.split_whitespace().next().unwrap();
+        let reference = |key: &str| {
+            body.split(key)
+                .nth(1)
+                .map(|tail| tail.split_whitespace().next().unwrap().parse::<usize>().unwrap())
+        };
+        elements.insert(object, (tag, reference(" /P ").unwrap(), reference(" /Pg ")));
+    }
+    let pages = emitted_pages(pdf);
+    let mut quotes_by_page = BTreeMap::<usize, BTreeSet<usize>>::new();
+    for &(tag, parent, page) in elements.values() {
+        if tag != "P" {
+            continue;
+        }
+        let page = page.expect("paragraph has an emitted page");
+        assert!(pages.contains(&page));
+        let mut cursor = parent;
+        let mut ancestors = BTreeSet::new();
+        let mut quotes = BTreeSet::new();
+        loop {
+            assert!(ancestors.insert(cursor), "acyclic structure ancestry");
+            let &(tag, parent, _) = elements.get(&cursor).expect("existing structure parent");
+            if tag == "Document" {
+                break;
+            }
+            assert_eq!(tag, "BlockQuote", "only quote containers enclose this prose");
+            quotes.insert(cursor);
+            cursor = parent;
+        }
+        assert_eq!(quotes.len(), depth, "exact quote nesting on page {page}");
+        quotes_by_page.entry(page).or_default().extend(quotes);
+    }
+    assert_eq!(quotes_by_page.len(), pages.len(), "every page contains quoted prose");
+    for page in &pages {
+        assert_eq!(quotes_by_page[page].len(), depth);
+    }
+    let used: BTreeSet<_> = quotes_by_page.values().flatten().copied().collect();
+    assert_eq!(used.len(), depth * pages.len(), "fresh containers per page");
+    let emitted: BTreeSet<_> = elements.iter()
+        .filter_map(|(&object, &(tag, _, _))| (tag == "BlockQuote").then_some(object))
+        .collect();
+    assert_eq!(used, emitted, "no unreferenced or duplicate quote containers");
+}
+
 fn emitted_heading_page(pdf: &[u8], title: &str) -> usize {
     let pages = emitted_pages(pdf);
     let text = String::from_utf8_lossy(pdf);
@@ -607,10 +666,7 @@ fn parsed_nested_quotes_admit_candidates_and_keep_native_emission_in_sync() {
                 .all(|line| line.quote_bars == baseline[0].quote_bars)
         );
         let pdf = crate::render_pdf(&source, &opts).unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&pdf).matches("/S /BlockQuote").count(),
-            depth
-        );
+        assert_quote_structure_on_every_page(&pdf, depth);
         assert_eq!(
             pdf,
             crate::render_pdf_emitted(&source, &opts, PdfEmitOptions::monolithic()).unwrap()

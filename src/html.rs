@@ -14,6 +14,8 @@ use crate::text::Font;
 use crate::theme::{DarkModePolicy, Theme, ThemeColors};
 use crate::{FontAssetSlot, FontAssets, HtmlOptions, instance_host_font};
 
+mod financial_tables;
+
 /// Render a document to a complete HTML5 document string.
 #[must_use]
 pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
@@ -783,6 +785,10 @@ fn render_table<'a, 'b>(
     opts: &HtmlOptions,
     state: &mut RenderState<'a>,
 ) {
+    if let Some(rows) = crate::table_format::financial_rows(table) {
+        financial_tables::render(table, &rows, out, opts, state);
+        return;
+    }
     out.push_str(
         "<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n",
     );
@@ -828,7 +834,7 @@ fn align_attr(a: Align) -> &'static str {
     match a {
         Align::Left => " style=\"text-align:left\"",
         Align::Center => " style=\"text-align:center\"",
-        Align::Right => " style=\"text-align:right\"",
+        Align::Right | Align::Decimal => " style=\"text-align:right\"",
         Align::None => "",
     }
 }
@@ -846,6 +852,34 @@ fn render_inlines(
     let base = state.raw_html_base;
     state.raw_html.close_to(base, out);
     state.raw_html_base = saved_base;
+}
+
+fn render_link_open(
+    dest: &str,
+    title: Option<&str>,
+    out: &mut String,
+    state: &mut RenderState<'_>,
+) -> bool {
+    let prefix = state.id_prefix;
+    let Some(href) = state.safe_url_cached(dest, UrlContext::Link) else {
+        return false;
+    };
+    out.push_str("<a href=\"");
+    if let Some(anchor) = href.strip_prefix('#').filter(|s| !s.is_empty()) {
+        out.push('#');
+        push_escaped_attr(prefix, out);
+        push_escaped_url(anchor, out);
+    } else {
+        push_escaped_url(href, out);
+    }
+    out.push('"');
+    if let Some(title) = title {
+        out.push_str(" title=\"");
+        push_escaped_attr(title, out);
+        out.push('"');
+    }
+    out.push('>');
+    true
 }
 
 fn render_inlines_body(
@@ -885,27 +919,10 @@ fn render_inlines_body(
                 title,
                 content,
             } => {
-                let prefix = state.id_prefix;
-                if let Some(href) = state.safe_url_cached(dest, UrlContext::Link) {
-                    out.push_str("<a href=\"");
-                    if let Some(anchor) = href.strip_prefix('#').filter(|s| !s.is_empty()) {
-                        out.push('#');
-                        push_escaped_attr(prefix, out);
-                        push_escaped_url(anchor, out);
-                    } else {
-                        push_escaped_url(href, out);
-                    }
-                    out.push('"');
-                    if let Some(title) = title.as_deref() {
-                        out.push_str(" title=\"");
-                        push_escaped_attr(title, out);
-                        out.push('"');
-                    }
-                    out.push('>');
-                    render_inlines(content, out, opts, state);
+                let linked = render_link_open(dest, title.as_deref(), out, state);
+                render_inlines(content, out, opts, state);
+                if linked {
                     out.push_str("</a>");
-                } else {
-                    render_inlines(content, out, opts, state);
                 }
             }
             Inline::Image { dest, title, alt } => {

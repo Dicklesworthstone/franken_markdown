@@ -119,6 +119,35 @@ fn rendered_body(doc: &Document, opts: &HtmlOptions) -> String {
 }
 
 #[test]
+fn financial_table_alignment_and_total_rules_reach_archived_xhtml() {
+    let doc = parse_markdown(
+        "# Accounts\n\n| Item | Amount |\n| --- | ---. |\n| Revenue | [12.5](https://example.com/revenue) |\n| | --- |\n| Total | **12.500** |\n| | === |\n",
+    );
+    let opts = HtmlOptions::default();
+    let body = rendered_body(&doc, &opts);
+    assert_eq!(body.matches("<tr>").count(), 3);
+    assert_eq!(body.matches("class=\"fmd-decimal\"").count(), 2);
+    assert!(body.contains("grid-template-columns:max-content"));
+    assert!(body.contains("border-bottom:1px solid currentColor"));
+    assert!(body.contains("border-bottom:3px double currentColor"));
+    assert!(body.contains("<strong><span class=\"fmd-decimal\""));
+    assert!(
+        body.contains(">12</span><span class=\"fmd-decimal-after\">.500</span></span></strong>")
+    );
+    assert_eq!(
+        body.matches("href=\"https://example.com/revenue\"").count(),
+        1
+    );
+    assert!(!body.contains(">===</"));
+    let archive = render_epub(&doc, &opts).expect("financial EPUB");
+    assert_entry(
+        &entries(&archive),
+        "OEBPS/chapter-1.xhtml",
+        chapter_xhtml("Accounts", "en", &body).as_bytes(),
+    );
+}
+
+#[test]
 fn single_document_packages_host_png_once_with_matching_manifest() {
     let doc = parse_markdown("# Pictures\n\n![one](pic.png) ![two](pic.png)\n");
     let opts = image_options(RED_PNG);

@@ -179,7 +179,14 @@ fn borrowed_and_retained_options_preserve_metadata_geometry_and_source_state() {
     assert_eq!(format!("{:?}", renderer.options()), stored);
     assert_eq!(renderer.book().chapters.iter().map(|chapter| chapter.doc.clone()).collect::<Vec<_>>(), documents);
     let retained = renderer.render_pdf_pdfa(PdfASettings::a2b()).unwrap();
-    assert_archival_objects(&retained, &renderer.options().pdf_options());
+    // This fixture changes only the retained title. Build the equivalent
+    // public native options independently of the internal browser adapter.
+    let retained_options = PdfOptions {
+        title: Some("Retained title".into()), ..Default::default()
+    };
+    assert_archival_objects(&retained, &retained_options);
+    assert_eq!(retained,
+        renderer.render_pdf_with_options(&retained_options, PdfASettings::a2b()).unwrap());
     assert_ne!(retained, bytes);
 }
 

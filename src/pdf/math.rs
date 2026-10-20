@@ -358,6 +358,8 @@ pub(super) fn layout_block(
         page_break_before: false,
         list_path: Vec::new(),
         table_cols: Vec::new(),
+        table_source_row: None,
+        table_footing: Vec::new(),
         segs: Vec::new(),
         image: Some(ImageLine {
             image,

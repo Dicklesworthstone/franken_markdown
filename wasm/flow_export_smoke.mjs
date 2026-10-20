@@ -75,7 +75,9 @@ const png = new Uint8Array(
 );
 let source =
   "# Export Guide\n\nCafé with **bold**, *italic* and [a link](#export-guide).\n\n" +
-  "| Name | Value |\n| --- | --- |\n| measured | original Markdown |\n\n![local](local.png)\n\n![again](local.png)\n";
+  "| Name | Value |\n| --- | --- |\n| measured | original Markdown |\n\n" +
+  "| Item | Amount |\n| --- | ---. |\n| Revenue | 1,234.5 |\n| Costs | (234.50) |\n| | --- |\n| Total | **1,000.000** |\n| | === |\n\n" +
+  "![local](local.png)\n\n![again](local.png)\n";
 const direct = await createFlowSession(source, { font: "serif", viewportWidth: 360 });
 let remote;
 const missing = (error) => error.code === "UNRESOLVED_EXPORT_ASSET";
@@ -119,9 +121,13 @@ async function parity(label, advanced = false) {
     assert.deepEqual(b.diagnostics, oracle.diagnostics);
     assert.equal(b.assetCount, 1);
     assert.equal(b.sourceLengthBytes, new TextEncoder().encode(source).length);
-    if (format === "html")
-      assert(new TextDecoder().decode(b.bytes).includes("data:image/png;base64,"));
-    else assert.equal(new TextDecoder().decode(b.bytes.subarray(0, 5)), "%PDF-");
+    if (format === "html") {
+      const html = new TextDecoder().decode(b.bytes);
+      assert(html.includes("data:image/png;base64,"));
+      assert(html.includes('class="fmd-decimal"'), "financial decimal alignment survives export");
+      assert(html.includes("border-bottom:1px solid currentColor;"));
+      assert(html.includes("border-bottom:3px double currentColor;"));
+    } else assert.equal(new TextDecoder().decode(b.bytes.subarray(0, 5)), "%PDF-");
     console.log(
       `flow-export: ${label} ${format} native-core/direct/worker bytes and diagnostics: PASS`,
     );

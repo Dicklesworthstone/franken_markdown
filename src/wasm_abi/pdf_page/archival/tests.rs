@@ -11,7 +11,7 @@ fn options() -> WasmRenderOptions {
     options.author = Some("Author".into());
     options.metadata_epoch_seconds = Some(0);
     options.theme.page = crate::PageStyle::from_browser_geometry(
-        &[720.0, 540.0, 36.0, 30.0, 24.0, 18.0],
+        &[720.0, 540.0, 36.0, 30.0, 32.0, 18.0],
     ).unwrap().unwrap();
     options.base_font_size = Some(12.0);
     options.heading_scale = Some(1.3);
@@ -72,6 +72,21 @@ fn direct_archive_matches_the_native_document_writer_not_a_book() {
 }
 
 #[test]
+fn archival_footer_keeps_rejecting_insufficient_margin() {
+    let mut options = options();
+    // The original success fixture supplied 24pt below a footer whose baseline
+    // and scaled font ascent need 27.2pt. Keep that actual rejection covered;
+    // the successful native/ABI parity fixture reserves 32pt instead.
+    options.theme.page = crate::PageStyle::from_browser_geometry(
+        &[720.0, 540.0, 36.0, 30.0, 24.0, 18.0],
+    ).unwrap().unwrap();
+    for settings in [PdfASettings::OFF, PdfASettings::a2b(), PdfASettings::a2b_strict()] {
+        let error = render_archival(SOURCE, &options, settings).unwrap_err();
+        assert!(error.to_string().contains("pdf_running_footer_does_not_fit"), "{error}");
+    }
+}
+
+#[test]
 fn off_is_byte_and_diagnostic_identical_to_the_existing_wasm_route() {
     for source in [SOURCE, "", "# Broken\n\n![Missing](missing.png)\n\n```rust\nfn x() {}"] {
         let options = options();
@@ -110,7 +125,7 @@ fn exported_archival_abi_keeps_all_document_settings_and_running_image_slots() {
         vec!["chart.svg".into()], LOGO.to_vec(), vec![LOGO.len() as u32],
         vec![], vec![], vec![], vec![], vec![], vec![],
         Some(12.0), Some(1.3), Some(9.0), true, Some(1.125), Some("de".into()),
-        true, Some(2), None, false, vec![720.0, 540.0, 36.0, 30.0, 24.0, 18.0],
+        true, Some(2), None, false, vec![720.0, 540.0, 36.0, 30.0, 32.0, 18.0],
         ["{title}", "", "", "", "{page} / {pages}", ""].map(String::from).to_vec(),
         true, false, false, vec!["chart.svg".into(), String::new()], vec![1, 0],
         vec![12, 0], Some("expansion,homogeneous".into()), "2b", true,

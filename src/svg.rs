@@ -59,6 +59,8 @@ const SLOT_EMOJI: usize = 6;
 const SLOT_COUNT: usize = 7;
 
 // Explicit paths also support the standalone #[path] SVG integration harness.
+#[path = "svg/financial_tables.rs"]
+mod financial_tables;
 #[path = "svg/geometry.rs"]
 mod geometry;
 #[cfg(test)]
@@ -868,6 +870,39 @@ impl Poster {
         let pad_x = self.table_pad_x;
         let pad_y = self.table_pad_y;
         let avail = r - l;
+        let financial = crate::table_format::financial_rows(table);
+        let rows: Vec<&[Vec<Inline>]> = match &financial {
+            Some(rows) => rows.iter().map(|row| row.cells).collect(),
+            None => table.rows.iter().map(Vec::as_slice).collect(),
+        };
+        let aligns: Vec<Align> = (0..ncols)
+            .map(|c| table.align.get(c).copied().unwrap_or(Align::None))
+            .collect();
+        let mut decimal = vec![financial_tables::DecimalMeasure::default(); ncols];
+        let measured: Vec<Vec<Option<financial_tables::DecimalMeasure>>> = if financial.is_some() {
+            rows.iter()
+                .map(|row| {
+                    (0..ncols)
+                        .map(|c| {
+                            let value = if aligns[c] == Align::Decimal {
+                                row.get(c).and_then(|cell| {
+                                    financial_tables::cell_measure(self, cell, size)
+                                })
+                            } else {
+                                None
+                            };
+                            if let Some(value) = value {
+                                decimal[c].before = decimal[c].before.max(value.before);
+                                decimal[c].after = decimal[c].after.max(value.after);
+                            }
+                            value
+                        })
+                        .collect()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Column widths: natural single-line width (capped), scaled down
         // proportionally when the table would overflow the measure.
@@ -893,9 +928,19 @@ impl Poster {
         for (c, cell) in table.head.iter().enumerate().take(ncols) {
             consider(c, cell, true, &mut natural);
         }
-        for row in &table.rows {
+        for row in &rows {
             for (c, cell) in row.iter().enumerate().take(ncols) {
                 consider(c, cell, false, &mut natural);
+            }
+        }
+        if financial.is_some() {
+            // Different rows can supply the longest integer and fractional
+            // portions. Reserve their combined width before scaling a narrow
+            // table, so each fitting numeric cell shares the same anchor.
+            for (c, value) in decimal.iter().enumerate() {
+                if aligns[c] == Align::Decimal {
+                    natural[c] = natural[c].max(value.before + value.after + 2.0 * pad_x);
+                }
             }
         }
         let total: f64 = natural.iter().sum();
@@ -905,11 +950,12 @@ impl Poster {
             natural
         };
 
-        let aligns: Vec<Align> = (0..ncols)
-            .map(|c| table.align.get(c).copied().unwrap_or(Align::None))
-            .collect();
-
-        let draw_row = |poster: &mut Self, cells: &[Vec<Inline>], bold: bool, top: f64| -> f64 {
+        let draw_row = |poster: &mut Self,
+                        cells: &[Vec<Inline>],
+                        bold: bool,
+                        top: f64,
+                        row_index: Option<usize>|
+         -> f64 {
             let st = RStyle {
                 bold,
                 ..RStyle::BODY
@@ -943,6 +989,28 @@ impl Poster {
                     let line_w = poster.words_width(line, size);
                     let x = match aligns[c] {
                         Align::Center => cx + padding + (cell_w - line_w) / 2.0,
+                        Align::Decimal => {
+                            let anchor = row_index
+                                .and_then(|index| measured.get(index))
+                                .and_then(|row| row[c])
+                                .filter(|_| {
+                                    // Compare outer widths in the same order
+                                    // used by the allocator. Subtracting the
+                                    // padding first can lose one rounding unit
+                                    // and reject an exactly fitting column.
+                                    cell_lines.len() == 1
+                                        && decimal[c].before + decimal[c].after + 2.0 * padding
+                                            <= widths[c]
+                                        && line_w + 2.0 * padding <= widths[c]
+                                })
+                                .and_then(|_| financial_tables::line_measure(line));
+                            match anchor {
+                                Some(value) => {
+                                    cx + padding + cell_w - decimal[c].after - value.before
+                                }
+                                None => cx + padding + (cell_w - line_w),
+                            }
+                        }
                         Align::Right => cx + padding + (cell_w - line_w),
                         Align::None | Align::Left => cx + padding,
                     };
@@ -960,7 +1028,7 @@ impl Poster {
         // background rectangle precedes the header glyphs in painter's order
         // without calling draw_row twice.
         let ops_start = self.ops.len();
-        let header_h = draw_row(self, &table.head, true, table_top);
+        let header_h = draw_row(self, &table.head, true, table_top, None);
         self.ops.insert(
             ops_start,
             Op::Rect {
@@ -974,9 +1042,19 @@ impl Poster {
         );
         let mut row_top = table_top + header_h;
         let mut bottoms = vec![row_top];
-        for row in &table.rows {
-            let h = draw_row(self, row, false, row_top);
+        for (index, row) in rows.iter().enumerate() {
+            let h = draw_row(self, row, false, row_top, Some(index));
             row_top += h;
+            if let Some(rows) = &financial {
+                row_top += financial_tables::draw_footings(
+                    self,
+                    &rows[index].rules,
+                    &widths,
+                    l,
+                    row_top,
+                    pad_x,
+                );
+            }
             bottoms.push(row_top);
         }
         let table_bottom = row_top;

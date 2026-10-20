@@ -70,6 +70,41 @@ pub(in super::super) struct ShapedText {
 }
 
 impl ShapedText {
+    /// Position of a retained glyph cluster, including the preceding pair
+    /// adjustment and its actual paint offset. A virtual integer anchor omits
+    /// the outgoing adjustment to a following suffix instead.
+    pub(in super::super) fn decimal_anchor_position(
+        &self,
+        byte: usize,
+        decimal_point: bool,
+    ) -> Option<f64> {
+        if self
+            .clusters
+            .last()
+            .is_some_and(|cluster| cluster.bytes.end == byte)
+        {
+            return Some(self.width());
+        }
+        let cluster = self
+            .clusters
+            .iter()
+            .find(|cluster| cluster.bytes.start == byte)?;
+        let first = cluster.glyphs.start;
+        let mut position = self.glyphs[..first]
+            .iter()
+            .map(|glyph| glyph.advance + glyph.kern_after)
+            .sum::<f64>();
+        if decimal_point {
+            position += self.glyphs.get(first)?.offset_x;
+        } else if let Some(previous) = first
+            .checked_sub(1)
+            .and_then(|index| self.glyphs.get(index))
+        {
+            position -= previous.kern_after;
+        }
+        Some(position)
+    }
+
     pub(super) fn add_wrap_warning(&mut self) {
         self.wrap_limited = true;
     }

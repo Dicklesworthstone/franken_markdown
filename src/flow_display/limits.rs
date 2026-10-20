@@ -349,6 +349,12 @@ impl<'a> Projection<'a> {
         } = &item.meta;
         add(heading_id.as_ref().map_or(0, String::len))?;
         add(marker.as_ref().map_or(0, String::len))?;
+        add(item
+            .meta
+            .table_footing
+            .len()
+            .saturating_mul(std::mem::size_of::<crate::table_format::FootingRule>()))?;
+        add(item.meta.table_decimal_cells.len())?;
         // Count targets per retained run conservatively, even where Arc shares
         // the backing string. Formatting metadata must not bypass admission.
         for run in item

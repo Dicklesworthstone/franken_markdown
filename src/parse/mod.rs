@@ -817,7 +817,9 @@ fn scan_footnote_definition(line: &str) -> Option<(String, &str)> {
         return None;
     }
     let after = rest[close + 1..].strip_prefix(':')?;
-    Some((id.to_string(), trim_space_tab(after)))
+    // Trailing source spaces can introduce a hard break before a continuation.
+    // Remove the definition's separator indentation, not its Markdown syntax.
+    Some((id.to_string(), trim_start_space_tab(after)))
 }
 
 /// Cheap check: the line starts a footnote definition (`[^id]:`).
@@ -871,6 +873,13 @@ fn footnote_body_lines<'a>(lines: &[&'a str], content: &'a str) -> (Vec<&'a str>
 /// boundaries reach the block parser intact.
 fn footnote_body_is_plain_paragraph(lines: &[&str]) -> bool {
     table_extent(lines).is_none()
+        && lines[..lines.len().saturating_sub(1)].iter().all(|line| {
+            // Joining physical lines with spaces would erase explicit hard
+            // breaks. Escaped backslashes and entity-produced whitespace are
+            // content; use the inline parser's source-delimiter rule here.
+            !line.ends_with("  ")
+                && line.bytes().rev().take_while(|&byte| byte == b'\\').count() % 2 == 0
+        })
         && lines.iter().all(|line| {
             let trimmed = trim_start_space_tab(line);
             !trimmed.contains("]:")
@@ -1729,11 +1738,19 @@ fn parse_blocks_with_refs_profiled(
                 let mut text = String::new();
                 let mut parts = profiler.destinations.is_some().then(Vec::new);
                 for (index, line) in body.iter().enumerate() {
+                    // The plain-note shortcut historically trimmed the first
+                    // line after its marker. Keep those bytes stable when no
+                    // explicit hard break requires the physical-line parser.
+                    let line = if index == 0 {
+                        trim_end_space_tab(line)
+                    } else {
+                        *line
+                    };
                     if index > 0 {
                         text.push(' ');
                     }
                     if let Some(parts) = &mut parts {
-                        parts.push((text.len(), *line));
+                        parts.push((text.len(), line));
                     }
                     text.push_str(line);
                 }
@@ -3704,6 +3721,17 @@ where
     let mut count = 0usize;
     for cell in table_delimiter_row_inner_from_trimmed(t).split('|') {
         let cell = trim_unicode_ws(cell);
+        // Financial tables opt in explicitly: a terminal dot after at least
+        // three hyphens requests a measured decimal anchor. Colon alignment
+        // and ordinary GFM delimiters retain their existing interpretation.
+        if let Some(core) = cell.strip_suffix('.')
+            && core.len() >= 3
+            && core.bytes().all(|byte| byte == b'-')
+        {
+            push_align(Align::Decimal);
+            count += 1;
+            continue;
+        }
         if !cell.is_empty() {
             let core = cell.trim_start_matches(':').trim_end_matches(':');
             if core.is_empty() || !core.as_bytes().iter().all(|byte| *byte == b'-') {
@@ -3847,6 +3875,9 @@ fn split_table_delimiter_alignments(line: &str) -> Vec<Align> {
         .split('|')
         .map(|cell| {
             let cell = cell.trim();
+            if cell.ends_with('.') {
+                return Align::Decimal;
+            }
             let left = cell.starts_with(':');
             let right = cell.ends_with(':');
             match (left, right) {
@@ -8162,6 +8193,42 @@ mod table_row_split_tests {
         validated_table_delimiter_cell_count,
     };
     use crate::ast::Align;
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn decimal_delimiter_is_explicit_and_available_to_the_extent_prepass() {
+        assert_eq!(
+            validated_table_delimiter_alignments("| --- | ---. | ----. |"),
+            Some(vec![Align::None, Align::Decimal, Align::Decimal])
+        );
+        assert_eq!(validated_table_delimiter_cell_count("---|---."), Some(2));
+        for malformed in [
+            "---|--.",
+            "---|:---.",
+            "---|---.:",
+            "---|---..",
+            "---|--- .",
+        ] {
+            assert_eq!(
+                validated_table_delimiter_alignments(malformed),
+                None,
+                "{malformed}"
+            );
+        }
+        let source =
+            "Before\n\n| Item | Amount |\n| --- | ---. |\n| A | 12.30 |\n| | === |\n\nAfter\n";
+        let parsed = crate::parse_markdown(source);
+        let crate::Block::Table(table) = &parsed.blocks[1] else {
+            panic!("the financial table must remain a separate block");
+        };
+        assert_eq!(table.align, [Align::None, Align::Decimal]);
+        assert_eq!(
+            table.rows.len(),
+            2,
+            "source rows remain available for editing"
+        );
+        assert_eq!(parsed.blocks.len(), 3);
+    }
 
     #[test]
     fn plain_table_rows_keep_trimmed_cell_shape() {

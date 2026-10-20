@@ -97,6 +97,7 @@ pub mod epub;
 pub mod interactive;
 pub mod search_index;
 pub mod svg;
+mod table_format;
 pub mod theme;
 pub mod transclude;
 pub mod wasm;

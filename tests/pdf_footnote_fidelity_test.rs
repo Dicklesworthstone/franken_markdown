@@ -396,3 +396,56 @@ fn cli_verify_includes_code_and_table_content_from_parsed_markdown_notes() {
         "CLI omitted the note table: {report}"
     );
 }
+
+#[cfg(feature = "cli")]
+#[test]
+fn cli_footnote_hard_breaks_reach_both_html_and_pdf_without_collapsing_lines() {
+    use std::{
+        fs,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory =
+        std::env::temp_dir().join(format!("fmd-note-breaks-{}-{stamp}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let output_path = directory.join("notes.html");
+    let markdown = "Evidence[^n].\n\n[^n]: First note line.  \n    Second note line.\\\n    Third note line.\n";
+    let output = Command::new(env!("CARGO_BIN_EXE_fmd"))
+        .args(["--no-config", "--text", markdown, "--to", "both", "--out"])
+        .arg(&output_path)
+        .env_remove("SOURCE_DATE_EPOCH")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    let html = fs::read_to_string(&output_path).unwrap();
+    assert!(html.contains("First note line.<br>\nSecond note line.<br>\nThird note line."));
+    let expected = Document {
+        blocks: vec![
+            Block::Paragraph(vec![text("Evidence"), reference("n"), text(".")]),
+            Block::FootnoteDefinition {
+                id: "n".into(),
+                blocks: vec![Block::Paragraph(vec![
+                    text("First note line."),
+                    Inline::HardBreak,
+                    text("Second note line."),
+                    Inline::HardBreak,
+                    text("Third note line."),
+                ])],
+            },
+        ],
+    };
+    assert_eq!(
+        fs::read(output_path.with_extension("pdf")).unwrap(),
+        render_pdf_document(&expected, &PdfOptions::default()).unwrap(),
+        "native PDF must match the independent three-line note AST"
+    );
+}

@@ -515,7 +515,7 @@ impl ConstrainedTableFlow {
             let (visible, count) = cell_prefix(&cell.text, columns, remaining / 2)?;
             *copied_bytes = reserved + visible.len() * 2;
             let offset = match self.alignments.get(column).copied().unwrap_or(Align::None) {
-                Align::Center | Align::Right => {
+                Align::Center | Align::Right | Align::Decimal => {
                     let free = (width - count as f32 * CELL_ADVANCE).max(0.0);
                     if self.alignments.get(column) == Some(&Align::Center) {
                         free / 2.0

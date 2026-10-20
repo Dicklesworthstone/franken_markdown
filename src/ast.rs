@@ -111,6 +111,9 @@ pub enum Align {
     Center,
     /// `---:`
     Right,
+    /// `---.`: align financial values at their decimal point. Enables explicit
+    /// single/double footing rows in this table; ordinary GFM is unchanged.
+    Decimal,
 }
 
 /// A GFM pipe table: a header row, a per-column alignment, and body rows.

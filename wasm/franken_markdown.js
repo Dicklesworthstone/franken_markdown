@@ -27,6 +27,17 @@ function requireBrowserBinding(name, feature) {
   return binding;
 }
 
+// wasm-bindgen emits explicit positional parameters. These options extended an
+// existing binding with a trailing argument, so checking the export name alone
+// cannot detect older glue that would silently discard a requested setting.
+function requireBindingArguments(binding, count, feature) {
+  if (binding.length < count) {
+    throw Object.assign(new Error(
+      `${feature} requires a WASM package rebuilt from matching source`,
+    ), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  }
+}
+
 export async function init(input) {
   if (initPromise === null) {
     initPromise = input === undefined ? initWasm() : initWasm({ module_or_path: input });
@@ -45,6 +56,9 @@ export async function capabilities() {
 }
 
 export async function renderHtml(markdown, options = {}) {
+  const htmlFontFormat = stringOption(options.htmlFontFormat);
+  if (htmlFontFormat !== undefined)
+    requireBindingArguments(renderHtmlConfiguredAdvanced, 20, "HTML font format selection");
   await init();
   const pdfImages = pdfImagesOption(options.pdfImages);
   const fontAssets = fontAssetsOption(options.fontAssets);
@@ -79,7 +93,7 @@ export async function renderHtml(markdown, options = {}) {
       stringOption(options.lang),
       Boolean(options.toc),
       integerOption(options.tocDepth, "tocDepth"),
-      ...(options.htmlFontFormat === undefined ? [] : [stringOption(options.htmlFontFormat)]),
+      ...(htmlFontFormat === undefined ? [] : [htmlFontFormat]),
     ),
   );
 }
@@ -98,6 +112,11 @@ export async function renderPdf(markdown, options = {}) {
       : "PDF paper and margins require a WASM package rebuilt from matching source");
     error.code = "UNSUPPORTED_WASM_PACKAGE";
     throw error;
+  }
+  const typography = typographyOption(options);
+  if (typography !== undefined) {
+    const count = running?.hasImages ? 36 : running ? 33 : geometry.length ? 29 : 28;
+    requireBindingArguments(render, count, "PDF typography and optimal pagination");
   }
   const pdfImages = pdfImagesOption(options.pdfImages);
   const fontAssets = fontAssetsOption(options.fontAssets).map(asset => ({
@@ -151,7 +170,6 @@ export async function renderPdf(markdown, options = {}) {
   ];
   // The typography tokens ride as one optional trailing argument, sent only
   // when requested so existing calls keep their exact ABI shape.
-  const typography = typographyOption(options);
   const tail = typography === undefined ? [] : [typography];
   // Source, primitive settings, image bytes and font bytes now belong to this
   // request. Asynchronous initialization cannot retarget its page or contents.

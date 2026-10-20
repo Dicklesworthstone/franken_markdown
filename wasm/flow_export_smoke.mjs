@@ -93,7 +93,7 @@ async function resolveImages() {
       });
   }
 }
-async function parity(label) {
+async function parity(label, advanced = false) {
   for (const format of ["html", "pdf"]) {
     const options = {
       title: "Export proof",
@@ -101,6 +101,10 @@ async function parity(label) {
       toc: true,
       tocDepth: 3,
       ...(format === "pdf" ? { pageNumbers: true, metadataEpochSeconds: 0 } : { darkMode: "auto" }),
+      ...(advanced ? format === "pdf"
+        ? { typography: { homogeneous: true, antiriver: true, pareto: true },
+          optimalPagination: true, microtype: "expansion" }
+        : { htmlFontFormat: "woff2" } : {}),
     };
     const a = await direct.exportDocument(format, options, direct.token);
     const b = await remote.exportDocument(format, options, remote.token);
@@ -134,6 +138,7 @@ try {
   const old = remote.token;
   await resolveImages();
   await parity("initial");
+  await parity("advanced typography and font packaging", true);
   await assert.rejects(
     remote.exportDocument("pdf", {}, old),
     (error) => error.code === "STALE_LAYOUT",

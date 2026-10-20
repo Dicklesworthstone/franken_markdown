@@ -432,6 +432,8 @@ export interface FlowExportOptions {
 }
 export interface FlowHtmlExportOptions extends FlowExportOptions {
   darkMode?: "auto" | "disabled";
+  /** Native embedded font container; omitted keeps the WOFF1 default. */
+  htmlFontFormat?: "woff1" | "woff2" | "ttf";
 }
 /** Reflowable native EPUB output, not a capture of editor geometry. */
 export interface FlowEpubExportOptions extends FlowExportOptions {
@@ -465,7 +467,11 @@ export interface FlowPdfExportOptions extends FlowExportOptions {
   headingScale?: number;
   tableFontSize?: number;
   fitToPages?: number;
-  microtype?: "disabled" | "protrusion";
+  microtype?: "disabled" | "protrusion" | "expansion";
+  /** Optional native line-breaking refinements, captured before queueing. */
+  typography?: { homogeneous?: boolean; antiriver?: boolean; pareto?: boolean };
+  /** Opt into native global page breaking; omitted/false keeps the default. */
+  optimalPagination?: boolean;
 }
 export interface FlowExportOptionsByFormat {
   html: FlowHtmlExportOptions;

@@ -83,6 +83,56 @@ test("worker PDF logos retain owned image and settings snapshots while queued", 
   assert.equal(session.disposed, false);
 });
 
+test("real Flow workers retain advanced typography snapshots and charge queued records", async t => {
+  const session = await setup(t, { delayMs: 30 });
+  const first = session.exportDocument("pdf", {}, session.token), priorBytes = session.pendingBytes;
+  const options = { typography: { homogeneous: true, antiriver: false, pareto: true },
+    optimalPagination: true, microtype: "expansion" };
+  const queued = session.exportDocument("pdf", options, session.token);
+  assert.ok(session.pendingBytes > priorBytes + 56, "nested record and switches participate in admission");
+  options.typography.homogeneous = false;
+  options.typography.extra = true;
+  options.optimalPagination = false;
+  options.microtype = "disabled";
+  await first;
+  const output = decode(await queued);
+  assert.deepEqual(output.typography, { homogeneous: true, antiriver: false, pareto: true });
+  assert.equal(output.optimalPagination, true);
+  assert.equal(output.microtype, "expansion");
+  for (const htmlFontFormat of ["woff1", "woff2", "ttf"]) {
+    const result = decode(await session.exportDocument("html", { htmlFontFormat }, session.token));
+    assert.equal(result.htmlFontFormat, htmlFontFormat);
+  }
+  const active = session.exportDocument("pdf", {}, session.token), before = session.pendingBytes;
+  const abort = new AbortController();
+  const cancelled = assert.rejects(session.exportDocument("pdf", { typography: { pareto: true } },
+    session.token, { signal: abort.signal }), code("ABORTED"));
+  assert.ok(session.pendingBytes > before + 40);
+  abort.abort();
+  await cancelled;
+  assert.equal(session.pendingBytes, before);
+  await active;
+  assert.equal(session.pendingBytes, 0);
+});
+
+test("Flow refuses malformed typography before RPC and preserves unsupported-package errors", async t => {
+  const session = await setup(t, { typographySupport: false });
+  let getters = 0;
+  const typography = Object.defineProperty({}, "pareto", { get() { getters++; return true; } });
+  await assert.rejects(session.exportDocument("pdf", { typography }, session.token), code("INVALID_OPTIONS"));
+  assert.equal(getters, 0);
+  assert.equal(session.pendingOperations, 0);
+  for (const [format, options] of [["pdf", { typography: { pareto: true } }],
+    ["pdf", { optimalPagination: true }], ["pdf", { microtype: "expansion" }],
+    ["html", { htmlFontFormat: "woff2" }]]) {
+    await assert.rejects(session.exportDocument(format, options, session.token),
+      error => error.code === "UNSUPPORTED_WASM_PACKAGE" && /matching WASM/.test(error.message));
+  }
+  assert.equal((await session.exportDocument("pdf", {}, session.token)).format, "pdf");
+  assert.equal(session.disposed, false);
+  assert.equal(session.pendingBytes, 0);
+});
+
 test("a queued edit cannot race ahead of an asynchronous export", async (t) => {
   const session = await setup(t, { delayMs: 80 });
   const token = session.token;

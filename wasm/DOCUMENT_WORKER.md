@@ -75,6 +75,35 @@ An explicit page defaults to Letter and 72-point margins. Omitting `page` preser
 the original renderer defaults. Nested geometry is validated and deeply captured
 before dispatch using the same normalization and f32 bounds as the direct API.
 
+PDF also accepts the native line-breaking refinements
+`typography: { homogeneous?, antiriver?, pareto? }`, `optimalPagination`, and
+`microtype: "disabled" | "protrusion" | "expansion"`. Every typography switch is
+a boolean; the nested record is validated and copied before queueing. Omitted
+switches and explicit `false` values preserve the renderer's defaults. Expansion
+selects glyph expansion without optical-margin protrusion; protrusion retains
+the renderer's combined conservative mode. These options use the same algorithms
+as direct PDF rendering and are independent of worker scheduling.
+
+HTML accepts `htmlFontFormat: "woff1" | "woff2" | "ttf"` for its embedded font
+subsets. Omission retains the WOFF1 default. This is an HTML-only setting; EPUB,
+PDF, SVG and interactive HTML reject it. PDF typography options are rejected by
+other formats. Both options are also available inside `publish()` targets.
+
+```js
+const pdf = await renderer.renderPdf(markdown, {
+  typography: { homogeneous: true, antiriver: true, pareto: true },
+  optimalPagination: true, microtype: "expansion",
+});
+const html = await renderer.renderHtml(markdown, { htmlFontFormat: "woff2" });
+```
+
+Nested typography records and booleans count toward the ingress budget before
+binary snapshots or worker startup. The worker validates them again before
+loading or invoking the renderer. A package with older generated function
+signatures rejects requested typography or font-format changes with
+`UNSUPPORTED_WASM_PACKAGE`; JavaScript does not silently discard a trailing
+option that the native binding cannot consume.
+
 PDF also accepts `running.header` and `running.footer`, each with optional
 `left`, `center`, and `right` text templates, a boolean `rule`, and one decorative
 `image`. Templates reach Rust unchanged and may use `{page}`, `{pages}`, `{title}`,

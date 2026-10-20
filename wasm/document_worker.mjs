@@ -4,6 +4,7 @@ import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker, workerLimits } from 
 
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
+import { normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfTypography } from "./render_typography.mjs";
 
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const DOCUMENT_SOURCE_LIMIT = 4 * 1024 * 1024;
@@ -18,8 +19,8 @@ const FORMATS = Object.freeze({
 });
 const SHARED = ["font", "darkMode", "fontScale", "typeSize"];
 const SETTINGS = {
-  html: [...SHARED, "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets"],
-  pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "pdfImages", "fontAssets", "page", "running"],
+  html: [...SHARED, "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
+  pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "pdfImages", "fontAssets", "page", "running"],
   svg: [...SHARED, "maxWidthPt", "pdfImages", "fontAssets"],
   epub: [...SHARED, "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets"],
   "interactive-html": [...SHARED, "title", "lang"],
@@ -95,14 +96,14 @@ function assets(value, fonts) {
   }
   return out;
 }
-function runningCharge(value) {
-  // Only walk the normalized/frozen running schema: at most five records and
-  // three levels, never an arbitrary caller graph or an accessor. Include all
+function settingsCharge(value) {
+  // Only walk normalized/frozen running bands or the three typography switches,
+  // never an arbitrary caller graph or an accessor. Include retained records,
   // template and destination strings before binary snapshots or queue admission.
   let charge = 256;
   for (const child of Object.values(value)) {
     if (typeof child === "string") charge += 64 + 2 * child.length;
-    else if (typeof child === "object") charge += runningCharge(child);
+    else if (typeof child === "object") charge += settingsCharge(child);
     else charge += 64;
   }
   return charge;
@@ -122,7 +123,12 @@ function normalize(format, source, options, knownSourceLength) {
     } else if (key === "running") {
       try { out.running = normalizePdfRunning(value); }
       catch (error) { fail(error.code, error.message); }
-    } else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion"].includes(key)) {
+    } else if (["typography", "microtype", "htmlFontFormat"].includes(key)) {
+      const normalize = { typography: normalizePdfTypography,
+        microtype: normalizeMicrotype, htmlFontFormat: normalizeHtmlFontFormat }[key];
+      try { out[key] = normalize(value); }
+      catch (error) { fail(error.code, error.message); }
+    } else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion", "optimalPagination"].includes(key)) {
       if (typeof value !== "boolean") fail("INVALID_OPTIONS", `${key} must be boolean`);
     } else if (["fontScale", "typeSize"].includes(key)) {
       if (typeof value === "string") text(value, 64, key);
@@ -139,7 +145,7 @@ function normalize(format, source, options, knownSourceLength) {
     else if (key === "fitToPages") integer(value, 1, 1000, key);
     else {
       text(value, key === "customCss" ? 1024 * 1024 : 4096, key);
-      const choices = { font: ["sans", "serif"], darkMode: ["auto", "disabled"], microtype: ["disabled", "protrusion"] }[key];
+      const choices = { font: ["sans", "serif"], darkMode: ["auto", "disabled"] }[key];
       if (choices && !choices.includes(value)) fail("INVALID_OPTIONS", `invalid ${key}`);
     }
   }
@@ -148,7 +154,7 @@ function normalize(format, source, options, knownSourceLength) {
   // A canonical page retains three records and six numeric fields.
   let charge = 512 + 2 * source.length + (out.page === undefined ? 0 : 512);
   for (const [key, value] of Object.entries(out)) {
-    if (key === "running") charge += runningCharge(value);
+    if (key === "running" || key === "typography") charge += settingsCharge(value);
     else if (typeof value === "string") charge += 64 + value.length * 2;
     else if (Array.isArray(value)) {
       for (const item of value) charge += 256 + item.bytes.byteLength + 2 * (item.destination ?? item.slot).length;

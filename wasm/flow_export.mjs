@@ -3,6 +3,7 @@
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
+import { normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfTypography } from "./render_typography.mjs";
 import {
   FLOW_ASSET_LIMIT,
   FLOW_SOURCE_LIMIT,
@@ -35,6 +36,8 @@ const PDF = [
   "tableFontSize",
   "fitToPages",
   "microtype",
+  "typography",
+  "optimalPagination",
   "page",
   "running",
   "pdfImages",
@@ -122,11 +125,9 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
     ...COMMON,
     ...(format === "pdf" ? PDF : ["darkMode"]),
     ...(format === "epub" ? ["customCss"] : []),
+    ...(format === "html" ? ["htmlFontFormat"] : []),
   ];
-  for (const key of Object.keys(options)) {
-    if (!allowed.includes(key))
-      fail("INVALID_OPTIONS", `unsupported ${format} export option: ${key}`);
-  }
+  options = runningRecord(options, allowed, `${format} export options`);
   const result = {
     maxOutputBytes: uint(
       options.maxOutputBytes ?? FLOW_EXPORT_LIMIT,
@@ -153,13 +154,17 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
       fail("INVALID_OPTIONS", "lang must be a nonempty ASCII language tag");
     result.lang = lang;
   }
-  for (const key of ["toc", ...(format === "pdf" ? ["pageNumbers", "codeLineNumbers"] : [])]) {
+  for (const key of ["toc", ...(format === "pdf" ? ["pageNumbers", "codeLineNumbers", "optimalPagination"] : [])]) {
     if (options[key] === undefined) continue;
     if (typeof options[key] !== "boolean") fail("INVALID_OPTIONS", `${key} must be boolean`);
     result[key] = options[key];
   }
   if (options.tocDepth !== undefined) result.tocDepth = uint(options.tocDepth, "tocDepth", 1, 6);
   if (format !== "pdf") {
+    if (format === "html" && options.htmlFontFormat !== undefined) {
+      try { result.htmlFontFormat = normalizeHtmlFontFormat(options.htmlFontFormat); }
+      catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
+    }
     const darkMode = options.darkMode ?? "auto";
     if (darkMode !== "auto" && darkMode !== "disabled") fail("INVALID_OPTIONS", "invalid darkMode");
     result.darkMode = darkMode;
@@ -202,9 +207,12 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
     if (options.fitToPages !== undefined)
       result.fitToPages = uint(options.fitToPages, "fitToPages", 1, 1000);
     if (options.microtype !== undefined) {
-      if (!["disabled", "protrusion"].includes(options.microtype))
-        fail("INVALID_OPTIONS", "invalid microtype");
-      result.microtype = options.microtype;
+      try { result.microtype = normalizeMicrotype(options.microtype); }
+      catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
+    }
+    if (options.typography !== undefined) {
+      try { result.typography = normalizePdfTypography(options.typography); }
+      catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
     }
   }
   return [format, Object.freeze(result), token(expectedToken)];

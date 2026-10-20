@@ -18,7 +18,7 @@ test("the publish manifest retains the batch entry, implementation, types and gu
     assert.ok(manifest.files.includes(name), `${name} must ship in npm packages`);
     assert.ok((await readFile(new URL(name, import.meta.url))).length > 0);
   }
-  for (const dependency of ["document_worker.mjs", "worker_transport.mjs", "pdf_page.mjs", "pdf_running.mjs"]) {
+  for (const dependency of ["document_worker.mjs", "worker_transport.mjs", "pdf_page.mjs", "pdf_running.mjs", "render_typography.mjs"]) {
     assert.ok(manifest.files.includes(dependency), `${dependency} must ship with the entry`);
   }
 });

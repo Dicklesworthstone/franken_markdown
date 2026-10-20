@@ -9,6 +9,11 @@ const renderer = createWorkerRenderer({
 const control = { signal: new AbortController().signal, timeoutMs: 1000 };
 const pdf: DocumentOutput<"pdf"> = await renderer.renderPdf("# PDF", { pageNumbers: true, metadataEpochSeconds: 0 }, control);
 const pdfExtension: "pdf" = pdf.extension;
+await renderer.renderPdf("# Typeset", {
+  typography: { homogeneous: true, antiriver: false, pareto: true },
+  optimalPagination: true, microtype: "expansion",
+});
+await renderer.renderHtml("# Compressed fonts", { htmlFontFormat: "woff2" });
 await renderer.renderPdf("# Branded PDF", {
   running: { header: { image: { dest: "brand.svg", position: "right", heightPt: 24 }, left: "{title}" },
     footer: { center: "{page}", rule: true }, skipFirstPage: true },
@@ -31,6 +36,14 @@ await renderer.render("svg", "# SVG", { author: "author" });
 await renderer.render("book-site", "source");
 // @ts-expect-error Metadata timestamps are numbers, not bigint coercions.
 await renderer.renderPdf("# PDF", { metadataEpochSeconds: 1n });
+// @ts-expect-error Typography flags are booleans, not native token strings.
+await renderer.renderPdf("# PDF", { typography: "pareto" });
+// @ts-expect-error HTML font packaging has no effect on PDF.
+await renderer.renderPdf("# PDF", { htmlFontFormat: "woff2" });
+// @ts-expect-error Native pagination is PDF-only.
+await renderer.renderHtml("# HTML", { optimalPagination: true });
+// @ts-expect-error EPUB does not use the HTML font-container setting.
+await renderer.renderEpub("# EPUB", { htmlFontFormat: "woff2" });
 // @ts-expect-error Returned SVG extension is not a PDF extension.
 const wrongExtension: "pdf" = svg.extension;
 void [pdfExtension, svgExtension, wrongExtension];

@@ -55,6 +55,25 @@ if (!isMainThread) {
         assert.deepEqual(actual[key], expected[key], `${format} ${key}`);
       console.log(`document-worker: ${format} generated-WASM parity PASS (${actual.bytes.length} bytes)`);
     }
+    for (const options of [
+      { typography: { homogeneous: true, antiriver: true, pareto: true } },
+      { optimalPagination: true },
+      { microtype: "expansion", page: { size: "a4" },
+        running: { footer: { center: "{page}" } } },
+    ]) {
+      const settings = { ...options, metadataEpochSeconds: 0 };
+      const expected = await direct.renderPdf(source, settings);
+      const actual = await worker.renderPdf(source, settings);
+      assert.deepEqual(actual.bytes, expected.bytes, "advanced PDF typography parity");
+      assert.deepEqual(actual.diagnostics, expected.diagnostics);
+    }
+    for (const htmlFontFormat of ["woff1", "woff2", "ttf"]) {
+      const expected = await direct.renderHtml(source, { htmlFontFormat });
+      const actual = await worker.renderHtml(source, { htmlFontFormat });
+      assert.deepEqual(actual.bytes, expected.bytes, `${htmlFontFormat} font-container parity`);
+      assert.deepEqual(actual.diagnostics, expected.diagnostics);
+    }
+    console.log("document-worker: advanced typography, optimal pagination and HTML font containers parity PASS");
     // A deterministic, 1x1 RGB PNG; both paths receive precisely the same bytes.
     const png = new Uint8Array(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC", "base64"));
     for (const method of ["renderHtml", "renderPdf", "renderSvg", "renderEpub"]) {

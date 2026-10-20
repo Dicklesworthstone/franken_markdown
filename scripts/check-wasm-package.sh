@@ -133,7 +133,7 @@ for file in interactive.js interactive.d.ts interactive_runtime.mjs interactive_
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
   document-inspector.js document-inspector.d.ts document_inspector.mjs document_inspector_worker.js DOCUMENT_INSPECTION.md \
   document-batch.js document-batch.d.ts document_batch.mjs DOCUMENT_BATCH.md \
-  document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs pdf_running.mjs; do
+  document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs pdf_running.mjs render_typography.mjs; do
   cp "wasm/$file" "$package_dir/$file"
 done
 cp wasm/package.json "$package_dir/package.json"

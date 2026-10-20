@@ -221,6 +221,7 @@
     "DOCUMENT_BATCH.md",
     "pdf_page.mjs",
     "pdf_running.mjs",
+    "render_typography.mjs",
     "interactive.js",
     "interactive.d.ts",
     "interactive_runtime.mjs",

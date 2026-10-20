@@ -28,7 +28,7 @@ for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts 
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
   document-inspector.js document-inspector.d.ts document_inspector.mjs document_inspector_worker.js DOCUMENT_INSPECTION.md \
   document-batch.js document-batch.d.ts document_batch.mjs DOCUMENT_BATCH.md \
-  document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs pdf_running.mjs \
+  document_worker.mjs document_worker_entry.js document-worker.d.ts DOCUMENT_WORKER.md pdf_page.mjs pdf_running.mjs render_typography.mjs \
   package.json README.md; do
   cp "wasm/$file" "$PACKAGE/$file"
 done

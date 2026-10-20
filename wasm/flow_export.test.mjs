@@ -157,6 +157,58 @@ test("rejects unknown/coerced settings, unsafe HTML/font/asset injection, and in
   assert.equal(normalized[2].revision, "18446744073709551615");
 });
 
+test("PDF typography is deeply owned and HTML font selection reaches the existing renderers", async () => {
+  const f = fixture(), hold = gate();
+  f.setGate(hold);
+  const options = { typography: { homogeneous: true, antiriver: false, pareto: true },
+    optimalPagination: true, microtype: "expansion" };
+  const pending = f.api.exportDocument("pdf", options, f.session.token);
+  options.typography.pareto = false;
+  options.typography.extra = true;
+  options.optimalPagination = false;
+  options.microtype = "disabled";
+  assert.deepEqual(f.calls[0].options.typography, { homogeneous: true, antiriver: false, pareto: true });
+  assert.equal(Object.isFrozen(f.calls[0].options.typography), true);
+  assert.equal(f.calls[0].options.optimalPagination, true);
+  assert.equal(f.calls[0].options.microtype, "expansion");
+  hold.resolve();
+  await pending;
+  f.setGate(null);
+  for (const htmlFontFormat of ["woff1", "woff2", "ttf"]) {
+    await f.api.exportDocument("html", { htmlFontFormat }, f.session.token);
+    assert.equal(f.calls.at(-1).options.htmlFontFormat, htmlFontFormat);
+  }
+  await f.api.exportDocument("pdf", {}, f.session.token);
+  assert.equal(Object.hasOwn(f.calls.at(-1).options, "typography"), false);
+  assert.equal(Object.hasOwn(f.calls.at(-1).options, "optimalPagination"), false);
+  const nullPrototype = Object.assign(Object.create(null), { homogeneous: false });
+  const normalized = normalizeFlowExport("pdf", { typography: nullPrototype, optimalPagination: false }, f.session.token);
+  assert.deepEqual(normalized[1].typography, { homogeneous: false });
+  assert.deepEqual(normalizeFlowExport(...structuredClone(normalized)), normalized);
+});
+
+test("typography and font-format admission rejects unknown fields and accessors before reading source", async () => {
+  const f = fixture();
+  let getters = 0;
+  const accessor = Object.defineProperty({}, "pareto", { get() { getters++; return true; } });
+  const top = Object.defineProperty({}, "typography", { get() { getters++; return {}; } });
+  for (const typography of [null, [], "pareto", 1, new Date(), accessor,
+    { unknown: true }, { pareto: 1 }, { homogeneous: "false" }, { antiriver: null },
+    { [Symbol("pareto")]: true }, Object.create({ pareto: true })])
+    await assert.rejects(f.api.exportDocument("pdf", { typography }, f.session.token), code("INVALID_OPTIONS"));
+  await assert.rejects(f.api.exportDocument("pdf", top, f.session.token), code("INVALID_OPTIONS"));
+  for (const [format, options] of [
+    ["pdf", { optimalPagination: "true" }], ["pdf", { microtype: "all" }],
+    ["html", { htmlFontFormat: "woff3" }], ["html", { htmlFontFormat: null }],
+    ["html", { typography: {} }], ["html", { optimalPagination: false }],
+    ["pdf", { htmlFontFormat: "woff2" }], ["epub", { htmlFontFormat: "woff2" }],
+    ["epub", { typography: {} }], ["svg", { typography: {} }],
+  ]) await assert.rejects(f.api.exportDocument(format, options, f.session.token), code("INVALID_OPTIONS"));
+  assert.equal(getters, 0);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.session.reads.length, 0);
+});
+
 test("explicit PDF logos merge with session images without changing source or overriding payloads", async () => {
   const f = fixture();
   f.session.items = [image(1, "body.png")];

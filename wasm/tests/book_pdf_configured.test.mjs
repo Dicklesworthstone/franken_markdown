@@ -27,6 +27,8 @@ async function fixture(advanced = true) {
     export const renderBookPdf = (...args) => output('book-legacy', args);
     export const renderPdfConfiguredPage = (...args) => output('pdf-page', args);
     export const renderPdfConfiguredMulti = (...args) => output('pdf', args);
+    Object.defineProperty(renderPdfConfiguredMulti, "length", { value: 28 });
+    Object.defineProperty(renderPdfConfiguredPage, "length", { value: 29 });
     ${["renderEpubConfigured", "renderHtmlConfiguredAdvanced", "renderInteractiveHtmlConfigured",
       "renderSvgConfigured", "accessibilityAudit", "capabilities", "documentStats", "renderBookSite",
       "renderSemanticDiffHtml", "searchIndex", "semanticDiff"].map(name =>

@@ -77,6 +77,12 @@ installFlowWorker(endpoint, async (source, options) => {
     if (workerData?.delayMs)
       await new Promise((resolve) => setTimeout(resolve, workerData.delayMs));
     if (settings.title === "reject-render") throw new Error("explicit renderer rejection");
+    if (workerData?.typographySupport === false && (settings.optimalPagination
+        || settings.microtype === "expansion" || Object.values(settings.typography ?? {}).some(Boolean)
+        || settings.htmlFontFormat !== undefined)) {
+      throw Object.assign(new Error("Typography requires matching WASM bindings"),
+        { code: "UNSUPPORTED_WASM_PACKAGE" });
+    }
     return {
       format,
       mimeType: format === "html" ? "text/html; charset=utf-8" : "application/pdf",
@@ -88,6 +94,10 @@ installFlowWorker(endpoint, async (source, options) => {
           title: settings.title,
           epoch: settings.metadataEpochSeconds,
           running: settings.running,
+          typography: settings.typography,
+          optimalPagination: settings.optimalPagination,
+          microtype: settings.microtype,
+          htmlFontFormat: settings.htmlFontFormat,
           images: settings.pdfImages.map((image) => [image.destination, [...image.bytes]]),
         }),
       ),

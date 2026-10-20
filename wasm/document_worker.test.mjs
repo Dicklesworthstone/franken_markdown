@@ -49,6 +49,14 @@ if (!isMainThread) {
             code: "UNSUPPORTED_WASM_PACKAGE",
           });
         }
+        if (workerData.typographySupport === false
+            && (options.optimalPagination || options.microtype === "expansion"
+              || Object.values(options.typography ?? {}).some(Boolean)
+              || options.htmlFontFormat !== undefined)) {
+          throw Object.assign(new Error("Typography requires a rebuilt matching WASM package"), {
+            code: "UNSUPPORTED_WASM_PACKAGE",
+          });
+        }
         const bytes = new TextEncoder().encode(JSON.stringify({ source, options, renders: ++renders },
           (_key, value) => value instanceof Uint8Array ? [...value] : value));
         previousBytes = bytes;
@@ -504,6 +512,123 @@ if (!isMainThread) {
       const first = assert.rejects(api.renderPdf("requested running content", {
         running, pdfImages: [{ destination: "logo.svg", bytes: new Uint8Array([1]) }],
       }), { code: "UNSUPPORTED_WASM_PACKAGE", message: /rebuilt matching WASM/ });
+      const queued = rejects(api.renderPdf("never replayed"), "SESSION_LOST");
+      await Promise.all([first, queued]);
+      assert.equal(api.disposed, true);
+      assert.equal(api.pendingBytes, 0);
+    }
+  });
+
+  test("native typography, optimal pagination and HTML font containers reach real worker exports", async t => {
+    const api = renderer(t);
+    const plain = JSON.parse((await api.renderPdf("plain")).text()).options;
+    assert.equal(Object.hasOwn(plain, "typography"), false);
+    assert.equal(Object.hasOwn(plain, "optimalPagination"), false);
+    for (const options of [
+      { typography: { homogeneous: true, antiriver: true, pareto: true }, optimalPagination: true, microtype: "expansion" },
+      { typography: { homogeneous: false, antiriver: false, pareto: false }, optimalPagination: false, microtype: "disabled" },
+      { typography: {}, microtype: "protrusion" },
+    ]) assert.deepEqual(JSON.parse((await api.renderPdf("typeset", options)).text()).options, options);
+    for (const htmlFontFormat of ["woff1", "woff2", "ttf"])
+      assert.equal(JSON.parse((await api.renderHtml("fonts", { htmlFontFormat })).text()).options.htmlFontFormat, htmlFontFormat);
+    const targets = [{ format: "pdf", options: { typography: { pareto: true }, optimalPagination: true } },
+      { format: "html", options: { htmlFontFormat: "woff2" } }];
+    const publishing = api.publish("publication", targets);
+    targets[0].options.typography.pareto = false;
+    targets[1].options.htmlFontFormat = "ttf";
+    const outputs = (await publishing).outputs.map(output => JSON.parse(output.text()).options);
+    assert.deepEqual(outputs, [{ typography: { pareto: true }, optimalPagination: true }, { htmlFontFormat: "woff2" }]);
+  });
+
+  test("queued typography owns nested booleans and releases its complete ingress charge", async t => {
+    const api = renderer(t);
+    const first = api.renderHtml("slow");
+    const priorBytes = api.pendingBytes;
+    const options = { typography: { homogeneous: true, antiriver: false, pareto: true },
+      optimalPagination: true, microtype: "expansion" };
+    const queued = api.renderPdf("owned", options);
+    assert.ok(api.pendingBytes >= priorBytes + 512 + 256 + 3 * 64, "the complete typography record is charged");
+    options.typography.homogeneous = false;
+    options.typography.pareto = false;
+    options.typography.extra = true;
+    options.optimalPagination = false;
+    options.microtype = "disabled";
+    await first;
+    assert.deepEqual(JSON.parse((await queued).text()).options, {
+      typography: { homogeneous: true, antiriver: false, pareto: true },
+      optimalPagination: true, microtype: "expansion",
+    });
+    const active = api.renderHtml("slow"), before = api.pendingBytes;
+    const abort = new AbortController();
+    const cancelled = rejects(api.renderPdf("cancel", { typography: { pareto: true } },
+      { signal: abort.signal }), "ABORTED");
+    assert.ok(api.pendingBytes > before + 256);
+    abort.abort();
+    await cancelled;
+    assert.equal(api.pendingBytes, before);
+    await active;
+    assert.equal(api.pendingBytes, 0);
+  });
+
+  test("invalid typography and wrong-format options reject without getters or worker startup", async () => {
+    let starts = 0, getters = 0;
+    const api = createWorkerRenderer({ workerFactory() { starts++; throw new Error("unexpected start"); } });
+    const accessor = Object.defineProperty({}, "pareto", { get() { getters++; return true; } });
+    const topAccessor = Object.defineProperty({}, "typography", { get() { getters++; return {}; } });
+    try {
+      for (const typography of [null, [], "pareto", true, 1, new Date(), { pareto: 1 },
+        { antiriver: "false" }, { homogeneous: null }, { extra: true }, accessor,
+        { [Symbol("pareto")]: true }, Object.create({ pareto: true })])
+        await rejects(api.renderPdf("x", { typography }), "INVALID_OPTIONS");
+      await rejects(api.renderPdf("x", topAccessor), "INVALID_OPTIONS");
+      for (const options of [{ optimalPagination: "true" }, { optimalPagination: null },
+        { microtype: "all" }, { microtype: true }])
+        await rejects(api.renderPdf("x", options), "INVALID_OPTIONS");
+      for (const htmlFontFormat of ["woff3", " WOFF2 ", null, 2, {}, true])
+        await rejects(api.renderHtml("x", { htmlFontFormat }), "INVALID_OPTIONS");
+      for (const format of ["html", "svg", "epub", "interactive-html"])
+        for (const options of [{ typography: {} }, { optimalPagination: false }, { microtype: "expansion" }])
+          await rejects(api.render(format, "x", options), "INVALID_OPTIONS");
+      for (const format of ["pdf", "svg", "epub", "interactive-html"])
+        await rejects(api.render(format, "x", { htmlFontFormat: "woff2" }), "INVALID_OPTIONS");
+      assert.equal(starts, 0);
+      assert.equal(getters, 0);
+      assert.equal(api.pendingBytes, 0);
+    } finally { api.dispose(); }
+  });
+
+  test("typography records count before worker construction and binary snapshots", async () => {
+    let starts = 0;
+    const api = createWorkerRenderer({ maxPendingBytes: 1024,
+      workerFactory() { starts++; throw new Error("unexpected start"); } });
+    try {
+      await rejects(api.renderPdf("x", {
+        typography: { homogeneous: true, antiriver: true, pareto: true }, optimalPagination: true,
+      }), "WORKER_QUEUE_FULL");
+      assert.equal(starts, 0);
+      assert.equal(api.pendingBytes, 0);
+    } finally { api.dispose(); }
+  });
+
+  test("worker-side typography validation rejects raw malformed RPC before native loading", async t => {
+    const rpc = new OwnedWorkerRpc(new NodeEndpoint({ loadFailure: true }), { timeoutMs: 5000 });
+    t.after(() => rpc.dispose());
+    for (const [format, options] of [["pdf", { typography: { pareto: "true" } }],
+      ["pdf", { optimalPagination: 1 }], ["html", { htmlFontFormat: "woff3" }]]) {
+      await rejects(rpc.request(format, 512, () => ({ args: [format, "x", options, 4096] })), "INVALID_OPTIONS");
+    }
+    assert.equal(rpc.closed, false);
+    await rejects(rpc.request("pdf", 512, () => ({ args: ["pdf", "x", { typography: { pareto: true } }, 4096] })), "RENDER_FAILED");
+    assert.equal(rpc.closed, true);
+  });
+
+  test("old typography packages reject without silent downgrade or replay", async t => {
+    for (const [format, options] of [["pdf", { typography: { pareto: true } }],
+      ["pdf", { optimalPagination: true }], ["pdf", { microtype: "expansion" }],
+      ["html", { htmlFontFormat: "woff2" }]]) {
+      const api = renderer(t, {}, { typographySupport: false });
+      const first = assert.rejects(api.render(format, "typeset", options),
+        { code: "UNSUPPORTED_WASM_PACKAGE", message: /rebuilt matching WASM/ });
       const queued = rejects(api.renderPdf("never replayed"), "SESSION_LOST");
       await Promise.all([first, queued]);
       assert.equal(api.disposed, true);

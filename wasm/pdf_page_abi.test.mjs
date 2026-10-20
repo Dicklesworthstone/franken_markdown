@@ -7,13 +7,14 @@ import test from "node:test";
 
 // Execute the exact public wrapper with only the generated WASM binding doubled.
 // This tests ABI selection, argument order and ownership, not native PDF output.
-async function fixture({ pageBinding = true, blocked = false, runningBinding = true, imageBinding = true } = {}) {
+async function fixture({ pageBinding = true, blocked = false, runningBinding = true, imageBinding = true,
+  typographyBindings = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-pdf-page-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
   for (const file of ["franken_markdown.js", "pdf_page.mjs"])
     await copyFile(new URL(`./${file}`, import.meta.url), join(dir, file));
-  const unused = ["renderEpubConfigured", "renderHtmlConfiguredAdvanced", "renderInteractiveHtmlConfigured",
+  const unused = ["renderEpubConfigured", "renderInteractiveHtmlConfigured",
     "renderSvgConfigured", "accessibilityAudit", "capabilities", "documentStats", "renderBookPdf",
     "renderBookSite", "renderSemanticDiffHtml", "searchIndex", "semanticDiff"];
   await writeFile(join(dir, "pkg/franken_markdown.js"), `
@@ -25,16 +26,25 @@ async function fixture({ pageBinding = true, blocked = false, runningBinding = t
     export default function init() { initCount++; return ${blocked ? "ready" : "Promise.resolve()"}; }
     function result(kind, args) {
       calls.push({ kind, args });
-      return { format: "pdf", mimeType: "application/pdf", extension: "pdf",
+      return { format: kind === "html" ? "html" : "pdf",
+        mimeType: kind === "html" ? "text/html; charset=utf-8" : "application/pdf",
+        extension: kind === "html" ? "html" : "pdf",
         sourceLength: new TextEncoder().encode(args[0]).length, bytes: new Uint8Array([37, 80, 68, 70]),
         diagnosticsJson() { return '[{"severity":"warning","start":0,"end":0,"message":"fixture"}]'; },
         free() { frees++; } };
     }
     export const renderPdfConfiguredMulti = (...args) => result("legacy", args);
+    export const renderHtmlConfiguredAdvanced = (...args) => result("html", args);
     ${pageBinding ? 'export const renderPdfConfiguredPage = (...args) => result("page", args);' : ""}
     ${runningBinding ? 'export const renderPdfConfiguredRunning = (...args) => result("running", args);' : ""}
     ${imageBinding ? 'export const renderPdfConfiguredRunningImages = (...args) => result("running-images", args);' : ""}
     ${unused.map(name => `export const ${name} = () => { throw new Error("unexpected ${name}"); };`).join("\n")}
+    // Model the explicit parameter counts in generated wasm-bindgen glue.
+    Object.defineProperty(renderPdfConfiguredMulti, "length", { value: ${typographyBindings ? 28 : 27} });
+    Object.defineProperty(renderHtmlConfiguredAdvanced, "length", { value: ${typographyBindings ? 20 : 19} });
+    ${pageBinding ? `Object.defineProperty(renderPdfConfiguredPage, "length", { value: ${typographyBindings ? 29 : 28} });` : ""}
+    ${runningBinding ? `Object.defineProperty(renderPdfConfiguredRunning, "length", { value: ${typographyBindings ? 33 : 32} });` : ""}
+    ${imageBinding ? `Object.defineProperty(renderPdfConfiguredRunningImages, "length", { value: ${typographyBindings ? 36 : 35} });` : ""}
   `);
   const bindings = await import(pathToFileURL(join(dir, "pkg/franken_markdown.js")));
   const api = await import(pathToFileURL(join(dir, "franken_markdown.js")));
@@ -59,6 +69,45 @@ test("no page option uses the unchanged 27-argument legacy ABI even with a new p
   assert.equal(output.sourceLength, 7);
   assert.equal(output.diagnostics[0].message, "fixture");
   assert.equal(bindings.frees, 1);
+});
+
+test("typography reaches every PDF binding and font formats reach the existing HTML binding", async () => {
+  const { api, bindings } = await fixture();
+  const typography = { homogeneous: true, antiriver: true, pareto: true };
+  for (const options of [{}, { page: { size: "a4" } },
+    { running: { footer: { center: "{page}" } } },
+    { running: { header: { image: { dest: "brand.svg" } } } }]) {
+    await api.renderPdf("Typeset", { ...options, typography, optimalPagination: true, microtype: "expansion" });
+    assert.equal(bindings.calls.at(-1).args.at(-1), "homogeneous,antiriver,pareto,optimal-pagination,expansion");
+  }
+  assert.deepEqual(bindings.calls.map(call => call.args.length), [28, 29, 33, 36]);
+  for (const htmlFontFormat of ["woff1", "woff2", "ttf"]) {
+    await api.renderHtml("Fonts", { htmlFontFormat });
+    const call = bindings.calls.at(-1);
+    assert.equal(call.kind, "html");
+    assert.equal(call.args.length, 20);
+    assert.equal(call.args[19], htmlFontFormat);
+  }
+});
+
+test("old positional ABIs reject requested typography before init and retain default calls", async () => {
+  const { api, bindings } = await fixture({ typographyBindings: false });
+  for (const typography of [{ typography: { pareto: true } }, { optimalPagination: true }, { microtype: "expansion" }]) {
+    for (const options of [{}, { page: { size: "a4" } },
+      { running: { footer: { center: "{page}" } } },
+      { running: { header: { image: { dest: "brand.svg" } } } }]) {
+      await assert.rejects(api.renderPdf("Typeset", { ...options, ...typography }),
+        { code: "UNSUPPORTED_WASM_PACKAGE", message: /rebuilt from matching source/ });
+    }
+  }
+  for (const htmlFontFormat of ["woff1", "woff2", "ttf"])
+    await assert.rejects(api.renderHtml("Fonts", { htmlFontFormat }), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  assert.equal(bindings.initCount, 0);
+  assert.equal(bindings.calls.length, 0);
+  await api.renderPdf("Default", { typography: { homogeneous: false, pareto: false },
+    optimalPagination: false, microtype: "disabled" });
+  await api.renderHtml("Default");
+  assert.deepEqual(bindings.calls.map(call => call.args.length), [27, 19]);
 });
 
 test("running logos select the additive ABI and capture exact asset bytes before initialization", async () => {

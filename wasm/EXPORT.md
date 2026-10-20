@@ -55,10 +55,38 @@ font injection, ambient URL loading and arbitrary renderer settings are not
 accepted. Use the separately documented general render API for other policies.
 
 Both formats accept title, language, TOC/depth and a lowered `maxOutputBytes`.
-HTML also accepts dark mode. PDF accepts author, page/line numbers, body/table
-sizes, heading scale, a page target and the existing protrusion setting. Unknown,
+HTML also accepts dark mode and `htmlFontFormat: "woff1" | "woff2" | "ttf"`
+for embedded font subsets; omission keeps WOFF1. PDF accepts author, page/line
+numbers, body/table sizes, heading scale, a page target and
+`microtype: "disabled" | "protrusion" | "expansion"`. Expansion enables glyph
+expansion without protrusion; protrusion keeps the conservative combined mode.
+Unknown,
 wrong-format and coerced settings are errors, not silently ignored preferences.
 The TypeScript declarations expose format-specific option types.
+
+PDF accepts `typography: { homogeneous?, antiriver?, pareto? }` with boolean
+switches for the existing native line-breaking refinements, plus the boolean
+`optimalPagination` to select global page breaking. All are opt-in. The nested
+record is deeply copied and frozen before asynchronous export or worker
+queueing; caller mutations cannot retarget queued output. Worker admission
+counts the record and its booleans along with other export inputs. HTML rejects
+these PDF settings, and EPUB/SVG do not accept HTML font-container selection.
+These options work in both single exports and `exportDocuments()` publications.
+
+```js
+const pdf = await session.exportDocument("pdf", {
+  typography: { homogeneous: true, antiriver: true, pareto: true },
+  optimalPagination: true, microtype: "expansion",
+}, session.token);
+const html = await session.exportDocument("html", {
+  htmlFontFormat: "woff2",
+}, session.token);
+```
+
+The general renderer checks the generated binding's positional signature before
+sending a requested typography or font-format option. An older package fails
+with `UNSUPPORTED_WASM_PACKAGE` and a rebuild explanation, preserving ordinary
+exports rather than silently losing the requested setting.
 
 PDF also accepts native running bands, including a repeated logo. Supply image
 bytes explicitly through `pdfImages` when the logo does not occur in Markdown:

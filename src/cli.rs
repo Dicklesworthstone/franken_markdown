@@ -474,8 +474,9 @@ struct RenderStyleArgs {
     /// Nominal table cell font size override in points (clamped to [5, base_font_size]).
     #[arg(long)]
     pdf_table_font_size: Option<f32>,
-    /// Provide or override a local PDF/EPUB image asset as DEST=PATH, including
-    /// running header/footer images that do not appear in the Markdown.
+    /// Provide or override an image asset as DEST=PATH for HTML, PDF, SVG and
+    /// EPUB, including stdin/--text input and PDF running header/footer images.
+    /// DEST is an exact source destination; it need not have a file extension.
     /// File-based HTML/PDF/EPUB renders also auto-load relative local PNG/SVG/JPEG
     /// image destinations, and PDF renders fetch remote http(s) destinations
     /// unless --no-remote-images is set; the render core itself never fetches
@@ -497,8 +498,8 @@ struct RenderStyleArgs {
     /// ignore the pin (stderr warning `font_weight_ignored_static`).
     #[arg(long = "pdf-font-weight", value_name = "WEIGHT|SLOT=WEIGHT")]
     pdf_font_weights: Vec<String>,
-    /// Maximum bytes accepted for each explicit PDF image or auto-loaded local
-    /// HTML/PDF image file before rendering.
+    /// Maximum bytes accepted for each explicitly mapped or auto-loaded local
+    /// image file before rendering, regardless of output format.
     #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
     max_pdf_image_bytes: u64,
     /// Do not fetch remote http(s) image destinations for PDF output. By
@@ -819,19 +820,16 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     {
         extras.push(css);
     }
-    // A logo need not occur in Markdown, so its explicit asset path would
-    // otherwise be absent from collect_watch_paths' source-derived inventory.
+    // Explicit mappings can point somewhere other than the source's image
+    // destination (or supply a logo absent from Markdown). Watch every mapped
+    // file so replacing the supplied bytes rebuilds all selected outputs.
     let logo_destinations = running_image_destinations(&args.style);
-    if !logo_destinations.is_empty() {
-        for spec in &args.style.pdf_images {
-            let (destination, path) = match parse_pdf_image_spec(spec, &logo_destinations) {
-                Ok(asset) => asset,
-                Err(message) => return fail_json(64, "usage_error", &message, json),
-            };
-            if logo_destinations.contains(&destination.as_str()) {
-                extras.push(path);
-            }
-        }
+    for spec in &args.style.pdf_images {
+        let (_, path) = match parse_pdf_image_spec(spec, &logo_destinations) {
+            Ok(asset) => asset,
+            Err(message) => return fail_json(64, "usage_error", &message, json),
+        };
+        extras.push(path);
     }
     // xjld: a directory input expands to every `*.md` file under it.
     // A directory with no `*.md` is a usage error (silent no-watch
@@ -1361,13 +1359,24 @@ fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, Strin
     };
     let frontmatter = crate::parse::split_frontmatter(&src).0;
     let doc = parse_markdown(&src);
-    let mut image_assets = Vec::new();
+    let lowered_doc = crate::safe_html::lower(&doc);
+    let mut destinations = Vec::new();
+    collect_image_destinations(&lowered_doc.blocks, &mut destinations);
+    destinations.extend(running_image_destinations(&args.style));
+    let mut image_assets = read_pdf_image_assets(
+        &args.style.pdf_images,
+        args.style.max_pdf_image_bytes,
+        &destinations,
+    )
+    .map_err(|error| match error {
+        PdfImageError::Usage(message) | PdfImageError::Input(message) => message,
+    })?;
     let base = args.input.parent().unwrap_or_else(|| Path::new("."));
     append_auto_image_assets(
         &doc,
         base,
         &mut image_assets,
-        DEFAULT_MAX_PDF_IMAGE_BYTES,
+        args.style.max_pdf_image_bytes,
         "HTML",
     )?;
     let opts = HtmlOptions {
@@ -1630,19 +1639,23 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     let mut explicit_image_destinations = image_destinations.clone();
     explicit_image_destinations.extend(running_image_destinations(&args.style));
     let base_image_dir = auto_pdf_image_base_dir(args.input.as_deref(), args.text.as_deref());
+    // Read the explicitly supplied bytes once, regardless of output format.
+    // In combined output both renderers must see the same override, even if
+    // the source also names a different automatically discoverable local file.
+    let mut explicit_image_assets = match read_pdf_image_assets(
+        &args.style.pdf_images,
+        args.style.max_pdf_image_bytes,
+        &explicit_image_destinations,
+    ) {
+        Ok(assets) => assets,
+        Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+        Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
+    };
     let html_image_assets = if want_html || want_epub {
-        let mut assets = if want_epub {
-            match read_pdf_image_assets(
-                &args.style.pdf_images,
-                args.style.max_pdf_image_bytes,
-                &explicit_image_destinations,
-            ) {
-                Ok(assets) => assets,
-                Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
-                Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
-            }
+        let mut assets = if want_pdf || want_svg {
+            explicit_image_assets.clone()
         } else {
-            Vec::new()
+            std::mem::take(&mut explicit_image_assets)
         };
         if let Some(base_dir) = base_image_dir.as_deref()
             && let Err(e) = append_auto_image_assets(
@@ -1661,17 +1674,7 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     };
     // SVG posters draw the same host image bytes as PDF.
     let mut pdf_image_assets = if want_pdf || want_svg {
-        let mut assets = match read_pdf_image_assets(
-            &args.style.pdf_images,
-            args.style.max_pdf_image_bytes,
-            &explicit_image_destinations,
-        ) {
-            Ok(assets) => assets,
-            // A malformed `--pdf-image` spec is a usage error (64); a missing/
-            // unreadable/oversized file is an input error (66).
-            Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
-            Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
-        };
+        let mut assets = explicit_image_assets;
         if let Some(base_dir) = base_image_dir.as_deref()
             && let Err(e) = append_auto_image_assets(
                 &doc,
@@ -4104,7 +4107,7 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --interactive-html --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --font-scale lg --out README.html\n  fmd README.md --to pdf --font-scale 125% --out README.pdf\n  fmd README.md --to pdf --fit-to-pages 1 --out README.pdf\n  fmd diff v1.md v2.md --out diff.html\n  fmd stats README.md --json\n  fmd README.md --toc --out README.html\n  fmd README.md --to pdf --toc --toc-depth 2 --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-header-right '{title}' --pdf-footer-center '{page} / {pages}' --pdf-footer-rule --out README.pdf\n  fmd README.md --to pdf --pdf-image brand=./logo.svg --pdf-header-image brand --pdf-header-image-height-pt 18 --pdf-footer-center '{page} / {pages}' --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to epub --out README.epub\n  fmd README.md --to svg --out README.svg\n  fmd README.md --to pdf --microtype protrusion --typography-homogeneous --pdf-optimal-pagination --out README.pdf\n  fmd batch docs/ --to both --toc --out-dir out/\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license\n  fmd doctor fonts --corpus ./docs --json\n                             # glyph coverage vs bundled faces + Noto math fallback.\n                             # stdout JSON: scripts/ranges/uncovered/hints.\n                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd diff <F1> <F2> --json  # semantic AST diff and change metrics\n  fmd stats [FILE] --json    # word counts, readability scores, outline, and health checks\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter|a4|a5|legal|tabloid|WIDTHxHEIGHT (points)\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  render defaults (flag > frontmatter > config): lang, toc, toc_depth, font_scale,\n    html_font_format=woff1|woff2|ttf, microtype=off|protrusion|expansion, pdf_page_numbers,\n    pdf_optimal_pagination, typography_homogeneous|antiriver|pareto (true/false)\n  emoji_strategy=warning|noto_subset|drawn (recorded policy hook; resolves to 'warning'. Native fmd\n    builds bundle a curated monochrome Noto Emoji face, so ~360 common emoji render as real\n    glyphs in PDF/SVG; emoji outside it, and every emoji in core/WASM builds, still warn).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage/stats/diff.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override a PDF Markdown image destination as DEST=PATH; repeat it for multiple images. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, keep-with-next headings and widow/orphan control in the page builder (opt-in document-wide optimal pagination via --pdf-optimal-pagination), inline and display math, inline images, footnotes at the foot of the page with linked marks (docs/PDF_FOOTNOTES.md), syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, opt-in running header/footer text and decorative images (--pdf-header-left/center/right, --pdf-footer-left/center/right with {page} {pages} {title} {author} {date}; --pdf-header-image/--pdf-footer-image DEST select one PNG/JPEG/SVG from --pdf-image DEST=PATH even if absent from Markdown; image-position left|right defaults left, image-height-pt is an optional positive integer reduced to fit; --pdf-header-rule/--pdf-footer-rule; --pdf-running-skip-first; invalid images or bands that do not fit their margin fail with exit 70), table of contents generation with dot leaders and bookmark alignment (--toc / [[_TOC_]]), local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. still planned: multi-column layout.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Use --font-scale <xs|sm|md|lg|xl|2xl|FLOAT|PERCENT> (alias --type-size) for uniform, anti-aliased typographic scaling across HTML and PDF.\n  Use --page-size <letter|a4|a5|legal|tabloid|WIDTHxHEIGHT> and --margin-top-pt/--margin-right-pt/--margin-bottom-pt/--margin-left-pt for PDF paper and independent margins in render, watch, batch and book. Custom dimensions retain orientation (792x612 is landscape Letter); one point is 1/72 inch. Paper dimensions must be 144..=14400 points; finite nonnegative margins must leave at least 72 points of content width and height. Flags override config independently; omitted sides keep configured values. Explicit geometry requires --to pdf or --to both. Set a persistent paper with fmd config set page_size a4.\n  Use --fit-to-pages <N> (alias --target-pages) to automatically solve micro-typography and fit content to a page budget.\n  Use --interactive-html (alias --self-hosting) to render a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n  0.4.1    4,162,426      4,300,000    1,854,075      1,900,000    table of contents + math + CJK fallbacks\n  current  ~7.6 MB        7,900,000    ~3.3 MB        3,400,000    books, EPUB, interactive workspace, typography knobs (gate prints exact numbers)\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --interactive-html --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --font-scale lg --out README.html\n  fmd README.md --to pdf --font-scale 125% --out README.pdf\n  fmd README.md --to pdf --fit-to-pages 1 --out README.pdf\n  fmd diff v1.md v2.md --out diff.html\n  fmd stats README.md --json\n  fmd README.md --toc --out README.html\n  fmd README.md --to pdf --toc --toc-depth 2 --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-header-right '{title}' --pdf-footer-center '{page} / {pages}' --pdf-footer-rule --out README.pdf\n  fmd README.md --to pdf --pdf-image brand=./logo.svg --pdf-header-image brand --pdf-header-image-height-pt 18 --pdf-footer-center '{page} / {pages}' --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to epub --out README.epub\n  fmd README.md --to svg --out README.svg\n  fmd README.md --to pdf --microtype protrusion --typography-homogeneous --pdf-optimal-pagination --out README.pdf\n  fmd batch docs/ --to both --toc --out-dir out/\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license\n  fmd doctor fonts --corpus ./docs --json\n                             # glyph coverage vs bundled faces + Noto math fallback.\n                             # stdout JSON: scripts/ranges/uncovered/hints.\n                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd diff <F1> <F2> --json  # semantic AST diff and change metrics\n  fmd stats [FILE] --json    # word counts, readability scores, outline, and health checks\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter|a4|a5|legal|tabloid|WIDTHxHEIGHT (points)\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  render defaults (flag > frontmatter > config): lang, toc, toc_depth, font_scale,\n    html_font_format=woff1|woff2|ttf, microtype=off|protrusion|expansion, pdf_page_numbers,\n    pdf_optimal_pagination, typography_homogeneous|antiriver|pareto (true/false)\n  emoji_strategy=warning|noto_subset|drawn (recorded policy hook; resolves to 'warning'. Native fmd\n    builds bundle a curated monochrome Noto Emoji face, so ~360 common emoji render as real\n    glyphs in PDF/SVG; emoji outside it, and every emoji in core/WASM builds, still warn).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage/stats/diff.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override an image destination as DEST=PATH for HTML, PDF, SVG or EPUB, including stdin/--text input; repeat it for multiple images. DEST can be an extensionless key or URL. HTML identifies supported PNG/JPEG/SVG payloads from their bytes, embeds data URIs and preserves the original safe URL for unsupported bytes. Explicit assets override auto-loaded files in combined output; watch rebuilds when a mapped file changes. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, keep-with-next headings and widow/orphan control in the page builder (opt-in document-wide optimal pagination via --pdf-optimal-pagination), inline and display math, inline images, footnotes at the foot of the page with linked marks (docs/PDF_FOOTNOTES.md), syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, opt-in running header/footer text and decorative images (--pdf-header-left/center/right, --pdf-footer-left/center/right with {page} {pages} {title} {author} {date}; --pdf-header-image/--pdf-footer-image DEST select one PNG/JPEG/SVG from --pdf-image DEST=PATH even if absent from Markdown; image-position left|right defaults left, image-height-pt is an optional positive integer reduced to fit; --pdf-header-rule/--pdf-footer-rule; --pdf-running-skip-first; invalid images or bands that do not fit their margin fail with exit 70), table of contents generation with dot leaders and bookmark alignment (--toc / [[_TOC_]]), local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. still planned: multi-column layout.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Use --font-scale <xs|sm|md|lg|xl|2xl|FLOAT|PERCENT> (alias --type-size) for uniform, anti-aliased typographic scaling across HTML and PDF.\n  Use --page-size <letter|a4|a5|legal|tabloid|WIDTHxHEIGHT> and --margin-top-pt/--margin-right-pt/--margin-bottom-pt/--margin-left-pt for PDF paper and independent margins in render, watch, batch and book. Custom dimensions retain orientation (792x612 is landscape Letter); one point is 1/72 inch. Paper dimensions must be 144..=14400 points; finite nonnegative margins must leave at least 72 points of content width and height. Flags override config independently; omitted sides keep configured values. Explicit geometry requires --to pdf or --to both. Set a persistent paper with fmd config set page_size a4.\n  Use --fit-to-pages <N> (alias --target-pages) to automatically solve micro-typography and fit content to a page budget.\n  Use --interactive-html (alias --self-hosting) to render a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n  0.4.1    4,162,426      4,300,000    1,854,075      1,900,000    table of contents + math + CJK fallbacks\n  current  ~7.6 MB        7,900,000    ~3.3 MB        3,400,000    books, EPUB, interactive workspace, typography knobs (gate prints exact numbers)\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
     )
 }
 
@@ -4368,6 +4371,51 @@ mod helper_tests {
             std::env::temp_dir().join(format!("fmd-cli-helper-{tag}-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn non_html_watch_previews_honor_explicit_image_bytes_and_size_limits() {
+        let dir = fresh_dir("mapped-preview");
+        let input = dir.join("report.md");
+        let image = dir.join("override=bytes.dat");
+        let out = dir.join("output.pdf");
+        let source =
+            "# Preview\n\n<img src=\"https://cdn.example.test/image?id=7\" alt=\"Chart\">\n";
+        let svg = b"<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'><rect width='10' height='10' fill='blue'/></svg>";
+        std::fs::write(&input, source).unwrap();
+        std::fs::write(&image, svg).unwrap();
+        let mapping = format!("https://cdn.example.test/image?id=7={}", image.display());
+        for target in ["pdf", "svg", "epub"] {
+            let cli = Cli::try_parse_from([
+                "fmd",
+                "watch",
+                input.to_str().unwrap(),
+                "--to",
+                target,
+                "--out",
+                out.to_str().unwrap(),
+                "--pdf-image",
+                &mapping,
+            ])
+            .unwrap();
+            let Some(Command::Watch(mut args)) = cli.command else {
+                panic!("expected watch arguments");
+            };
+            let html = watch_preview_html(&args, true).unwrap();
+            assert!(
+                html.contains(&format!(
+                    "src=\"data:image/svg+xml;base64,{}\"",
+                    crate::html::base64_encode(svg)
+                )),
+                "{target} preview omitted its explicit asset"
+            );
+            args.style.max_pdf_image_bytes = 4;
+            assert!(
+                watch_preview_html(&args, true)
+                    .unwrap_err()
+                    .contains("--max-pdf-image-bytes")
+            );
+        }
     }
 
     #[test]

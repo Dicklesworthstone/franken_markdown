@@ -980,32 +980,26 @@ fn html_image_asset<'a>(dest: &str, opts: &'a HtmlOptions) -> Option<(&'static s
     let dest = dest.trim();
     opts.image_assets.iter().find_map(|asset| {
         if asset.destination.trim() == dest {
-            html_image_asset_mime(&asset.destination, &asset.bytes)
-                .map(|mime| (mime, asset.bytes.as_slice()))
+            html_image_asset_mime(&asset.bytes).map(|mime| (mime, asset.bytes.as_slice()))
         } else {
             None
         }
     })
 }
 
-fn html_image_asset_mime(destination: &str, bytes: &[u8]) -> Option<&'static str> {
-    let path = destination
-        .trim()
-        .split(['?', '#'])
-        .next()
-        .unwrap_or_default()
-        .trim();
-    let ext = path.rsplit_once('.').map(|(_, ext)| ext)?;
-    if ext.eq_ignore_ascii_case("png") && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+/// Asset keys are URLs or opaque host identifiers, not MIME declarations.
+/// Infer only the supported image formats from their bytes; unsupported
+/// payloads retain the ordinary safe-URL fallback instead of gaining a MIME
+/// type merely because a caller supplied a misleading filename.
+fn html_image_asset_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some("image/png");
     }
-    if ext.eq_ignore_ascii_case("svg") && looks_like_svg(bytes) {
-        return Some("image/svg+xml");
-    }
-    if (ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg"))
-        && bytes.starts_with(&[0xFF, 0xD8, 0xFF])
-    {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return Some("image/jpeg");
+    }
+    if looks_like_svg(bytes) {
+        return Some("image/svg+xml");
     }
     None
 }
@@ -1014,10 +1008,47 @@ fn looks_like_svg(bytes: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return false;
     };
-    let trimmed = text.trim_start_matches('\u{feff}').trim_start();
-    starts_with_ascii_case_insensitive(trimmed, "<svg")
-        || (starts_with_ascii_case_insensitive(trimmed, "<?xml")
-            && contains_ascii_case_insensitive(trimmed, "<svg"))
+    let mut rest = text.trim_start_matches('\u{feff}').trim_start();
+    loop {
+        let skip = if rest.starts_with("<?") {
+            rest.find("?>").map(|end| end + 2)
+        } else if rest.starts_with("<!--") {
+            rest.find("-->").map(|end| end + 3)
+        } else if starts_with_ascii_case_insensitive(rest, "<!DOCTYPE") {
+            // Ignore quoted '>' and internal-subset declarations while
+            // locating the end of an SVG exporter's optional XML doctype.
+            let mut quote = None;
+            let mut brackets = 0usize;
+            rest.bytes().enumerate().find_map(|(index, byte)| {
+                if let Some(delimiter) = quote {
+                    if byte == delimiter {
+                        quote = None;
+                    }
+                } else {
+                    match byte {
+                        b'\'' | b'"' => quote = Some(byte),
+                        b'[' => brackets += 1,
+                        b']' => brackets = brackets.saturating_sub(1),
+                        b'>' if brackets == 0 => return Some(index + 1),
+                        _ => {}
+                    }
+                }
+                None
+            })
+        } else {
+            // A mention inside arbitrary XML/HTML, or a tag such as
+            // <svgscript>, is not evidence of an SVG document root.
+            return starts_with_ascii_case_insensitive(rest, "<svg")
+                && rest
+                    .as_bytes()
+                    .get(4)
+                    .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>'));
+        };
+        let Some(skip) = skip else {
+            return false;
+        };
+        rest = rest[skip..].trim_start();
+    }
 }
 
 fn svg_without_remote_style_imports(bytes: &[u8]) -> Cow<'_, [u8]> {
@@ -3816,41 +3847,43 @@ mod tests {
     const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
 
     #[test]
-    fn image_asset_mime_requires_matching_extension_and_magic() {
-        // PNG: extension (case-insensitive, query/fragment stripped) AND magic.
+    fn image_asset_mime_uses_content_and_requires_an_actual_svg_root() {
+        assert_eq!(html_image_asset_mime(PNG_MAGIC), Some("image/png"));
         assert_eq!(
-            html_image_asset_mime("chart.png", PNG_MAGIC),
-            Some("image/png")
+            html_image_asset_mime(b"\xff\xd8\xff\xe0"),
+            Some("image/jpeg")
         );
-        assert_eq!(
-            html_image_asset_mime("a.PNG?v=1#frag", PNG_MAGIC),
-            Some("image/png")
-        );
-        assert_eq!(html_image_asset_mime("chart.png", b"not-a-png"), None);
-
-        // SVG: extension AND content that actually reads as SVG.
-        assert_eq!(
-            html_image_asset_mime("pic.svg", b"<svg xmlns='http://www.w3.org/2000/svg'/>"),
-            Some("image/svg+xml")
-        );
-        assert_eq!(
-            html_image_asset_mime("pic.svg", b"\xff\xfe"),
-            None,
-            "non-UTF-8 bytes can never be SVG"
-        );
-        assert_eq!(
-            html_image_asset_mime("pic.svg", b"<?xml version='1.0'?><rect/>"),
-            None,
-            "an XML prolog without an <svg> root is not SVG"
-        );
-        assert_eq!(
-            html_image_asset_mime("pic.svg", b"plain text"),
-            None,
-            "text with neither an <svg> root nor an XML prolog is not SVG"
-        );
-
-        // No extension at all: never emitted as a data URI.
-        assert_eq!(html_image_asset_mime("logo", PNG_MAGIC), None);
+        for svg in [
+            "<svg xmlns='http://www.w3.org/2000/svg'/>",
+            "\u{feff}  <?xml version='1.0'?>\n<!-- exported logo --><svg/>",
+            "<?xml version='1.0'?><!DOCTYPE svg PUBLIC 'svg > public' 'svg.dtd'><svg/>",
+            "<!DOCTYPE svg [<!ENTITY label 'a > b'>]><svg/>",
+        ] {
+            assert_eq!(
+                html_image_asset_mime(svg.as_bytes()),
+                Some("image/svg+xml"),
+                "{svg}"
+            );
+        }
+        for unsupported in [
+            "not an image",
+            "<html><body>not SVG</body></html>",
+            "<?xml version='1.0'?><html><svg/></html>",
+            "<?xml version='1.0'?><rect/>",
+            "<svgscript/>",
+            "<svg",
+            "<!-- <svg/> -->",
+            "<!-- never closed <svg/>",
+            "<?xml never closed <svg/>",
+            "<!DOCTYPE svg [ never closed <svg/>",
+        ] {
+            assert_eq!(
+                html_image_asset_mime(unsupported.as_bytes()),
+                None,
+                "{unsupported}"
+            );
+        }
+        assert_eq!(html_image_asset_mime(b"\xff\xfe"), None);
     }
 
     #[test]

@@ -158,8 +158,13 @@ Requires the corresponding image flag. Logos are decorative artifacts without
 interactive links. Watch rebuilds when the selected logo file changes.
 .TP
 \fB\-\-pdf\-image\fR \fIDEST=PATH\fR
-Supply a local image asset for a Markdown destination or running logo. Repeat
-for multiple mappings. For example, \fBfmd report.md \-\-to pdf \-\-pdf\-image
+Supply or override a local image asset for HTML, PDF, SVG or EPUB, including
+stdin and \fB\-\-text\fR input. DEST matches the source image destination exactly
+and can be an extensionless key or URL. HTML identifies PNG/JPEG/SVG from the
+bytes and embeds data URIs; unsupported bytes retain the original safe URL.
+Explicit assets override auto-loaded files, and watch rebuilds when a mapped
+file changes. Repeat for multiple mappings. The same flag supplies PDF running
+logos. For example, \fBfmd report.md \-\-to pdf \-\-pdf\-image
 brand=./logo.svg \-\-pdf\-header\-image brand \-\-pdf\-header\-image\-height\-pt
 18 \-\-pdf\-footer\-center '{page} / {pages}' \-\-out branded.pdf\fR.
 .TP

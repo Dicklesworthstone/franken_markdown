@@ -5,25 +5,14 @@ import {Script} from 'node:vm';
 import {createNativeWorkspacePublisher} from './native_workspace_publisher.mjs';
 import {createNativeSourceProjectOpenWorker} from './native_source_project_open_worker.mjs';
 import {createNativeSourceProjectCodec} from './native_source_project.mjs';
-import {projectFixtureParts, projectFixtureEngine, projectShell, projectExporterFixtureModule,
+import {projectFixtureParts, projectFixtureEngine, projectFixtureBindings, projectExporterFixtureModule,
   PROJECT_FIXTURE_SOURCE, PROJECT_FIXTURE_OPTIONS} from './native_source_project_fixture.mjs';
 
 const parts = await projectFixtureParts();
 const api = await projectExporterFixtureModule();
 const project = api.createNativeSourceProject(PROJECT_FIXTURE_SOURCE, PROJECT_FIXTURE_OPTIONS());
 const file = () => new Blob([project.bytes]);
-function json(value) { return JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'); }
-export const fixtureBindings = `
-const json = ${json.toString()};
-const projectShell = ${projectShell.toString()};
-const {engine} = (${projectFixtureEngine.toString()})('selected trusted adapter');
-export default async function init({module_or_path}) {
-  if (!(module_or_path instanceof Uint8Array) || module_or_path.length !== 8) throw Error('fixture WASM bytes lost');
-}
-export const renderInteractiveHtmlConfigured = engine.renderInteractiveHtmlConfigured;
-export const renderHtmlConfiguredAdvanced = engine.renderHtmlConfiguredAdvanced;
-export const renderPdfConfiguredMulti = engine.renderPdfConfiguredMulti;
-`;
+const fixtureBindings = projectFixtureBindings();
 const saved = (bindings = fixtureBindings) => JSON.stringify({version: 1,
   wasm: 'AGFzbQEAAAA=', bindings,
   options: {title: 'OLD_DOCUMENT_PRIVATE_TITLE'}, images: [{destination: 'OLD_PRIVATE_IMAGE', bytes: 'AQ=='}],
@@ -70,6 +59,7 @@ test('real worker rebuilds the complete project through the native workspace pub
     {version: 1, wasm: selected.wasm, bindings: selected.bindings, options: data.options, images: data.images, fonts: data.fonts.map(font => ({slot: font.slot, weight: font.weight, bytes: font.bytes}))});
   assert.deepEqual(output.bytes, expected.bytes);
   const exporter = await api.createWorkspaceExporterWithLoader({wasm: new Uint8Array([0,97,115,109,1,0,0,0]), bindings: fixtureBindings}, async () => engine);
+  assert.deepEqual(output.bytes, exporter.renderProject(project.bytes).bytes);
   const direct = exporter.renderProject(project.bytes).text();
   const marker = /<script type="application\/json" id="fmd-native-runtime">([\s\S]*?)<\/script>/;
   assert.equal(new TextDecoder().decode(output.bytes).match(marker)[1], direct.match(marker)[1]);

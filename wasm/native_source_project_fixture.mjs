@@ -75,9 +75,9 @@ export const PROJECT_FIXTURE_OPTIONS = () => ({font: 'serif', fontScale: 1.125, 
   // Explicit data fixture, not a usable TrueType font or glyph-shaping proof.
   fontAssets: [{slot: 'body-regular', bytes: new Uint8Array([0, 1, 2, 3]), weight: 525}],
 });
-export async function nativeSourceProjectFixture() {
+export async function nativeSourceProjectFixture(bindings = '// trusted fixture') {
   const module = await projectExporterFixtureModule(), {engine} = projectFixtureEngine();
-  const exporter = await module.createWorkspaceExporterWithLoader({wasm: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]), bindings: '// trusted fixture'}, async () => engine);
+  const exporter = await module.createWorkspaceExporterWithLoader({wasm: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]), bindings}, async () => engine);
   return exporter.render(PROJECT_FIXTURE_SOURCE, PROJECT_FIXTURE_OPTIONS()).text();
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -89,14 +89,33 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 // The exact explicit adapters used by projectExporterFixtureModule, also useful
 // when executing the shared assembler inside a real disposable worker.
 export async function projectFixtureParts() {
-  const [runtime, preview, proof, proofUI, project, projectUI] = await Promise.all([
+  const [runtime, preview, proof, proofUI, project, projectUI, openWorker, openUI] = await Promise.all([
     import(runtimeAdapter), import(previewAdapter), import(proofAdapter),
     import('./native_pdf_proof_ui.mjs'), import('./native_source_project.mjs'), import('./native_source_project_ui.mjs'),
+    import('./native_source_project_open_worker.mjs'), import('./native_source_project_open_ui.mjs'),
   ]);
   return {bootNativeWorkspace: runtime.bootNativeWorkspace,
     createNativeWorkspaceRenderer: runtime.createNativeWorkspaceRenderer,
     createWorkspacePreviewWorker: preview.createWorkspacePreviewWorker,
     createNativePdfProof: proof.createNativePdfProof, registerNativePdfProof: proofUI.registerNativePdfProof,
     createNativeSourceProjectCodec: project.createNativeSourceProjectCodec,
-    installNativeSourceProjectDownload: projectUI.installNativeSourceProjectDownload};
+    installNativeSourceProjectDownload: projectUI.installNativeSourceProjectDownload,
+    createNativeSourceProjectOpenWorker: openWorker.createNativeSourceProjectOpenWorker,
+    installNativeSourceProjectOpen: openUI.installNativeSourceProjectOpen};
+}
+
+// Executable, explicitly fake wasm-bindgen module for reopening transport tests.
+// It validates the selected byte identity but does not compile or render WASM.
+export function projectFixtureBindings() {
+  return `
+const json = ${json.toString()};
+const projectShell = ${projectShell.toString()};
+const {engine} = (${projectFixtureEngine.toString()})('selected trusted adapter');
+export default async function init({module_or_path}) {
+  if (!(module_or_path instanceof Uint8Array) || module_or_path.length !== 8) throw Error('fixture WASM bytes lost');
+}
+export const renderInteractiveHtmlConfigured = engine.renderInteractiveHtmlConfigured;
+export const renderHtmlConfiguredAdvanced = engine.renderHtmlConfiguredAdvanced;
+export const renderPdfConfiguredMulti = engine.renderPdfConfiguredMulti;
+`;
 }

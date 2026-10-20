@@ -30,6 +30,8 @@ const directWorkspace = exporter.render(source, options);
 const restoredWorkspace = exporter.renderProject(project.bytes);
 assert.deepEqual(restoredWorkspace.bytes, directWorkspace.bytes, 'Restored workspace must equal ordinary workspace output');
 assert.ok(restoredWorkspace.text().includes('function installNativeSourceProjectDownload'));
+assert.ok(restoredWorkspace.text().includes('function installNativeSourceProjectOpen'));
+assert.ok(restoredWorkspace.text().includes('function createNativeWorkspacePublisher'));
 
 const renderer = await import(pathToFileURL(join(packageDir, 'franken_markdown.js')).href);
 await renderer.init(wasm.slice());

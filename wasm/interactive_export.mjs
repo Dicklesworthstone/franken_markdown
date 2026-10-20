@@ -7,9 +7,16 @@ import {createNativePdfProof} from './native_pdf_proof.mjs';
 import {registerNativePdfProof} from './native_pdf_proof_ui.mjs';
 import {installNativeSourceProjectDownload} from './native_source_project_ui.mjs';
 import {createNativeSourceProjectCodec, readNativeSourceProject} from './native_source_project.mjs';
+import {createNativeWorkspacePublisher} from './native_workspace_publisher.mjs';
+import {createNativeSourceProjectOpenWorker} from './native_source_project_open_worker.mjs';
+import {installNativeSourceProjectOpen} from './native_source_project_open_ui.mjs';
 
 export {readNativeSourceProject, NATIVE_SOURCE_PROJECT_LIMITS} from './native_source_project.mjs';
 const sourceProjects = createNativeSourceProjectCodec();
+const publisher = createNativeWorkspacePublisher({bootNativeWorkspace, createNativeWorkspaceRenderer,
+  createWorkspacePreviewWorker, createNativePdfProof, registerNativePdfProof,
+  installNativeSourceProjectDownload, createNativeSourceProjectCodec,
+  createNativeSourceProjectOpenWorker, installNativeSourceProjectOpen});
 
 const MiB = 1024 * 1024;
 const SLOTS = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
@@ -61,15 +68,6 @@ function base64(bytes) {
     chunks.push(String.fromCharCode(...bytes.subarray(start, start + 16384)));
   }
   return btoa(chunks.join(''));
-}
-
-function jsonData(value) {
-  return JSON.stringify(value).replace(/</g, '\\u003c')
-    .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-}
-
-function attribute(text) {
-  return text.replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
 }
 
 function captureRuntime(input) {
@@ -157,70 +155,6 @@ export function createNativeSourceProject(markdown, options = {}) {
   return sourceProjects.encode({source: markdown, ...captureOptions(options)});
 }
 
-function takeShell(result) {
-  try {
-    const bytes = result?.bytes;
-    if (result?.mimeType?.split(';')[0] !== 'text/html' || !(bytes instanceof Uint8Array)) throw new TypeError('Native workspace shell has an invalid output envelope');
-    if (!bytes.length || bytes.length > NATIVE_WORKSPACE_LIMITS.outputBytes) throw new RangeError('Native workspace shell exceeds its output limit');
-    const json = result.diagnosticsJson();
-    const diagnostics = json === '' ? [] : JSON.parse(json);
-    if (!Array.isArray(diagnostics)) throw new TypeError('Native workspace shell has invalid diagnostics');
-    return {html: new TextDecoder('utf-8', {fatal: true}).decode(bytes), diagnostics};
-  } finally {
-    if (typeof result?.free === 'function') result.free();
-  }
-}
-
-function assemble(shell, preview, payload, source) {
-  const sourceOpen = '<script type="application/json" id="fmd-raw-source">';
-  const sourceStart = shell.indexOf(sourceOpen);
-  const sourceEnd = shell.indexOf('</script>', sourceStart + sourceOpen.length);
-  const appStart = '<div class="fmd-content" id="fmd-content">';
-  const appEnd = '</div>\n  </main>\n</div>\n';
-  const previewStart = shell.indexOf(appStart), previewEnd = shell.lastIndexOf(appEnd, sourceStart);
-  // The controller must await Promise-returning previews before Save HTML.
-  // A marker appearing in Markdown/initial output cannot supply that capability.
-  const scriptStart = shell.indexOf('<script>\n', sourceEnd + 9);
-  const scriptEnd = shell.indexOf('</script>', scriptStart + 9);
-  if (sourceStart < 0 || sourceEnd < 0 || previewStart < 0 || previewEnd < previewStart
-      || scriptStart < sourceEnd || scriptEnd < scriptStart
-      || !shell.slice(scriptStart, scriptEnd).includes('__fmdNativeRuntime')
-      || !shell.slice(scriptStart, scriptEnd).includes('fmd-async-preview-v1')
-      || JSON.parse(shell.slice(sourceStart + sourceOpen.length, sourceEnd)) !== source) {
-    throw Object.assign(new Error('Native workspace requires a rebuilt matching WASM package with the background preview editor controller'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
-  }
-  // Replace, do not append to, the initial unsandboxed fragment. Even before
-  // initialization the complete native preview gets the iframe resource policy.
-  const frame = '<iframe title="Rust/WASM Markdown preview" sandbox="allow-same-origin" referrerpolicy="no-referrer" '
-    + 'style="display:block;width:100%;border:0;min-height:320px;height:320px" srcdoc="' + attribute(preview) + '"></iframe>';
-  const bootstrap = '<script type="application/json" id="fmd-native-runtime">' + jsonData(payload) + '</script>\n'
-    + '<script id="fmd-native-bootstrap">\n;(' + bootNativeWorkspace.toString() + ')('
-    + createNativeWorkspaceRenderer.toString() + ', ' + createWorkspacePreviewWorker.toString() + ');\n;('
-    + registerNativePdfProof.toString() + ')(' + createNativePdfProof.toString()
-    + ', window.__fmdNativeRuntime, function(host) { ('
-    + installNativeSourceProjectDownload.toString() + ')(' + createNativeSourceProjectCodec.toString()
-    + ', window.__fmdNativeRuntime, host); });\n</script>\n';
-  // These offsets refer to the original shell. Assembly never searches the
-  // newly injected source, binary, binding text or rendered document for tags.
-  const output = shell.slice(0, previewStart + appStart.length) + frame
-    + shell.slice(previewEnd, scriptStart) + bootstrap + shell.slice(scriptStart);
-  const head = /<head(?:\s[^>]*)?>/i;
-  if (!head.test(output)) throw new Error('Native workspace shell is missing its document head');
-  // Allow only the embedded application, Blob module and WASM compilation.
-  // Browser PDF viewers may use an internal Blob frame for the native proof.
-  // Permit only local Blob objects/frames here. The Markdown iframe retains its
-  // separate stricter policy: no scripts, objects, frames or remote resources.
-  const policy = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; frame-src 'self' about: blob:; object-src blob:; base-uri 'none'; form-action 'none'";
-  return output.replace(head, match => match + '\n<meta http-equiv="Content-Security-Policy" content="' + policy + '">');
-}
-
-function filename(value = 'document') {
-  let name = Array.from(String(value)).slice(0, 80).join('')
-    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').trim().replace(/[. ]+$/, '');
-  if (!name || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = 'document';
-  return name + '.html';
-}
-
 // Internal injection seam: tests exercise packaging with explicit ABI adapters,
 // rather than pretending an unavailable Rust build was executed.
 export async function createWorkspaceExporterWithLoader(runtime, load) {
@@ -238,22 +172,10 @@ export async function createWorkspaceExporterWithLoader(runtime, load) {
       return exporter.render(project.source, project.options);
     },
     render(markdown, options = {}) {
-      const sourceLength = textSize(markdown, NATIVE_WORKSPACE_LIMITS.sourceBytes, 'workspace source');
+      textSize(markdown, NATIVE_WORKSPACE_LIMITS.sourceBytes, 'workspace source');
       const prepared = captureOptions(options);
       const payload = {version: 1, wasm: encodedWasm, bindings: bindingSource, ...prepared};
-      const opts = prepared.options;
-      const renderer = createNativeWorkspaceRenderer(engine, payload);
-      const shell = takeShell(engine.renderInteractiveHtmlConfigured(markdown,
-        opts.font, opts.darkMode, opts.title, opts.lang, opts.fontScale));
-      const preview = renderer.html(markdown);
-      const html = assemble(shell.html, preview, payload, markdown);
-      textSize(html, NATIVE_WORKSPACE_LIMITS.outputBytes, 'native workspace output');
-      const bytes = new TextEncoder().encode(html);
-      const diagnostics = [...shell.diagnostics, ...renderer.diagnostics];
-      return Object.freeze({format: 'interactive-html', mimeType: 'text/html;charset=utf-8',
-        extension: 'html', sourceLength, bytes, diagnostics,
-        text: () => new TextDecoder('utf-8', {fatal: true}).decode(bytes),
-        blob: () => new Blob([bytes], {type: 'text/html;charset=utf-8'}), filename});
+      return publisher.render(engine, markdown, payload);
     },
   });
   return exporter;

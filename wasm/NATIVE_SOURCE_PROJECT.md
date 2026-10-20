@@ -37,11 +37,58 @@ the editor's unsaved-work warning. No source rewrite, browser-storage write,
 network upload, ambient file access or automatic save is introduced. Serialized
 transient controls are rebuilt on reopen; pending jobs are never replayed.
 
-The control is embedded by the updated exporter. Its selected WASM shell must
+The controls are embedded by the updated exporter. Its selected WASM shell must
 include the existing lossless-source host hook used for PDF proofing; earlier
-standalone files do not self-upgrade. The save control does not add an in-place
-project-open dialog. Restore projects with the public API below, then open the
-newly exported workspace. Plain Markdown and self-hosting HTML remain available.
+standalone files do not self-upgrade. Plain Markdown and self-hosting HTML remain
+available.
+
+## Reopen without replacing the current document
+
+Use **Open source project**, choose a local `.fmd.json` file, then select
+**Build workspace**. When it is ready, select **Download workspace** and open the
+downloaded HTML file. The new workspace contains the imported source, settings,
+images and fonts, together with the current workspace's explicitly trusted engine.
+It includes the same save and reopen controls, so this workflow can be repeated.
+
+This is a separate-workspace workflow, **not an in-place replacement**. The current
+editor, unsaved edits, undo history, resources and unsaved-work warning remain
+unchanged. Building does not download automatically, navigate away, open a popup,
+overwrite a file, save to browser storage or upload anything. It does not include
+source, settings or assets from the current document in the rebuilt document.
+The embedded engine is the only document-independent input reused from it.
+
+Choosing a file alone does not read or render it. Build starts one disposable
+worker that reads the selected file, strictly validates the complete project,
+and only then imports and initializes the selected trusted binding JavaScript
+and WASM. Project fields can never replace that executable code. The same
+import-free workspace publisher serves ordinary exports and reopening; sandboxed
+preview framing and the existing content policy are unchanged. Resources are
+validated by the chosen renderer as usual, not silently dropped or fetched.
+
+The file, saved-runtime JSON and output each have a 256 MiB admission bound;
+source and asset limits remain those below. The trusted runtime is limited to
+64 MiB WASM and 4 MiB binding text. A 60-second deadline spans reading, validation,
+startup, rendering and assembly. Cancel, closing the dialog, changing the selected
+file or committed runtime data, composition and suspension retire pending work.
+File identity and exact runtime text are checked again on completion and before
+download activation, including programmatic changes without DOM events. Cancelling
+the file picker, or choosing the same file again, does not dismiss the dialog.
+
+A completed workspace stays in memory until cancellation, replacement or close.
+Downloading retains it so another explicit download uses the same bytes without
+rendering again. Download URLs are released on a later download or when
+the prepared output is retired. Suspension clears the selected file and requires
+explicit reopening. Native export/settings operations must finish or be cancelled
+before Build; opening does not cancel them or alter their result. Reopening does
+not automatically replay jobs when a saved HTML document is opened again.
+
+Unlike data-only saving, building an editable workspace **requires a successful
+native render**. Its disposable worker can initialize independently of a failed
+current preview, but corrupt or incompatible engine artifacts, rejected assets
+or render failures produce an explicit error and no partial workspace. A browser
+without Worker support has no synchronous fallback. The dialog reports native
+diagnostics; it does not certify document fidelity or a completed filesystem save.
+The public APIs below remain available for hosts that select another trusted engine.
 
 ## Create, read, edit and export
 
@@ -140,7 +187,8 @@ option normalization and native rendering retain their own error contracts.
 node --test wasm/native_source_project*.test.mjs
 tsc --noEmit --strict --lib ES2022,DOM --target ES2022 --module NodeNext \
   --moduleResolution NodeNext wasm/native_source_project_types.test.mts
-python wasm/native_source_project_browser.py --mode file --output NEW_DIRECTORY
+python wasm/native_source_project_browser.py --mode file --output NEW_SAVE_DIRECTORY
+python wasm/native_source_project_open_browser.py --mode file --output NEW_OPEN_DIRECTORY
 node wasm/native_source_project_smoke.mjs PACKAGE MATCHING_WASM
 ```
 
@@ -149,12 +197,19 @@ base64, UTF-8/geometry/aggregate limits and seeded cases. Exporter tests execute
 the actual exporter/codec/page normalizer with explicitly replaced native engine,
 preview and PDF-proof-session dependencies. UI tests use controlled DOM/URL/timer
 adapters and execute the emitted worker body in isolated VM and real Node-worker
-realms. These tests do not establish Rust rendering or native image/font validity.
+realms. Reopening tests also import an explicit binding adapter in a real Node
+worker, check complete output parity with the ordinary exporter, and verify that
+invalid projects fail before even trusted engine initialization. These tests do
+not establish Rust rendering or native image/font validity.
 
-The browser probe uses the actual exporter, project controls, codec and Blob
-worker in a locally installed Chromium. Native rendering and the lossless-source
+The browser probes use the actual exporter, project controls, codec and Blob
+workers in a locally installed Chromium. Native rendering and the lossless-source
 host are explicit fixtures, not a rebuilt engine or the full production editor
-controller. It retains downloads, HTML and a narrow-viewport screenshot. The
+controller. They retain downloads, HTML and narrow-viewport screenshots. The
+reopening probe loads the downloaded workspace in a fresh browser context, saves
+its complete project, then reopens it again and compares the two generated HTML
+files byte-for-byte. It also checks current-document preservation, cancellation,
+engine startup failure, hostile project fields and explicit-only downloads. The
 synthetic composition checks are not operating-system IME qualification. The
 reparse test reconstructs transient controls; it is not the full native Save HTML
 lifecycle. Default file mode attempts actual file navigation. `--mode content`

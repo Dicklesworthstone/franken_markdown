@@ -153,6 +153,7 @@ FACES = [
     ("FmdCmMathSymbols7", "cmsy7", "FMD CM Math Symbols 7", CMSY),
     ("FmdCmMathSymbols5", "cmsy5", "FMD CM Math Symbols 5", CMSY),
     ("FmdCmMathExtension10", "cmex10", "FMD CM Math Extension 10", CMEX),
+    ("FmdCmRoman10", "cmr10", "FMD CM Roman 10", "cmr"),
     ("FmdCmRoman7", "cmr7", "FMD CM Roman 7", "cmr"),
     ("FmdCmRoman5", "cmr5", "FMD CM Roman 5", "cmr"),
 ]

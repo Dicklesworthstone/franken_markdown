@@ -84,6 +84,17 @@
       "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMEX10."
     },
     {
+      "file": "FmdCmRoman10.ttf",
+      "family": "FMD CM Roman 10",
+      "source": "cmr10.pfb",
+      "source_font_name": "CMR10",
+      "source_sha256": "fdcede8794018df5f2b58f0905fb20a2b418ed8f67b73ee12445855dfbe5b1be",
+      "sha256": "eb80e837b472e30d108066416d976a828d9ea2bec51fa4b3462ec5b40f29ce51",
+      "glyphs": 128,
+      "unicode_mapped": 120,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMR10."
+    },
+    {
       "file": "FmdCmRoman7.ttf",
       "family": "FMD CM Roman 7",
       "source": "cmr7.pfb",

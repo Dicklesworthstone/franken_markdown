@@ -9,9 +9,12 @@
 //! and falls back across the roster; a character no face maps is a precise
 //! [`MathError::UnmappedChar`](crate::MathError).
 //!
-//! **TeX's metrics where TeX has them.** In math mode a glyph from a face
-//! that stands for one of TeX's math-family fonts (the CM math faces, and
-//! CM Regular as cmr10) takes that font's TFM box and kerns
+//! **TeX's fonts where TeX has them.** In math mode, family 0 at display and
+//! text size is cmr10 itself ([`FACE_ROMAN_10`]); CM Unicode's Regular,
+//! whose `+ = [ ]` differ from cmr10's, stands for it only in text mode.
+//! A glyph from a face that stands for one of TeX's math-family fonts (the
+//! CM math faces, and CM Regular as cmr10) takes that font's TFM box and
+//! kerns
 //! ([`crate::tfm`]): TeX lays out from the TFM, whose heights, depths and
 //! italic corrections are the designer's, not the ink's. Every other glyph
 //! keeps metrics measured from its outline, with the italic correction
@@ -122,6 +125,9 @@ pub const FACE_MATH_SYMBOLS_5: FaceId = FaceId(13);
 pub const FACE_ROMAN_7: FaceId = FaceId(14);
 /// [`FaceId`] of cmr5 (second-order scripts).
 pub const FACE_ROMAN_5: FaceId = FaceId(15);
+/// [`FaceId`] of cmr10, TeX's family 0 in math mode at display and text
+/// size: digits, `+ = ( ) [ ]`, upright Greek and operator names.
+pub const FACE_ROMAN_10: FaceId = FaceId(16);
 
 /// The private-use page the CM math faces map their TFM code positions
 /// into: code `c` of cmmi/cmsy/cmex is `U+F000 + c` in that face (ADR-0028).
@@ -139,8 +145,8 @@ pub const fn tex_code(code: u8) -> char {
 impl FaceSet {
     /// Build a face set from parsed fonts, in [`FaceId`] order: regular,
     /// italic, bold, bold-italic, typewriter, sans, symbols, then the CM
-    /// math faces (math italic, symbols, extension, and the 7/5-point
-    /// italic, symbols and roman cuts). A roster without the CM math faces
+    /// math faces (math italic, symbols, extension, the 7/5-point italic,
+    /// symbols and roman cuts, and cmr10). A roster without the CM math faces
     /// still lays out: resolution falls back across whatever is present.
     /// Its glyphs take metrics measured from their outlines: only
     /// [`FaceSet::bundled`] knows which faces are TeX's fonts.
@@ -179,6 +185,7 @@ impl FaceSet {
             fmd_font::Font::parse(fmd_font::bundled::CM_MATH_SYMBOLS_5.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_7.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_5.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_10.to_vec())?,
         ];
         let mut faces = Self::from_fonts(fonts);
         faces.tfm = (0..faces.fonts.len()).map(|_| None).collect();
@@ -207,6 +214,7 @@ impl FaceSet {
             (FACE_MATH_SYMBOLS_5, &crate::tfm::CMSY5),
             (FACE_ROMAN_7, &crate::tfm::CMR7),
             (FACE_ROMAN_5, &crate::tfm::CMR5),
+            (FACE_ROMAN_10, &crate::tfm::CMR10),
         ] {
             faces.attach_tfm(face, font, &tex_coded);
         }
@@ -269,6 +277,41 @@ impl FaceSet {
         };
         let gid = self.font(cut)?.glyph_index(ch);
         (gid != 0).then_some((cut, gid))
+    }
+
+    /// The face TeX itself sets `ch` in at `style`, for a glyph resolved
+    /// from `face`: the optically sized cut in the script styles
+    /// ([`FaceSet::optical`]), and cmr10 at display and text size
+    /// ([`FaceSet::math_roman`]). `None` when neither applies or the cut
+    /// lacks the character.
+    #[must_use]
+    pub fn tex_face(
+        &self,
+        face: FaceId,
+        ch: char,
+        style: Style,
+        text_mode: bool,
+    ) -> Option<(FaceId, u16)> {
+        if let Some(cut) = self.optical(face, ch, style) {
+            return Some(cut);
+        }
+        if !matches!(style, Style::Display | Style::Text) {
+            return None;
+        }
+        self.math_roman(face, ch, text_mode)
+    }
+
+    /// cmr10's glyph for `ch`, TeX's family 0 in math mode, where CM Regular
+    /// resolved it. CM Unicode's Regular stands in for cmr10 only in text
+    /// mode: its `+` and `=` carry 0.57 of cmr10's ink and its brackets 1.48.
+    /// `None` in text mode, for other faces, or when cmr10 lacks `ch`.
+    #[must_use]
+    pub fn math_roman(&self, face: FaceId, ch: char, text_mode: bool) -> Option<(FaceId, u16)> {
+        if text_mode || face != FACE_REGULAR {
+            return None;
+        }
+        let gid = self.font(FACE_ROMAN_10)?.glyph_index(ch);
+        (gid != 0).then_some((FACE_ROMAN_10, gid))
     }
 
     /// The glyph at TFM code position `code` of `face` (a CM math face), if
@@ -526,7 +569,7 @@ mod tests {
             Ok(f) => f,
             Err(e) => panic!("bundled faces: {e}"),
         };
-        assert_eq!(faces.len(), 16);
+        assert_eq!(faces.len(), 17);
         // Letters come from the math italic; digits stay upright.
         let Some((face, gid)) = faces.resolve('x', default_math_chain('x')) else {
             panic!("x must resolve");

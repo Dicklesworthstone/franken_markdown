@@ -49,6 +49,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     does.
   - Noto Sans Math remains the last-resort fallback.
   - Layout goldens moved with the faces.
+- `fmd-math` sets math-mode family 0 (digits, `+ = ( ) [ ]`, upright Greek,
+  operator names, `\mathrm`, and the accents) from cmr10 itself at display and
+  text size. `fmd-font` bundles it like cmr7 and cmr5 (`FmdCmRoman10.ttf`), and
+  the other nine converted faces reproduce byte for byte.
+  - CM Unicode's Regular had stood in for cmr10, but its glyphs are not
+    cmr10's: its `+` and `=` carry 0.57 of cmr10's ink (bars 0.023 em against
+    TeX's 0.4 pt rule) and its brackets 1.48. franken_manim's ink oracle
+    measured this in every formula that uses them (franken_manim fm-8zy2).
+  - Text mode, including TexText runs, keeps CM Unicode.
+  - Boxes, kerns and positions are unchanged, since both faces read cmr10's TFM.
+    Eleven layout goldens moved: the faces and outlines of those glyphs only,
+    and the accents, which now draw cmr10's own accent at scale 1.
 - `fmd-math` lays out those faces from TeX's own font metrics (`fmd-math/src/tfm.rs`,
   transcribed from Knuth's cmmi, cmsy, cmex and cmr TFM files at 10, 7 and 5 pt
   by `scripts/font-oracles/extract-cm-tfm.py`). In math mode a glyph of a TeX

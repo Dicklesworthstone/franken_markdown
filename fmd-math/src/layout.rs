@@ -604,10 +604,10 @@ impl Engine {
                 self.op_glyph(*ch, node.span, ctx, scale)
             }
             NodeKind::OpName { name, .. } => {
-                self.word_box(name, node.span, None, ctx, FACE_REGULAR)
+                self.word_box(name, node.span, None, ctx, FACE_REGULAR, false)
             }
             NodeKind::TextRun { text, char_spans } => {
-                self.word_box(text, node.span, Some(char_spans), ctx, text_face(ctx))
+                self.word_box(text, node.span, Some(char_spans), ctx, text_face(ctx), true)
             }
             NodeKind::Text { body } => Ok(Laid {
                 boxx: self.hlist(
@@ -935,11 +935,11 @@ impl Engine {
                 return Err(err);
             }
         };
-        // Scripts take the optically designed 7- and 5-point cuts, as TeX
-        // does, at the same scaled size.
+        // TeX's own font: the optically designed 7- and 5-point cuts in
+        // scripts, at the same scaled size, and cmr10 for family 0.
         let (face, gid) = self
             .faces
-            .optical(face, mapped, ctx.style.style)
+            .tex_face(face, mapped, ctx.style.style, ctx.text_mode)
             .unwrap_or((face, gid));
         let metrics = self.char_metrics(face, gid, ctx.text_mode);
         let size = ctx.size();
@@ -1099,6 +1099,7 @@ impl Engine {
         char_spans: Option<&[Span]>,
         ctx: LayCtx,
         prefer: FaceId,
+        text_run: bool,
     ) -> Result<Laid, MathError> {
         let size = ctx.size();
         let mut children = Vec::new();
@@ -1128,9 +1129,11 @@ impl Engine {
                     span: ch_span,
                 });
             };
+            // An operator name is family 0 (cmr10); a text run keeps the
+            // text face.
             let (face, gid) = self
                 .faces
-                .optical(face, mapped, ctx.style.style)
+                .tex_face(face, mapped, ctx.style.style, ctx.text_mode || text_run)
                 .unwrap_or((face, gid));
             if let Some((pf, pg)) = prev {
                 if pf == face {
@@ -1927,12 +1930,16 @@ impl Engine {
                 };
                 let base_laid = self.clean_box(base, ctx.map(StyleCtx::cramp))?;
                 let combining = accent_char(AccentKind::Dot);
-                let Some((face, gid)) = self
+                let Some((used, (face, gid))) = self
                     .faces
                     .resolve(combining, &[FACE_REGULAR, FACE_ITALIC, FACE_SYMBOLS])
+                    .map(|hit| (combining, hit))
                     .or_else(|| {
-                        accent_spacing_fallback(combining)
-                            .and_then(|alt| self.faces.resolve(alt, &[FACE_REGULAR, FACE_SYMBOLS]))
+                        accent_spacing_fallback(combining).and_then(|alt| {
+                            self.faces
+                                .resolve(alt, &[FACE_REGULAR, FACE_SYMBOLS])
+                                .map(|hit| (alt, hit))
+                        })
                     })
                 else {
                     return Err(MathError::UnmappedChar {
@@ -1940,6 +1947,11 @@ impl Engine {
                         span,
                     });
                 };
+                // In math mode the dot is cmr10's own accent character.
+                let (face, gid) = self
+                    .faces
+                    .math_roman(face, used, ctx.text_mode)
+                    .unwrap_or((face, gid));
                 let Some(font) = self.faces.font(face) else {
                     return Err(MathError::UnmappedChar {
                         ch: combining,
@@ -1994,27 +2006,40 @@ impl Engine {
             _ => {
                 let base_laid = self.clean_box(base, ctx.map(StyleCtx::cramp))?;
                 let combining = accent_char(kind);
-                // CM Unicode's spacing accents are cmr's own designs, so
-                // they come first; a combining mark from another face only
-                // where CM has none (the vector arrow).
+                // The spacing accents of CM come first (cmr10's own in
+                // math mode); a combining mark from another face only where
+                // CM has none (the vector arrow).
                 let spacing = accent_spacing_fallback(combining);
                 let resolved = spacing
-                    .and_then(|alt| self.faces.resolve(alt, &[FACE_REGULAR]))
-                    .filter(|&(face, _)| face == FACE_REGULAR)
+                    .and_then(|alt| {
+                        self.faces
+                            .resolve(alt, &[FACE_REGULAR])
+                            .map(|hit| (alt, hit))
+                    })
+                    .filter(|&(_, (face, _))| face == FACE_REGULAR)
                     .or_else(|| {
                         self.faces
                             .resolve(combining, &[FACE_REGULAR, FACE_ITALIC, FACE_SYMBOLS])
+                            .map(|hit| (combining, hit))
                     })
                     .or_else(|| {
-                        spacing
-                            .and_then(|alt| self.faces.resolve(alt, &[FACE_REGULAR, FACE_SYMBOLS]))
+                        spacing.and_then(|alt| {
+                            self.faces
+                                .resolve(alt, &[FACE_REGULAR, FACE_SYMBOLS])
+                                .map(|hit| (alt, hit))
+                        })
                     });
-                let Some((face, gid)) = resolved else {
+                let Some((used, (face, gid))) = resolved else {
                     return Err(MathError::UnmappedChar {
                         ch: combining,
                         span,
                     });
                 };
+                // In math mode the accent is cmr10's own accent character.
+                let (face, gid) = self
+                    .faces
+                    .math_roman(face, used, ctx.text_mode)
+                    .unwrap_or((face, gid));
                 let Some(font) = self.faces.font(face) else {
                     return Err(MathError::UnmappedChar {
                         ch: combining,

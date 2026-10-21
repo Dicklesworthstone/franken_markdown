@@ -1269,3 +1269,28 @@ fn explicit_spaces_keep_inter_atom_spacing() {
     // across it.
     assert!((width(r"A\!V") - width("A") - width("V") + 3.0 / 18.0).abs() < EPS);
 }
+
+/// fm-8zy2: in math mode TeX sets family 0 (digits, `+ = ( ) [ ]`) from
+/// cmr10 at display and text size, and from cmr7 in scripts. CM Unicode's
+/// Regular stands in for it in text mode only: its `+` and `=` carry 0.57
+/// of cmr10's ink and its brackets 1.48.
+#[test]
+fn family_zero_is_cmr10_in_math_mode_and_cm_unicode_in_text_mode() {
+    use fmd_math::faces::{FACE_REGULAR, FACE_ROMAN_7, FACE_ROMAN_10};
+    let e = engine();
+    let math = e.typeset("[1+2]=3", Style::Display).unwrap();
+    assert_eq!(math.glyphs.len(), 7);
+    for g in &math.glyphs {
+        assert_eq!(g.face, FACE_ROMAN_10, "math-mode {:?}", g.ch);
+    }
+    let inline = e.typeset("[x]", Style::Text).unwrap();
+    assert_eq!(inline.glyphs[0].face, FACE_ROMAN_10);
+    let script = e.typeset("x^{[2]}", Style::Display).unwrap();
+    for g in script.glyphs.iter().skip(1) {
+        assert_eq!(g.face, FACE_ROMAN_7, "script {:?}", g.ch);
+    }
+    let text = e.typeset_text("[1+2]").unwrap();
+    for g in &text.glyphs {
+        assert_eq!(g.face, FACE_REGULAR, "text-mode {:?}", g.ch);
+    }
+}

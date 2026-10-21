@@ -53,6 +53,9 @@ pub const CM_MATH_SYMBOLS_7: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathS
 pub const CM_MATH_SYMBOLS_5: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathSymbols5.ttf");
 /// CM math extension (cmex10): big operators, delimiter sizes, extensible pieces.
 pub const CM_MATH_EXTENSION_10: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathExtension10.ttf");
+/// CM roman at 10 pt (cmr10): TeX's family 0 in math mode (digits,
+/// `+ = ( ) [ ]`, upright Greek, operator names) at display and text size.
+pub const CM_ROMAN_10: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman10.ttf");
 /// CM roman at 7 pt (cmr7): upright script characters.
 pub const CM_ROMAN_7: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman7.ttf");
 /// CM roman at 5 pt (cmr5): upright second-order script characters.
@@ -64,7 +67,7 @@ pub const CM_ROMAN_5: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman5.ttf")
 pub const NOTO_EMOJI_CURATED: &[u8] = include_bytes!("../fonts/noto-emoji/NotoEmojiCurated.ttf");
 
 /// Every bundled face as `(stable name, bytes)`, in registry order.
-pub const ALL_FACES: [(&str, &[u8]); 19] = [
+pub const ALL_FACES: [(&str, &[u8]); 20] = [
     ("cm-regular", CM_REGULAR),
     ("cm-bold", CM_BOLD),
     ("cm-italic", CM_ITALIC),
@@ -82,6 +85,7 @@ pub const ALL_FACES: [(&str, &[u8]); 19] = [
     ("cm-math-symbols-7", CM_MATH_SYMBOLS_7),
     ("cm-math-symbols-5", CM_MATH_SYMBOLS_5),
     ("cm-math-extension-10", CM_MATH_EXTENSION_10),
+    ("cm-roman-10", CM_ROMAN_10),
     ("cm-roman-7", CM_ROMAN_7),
     ("cm-roman-5", CM_ROMAN_5),
 ];
@@ -111,6 +115,7 @@ mod tests {
         let italic = parse(super::CM_MATH_ITALIC_10);
         let symbols = parse(super::CM_MATH_SYMBOLS_10);
         let extension = parse(super::CM_MATH_EXTENSION_10);
+        let roman10 = parse(super::CM_ROMAN_10);
         let roman7 = parse(super::CM_ROMAN_7);
         for ch in [
             'x', 'f', 'α', 'θ', 'ϑ', 'ϕ', 'φ', 'ϵ', 'ε', '∂', 'ℓ', '<', ',',
@@ -137,5 +142,8 @@ mod tests {
         );
         assert_ne!(roman7.glyph_index('2'), 0);
         assert_ne!(roman7.glyph_index('Γ'), 0);
+        for ch in ['0', '+', '=', '(', '[', ']', 's', 'Γ', '\u{F02B}'] {
+            assert_ne!(roman10.glyph_index(ch), 0, "cmr10 maps {ch:?}");
+        }
     }
 }

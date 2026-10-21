@@ -49,6 +49,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     does.
   - Noto Sans Math remains the last-resort fallback.
   - Layout goldens moved with the faces.
+- `fmd-math` lays out those faces from TeX's own font metrics (`fmd-math/src/tfm.rs`,
+  transcribed from Knuth's cmmi, cmsy, cmex and cmr TFM files at 10, 7 and 5 pt
+  by `scripts/font-oracles/extract-cm-tfm.py`). In math mode a glyph of a TeX
+  face, with CM Regular standing for cmr10, now gets:
+  - Boxes: the TFM width, height, depth and italic correction instead of
+    measured ink. `-` is 0.583 em tall with 0.083 depth, `\cdot` 0.444,
+    `\rightarrow` 0.367, digits 0.644, and letters have no overshoot depth, as
+    in TeX. `y` is 0.526 em wide with its 0.036 italic correction.
+  - Kerns: those of the TFM lig/kern program. An Ord character kerns with the
+    next atom's character from its font, whatever that atom's class (`d f` is
+    1/6 em tighter, `V,` likewise).
+  - Italic corrections: kept between letters of cmmi, cmsy and cmex, whose
+    interword space is zero, and dropped inside a word of cmr or a text face.
+  - Accents: an accent over a single character is skewed by that character's
+    kern with its font's skewchar.
+  - Big operators: their TFM boxes are centred on the axis. The display `\sum`
+    box is 1.6 em, against 1.4 em of ink.
+
+  Text mode keeps measured metrics. Ligatures stay off, as under the
+  Reference preamble. 17 of the 19 layout goldens moved.
 - `fmd-math` gains an `svg_dump` example for visual checks of layout changes.
 
 ## [0.6.0] - 2026-10-14

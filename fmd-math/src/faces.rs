@@ -9,22 +9,80 @@
 //! and falls back across the roster; a character no face maps is a precise
 //! [`MathError::UnmappedChar`](crate::MathError).
 //!
-//! **Italic correction, synthesized.** TFM italic corrections do not exist
-//! in the sfnt world; per the ratified measure-and-validate seam they are
-//! synthesized from decoded geometry as the ink's right overhang past the
-//! advance (`max(0, bbox_xmax − advance)`), which reproduces their role in
-//! script placement (slanted `∫` and italic letters push superscripts
-//! right).
+//! **TeX's metrics where TeX has them.** In math mode a glyph from a face
+//! that stands for one of TeX's math-family fonts (the CM math faces, and
+//! CM Regular as cmr10) takes that font's TFM box and kerns
+//! ([`crate::tfm`]): TeX lays out from the TFM, whose heights, depths and
+//! italic corrections are the designer's, not the ink's. Every other glyph
+//! keeps metrics measured from its outline, with the italic correction
+//! synthesized as the ink's right overhang past the advance
+//! (`max(0, bbox_xmax − advance)`), which plays its role in script
+//! placement.
 
 use crate::mbox::FaceId;
 use crate::node::MathFont;
 use crate::style::Style;
+use crate::tfm::TfmFont;
 
 /// The engine's face roster, in [`FaceId`] order. The set mirrors the
 /// bundled sovereign default (§11.1): CM regular/italic/bold/bold-italic,
 /// CM Typewriter, a sans face, and the math-symbol coverage face.
 pub struct FaceSet {
     fonts: Vec<fmd_font::Font>,
+    /// Per face, the TFM file TeX reads for it in math mode, with each
+    /// glyph's code there. Only the bundled roster carries any.
+    tfm: Vec<Option<FaceTfm>>,
+}
+
+/// A face's TFM file and its glyph-to-code map.
+struct FaceTfm {
+    font: &'static TfmFont,
+    /// The TFM code of each glyph id, where the face's glyph is that code's
+    /// character.
+    codes: Vec<Option<u8>>,
+}
+
+/// The characters cmr10 (OT1) carries that CM Regular maps by Unicode,
+/// with their codes: upright Greek capitals, the dotless letters, the
+/// ASCII letters, digits and punctuation at their own positions, and the
+/// OT1 quotes, dashes and Latin extras. Accents are left out: fmd-math sets
+/// them from their own TeX accent metrics.
+#[cfg(feature = "bundled-faces")]
+const OT1_UNICODE: &[(char, u8)] = &[
+    ('Γ', 0x00),
+    ('Δ', 0x01),
+    ('Θ', 0x02),
+    ('Λ', 0x03),
+    ('Ξ', 0x04),
+    ('Π', 0x05),
+    ('Σ', 0x06),
+    ('Υ', 0x07),
+    ('Φ', 0x08),
+    ('Ψ', 0x09),
+    ('Ω', 0x0A),
+    ('ı', 0x10),
+    ('ȷ', 0x11),
+    ('ß', 0x19),
+    ('æ', 0x1A),
+    ('œ', 0x1B),
+    ('ø', 0x1C),
+    ('Æ', 0x1D),
+    ('Œ', 0x1E),
+    ('Ø', 0x1F),
+    ('”', 0x22),
+    ('’', 0x27),
+    ('¡', 0x3C),
+    ('¿', 0x3E),
+    ('“', 0x5C),
+    ('‘', 0x60),
+    ('–', 0x7B),
+    ('—', 0x7C),
+];
+
+/// The ASCII characters cmr10 sets at their own code.
+#[cfg(feature = "bundled-faces")]
+fn ot1_ascii(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || "!#$%&()*+,-./:;=?@[]".contains(ch)
 }
 
 /// [`FaceId`] of CM Regular (upright letters, digits, most symbols).
@@ -84,9 +142,14 @@ impl FaceSet {
     /// math faces (math italic, symbols, extension, and the 7/5-point
     /// italic, symbols and roman cuts). A roster without the CM math faces
     /// still lays out: resolution falls back across whatever is present.
+    /// Its glyphs take metrics measured from their outlines: only
+    /// [`FaceSet::bundled`] knows which faces are TeX's fonts.
     #[must_use]
     pub fn from_fonts(fonts: Vec<fmd_font::Font>) -> Self {
-        Self { fonts }
+        Self {
+            fonts,
+            tfm: Vec::new(),
+        }
     }
 
     /// The bundled sovereign default: the four CM text faces, CM
@@ -117,7 +180,74 @@ impl FaceSet {
             fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_7.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_5.to_vec())?,
         ];
-        Ok(Self::from_fonts(fonts))
+        let mut faces = Self::from_fonts(fonts);
+        faces.tfm = (0..faces.fonts.len()).map(|_| None).collect();
+        // CM Regular is CM Unicode, mapped by Unicode; the converted faces
+        // carry every TFM code at U+F000 + code (ADR-0028).
+        let regular = OT1_UNICODE
+            .iter()
+            .copied()
+            .chain(
+                (0x21..0x7F_u8)
+                    .filter(|&code| ot1_ascii(char::from(code)))
+                    .map(|code| (char::from(code), code)),
+            )
+            .collect::<Vec<_>>();
+        faces.attach_tfm(FACE_REGULAR, &crate::tfm::CMR10, &regular);
+        let tex_coded = (0..128_u8)
+            .map(|code| (tex_code(code), code))
+            .collect::<Vec<_>>();
+        for (face, font) in [
+            (FACE_MATH_ITALIC, &crate::tfm::CMMI10),
+            (FACE_MATH_SYMBOLS, &crate::tfm::CMSY10),
+            (FACE_MATH_EXTENSION, &crate::tfm::CMEX10),
+            (FACE_MATH_ITALIC_7, &crate::tfm::CMMI7),
+            (FACE_MATH_ITALIC_5, &crate::tfm::CMMI5),
+            (FACE_MATH_SYMBOLS_7, &crate::tfm::CMSY7),
+            (FACE_MATH_SYMBOLS_5, &crate::tfm::CMSY5),
+            (FACE_ROMAN_7, &crate::tfm::CMR7),
+            (FACE_ROMAN_5, &crate::tfm::CMR5),
+        ] {
+            faces.attach_tfm(face, font, &tex_coded);
+        }
+        Ok(faces)
+    }
+
+    /// Record `font` as `face`'s TFM, reading each code's glyph through the
+    /// characters that address it.
+    #[cfg(feature = "bundled-faces")]
+    fn attach_tfm(&mut self, face: FaceId, font: &'static TfmFont, chars: &[(char, u8)]) {
+        let Some(sfnt) = self.fonts.get(face.0) else {
+            return;
+        };
+        let mut codes = vec![None; usize::from(sfnt.num_glyphs)];
+        for &(ch, code) in chars {
+            let gid = sfnt.glyph_index(ch);
+            if gid != 0 && font.char(code).is_some() {
+                if let Some(slot) = codes.get_mut(usize::from(gid)) {
+                    *slot = Some(code);
+                }
+            }
+        }
+        if let Some(slot) = self.tfm.get_mut(face.0) {
+            *slot = Some(FaceTfm { font, codes });
+        }
+    }
+
+    /// The TFM file TeX reads for `face` in math mode and the code of glyph
+    /// `gid` there; `None` when the face has no TFM or the glyph is not one
+    /// of its characters.
+    #[must_use]
+    pub fn tfm(&self, face: FaceId, gid: u16) -> Option<(&'static TfmFont, u8)> {
+        let entry = self.tfm.get(face.0)?.as_ref()?;
+        let code = (*entry.codes.get(usize::from(gid))?)?;
+        Some((entry.font, code))
+    }
+
+    /// The TFM file behind `face`, if it has one.
+    #[must_use]
+    pub fn tfm_font(&self, face: FaceId) -> Option<&'static TfmFont> {
+        self.tfm.get(face.0)?.as_ref().map(|entry| entry.font)
     }
 
     /// The optically sized cut TeX sets a script in: cmmi7, cmsy7 and cmr7

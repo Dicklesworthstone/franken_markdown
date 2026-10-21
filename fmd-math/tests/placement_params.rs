@@ -239,16 +239,21 @@ fn big_op_is_display_scaled_and_axis_centered() {
     let e = engine();
     let display = e.typeset(r"\sum", Style::Display).unwrap();
     let text = e.typeset(r"\sum", Style::Text).unwrap();
-    // cmex10's display summation (char 0x58) is 1.4 em tall against the
-    // text one's 1.0 em (0x50): two designed glyphs, not one scaled.
+    // cmex10's display summation (char 0x58) and its text one (0x50) are two
+    // designed glyphs, not one scaled; their TFM boxes are 1.6 and 1.0 em.
     let ds = display.height + display.depth;
     let ts = text.height + text.depth;
-    assert!((ds / ts - CM.display_op_scale).abs() < 2e-3, "{ds} / {ts}");
+    assert!(
+        (ds - 1.6).abs() < 1e-4 && (ts - 1.0).abs() < 1e-4,
+        "{ds} {ts}"
+    );
     assert_eq!(display.glyphs[0].face, fmd_math::faces::FACE_MATH_EXTENSION);
     assert_ne!(display.glyphs[0].gid, text.glyphs[0].gid);
-    // Axis-centered: ink center at σ22.
-    let ink_center = (display.height - display.depth) / 2.0;
-    assert!((ink_center - CM.axis_height).abs() < 0.02, "{ink_center}");
+    // Axis-centered (tex.web §749): the box's center at σ22.
+    for layout in [&display, &text] {
+        let center = (layout.height - layout.depth) / 2.0;
+        assert!((center - CM.axis_height).abs() < 1e-9, "{center}");
+    }
 }
 
 #[test]
@@ -828,29 +833,33 @@ fn a_line_break_unskips_the_space_before_it() {
 /// word of a text face (TeX's math_text_char) gets none.
 #[test]
 fn italic_correction_kerns_follow_lone_math_characters() {
-    use fmd_math::faces::glyph_metrics;
     let e = engine();
-    let metrics = |l: &Layout, i: usize| {
+    // TeX's own boxes: each placed glyph's TFM character.
+    let tfm = |l: &Layout, i: usize| {
         let g = &l.glyphs[i];
-        glyph_metrics(e.faces().font(g.face).expect("glyph face"), g.gid)
+        e.faces().tfm(g.face, g.gid).expect("a TeX font's glyph")
+    };
+    let metrics = |l: &Layout, i: usize| {
+        let (font, code) = tfm(l, i);
+        font.char(code).expect("its TFM character")
     };
 
     let italic = e.typeset("f(", Style::Text).unwrap();
     let m = metrics(&italic, 0);
     assert!(
-        m.italic > 0.0,
-        "the math-italic f overhangs its advance: {m:?}"
+        (m.italic - 0.107_64).abs() < 1e-5,
+        "cmmi10's f has its TFM italic correction: {m:?}"
     );
     let gap = italic.glyphs[1].x - italic.glyphs[0].x;
     assert!(
-        (gap - (m.advance + m.italic)).abs() < EPS,
+        (gap - (m.width + m.italic)).abs() < EPS,
         "f( advances by the f's width plus its italic correction: {gap} vs {m:?}"
     );
 
     let subscripted = e.typeset("f_i", Style::Text).unwrap();
     let gap = subscripted.glyphs[1].x - subscripted.glyphs[0].x;
     assert!(
-        (gap - metrics(&subscripted, 0).advance).abs() < EPS,
+        (gap - metrics(&subscripted, 0).width).abs() < EPS,
         "a subscript attaches at the nucleus width, without δ: {gap}"
     );
 
@@ -859,7 +868,7 @@ fn italic_correction_kerns_follow_lone_math_characters() {
     let grouped = e.typeset("{f}(", Style::Text).unwrap();
     let gap = grouped.glyphs[1].x - grouped.glyphs[0].x;
     assert!(
-        (gap - (m.advance + m.italic)).abs() < EPS,
+        (gap - (m.width + m.italic)).abs() < EPS,
         "{{f}}( is f(: {gap} vs {m:?}"
     );
     let xs = |l: &Layout| l.glyphs.iter().map(|g| (g.x, g.y)).collect::<Vec<_>>();
@@ -883,19 +892,19 @@ fn italic_correction_kerns_follow_lone_math_characters() {
     );
     let gap = word.glyphs[1].x - word.glyphs[0].x;
     assert!(
-        (gap - upright.advance).abs() < EPS,
-        "inside a word of the text face the italic correction is zero: {gap} vs {upright:?}"
+        (gap - upright.width).abs() < EPS,
+        "inside a word of cmr10 the italic correction is zero: {gap} vs {upright:?}"
     );
-    // Within `\mathrm{ff}` the first f is such a word character: only the
-    // font's kern separates the two.
+    // Within `\mathrm{ff}` the first f is such a word character, and cmr10's
+    // program pairs f with f only as a ligature, which the Reference's
+    // preamble disables: no kern, no δ.
     let ff = e.typeset(r"\mathrm{ff}", Style::Text).unwrap();
-    let (first, second) = (&ff.glyphs[0], &ff.glyphs[1]);
-    let font = e.faces().font(first.face).expect("glyph face");
-    let kern = fmd_math::faces::kern_em(font, first.gid, second.gid);
-    let gap = second.x - first.x;
+    let ((font, first), (_, second)) = (tfm(&ff, 0), tfm(&ff, 1));
+    assert_eq!(font.kern(first, second), None);
+    let gap = ff.glyphs[1].x - ff.glyphs[0].x;
     assert!(
-        (gap - (upright.advance + kern)).abs() < EPS,
-        "\\mathrm{{ff}}: {gap} vs {upright:?} + kern {kern}"
+        (gap - upright.width).abs() < EPS,
+        "\\mathrm{{ff}}: {gap} vs {upright:?}"
     );
 
     // A `\left…\right` inner is a sub-mlist, not a clean box: its lone f
@@ -903,9 +912,64 @@ fn italic_correction_kerns_follow_lone_math_characters() {
     let fenced = e.typeset(r"\left( f \right)", Style::Text).unwrap();
     let gap = fenced.glyphs[2].x - fenced.glyphs[1].x;
     assert!(
-        (gap - (m.advance + m.italic)).abs() < EPS,
+        (gap - (m.width + m.italic)).abs() < EPS,
         "\\left( f \\right): {gap} vs {m:?}"
     );
+}
+
+/// TeX's TFM boxes, not the ink: a character's box is its TFM height,
+/// depth and width (floored at zero), cmmi's lig/kern program kerns an Ord
+/// character against the next character of its font whatever that atom's
+/// class, cmmi keeps δ between letters (its interword space is zero), and
+/// an accent's skew is the base's kern with the skewchar. Each value below
+/// is TeX's own box for the string under the Reference preamble (real
+/// TeX's `\wd`, `\ht` and `\dp`, in ems).
+#[test]
+fn character_boxes_and_kerns_are_tex_metrics() {
+    let e = engine();
+    for (source, (w, h, d)) in [
+        ("-", (0.777_78, 0.583_33, 0.083_33)),
+        (r"\cdot", (0.277_78, 0.444_44, 0.0)),
+        (r"\rightarrow", (1.0, 0.366_88, 0.0)),
+        ("y", (0.526_16, 0.430_55, 0.194_44)),
+        ("4", (0.5, 0.644_44, 0.0)),
+        ("df", (0.951_05, 0.694_44, 0.194_44)),
+        (r"\theta", (0.497_22, 0.694_44, 0.0)),
+    ] {
+        let l = e.typeset(source, Style::Display).unwrap();
+        assert!(
+            (l.width - w).abs() < 1e-4 && (l.height - h).abs() < 1e-4 && (l.depth - d).abs() < 1e-4,
+            "{source}: ({}, {}, {}) vs TeX ({w}, {h}, {d})",
+            l.width,
+            l.height,
+            l.depth
+        );
+    }
+    // `V,`: cmmi10 kerns V against its comma by -1/6 em.
+    let gap = |source: &str| {
+        let l = e.typeset(source, Style::Text).unwrap();
+        l.glyphs[1].x - l.glyphs[0].x
+    };
+    let v = e.typeset("V", Style::Text).unwrap();
+    let (font, code) = e.faces().tfm(v.glyphs[0].face, v.glyphs[0].gid).unwrap();
+    let ch = font.char(code).unwrap();
+    assert!((gap("V,") - (ch.width + ch.italic - 0.166_67)).abs() < 1e-4);
+    // Two letters keep the first one's δ.
+    let (font, code) = {
+        let y = e.typeset("y", Style::Text).unwrap();
+        e.faces().tfm(y.glyphs[0].face, y.glyphs[0].gid).unwrap()
+    };
+    let y = font.char(code).unwrap();
+    assert!((gap("yx") - (y.width + y.italic)).abs() < EPS);
+    // `\hat{A}` skews by cmmi10's A–skewchar kern (5/36 em) over the
+    // accent's centered position.
+    let skewed = e.typeset(r"\hat{A}", Style::Text).unwrap();
+    let centered = e.typeset(r"\hat{\mathrm{A}}", Style::Text).unwrap();
+    let accent_x = |l: &Layout| l.glyphs.iter().find(|g| g.ch != 'A').unwrap().x;
+    let a_width = |l: &Layout| l.width;
+    let shift = (accent_x(&skewed) - a_width(&skewed) / 2.0)
+        - (accent_x(&centered) - a_width(&centered) / 2.0);
+    assert!((shift - 0.138_89).abs() < 1e-3, "skew {shift}");
 }
 
 #[test]

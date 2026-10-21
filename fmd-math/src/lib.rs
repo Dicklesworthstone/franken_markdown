@@ -95,6 +95,7 @@ mod parse;
 pub mod paths;
 pub mod spanmap;
 pub mod style;
+pub mod tfm;
 mod token;
 
 pub use commands::{

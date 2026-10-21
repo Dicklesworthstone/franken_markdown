@@ -405,14 +405,14 @@ impl Engine {
                     if let Some((prev_class, prev_glyph)) = prev {
                         let mu = spacing_in_style(prev_class, class, ctx.style.style).mu();
                         x += f64::from(mu) / 18.0 * ctx.size();
-                        if mu == 0 && prev_class == AtomClass::Ord && class == AtomClass::Ord {
+                        // make_ord (tex.web §752): an Ord character kerns
+                        // with the next atom's character from its font,
+                        // whatever that atom's class (`V,` `d f` `f/`).
+                        if prev_class == AtomClass::Ord && class != AtomClass::Inner {
                             if let (Some((pf, pg)), Some((cf, cg))) = (prev_glyph, laid.char_glyph)
                             {
                                 if pf == cf {
-                                    if let Some(font) = self.faces.font(pf) {
-                                        x += kern_em(font, pg, cg) * ctx.size();
-                                    }
-                                    let _ = cg;
+                                    x += self.pair_kern(pf, pg, cg, ctx.text_mode) * ctx.size();
                                 }
                             }
                         }
@@ -426,13 +426,13 @@ impl Engine {
                     // (rule 18); text mode never kerns. The one exception is
                     // TeX's math_text_char: an Ord followed by another
                     // character of its family, in a font with nonzero
-                    // interword space. The math-italic face plays cmmi
-                    // (space 0) and always keeps δ; the text faces drop it
-                    // inside such a word (`\mathrm{ff}`, `\mathrm{f}(`).
+                    // interword space. cmmi, cmsy and cmex (space 0) always
+                    // keep δ; cmr and the text faces drop it inside such a
+                    // word (`\mathrm{ff}`, `\mathrm{f}(`).
                     let italic_kern = match laid.char_glyph {
                         Some((face, _)) if !ctx.text_mode => {
                             let text_char = class == AtomClass::Ord
-                                && face != FACE_ITALIC
+                                && self.spaced_face(face)
                                 && next_char_face[index] == Some(face);
                             if text_char { 0.0 } else { laid.italic }
                         }
@@ -933,7 +933,7 @@ impl Engine {
             .faces
             .optical(face, mapped, ctx.style.style)
             .unwrap_or((face, gid));
-        let metrics = self.metrics_of(face, gid);
+        let metrics = self.char_metrics(face, gid, ctx.text_mode);
         let size = ctx.size();
         Ok(Laid {
             boxx: glyph_box(face, gid, mapped, span, size, metrics),
@@ -974,7 +974,7 @@ impl Engine {
             .unwrap_or((FACE_MATH_SYMBOLS, gid));
         let relation = self.char_atom(base, span, ctx)?;
         let size = ctx.size();
-        let slash = self.metrics_of(face, gid);
+        let slash = self.char_metrics(face, gid, ctx.text_mode);
         let dx = match (
             centred,
             self.faces.font(face).and_then(|f| f.glyph_bbox(gid)),
@@ -1030,7 +1030,7 @@ impl Engine {
                 (face, gid, mapped, scale)
             }
         };
-        let metrics = self.metrics_of(face, gid);
+        let metrics = self.char_metrics(face, gid, ctx.text_mode);
         let size = ctx.size() * scale;
         let gh = metrics.height * size;
         let gd = metrics.depth * size;
@@ -1126,12 +1126,10 @@ impl Engine {
                 .unwrap_or((face, gid));
             if let Some((pf, pg)) = prev {
                 if pf == face {
-                    if let Some(font) = self.faces.font(face) {
-                        x += kern_em(font, pg, gid) * size;
-                    }
+                    x += self.pair_kern(face, pg, gid, ctx.text_mode) * size;
                 }
             }
-            let m = self.metrics_of(face, gid);
+            let m = self.char_metrics(face, gid, ctx.text_mode);
             children.push(Positioned {
                 dx: x,
                 dy: 0.0,
@@ -1202,6 +1200,68 @@ impl Engine {
         }
         per_face[usize::from(gid)] = Some(m);
         m
+    }
+
+    /// A glyph's box in ems of its size. In math mode a character of a face
+    /// that stands for one of TeX's fonts takes that font's TFM box, its
+    /// height and depth floored at zero as the character's box is
+    /// (tex.web §653); anything else is measured from its outline.
+    fn char_metrics(&self, face: FaceId, gid: u16, text_mode: bool) -> GlyphMetrics {
+        if !text_mode
+            && let Some(tex) = self
+                .faces
+                .tfm(face, gid)
+                .and_then(|(font, code)| font.char(code))
+        {
+            return GlyphMetrics {
+                advance: tex.width,
+                height: tex.height.max(0.0),
+                depth: tex.depth.max(0.0),
+                italic: tex.italic,
+            };
+        }
+        self.metrics_of(face, gid)
+    }
+
+    /// The kern between two adjacent glyphs of one face, in ems: in math
+    /// mode the TFM's lig/kern program for two of its characters, else the
+    /// face's own kerning.
+    fn pair_kern(&self, face: FaceId, left: u16, right: u16, text_mode: bool) -> f64 {
+        if !text_mode
+            && let (Some((font, l)), Some((_, r))) =
+                (self.faces.tfm(face, left), self.faces.tfm(face, right))
+        {
+            return font.kern(l, r).unwrap_or(0.0);
+        }
+        self.faces
+            .font(face)
+            .map_or(0.0, |font| kern_em(font, left, right))
+    }
+
+    /// Whether `face`'s font has a nonzero interword space, which makes an
+    /// Ord character followed by another of its font TeX's math_text_char
+    /// and drops its italic correction (tex.web §752, §755). cmmi, cmsy and
+    /// cmex have none; cmr and the text faces do. Without TeX's metrics the
+    /// CM text italic stands in for cmmi.
+    fn spaced_face(&self, face: FaceId) -> bool {
+        match self.faces.tfm_font(face) {
+            Some(font) => font.space != 0.0,
+            None => face != FACE_ITALIC || self.faces.tfm_font(FACE_MATH_ITALIC).is_some(),
+        }
+    }
+
+    /// Rule 12's skew (tex.web §738, §741): over a single character, its
+    /// kern with its font's skewchar; over anything else, none. A character
+    /// without TeX's metrics is skewed by half its measured italic
+    /// correction.
+    fn accent_skew(&self, base: &Laid, ctx: LayCtx) -> f64 {
+        let Some((face, gid)) = base.char_glyph else {
+            return 0.0;
+        };
+        match self.faces.tfm(face, gid) {
+            Some((font, code)) if !ctx.text_mode => font.skew(code) * ctx.size(),
+            _ => base.italic / 2.0,
+        }
     }
 
     fn space_width(&self, ctx: LayCtx) -> f64 {
@@ -1885,7 +1945,7 @@ impl Engine {
                 let ink_w = ink_right - ink_left;
                 let row_w = ink_w * f64::from(n);
                 let dy = base_laid.boxx.height - c.x_height * size;
-                let skew = base_laid.italic / 2.0;
+                let skew = self.accent_skew(&base_laid, ctx);
                 let row_left = base_laid.boxx.width / 2.0 + skew - row_w / 2.0;
                 let width = base_laid.boxx.width;
                 let height = base_laid.boxx.height.max(dy + ink_top);
@@ -1955,8 +2015,8 @@ impl Engine {
                 let bbox = font.glyph_bbox(gid).unwrap_or([0, 0, 0, 0]);
                 let [gl, gb, gr, _] = bbox.map(|v| f64::from(v) / upm);
                 // Rule 12 with TeX's accent character: its box (the
-                // advance) is centered over the base, skewed by half the
-                // italic correction, its baseline at h(x) - min(h(x),
+                // advance) is centered over the base, skewed by the base
+                // character's skewchar kern, its baseline at h(x) - min(h(x),
                 // x-height). The glyph is scaled to that character's ink
                 // width and its ink set where that character's ink sits,
                 // whichever face supplied it.
@@ -1965,7 +2025,7 @@ impl Engine {
                 let glyph_size = size * scale;
                 let h = base_laid.boxx.height;
                 let box_dy = h - h.min(c.x_height * size);
-                let skew = base_laid.italic / 2.0;
+                let skew = self.accent_skew(&base_laid, ctx);
                 let box_dx = (base_laid.boxx.width - advance * size) / 2.0 + skew;
                 let dx = box_dx + tl * size - gl * glyph_size;
                 let dy = box_dy + tb * size - gb * glyph_size;
@@ -2583,7 +2643,7 @@ impl Engine {
                 span: delim.span,
             });
         };
-        let m = self.metrics_of(face, gid);
+        let m = self.char_metrics(face, gid, ctx.text_mode);
         let natural_total = (m.height + m.depth) * ctx.size();
         let scale = if natural_total >= target_total || natural_total <= 0.0 {
             1.0
@@ -2688,7 +2748,7 @@ impl Engine {
             let gid = piece(code)?;
             // The successor's TFM height is its ink top (0.04 em); its box,
             // height plus depth `total`, centers on the axis.
-            let m = self.metrics_of(FACE_MATH_EXTENSION, gid);
+            let m = self.char_metrics(FACE_MATH_EXTENSION, gid, false);
             children.push(glyph(gid, top - m.height * size));
             width_gid = gid;
         } else {
@@ -2726,7 +2786,10 @@ impl Engine {
         // TeX's box is the TFM width; the Type 1 advance is that width
         // rounded to 1/1000 em, which would drift every delimited array.
         let width = tex_delimiter_frame(ch, total).map_or_else(
-            || self.metrics_of(FACE_MATH_EXTENSION, width_gid).advance,
+            || {
+                self.char_metrics(FACE_MATH_EXTENSION, width_gid, false)
+                    .advance
+            },
             |(advance, _, _)| advance,
         ) * size;
         Some(MBox {

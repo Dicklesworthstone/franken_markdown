@@ -465,16 +465,24 @@ impl Engine {
     /// A node set as its own formula, as TeX sets array cells, phantoms,
     /// arrow labels, a radical's degree and the bodies of `\overbrace`-style
     /// alignments (each an `\hbox{$…$}` or a `$…$` template): a lone
-    /// character keeps its rule-17 italic correction there. Where TeX
-    /// clean_boxes instead (fraction parts, scripts, limits, radicands,
-    /// accent bases), `lay_node(..).boxx` already leaves it out (§720).
+    /// character keeps its rule-17 italic correction there.
     fn formula_box(&self, node: &Node, ctx: LayCtx) -> Result<MBox, MathError> {
-        let laid = lone_op_box(node, self.lay_node(node, ctx)?);
-        let mut boxx = laid.boxx;
+        Ok(self.clean_box(node, ctx)?.boxx)
+    }
+
+    /// TeX's clean_box (tex.web §720): a fraction part, script, limit,
+    /// radicand, over- or underlined body or accent base laid as its own
+    /// list. A lone character's box keeps its italic correction in its
+    /// width: §721 frees the kern node but not the width hpack gave the box,
+    /// so `\frac{f}{2}`'s numerator and `\tilde f`'s base are f plus δ wide
+    /// (real TeX's `\showbox`). The character and its δ stay in the `Laid`
+    /// for an accent's skew.
+    fn clean_box(&self, node: &Node, ctx: LayCtx) -> Result<Laid, MathError> {
+        let mut laid = lone_op_box(node, self.lay_node(node, ctx)?);
         if laid.char_glyph.is_some() && !ctx.text_mode {
-            boxx.width += laid.italic;
+            laid.boxx.width += laid.italic;
         }
-        Ok(boxx)
+        Ok(laid)
     }
 
     /// Lay one node into an atom box.
@@ -728,7 +736,7 @@ impl Engine {
                     StackKind::Underset => ctx.map(StyleCtx::sub),
                     StackKind::Stackrel | StackKind::Overset => ctx.map(StyleCtx::sup),
                 };
-                let ann = self.lay_node(annotation, ann_ctx)?;
+                let ann = self.clean_box(annotation, ann_ctx)?;
                 let (upper, lower) = match kind {
                     StackKind::Underset => (None, Some(ann.boxx)),
                     StackKind::Stackrel | StackKind::Overset => (Some(ann.boxx), None),
@@ -1299,11 +1307,11 @@ impl Engine {
             if self.limits_active(base_node, ctx) {
                 let base_laid = self.lay_node(base_node, ctx)?;
                 let upper = sup
-                    .map(|n| self.lay_node(n, ctx.map(StyleCtx::sup)))
+                    .map(|n| self.clean_box(n, ctx.map(StyleCtx::sup)))
                     .transpose()?
                     .map(|l| l.boxx);
                 let lower = sub
-                    .map(|n| self.lay_node(n, ctx.map(StyleCtx::sub)))
+                    .map(|n| self.clean_box(n, ctx.map(StyleCtx::sub)))
                     .transpose()?
                     .map(|l| l.boxx);
                 return Ok(Laid {
@@ -1338,14 +1346,14 @@ impl Engine {
         // The superscript material: an explicit box, or a prime run.
         let sup_box = if primes.is_empty() {
             match sup {
-                Some(node) => Some(self.lay_node(node, ctx.map(StyleCtx::sup))?.boxx),
+                Some(node) => Some(self.clean_box(node, ctx.map(StyleCtx::sup))?.boxx),
                 None => None,
             }
         } else {
             Some(self.prime_run(primes, ctx)?)
         };
         let sub_box = match sub {
-            Some(node) => Some(self.lay_node(node, ctx.map(StyleCtx::sub))?.boxx),
+            Some(node) => Some(self.clean_box(node, ctx.map(StyleCtx::sub))?.boxx),
             None => None,
         };
         // §756: every script box is widened by \scriptspace.
@@ -1661,8 +1669,8 @@ impl Engine {
         };
         let display = eff.style.style == Style::Display;
         let size = eff.size();
-        let num_box = self.lay_node(num, eff.map(StyleCtx::num))?.boxx;
-        let den_box = self.lay_node(den, eff.map(StyleCtx::den))?.boxx;
+        let num_box = self.clean_box(num, eff.map(StyleCtx::num))?.boxx;
+        let den_box = self.clean_box(den, eff.map(StyleCtx::den))?.boxx;
         let theta = c.rule_thickness * size;
         let axis = c.axis_height * size;
         // Rule 15b: initial shifts.
@@ -1754,7 +1762,7 @@ impl Engine {
     ) -> Result<Laid, MathError> {
         let c = &self.consts;
         let size = ctx.size();
-        let x = self.lay_node(radicand, ctx.map(StyleCtx::cramp))?.boxx;
+        let x = self.clean_box(radicand, ctx.map(StyleCtx::cramp))?.boxx;
         let theta = c.rule_thickness * size;
         let mut psi = if ctx.style.style == Style::Display {
             theta + 0.25 * c.x_height * size
@@ -1778,12 +1786,14 @@ impl Engine {
         // Vertical frame: radicand baseline at 0; rule sits ψ above the
         // radicand's top; the sign's top aligns with the rule's top. The
         // box's depth is the deeper of the radicand and the sign, as TeX's
-        // hpack of the shifted sign and the overbar (§737) has it.
+        // hpack of the shifted sign and the overbar (§737) has it, and its
+        // height includes the overbar's kern of one rule thickness above the
+        // rule (§705).
         let rule_y = x.height + psi;
         let sign_dy = rule_y + theta - sign.height;
         let mut pen = 0.0_f64;
         let mut children = Vec::new();
-        let mut total_height = rule_y + theta;
+        let mut total_height = rule_y + 2.0 * theta;
         let mut total_depth = x.depth.max(sign.depth - sign_dy);
         // Degree: plain TeX's \r@@t, `\mkern5mu\raise.6\dimen@\copy\rootbox
         // \mkern-10mu\box0` with \dimen@ the radical box's height minus its
@@ -1861,7 +1871,7 @@ impl Engine {
         let size = ctx.size();
         match kind {
             AccentKind::OverLine => {
-                let inner = self.lay_node(base, ctx.map(StyleCtx::cramp))?.boxx;
+                let inner = self.clean_box(base, ctx.map(StyleCtx::cramp))?.boxx;
                 let theta = c.rule_thickness * size;
                 let rule_y = inner.height + 3.0 * theta;
                 let width = inner.width;
@@ -1893,7 +1903,7 @@ impl Engine {
                 })
             }
             AccentKind::UnderLine => {
-                let inner = self.lay_node(base, ctx)?.boxx;
+                let inner = self.clean_box(base, ctx)?.boxx;
                 Ok(Laid {
                     boxx: self.underline_box(inner, ctx, span),
                     italic: 0.0,
@@ -1915,7 +1925,7 @@ impl Engine {
                 } else {
                     4
                 };
-                let base_laid = self.lay_node(base, ctx.map(StyleCtx::cramp))?;
+                let base_laid = self.clean_box(base, ctx.map(StyleCtx::cramp))?;
                 let combining = accent_char(AccentKind::Dot);
                 let Some((face, gid)) = self
                     .faces
@@ -1982,7 +1992,7 @@ impl Engine {
                 })
             }
             _ => {
-                let base_laid = self.lay_node(base, ctx.map(StyleCtx::cramp))?;
+                let base_laid = self.clean_box(base, ctx.map(StyleCtx::cramp))?;
                 let combining = accent_char(kind);
                 // CM Unicode's spacing accents are cmr's own designs, so
                 // they come first; a combining mark from another face only
@@ -2020,7 +2030,8 @@ impl Engine {
                 // x-height). The glyph is scaled to that character's ink
                 // width and its ink set where that character's ink sits,
                 // whichever face supplied it.
-                let (advance, [tl, tb, tr, _]) = tex_accent_metrics(kind);
+                let (math_italic, code, [tl, tb, tr, _]) = tex_accent(kind);
+                let (advance, accent_height) = tex_accent_box(math_italic, code, ctx.style.style);
                 let scale = if gr > gl { (tr - tl) / (gr - gl) } else { 1.0 };
                 let glyph_size = size * scale;
                 let h = base_laid.boxx.height;
@@ -2029,10 +2040,11 @@ impl Engine {
                 let box_dx = (base_laid.boxx.width - advance * size) / 2.0 + skew;
                 let dx = box_dx + tl * size - gl * glyph_size;
                 let dy = box_dy + tb * size - gb * glyph_size;
-                let ink_top = f64::from(bbox[3]) / upm * glyph_size;
                 let ink_bottom = gb * glyph_size;
                 let width = base_laid.boxx.width;
-                let height = base_laid.boxx.height.max(dy + ink_top);
+                // The vbox of the accent's box, a kern of -min(h, x-height)
+                // and the base: TeX's height, whatever the drawn ink.
+                let height = h.max(box_dy + accent_height * size);
                 let depth = base_laid.boxx.depth.max(-(dy + ink_bottom));
                 let base_box = base_laid.boxx;
                 Ok(Laid {
@@ -2451,15 +2463,10 @@ impl Engine {
         let size = ctx.size();
         let theta = self.consts.rule_thickness * size;
         // Over-accents cramp their base (rule 12 / overline's rule 9). The
-        // wide accents clean their base (clean_box drops a lone
-        // character's italic correction); the arrows are amsmath
-        // alignments whose body is its own formula and keeps it.
-        let base_ctx = ctx.map(StyleCtx::cramp);
-        let inner = if matches!(kind, AccentKind::WideHat | AccentKind::WideTilde) {
-            self.lay_node(base, base_ctx)?.boxx
-        } else {
-            self.formula_box(base, base_ctx)?
-        };
+        // wide accents clean their base and the arrows are amsmath
+        // alignments whose body is its own formula; either way a lone
+        // character keeps its italic correction in the width.
+        let inner = self.clean_box(base, ctx.map(StyleCtx::cramp))?.boxx;
         let stretch_kind = match kind {
             AccentKind::WideHat => crate::drawn::Stretch::Hat,
             AccentKind::WideTilde => crate::drawn::Stretch::Tilde,
@@ -3142,24 +3149,41 @@ fn text_face(ctx: LayCtx) -> FaceId {
     }
 }
 
-/// The accent character plain TeX's `\mathaccent` sets for `kind` (cmr10's
-/// accents, cmmi10's vector), from its AFM metrics in ems: the advance,
-/// then the ink's left, bottom, right and top.
-const fn tex_accent_metrics(kind: AccentKind) -> (f64, [f64; 4]) {
+/// The accent character plain TeX's `\mathaccent` sets for `kind`: its
+/// code in cmr (or cmmi, for the vector), and its ink's left, bottom, right
+/// and top in ems from cmr10's (cmmi10's) AFM metrics.
+const fn tex_accent(kind: AccentKind) -> (bool, u8, [f64; 4]) {
     match kind {
-        AccentKind::Hat => (0.5, [0.116, 0.540, 0.383, 0.694]),
-        AccentKind::Check => (0.5, [0.118, 0.516, 0.381, 0.638]),
-        AccentKind::Tilde => (0.5, [0.083, 0.575, 0.416, 0.668]),
-        AccentKind::Acute => (0.5, [0.206, 0.510, 0.392, 0.698]),
-        AccentKind::Grave => (0.5, [0.107, 0.510, 0.293, 0.698]),
-        AccentKind::Dot => (0.277, [0.085, 0.563, 0.192, 0.669]),
-        AccentKind::Ddot => (0.5, [0.103, 0.569, 0.396, 0.669]),
-        AccentKind::Breve => (0.5, [0.100, 0.522, 0.399, 0.694]),
-        AccentKind::Bar => (0.5, [0.069, 0.559, 0.430, 0.590]),
-        AccentKind::Vec => (0.5, [0.182, 0.516, 0.625, 0.714]),
-        AccentKind::Ring => (0.75, [0.279, 0.541, 0.470, 0.716]),
-        _ => (0.5, [0.116, 0.540, 0.383, 0.694]),
+        AccentKind::Hat => (false, 0x5E, [0.116, 0.540, 0.383, 0.694]),
+        AccentKind::Check => (false, 0x14, [0.118, 0.516, 0.381, 0.638]),
+        AccentKind::Tilde => (false, 0x7E, [0.083, 0.575, 0.416, 0.668]),
+        AccentKind::Acute => (false, 0x13, [0.206, 0.510, 0.392, 0.698]),
+        AccentKind::Grave => (false, 0x12, [0.107, 0.510, 0.293, 0.698]),
+        AccentKind::Dot => (false, 0x5F, [0.085, 0.563, 0.192, 0.669]),
+        AccentKind::Ddot => (false, 0x7F, [0.103, 0.569, 0.396, 0.669]),
+        AccentKind::Breve => (false, 0x15, [0.100, 0.522, 0.399, 0.694]),
+        AccentKind::Bar => (false, 0x16, [0.069, 0.559, 0.430, 0.590]),
+        AccentKind::Vec => (true, 0x7E, [0.182, 0.516, 0.625, 0.714]),
+        AccentKind::Ring => (false, 0x17, [0.279, 0.541, 0.470, 0.716]),
+        _ => (false, 0x5E, [0.116, 0.540, 0.383, 0.694]),
     }
+}
+
+/// The accent's TFM box in the size `style` sets it at (cmr or cmmi at 10,
+/// 7 or 5 pt): TeX's char_box, whose width is the character's width plus
+/// its italic correction (tex.web §709, 0.5 + 0.1538 em for cmmi10's
+/// vector), and the character's height.
+fn tex_accent_box(math_italic: bool, code: u8, style: Style) -> (f64, f64) {
+    let font = match (math_italic, style) {
+        (false, Style::Display | Style::Text) => &crate::tfm::CMR10,
+        (false, Style::Script) => &crate::tfm::CMR7,
+        (false, Style::ScriptScript) => &crate::tfm::CMR5,
+        (true, Style::Display | Style::Text) => &crate::tfm::CMMI10,
+        (true, Style::Script) => &crate::tfm::CMMI7,
+        (true, Style::ScriptScript) => &crate::tfm::CMMI5,
+    };
+    font.char(code)
+        .map_or((0.5, 0.694_445), |c| (c.width + c.italic, c.height))
 }
 
 /// cmsy's prime character from its AFM metrics, in ems of that size's

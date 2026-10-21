@@ -935,6 +935,14 @@ fn character_boxes_and_kerns_are_tex_metrics() {
         ("4", (0.5, 0.644_44, 0.0)),
         ("df", (0.951_05, 0.694_44, 0.194_44)),
         (r"\theta", (0.497_22, 0.694_44, 0.0)),
+        // Clean boxes keep a lone character's italic correction in their
+        // width (tex.web §721), and an accent's box is its width plus its
+        // italic correction (§709): `\showbox` in display style.
+        (r"\frac{f}{2}", (0.837_225, 1.370_952, 0.685_951)),
+        ("x^f", (1.089_935, 0.899_002, 0.0)),
+        (r"\sqrt{f}", (1.597_227, 0.983_821, 0.256_187)),
+        (r"\tilde{f}", (0.597_226, 0.931_749, 0.194_444)),
+        (r"\vec{v}", (0.520_601, 0.714_444, 0.0)),
     ] {
         let l = e.typeset(source, Style::Display).unwrap();
         assert!(

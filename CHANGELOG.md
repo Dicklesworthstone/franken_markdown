@@ -69,6 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Text mode keeps measured metrics. Ligatures stay off, as under the
   Reference preamble. 17 of the 19 layout goldens moved.
+- `fmd-math`'s clean boxes keep a lone character's italic correction in their
+  width, as real TeX's `\showbox` shows. tex.web §721 frees the kern node but
+  not the width its hpack gave the box. This covers fraction parts, scripts,
+  limits, radicands, over- and underlined bodies, and accent bases:
+  `\frac{f}{2}`'s numerator and `\tilde f`'s base are f plus δ wide, and a
+  limit centres δ-wide. Three related corrections land with it:
+  - An accent's box is its TFM character's width plus italic correction
+    (char_box, §709) at the size of the style it is set in, with that
+    character's height. `\vec` sits 0.077 em further left.
+  - A radical's box includes the overbar's kern of one rule thickness above
+    the rule (§705, §737).
+  - Each change is checked against TeX's own `\showbox` boxes.
 - `fmd-math` gains an `svg_dump` example for visual checks of layout changes.
 
 ## [0.6.0] - 2026-10-14

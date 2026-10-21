@@ -3,8 +3,9 @@
 //!
 //! **Provenance.** The values are the published TFM fontdimen families of
 //! Computer Modern at 10 pt — cmsy10's σ₅…σ₂₂ and cmex10's ξ₈…ξ₁₃ (The
-//! TeXbook, Appendix G; the parameters Appendix G consumes by name) —
-//! expressed in ems of the design size. The G0-3 spike ratified this
+//! TeXbook, Appendix G; the parameters Appendix G consumes by name), plus
+//! cmsy7's and cmsy5's σ₁₈ and σ₁₉ for rule 18a — expressed in ems of each
+//! font's design size. The G0-3 spike ratified this
 //! *synthesis method* (franken_manim `docs/g0/G0-3-fmd-math-ratification.md`,
 //! Verdict 1): compile the published family in as em constants and
 //! **validate** against geometry decoded from the bundled faces by
@@ -16,7 +17,12 @@
 //!
 //! **Scaling rule.** Every parameter is stored in ems of the text size and
 //! is multiplied by the current style's size factor at use — the analogue
-//! of TeX reading fontdimens from the current size's symbol font.
+//! of TeX reading fontdimens from the current size's symbol font. The one
+//! exception is rule 18a's baseline drops, which TeX reads from the symbol
+//! font at the size the scripts are set at (tex.web §756). They are stored
+//! in ems of that font (cmsy7 and cmsy5) and scaled by that size.
+
+use crate::style::Style;
 
 /// The Appendix-G parameter family, in ems of the text-size em.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -45,10 +51,17 @@ pub struct MathConstants {
     pub sub1: f64,
     /// σ₁₇ — sub2: subscript shift with a superscript.
     pub sub2: f64,
-    /// σ₁₈ — sup_drop: superscript baseline drop from the base's top.
-    pub sup_drop: f64,
-    /// σ₁₉ — sub_drop: subscript baseline drop from the base's bottom.
-    pub sub_drop: f64,
+    /// σ₁₈ of the script-size symbol font (cmsy7), in its ems:
+    /// sup_drop, the superscript baseline drop from a non-character base's
+    /// top for scripts set in script style.
+    pub sup_drop_script: f64,
+    /// σ₁₉ of cmsy7: sub_drop, the subscript baseline drop from a
+    /// non-character base's bottom for scripts set in script style.
+    pub sub_drop_script: f64,
+    /// σ₁₈ of the scriptscript-size symbol font (cmsy5), in its ems.
+    pub sup_drop_scriptscript: f64,
+    /// σ₁₉ of cmsy5, in its ems.
+    pub sub_drop_scriptscript: f64,
     /// σ₂₀ — delim1: delimiter target for display-style generalized
     /// fractions.
     pub delim1: f64,
@@ -127,8 +140,10 @@ pub const CM: MathConstants = MathConstants {
     sup3: 0.288_889,
     sub1: 0.150_000,
     sub2: 0.247_217,
-    sup_drop: 0.386_108,
-    sub_drop: 0.050_000,
+    sup_drop_script: 0.353_171,
+    sub_drop_script: 0.071_428,
+    sup_drop_scriptscript: 0.494_446,
+    sub_drop_scriptscript: 0.100_000,
     delim1: 2.389_999,
     delim2: 1.010_000,
     axis_height: 0.250_000,
@@ -151,6 +166,22 @@ pub const CM: MathConstants = MathConstants {
     fallback_space: 1.0 / 3.0,
 };
 
+impl MathConstants {
+    /// Rule 18a's `(sup_drop, sub_drop)` for scripts set in style `t`, in
+    /// ems of `t`'s symbol font. TeX reads them at the script size: from
+    /// the script font below script style, else from the scriptscript
+    /// font (tex.web §756), never from the base's own size.
+    #[must_use]
+    pub const fn script_drops(&self, t: Style) -> (f64, f64) {
+        match t {
+            Style::Display | Style::Text | Style::Script => {
+                (self.sup_drop_script, self.sub_drop_script)
+            }
+            Style::ScriptScript => (self.sup_drop_scriptscript, self.sub_drop_scriptscript),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +200,9 @@ mod tests {
         assert!((c.axis_height - 0.25).abs() < 1e-9);
         assert!((c.rule_thickness - 0.04).abs() < 1e-5);
         assert!(c.x_height < 0.5 && c.x_height > 0.4);
+        // cmsy7's and cmsy5's drops are the same lengths at 10 pt:
+        // 2.4722 pt and 0.5 pt.
+        assert!((c.sup_drop_script * 0.7 - c.sup_drop_scriptscript * 0.5).abs() < 1e-5);
+        assert!((c.sub_drop_script * 0.7 - c.sub_drop_scriptscript * 0.5).abs() < 1e-5);
     }
 }

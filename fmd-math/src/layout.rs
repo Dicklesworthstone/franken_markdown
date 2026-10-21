@@ -1337,13 +1337,17 @@ impl Engine {
         let base_is_char = base_laid.char_glyph.is_some() || base.is_none();
         let delta = base_laid.italic;
         // Rule 18a: baseline drops from the base's extremes (zero for
-        // single characters).
+        // single characters), read from the symbol font of the size the
+        // scripts are set at, t (tex.web §756).
         let (u, v) = if base_is_char {
             (0.0, 0.0)
         } else {
+            let t = ctx.style.style.sup();
+            let (sup_drop, sub_drop) = c.script_drops(t);
+            let t_size = t.size_factor() * ctx.decl_size;
             (
-                base_laid.boxx.height - c.sup_drop * size,
-                base_laid.boxx.depth + c.sub_drop * size,
+                base_laid.boxx.height - sup_drop * t_size,
+                base_laid.boxx.depth + sub_drop * t_size,
             )
         };
         // The superscript material: an explicit box, or a prime run.

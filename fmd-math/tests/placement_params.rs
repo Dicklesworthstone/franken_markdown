@@ -301,6 +301,30 @@ fn display_limits_go_above_and_below_with_the_xi_gaps() {
     assert!((glyph_y(&t, 'N') - CM.sup2).abs() < 0.2);
 }
 
+/// Rule 18a reads sup_drop and sub_drop from the symbol font of the size the
+/// scripts are set at (tex.web §756): cmsy7's 0.353171 × 7 pt and
+/// 0.071428 × 7 pt, not cmsy10's at the base's size. Each value is real
+/// TeX's `\showbox` under `article` + `amsmath` (franken_manim fm-4ptw), in
+/// ems of 10 pt: where the drop binds, the scripts sit exactly there.
+#[test]
+fn script_drops_are_read_at_the_script_size() {
+    let e = engine();
+    // Display integral with limits: the superscript 11.13903 pt up and δ =
+    // 4.44444 pt right of the subscript, which is 9.11122 pt down.
+    let int = e.typeset(r"\int_0^1 x", Style::Display).unwrap();
+    let (sup, sub) = (glyph_y(&int, '1'), glyph_y(&int, '0'));
+    assert!((sup - 1.113_903).abs() < 1e-4, "\\int superscript at {sup}");
+    assert!((sub + 0.911_122).abs() < 1e-4, "\\int subscript at {sub}");
+    let delta = glyph_x(&int, '1') - glyph_x(&int, '0');
+    assert!((delta - 0.444_444).abs() < 1e-4, "\\int δ {delta}");
+    // A group nucleus: 7.5 pt tall, so its superscript sits 7.5 - 2.47220 =
+    // 5.0278 pt up; 2.5 pt deep, so its subscript sits 2.5 + 0.5 = 3.0 pt down.
+    let sup = glyph_y(&e.typeset(r"{(a)}^2", Style::Display).unwrap(), '2');
+    assert!((sup - 0.502_78).abs() < 1e-4, "{{(a)}}^2 at {sup}");
+    let sub = glyph_y(&e.typeset(r"{(a)}_2", Style::Text).unwrap(), '2');
+    assert!((sub + 0.3).abs() < 1e-4, "{{(a)}}_2 at {sub}");
+}
+
 #[test]
 fn integrals_take_side_scripts_even_in_display() {
     let l = engine().typeset(r"\int_0^1", Style::Display).unwrap();

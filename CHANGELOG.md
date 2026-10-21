@@ -95,6 +95,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Each change is checked against TeX's own `\showbox` boxes.
 - `fmd-math` gains an `svg_dump` example for visual checks of layout changes.
 
+### Fixed
+
+- `fmd-math` reads rule 18a's baseline drops at the script size, as TeX does
+  (tex.web §756). The drops come from cmsy7 and cmsy5, not from cmsy10 scaled
+  to the base's size. A superscript on a non-character nucleus now sits
+  0.139 em higher in display and text style: a display integral's upper limit,
+  a `\sum`'s superscript in text style, `{(a)}^2`. The subscript is
+  unchanged there. In script and scriptscript styles both drops move to TeX's
+  values. `MathConstants` replaces `sup_drop`/`sub_drop` with the cmsy7 and
+  cmsy5 values and `script_drops`. Checked against TeX's `\showbox`
+  (franken_manim fm-4ptw).
+
 ## [0.6.0] - 2026-10-14
 
 A feature release (139 commits since 0.5.0). It changes the public Rust

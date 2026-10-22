@@ -246,6 +246,41 @@ def main() -> None:
         dialog.locator('[name=paper]').select_option('default')
         dialog.locator('[type=submit]').click()
         check('pageGeometry' not in settings(reopened2) and pdf(reopened2)['page'] is None, 'default paper restores legacy PDF dispatch')
+        for paper, width, height in [
+            ('letter', 612, 792),
+            ('a4', 210 * 72 / 25.4, 297 * 72 / 25.4),
+            ('a5', 148 * 72 / 25.4, 210 * 72 / 25.4),
+            ('legal', 612, 1008),
+            ('tabloid', 792, 1224),
+        ]:
+            paper_page = open_page(fixture(functions), f'paper-{paper}.html')
+            for orientation, dimensions in [('portrait', [width, height]), ('landscape', [height, width])]:
+                committed = settings(paper_page)
+                dialog = open_settings(paper_page)
+                dialog.locator('[name=paper]').select_option(paper)
+                dialog.locator('[name=orientation]').select_option(orientation)
+                for name, value in zip(['top', 'right', 'bottom', 'left'], [18, 24, 30, 36]):
+                    dialog.locator(f'[name={name}]').fill(str(value))
+                expected = dimensions + [18, 24, 30, 36]
+                check(settings(paper_page) == committed, f'{paper} {orientation} remains a draft before Apply')
+                dialog.locator('[type=submit]').click()
+                check(not dialog.is_visible() and settings(paper_page)['pageGeometry'] == expected,
+                      f'{paper} {orientation} applies exact dimensions and independent margins')
+                check(pdf(paper_page)['page'] == expected, f'{paper} {orientation} reaches the PDF ABI')
+            saved_paper = download(paper_page, lambda: paper_page.locator('#btn-save-html').click(), 'html').decode()
+            paper_reopened = open_page(saved_paper, f'paper-{paper}-reopened.html')
+            check(settings(paper_reopened) == settings(paper_page) and pdf(paper_reopened)['page'] == expected,
+                  f'{paper} settings and PDF geometry survive Save HTML/reopen')
+            dialog = open_settings(paper_reopened)
+            check([float(dialog.locator(f'[name={name}]').input_value())
+                   for name in ['width', 'height', 'top', 'right', 'bottom', 'left']] == expected,
+                  f'{paper} reopened form preserves exact saved dimensions')
+            dialog.locator('[type=submit]').click()
+            check(settings(paper_reopened)['pageGeometry'] == expected and not dirty(paper_reopened),
+                  f'{paper} unchanged Apply preserves saved geometry and the clean baseline')
+            paper_reopened.close()
+            paper_page.close()
+
         old = open_page(fixture(functions, page_capable=False), 'old-package.html')
         dialog = open_settings(old); dialog.locator('[name=fontScale]').fill('1.5'); dialog.locator('[type=submit]').click()
         check(settings(old)['fontScale'] == 1.5, 'typography editing works with an older non-page-capable package')

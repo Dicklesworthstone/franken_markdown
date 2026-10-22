@@ -513,7 +513,7 @@
       <fieldset><legend>PDF paper and margins</legend>
         <p>Dimensions are points (72 points = 1 inch). Margins must leave at least 72 points of content on each axis. Paper does not paginate the HTML preview.</p>
         <div data-grid>
-          <label>Paper<select name="paper"><option value="default">Renderer default (no override)</option><option value="letter">Letter</option><option value="a4">A4</option><option value="custom">Custom / saved dimensions</option></select></label>
+          <label>Paper<select name="paper"><option value="default">Renderer default (no override)</option><option value="letter">Letter</option><option value="a4">A4</option><option value="a5">A5</option><option value="legal">US Legal</option><option value="tabloid">Tabloid</option><option value="custom">Custom / saved dimensions</option></select></label>
           <label>Orientation<select name="orientation" data-page><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></label>
           <label>Width (pt)<input name="width" data-page type="number" min="144" max="14400" step="any" required></label>
           <label>Height (pt)<input name="height" data-page type="number" min="144" max="14400" step="any" required></label>
@@ -536,6 +536,13 @@
     const texts = ['font', 'darkMode', 'title', 'author', 'lang'];
     const settingsFields = [...flags, ...numbers, ...texts];
     const geometryFields = ['width', 'height', 'top', 'right', 'bottom', 'left'];
+    const paperDimensions = {
+      letter: [612, 792],
+      a4: [210 * 72 / 25.4, 297 * 72 / 25.4],
+      a5: [148 * 72 / 25.4, 210 * 72 / 25.4],
+      legal: [612, 1008],
+      tabloid: [792, 1224],
+    };
     const raw = name => flags.includes(name) ? field(name).checked : field(name).value;
     let opened = null, initial = null, applying = null, panelRevision = 0;
     const asynchronous = native.settingsMode === 'worker';
@@ -569,8 +576,8 @@
     };
     field('paper').addEventListener('change', () => {
       const paper = field('paper').value;
-      if (paper === 'letter' || paper === 'a4') {
-        const dimensions = paper === 'letter' ? [612, 792] : [210 * 72 / 25.4, 297 * 72 / 25.4];
+      if (Object.hasOwn(paperDimensions, paper)) {
+        const dimensions = paperDimensions[paper];
         field('width').value = dimensions[0]; field('height').value = dimensions[1]; orient();
       }
       pageEnabled();

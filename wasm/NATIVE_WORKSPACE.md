@@ -125,8 +125,9 @@ numbers or PDF code line numbers. Existing embedded font assets and weight pins
 remain in use; changing settings does not replace fonts or image resources.
 The creation-time `metadataEpochSeconds`, including zero, is preserved.
 
-Select Letter, A4 or custom dimensions, rotate portrait/landscape, and edit each
-margin in PDF points (72 points per inch). Saved fractional dimensions remain
+Select Letter, A4, A5, US Legal, Tabloid or custom dimensions, rotate
+portrait/landscape, and edit each margin in PDF points (72 points per inch).
+Saved fractional dimensions remain
 exact, without display rounding. Orientation changes width/height, not margin
 sides. **Renderer default (no override)** removes the explicit geometry and uses
 the original PDF ABI. Typography changes still work with older binaries lacking

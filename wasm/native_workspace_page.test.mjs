@@ -39,6 +39,35 @@ test('export normalizes Letter, A4, custom size, orientation and independent mar
   assert.equal(Object.hasOwn(payload(exporter.render('Defaults')).options,'pageGeometry'),false);
 });
 
+test('every standard paper survives saved settings and reopening in both orientations',async()=>{
+  const {exporter,engine,calls}=await setup();
+  for(const [size,width,height] of [
+    ['letter',612,792],
+    ['a4',210*72/25.4,297*72/25.4],
+    ['a5',148*72/25.4,210*72/25.4],
+    ['legal',612,1008],
+    ['tabloid',792,1224],
+  ]) {
+    for(const orientation of ['portrait','landscape']) {
+      const [w,h]=orientation==='landscape'?[height,width]:[width,height];
+      const expected=[w,h,18,24,30,36];
+      const data=payload(exporter.render('Saved paper',{page:{size,orientation,
+        margins:{topPt:18,rightPt:24,bottomPt:30,leftPt:36}}}));
+      assert.deepEqual(data.options.pageGeometry,expected,size+' '+orientation+' saved geometry');
+      const renderer=createNativeWorkspaceRenderer(engine,data);
+      renderer.stageSettings({title:'Reopened paper',pageGeometry:expected}).commit();
+      const saved=JSON.parse(JSON.stringify(data));
+      const reopened=createNativeWorkspaceRenderer(engine,saved);
+      assert.deepEqual(reopened.settings.pageGeometry,expected);
+      reopened.pdf('Current paper');
+      const [kind,args]=calls.at(-1);
+      assert.equal(kind,'page');
+      assert.equal(args[3],'Reopened paper');
+      assert.deepEqual(Array.from(args[27]),expected,size+' '+orientation+' PDF geometry');
+    }
+  }
+});
+
 test('saved PDF geometry reaches the page ABI in exact order without changing other options',async()=>{
   const {exporter,engine,calls}=await setup();
   const page=cases[2], geometry=Array.from(pdfPageGeometry(page));

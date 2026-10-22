@@ -5,6 +5,10 @@ import { renderPdf, renderHtml, renderEpub, renderBookPdf, createRenderer,
 const page: FmdPdfPage = { size: "a4", orientation: "landscape",
   margins: { leftPt: 24, rightPt: 36, topPt: 18, bottomPt: 30 } };
 const options: FmdPdfRenderOptions = { page, font: "serif", pageNumbers: true, metadataEpochSeconds: 0 };
+for (const size of ["a5", "legal", "tabloid"] as const) {
+  await renderPdf("# Paper", { page: { size } });
+  await renderBookPdf([{ path: "one.md", source: "# One" }], { page: { size } });
+}
 await renderPdf("# Report", options);
 await renderPdf("# Custom", { page: { size: { widthPt: 720, heightPt: 540 }, margins: 0 } });
 await (await createRenderer()).renderPdf("# Report", options);

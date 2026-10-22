@@ -10,6 +10,9 @@ const pdf: Promise<DocumentOutput<"pdf">> = worker.renderPdf("# Report", {
   pdfImages: [{ destination: "brand.svg", bytes }],
 });
 worker.renderPdf("custom", { page: { size: { widthPt: 700, heightPt: 900 }, margins: 36 } });
+for (const size of ["a5", "legal", "tabloid"] as const) {
+  worker.renderPdf("standard", { page: { size } });
+}
 worker.renderSvg("poster", { maxWidthPt: 720,
   pdfImages: [{ destination: "plot.png", bytes }],
   fontAssets: [{ slot: "body-bold", bytes, weight: 700 }],
@@ -26,7 +29,7 @@ worker.renderEpub("x", { allowRawHtml: true });
 // @ts-expect-error Interactive HTML does not accept document resource arrays.
 worker.renderInteractiveHtml("x", { pdfImages: [] });
 // @ts-expect-error Named paper sizes are limited to the documented choices.
-worker.renderPdf("x", { page: { size: "legal" } });
+worker.renderPdf("x", { page: { size: "ledger" } });
 // @ts-expect-error Running bands are PDF-only, including generic dispatch.
 worker.render("html", "x", { running: { header: { left: "Title" } } });
 // @ts-expect-error Logos have side positions, not a center position.

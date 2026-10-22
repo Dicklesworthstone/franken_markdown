@@ -4,6 +4,9 @@
 const PAPER = Object.freeze({
   letter: Object.freeze([612, 792]),
   a4: Object.freeze([210 * 72 / 25.4, 297 * 72 / 25.4]),
+  a5: Object.freeze([148 * 72 / 25.4, 210 * 72 / 25.4]),
+  legal: Object.freeze([612, 1008]),
+  tabloid: Object.freeze([792, 1224]),
 });
 const SIDES = ["topPt", "rightPt", "bottomPt", "leftPt"];
 
@@ -50,7 +53,7 @@ export function normalizePdfPage(value) {
   let widthPt, heightPt;
   const size = page.size === undefined ? "letter" : page.size;
   if (typeof size === "string") {
-    if (!Object.hasOwn(PAPER, size)) fail("PDF page size must be letter, a4 or explicit dimensions");
+    if (!Object.hasOwn(PAPER, size)) fail("PDF page size must be letter, a4, a5, legal, tabloid or explicit dimensions");
     [widthPt, heightPt] = PAPER[size];
   } else {
     const dimensions = record(size, ["widthPt", "heightPt"], "PDF page size");

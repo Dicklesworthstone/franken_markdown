@@ -3,7 +3,8 @@
 //! Retain host precision until the complete page has been validated, then
 //! recheck the exact arithmetic used by the renderer before converting it.
 
-use crate::{PageMargins, PageSize, Theme};
+use crate::theme::page_geometry::{MAX_POINT, MIN_PAPER, named_paper};
+use crate::{PageSize, PageStyle, Theme};
 
 pub(crate) struct Paper {
     name: &'static str,
@@ -33,13 +34,9 @@ impl Paper {
 
 pub(crate) fn parse_size(value: &str) -> Result<Paper, String> {
     let value = value.trim().to_ascii_lowercase();
-    let (name, width, height) = match value.as_str() {
-        "letter" => ("letter", 612.0, 792.0),
-        "a4" => ("a4", 210.0 * 72.0 / 25.4, 297.0 * 72.0 / 25.4),
-        "a5" => ("a5", 148.0 * 72.0 / 25.4, 210.0 * 72.0 / 25.4),
-        "legal" => ("legal", 612.0, 1008.0),
-        "tabloid" => ("tabloid", 792.0, 1224.0),
-        _ => {
+    let (name, width, height) = match named_paper(&value) {
+        Some((name, [width, height])) => (name, width, height),
+        None => {
             let parsed = value.split_once('x').and_then(|(width, height)| {
                 Some((
                     width.trim().parse::<f64>().ok()?,
@@ -55,7 +52,7 @@ pub(crate) fn parse_size(value: &str) -> Result<Paper, String> {
     };
     if [width, height]
         .iter()
-        .any(|point| !point.is_finite() || !(144.0..=14_400.0).contains(point))
+        .any(|point| !point.is_finite() || !(MIN_PAPER..=MAX_POINT).contains(point))
     {
         return Err(
             "PDF paper dimensions must be finite values from 144 through 14400 points".to_string(),
@@ -95,31 +92,11 @@ pub(crate) fn configure(
             ][i],
         ))
     });
-    if [top, right, bottom, left]
-        .iter()
-        .any(|point| !point.is_finite() || !(0.0..=14_400.0).contains(point))
-    {
-        return Err("PDF margins must be finite values from 0 through 14400 points".to_string());
-    }
-    let size = paper.size();
-    let [top32, right32, bottom32, left32] = [top, right, bottom, left].map(|point| point as f32);
-    // Keep the book command's admission at both precisions. A decimal that
-    // rounds onto a boundary must not admit an impossible content rectangle.
-    if paper.width - left - right < 72.0
-        || paper.height - top - bottom < 72.0
-        || size.width_pt - left32 - right32 < 72.0
-        || size.height_pt - top32 - bottom32 < 72.0
-    {
-        return Err(
-            "PDF margins must leave at least 72 points of content width and height".to_string(),
-        );
-    }
-    theme.page.size = size;
-    theme.page.margins = PageMargins {
-        top_pt: top32,
-        right_pt: right32,
-        bottom_pt: bottom32,
-        left_pt: left32,
-    };
+    let mut page = PageStyle::from_points([paper.width, paper.height], [top, right, bottom, left])
+        .map_err(str::to_string)?;
+    // Native config preserves the selected spelling for round trips. Browser
+    // and MCP requests use the same geometry without persisting a paper name.
+    page.size.name = paper.name;
+    theme.page = page;
     Ok(())
 }

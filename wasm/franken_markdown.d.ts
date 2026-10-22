@@ -110,7 +110,7 @@ export interface FmdRenderOptions {
 /** PDF paper dimensions/margins are points, never CSS pixels. */
 export interface FmdPdfPage {
   /** Omitted size is Letter. Custom dimensions must each be 144..14400 points. */
-  size?: "letter" | "a4" | { widthPt: number; heightPt: number };
+  size?: "letter" | "a4" | "a5" | "legal" | "tabloid" | { widthPt: number; heightPt: number };
   /** Rotate only paper; omitted orientation preserves custom width/height order. */
   orientation?: "portrait" | "landscape";
   /** Uniform points or independent sides, each defaulting to 72 points. */

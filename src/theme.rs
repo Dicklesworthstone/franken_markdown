@@ -5,6 +5,8 @@
 //! or a config stack, and it keeps visual decisions in one place so HTML and
 //! PDF can converge on the same typography, colour, spacing, and page contract.
 
+pub(crate) mod page_geometry;
+
 /// The default body font family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FontFamily {

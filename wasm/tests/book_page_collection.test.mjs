@@ -91,13 +91,14 @@ test("page-bearing projects require v3 and malformed geometry rejects before rep
     const project = { schemaVersion, files: [{ path: "x.md", source: "new" }], options: { page: page() } };
     assert.throws(() => book.replaceProject(project), { code: "INVALID_PROJECT" });
   }
-  for (const geometry of [null, [], { size: "a5" }, { margins: 500 },
+  for (const geometry of [null, [], { size: "a6" }, { margins: 500 },
     { size: { widthPt: 1, heightPt: 500 } }, { margins: { topPt: NaN } }, { typo: 5 }]) {
     assert.throws(() => book.replaceProject({ schemaVersion: 3, files: [], options: { page: geometry } }));
     assert.deepEqual(book.snapshot(), before); assert.equal(book.revision, revision);
   }
-  // Version 4 (publishing profiles, a3ca221) is the newest supported schema.
-  assert.throws(() => normalizeBookProject({ schemaVersion: 5, files: [] }), { code: "INVALID_PROJECT" });
+  // Version 5 adds archival PDF settings; geometry remains valid in that schema.
+  assert.deepEqual(normalizeBookProject({ schemaVersion: 5, files: [], options: { page: page() } }).options.page, normalizePdfPage(page()));
+  assert.throws(() => normalizeBookProject({ schemaVersion: 6, files: [] }), { code: "INVALID_PROJECT" });
 });
 
 test("stale, disposed and reentrant page transactions cannot overwrite newer state", () => {

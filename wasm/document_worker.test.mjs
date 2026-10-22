@@ -284,6 +284,15 @@ if (!isMainThread) {
       [{ size: "a4", orientation: "landscape", margins: 36 }, {
         size: { widthPt: 297 * 72 / 25.4, heightPt: 210 * 72 / 25.4 },
         margins: { topPt: 36, rightPt: 36, bottomPt: 36, leftPt: 36 } }],
+      [{ size: "a5", margins: 24 }, {
+        size: { widthPt: 148 * 72 / 25.4, heightPt: 210 * 72 / 25.4 },
+        margins: { topPt: 24, rightPt: 24, bottomPt: 24, leftPt: 24 } }],
+      [{ size: "legal", orientation: "landscape" }, {
+        size: { widthPt: 1008, heightPt: 612 },
+        margins: { topPt: 72, rightPt: 72, bottomPt: 72, leftPt: 72 } }],
+      [{ size: "tabloid", margins: { leftPt: 0 } }, {
+        size: { widthPt: 792, heightPt: 1224 },
+        margins: { topPt: 72, rightPt: 72, bottomPt: 72, leftPt: 0 } }],
       [{ size: { widthPt: 900, heightPt: 600 }, orientation: "portrait",
         margins: { topPt: 12, rightPt: 24, bottomPt: 48, leftPt: 0 } }, {
         size: { widthPt: 600, heightPt: 900 },
@@ -314,7 +323,7 @@ if (!isMainThread) {
     let starts = 0, reads = 0;
     const api = createWorkerRenderer({ workerFactory() { starts++; throw new Error("unexpected worker"); } });
     try {
-      for (const page of [null, [], { size: "legal" }, { orientation: "sideways" },
+      for (const page of [null, [], { size: "ledger" }, { orientation: "sideways" },
         { size: { widthPt: 143, heightPt: 400 } }, { margins: 10000 },
         { margins: { leftPt: NaN } }, { get size() { reads++; return "a4"; } },
         { size: { get widthPt() { reads++; return 600; }, heightPt: 800 } },

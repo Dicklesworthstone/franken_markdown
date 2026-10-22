@@ -2,6 +2,7 @@
 #![cfg(feature = "mcp")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use franken_markdown::book::{BookInput, BookRenderer};
 use franken_markdown::mcp::{
     JsonValue, base64_encode, handle_tool_call, parse_json, tools_list_result,
 };
@@ -322,6 +323,146 @@ fn geometry_failure_precedes_file_io_and_preserves_existing_outputs() {
 }
 
 #[test]
+fn named_paper_reaches_pdf_files_books_and_verification_in_both_orientations() {
+    let source = format!(
+        "# Physical paper\n\n{}",
+        "A paragraph whose measured wrapping and page breaks depend on the chosen paper.\n\n"
+            .repeat(16),
+    );
+    let root = scratch();
+    let input = root.join("chapter.md");
+    std::fs::write(&input, &source).unwrap();
+    let doc = parse_markdown(&source);
+    let book = BookRenderer::from_sources(
+        &[BookInput {
+            path: "chapter.md".into(),
+            source: source.clone(),
+        }],
+        &[],
+    )
+    .unwrap();
+    // Physical dimensions are independent of the implementation's paper table.
+    for (name, width, height) in [
+        ("letter", 612.0, 792.0),
+        ("a4", 210.0 * 72.0 / 25.4, 297.0 * 72.0 / 25.4),
+        ("a5", 148.0 * 72.0 / 25.4, 210.0 * 72.0 / 25.4),
+        ("legal", 612.0, 1008.0),
+        ("tabloid", 792.0, 1224.0),
+    ] {
+        for orientation in ["portrait", "landscape"] {
+            let (width, height) = if orientation == "landscape" {
+                (height, width)
+            } else {
+                (width, height)
+            };
+            let config = format!(
+                r#"{{"title":"Paper","page":{{"size":"{name}","orientation":"{orientation}","margins":{{"topPt":18,"rightPt":24,"bottomPt":30,"leftPt":36}}}},"baseFontSize":14,"pageNumbers":true}}"#,
+            );
+            let options = PdfOptions {
+                title: Some("Paper".into()),
+                theme: Theme {
+                    page: PageStyle {
+                        size: PageSize {
+                            name: "custom",
+                            width_pt: width as f32,
+                            height_pt: height as f32,
+                        },
+                        margins: PageMargins {
+                            top_pt: 18.0,
+                            right_pt: 24.0,
+                            bottom_pt: 30.0,
+                            left_pt: 36.0,
+                        },
+                    },
+                    ..Default::default()
+                },
+                base_font_size: Some(14.0),
+                page_numbers: true,
+                ..Default::default()
+            };
+            let expected = franken_markdown::render_pdf_document(&doc, &options).unwrap();
+            assert_eq!(
+                content(&call("fmd.render_pdf", args(&config, &source)).unwrap()),
+                base64_encode(&expected),
+                "inline {name} {orientation}",
+            );
+            let mut file_args = args(&config, &source);
+            file_args.remove("markdown");
+            file_args.insert("to".into(), JsonValue::String("pdf".into()));
+            file_args.insert(
+                "path".into(),
+                JsonValue::String(input.to_string_lossy().into_owned()),
+            );
+            assert_eq!(
+                content(&call("fmd.render_file", file_args).unwrap()),
+                base64_encode(&expected),
+                "file {name} {orientation}",
+            );
+            assert_eq!(
+                content(&call("fmd.verify", args(&config, &source)).unwrap()),
+                franken_markdown::verify::to_json(
+                    &franken_markdown::verify::verify_pdf(&doc, &options).unwrap(),
+                ),
+                "verify {name} {orientation}",
+            );
+            let mut book_args = args(&config, &source);
+            book_args.remove("markdown");
+            book_args.insert(
+                "chapters".into(),
+                JsonValue::Array(vec![JsonValue::Object(BTreeMap::from([
+                    ("path".into(), JsonValue::String("chapter.md".into())),
+                    ("markdown".into(), JsonValue::String(source.clone())),
+                ]))]),
+            );
+            let result = call("fmd.render_book", book_args).unwrap();
+            let receipt = parse_json(content(&result)).unwrap();
+            let JsonValue::Array(outputs) = receipt.get("outputs").unwrap() else {
+                panic!("book outputs array")
+            };
+            assert_eq!(
+                outputs[0].get("data").unwrap().as_str().unwrap(),
+                base64_encode(
+                    &book
+                        .render_pdf_with_options(&options, franken_markdown::PdfASettings::OFF)
+                        .unwrap(),
+                ),
+                "book {name} {orientation}",
+            );
+        }
+    }
+}
+
+#[test]
+fn book_geometry_is_admitted_before_source_expansion_and_has_no_non_pdf_consumer() {
+    let mut arguments = args(r#"{"page":{"size":"a5","margins":400}}"#, "");
+    arguments.remove("markdown");
+    arguments.insert(
+        "chapters".into(),
+        JsonValue::Array(vec![JsonValue::Object(BTreeMap::from([
+            ("path".into(), JsonValue::String("chapter.md".into())),
+            (
+                "markdown".into(),
+                JsonValue::String("{{#include absent.md}}".into()),
+            ),
+        ]))]),
+    );
+    for target in ["pdf", "all"] {
+        arguments.insert("to".into(), JsonValue::String(target.into()));
+        assert_eq!(
+            call("fmd.render_book", arguments.clone()).unwrap_err().2,
+            "invalid_page",
+        );
+    }
+    for target in ["epub", "site"] {
+        arguments.insert("to".into(), JsonValue::String(target.into()));
+        assert_eq!(
+            call("fmd.render_book", arguments.clone()).unwrap_err().2,
+            "unsupported_target_option",
+        );
+    }
+}
+
+#[test]
 fn discovery_exposes_page_shape_and_auditable_resources_without_pdfa_claims() {
     let list = tools_list_result();
     let JsonValue::Array(tools) = list.get("tools").unwrap() else {
@@ -330,12 +471,33 @@ fn discovery_exposes_page_shape_and_auditable_resources_without_pdfa_claims() {
     for tool in tools {
         let name = tool.get("name").unwrap().as_str().unwrap();
         let props = tool.get("inputSchema").unwrap().get("properties").unwrap();
-        if matches!(name, "fmd.render_pdf" | "fmd.render_file" | "fmd.verify") {
+        if matches!(
+            name,
+            "fmd.render_pdf" | "fmd.render_file" | "fmd.render_book" | "fmd.verify"
+        ) {
             let page = props.get("page").unwrap();
             assert_eq!(page.get("type").unwrap().as_str(), Some("object"));
             assert_eq!(
                 page.get("additionalProperties"),
                 Some(&JsonValue::Bool(false))
+            );
+            let JsonValue::Array(sizes) = page
+                .get("properties")
+                .unwrap()
+                .get("size")
+                .unwrap()
+                .get("oneOf")
+                .unwrap()
+            else {
+                panic!("paper size choices")
+            };
+            assert_eq!(
+                sizes[0].get("enum"),
+                Some(&JsonValue::Array(
+                    ["letter", "a4", "a5", "legal", "tabloid"]
+                        .map(|name| JsonValue::String(name.into()))
+                        .to_vec(),
+                )),
             );
             assert!(props.get("images").is_some());
             assert!(props.get("fonts").is_some());

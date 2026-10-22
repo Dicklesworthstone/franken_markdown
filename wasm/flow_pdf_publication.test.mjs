@@ -99,7 +99,7 @@ test("custom paper order, orientation and asymmetric margins use the shared nati
 
 test("invalid print geometry is rejected before inventory reads or native rendering", async () => {
   const f = fixture();
-  for (const page of [null, [], 1, { size: "legal" }, { orientation: "sideways" },
+  for (const page of [null, [], 1, { size: "ledger" }, { orientation: "sideways" },
     { size: { widthPt: 143, heightPt: 600 } }, { size: { widthPt: Infinity, heightPt: 600 } },
     { margins: -1 }, { margins: 1000 }, { margins: { topPt: "72" } },
     { widthPt: 300 }, { size: { widthPt: 144, heightPt: 144 }, margins: 40 }]) {
@@ -107,6 +107,19 @@ test("invalid print geometry is rejected before inventory reads or native render
   }
   assert.equal(f.reads, 0);
   assert.equal(f.calls.length, 0);
+});
+
+test("persistent PDF exports retain every native standard paper preset", async () => {
+  const f = fixture();
+  for (const [size, width, height] of [
+    ["a5", 148 * 72 / 25.4, 210 * 72 / 25.4],
+    ["legal", 612, 1008],
+    ["tabloid", 792, 1224],
+  ]) {
+    await f.api.exportDocument("pdf", { page: { size, orientation: "landscape", margins: 36 } }, token);
+    assert.deepEqual([...pdfPageGeometry(f.calls.at(-1).options.page)], [height, width, 36, 36, 36, 36]);
+  }
+  f.api.dispose();
 });
 
 test("nested print accessors, inherited settings and unknown keys cannot cross the boundary", async () => {

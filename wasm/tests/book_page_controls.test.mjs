@@ -85,6 +85,30 @@ test("applying paper and asymmetric margins captures raw editor state and preser
   assert.equal(f.collection.files[1].source, before.options.includeSources[0].source);
 });
 
+test("standard paper choices survive apply, publication and project reopening", async () => {
+  for (const [name, width, height] of [
+    ["a5", 148 * 72 / 25.4, 210 * 72 / 25.4],
+    ["legal", 612, 1008],
+    ["tabloid", 792, 1224],
+  ]) {
+    const f = fixture();
+    assert(f.field("size").children.some(option => option.value === name));
+    f.change("size", name);
+    f.change("orientation", "landscape");
+    f.input("left", "24");
+    f.apply();
+    assert.deepEqual([...pdfPageGeometry(f.collection.options.page)], [height, width, 72, 72, 72, 24]);
+    await f.controls.prepare("pdf");
+    assert.deepEqual(f.exports.at(-1).options.page, f.collection.options.page);
+    const project = f.controls.captureProject(), reopened = fixture();
+    reopened.controls.replaceProject(project, reopened.controls.checkpoint());
+    assert.equal(reopened.field("size").value, name);
+    assert.equal(reopened.field("orientation").value, "landscape");
+    assert.deepEqual(reopened.collection.options.page, f.collection.options.page);
+    f.controls.dispose(); reopened.controls.dispose();
+  }
+});
+
 test("page drafts stay unapplied while captures and every publication retain committed geometry", async () => {
   const f = fixture(); draft(f); f.apply();
   const revision = f.collection.revision;

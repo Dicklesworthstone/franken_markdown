@@ -18,6 +18,19 @@ test("A4 dimensions are converted from millimetres to points before orientation"
     [297 * 72 / 25.4, 210 * 72 / 25.4, 0, 0, 0, 0]);
 });
 
+test("A5, Legal and Tabloid preserve their native sizes and rotate paper independently of margins", () => {
+  for (const [size, width, height] of [
+    ["a5", 148 * 72 / 25.4, 210 * 72 / 25.4],
+    ["legal", 612, 1008],
+    ["tabloid", 792, 1224],
+  ]) {
+    assert.deepEqual(geometry({ size }), [width, height, 72, 72, 72, 72]);
+    assert.deepEqual(geometry({ size, orientation: "landscape",
+      margins: { topPt: 18, rightPt: 24, bottomPt: 30, leftPt: 36 } }),
+      [height, width, 18, 24, 30, 36]);
+  }
+});
+
 test("custom paper dimensions and all four margins retain exact order and precision", () => {
   assert.deepEqual(geometry({ size: { widthPt: 720.25, heightPt: 540.75 },
     margins: { topPt: 18, rightPt: 24, bottomPt: 30, leftPt: 36 } }),

@@ -8,8 +8,8 @@ use super::{
     optional_positive_usize, pdf_options_configured, positive_f32, render_error_to_js,
     render_result, split_nonempty_image_assets,
 };
+use crate::PageStyle;
 use crate::wasm;
-use crate::{PageMargins, PageSize, PageStyle};
 
 mod archival;
 mod book_advanced;
@@ -582,45 +582,11 @@ fn page_style(values: &[f64]) -> Result<Option<PageStyle>, &'static str> {
     if values.len() != 6 {
         return Err("page geometry must contain width, height, top, right, bottom, left");
     }
-    if values
-        .iter()
-        .any(|v| !v.is_finite() || *v < 0.0 || *v > 14_400.0)
-        || !(144.0..=14_400.0).contains(&values[0])
-        || !(144.0..=14_400.0).contains(&values[1])
-    {
-        return Err(
-            "page dimensions must be 144..14400 points; margins must be finite and nonnegative",
-        );
-    }
-    let [width, height, top, right, bottom, left]: [f32; 6] =
-        std::array::from_fn(|i| values[i] as f32);
-    // Check BOTH host precision and exactly the arithmetic used by the native
-    // theme. Rounding must not turn an invalid content rectangle into admission.
-    if values[0] - values[5] - values[3] < 72.0
-        || values[1] - values[2] - values[4] < 72.0
-        || width - left - right < 72.0
-        || height - top - bottom < 72.0
-    {
-        return Err("page margins must leave at least 72 points of content width and height");
-    }
-    let size = if width == PageSize::LETTER.width_pt && height == PageSize::LETTER.height_pt {
-        PageSize::LETTER
-    } else {
-        PageSize {
-            name: "custom",
-            width_pt: width,
-            height_pt: height,
-        }
-    };
-    Ok(Some(PageStyle {
-        size,
-        margins: PageMargins {
-            top_pt: top,
-            right_pt: right,
-            bottom_pt: bottom,
-            left_pt: left,
-        },
-    }))
+    PageStyle::from_points(
+        [values[0], values[1]],
+        [values[2], values[3], values[4], values[5]],
+    )
+    .map(Some)
 }
 
 #[cfg(test)]
@@ -628,6 +594,7 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::*;
+    use crate::PageMargins;
     use crate::wasm::WasmRenderOptions;
 
     #[test]

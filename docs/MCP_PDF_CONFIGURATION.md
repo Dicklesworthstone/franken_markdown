@@ -1,7 +1,8 @@
 # MCP PDF layout and verification
 
-`fmd.render_pdf`, `fmd.render_file` with `to: "pdf"` or `"both"`, and
-`fmd.verify` accept a `page` object and explicit typographic sizes. They populate
+`fmd.render_pdf`, `fmd.render_file` with `to: "pdf"` or `"both"`,
+`fmd.render_book` with `to: "pdf"` or `"all"`, and `fmd.verify` accept a
+`page` object and explicit typographic sizes. They populate
 the native `PdfOptions` and theme before layout; output is not rescaled or patched.
 
 ```json
@@ -22,8 +23,9 @@ the native `PdfOptions` and theme before layout; output is not rescaled or patch
 }
 ```
 
-`page.size` is `"letter"`, `"a4"`, or an object containing both `widthPt` and
-`heightPt`. Custom dimensions preserve their order unless an explicit
+`page.size` is `"letter"`, `"a4"`, `"a5"`, `"legal"`, `"tabloid"`, or an object
+containing both `widthPt` and `heightPt`. These presets match the native CLI
+and browser APIs. Custom dimensions preserve their order unless an explicit
 `"portrait"`/`"landscape"` orientation rotates the paper. Margin sides never
 rotate. `page.margins` is a uniform number or an object with optional `topPt`,
 `rightPt`, `bottomPt`, and `leftPt`. Missing sides default to 72 points. Omitted

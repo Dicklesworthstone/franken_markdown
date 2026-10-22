@@ -760,6 +760,9 @@ const PAGE_FIELDS = ["width", "height", "top", "right", "bottom", "left"];
 const PAGE_PRESETS = Object.freeze({
   letter: normalizePdfPage({ size: "letter" }).size,
   a4: normalizePdfPage({ size: "a4" }).size,
+  a5: normalizePdfPage({ size: "a5" }).size,
+  legal: normalizePdfPage({ size: "legal" }).size,
+  tabloid: normalizePdfPage({ size: "tabloid" }).size,
   trade: Object.freeze({ widthPt: 432, heightPt: 648 }),
 });
 const pageKey = value => JSON.stringify(value);
@@ -791,7 +794,8 @@ export function createBookPageControls({ root, collection, capture, isBusy }) {
     return node;
   }
   select("size", "Paper", [["default", "Renderer default (Letter, 72 pt margins)"],
-    ["letter", "US Letter"], ["a4", "A4"], ["trade", "6 × 9 inch book"], ["custom", "Custom dimensions"]]);
+    ["letter", "US Letter"], ["a4", "A4"], ["a5", "A5"], ["legal", "US Legal"],
+    ["tabloid", "Tabloid"], ["trade", "6 × 9 inch book"], ["custom", "Custom dimensions"]]);
   select("unit", "Units for dimensions and margins", [["pt", "Points"], ["in", "Inches"], ["mm", "Millimetres"]]);
   select("orientation", "Orientation (margins keep their named sides)",
     [["keep", "As entered"], ["portrait", "Portrait"], ["landscape", "Landscape"]]);

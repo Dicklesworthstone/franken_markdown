@@ -4,13 +4,11 @@
 //! arithmetic used by the renderer. No MediaBox patching or output scaling.
 
 use super::{JsonValue, ToolError, invalid_options};
-use crate::{PageMargins, PageSize, PageStyle};
+use crate::PageStyle;
+use crate::theme::page_geometry::{MAX_POINT, MIN_PAPER, NAMED_PAPER_SIZES, named_paper};
 use std::collections::BTreeMap;
 
 const SIDES: [&str; 4] = ["topPt", "rightPt", "bottomPt", "leftPt"];
-const MAX_POINT: f64 = 14_400.0;
-const MIN_PAPER: f64 = 144.0;
-const MIN_CONTENT: f64 = 72.0;
 
 fn error(message: impl Into<String>) -> ToolError {
     invalid_options(message, "invalid_page")
@@ -49,12 +47,11 @@ pub(super) fn parse(value: Option<&JsonValue>) -> Result<Option<PageStyle>, Tool
     let page = record(value, &["size", "orientation", "margins"], "page")?;
     let (mut width, mut height) = match page.get("size") {
         None => (612.0, 792.0),
-        Some(JsonValue::String(name)) => match name.as_str() {
-            "letter" => (612.0, 792.0),
-            "a4" => (210.0 * 72.0 / 25.4, 297.0 * 72.0 / 25.4),
-            _ => {
+        Some(JsonValue::String(name)) => match named_paper(name) {
+            Some((_, [width, height])) => (width, height),
+            None => {
                 return Err(error(
-                    "page.size must be 'letter', 'a4', or explicit dimensions",
+                    "page.size must be 'letter', 'a4', 'a5', 'legal', 'tabloid', or explicit dimensions",
                 ));
             }
         },
@@ -95,37 +92,9 @@ pub(super) fn parse(value: Option<&JsonValue>) -> Result<Option<PageStyle>, Tool
             }
         }
     }
-    let [top, right, bottom, left] = margins;
-    if width - left - right < MIN_CONTENT || height - top - bottom < MIN_CONTENT {
-        return Err(error(
-            "page margins must leave at least 72 points of content width and height",
-        ));
-    }
-    let [width, height, top, right, bottom, left] =
-        [width, height, top, right, bottom, left].map(|value| value as f32);
-    if width - left - right < MIN_CONTENT as f32 || height - top - bottom < MIN_CONTENT as f32 {
-        return Err(error(
-            "page margins leave less than 72 points after renderer precision conversion",
-        ));
-    }
-    let size = if width == PageSize::LETTER.width_pt && height == PageSize::LETTER.height_pt {
-        PageSize::LETTER
-    } else {
-        PageSize {
-            name: "custom",
-            width_pt: width,
-            height_pt: height,
-        }
-    };
-    Ok(Some(PageStyle {
-        size,
-        margins: PageMargins {
-            top_pt: top,
-            right_pt: right,
-            bottom_pt: bottom,
-            left_pt: left,
-        },
-    }))
+    PageStyle::from_points([width, height], margins)
+        .map(Some)
+        .map_err(error)
 }
 
 fn object(properties: Vec<(&str, JsonValue)>, required: &[&str]) -> JsonValue {
@@ -192,7 +161,7 @@ pub(super) fn schema() -> JsonValue {
             (
                 "size",
                 either(
-                    choices(&["letter", "a4"]),
+                    choices(&NAMED_PAPER_SIZES.map(|(name, _)| name)),
                     object(
                         vec![
                             ("widthPt", number(MIN_PAPER)),
@@ -215,7 +184,7 @@ pub(super) fn schema() -> JsonValue {
     );
     if let JsonValue::Object(fields) = &mut schema {
         fields.insert("description".into(), JsonValue::String(
-            "PDF paper and margins in points. Defaults: Letter, 72-point margins. Orientation rotates paper only. Margins must leave a 72-point content rectangle at host and renderer precision. File targets: pdf, both.".into(),
+            "PDF paper and margins in points. Named sizes: letter, a4, a5, legal, tabloid. Defaults: Letter, 72-point margins. Orientation rotates paper only. Margins must leave a 72-point content rectangle at host and renderer precision. File targets: pdf, both. Book targets: pdf, all.".into(),
         ));
     }
     schema
@@ -225,6 +194,7 @@ pub(super) fn schema() -> JsonValue {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+    use crate::PageSize;
     use crate::mcp::parse_json;
 
     fn parse_page(json: &str) -> Result<PageStyle, ToolError> {
@@ -273,7 +243,7 @@ mod tests {
         for json in [
             "null",
             "[]",
-            r#"{"size":"legal"}"#,
+            r#"{"size":"unknown"}"#,
             r#"{"size":{}}"#,
             r#"{"size":{"widthPt":300,"heightPt":500,"extra":1}}"#,
             r#"{"orientation":"sideways"}"#,

@@ -234,6 +234,21 @@ test("A4 and landscape selections reach the geometry binding without scaling typ
   assert.deepEqual([...args[27]], [297 * 72 / 25.4, 210 * 72 / 25.4, 36, 36, 36, 36]);
 });
 
+test("all standard paper presets reach the renderer's existing geometry ABI", async () => {
+  const { api, bindings } = await fixture();
+  for (const [size, width, height] of [
+    ["a5", 148 * 72 / 25.4, 210 * 72 / 25.4],
+    ["legal", 612, 1008],
+    ["tabloid", 792, 1224],
+  ]) {
+    await api.renderPdf("# Paper", { page: { size, orientation: "landscape", margins: 36 }, baseFontSize: 12 });
+    const { kind, args } = bindings.calls.at(-1);
+    assert.equal(kind, "page");
+    assert.equal(args[17], 12);
+    assert.deepEqual([...args[27]], [height, width, 36, 36, 36, 36]);
+  }
+});
+
 test("running chrome appends geometry, six slots and three flags; empty chrome keeps the old ABIs", async () => {
   const { api, bindings } = await fixture();
   const base = { title: "Spec", metadataEpochSeconds: 1700000000 };

@@ -67,7 +67,7 @@ losing them. Format-specific TypeScript declarations describe the allowlists.
 Raw HTML is escaped by default; `allowRawHtml` is an explicit HTML/PDF option.
 Worker rendering is not a sandbox for subsequently displaying or opening output.
 
-PDF accepts `page` with `size: "letter"`, `size: "a4"`, or explicit
+PDF accepts `page` with `size: "letter"`, `"a4"`, `"a5"`, `"legal"`, `"tabloid"`, or explicit
 `size: { widthPt, heightPt }`, optional `orientation`, and uniform or per-side
 `margins`. Units are PDF points, not CSS pixels. Dimensions must be 144..14400;
 margins must leave at least a 72-point content rectangle in both dimensions.

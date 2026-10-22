@@ -9,7 +9,7 @@ use std::cell::OnceCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use fmd_math::{Engine, Layout, PathContour, PathSeg, Style};
+use fmd_math::{Color, Engine, Layout, PathContour, PathSeg, Placed, Style};
 
 use super::{
     Block, FlowKind, FlowMark, ImageLine, LayoutCx, Line, Palette, PdfImageColor, PdfImageData,
@@ -31,8 +31,15 @@ pub(super) struct MathRenderer {
     engine: OnceCell<std::result::Result<Engine, String>>,
 }
 
+/// One independently filled primitive; its explicit colour travels with its
+/// contours so the cached geometry never depends on the surrounding theme.
+struct FormulaPath {
+    contours: Vec<PathContour>,
+    color: Option<Color>,
+}
+
 struct Formula {
-    paths: Vec<Vec<PathContour>>,
+    paths: Vec<FormulaPath>,
     bounds: Bounds,
     /// The layout box width: the advance an inline formula occupies.
     advance: f64,
@@ -65,7 +72,7 @@ fn typeset_formula(
     if source.len() > MAX_SOURCE_BYTES {
         return Err("formula exceeds the 64 KiB source limit".to_string());
     }
-    let layout = engine
+    let mut layout = engine
         .typeset(source, style)
         .map_err(|error| error.to_string())?;
     if layout
@@ -84,51 +91,74 @@ fn typeset_formula(
     bounds.add(layout.width, layout.height)?;
     let mut paths = Vec::new();
     let mut segment_count = 0usize;
-    let mut add_path = |contours: Vec<PathContour>| -> std::result::Result<(), String> {
-        for contour in &contours {
-            segment_count = segment_count
-                .saturating_add(contour.segments.len())
-                .saturating_add(2);
-            if segment_count > MAX_PATH_SEGMENTS {
-                return Err("formula exceeds the 262144 path segment limit".to_string());
-            }
-            bounds.add(contour.start.0, contour.start.1)?;
-            for segment in &contour.segments {
-                match segment {
-                    PathSeg::Line { to } => bounds.add(to.0, to.1)?,
-                    PathSeg::Quad { ctrl, to } => {
-                        bounds.add(ctrl.0, ctrl.1)?;
-                        bounds.add(to.0, to.1)?;
+    let mut add_path =
+        |contours: Vec<PathContour>, color: Option<Color>| -> std::result::Result<(), String> {
+            for contour in &contours {
+                segment_count = segment_count
+                    .saturating_add(contour.segments.len())
+                    .saturating_add(2);
+                if segment_count > MAX_PATH_SEGMENTS {
+                    return Err("formula exceeds the 262144 path segment limit".to_string());
+                }
+                bounds.add(contour.start.0, contour.start.1)?;
+                for segment in &contour.segments {
+                    match segment {
+                        PathSeg::Line { to } => bounds.add(to.0, to.1)?,
+                        PathSeg::Quad { ctrl, to } => {
+                            bounds.add(ctrl.0, ctrl.1)?;
+                            bounds.add(to.0, to.1)?;
+                        }
                     }
                 }
             }
-        }
-        if !contours.is_empty() {
-            paths.push(contours);
-        }
-        Ok(())
-    };
+            if !contours.is_empty() {
+                paths.push(FormulaPath { contours, color });
+            }
+            Ok(())
+        };
     // Separate paint operations preserve overlays with opposing contour
     // windings. A glyph's own contours stay together to preserve its holes.
+    let explicitly_colored = layout.glyphs.iter().any(|glyph| glyph.color.is_some())
+        || layout.rules.iter().any(|rule| rule.color.is_some())
+        || layout.paths.iter().any(|path| path.color.is_some());
+    let mut order = std::mem::take(&mut layout.order);
+    if !explicitly_colored {
+        // Keep historical bytes for uncoloured formulas, whose same-ink fills
+        // commute. With colour, TeX's emission order determines which ink is
+        // visible where a later glyph overlaps a fraction bar or radical.
+        order.clear();
+        order.extend((0..layout.glyphs.len()).map(Placed::Glyph));
+        order.extend((0..layout.rules.len()).map(Placed::Rule));
+        order.extend((0..layout.paths.len()).map(Placed::Path));
+    }
     let mut primitive = Layout::default();
-    for glyph in layout.glyphs {
-        primitive.glyphs.push(glyph);
-        add_path(
-            fmd_math::paths::resolve_paths(engine, &primitive)
-                .map_err(|error| error.to_string())?,
-        )?;
-        primitive.glyphs.clear();
-    }
-    for rule in layout.rules {
-        primitive.rules.push(rule);
-        add_path(
-            fmd_math::paths::resolve_paths(engine, &primitive)
-                .map_err(|error| error.to_string())?,
-        )?;
-        primitive.rules.clear();
-    }
-    for path in layout.paths {
-        add_path(path.contours)?;
+    for placed in order {
+        match placed {
+            Placed::Glyph(index) => {
+                let glyph = &layout.glyphs[index];
+                primitive.glyphs.push(glyph.clone());
+                add_path(
+                    fmd_math::paths::resolve_paths(engine, &primitive)
+                        .map_err(|error| error.to_string())?,
+                    glyph.color,
+                )?;
+                primitive.glyphs.clear();
+            }
+            Placed::Rule(index) => {
+                let rule = &layout.rules[index];
+                primitive.rules.push(rule.clone());
+                add_path(
+                    fmd_math::paths::resolve_paths(engine, &primitive)
+                        .map_err(|error| error.to_string())?,
+                    rule.color,
+                )?;
+                primitive.rules.clear();
+            }
+            Placed::Path(index) => {
+                let path = &mut layout.paths[index];
+                add_path(std::mem::take(&mut path.contours), path.color)?;
+            }
+        }
     }
     Ok(Formula {
         paths,
@@ -141,7 +171,7 @@ fn typeset_formula(
 /// its origin at the left end of the baseline. It is set as one unbreakable
 /// box of `advance` ems whose extents grow the line it sits on.
 pub(super) struct InlineFormula {
-    paths: Vec<Vec<PathContour>>,
+    paths: Vec<FormulaPath>,
     /// The layout box width.
     pub(super) advance: f32,
     /// Extent above the baseline: the layout height or the ink, whichever is taller.
@@ -191,8 +221,9 @@ pub(super) fn inline_formula(source: &str) -> std::result::Result<Arc<InlineForm
 }
 
 /// Fill `formula`'s outlines at `size` points with the left end of its
-/// baseline at `(x, baseline)`, in the current fill colour. Each glyph, rule
-/// and drawn path is its own nonzero fill so overlays keep their own
+/// baseline at `(x, baseline)`. Primitives inherit the current fill colour
+/// unless the source explicitly overrides it. Each glyph, rule and drawn
+/// path is its own nonzero fill so overlays keep their own
 /// windings; quadratic segments become the exact equivalent cubics.
 pub(super) fn append_inline_formula(
     out: &mut String,
@@ -209,8 +240,14 @@ pub(super) fn append_inline_formula(
         super::append_pdf_num(out, (oy + py * scale) as f32);
         out.push(' ');
     };
-    for contours in &formula.paths {
-        for contour in contours {
+    for path in &formula.paths {
+        if let Some(color) = path.color {
+            // Restore the caller's current fill, including link/quote ink,
+            // before the next uncoloured primitive or surrounding prose.
+            out.push_str("q\n");
+            super::append_rgb_fill_operator(out, (color.r as f32, color.g as f32, color.b as f32));
+        }
+        for contour in &path.contours {
             let mut current = contour.start;
             point(out, current);
             out.push_str("m\n");
@@ -239,6 +276,9 @@ pub(super) fn append_inline_formula(
             out.push_str("h\n");
         }
         out.push_str("f\n");
+        if path.color.is_some() {
+            out.push_str("Q\n");
+        }
     }
 }
 
@@ -274,9 +314,12 @@ pub(super) fn layout_block(
             ((formula.bounds.top - y) * size) as f32 + (height - ink_height) * 0.5,
         )
     };
-    for contours in formula.paths {
+    for path in formula.paths {
+        let color = path.color.map_or(color, |color| {
+            (color.r as f32, color.g as f32, color.b as f32)
+        });
         let mut ops = Vec::new();
-        for contour in contours {
+        for contour in path.contours {
             let (x, y) = point(contour.start);
             ops.push(SvgPathOp::Move(x, y));
             for segment in contour.segments {

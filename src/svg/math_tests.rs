@@ -272,3 +272,200 @@ fn quote_math_inherits_quote_ink() {
             .any(|op| matches!(op, Op::Glyph { ink: Ink::Fg, .. }))
     );
 }
+
+#[test]
+fn scoped_math_colors_reach_svg_glyphs_and_fraction_rules() {
+    let source = r"a {\color{red}\frac{b}{\textcolor{blue}{c}}} d";
+    let mut options = SvgOptions::default();
+    options.theme.colors.fg = "#234567".into();
+    for block in [
+        Block::MathBlock(source.into()),
+        Block::Paragraph(vec![Inline::Math(source.into())]),
+    ] {
+        let document = Document {
+            blocks: vec![block],
+        };
+        let (bytes, _, warnings) = render_svg_with_diagnostics(&document, &options);
+        assert!(warnings.is_empty());
+        let svg = String::from_utf8(bytes).unwrap();
+        let fills: Vec<_> = svg
+            .lines()
+            .filter(|line| line.starts_with("<use href=\"#g"))
+            .map(|line| {
+                line.split_once("fill=\"")
+                    .unwrap()
+                    .1
+                    .split('"')
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            fills,
+            ["#234567", "rgb(100%,0%,0%)", "rgb(0%,0%,100%)", "#234567"]
+        );
+        let rules: Vec<_> = svg
+            .lines()
+            .filter(|line| line.starts_with("<rect ") && line.contains("fill=\"rgb("))
+            .collect();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].contains("fill=\"rgb(100%,0%,0%)\""));
+        assert_eq!(
+            svg.as_bytes(),
+            render_svg_with_diagnostics(&document, &options).0
+        );
+    }
+}
+
+#[test]
+fn constructed_math_paths_and_color_mixes_reach_svg_without_palette_quantization() {
+    let source = r"\color[rgb]{0.12345,0.5,0.75}\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}";
+    let document = Document {
+        blocks: vec![Block::MathBlock(source.into())],
+    };
+    let (bytes, _, warnings) = render_svg_with_diagnostics(&document, &SvgOptions::default());
+    assert!(warnings.is_empty());
+    let svg = String::from_utf8(bytes).unwrap();
+    let paths: Vec<_> = svg
+        .lines()
+        .filter(|line| line.starts_with("<path d="))
+        .collect();
+    assert!(!paths.is_empty(), "exercise a constructed radical");
+    for line in svg.lines().filter(|line| {
+        line.starts_with("<use href=\"#g")
+            || line.starts_with("<path d=")
+            || (line.starts_with("<rect ") && line.contains("fill=\"rgb("))
+    }) {
+        assert!(line.contains("fill=\"rgb(12.345%,50%,75%)\""), "{line}");
+    }
+    let mixed = Document {
+        blocks: vec![Block::MathBlock(r"\color{red!30!blue} x".into())],
+    };
+    let svg = String::from_utf8(render_svg(&mixed, &SvgOptions::default())).unwrap();
+    assert!(svg.contains("fill=\"rgb(30%,0%,70%)\""));
+}
+
+#[test]
+fn colored_overlays_emit_svg_elements_in_tex_order() {
+    use franken_markdown::math::{Color, Placed};
+
+    let engine = Engine::bundled().unwrap();
+    let red = Color {
+        r: 1.0,
+        g: 0.0,
+        b: 0.0,
+    };
+    let blue = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 1.0,
+    };
+    for source in [
+        r"{\color{red}\frac{a}{b}}\!\!\!{\color{blue}X}",
+        r"{\color{red}\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}}\!\!\!{\color{blue}X}",
+    ] {
+        for inline in [false, true] {
+            let layout = engine
+                .typeset(source, if inline { Style::Text } else { Style::Display })
+                .unwrap();
+            let expected: Vec<_> = layout
+                .order
+                .iter()
+                .filter_map(|placed| {
+                    let (kind, color) = match *placed {
+                        Placed::Glyph(index) => {
+                            let glyph = &layout.glyphs[index];
+                            if glyph.ch.is_whitespace() {
+                                return None;
+                            }
+                            ("glyph", glyph.color.unwrap())
+                        }
+                        Placed::Rule(index) => ("rule", layout.rules[index].color.unwrap()),
+                        Placed::Path(index) => ("path", layout.paths[index].color.unwrap()),
+                    };
+                    let fill = if color == red {
+                        "rgb(100%,0%,0%)"
+                    } else {
+                        assert_eq!(color, blue);
+                        "rgb(0%,0%,100%)"
+                    };
+                    Some((kind, fill))
+                })
+                .collect();
+            let document = Document {
+                blocks: vec![if inline {
+                    Block::Paragraph(vec![Inline::Math(source.into())])
+                } else {
+                    Block::MathBlock(source.into())
+                }],
+            };
+            let (bytes, _, warnings) =
+                render_svg_with_diagnostics(&document, &SvgOptions::default());
+            assert!(warnings.is_empty());
+            let svg = String::from_utf8(bytes).unwrap();
+            let actual: Vec<_> = svg
+                .lines()
+                .filter_map(|line| {
+                    let kind = if line.starts_with("<use href=\"#g") {
+                        "glyph"
+                    } else if line.starts_with("<rect ") {
+                        "rule"
+                    } else if line.starts_with("<path d=") {
+                        "path"
+                    } else {
+                        return None;
+                    };
+                    let fill = line.split_once("fill=\"")?.1.split('"').next()?;
+                    fill.starts_with("rgb(").then_some((kind, fill))
+                })
+                .collect();
+            assert_eq!(actual, expected, "{source}, inline={inline}");
+        }
+    }
+}
+
+#[test]
+fn color_does_not_change_math_geometry_or_escape_quote_ink() {
+    let mut plain = poster();
+    let mut colored = poster();
+    plain.math_block(r"a {\frac{b}{c}} d", 72.0, 540.0, true);
+    colored.math_block(r"a {\color{red}\frac{b}{c}} d", 72.0, 540.0, true);
+    assert!(plain.warnings.is_empty());
+    assert!(colored.warnings.is_empty());
+    let glyph_inks: Vec<_> = colored
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Glyph { ink, .. } => Some(*ink),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(glyph_inks.first(), Some(&Ink::QuoteFg));
+    assert_eq!(glyph_inks.last(), Some(&Ink::QuoteFg));
+    let mut recolored = 0;
+    for op in &mut colored.ops {
+        let ink = match op {
+            Op::Glyph { ink, .. } | Op::Path { ink, .. } => ink,
+            Op::Rect { fill, .. } => fill,
+            _ => continue,
+        };
+        if matches!(ink, Ink::Rgb(_)) {
+            *ink = Ink::QuoteFg;
+            recolored += 1;
+        }
+    }
+    assert_eq!(recolored, 3, "two fraction glyphs and its rule");
+    // Explicit colour enables TeX's paint order, but every primitive keeps
+    // exactly the same geometry as the formula with inherited colour.
+    assert_eq!(plain.ops.len(), colored.ops.len());
+    for op in &plain.ops {
+        let index = colored
+            .ops
+            .iter()
+            .position(|candidate| candidate == op)
+            .unwrap();
+        colored.ops.remove(index);
+    }
+    assert!(colored.ops.is_empty());
+    assert_eq!(plain.y, colored.y);
+}

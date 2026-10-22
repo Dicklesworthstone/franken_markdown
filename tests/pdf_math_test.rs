@@ -68,6 +68,196 @@ fn equation(source: &str) -> Document {
     }
 }
 
+/// Interpret the paint-state operators in a formula's actual PDF path stream.
+/// This checks the emitted colour at every fill, including graphics-state
+/// restoration, instead of merely looking for a colour somewhere in the file.
+fn formula_paints(content: &str, inherited: [f32; 3]) -> (Vec<[f32; 3]>, [f32; 3]) {
+    let drawing = content
+        .split_once("/Formula <</MCID ")
+        .unwrap()
+        .1
+        .split_once("BDC\n")
+        .unwrap()
+        .1
+        .split_once("/Span <</ActualText ")
+        .unwrap()
+        .0;
+    let mut color = inherited;
+    let mut saved = Vec::new();
+    let mut numbers = Vec::new();
+    let mut fills = Vec::new();
+    for token in drawing.split_whitespace() {
+        if let Ok(number) = token.parse::<f32>() {
+            numbers.push(number);
+            continue;
+        }
+        match token {
+            "q" => saved.push(color),
+            "Q" => color = saved.pop().expect("balanced formula graphics state"),
+            "rg" => {
+                assert_eq!(numbers.len(), 3);
+                color.copy_from_slice(&numbers);
+            }
+            "f" | "f*" => fills.push(color),
+            _ => {}
+        }
+        numbers.clear();
+    }
+    assert!(saved.is_empty(), "formula must restore every saved state");
+    (fills, color)
+}
+
+#[test]
+fn scoped_colors_survive_display_and_inline_pdf_painting() {
+    let mut options = PdfOptions::default();
+    options.theme.colors.fg = "#234567".into();
+    let inherited = [0.137, 0.271, 0.404];
+    let source = r"a {\color{red} b {\color{blue}c} d} e";
+    let expected = vec![
+        inherited,
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        inherited,
+    ];
+    for document in [
+        equation(source),
+        parse_markdown(&format!("Before ${source}$ after.")),
+    ] {
+        assert!(render_warnings(&document, &options).is_empty());
+        let pdf = render_pdf_document(&document, &options).unwrap();
+        let (fills, restored) = formula_paints(&page_content(&pdf), inherited);
+        assert_eq!(fills, expected);
+        assert_eq!(restored, inherited, "colour must not leak into prose");
+        assert_eq!(pdf, render_pdf_document(&document, &options).unwrap());
+    }
+    let plain = render_pdf_document(&equation("a {b {c} d} e"), &options).unwrap();
+    let colored = render_pdf_document(&equation(source), &options).unwrap();
+    assert_eq!(bounds(&plain), bounds(&colored), "colour never moves ink");
+}
+
+#[test]
+fn colored_inline_math_preserves_link_ink_and_annotations() {
+    let mut options = PdfOptions::default();
+    options.theme.colors.accent = "#234567".into();
+    let inherited = [0.137, 0.271, 0.404];
+    let document = parse_markdown(r"[Before $a {\color{red}b} c$ after](https://example.com/math)");
+    let pdf = render_pdf_document(&document, &options).unwrap();
+    let (fills, restored) = formula_paints(&page_content(&pdf), inherited);
+    assert_eq!(fills, vec![inherited, [1.0, 0.0, 0.0], inherited]);
+    assert_eq!(restored, inherited);
+    assert!(String::from_utf8_lossy(&pdf).contains("/URI (https://example.com/math)"));
+}
+
+#[test]
+fn fraction_rules_and_constructed_radicals_keep_explicit_colors() {
+    let options = PdfOptions::default();
+    let inherited = [0.0, 0.0, 0.0];
+    for inline in [false, true] {
+        for (source, color, count) in [
+            (r"\color{red!30!blue}\frac{a}{b}", [0.3, 0.0, 0.7], 3),
+            (r"\color[rgb]{0.2,0.4,0.6}\frac{a}{b}", [0.2, 0.4, 0.6], 3),
+        ] {
+            let document = if inline {
+                parse_markdown(&format!("${source}$"))
+            } else {
+                equation(source)
+            };
+            let pdf = render_pdf_document(&document, &options).unwrap();
+            let (fills, _) = formula_paints(&page_content(&pdf), inherited);
+            assert_eq!(fills, vec![color; count], "{source}, inline={inline}");
+        }
+    }
+    let source = r"\color{red}\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}";
+    let layout = franken_markdown::math::Engine::bundled()
+        .unwrap()
+        .typeset(source, franken_markdown::math::Style::Display)
+        .unwrap();
+    assert!(!layout.paths.is_empty(), "exercise a constructed radical");
+    let pdf = render_pdf_document(&equation(source), &options).unwrap();
+    let (fills, _) = formula_paints(&page_content(&pdf), inherited);
+    assert_eq!(
+        fills,
+        vec![[1.0, 0.0, 0.0]; layout.glyphs.len() + layout.rules.len() + layout.paths.len()]
+    );
+}
+
+#[test]
+fn colored_overlays_follow_tex_primitive_order() {
+    use franken_markdown::math::{Engine, Placed, Style};
+
+    let engine = Engine::bundled().unwrap();
+    let options = PdfOptions::default();
+    for source in [
+        r"{\color{red}\frac{a}{b}}\!\!\!{\color{blue}X}",
+        r"{\color{red}\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}}\!\!\!{\color{blue}X}",
+    ] {
+        for inline in [false, true] {
+            let layout = engine
+                .typeset(source, if inline { Style::Text } else { Style::Display })
+                .unwrap();
+            assert!(!layout.rules.is_empty());
+            if !inline && source.contains("\\sqrt") {
+                assert!(!layout.paths.is_empty(), "exercise a constructed radical");
+            }
+            let expected: Vec<_> = layout
+                .order
+                .iter()
+                .map(|placed| {
+                    let color = match *placed {
+                        Placed::Glyph(index) => layout.glyphs[index].color,
+                        Placed::Rule(index) => layout.rules[index].color,
+                        Placed::Path(index) => layout.paths[index].color,
+                    }
+                    .unwrap();
+                    [color.r as f32, color.g as f32, color.b as f32]
+                })
+                .collect();
+            assert_eq!(expected.last(), Some(&[0.0, 0.0, 1.0]));
+            let document = if inline {
+                Document {
+                    blocks: vec![Block::Paragraph(vec![Inline::Math(source.into())])],
+                }
+            } else {
+                equation(source)
+            };
+            let pdf = render_pdf_document(&document, &options).unwrap();
+            let (fills, _) = formula_paints(&page_content(&pdf), [0.0, 0.0, 0.0]);
+            assert_eq!(fills, expected, "{source}, inline={inline}");
+        }
+    }
+}
+
+#[test]
+fn colored_math_uses_the_same_pdf_path_in_browser_and_archival_exports() {
+    let source = r"Before $a {\color{red}b} c$ after.
+
+$\color[RGB]{0,128,255}\frac{d}{e}$";
+    let document = parse_markdown(source);
+    let options = PdfOptions::default();
+    let pdf = render_pdf_document(&document, &options).unwrap();
+    assert_eq!(
+        pdf,
+        franken_markdown::wasm::render_pdf(
+            source,
+            &franken_markdown::wasm::WasmRenderOptions::default()
+        )
+        .unwrap()
+        .bytes
+    );
+    assert_eq!(
+        pdf,
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()).unwrap()
+    );
+    let archived = render_pdf_document_pdfa(&document, &options, PdfASettings::a2b()).unwrap();
+    for bytes in [&pdf, &archived] {
+        let content = page_content(bytes);
+        assert!(content.contains("1 0 0 rg") || content.contains("1.000 0.000 0.000 rg"));
+        assert!(content.contains("0.000 0.502 1.000 rg"));
+        assert!(String::from_utf8_lossy(bytes).contains("/S /Formula "));
+    }
+}
+
 #[test]
 fn fractions_roots_scripts_operators_and_matrices_draw_real_curves() {
     let options = PdfOptions::default();

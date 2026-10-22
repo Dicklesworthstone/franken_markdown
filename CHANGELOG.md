@@ -26,8 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     plus the resolved `Color`, or the error that layout reports for a colour
     xcolor does not define. MathML's `mathcolor` keeps a bare colour verbatim,
     so HTML still hands CSS names and `#hex` to the browser, and writes
-    `#rrggbb` for an explicit `[model]`. The PDF math renderer still paints in
-    the theme colour.
+    `#rrggbb` for an explicit `[model]`. PDF and SVG now preserve each glyph,
+    fraction rule and constructed path's resolved colour. Uncoloured parts
+    keep the theme or surrounding link/quote ink, and scoped declarations
+    cannot recolour following prose. Geometry and uncoloured output stay
+    unchanged.
 
 ### Changed
 

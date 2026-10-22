@@ -278,8 +278,8 @@ fn esc_attr(s: &str, out: &mut String) {
 // Palette and paint ops.
 // ---------------------------------------------------------------------------
 
-/// Palette slots; resolved against [`ThemeColors`] at emission time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Theme palette slots and explicit math colours, resolved at emission time.
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Ink {
     Fg,
     FgMuted,
@@ -290,12 +290,13 @@ enum Ink {
     QuoteFg,
     QuoteBar,
     Accent,
+    Rgb(franken_markdown::math::Color),
 }
 
 impl Ink {
     #[inline(always)]
-    fn hex(self, colors: &ThemeColors) -> &str {
-        match self {
+    fn write(self, colors: &ThemeColors, out: &mut String) {
+        let color = match self {
             Self::Fg => &colors.fg,
             Self::FgMuted => &colors.fg_muted,
             Self::BgSubtle => &colors.bg_subtle,
@@ -305,7 +306,20 @@ impl Ink {
             Self::QuoteFg => &colors.quote_fg,
             Self::QuoteBar => &colors.quote_bar,
             Self::Accent => &colors.accent,
-        }
+            Self::Rgb(color) => {
+                // Percentages retain numeric-model and mix precision without
+                // quantizing the engine's channels to an 8-bit palette.
+                out.push_str("rgb(");
+                push_trim4(out, color.r * 100.0);
+                out.push_str("%,");
+                push_trim4(out, color.g * 100.0);
+                out.push_str("%,");
+                push_trim4(out, color.b * 100.0);
+                out.push_str("%)");
+                return;
+            }
+        };
+        esc_attr(color, out);
     }
 }
 
@@ -352,7 +366,7 @@ enum Op {
 // ---------------------------------------------------------------------------
 
 /// Style carried by a flattened run of text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct RStyle {
     bold: bool,
     italic: bool,
@@ -1266,7 +1280,7 @@ impl Poster {
                     out.push_str("<path d=\"");
                     out.push_str(data);
                     out.push_str("\" fill=\"");
-                    esc_attr(ink.hex(&self.colors), &mut out);
+                    ink.write(&self.colors, &mut out);
                     out.push_str("\"/>\n");
                 }
                 Op::Rect {
@@ -1286,11 +1300,11 @@ impl Poster {
                     out.push_str("\" height=\"");
                     push_q2(&mut out, *h);
                     out.push_str("\" fill=\"");
-                    esc_attr(fill.hex(&self.colors), &mut out);
+                    fill.write(&self.colors, &mut out);
                     out.push('"');
                     if let Some(stroke) = stroke {
                         out.push_str(" stroke=\"");
-                        esc_attr(stroke.hex(&self.colors), &mut out);
+                        stroke.write(&self.colors, &mut out);
                         out.push_str("\" stroke-width=\"0.5\"");
                     }
                     out.push_str("/>\n");
@@ -1312,7 +1326,7 @@ impl Poster {
                     out.push_str("\" y2=\"");
                     push_q2(&mut out, *y2);
                     out.push_str("\" stroke=\"");
-                    esc_attr(ink.hex(&self.colors), &mut out);
+                    ink.write(&self.colors, &mut out);
                     out.push_str("\" stroke-width=\"");
                     push_q2(&mut out, *w);
                     out.push_str("\"/>\n");
@@ -1338,7 +1352,7 @@ impl Poster {
                     out.push_str(") scale(");
                     push_trim4(&mut out, *size / DEF_EM_PT);
                     out.push_str(")\" fill=\"");
-                    esc_attr(ink.hex(&self.colors), &mut out);
+                    ink.write(&self.colors, &mut out);
                     out.push_str("\"/>\n");
                     drawn += 1;
                 }

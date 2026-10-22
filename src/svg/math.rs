@@ -2,7 +2,7 @@
 //! No MathML/foreignObject, browser typesetter, or runtime font lookup.
 
 use super::{Ink, Op, Poster, RStyle, SLOT_COUNT, SvgWarning, Word, push_q2};
-use franken_markdown::math::{self, FaceId, PathSeg, Style};
+use franken_markdown::math::{self, FaceId, PathSeg, Placed, Style};
 use std::rc::Rc;
 
 const MAX_FORMULA_BYTES: usize = 64 * 1024;
@@ -176,50 +176,78 @@ impl Poster {
         let formula = &run.formula;
         let size = run.size;
         let origin = x - formula.left * size;
-        for glyph in &formula.layout.glyphs {
-            if !glyph.ch.is_whitespace() {
-                self.ops.push(Op::Glyph {
-                    slot: SLOT_COUNT + glyph.face.0,
-                    gid: glyph.gid,
-                    x: origin + glyph.x * size,
-                    y: baseline - glyph.y * size,
-                    size: glyph.size * size,
-                    ink,
+        let layout = &formula.layout;
+        let explicitly_colored = layout.glyphs.iter().any(|glyph| glyph.color.is_some())
+            || layout.rules.iter().any(|rule| rule.color.is_some())
+            || layout.paths.iter().any(|path| path.color.is_some());
+        let mut draw = |placed: Placed| match placed {
+            Placed::Glyph(index) => {
+                let glyph = &layout.glyphs[index];
+                if !glyph.ch.is_whitespace() {
+                    self.ops.push(Op::Glyph {
+                        slot: SLOT_COUNT + glyph.face.0,
+                        gid: glyph.gid,
+                        x: origin + glyph.x * size,
+                        y: baseline - glyph.y * size,
+                        size: glyph.size * size,
+                        ink: glyph.color.map_or(ink, Ink::Rgb),
+                    });
+                }
+            }
+            Placed::Rule(index) => {
+                let rule = &layout.rules[index];
+                self.ops.push(Op::Rect {
+                    x: origin + rule.x * size,
+                    y: baseline - (rule.y + rule.height) * size,
+                    w: rule.width * size,
+                    h: rule.height * size,
+                    fill: rule.color.map_or(ink, Ink::Rgb),
+                    stroke: None,
                 });
             }
-        }
-        for rule in &formula.layout.rules {
-            self.ops.push(Op::Rect {
-                x: origin + rule.x * size,
-                y: baseline - (rule.y + rule.height) * size,
-                w: rule.width * size,
-                h: rule.height * size,
-                fill: ink,
-                stroke: None,
-            });
-        }
-        for path in &formula.layout.paths {
-            let mut data = String::new();
-            for contour in &path.contours {
-                data.push('M');
-                point(&mut data, contour.start, origin, baseline, size);
-                for segment in &contour.segments {
-                    match segment {
-                        PathSeg::Line { to } => {
-                            data.push('L');
-                            point(&mut data, *to, origin, baseline, size);
-                        }
-                        PathSeg::Quad { ctrl, to } => {
-                            data.push('Q');
-                            point(&mut data, *ctrl, origin, baseline, size);
-                            data.push(' ');
-                            point(&mut data, *to, origin, baseline, size);
+            Placed::Path(index) => {
+                let path = &layout.paths[index];
+                let mut data = String::new();
+                for contour in &path.contours {
+                    data.push('M');
+                    point(&mut data, contour.start, origin, baseline, size);
+                    for segment in &contour.segments {
+                        match segment {
+                            PathSeg::Line { to } => {
+                                data.push('L');
+                                point(&mut data, *to, origin, baseline, size);
+                            }
+                            PathSeg::Quad { ctrl, to } => {
+                                data.push('Q');
+                                point(&mut data, *ctrl, origin, baseline, size);
+                                data.push(' ');
+                                point(&mut data, *to, origin, baseline, size);
+                            }
                         }
                     }
+                    data.push('Z');
                 }
-                data.push('Z');
+                self.ops.push(Op::Path {
+                    data,
+                    ink: path.color.map_or(ink, Ink::Rgb),
+                });
             }
-            self.ops.push(Op::Path { data, ink });
+        };
+        if explicitly_colored {
+            // TeX's order preserves overprinting between differently coloured
+            // glyphs, fraction bars and constructed radicals.
+            for placed in &layout.order {
+                draw(*placed);
+            }
+        } else {
+            // Preserve the existing bytes for formulas with one inherited ink.
+            for placed in (0..layout.glyphs.len())
+                .map(Placed::Glyph)
+                .chain((0..layout.rules.len()).map(Placed::Rule))
+                .chain((0..layout.paths.len()).map(Placed::Path))
+            {
+                draw(placed);
+            }
         }
     }
 

@@ -24,6 +24,14 @@ foreground color, center within their current column, and scale down when
 necessary to fit the page. Their measured height participates in pagination,
 including equations nested in blockquotes, lists and footnotes.
 
+Explicit `\color` and `\textcolor` declarations override that inherited ink
+within their TeX scope, for glyphs, fraction rules and constructed paths alike.
+The shared engine supports xcolor's base names, mixes such as `red!30!blue`,
+and the `[rgb]`, `[RGB]`, `[HTML]` and `[gray]` models. The same resolved colours
+appear in PDF and SVG output. For example, `\textcolor{red}{\frac{a}{b}}`
+colours both letters and their fraction bar without changing the formula's
+geometry or the ink of surrounding content.
+
 ## Text and accessibility
 
 The visible equation uses outlines from the math engine's bundled fonts.
@@ -47,8 +55,9 @@ goes through the same engine, in text style at the line's font size. Each
 formula is one unbreakable box in the paragraph's line breaking. It never
 splits, and the words around it do not hyphenate against it. Its advance is the
 formula's layout width. Its outlines are filled on the text baseline in the
-run's colour, so a formula inside a link keeps the link colour, underline and
-annotation.
+run's colour unless explicitly overridden by a scoped colour declaration.
+A formula inside a link keeps the link colour for its uncoloured parts, together
+with the link's underline and annotation.
 
 A formula taller than the text grows its line. Ink above 1.0 em or below 0.3 em
 of the line's size adds that much leading, and the baseline rises by the extra
@@ -66,7 +75,8 @@ overflows its line whole, with a `math_overflow` warning.
 ## Verification
 
 `cargo test --test pdf_math_test` exercises display formula geometry, native/browser
-adapter byte parity, deterministic emission, theme colors, fallbacks, nested
+adapter byte parity, deterministic emission, inherited and scoped explicit
+colors (including graphics-state restoration), fallbacks, nested
 containers, narrow pages, and Unicode coverage. When installed, independent
 `pdftotext` checks confirm TeX and Unicode extraction. The TOC layout has
 separate measured-column tests in `src/pdf/toc_tests.rs`; long titles wrap

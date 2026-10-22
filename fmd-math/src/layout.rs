@@ -2484,10 +2484,11 @@ impl Engine {
     /// alignment of the base, in display style and centered, and a brace
     /// fill 3 pt from it, with 3 pt more past the fill. The fill is four
     /// cmex pieces, 0.45 em wide and 0.12 em high, joined by rules, so it
-    /// is never narrower than 1.8 em. The pieces' ink curls 0.214 em to
-    /// either side of their row, and the drawn brace is centered where
-    /// that ink is. cmex has one size, so neither the fill nor the kerns
-    /// shrink in script styles.
+    /// is never narrower than 1.8 em ([`Self::cmex_brace_fill`]). Without
+    /// cmex10 in the roster a drawn band stands in, centered where the
+    /// pieces' ink would be (it curls 0.214 em to either side of their
+    /// row). cmex has one size, so neither the fill nor the kerns shrink
+    /// in script styles.
     fn brace(
         &self,
         kind: AccentKind,
@@ -2502,6 +2503,48 @@ impl Engine {
             ..ctx
         };
         let inner = self.formula_box(base, display)?;
+        if let Some(fill) = self.cmex_brace_fill(under, inner.width, em, span) {
+            // The fill row's baseline: 3 pt below the base's depth (less
+            // the row), or 3 pt above its height; 3 pt more past the row.
+            let kern = 0.3 * em;
+            let (fill_dy, height, depth) = if under {
+                let dy = -(inner.depth + kern + fill.height);
+                (dy, inner.height, inner.depth + 2.0 * kern + fill.height)
+            } else {
+                let dy = inner.height + kern;
+                (dy, inner.height + 2.0 * kern + fill.height, inner.depth)
+            };
+            let width = fill.width;
+            let base = Positioned {
+                dx: (width - inner.width) / 2.0,
+                dy: 0.0,
+                node: MNode::Box(inner),
+            };
+            let fill = Positioned {
+                dx: 0.0,
+                dy: fill_dy,
+                node: MNode::Box(fill),
+            };
+            // TeX's emission order is top to bottom.
+            let children = if under {
+                vec![base, fill]
+            } else {
+                vec![fill, base]
+            };
+            return Ok(Laid {
+                boxx: MBox {
+                    kind: BoxKind::Horizontal,
+                    width,
+                    height,
+                    depth,
+                    children,
+                },
+                italic: 0.0,
+                char_glyph: None,
+            });
+        }
+        // No cmex10 in the roster: the drawn band, centred where the
+        // pieces' ink would be.
         let width = inner.width.max(4.0 * 0.45 * em);
         let stretch_kind = if under {
             crate::drawn::Stretch::UnderBrace
@@ -2551,6 +2594,74 @@ impl Engine {
             },
             italic: 0.0,
             char_glyph: None,
+        })
+    }
+
+    /// LaTeX's `\downbracefill` (under `\underbrace`) or `\upbracefill`
+    /// (over `\overbrace`), at least `width` wide: cmex10's four brace
+    /// pieces in two pairs, each pair joined by a `\leaders\vrule` as high
+    /// as `\braceld` (the fill row), the two rules sharing whatever width
+    /// the pieces leave. The order is TeX's `\showbox`:
+    /// - `\underbrace`: 0x7C, rule, 0x7B, 0x7A, rule, 0x7D;
+    /// - `\overbrace`: 0x7A, rule, 0x7D, 0x7C, rule, 0x7B.
+    ///
+    /// cmex has one size, so `em` is the declared size. The pieces' ink
+    /// curls past the row. `None` when the roster lacks cmex10's pieces.
+    fn cmex_brace_fill(&self, under: bool, width: f64, em: f64, span: Span) -> Option<MBox> {
+        let codes: [u8; 4] = if under {
+            [0x7C, 0x7B, 0x7A, 0x7D]
+        } else {
+            [0x7A, 0x7D, 0x7C, 0x7B]
+        };
+        let mut gids = [0_u16; 4];
+        for (gid, code) in gids.iter_mut().zip(codes) {
+            *gid = self.faces.tex_glyph(FACE_MATH_EXTENSION, code)?;
+        }
+        let metrics = gids.map(|gid| self.char_metrics(FACE_MATH_EXTENSION, gid, false));
+        // \ht of \hbox{$\braceld$}: braceld is 0x7A.
+        let braceld = self.faces.tex_glyph(FACE_MATH_EXTENSION, 0x7A)?;
+        let row = self
+            .char_metrics(FACE_MATH_EXTENSION, braceld, false)
+            .height
+            * em;
+        let pieces = metrics.iter().map(|m| m.advance).sum::<f64>() * em;
+        let rule = ((width - pieces) / 2.0).max(0.0);
+        let ch = if under { '⏟' } else { '⏞' };
+        let mut x = 0.0;
+        let mut children = Vec::with_capacity(6);
+        for (i, (gid, m)) in gids.into_iter().zip(metrics).enumerate() {
+            children.push(Positioned {
+                dx: x,
+                dy: 0.0,
+                node: MNode::Glyph {
+                    face: FACE_MATH_EXTENSION,
+                    gid,
+                    ch,
+                    size: em,
+                    span,
+                },
+            });
+            x += m.advance * em;
+            // A fill of no width ships nothing.
+            if i % 2 == 0 && rule > 0.0 {
+                children.push(Positioned {
+                    dx: x,
+                    dy: 0.0,
+                    node: MNode::Rule {
+                        width: rule,
+                        height: row,
+                        span,
+                    },
+                });
+                x += rule;
+            }
+        }
+        Some(MBox {
+            kind: BoxKind::Horizontal,
+            width: pieces + 2.0 * rule,
+            height: row,
+            depth: 0.0,
+            children,
         })
     }
 

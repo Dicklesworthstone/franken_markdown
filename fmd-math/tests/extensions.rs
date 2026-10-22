@@ -131,11 +131,30 @@ fn drawn_delimiters_keep_their_source_spans() {
 #[test]
 fn stretchy_constructions_span_their_bases() {
     let e = engine();
+    // The braces are TeX's fill: cmex's four pieces and two rules, ending
+    // exactly at the layout's width (franken_manim fm-u5sb).
+    for src in [r"\overbrace{a+b+c}", r"\underbrace{a+b+c}"] {
+        let l = e
+            .typeset(src, Style::Display)
+            .unwrap_or_else(|err| panic!("{src}: {err}"));
+        assert!(l.paths.is_empty(), "{src}: no drawn band");
+        let pieces: Vec<_> = l
+            .glyphs
+            .iter()
+            .filter(|g| g.face == fmd_math::faces::FACE_MATH_EXTENSION)
+            .collect();
+        assert_eq!((pieces.len(), l.rules.len()), (4, 2), "{src}");
+        let piece = fmd_math::tfm::CMEX10.char(0x7A).expect("braceld").width;
+        let end = pieces.iter().map(|g| g.x).fold(0.0_f64, f64::max) + piece;
+        assert!(
+            (end - l.width).abs() < 1e-9,
+            "{src}: fill ends at {end} of {}",
+            l.width
+        );
+    }
     for src in [
         r"\widehat{x+y}",
         r"\widetilde{abc}",
-        r"\overbrace{a+b+c}",
-        r"\underbrace{a+b+c}",
         r"\overrightarrow{AB}",
         r"\overleftarrow{AB}",
     ] {

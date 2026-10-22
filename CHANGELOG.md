@@ -121,6 +121,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   glyph, whose brackets carry 1.48 times cmr10's ink. Tall delimiters were
   already cmex's own glyphs. Checked against TeX's `\showbox`
   (franken_manim fm-u5sb).
+- `fmd-math` fills `\overbrace` and `\underbrace` the way LaTeX's
+  `\upbracefill` and `\downbracefill` do: cmex's four brace pieces in two
+  pairs, each pair joined by a rule as high as the pieces' row, instead of a
+  drawn band. The band was lighter than cmex's ink and curled differently.
+  The boxes, rules and emission order match TeX's `\showbox`. The drawn band
+  remains only for rosters without cmex10 (franken_manim fm-u5sb).
 
 ## [0.6.0] - 2026-10-14
 

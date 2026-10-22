@@ -220,8 +220,11 @@ fn primitives_follow_tex_emission_order() {
     assert_eq!(order(r"\sum_{n=1}^{N} n").0, "N∑n=1n");
     assert_eq!(order(r"\overline{ab}").0, "Rab");
     assert_eq!(order(r"\underline{ab}").0, "abR");
-    assert_eq!(order(r"\overbrace{ab}").0, "Pab");
-    assert_eq!(order(r"\underbrace{ab}").0, "abP");
+    // A brace is cmex's four pieces, with a rule inside each pair once the
+    // base is wider than the pieces (TeX's \showbox order).
+    assert_eq!(order(r"\overbrace{ab}").0, "⏞⏞⏞⏞ab");
+    assert_eq!(order(r"\underbrace{ab}").0, "ab⏟⏟⏟⏟");
+    assert_eq!(order(r"\underbrace{abcdefg}").0, "abcdefg⏟R⏟⏟R⏟");
     // Degree, sign, bar, radicand; the sign is a glyph or a drawn path.
     let (root, _) = order(r"\sqrt[3]{x}");
     let root: Vec<char> = root.chars().collect();

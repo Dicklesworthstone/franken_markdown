@@ -471,6 +471,64 @@ fn left_right_delimiters_cover_the_rule_19_target() {
     assert!(small.paths.is_empty());
 }
 
+/// franken_manim fm-u5sb: `\underbrace` and `\overbrace` fill with cmex's
+/// four brace pieces and two rules, as LaTeX's `\downbracefill` and
+/// `\upbracefill` do, never a drawn band. TeX's `\showbox` (TeX Live 2025,
+/// article + amsmath):
+/// - `\underbrace{a+b}`: 21.79968 × (6.94444 + 8.0333) pt. Its rules are
+///   1.89975 pt wide (glue set) and 1.19997 pt high, their bottoms 3 pt
+///   below the base's 0.83333 pt depth, less the row.
+/// - `\overbrace{1+2+\cdots+n}`: 64.3354 × (13.64441 + 0.83333) pt.
+/// - `\underbrace{x}`: 18.00018 × (4.30554 + 7.19997) pt, the four pieces
+///   alone (the fills have no width), and the same in script style.
+#[test]
+fn braces_fill_with_cmex_pieces_and_rules() {
+    use fmd_math::faces::FACE_MATH_EXTENSION;
+    let e = engine();
+    let close = |ours: f64, tex_pt: f64| (ours - tex_pt / 10.0).abs() < 1e-5;
+    // TeX truncates mu glue (a medium space is 2.22217 pt, not 5/18 of
+    // the quad), so widths across a + get 1e-4 em; heights and depths do not
+    // depend on it.
+    let close_mu = |ours: f64, tex_pt: f64| (ours - tex_pt / 10.0).abs() < 1e-4;
+    let under = e.typeset(r"\underbrace{a+b}", Style::Text).unwrap();
+    assert!(
+        close_mu(under.width, 21.79968)
+            && close(under.height, 6.94444)
+            && close(under.depth, 8.0333),
+        "{under:?}"
+    );
+    let pieces = |l: &fmd_math::Layout| {
+        l.glyphs
+            .iter()
+            .filter(|g| g.face == FACE_MATH_EXTENSION)
+            .count()
+    };
+    assert_eq!(pieces(&under), 4, "{under:?}");
+    assert!(under.paths.is_empty(), "no drawn band: {under:?}");
+    assert_eq!(under.rules.len(), 2, "{under:?}");
+    for rule in &under.rules {
+        assert!(
+            close_mu(rule.width, 1.89975) && close(rule.height, 1.19997),
+            "{rule:?}"
+        );
+        assert!(close(rule.y, -(0.83333 + 3.0 + 1.19997)), "{rule:?}");
+    }
+    let over = e.typeset(r"\overbrace{1+2+\cdots+n}", Style::Text).unwrap();
+    assert!(
+        close_mu(over.width, 64.3354) && close(over.height, 13.64441) && close(over.depth, 0.83333),
+        "{over:?}"
+    );
+    assert_eq!((pieces(&over), over.rules.len()), (4, 2), "{over:?}");
+    for tex in [r"\underbrace{x}", r"\scriptstyle\underbrace{x}"] {
+        let l = e.typeset(tex, Style::Text).unwrap();
+        assert!(
+            close(l.width, 18.00018) && close(l.height, 4.30554) && close(l.depth, 7.19997),
+            "{tex}: {l:?}"
+        );
+        assert_eq!((pieces(&l), l.rules.len()), (4, 0), "{tex}: {l:?}");
+    }
+}
+
 /// franken_manim fm-u5sb: a `\left`/`\right` delimiter that needs nothing
 /// larger is TeX's small variant, from math family 0 for parentheses and
 /// brackets: cmr10 at text size and cmr7 in a script, never CM Unicode,
@@ -849,7 +907,15 @@ fn formerly_pending_constructs_now_lay_out() {
         .unwrap();
     assert_eq!(m.glyphs.len(), 4);
     let b = e.typeset(r"\overbrace{x+y}", Style::Display).unwrap();
-    assert_eq!(b.paths.len(), 1, "the drawn brace band");
+    assert!(b.paths.is_empty(), "cmex's brace pieces, not a drawn band");
+    assert_eq!(
+        b.glyphs
+            .iter()
+            .filter(|g| g.face == fmd_math::faces::FACE_MATH_EXTENSION)
+            .count(),
+        4,
+        "the four brace pieces"
+    );
 
     // `center` graduated from the tier-2 vocabulary: inside mathematics it
     // is now the *precise* text-mode-only refusal rather than a pending
@@ -1377,9 +1443,12 @@ fn braces_are_latex_brace_fills() {
     // LaTeX's \overbrace and \underbrace: the base in display style,
     // centered on a fill of four 0.45 em cmex pieces (never narrower than
     // 1.8 em), 3 pt from it, with 3 pt more past the fill's 0.12 em row.
-    // Measured in LaTeX: \underbrace{\frac{1}{6^2}} is 1.8 em wide and
-    // 0.72 em deeper than the fraction.
+    // Measured in LaTeX: \underbrace{x} is 18.00018 pt wide and 7.19997 pt
+    // deeper than x. Those are four pieces' TFM widths, and 6 pt plus
+    // \braceld's TFM height.
     let e = engine();
+    let piece = fmd_math::tfm::CMEX10.char(0x7A).expect("braceld");
+    let (fill_width, fill_extra) = (4.0 * piece.width, 0.6 + piece.height);
     let x = |layout: &Layout, ch: char| {
         layout
             .glyphs
@@ -1392,15 +1461,15 @@ fn braces_are_latex_brace_fills() {
     let under = e
         .typeset(r"\underbrace{\frac{1}{6^2}}", Style::Display)
         .unwrap();
-    assert!((under.width - 1.8).abs() < EPS, "{}", under.width);
+    assert!((under.width - fill_width).abs() < EPS, "{}", under.width);
     assert!((under.height - frac.height).abs() < EPS);
-    assert!((under.depth - (frac.depth + 0.72)).abs() < EPS);
-    let centered = (1.8 - frac.width) / 2.0;
+    assert!((under.depth - (frac.depth + fill_extra)).abs() < EPS);
+    let centered = (fill_width - frac.width) / 2.0;
     assert!((x(&under, '1') - x(&frac, '1') - centered).abs() < EPS);
     let sum = e.typeset("a+b+c+d", Style::Display).unwrap();
     let over = e.typeset(r"\overbrace{a+b+c+d}", Style::Display).unwrap();
     assert!((over.width - sum.width).abs() < EPS);
-    assert!((over.height - (sum.height + 0.72)).abs() < EPS);
+    assert!((over.height - (sum.height + fill_extra)).abs() < EPS);
     assert!((over.depth - sum.depth).abs() < EPS);
     // \displaystyle resets the size: a braced base in a superscript is
     // full size.

@@ -189,7 +189,7 @@ fn text_ligature_glyphs_typeset_from_the_bundled_text_face() {
 fn radical_degree_follows_plain_tex_root() {
     // plain.tex's \r@@t: \mkern5mu \raise.6\dimen@ \copy\rootbox \mkern-10mu
     // \box0, with \dimen@ = \ht0 - \dp0 of the radical box. In display
-    // style one mu is 1/18 em.
+    // style one mu is cmsy10's quad over 18 (§716).
     let e = engine();
     let plain = e.typeset(r"\sqrt{x}", Style::Display).unwrap();
     let rooted = e.typeset(r"\sqrt[3]{x}", Style::Display).unwrap();
@@ -200,7 +200,8 @@ fn radical_degree_follows_plain_tex_root() {
         glyph_y(&rooted, '3')
     );
     let degree = e.typeset("3", Style::ScriptScript).unwrap().width;
-    let shift = 5.0 / 18.0 + degree - 10.0 / 18.0;
+    let mu = CM.quad / 18.0;
+    let shift = 5.0 * mu + degree - 10.0 * mu;
     assert!(
         (glyph_x(&rooted, 'x') - glyph_x(&plain, 'x') - shift).abs() < EPS,
         "radicand moved {} for 5mu + w - 10mu = {shift}",
@@ -323,6 +324,57 @@ fn script_drops_are_read_at_the_script_size() {
     assert!((sup - 0.502_78).abs() < 1e-4, "{{(a)}}^2 at {sup}");
     let sub = glyph_y(&e.typeset(r"{(a)}_2", Style::Text).unwrap(), '2');
     assert!((sub + 0.3).abs() < 1e-4, "{{(a)}}_2 at {sub}");
+}
+
+/// Script styles read Appendix G's parameters from the fonts loaded at their
+/// own size: cmsy7 and cmex7 in script style, cmsy5 and cmex7 at 5 pt in
+/// scriptscript style, never cmsy10 and cmex10 scaled down (tex.web's
+/// cur_size; franken_manim fm-giir). Each value is real TeX's `\showbox`
+/// under `article` + `amsmath`, in ems of 10 pt. TeX truncates every scaled
+/// fontdimen to a whole sp, so the exact products agree within a few sp.
+#[test]
+fn script_styles_read_their_own_sizes_fontdimens() {
+    let e = engine();
+    let close = |ours: f64, tex_pt: f64| (ours - tex_pt / 10.0).abs() < 1e-5;
+    // e^{-x^2}: the outer script rises sup2 of cmsy10 (3.62892 pt), the
+    // inner one sup2 of cmsy7 (3.01779 pt; cmsy10's scaled would be 2.54).
+    let y = glyph_y(&e.typeset(r"e^{-x^2}", Style::Text).unwrap(), '2');
+    assert!(close(y, 3.62892 + 3.01779), "e^{{-x^2}}: 2 at {y}");
+    // x^{a\,b}: 3 mu in script style is 3/18 of cmsy7's quad, 1.36574 pt.
+    let width = |s: &str| e.typeset(s, Style::Text).unwrap().width;
+    let thin = width(r"x^{a\,b}") - width("x^{ab}");
+    assert!(close(thin, 15.43532 - 14.06958), "thin space {thin}");
+    // \quad and `\ ` are text-font glue, not mu: cmr10's quad and interword
+    // space at 10 pt even in a script.
+    let quad = width(r"x^{a\quad b}") - width("x^{ab}");
+    assert!(close(quad, 24.0696 - 14.06958), "script quad {quad}");
+    let space = width(r"x^{a\ b}") - width("x^{ab}");
+    assert!(
+        close(space, 17.40291 - 14.06958),
+        "script control space {space}"
+    );
+    // x^{\frac12}: the bar is ξ8 of cmex7, 0.33998 pt, on cmsy7's axis;
+    // num2 and denom2 come from cmsy7 too (rule 15b's clearances do not
+    // bind for 1 over 2).
+    let frac = e.typeset(r"x^{\frac12}", Style::Text).unwrap();
+    let bar = &frac.rules[0];
+    assert!(close(bar.height, 0.33998), "bar {bar:?}");
+    assert!(close(bar.y, 3.62892 + 1.58002), "bar {bar:?}");
+    assert!(close(glyph_y(&frac, '1'), 3.62892 + 2.68732), "{frac:?}");
+    assert!(close(glyph_y(&frac, '2'), 3.62892 - 2.4095), "{frac:?}");
+    // x^{a^{b^c}}: the third level stays in scriptscript, rising sup2 of
+    // cmsy5 (2.01776 pt).
+    let tower = e.typeset(r"x^{a^{b^c}}", Style::Text).unwrap();
+    let c = glyph_y(&tower, 'c');
+    assert!(close(c, 3.62892 + 3.01779 + 2.01776), "c at {c}");
+    // {(a)}^2_3 set in scriptscript: sup2 and sub2 of cmsy5, then the
+    // subscript lowered to rule 18e's 4θ gap, θ = ξ8 of cmex7 at 5 pt.
+    let both = e
+        .typeset(r"\scriptscriptstyle{(a)}^2_3", Style::Text)
+        .unwrap();
+    let (sup, sub) = (glyph_y(&both, '2'), glyph_y(&both, '3'));
+    assert!(close(sup, 3.22221 + 0.97137 - 2.17583), "sup at {sup}");
+    assert!(close(sub, -2.17583), "sub at {sub}");
 }
 
 #[test]
@@ -651,7 +703,7 @@ fn vdots_and_ddots_are_latex_period_constructions() {
 
     let ddots = e.typeset(r"\ddots", Style::Display).unwrap();
     let d = dots(&ddots);
-    let mu = 1.0 / 18.0;
+    let mu = CM.quad / 18.0;
     assert_eq!(d.len(), 3);
     for (i, (dot, y)) in d.iter().zip([0.7, 0.4, 0.1]).enumerate() {
         let x = mu + f64::from(u8::try_from(i).unwrap()) * (period.width + 2.0 * mu);
@@ -758,15 +810,32 @@ fn formerly_pending_constructs_now_lay_out() {
     assert_eq!(dots3.glyphs.len(), 4, "x and three dots");
     let dots4 = e.typeset(r"\ddddot x", Style::Display).unwrap();
     assert_eq!(dots4.glyphs.len(), 5, "x and four dots");
-    let x_top = dots3.glyphs.iter().find(|g| g.ch == 'x').unwrap().y;
+    // Rule 12 lowers the accent by min(h(x), σ5): x is exactly σ5 tall,
+    // so the dot marks share its baseline and only their ink rises above it.
+    let x_y = dots3.glyphs.iter().find(|g| g.ch == 'x').unwrap().y;
     assert!(
         dots3
             .glyphs
             .iter()
             .filter(|g| g.ch != 'x')
-            .all(|g| g.y > x_top),
+            .all(|g| (g.y - x_y).abs() < EPS),
+        "{dots3:?}"
+    );
+    let x_alone = e.typeset("x", Style::Display).unwrap();
+    assert!(
+        dots3.height > x_alone.height + 0.2,
         "dots sit above the base"
     );
+    // A base shorter than σ5 does not lower them below its own top.
+    let dots_dot = e.typeset(r"\dddot .", Style::Display).unwrap();
+    let marks: Vec<f64> = dots_dot
+        .glyphs
+        .iter()
+        .filter(|g| g.ch != '.')
+        .map(|g| g.y)
+        .collect();
+    assert_eq!(marks.len(), 3, "{dots_dot:?}");
+    assert!(marks.iter().all(|y| y.abs() < EPS), "{marks:?}");
 
     // The labeled extensible arrows (fm-j5t): a drawn band stretched to
     // its script-style label, label riding above as a limit; \xmapsto
@@ -1043,7 +1112,7 @@ fn ellipses_are_three_thin_spaced_punctuation_dots() {
         for pair in d.windows(2) {
             let gap = pair[1] - pair[0];
             assert!(
-                (gap - (advance + 1.0 / 6.0)).abs() < EPS,
+                (gap - (advance + 3.0 * CM.quad / 18.0)).abs() < EPS,
                 "{command}: gap {gap} vs advance {advance} + 3 mu"
             );
         }
@@ -1287,11 +1356,15 @@ fn explicit_spaces_keep_inter_atom_spacing() {
     // 45.133 - 25.133 pt at 10 pt).
     let e = engine();
     let width = |s: &str| e.typeset(s, Style::Text).unwrap().width;
-    assert!((width(r"a\,=b") - width("a=b") - 3.0 / 18.0).abs() < EPS);
-    assert!((width(r"a\quad\Rightarrow\quad b") - width(r"a\Rightarrow b") - 2.0).abs() < EPS);
+    let mu = CM.quad / 18.0;
+    assert!((width(r"a\,=b") - width("a=b") - 3.0 * mu).abs() < EPS);
+    let quad = fmd_math::tfm::CMR10.param(6);
+    assert!(
+        (width(r"a\quad\Rightarrow\quad b") - width(r"a\Rightarrow b") - 2.0 * quad).abs() < EPS
+    );
     // A kern still separates the characters, so no font kern applies
     // across it.
-    assert!((width(r"A\!V") - width("A") - width("V") + 3.0 / 18.0).abs() < EPS);
+    assert!((width(r"A\!V") - width("A") - width("V") + 3.0 * mu).abs() < EPS);
 }
 
 /// fm-8zy2: in math mode TeX sets family 0 (digits, `+ = ( ) [ ]`) from

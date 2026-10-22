@@ -42,7 +42,7 @@ use crate::mbox::{BoxKind, Color, FaceId, GlueSpec, Layout, MBox, MNode, Positio
 use crate::metrics::MathConstants;
 use crate::node::{
     AccentKind, Delim, DelimSize, FracSpec, FragmentKind, Limits, LineAlign, MathFont, Node,
-    NodeKind, PhantomKind, Span, StackKind, TextStyle,
+    NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
 };
 use crate::style::{Style, StyleCtx};
 
@@ -94,6 +94,21 @@ impl Engine {
     #[must_use]
     pub fn constants(&self) -> &MathConstants {
         &self.consts
+    }
+
+    /// The Appendix-G parameters TeX reads in `ctx`'s style (franken_manim
+    /// fm-giir).
+    ///
+    /// At the default declared size they come from the fonts TeX loads at
+    /// that style's size ([`MathConstants::at`]). A size declaration such as
+    /// `\large` loads other optical sizes (cmsy8, cmsy6) that fmd-math does
+    /// not carry, so there the text-size fonts are scaled, as before.
+    fn consts_at(&self, ctx: &LayCtx) -> MathConstants {
+        if (ctx.decl_size - 1.0).abs() < f64::EPSILON {
+            self.consts.at(ctx.style.style)
+        } else {
+            self.consts.at(Style::Text)
+        }
     }
 
     /// Typeset a math-mode string at the given outer style.
@@ -346,7 +361,21 @@ impl Engine {
                     FragmentKind::UnmatchedClose | FragmentKind::RedundantMathShift,
                 ) => {}
                 NodeKind::Space(kind) => {
-                    let em = f64::from(kind.mu()) / 18.0 * ctx.size();
+                    let eighteenths = f64::from(kind.mu()) / 18.0;
+                    let em = if ctx.text_mode {
+                        // Text spaces are ems of the text face at its size.
+                        eighteenths * ctx.size()
+                    } else if kind.is_mu_glue() {
+                        // 18 mu is family 2's quad at the current size (§716).
+                        eighteenths * self.consts_at(&ctx).quad * ctx.size()
+                    } else if matches!(kind, SpaceKind::ControlSpace) {
+                        // `\ ` is the text font's interword space.
+                        crate::tfm::CMR10.space * ctx.decl_size
+                    } else {
+                        // \quad and \qquad are \hskip ems of the text font,
+                        // cmr10 at the declared size, in every math style.
+                        eighteenths * crate::tfm::CMR10.param(6) * ctx.decl_size
+                    };
                     laid_items.push(LineItem::Glue(GlueSpec {
                         natural: em,
                         stretch: 0.0,
@@ -404,7 +433,7 @@ impl Engine {
                 LineItem::Atom { laid, class } => {
                     if let Some((prev_class, prev_glyph)) = prev {
                         let mu = spacing_in_style(prev_class, class, ctx.style.style).mu();
-                        x += f64::from(mu) / 18.0 * ctx.size();
+                        x += f64::from(mu) / 18.0 * self.consts_at(&ctx).quad * ctx.size();
                         // make_ord (tex.web §752): an Ord character kerns
                         // with the next atom's character from its font,
                         // whatever that atom's class (`V,` `d f` `f/`).
@@ -569,7 +598,7 @@ impl Engine {
             // under a 7 pt kern, so the box is as tall as `\vdots`.
             NodeKind::Symbol { ch: '⋱', .. } => {
                 let dot = self.text_period(node.span, ctx)?;
-                let mu = ctx.size() / 18.0;
+                let mu = self.consts_at(&ctx).quad * ctx.size() / 18.0;
                 let children: Vec<Positioned<MNode>> = [(0.0, 0.7), (1.0, 0.4), (2.0, 0.1)]
                     .map(|(i, dy)| Positioned {
                         dx: mu + i * (dot.width + 2.0 * mu),
@@ -774,7 +803,7 @@ impl Engine {
                     crate::drawn::Stretch::RightArrow
                 };
                 let band = crate::drawn::stretch(stretch_kind, width, size);
-                let axis = self.consts.axis_height * size;
+                let axis = self.consts_at(&ctx).axis_height * size;
                 let band_dy = axis - band.height / 2.0;
                 let band_box = MBox {
                     kind: BoxKind::Horizontal,
@@ -1042,7 +1071,7 @@ impl Engine {
         let size = ctx.size() * scale;
         let gh = metrics.height * size;
         let gd = metrics.depth * size;
-        let axis = self.consts.axis_height * ctx.size();
+        let axis = self.consts_at(&ctx).axis_height * ctx.size();
         // Center the ink on the math axis.
         let dy = axis - (gh - gd) / 2.0;
         let ink = self.faces.font(face).and_then(|font| {
@@ -1325,7 +1354,7 @@ impl Engine {
             }
         }
         let size = ctx.size();
-        let c = &self.consts;
+        let c = &self.consts_at(&ctx);
         let base_laid = match base {
             Some(node) => self.lay_node(node, ctx)?,
             None => Laid {
@@ -1563,7 +1592,7 @@ impl Engine {
         delta: f64,
     ) -> MBox {
         let size = ctx.size();
-        let c = &self.consts;
+        let c = &self.consts_at(&ctx);
         let width = op
             .width
             .max(upper.as_ref().map_or(0.0, |b| b.width))
@@ -1666,7 +1695,7 @@ impl Engine {
         ctx: LayCtx,
         span: Span,
     ) -> Result<Laid, MathError> {
-        let c = &self.consts;
+        let c = &self.consts_at(&ctx);
         let eff = match spec.forced_style {
             Some(forced) => ctx.map(|s| StyleCtx {
                 style: forced,
@@ -1767,7 +1796,7 @@ impl Engine {
         ctx: LayCtx,
         span: Span,
     ) -> Result<Laid, MathError> {
-        let c = &self.consts;
+        let c = &self.consts_at(&ctx);
         let size = ctx.size();
         let x = self.clean_box(radicand, ctx.map(StyleCtx::cramp))?.boxx;
         let theta = c.rule_thickness * size;
@@ -1819,7 +1848,7 @@ impl Engine {
                 },
             )?;
             let raise = 0.6 * (total_height - total_depth);
-            pen += 5.0 / 18.0 * size;
+            pen += 5.0 / 18.0 * c.quad * size;
             total_height = total_height.max(raise + ix_box.height);
             total_depth = total_depth.max(ix_box.depth - raise);
             let ix_width = ix_box.width;
@@ -1828,7 +1857,7 @@ impl Engine {
                 dy: raise,
                 node: MNode::Box(ix_box),
             });
-            pen += ix_width - 10.0 / 18.0 * size;
+            pen += ix_width - 10.0 / 18.0 * c.quad * size;
         }
         let sign_width = sign.width;
         children.push(Positioned {
@@ -1874,7 +1903,7 @@ impl Engine {
         ctx: LayCtx,
         span: Span,
     ) -> Result<Laid, MathError> {
-        let c = &self.consts;
+        let c = &self.consts_at(&ctx);
         let size = ctx.size();
         match kind {
             AccentKind::OverLine => {
@@ -1970,7 +1999,8 @@ impl Engine {
                 let ink_bottom = f64::from(bbox[1]) / upm * size;
                 let ink_w = ink_right - ink_left;
                 let row_w = ink_w * f64::from(n);
-                let dy = base_laid.boxx.height - c.x_height * size;
+                let h = base_laid.boxx.height;
+                let dy = h - h.min(c.x_height * size);
                 let skew = self.accent_skew(&base_laid, ctx);
                 let row_left = base_laid.boxx.width / 2.0 + skew - row_w / 2.0;
                 let width = base_laid.boxx.width;
@@ -2260,7 +2290,7 @@ impl Engine {
         span: Span,
     ) -> Result<MBox, MathError> {
         let size = cell_ctx.size();
-        let c = &self.consts;
+        let c = &self.consts_at(&cell_ctx);
         // 1. Lay every cell.
         let mut cells: Vec<Vec<MBox>> = Vec::new();
         for row in rows {
@@ -2392,7 +2422,7 @@ impl Engine {
         ctx: LayCtx,
         span: Span,
     ) -> Result<MBox, MathError> {
-        let c = &self.consts;
+        let c = &self.consts_at(&ctx);
         let size = ctx.size();
         let axis = c.axis_height * size;
         let delta = (inner.height - axis).max(inner.depth + axis);
@@ -2490,7 +2520,7 @@ impl Engine {
         span: Span,
     ) -> Result<Laid, MathError> {
         let size = ctx.size();
-        let theta = self.consts.rule_thickness * size;
+        let theta = self.consts_at(&ctx).rule_thickness * size;
         // Over-accents cramp their base (rule 12 / overline's rule 9). The
         // wide accents clean their base and the arrows are amsmath
         // alignments whose body is its own formula; either way a lone
@@ -2539,7 +2569,7 @@ impl Engine {
     }
 
     fn underline_box(&self, inner: MBox, ctx: LayCtx, span: Span) -> MBox {
-        let theta = self.consts.rule_thickness * ctx.size();
+        let theta = self.consts_at(&ctx).rule_thickness * ctx.size();
         let rule_y = -(inner.depth + 3.0 * theta) - theta;
         let width = inner.width;
         MBox {
@@ -2575,7 +2605,7 @@ impl Engine {
         body: &[Node],
         ctx: LayCtx,
     ) -> Result<Laid, MathError> {
-        let c = &self.consts;
+        let c = &self.consts_at(&ctx);
         let size = ctx.size();
         let inner = self.hlist(body, ctx)?;
         let axis = c.axis_height * size;
@@ -2650,7 +2680,7 @@ impl Engine {
                 crate::drawn::delimiter(ch, target_total.max(0.7 * ctx.size()), ctx.size())
             {
                 let total = target_total.max(0.7 * ctx.size());
-                let axis = self.consts.axis_height * ctx.size();
+                let axis = self.consts_at(&ctx).axis_height * ctx.size();
                 let dy = axis - total / 2.0;
                 let (width, dx) = framed(
                     ch,
@@ -2691,7 +2721,7 @@ impl Engine {
         {
             // The drawn mainline: contours span y ∈ [0, target]; center
             // the construction on the axis exactly as a glyph would be.
-            let axis = self.consts.axis_height * ctx.size();
+            let axis = self.consts_at(&ctx).axis_height * ctx.size();
             let dy = axis - target_total / 2.0;
             let (width, dx) = framed(
                 ch,
@@ -2718,7 +2748,7 @@ impl Engine {
         let size = ctx.size() * scale;
         let gh = m.height * size;
         let gd = m.depth * size;
-        let axis = self.consts.axis_height * ctx.size();
+        let axis = self.consts_at(&ctx).axis_height * ctx.size();
         let dy = axis - (gh - gd) / 2.0;
         let ink = self.faces.font(face).and_then(|font| {
             let upm = f64::from(font.units_per_em.max(1));
@@ -2765,7 +2795,7 @@ impl Engine {
             return None;
         }
         let size = ctx.size();
-        let top = self.consts.axis_height * size + total * size / 2.0;
+        let top = self.consts_at(&ctx).axis_height * size + total * size / 2.0;
         let piece = |code: u8| self.faces.tex_glyph(FACE_MATH_EXTENSION, code);
         let glyph = |gid: u16, dy: f64| Positioned {
             dx: 0.0,

@@ -229,9 +229,10 @@ pub enum SpaceKind {
 }
 
 impl SpaceKind {
-    /// The width in mu (18 mu = 1 em at the current size). The control
-    /// space is nominally a text interword space; 6 mu (= ⅓ em) is the
-    /// conventional math approximation.
+    /// The width in eighteenths of a quad. For the `\mskip` spaces
+    /// ([`Self::is_mu_glue`]) these are math units; `\quad` and `\qquad`
+    /// are `\hskip` ems of the text font, and the control space is its
+    /// interword space, close to 6 of them.
     #[must_use]
     pub const fn mu(self) -> i32 {
         match self {
@@ -243,6 +244,14 @@ impl SpaceKind {
             Self::Qquad => 36,
             Self::ControlSpace => 6,
         }
+    }
+
+    /// Whether math mode sets this space as `\mskip` glue in mu, which
+    /// follows the math style's size (`\,` `\:` `\;` `\!`), rather than as
+    /// text-font glue, which does not.
+    #[must_use]
+    pub const fn is_mu_glue(self) -> bool {
+        matches!(self, Self::Thin | Self::Med | Self::Thick | Self::NegThin)
     }
 }
 

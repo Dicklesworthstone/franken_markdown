@@ -8,9 +8,15 @@ the lig/kern program. This script reads those TFM files and writes them as
 `fmd-math/src/tfm.rs`, so fmd-math boxes characters exactly as TeX does.
 
 Dev-only, standard library only; never run at build or render time. Run from
-the repository root, pointing at TeX Live's `fonts/tfm/public/cm` directory:
+the repository root, pointing at TeX Live's `fonts/tfm/public` directory (cm,
+and amsfonts for cmex7):
 
-    python3 scripts/font-oracles/extract-cm-tfm.py /usr/share/texlive/texmf-dist/fonts/tfm/public/cm
+    python3 scripts/font-oracles/extract-cm-tfm.py /usr/share/texlive/texmf-dist/fonts/tfm/public
+
+Each font's fontdimens are transcribed too. TeX reads Appendix G's parameters
+from the symbol and extension fonts loaded at the current size. Under LaTeX's
+article and amsmath those are cmsy10/cmsy7/cmsy5 and cmex10/cmex7/cmex7 at 5 pt,
+per `\\fontname\\scriptfont3` and `\\scriptscriptfont3` (franken_manim fm-giir).
 
 The TFM files are Knuth's Computer Modern metrics, distributed with TeX under
 the Knuth licence (free use; changed files must be renamed). The output is a
@@ -29,21 +35,22 @@ from pathlib import Path
 
 OUT = Path("fmd-math/src/tfm.rs")
 
-# (TFM file, Rust static, skewchar). The skewchar is not in the TFM: LaTeX's
-# font definitions set it (omlcmm.fd: \skewchar\font'177; omscmsy.fd:
-# \skewchar\font'60), and TeX reads an accent's skew as the kern between the
-# accented character and that skewchar (tex.web §741).
+# (TFM file, Rust static, skewchar, directory under fonts/tfm/public). The
+# skewchar is not in the TFM: LaTeX's font definitions set it (omlcmm.fd:
+# \skewchar\font'177; omscmsy.fd: \skewchar\font'60), and TeX reads an accent's
+# skew as the kern between the accented character and that skewchar (tex.web §741).
 FONTS = [
-    ("cmmi10", "CMMI10", 0o177),
-    ("cmmi7", "CMMI7", 0o177),
-    ("cmmi5", "CMMI5", 0o177),
-    ("cmsy10", "CMSY10", 0o60),
-    ("cmsy7", "CMSY7", 0o60),
-    ("cmsy5", "CMSY5", 0o60),
-    ("cmex10", "CMEX10", None),
-    ("cmr10", "CMR10", None),
-    ("cmr7", "CMR7", None),
-    ("cmr5", "CMR5", None),
+    ("cmmi10", "CMMI10", 0o177, "cm"),
+    ("cmmi7", "CMMI7", 0o177, "cm"),
+    ("cmmi5", "CMMI5", 0o177, "cm"),
+    ("cmsy10", "CMSY10", 0o60, "cm"),
+    ("cmsy7", "CMSY7", 0o60, "cm"),
+    ("cmsy5", "CMSY5", 0o60, "cm"),
+    ("cmex10", "CMEX10", None, "cm"),
+    ("cmex7", "CMEX7", None, "amsfonts/cmextra"),
+    ("cmr10", "CMR10", None, "cm"),
+    ("cmr7", "CMR7", None, "cm"),
+    ("cmr5", "CMR5", None, "cm"),
 ]
 
 STOP_FLAG = 128
@@ -122,15 +129,16 @@ def main() -> None:
         "//! mathematics in (generated; do not edit by hand).",
         "//!",
         "//! Written by `scripts/font-oracles/extract-cm-tfm.py` from TeX Live's",
-        "//! `fonts/tfm/public/cm` (Knuth's Computer Modern metrics). Values are the",
-        "//! TFM fix_words over 2^20, in ems of each font's design size, so they are",
-        "//! exact. Ligatures are omitted: the Reference preamble disables them.",
+        "//! `fonts/tfm/public` (Knuth's Computer Modern metrics: `cm`, and",
+        "//! `amsfonts/cmextra` for cmex7). Values are the TFM fix_words over 2^20,",
+        "//! in ems of each font's design size, so they are exact. Ligatures are",
+        "//! omitted: the Reference preamble disables them.",
         "//!",
         "//! Sources (sha256):",
     ]
     bodies = []
-    for name, static, skew in FONTS:
-        data = (root / f"{name}.tfm").read_bytes()
+    for name, static, skew, directory in FONTS:
+        data = (root / directory / f"{name}.tfm").read_bytes()
         out.append(f"//! - `{name}.tfm` {hashlib.sha256(data).hexdigest()}")
         params, chars, kerns = parse_tfm(data)
         space = params[1] if len(params) > 1 else 0.0
@@ -142,6 +150,7 @@ def main() -> None:
             f'    name: "{name}",',
             f"    space: {lit(space)},",
             f"    skew_char: {'None' if skew is None else f'Some(0x{skew:02X})'},",
+            f"    params: &[{', '.join(lit(p) for p in params)}],",
             "    chars: &[",
         ]
         for code in range(128):
@@ -187,6 +196,9 @@ def main() -> None:
         "    pub space: f64,",
         "    /// The skewchar LaTeX assigns the font, if any.",
         "    pub skew_char: Option<u8>,",
+        "    /// The fontdimens: `params[n - 1]` is fontdimen n, in ems of the",
+        "    /// design size (fontdimen 1, the slant, is a plain ratio).",
+        "    pub params: &'static [f64],",
         "    /// Codes 0-127.",
         "    pub chars: &'static [Option<TfmChar>; 128],",
         "    /// The lig/kern program's kerns, as `(left, right, kern)` sorted by pair.",
@@ -198,6 +210,17 @@ def main() -> None:
         "    #[must_use]",
         "    pub fn char(&self, code: u8) -> Option<TfmChar> {",
         "        self.chars.get(usize::from(code)).copied().flatten()",
+        "    }",
+        "",
+        "    /// Fontdimen `n` (1-based, as TeX numbers them), in ems of the",
+        "    /// design size.",
+        "    ///",
+        "    /// # Panics",
+        "    /// If the font has fewer than `n` fontdimens: a typo in a parameter",
+        "    /// table, never input data.",
+        "    #[must_use]",
+        "    pub const fn param(&self, n: usize) -> f64 {",
+        "        self.params[n - 1]",
         "    }",
         "",
         "    /// The kern the lig/kern program places between `left` and `right`.",

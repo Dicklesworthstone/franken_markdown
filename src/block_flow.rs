@@ -504,12 +504,12 @@ impl FlowBlockItem {
     pub fn slug(&self) -> Option<String> {
         match self {
             Self::Heading { text, .. } => {
-                let slug: String = text
-                    .to_lowercase()
-                    .replace(' ', "-")
-                    .chars()
-                    .filter(|c| c.is_alphanumeric() || *c == '-')
-                    .collect();
+                let slug = crate::anchors::text_slug(text);
+                let slug = if slug.is_empty() {
+                    "section".to_owned()
+                } else {
+                    slug
+                };
                 Some(slug)
             }
             _ => None,

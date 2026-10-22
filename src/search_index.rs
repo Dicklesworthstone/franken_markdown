@@ -10,24 +10,13 @@
 //! mathematics, and referenced footnotes in HTML emission order. The original
 //! [`build_search_index`] retains its heading/body-paragraph-only contract.
 //!
-//! # Anchor parity with `src/html.rs`
+//! # Anchor parity
 //!
-//! The heading-id algorithm below is a deliberate, line-cited mirror of the
-//! HTML emitter so anchors match the rendered HTML byte-for-byte:
-//!
-//! - collision-suffix state `RenderState::heading_id_suffixes` — src/html.rs:119-121
-//! - `RenderState::push_heading_id_from_inlines` — src/html.rs:159-189
-//! - `push_usize` / `decimal_len_usize` — src/html.rs:954-976
-//! - `slug_inlines` / `push_slug_inlines` / `push_slug_char` — src/html.rs:1013-1057
-//! - container-aware walk of `collect_toc_entries` — src/html.rs:1063-1095
-//! - `push_inlines_to_plain` — src/html.rs:984-998
-//!
-//! Behavioural notes inherited from that mirror: slugs keep ASCII
-//! alphanumerics only (lowercased), ` `/`-`/`_` collapse to single dashes,
-//! empty slugs become `section`, and duplicate headings receive `-2`, `-3`,
-//! ... suffixes (the first occurrence is unsuffixed). If html.rs changes,
-//! change this file in lockstep; the test suite cross-checks anchors against
-//! real rendered HTML, including duplicate-heading collisions.
+//! Heading normalization is shared with all exporters through
+//! [`franken_markdown::anchors::heading_slug`]. Document-local suffixes retain
+//! the HTML renderer's collision rules: an empty slug becomes `section`, and
+//! duplicate headings receive `-2`, `-3`, ... without reusing a literal ID.
+//! The test suite compares this inventory with actual rendered HTML.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -376,56 +365,8 @@ fn heading_id(state: &mut AnchorState, inlines: &[Inline]) -> String {
     }
 }
 
-/// Mirror of `slug_inlines` (src/html.rs:1013-1018).
 fn slug_inlines(inlines: &[Inline]) -> String {
-    let mut s = String::new();
-    let mut pending_dash = false;
-    push_slug_inlines(inlines, &mut s, &mut pending_dash);
-    s
-}
-
-/// Mirror of `push_slug_inlines` (src/html.rs:1020-1045).
-fn push_slug_inlines(inlines: &[Inline], out: &mut String, pending_dash: &mut bool) {
-    for inl in inlines {
-        match inl {
-            Inline::FootnoteRef { .. } => {}
-            Inline::Text(t)
-            | Inline::Code(t)
-            | Inline::Html(t)
-            | Inline::Math(t)
-            | Inline::DisplayMath(t) => {
-                for c in t.chars() {
-                    push_slug_char(out, pending_dash, c);
-                }
-            }
-            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                push_slug_inlines(c, out, pending_dash);
-            }
-            Inline::Link { content, .. } => push_slug_inlines(content, out, pending_dash),
-            Inline::Image { alt, .. } => {
-                for c in alt.chars() {
-                    push_slug_char(out, pending_dash, c);
-                }
-            }
-            Inline::SoftBreak | Inline::HardBreak => push_slug_char(out, pending_dash, ' '),
-        }
-    }
-}
-
-/// Mirror of `push_slug_char` (src/html.rs:1047-1057): ASCII alphanumerics
-/// are kept (lowercased); space, `-`, and `_` collapse to a single dash;
-/// every other character is dropped without touching the pending-dash state.
-#[inline(always)]
-fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
-    if c.is_ascii_alphanumeric() {
-        if *pending_dash && !out.is_empty() {
-            out.push('-');
-        }
-        out.push(c.to_ascii_lowercase());
-        *pending_dash = false;
-    } else if c == ' ' || c == '-' || c == '_' {
-        *pending_dash = true;
-    }
+    franken_markdown::anchors::heading_slug(inlines)
 }
 
 /// Mirror of `push_inlines_to_plain` (src/html.rs:984-998).

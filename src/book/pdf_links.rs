@@ -194,28 +194,7 @@ fn local_target(
 }
 
 fn decode_fragment(fragment: &str) -> Option<String> {
-    fn hex(byte: u8) -> Option<u8> {
-        match byte {
-            b'0'..=b'9' => Some(byte - b'0'),
-            b'a'..=b'f' => Some(byte - b'a' + 10),
-            b'A'..=b'F' => Some(byte - b'A' + 10),
-            _ => None,
-        }
-    }
-    let mut bytes = Vec::with_capacity(fragment.len());
-    let source = fragment.as_bytes();
-    let mut index = 0;
-    while index < source.len() {
-        if source[index] == b'%' {
-            bytes.push(hex(*source.get(index + 1)?)? * 16 + hex(*source.get(index + 2)?)?);
-            index += 3;
-        } else {
-            bytes.push(source[index]);
-            index += 1;
-        }
-    }
-    let fragment = String::from_utf8(bytes).ok()?;
-    (!fragment.chars().any(char::is_control)).then_some(fragment)
+    crate::anchors::decode_fragment(fragment)
 }
 
 /// Assemble source boundaries from chapter lengths, never by searching for

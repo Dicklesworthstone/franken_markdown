@@ -583,53 +583,8 @@ fn assign_heading_id(inlines: &[Inline], suffixes: &mut BTreeMap<String, usize>)
     }
 }
 
-/// Mirror of the renderer's `slug_inlines`: ASCII alphanumerics lowercased;
-/// spaces, dashes, and underscores collapse to single dashes; everything else
-/// is dropped.
 fn slug_inlines(inlines: &[Inline]) -> String {
-    let mut s = String::new();
-    let mut pending_dash = false;
-    push_slug_inlines(inlines, &mut s, &mut pending_dash);
-    s
-}
-
-fn push_slug_inlines(inlines: &[Inline], out: &mut String, pending_dash: &mut bool) {
-    for inl in inlines {
-        match inl {
-            Inline::FootnoteRef { .. } => {}
-            Inline::Text(t)
-            | Inline::Code(t)
-            | Inline::Html(t)
-            | Inline::Math(t)
-            | Inline::DisplayMath(t) => {
-                for c in t.chars() {
-                    push_slug_char(out, pending_dash, c);
-                }
-            }
-            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                push_slug_inlines(c, out, pending_dash);
-            }
-            Inline::Link { content, .. } => push_slug_inlines(content, out, pending_dash),
-            Inline::Image { alt, .. } => {
-                for c in alt.chars() {
-                    push_slug_char(out, pending_dash, c);
-                }
-            }
-            Inline::SoftBreak | Inline::HardBreak => push_slug_char(out, pending_dash, ' '),
-        }
-    }
-}
-
-fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
-    if c.is_ascii_alphanumeric() {
-        if *pending_dash && !out.is_empty() {
-            out.push('-');
-        }
-        out.push(c.to_ascii_lowercase());
-        *pending_dash = false;
-    } else if c == ' ' || c == '-' || c == '_' {
-        *pending_dash = true;
-    }
+    franken_markdown::anchors::heading_slug(inlines)
 }
 
 /// Mirror of the renderer's `inlines_to_plain`: visible text with breaks as

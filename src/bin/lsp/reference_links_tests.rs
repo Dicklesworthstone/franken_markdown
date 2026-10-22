@@ -181,6 +181,73 @@ fn adjacent_reference_precedence_is_parser_proven_and_equivalent_ambiguity_is_in
 }
 
 #[test]
+fn equivalent_adjacent_references_are_inert_in_nested_and_formatted_contexts() {
+    for body in [
+        "[x][x¦][x]",
+        "[x][x][x¦]",
+        "**[x][x¦][x]**",
+        "😀 [x][x¦][x]",
+        "> [x][x¦][x]",
+        "- [x][x¦][x]",
+        "| [x][x¦][x] |\n| --- |\n| body |",
+        "Term\n: [x][x¦][x]",
+        "Use[^n].\n\n[^n]: [x][x¦][x]",
+    ] {
+        let source = format!("# Target\n\n{body}\n\n[x]: #target \"Title\"\n");
+        assert_eq!(
+            call("textDocument/definition", &source),
+            Json::Null,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn adjacent_alternatives_must_preserve_real_definitions_labels_and_titles() {
+    for (body, definitions) in [
+        ("[x¦][x][x]", "[x]: #target"),
+        // The preceding bracket is not a defined shortcut by itself.
+        ("[undefined][x¦][x]", "[x]: #target"),
+        // Its real shortcut destination must match, even if both exist.
+        ("[a][x¦][x]", "[a]: #other\n[x]: #target"),
+        (
+            "[a][x¦][x]",
+            "[a]: #target \"Other title\"\n[x]: #target \"Target title\"",
+        ),
+        // A common destination does not make distinct link labels equivalent.
+        ("[a][b¦][c]", "[b]: #target\n[c]: #target"),
+    ] {
+        let source = format!("# Target\n\n{body}\n\n{definitions}\n\n# Other\n");
+        assert_eq!(
+            start(&call("textDocument/definition", &source)),
+            Some(&position(Position {
+                line: 0,
+                character: 0,
+            })),
+            "{body}: {definitions}"
+        );
+    }
+}
+
+#[test]
+fn adjacent_ambiguity_probes_do_not_grant_navigation_to_images_or_literal_sources() {
+    for body in [
+        "![x][x¦][x]",
+        "`[x][x¦][x]`",
+        "$[x][x¦][x]$",
+        "<span title=\"[x][x¦][x]\">body</span>",
+        "```md\n[x][x¦][x]\n```",
+    ] {
+        let source = format!("# Target\n\n{body}\n\n[x]: #target\n");
+        assert_eq!(
+            call("textDocument/definition", &source),
+            Json::Null,
+            "{body}"
+        );
+    }
+}
+
+#[test]
 fn missing_malformed_and_ambiguous_targets_never_fabricate_a_definition() {
     for destination in [
         "#missing",

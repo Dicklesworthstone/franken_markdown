@@ -32,14 +32,12 @@
 //! ## Heading anchors
 //!
 //! Broken internal-anchor detection compares `#fragment` link targets against
-//! the heading `id`s the HTML renderer emits. The assignment algorithm below
-//! mirrors `src/html.rs` (`slug_inlines`, `push_slug_char`,
-//! `push_heading_id_from_inlines`, and the block/footnote walk order) exactly:
-//! same lowercase/dash slugging, same empty-slug `section` fallback, same
+//! the heading `id`s the HTML renderer emits. Heading normalization uses the
+//! shared anchors module, with the same empty-slug `section` fallback and
 //! `-N` collision suffixes, same render order (body walk with block quotes and
 //! list items recursed, footnote definitions rendered afterwards in
 //! first-reference order, unreferenced definitions omitted). Anchor comparison
-//! is exact and case-sensitive on the raw fragment (no percent-decoding).
+//! is exact and case-sensitive after one percent-decoding pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -301,7 +299,10 @@ fn collect_inline_metrics(inlines: &[Inline], analysis: &mut Analysis, anchors: 
                 analysis.links.total += 1;
                 if let Some(fragment) = dest.strip_prefix('#') {
                     analysis.links.internal += 1;
-                    if !anchors.contains(fragment) {
+                    if !fragment.is_empty()
+                        && !franken_markdown::anchors::decode_fragment(fragment)
+                            .is_some_and(|id| anchors.contains(&id))
+                    {
                         analysis.links.broken_anchor_count += 1;
                     }
                 } else {
@@ -616,52 +617,6 @@ impl AnchorAssigner {
     }
 }
 
-/// Slug a heading's inlines — mirror of `html.rs::slug_inlines` /
-/// `push_slug_inlines`: ASCII alphanumerics lowercased; runs of spaces,
-/// dashes, and underscores collapse to single dashes; every other character
-/// (including non-ASCII letters) is dropped without separating.
 fn slug_inlines(inlines: &[Inline]) -> String {
-    let mut s = String::new();
-    let mut pending_dash = false;
-    push_slug_inlines(inlines, &mut s, &mut pending_dash);
-    s
-}
-
-fn push_slug_inlines(inlines: &[Inline], out: &mut String, pending_dash: &mut bool) {
-    for inl in inlines {
-        match inl {
-            Inline::FootnoteRef { .. } => {}
-            Inline::Text(t)
-            | Inline::Code(t)
-            | Inline::Html(t)
-            | Inline::Math(t)
-            | Inline::DisplayMath(t) => {
-                for c in t.chars() {
-                    push_slug_char(out, pending_dash, c);
-                }
-            }
-            Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
-                push_slug_inlines(inner, out, pending_dash);
-            }
-            Inline::Link { content, .. } => push_slug_inlines(content, out, pending_dash),
-            Inline::Image { alt, .. } => {
-                for c in alt.chars() {
-                    push_slug_char(out, pending_dash, c);
-                }
-            }
-            Inline::SoftBreak | Inline::HardBreak => push_slug_char(out, pending_dash, ' '),
-        }
-    }
-}
-
-fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
-    if c.is_ascii_alphanumeric() {
-        if *pending_dash && !out.is_empty() {
-            out.push('-');
-        }
-        out.push(c.to_ascii_lowercase());
-        *pending_dash = false;
-    } else if c == ' ' || c == '-' || c == '_' {
-        *pending_dash = true;
-    }
+    franken_markdown::anchors::heading_slug(inlines)
 }

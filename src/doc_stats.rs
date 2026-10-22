@@ -105,15 +105,18 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
 
     // Check for broken internal anchors (e.g. [Link](#missing-target))
     for (anchor, link_text) in &collector.referenced_anchors {
-        let is_valid_footnote = collector.footnote_defs_set.contains(anchor)
-            || anchor
-                .strip_prefix("fn-")
-                .is_some_and(|id| collector.footnote_defs_set.contains(id))
-            || anchor
-                .strip_prefix("fnref-")
-                .is_some_and(|id| collector.footnote_defs_set.contains(id));
-
-        if !collector.defined_anchors.contains(anchor) && !is_valid_footnote {
+        let valid = crate::anchors::decode_fragment(anchor).is_some_and(|id| {
+            id.is_empty()
+                || collector.defined_anchors.contains(&id)
+                || collector.footnote_defs_set.contains(&id)
+                || id
+                    .strip_prefix("fn-")
+                    .is_some_and(|note| collector.footnote_defs_set.contains(note))
+                || id
+                    .strip_prefix("fnref-")
+                    .is_some_and(|note| collector.footnote_defs_set.contains(note))
+        });
+        if !valid {
             collector.findings.push(DocFinding {
                 severity: "warning",
                 code: "broken_internal_anchor",
@@ -577,71 +580,8 @@ fn assign_heading_id(inlines: &[Inline], suffixes: &mut BTreeMap<String, usize>)
     }
 }
 
-#[inline(always)]
 fn slug_inlines(inlines: &[Inline]) -> String {
-    let mut s = String::new();
-    let mut pending_dash = false;
-    push_slug_inlines(inlines, &mut s, &mut pending_dash);
-    s
-}
-
-fn push_slug_inlines(inlines: &[Inline], out: &mut String, pending_dash: &mut bool) {
-    for inl in inlines {
-        match inl {
-            Inline::FootnoteRef { .. } => {}
-            Inline::Text(t)
-            | Inline::Code(t)
-            | Inline::Html(t)
-            | Inline::Math(t)
-            | Inline::DisplayMath(t) => {
-                push_slug_str(out, pending_dash, t);
-            }
-            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                push_slug_inlines(c, out, pending_dash);
-            }
-            Inline::Link { content, .. } => push_slug_inlines(content, out, pending_dash),
-            Inline::Image { alt, .. } => {
-                push_slug_str(out, pending_dash, alt);
-            }
-            Inline::SoftBreak | Inline::HardBreak => push_slug_char(out, pending_dash, ' '),
-        }
-    }
-}
-
-fn push_slug_str(out: &mut String, pending_dash: &mut bool, s: &str) {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b < 0x80 {
-            if b.is_ascii_alphanumeric() {
-                if *pending_dash && !out.is_empty() {
-                    out.push('-');
-                }
-                out.push((b as char).to_ascii_lowercase());
-                *pending_dash = false;
-            } else if b == b' ' || b == b'-' || b == b'_' {
-                *pending_dash = true;
-            }
-            i += 1;
-        } else {
-            let ch = s[i..].chars().next().unwrap_or('\0');
-            push_slug_char(out, pending_dash, ch);
-            i += ch.len_utf8();
-        }
-    }
-}
-
-fn push_slug_char(out: &mut String, pending_dash: &mut bool, c: char) {
-    if c.is_ascii_alphanumeric() {
-        if *pending_dash && !out.is_empty() {
-            out.push('-');
-        }
-        out.push(c.to_ascii_lowercase());
-        *pending_dash = false;
-    } else if c == ' ' || c == '-' || c == '_' {
-        *pending_dash = true;
-    }
+    franken_markdown::anchors::heading_slug(inlines)
 }
 
 impl DocumentStats {

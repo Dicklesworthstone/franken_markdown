@@ -359,6 +359,9 @@ struct Line {
     table_source_row: Option<u32>,
     /// Non-content strokes belonging to this row, never repeated as headers.
     table_footing: Vec<financial_tables::FootingStroke>,
+    /// Unwrapped AST identity, carried only by a heading's first line. Paint
+    /// fragments may split a word across lines and cannot reconstruct its ID.
+    heading_source: Option<Box<HeadingSource>>,
     segs: Vec<Seg>,
     image: Option<ImageLine>,
 }
@@ -3031,7 +3034,7 @@ fn push_inlines_to_plain_text(inlines: &[Inline], out: &mut String) {
                 out.push(' ');
             }
             Inline::Html(html) => {
-                out.push_str(html);
+                out.push_str(&crate::safe_html::visible_text(html));
             }
         }
     }
@@ -3044,18 +3047,11 @@ fn collect_pdf_toc_entries(blocks: &[Block]) -> Vec<PdfTocEntry> {
         for block in blocks {
             match block {
                 Block::Heading { level, inlines } => {
-                    let mut plain = String::new();
-                    push_inlines_to_plain_text(inlines, &mut plain);
-                    let title = plain.trim().to_string();
-                    let title = if title.is_empty() {
-                        "Section".to_string()
-                    } else {
-                        title
-                    };
-                    let id = state.heading_id(&title);
+                    let source = HeadingSource::from_inlines(inlines);
+                    let id = state.heading_id_from_slug(source.slug);
                     entries.push(PdfTocEntry {
                         level: *level,
-                        title,
+                        title: source.title,
                         id,
                     });
                 }
@@ -3154,6 +3150,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 table_cols: Vec::new(),
                 table_source_row: None,
                 table_footing: Vec::new(),
+                heading_source: None,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -3559,6 +3556,7 @@ fn page_note_separator(page: PageGeom) -> Line {
         table_cols: Vec::new(),
         table_source_row: None,
         table_footing: Vec::new(),
+        heading_source: None,
         segs: Vec::new(),
         image: None,
     }
@@ -4343,6 +4341,9 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             for line in &mut out[before..] {
                 line.flow.heading_level = (*level).clamp(1, 6);
             }
+            if let Some(first) = out.get_mut(before) {
+                first.heading_source = Some(Box::new(HeadingSource::from_inlines(inlines)));
+            }
             if ruled && out.len() > before {
                 push_heading_rule(out, indent, cx.page, group, heading_gap_after(*level));
             }
@@ -4457,6 +4458,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         table_cols: Vec::new(),
                         table_source_row: None,
                         table_footing: Vec::new(),
+                        heading_source: None,
                         segs,
                         page_break_before: false,
                         image: None,
@@ -4503,6 +4505,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     table_cols: Vec::new(),
                     table_source_row: None,
                     table_footing: Vec::new(),
+                    heading_source: None,
                     segs,
                     page_break_before: false,
                     image: None,
@@ -4583,6 +4586,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 table_cols: Vec::new(),
                 table_source_row: None,
                 table_footing: Vec::new(),
+                heading_source: None,
                 segs: Vec::new(),
                 image: None,
             });
@@ -4778,6 +4782,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         table_cols: Vec::new(),
         table_source_row: None,
         table_footing: Vec::new(),
+        heading_source: None,
         segs: Vec::new(),
         image: None,
     });
@@ -4868,6 +4873,7 @@ fn push_figure_line(
         table_cols: Vec::new(),
         table_source_row: None,
         table_footing: Vec::new(),
+        heading_source: None,
         segs: Vec::new(),
         image: Some(ImageLine {
             image,
@@ -18047,6 +18053,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                     source_row.map_or(0, |index| rows[index].source_index.saturating_add(1) as u32)
                 }),
                 table_footing: Vec::new(),
+                heading_source: None,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -18078,6 +18085,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         table_cols: Vec::new(),
         table_source_row: None,
         table_footing: Vec::new(),
+        heading_source: None,
         segs: Vec::new(),
         page_break_before: false,
         image: None,
@@ -19675,6 +19683,7 @@ fn emit_broken_paragraph(
             table_cols: Vec::new(),
             table_source_row: None,
             table_footing: Vec::new(),
+            heading_source: None,
             segs,
             page_break_before: false,
             image: None,
@@ -19733,6 +19742,7 @@ fn layout_prefixed_inlines(
             table_cols: Vec::new(),
             table_source_row: None,
             table_footing: Vec::new(),
+            heading_source: None,
             segs: vec![marker],
             image: None,
         });
@@ -19815,6 +19825,7 @@ fn layout_prefixed_inlines(
             table_cols: Vec::new(),
             table_source_row: None,
             table_footing: Vec::new(),
+            heading_source: None,
             segs,
             page_break_before: false,
             image: None,
@@ -19883,6 +19894,7 @@ fn layout_inlines_greedy(
             table_cols: Vec::new(),
             table_source_row: None,
             table_footing: Vec::new(),
+            heading_source: None,
             segs,
             page_break_before: false,
             image: None,
@@ -23801,6 +23813,27 @@ struct HeadingMeta {
     title: String,
 }
 
+/// Identity from the prepared heading AST, before line breaking, font fallback,
+/// or synthetic hyphens can change its painted text. Footnote/HTML preparation
+/// precedes this boundary; pre-preparation provenance is not stored here.
+#[derive(Clone)]
+struct HeadingSource {
+    slug: String,
+    title: String,
+}
+
+impl HeadingSource {
+    fn from_inlines(inlines: &[Inline]) -> Self {
+        let mut title = String::new();
+        push_inlines_to_plain_text(inlines, &mut title);
+        let title = title.trim();
+        Self {
+            slug: crate::anchors::heading_slug(inlines),
+            title: if title.is_empty() { "Section" } else { title }.to_string(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct HeadingIdState {
     used: BTreeSet<String>,
@@ -23809,7 +23842,10 @@ struct HeadingIdState {
 
 impl HeadingIdState {
     fn heading_id(&mut self, text: &str) -> String {
-        let mut base = slug(text);
+        self.heading_id_from_slug(slug(text))
+    }
+
+    fn heading_id_from_slug(&mut self, mut base: String) -> String {
         if base.is_empty() {
             base.push_str("section");
         }
@@ -23837,12 +23873,16 @@ impl HeadingIdState {
 fn heading_metadata(lines: &[Line]) -> BTreeMap<u32, HeadingMeta> {
     let mut order = Vec::new();
     let mut titles: BTreeMap<u32, String> = BTreeMap::new();
+    let mut sources = BTreeMap::new();
     for line in lines
         .iter()
         .filter(|line| line.flow.kind == FlowKind::Heading && line.flow.group != 0)
     {
         if !titles.contains_key(&line.flow.group) {
             order.push(line.flow.group);
+        }
+        if let Some(source) = line.heading_source.as_deref() {
+            sources.entry(line.flow.group).or_insert(source);
         }
         let title = titles.entry(line.flow.group).or_default();
         if !title.is_empty() && !title.ends_with(' ') {
@@ -23856,6 +23896,19 @@ fn heading_metadata(lines: &[Line]) -> BTreeMap<u32, HeadingMeta> {
     let mut state = HeadingIdState::default();
     let mut out = BTreeMap::new();
     for group in order {
+        if let Some(source) = sources.get(&group) {
+            let id = state.heading_id_from_slug(source.slug.clone());
+            out.insert(
+                group,
+                HeadingMeta {
+                    id,
+                    title: source.title.clone(),
+                },
+            );
+            continue;
+        }
+        // Synthetic heading-like lines (such as alert labels) have no AST
+        // heading. Keep their existing visible-text identity.
         let title = titles
             .remove(&group)
             .map(|s| s.trim().to_string())
@@ -24104,6 +24157,7 @@ mod font_slot_text_refs_tests {
             table_cols: Vec::new(),
             table_source_row: None,
             table_footing: Vec::new(),
+            heading_source: None,
             segs,
             page_break_before: false,
             image,
@@ -30015,6 +30069,7 @@ mod keep_with_next_tests {
             table_cols: Vec::new(),
             table_source_row: None,
             table_footing: Vec::new(),
+            heading_source: None,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -30239,6 +30294,7 @@ mod void_budget_tests {
             table_cols: Vec::new(),
             table_source_row: None,
             table_footing: Vec::new(),
+            heading_source: None,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -33138,7 +33194,8 @@ fn safe_pdf_link(url: &str) -> Option<LinkTarget> {
     }
     if let Some(fragment) = trimmed.strip_prefix('#') {
         let id = fragment.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
-        return valid_pdf_fragment(id).then(|| LinkTarget::Fragment(id.to_string()));
+        let id = crate::anchors::decode_fragment(id)?;
+        return valid_pdf_fragment(&id).then_some(LinkTarget::Fragment(id));
     }
     match pdf_url_scheme(trimmed) {
         PdfUrlScheme::None => Some(LinkTarget::Uri(trimmed.to_string())),
@@ -33195,18 +33252,7 @@ fn valid_pdf_fragment(fragment: &str) -> bool {
 }
 
 fn slug(text: &str) -> String {
-    let mut s = String::new();
-    for c in text.chars() {
-        if c.is_ascii_alphanumeric() {
-            s.push(c.to_ascii_lowercase());
-        } else if c == ' ' || c == '-' || c == '_' {
-            s.push('-');
-        }
-    }
-    while s.contains("--") {
-        s = s.replace("--", "-");
-    }
-    s.trim_matches('-').to_string()
+    crate::anchors::text_slug(text)
 }
 
 /// Encode `s` as a complete PDF string-object token, delimiters included.
@@ -33466,6 +33512,7 @@ mod pdf_writer_tests {
             table_cols: Vec::new(),
             table_source_row: None,
             table_footing: Vec::new(),
+            heading_source: None,
             segs: texts
                 .iter()
                 .map(|text| Seg {
@@ -35337,6 +35384,7 @@ mod pdf_writer_tests {
                 table_cols: Vec::new(),
                 table_source_row: None,
                 table_footing: Vec::new(),
+                heading_source: None,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -35503,6 +35551,7 @@ mod pdf_writer_tests {
                 table_cols: Vec::new(),
                 table_source_row: None,
                 table_footing: Vec::new(),
+                heading_source: None,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -35642,6 +35691,7 @@ mod pdf_writer_tests {
                 table_cols: Vec::new(),
                 table_source_row: None,
                 table_footing: Vec::new(),
+                heading_source: None,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -35761,6 +35811,7 @@ mod pdf_writer_tests {
                 table_cols: vec![0, 1, 2],
                 table_source_row: None,
                 table_footing: Vec::new(),
+                heading_source: None,
                 segs: vec![
                     Seg {
                         x: 0.0,
@@ -35861,6 +35912,7 @@ mod pdf_writer_tests {
                 table_cols: Vec::new(),
                 table_source_row: None,
                 table_footing: Vec::new(),
+                heading_source: None,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -40832,6 +40884,7 @@ mod coverage_gap_tests {
             table_cols: Vec::new(),
             table_source_row: None,
             table_footing: Vec::new(),
+            heading_source: None,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -42697,7 +42750,7 @@ fn audit_inline_fragment_links(
     push_plain_inlines(inlines, &mut plain, &mut links);
     for dest in links {
         if let Some(target) = dest.strip_prefix('#') {
-            if ids.contains(target) {
+            if crate::anchors::decode_fragment(target).is_some_and(|id| ids.contains(&id)) {
                 audit.resolved += 1;
             } else if !audit.unresolved.iter().any(|u| u == target) {
                 audit.unresolved.push(target.to_string());
@@ -42715,10 +42768,7 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
         for block in blocks {
             match block {
                 Block::Heading { inlines, .. } => {
-                    let mut plain = String::new();
-                    let mut links = Vec::new();
-                    push_plain_inlines(inlines, &mut plain, &mut links);
-                    ids.insert(state.heading_id(&plain));
+                    ids.insert(state.heading_id_from_slug(crate::anchors::heading_slug(inlines)));
                 }
                 Block::BlockQuote(inner) => collect_ids(inner, state, ids),
                 Block::List(list) => {
@@ -42835,6 +42885,7 @@ mod plass_pagination_tests {
             table_cols: Vec::new(),
             table_source_row: None,
             table_footing: Vec::new(),
+            heading_source: None,
             segs: Vec::new(),
             page_break_before: false,
             image: None,

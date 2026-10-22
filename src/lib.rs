@@ -32,6 +32,7 @@
 // compile both standalone (test harnesses) and in-tree.
 extern crate self as franken_markdown;
 
+pub mod anchors;
 pub mod ast;
 pub mod block_flow;
 pub mod book;

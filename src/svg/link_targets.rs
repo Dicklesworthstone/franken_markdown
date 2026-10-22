@@ -56,30 +56,7 @@ pub(super) fn target(raw: &str) -> Option<Target> {
 }
 
 fn percent_decode(input: &str) -> Option<String> {
-    let source = input.as_bytes();
-    let mut out = Vec::with_capacity(source.len());
-    let mut i = 0;
-    while i < source.len() {
-        if source[i] == b'%' {
-            let high = hex(*source.get(i + 1)?)?;
-            let low = hex(*source.get(i + 2)?)?;
-            out.push(high * 16 + low);
-            i += 3;
-        } else {
-            out.push(source[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
-const fn hex(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
+    franken_markdown::anchors::decode_fragment(input)
 }
 
 fn invalid_xml(ch: char) -> bool {
@@ -118,37 +95,24 @@ pub(super) fn inline_label(inlines: &[Inline]) -> String {
     out
 }
 
-/// Match html::slug_inlines: ASCII alphanumerics, lowercase, deferred hyphens
+/// Match shared heading slugs: Unicode letters, ASCII digits, deferred hyphens
 /// for space/hyphen/underscore, no footnote reference text, and `section` for
 /// an empty slug. Refuse over-budget metadata rather than truncate into a
 /// different heading's identity. The source heading is still painted normally.
 pub(super) fn heading_slug(inlines: &[Inline]) -> Option<String> {
-    let mut out = String::new();
-    let mut dash = false;
     let mut remaining = 64 * 1024usize;
     let complete = walk_text(inlines, false, |part| {
         if part.len() > remaining {
             return false;
         }
         remaining -= part.len();
-        for ch in part.chars() {
-            if ch.is_ascii_alphanumeric() {
-                let extra = usize::from(dash && !out.is_empty()) + 1;
-                if out.len() + extra > MAX_SLUG_BYTES {
-                    return false;
-                }
-                if dash && !out.is_empty() {
-                    out.push('-');
-                }
-                out.push(ch.to_ascii_lowercase());
-                dash = false;
-            } else if matches!(ch, ' ' | '-' | '_') {
-                dash = true;
-            }
-        }
         true
     });
     if !complete {
+        return None;
+    }
+    let mut out = franken_markdown::anchors::heading_slug(inlines);
+    if out.len() > MAX_SLUG_BYTES {
         return None;
     }
     if out.is_empty() {

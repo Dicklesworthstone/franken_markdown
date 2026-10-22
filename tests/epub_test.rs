@@ -793,6 +793,26 @@ fn epub_nav_lists_headings_with_matching_chapter_anchors() {
 }
 
 #[test]
+fn epub_unicode_and_safe_markup_navigation_targets_the_published_chapter() {
+    let doc = parse_markdown("# Café\n\n# <em>Café</em>\n\n# Café-2\n\n# 中文 Guide");
+    let bytes = epub::render_epub(&doc, &HtmlOptions::default()).expect("epub renders");
+    let nav = entry_text(&bytes, "OEBPS/nav.xhtml");
+    let chapter = entry_text(&bytes, "OEBPS/chapter-1.xhtml");
+    for id in ["café", "café-2", "café-2-2", "中文-guide"] {
+        assert!(
+            nav.contains(&format!("href=\"chapter-1.xhtml#{id}\"")),
+            "nav: {nav}"
+        );
+        assert!(
+            chapter.contains(&format!("id=\"{id}\"")),
+            "chapter: {chapter}"
+        );
+    }
+    assert_well_formed_xml(&nav);
+    assert_well_formed_xml(&chapter);
+}
+
+#[test]
 fn epub_render_is_byte_deterministic() {
     let a = fixture_epub(&HtmlOptions::default());
     let b = fixture_epub(&HtmlOptions::default());

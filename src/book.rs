@@ -533,7 +533,7 @@ mod navigation_tests {
                 .iter()
                 .map(|entry| entry.anchor.as_str())
                 .collect::<Vec<_>>(),
-            ["repeat", "repeat-2", "repeat-3", "nested", "section"]
+            ["repeat", "repeat-2", "repeat-3", "nested", "中"]
         );
         let rendered = render_html_document(
             &chapter.doc,

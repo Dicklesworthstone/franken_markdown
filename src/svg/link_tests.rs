@@ -165,7 +165,7 @@ fn svg_links_source_labels_keep_rich_text_without_inventing_word_spaces() {
         heading_slug(&inlines).as_deref(),
         Some("prefix-code-x2-diagram")
     );
-    assert_eq!(heading_slug(&[text("你好 !")]).as_deref(), Some("section"));
+    assert_eq!(heading_slug(&[text("你好 !")]).as_deref(), Some("你好"));
     assert_eq!(
         heading_slug(&[text(" A__B---C  D ")]).as_deref(),
         Some("a-b-c-d")

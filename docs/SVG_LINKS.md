@@ -46,8 +46,8 @@ messages never echo rejected destinations or source content.
 
 Forward and backward heading references resolve after complete document layout,
 including headings in nested containers and prepared endnotes. Slugs match the
-current HTML spelling: lowercase ASCII alphanumerics, collapsed separators for
-spaces/hyphens/underscores, discarded punctuation/non-ASCII characters and
+shared HTML spelling: lowercase Unicode letters and ASCII digits, collapsed separators for
+spaces/hyphens/underscores, discarded punctuation and
 `section` for an empty result. Inline styles, image alt text and math source are
 included; footnote-reference markers are ignored. Suffixes start at `-2` and
 skip all occupied names, including literal headings such as `Topic-2`.

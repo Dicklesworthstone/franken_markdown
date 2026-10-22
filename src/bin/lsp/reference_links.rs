@@ -3,8 +3,11 @@
 //! A bounded bracket scan proposes full, collapsed or shortcut uses. Replacing
 //! only the reference suffix with a unique inline destination must preserve the
 //! entire parsed AST after restoring the original Link's destination and title.
+//! An adjacent preceding bracket may need a removable comment boundary so it
+//! cannot consume the new inline link's label as its own reference suffix.
 //! The real parser owns normalization, first-definition precedence and context.
 
+use franken_markdown::{Block, Inline};
 use std::collections::BTreeMap;
 use std::ops::Range;
 
@@ -19,6 +22,8 @@ const MAX_CANDIDATES: usize = 8;
 struct Candidate {
     // The reference suffix [id] / [], or an insertion point after [shortcut].
     suffix: Range<usize>,
+    // Boundary before this link's label when it immediately follows a bracket.
+    preceding: Option<usize>,
 }
 
 fn candidates(source: &str, span: SourceSpan, offset: usize) -> Result<Vec<Candidate>, Failure> {
@@ -77,6 +82,7 @@ fn candidates(source: &str, span: SourceSpan, offset: usize) -> Result<Vec<Candi
         }
         found.push(Candidate {
             suffix: close + 1..end,
+            preceding: (open > span.start && bytes[open - 1] == b']').then_some(open),
         });
     }
     Ok(found)
@@ -100,48 +106,142 @@ pub(super) fn destination(
         ));
     };
     let mut selected = None;
-    for candidate in candidates {
-        let mut amended = String::with_capacity(source.len() + probe.len() + 2);
-        amended.push_str(&source[..candidate.suffix.start]);
-        amended.push('(');
-        amended.push_str(&probe);
-        amended.push(')');
-        amended.push_str(&source[candidate.suffix.end..]);
-        let mut probed = parse_markdown(&amended);
-        if !matches_probe(&probed, original, owner, &probe) {
-            continue;
-        }
-        let analysis = analyze_document_links(&probed).map_err(|_| {
-            (
-                -32803,
-                "reference link analysis could not complete within its limits",
-            )
-        })?;
-        if !analysis.references.iter().any(|reference| {
-            reference.block_index == owner
-                && reference.kind == ReferenceKind::Link
-                && reference.destination == probe
-        }) {
-            continue;
-        }
-        let mut destination = None;
-        if let (Some(block), Some(old)) = (probed.blocks.get_mut(owner), original.blocks.get(owner))
+    for (index, candidate) in candidates.iter().enumerate() {
+        if let Some(destination) =
+            prove_candidate(source, candidate, original, owner, &probe, None)?
         {
-            structure::restore_reference(block, old, &probe, &mut destination);
-        }
-        if &probed != original {
-            continue;
-        }
-        if let Some(destination) = destination {
             // Equivalent adjacent bracket parses can sometimes produce the
             // same AST. More than one proven context is still ambiguous.
             if selected.is_some() {
                 return Ok(None);
             }
-            selected = Some(destination);
+            selected = Some((index, destination));
         }
     }
-    Ok(selected)
+    let Some((selected_index, destination)) = selected else {
+        return Ok(None);
+    };
+    let boundary = format!("<!--{probe}-->");
+    for (index, candidate) in candidates.iter().enumerate() {
+        // [x][x](probe) can be swallowed by the earlier full reference. A
+        // comment lets the parser resolve the preceding [x] on its own.
+        // This extra proof can only veto an ambiguous ordinary match, never
+        // grant navigation from an image or another unproven source context.
+        if index != selected_index
+            && candidate.preceding.is_some()
+            && prove_candidate(source, candidate, original, owner, &probe, Some(&boundary))?
+                .is_some()
+        {
+            return Ok(None);
+        }
+    }
+    Ok(Some(destination))
+}
+
+fn prove_candidate(
+    source: &str,
+    candidate: &Candidate,
+    original: &Document,
+    owner: usize,
+    probe: &str,
+    boundary: Option<&str>,
+) -> Result<Option<String>, Failure> {
+    let mut amended =
+        String::with_capacity(source.len() + probe.len() + boundary.map_or(0, str::len) + 2);
+    if let (Some(at), Some(boundary)) = (candidate.preceding, boundary) {
+        amended.push_str(&source[..at]);
+        amended.push_str(boundary);
+        amended.push_str(&source[at..candidate.suffix.start]);
+    } else {
+        amended.push_str(&source[..candidate.suffix.start]);
+    }
+    amended.push('(');
+    amended.push_str(probe);
+    amended.push(')');
+    amended.push_str(&source[candidate.suffix.end..]);
+    let mut probed = parse_markdown(&amended);
+    if let Some(boundary) = boundary
+        && probed
+            .blocks
+            .get_mut(owner)
+            .map(|block| remove_boundary(block, boundary))
+            != Some(1)
+    {
+        return Ok(None);
+    }
+    if !matches_probe(&probed, original, owner, probe) {
+        return Ok(None);
+    }
+    let analysis = analyze_document_links(&probed).map_err(|_| {
+        (
+            -32803,
+            "reference link analysis could not complete within its limits",
+        )
+    })?;
+    if !analysis.references.iter().any(|reference| {
+        reference.block_index == owner
+            && reference.kind == ReferenceKind::Link
+            && reference.destination == probe
+    }) {
+        return Ok(None);
+    }
+    let mut destination = None;
+    if let (Some(block), Some(old)) = (probed.blocks.get_mut(owner), original.blocks.get(owner)) {
+        structure::restore_reference(block, old, probe, &mut destination);
+    }
+    Ok((&probed == original).then_some(destination).flatten())
+}
+
+/// Remove only the injected raw HTML node, never text that resembles it. The
+/// unique probe makes the marker absent from the original source, and callers
+/// require exactly one removal before validating the entire parsed document.
+fn remove_boundary(block: &mut Block, boundary: &str) -> usize {
+    match block {
+        Block::Paragraph(items) | Block::Heading { inlines: items, .. } => {
+            remove_inline_boundary(items, boundary)
+        }
+        Block::BlockQuote(blocks) | Block::FootnoteDefinition { blocks, .. } => blocks
+            .iter_mut()
+            .map(|block| remove_boundary(block, boundary))
+            .sum(),
+        Block::List(list) => list
+            .items
+            .iter_mut()
+            .flat_map(|item| &mut item.blocks)
+            .map(|block| remove_boundary(block, boundary))
+            .sum(),
+        Block::Table(table) => table
+            .head
+            .iter_mut()
+            .chain(table.rows.iter_mut().flatten())
+            .map(|items| remove_inline_boundary(items, boundary))
+            .sum(),
+        Block::DefinitionList(items) => items
+            .iter_mut()
+            .flat_map(|item| item.terms.iter_mut().chain(&mut item.definitions))
+            .map(|items| remove_inline_boundary(items, boundary))
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn remove_inline_boundary(items: &mut Vec<Inline>, boundary: &str) -> usize {
+    let mut removed = 0;
+    items.retain_mut(|item| match item {
+        Inline::Html(html) if html == boundary => {
+            removed += 1;
+            false
+        }
+        Inline::Emphasis(items)
+        | Inline::Strong(items)
+        | Inline::Strikethrough(items)
+        | Inline::Link { content: items, .. } => {
+            removed += remove_inline_boundary(items, boundary);
+            true
+        }
+        _ => true,
+    });
+    removed
 }
 
 #[cfg(test)]

@@ -93,7 +93,7 @@ fn anchors_match_rendered_html_for_slug_edge_cases() {
     let expected = vec![
         "hello-world".to_string(),
         "under-score-test".to_string(),
-        "unicode".to_string(),
+        "中文-unicode".to_string(),
         "section".to_string(),
         "section-2".to_string(),
     ];

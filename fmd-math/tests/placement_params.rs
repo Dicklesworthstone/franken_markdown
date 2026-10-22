@@ -377,6 +377,48 @@ fn script_styles_read_their_own_sizes_fontdimens() {
     assert!(close(sub, -2.17583), "sub at {sub}");
 }
 
+/// franken_manim fm-shqq: LaTeX's `\cong` is `\mathpalette\@vereq\sim`,
+/// cmsy's ∼ over cmr's =. The rows sit 0.5 pt closer than touching, and the
+/// stack is lowered 0.5 pt. TeX's `\showbox` (TeX Live 2025, article +
+/// amsmath):
+/// - text: 7.7778 × (6.3375 + 0.5) pt;
+/// - script: 6.25002 × (4.3771 + 0.5);
+/// - scriptscript: 5.41673 × (2.96405 + 0.5).
+#[test]
+fn cong_is_latexs_vereq_stack() {
+    let e = engine();
+    let close = |ours: f64, tex_pt: f64| (ours - tex_pt / 10.0).abs() < 1e-5;
+    for (tex, w, h) in [
+        (r"\cong", 7.7778, 6.3375),
+        (r"\scriptstyle\cong", 6.25002, 4.3771),
+        (r"\scriptscriptstyle\cong", 5.41673, 2.96405),
+    ] {
+        let l = e.typeset(tex, Style::Text).unwrap();
+        assert!(
+            close(l.width, w) && close(l.height, h) && close(l.depth, 0.5),
+            "{tex}: {l:?}"
+        );
+        // Two Computer Modern glyphs, never a fallback face's ≅.
+        let chars: Vec<char> = l.glyphs.iter().map(|g| g.ch).collect();
+        assert_eq!(chars, ['∼', '='], "{tex}");
+    }
+    // Text style: ∼'s baseline is 3.66875 - 0.5 - 0.5 pt up and ='s 0.5 pt
+    // down; both are 0.777779 em wide, so neither is shifted.
+    let l = e.typeset(r"\cong", Style::Text).unwrap();
+    assert!(close(glyph_y(&l, '∼'), 2.66875), "{l:?}");
+    assert!(close(glyph_y(&l, '='), -0.5), "{l:?}");
+    assert!(close(glyph_x(&l, '=') - glyph_x(&l, '∼'), 0.0), "{l:?}");
+    // Script style: cmr7's = is narrower than cmsy7's ∼ and is centred
+    // (TeX's glue set 0.05556fil on each side).
+    let l = e.typeset(r"\scriptstyle\cong", Style::Text).unwrap();
+    assert!(close(glyph_x(&l, '=') - glyph_x(&l, '∼'), 0.05556), "{l:?}");
+    assert!(close(glyph_y(&l, '∼'), 2.68855 - 1.0), "{l:?}");
+    // A relation: thick spaces on either side. TeX truncates the mu glue to
+    // 2.77771 pt rather than 5/18 of the quad, hence 1e-4 em here.
+    let w = e.typeset(r"a\cong b", Style::Text).unwrap().width;
+    assert!((w - 2.291077).abs() < 1e-4, "a\\cong b: {w}");
+}
+
 #[test]
 fn integrals_take_side_scripts_even_in_display() {
     let l = engine().typeset(r"\int_0^1", Style::Display).unwrap();

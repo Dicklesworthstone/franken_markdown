@@ -109,6 +109,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values. `MathConstants` replaces `sup_drop`/`sub_drop` with the cmsy7 and
   cmsy5 values and `script_drops`. Checked against TeX's `\showbox`
   (franken_manim fm-4ptw).
+- `fmd-math` sets `\cong` (≅) as LaTeX's `\@vereq` stack, cmsy's `∼` over
+  cmr's `=`, instead of drawing the Noto Sans Math fallback glyph. The rows
+  sit 0.5 pt closer than touching, and the stack is lowered 0.5 pt, in every
+  style. The construction is two glyphs, matching TeX's boxes to 1e-5 em in
+  text, script and scriptscript style. Every standard relation is now drawn
+  from Computer Modern (franken_manim fm-shqq).
 
 ## [0.6.0] - 2026-10-14
 

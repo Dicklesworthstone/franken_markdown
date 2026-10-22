@@ -927,6 +927,9 @@ impl Engine {
             if let Some(laid) = self.negated_relation(ch, span, ctx)? {
                 return Ok(laid);
             }
+            if let Some(laid) = self.vereq_relation(ch, span, ctx)? {
+                return Ok(laid);
+            }
         }
         let (face, gid, mapped) = match self.resolve_math_char(ch, span, ctx) {
             Ok(hit) => hit,
@@ -1044,6 +1047,50 @@ impl Engine {
         Ok(Some(Laid {
             boxx,
             italic: relation.italic,
+            char_glyph: None,
+        }))
+    }
+
+    /// LaTeX's `\cong`, `\mathrel{\mathpalette\@vereq\sim}`, where
+    /// `\@vereq#1#2` is `\lower.5\p@\vbox{\lineskiplimit\maxdimen
+    /// \lineskip-.5\p@\ialign{$\m@th#1\hfil##\hfil$\crcr#2\crcr=\crcr}}`:
+    /// cmsy's `∼` over cmr's `=` in the current style, each centred in the
+    /// wider one's width. The rows are hboxes, so their depths floor at
+    /// zero; they sit 0.5 pt closer than touching, and the stack is lowered
+    /// 0.5 pt. Points do not scale with the math style. Two glyphs, as the
+    /// Reference's SVG has them. `None` for every other character.
+    fn vereq_relation(&self, ch: char, span: Span, ctx: LayCtx) -> Result<Option<Laid>, MathError> {
+        if ch != '≅' {
+            return Ok(None);
+        }
+        let top = self.char_atom('∼', span, ctx)?.boxx;
+        let bottom = self.char_atom('=', span, ctx)?.boxx;
+        let width = top.width.max(bottom.width);
+        // \lineskip-.5\p@ and \lower.5\p@, in 10 pt ems.
+        let (lineskip, lower) = (-0.05, 0.05);
+        let top_dy = bottom.height.max(0.0) + lineskip + top.depth.max(0.0) - lower;
+        let boxx = MBox {
+            kind: BoxKind::Horizontal,
+            width,
+            height: top.height.max(0.0) + top_dy,
+            depth: bottom.depth.max(0.0) + lower,
+            // Top to bottom, the vbox's emission order.
+            children: vec![
+                Positioned {
+                    dx: (width - top.width) / 2.0,
+                    dy: top_dy,
+                    node: MNode::Box(top),
+                },
+                Positioned {
+                    dx: (width - bottom.width) / 2.0,
+                    dy: -lower,
+                    node: MNode::Box(bottom),
+                },
+            ],
+        };
+        Ok(Some(Laid {
+            boxx,
+            italic: 0.0,
             char_glyph: None,
         }))
     }

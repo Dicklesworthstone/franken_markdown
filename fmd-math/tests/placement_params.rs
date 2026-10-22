@@ -458,17 +458,50 @@ fn left_right_delimiters_cover_the_rule_19_target() {
     assert!(l.paths.is_empty());
     assert!(l.height + l.depth >= target - 1e-6);
 
-    // The small variant is the roman face's own paren: an inline
+    // The small variant is math family 0's own paren, cmr10's: an inline
     // \left(x\right) needs nothing larger.
     let small = e.typeset(r"\left( x \right)", Style::Text).unwrap();
     assert!(
         small
             .glyphs
             .iter()
-            .any(|g| g.ch == '(' && g.face == fmd_math::faces::FACE_REGULAR),
+            .any(|g| g.ch == '(' && g.face == fmd_math::faces::FACE_ROMAN_10),
         "natural glyph kept"
     );
     assert!(small.paths.is_empty());
+}
+
+/// franken_manim fm-u5sb: a `\left`/`\right` delimiter that needs nothing
+/// larger is TeX's small variant, from math family 0 for parentheses and
+/// brackets: cmr10 at text size and cmr7 in a script, never CM Unicode,
+/// whose brackets carry 1.48 times cmr10's ink. TeX's `\showbox` (TeX Live
+/// 2025, article + amsmath):
+/// - `\left[ x \right]` is 11.27084 × (7.5 + 2.5) pt, from `\OT1/cmr/m/n/10 [`;
+/// - `\left( x \right)` is 13.49307 pt wide;
+/// - `x^{\left[ y \right]}` sets `\OT1/cmr/m/n/7 [`.
+#[test]
+fn small_left_right_delimiters_are_math_family_zero() {
+    use fmd_math::faces::{FACE_ROMAN_7, FACE_ROMAN_10};
+    let e = engine();
+    let close = |ours: f64, tex_pt: f64| (ours - tex_pt / 10.0).abs() < 1e-5;
+    let brackets = e.typeset(r"\left[ x \right]", Style::Text).unwrap();
+    assert!(
+        close(brackets.width, 11.27084)
+            && close(brackets.height, 7.5)
+            && close(brackets.depth, 2.5),
+        "{brackets:?}"
+    );
+    for ch in ['[', ']'] {
+        let g = brackets.glyphs.iter().find(|g| g.ch == ch).unwrap();
+        assert_eq!(g.face, FACE_ROMAN_10, "{ch}");
+    }
+    let parens = e.typeset(r"\left( x \right)", Style::Text).unwrap();
+    assert!(close(parens.width, 13.49307), "{parens:?}");
+    let script = e.typeset(r"x^{\left[ y \right]}", Style::Text).unwrap();
+    for ch in ['[', ']'] {
+        let g = script.glyphs.iter().find(|g| g.ch == ch).unwrap();
+        assert_eq!(g.face, FACE_ROMAN_7, "script {ch}");
+    }
 }
 
 /// The vertical ink extent of the glyphs `keep` selects, ems.

@@ -2699,9 +2699,11 @@ impl Engine {
         {
             return Ok(boxx);
         }
-        // The small variant is the character's own face: cmsy for braces,
-        // bars, angles, floors and ceilings, cmmi for the slash, the roman
-        // face for parentheses and brackets, at the style's optical size.
+        // The small variant is the character's own face, as TeX sets it:
+        // cmsy for braces, bars, angles, floors and ceilings, cmmi for the
+        // slash, and math family 0 for parentheses and brackets. Family 0 is
+        // cmr10 at display and text size, not CM Unicode, whose brackets
+        // carry 1.48 times cmr10's ink. Each comes at the style's optical size.
         let Some((face, gid)) = self
             .faces
             .resolve(
@@ -2716,7 +2718,7 @@ impl Engine {
             )
             .map(|(face, gid)| {
                 self.faces
-                    .optical(face, ch, ctx.style.style)
+                    .tex_face(face, ch, ctx.style.style, ctx.text_mode)
                     .unwrap_or((face, gid))
             })
         else {

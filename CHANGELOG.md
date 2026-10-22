@@ -115,6 +115,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   style. The construction is two glyphs, matching TeX's boxes to 1e-5 em in
   text, script and scriptscript style. Every standard relation is now drawn
   from Computer Modern (franken_manim fm-shqq).
+- `fmd-math` takes the small variant of a `\left`/`\right` parenthesis or
+  bracket from math family 0, as TeX does: cmr10 at display and text size,
+  cmr7 and cmr5 in scripts. At display and text size it used CM Unicode's
+  glyph, whose brackets carry 1.48 times cmr10's ink. Tall delimiters were
+  already cmex's own glyphs. Checked against TeX's `\showbox`
+  (franken_manim fm-u5sb).
 
 ## [0.6.0] - 2026-10-14
 

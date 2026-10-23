@@ -113,6 +113,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
 | Native safety | HTML, PDF, config, and batch outputs are staged where applicable. `--to both` rolls back sibling outputs on later failure, and the CLI refuses to overwrite the input file |
+| Editor integration | Optional `fmd-lsp` provides diagnostics, symbols, link navigation, and parser-proven [footnote definitions, references, highlights and safe versioned renames](docs/LSP_FOOTNOTES.md) in opened Markdown buffers |
 | Config | Dependency-free `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults. `--no-config` gives reproducible config-free runs |
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, and stable output ordering |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |

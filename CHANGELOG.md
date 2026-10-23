@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The optional language server supports exact footnote definitions, references,
+  highlights and label-only renames through versioned document edits. Parser-proven
+  source mapping excludes literal lookalikes; rename checks preserve Markdown
+  semantics, document/session limits and generated anchors, including links
+  through alternate spellings of an opened file URI.
+
 - `fmd-math` honours `\color` and `\textcolor`. They used to parse and then be
   silently ignored, and `\textcolor` failed as untiered.
   - The colour surface is plain xcolor's: the 19 base names, mixes such as

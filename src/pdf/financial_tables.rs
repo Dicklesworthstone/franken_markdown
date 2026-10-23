@@ -150,8 +150,8 @@ pub(super) fn footing_depth(line: &Line) -> f32 {
 mod tests {
     use super::*;
     use crate::pdf::{
-        FlowKind, PageGeom, Seg, effective_pdf_options, layout, paginate_lines_for_options,
-        text_width,
+        FlowKind, PageGeom, Seg, TableSourceRow, effective_pdf_options, layout,
+        paginate_lines_for_options, text_width,
     };
     use crate::{PdfOptions, parse_markdown};
 
@@ -298,7 +298,13 @@ mod tests {
             .collect();
         assert!(data.len() > 2, "the long label must wrap");
         for line in &data {
-            assert!(matches!(line.table_source_row, Some(1 | 3)));
+            assert!(matches!(
+                line.table_source_row,
+                Some(TableSourceRow {
+                    index: 1 | 3,
+                    columns: 2,
+                })
+            ));
             if !line.table_footing.is_empty() {
                 assert_eq!(line.flow.index + 1, line.flow.count);
             }
@@ -310,8 +316,20 @@ mod tests {
         assert_eq!(decorated.len(), 2);
         assert_eq!(decorated[0].table_footing.len(), 1);
         assert_eq!(decorated[1].table_footing.len(), 2);
-        assert_eq!(decorated[0].table_source_row, Some(1));
-        assert_eq!(decorated[1].table_source_row, Some(3));
+        assert_eq!(
+            decorated[0].table_source_row,
+            Some(TableSourceRow {
+                index: 1,
+                columns: 2
+            })
+        );
+        assert_eq!(
+            decorated[1].table_source_row,
+            Some(TableSourceRow {
+                index: 3,
+                columns: 2
+            })
+        );
         let double = &decorated[1].table_footing;
         assert_eq!(double[0].x1, double[1].x1);
         assert_eq!(double[0].x2, double[1].x2);
@@ -348,7 +366,13 @@ mod tests {
                 for placed in page_lines {
                     if placed.line.flow.kind == FlowKind::TableHeader {
                         assert!(placed.line.table_footing.is_empty());
-                        assert_eq!(placed.line.table_source_row, Some(0));
+                        assert_eq!(
+                            placed.line.table_source_row,
+                            Some(TableSourceRow {
+                                index: 0,
+                                columns: 2
+                            })
+                        );
                     }
                     if !placed.line.table_footing.is_empty() {
                         decorated += 1;
@@ -366,21 +390,38 @@ mod tests {
             assert_eq!(decorated, 32);
             assert_eq!(
                 source_rows,
-                (0..32).map(|row| row * 2 + 1).collect::<Vec<_>>()
+                (0..32)
+                    .map(|row| TableSourceRow {
+                        index: row * 2 + 1,
+                        columns: 2,
+                    })
+                    .collect::<Vec<_>>()
             );
         }
     }
 
     #[test]
-    fn ordinary_tables_keep_literal_marker_rows_and_no_financial_metadata() {
+    fn ordinary_tables_keep_literal_marker_rows_and_no_financial_footings() {
         let source = "| Item | Amount |\n| --- | ---: |\n\
                       | Total | 1.25 |\n| | === |\n";
         let (lines, _, _) = prepared(source, &PdfOptions::default());
-        assert!(
-            lines
-                .iter()
-                .all(|line| { line.table_footing.is_empty() && line.table_source_row.is_none() })
-        );
+        let mut next_source_row = 0;
+        for line in &lines {
+            assert!(line.table_footing.is_empty());
+            if matches!(line.flow.kind, FlowKind::TableHeader | FlowKind::TableRow) {
+                assert_eq!(
+                    line.table_source_row,
+                    Some(TableSourceRow {
+                        index: next_source_row,
+                        columns: 2,
+                    })
+                );
+                next_source_row += 1;
+            } else {
+                assert!(line.table_source_row.is_none());
+            }
+        }
+        assert_eq!(next_source_row, 3);
         assert!(
             lines
                 .iter()

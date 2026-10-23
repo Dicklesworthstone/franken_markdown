@@ -63,8 +63,13 @@ labels, container metadata and other titles are not relaxed. Code, images, math
 and HTML attributes therefore cannot acquire authority from link-shaped text.
 Probe text never enters stored buffers, diagnostics, response edits or files.
 
-Direct footnote-marker navigation, escaped/multiline explicit URL tokens,
-multiline reference uses and reference-definition editing are not implemented.
+Direct footnote markers such as `[^note]` support label-precise definitions,
+references, highlights, and versioned rename through a separate document-local
+provider; see [LSP_FOOTNOTES.md](LSP_FOOTNOTES.md). This includes unresolved
+references and definitions in unreferenced note bodies.
+
+Escaped/multiline explicit URL tokens, multiline reference uses and
+reference-definition editing are not implemented.
 
 ## Limits and verification
 

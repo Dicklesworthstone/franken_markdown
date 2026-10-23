@@ -2,6 +2,7 @@
 //! Only explicitly opened buffers participate: no network, file reads, or transclusion.
 
 mod diagnostics;
+mod footnotes;
 mod links;
 mod navigation;
 #[cfg(test)]
@@ -101,6 +102,7 @@ struct Server {
     exit: Option<bool>,
     hierarchical_symbols: bool,
     folding_limit: Option<usize>,
+    versioned_edits: bool,
 }
 
 impl Server {
@@ -154,6 +156,14 @@ impl Server {
                 .and_then(|c| c.get("rangeLimit"))
                 .and_then(Json::as_u64)
                 .map(|n| n.min(navigation::MAX_NAVIGATION_ITEMS as u64) as usize);
+            self.versioned_edits = message
+                .get("params")
+                .and_then(|params| params.get("capabilities"))
+                .and_then(|capabilities| capabilities.get("workspace"))
+                .and_then(|workspace| workspace.get("workspaceEdit"))
+                .and_then(|edit| edit.get("documentChanges"))
+                .and_then(Json::as_bool)
+                .unwrap_or(false);
             self.phase = Phase::Running;
             return vec![response(
                 id,
@@ -169,6 +179,14 @@ impl Server {
                             ("definitionProvider", Json::Bool(true)),
                             ("referencesProvider", Json::Bool(true)),
                             ("documentHighlightProvider", Json::Bool(true)),
+                            (
+                                "renameProvider",
+                                if self.versioned_edits {
+                                    object([("prepareProvider", Json::Bool(true))])
+                                } else {
+                                    Json::Bool(false)
+                                },
+                            ),
                             (
                                 "completionProvider",
                                 object([
@@ -239,6 +257,8 @@ impl Server {
                     | "textDocument/definition"
                     | "textDocument/references"
                     | "textDocument/documentHighlight"
+                    | "textDocument/prepareRename"
+                    | "textDocument/rename"
             ) {
                 return vec![match self.navigate(method, params) {
                     Ok(result) => response(id, result),
@@ -270,6 +290,29 @@ impl Server {
             .ok_or((-32602, "document is not open"))?;
         if !buffer.synchronized {
             return Err((-32801, "document requires full-text resynchronization"));
+        }
+        if matches!(
+            method,
+            "textDocument/definition"
+                | "textDocument/references"
+                | "textDocument/documentHighlight"
+                | "textDocument/prepareRename"
+                | "textDocument/rename"
+        ) {
+            let renaming = matches!(method, "textDocument/prepareRename" | "textDocument/rename");
+            if renaming && !self.versioned_edits {
+                return Err((
+                    -32601,
+                    "footnote rename requires versioned documentChanges support",
+                ));
+            }
+            if let Some(result) = footnotes::request(method, params, uri, buffer, &self.documents)?
+            {
+                return Ok(result);
+            }
+            if renaming {
+                return Ok(Json::Null);
+            }
         }
         if matches!(
             method,

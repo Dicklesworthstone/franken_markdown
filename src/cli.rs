@@ -831,6 +831,16 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         };
         extras.push(path);
     }
+    // Custom faces are render inputs even when Markdown never mentions their
+    // paths. Retain missing paths as well so installing a font repairs a failed
+    // initial render without requiring a source edit.
+    for spec in &args.style.pdf_fonts {
+        let (_, path) = match parse_pdf_font_spec(spec) {
+            Ok(asset) => asset,
+            Err(message) => return fail_json(64, "usage_error", &message, json),
+        };
+        extras.push(path);
+    }
     // xjld: a directory input expands to every `*.md` file under it.
     // A directory with no `*.md` is a usage error (silent no-watch
     // would surprise agents that typed the wrong path).
@@ -2415,6 +2425,10 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
         Ok(config) => config,
         Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
     };
+    let mut input_paths = Vec::new();
+    if !no_config {
+        input_paths.push(config_path());
+    }
     apply_config_render_defaults(&mut args.style, &config.render, true);
     let mut theme = config.to_theme();
     if let Some(font) = args.font {
@@ -2426,7 +2440,10 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     let css_path = args.css.clone().or_else(|| config.custom_css.clone());
     let custom_css = match css_path.as_deref() {
         Some(p) => match read_stylesheet(p) {
-            Ok(s) => Some(s),
+            Ok(s) => {
+                input_paths.push(p.to_path_buf());
+                Some(s)
+            }
             Err(e) => {
                 return fail_json(
                     66,
@@ -2526,15 +2543,20 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
         Ok(profile) => profile,
         Err(code) => return code,
     };
-    let font_assets = match load_host_font_assets(&style.pdf_fonts, &style.pdf_font_weights) {
+    let font_assets = match load_host_font_assets_recording(
+        &style.pdf_fonts,
+        &style.pdf_font_weights,
+        &mut input_paths,
+    ) {
         Ok(assets) => assets,
         Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
         Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
     };
-    let explicit_images = match read_pdf_image_assets(
+    let explicit_images = match read_pdf_image_assets_recording(
         &style.pdf_images,
         style.max_pdf_image_bytes,
         &running_image_destinations(style),
+        &mut input_paths,
     ) {
         Ok(assets) => assets,
         Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
@@ -2601,7 +2623,7 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
         max_pdf_image_bytes: args.style.max_pdf_image_bytes,
     };
 
-    match batch::run_batch_blocking(plan, &opts) {
+    match batch::run_batch_blocking_with_protected_inputs(plan, &opts, &input_paths) {
         Ok(mut receipt) => {
             // Record any unexpandable paths as per-file failures. Strict mode
             // already returned above, so this only runs under --continue-on-error
@@ -2913,14 +2935,6 @@ enum PdfImageError {
 enum HostFontError {
     Usage(String),
     Input(String),
-}
-
-#[cfg(feature = "batch")]
-fn load_host_font_assets(
-    fonts: &[String],
-    weights: &[String],
-) -> std::result::Result<FontAssets, HostFontError> {
-    load_host_font_assets_recording(fonts, weights, &mut Vec::new())
 }
 
 fn load_host_font_assets_recording(

@@ -100,6 +100,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Batch outputs preserve all planned source documents and loaded image, CSS,
+  font and configuration files, including another job's inputs and filesystem
+  aliases. Unsafe jobs fail before publishing either combined output; fresh
+  destinations avoid the extra dependency scan.
+- Watch rebuilds when an explicitly supplied font changes or a missing font
+  appears, including documents sharing that font in a watched directory.
 - Tagged PDF paragraphs, links, code blocks, quotes, lists and tables retain
   their logical identity across page breaks. Continued table headers are
   pagination artifacts, with annotations still owned by their original header

@@ -643,30 +643,33 @@ fn read_input_limited(input: &Path, max_bytes: u64) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "read failed: input is not valid UTF-8".to_string())
 }
 
-fn append_auto_image_assets_for_input(
+/// Resolve the exact local files that the renderer can auto-load. The batch
+/// preflight and per-file loader share this selection so an image owned by any
+/// job is protected before another worker can replace it.
+fn auto_image_inputs(
     input: &Path,
     doc: &Document,
-    assets: &mut Vec<PdfImageAsset>,
-    output_kind: &str,
-    max_bytes: u64,
-) -> Result<(), String> {
+    assets: &[PdfImageAsset],
+) -> Vec<(String, PathBuf)> {
     let base_dir = input
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let Ok(canonical_base_dir) = std::fs::canonicalize(base_dir) else {
-        return Ok(());
+        return Vec::new();
     };
-
     let mut destinations = Vec::new();
     let lowered_doc = crate::safe_html::lower(doc);
     collect_image_destinations(&lowered_doc.blocks, &mut destinations);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut inputs = Vec::new();
     for destination in destinations {
         let destination = destination.trim();
         if destination.is_empty()
             || assets
                 .iter()
                 .any(|asset| asset.destination.trim() == destination)
+            || !seen.insert(destination)
         {
             continue;
         }
@@ -676,15 +679,24 @@ fn append_auto_image_assets_for_input(
         let Ok(canonical_path) = std::fs::canonicalize(&path) else {
             continue;
         };
-        if !canonical_path.starts_with(&canonical_base_dir) {
-            continue;
+        if canonical_path.starts_with(&canonical_base_dir) && canonical_path.is_file() {
+            inputs.push((destination.to_string(), canonical_path));
         }
-        let Ok(meta) = std::fs::metadata(&canonical_path) else {
-            continue;
-        };
-        if !meta.is_file() {
-            continue;
-        }
+    }
+    inputs
+}
+
+fn append_auto_image_assets_for_input(
+    input: &Path,
+    doc: &Document,
+    assets: &mut Vec<PdfImageAsset>,
+    output_kind: &str,
+    max_bytes: u64,
+    input_paths: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    for (destination, path) in auto_image_inputs(input, doc, assets) {
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| format!("reading auto {output_kind} image {}: {e}", path.display()))?;
         let label = format!(
             "auto {output_kind} image asset {destination} from {}",
             path.display()
@@ -696,8 +708,7 @@ fn append_auto_image_assets_for_input(
                 limit = max_bytes
             ));
         }
-        let file =
-            std::fs::File::open(&canonical_path).map_err(|e| format!("reading {label}: {e}"))?;
+        let file = std::fs::File::open(&path).map_err(|e| format!("reading {label}: {e}"))?;
         let mut bytes = Vec::new();
         file.take(max_bytes.saturating_add(1))
             .read_to_end(&mut bytes)
@@ -709,6 +720,7 @@ fn append_auto_image_assets_for_input(
             ));
         }
         assets.push(PdfImageAsset::new(destination, bytes));
+        input_paths.push(path);
     }
     Ok(())
 }
@@ -834,6 +846,135 @@ fn has_supported_pdf_image_extension(path: &Path) -> bool {
         })
 }
 
+#[derive(Default)]
+struct ProtectedInputs {
+    canonical: std::collections::BTreeMap<PathBuf, PathBuf>,
+    #[cfg(unix)]
+    inodes: std::collections::BTreeMap<(u64, u64), PathBuf>,
+}
+
+impl ProtectedInputs {
+    fn insert(&mut self, path: &Path) {
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            self.canonical
+                .entry(canonical)
+                .or_insert_with(|| path.to_path_buf());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let Ok(meta) = std::fs::metadata(path) {
+                self.inodes
+                    .entry((meta.dev(), meta.ino()))
+                    .or_insert_with(|| path.to_path_buf());
+            }
+        }
+    }
+
+    fn source_for(&self, output: &Path) -> Option<&Path> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let Ok(meta) = std::fs::metadata(output)
+                && let Some(source) = self.inodes.get(&(meta.dev(), meta.ino()))
+            {
+                return Some(source);
+            }
+        }
+        std::fs::canonicalize(output)
+            .ok()
+            .and_then(|path| self.canonical.get(&path))
+            .map(PathBuf::as_path)
+    }
+}
+
+/// Discover dependencies for the entire plan before allowing any worker to
+/// write. Keeping only paths bounds this pass to one parsed document at a time;
+/// image bytes and rendered output remain subject to the normal worker budget.
+fn source_overwrite_errors(
+    plan: &BatchPlan,
+    opts: &BatchOptions,
+    host_inputs: &[PathBuf],
+    cx: &Cx,
+    cancelled: &AtomicBool,
+) -> Vec<Option<String>> {
+    let extensions: &[&str] = match plan.format {
+        OutputFormat::Html => &["html"],
+        OutputFormat::Pdf => &["pdf"],
+        OutputFormat::Both => &["html", "pdf"],
+        OutputFormat::Epub => &["epub"],
+        OutputFormat::Svg => &["svg"],
+    };
+    let existing_outputs: Vec<Vec<_>> = plan
+        .inputs
+        .iter()
+        .map(|input| {
+            extensions
+                .iter()
+                .map(|kind| (*kind, output_path(input, plan.out_dir.as_deref(), kind)))
+                .filter(|(_, path)| path.exists())
+                .collect()
+        })
+        .collect();
+    // A fresh output tree cannot overwrite an existing input. Avoid a second
+    // parse of every source for this common case; each job still checks its
+    // actual loaded inputs immediately before committing its outputs.
+    if existing_outputs.iter().all(Vec::is_empty) {
+        return vec![None; plan.inputs.len()];
+    }
+    let mut readable = vec![false; plan.inputs.len()];
+    let mut protected = ProtectedInputs::default();
+    for path in plan.inputs.iter().chain(host_inputs) {
+        protected.insert(path);
+    }
+    for (index, input) in plan.inputs.iter().enumerate() {
+        if cancelled.load(Ordering::Relaxed) || cx.checkpoint().is_err() {
+            cancelled.store(true, Ordering::Relaxed);
+            break;
+        }
+        // Read/render failures still belong to the individual job's receipt.
+        // Preserve its panic isolation while inspecting dependencies here.
+        let resources = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let md = read_input_limited(input, opts.max_input_bytes).ok()?;
+            let doc = parse_markdown(&md);
+            let mut paths = Vec::new();
+            if plan.format.wants_html() || matches!(plan.format, OutputFormat::Epub) {
+                paths.extend(auto_image_inputs(input, &doc, &opts.html.image_assets));
+            }
+            if plan.format.wants_pdf() || matches!(plan.format, OutputFormat::Svg) {
+                paths.extend(auto_image_inputs(input, &doc, &opts.pdf.image_assets));
+            }
+            Some(paths)
+        }));
+        if let Ok(Some(resources)) = resources {
+            readable[index] = true;
+            for (_, path) in resources {
+                protected.insert(&path);
+            }
+        }
+    }
+    existing_outputs
+        .iter()
+        .zip(readable)
+        .map(|(outputs, readable)| {
+            // Preserve input-error precedence for unreadable/oversized sources;
+            // their primary paths still protect every other job's output.
+            if !readable {
+                return None;
+            }
+            outputs.iter().find_map(|(kind, output)| {
+                protected.source_for(output).map(|source| {
+                    format!(
+                        "write {kind} failed: refusing to overwrite the input file {} with output {}; write to a distinct output directory",
+                        source.display(),
+                        output.display()
+                    )
+                })
+            })
+        })
+        .collect()
+}
+
 fn render_one(
     input: &Path,
     format: OutputFormat,
@@ -848,6 +989,7 @@ fn render_one(
         Err(e) => return failed(input, FileErrorKind::Input, e),
     };
     let doc = parse_markdown(&md);
+    let mut input_paths = vec![input.to_path_buf()];
     if let Some(dir) = out_dir
         && let Err(e) = std::fs::create_dir_all(dir)
     {
@@ -867,6 +1009,7 @@ fn render_one(
             &mut html_opts.image_assets,
             "HTML",
             max_pdf_image_bytes,
+            &mut input_paths,
         ) {
             return failed(input, FileErrorKind::Input, e);
         }
@@ -896,6 +1039,7 @@ fn render_one(
             &mut pdf_opts.image_assets,
             "PDF",
             max_pdf_image_bytes,
+            &mut input_paths,
         ) {
             return failed(input, FileErrorKind::Input, e);
         }
@@ -926,6 +1070,7 @@ fn render_one(
             &mut epub_opts.image_assets,
             "EPUB",
             max_pdf_image_bytes,
+            &mut input_paths,
         ) {
             return failed(input, FileErrorKind::Input, e);
         }
@@ -946,9 +1091,14 @@ fn render_one(
     }
     if matches!(format, OutputFormat::Svg) {
         let mut images = pdf.image_assets.clone();
-        if let Err(e) =
-            append_auto_image_assets_for_input(input, &doc, &mut images, "SVG", max_pdf_image_bytes)
-        {
+        if let Err(e) = append_auto_image_assets_for_input(
+            input,
+            &doc,
+            &mut images,
+            "SVG",
+            max_pdf_image_bytes,
+            &mut input_paths,
+        ) {
             return failed(input, FileErrorKind::Input, e);
         }
         let svg_opts = crate::SvgOptions {
@@ -979,13 +1129,17 @@ fn render_one(
                 format!("write {} failed: destination is a directory", item.kind),
             );
         }
-        if crate::file_write::same_existing_file(input, &item.path) {
+        if let Some(source) = input_paths
+            .iter()
+            .find(|source| crate::file_write::same_existing_file(source, &item.path))
+        {
             return failed(
                 input,
                 FileErrorKind::Output,
                 format!(
-                    "write {} failed: refusing to overwrite the input file {}; write to a distinct output directory",
+                    "write {} failed: refusing to overwrite the input file {} with output {}; write to a distinct output directory",
                     item.kind,
+                    source.display(),
                     item.path.display()
                 ),
             );
@@ -1081,6 +1235,16 @@ pub async fn render_batch(
     opts: &BatchOptions,
     budget: WorkerBudget,
 ) -> Outcome<BatchReceipt, BatchError> {
+    render_batch_with_protected_inputs(cx, plan, opts, budget, &[]).await
+}
+
+async fn render_batch_with_protected_inputs(
+    cx: &Cx,
+    plan: BatchPlan,
+    opts: &BatchOptions,
+    budget: WorkerBudget,
+    host_inputs: &[PathBuf],
+) -> Outcome<BatchReceipt, BatchError> {
     // Cooperative cancellation/budget observation at the batch boundary.
     if cx.checkpoint().is_err() {
         let files = plan
@@ -1103,7 +1267,6 @@ pub async fn render_batch(
         &plan.inputs,
         plan.out_dir.as_deref(),
     ));
-    let inputs = Arc::new(plan.inputs);
     let cancelled = Arc::new(AtomicBool::new(false));
 
     // `--timeout` watchdog: a plain OS thread (no `unsafe`, no signal handler)
@@ -1134,6 +1297,15 @@ pub async fn render_batch(
         })
     });
 
+    let overwrite_errors = Arc::new(source_overwrite_errors(
+        &plan,
+        opts,
+        host_inputs,
+        cx,
+        &cancelled,
+    ));
+    let inputs = Arc::new(plan.inputs);
+
     // Spawn through the runtime handle (the documented `block_on` spawn path);
     // on a multi-thread runtime each worker task lands on its own worker thread,
     // so the blocking synchronous renders run in parallel.
@@ -1147,6 +1319,7 @@ pub async fn render_batch(
         let inputs = Arc::clone(&inputs);
         let cancelled = Arc::clone(&cancelled);
         let collisions = Arc::clone(&collisions);
+        let overwrite_errors = Arc::clone(&overwrite_errors);
         let html = opts.html.clone();
         let pdf = opts.pdf.clone();
         let out_dir = plan.out_dir.clone();
@@ -1175,6 +1348,8 @@ pub async fn render_batch(
                             inputs[first].display()
                         ),
                     )
+                } else if let Some(message) = &overwrite_errors[i] {
+                    failed(&inputs[i], FileErrorKind::Output, message.clone())
                 } else {
                     // Isolate a renderer panic to this one file (in unwind builds;
                     // release uses panic=abort, where a panic ends the process the
@@ -1251,6 +1426,16 @@ pub fn run_batch_blocking(
     plan: BatchPlan,
     opts: &BatchOptions,
 ) -> Result<BatchReceipt, BatchError> {
+    run_batch_blocking_with_protected_inputs(plan, opts, &[])
+}
+
+/// Host-only resources (CSS, fonts, explicit images and configuration) arrive
+/// as bytes in render options, so the CLI supplies their source paths here.
+pub(crate) fn run_batch_blocking_with_protected_inputs(
+    plan: BatchPlan,
+    opts: &BatchOptions,
+    host_inputs: &[PathBuf],
+) -> Result<BatchReceipt, BatchError> {
     let c_avail = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
@@ -1273,7 +1458,9 @@ pub fn run_batch_blocking(
 
     let outcome = runtime.block_on(async move {
         match Cx::current() {
-            Some(cx) => render_batch(&cx, plan, opts, budget).await,
+            Some(cx) => {
+                render_batch_with_protected_inputs(&cx, plan, opts, budget, host_inputs).await
+            }
             None => Outcome::Err(BatchError::NoContext),
         }
     });
@@ -2630,7 +2817,8 @@ mod tests {
         let doc = parse_markdown("![x](pic.svg)\n");
         let mut assets = Vec::new();
         let input = Path::new("/fmd-batch-test-does-not-exist/doc.md");
-        append_auto_image_assets_for_input(input, &doc, &mut assets, "HTML", 1024).unwrap();
+        append_auto_image_assets_for_input(input, &doc, &mut assets, "HTML", 1024, &mut Vec::new())
+            .unwrap();
         assert!(
             assets.is_empty(),
             "no asset can be loaded without a base dir"

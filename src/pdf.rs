@@ -354,9 +354,9 @@ struct Line {
     /// non-table line. Lets the structure-tree builder emit per-cell `/TH`/`/TD`
     /// and merge a cell's wrapped fragments across physical lines.
     table_cols: Vec<u32>,
-    /// Original source table row (header = 0), stable across page boundaries.
+    /// Original source table row and full grid width, stable across pages.
     /// Footing-marker rows do not become accessible data rows.
-    table_source_row: Option<u32>,
+    table_source_row: Option<TableSourceRow>,
     /// Non-content strokes belonging to this row, never repeated as headers.
     table_footing: Vec<financial_tables::FootingStroke>,
     /// Unwrapped AST identity, carried only by a heading's first line. Paint
@@ -364,6 +364,16 @@ struct Line {
     heading_source: Option<Box<HeadingSource>>,
     segs: Vec<Seg>,
     image: Option<ImageLine>,
+}
+
+/// The semantic row survives even when none of its cells paints a glyph.
+/// Carrying the width separately from `table_cols` preserves blank grid slots
+/// without adding dummy text segments or changing measurement and placement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TableSourceRow {
+    /// Original source row; the header is row zero.
+    index: u32,
+    columns: u32,
 }
 
 #[derive(Clone)]
@@ -17835,8 +17845,8 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             let nominal = spec.nominal_size;
             // Footnote scaling can put a valid nominal size below the body
             // table floor. Never enlarge that nominal or invert clamp bounds.
-            let min_size = (nominal * 0.75)
-                .max(crate::theme::TABLE_FONT_SIZE_FLOOR_PT.min(nominal));
+            let min_size =
+                (nominal * 0.75).max(crate::theme::TABLE_FONT_SIZE_FLOOR_PT.min(nominal));
             size = (nominal * scale).clamp(min_size, nominal);
             pad = (TABLE_COL_GUTTER * (size / nominal)).max(8.0);
             gutters = pad * ncol as f32;
@@ -17964,9 +17974,9 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             // so the structure tree can tag per-cell `/TH`/`/TD`. Multiple
             // styled runs of one cell share that cell's column key, so they
             // collapse into a single `/TH`/`/TD` with several marked-content
-            // runs. An empty cell emits no seg (and no column), so it is
-            // simply omitted from its row's structure — a known limitation
-            // (no empty-`/TD` backfill); see docs/PDF_ACCESSIBILITY.md.
+            // runs. Empty cells need no paint segment: `table_source_row`
+            // carries the full grid width so the writer can insert empty cell
+            // marks at their original column positions.
             let mut cols = Vec::new();
             for k in 0..ncol {
                 let Some(cell_line) = wrapped.get(k).and_then(|parts| parts.get(row_idx)) else {
@@ -18060,12 +18070,15 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 // Stable across pages, including a wrapped row continued after
                 // a repeated header. Financial rule-only source rows retain
                 // their original indices instead of renumbering visible rows.
-                table_source_row: Some(source_row.map_or(0, |index| {
-                    financial_rows
-                        .as_ref()
-                        .map_or(index, |rows| rows[index].source_index)
-                        .saturating_add(1) as u32
-                })),
+                table_source_row: Some(TableSourceRow {
+                    index: source_row.map_or(0, |index| {
+                        financial_rows
+                            .as_ref()
+                            .map_or(index, |rows| rows[index].source_index)
+                            .saturating_add(1) as u32
+                    }),
+                    columns: ncol as u32,
+                }),
                 table_footing: Vec::new(),
                 heading_source: None,
                 segs,
@@ -18269,7 +18282,9 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             })
             .collect();
         for line in &mut out[item_start_line..] {
-            if line.list_path.is_empty() && line_has_visible_content(line) {
+            if line.list_path.is_empty()
+                && (line_has_visible_content(line) || line.table_source_row.is_some())
+            {
                 line.list_path = chain.clone();
             }
         }
@@ -22895,11 +22910,11 @@ fn generate_page_content(
                 y + line.size * 0.5,
                 x2,
             );
-        } else if !line.table_cols.is_empty() {
+        } else if line.table_source_row.is_some() || !line.table_cols.is_empty() {
             match (line.table_source_row, tbl_group) {
                 (Some(source_row), _) => {
                     tbl_group = Some(line.flow.group);
-                    tbl_row = source_row;
+                    tbl_row = source_row.index;
                 }
                 (None, Some(g)) if g == line.flow.group => {
                     let into_body = line.flow.kind == FlowKind::TableRow
@@ -22921,23 +22936,32 @@ fn generate_page_content(
                     .insert((line.flow.group, line.flow.index));
             let cell_tag = if header { "TH" } else { "TD" };
             let prefix = container_prefix(line);
+            // Only the row's first physical line creates missing grid slots.
+            // Interleave them with painted cells so /TR children retain source
+            // column order. Continued rows reuse those same logical cells, and
+            // repeated headers need no second empty-cell occurrence.
+            let empty_columns = line
+                .table_source_row
+                .filter(|_| line.flow.index == 0 && !repeated_header)
+                .map(|row| row.columns);
+            let mut next_column = 0;
             for (seg, &col) in line.segs.iter().zip(line.table_cols.iter()) {
                 if seg.text.is_empty() {
                     continue;
                 }
-                let mut path = SmallPath::from_slice(prefix.as_slice());
-                path.push(SElem {
-                    key: SKey::Table(line.flow.group),
-                    tag: "Table",
-                });
-                path.push(SElem {
-                    key: SKey::TableRow(line.flow.group, tbl_row),
-                    tag: "TR",
-                });
-                path.push(SElem {
-                    key: SKey::TableCell(line.flow.group, tbl_row, col),
-                    tag: cell_tag,
-                });
+                if empty_columns.is_some() {
+                    for missing in next_column..col {
+                        append_empty_table_cell(
+                            &mut body,
+                            &mut marks,
+                            &mut next_mcid,
+                            table_cell_path(&prefix, line.flow.group, tbl_row, missing, header),
+                            cell_tag,
+                        );
+                    }
+                    next_column = col.saturating_add(1);
+                }
+                let mut path = table_cell_path(&prefix, line.flow.group, tbl_row, col, header);
                 if seg.slot == F_IMAGE {
                     // An image in a cell is a /Figure inside its /TD.
                     if !repeated_header {
@@ -22979,12 +23003,7 @@ fn generate_page_content(
                     next_mcid += 1;
                     continue;
                 }
-                append_table_cell_content_begin(
-                    &mut body,
-                    cell_tag,
-                    next_mcid,
-                    repeated_header,
-                );
+                append_table_cell_content_begin(&mut body, cell_tag, next_mcid, repeated_header);
                 draw_seg(
                     &mut body,
                     &mut annots,
@@ -23007,6 +23026,17 @@ fn generate_page_content(
                     bbox: None,
                 });
                 next_mcid += 1;
+            }
+            if let Some(columns) = empty_columns {
+                for missing in next_column..columns {
+                    append_empty_table_cell(
+                        &mut body,
+                        &mut marks,
+                        &mut next_mcid,
+                        table_cell_path(&prefix, line.flow.group, tbl_row, missing, header),
+                        cell_tag,
+                    );
+                }
             }
         } else {
             let marker_size = line.image.as_ref().and_then(|image| image.marker_size);
@@ -23316,6 +23346,44 @@ fn generate_page_content(
     )
 }
 
+fn table_cell_path(prefix: &[SElem], table: u32, row: u32, column: u32, header: bool) -> SmallPath {
+    let mut path = SmallPath::from_slice(prefix);
+    path.push(SElem {
+        key: SKey::Table(table),
+        tag: "Table",
+    });
+    path.push(SElem {
+        key: SKey::TableRow(table, row),
+        tag: "TR",
+    });
+    path.push(SElem {
+        key: SKey::TableCell(table, row, column),
+        tag: if header { "TH" } else { "TD" },
+    });
+    path
+}
+
+/// Empty cells still occupy a grid position for table navigation. An empty
+/// marked-content sequence gives each one a normal page/parent-tree owner
+/// without painting text, changing layout, or inventing an accessible label.
+fn append_empty_table_cell(
+    body: &mut String,
+    marks: &mut Vec<StructMark>,
+    next_mcid: &mut usize,
+    path: SmallPath,
+    tag: &'static str,
+) {
+    append_marked_content_begin(body, tag, *next_mcid);
+    body.push_str("EMC\n");
+    marks.push(StructMark {
+        mcid: *next_mcid,
+        path,
+        alt: None,
+        bbox: None,
+    });
+    *next_mcid += 1;
+}
+
 /// Start a cell's logical content, keeping repeated header paint out of the
 /// reading order. The empty mark retained on a repeated header still owns its
 /// clickable annotations and maps to the original logical header cell.
@@ -23516,6 +23584,9 @@ struct SNode {
     bbox: Option<[f32; 4]>,
     /// True for `/TH` cells, which emit a `/Scope /Column` table attribute.
     scope_column: bool,
+    /// Stable table/column identity, used for a header's `/ID` or a data
+    /// cell's `/Headers` association. Page fragments share the same key.
+    table_column: Option<(u32, u32)>,
     /// Page of this element's marked content, emitted as `/Pg` when present.
     page: Option<usize>,
 }
@@ -23552,6 +23623,7 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
         alt: None,
         bbox: None,
         scope_column: false,
+        table_column: None,
         page: None,
     }];
     let mut parent_tree: Vec<Vec<usize>> = Vec::with_capacity(pages.len());
@@ -23605,6 +23677,10 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
                     alt: None,
                     bbox: None,
                     scope_column: elem.tag == "TH",
+                    table_column: match elem.key {
+                        SKey::TableCell(table, _, column) => Some((table, column)),
+                        _ => None,
+                    },
                     page: None,
                 });
                 nodes[parent_node].kids.push(SKid::Node(node_index));
@@ -23806,13 +23882,23 @@ fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityE
                 linked += 1;
             }
         }
-        if !line.table_cols.is_empty() {
-            marks += line
-                .segs
-                .iter()
-                .zip(line.table_cols.iter())
-                .filter(|(seg, _)| !seg.text.is_empty())
-                .count();
+        if line.table_source_row.is_some() || !line.table_cols.is_empty() {
+            let mut painted_columns = 0;
+            let mut previous_column = None;
+            for (seg, &column) in line.segs.iter().zip(line.table_cols.iter()) {
+                if !seg.text.is_empty() {
+                    marks += 1;
+                    if previous_column != Some(column) {
+                        painted_columns += 1;
+                        previous_column = Some(column);
+                    }
+                }
+            }
+            if line.flow.index == 0
+                && let Some(row) = line.table_source_row
+            {
+                marks += (row.columns as usize).saturating_sub(painted_columns);
+            }
         } else if visible {
             marks += 1;
         }
@@ -31422,6 +31508,12 @@ fn append_struct_kid_list_bytes(
     }
 }
 
+/// ASCII byte-string identifier shared by `/ID`, `/Headers`, and `/IDTree`.
+/// The table flow group is document-wide, including cached and footnote tables.
+fn table_header_id(table: u32, column: u32) -> String {
+    format!("fmd-th-{table}-{column}")
+}
+
 struct PdfStructElementObjectParts<'a> {
     object_id: usize,
     node: &'a SNode,
@@ -31456,7 +31548,15 @@ fn append_pdf_struct_element_object(
         append_pdf_text_string_bytes(out, alt);
     }
     if parts.node.scope_column {
+        if let Some((table, column)) = parts.node.table_column {
+            out.extend_from_slice(b" /ID ");
+            append_pdf_text_string_bytes(out, &table_header_id(table, column));
+        }
         out.extend_from_slice(b" /A << /O /Table /Scope /Column >>");
+    } else if let Some((table, column)) = parts.node.table_column {
+        out.extend_from_slice(b" /A << /O /Table /Headers [ ");
+        append_pdf_text_string_bytes(out, &table_header_id(table, column));
+        out.extend_from_slice(b" ] >>");
     } else if let Some(b) = parts.node.bbox {
         out.extend_from_slice(b" /A << /O /Layout /BBox [ ");
         append_pdf_num_bytes(out, b[0]);
@@ -32410,16 +32510,36 @@ fn build_pdf(
     if tagged {
         // StructTreeRoot points at the single /Document node (node 0).
         // /ParentTreeNextKey is one past the highest key used in /Nums.
-        append_pdf_object_str(
-            &mut buf,
-            &mut offsets,
-            struct_root_obj,
-            &format!(
-                "<< /Type /StructTreeRoot /K [ {doc} 0 R ] /ParentTree {parent_tree_obj} 0 R \
-                 /ParentTreeNextKey {parent_tree_next_key} >>",
-                doc = struct_elem_obj(0),
-            ),
+        let mut root = format!(
+            "<< /Type /StructTreeRoot /K [ {doc} 0 R ] /ParentTree {parent_tree_obj} 0 R \
+             /ParentTreeNextKey {parent_tree_next_key}",
+            doc = struct_elem_obj(0),
         );
+        // ISO 32000-1 requires an IDTree whenever elements have /ID entries.
+        // Name-tree keys are byte strings in lexical order, which differs from
+        // numeric table/column order once either counter reaches two digits.
+        let header_ids: BTreeMap<String, usize> = stree
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.scope_column)
+            .filter_map(|(index, node)| {
+                node.table_column
+                    .map(|(table, column)| (table_header_id(table, column), index))
+            })
+            .collect();
+        if !header_ids.is_empty() {
+            root.push_str(" /IDTree << /Names [ ");
+            for (id, node) in &header_ids {
+                root.push_str(&pdf_text_string(id));
+                root.push(' ');
+                append_pdf_object_ref_string(&mut root, struct_elem_obj(*node));
+                root.push(' ');
+            }
+            root.push_str("] >>");
+        }
+        root.push_str(" >>");
+        append_pdf_object_str(&mut buf, &mut offsets, struct_root_obj, &root);
 
         // Parent tree: page keys (0..p) map their MCIDs in order to the owning
         // element; annotation keys (p..) map a single OBJR-referenced link
@@ -37713,6 +37833,7 @@ mod pdf_writer_tests {
             alt: Some("A—B".to_string()),
             bbox: Some([1.0, -0.0, 3.5, 4.25]),
             scope_column: false,
+            table_column: None,
             page: Some(4),
         };
         let page_obj = |page: usize| 20 + page;
@@ -37780,6 +37901,7 @@ mod pdf_writer_tests {
             alt: None,
             bbox: Some([1.0, 2.0, 3.0, 4.0]),
             scope_column: true,
+            table_column: None,
             page: None,
         };
         let page_obj = |page: usize| 20 + page;

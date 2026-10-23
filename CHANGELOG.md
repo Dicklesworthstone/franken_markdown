@@ -100,6 +100,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tagged PDF tables retain blank headers, empty data cells and entirely blank
+  rows in their original grid positions. Each data cell names its column header
+  through a stable identifier and a sorted document lookup, including wrapped,
+  repeated, nested and cached tables, without adding text or changing layout.
 - Batch outputs preserve all planned source documents and loaded image, CSS,
   font and configuration files, including another job's inputs and filesystem
   aliases. Unsafe jobs fail before publishing either combined output; fresh

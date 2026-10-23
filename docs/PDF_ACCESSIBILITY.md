@@ -2,7 +2,7 @@
 
 Date: 2026-10-23
 Scope: tagged-PDF structure semantics emitted by the clean-room PDF writer
-(`src/pdf.rs`). Beads: `qw1.9`, `6lcj`.
+(`src/pdf.rs`). Beads: `qw1.9`, `6lcj`, `j36e`.
 
 `franken_markdown` writes a tagged PDF (`/MarkInfo << /Marked true >>`,
 `/StructTreeRoot`, `/Lang (en-US)`, `/Tabs /S`) so the output is usable by
@@ -11,7 +11,8 @@ This ledger records exactly which structure semantics are supported, how they
 are produced, the known limitations of the line-based writer, and the explicit
 non-goals. It depends on **no third-party PDF parser** in production; the
 guarantees below are pinned by byte-level structural tests in
-`tests/pdf_test.rs` and `tests/pdf_accessibility_pages_test.rs`.
+`tests/pdf_test.rs`, `tests/pdf_accessibility_pages_test.rs`, and
+`tests/pdf_table_accessibility_test.rs`.
 
 ## Supported semantics
 
@@ -23,8 +24,9 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 | Paragraph | `/P` | Wrapped lines share a single `/P`, including across page boundaries; every `/MCR` names its actual page |
 | Bullet / ordered / task list | `/L` → `/LI` → `/LBody` → `/P` | Nested lists produce nested `/L`, to arbitrary depth |
 | Blockquote | `/BlockQuote` | Nested quotes nest; content keeps its own `/P`/`/L`/… inside |
-| Pipe table | `/Table` → `/TR` → `/TH`\|`/TD` | Per **cell** marks; header cells are `/TH` |
-| Table header cell | `/TH` with `/A << /O /Table /Scope /Column >>` | Column scope (Markdown headers are column headers) |
+| Pipe table | `/Table` → `/TR` → `/TH`\|`/TD` | Complete rectangular grid, including blank cells and entirely blank rows |
+| Table header cell | `/TH` with a stable `/ID` and `/A << /O /Table /Scope /Column >>` | Column scope; blank headers retain their column positions |
+| Table data cell | `/TD` with `/A << /O /Table /Headers [ (header-id) ] >>` | Explicit association to its column's header; `/IDTree` resolves every header ID |
 | Repeated table header | `/Artifact` with pagination/header attributes | Continued-page paint stays outside the reading order; empty marks on the original `/TH` retain ownership of clickable annotations |
 | Fenced code block | `/Code` | All lines of one block share a single `/Code` |
 | Image | `/Figure` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Alt text from the Markdown `![alt]`; bbox locates the image |
@@ -43,11 +45,16 @@ Cross-cutting guarantees, all asserted by tests:
   requirement.
 - **Bidirectional links.** Each OBJR-referenced link annotation carries a
   `/StructParent` whose key maps, through the parent tree, back to its owning
-  `/Link` element; the `/StructTreeRoot` advertises `/ParentTreeNextKey`.
+  structure element (a `/Link` in prose, or its cell/figure in a table);
+  the `/StructTreeRoot` advertises `/ParentTreeNextKey`.
 - **Parent tree integrity.** Each page declares `/StructParents`, and the
   `/ParentTree` `/Nums` maps every content `/MCID`, in order, to the structure
   element that owns it. Each content-stream `/MCID` is referenced by exactly one
   structure `/MCR`.
+- **Complete table relationships.** Every rendered column has one header cell
+  and one data cell per body row, including empty positions. Data cells name
+  their header explicitly, with unique IDs across separate or cached tables,
+  page continuations, and footnotes. Empty cells add no glyphs or invented labels.
 - **Selectable text preserved.** `/ToUnicode` maps (including ligature glyphs)
   are unchanged, so copy/search still work over the tagged content.
 - **Logical elements span pages.** A source paragraph, code block, quote, list,
@@ -62,12 +69,12 @@ Cross-cutting guarantees, all asserted by tests:
 ## How it is produced
 
 The writer flattens the document AST to a vector of laid-out `Line`s, paginates,
-then in the page builder emits one marked-content sequence per visible line
-(per **cell** for table rows). Each mark carries a *container path* — the chain
+then the page builder emits marked-content sequences for visible lines and
+individual table cells. Empty cell sequences preserve grid positions without
+painting or changing placement. Each mark carries a *container path* — the chain
 of structure elements from just below `/Document` down to the element that owns
 the mark's content (enclosing blockquotes and lists in source nesting order,
-then the leaf or
-table `/Table`/`/TR`/`/TH`/`/TD`). `build_struct_tree` diffs consecutive paths
+then the leaf or table `/Table`/`/TR`/`/TH`/`/TD`). `build_struct_tree` diffs consecutive paths
 to open and reuse shared ancestors. Its identity map persists across pages,
 while each content reference and annotation retains its own page. Lists and
 quotes allocate document-wide identities before their children, preserving
@@ -76,16 +83,23 @@ rows retain their original source indices through wrapping and pagination.
 Inline formulas and figures use a page-qualified occurrence key because their
 MCIDs restart on each page. Both PDF emission modes use this same hierarchy.
 
+A table header ID is derived from the document-wide table identity and source
+column. Each data cell's `/Headers` array names that ID, and `/StructTreeRoot`
+contains a byte-sorted `/IDTree` name tree mapping every ID to its header element.
+This follows the identifier and table-attribute requirements in
+[ISO 32000-1, Tables 322 and 349](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf).
+The renderer's existing normalized grid width also supplies missing cells in
+ragged host-created tables. Financial footing strokes remain artifacts rather
+than invented data rows.
+
 ## Known limitations
 
 These are deliberate consequences of a small, line-based, dependency-free writer.
 They are safe (they never corrupt the tree) and are candidates for future beads.
 
-- **Empty table cells** emit no `/TD`; a row with blank source cells is not
-  back-filled to a rectangular grid. Non-empty cells are always tagged.
-- **No `/Headers` ID associations** between body cells and header cells. Header
-  cells carry a column `/Scope`, which covers simple Markdown grids; there is no
-  row/column id linkage and no row/col span (GFM has neither).
+- **Complex table headers and spanning cells** are not represented by the
+  Markdown AST. Header associations cover its single column-header row; row
+  headers, multiple header tiers, and row/column spans remain unsupported.
 - **List markers** (bullet/number/checkbox) are part of the item's first line
   text, not a separate `/Lbl` element, and ordered vs. bullet lists both tag as
   `/L` without an explicit `/ListNumbering` attribute.
@@ -95,7 +109,7 @@ They are safe (they never corrupt the tree) and are candidates for future beads.
 - Formal PDF/UA-1 or WCAG certification, or any dependency on a third-party PDF
   validator in the production build. External validators may be used as
   developer-only spot checks.
-- MathML / complex-table (`/Headers`, span) structures, and full artifact
+- MathML / complex-table (multiple header tiers, spanning cells) structures, and full artifact
   classification beyond keeping decoration out of the reading order.
 
 ## Verification
@@ -106,6 +120,12 @@ artifacts with preserved annotations, unique dense MCID owners, separately
 laid-out footnotes, inline formula identity, deterministic output, and equality
 between monolithic and chunked emission. It also exercises adaptive table
 scaling below the ordinary body-table floor inside a small-type footnote.
+
+`tests/pdf_table_accessibility_test.rs` verifies complete sparse and blank
+matrices, normalized ragged host tables, sorted ID lookup and column-specific
+header associations, distinct cached tables, wrapping and repeated headers,
+list/footnote ownership, linked images with preserved alt text, PDF/A output,
+annotation back-references, deterministic bytes, and parity between emitters.
 
 Closing `qw1.9` cited:
 

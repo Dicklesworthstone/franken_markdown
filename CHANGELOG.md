@@ -106,6 +106,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Native HTML books resolve chapter links by their exact source identity. Missing
+  nested siblings, alternate extensions and flattened-name lookalikes no longer
+  redirect to unrelated chapters; real chapter aliases retain query strings and
+  fragments across standalone and combined publication.
+
 - Native batch rendering expands recursive includes, named snippets and line
   selectors through the single-file resolver, preserving fragment-relative
   images and links. Include failures remain per-file input errors; consulted

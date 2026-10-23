@@ -350,7 +350,7 @@ fn asset_keys(assets: &[PdfImageAsset]) -> BTreeSet<&str> {
         .collect()
 }
 
-fn resolve_site_links(blocks: &mut [Block], source: &str, known: &BTreeMap<&str, &str>) {
+pub(super) fn resolve_site_links(blocks: &mut [Block], source: &str, known: &BTreeMap<&str, &str>) {
     walk_inline_nodes(blocks, &mut |inline| {
         if let Inline::Link { dest, .. } = inline {
             if let Some((target, suffix)) =

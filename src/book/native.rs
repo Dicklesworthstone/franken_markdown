@@ -4,7 +4,7 @@
 //! bounded book pipeline; all other invocations delegate to the existing CLI
 //! unchanged. Filesystem and process concerns remain behind the `cli` feature.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -344,11 +344,11 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         ..HtmlOptions::default()
     };
     let paths = output_paths(&args)?;
-    let known: BTreeSet<String> = loaded
+    let known: BTreeMap<&str, &str> = loaded
         .book
         .chapters
         .iter()
-        .map(|chapter| chapter.out_name.clone())
+        .map(|chapter| (chapter.path.as_str(), chapter.out_name.as_str()))
         .collect();
     let known_sources: BTreeSet<&str> = loaded
         .book
@@ -375,7 +375,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         let book_title = html_options.title.clone();
         for chapter in &loaded.book.chapters {
             let mut doc = chapter.doc.clone();
-            super::rewrite_links_for_site(&mut doc, &known);
+            super::render::resolve_site_links(&mut doc.blocks, &chapter.path, &known);
             html_options.title = Some(chapter.title.clone());
             html_options.lang = chapter
                 .frontmatter

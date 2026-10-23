@@ -404,6 +404,7 @@ pub(super) fn layout_block(
         table_source_row: None,
         table_footing: Vec::new(),
         heading_source: None,
+        text_ink: (0.0, 0.0),
         segs: Vec::new(),
         image: Some(ImageLine {
             image,

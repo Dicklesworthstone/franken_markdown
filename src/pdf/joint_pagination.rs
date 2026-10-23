@@ -255,6 +255,7 @@ fn cost_context(line: &Line) -> Line {
         table_source_row: None,
         table_footing: Vec::new(),
         heading_source: None,
+        text_ink: (0.0, 0.0),
         segs: Vec::new(),
         image: None,
     }

@@ -13,7 +13,8 @@ use super::{
     EmbeddedFace, EmbeddedFaceLookup, F_BODY, Faces, Fill, ImageLine, LinkAnnotation, PageGeom,
     Palette, PdfImageData, Seg, ShapedRunCache, SvgPageResources, append_image_xobject_do,
     append_rgb_stroke_line_operator, append_svg_text_viewport_clip, civil_from_unix_days, draw_seg,
-    draw_svg_image, fallback_slot_runs, parse_pdf_image_asset, seg_text_hash, text_composition,
+    draw_svg_image, fallback_slot_runs, font_size_of, parse_pdf_image_asset, seg_text_hash,
+    text_composition, text_positioning,
 };
 use crate::ast::Document;
 use crate::{PdfOptions, PdfRunningBand, PdfRunningImage, PdfRunningImagePosition, RenderError};
@@ -145,6 +146,62 @@ pub(super) struct ChromePages {
 }
 
 impl ChromePages {
+    /// The font's global ascent/descent cannot bound an attached stack of
+    /// marks. Check the actual fitted, page-expanded text before embedding or
+    /// drawing it, and keep an existing rule clear of the positioned ink.
+    /// Ordinary bands retain exactly the geometry resolved from font metrics.
+    pub(super) fn fit_positioned_ink(
+        &mut self,
+        faces: &Faces,
+        page: PageGeom,
+    ) -> crate::Result<()> {
+        let size = font_size_of(self.size);
+        for band in self.pages.iter_mut().flatten() {
+            let mut positioned = false;
+            let mut above = 0.0_f32;
+            let mut below = 0.0_f32;
+            for (slot, text, _) in band.runs.iter().flat_map(|run| &run.pieces) {
+                if let Some(run) = text_positioning::prepare(faces.face(*slot), text).run {
+                    positioned = true;
+                    let ink = run.ink(size);
+                    above = above.max(ink.0);
+                    below = below.max(ink.1);
+                }
+            }
+            if !positioned {
+                continue;
+            }
+            let top = band.baseline + above;
+            let bottom = band.baseline - below;
+            match band.kind {
+                BandKind::Header => {
+                    if let Some(rule) = &mut band.rule_y {
+                        *rule = rule.min(bottom - RULE_GAP_PT);
+                    }
+                    let lowest = band
+                        .rule_y
+                        .map_or(bottom, |rule| bottom.min(rule - RULE_WIDTH_PT / 2.0));
+                    let needed = page.height - lowest;
+                    if needed > page.top || top > page.height {
+                        return Err(does_not_fit("header", "top", page.top, needed));
+                    }
+                }
+                BandKind::Footer => {
+                    if let Some(rule) = &mut band.rule_y {
+                        *rule = rule.max(top + RULE_GAP_PT);
+                    }
+                    let highest = band
+                        .rule_y
+                        .map_or(top, |rule| top.max(rule + RULE_WIDTH_PT / 2.0));
+                    if highest > page.bottom || bottom < 0.0 {
+                        return Err(does_not_fit("footer", "bottom", page.bottom, highest));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Only assets that appear on a painted page participate in resource and
     /// font collection. In particular, a skipped one-page document embeds none.
     pub(super) fn images(&self) -> impl Iterator<Item = &PdfImageData> {
@@ -561,6 +618,19 @@ fn does_not_fit(band: &str, side: &str, margin: f32, needed: f32) -> RenderError
 }
 
 impl RunningSpec {
+    /// Source-level shaping preflight, before truncation and page expansion.
+    /// Static title/author/date tokens have already been resolved. A sample
+    /// folio keeps adjacent literal text in its actual source context without
+    /// requiring a second pagination pass merely to report render warnings.
+    pub(super) fn collect_positioning_sources(&self, faces: &Faces, out: &mut Vec<(u8, String)>) {
+        for slot in self.bands.iter().flat_map(|band| &band.slots) {
+            out.extend(fallback_slot_runs(faces, F_BODY, &expand(slot, 1, 1)));
+        }
+        for image in &self.images.0 {
+            super::collect_svg_image_text(&image.image, out);
+        }
+    }
+
     /// Expand and fit every page's chrome. `page_count` must be the count
     /// the emitter will produce (same lines, geometry and break plan).
     pub(super) fn layout_pages(

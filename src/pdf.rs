@@ -46,6 +46,10 @@ mod joint_pagination;
 mod math;
 mod running;
 mod text_composition;
+mod text_positioning;
+
+#[cfg(test)]
+mod text_positioning_tests;
 
 #[cfg(test)]
 mod text_composition_tests;
@@ -362,6 +366,9 @@ struct Line {
     /// Unwrapped AST identity, carried only by a heading's first line. Paint
     /// fragments may split a word across lines and cannot reconstruct its ID.
     heading_source: Option<Box<HeadingSource>>,
+    /// Actual ink above/below the baseline for strictly positioned text.
+    /// Zero preserves the historical ordinary/composable-text line box.
+    text_ink: (f32, f32),
     segs: Vec<Seg>,
     image: Option<ImageLine>,
 }
@@ -1561,6 +1568,7 @@ struct Face {
     /// repeat renders reuse one `Arc` instead of rebuilding the 128 cmap
     /// lookups and the kern matrix per face.
     ascii: std::sync::OnceLock<std::sync::Arc<AsciiWidthTables>>,
+    positioned: RefCell<text_positioning::Cache>,
 }
 
 struct AsciiWidthTables {
@@ -1704,6 +1712,7 @@ impl Face {
             kern,
             lig,
             ascii: std::sync::OnceLock::new(),
+            positioned: RefCell::new(text_positioning::Cache::default()),
         })
     }
 
@@ -1726,6 +1735,7 @@ impl Face {
             kern: Cow::Borrowed(&layout.kern),
             lig: Cow::Borrowed(&layout.lig),
             ascii: std::sync::OnceLock::new(),
+            positioned: RefCell::new(text_positioning::Cache::default()),
         }))
     }
 
@@ -1745,6 +1755,7 @@ impl Face {
             kern: Cow::Borrowed(&layout.kern),
             lig: Cow::Borrowed(&layout.lig),
             ascii: std::sync::OnceLock::new(),
+            positioned: RefCell::new(text_positioning::Cache::default()),
         })
     }
 
@@ -1782,6 +1793,9 @@ impl Face {
     }
 
     fn shaped_width(&self, text: &str, size: FontSize) -> LayoutUnit {
+        if let Some(run) = text_positioning::prepare(self, text).run {
+            return run.width(size);
+        }
         let bytes = text.as_bytes();
         if bytes.iter().all(|&b| b < 128)
             && !bytes
@@ -2362,6 +2376,11 @@ pub enum RenderWarning {
         width_pt: u32,
         measure_pt: u32,
     },
+    /// A combining sequence could not use strict Latin mark positioning;
+    /// its complete source remains visible through the legacy glyph fallback.
+    TextShapingUnsupported { source: String, reason: String },
+    /// A marked word exhausted the bounded strict-shaping profile.
+    TextShapingLimit { source: String, reason: String },
 }
 
 impl RenderWarning {
@@ -2375,6 +2394,8 @@ impl RenderWarning {
             Self::FontWeightIgnoredStatic { .. } => "font_weight_ignored_static",
             Self::MathFallback { .. } => "math_fallback",
             Self::MathOverflow { .. } => "math_overflow",
+            Self::TextShapingUnsupported { .. } => "text_shaping_unsupported",
+            Self::TextShapingLimit { .. } => "text_shaping_limit",
         }
     }
 
@@ -2400,6 +2421,12 @@ impl RenderWarning {
             ),
             Self::MathFallback { source, reason } => format!(
                 "equation {source:?} could not be typeset: {reason}; rendered as TeX source"
+            ),
+            Self::TextShapingUnsupported { source, reason }
+            | Self::TextShapingLimit { source, reason } => format!(
+                "text {source:?} could not use Latin mark positioning in its source context: \
+                 {reason}; retained the complete source, with unpositioned glyph fallback \
+                 for fragments the strict shaper cannot handle"
             ),
             Self::MathOverflow {
                 source,
@@ -2460,6 +2487,7 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
         let mut seen = BTreeSet::new();
         let mut sample = String::new();
         let mut scan = |source: &str, slot: u8| {
+            text_positioning::prepare(faces.face(slot), source).warnings(&mut warnings);
             let face = faces.get(slot);
             let glyph_text = text_composition::glyph_text(source, face);
             for c in glyph_text.chars() {
@@ -2491,6 +2519,18 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
                 count: missing,
                 sample,
             });
+        }
+        // Running templates and decorative SVG logos are separate painting
+        // surfaces. Their positioned text needs the same source-level shaping
+        // findings even when no corresponding text occurs in the body.
+        if let Ok(Some(running)) =
+            running::resolve(doc, opts, &faces, PageGeom::from_theme(&opts.theme))
+        {
+            let mut running_text = Vec::new();
+            running.collect_positioning_sources(&faces, &mut running_text);
+            for (slot, source) in running_text {
+                text_positioning::prepare(faces.face(slot), &source).warnings(&mut warnings);
+            }
         }
     }
 
@@ -3161,6 +3201,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 table_source_row: None,
                 table_footing: Vec::new(),
                 heading_source: None,
+                text_ink: (0.0, 0.0),
                 segs,
                 page_break_before: false,
                 image: None,
@@ -3567,6 +3608,7 @@ fn page_note_separator(page: PageGeom) -> Line {
         table_source_row: None,
         table_footing: Vec::new(),
         heading_source: None,
+        text_ink: (0.0, 0.0),
         segs: Vec::new(),
         image: None,
     }
@@ -4303,10 +4345,13 @@ fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut La
             && !has_toc_marker(blocks)
         {
             injected_toc = true;
+            let before_toc = out.len();
             layout_pdf_toc(cx.opts.toc_depth, indent, out, cx);
+            text_positioning::stamp_lines(&mut out[before_toc..], cx.faces);
         }
         let before = out.len();
         layout_block(block, indent, out, cx);
+        text_positioning::stamp_lines(&mut out[before..], cx.faces);
         // A PageBreak marker targets the first line of the FOLLOWING block
         // (the chapter start), so the boundary lands before the new chapter.
         if cx.pending_page_break && out.len() > before {
@@ -4355,6 +4400,14 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 first.heading_source = Some(Box::new(HeadingSource::from_inlines(inlines)));
             }
             if ruled && out.len() > before {
+                text_positioning::stamp_lines(&mut out[before..], cx.faces);
+                if let Some(last) = out.last_mut()
+                    && last.text_ink.1 > 0.0
+                {
+                    last.gap_after = last
+                        .gap_after
+                        .max(last.text_ink.1 - inline_math_extents(last).1 + 1.0);
+                }
                 push_heading_rule(out, indent, cx.page, group, heading_gap_after(*level));
             }
         }
@@ -4469,6 +4522,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         table_source_row: None,
                         table_footing: Vec::new(),
                         heading_source: None,
+                        text_ink: (0.0, 0.0),
                         segs,
                         page_break_before: false,
                         image: None,
@@ -4516,6 +4570,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     table_source_row: None,
                     table_footing: Vec::new(),
                     heading_source: None,
+                    text_ink: (0.0, 0.0),
                     segs,
                     page_break_before: false,
                     image: None,
@@ -4602,6 +4657,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 table_source_row: None,
                 table_footing: Vec::new(),
                 heading_source: None,
+                text_ink: (0.0, 0.0),
                 segs: Vec::new(),
                 image: None,
             });
@@ -4798,6 +4854,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         table_source_row: None,
         table_footing: Vec::new(),
         heading_source: None,
+        text_ink: (0.0, 0.0),
         segs: Vec::new(),
         image: None,
     });
@@ -4889,6 +4946,7 @@ fn push_figure_line(
         table_source_row: None,
         table_footing: Vec::new(),
         heading_source: None,
+        text_ink: (0.0, 0.0),
         segs: Vec::new(),
         image: Some(ImageLine {
             image,
@@ -16722,13 +16780,26 @@ fn cell_tokens(
     let mut toks = Vec::new();
     tokenize(inlines, header, false, false, None, intern, &mut toks);
     apply_symbol_fallback(&mut toks, faces);
-    split_cell_separator_tokens(toks)
+    split_cell_separator_tokens(toks, faces)
 }
 
-fn split_cell_separator_tokens(toks: Vec<Tok>) -> Vec<Tok> {
+fn split_cell_separator_tokens(toks: Vec<Tok>, faces: &Faces) -> Vec<Tok> {
     let mut out = Vec::with_capacity(toks.len());
     for tok in toks {
         if tok.space || tok.hard_break || is_inline_object(tok.slot) || tok.text.len() < 4 {
+            out.push(tok);
+            continue;
+        }
+        if !tok.text.is_ascii()
+            && text_composition::glyph_text(&tok.text, faces.get(tok.slot))
+                .chars()
+                .any(text_composition::is_mark)
+        {
+            // The strict shaper admits a complete word transactionally. A
+            // separator must not make an otherwise refused prefix appear
+            // narrower than the same word after its pieces are rejoined for
+            // drawing. Keep allocator and wrapper on the same source unit;
+            // the marked-word hard-wrap path can still split whole clusters.
             out.push(tok);
             continue;
         }
@@ -18081,12 +18152,14 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 }),
                 table_footing: Vec::new(),
                 heading_source: None,
+                text_ink: (0.0, 0.0),
                 segs,
                 page_break_before: false,
                 image: None,
             });
         }
 
+        text_positioning::stamp_lines(&mut lines, faces);
         lines
     };
 
@@ -18113,6 +18186,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         table_source_row: None,
         table_footing: Vec::new(),
         heading_source: None,
+        text_ink: (0.0, 0.0),
         segs: Vec::new(),
         page_break_before: false,
         image: None,
@@ -18397,12 +18471,12 @@ fn inline_math_advance(source: &str, size: f32) -> f32 {
 const INLINE_MATH_ASCENT_ROOM: f32 = 1.0;
 const INLINE_MATH_DESCENT_ROOM: f32 = 0.3;
 
-/// Extra room `line`'s inline formulas need beyond a text line's leading:
-/// `(above, below)` in points, zero for a line without math. A tall formula
-/// grows its line the way TeX's box heights and depths do.
+/// Extra room for positioned text, formulas, and images beyond ordinary
+/// text leading: `(above, below)` in points. Their actual ink grows the line
+/// the way TeX's box heights and depths do; ordinary text keeps zero extras.
 fn inline_math_extents(line: &Line) -> (f32, f32) {
-    let mut above = 0.0f32;
-    let mut below = 0.0f32;
+    let mut above = (line.text_ink.0 - INLINE_MATH_ASCENT_ROOM * line.size).max(0.0);
+    let mut below = (line.text_ink.1 - INLINE_MATH_DESCENT_ROOM * line.size).max(0.0);
     for seg in &line.segs {
         if seg.slot == F_MATH
             && let Ok(formula) = math::inline_formula(&seg.text)
@@ -19598,7 +19672,9 @@ fn layout_inlines(
         flow,
     };
     emit_broken_paragraph(&built, &breaks, spec, out, cx);
-    if let Some(variants) = variants {
+    // A context-sensitive marked word can require a final fit repair. Its
+    // resulting line count is not the solver shape used by these alternatives.
+    if let Some(variants) = variants.filter(|_| out.len() - start == baseline_count) {
         let baseline_demerits = breaks.last().map_or(0, |line| line.demerits);
         let mut alternatives = Vec::new();
         for variant in variants.variants {
@@ -19607,6 +19683,9 @@ fn layout_inlines(
             }
             let mut lines = Vec::with_capacity(variant.line_count);
             emit_broken_paragraph(&built, &variant.lines, spec, &mut lines, cx);
+            if lines.len() != variant.line_count {
+                continue;
+            }
             alternatives.push(joint_pagination::Alternative {
                 lines,
                 extra_demerits: variant.demerits.saturating_sub(baseline_demerits),
@@ -19700,7 +19779,7 @@ fn emit_broken_paragraph(
                 Some(&cx.width_cache),
             );
         }
-        out.push(Line {
+        let line = Line {
             size,
             gap_after: if i + 1 == n { gap_after } else { 0.0 },
             rule: false,
@@ -19714,12 +19793,21 @@ fn emit_broken_paragraph(
             table_source_row: None,
             table_footing: Vec::new(),
             heading_source: None,
+            text_ink: (0.0, 0.0),
             segs,
             page_break_before: false,
             image: None,
-        });
+        };
+        text_positioning::append_fitted_line(
+            out,
+            line,
+            left,
+            left + (content_w + right_protrusion).to_points_f32(),
+            cx,
+        );
     }
     mark_flow(out, start, flow.group, flow.kind);
+    text_positioning::stamp_lines(&mut out[start..], cx.faces);
 }
 
 /// Layout a paragraph with a fixed prefix segment on the first physical line.
@@ -19773,6 +19861,7 @@ fn layout_prefixed_inlines(
             table_source_row: None,
             table_footing: Vec::new(),
             heading_source: None,
+            text_ink: (0.0, 0.0),
             segs: vec![marker],
             image: None,
         });
@@ -19837,12 +19926,8 @@ fn layout_prefixed_inlines(
                 Some(&cx.width_cache),
             );
         }
-        if i == 0 {
-            if let Some(marker) = marker.take() {
-                segs.insert(0, marker);
-            }
-        }
-        out.push(Line {
+        let first_physical = out.len();
+        let line = Line {
             size: spec.size,
             gap_after: if i + 1 == n { spec.gap_after } else { 0.0 },
             rule: false,
@@ -19856,10 +19941,18 @@ fn layout_prefixed_inlines(
             table_source_row: None,
             table_footing: Vec::new(),
             heading_source: None,
+            text_ink: (0.0, 0.0),
             segs,
             page_break_before: false,
             image: None,
-        });
+        };
+        text_positioning::append_fitted_line(out, line, left, left + content_w.to_points_f32(), cx);
+        if i == 0
+            && let Some(marker) = marker.take()
+            && let Some(first) = out.get_mut(first_physical)
+        {
+            first.segs.insert(0, marker);
+        }
     }
     mark_flow(out, start, spec.flow.group, spec.flow.kind);
 }
@@ -19925,6 +20018,7 @@ fn layout_inlines_greedy(
             table_source_row: None,
             table_footing: Vec::new(),
             heading_source: None,
+            text_ink: (0.0, 0.0),
             segs,
             page_break_before: false,
             image: None,
@@ -21498,10 +21592,13 @@ fn serialize(
     let break_plan = page_break_plan_for_options(lines, page, opts);
     // Running chrome needs `{pages}` and every page's exact text before font
     // subsetting, so it counts pages with the emitter's own pager up front.
-    let chrome = running.map(|spec| {
+    let mut chrome = running.map(|spec| {
         let page_count = count_pages_with(lines, page, break_plan.as_ref());
         spec.layout_pages(faces, page, page_count)
     });
+    if let Some(chrome) = &mut chrome {
+        chrome.fit_positioned_ink(faces, page)?;
+    }
 
     // Which slots actually appear (skip embedding unused faces).
     let used_slot_started = profiler.checkpoint();
@@ -21562,8 +21659,6 @@ fn serialize(
     for &slot in &used_slots {
         let face = faces.face(slot);
         let source = face.font.as_ref();
-        let lig = face.lig.as_ref();
-        let tables = face.ascii_tables();
         let tail = subset_tail_enabled();
         let mut tail_shape_ns = 0u128;
         let mut tail_subset_ns = 0u128;
@@ -21606,11 +21701,11 @@ fn serialize(
                 let shaped = if tail {
                     tail_misses += 1;
                     let t0 = subset_tail_now();
-                    let s = shape_run_with_scratch(source, lig, tables, text, &mut shape_scratch);
+                    let s = shape_run_with_scratch(face, text, &mut shape_scratch);
                     subset_tail_since(t0, &mut tail_shape_ns);
                     s
                 } else {
-                    shape_run_with_scratch(source, lig, tables, text, &mut shape_scratch)
+                    shape_run_with_scratch(face, text, &mut shape_scratch)
                 };
                 collect_shaped_run_glyphs(&shaped, &mut shaped_glyphs, &mut lig_src_uni);
                 if let Entry::Vacant(slot_entry) = entry {
@@ -21620,6 +21715,7 @@ fn serialize(
                         ligatures: shaped.ligatures,
                         pdf_tj: shaped.pdf_tj,
                         requires_actual_text: shaped.requires_actual_text,
+                        positioned: shaped.positioned,
                     });
                 }
             }
@@ -21707,6 +21803,9 @@ fn serialize(
         if tail {
             let t0 = subset_tail_now();
             for shaped in slot_cache.values_mut() {
+                if shaped.positioned.is_some() {
+                    continue;
+                }
                 append_kerned_tj_with_spacing(
                     &mut shaped.pdf_tj,
                     &map_lookup,
@@ -21720,6 +21819,9 @@ fn serialize(
             subset_tail_since(t0, &mut tail_tj_ns);
         } else {
             for shaped in slot_cache.values_mut() {
+                if shaped.positioned.is_some() {
+                    continue;
+                }
                 append_kerned_tj_with_spacing(
                     &mut shaped.pdf_tj,
                     &map_lookup,
@@ -21743,7 +21845,6 @@ fn serialize(
             bytes,
             font,
             kern: face.kern.as_ref(),
-            lig: face.lig.as_ref(),
             map_lookup,
             cmap_chars: keep,
             lig_uni,
@@ -22769,8 +22870,8 @@ fn generate_page_content(
             continue;
         }
         let size = p.line.size;
-        let top_y = p.y + size * 0.92;
-        let bot_y = p.y - size * 0.40;
+        let top_y = p.y + (size * 0.92).max(p.line.text_ink.0);
+        let bot_y = p.y - (size * 0.40).max(p.line.text_ink.1);
         append_page_background_rounded_rect_fill(
             &mut bg,
             p.line.rule_x,
@@ -22799,8 +22900,9 @@ fn generate_page_content(
             let x_text = head.line.segs.first().map_or(page.left, |s| s.x);
             let x0 = x_text - CODE_PAD_X;
             let x1 = page.right_x();
-            let top_y = head.y + size * PANEL_ASCENT_FRAC + PANEL_PAD_V;
-            let bot_y = tail.y - size * PANEL_DESCENT_FRAC - PANEL_PAD_V;
+            let top_y = head.y + (size * PANEL_ASCENT_FRAC).max(head.line.text_ink.0) + PANEL_PAD_V;
+            let bot_y =
+                tail.y - (size * PANEL_DESCENT_FRAC).max(tail.line.text_ink.1) - PANEL_PAD_V;
             append_page_background_rounded_rect_fill(
                 &mut bg,
                 x0,
@@ -22825,8 +22927,11 @@ fn generate_page_content(
                 }
                 let cx0 = seg.x - CHIP_PAD_X;
                 let cx1 = seg.x + seg.width + CHIP_PAD_X;
-                let cy0 = p.y - p.line.size * 0.26;
-                let cy1 = p.y + p.line.size * 0.74;
+                let ink = text_positioning::prepare(faces.face(seg.slot), &seg.text)
+                    .run
+                    .map_or((0.0, 0.0), |run| run.ink(font_size_of(p.line.size)));
+                let cy0 = p.y - (p.line.size * 0.26).max(ink.1);
+                let cy1 = p.y + (p.line.size * 0.74).max(ink.0);
                 append_page_background_rounded_rect_fill(
                     &mut bg,
                     cx0,
@@ -24291,6 +24396,7 @@ mod font_slot_text_refs_tests {
             table_source_row: None,
             table_footing: Vec::new(),
             heading_source: None,
+            text_ink: (0.0, 0.0),
             segs,
             page_break_before: false,
             image,
@@ -28311,19 +28417,14 @@ fn draw_svg_text(
     ) {
         Some(run) => run,
         None => {
-            fallback = shape_run(
-                source,
-                face.lig,
-                faces.face(slot).ascii_tables(),
-                &text.text,
-            );
+            fallback = shape_run(faces.face(slot), &text.text);
             &fallback
         }
     };
     let shaped = run.glyphs.as_slice();
     let mut matrix = svg_text_pdf_matrix(text, image_transform);
     let (letter_spacing, word_spacing, width, glyph_scale) =
-        svg_text_layout_adjustment(text, matrix, slot, faces, shaped);
+        svg_text_layout_adjustment(text, matrix, slot, faces, shaped, run.positioned.as_deref());
     if glyph_scale != 1.0 {
         matrix.a *= glyph_scale;
         matrix.b *= glyph_scale;
@@ -28403,6 +28504,7 @@ fn draw_svg_text(
             shaped,
             letter_spacing_adjust,
             word_spacing_adjust,
+            run.positioned.as_deref(),
         );
     } else {
         for layer in text.paint_order.layers {
@@ -28429,6 +28531,7 @@ fn draw_svg_text(
                             shaped,
                             letter_spacing_adjust,
                             word_spacing_adjust,
+                            run.positioned.as_deref(),
                         );
                     }
                 }
@@ -28454,6 +28557,7 @@ fn draw_svg_text(
                             shaped,
                             letter_spacing_adjust,
                             word_spacing_adjust,
+                            run.positioned.as_deref(),
                         );
                     }
                 }
@@ -28547,6 +28651,7 @@ fn append_svg_text_operator(
     shaped: &[u16],
     letter_spacing_adjust: i32,
     word_spacing_adjust: i32,
+    positioned: Option<&text_positioning::Run>,
 ) {
     if let Some(color) = fill_color {
         append_rgb_fill_operator(body, color);
@@ -28564,6 +28669,21 @@ fn append_svg_text_operator(
     if let Some(mode) = render_mode {
         append_decimal_u64_string(body, u64::from(mode));
         body.push_str(" Tr ");
+    }
+    if let Some(positioned) = positioned {
+        text_positioning::append_glyphs(
+            body,
+            positioned,
+            map_lookup,
+            matrix,
+            letter_spacing_adjust,
+            word_spacing_adjust,
+        );
+        if render_mode.is_some() {
+            body.push_str("0 Tr ");
+        }
+        body.push_str("ET\n");
+        return;
     }
     append_pdf_num(body, matrix.a);
     body.push(' ');
@@ -28643,18 +28763,22 @@ fn svg_text_layout_adjustment(
     slot: u8,
     faces: &Faces,
     shaped: &[u16],
+    positioned: Option<&text_positioning::Run>,
 ) -> (f32, f32, f32, f32) {
     let base_letter_spacing = svg_letter_spacing_for_matrix(text, matrix);
     let base_word_spacing = svg_word_spacing_for_matrix(text, matrix);
-    let natural_width = svg_text_width_with_spacing(
-        &text.text,
-        matrix.size,
-        slot,
-        faces,
-        base_letter_spacing,
-        base_word_spacing,
-        shaped,
+    let (letter_gaps, word_gaps) = positioned.map_or_else(
+        || {
+            (
+                shaped.len().saturating_sub(1),
+                svg_word_spacing_gap_count(&text.text),
+            )
+        },
+        text_positioning::Run::spacing_gaps,
     );
+    let natural_width = text_width(&text.text, matrix.size, slot, faces)
+        + letter_gaps as f32 * base_letter_spacing
+        + word_gaps as f32 * base_word_spacing;
     let Some(target_width) = svg_text_target_width_for_matrix(text, matrix) else {
         return (base_letter_spacing, base_word_spacing, natural_width, 1.0);
     };
@@ -28663,7 +28787,7 @@ fn svg_text_layout_adjustment(
     }
     match text.length_adjust {
         SvgLengthAdjust::Spacing => {
-            let gaps = shaped.len().saturating_sub(1);
+            let gaps = letter_gaps;
             if gaps == 0 {
                 return (base_letter_spacing, base_word_spacing, natural_width, 1.0);
             }
@@ -28707,21 +28831,6 @@ fn svg_word_spacing_for_matrix(text: &SvgText, matrix: SvgTextMatrix) -> f32 {
     let scale = matrix.size / text.font_size.max(0.001);
     let spacing = text.word_spacing * scale;
     if spacing.is_finite() { spacing } else { 0.0 }
-}
-
-fn svg_text_width_with_spacing(
-    text: &str,
-    size: f32,
-    slot: u8,
-    faces: &Faces,
-    letter_spacing: f32,
-    word_spacing: f32,
-    shaped: &[u16],
-) -> f32 {
-    let width = text_width(text, size, slot, faces);
-    width
-        + shaped.len().saturating_sub(1) as f32 * letter_spacing
-        + svg_word_spacing_gap_count(text) as f32 * word_spacing
 }
 
 fn pdf_tj_spacing_adjust(spacing: f32, font_size: f32) -> i32 {
@@ -28908,12 +29017,7 @@ fn draw_seg(
         match shaped_run_lookup(&shaped_cache[slot_idx], &seg.text, seg.text_hash) {
             Some(run) => (run, Some(run.pdf_tj.as_str())),
             None => {
-                fallback = shape_run(
-                    source,
-                    face.lig,
-                    faces.face(seg.slot).ascii_tables(),
-                    &seg.text,
-                );
+                fallback = shape_run(faces.face(seg.slot), &seg.text);
                 (&fallback, None)
             }
         };
@@ -28936,6 +29040,22 @@ fn draw_seg(
             cached_tj,
             Some(3),
             seg.expansion_permille,
+        );
+    } else if let Some(positioned) = &run.positioned {
+        if seg.fill != *current_fill {
+            append_rgb_fill_operator(body, fill_rgb(seg.fill, palette));
+            *current_fill = seg.fill;
+        }
+        text_positioning::append_text(
+            body,
+            positioned,
+            &face.map_lookup,
+            seg.slot,
+            size,
+            seg.x,
+            y,
+            seg.expansion_permille,
+            None,
         );
     } else {
         if seg.fill != *current_fill {
@@ -28970,6 +29090,9 @@ fn draw_seg(
         size,
         y,
         palette,
+        run.positioned
+            .as_ref()
+            .map_or((0.0, 0.0), |run| run.ink(font_size_of(size))),
     );
 }
 
@@ -29017,6 +29140,7 @@ fn draw_inline_math_seg(
         size,
         y,
         palette,
+        (0.0, 0.0),
     );
 }
 
@@ -29099,6 +29223,7 @@ fn draw_seg_decorations(
     size: f32,
     y: f32,
     palette: &Palette,
+    ink: (f32, f32),
 ) {
     // Strikethrough: a thin stroke through the run's middle, in the text's own
     // color (stroke `RG`, leaving the text fill `rg` untouched).
@@ -29124,9 +29249,9 @@ fn draw_seg_decorations(
             annots.push(LinkAnnotation {
                 rect: Rect {
                     x0: seg.x,
-                    y0: y - size * 0.28,
+                    y0: y - (size * 0.28).max(ink.1),
                     x1: seg.x + seg.width,
-                    y1: y + size * 0.86,
+                    y1: y + (size * 0.86).max(ink.0),
                 },
                 target: target.clone(),
                 owner_mcid: Some(owner_mcid),
@@ -30203,6 +30328,7 @@ mod keep_with_next_tests {
             table_source_row: None,
             table_footing: Vec::new(),
             heading_source: None,
+            text_ink: (0.0, 0.0),
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -30428,6 +30554,7 @@ mod void_budget_tests {
             table_source_row: None,
             table_footing: Vec::new(),
             heading_source: None,
+            text_ink: (0.0, 0.0),
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -30619,7 +30746,10 @@ fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, (f32, f32, f32)> {
                 }
                 (top, bottom)
             } else {
-                (p.y + p.line.size * 0.85, p.y - p.line.size * 0.20)
+                (
+                    p.y + (p.line.size * 0.85).max(p.line.text_ink.0),
+                    p.y - (p.line.size * 0.20).max(p.line.text_ink.1),
+                )
             };
             acc.entry(id)
                 .and_modify(|e| e.2 = bot_y)
@@ -30785,7 +30915,7 @@ fn rounded_rect_fill(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: (f32, f32, f
     out
 }
 
-/// A subset face ready to embed. The GPOS/GSUB tables are borrowed from the
+/// A subset face ready to embed. The GPOS pair table is borrowed from the
 /// source [`Face`] (owned by the render's [`Faces`] registry, which outlives
 /// every use of the subset within the same render) instead of deep-cloned —
 /// they are read-only here, keyed by original glyph ids.
@@ -30796,8 +30926,6 @@ struct EmbeddedFace<'a> {
     /// GPOS pair kerning of the SOURCE face (the subset drops GPOS), keyed by
     /// original glyph ids — used to position glyphs in the content stream.
     kern: &'a Kerning,
-    /// GSUB ligatures of the SOURCE face, applied to shape content lines.
-    lig: &'a Ligatures,
     /// Direct-index source glyph id -> subset (renumbered) glyph id; entries
     /// for source gids absent from the subset are 0 (`.notdef`).
     map_lookup: Vec<u16>,
@@ -30840,6 +30968,7 @@ struct ShapedRun {
     glyphs: Vec<u16>,
     ligatures: Vec<(u16, String)>,
     pdf_tj: String,
+    positioned: Option<std::sync::Arc<text_positioning::Run>>,
     /// Glyph selection composed one or more source clusters. ToUnicode is
     /// global per glyph, so the original spelling belongs on this occurrence.
     requires_actual_text: bool,
@@ -32872,11 +33001,11 @@ fn widths_array(font: &Font) -> String {
 
 /// Shape `text` with `source`'s ligatures, returning the shaped SOURCE glyph ids
 /// and, for each emitted ligature, its source characters (so a `ToUnicode` entry
-/// can keep the ligated text selectable). `tables` must be the ASCII tables of
-/// the same face `source`/`lig` come from (they gate the fast route).
-fn shape_run(source: &Font, lig: &Ligatures, tables: &AsciiWidthTables, text: &str) -> ShapedRun {
+/// can keep the ligated text selectable). Supported uncomposed Latin marks
+/// retain their strict-shaper advances and offsets from this same source face.
+fn shape_run(face: &Face, text: &str) -> ShapedRun {
     let mut scratch = ShapeScratch::default();
-    shape_run_with_scratch(source, lig, tables, text, &mut scratch)
+    shape_run_with_scratch(face, text, &mut scratch)
 }
 
 /// Reusable shaping scratch: the char vector, raw cmap glyph ids, and
@@ -32899,13 +33028,20 @@ struct ShapeScratch {
 ///   vector, no substitution pass, no per-char cmap search.
 /// * General route — the original algorithm verbatim, with the intermediate
 ///   buffers borrowed from `scratch`.
-fn shape_run_with_scratch(
-    source: &Font,
-    lig: &Ligatures,
-    tables: &AsciiWidthTables,
-    text: &str,
-    scratch: &mut ShapeScratch,
-) -> ShapedRun {
+fn shape_run_with_scratch(face: &Face, text: &str, scratch: &mut ShapeScratch) -> ShapedRun {
+    if !*TAIL_NOGLYPH && let Some(run) = text_positioning::prepare(face, text).run {
+        return ShapedRun {
+            text: text.to_owned(),
+            glyphs: run.glyphs.iter().map(|glyph| glyph.id).collect(),
+            ligatures: run.unicode.clone(),
+            pdf_tj: String::new(),
+            positioned: Some(run),
+            requires_actual_text: true,
+        };
+    }
+    let source = face.font.as_ref();
+    let lig = face.lig.as_ref();
+    let tables = face.ascii_tables();
     let bytes = text.as_bytes();
     // `tables.glyphs` mirrors the unchecked cmap, so the debug toggle that
     // forces `.notdef` ids must keep taking the general route.
@@ -32927,6 +33063,7 @@ fn shape_run_with_scratch(
             ligatures: Vec::new(),
             pdf_tj,
             requires_actual_text: false,
+            positioned: None,
         };
     }
     let glyph_text = text_composition::glyph_text(text, source);
@@ -32962,6 +33099,7 @@ fn shape_run_with_scratch(
         ligatures: lig_uni,
         pdf_tj,
         requires_actual_text,
+        positioned: None,
     }
 }
 
@@ -33680,6 +33818,7 @@ mod pdf_writer_tests {
             table_source_row: None,
             table_footing: Vec::new(),
             heading_source: None,
+            text_ink: (0.0, 0.0),
             segs: texts
                 .iter()
                 .map(|text| Seg {
@@ -35016,7 +35155,7 @@ mod pdf_writer_tests {
             strike: false,
         };
 
-        let shaped = shape_run(&face.font, &face.lig, face.ascii_tables(), &tok.text);
+        let shaped = shape_run(face, &tok.text);
 
         assert_eq!(
             shaped.glyphs.len(),
@@ -35063,6 +35202,7 @@ mod pdf_writer_tests {
             ligatures: lig_uni,
             pdf_tj,
             requires_actual_text: false,
+            positioned: None,
         }
     }
 
@@ -35092,11 +35232,10 @@ mod pdf_writer_tests {
             let face = faces.face(slot);
             let source = face.font.as_ref();
             let lig = face.lig.as_ref();
-            let tables = face.ascii_tables();
             for text in corpora {
                 let reference = shape_run_reference(source, lig, text);
-                let fresh = shape_run(source, lig, tables, text);
-                let reused = shape_run_with_scratch(source, lig, tables, text, &mut scratch);
+                let fresh = shape_run(face, text);
+                let reused = shape_run_with_scratch(face, text, &mut scratch);
                 for run in [fresh, reused] {
                     assert_eq!(
                         run.glyphs, reference.glyphs,
@@ -35165,13 +35304,7 @@ mod pdf_writer_tests {
             let mut scratch = ShapeScratch::default();
             for &(slot, text) in corpus {
                 let face = faces.face(slot);
-                let run = shape_run_with_scratch(
-                    face.font.as_ref(),
-                    face.lig.as_ref(),
-                    face.ascii_tables(),
-                    text,
-                    &mut scratch,
-                );
+                let run = shape_run_with_scratch(face, text, &mut scratch);
                 sink += run.glyphs.len() + run.ligatures.len();
             }
             sink
@@ -35552,6 +35685,7 @@ mod pdf_writer_tests {
                 table_source_row: None,
                 table_footing: Vec::new(),
                 heading_source: None,
+                text_ink: (0.0, 0.0),
                 segs,
                 page_break_before: false,
                 image: None,
@@ -35719,6 +35853,7 @@ mod pdf_writer_tests {
                 table_source_row: None,
                 table_footing: Vec::new(),
                 heading_source: None,
+                text_ink: (0.0, 0.0),
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -35859,6 +35994,7 @@ mod pdf_writer_tests {
                 table_source_row: None,
                 table_footing: Vec::new(),
                 heading_source: None,
+                text_ink: (0.0, 0.0),
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -35979,6 +36115,7 @@ mod pdf_writer_tests {
                 table_source_row: None,
                 table_footing: Vec::new(),
                 heading_source: None,
+                text_ink: (0.0, 0.0),
                 segs: vec![
                     Seg {
                         x: 0.0,
@@ -36080,6 +36217,7 @@ mod pdf_writer_tests {
                 table_source_row: None,
                 table_footing: Vec::new(),
                 heading_source: None,
+                text_ink: (0.0, 0.0),
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -38205,7 +38343,7 @@ mod pdf_writer_tests {
     fn streamed_text_segment_operator_matches_legacy_format_shape() -> crate::Result<()> {
         let faces = Faces::load(&crate::PdfOptions::default())?;
         let face = faces.face(F_BODY);
-        let shaped = shape_run(&face.font, &face.lig, face.ascii_tables(), "AVATAR");
+        let shaped = shape_run(face, "AVATAR");
         let mut map = vec![0u16; usize::from(face.font.num_glyphs)];
         for &g in &shaped.glyphs {
             map[usize::from(g)] = g;
@@ -38257,7 +38395,7 @@ mod pdf_writer_tests {
     fn streamed_svg_text_operator_matches_legacy_format_shape() -> crate::Result<()> {
         let faces = Faces::load(&crate::PdfOptions::default())?;
         let face = faces.face(F_BODY);
-        let shaped = shape_run(&face.font, &face.lig, face.ascii_tables(), "A V A");
+        let shaped = shape_run(face, "A V A");
         let mut map = vec![0u16; usize::from(face.font.num_glyphs)];
         for &g in &shaped.glyphs {
             map[usize::from(g)] = g;
@@ -38288,6 +38426,7 @@ mod pdf_writer_tests {
             &shaped.glyphs,
             -25,
             -75,
+            None,
         );
 
         let expected = format!(
@@ -41054,6 +41193,7 @@ mod coverage_gap_tests {
             table_source_row: None,
             table_footing: Vec::new(),
             heading_source: None,
+            text_ink: (0.0, 0.0),
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -43055,6 +43195,7 @@ mod plass_pagination_tests {
             table_source_row: None,
             table_footing: Vec::new(),
             heading_source: None,
+            text_ink: (0.0, 0.0),
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -43319,6 +43460,7 @@ mod shaped_cache_tests {
             ligatures: Vec::new(),
             pdf_tj: String::new(),
             requires_actual_text: false,
+            positioned: None,
         }
     }
 

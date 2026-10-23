@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- PDF text positions supported Latin combining marks and stacked accents with
+  the embedded font's OpenType data. Measurement, drawing, font subsets and
+  exact text extraction share the retained glyph run, including transformed
+  SVG text and running headers and footers. Actual ink grows line and margin
+  clearances; paragraph and table wrapping preserve shaping context. Unsupported
+  sequences and bounded shaping limits produce explicit verification findings.
+
 - The language server renames top-level heading titles and their real Markdown
   links across synchronized open documents. Versioned edits preserve source
   paths, queries, delimiters and Unicode coordinates; parser-verified source

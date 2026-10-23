@@ -17,8 +17,8 @@ fn canonical_latin_pdf_metrics_and_glyphs_match_precomposed_text() {
                 face.shaped_width(composed, font_size_of(11.0)),
                 "family={family:?}, slot={slot}"
             );
-            let actual = shape_run(&face.font, &face.lig, face.ascii_tables(), source);
-            let expected = shape_run(&face.font, &face.lig, face.ascii_tables(), composed);
+            let actual = shape_run(face, source);
+            let expected = shape_run(face, composed);
             assert_eq!(
                 actual.glyphs, expected.glyphs,
                 "family={family:?}, slot={slot}"
@@ -452,7 +452,7 @@ fn narrow_styled_table_cells_hard_wrap_complete_marked_clusters() {
                 );
                 assert_eq!(run.text.replace("e\u{0301}", "é"), canonical_run.text);
                 let face = faces.face(run.slot);
-                let shaped = shape_run(&face.font, &face.lig, face.ascii_tables(), &run.text);
+                let shaped = shape_run(face, &run.text);
                 assert!(!shaped.glyphs.contains(&0));
                 assert!((run.width - face.shaped_width_points(&run.text, 10.0)).abs() < 0.001);
             }
@@ -627,7 +627,7 @@ fn unsupported_clusters_keep_their_original_shaping_and_source_text() {
             .iter()
             .map(|&(gid, _)| gid)
             .collect();
-        let shaped = shape_run(&face.font, &face.lig, face.ascii_tables(), source);
+        let shaped = shape_run(face, source);
         assert_eq!(shaped.text, source);
         assert_eq!(shaped.glyphs, expected, "unsupported chain {source:?}");
         let mut toks = Vec::new();

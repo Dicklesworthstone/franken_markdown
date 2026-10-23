@@ -101,10 +101,33 @@ fn emitted_pages(pdf: &[u8]) -> Vec<usize> {
         .collect()
 }
 
-/// The writer intentionally gives a split block fresh structure containers on
-/// each page. Check the actual paragraph-to-root ancestry on every emitted
-/// page, rather than assuming one container per source quote for the document.
+/// One logical paragraph and quote chain span physical pages. Every painted
+/// MCID must have exactly one MCR owner under that shared ancestry; an element's
+/// own `/Pg` names its first page, not all pages containing its marked content.
 fn assert_quote_structure_on_every_page(pdf: &[u8], depth: usize) {
+    fn reference(value: &str) -> usize {
+        let mut words = value.split_whitespace();
+        let object = words.next().unwrap().parse().unwrap();
+        assert_eq!(words.next(), Some("0"));
+        assert_eq!(words.next(), Some("R"));
+        object
+    }
+
+    struct Element<'a> {
+        tag: &'a str,
+        parent: usize,
+        page: Option<usize>,
+        kids: &'a str,
+    }
+
+    let object_bytes = |object: usize| {
+        let marker = format!("\n{object} 0 obj\n");
+        let start = pdf
+            .windows(marker.len())
+            .position(|bytes| bytes == marker.as_bytes())
+            .expect("referenced PDF object exists");
+        &pdf[start + marker.len()..]
+    };
     let text = String::from_utf8_lossy(pdf);
     let needle = " 0 obj\n<< /Type /StructElem /S /";
     let mut elements = BTreeMap::new();
@@ -115,49 +138,195 @@ fn assert_quote_structure_on_every_page(pdf: &[u8], depth: usize) {
             .unwrap()
             .parse()
             .unwrap();
-        let body = text[offset + needle.len()..].split("\nendobj").next().unwrap();
-        let tag = body.split_whitespace().next().unwrap();
-        let reference = |key: &str| {
-            body.split(key)
-                .nth(1)
-                .map(|tail| tail.split_whitespace().next().unwrap().parse::<usize>().unwrap())
+        let body = text[offset + needle.len()..]
+            .split("\nendobj")
+            .next()
+            .unwrap();
+        let (header, kids) = body.split_once(" /K [").unwrap();
+        let element = Element {
+            tag: header.split_whitespace().next().unwrap(),
+            parent: reference(header.split_once(" /P ").unwrap().1),
+            page: header.split_once(" /Pg ").map(|(_, tail)| reference(tail)),
+            kids: kids.split_once(']').unwrap().0.trim(),
         };
-        elements.insert(object, (tag, reference(" /P ").unwrap(), reference(" /Pg ")));
+        assert!(
+            elements.insert(object, element).is_none(),
+            "unique structure objects"
+        );
     }
     let pages = emitted_pages(pdf);
-    let mut quotes_by_page = BTreeMap::<usize, BTreeSet<usize>>::new();
-    for &(tag, parent, page) in elements.values() {
-        if tag != "P" {
+    assert!(!pages.is_empty());
+    assert_eq!(pages.iter().collect::<BTreeSet<_>>().len(), pages.len());
+    let mut painted = BTreeSet::new();
+    for &page in &pages {
+        let bytes = object_bytes(page);
+        let header_end = bytes.iter().position(|&byte| byte == b'\n').unwrap();
+        let header = std::str::from_utf8(&bytes[..header_end]).unwrap();
+        assert!(header.starts_with("<< /Type /Page "));
+        let content_object = reference(header.split_once(" /Contents ").unwrap().1);
+        let bytes = object_bytes(content_object);
+        let header_end = bytes.iter().position(|&byte| byte == b'\n').unwrap();
+        let header = std::str::from_utf8(&bytes[..header_end]).unwrap();
+        let length: usize = header
+            .split_once("/Length ")
+            .unwrap()
+            .1
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let bytes = bytes[header_end + 1..].strip_prefix(b"stream\n").unwrap();
+        let payload = &bytes[..length];
+        assert!(bytes[length..].starts_with(b"\nendstream"));
+        let decoded;
+        let payload = if header.contains("/Filter /FlateDecode") {
+            decoded = crate::zlib_decompress(payload, 16 << 20).expect("valid page stream");
+            decoded.as_slice()
+        } else {
+            payload
+        };
+        let stream = std::str::from_utf8(payload).unwrap();
+        let mut count = 0;
+        for tail in stream.split("/P <</MCID ").skip(1) {
+            let (mcid, content) = tail.split_once(">> BDC\n").unwrap();
+            let mcid: usize = mcid.parse().unwrap();
+            assert_eq!(mcid, count, "dense paragraph MCIDs on page {page}");
+            let content = content.split_once("\nEMC").unwrap().0;
+            assert!(
+                content.contains(" Tj") || content.contains(" TJ"),
+                "painted prose"
+            );
+            assert!(painted.insert((page, mcid)), "unique painted MCID");
+            count += 1;
+        }
+        assert!(count > 0, "every emitted page paints paragraph content");
+        assert_eq!(
+            count,
+            stream.matches("/MCID ").count(),
+            "only expected prose marks"
+        );
+    }
+
+    let mut child_owners = BTreeMap::new();
+    for (&object, element) in &elements {
+        if !matches!(element.tag, "Document" | "BlockQuote") {
             continue;
         }
-        let page = page.expect("paragraph has an emitted page");
-        assert!(pages.contains(&page));
-        let mut cursor = parent;
+        let words: Vec<_> = element.kids.split_whitespace().collect();
+        assert_eq!(words.len(), 3, "one child in this logical quote chain");
+        let child = reference(element.kids);
+        let child_element = elements.get(&child).expect("existing structure child");
+        assert_eq!(
+            child_element.parent, object,
+            "matching parent and child links"
+        );
+        assert!(
+            child_owners.insert(child, object).is_none(),
+            "one parent per child"
+        );
+    }
+    assert_eq!(
+        elements
+            .values()
+            .filter(|element| element.tag == "Document")
+            .count(),
+        1
+    );
+    assert_eq!(
+        elements
+            .values()
+            .filter(|element| element.tag == "P")
+            .count(),
+        1,
+        "one logical paragraph survives the page break"
+    );
+
+    let mut quotes_by_page = BTreeMap::<usize, Vec<usize>>::new();
+    let mut owned = BTreeSet::new();
+    for (&object, element) in &elements {
+        if element.tag != "P" {
+            continue;
+        }
+        let mut cursor = element.parent;
+        let mut child = object;
         let mut ancestors = BTreeSet::new();
-        let mut quotes = BTreeSet::new();
+        let mut quotes = Vec::new();
         loop {
             assert!(ancestors.insert(cursor), "acyclic structure ancestry");
-            let &(tag, parent, _) = elements.get(&cursor).expect("existing structure parent");
-            if tag == "Document" {
+            assert_eq!(child_owners.get(&child), Some(&cursor));
+            let parent = elements.get(&cursor).expect("existing structure parent");
+            if parent.tag == "Document" {
                 break;
             }
-            assert_eq!(tag, "BlockQuote", "only quote containers enclose this prose");
-            quotes.insert(cursor);
-            cursor = parent;
+            assert_eq!(
+                parent.tag, "BlockQuote",
+                "only quote containers enclose this prose"
+            );
+            quotes.push(cursor);
+            child = cursor;
+            cursor = parent.parent;
         }
-        assert_eq!(quotes.len(), depth, "exact quote nesting on page {page}");
-        quotes_by_page.entry(page).or_default().extend(quotes);
+        assert_eq!(quotes.len(), depth, "exact logical quote nesting");
+        let mut kids = element.kids;
+        let mut first_page = None;
+        while !kids.is_empty() {
+            let tail = kids
+                .strip_prefix("<< /Type /MCR /Pg ")
+                .expect("paragraph MCR child");
+            let (page_ref, tail) = tail.split_once(" /MCID ").unwrap();
+            let page = reference(page_ref);
+            let (mcid, tail) = tail.split_once(" >>").unwrap();
+            let mcid: usize = mcid.parse().unwrap();
+            assert!(pages.contains(&page), "MCR references an emitted page");
+            assert!(
+                painted.contains(&(page, mcid)),
+                "MCR references painted content"
+            );
+            assert!(
+                owned.insert((page, mcid)),
+                "exactly one owner for each MCID"
+            );
+            first_page.get_or_insert(page);
+            let chain = quotes_by_page.entry(page).or_insert_with(|| quotes.clone());
+            assert_eq!(
+                *chain, quotes,
+                "the same logical quote chain covers every MCR"
+            );
+            kids = tail.trim_start();
+        }
+        assert!(first_page.is_some(), "paragraph owns marked content");
+        assert_eq!(
+            element.page, first_page,
+            "element Pg anchors its first MCR page"
+        );
     }
-    assert_eq!(quotes_by_page.len(), pages.len(), "every page contains quoted prose");
+    assert_eq!(
+        owned, painted,
+        "every painted paragraph MCID has one logical owner"
+    );
+    assert_eq!(
+        quotes_by_page.len(),
+        pages.len(),
+        "every page contains quoted prose"
+    );
     for page in &pages {
         assert_eq!(quotes_by_page[page].len(), depth);
+        assert_eq!(
+            quotes_by_page[page], quotes_by_page[&pages[0]],
+            "shared quote ancestry"
+        );
     }
     let used: BTreeSet<_> = quotes_by_page.values().flatten().copied().collect();
-    assert_eq!(used.len(), depth * pages.len(), "fresh containers per page");
-    let emitted: BTreeSet<_> = elements.iter()
-        .filter_map(|(&object, &(tag, _, _))| (tag == "BlockQuote").then_some(object))
+    assert_eq!(used.len(), depth, "one logical quote chain across pages");
+    let emitted: BTreeSet<_> = elements
+        .iter()
+        .filter_map(|(&object, element)| (element.tag == "BlockQuote").then_some(object))
         .collect();
-    assert_eq!(used, emitted, "no unreferenced or duplicate quote containers");
+    assert_eq!(
+        used, emitted,
+        "no unreferenced or duplicate quote containers"
+    );
 }
 
 fn emitted_heading_page(pdf: &[u8], title: &str) -> usize {

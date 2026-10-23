@@ -100,6 +100,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tagged PDF paragraphs, links, code blocks, quotes, lists and tables retain
+  their logical identity across page breaks. Continued table headers are
+  pagination artifacts, with annotations still owned by their original header
+  cells; source rows, footnote containers and page-local formulas stay distinct.
+- Small-font footnote tables no longer panic when adaptive scaling would place
+  the body-table minimum above their nominal font size.
 - Editor and LSP source ranges now follow the semantic Markdown parser, keeping
   diagnostics and navigation aligned after frontmatter, lazy blockquotes,
   multiline mathematics, definition lists and removed reference definitions.

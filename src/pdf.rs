@@ -330,7 +330,7 @@ struct Line {
     /// Left x of a horizontal rule (only meaningful when `rule`).
     rule_x: f32,
     /// For each blockquote enclosing this line: `(quote_id, bar_x)`. `quote_id`
-    /// is the out-vec index of the quote's first line; `bar_x` is the stroke x.
+    /// is a document-wide container identity; `bar_x` is the stroke x.
     quote_bars: Vec<(usize, f32)>,
     /// Code-panel group: `0` = no background; equal nonzero ids on consecutive
     /// lines share ONE filled rounded rect (a single fenced code block).
@@ -354,7 +354,7 @@ struct Line {
     /// non-table line. Lets the structure-tree builder emit per-cell `/TH`/`/TD`
     /// and merge a cell's wrapped fragments across physical lines.
     table_cols: Vec<u32>,
-    /// Original source row in an explicitly formatted table (header = 0).
+    /// Original source table row (header = 0), stable across page boundaries.
     /// Footing-marker rows do not become accessible data rows.
     table_source_row: Option<u32>,
     /// Non-content strokes belonging to this row, never repeated as headers.
@@ -4515,6 +4515,11 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             gap(out, CODE_BLOCK_GAP_AFTER);
         }
         Block::BlockQuote(inner) => {
+            // Containers need document-wide identities: footnote bodies are
+            // laid out into separate vectors, and nested containers can open
+            // at the same line offset. Allocate before descending so identity
+            // order also preserves the nesting order of lists and quotes.
+            let quote_id = cx.alloc_flow() as usize;
             if let Some((_tag, label, body)) = crate::ast::alert_body(inner) {
                 let start = out.len();
                 gap(out, 4.0);
@@ -4538,7 +4543,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 let bar_x = cx.page.left + indent + 6.0;
                 if let Some(lines) = out.get_mut(start..) {
                     for line in lines {
-                        line.quote_bars.push((start, bar_x));
+                        line.quote_bars.push((quote_id, bar_x));
                     }
                 }
                 gap(out, 3.0);
@@ -4549,7 +4554,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 let bar_x = cx.page.left + indent + 6.0; // sits in the reserved 18pt gutter
                 if let Some(lines) = out.get_mut(start..) {
                     for line in lines {
-                        line.quote_bars.push((start, bar_x)); // `start` = unique quote id
+                        line.quote_bars.push((quote_id, bar_x));
                     }
                 }
                 gap(out, 3.0);
@@ -17828,7 +17833,10 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         let scale = min_ratio.min(col_cap).clamp(0.75, 1.0);
         if scale < 0.96 {
             let nominal = spec.nominal_size;
-            let min_size = (nominal * 0.75).max(crate::theme::TABLE_FONT_SIZE_FLOOR_PT);
+            // Footnote scaling can put a valid nominal size below the body
+            // table floor. Never enlarge that nominal or invert clamp bounds.
+            let min_size = (nominal * 0.75)
+                .max(crate::theme::TABLE_FONT_SIZE_FLOOR_PT.min(nominal));
             size = (nominal * scale).clamp(min_size, nominal);
             pad = (TABLE_COL_GUTTER * (size / nominal)).max(8.0);
             gutters = pad * ncol as f32;
@@ -18049,9 +18057,15 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 },
                 list_path: Vec::new(),
                 table_cols: cols,
-                table_source_row: financial_rows.as_ref().map(|rows| {
-                    source_row.map_or(0, |index| rows[index].source_index.saturating_add(1) as u32)
-                }),
+                // Stable across pages, including a wrapped row continued after
+                // a repeated header. Financial rule-only source rows retain
+                // their original indices instead of renumbering visible rows.
+                table_source_row: Some(source_row.map_or(0, |index| {
+                    financial_rows
+                        .as_ref()
+                        .map_or(index, |rows| rows[index].source_index)
+                        .saturating_add(1) as u32
+                })),
                 table_footing: Vec::new(),
                 heading_source: None,
                 segs,
@@ -18155,12 +18169,13 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
     let marker_left = cx.page.left + indent + 2.0 * scale;
     let content_indent = indent + marker_col + 11.0 * scale;
     let list_first_line = out.len();
+    let list_id = cx.alloc_flow();
 
     // Push this list onto the layout's list stack so every line laid out while
     // it is open can be stamped with its full `/L`→`/LI` ancestor chain. The
     // item id is updated as the loop advances.
     cx.list_stack.push(ListFrame {
-        list: list_first_line as u32,
+        list: list_id,
         item: 0,
     });
 
@@ -21812,6 +21827,7 @@ struct RenderScratch {
     pages: Vec<PageContent>,
     outlines: Vec<OutlineEntry>,
     seen_heading_groups: BTreeSet<u32>,
+    seen_table_header_lines: BTreeSet<(u32, usize)>,
 }
 
 impl RenderScratch {
@@ -21820,6 +21836,7 @@ impl RenderScratch {
             pages: Vec::with_capacity(page_count.max(1)),
             outlines: Vec::with_capacity(heading_count),
             seen_heading_groups: BTreeSet::new(),
+            seen_table_header_lines: BTreeSet::new(),
         }
     }
 }
@@ -22898,6 +22915,10 @@ fn generate_page_content(
             }
             prev_table_kind = Some(line.flow.kind);
             let header = line.flow.kind == FlowKind::TableHeader;
+            let repeated_header = header
+                && !scratch
+                    .seen_table_header_lines
+                    .insert((line.flow.group, line.flow.index));
             let cell_tag = if header { "TH" } else { "TD" };
             let prefix = container_prefix(line);
             for (seg, &col) in line.segs.iter().zip(line.table_cols.iter()) {
@@ -22919,11 +22940,18 @@ fn generate_page_content(
                 });
                 if seg.slot == F_IMAGE {
                     // An image in a cell is a /Figure inside its /TD.
-                    path.push(SElem {
-                        key: SKey::InlineFigure(next_mcid),
-                        tag: "Figure",
-                    });
-                    append_marked_content_begin(&mut body, "Figure", next_mcid);
+                    if !repeated_header {
+                        path.push(SElem {
+                            key: SKey::InlineFigure(next_mcid),
+                            tag: "Figure",
+                        });
+                    }
+                    append_table_cell_content_begin(
+                        &mut body,
+                        if repeated_header { cell_tag } else { "Figure" },
+                        next_mcid,
+                        repeated_header,
+                    );
                     let bbox = draw_inline_image_seg(
                         &mut body,
                         &mut annots,
@@ -22944,13 +22972,19 @@ fn generate_page_content(
                     marks.push(StructMark {
                         mcid: next_mcid,
                         path,
-                        alt: Some(inline_image::alt_text(&seg.text).to_string()),
-                        bbox,
+                        alt: (!repeated_header)
+                            .then(|| inline_image::alt_text(&seg.text).to_string()),
+                        bbox: (!repeated_header).then_some(bbox).flatten(),
                     });
                     next_mcid += 1;
                     continue;
                 }
-                append_marked_content_begin(&mut body, cell_tag, next_mcid);
+                append_table_cell_content_begin(
+                    &mut body,
+                    cell_tag,
+                    next_mcid,
+                    repeated_header,
+                );
                 draw_seg(
                     &mut body,
                     &mut annots,
@@ -23282,6 +23316,21 @@ fn generate_page_content(
     )
 }
 
+/// Start a cell's logical content, keeping repeated header paint out of the
+/// reading order. The empty mark retained on a repeated header still owns its
+/// clickable annotations and maps to the original logical header cell.
+fn append_table_cell_content_begin(
+    body: &mut String,
+    tag: &str,
+    mcid: usize,
+    repeated_header: bool,
+) {
+    append_marked_content_begin(body, tag, mcid);
+    if repeated_header {
+        body.push_str("EMC\n/Artifact <</Type /Pagination /Subtype /Header>> BDC\n");
+    }
+}
+
 /// Identity of a structure element, used to share a container across the
 /// consecutive marks that belong to it (e.g. every cell of one table row reuses
 /// the same `TableRow`, every wrapped line of one paragraph reuses the same
@@ -23490,12 +23539,11 @@ struct StructTree {
     annot_owner: Vec<Vec<Option<usize>>>,
 }
 
-/// Assemble the hierarchical structure tree from per-page marks. Each mark
-/// carries the full container path from just below `/Document` to its owning
-/// element; consecutive marks that share a prefix reuse the same container
-/// nodes, so tables, lists, and blockquotes nest correctly. The open stack is
-/// reset per page (a block split across a page break becomes two sibling
-/// elements under `/Document`, which is valid and keeps the parent tree simple).
+/// Assemble one logical hierarchy from every page's marked content. Stable
+/// layout identities join page-spanning paragraphs, lists, quotes and tables;
+/// each MCR still names its own page and each page has its own dense parent
+/// tree. Inline formulas/images use page-local MCIDs, so their keys include
+/// the page rather than accidentally merging unrelated occurrences.
 fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> StructTree {
     let mut nodes: Vec<SNode> = vec![SNode {
         tag: "Document",
@@ -23508,18 +23556,14 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
     }];
     let mut parent_tree: Vec<Vec<usize>> = Vec::with_capacity(pages.len());
     let mut annot_owner: Vec<Vec<Option<usize>>> = Vec::with_capacity(pages.len());
+    let mut child_by_key: BTreeMap<(usize, SKey, Option<usize>), usize> = BTreeMap::new();
 
     for (page_idx, page) in pages.iter().enumerate() {
         let mut leaf_for_mcid: Vec<usize> = Vec::with_capacity(page.marks.len());
         // Currently open path elements below /Document: (sharing key, node index).
         let mut open: Vec<(SKey, usize)> = Vec::new();
-        // Existing child of a parent, keyed by (parent node, element key). Reset
-        // per page so a block split across a page break becomes two siblings.
-        // This lets a logical element's fragments re-find their node even when a
-        // sibling intervened — e.g. a table cell that wraps onto later lines
-        // reappears after the other columns, and MUST extend its existing /TD
-        // rather than spawn a duplicate one (which would tear reading order).
-        let mut child_by_key: BTreeMap<(usize, SKey), usize> = BTreeMap::new();
+        // The lookup spans pages and intervening siblings (including footnotes),
+        // so a wrapped cell or continuing paragraph re-finds its original node.
 
         // `PageContent` is private renderer state: page generation pushes each
         // mark as its BDC is emitted, then increments `next_mcid` exactly once.
@@ -23544,7 +23588,10 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
             open.truncate(common);
             for elem in &mark.path[common..] {
                 let parent_node = open.last().map_or(0, |&(_, idx)| idx);
-                if let Some(&existing) = child_by_key.get(&(parent_node, elem.key)) {
+                let page_scope = matches!(elem.key, SKey::InlineFormula(_) | SKey::InlineFigure(_))
+                    .then_some(page_idx);
+                let identity = (parent_node, elem.key, page_scope);
+                if let Some(&existing) = child_by_key.get(&identity) {
                     // A fragment of an element that already exists under this
                     // parent (a wrapped/re-entered cell, list item, ...): extend it.
                     open.push((elem.key, existing));
@@ -23561,7 +23608,7 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
                     page: None,
                 });
                 nodes[parent_node].kids.push(SKid::Node(node_index));
-                child_by_key.insert((parent_node, elem.key), node_index);
+                child_by_key.insert(identity, node_index);
                 open.push((elem.key, node_index));
             }
 
@@ -29128,9 +29175,9 @@ fn leaf_elem(line: &Line) -> SElem {
 /// line: the blockquotes and lists that enclose it, outermost-first. Tables and
 /// leaves append their own elements after this.
 ///
-/// Blockquotes and lists are merged by their out-vec start index (every
-/// blockquote id and list id is the index where that block opened). Markdown
-/// block structure is a tree, so start order is exactly nesting order — this
+/// Blockquotes and lists share the document's monotonic identity allocator.
+/// Each container takes its identity before laying out children, so allocation
+/// order is exactly nesting order even for separately laid-out footnotes. This
 /// gets `> - item` (list inside quote) and `- > quote` (quote inside list)
 /// right, rather than always nesting one kind inside the other.
 fn container_prefix(line: &Line) -> SmallPath {

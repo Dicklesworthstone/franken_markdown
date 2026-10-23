@@ -1,8 +1,8 @@
 # PDF Accessibility Ledger
 
-Date: 2026-06-29
+Date: 2026-10-23
 Scope: tagged-PDF structure semantics emitted by the clean-room PDF writer
-(`src/pdf.rs`). Bead: `qw1.9`.
+(`src/pdf.rs`). Beads: `qw1.9`, `6lcj`.
 
 `franken_markdown` writes a tagged PDF (`/MarkInfo << /Marked true >>`,
 `/StructTreeRoot`, `/Lang (en-US)`, `/Tabs /S`) so the output is usable by
@@ -11,7 +11,7 @@ This ledger records exactly which structure semantics are supported, how they
 are produced, the known limitations of the line-based writer, and the explicit
 non-goals. It depends on **no third-party PDF parser** in production; the
 guarantees below are pinned by byte-level structural tests in
-`tests/pdf_test.rs`.
+`tests/pdf_test.rs` and `tests/pdf_accessibility_pages_test.rs`.
 
 ## Supported semantics
 
@@ -20,11 +20,12 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 | Markdown | Structure | Notes |
 |---|---|---|
 | `#` … `######` heading | `/H1` … `/H6` | Exact level from the source heading, independent of the type scale |
-| Paragraph | `/P` | Wrapped lines of one paragraph share a single `/P` (one `/MCR` per line) |
+| Paragraph | `/P` | Wrapped lines share a single `/P`, including across page boundaries; every `/MCR` names its actual page |
 | Bullet / ordered / task list | `/L` → `/LI` → `/LBody` → `/P` | Nested lists produce nested `/L`, to arbitrary depth |
 | Blockquote | `/BlockQuote` | Nested quotes nest; content keeps its own `/P`/`/L`/… inside |
 | Pipe table | `/Table` → `/TR` → `/TH`\|`/TD` | Per **cell** marks; header cells are `/TH` |
 | Table header cell | `/TH` with `/A << /O /Table /Scope /Column >>` | Column scope (Markdown headers are column headers) |
+| Repeated table header | `/Artifact` with pagination/header attributes | Continued-page paint stays outside the reading order; empty marks on the original `/TH` retain ownership of clickable annotations |
 | Fenced code block | `/Code` | All lines of one block share a single `/Code` |
 | Image | `/Figure` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Alt text from the Markdown `![alt]`; bbox locates the image |
 | Inline / autolink link | `/Link` nested in its `/P` or heading (one per link run; prose stays in the parent) with `/OBJR` to its annotation, and the annotation's reverse `/StructParent` | Fully bidirectional: the element references the annotation and the annotation maps back through the parent tree (PDF/UA) |
@@ -35,7 +36,8 @@ Cross-cutting guarantees, all asserted by tests:
 
 - **No unmarked content.** Every byte of page content is inside either a
   structure marked-content sequence (`/<Tag> <</MCID n>> BDC … EMC`) or an
-  `/Artifact BMC … EMC` span (running header/footer bands use the typed
+  `/Artifact BMC … EMC` span (running header/footer bands and repeated table
+  headers use the typed
   `/Artifact <</Type /Pagination …>> BDC` form). Marked content is always balanced
   (`#BDC + #BMC == #EMC`). This is the PDF/UA 7.1 "all content is tagged"
   requirement.
@@ -48,6 +50,11 @@ Cross-cutting guarantees, all asserted by tests:
   structure `/MCR`.
 - **Selectable text preserved.** `/ToUnicode` maps (including ligature glyphs)
   are unchanged, so copy/search still work over the tagged content.
+- **Logical elements span pages.** A source paragraph, code block, quote, list,
+  list item, table, row or cell retains one structure element as it continues
+  onto later pages. Repeated header paint does not repeat its text or image alt
+  in the logical reading order. Independently laid-out footnote containers and
+  page-local inline formulas/images keep distinct identities.
 - **Determinism.** Given fixed input/theme/fonts/options the tagged bytes are
   stable across runs and `SOURCE_DATE_EPOCH` values
   (`scripts/check-determinism.sh`).
@@ -58,13 +65,16 @@ The writer flattens the document AST to a vector of laid-out `Line`s, paginates,
 then in the page builder emits one marked-content sequence per visible line
 (per **cell** for table rows). Each mark carries a *container path* — the chain
 of structure elements from just below `/Document` down to the element that owns
-the mark's content (blockquotes, then list `/L`/`/LI`/`/LBody`, then the leaf or
+the mark's content (enclosing blockquotes and lists in source nesting order,
+then the leaf or
 table `/Table`/`/TR`/`/TH`/`/TD`). `build_struct_tree` diffs consecutive paths
-to open and reuse shared ancestors, so tables, lists, and blockquotes nest
-correctly without the page builder needing global structure state. List
-membership is threaded from `layout_list` (innermost list wins); table cell
-columns are threaded from `layout_table`; blockquote and code grouping are
-derived from existing per-line data.
+to open and reuse shared ancestors. Its identity map persists across pages,
+while each content reference and annotation retains its own page. Lists and
+quotes allocate document-wide identities before their children, preserving
+nesting even when a footnote is laid out in a separate temporary vector. Table
+rows retain their original source indices through wrapping and pagination.
+Inline formulas and figures use a page-qualified occurrence key because their
+MCIDs restart on each page. Both PDF emission modes use this same hierarchy.
 
 ## Known limitations
 
@@ -76,9 +86,6 @@ They are safe (they never corrupt the tree) and are candidates for future beads.
 - **No `/Headers` ID associations** between body cells and header cells. Header
   cells carry a column `/Scope`, which covers simple Markdown grids; there is no
   row/column id linkage and no row/col span (GFM has neither).
-- **Page-split blocks fragment.** A paragraph, list, table, or blockquote split
-  across a page break becomes sibling elements under `/Document` (one fragment
-  per page), not one logical element spanning pages. Reading order is preserved.
 - **List markers** (bullet/number/checkbox) are part of the item's first line
   text, not a separate `/Lbl` element, and ordered vs. bullet lists both tag as
   `/L` without an explicit `/ListNumbering` attribute.
@@ -92,6 +99,13 @@ They are safe (they never corrupt the tree) and are candidates for future beads.
   classification beyond keeping decoration out of the reading order.
 
 ## Verification
+
+`tests/pdf_accessibility_pages_test.rs` checks emitted multipage PDFs for one
+logical element per source block/cell, nested list/quote ownership, header
+artifacts with preserved annotations, unique dense MCID owners, separately
+laid-out footnotes, inline formula identity, deterministic output, and equality
+between monolithic and chunked emission. It also exercises adaptive table
+scaling below the ordinary body-table floor inside a small-type footnote.
 
 Closing `qw1.9` cited:
 

@@ -930,8 +930,10 @@ Honest about what the renderer does not do yet.
   tags from the source level (at any type scale), and lists, tables (with header
   column scope), blockquotes, figures, task-list markers, strikethrough runs,
   and links are tagged (each link run is a `/Link` inside its paragraph or
-  heading, owning its annotation). Cell-to-header id linkage,
-  full PDF/UA validation, and page-spanning logical elements remain roadmap. See
+  heading, owning its annotation). Paragraphs, code blocks, quotes, lists and
+  tables keep their logical structure across page breaks, and repeated table
+  headers are pagination artifacts. Empty-cell tags, cell-to-header ID
+  associations, and full PDF/UA validation remain roadmap. See
   [`docs/PDF_ACCESSIBILITY.md`](docs/PDF_ACCESSIBILITY.md).
 - **Release binaries are tag-driven.** The installers prefer the GitHub release
   assets and fall back to local compilation only when explicitly requested or

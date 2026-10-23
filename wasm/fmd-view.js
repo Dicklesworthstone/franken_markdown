@@ -17,6 +17,13 @@
 // "fmd-error" fires on fetch/render failure. Bytes parity with renderHtml()
 // is exact: the same call is used.
 //
+// Each connected render owns a source/options snapshot. New attributes, inline
+// Markdown edits and disconnection revoke older work; canceled/stale attempts
+// cannot publish HTML or events. Fetches are aborted when superseded. Inline
+// child/text changes are observed only while src is absent/empty; a first
+// script[type="text/markdown"] supplies the source when present. Failed shared
+// engine initialization is retried by the next render (including reconnect).
+//
 // Zero dependencies; the shared wasm payload is the package's.
 
 import { createRenderer } from "./franken_markdown.js";
@@ -25,12 +32,16 @@ let rendererPromise = null;
 
 function sharedRenderer(wasmInput) {
   if (!rendererPromise) {
-    rendererPromise = createRenderer(wasmInput);
+    const pending = Promise.resolve().then(() => createRenderer(wasmInput));
+    rendererPromise = pending;
+    // A transient engine-load failure must not poison all future elements.
+    // Keep a newer initialization's ownership if a caller has already retried.
+    pending.catch(() => {
+      if (rendererPromise === pending) rendererPromise = null;
+    });
   }
   return rendererPromise;
 }
-
-const SLOT_RENDER = Symbol("slot source");
 
 class FmdView extends HTMLElement {
   static get observedAttributes() {
@@ -38,7 +49,9 @@ class FmdView extends HTMLElement {
   }
 
   #root = null;
-  #lastSrc = undefined;
+  #request = null;
+  #observer = null;
+  #lastInline = undefined;
 
   constructor() {
     super();
@@ -47,31 +60,34 @@ class FmdView extends HTMLElement {
   }
 
   connectedCallback() {
-    this.#render();
-  }
-
-  attributeChangedCallback(name, oldV, newV) {
-    if (oldV === newV || !this.#root) {
-      return;
-    }
-    if (name === "src" && newV !== this.#lastSrc) {
-      this.#render();
-      return;
-    }
-    if (name === "font" || name === "dark-mode") {
-      this.#render();
-    }
-  }
-
-  async #source() {
-    const src = this.getAttribute("src");
-    if (src) {
-      const res = await fetch(src);
-      if (!res.ok) {
-        throw new Error(`fmd-view: fetch ${src} -> HTTP ${res.status}`);
+    if (!this.isConnected) return;
+    this.#observer ??= new MutationObserver(() => {
+      if (this.isConnected && !this.getAttribute("src") && this.#inlineSource() !== this.#lastInline) {
+        this.#startRender();
       }
-      return await res.text();
+    });
+    this.#observer.observe(this, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["type"],
+    });
+    this.#startRender();
+  }
+
+  disconnectedCallback() {
+    this.#observer?.disconnect();
+    this.#cancelRender();
+  }
+
+  attributeChangedCallback(_name, oldV, newV) {
+    if (oldV !== newV && this.isConnected) {
+      this.#startRender();
     }
+  }
+
+  #inlineSource() {
     // Slot content as inline Markdown. Preserve text exactly.
     const slot = this.querySelector("script[type='text/markdown']");
     if (slot) {
@@ -80,41 +96,74 @@ class FmdView extends HTMLElement {
     return this.textContent ?? "";
   }
 
-  async #render() {
-    const srcAttr = this.getAttribute("src");
-    this.#lastSrc = srcAttr;
-    let markdown;
+  #cancelRender() {
+    const previous = this.#request;
+    this.#request = null;
+    previous?.controller.abort();
+  }
+
+  #current(request) {
+    return this.isConnected && this.#request === request
+      // MutationObserver runs asynchronously. Recheck inline source so a
+      // resolved old promise cannot publish before the mutation callback runs.
+      && (request.src || this.#inlineSource() === request.markdown);
+  }
+
+  #startRender() {
+    this.#cancelRender();
+    if (!this.isConnected) return;
+    const src = this.getAttribute("src");
+    const markdown = src ? null : this.#inlineSource();
+    this.#lastInline = markdown;
+    const request = {
+      src,
+      markdown,
+      options: {
+        font: this.getAttribute("font") === "serif" ? "serif" : "sans",
+        darkMode: this.getAttribute("dark-mode") === "disabled" ? "disabled" : "auto",
+      },
+      controller: new AbortController(),
+    };
+    this.#request = request;
+    void this.#render(request);
+  }
+
+  async #render(request) {
     try {
-      markdown = await this.#source();
+      let markdown = request.markdown;
+      if (request.src) {
+        const res = await fetch(request.src, { signal: request.controller.signal });
+        if (!this.#current(request)) return;
+        if (!res.ok) {
+          throw new Error(`fmd-view: fetch ${request.src} -> HTTP ${res.status}`);
+        }
+        markdown = await res.text();
+      }
+      if (!this.#current(request)) return;
+      const renderer = await sharedRenderer(undefined);
+      if (!this.#current(request)) return;
+      const out = await renderer.renderHtml(markdown, request.options);
+      if (!this.#current(request)) return;
+      const html = out.text();
+      const detail = {
+        bytes: out.bytes.byteLength,
+        sourceLength: out.sourceLength,
+        diagnostics: out.diagnostics,
+      };
+      if (!this.#current(request)) return;
+      this.#root.innerHTML = `<style>:host{display:block}</style>${html}`;
+      if (this.#current(request)) {
+        this.dispatchEvent(new CustomEvent("fmd-rendered", { detail }));
+      }
     } catch (err) {
-      this.dispatchEvent(new CustomEvent("fmd-error", { detail: { error: String(err) } }));
-      return;
+      if (this.#current(request)) {
+        this.dispatchEvent(new CustomEvent("fmd-error", { detail: { error: String(err) } }));
+      }
+    } finally {
+      if (this.#request === request) {
+        this.#request = null;
+      }
     }
-    let renderer;
-    try {
-      // If the host already initialized the engine with explicit wasm bytes,
-      // a package-level export would be needed; default path resolves the
-      // bundled artifact via the wrapper's own URL resolution.
-      renderer = await sharedRenderer(undefined);
-    } catch (err) {
-      this.dispatchEvent(new CustomEvent("fmd-error", { detail: { error: String(err) } }));
-      return;
-    }
-    const out = await renderer.renderHtml(markdown, {
-      font: this.getAttribute("font") === "serif" ? "serif" : "sans",
-      darkMode: this.getAttribute("dark-mode") === "disabled" ? "disabled" : "auto",
-    });
-    const html = out.text();
-    this.#root.innerHTML = `<style>:host{display:block}</style>${html}`;
-    this.dispatchEvent(
-      new CustomEvent("fmd-rendered", {
-        detail: {
-          bytes: out.bytes.byteLength,
-          sourceLength: out.sourceLength,
-          diagnostics: out.diagnostics,
-        },
-      }),
-    );
   }
 }
 

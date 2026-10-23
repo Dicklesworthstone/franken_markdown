@@ -119,6 +119,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `<fmd-view>` tracks its current connected source and options throughout fetch
+  and rendering. Inline Markdown edits refresh the preview; source changes and
+  disconnection abort obsolete fetches and suppress stale HTML or events.
+  Initialization, rendering and output failures emit a recoverable error instead
+  of leaving unhandled work or poisoning subsequent component instances.
+
 - Native HTML books resolve chapter links by their exact source identity. Missing
   nested siblings, alternate extensions and flattened-name lookalikes no longer
   redirect to unrelated chapters; real chapter aliases retain query strings and

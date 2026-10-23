@@ -14,10 +14,20 @@ export interface FmdRenderedDetail {
 }
 
 export interface FmdViewEventMap {
+  /** Emitted only by the current connected render after publishing its HTML. */
   "fmd-rendered": CustomEvent<FmdRenderedDetail>;
+  /** Current fetch, initialization, render or output failure; canceled work is silent. */
   "fmd-error": CustomEvent<{ error: string }>;
 }
 
+/**
+ * Reactive source: a nonempty `src` attribute, otherwise the first
+ * `script[type="text/markdown"]` child descendant or exact inline text.
+ * Inline mutations and `src`/`font`/`dark-mode` changes render the latest
+ * snapshot. Superseded fetches and disconnection cancel publication; reconnect
+ * renders current content. Failed engine initialization can be retried by a
+ * subsequent source/options change or reconnect.
+ */
 export interface FmdView extends HTMLElement {
   addEventListener<K extends keyof FmdViewEventMap>(
     type: K,

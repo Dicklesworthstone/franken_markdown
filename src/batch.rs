@@ -643,6 +643,23 @@ fn read_input_limited(input: &Path, max_bytes: u64) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "read failed: input is not valid UTF-8".to_string())
 }
 
+/// Match ordinary native rendering: expand selected fragments recursively and
+/// rebase their resource URLs to this input's directory. Keep consulted paths
+/// even when a later include fails, so other jobs cannot overwrite them.
+fn read_expanded_input(
+    input: &Path,
+    max_bytes: u64,
+    input_paths: &mut Vec<PathBuf>,
+) -> Result<String, String> {
+    let source = read_input_limited(input, max_bytes)?;
+    if !crate::transclude::has_includes(&source) {
+        return Ok(source);
+    }
+    let expansion = crate::watch::expand_file_includes(&source, input, max_bytes);
+    input_paths.extend(expansion.input_paths().map(Path::to_path_buf));
+    expansion.result
+}
+
 /// Resolve the exact local files that the renderer can auto-load. The batch
 /// preflight and per-file loader share this selection so an image owned by any
 /// job is protected before another worker can replace it.
@@ -797,14 +814,20 @@ fn auto_pdf_image_path(destination: &str, base_dir: &Path) -> Option<PathBuf> {
         .next()
         .unwrap_or_default()
         .trim();
-    if path_part.is_empty()
-        || path_part.starts_with("//")
-        || path_part.contains('\\')
+    // Included destinations are rebased as URLs. Decode their path exactly
+    // once after separating the suffix, just like single-document rendering;
+    // encoded traversal and schemes remain subject to the same path checks.
+    let decoded = crate::cli::source_origins::decode_path(path_part)?;
+    if decoded.is_empty()
+        || decoded.starts_with("//")
+        || decoded.contains('\\')
+        || decoded.chars().any(char::is_control)
         || has_uri_scheme(path_part)
+        || has_uri_scheme(&decoded)
     {
         return None;
     }
-    let relative = Path::new(path_part);
+    let relative = Path::new(&decoded);
     if relative.is_absolute() || !has_supported_pdf_image_extension(relative) {
         return None;
     }
@@ -846,18 +869,72 @@ fn has_supported_pdf_image_extension(path: &Path) -> bool {
         })
 }
 
+/// Resolve a path's identity even before its final file or directories exist.
+/// Canonicalizing the nearest existing ancestor preserves directory aliases;
+/// following a dangling alias also protects the missing file it will resolve
+/// to once created. Bound symlink traversal so cycles cannot stall preflight.
+fn protected_path_identity(path: &Path) -> Option<PathBuf> {
+    let mut path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut followed_links = 0;
+    'resolve: loop {
+        let mut ancestor = path.as_path();
+        let mut suffix = Vec::new();
+        loop {
+            if let Ok(mut identity) = std::fs::canonicalize(ancestor) {
+                for component in suffix.iter().rev() {
+                    identity.push(component);
+                }
+                let identity = normalize_lexical_path(&identity);
+                return Some(if output_keys_are_case_folded() {
+                    PathBuf::from(identity.to_string_lossy().to_lowercase())
+                } else {
+                    identity
+                });
+            }
+            if let Ok(target) = std::fs::read_link(ancestor) {
+                if followed_links == 40 {
+                    return None;
+                }
+                followed_links += 1;
+                let mut target = if target.is_absolute() {
+                    target
+                } else {
+                    ancestor.parent()?.join(target)
+                };
+                for component in suffix.iter().rev() {
+                    target.push(component);
+                }
+                path = target;
+                continue 'resolve;
+            }
+            suffix.push(
+                ancestor
+                    .components()
+                    .next_back()?
+                    .as_os_str()
+                    .to_os_string(),
+            );
+            ancestor = ancestor.parent()?;
+        }
+    }
+}
+
 #[derive(Default)]
 struct ProtectedInputs {
-    canonical: std::collections::BTreeMap<PathBuf, PathBuf>,
+    identities: std::collections::BTreeMap<PathBuf, PathBuf>,
     #[cfg(unix)]
     inodes: std::collections::BTreeMap<(u64, u64), PathBuf>,
 }
 
 impl ProtectedInputs {
     fn insert(&mut self, path: &Path) {
-        if let Ok(canonical) = std::fs::canonicalize(path) {
-            self.canonical
-                .entry(canonical)
+        if let Some(identity) = protected_path_identity(path) {
+            self.identities
+                .entry(identity)
                 .or_insert_with(|| path.to_path_buf());
         }
         #[cfg(unix)]
@@ -881,9 +958,8 @@ impl ProtectedInputs {
                 return Some(source);
             }
         }
-        std::fs::canonicalize(output)
-            .ok()
-            .and_then(|path| self.canonical.get(&path))
+        protected_path_identity(output)
+            .and_then(|path| self.identities.get(&path))
             .map(PathBuf::as_path)
     }
 }
@@ -905,23 +981,20 @@ fn source_overwrite_errors(
         OutputFormat::Epub => &["epub"],
         OutputFormat::Svg => &["svg"],
     };
-    let existing_outputs: Vec<Vec<_>> = plan
+    let outputs: Vec<Vec<_>> = plan
         .inputs
         .iter()
         .map(|input| {
             extensions
                 .iter()
                 .map(|kind| (*kind, output_path(input, plan.out_dir.as_deref(), kind)))
-                .filter(|(_, path)| path.exists())
                 .collect()
         })
         .collect();
-    // A fresh output tree cannot overwrite an existing input. Avoid a second
-    // parse of every source for this common case; each job still checks its
-    // actual loaded inputs immediately before committing its outputs.
-    if existing_outputs.iter().all(Vec::is_empty) {
-        return vec![None; plan.inputs.len()];
-    }
+    // A fresh output tree cannot overwrite an existing image. Skip the extra
+    // AST/image scan in that case, but always inspect includes: publishing a
+    // currently missing include would make another job depend on worker order.
+    let inspect_images = outputs.iter().flatten().any(|(_, path)| path.exists());
     let mut readable = vec![false; plan.inputs.len()];
     let mut protected = ProtectedInputs::default();
     for path in plan.inputs.iter().chain(host_inputs) {
@@ -934,8 +1007,14 @@ fn source_overwrite_errors(
         }
         // Read/render failures still belong to the individual job's receipt.
         // Preserve its panic isolation while inspecting dependencies here.
+        // The path collector survives an expansion error: an earlier fragment
+        // remains an input even if a later include is missing or malformed.
+        let mut include_paths = Vec::new();
         let resources = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let md = read_input_limited(input, opts.max_input_bytes).ok()?;
+            let md = read_expanded_input(input, opts.max_input_bytes, &mut include_paths).ok()?;
+            if !inspect_images {
+                return Some(Vec::new());
+            }
             let doc = parse_markdown(&md);
             let mut paths = Vec::new();
             if plan.format.wants_html() || matches!(plan.format, OutputFormat::Epub) {
@@ -946,6 +1025,9 @@ fn source_overwrite_errors(
             }
             Some(paths)
         }));
+        for path in include_paths {
+            protected.insert(&path);
+        }
         if let Ok(Some(resources)) = resources {
             readable[index] = true;
             for (_, path) in resources {
@@ -953,7 +1035,7 @@ fn source_overwrite_errors(
             }
         }
     }
-    existing_outputs
+    outputs
         .iter()
         .zip(readable)
         .map(|(outputs, readable)| {
@@ -984,12 +1066,12 @@ fn render_one(
     max_input_bytes: u64,
     max_pdf_image_bytes: u64,
 ) -> FileEntry {
-    let md = match read_input_limited(input, max_input_bytes) {
+    let mut input_paths = vec![input.to_path_buf()];
+    let md = match read_expanded_input(input, max_input_bytes, &mut input_paths) {
         Ok(text) => text,
         Err(e) => return failed(input, FileErrorKind::Input, e),
     };
     let doc = parse_markdown(&md);
-    let mut input_paths = vec![input.to_path_buf()];
     if let Some(dir) = out_dir
         && let Err(e) = std::fs::create_dir_all(dir)
     {

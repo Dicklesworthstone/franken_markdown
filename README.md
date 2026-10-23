@@ -115,7 +115,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Native safety | HTML, PDF, config, and batch outputs are staged where applicable. `--to both` rolls back sibling outputs on later failure, and the CLI refuses to overwrite the input file |
 | Editor integration | Optional `fmd-lsp` provides diagnostics, symbols, link navigation, and parser-proven [footnote definitions, references, highlights and safe versioned renames](docs/LSP_FOOTNOTES.md) in opened Markdown buffers |
 | Config | Dependency-free `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults. `--no-config` gives reproducible config-free runs |
-| Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, and stable output ordering |
+| Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, source-aware recursive includes, and protection of shared sources and assets; see the [batch contract](docs/BATCH_ORCHESTRATION.md) |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
 | Releases | Checksum-verified GitHub release archives for Linux (x86_64 + ARM64), macOS (Intel + Apple Silicon), and Windows x86_64, each smoke-tested before upload; npm package `@franken-suite/franken-markdown` latest at `0.4.4` (Sigstore provenance); crates.io lists `franken_markdown` 0.4.5 with `fmd-font` 0.3.2 and `fmd-math` 0.1.1 |
 

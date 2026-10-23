@@ -106,6 +106,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Native batch rendering expands recursive includes, named snippets and line
+  selectors through the single-file resolver, preserving fragment-relative
+  images and links. Include failures remain per-file input errors; consulted
+  sources are protected across jobs, including missing files and dangling
+  aliases, so publishing outputs cannot change another job's include result.
+
 - Tagged PDF tables retain blank headers, empty data cells and entirely blank
   rows in their original grid positions. Each data cell names its column header
   through a stable identifier and a sorted document lookup, including wrapped,
@@ -113,7 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Batch outputs preserve all planned source documents and loaded image, CSS,
   font and configuration files, including another job's inputs and filesystem
   aliases. Unsafe jobs fail before publishing either combined output; fresh
-  destinations avoid the extra dependency scan.
+  destinations avoid the extra image scan.
 - Watch rebuilds when an explicitly supplied font changes or a missing font
   appears, including documents sharing that font in a watched directory.
 - Tagged PDF paragraphs, links, code blocks, quotes, lists and tables retain

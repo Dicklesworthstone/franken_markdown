@@ -201,8 +201,18 @@ pub(super) fn render_book_pdf_counted(
     book: &Book,
     options: &PdfOptions,
 ) -> Result<(Vec<u8>, u64, Vec<crate::RenderWarning>)> {
+    render_book_pdf_counted_configured(book, options, crate::PdfASettings::OFF)
+}
+
+/// Preserve chapter destinations and actual warnings for archival emission too.
+#[cfg(feature = "cli")]
+pub(super) fn render_book_pdf_counted_configured(
+    book: &Book,
+    options: &PdfOptions,
+    settings: crate::PdfASettings,
+) -> Result<(Vec<u8>, u64, Vec<crate::RenderWarning>)> {
     let document = book_pdf_document_with_assets(book, &options.image_assets)?;
-    let (bytes, warnings) = pdf_links::render_report(book, document, options)?;
+    let (bytes, warnings) = pdf_links::render_report(book, document, options, settings)?;
     let pages = pdf_links::page_count(&bytes)
         .ok_or_else(|| invalid("could not read the emitted PDF page count"))?;
     Ok((bytes, pages, warnings))

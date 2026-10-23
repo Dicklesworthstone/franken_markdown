@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native book publication supports configured typography, optimal pagination,
+  running titles and logos, PDF/A-2b, and page budgets checked against the actual
+  emitted PDF. Persistent font scale, language, contents and HTML font settings
+  carry through books, with explicit flags taking precedence. Failed budgets or
+  archival rendering preserve prior combined outputs, and every mapped image
+  remains protected even when a later mapping replaces it.
+
 - The optional language server supports exact footnote definitions, references,
   highlights and label-only renames through versioned document edits. Parser-proven
   source mapping excludes literal lookalikes; rename checks preserve Markdown

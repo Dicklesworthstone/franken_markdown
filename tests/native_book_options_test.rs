@@ -362,7 +362,6 @@ fn invalid_options_are_rejected_before_missing_sources_are_read() {
             vec!["--page-size", "a4"],
             vec!["--margin-top-pt", "36"],
             vec!["--pdf-line-numbers"],
-            vec!["--toc-depth", "2"],
         ] {
             let mut args = vec!["book", "absent", "--to", target, "--json"];
             args.extend(options);

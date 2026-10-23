@@ -15,7 +15,11 @@ pub(super) struct Typography {
 }
 
 /// Validate all explicit option values before reading chapter or font files.
-pub(super) fn prepare(args: &BookArgs, mut theme: Theme) -> Result<Typography, Failure> {
+pub(super) fn prepare(
+    args: &BookArgs,
+    mut theme: Theme,
+    defaults: &crate::config::RenderDefaults,
+) -> Result<Typography, Failure> {
     let margins = [
         args.margin_top_pt,
         args.margin_right_pt,
@@ -25,16 +29,15 @@ pub(super) fn prepare(args: &BookArgs, mut theme: Theme) -> Result<Typography, F
     if !matches!(args.to, BookTarget::Pdf | BookTarget::Both)
         && (args.page_size.is_some()
             || margins.iter().any(Option::is_some)
-            || args.pdf_line_numbers
-            || args.toc_depth.is_some())
+            || args.pdf_line_numbers)
     {
         return Err(error(
             64,
             "unsupported_target_option",
-            "page size, margins, --pdf-line-numbers and --toc-depth require --to pdf or --to both",
+            "page size, margins and --pdf-line-numbers require --to pdf or --to both",
         ));
     }
-    let font_scale = args.font_scale.as_deref().map(|value| {
+    let font_scale = args.font_scale.as_deref().or(defaults.font_scale.as_deref()).map(|value| {
         FontScale::parse(value).ok_or_else(|| error(64, "usage_error",
             format!("invalid --font-scale {value:?}; use a preset such as lg, a percentage such as 125%, or a positive multiplier")))
     }).transpose()?;

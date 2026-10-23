@@ -40,10 +40,11 @@ pub(super) fn render_report(
     book: &Book,
     document: Document,
     options: &PdfOptions,
+    settings: PdfASettings,
 ) -> Result<(Vec<u8>, Vec<crate::RenderWarning>)> {
-    let plan = prepare(book, document, options)?;
+    let plan = prepare_configured(book, document, options, settings)?;
     let warnings = crate::render_warnings(&crate::footnotes::for_pdf(&plan.document), options);
-    let bytes = render_plan(plan, options)?;
+    let bytes = render_plan_configured(plan, options, settings)?;
     Ok((bytes, warnings))
 }
 
@@ -80,27 +81,49 @@ impl BookRenderer {
         options: &PdfOptions,
         settings: PdfASettings,
     ) -> Result<Vec<u8>> {
-        if settings.strict && !settings.mode.is_a2b() {
-            return Err(crate::pdfa::pdfa_reject(
-                "pdf_a_strict_without_profile",
-                "strict PDF/A requires the 2b profile",
-            ));
-        }
+        validate_settings(settings)?;
         let document = super::book_pdf_document_with_assets(self.book(), &options.image_assets)?;
-        if settings.strict {
-            // The navigation path can move/drop footnote bodies before calling
-            // the document renderer. Validate the original assembled source too,
-            // so adding an internal link cannot change strict-mode acceptance.
-            crate::validate_doc_pdfa_strict(&document)?;
-        }
-        let plan = prepare(self.book(), document, options)?;
-        if settings.mode.is_a2b() {
-            render_plan_with(plan, options, |document, options| {
-                render_pdf_document_pdfa(document, options, settings)
-            })
-        } else {
-            render_plan(plan, options)
-        }
+        let plan = prepare_configured(self.book(), document, options, settings)?;
+        render_plan_configured(plan, options, settings)
+    }
+}
+
+fn prepare_configured(
+    book: &Book,
+    document: Document,
+    options: &PdfOptions,
+    settings: PdfASettings,
+) -> Result<Plan> {
+    validate_settings(settings)?;
+    if settings.strict {
+        // Navigation may move/drop footnote bodies. Validate the original
+        // assembled source so dormant notes cannot conceal forbidden actions.
+        crate::validate_doc_pdfa_strict(&document)?;
+    }
+    prepare(book, document, options)
+}
+
+fn validate_settings(settings: PdfASettings) -> Result<()> {
+    if settings.strict && !settings.mode.is_a2b() {
+        return Err(crate::pdfa::pdfa_reject(
+            "pdf_a_strict_without_profile",
+            "strict PDF/A requires the 2b profile",
+        ));
+    }
+    Ok(())
+}
+
+fn render_plan_configured(
+    plan: Plan,
+    options: &PdfOptions,
+    settings: PdfASettings,
+) -> Result<Vec<u8>> {
+    if settings.mode.is_a2b() {
+        render_plan_with(plan, options, |document, options| {
+            render_pdf_document_pdfa(document, options, settings)
+        })
+    } else {
+        render_plan(plan, options)
     }
 }
 

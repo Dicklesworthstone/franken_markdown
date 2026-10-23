@@ -25,6 +25,8 @@ mod manifest;
 mod options;
 #[path = "native_check.rs"]
 mod preflight;
+#[path = "native/publishing.rs"]
+mod publishing;
 
 const MAX_STYLESHEET_BYTES: u64 = 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
@@ -69,7 +71,7 @@ pub(crate) struct BookArgs {
     #[arg(long, value_enum, default_value_t = BookTarget::Both)]
     to: BookTarget,
     /// Check expanded HTML navigation only; write no publications. Exit 65 for findings.
-    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage", "pdf_fonts", "pdf_font_weights", "font_scale", "page_size", "margin_top_pt", "margin_right_pt", "margin_bottom_pt", "margin_left_pt", "pdf_line_numbers", "toc_depth"])]
+    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage", "pdf_fonts", "pdf_font_weights", "font_scale", "page_size", "margin_top_pt", "margin_right_pt", "margin_bottom_pt", "margin_left_pt", "pdf_line_numbers", "toc_depth", "book_publishing"])]
     check_links: bool,
     /// Refuse publication on expanded-navigation findings before rendering or writes.
     #[arg(long, conflicts_with = "robot_triage")]
@@ -118,15 +120,17 @@ pub(crate) struct BookArgs {
     /// Render line numbers in the PDF book's fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,
-    /// Maximum heading depth in the generated PDF contents (1..=6).
+    /// Maximum heading depth in generated contents (1..=6).
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=6))]
     toc_depth: Option<u8>,
     /// Maximum bytes per Markdown file and expanded chapter (book cap: 64 MiB).
     #[arg(long, default_value_t = 64 * 1024 * 1024)]
     max_input_bytes: u64,
-    /// Maximum bytes per automatically loaded local image (ceiling: 32 MiB).
+    /// Maximum bytes per explicit or automatically loaded image (ceiling: 32 MiB).
     #[arg(long, default_value_t = 32 * 1024 * 1024)]
     max_pdf_image_bytes: u64,
+    #[command(flatten)]
+    publishing: publishing::PublishingArgs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -279,7 +283,8 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
                 .ok_or_else(|| error(64, "usage_error", "font must be sans or serif"))?,
         );
     }
-    let typography = options::prepare(&args, theme)?;
+    let publication = publishing::prepare(&args.publishing, args.to, &config.render)?;
+    let typography = options::prepare(&args, theme, &config.render)?;
     let (mut loaded, link_check) = if args.deny_broken_links {
         let mut loaded = inputs::load_sources(&args.input, args.max_input_bytes)
             .map_err(|e| error(66, "book_error", e))?;
@@ -310,12 +315,22 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         .lang
         .clone()
         .or_else(|| loaded.manifest.lang.clone())
-        .or_else(|| frontmatter.and_then(|fm| fm.lang.clone()));
+        .or_else(|| frontmatter.and_then(|fm| fm.lang.clone()))
+        .or_else(|| config.render.lang.clone());
     let author = args
         .author
         .clone()
         .or_else(|| loaded.manifest.author.clone())
         .or_else(|| frontmatter.and_then(|fm| fm.author.clone()));
+    let pdf_toc = publication.toc(frontmatter.and_then(|fm| fm.toc), true);
+    let html_toc = publication.toc(frontmatter.and_then(|fm| fm.toc), false);
+    let toc_depth = args
+        .toc_depth
+        .or_else(|| frontmatter.and_then(|fm| fm.toc_depth))
+        .or(config.render.toc_depth);
+    if !no_config && let Ok(path) = crate::config::config_path().canonicalize() {
+        loaded.protected_paths.insert(path);
+    }
     let css = args
         .css
         .as_ref()
@@ -329,6 +344,11 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
                 .map_err(|_| error(66, "stylesheet_error", "stylesheet must be UTF-8"))
         })
         .transpose()?;
+    publication.load_images(
+        &mut loaded.images,
+        &mut loaded.protected_paths,
+        args.max_pdf_image_bytes,
+    )?;
     let image_count = loaded.images.len();
     let font_assets = typography.load_fonts(&mut loaded.protected_paths)?;
     if !matches!(args.to, BookTarget::Pdf | BookTarget::Both) {
@@ -341,6 +361,9 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         custom_css: css,
         image_assets: std::mem::take(&mut loaded.images),
         font_assets,
+        toc: html_toc,
+        toc_depth,
+        html_font_format: publication.html_font_format,
         ..HtmlOptions::default()
     };
     let paths = output_paths(&args)?;
@@ -382,6 +405,12 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
                 .as_ref()
                 .and_then(|fm| fm.lang.clone())
                 .or_else(|| book_lang.clone());
+            html_options.toc =
+                publication.toc(chapter.frontmatter.as_ref().and_then(|fm| fm.toc), false);
+            html_options.toc_depth = args
+                .toc_depth
+                .or_else(|| chapter.frontmatter.as_ref().and_then(|fm| fm.toc_depth))
+                .or(config.render.toc_depth);
             let html = crate::render_html_document(&doc, &html_options)
                 .map_err(|e| error(70, "html_render_error", e))?;
             let html = super::inject_book_nav(&html, &loaded.book, &chapter.out_name);
@@ -430,13 +459,13 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         )?;
     }
     if matches!(args.to, BookTarget::Pdf | BookTarget::Both) {
-        let pdf_options = PdfOptions {
+        let mut pdf_options = PdfOptions {
             theme: html_options.theme.clone(),
             title: html_options.title.clone(),
             author,
             lang: html_options.lang.clone(),
-            toc: true,
-            toc_depth: args.toc_depth,
+            toc: pdf_toc,
+            toc_depth,
             page_numbers: true,
             code_line_numbers: args.pdf_line_numbers,
             base_font_size: typography.font_scale.map(|scale| scale.pdf_base_pt()),
@@ -445,9 +474,19 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             font_assets: std::mem::take(&mut html_options.font_assets),
             ..PdfOptions::default()
         };
-        let (bytes, emitted_pages, warnings) =
+        publication.apply_pdf(&mut pdf_options);
+        let pdf_result = if publication.pdf_a.mode.is_a2b() {
+            super::render::render_book_pdf_counted_configured(
+                &loaded.book,
+                &pdf_options,
+                publication.pdf_a,
+            )
+        } else {
             super::render::render_book_pdf_counted(&loaded.book, &pdf_options)
-                .map_err(|e| error(70, "pdf_render_error", e))?;
+        };
+        let (bytes, emitted_pages, warnings) =
+            pdf_result.map_err(|e| error(70, "pdf_render_error", e))?;
+        publication.check_page_budget(emitted_pages)?;
         loaded
             .warnings
             .extend(warnings.iter().map(options::warning_text));
@@ -536,8 +575,16 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         .iter()
         .map(|warning| json_string(warning))
         .collect();
+    let archival = if publication.pdf_a.mode.is_a2b() {
+        format!(
+            ",\"pdf_a\":{{\"profile\":\"2b\",\"strict\":{}}}",
+            publication.pdf_a.strict
+        )
+    } else {
+        String::new()
+    };
     let json = format!(
-        "{{\"ok\":true,\"tool\":\"fmd\",\"command\":\"book\",\"target\":{},\"input\":{},\"chapters\":{},\"files\":[{}],\"unresolved_links\":{unresolved},\"pages\":{pages},\"images\":{image_count},\"outputs\":[{}],\"warnings\":[{}]{link_check}}}",
+        "{{\"ok\":true,\"tool\":\"fmd\",\"command\":\"book\",\"target\":{},\"input\":{},\"chapters\":{},\"files\":[{}],\"unresolved_links\":{unresolved},\"pages\":{pages},\"images\":{image_count},\"outputs\":[{}],\"warnings\":[{}]{link_check}{archival}}}",
         json_string(args.to.as_str()),
         json_string(&args.input.display().to_string()),
         loaded.book.chapters.len(),

@@ -23,9 +23,20 @@ mod unicode_punct;
 pub use frontmatter::{Frontmatter, split_frontmatter};
 
 mod destinations;
-pub(crate) use destinations::DestinationSpan;
+pub use destinations::DestinationSpan;
 
-pub(crate) fn destination_spans(source: &str) -> Vec<DestinationSpan> {
+/// Exact source tokens for parsed inline link/image destinations and accepted
+/// reference definitions. Ranges are UTF-8 byte offsets in this exact source,
+/// sorted and deduplicated. The normal parser owns recognition, escaping and
+/// container handling; code, HTML attributes and abandoned link parses are not
+/// guessed from matching text. Autolinks are not included.
+///
+/// Definitions may be unused or shadowed, and images are included. Consumers
+/// making semantic edits must prove which AST nodes a token supplies and reparse
+/// the proposed result; a token alone does not authorize changing every use.
+/// Tracking is opt-in and leaves the ordinary AST and parser behavior unchanged.
+#[must_use]
+pub fn destination_spans(source: &str) -> Vec<DestinationSpan> {
     destinations::destination_spans(source)
 }
 

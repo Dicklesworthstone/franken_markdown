@@ -536,15 +536,17 @@ fn server_advertises_only_versioned_rename_and_keeps_heading_navigation() -> Tes
                 apply(source, &rename.map_err(|(_, e)| e)?)?,
                 source.replace("[^n]", "[^new]")
             );
+            let prepared = server
+                .navigate(
+                    "textDocument/prepareRename",
+                    &params(source, 3, "new", true),
+                )
+                .map_err(|(_, e)| e)?;
             assert_eq!(
-                server
-                    .navigate(
-                        "textDocument/prepareRename",
-                        &params(source, 3, "new", true)
-                    )
-                    .map_err(|(_, e)| e)?,
-                Json::Null
+                prepared.get("placeholder").and_then(Json::as_str),
+                Some("Heading")
             );
+            assert_eq!(span(source, &prepared)?, SourceSpan::new(2, 9));
         } else {
             assert_eq!(rename.err().map(|(code, _)| code), Some(-32601));
         }

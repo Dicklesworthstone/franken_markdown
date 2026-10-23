@@ -92,7 +92,9 @@ the safety checks.
 
 Only the selected document's footnote namespace is renamed. Matching labels in
 other opened documents remain independent. General heading rename and
-reference-link label rename are outside this provider's scope.
+reference-link label rename are outside this provider's scope. Top-level heading
+titles and their Markdown links have a separate
+[heading rename provider](LSP_HEADING_RENAME.md).
 
 ## Rename safety
 

@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The language server renames top-level heading titles and their real Markdown
+  links across synchronized open documents. Versioned edits preserve source
+  paths, queries, delimiters and Unicode coordinates; parser-verified source
+  tokens and complete AST checks reject partial changes, shared image references,
+  ambiguous file aliases and heading or footnote anchor collisions.
+
 - Native book publication supports configured typography, optimal pagination,
   running titles and logos, PDF/A-2b, and page budgets checked against the actual
   emitted PDF. Persistent font scale, language, contents and HTML font settings

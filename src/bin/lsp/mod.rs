@@ -3,6 +3,7 @@
 
 mod diagnostics;
 mod footnotes;
+mod heading_rename;
 mod links;
 mod navigation;
 #[cfg(test)]
@@ -301,17 +302,14 @@ impl Server {
         ) {
             let renaming = matches!(method, "textDocument/prepareRename" | "textDocument/rename");
             if renaming && !self.versioned_edits {
-                return Err((
-                    -32601,
-                    "footnote rename requires versioned documentChanges support",
-                ));
+                return Err((-32601, "rename requires versioned documentChanges support"));
             }
             if let Some(result) = footnotes::request(method, params, uri, buffer, &self.documents)?
             {
                 return Ok(result);
             }
             if renaming {
-                return Ok(Json::Null);
+                return heading_rename::request(method, params, uri, buffer, &self.documents);
             }
         }
         if matches!(

@@ -30,6 +30,11 @@ inside that container cannot select an independently mapped heading, so it
 returns no symbol. Document-root links and footnote symbols are outside this
 heading-search contract.
 
+Top-level heading declarations have a separate, parser-proven
+[heading rename provider](LSP_HEADING_RENAME.md). It computes exact title and
+destination-token edits and refuses incomplete coverage; the enclosing-block
+ranges returned by reference search are never reused as replacement ranges.
+
 `textDocument/references` requires the standard boolean
 `context.includeDeclaration`; when true, the heading's source block is included.
 Results have deterministic URI/source order. Document highlights include the

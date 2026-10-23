@@ -8,12 +8,89 @@
 use super::*;
 use std::collections::BTreeMap;
 
+/// One exact destination token in the source passed to [`super::destination_spans`].
+/// A token can supply an inline link, image or reference definition; its source
+/// range alone does not establish which semantic nodes use that destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DestinationSpan {
+pub struct DestinationSpan {
     /// The complete source token, including angle delimiters when present.
     pub range: Range<usize>,
     /// The parser-decoded destination, without a title or angle delimiters.
     pub dest: String,
+}
+
+impl DestinationSpan {
+    /// Return the original UTF-8 byte range after the first decoded `#`, without
+    /// an angle token's closing `>`. The separator's original spelling and every
+    /// path/query byte stay outside this range, including `\#`, `&#35;` and
+    /// `&num;`. Percent escapes are URI data and are not decoded here.
+    ///
+    /// Uses the normal parser's escape and character-reference decoder. Returns
+    /// `None` for invalid/stale token bounds, a decoded value different from
+    /// `dest`, or a destination without a fragment separator. This checks token
+    /// spelling, not its semantic role or the caller's source revision identity.
+    #[must_use]
+    pub fn fragment_range(&self, source: &str) -> Option<Range<usize>> {
+        let raw = source.get(self.range.clone())?;
+        let (body, start, end) = if raw.starts_with('<') {
+            (
+                raw.strip_prefix('<')?.strip_suffix('>')?,
+                self.range.start + 1,
+                self.range.end - 1,
+            )
+        } else {
+            (raw, self.range.start, self.range.end)
+        };
+        let chars: Vec<_> = body.chars().collect();
+        let mut decoded = String::with_capacity(body.len());
+        let mut index = 0;
+        let mut byte_offset = 0;
+        let mut fragment = None;
+        while index < chars.len() {
+            let previous = index;
+            let hash = match chars[index] {
+                '\\' if chars.get(index + 1).is_some_and(|&ch| is_ascii_punct(ch)) => {
+                    let ch = chars[index + 1];
+                    decoded.push(ch);
+                    index += 2;
+                    ch == '#'
+                }
+                '&' => {
+                    if let Some((text, next)) = parse_character_reference(&chars, index) {
+                        // No current multi-scalar entity contains '#'. Refuse a
+                        // future mixed expansion rather than invent its suffix.
+                        if text.contains('#') && text != "#" {
+                            return None;
+                        }
+                        let hash = text == "#";
+                        decoded.push_str(&text);
+                        index = next;
+                        hash
+                    } else {
+                        decoded.push('&');
+                        index += 1;
+                        false
+                    }
+                }
+                ch => {
+                    decoded.push(ch);
+                    index += 1;
+                    ch == '#'
+                }
+            };
+            byte_offset += chars[previous..index]
+                .iter()
+                .map(|ch| ch.len_utf8())
+                .sum::<usize>();
+            if fragment.is_none() && hash {
+                fragment = Some(start + byte_offset);
+            }
+        }
+        (decoded == self.dest)
+            .then_some(fragment)
+            .flatten()
+            .map(|start| start..end)
+    }
 }
 
 pub(crate) fn destination_spans(source: &str) -> Vec<DestinationSpan> {
@@ -549,5 +626,73 @@ mod tests {
                 ("link.md", "link.md".into()),
             ]
         );
+    }
+
+    #[test]
+    fn fragment_ranges_preserve_exact_path_query_and_encoded_separator_spelling()
+    -> Result<(), &'static str> {
+        let source = "中 [a](<path?x=1&amp;y=2&#35;%E7%8C%AB>) [b](path\\#old) [c](path&num;old) [d](f&#111;o.md#&#111;ld)";
+        let spans = destination_spans(source);
+        let mut suffixes = Vec::new();
+        for span in &spans {
+            let range = span.fragment_range(source).ok_or("fragment range")?;
+            suffixes.push((
+                &source[span.range.start..range.start],
+                &source[range.clone()],
+                &source[range.end..span.range.end],
+            ));
+        }
+        assert_eq!(
+            suffixes,
+            [
+                ("<path?x=1&amp;y=2&#35;", "%E7%8C%AB", ">"),
+                ("path\\#", "old", ""),
+                ("path&num;", "old", ""),
+                ("f&#111;o.md#", "&#111;ld", ""),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fragment_ranges_use_reference_definition_tokens_and_keep_titles_outside()
+    -> Result<(), &'static str> {
+        let source = "[r]\r\n\r\n[r]:\r\n <guide.md?x=1&amp;y=2&num;part>\r\n \"Title\"\r\n";
+        let spans = destination_spans(source);
+        assert_eq!(spans.len(), 1);
+        let range = spans[0].fragment_range(source).ok_or("fragment range")?;
+        assert_eq!(&source[range.clone()], "part");
+        assert_eq!(&source[range.end..], ">\r\n \"Title\"\r\n");
+        Ok(())
+    }
+
+    #[test]
+    fn fragment_ranges_reject_changed_or_invalid_tokens_and_do_not_decode_percent_hashes()
+    -> Result<(), &'static str> {
+        let source = "[a](<#old>) [b](path%23old) [c](#)";
+        let spans = destination_spans(source);
+        assert!(
+            spans[0]
+                .fragment_range("[a](<#new>) [b](path%23old) [c](#)")
+                .is_none()
+        );
+        assert!(spans[1].fragment_range(source).is_none());
+        assert!(
+            spans[2]
+                .fragment_range(source)
+                .ok_or("empty fragment")?
+                .is_empty()
+        );
+        for range in [Range { start: 2, end: 1 }, 0..usize::MAX, 1..2] {
+            assert!(
+                DestinationSpan {
+                    range,
+                    dest: "#old".into()
+                }
+                .fragment_range("猫")
+                .is_none()
+            );
+        }
+        Ok(())
     }
 }

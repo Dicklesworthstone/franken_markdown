@@ -193,6 +193,9 @@ struct ParseProfiler {
     /// through every block-parsing call.
     block_depth: usize,
     destinations: Option<destinations::DestinationTracker>,
+    // Only the spanned entrypoint records top-level block consumption. The
+    // normal parser remains the source of truth for every block boundary.
+    block_spans: Option<BlockSpanTracker>,
 }
 
 impl ParseProfiler {
@@ -205,6 +208,7 @@ impl ParseProfiler {
             inline_work: InlineWorkBudget::default(),
             block_depth: 0,
             destinations: None,
+            block_spans: None,
         }
     }
 
@@ -217,6 +221,7 @@ impl ParseProfiler {
             inline_work: InlineWorkBudget::default(),
             block_depth: 0,
             destinations: None,
+            block_spans: None,
         }
     }
 
@@ -348,11 +353,10 @@ fn expand_leading_tabs(line: &str) -> std::borrow::Cow<'_, str> {
 
 fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // Normalize: strip a UTF-8 BOM; `lines()` handles both `\n` and `\r\n`.
-    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
     // Frontmatter (key=value between --- fences at byte 0) is document
     // metadata, not content: split it off before line scanning so it never
     // renders as a thematic break or paragraph text.
-    let (_frontmatter, src) = split_frontmatter(src);
+    let src = document_body(src);
     let tab_storage: Option<Vec<String>> = if src.contains('\t') {
         Some(
             src.lines()
@@ -383,7 +387,11 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     let has_reference_candidate = src.contains("]:");
     let (lines, mut refs, kept_reference_candidate, rebuilt_reference_lines) =
         if has_reference_candidate {
-            collect_link_references_tracked(lines, profiler.destinations.as_mut())
+            collect_link_references_tracked(
+                lines,
+                profiler.destinations.as_mut(),
+                profiler.block_spans.as_mut(),
+            )
         } else {
             (lines, ReferenceMap::new(), false, false)
         };
@@ -431,6 +439,11 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     Document { blocks }
 }
 
+fn document_body(src: &str) -> &str {
+    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
+    split_frontmatter(src).1
+}
+
 fn split_logical_lines(src: &str) -> Vec<&str> {
     let mut lines = Vec::with_capacity(logical_line_capacity_hint(src.len()));
     lines.extend(src.lines());
@@ -465,16 +478,26 @@ pub fn parse_document_spanned_profiled(src: &str) -> SpannedParseProfile {
 }
 
 fn parse_document_spanned_inner(src: &str, profiler: &mut ParseProfiler) -> SpannedDocument {
+    let source_lines = source_lines(src);
+    profiler.block_spans = Some(BlockSpanTracker {
+        lines: source_lines
+            .iter()
+            .map(|line| SourceSpan::new(line.start, line.end))
+            .collect(),
+        blocks: Vec::new(),
+    });
     let document = parse_document_inner(src, profiler);
     let span_started = profiler.checkpoint();
-    let source_lines = source_lines(src);
-    let spans = collect_top_level_spans(&source_lines);
+    let spans = profiler
+        .block_spans
+        .take()
+        .map_or_else(Vec::new, |tracker| tracker.blocks);
     profiler.record_since(
         "span_collection",
         spans.len(),
         src.len(),
         spans.len(),
-        "collect top-level source spans for editor/WASM diagnostics",
+        "attach parser-consumed top-level source spans for editor/WASM diagnostics",
         span_started,
     );
     let fallback = SourceSpan::new(0, src.len());
@@ -504,140 +527,59 @@ struct SourceLine<'a> {
     end: usize,
 }
 
+/// Original byte coordinates for the same logical lines the parser sees,
+/// before tab expansion or reference-definition removal. Metadata never owns a
+/// renderer block, and CRLF/lone-CR behavior follows `str::lines` exactly.
 fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
-    let mut lines = Vec::new();
-    let (src, mut start) = src
-        .strip_prefix('\u{feff}')
-        .map_or((src, 0usize), |stripped| (stripped, '\u{feff}'.len_utf8()));
-
-    for raw in src.split_inclusive('\n') {
-        let raw_start = start;
-        start += raw.len();
-
-        let without_lf = raw.strip_suffix('\n').unwrap_or(raw);
-        let text = without_lf.strip_suffix('\r').unwrap_or(without_lf);
-        lines.push(SourceLine {
-            text,
-            start: raw_start,
-            end: raw_start + text.len(),
-        });
-    }
-    lines
+    let body = document_body(src);
+    let offset = src.len() - body.len();
+    let address = body.as_ptr() as usize;
+    body.lines()
+        .map(|text| {
+            let start = offset + (text.as_ptr() as usize - address);
+            SourceLine {
+                text,
+                start,
+                end: start + text.len(),
+            }
+        })
+        .collect()
 }
 
-fn collect_top_level_spans(raw_lines: &[SourceLine<'_>]) -> Vec<SourceSpan> {
-    let line_texts: Vec<&str> = raw_lines.iter().map(|line| line.text).collect();
-    let consumed_reference_lines = collect_link_reference_metadata(&line_texts).0;
-    let lines = strip_consumed_source_lines(raw_lines, &line_texts, &consumed_reference_lines);
-    let refs = ReferenceMap::new();
-    let mut spans = Vec::new();
-    let mut i = 0usize;
-
-    'blocks: while i < lines.len() {
-        let line = lines[i].text;
-        if is_blank_line(line) {
-            i += 1;
-            continue;
-        }
-
-        if is_thematic_break(line) || atx_heading(line).is_some() {
-            spans.push(span_for_lines(&lines, i, i + 1));
-            i += 1;
-            continue;
-        }
-
-        if let Some((fence_ch, fence_len, _info)) = open_fence(line) {
-            let mut end = i + 1;
-            while end < lines.len() {
-                if is_close_fence(lines[end].text, fence_ch, fence_len) {
-                    end += 1;
-                    break;
-                }
-                end += 1;
-            }
-            spans.push(span_for_lines(&lines, i, end));
-            i = end;
-            continue;
-        }
-
-        if indented_code_start(line) {
-            let used = indented_code_extent(&lines[i..], |line| line.text);
-            spans.push(span_for_lines(&lines, i, i + used));
-            i += used;
-            continue;
-        }
-
-        if footnote_definition_marker(line) {
-            let used = footnote_extent(&lines[i..], |line| line.text);
-            spans.push(span_for_lines(&lines, i, i + used));
-            i += used;
-            continue;
-        }
-
-        if blockquote_marker_start(line) {
-            let start = i;
-            while i < lines.len() && blockquote_marker_start(lines[i].text) {
-                i += 1;
-            }
-            spans.push(span_for_lines(&lines, start, i));
-            continue;
-        }
-
-        if let Some(end_cond) = html_block_kind(line) {
-            let start = i;
-            i = html_block_end(&lines, i, end_cond, |l| l.text);
-            spans.push(span_for_lines(&lines, start, i));
-            continue;
-        }
-
-        if i + 1 < lines.len()
-            && line.contains('|')
-            && let Some(used) = table_extent_with(&lines[i..], |line| line.text)
-        {
-            spans.push(span_for_lines(&lines, i, i + used));
-            i += used;
-            continue;
-        }
-
-        if list_marker(line).is_some() {
-            let rest: Vec<&str> = lines[i..].iter().map(|line| line.text).collect();
-            let (_list, used) = parse_list(&rest, &refs);
-            spans.push(span_for_lines(&lines, i, i + used));
-            i += used;
-            continue;
-        }
-
-        let start = i;
-        while i < lines.len() && !is_blank_line(lines[i].text) {
-            if i > start && setext_underline(lines[i].text).is_some() {
-                spans.push(span_for_lines(&lines, start, i + 1));
-                i += 1;
-                continue 'blocks;
-            }
-            if is_thematic_break(lines[i].text)
-                || atx_heading(lines[i].text).is_some()
-                || open_fence(lines[i].text).is_some()
-                || indented_code_start(lines[i].text)
-                || blockquote_marker_start(lines[i].text)
-                || html_block_start(lines[i].text)
-                || list_marker_interrupts_paragraph(lines[i].text)
-            {
-                break;
-            }
-            i += 1;
-        }
-        spans.push(span_for_lines(&lines, start, i));
-    }
-
-    spans
+struct BlockSpanTracker {
+    /// One original span per current top-level parser line. Expanded tabs do
+    /// not alter line count; removing references updates this vector with the
+    /// very same consumed ranges and synthetic separators as the parser.
+    lines: Vec<SourceSpan>,
+    blocks: Vec<SourceSpan>,
 }
 
-fn span_for_lines(lines: &[SourceLine<'_>], start: usize, end: usize) -> SourceSpan {
+impl BlockSpanTracker {
+    fn strip_references(&mut self, line_texts: &[&str], consumed: &[Range<usize>]) {
+        let mut kept = Vec::with_capacity(self.lines.len());
+        let mut cursor = 0;
+        for range in consumed {
+            kept.extend_from_slice(&self.lines[cursor..range.start]);
+            if consumed_reference_run_separates_tables(line_texts, range) {
+                kept.push(self.lines[range.start]);
+            }
+            cursor = range.end;
+        }
+        kept.extend_from_slice(&self.lines[cursor..]);
+        self.lines = kept;
+    }
+
+    fn record(&mut self, start: usize, end: usize) {
+        self.blocks.push(span_for_lines(&self.lines, start, end));
+    }
+}
+
+fn span_for_lines(lines: &[SourceSpan], start: usize, end: usize) -> SourceSpan {
     let Some(first) = lines.get(start) else {
         return SourceSpan::default();
     };
     let Some(last) = end.checked_sub(1).and_then(|idx| lines.get(idx)) else {
-        return SourceSpan::new(first.start, first.end);
+        return *first;
     };
     SourceSpan::new(first.start, last.end)
 }
@@ -693,12 +635,13 @@ fn looks_like_reference_definition(line: &str) -> bool {
 
 #[cfg(test)]
 fn collect_link_references(lines: Vec<&str>) -> (Vec<&str>, ReferenceMap, bool, bool) {
-    collect_link_references_tracked(lines, None)
+    collect_link_references_tracked(lines, None, None)
 }
 
 fn collect_link_references_tracked<'a>(
     lines: Vec<&'a str>,
     tracker: Option<&mut destinations::DestinationTracker>,
+    block_spans: Option<&mut BlockSpanTracker>,
 ) -> (Vec<&'a str>, ReferenceMap, bool, bool) {
     let mut consumed = ConsumedReferenceLines::new();
     let mut refs = ReferenceMap::new();
@@ -709,39 +652,15 @@ fn collect_link_references_tracked<'a>(
         tracker,
     );
     let rebuilt_lines = !consumed.is_empty();
+    if rebuilt_lines && let Some(spans) = block_spans {
+        spans.strip_references(&lines, &consumed);
+    }
     let kept = if rebuilt_lines {
         strip_consumed_references(&lines, &consumed)
     } else {
         lines
     };
     (kept, refs, kept_reference_candidate, rebuilt_lines)
-}
-
-fn strip_consumed_source_lines<'a>(
-    raw_lines: &[SourceLine<'a>],
-    line_texts: &[&str],
-    consumed: &[Range<usize>],
-) -> Vec<SourceLine<'a>> {
-    let consumed_line_count: usize = consumed
-        .iter()
-        .map(|range| range.end.saturating_sub(range.start))
-        .sum();
-    let mut kept = Vec::with_capacity(raw_lines.len().saturating_sub(consumed_line_count));
-    let mut cursor = 0usize;
-
-    for range in consumed {
-        kept.extend(raw_lines[cursor..range.start].iter().copied());
-        if consumed_reference_run_separates_tables(line_texts, range) {
-            kept.push(SourceLine {
-                text: "",
-                ..raw_lines[range.start]
-            });
-        }
-        cursor = range.end;
-    }
-
-    kept.extend(raw_lines[cursor..].iter().copied());
-    kept
 }
 
 fn strip_consumed_references<'a>(lines: &[&'a str], consumed: &[Range<usize>]) -> Vec<&'a str> {
@@ -1364,7 +1283,7 @@ fn collect_nested_references_tracked(
             continue;
         }
         // List items: split into per-item bodies exactly as the block parser
-        // does (shared `split_list_items`) and collect each item's definitions.
+        // does (shared list splitting) and collect each item's definitions.
         // A marker that cannot interrupt an open paragraph is a lazy continuation
         // of that paragraph, not a list, so skip it without harvesting.
         if scan.maybe_list_marker
@@ -1575,12 +1494,26 @@ fn parse_blocks_with_refs_profiled(
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut i = 0;
+    // A nonblank iteration emits one block. Record its consumed lines at the
+    // next iteration (or EOF), so every existing and future block branch uses
+    // the same boundaries as its semantic parse. Nested container calls must
+    // not consume entries in the top-level source map.
+    let track_spans = profiler.block_depth == 0 && profiler.block_spans.is_some();
+    let mut block_start = None;
     'blocks: while i < lines.len() {
+        if let Some(start) = block_start.take()
+            && let Some(spans) = &mut profiler.block_spans
+        {
+            spans.record(start, i);
+        }
         let line = lines[i];
         let trimmed = trim_space_tab(line);
         if trimmed.is_empty() {
             i += 1;
             continue;
+        }
+        if track_spans {
+            block_start = Some(i);
         }
         let scan = BlockStartScan::new(line, trimmed);
         if scanned_thematic_break(scan) {
@@ -1972,6 +1905,11 @@ fn parse_blocks_with_refs_profiled(
             started,
         );
         blocks.push(Block::Paragraph(inlines));
+    }
+    if let Some(start) = block_start
+        && let Some(spans) = &mut profiler.block_spans
+    {
+        spans.record(start, i);
     }
     blocks
 }
@@ -3391,17 +3329,12 @@ fn marker_interrupts_paragraph(marker: &Marker<'_>) -> bool {
     !marker.ordered || marker.start == 1
 }
 
-fn parse_list(lines: &[&str], refs: &ReferenceMap) -> (List, usize) {
-    let mut profiler = ParseProfiler::disabled();
-    parse_list_profiled(lines, refs, &mut profiler)
-}
-
 /// A list split into per-item bodies (marker/indent stripped, task marker
 /// separated) without parsing them, plus the list flags and the number of lines
 /// consumed. Body lines borrow from the source wherever possible: marker rests,
 /// content-indent strips, and lazy continuations are all slices of the original
 /// input; inserted structural blanks use the shared empty string. Shared by
-/// `parse_list_profiled` (which parses + renders each body) and
+/// `parse_list_profiled_with_first_marker` (which parses each body) and
 /// `collect_nested_references` (which recurses into each body to find nested
 /// reference definitions), so the two agree exactly on item boundaries.
 struct ListSplit<'a> {
@@ -3411,23 +3344,6 @@ struct ListSplit<'a> {
     /// `(task marker, body lines)` per item.
     items: Vec<(Option<bool>, Vec<std::borrow::Cow<'a, str>>)>,
     used: usize,
-}
-
-fn split_list_items<'a>(lines: &[&'a str]) -> ListSplit<'a> {
-    let Some(first) = list_marker(lines[0]) else {
-        return ListSplit {
-            ordered: false,
-            start: 1,
-            tight: true,
-            items: Vec::new(),
-            used: 1,
-        };
-    };
-    split_list_items_with_first_marker(lines, first)
-}
-
-fn split_list_items_with_first_marker<'a>(lines: &[&'a str], first: Marker<'a>) -> ListSplit<'a> {
-    split_list_items_with_first_marker_tracked(lines, first, None)
 }
 
 fn split_list_items_with_first_marker_tracked<'a>(
@@ -3616,22 +3532,6 @@ fn split_list_items_with_first_marker_tracked<'a>(
         items,
         used: i,
     }
-}
-
-fn parse_list_profiled(
-    lines: &[&str],
-    refs: &ReferenceMap,
-    profiler: &mut ParseProfiler,
-) -> (List, usize) {
-    let checkpoint = profiler.destination_checkpoint();
-    let split = if let Some(first) = list_marker(lines[0]) {
-        split_list_items_with_first_marker_tracked(lines, first, profiler.destinations.as_mut())
-    } else {
-        split_list_items(lines)
-    };
-    let parsed = parse_list_split(split, refs, profiler);
-    profiler.destination_restore(checkpoint);
-    parsed
 }
 
 fn parse_list_profiled_with_first_marker(
@@ -7141,7 +7041,10 @@ mod refdef_paragraph_tests {
             0
         ));
 
-        let lines = source_lines("alpha\nbeta");
+        let lines: Vec<_> = source_lines("alpha\nbeta")
+            .iter()
+            .map(|line| crate::span::SourceSpan::new(line.start, line.end))
+            .collect();
         assert_eq!(span_for_lines(&[], 0, 1).len(), 0);
         assert_eq!(span_for_lines(&lines, 0, 0), span_for_lines(&lines, 0, 1));
         assert_eq!(span_for_lines(&lines, 1, 2).len(), "beta".len());

@@ -100,6 +100,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Editor and LSP source ranges now follow the semantic Markdown parser, keeping
+  diagnostics and navigation aligned after frontmatter, lazy blockquotes,
+  multiline mathematics, definition lists and removed reference definitions.
+  Original UTF-8 byte offsets, CRLF line endings and tabs remain intact.
 - Native render and watch outputs preserve every loaded input. SVG files and
   search-index sidecars now share the source-overwrite guard with HTML, PDF and
   EPUB; included Markdown, CSS, configuration, fonts and local images are also

@@ -286,6 +286,21 @@ mod tests {
     }
 
     #[test]
+    fn anchor_diagnostics_follow_frontmatter_and_lazy_container_boundaries() -> TestResult {
+        let source = "---\r\ntitle: Document\r\n---\r\n\r\n> quote\r\nlazy continuation\r\n\r\n# Present\r\n\r\n😀 [bad](#absent)\r\n";
+        let report = inspect(source);
+        let found = anchors(&report);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].get("range"),
+            Some(&parse_json(
+                r#"{"start":{"line":9,"character":0},"end":{"line":9,"character":17}}"#
+            )?),
+        );
+        Ok(())
+    }
+
+    #[test]
     fn parser_findings_are_preserved_alongside_anchor_findings() {
         let source = "[bad](#absent)\n\n```rust\nlet unfinished = true;\n";
         let expected = parse_markdown_spanned(source).diagnostics;

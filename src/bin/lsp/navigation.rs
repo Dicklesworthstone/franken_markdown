@@ -305,6 +305,34 @@ mod tests {
     }
 
     #[test]
+    fn outline_selects_the_real_heading_after_compound_blocks() -> TestResult {
+        let source = "---\ntitle: Document\n---\n\n> quote\nlazy continuation\n\n$$\nx + y\n\n# math, not a heading\n$$\n\nFirst\n: definition\n\nSecond\n: another\n\n# Real 😀\n";
+        let navigation = Navigation::new(source)?;
+        let outline = navigation.symbols("untitled:compound", true);
+        let roots = array(&outline);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].get("name").and_then(Json::as_str), Some("Real 😀"));
+        let selection = object([
+            (
+                "start",
+                position(Position {
+                    line: 19,
+                    character: 0,
+                }),
+            ),
+            (
+                "end",
+                position(Position {
+                    line: 19,
+                    character: 9,
+                }),
+            ),
+        ]);
+        assert_eq!(roots[0].get("selectionRange"), Some(&selection));
+        Ok(())
+    }
+
+    #[test]
     fn section_range_contains_children_but_not_the_next_sibling() -> TestResult {
         let navigation = Navigation::new("# A\n\n## B\ntext\n# C\n")?;
         assert_eq!(

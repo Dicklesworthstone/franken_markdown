@@ -100,6 +100,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Native render and watch outputs preserve every loaded input. SVG files and
+  search-index sidecars now share the source-overwrite guard with HTML, PDF and
+  EPUB; included Markdown, CSS, configuration, fonts and local images are also
+  protected, including symlink and hard-link aliases. A collision fails before
+  rendering or writing any publication output.
 - `fmd-math` reads rule 18a's baseline drops at the script size, as TeX does
   (tex.web §756). The drops come from cmsy7 and cmsy5, not from cmsy10 scaled
   to the base's size. A superscript on a non-character nucleus now sits

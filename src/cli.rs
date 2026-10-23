@@ -1478,6 +1478,11 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     // lang/toc/toc_depth merge below frontmatter, so they wait for it.
     apply_config_render_defaults(&mut args.style, &config.render, false);
 
+    let mut input_paths = Vec::new();
+    if !no_config {
+        input_paths.push(config_path());
+    }
+
     let mut theme = config.to_theme();
     if let Some(font) = args.font {
         theme = theme.with_font(font.into());
@@ -1521,7 +1526,13 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
                 );
             }
             Some(input_path) => {
-                match expand_file_includes(&src, input_path, args.max_input_bytes) {
+                let expansion = crate::watch::expand_file_includes(
+                    &src,
+                    Path::new(input_path),
+                    args.max_input_bytes,
+                );
+                input_paths.extend(expansion.input_paths().map(Path::to_path_buf));
+                match expansion.result {
                     Ok(expanded) => expanded,
                     Err(e) => return fail_json(66, "input_error", &e, json),
                 }
@@ -1534,7 +1545,10 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     let css_path = args.css.clone().or_else(|| config.custom_css.clone());
     let custom_css = match css_path.as_deref() {
         Some(p) => match read_stylesheet(p) {
-            Ok(s) => Some(s),
+            Ok(s) => {
+                input_paths.push(p.to_path_buf());
+                Some(s)
+            }
             Err(e) => {
                 return fail_json(
                     66,
@@ -1562,22 +1576,50 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     // README.md`, `fmd notes.md --to pdf --out notes.md`, or a `.md` file
     // misnamed `doc.pdf` rendered with `--to pdf`). Check every file target
     // before writing any of them so we fail fast with nothing written.
-    let mut file_targets: Vec<PathBuf> = Vec::new();
-    if want_html && let Some(p) = out_path(&args, single, "html") {
-        file_targets.push(p);
-    }
-    if want_pdf && let Some(p) = out_path(&args, single, "pdf") {
-        file_targets.push(p);
-    }
-    if want_epub && let Some(p) = out_path(&args, single, "epub") {
-        file_targets.push(p);
-    }
+    // Derive every actual destination once, including optional sidecars. Keep
+    // stdout out of this list; all file-producing formats use the same guard.
+    let html_path = want_html.then(|| out_path(&args, single, "html")).flatten();
+    let pdf_path = if want_pdf {
+        match out_path(&args, single, "pdf") {
+            Some(path) if !is_stdout_path(&path) => Some(path),
+            _ => return fail_json(64, "usage_error", "PDF output requires --out <path>", json),
+        }
+    } else {
+        None
+    };
+    let epub_path = if want_epub {
+        match out_path(&args, single, "epub") {
+            Some(path) if !is_stdout_path(&path) => Some(path),
+            _ => {
+                return fail_json(
+                    64,
+                    "usage_error",
+                    "EPUB output requires a real --out <path> (binary zip cannot stream to stdout)",
+                    json,
+                );
+            }
+        }
+    } else {
+        None
+    };
+    let svg_path = want_svg
+        .then(|| out_path(&args, single, "svg"))
+        .flatten()
+        .filter(|path| !is_stdout_path(path));
+    let file_targets: Vec<PathBuf> = html_path
+        .iter()
+        .chain(&pdf_path)
+        .chain(&epub_path)
+        .chain(&svg_path)
+        .chain(&args.search_index)
+        .cloned()
+        .collect();
     if let Some(clash) = find_input_overwrite(args.input.as_deref(), &file_targets) {
         return fail_json(
             64,
             "usage_error",
             &format!(
-                "refusing to overwrite the input file {} with rendered output; write to a different --out path",
+                "refusing to overwrite the input file {} with rendered output; write to a different --out or --search-index path",
                 clash.display()
             ),
             json,
@@ -1592,12 +1634,15 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     } else {
         None
     };
-    let font_assets =
-        match load_host_font_assets(&args.style.pdf_fonts, &args.style.pdf_font_weights) {
-            Ok(assets) => assets,
-            Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
-            Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
-        };
+    let font_assets = match load_host_font_assets_recording(
+        &args.style.pdf_fonts,
+        &args.style.pdf_font_weights,
+        &mut input_paths,
+    ) {
+        Ok(assets) => assets,
+        Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
+        Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
+    };
     if json {
         report_font_assets(&font_assets);
     }
@@ -1642,10 +1687,11 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     // Read the explicitly supplied bytes once, regardless of output format.
     // In combined output both renderers must see the same override, even if
     // the source also names a different automatically discoverable local file.
-    let mut explicit_image_assets = match read_pdf_image_assets(
+    let mut explicit_image_assets = match read_pdf_image_assets_recording(
         &args.style.pdf_images,
         args.style.max_pdf_image_bytes,
         &explicit_image_destinations,
+        &mut input_paths,
     ) {
         Ok(assets) => assets,
         Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
@@ -1658,12 +1704,13 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
             std::mem::take(&mut explicit_image_assets)
         };
         if let Some(base_dir) = base_image_dir.as_deref()
-            && let Err(e) = append_auto_image_assets(
+            && let Err(e) = append_auto_image_assets_recording(
                 &doc,
                 base_dir,
                 &mut assets,
                 args.style.max_pdf_image_bytes,
                 if want_epub { "EPUB" } else { "HTML" },
+                &mut input_paths,
             )
         {
             return fail_json(66, "input_error", &e, json);
@@ -1676,12 +1723,13 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     let mut pdf_image_assets = if want_pdf || want_svg {
         let mut assets = explicit_image_assets;
         if let Some(base_dir) = base_image_dir.as_deref()
-            && let Err(e) = append_auto_image_assets(
+            && let Err(e) = append_auto_image_assets_recording(
                 &doc,
                 base_dir,
                 &mut assets,
                 args.style.max_pdf_image_bytes,
                 "PDF",
+                &mut input_paths,
             )
         {
             return fail_json(66, "input_error", &e, json);
@@ -1699,6 +1747,25 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     } else {
         Vec::new()
     };
+
+    // Includes and presentation resources are source material too. Perform
+    // this check after their successful reads, before any renderer or writer
+    // can replace them; aliases use the same inode/canonical-path comparison
+    // as the top-level Markdown guard.
+    for input in &input_paths {
+        if let Some(output) = file_targets.iter().find(|output| same_file(input, output)) {
+            return fail_json(
+                64,
+                "usage_error",
+                &format!(
+                    "refusing to overwrite render input {} with output {}; write to a different --out or --search-index path",
+                    input.display(),
+                    output.display(),
+                ),
+                json,
+            );
+        }
+    }
 
     let profile = match parse_profile_arg(&args.style, json) {
         Ok(profile) => profile,
@@ -1818,21 +1885,6 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     } else {
         None
     };
-    let epub_path = if epub_render.is_some() {
-        match out_path(&args, single, "epub") {
-            Some(path) if !is_stdout_path(&path) => Some(path),
-            _ => {
-                return fail_json(
-                    64,
-                    "usage_error",
-                    "EPUB output requires a real --out <path> (binary zip cannot stream to stdout)",
-                    json,
-                );
-            }
-        }
-    } else {
-        None
-    };
 
     // SVG poster (bead y0vu): text format, so like HTML it may stream to
     // stdout; with a path it rides the staged write.
@@ -1862,23 +1914,6 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
                 Some(bytes)
             }
             Err(e) => return fail_render(e, json),
-        }
-    } else {
-        None
-    };
-    let svg_path = if svg_render.is_some() {
-        out_path(&args, single, "svg")
-    } else {
-        None
-    };
-
-    let html_path = html_bytes
-        .as_ref()
-        .and_then(|_| out_path(&args, single, "html"));
-    let pdf_path = if pdf_render.is_some() {
-        match out_path(&args, single, "pdf") {
-            Some(path) => Some(path),
-            None => return fail_json(64, "usage_error", "PDF output requires --out <path>", json),
         }
     } else {
         None
@@ -2880,9 +2915,18 @@ enum HostFontError {
     Input(String),
 }
 
+#[cfg(feature = "batch")]
 fn load_host_font_assets(
     fonts: &[String],
     weights: &[String],
+) -> std::result::Result<FontAssets, HostFontError> {
+    load_host_font_assets_recording(fonts, weights, &mut Vec::new())
+}
+
+fn load_host_font_assets_recording(
+    fonts: &[String],
+    weights: &[String],
+    input_paths: &mut Vec<PathBuf>,
 ) -> std::result::Result<FontAssets, HostFontError> {
     let mut assets = FontAssets::default();
     let max_bytes = crate::MAX_FONT_ASSET_BYTES as u64;
@@ -2904,6 +2948,7 @@ fn load_host_font_assets(
         assets
             .set_slot(slot, bytes)
             .map_err(|e| HostFontError::Input(e.to_string()))?;
+        input_paths.push(path);
     }
     for spec in weights {
         let (slot, weight) = parse_pdf_font_weight_spec(spec).map_err(HostFontError::Usage)?;
@@ -3027,6 +3072,15 @@ fn read_pdf_image_assets(
     max_bytes: u64,
     destination_hints: &[&str],
 ) -> std::result::Result<Vec<PdfImageAsset>, PdfImageError> {
+    read_pdf_image_assets_recording(specs, max_bytes, destination_hints, &mut Vec::new())
+}
+
+fn read_pdf_image_assets_recording(
+    specs: &[String],
+    max_bytes: u64,
+    destination_hints: &[&str],
+    input_paths: &mut Vec<PathBuf>,
+) -> std::result::Result<Vec<PdfImageAsset>, PdfImageError> {
     let mut assets = Vec::with_capacity(specs.len());
     for spec in specs {
         let (destination, path) =
@@ -3043,6 +3097,7 @@ fn read_pdf_image_assets(
             .map_err(|e| PdfImageError::Input(format!("reading {label}: {e}")))?;
         let bytes = read_limited_with_flag(file, max_bytes, &label, "--max-pdf-image-bytes")
             .map_err(|e| PdfImageError::Input(format!("reading {label}: {e}")))?;
+        input_paths.push(path);
         assets.push(PdfImageAsset::new(destination, bytes));
     }
     Ok(assets)
@@ -3072,6 +3127,24 @@ fn append_auto_image_assets(
     assets: &mut Vec<PdfImageAsset>,
     max_bytes: u64,
     output_kind: &str,
+) -> std::result::Result<(), String> {
+    append_auto_image_assets_recording(
+        doc,
+        base_dir,
+        assets,
+        max_bytes,
+        output_kind,
+        &mut Vec::new(),
+    )
+}
+
+fn append_auto_image_assets_recording(
+    doc: &Document,
+    base_dir: &Path,
+    assets: &mut Vec<PdfImageAsset>,
+    max_bytes: u64,
+    output_kind: &str,
+    input_paths: &mut Vec<PathBuf>,
 ) -> std::result::Result<(), String> {
     let Ok(canonical_base_dir) = std::fs::canonicalize(base_dir) else {
         return Ok(());
@@ -3114,6 +3187,7 @@ fn append_auto_image_assets(
             std::fs::File::open(&canonical_path).map_err(|e| format!("reading {label}: {e}"))?;
         let bytes = read_limited_with_flag(file, max_bytes, &label, "--max-pdf-image-bytes")
             .map_err(|e| format!("reading {label}: {e}"))?;
+        input_paths.push(canonical_path);
         assets.push(PdfImageAsset::new(destination, bytes));
     }
     Ok(())

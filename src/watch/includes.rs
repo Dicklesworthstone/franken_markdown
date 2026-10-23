@@ -13,6 +13,14 @@ pub(crate) struct Expansion {
     pub(super) entries: BTreeMap<PathBuf, Option<Fingerprint>>,
 }
 
+impl Expansion {
+    /// Files actually consulted while expanding this source. Native writers
+    /// retain these paths so an output cannot replace one of its own inputs.
+    pub(crate) fn input_paths(&self) -> impl Iterator<Item = &Path> {
+        self.dependencies.keys().map(PathBuf::as_path)
+    }
+}
+
 /// Resolve through the same include engine used for rendering, including code
 /// fences, selectors, recursive paths, cycles and output budgets. Dependencies
 /// discovered before an error remain available so watch can recover on save.

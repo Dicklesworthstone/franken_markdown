@@ -132,6 +132,7 @@ function setup(t) {
   root.publish = new Element("section", el);
   const panel = createBookInspectionPanel(root);
   for (const id of [
+    "source-role",
     "chapter-source",
     "chapter-path",
     "chapters",

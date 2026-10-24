@@ -107,7 +107,10 @@ async function setup(t, options = {}) {
   const el = Object.fromEntries(
     [...html.matchAll(/id="([^"]+)"/g)].map((match) => [match[1], new Element()]),
   );
-  const root = { querySelector: (query) => el[query.slice(1)], createElement: () => new Element() };
+  const root = Object.assign(new EventTarget(), {
+    querySelector: (query) => el[query.slice(1)],
+    createElement: () => new Element(),
+  });
   const collection = createBookCollection(),
     host = new EventTarget(),
     store = storeDouble();

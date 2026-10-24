@@ -16,7 +16,7 @@ const gate = () => {
   return { promise, resolve };
 };
 const ids =
-  `chapters chapter-path chapter-source add-chapter move-up move-down remove-chapter import-files import-folder open-project save-project save-chapter revoke-images image-list title author lang font dark-mode font-scale toc page-numbers export-pdf export-epub export-site cancel-export download status search-query search-replacement search-case search-scope search-run search-results search-open search-previous search-next search-page-previous search-page-next search-review-one search-review-all search-apply search-discard search-review search-status search-undo search-redo search-history`.split(
+  `source-role add-include import-includes import-include-folder chapters chapter-path chapter-source add-chapter move-up move-down remove-chapter import-files import-folder open-project save-project save-chapter revoke-images image-list title author lang font dark-mode font-scale toc page-numbers export-pdf export-epub export-site cancel-export download status search-query search-replacement search-case search-scope search-run search-results search-open search-previous search-next search-page-previous search-page-next search-review-one search-review-all search-apply search-discard search-review search-status search-undo search-redo search-history`.split(
     " ",
   );
 class Element extends EventTarget {

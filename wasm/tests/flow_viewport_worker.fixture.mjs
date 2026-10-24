@@ -17,8 +17,12 @@ const endpoint = {
   },
   postMessage(message, transfer) {
     if (workerData === "legacy" && message.id === 1 && message.ok) message.value = null;
-    if (workerData === "bad-query" && message.value?.queryKind === "viewport-v1") {
-      message.value.viewport = { ...message.value.viewport, y: message.value.viewport.y + 1 };
+    // Negotiated viewport replies wrap the actual page in a delta packet.
+    // Corrupt the page itself so this negative control cannot silently stop
+    // injecting its fault when the transport changes its envelope.
+    const page = message.value?.page ?? message.value;
+    if (workerData === "bad-query" && page?.queryKind === "viewport-v1") {
+      page.viewport = { ...page.viewport, y: page.viewport.y + 1 };
     }
     parentPort.postMessage(message, transfer);
   },

@@ -90,7 +90,20 @@ adopted.
 
 Native check, Clippy and 4,651 all-target tests passed at `2d37ebd0` (12 ignored).
 These results do not qualify every feature combination or the complete browser
-distribution. Current profile-vs-profile, native parity, browser lifecycle and
-release gates still require their matching-source evidence. The approximately
+distribution. The committed `e51cc1e9` profile builds passed their six-output
+render/full comparison: render is 6,484,424 raw / 2,981,665 gzip bytes, full is
+7,132,900 raw / 3,188,696 gzip bytes (`compare_profiles.mjs`, Node zlib level 9;
+the earlier experiment used Python gzip). The full WASM hash exactly matches
+the experiment. Ten of twelve real-package smokes and all 54 Chrome checks
+passed. The other two smokes exposed a Node base64 module-loader stack limit;
+their aggregate DSR result remains a non-pass pending the loader repair.
+
+The `e51cc1e9` MCP/LSP/batch all-target run reported 5,058 passed, one failed and
+12 ignored: the timeout FIFO test expects an in-flight render, while input
+protection preflight reads the FIFO before worker admission. Its assertion is
+retained. Core native/WASM builds, selected browser feature checks, native
+MCP/LSP/batch Clippy and doctests passed; the first unqualified native artifact
+transfer was refused and its explicit Linux-target retry passed. Full native
+parity, browser lifecycle and release gates remain open. The approximately
 4.5 MB render-only target and a lower size ratchet are not claimed. No release,
 registry publish, Actions workflow or size-budget change is included.

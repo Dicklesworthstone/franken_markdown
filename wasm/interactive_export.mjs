@@ -191,7 +191,8 @@ async function loadRuntime(owned) {
     if (typeof process !== 'undefined' && process.versions?.node) {
       const identity = URL.createObjectURL(new Blob());
       URL.revokeObjectURL(identity);
-      url = 'data:text/javascript;base64,' + base64(new TextEncoder().encode(owned.bindings)) + '#' + identity;
+      // Avoid Node's base64 data-URL decoder stack limit on large bindings.
+      url = 'data:text/javascript;charset=utf-8,' + encodeURIComponent(owned.bindings) + '#' + identity;
     } else {
       url = URL.createObjectURL(new Blob([owned.bindings], {type: 'text/javascript'}));
       revoke = true;

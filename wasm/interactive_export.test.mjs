@@ -246,6 +246,18 @@ test('factories using identical glue and different WASM cannot share the wrong m
   assert.ok(first.render('Again').text().includes('WASM answer 7'));
 });
 
+test('public loader accepts large UTF-8 bindings and preserves their independent instances',async()=>{
+  const marker = 'naïve Ω # % ? /';
+  const bindings = '// ' + (marker + ' ').repeat(32768) + '\n'
+    + bindingSource.replace('WASM answer ', marker + ' WASM answer ');
+  const first = await createNativeWorkspaceExporter({wasm:wasmAnswer(7),bindings});
+  const second = await createNativeWorkspaceExporter({wasm:wasmAnswer(9),bindings});
+  assert.ok(first.render('First').text().includes(marker + ' WASM answer 7'));
+  assert.ok(second.render('Second').text().includes(marker + ' WASM answer 9'));
+  assert.ok(first.render('Again').text().includes(marker + ' WASM answer 7'));
+  assert.equal(payload(first.render('Exact runtime')).bindings, bindings);
+});
+
 test('initialization failures and incompatible binding modules reject without publishing output',async()=>{
   for(const bindings of ['export const value=1;', 'export default async function(){throw Error("init failed")}',
     'export default async function() {}','this is invalid JavaScript']) {

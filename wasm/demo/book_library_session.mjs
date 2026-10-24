@@ -136,6 +136,13 @@ export function createBookLibrarySession({
       );
     }
   }
+  function guardRecovery(stamp, generation, life, capturedName) {
+    guard(stamp, generation, life, capturedName);
+    // Composition can start while read/confirmation is pending without changing
+    // source bytes or the checkpoint yet. It still revokes replacement authority.
+    if (composing || host.sourceBusy === true)
+      throw bookError("BOOK_BUSY", "Finish importing or composing text before recovery; nothing was replaced.");
+  }
   async function save({ copy = false } = {}) {
     return run(async () => {
       if (!copy && conflict)
@@ -351,13 +358,13 @@ export function createBookLibrarySession({
           life = lifecycle,
           capturedName = name;
         const saved = await store.read(id, revision);
-        guard(stamp, generation, life, capturedName);
+        guardRecovery(stamp, generation, life, capturedName);
         const baseFiles = sources && saved.snapshotRevision === saved.revision
           ? captureBookSourceTreeForMerge(saved.project.files) : null;
         const approved = await confirm(
           `Open “${saved.name}”, revision ${saved.snapshotRevision}? This replaces the current editor, including unsaved edits, and revokes all image access. Download or save current work first.`,
         );
-        guard(stamp, generation, life, capturedName);
+        guardRecovery(stamp, generation, life, capturedName);
         if (approved !== true) {
           message = "Recovery cancelled. Current source is unchanged; autosave remains off.";
           return false;
@@ -385,7 +392,7 @@ export function createBookLibrarySession({
         const approved = await confirm(
           "Start an empty book? Save or download the current collection first. This replaces the editor and revokes images, but does not delete saved books.",
         );
-        guard(stamp, generation, life, capturedName);
+        guardRecovery(stamp, generation, life, capturedName);
         if (approved !== true) {
           message = "New book cancelled. Current source is unchanged.";
           return false;

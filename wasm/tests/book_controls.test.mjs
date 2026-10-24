@@ -346,6 +346,45 @@ test("retired UI import callbacks preserve newer status and file selection", asy
   assert.equal(f.el["import-files"].value, ""); assert.equal(f.collection.files.at(-1).path, "fresh.md");
   assert.match(f.el.status.textContent, /Imported 1 chapters/);
 });
+for (const field of ["chapter-source", "chapter-path"]) test(`${field} composition protects direct recovery and import admission`, async (t) => {
+  const f = setup(t); await initial(f);
+  await f.controls.importFiles([new File(["image"], "keep.svg")]);
+  const before = f.collection.files, project = f.collection.project(); project.files[0].source = "replacement";
+  const stamp = f.controls.checkpoint(); f.el[field].dispatchEvent(new Event("compositionstart"));
+  assert.throws(() => f.controls.replaceProject(project, stamp), code("BOOK_BUSY"));
+  await assert.rejects(f.controls.importFiles([new File(["new"], "new.md")]), code("BOOK_BUSY"));
+  assert.deepEqual(f.collection.files, before); assert.equal(f.collection.images.length, 1);
+  f.el[field].dispatchEvent(new Event("compositionend"));
+  f.controls.replaceProject(project, f.controls.checkpoint());
+  assert.equal(f.collection.files[0].source, "replacement"); assert.equal(f.collection.images.length, 0);
+  await f.controls.importFiles([new File(["new"], "new.md")]); assert.equal(f.collection.files.at(-1).path, "new.md");
+});
+for (const phase of ["read", "confirmation"]) test(`project ${phase} cannot replace source when composition begins while waiting`, async (t) => {
+  const f = setup(t); await initial(f);
+  await f.controls.importFiles([new File(["image"], "keep.svg")]);
+  const before = f.collection.files, project = f.collection.project(); project.files[0].source = "replacement";
+  const slow = delayedFile(JSON.stringify(project), "project.json"), hold = gate(), entered = gate();
+  let confirmations = 0;
+  f.confirm(() => { confirmations++; entered.resolve(); return phase === "confirmation" ? hold.promise : true; });
+  const pending = f.controls.importFiles([phase === "read" ? slow.file : new File([JSON.stringify(project)], "project.json")], "project");
+  if (phase === "read") await slow.entered.promise; else await entered.promise;
+  f.el["chapter-source"].dispatchEvent(new Event("compositionstart"));
+  if (phase === "read") slow.hold.resolve(); else hold.resolve(true);
+  await assert.rejects(pending, code("BOOK_BUSY"));
+  assert.equal(confirmations, phase === "read" ? 0 : 1);
+  assert.deepEqual(f.collection.files, before); assert.equal(f.collection.images.length, 1);
+  f.el["chapter-source"].dispatchEvent(new Event("compositionend")); f.confirm(() => true);
+  await f.controls.importFiles([new File([JSON.stringify(project)], "project.json")], "project");
+  assert.equal(f.collection.files[0].source, "replacement"); assert.equal(f.collection.images.length, 0);
+});
+test("pending chapter removal respects composition begun during confirmation", async (t) => {
+  const f = setup(t); await initial(f); const before = f.collection.files, hold = gate();
+  f.confirm(() => hold.promise); f.el["remove-chapter"].click();
+  f.el["chapter-path"].dispatchEvent(new Event("compositionstart")); hold.resolve(true); await tick();
+  assert.deepEqual(f.collection.files, before); assert.match(f.el.status.textContent, /BOOK_BUSY/);
+  f.el["chapter-path"].dispatchEvent(new Event("compositionend")); f.confirm(() => true);
+  f.el["remove-chapter"].click(); await tick(); assert.equal(f.collection.files.length, 1);
+});
 test("source rescue remains available with invalid publishing settings and a half-edited path", async (t) => {
   const f = setup(t);
   await initial(f);

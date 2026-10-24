@@ -70,6 +70,20 @@ composition through the unmodified app. Its composition and page-transition
 events are explicit fault injections, not real IME or actual back/forward-cache
 acceptance. All original formatting checks remain in the runner.
 
+Whole-project replacement also rechecks active composition immediately before
+changing source. A project read, saved-book read, or replacement confirmation
+that began earlier cannot replace the editor while source/path composition is
+active, even when its text and checkpoint have not changed yet. Pending chapter
+removal follows the same rule. Finish composing, then start the operation again;
+the earlier approval is not replayed automatically. Existing source-merge
+conflict and stale-review rules remain separate.
+
+The browser runner now also executes the eleven native IndexedDB store checks
+and the real workbench's save/open controls. Its recovery races delay delivery
+of a completed native storage transaction, a file read, or an embedding host's
+confirmation callback. These are explicit scheduling controls around the
+unmodified app, not real-IME or operating-system picker acceptance.
+
 ## Review, apply, undo
 
 Enter a literal replacement (empty means deletion), then review either the

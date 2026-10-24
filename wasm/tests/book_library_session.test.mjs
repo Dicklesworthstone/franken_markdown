@@ -243,6 +243,35 @@ test("recovery is rejected when source or the local name changes during confirma
     h.close();
   }
 });
+for (const phase of ["read", "confirmation"]) test(`saved-book ${phase} preserves composition begun during the pending operation`, async t => {
+  const hold = deferred(), entered = deferred(), h = harness({ confirm: () => {
+    entered.resolve(); return phase === "confirmation" ? hold.promise : true;
+  } });
+  t.after(h.close); const first = await h.session.save();
+  h.collection.append({ chapters: [], images: [{ destination: "keep.svg", bytes: new Uint8Array([1]) }] });
+  const before = h.collection.files;
+  if (phase === "read") h.store.beforeRead = () => { entered.resolve(); return hold.promise; };
+  const opening = h.session.open(first.id); await entered.promise; h.session.composition(true); hold.resolve(true);
+  await assert.rejects(opening, { code: "BOOK_BUSY" });
+  assert.deepEqual(h.collection.files, before); assert.equal(h.collection.images.length, 1);
+  h.session.composition(false); await h.session.open(first.id);
+  assert.equal(h.collection.images.length, 0); assert.equal(h.session.state.binding.id, first.id);
+});
+test("new-book confirmation cannot discard a newly begun composition", async t => {
+  const hold = deferred(), entered = deferred(), h = harness({ confirm: () => { entered.resolve(); return hold.promise; } });
+  t.after(h.close); const before = h.collection.files;
+  const pending = h.session.newBook(); await entered.promise; h.session.composition(true); hold.resolve(true);
+  await assert.rejects(pending, { code: "BOOK_BUSY" }); assert.deepEqual(h.collection.files, before);
+  h.session.composition(false); await h.session.newBook(); assert.deepEqual(h.collection.files, []);
+});
+test("saved-book recovery also respects the source host busy state", async t => {
+  const h = harness(), hold = deferred(), entered = deferred(); t.after(h.close);
+  const first = await h.session.save(), before = h.collection.files;
+  h.store.beforeRead = () => { entered.resolve(); return hold.promise; };
+  const opening = h.session.open(first.id); await entered.promise; h.host.sourceBusy = true; hold.resolve();
+  await assert.rejects(opening, { code: "BOOK_BUSY" }); assert.deepEqual(h.collection.files, before);
+  h.host.sourceBusy = false; await h.session.open(first.id); assert.equal(h.session.state.binding.id, first.id);
+});
 test("cancelled recovery preserves source, grants and disables autosave", async () => {
   const h = harness({ confirm: () => false });
   const first = await h.session.save();

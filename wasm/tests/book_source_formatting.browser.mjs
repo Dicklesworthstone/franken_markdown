@@ -133,6 +133,96 @@ try {
   check("fresh import clears its own file selection", await page.locator("#import-files").inputValue(), "");
   await page.locator("#chapters").selectOption({ label: "2. fresh-lifecycle.md" });
   check("fresh imported bytes reach the real source editor", await editor.inputValue(), "# Fresh imported source");
+  // Execute the existing complete native storage suite, using its unique test
+  // databases in this isolated browser profile. No user database is opened.
+  const storage = await page.evaluate(async () => (await import("/wasm/tests/book_library_store.browser.mjs")).runBookLibraryStoreTests());
+  for (const result of storage.results) check(`native IndexedDB: ${result.name}`, result.passed ? true : result.error, true);
+  // Full application save/open with native storage. Delay only delivery of the
+  // next readonly transaction acknowledgment after its real requests complete.
+  const dialogs = []; page.on("dialog", dialog => {
+    dialogs.push(dialog.message());
+    void dialog.accept().catch(error => errors.push(`Dialog acknowledgment failed: ${error.message}`));
+  });
+  await page.locator("#library-name").fill("Composition recovery"); await page.locator("#library-save").click();
+  await page.waitForFunction(() => document.querySelector("#library-status").textContent.includes("Saved locally"));
+  check("real library save creates an acknowledged named revision", await page.locator("#library-books option").count(), 1);
+  await editor.fill("unsaved current source");
+  await page.locator("#import-files").setInputFiles({ name: "keep-composition.svg", mimeType: "image/svg+xml", buffer: Buffer.from("<svg/>") });
+  await page.waitForFunction(() => document.querySelector("#image-list").textContent.includes("keep-composition.svg"));
+  await page.evaluate(() => {
+    const original = IDBDatabase.prototype.transaction;
+    const complete = Object.getOwnPropertyDescriptor(IDBTransaction.prototype, "oncomplete");
+    window.holdNextSavedRead = true; window.savedReadReady = false;
+    IDBDatabase.prototype.transaction = function (...args) {
+      const tx = original.apply(this, args);
+      if (window.holdNextSavedRead && tx.mode === "readonly" && tx.objectStoreNames.contains("snapshots")) {
+        window.holdNextSavedRead = false;
+        Object.defineProperty(tx, "oncomplete", {
+          set(handler) { complete.set.call(tx, event => {
+            window.releaseSavedRead = () => handler.call(tx, event); window.savedReadReady = true;
+          }); },
+          get() { return complete.get.call(tx); },
+        });
+      }
+      return tx;
+    };
+  });
+  const dialogsBeforeRecovery = dialogs.length;
+  await page.locator("#library-open").click(); await page.waitForFunction(() => window.savedReadReady);
+  await editor.dispatchEvent("compositionstart"); await page.evaluate(() => window.releaseSavedRead());
+  await page.waitForFunction(() => document.querySelector("#library-status").textContent.includes("BOOK_BUSY"));
+  check("composition begun during native storage read preserves current source", await editor.inputValue(), "unsaved current source");
+  check("blocked saved recovery preserves current image access", (await page.locator("#image-list").textContent()).includes("keep-composition.svg"), true);
+  check("blocked saved recovery does not ask for replacement approval", dialogs.length, dialogsBeforeRecovery);
+  await editor.dispatchEvent("compositionend"); await page.locator("#library-open").click();
+  await page.waitForFunction(() => document.querySelector("#library-status").textContent.includes("Opened saved revision"));
+  await page.locator("#chapters").selectOption({ label: "2. fresh-lifecycle.md" });
+  check("fresh recovery succeeds after composition ends", await editor.inputValue(), "# Fresh imported source");
+  check("approved saved recovery revokes old image access", await page.locator("#image-list").textContent(), "No images authorized.");
+  // A pending confirmation can be asynchronous in an embedding host. Replace
+  // that callback only; the real library/source controllers still own mutation.
+  await editor.fill("unfinished new-book source");
+  await page.evaluate(() => {
+    window.originalConfirm = window.confirm; window.pendingBookConfirm = null;
+    window.confirm = () => new Promise(resolve => { window.pendingBookConfirm = () => resolve(true); });
+  });
+  await page.locator("#library-new").click(); await page.waitForFunction(() => typeof window.pendingBookConfirm === "function");
+  await page.locator("#chapter-path").dispatchEvent("compositionstart"); await page.evaluate(() => window.pendingBookConfirm());
+  await page.waitForFunction(() => document.querySelector("#library-status").textContent.includes("BOOK_BUSY"));
+  check("composition begun during new-book confirmation preserves the book", await page.locator("#chapters option").count(), 3);
+  check("blocked new-book confirmation preserves current source", await editor.inputValue(), "unfinished new-book source");
+  await page.locator("#chapter-path").dispatchEvent("compositionend");
+  await page.evaluate(() => { window.confirm = window.originalConfirm; }); await page.locator("#library-new").click();
+  await page.waitForFunction(() => document.querySelector("#chapters").options.length === 0);
+  check("fresh new-book approval succeeds after composition ends", await editor.inputValue(), "");
+  check("new book detaches the previous save target", (await page.locator("#library-current").textContent()).includes("not attached"), true);
+  await page.locator("#add-chapter").click(); await editor.fill("ready for a fresh edit");
+  await editor.press("ControlOrMeta+a"); await button("bold").click();
+  check("editing remains usable after approved replacement", await editor.inputValue(), "**ready for a fresh edit**");
+  const projectBytes = Buffer.from(JSON.stringify({ schemaVersion: 1,
+    files: [{ path: "replacement.md", source: "# Approved project" }], options: {} }));
+  await page.evaluate(() => {
+    const original = File.prototype.arrayBuffer; window.projectReadReady = false;
+    File.prototype.arrayBuffer = function () {
+      if (this.name !== "composition-project.json") return original.call(this);
+      const file = this;
+      return new Promise(resolve => {
+        window.releaseProjectRead = async () => resolve(await original.call(file)); window.projectReadReady = true;
+      });
+    };
+  });
+  await page.locator("#open-project").setInputFiles({ name: "composition-project.json", mimeType: "application/json", buffer: projectBytes });
+  await page.waitForFunction(() => window.projectReadReady); await editor.dispatchEvent("compositionstart");
+  await page.evaluate(() => window.releaseProjectRead());
+  await page.waitForFunction(() => document.querySelector("#status").textContent.includes("BOOK_BUSY"));
+  check("composition begun during source-project decoding preserves the editor", await editor.inputValue(), "**ready for a fresh edit**");
+  check("blocked source-project import preserves source paths", (await page.locator("#chapters option").allTextContents()).some(text => text.includes("replacement.md")), false);
+  await editor.dispatchEvent("compositionend");
+  await page.locator("#open-project").setInputFiles({ name: "approved-project.json", mimeType: "application/json", buffer: projectBytes });
+  await page.waitForFunction(() => document.querySelector("#chapter-path").value === "replacement.md");
+  check("fresh source-project import succeeds after composition ends", await editor.inputValue(), "# Approved project");
+  await editor.press("ControlOrMeta+a"); await button("bold").click();
+  check("formatting works after fresh source-project import", await editor.inputValue(), "**# Approved project**");
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 900 }); await toolbar.scrollIntoViewIfNeeded();
     check(`${width}px viewport has no horizontal page overflow`, await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -142,5 +232,9 @@ try {
   check("no browser runtime errors or missing module requests", errors, []);
   check("no external requests", denied, []);
   console.log(JSON.stringify({ browser: await browser.version(), checks: checks.length, passed: checks,
-    scope: "actual book application/source controls; no generated WASM, real IME, OS file I/O or actual bfcache proof", output }, null, 2));
-} finally { await context.close(); await browser.close(); }
+    scope: "actual book app and native IndexedDB; controlled File/transaction/confirmation delays and synthetic composition/lifecycle; no generated WASM, real IME, OS file I/O or actual bfcache proof", output }, null, 2));
+} finally {
+  // Teardown may dismiss beforeunload itself; no approval callback owns it.
+  for (const page of context.pages()) page.removeAllListeners("dialog");
+  await context.close(); await browser.close();
+}

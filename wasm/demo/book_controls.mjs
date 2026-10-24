@@ -127,7 +127,7 @@ export function createBookControls({
       "import-include-folder",
       "open-project",
     ])
-      el[kind].disabled = reading;
+      el[kind].disabled = reading || composing;
     el["cancel-export"].disabled = !preparing && !(reading && portableAbort) && !worker.hasRetainedBook;
     if (el["save-portable"]) el["save-portable"].disabled = reading || composing || preparing;
     if (el["open-portable"]) el["open-portable"].disabled = reading || composing;
@@ -304,6 +304,7 @@ export function createBookControls({
     alive();
     const lifetime = lifecycle;
     if (reading) throw bookError("BOOK_BUSY", "A local import is already in progress.");
+    if (composing) throw bookError("BOOK_BUSY", "Finish composing text before importing source.");
     if (mode === "portable" && (composing || files.length !== 1))
       throw bookError("BOOK_BUSY", "Finish composing text and choose one portable book file.");
     if (mode === "portable" && confirm === DEFAULT_CONFIRMATION)
@@ -325,11 +326,13 @@ export function createBookControls({
         throw bookError("ABORTED", "Import retired on page suspension; nothing was installed.");
       if (job?.signal.aborted)
         throw bookError("ABORTED", "Portable import cancelled; nothing was installed.");
-      if (revision !== collection.revision || view !== signature() || (job && composing))
+      if (revision !== collection.revision || view !== signature())
         throw bookError(
           "STALE_SOURCE",
           "The collection changed during import; nothing was installed.",
         );
+      if (composing)
+        throw bookError("BOOK_BUSY", "Finish composing text before installing imported source.");
     };
     try {
       if (mode === "project" || mode === "portable") {
@@ -500,6 +503,8 @@ export function createBookControls({
     );
   on("remove-chapter", "click", () =>
     invoke(async () => {
+      if (reading || composing)
+        throw bookError("BOOK_BUSY", "Finish importing or composing text before removing source.");
       capture();
       const revision = collection.revision,
         view = signature(),
@@ -516,6 +521,8 @@ export function createBookControls({
           "STALE_SOURCE",
           "The source changed during confirmation; it was not removed.",
         );
+      if (composing)
+        throw bookError("BOOK_BUSY", "Composition began during confirmation; no source was removed.");
       collection.remove(index);
       active = Math.max(0, Math.min(index, collection.files.length - 1));
       showChapter();
@@ -675,8 +682,8 @@ export function createBookControls({
     },
     replaceProject(project, checkpoint) {
       alive();
-      if (reading)
-        throw bookError("BOOK_BUSY", "A local import is in progress; recovery did not replace it.");
+      if (reading || composing)
+        throw bookError("BOOK_BUSY", "Finish importing or composing text before recovery; nothing was replaced.");
       if (checkpoint !== JSON.stringify([collection.revision, signature()]))
         throw bookError(
           "STALE_SOURCE",

@@ -15,7 +15,10 @@
 // self-contained HTML carries its own CSS). A "fmd-rendered" CustomEvent with
 // { bytes, sourceLength, diagnostics } fires after each successful render;
 // "fmd-error" fires on fetch/render failure. Bytes parity with renderHtml()
-// is exact: the same call is used.
+// is exact: the same call is used. Document selectors are scoped to the host
+// and embedded fonts are decoded and registered under per-render family names.
+// Those registrations are retired on replacement/disconnect, without touching
+// other elements or host-owned fonts. A font failure retains the previous view.
 //
 // Each connected render owns a source/options snapshot. New attributes, inline
 // Markdown edits and disconnection revoke older work; canceled/stale attempts
@@ -29,6 +32,60 @@
 import { createRenderer } from "./franken_markdown.js";
 
 let rendererPromise = null;
+let fontScope = 0;
+
+// Complete-document selectors do not match inside a shadow tree, and browsers
+// do not register its @font-face rules. Let the browser parse our renderer CSS;
+// adapt only document selectors and the renderer's two font-family variables.
+// Unique families prevent one document subset or serif choice affecting peers.
+async function shadowDocument(html, doc) {
+  const template = doc.createElement("template");
+  template.innerHTML = `<style>:host{display:block}</style>${html}`;
+  const sheets = [...template.content.querySelectorAll("style")].map(node => {
+    const sheet = new doc.defaultView.CSSStyleSheet();
+    sheet.replaceSync(node.textContent);
+    return { node, sheet };
+  });
+  const families = new Map(), faces = [], scope = ++fontScope;
+  const visit = (rules, work) => {
+    for (const rule of rules) {
+      work(rule);
+      if (rule.cssRules) visit(rule.cssRules, work);
+    }
+  };
+  for (const { sheet } of sheets) visit(sheet.cssRules, rule => {
+    if (rule.type !== 5) return; // CSSRule.FONT_FACE_RULE
+    const family = rule.style.getPropertyValue("font-family");
+    if (!families.has(family)) families.set(family, `fmd-view-${scope}-${families.size}`);
+    const descriptors = {};
+    for (const [key, property] of Object.entries({ style: "font-style", weight: "font-weight",
+      stretch: "font-stretch", display: "font-display", unicodeRange: "unicode-range",
+      featureSettings: "font-feature-settings", variationSettings: "font-variation-settings" })) {
+      const value = rule.style.getPropertyValue(property);
+      if (value) descriptors[key] = value;
+    }
+    faces.push(new doc.defaultView.FontFace(families.get(family), rule.style.getPropertyValue("src"), descriptors));
+    rule.style.setProperty("font-family", families.get(family));
+  });
+  for (const { node, sheet } of sheets) {
+    visit(sheet.cssRules, rule => {
+      if ([":root", "html", "body"].includes(rule.selectorText)) rule.selectorText = ":host";
+      if (!rule.style) return;
+      for (const property of ["--fmd-font-body", "--fmd-font-mono"]) {
+        const value = rule.style.getPropertyValue(property);
+        for (const [family, alias] of families) {
+          if (value === family || value.startsWith(`${family},`))
+            rule.style.setProperty(property, alias + value.slice(family.length));
+        }
+      }
+    });
+    node.textContent = [...sheet.cssRules].map(rule => rule.cssText).join("\n");
+  }
+  // Decode before registration/publication: a superseded attempt never gains
+  // document font authority, and a bad font leaves the previous view intact.
+  await Promise.all(faces.map(face => face.load()));
+  return { fragment: template.content, faces };
+}
 
 function sharedRenderer(wasmInput) {
   if (!rendererPromise) {
@@ -52,6 +109,7 @@ class FmdView extends HTMLElement {
   #request = null;
   #observer = null;
   #lastInline = undefined;
+  #releaseFonts = null;
 
   constructor() {
     super();
@@ -79,6 +137,8 @@ class FmdView extends HTMLElement {
   disconnectedCallback() {
     this.#observer?.disconnect();
     this.#cancelRender();
+    this.#releaseFonts?.();
+    this.#releaseFonts = null;
   }
 
   attributeChangedCallback(_name, oldV, newV) {
@@ -151,7 +211,22 @@ class FmdView extends HTMLElement {
         diagnostics: out.diagnostics,
       };
       if (!this.#current(request)) return;
-      this.#root.innerHTML = `<style>:host{display:block}</style>${html}`;
+      const prepared = await shadowDocument(html, this.ownerDocument);
+      if (!this.#current(request)) return;
+      const fontSet = this.ownerDocument.fonts;
+      const release = () => { for (const face of prepared.faces) fontSet.delete(face); };
+      const previous = this.#releaseFonts;
+      try {
+        for (const face of prepared.faces) fontSet.add(face);
+        if (!this.#current(request)) { release(); return; }
+        this.#releaseFonts = release;
+        this.#root.replaceChildren(prepared.fragment);
+      } catch (error) {
+        release();
+        if (this.#releaseFonts === release) this.#releaseFonts = previous;
+        throw error;
+      }
+      previous?.();
       if (this.#current(request)) {
         this.dispatchEvent(new CustomEvent("fmd-rendered", { detail }));
       }

@@ -54,6 +54,23 @@ and records the supplied glue/WASM hashes. Using a release package proves
 compatibility with that artifact; it does not qualify the current Rust source.
 Composition and page transitions in this check are synthetic events.
 
+The `./web-component` entry registers `<fmd-view>` for fetched or inline
+Markdown. Its shadow view applies the renderer's palette, body typography and
+embedded body/mono fonts; `font="sans"` and `font="serif"` can coexist on the
+same page. Document selectors are scoped to the host, including dark and print
+styles. Each render owns its font registrations, which are released on
+replacement or disconnection. `fmd-rendered` follows font decoding and retains
+the original renderer byte counts and diagnostics. A font/render failure emits
+`fmd-error` and keeps the previous view. This uses browser CSSOM and FontFace
+APIs without adding a framework or changing the native renderer.
+
+Run `node wasm/tests/run_fmd_view.mjs` for the browser lifecycle suite (explicit
+renderer boundary fixtures and delayed native font decoding), or
+`FMD_WASM_PKG=/absolute/path/to/pkg node wasm/tests/fmd_view_typography.browser.mjs`
+for real generated-renderer typography, font isolation and standalone metric
+comparisons. Both accept the installed Playwright/Chromium environment options
+above. A released package remains historical artifact evidence.
+
 ## Browser Usage
 
 ```js

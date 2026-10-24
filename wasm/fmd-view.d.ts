@@ -14,9 +14,9 @@ export interface FmdRenderedDetail {
 }
 
 export interface FmdViewEventMap {
-  /** Emitted only by the current connected render after publishing its HTML. */
+  /** Emitted by the current connected render after embedded fonts decode and HTML is published. */
   "fmd-rendered": CustomEvent<FmdRenderedDetail>;
-  /** Current fetch, initialization, render or output failure; canceled work is silent. */
+  /** Current fetch, initialization, render, font or output failure; canceled work is silent. */
   "fmd-error": CustomEvent<{ error: string }>;
 }
 
@@ -27,6 +27,9 @@ export interface FmdViewEventMap {
  * snapshot. Superseded fetches and disconnection cancel publication; reconnect
  * renders current content. Failed engine initialization can be retried by a
  * subsequent source/options change or reconnect.
+ * The document theme is scoped to the shadow host. Embedded body/mono faces
+ * have per-render family names; replacing or disconnecting a view retires only
+ * its registrations. A failed render/font load retains the previous view.
  */
 export interface FmdView extends HTMLElement {
   addEventListener<K extends keyof FmdViewEventMap>(

@@ -29,6 +29,15 @@ addEventListener("unhandledrejection", event => { unhandled.push(String(event.re
 const nativeFetch = globalThis.fetch;
 const initializations = [], renders = [];
 let renderFailure = null;
+const nativeFontLoad = FontFace.prototype.load;
+let delayedFonts = null;
+FontFace.prototype.load = function () {
+  const decoded = nativeFontLoad.call(this);
+  if (!delayedFonts) return decoded;
+  const gate = deferred();
+  delayedFonts.push({ face: this, finish: async () => gate.resolve(await decoded), reject: gate.reject });
+  return gate.promise;
+};
 const renderer = {
   renderHtml(markdown, options) {
     if (renderFailure) {
@@ -59,6 +68,13 @@ function output(call, label = call.markdown) {
     diagnostics: [{ severity: "warning", start: 0, end: 0, message: "boundary fixture" }],
     text() { return html; },
   };
+}
+function fontOutput(call, copies = 1) {
+  const value = output(call);
+  const faces = Array.from({ length: copies }, (_, index) =>
+    `@font-face{font-family:"Fixture ${index}";src:url("${globalThis.fmdViewTestFont}");font-weight:400;font-style:normal}`).join("");
+  const html = `<style>${faces}:root{--fmd-font-body:"Fixture 0",serif;--fmd-base:16px}body{font-family:var(--fmd-font-body)}</style>${value.text()}`;
+  return { ...value, bytes: new TextEncoder().encode(html), text: () => html };
 }
 function view(markdown = "", attributes = {}) {
   const element = document.createElement("fmd-view");
@@ -108,6 +124,7 @@ async function test(name, run) {
     for (const element of document.querySelectorAll("fmd-view")) element.remove();
     globalThis.fetch = nativeFetch;
     renderFailure = null;
+    delayedFonts = null;
     await turn();
   }
 }
@@ -391,6 +408,111 @@ await test("real browser fetch honors cancellation and preserves exact fetched s
   equal(f.errors, []);
   equal(initializations.length, 2);
 });
+
+await test("embedded faces are isolated, replaced, disconnected and reloaded on reconnect", async () => {
+  const a = view("first fonts"), b = view("peer fonts");
+  for (const f of [a, b]) {
+    const call = await nextRender(() => f.connect()); call.resolve(fontOutput(call));
+    await until(() => f.rendered.length === 1);
+  }
+  const before = [...document.fonts]; equal(before.length, 2);
+  assert(before.every(face => face.status === "loaded"));
+  assert(before[0].family !== before[1].family);
+  for (const f of [a, b]) assert(getComputedStyle(f.element.shadowRoot.querySelector("p")).fontFamily.startsWith("fmd-view-"));
+  const call = await nextRender(() => { a.element.textContent = "replacement fonts"; });
+  call.resolve(fontOutput(call)); await until(() => a.rendered.length === 2);
+  equal(document.fonts.size, 2); assert(!document.fonts.has(before[0])); assert(document.fonts.has(before[1]));
+  a.element.remove(); equal([...document.fonts], [before[1]]);
+  const reconnect = await nextRender(() => a.connect()); reconnect.resolve(fontOutput(reconnect));
+  await until(() => a.rendered.length === 3); equal(document.fonts.size, 2);
+  a.element.remove(); b.element.remove(); equal(document.fonts.size, 0);
+});
+
+await test("superseded font decode success and failure never gain font or event authority", async () => {
+  for (const failure of [false, true]) {
+    delayedFonts = [];
+    const f = view("old font source"), old = await nextRender(() => f.connect());
+    old.resolve(fontOutput(old)); await until(() => delayedFonts.length === 1);
+    const current = await nextRender(() => { f.element.textContent = "current source"; });
+    await publish(f, current);
+    if (failure) delayedFonts[0].reject(new Error("obsolete font failed"));
+    else await delayedFonts[0].finish();
+    await turn(); await turn();
+    equal(document.fonts.size, 0); equal(f.errors, []); equal(f.rendered.length, 1);
+    equal(f.element.shadowRoot.querySelector("p").textContent, "current source");
+    f.element.remove();
+  }
+});
+
+await test("disconnect during font decoding stays silent and leaves no registered faces", async () => {
+  for (const failure of [false, true]) {
+    delayedFonts = [];
+    const f = view("disconnected font source"), call = await nextRender(() => f.connect());
+    call.resolve(fontOutput(call)); await until(() => delayedFonts.length === 1);
+    f.element.remove();
+    if (failure) delayedFonts[0].reject(new Error("detached font failed"));
+    else await delayedFonts[0].finish();
+    await turn(); await turn();
+    equal(document.fonts.size, 0); equal(f.errors, []); equal(f.rendered, []);
+    equal(f.element.shadowRoot.querySelector("p"), null);
+  }
+});
+
+await test("current font decode failure retains previous HTML and fonts and permits retry", async () => {
+  const f = view("previous fonts"), first = await nextRender(() => f.connect());
+  first.resolve(fontOutput(first)); await until(() => f.rendered.length === 1);
+  const before = f.element.shadowRoot.innerHTML, faces = [...document.fonts];
+  delayedFonts = [];
+  const failed = await nextRender(() => { f.element.textContent = "font load fails"; });
+  failed.resolve(fontOutput(failed)); await until(() => delayedFonts.length === 1);
+  delayedFonts[0].reject(new Error("current font failed"));
+  await until(() => f.errors.length === 1);
+  equal(f.element.shadowRoot.innerHTML, before); equal([...document.fonts], faces);
+  equal(f.rendered.length, 1); assert(f.errors[0].error.includes("current font failed"));
+  delayedFonts = null;
+  const retry = await nextRender(() => { f.element.textContent = "font recovery"; });
+  retry.resolve(fontOutput(retry)); await until(() => f.rendered.length === 2);
+  assert(!document.fonts.has(faces[0])); equal(document.fonts.size, 1);
+});
+
+await test("partial font registration failure rolls back new faces and preserves the old view", async () => {
+  const f = view("original registration"), first = await nextRender(() => f.connect());
+  first.resolve(fontOutput(first)); await until(() => f.rendered.length === 1);
+  const before = f.element.shadowRoot.innerHTML, faces = [...document.fonts];
+  const add = document.fonts.add; let additions = 0;
+  document.fonts.add = function (face) {
+    if (++additions === 2) throw new Error("registration failed");
+    return add.call(this, face);
+  };
+  try {
+    const failed = await nextRender(() => { f.element.textContent = "two new faces"; });
+    failed.resolve(fontOutput(failed, 2)); await until(() => f.errors.length === 1);
+    equal(f.element.shadowRoot.innerHTML, before); equal([...document.fonts], faces);
+    equal(f.rendered.length, 1); assert(f.errors[0].error.includes("registration failed"));
+  } finally { document.fonts.add = add; }
+});
+
+await test("font registration reentrancy cannot replace current source with obsolete output", async () => {
+  const f = view("previous visible source"), first = await nextRender(() => f.connect());
+  first.resolve(fontOutput(first)); await until(() => f.rendered.length === 1);
+  const before = f.element.shadowRoot.innerHTML, faces = [...document.fonts];
+  const old = await nextRender(() => { f.element.textContent = "obsolete font output"; });
+  const count = renders.length, add = document.fonts.add;
+  document.fonts.add = function (face) {
+    const result = add.call(this, face);
+    f.element.setAttribute("font", "serif");
+    return result;
+  };
+  try {
+    old.resolve(fontOutput(old)); await until(() => renders.length > count);
+    equal(f.element.shadowRoot.innerHTML, before); equal([...document.fonts], faces);
+    equal(f.rendered.length, 1); equal(f.errors, []);
+  } finally { document.fonts.add = add; }
+  await publish(f, renders.at(-1), "current options");
+  equal(document.fonts.size, 0);
+});
+
+FontFace.prototype.load = nativeFontLoad;
 
 document.querySelector("#result").textContent = JSON.stringify({
   passed: reports.filter(report => report.pass).length,

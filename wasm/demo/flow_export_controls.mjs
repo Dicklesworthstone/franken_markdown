@@ -123,6 +123,7 @@ export function createExportControls({
       !published ||
       published.epoch !== epoch ||
       sourceEditor.value !== published.source ||
+      state?.images?.status === "loading" ||
       !same(published.token, state?.frame) ||
       ["idle", "disposed", "error"].includes(state?.status)
     ) {
@@ -154,9 +155,12 @@ export function createExportControls({
       if (disposed) return;
       const changed =
         state &&
-        (!same(state.frame, next.frame) || ["idle", "disposed", "error"].includes(next.status));
+        (!same(state.frame, next.frame) || ["idle", "disposed", "error"].includes(next.status)
+          || (next.images?.status === "loading" && state.images?.status !== "loading"));
       state = next;
-      if (changed) invalidate();
+      if (changed) invalidate(next.images?.status === "loading"
+        ? "Selected images are still loading; prepare a fresh export after they finish."
+        : undefined);
       buttons();
     },
     invalidate,

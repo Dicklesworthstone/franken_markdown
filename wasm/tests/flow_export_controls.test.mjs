@@ -236,6 +236,30 @@ test("scroll reuses downloads; new geometry revokes them", async (t) => {
   assert.equal(f.download.hidden, true);
   assert.equal(f.revoked.length, 1);
 });
+test("a new image batch revokes a prepared download until a fresh export is ready", async t => {
+  const f = fixture(); t.after(() => f.controls.dispose()); f.pdf.click(); await tick();
+  f.controls.update({ ...f.state, images: { status: "loading" } });
+  assert(f.download.hidden); assert.equal(f.download.click().defaultPrevented, true);
+  assert.deepEqual(f.revoked, ["blob:test-1"]); assert(f.html.disabled);
+  f.controls.update({ ...f.state, images: { status: "ready" } });
+  assert(f.download.hidden); f.html.click(); await tick();
+  assert.equal(f.download.hidden, false); assert.equal(f.download.click().defaultPrevented, false);
+  assert.equal(f.download.download, "document.html");
+});
+test("an image batch begun during preparation cannot publish the earlier output", async t => {
+  const f = fixture(), hold = gate(); t.after(() => f.controls.dispose()); f.hold(hold); f.pdf.click();
+  f.controls.update({ ...f.state, images: { status: "loading" } }); hold.resolve(); await tick();
+  assert.equal(f.created.length, 0); assert(f.download.hidden);
+  f.controls.update({ ...f.state, images: { status: "ready" } }); f.hold(null); f.pdf.click(); await tick();
+  assert.equal(f.created.length, 1); assert.equal(f.download.click().defaultPrevented, false);
+});
+test("download activation rechecks image loading even without an update notification", async t => {
+  const f = fixture(); t.after(() => f.controls.dispose()); f.pdf.click(); await tick();
+  f.state.images = { status: "loading" };
+  assert.equal(f.download.click().defaultPrevented, true); assert(f.download.hidden);
+  f.state.images = { status: "ready" }; f.controls.update(f.state); f.pdf.click(); await tick();
+  assert.equal(f.download.click().defaultPrevented, false);
+});
 test("errors/diagnostics become inert text and disposal removes listeners and URLs", async () => {
   const f = fixture();
   f.error(Object.assign(new Error("<script>native</script>"), { code: "EXPORT_FAILED" }));

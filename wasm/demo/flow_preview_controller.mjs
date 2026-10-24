@@ -58,13 +58,18 @@ export function createPreviewController({
       expected = targetLayout(desired);
     return layoutKeys.every((key) => actual[key] === expected[key]);
   };
+  // A retired physical batch can occupy the shared slot before this document's
+  // inventory gets its turn. Text may be ready while its selected images wait.
+  const imagesPending = () => Boolean(assets && session && !session.disposed && (
+    imagesRevision !== session.revision || assetJob?.owner === assets
+  ));
   const exportDocument = createPreviewExport(() => ({
     session,
     source: appliedSource,
     desiredSource: desired?.source,
     status: state.status,
     frame: state.frame,
-    imagesBusy: Boolean(assetJob?.owner === assets && assetJob),
+    imagesBusy: imagesPending(),
     layoutPending: !layoutCurrent(),
     layoutVersion,
     epoch,
@@ -433,6 +438,7 @@ export function createPreviewController({
           publish({
             status: "ready",
             frame,
+            ...(imagesPending() ? { images: Object.freeze({ status: "loading", revision: current.revision }) } : {}),
             reading,
             document: readingDocument,
             readingError,

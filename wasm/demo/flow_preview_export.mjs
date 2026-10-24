@@ -59,6 +59,8 @@ export function createPreviewExport(readState) {
       ) {
         fail("STALE_LAYOUT", "preview assets or layout changed during export");
       }
+      if (after.imagesBusy)
+        fail("ASSET_BUSY", "selected images are still loading; prepare a fresh export after they finish");
       if (output?.format !== format)
         fail("INVALID_WASM_RESPONSE", "export format does not match the request");
       return validateFlowExportResult(output, expected, options?.maxOutputBytes);

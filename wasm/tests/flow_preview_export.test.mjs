@@ -127,6 +127,13 @@ test("scroll-only busy state preserves a completed export of the same source and
   hold.resolve();
   assert.equal((await pending).format, "pdf");
 });
+test("an image batch begun during export defers publication and preserves a fresh retry", async () => {
+  const f = fixture(), hold = gate(); f.hold(hold);
+  const pending = f.export("pdf", {}, "old"); f.state.imagesBusy = true; hold.resolve();
+  await assert.rejects(pending, code("ASSET_BUSY"));
+  assert.equal(f.session.disposed, false); f.state.imagesBusy = false; f.hold(null);
+  assert.equal((await f.export("html", {}, "old")).format, "html");
+});
 test("export errors release the slot and do not mutate or dispose the preview", async () => {
   const f = fixture();
   f.reject(Object.assign(new Error("native reject"), { code: "EXPORT_FAILED" }));

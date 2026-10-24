@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createPreviewController } from "../demo/flow_preview_controller.mjs";
 import { FlowImageAssets } from "../flow-assets.js";
+import { withFlowExports } from "../flow_export.mjs";
 import { deferred, image, png, Session, tick } from "./flow_image_fixtures.mjs";
 
 const input = (source, width = 360) => ({ source, width, height: 240 });
@@ -12,7 +13,8 @@ async function until(predicate) {
   for (let i = 0; i < 100 && !predicate(); i++) await tick();
   assert(predicate(), "expected asynchronous state did not settle");
 }
-function fixture({ load = () => png(), decode = () => image() } = {}) {
+function fixture({ load = () => png(), decode = () => image(), retainSourceBytes = false,
+  configureSession = () => {} } = {}) {
   const f = {
     sessions: [],
     owners: [],
@@ -50,11 +52,13 @@ function fixture({ load = () => png(), decode = () => image() } = {}) {
         return provide(result);
       };
       f.sessions.push(session);
+      configureSession(session);
       return session;
     },
     createAssets(session) {
       const owner = new FlowImageAssets(session, {
         timeoutMs: 0,
+        retainSourceBytes,
         load: (request, context) => {
           f.calls.push({ session, request });
           return load(request, context);
@@ -159,6 +163,49 @@ test("repeated explicit restarts cannot multiply outstanding decoder batches", a
   assert.equal(f.sessions[1].writes.length, 0);
   assert.equal(f.sessions[2].writes.length, 1);
   c.dispose();
+});
+
+test("restarted preview waits for its image turn then exports the current encoded payload", async t => {
+  const gate = deferred(), currentBytes = png(2, 3, [["tEXt", [110, 101, 119]]]), rendered = [];
+  let calls = 0;
+  const f = fixture({ retainSourceBytes: true, load: () => calls++ === 0 ? gate.promise : currentBytes,
+    configureSession(session) {
+      session.snapshot = ({ offset }) => ({ schemaVersion: 1, ...session.token, offset, total: 1, nextOffset: null,
+        items: [{ kind: "image", requestId: "1", destination: "1.png", isResolved: session.requests.length === 0 }] });
+      session.assetBytes = () => session.writes.at(-1)?.bytes ?? null;
+      const render = format => async (source, options) => {
+        rendered.push({ source, images: options.pdfImages });
+        return { format, mimeType: format === "html" ? "text/html; charset=utf-8" : "application/pdf",
+          bytes: new TextEncoder().encode("explicit renderer fixture"), diagnostics: [] };
+      };
+      session.exportDocument = withFlowExports(session, { html: render("html"), pdf: render("pdf") }).exportDocument;
+    },
+  });
+  const c = f.controller; t.after(() => { gate.resolve(png()); c.dispose(); });
+  c.update(input("old")); await c.whenIdle(); await until(() => f.calls.length === 1);
+  c.update(input("new")); c.restart(); await c.whenIdle();
+  assert.equal(c.state.status, "ready"); assert.equal(c.state.reading, "new");
+  assert.equal(f.calls.length, 1); assert.equal(f.sessions.at(-1).writes.length, 0);
+  await assert.rejects(c.exportDocument("html", {}, "new"), { code: "ASSET_BUSY" });
+  assert.equal(c.state.images.status, "loading"); assert.equal(rendered.length, 0);
+  gate.resolve(png());
+  await until(() => c.state.images?.loaded === 1 && c.state.frame.layoutRevision === f.sessions.at(-1).token.layoutRevision);
+  const output = await c.exportDocument("html", {}, "new");
+  assert.equal(output.assetCount, 1); assert.equal(output.assetBytes, currentBytes.length);
+  assert.equal(rendered[0].source, "new"); assert.deepEqual(rendered[0].images[0].bytes, currentBytes);
+  assert.equal(f.sessions[0].writes.length, 0); assert.equal(f.sessions.at(-1).writes.length, 1);
+});
+test("image readiness does not read a closed native session's revision", async t => {
+  const hold = deferred(), f = fixture({ load: () => hold.promise, configureSession(session) {
+    let revision = session.revision;
+    Object.defineProperty(session, "revision", {
+      get() { if (session.disposed) throw new Error("closed native revision read"); return revision; },
+      set(value) { revision = value; },
+    });
+  } });
+  const c = f.controller; t.after(() => { hold.resolve(png()); c.dispose(); });
+  c.update(input("source")); await c.whenIdle(); f.sessions[0].disposed = true;
+  await assert.rejects(c.exportDocument("html", {}, "source"), { code: "STALE_REVISION" });
 });
 
 test("refused/invalid images remain placeholders without turning text rendering into an error", async () => {

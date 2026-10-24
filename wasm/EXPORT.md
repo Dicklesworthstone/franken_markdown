@@ -190,6 +190,16 @@ preview update; programmatic source changes are checked again on link activation
 Scrolling alone preserves an already prepared download. At most one physical
 export and one Blob URL are retained; replaced/disposed URLs are revoked.
 
+Text can become ready before the current image inventory has had its turn.
+After a restart, an old loader that ignores cancellation still owns the single
+physical image slot until it drains. The current preview keeps its image state
+at `loading` throughout that wait, so exports wait for the current inventory
+rather than presenting a premature unresolved-asset error. An image batch that
+begins during export also stops publication. Starting image loading revokes any
+earlier prepared download; after it finishes, prepare a new export explicitly.
+Scrolling with the same source, layout and settled images retains the download.
+The renderer's independent `UNRESOLVED_EXPORT_ASSET` check remains in place.
+
 The demo opts into `FlowImageAssets({ ..., retainSourceBytes: true })` (passed as
 the second constructor argument). This keeps the exact admitted immutable PNG/JPEG
 bytes in the native session as well as the Canvas bitmap. The default remains
@@ -212,3 +222,15 @@ node --test wasm/tests/flow_assets_export.test.mjs wasm/tests/flow_preview_expor
 These tests exercise production image admission, export gating and download
 controls with native/decoder/element doubles and real EventTarget/Blob objects.
 They do not constitute browser-download, image-codec or generated-WASM acceptance.
+
+The raster browser suite additionally executes the production preview controller,
+image manager, export adapter and download controls with real PNG/JPEG codecs,
+Canvas pixels and Blob URLs. Its native session and document renderer are
+explicit fixtures. The restart case checks that the current blue image, rather
+than retired red bytes, reaches the export boundary, and that a fresh download
+works after loading. This does not establish actual HTML/PDF renderer output or
+browser file-save acceptance. Run it through the existing local-source runner:
+
+```sh
+python3 wasm/tests/run_flow_assets.py --chromium /path/to/chromium
+```

@@ -3180,18 +3180,18 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn batch_timeout_fires_mid_run_and_skips_remaining_inputs() {
-        // Deterministic --timeout firing without a sleep race: the first input
-        // is a FIFO, so its read blocks until the writer thread completes it
-        // WELL AFTER the 1 s deadline. The watchdog is therefore guaranteed to
-        // fire while file 1 is mid-render; file 1 still runs to completion
-        // (cancellation is per-file cooperative) and every later file is
-        // skipped, which is exactly the documented best-effort contract.
+    fn fifo_timeout_run(
+        preflight_delay: std::time::Duration,
+        render_delay: std::time::Duration,
+    ) -> (PathBuf, BatchReceipt) {
+        use std::io::Write as _;
+
         let dir = fresh_dir("timeout-fires");
         let fifo = dir.join("a_slow.md");
+        let render_fifo = dir.join("render-stage.md");
         let status = std::process::Command::new("mkfifo")
             .arg(&fifo)
+            .arg(&render_fifo)
             .status()
             .expect("spawn mkfifo");
         assert!(status.success(), "mkfifo must succeed");
@@ -3200,12 +3200,23 @@ mod tests {
 
         let writer = std::thread::spawn({
             let fifo = fifo.clone();
+            let preflight_fifo = dir.join("preflight-stage.md");
             move || {
-                // Complete the blocked read only after the deadline has long
-                // passed (deadline 1000 ms, checked every 50 ms on a monotonic
-                // clock; 1400 ms leaves a wide margin).
-                std::thread::sleep(std::time::Duration::from_millis(1400));
-                std::fs::write(&fifo, "# slow\n").unwrap();
+                // Opening the writer waits for the preflight reader. Move that
+                // live FIFO aside before publishing the distinct render FIFO:
+                // reopening the same pipe could feed both writes to preflight.
+                let mut preflight = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+                std::fs::rename(&fifo, preflight_fifo).unwrap();
+                std::fs::rename(render_fifo, &fifo).unwrap();
+                std::thread::sleep(preflight_delay);
+                preflight.write_all(b"# preflight-only\n").unwrap();
+                drop(preflight);
+
+                // This open waits for the actual render read, or the test's
+                // drain below when cancellation correctly prevents that read.
+                let mut rendering = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+                std::thread::sleep(render_delay);
+                rendering.write_all(b"# slow\n").unwrap();
             }
         });
 
@@ -3213,14 +3224,34 @@ mod tests {
         let plan = BatchPlan {
             inputs: vec![fifo.clone(), dir.join("b.md"), dir.join("c.md")],
             format: OutputFormat::Html,
-            out_dir: Some(out.clone()),
+            out_dir: Some(out),
         };
         let opts = BatchOptions {
             timeout_secs: Some(1),
             ..throughput_opts()
         };
         let r = run_batch_blocking(plan, &opts).unwrap();
+        if r.files[0].status == FileStatus::Skipped {
+            // A skipped first job never opens the render FIFO. Release its
+            // writer without rendering anything, including on an assertion
+            // failure caused by unusually late worker admission.
+            assert_eq!(std::fs::read(&fifo).unwrap(), b"# slow\n");
+        }
         writer.join().unwrap();
+        (dir, r)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_timeout_fires_mid_run_and_skips_remaining_inputs() {
+        // The overwrite-protection preflight must finish before the delayed
+        // render read begins. Keep the original 1 s deadline and 1400 ms delay;
+        // the in-progress file completes and all later inputs are skipped.
+        let (dir, r) = fifo_timeout_run(
+            std::time::Duration::ZERO,
+            std::time::Duration::from_millis(1400),
+        );
+        let out = dir.join("out");
 
         assert!(
             r.cancelled,
@@ -3241,9 +3272,41 @@ mod tests {
             out.join("a_slow.html").exists(),
             "the completed file's output is committed"
         );
+        let html = std::fs::read_to_string(out.join("a_slow.html")).unwrap();
+        assert!(
+            html.contains(">slow</h1>"),
+            "render must use the second read"
+        );
+        assert!(!html.contains("preflight-only"));
         assert!(
             !out.join("b.html").exists() && !out.join("c.html").exists(),
             "skipped inputs must not be rendered"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_timeout_during_preflight_skips_every_unstarted_input() {
+        // Preflight is part of the timeout budget too. A deadline that fires
+        // here must prevent every render, including the first file.
+        let (dir, r) = fifo_timeout_run(
+            std::time::Duration::from_millis(1400),
+            std::time::Duration::ZERO,
+        );
+        assert!(r.cancelled);
+        assert_eq!(r.ok_count(), 0);
+        assert_eq!(r.skipped_count(), 3);
+        assert_eq!(r.failed_count(), 0);
+        assert!(
+            r.files
+                .iter()
+                .all(|entry| entry.status == FileStatus::Skipped)
+        );
+        assert!(
+            !dir.join("out").exists(),
+            "preflight must not publish output"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

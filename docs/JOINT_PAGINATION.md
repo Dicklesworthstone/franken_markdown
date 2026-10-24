@@ -26,15 +26,17 @@ that same result.
 
 ### Current admission limits
 
-The first integration offers alternatives for ordinary body paragraphs only,
+The integration offers alternatives for ordinary and blockquoted paragraphs,
 with at least four physical lines in both the baseline and every offered shape.
 This preserves the existing context-sensitive rules for short captions, heading
 followers, and final list items. Other blocks still participate in page planning
 at their existing measured shape.
 
-Paragraphs inside lists or blockquotes, paragraphs containing inline images or
-typeset math, and documents containing footnote definitions retain their baseline
-paragraph shapes. The same applies when gradual-demerit, river, or Pareto line
+Paragraphs inside lists and paragraphs containing inline images or typeset math
+retain their baseline shapes. Prepared numbered page notes participate with
+their unchanged measured bodies reserved at each alternative's first citation;
+a candidate cannot lose or reorder citations. Legacy unprepared footnote
+definitions retain baseline shapes. The same applies when gradual-demerit, river, or Pareto line
 breaking is enabled: their additional predecessor state is not represented by
 the adjacent-line-count candidate search. These cases continue to use the
 existing optimal page planner, including its footnote reservations and repeated
@@ -70,6 +72,12 @@ chapter boundaries, repeated paragraphs, and TOC numbers matching emitted
 heading destinations. Default and unsupported-mode cases compare emitted bytes
 with the original measured layout. Run these regressions with
 `cargo test --lib joint_pagination`.
+
+Blockquote regressions retain ancestor bars, spacing, tagged content and forced
+chapter boundaries. `src/pdf/joint_pagination_note_tests.rs` checks numbered-note
+reservations against emitted page boundaries and compares streaming with
+monolithic emission. These bounded cases do not establish universal visual
+superiority or eliminate the fallback limits above.
 
 ## Uniform-grid core API
 

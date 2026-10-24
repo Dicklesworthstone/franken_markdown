@@ -2011,12 +2011,20 @@ fn pdf_oversized_table_bypasses_layout_cache_and_keeps_every_row() {
         .parse()
         .expect("page count");
     assert!(page_count > 1, "130 rows must paginate: {page_count}");
-    // 1 header + 130 body rows, plus one repeated header row per continuation page.
+    // A continued table has one logical source grid. Repeated header paint is
+    // a pagination artifact tied to the original header, not another source row
+    // (see continued_tables_keep_source_rows_and_headers_in_one_logical_table).
     assert_eq!(
         text.matches("/S /TR").count(),
-        131 + (page_count - 1),
-        "all 130 body rows plus the (repeated) headers must survive the uncached \
-         table path across {page_count} pages"
+        131,
+        "all 130 body rows and one logical header must survive the uncached \
+         table path across {page_count} pages without duplicating source rows"
+    );
+    assert_eq!(text.matches("/S /TH").count(), 2, "one header per column");
+    assert_eq!(
+        text.matches("/S /TD").count(),
+        260,
+        "both cells of every body row"
     );
     let again = render_pdf(&md, &PdfOptions::default()).unwrap();
     assert_eq!(pdf, again, "uncached table layout must stay deterministic");

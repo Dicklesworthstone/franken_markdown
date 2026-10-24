@@ -603,11 +603,24 @@ fn pdf_debug_environment_cannot_change_rendered_bytes() {
     let source = "# AVATAR affinity office\n\nCafe\u{0301} **Å** *naïve* \
                   [AVATAR](https://example.com) and `office`.\n\n\
                   | Pair | Text |\n| --- | --- |\n| AV | affinity Cafe\u{0301} |\n";
-    let output_path = temp_file("pdf-debug-environment", "pdf");
+    // Cargo's artifact scratch directory survives retirement of an RCH source
+    // snapshot, so independent PDF validators can inspect both font results.
+    let artifact_dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    fs::create_dir_all(&artifact_dir).unwrap();
+    let output_path = artifact_dir.join(
+        temp_file("pdf-debug-environment", "pdf")
+            .file_name()
+            .unwrap(),
+    );
+    eprintln!(
+        "PDF environment matrix binary {}",
+        env!("CARGO_BIN_EXE_fmd")
+    );
     let mut baseline = Vec::new();
     // Each invocation is a fresh process: the historical switches were latched
     // by LazyLock, so changing an in-process environment would miss the defect.
     for family in ["sans", "serif"] {
+        let output_path = output_path.with_extension(format!("{family}.pdf"));
         for mask in 0u8..(1 << VARIABLES.len()) {
             let mut command = Command::new(env!("CARGO_BIN_EXE_fmd"));
             command.args([
@@ -647,8 +660,8 @@ fn pdf_debug_environment_cannot_change_rendered_bytes() {
                 );
             }
         }
+        eprintln!("PDF environment matrix retained {}", output_path.display());
     }
-    eprintln!("PDF environment matrix retained {}", output_path.display());
 }
 
 #[test]

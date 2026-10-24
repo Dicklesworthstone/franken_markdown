@@ -975,7 +975,8 @@ Mermaid/MMD diagram source. Unknown languages fall back to plain, escaped code.
 There is no shell-completion generator subcommand today. Static completion
 assets are provided under `completions/`. Commands include `render`, `config`,
 `capabilities`, `doctor`, `robot-docs`, `verify`, `watch`, `stats`, `diff`, `book`,
-and (with the `batch` feature) `batch`, plus the global flags. `fmd --help` and
+and the feature-gated commands `batch` (`batch` feature) and `mcp` (`mcp`
+feature), plus the global flags. `fmd --help` and
 `fmd capabilities --json` describe the surface of the installed binary.
 
 **How do I get byte-for-byte reproducible output?**

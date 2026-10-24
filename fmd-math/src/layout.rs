@@ -34,11 +34,13 @@ use std::sync::{PoisonError, RwLock};
 use crate::atom::{AtomClass, classify_list, spacing_in_style};
 use crate::error::MathError;
 use crate::faces::{
-    FACE_BOLD, FACE_ITALIC, FACE_MATH_EXTENSION, FACE_MATH_ITALIC, FACE_MATH_SYMBOLS, FACE_REGULAR,
-    FACE_SYMBOLS, FaceSet, GlyphMetrics, accent_spacing_fallback, alphabet_map, default_math_chain,
-    glyph_metrics, kern_em,
+    FACE_BOLD, FACE_ITALIC, FACE_MATH_EXTENSION, FACE_MATH_ITALIC, FACE_MATH_ITALIC_5,
+    FACE_MATH_ITALIC_7, FACE_MATH_SYMBOLS, FACE_REGULAR, FACE_SYMBOLS, FaceSet, GlyphMetrics,
+    accent_spacing_fallback, alphabet_map, default_math_chain, glyph_metrics, kern_em,
 };
-use crate::mbox::{BoxKind, Color, FaceId, GlueSpec, Layout, MBox, MNode, Positioned};
+use crate::mbox::{
+    BoxKind, Color, FaceId, GlueSpec, Layout, MBox, MNode, PathContour, PathSeg, Positioned,
+};
 use crate::metrics::MathConstants;
 use crate::node::{
     AccentKind, Delim, DelimSize, FracSpec, FragmentKind, Limits, LineAlign, MathFont, Node,
@@ -390,6 +392,13 @@ impl Engine {
                     }));
                 }
                 _ => {
+                    if let Some(kern) = self.multi_integral_kern(node, ctx) {
+                        laid_items.push(LineItem::Glue(GlueSpec {
+                            natural: -kern,
+                            stretch: 0.0,
+                            shrink: 0.0,
+                        }));
+                    }
                     let mut laid = lone_op_box(node, self.lay_node(node, ctx)?);
                     if let Some(color) = ctx.color {
                         laid.boxx = colored_box(color, laid.boxx);
@@ -624,6 +633,10 @@ impl Engine {
                 char_glyph: None,
             }),
             NodeKind::Symbol { ch, .. } => self.char_atom(*ch, node.span, ctx),
+            NodeKind::BigOp { ch, .. } if multi_integral_count(*ch).is_some() => {
+                let count = multi_integral_count(*ch).unwrap_or(2);
+                self.multi_integral(count, self.limits_active(node, ctx), node.span, ctx)
+            }
             NodeKind::BigOp { ch, integral, .. } => {
                 let scale = match (ctx.style.style == Style::Display, *integral) {
                     (true, true) => self.consts.display_integral_scale,
@@ -1161,6 +1174,120 @@ impl Engine {
             italic,
             char_glyph: None,
         })
+    }
+
+    /// amsmath's `\iint`, `\iiint` and `\iiiint` (`\MultiIntegral`,
+    /// amsmath.sty): `count` of cmex's `\intop` side by side, each after the
+    /// first drawn back by `\intkern@` (−6 mu, a further −3 mu in display
+    /// style) past the thin space TeX sets between adjacent Op atoms. The
+    /// scripts belong to the last `\intop`, so its italic correction is the
+    /// atom's. With limits active amsmath makes the row one `\mathop` opened
+    /// by 7 mu (9 in display style), which a kern before the atom takes back
+    /// ([`Self::multi_integral_kern`]); that nucleus is a list, so the limits
+    /// centre over the whole row and it has no italic correction.
+    ///
+    /// The row is one drawn construct of the `\intop` outlines, not a glyph
+    /// per `\intop`: the Reference's preamble sets `\iint` as wasysym's one
+    /// character, so a consumer that counts or indexes the formula's parts
+    /// (manim's `Tex(...)[0]`) finds the integral as one part there too.
+    fn multi_integral(
+        &self,
+        count: u8,
+        limits: bool,
+        span: Span,
+        ctx: LayCtx,
+    ) -> Result<Laid, MathError> {
+        let one = self.op_glyph('∫', span, ctx, 1.0)?;
+        let display = ctx.style.style == Style::Display;
+        let mu = self.consts_at(&ctx).quad * ctx.size() / 18.0;
+        let thin = f64::from(spacing_in_style(AtomClass::Op, AtomClass::Op, ctx.style.style).mu());
+        let gap = (thin - 6.0 - if display { 3.0 } else { 0.0 }) * mu;
+        let lead = if limits {
+            multi_integral_lead(display) * mu
+        } else {
+            0.0
+        };
+        let lone = one.boxx.width + one.italic;
+        let unmapped = MathError::UnmappedChar { ch: '∫', span };
+        let Some(Positioned {
+            dx: glyph_dx,
+            dy: glyph_dy,
+            node: MNode::Glyph {
+                face, gid, size, ..
+            },
+        }) = one.boxx.children.first()
+        else {
+            return Err(unmapped);
+        };
+        let font = self.faces.font(*face).ok_or(unmapped.clone())?;
+        let outline = font.glyph_outline(*gid).map_err(|_| unmapped)?;
+        let scale = *size / f64::from(font.units_per_em.max(1));
+        let mut contours = Vec::with_capacity(usize::from(count) * outline.contours.len());
+        for i in 0..count {
+            let x0 = lead + f64::from(i) * (lone + gap) + *glyph_dx;
+            let at = |p: fmd_font::outline::Point| (x0 + p.x * scale, *glyph_dy + p.y * scale);
+            contours.extend(outline.contours.iter().map(|contour| {
+                PathContour {
+                    start: at(contour.start),
+                    segments: contour
+                        .segments
+                        .iter()
+                        .map(|seg| match seg {
+                            fmd_font::outline::Segment::Line { to } => {
+                                PathSeg::Line { to: at(*to) }
+                            }
+                            fmd_font::outline::Segment::Quad { ctrl, to } => PathSeg::Quad {
+                                ctrl: at(*ctrl),
+                                to: at(*to),
+                            },
+                        })
+                        .collect(),
+                }
+            }));
+        }
+        let children = vec![Positioned {
+            dx: 0.0,
+            dy: 0.0,
+            node: MNode::Path { contours, span },
+        }];
+        let full = lead + f64::from(count) * lone + f64::from(count - 1) * gap;
+        let (width, italic) = if limits {
+            (full, 0.0)
+        } else {
+            (full - one.italic, one.italic)
+        };
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width,
+                height: one.boxx.height,
+                depth: one.boxx.depth,
+                children,
+            },
+            italic,
+            char_glyph: None,
+        })
+    }
+
+    /// The kern amsmath's `\ints@b` sets before a multiple integral whose
+    /// limits are active (−7 mu, −9 mu in display style), taking back the
+    /// space that opens its `\mathop`. `None` for every other atom.
+    fn multi_integral_kern(&self, node: &Node, ctx: LayCtx) -> Option<f64> {
+        let op = match &node.kind {
+            NodeKind::Scripts {
+                base: Some(base), ..
+            } => base.as_ref(),
+            _ => node,
+        };
+        let NodeKind::BigOp { ch, .. } = op.kind else {
+            return None;
+        };
+        multi_integral_count(ch)?;
+        if !self.limits_active(op, ctx) {
+            return None;
+        }
+        let display = ctx.style.style == Style::Display;
+        Some(multi_integral_lead(display) * self.consts_at(&ctx).quad * ctx.size() / 18.0)
     }
 
     /// A run of text glyphs from one preferred face (operator names, text
@@ -2087,40 +2214,54 @@ impl Engine {
             _ => {
                 let base_laid = self.clean_box(base, ctx.map(StyleCtx::cramp))?;
                 let combining = accent_char(kind);
-                // The spacing accents of CM come first (cmr10's own in
-                // math mode); a combining mark from another face only where
-                // CM has none (the vector arrow).
-                let spacing = accent_spacing_fallback(combining);
-                let resolved = spacing
-                    .and_then(|alt| {
-                        self.faces
-                            .resolve(alt, &[FACE_REGULAR])
-                            .map(|hit| (alt, hit))
-                    })
-                    .filter(|&(_, (face, _))| face == FACE_REGULAR)
-                    .or_else(|| {
-                        self.faces
-                            .resolve(combining, &[FACE_REGULAR, FACE_ITALIC, FACE_SYMBOLS])
-                            .map(|hit| (combining, hit))
-                    })
-                    .or_else(|| {
-                        spacing.and_then(|alt| {
-                            self.faces
-                                .resolve(alt, &[FACE_REGULAR, FACE_SYMBOLS])
-                                .map(|hit| (alt, hit))
-                        })
-                    });
-                let Some((used, (face, gid))) = resolved else {
-                    return Err(MathError::UnmappedChar {
-                        ch: combining,
-                        span,
-                    });
+                let (math_italic, code, [tl, tb, tr, _]) = tex_accent(kind);
+                // The vector is cmmi's own accent character at the style's
+                // optical size, TeX's glyph as it is.
+                let cmmi = if math_italic {
+                    let face = math_italic_face(ctx.style.style);
+                    self.faces.tex_glyph(face, code).map(|gid| (face, gid))
+                } else {
+                    None
                 };
-                // In math mode the accent is cmr10's own accent character.
-                let (face, gid) = self
-                    .faces
-                    .math_roman(face, used, ctx.text_mode)
-                    .unwrap_or((face, gid));
+                let (face, gid) = match cmmi {
+                    Some(hit) => hit,
+                    None => {
+                        // The spacing accents of CM come first (cmr10's own
+                        // in math mode); a combining mark from another face
+                        // only where CM has none.
+                        let spacing = accent_spacing_fallback(combining);
+                        let resolved = spacing
+                            .and_then(|alt| {
+                                self.faces
+                                    .resolve(alt, &[FACE_REGULAR])
+                                    .map(|hit| (alt, hit))
+                            })
+                            .filter(|&(_, (face, _))| face == FACE_REGULAR)
+                            .or_else(|| {
+                                self.faces
+                                    .resolve(combining, &[FACE_REGULAR, FACE_ITALIC, FACE_SYMBOLS])
+                                    .map(|hit| (combining, hit))
+                            })
+                            .or_else(|| {
+                                spacing.and_then(|alt| {
+                                    self.faces
+                                        .resolve(alt, &[FACE_REGULAR, FACE_SYMBOLS])
+                                        .map(|hit| (alt, hit))
+                                })
+                            });
+                        let Some((used, (face, gid))) = resolved else {
+                            return Err(MathError::UnmappedChar {
+                                ch: combining,
+                                span,
+                            });
+                        };
+                        // In math mode the accent is cmr10's own accent
+                        // character.
+                        self.faces
+                            .math_roman(face, used, ctx.text_mode)
+                            .unwrap_or((face, gid))
+                    }
+                };
                 let Some(font) = self.faces.font(face) else {
                     return Err(MathError::UnmappedChar {
                         ch: combining,
@@ -2133,19 +2274,28 @@ impl Engine {
                 // Rule 12 with TeX's accent character: its box (the
                 // advance) is centered over the base, skewed by the base
                 // character's skewchar kern, its baseline at h(x) - min(h(x),
-                // x-height). The glyph is scaled to that character's ink
-                // width and its ink set where that character's ink sits,
-                // whichever face supplied it.
-                let (math_italic, code, [tl, tb, tr, _]) = tex_accent(kind);
+                // x-height). TeX's own character sits at its box; a glyph
+                // from another face is scaled to that character's ink width
+                // and its ink set where that character's ink sits.
                 let (advance, accent_height) = tex_accent_box(math_italic, code, ctx.style.style);
-                let scale = if gr > gl { (tr - tl) / (gr - gl) } else { 1.0 };
+                let scale = if cmmi.is_none() && gr > gl {
+                    (tr - tl) / (gr - gl)
+                } else {
+                    1.0
+                };
                 let glyph_size = size * scale;
                 let h = base_laid.boxx.height;
                 let box_dy = h - h.min(c.x_height * size);
                 let skew = self.accent_skew(&base_laid, ctx);
                 let box_dx = (base_laid.boxx.width - advance * size) / 2.0 + skew;
-                let dx = box_dx + tl * size - gl * glyph_size;
-                let dy = box_dy + tb * size - gb * glyph_size;
+                let (dx, dy) = if cmmi.is_some() {
+                    (box_dx, box_dy)
+                } else {
+                    (
+                        box_dx + tl * size - gl * glyph_size,
+                        box_dy + tb * size - gb * glyph_size,
+                    )
+                };
                 let ink_bottom = gb * glyph_size;
                 let width = base_laid.boxx.width;
                 // The vbox of the accent's box, a kern of -min(h, x-height)
@@ -2945,11 +3095,11 @@ impl Engine {
     /// (`total` ems, from [`tex_delimiter_total`]): a 1.2, 1.8, 2.4 or
     /// 3.0 em successor glyph, or past those the extensible recipe built
     /// from cmex's pieces as tex.web §713 stacks them — top, repeaters,
-    /// middle, repeaters, bottom, each piece hanging from the top of its
-    /// slot. Axis-centered; the box width is the glyph's TFM width. `None`
-    /// at the small variant, when the roster lacks cmex10, or when `ch` has
-    /// no cmex form at `total` (the radical's extensible, characters TeX
-    /// does not chain), which leaves the drawn construction to serve.
+    /// middle, repeaters, bottom, each piece's char box filling its slot.
+    /// Axis-centered; the box width is the glyph's TFM width. `None` at the
+    /// small variant, when the roster lacks cmex10, or when `ch` has no cmex
+    /// form at `total` (characters TeX does not chain), which leaves the
+    /// drawn construction to serve.
     fn cmex_delimiter(&self, ch: char, total: f64, ctx: LayCtx, span: Span) -> Option<MBox> {
         if total <= 1.0 + 1e-9 {
             return None;
@@ -3002,9 +3152,14 @@ impl Engine {
             if let Some((code, h)) = recipe.bot {
                 slots.push((piece(code)?, h));
             }
+            // tex.web §713 stacks the pieces' char boxes in a vlist, so each
+            // baseline sits its TFM height below the top of its slot (0.04 em
+            // for the round and square tops and bottoms and the radical's
+            // top); the designed overlaps then join every piece.
             let mut y = top;
             for (gid, h) in slots {
-                children.push(glyph(gid, y));
+                let height = self.char_metrics(FACE_MATH_EXTENSION, gid, false).height;
+                children.push(glyph(gid, y - height * size));
                 y -= h * size;
             }
             width_gid = rep_gid;
@@ -3064,8 +3219,7 @@ struct CmexRecipe {
     rep: (u8, f64),
 }
 
-/// cmex10's extensible recipes (cmex10.tfm's `exten` table). The radical's
-/// is left to the drawn construction.
+/// cmex10's extensible recipes (cmex10.tfm's `exten` table).
 fn cmex_recipe(ch: char) -> Option<CmexRecipe> {
     let r =
         |top: Option<u8>, mid: Option<u8>, bot: Option<u8>, rep: u8, sizes: [f64; 4]| CmexRecipe {
@@ -3076,7 +3230,9 @@ fn cmex_recipe(ch: char) -> Option<CmexRecipe> {
         };
     const ROUND: [f64; 4] = [1.8, 0.0, 1.8, 0.6];
     const BRACE: [f64; 4] = [0.9, 1.8, 0.9, 0.3];
+    const RADICAL: [f64; 4] = [0.6, 0.0, 1.8, 0.6];
     Some(match ch {
+        '√' => r(Some(0x76), None, Some(0x74), 0x75, RADICAL),
         '(' => r(Some(0x30), None, Some(0x40), 0x42, ROUND),
         ')' => r(Some(0x31), None, Some(0x41), 0x43, ROUND),
         '[' => r(Some(0x32), None, Some(0x34), 0x36, ROUND),
@@ -3249,6 +3405,24 @@ fn tex_delimiter_frame(ch: char, total: f64) -> Option<(f64, f64, f64)> {
     }
 }
 
+/// How many `\intop`s amsmath's `\MultiIntegral` sets for a multiple
+/// integral: `\iint` 2, `\iiint` 3, `\iiiint` 4. `None` for every other
+/// operator, `\oiint` included (amsmath has none).
+const fn multi_integral_count(ch: char) -> Option<u8> {
+    match ch {
+        '∬' => Some(2),
+        '∭' => Some(3),
+        '⨌' => Some(4),
+        _ => None,
+    }
+}
+
+/// The space amsmath's `\ints@b` opens a limits-carrying multiple integral's
+/// `\mathop` with, in mu: `\mkern7mu\mathchoice{\mkern2mu}{}{}{}`.
+const fn multi_integral_lead(display: bool) -> f64 {
+    if display { 9.0 } else { 7.0 }
+}
+
 /// cmex10's text and display code positions of a big operator.
 const fn big_op_codes(ch: char) -> Option<(u8, u8)> {
     Some(match ch {
@@ -3385,6 +3559,16 @@ const fn tex_accent(kind: AccentKind) -> (bool, u8, [f64; 4]) {
         AccentKind::Vec => (true, 0x7E, [0.182, 0.516, 0.625, 0.714]),
         AccentKind::Ring => (false, 0x17, [0.279, 0.541, 0.470, 0.716]),
         _ => (false, 0x5E, [0.116, 0.540, 0.383, 0.694]),
+    }
+}
+
+/// The cmmi cut TeX sets `style` in: cmmi10, cmmi7 in script style and
+/// cmmi5 in scriptscript style.
+const fn math_italic_face(style: Style) -> FaceId {
+    match style {
+        Style::Display | Style::Text => FACE_MATH_ITALIC,
+        Style::Script => FACE_MATH_ITALIC_7,
+        Style::ScriptScript => FACE_MATH_ITALIC_5,
     }
 }
 

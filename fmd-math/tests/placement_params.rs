@@ -1393,11 +1393,15 @@ fn accents_take_tex_accent_geometry() {
             .cloned()
             .unwrap_or_else(|| panic!("an accent glyph in {layout:?}"))
     };
-    // `\vec` draws a 0.44 em arrow above the letter, topping out at cmmi10's
-    // 0.714 em, not a full-size arrow through it.
+    // `\vec` is cmmi10's own vector, its 0.44 em arrow above the letter,
+    // topping out at 0.714 em, not a full-size arrow through it.
     let vec = e.typeset(r"\vec{v}", Style::Display).unwrap();
     let arrow = accent(&vec, 'v');
-    assert!(arrow.size > 0.4 && arrow.size < 0.6, "{arrow:?}");
+    assert_eq!(
+        (arrow.face, arrow.size),
+        (fmd_math::faces::FACE_MATH_ITALIC, 1.0),
+        "{arrow:?}"
+    );
     assert!((vec.height - 0.714).abs() < 0.02, "{vec:?}");
     // `\hat` is CM's own circumflex (cmr10's), topping out 0.694 em above
     // its box, which rises by h - min(h, x-height): barely over an x-height
@@ -1533,5 +1537,192 @@ fn family_zero_is_cmr10_in_math_mode_and_cm_unicode_in_text_mode() {
     let text = e.typeset_text("[1+2]").unwrap();
     for g in &text.glyphs {
         assert_eq!(g.face, FACE_REGULAR, "text-mode {:?}", g.ch);
+    }
+}
+
+/// franken_manim fm-zxxy: `\iint`, `\iiint` and `\iiiint` are amsmath's
+/// `\MultiIntegral`, cmex's `\intop` repeated with `\intkern@` (−6 mu, a
+/// further −3 mu in display style) after the Op–Op thin space, never a
+/// fallback double-integral glyph. The scripts belong to the last `\intop`;
+/// `\limits` makes the row one `\mathop` (amsmath's `\ints@b`). The row is
+/// one drawn path of the `\intop` outlines, one part as the Reference's
+/// wasysym `\iint` is one character. Real TeX's `\showbox` (TeX Live 2025,
+/// article + amsmath), widths in pt at 10 pt; TeX truncates mu glue, so
+/// widths get 1e-4 em.
+#[test]
+fn multiple_integrals_repeat_cmex_intop_as_amsmath_does() {
+    use Style::{Display, Text};
+    use fmd_math::paths::resolve_paths;
+    let e = engine();
+    let close_mu = |ours: f64, tex_pt: f64| (ours - tex_pt / 10.0).abs() < 1e-4;
+    // One \intop's contours, and where its outline starts, in each style.
+    let int = |style| {
+        let contours = resolve_paths(&e, &e.typeset(r"\int", style).unwrap()).unwrap();
+        (contours.len(), contours[0].start.0)
+    };
+    let row_starts = |l: &Layout, style| {
+        let (n, _) = int(style);
+        assert_eq!(l.paths.len(), 1, "one drawn row: {l:?}");
+        let row = &l.paths[0];
+        assert_eq!(row.contours.len() % n, 0, "{l:?}");
+        row.contours
+            .iter()
+            .step_by(n)
+            .map(|c| c.start.0)
+            .collect::<Vec<f64>>()
+    };
+    for (tex, style, width, integrals) in [
+        (r"\iint", Text, 11.66672, 2),
+        (r"\iint", Display, 16.66678, 2),
+        (r"\iiint", Text, 16.66676, 3),
+        (r"\iiint", Display, 23.33354, 3),
+        (r"\iiiint", Text, 21.66681, 4),
+        (r"\iint_D f\,dA", Text, 38.98643, 2),
+        (r"\iint_D f\,dA", Display, 41.4865, 2),
+        (r"\iint\nolimits_D", Text, 16.97604, 2),
+        (r"\iint\limits", Text, 11.66672, 2),
+        (r"\iint\limits_D f", Text, 19.3056, 2),
+        (r"\iint\limits_D f", Display, 24.30566, 2),
+        (r"a\iint\limits_D b", Text, 24.57751, 2),
+    ] {
+        let l = e.typeset(tex, style).unwrap();
+        assert!(
+            close_mu(l.width, width),
+            "{tex} in {style:?}: {} against TeX's {width} pt",
+            l.width
+        );
+        assert!(l.glyphs.iter().all(|g| g.ch != '∫'), "{tex}: {l:?}");
+        assert_eq!(row_starts(&l, style).len(), integrals, "{tex}: {l:?}");
+    }
+    // Text style: the second \intop starts 6.66667 - 3.33325 + 1.66663 pt
+    // after the first, and the subscript tucks under the last one, at its
+    // TFM width (4.72223 pt) with its italic correction removed.
+    let l = e.typeset(r"\iint_D", Style::Text).unwrap();
+    let xs = row_starts(&l, Text);
+    assert!(close_mu(xs[1] - xs[0], 5.00005), "{xs:?}");
+    assert!((xs[0] - int(Text).1).abs() < 1e-9, "{xs:?}");
+    assert!(close_mu(glyph_x(&l, 'D'), 9.72228), "{l:?}");
+    assert!((glyph_y(&l, 'D') + 0.355_56).abs() < 1e-5, "{l:?}");
+    // Display style: cmex's display \intop, 10.00002 - 3.33325 - 1.66663 +
+    // 1.66663 pt apart. With limits the row's 9 mu lead and the kern before
+    // it cancel, so the first \intop stays where a lone one is drawn.
+    let l = e.typeset(r"\iint\limits_D", Style::Display).unwrap();
+    let xs = row_starts(&l, Display);
+    assert!(close_mu(xs[1] - xs[0], 6.66677), "{xs:?}");
+    assert!((xs[0] - int(Display).1).abs() < 1e-9, "{xs:?}");
+    // The row carries the command's span.
+    let l = e.typeset(r"x\iiint", Style::Text).unwrap();
+    assert_eq!(
+        (l.paths[0].span.start, l.paths[0].span.end),
+        (1, 7),
+        "{l:?}"
+    );
+    // \oiint has no amsmath definition and keeps its own glyph.
+    let l = e.typeset(r"\oiint", Style::Text).unwrap();
+    assert_eq!((l.glyphs.len(), l.paths.len()), (1, 0), "{l:?}");
+}
+
+/// franken_manim fm-zxxy: `\vec` is cmmi's own vector accent (0x7E) at the
+/// style's optical size, unscaled at TeX's accent box, never a fallback
+/// arrow fitted to it. TeX's `\showbox` of `$\vec{v}$` (article +
+/// amsmath): the accent's char box shifted −0.3883 pt (v's skewchar kern,
+/// 0.27779 pt, less half the 1.33218 pt by which the 6.53819 pt accent box
+/// overhangs the 5.20601 pt v), on v's baseline; 5.20601 × 7.14444 pt.
+#[test]
+fn vector_accent_is_cmmis_own_character() {
+    use fmd_math::faces::{FACE_MATH_ITALIC, FACE_MATH_ITALIC_7};
+    let e = engine();
+    let l = e.typeset(r"\vec{v}", Style::Text).unwrap();
+    let accent = l.glyphs.iter().find(|g| g.ch == '\u{20D7}').unwrap();
+    assert_eq!((accent.face, accent.size), (FACE_MATH_ITALIC, 1.0), "{l:?}");
+    assert!((accent.x + 0.038_83).abs() < 1e-5, "{l:?}");
+    assert!(accent.y.abs() < 1e-9, "{l:?}");
+    assert!((l.width - 0.520_601).abs() < 1e-5 && (l.height - 0.714_444).abs() < 1e-5);
+    // In a script the accent is cmmi7's, at the script size.
+    let l = e.typeset(r"x^{\vec{v}}", Style::Text).unwrap();
+    let accent = l.glyphs.iter().find(|g| g.ch == '\u{20D7}').unwrap();
+    assert_eq!(
+        (accent.face, accent.size),
+        (FACE_MATH_ITALIC_7, 0.7),
+        "{l:?}"
+    );
+}
+
+/// franken_manim fm-zxxy: past cmex's 3.0 em successor a radical sign is
+/// cmex's extensible (tex.web §713): the bottom piece 0x74, repeaters 0x75
+/// and the top 0x76, never a drawn sign. TeX's `\showbox` of a display
+/// `\sqrt` over a five-row matrix: 15.84148 pt wide; the sign's vbox
+/// stacks the top piece (0.39998 + 5.60007 pt), seven repeaters (6.00006
+/// pt each) and the bottom piece, its top on the overbar's top.
+#[test]
+fn tall_radicals_stack_cmex_pieces() {
+    use fmd_math::faces::FACE_MATH_EXTENSION;
+    let e = engine();
+    let l = e
+        .typeset(
+            r"\sqrt{\begin{matrix}a\\b\\c\\d\\e\end{matrix}}",
+            Style::Display,
+        )
+        .unwrap();
+    assert!(l.paths.is_empty(), "no drawn sign: {l:?}");
+    assert!((l.width - 1.584_148).abs() < 1e-5, "{l:?}");
+    let sign: Vec<_> = l.glyphs.iter().filter(|g| g.ch == '√').collect();
+    assert_eq!(sign.len(), 9, "{l:?}");
+    assert!(
+        sign.iter()
+            .all(|g| g.face == FACE_MATH_EXTENSION && g.size == 1.0)
+    );
+    // Each piece's baseline sits its TFM height below the top of its slot:
+    // the top piece's ink top (0.04 em above its baseline) on the rule's
+    // top, then the recipe's 0.6 em slots (TeX's are the TFM's 0.600006),
+    // the bottom piece's 1.8 em last.
+    let rule = &l.rules[0];
+    let top = rule.y + rule.height;
+    assert!((sign[0].y - (top - 0.039_999)).abs() < 1e-5, "{l:?}");
+    for (i, piece) in sign.iter().enumerate().skip(1) {
+        #[allow(clippy::cast_precision_loss)]
+        let slot_top = top - 0.6 * i as f64;
+        assert!((piece.y - slot_top).abs() < 1e-5, "piece {i}: {l:?}");
+    }
+    assert!((rule.x - 1.055_559).abs() < 1e-5, "{rule:?}");
+}
+
+/// franken_manim fm-zxxy: an extensible delimiter stacks its pieces' char
+/// boxes as tex.web §713's vlist does, so a piece whose TFM height is 0.04
+/// em (the round and square tops and bottoms) hangs that far below the top
+/// of its slot and the designed 0.02 em overlaps join every piece. TeX's
+/// `\showbox` of a display `\left(` over a six-row matrix: the top piece's
+/// box is 0.39998 + 17.60019 pt from the vbox top, then six repeaters of
+/// 6.00006 pt, then the bottom piece's 0.39998 + 17.60019 pt.
+#[test]
+fn extensible_pieces_hang_by_their_tfm_height() {
+    let e = engine();
+    let l = e
+        .typeset(
+            r"\left(\begin{matrix}a\\b\\c\\d\\e\\f\end{matrix}\right.",
+            Style::Display,
+        )
+        .unwrap();
+    let pieces: Vec<f64> = l
+        .glyphs
+        .iter()
+        .filter(|g| g.ch == '(')
+        .map(|g| g.y)
+        .collect();
+    assert_eq!(pieces.len(), 8, "{l:?}");
+    // The recipe's slots are 1.8 and 0.6 em (TeX's are the TFM's 1.800018
+    // and 0.600006).
+    assert!(
+        (pieces[0] - (l.height - 0.039_999)).abs() < 1e-5,
+        "{pieces:?}"
+    );
+    for (i, y) in pieces.iter().enumerate().skip(1) {
+        #[allow(clippy::cast_precision_loss)]
+        let slot_top = l.height - 1.8 - 0.6 * (i - 1) as f64;
+        let height = if i == 7 { 0.039_999 } else { 0.0 };
+        assert!(
+            (y - (slot_top - height)).abs() < 1e-5,
+            "piece {i}: {pieces:?}"
+        );
     }
 }

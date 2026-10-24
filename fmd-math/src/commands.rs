@@ -410,6 +410,10 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
             ch: '∭',
             integral: true,
         },
+        "iiiint" => Cmd::BigOp {
+            ch: '⨌',
+            integral: true,
+        },
         "bigcup" => Cmd::BigOp {
             ch: '⋃',
             integral: false,

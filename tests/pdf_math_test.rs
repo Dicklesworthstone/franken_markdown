@@ -168,12 +168,12 @@ fn fraction_rules_and_constructed_radicals_keep_explicit_colors() {
             assert_eq!(fills, vec![color; count], "{source}, inline={inline}");
         }
     }
-    let source = r"\color{red}\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}";
+    let source = r"\color{red}\iint\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}";
     let layout = franken_markdown::math::Engine::bundled()
         .unwrap()
         .typeset(source, franken_markdown::math::Style::Display)
         .unwrap();
-    assert!(!layout.paths.is_empty(), "exercise a constructed radical");
+    assert!(!layout.paths.is_empty(), "exercise a constructed path");
     let pdf = render_pdf_document(&equation(source), &options).unwrap();
     let (fills, _) = formula_paints(&page_content(&pdf), inherited);
     assert_eq!(
@@ -190,15 +190,15 @@ fn colored_overlays_follow_tex_primitive_order() {
     let options = PdfOptions::default();
     for source in [
         r"{\color{red}\frac{a}{b}}\!\!\!{\color{blue}X}",
-        r"{\color{red}\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}}\!\!\!{\color{blue}X}",
+        r"{\color{red}\iint\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}}\!\!\!{\color{blue}X}",
     ] {
         for inline in [false, true] {
             let layout = engine
                 .typeset(source, if inline { Style::Text } else { Style::Display })
                 .unwrap();
             assert!(!layout.rules.is_empty());
-            if !inline && source.contains("\\sqrt") {
-                assert!(!layout.paths.is_empty(), "exercise a constructed radical");
+            if source.contains("\\iint") {
+                assert!(!layout.paths.is_empty(), "exercise a constructed path");
             }
             let expected: Vec<_> = layout
                 .order

@@ -74,13 +74,13 @@ fn display_fraction_is_not_a_literal_code_panel() {
 
 #[test]
 fn radicals_and_stretchy_delimiters_emit_closed_vector_paths() {
-    // Delimiters and radicals up to cmex's largest size are cmex glyphs; a
-    // radical past its 3.0 em variant is still a drawn construction (fmd-math
-    // has no radical extensible), and drawn constructions must emit closed
+    // Delimiters and radicals are cmex glyphs at every size, past the 3.0 em
+    // variants as cmex's extensible pieces. amsmath's `\iint` is one drawn
+    // row of `\intop` outlines, and drawn constructions must emit closed
     // vector paths.
     let mut p = poster();
     p.math_block(
-        r"\left(\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}\right)",
+        r"\left(\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}\right)\iint",
         72.0,
         540.0,
         false,
@@ -88,7 +88,7 @@ fn radicals_and_stretchy_delimiters_emit_closed_vector_paths() {
     assert!(p.warnings.is_empty());
     assert!(
         p.ops.iter().any(|op| matches!(op, Op::Glyph { .. })),
-        "cmex parens are glyphs"
+        "cmex parens and radical pieces are glyphs"
     );
     let paths: Vec<_> = p
         .ops
@@ -98,7 +98,7 @@ fn radicals_and_stretchy_delimiters_emit_closed_vector_paths() {
             _ => None,
         })
         .collect();
-    assert!(!paths.is_empty(), "drawn radicals must not be lost");
+    assert!(!paths.is_empty(), "drawn constructions must not be lost");
     assert!(
         paths
             .iter()
@@ -319,7 +319,7 @@ fn scoped_math_colors_reach_svg_glyphs_and_fraction_rules() {
 
 #[test]
 fn constructed_math_paths_and_color_mixes_reach_svg_without_palette_quantization() {
-    let source = r"\color[rgb]{0.12345,0.5,0.75}\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}";
+    let source = r"\color[rgb]{0.12345,0.5,0.75}\iint\sqrt{\begin{matrix}a\\b\\c\\d\end{matrix}}";
     let document = Document {
         blocks: vec![Block::MathBlock(source.into())],
     };
@@ -330,7 +330,7 @@ fn constructed_math_paths_and_color_mixes_reach_svg_without_palette_quantization
         .lines()
         .filter(|line| line.starts_with("<path d="))
         .collect();
-    assert!(!paths.is_empty(), "exercise a constructed radical");
+    assert!(!paths.is_empty(), "exercise a constructed path");
     for line in svg.lines().filter(|line| {
         line.starts_with("<use href=\"#g")
             || line.starts_with("<path d=")

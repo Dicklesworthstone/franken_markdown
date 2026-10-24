@@ -1,4 +1,30 @@
-# Release-readiness reality check (bead mwm.5)
+# Release qualification
+
+## Current status, 2026-10-24
+
+The June assessment below is historical and is superseded by the
+[October reality check and bridge plan](planning/REALITY_CHECK_BRIDGE_PLAN.md).
+Its "implemented and proven" verdict does not qualify current `main`.
+Current Rust, generated-WASM, browser, batch and platform release gates must
+execute against the exact source and artifact being shipped. A release archive,
+passing adapter tests or a closed implementation bead cannot substitute for
+those gates.
+
+Release/build orchestration uses **DSR exclusively**. The historical
+`release.yml`/`release-wasm.yml` and tag-triggered GitHub Actions instructions
+below are obsolete; do not create, enable or dispatch those workflows.
+The maintained DSR build helpers include `scripts/dsr-wasm-package.sh`,
+`scripts/dsr-wasm-profiles.sh` and `scripts/dsr-apple-quality.sh`; run them on
+the configured DSR hosts with their prerequisites and source fences satisfied.
+GitHub Releases remains a distribution destination. Missing publication
+credentials are a blocker, not permission to switch orchestration systems.
+
+Live channel inventory on October 24: GitHub and crates.io `0.6.0`, npm `0.5.0`,
+with a `0.6.0` browser tarball attached to the GitHub release. This inventory
+establishes availability, not current-source qualification or credential health.
+See [README release channels](../README.md#franken_markdown) for source links.
+
+## Historical assessment: 2026-06-29 (bead mwm.5)
 
 Date: 2026-06-29 · Branch: `main`
 

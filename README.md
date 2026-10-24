@@ -16,21 +16,21 @@ auditable core.**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
-# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.5.0 franken_markdown
+# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.6.0 franken_markdown
 ```
 
 </div>
 
-> **Current status.** As checked on **2026-10-02**:
+> **Release channels.** As checked on **2026-10-24**:
 >
 > | Channel | Surface | Version | Where to verify |
 > |---|---|---|---|
 > | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.6.0`** | `Cargo.toml` `version` field |
 > | **GitHub Release** | `fmd` CLI archives (5 platforms, `.sha256` sidecars) | **`v0.6.0`** (2026-10-14) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.6.0 |
 > | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.3.4, `fmd-math` 0.2.0) | **`0.6.0`** | https://crates.io/crates/franken_markdown |
-> | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.4.4`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
+> | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.5.0`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
 >
-> The latest tagged release is **v0.6.0**, available on GitHub Releases and crates.io. It adds book editions published in one pass (PDF, EPUB, site), retained book sessions and publishing profiles, page-bottom PDF footnotes, inline math and images in PDF, Mermaid figures, emoji, and much closer TeX spacing in fmd-math; see CHANGELOG.md for breaking changes. npm remains at **0.4.4** pending publishing authentication; the verified **0.6.0 npm tarball** is attached to the GitHub release. Build the in-tree source with `cargo install --path .` or `cargo build --release --bin fmd`.
+> The latest tagged release is **v0.6.0**, available on GitHub Releases and crates.io. It adds book editions published in one pass (PDF, EPUB, site), retained book sessions and publishing profiles, page-bottom PDF footnotes, inline math and images in PDF, Mermaid figures, emoji, and much closer TeX spacing in fmd-math; see CHANGELOG.md for breaking changes. npm currently serves **0.5.0**; a **0.6.0 npm tarball** is attached to the GitHub release. Build the in-tree source with `cargo install --path .` or `cargo build --release --bin fmd`. Changes on `main` require their own qualification; release artifacts do not prove the current checkout. See the [current assessment and remaining work](docs/planning/REALITY_CHECK_BRIDGE_PLAN.md).
 > The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
@@ -117,11 +117,11 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Config | Dependency-free `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults. `--no-config` gives reproducible config-free runs |
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, source-aware recursive includes, and protection of shared sources and assets; see the [batch contract](docs/BATCH_ORCHESTRATION.md) |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
-| Releases | Checksum-verified GitHub release archives for Linux (x86_64 + ARM64), macOS (Intel + Apple Silicon), and Windows x86_64, each smoke-tested before upload; npm package `@franken-suite/franken-markdown` latest at `0.4.4` (Sigstore provenance); crates.io lists `franken_markdown` 0.4.5 with `fmd-font` 0.3.2 and `fmd-math` 0.1.1 |
+| Releases | GitHub v0.6.0 archives for Linux (x86_64 + ARM64), macOS (Intel + Apple Silicon), and Windows x86_64 with checksum sidecars; npm latest is `0.5.0`; crates.io lists `franken_markdown` 0.6.0 with `fmd-font` 0.3.4 and `fmd-math` 0.2.0. Each artifact and platform needs its own execution evidence |
 
 ### Reusable font mechanics
 
-`fmd-font` 0.3.2 provides strict typed subsets, name-keyed CFF1 cubic
+`fmd-font` 0.3.4 provides strict typed subsets, name-keyed CFF1 cubic
 outlines/subsetting, and bounded Latin/basic-Arabic shaping with source
 clusters. See [the font API guide](fmd-font/README.md) for embedding formats,
 coverage, examples, and independent FontTools/HarfBuzz verification. These
@@ -426,7 +426,7 @@ shared entrypoint; type whichever you like.
 
 ### Prebuilt binaries and browser package sources
 
-The v0.5.0 release includes archives for Linux x86_64 and ARM64,
+The v0.6.0 release includes archives for Linux x86_64 and ARM64,
 macOS Intel and Apple Silicon, and Windows x86_64. Release builds and
 publication orchestration use DSR exclusively; GitHub Actions is prohibited.
 Native archives are built and smoke-tested per platform before they are
@@ -441,11 +441,12 @@ tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 
 The browser/WASM package is available on npm as
 `@franken-suite/franken-markdown`
-(`npm install @franken-suite/franken-markdown`). As verified on
-September 15, 2026, version `0.4.4` is published. The verified `0.4.5` package
-is attached to the GitHub release; npm publication awaits host authentication.
-The new package passes the
-WASM size budgets, Node smoke tests, and native/WASM HTML and PDF parity checks.
+(`npm install @franken-suite/franken-markdown`). As checked against the registry on
+October 24, 2026, version `0.5.0` is published. The `0.6.0` package tarball
+is attached to the [GitHub release](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.6.0).
+Size budgets, generated-WASM smoke tests and native/WASM parity must be checked
+against the specific package being shipped; passing JavaScript adapter tests
+alone does not establish those results for the current source.
 Future browser package publication must use DSR and its configured hosts.
 
 ---
@@ -971,15 +972,16 @@ Go, C/C++ (including `#` preprocessor directives), TOML/INI, YAML, SQL
 Mermaid/MMD diagram source. Unknown languages fall back to plain, escaped code.
 
 **Does `fmd` have a `completions` subcommand?**
-No. There is no shell-completion generator today; the command set is `render`,
-`config`, `capabilities`, `doctor`, `robot-docs`, and (with the `batch` feature)
-`batch`, plus the global flags. `fmd --help` and `fmd capabilities --json`
-describe the full surface.
+There is no shell-completion generator subcommand today. Static completion
+assets are provided under `completions/`. Commands include `render`, `config`,
+`capabilities`, `doctor`, `robot-docs`, `verify`, `watch`, `stats`, `diff`, `book`,
+and (with the `batch` feature) `batch`, plus the global flags. `fmd --help` and
+`fmd capabilities --json` describe the surface of the installed binary.
 
 **How do I get byte-for-byte reproducible output?**
 Render with `--no-config` so machine-local defaults do not leak in, and set
-`SOURCE_DATE_EPOCH` for PDF dates. Determinism is enforced in CI by
-`scripts/check-determinism.sh`.
+`SOURCE_DATE_EPOCH` for PDF dates. `scripts/check-determinism.sh` checks repeated
+output; cross-platform determinism requires results from each platform.
 
 **Can I supply my own fonts or stylesheet?**
 Yes. `--css <file>` replaces the HTML stylesheet entirely. Library and WASM

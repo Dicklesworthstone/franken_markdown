@@ -8,7 +8,7 @@ builds it into `target/fmd-checks/wasm-package/`.
 
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.126 --locked
+cargo install wasm-bindgen-cli --version 0.2.129 --locked
 scripts/check-wasm-package.sh
 ```
 

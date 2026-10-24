@@ -1,5 +1,40 @@
 # Testing & Coverage
 
+## Current execution scope, 2026-10-24
+
+The measurements below date from June; they are not coverage measurements of
+the current expanded tree. The October audit and remaining qualification work
+are tracked in the [bridge plan](planning/REALITY_CHECK_BRIDGE_PLAN.md).
+
+Run the complete JavaScript corpus from the repository root:
+
+```bash
+node --experimental-vm-modules --test --test-concurrency=4 \
+  wasm/*.test.mjs wasm/tests/*.test.mjs scripts/*.test.mjs scripts/font-oracles/*.test.mjs
+```
+
+All 231 discovered files ran at `e9896461`: 3,552 passed, zero failed, zero
+skipped. These include explicit DOM, worker-transport and native-boundary
+doubles. They establish adapter behavior in their stated scope; they do not
+establish generated-WASM rendering, actual browser pixels, or native parity.
+The separate generated profiles require DSR-host execution of
+`scripts/dsr-wasm-profiles.sh`. `scripts/test-all.sh` alone does not discover
+this full JavaScript corpus or qualify those profiles.
+
+For substantive Rust changes, execute `cargo fmt --check`,
+`cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and
+`cargo test` through the admitted build path. Also check the std-only core and
+WASM target; compilation alone does not exercise the browser APIs. Font reader,
+subsetter and bundled faces now live under `fmd-font/`, replacing historical
+`src/text.rs` and `fonts/` references below.
+
+Release/build orchestration uses DSR; historical CI references below do not
+authorize GitHub Actions. Preserve golden fixtures and ratcheted floors when
+investigating failures. Regeneration is appropriate only for an independently
+reviewed intentional output change.
+
+## Historical methodology and measurements
+
 Date: 2026-06-29 · Bead: `grn.1.2` (epic `grn`: test rigor)
 
 How `franken_markdown` is tested, why the tests look the way they do, and how to
@@ -138,7 +173,7 @@ that line were wrong. Three further tiers close that gap:
   after a reviewed intentional change with `UPDATE_GOLDEN=1 cargo test --test
   golden_output`.
 
-## Current numbers
+## Historical coverage numbers
 
 The committed baseline is [`../tests/artifacts/coverage/baseline.md`](../tests/artifacts/coverage/baseline.md)
 (machine form: `baseline.tsv`). As of 2026-06-30, after the grn.2 mock-free

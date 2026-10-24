@@ -729,6 +729,13 @@ as [`@franken-suite/franken-markdown`](https://www.npmjs.com/package/@franken-su
 [`wasm/README.md`](wasm/README.md) and run `scripts/check-wasm-package.sh` to
 build and verify it.
 
+In the [main demo](wasm/demo/index.html), choose **Open Markdown…** to load a
+local UTF-8 `.md`, `.markdown`, or `.txt` file up to 4 MiB, edit it, then download
+HTML or PDF. Opening a file updates the export title and resets raw HTML to its
+safe default; replacing an edited draft asks for confirmation. Invalid files
+leave the draft and its existing exports available. Local images require
+separate authorization in the [workspace demo](wasm/demo/flow-canvas.html).
+
 ---
 
 ## Configuration

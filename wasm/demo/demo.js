@@ -1,4 +1,5 @@
 import { createWorkerRenderer } from "../document_worker.mjs";
+import { readMarkdownFile } from "./flow_document.mjs";
 
 const sampleMarkdown = `# franken_markdown demo
 
@@ -28,6 +29,7 @@ fn main() {
 export function createDemoController(doc, win, factory = createWorkerRenderer) {
   const els = {};
   for (const [key, selector] of Object.entries({
+    openMarkdown: "#open-markdown", markdownFile: "#markdown-file", fileStatus: "#file-status",
     markdown: "#markdown", render: "#render", downloadPdf: "#download-pdf", downloadHtml: "#download-html",
     preview: "#preview", diagnostics: "#diagnostics", status: "#status",
     sourceSize: "#source-size", previewMeta: "#preview-meta", font: "#font",
@@ -39,6 +41,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   }
   let alive = true, suspended = false, composing = false, generation = 0;
   let timer = null, lastPdfUrl = null, lastHtmlUrl = null, preparedHtml = null, observed = null;
+  let fileJob = null, cleanSource;
   const clients = { html: null, pdf: null }, jobs = { html: null, pdf: null }, listeners = [];
   const fields = ["markdown", "font", "darkMode", "title", "author", "customCss", "allowHtml", "lineNumbers"];
   const raw = () => Object.fromEntries(fields.map(key =>
@@ -57,6 +60,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     els.render.textContent = jobs.html ? "Cancel render" : "Render";
     els.downloadPdf.textContent = jobs.pdf ? "Cancel PDF" : "Download PDF";
     els.render.disabled = els.downloadPdf.disabled = !alive || suspended || composing;
+    els.openMarkdown.disabled = els.markdownFile.disabled = !alive || suspended || composing;
     els.status.textContent = jobs.html && jobs.pdf ? "rendering HTML and PDF in workers"
       : jobs.html ? "rendering HTML in worker" : jobs.pdf ? "rendering PDF in worker" : message;
   }
@@ -103,6 +107,10 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     }
   }
   function invalidate() {
+    if (fileJob) {
+      fileJob = null;
+      els.fileStatus.textContent = "File opening cancelled because the draft or page changed. Choose the file again.";
+    }
     generation++;
     clearTimer();
     cancel("html");
@@ -207,6 +215,53 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     status(composing ? "composing text" : "waiting for edits");
     if (!composing) timer = win.setTimeout(() => { timer = null; void run("html"); }, 180);
   }
+  async function openMarkdown(file) {
+    if (!alive || suspended || composing || !file) return false;
+    const job = { raw: raw(), generation };
+    fileJob = job; // A newer selection owns publication, even if an old read settles last.
+    const owns = () => alive && !suspended && fileJob === job;
+    const fresh = () => owns() && !composing && generation === job.generation && unchanged(job.raw);
+    els.fileStatus.textContent = "Reading local Markdown…";
+    try {
+      const next = await readMarkdownFile(file);
+      if (!fresh()) return false;
+      if (job.raw.markdown !== cleanSource && !win.confirm(
+        `Replace the current draft with ${next.filename}? Download your current output first if you need to keep it.`,
+      )) {
+        els.fileStatus.textContent = "Open cancelled; current draft retained.";
+        return false;
+      }
+      if (!fresh()) return false;
+      fileJob = null;
+      els.markdown.value = next.source;
+      cleanSource = els.markdown.value; // Browsers normalize CR/CRLF in textareas.
+      els.title.value = next.filename.replace(/\.(md|markdown|txt)$/i, "") || next.filename;
+      els.allowHtml.checked = false;
+      // Even an identical import is a document replacement. Retire exports
+      // before notifying Document Lab through its existing input listener.
+      schedulePreview(true);
+      els.markdown.dispatchEvent(new Event("input", { bubbles: true }));
+      els.fileStatus.textContent = `Opened ${next.filename}. Raw HTML is off. Local images need separate authorization in the workspace demo.`;
+      els.markdown.focus();
+      return true;
+    } catch (error) {
+      if (owns()) els.fileStatus.textContent = `${error?.code ? `${error.code}: ` : ""}${error instanceof Error ? error.message : "The file could not be opened."}`;
+      return false;
+    } finally {
+      if (fileJob === job) {
+        if (owns() && !fresh()) els.fileStatus.textContent = "The draft changed during file loading; choose the file again.";
+        fileJob = null;
+      }
+    }
+  }
+  listen(els.openMarkdown, "click", () => {
+    if (alive && !suspended && !composing) els.markdownFile.click();
+  });
+  listen(els.markdownFile, "change", () => {
+    const file = els.markdownFile.files?.[0];
+    els.markdownFile.value = ""; // A failed/cancelled file can be selected again.
+    if (file) void openMarkdown(file);
+  });
   for (const key of fields) {
     listen(els[key], "input", () => schedulePreview());
     listen(els[key], "change", () => schedulePreview());
@@ -244,9 +299,10 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     if (event.persisted) { suspended = false; schedulePreview(true); }
   });
   if (!els.markdown.value) els.markdown.value = sampleMarkdown;
+  cleanSource = els.markdown.value;
   schedulePreview();
   return Object.freeze({
-    renderPreview: () => run("html"), downloadPdf: () => run("pdf"),
+    renderPreview: () => run("html"), downloadPdf: () => run("pdf"), openMarkdown,
     dispose() {
       if (!alive) return;
       alive = false;

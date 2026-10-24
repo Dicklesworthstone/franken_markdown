@@ -110,12 +110,76 @@ try {
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
   await download.waitFor({ state: "visible" });
   check("resume uses retained source", await source.inputValue(), `# Browser export\n\nUnicode café😀.\n\n${html}\n\n| A | B |\n|---|---|\n|one|two|`);
+  // Real File input, real generated-engine HTML/PDF; no file handles or network grants.
+  const picker = page.locator("#markdown-file"), fileStatus = page.locator("#file-status");
+  const localText = '# Local café\r\n\r\nOpened from a UTF-8 file.\r\n\r\n<span id="file-raw-proof">file markup</span>\r\n';
+  const local = { name: "Local Notes.md", mimeType: "text/markdown", buffer: Buffer.from(localText) };
+  const retainedSource = await source.inputValue(), retainedUrl = await download.getAttribute("href");
+  page.once("dialog", dialog => dialog.dismiss());
+  await picker.setInputFiles(local);
+  await page.waitForFunction(() => document.querySelector("#file-status").textContent.includes("Open cancelled"));
+  check("declining replacement preserves edited source", await source.inputValue(), retainedSource);
+  check("declining replacement preserves usable export", await download.getAttribute("href"), retainedUrl);
+  await page.locator("#custom-css").fill("");
+  await page.locator("#allow-html").check();
+  await download.waitFor({ state: "visible" });
+  const replacedUrl = await download.getAttribute("href");
+  page.once("dialog", dialog => dialog.accept());
+  await picker.setInputFiles(local);
+  await page.waitForFunction(() => document.querySelector("#file-status").textContent.startsWith("Opened Local Notes.md"));
+  await download.waitFor({ state: "visible" });
+  check("UTF-8 file enters the textarea with browser newline normalization", await source.inputValue(), localText.replace(/\r\n/g, "\n"));
+  check("file input cleared for same-file retry", await picker.inputValue(), "");
+  check("filename becomes export title", await page.locator("#title").inputValue(), "Local Notes");
+  check("import resets prior raw HTML opt-in", await page.locator("#allow-html").isChecked(), false);
+  check("import retires exact previous export URL", await page.evaluate(url => demoRevokedUrls.includes(url), replacedUrl), true);
+  const localPreview = await page.locator("#preview").evaluate(node => node.srcdoc);
+  assert.match(localPreview, /Opened from a UTF-8 file/); checks.push("file source reaches actual generated HTML renderer");
+  assert.doesNotMatch(localPreview, /id="file-raw-proof"/); checks.push("imported markup inherits safe rendering default");
+  const htmlEvent = page.waitForEvent("download"); await download.click(); const localHtml = await htmlEvent;
+  check("local file HTML download name", localHtml.suggestedFilename(), "local-notes.html");
+  const localHtmlPath = resolve(output, "local-file.html"); await localHtml.saveAs(localHtmlPath);
+  check("local file HTML download equals actual sandboxed preview bytes", await readFile(localHtmlPath), Buffer.from(localPreview));
+  const localPdfEvent = page.waitForEvent("download"); await page.locator("#download-pdf").click(); const localPdf = await localPdfEvent;
+  check("local file PDF download name", localPdf.suggestedFilename(), "local-notes.pdf");
+  const localPdfPath = resolve(output, "local-file.pdf"); await localPdf.saveAs(localPdfPath);
+  check("local file actual-engine PDF header", (await readFile(localPdfPath)).subarray(0, 5).toString(), "%PDF-");
+  const currentUrl = await download.getAttribute("href");
+  await picker.setInputFiles({ name: "bad.md", mimeType: "text/markdown", buffer: Buffer.from([0xc3, 0x28]) });
+  await page.waitForFunction(() => document.querySelector("#file-status").textContent.includes("INVALID_UNICODE"));
+  check("invalid UTF-8 leaves current editor unchanged", await source.inputValue(), localText.replace(/\r\n/g, "\n"));
+  check("invalid UTF-8 retains current HTML export", await download.getAttribute("href"), currentUrl);
+  await picker.setInputFiles({ name: "large.md", mimeType: "text/markdown", buffer: Buffer.alloc(4 * 1024 * 1024 + 1) });
+  await page.waitForFunction(() => document.querySelector("#file-status").textContent.includes("BUDGET_EXCEEDED"));
+  check("over-budget local file retains current HTML export", await download.getAttribute("href"), currentUrl);
+  await picker.setInputFiles(local);
+  await page.waitForFunction(() => document.querySelector("#file-status").textContent.startsWith("Opened Local Notes.md"));
+  await download.waitFor({ state: "visible" });
+  check("same-file retry uses the clean imported baseline", await source.inputValue(), localText.replace(/\r\n/g, "\n"));
+  check("identical import still revokes prior export", await page.evaluate(url => demoRevokedUrls.includes(url), currentUrl), true);
+  // Only the file-read completion is delayed; generated renderer/worker remain real.
+  await page.evaluate(() => {
+    const read = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = function () {
+      const bytes = read.call(this);
+      if (this.name !== "delayed.md") return bytes;
+      File.prototype.arrayBuffer = read;
+      return new Promise((resolve, reject) => { window.demoReleaseFile = () => bytes.then(resolve, reject); });
+    };
+  });
+  await picker.setInputFiles({ name: "delayed.md", mimeType: "text/markdown", buffer: Buffer.from("# Old local file") });
+  await page.waitForFunction(() => typeof window.demoReleaseFile === "function");
+  await source.fill("# More recent edits");
+  await page.evaluate(async () => { await window.demoReleaseFile(); });
+  check("controlled delayed file cannot replace more recent editor input", await source.inputValue(), "# More recent edits");
+  check("delayed file does not claim a successful open", (await fileStatus.textContent()).includes("Opened delayed.md"), false);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: resolve(output, "mobile.png"), fullPage: true });
   check("mobile page has no horizontal overflow", await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  check("mobile file-open control is visible", await page.locator("#open-markdown").isVisible(), true);
   check("browser errors", errors, []); check("unapproved network requests", denied, []);
   console.log(JSON.stringify({ browser: browser.version(), pkg, generated, checks: checks.length, names: checks,
-    output, limitation: "Synthetic composition/page events, not real IME or actual bfcache. Generated artifact provenance must be qualified separately." }, null, 2));
+    output, limitation: "Real file inputs and downloads; one controlled delayed File.arrayBuffer and synthetic composition/page events, not real IME or actual bfcache. Generated artifact provenance must be qualified separately." }, null, 2));
 } catch (error) {
   console.error(JSON.stringify({ completedChecks: checks, errors, denied,
     state: page && await page.evaluate(() => ({ status: document.querySelector("#status")?.textContent,

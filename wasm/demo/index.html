@@ -346,6 +346,8 @@
         <div class="actions">
           <a id="open-document-lab" href="#document-lab">Document Lab</a>
           <a href="./review.html" target="_blank" rel="noopener noreferrer">Compare revisions</a>
+          <button id="open-markdown" class="button secondary" type="button" aria-describedby="file-status">Open Markdown…</button>
+          <input id="markdown-file" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden />
           <button id="render" class="button primary" type="button">Render</button>
           <a id="download-html" class="button secondary" hidden>Download HTML</a>
           <button id="download-pdf" class="button secondary" type="button">Download PDF</button>
@@ -359,6 +361,7 @@
             <span id="source-size" class="status">0 bytes</span>
           </header>
           <div class="editor-body">
+            <p id="file-status" class="status" role="status">Open a local UTF-8 Markdown file (up to 4 MiB), or edit the sample below.</p>
             <div class="controls">
               <label class="field">
                 Font

@@ -254,7 +254,7 @@ e2e_assert() {
 # ---------------------------------------------------------------------------
 e2e_finish() {
   _e2e_close_step
-  python3 - "$E2E_MANIFEST" "$E2E_SUMMARY_JSON" "$E2E_RUN_ID" \
+  if ! python3 - "$E2E_MANIFEST" "$E2E_SUMMARY_JSON" "$E2E_RUN_ID" \
             "$E2E_PASS" "$E2E_FAIL" "$E2E_ASSERT_PASS" "$E2E_ASSERT_FAIL" "$E2E_REPO_ROOT" <<'PY'
 import json, sys, os
 manifest, out, run_id, sp, sf, ap, af, root = sys.argv[1:9]
@@ -299,6 +299,10 @@ with open(out, "w") as fh:
     json.dump(summary, fh, indent=2, sort_keys=True)
     fh.write("\n")
 PY
+  then
+    _e2e_warn "could not persist summary.json; this run has no complete evidence at $E2E_SUMMARY_JSON"
+    return 66
+  fi
   local total=$((E2E_PASS+E2E_FAIL))
   _e2e_log ""
   _e2e_log "e2e ${E2E_RUN_ID}: ${E2E_PASS}/${total} steps passed; assertions ${E2E_ASSERT_PASS} ok / ${E2E_ASSERT_FAIL} failed"

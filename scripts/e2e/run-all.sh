@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # scripts/e2e/run-all.sh — run every e2e suite + the batch throughput e2e (grn.4.7).
 #
-# The single entry point for the comprehensive, structured-logging e2e tier. It
-# runs each suite that drives the real fmd binary (built once and shared via
+# The entry point for the selected structured-logging e2e suites. It
+# runs each selected suite against the real fmd binary (built once and shared via
 # FMD_BIN so the suites don't each rebuild), folds in the existing batch-throughput
 # e2e, verifies the harness + test-double machinery via their self-tests, and
 # writes a combined aggregate.json over every suite's per-step results.
+# Success covers this selection; explicit batch/parity/installer omissions do
+# not qualify those capabilities or establish full release readiness.
 #
 # Usage: scripts/e2e/run-all.sh [run-id]
 # Exit:  0 all suites ok · 66 env/build · 70 one or more suites failed.
@@ -58,7 +60,9 @@ for s in "${SUITES[@]}"; do
     fail=1
   fi
   summ="tests/artifacts/e2e/${RUN_ID}-$s/summary.json"
-  [ -f "$summ" ] && SUMMARIES+=("$s=$summ")
+  # Every selected suite owes a current summary, even if its process exited 0.
+  # Omitting absent files here would erase unrun/broken suites from the gate.
+  SUMMARIES+=("$s=$summ")
 done
 
 # Fold in the existing batch-throughput e2e (its own structured scenario harness).
@@ -86,29 +90,72 @@ done
 
 # Aggregate every suite's summary.json into one report.
 log "run-all: aggregating per-suite results"
-python3 - "$ART/aggregate.json" "$RUN_ID" "$bt" "$REPO_ROOT" "${SUMMARIES[@]}" <<'PY'
+if ! python3 - "$ART/aggregate.json" "$RUN_ID" "$bt" "$REPO_ROOT" "${SUMMARIES[@]}" <<'PY'
 import json, sys, os
 out, run_id, bt, root = sys.argv[1:5]
 pairs = sys.argv[5:]
 suites = []
+errors = []
+seen = set()
 tot_steps = tot_pass = tot_assert = tot_assert_fail = 0
+if not pairs:
+    errors.append("no selected suite summaries")
 for p in pairs:
     name, path = p.split("=", 1)
     try:
+        if name in seen:
+            raise ValueError("duplicate suite")
+        seen.add(name)
         d = json.load(open(path))
+        if d.get("schema") != "fmd-e2e-v1" or d.get("run_id") != f"{run_id}-{name}":
+            raise ValueError("wrong summary schema or stale/foreign run id")
         t = d["totals"]
+        keys = ("steps", "steps_passed", "steps_failed", "assertions", "assertions_passed", "assertions_failed")
+        if any(type(t.get(key)) is not int or t[key] < 0 for key in keys):
+            raise ValueError("summary counts must be nonnegative integers")
+        steps = d["steps"]
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("suite executed no steps")
+        passed = failed = assertions_passed = assertions_failed = 0
+        for index, step in enumerate(steps, 1):
+            if type(step.get("step")) is not int or step["step"] != index:
+                raise ValueError("step inventory is not complete and ordered")
+            assertions = step["assertions"]
+            if not isinstance(assertions, list) or not assertions:
+                raise ValueError("step executed no assertions")
+            outcomes = [assertion["verdict"] for assertion in assertions]
+            if any(value not in ("pass", "fail") for value in outcomes):
+                raise ValueError("unknown assertion verdict")
+            expected = "fail" if "fail" in outcomes else "pass"
+            if step.get("verdict") != expected:
+                raise ValueError("step verdict contradicts its assertions")
+            passed += expected == "pass"
+            failed += expected == "fail"
+            assertions_passed += outcomes.count("pass")
+            assertions_failed += outcomes.count("fail")
+        actual = (len(steps), passed, failed, assertions_passed + assertions_failed,
+                  assertions_passed, assertions_failed)
+        if tuple(t[key] for key in keys) != actual:
+            raise ValueError("summary totals contradict executed steps/assertions")
     except Exception as e:
         suites.append({"suite": name, "error": str(e)})
+        errors.append(f"{name}: {e}")
         continue
     suites.append({"suite": name, "steps": t["steps"], "steps_passed": t["steps_passed"],
                    "steps_failed": t["steps_failed"], "assertions": t["assertions"],
                    "assertions_failed": t["assertions_failed"]})
     tot_steps += t["steps"]; tot_pass += t["steps_passed"]
     tot_assert += t["assertions"]; tot_assert_fail += t["assertions_failed"]
+    if t["steps_failed"] or t["assertions_failed"]:
+        errors.append(f"{name}: executed checks failed")
+if bt not in ("ok", "skipped"):
+    errors.append("batch-throughput failed or has unknown status")
 agg = {
     "schema": "fmd-e2e-aggregate-v1",
     "run_id": run_id,
     "batch_throughput": bt,
+    "ok": not errors,
+    "errors": errors,
     "totals": {"suites": len(suites), "steps": tot_steps, "steps_passed": tot_pass,
                "assertions": tot_assert, "assertions_failed": tot_assert_fail},
     "suites": suites,
@@ -118,12 +165,18 @@ with open(out, "w") as fh:
     fh.write("\n")
 print(f"run-all: {tot_pass}/{tot_steps} steps passed across {len(suites)} suites; "
       f"{tot_assert - tot_assert_fail}/{tot_assert} assertions ok; batch-throughput={bt}")
+for error in errors:
+    print(f"run-all: invalid/failed evidence: {error}", file=sys.stderr)
+sys.exit(1 if errors else 0)
 PY
+then
+  fail=1
+fi
 
 log "run-all: aggregate at $ART/aggregate.json"
 if [ "$fail" -ne 0 ]; then
   log "run-all: FAILED — at least one e2e suite or machinery check failed (see $LOG)."
   exit 70
 fi
-log "run-all: ok — every e2e suite + the batch e2e + machinery self-tests passed."
+log "run-all: ok — selected e2e suites and machinery self-tests passed; batch-throughput=$bt."
 exit 0

@@ -15,7 +15,8 @@ const fail = (code, message) => { throw new SourceCommandError(code, message); }
  * beforeinput may veto the edit. Recheck source, selection and lifecycle after
  * focus and event handlers; never overwrite a replacement document.
  */
-export function createSourceFormattingControls({ sourceEditor, status, container = sourceEditor.parentNode }) {
+export function createSourceFormattingControls({ sourceEditor, status, container = sourceEditor.parentNode,
+  isBusy = () => false, checkpoint = () => undefined }) {
   const doc = sourceEditor.ownerDocument;
   const group = doc.createElement("div");
   group.setAttribute("role", "group");
@@ -30,10 +31,11 @@ export function createSourceFormattingControls({ sourceEditor, status, container
     target.addEventListener(name, handler);
     listeners.push(() => target.removeEventListener(name, handler));
   };
-  const writable = () => !disposed && !composing && !sourceEditor.readOnly && !sourceEditor.disabled;
+  const writable = () => !disposed && !composing && !sourceEditor.readOnly && !sourceEditor.disabled && !isBusy();
   const refresh = () => { for (const button of buttons) button.disabled = busy || !writable(); };
   const capture = () => ({ source: sourceEditor.value, start: sourceEditor.selectionStart,
-    end: sourceEditor.selectionEnd, direction: sourceEditor.selectionDirection ?? "none", epoch });
+    end: sourceEditor.selectionEnd, direction: sourceEditor.selectionDirection ?? "none", epoch,
+    checkpoint: checkpoint() });
   const same = before => {
     const now = capture();
     return Object.keys(before).every(key => now[key] === before[key]);
@@ -114,6 +116,7 @@ export function createSourceFormattingControls({ sourceEditor, status, container
   refresh();
   return Object.freeze({
     execute,
+    refresh,
     dispose() {
       if (disposed) return;
       disposed = true;

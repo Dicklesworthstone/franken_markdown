@@ -195,6 +195,7 @@
     "PREVIEW.md",
     "demo/book_source_search.mjs",
     "demo/book_source_history.mjs",
+    "demo/book_source_formatting.mjs",
     "demo/book_file_session.mjs",
     "demo/book_file_controls.mjs",
     "demo/book_directory_session.mjs",

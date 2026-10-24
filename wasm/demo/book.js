@@ -14,6 +14,7 @@ import { createBookPdfControls, createBookPdfPanel, createBookPublicationControl
 import { createBookPreviewControls } from "./book_preview_controls.mjs";
 import { createBookSearchControls } from "./book_search_controls.mjs";
 import { createBookSourceHistoryControls } from "./book_source_history.mjs";
+import { createBookSourceFormattingControls } from "./book_source_formatting.mjs";
 
 import { createBookFileControls } from "./book_file_controls.mjs";
 import { createBookDirectoryControls } from "./book_directory_controls.mjs";
@@ -28,6 +29,7 @@ let library = null,
   imageControls = null,
   search = null,
   sourceHistory = null,
+  sourceFormatting = null,
   projectFiles = null,
   sourceDirectory = null,
   edition = null,
@@ -69,6 +71,13 @@ try {
   const status = document.querySelector("#book-history-status") ?? document.querySelector("#status");
   if (status) status.textContent =
     "Book-wide source history is unavailable. Source editing, replacement-specific undo, saves and publication remain available.";
+}
+// Formatting is an ordinary source edit; history and publication observe input.
+try {
+  sourceFormatting = createBookSourceFormattingControls({ root: document, controls, collection });
+} catch {
+  document.querySelector("#status").textContent =
+    "Source formatting is unavailable. Ordinary source editing, history, saves and publication remain available.";
 }
 // One edition owns a separate publisher; ordinary exports and proofs retain
 // their existing clients. Creating the publisher does not start a worker.
@@ -192,6 +201,7 @@ try {
 }
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
+    sourceFormatting?.suspend();
     edition?.suspend();
     sourceDirectory?.suspend();
     projectFiles?.suspend();
@@ -207,6 +217,7 @@ window.addEventListener("pagehide", (event) => {
     library?.suspend();
     controls.suspend();
   } else {
+    sourceFormatting?.dispose();
     edition?.dispose();
     sourceDirectory?.dispose();
     projectFiles?.dispose();
@@ -225,6 +236,7 @@ window.addEventListener("pagehide", (event) => {
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
+    sourceFormatting?.resume();
     edition?.resume();
     sourceDirectory?.resume();
     projectFiles?.resume();

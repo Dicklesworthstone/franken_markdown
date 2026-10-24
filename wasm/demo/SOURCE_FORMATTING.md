@@ -7,6 +7,12 @@ Ctrl/Cmd+I and Ctrl/Cmd+Shift+X invoke the emphasis commands. Native buttons
 support keyboard activation; no page-wide key handler or Tab interception is
 installed. The commands do not require a renderer, worker, fonts or storage.
 
+The book publisher also installs this same planner and controller through
+`book_source_formatting.mjs`. Its host supplies busy state and a checkpoint so
+identical text in a different chapter or replacement project cannot receive a
+stale command. The book's existing source history owns undo/redo. See
+[book source editing](../BOOK_EDITING.md) for its integration and acceptance scope.
+
 ## Source and selection semantics
 
 `planSourceCommand(source, selection, command)` returns one immutable replacement

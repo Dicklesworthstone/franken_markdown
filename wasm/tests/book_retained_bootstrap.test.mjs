@@ -30,7 +30,7 @@ async function bootstrap(failPreview = false) {
   };
   for (const name of ["Controls", "FontControls", "InspectionControls", "LinkControls",
     "LibraryControls", "PdfControls", "PublicationControls", "PreviewControls", "SearchControls",
-    "ImageControls", "FileControls", "DirectoryControls", "EditionControls", "SourceHistoryControls"]) {
+    "ImageControls", "FileControls", "DirectoryControls", "EditionControls", "SourceHistoryControls", "SourceFormattingControls"]) {
     context[`createBook${name}`] = options => {
       if (name === "PreviewControls" && failPreview) throw Error("intentional startup failure");
       const instance = { options, suspended: 0, resumed: 0, disposed: 0,

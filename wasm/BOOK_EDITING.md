@@ -4,6 +4,44 @@ The assembled `demo/book.html` publisher includes **Find and replace across
 chapters**. This is a source-authoring operation, not rendered-text search or a
 second Markdown parser. It works without a loaded WASM engine or export worker.
 
+## Format the selected source
+
+The source editor also includes Bold, Italic, Strike, Inline code, Code block,
+Heading 1–3, Bullets, Numbered list, Task list and Quote buttons. Select source
+text, then choose a command; Ctrl/Cmd+B, Ctrl/Cmd+I and Ctrl/Cmd+Shift+X work in
+the source editor. Commands apply equally to chapters and include-only files.
+Line commands affect complete selected lines. Code commands insert literal
+delimiters; they do not infer or remove existing Markdown syntax.
+
+Each accepted command is one ordinary edit in the existing book-wide history.
+Undo/Redo below restores it. Preview, autosave and prepared-download invalidation
+observe the same source revision as typing; formatting starts no worker or save
+of its own and preserves current source roles, images, fonts and settings.
+Imports, source/path composition, readonly/disabled editors and empty books block
+commands. A chapter or project switch during focus or `beforeinput` refuses the
+stale command even when the replacement has identical text. A cancelled
+`beforeinput` leaves source and undo history unchanged. Page suspension removes
+the toolbar; persisted restoration installs one fresh owner.
+
+The commands reuse the single-document editor's
+[source formatting rules](demo/SOURCE_FORMATTING.md), including Unicode and size
+limits. Fourteen Node integration/package checks cover this wiring, and the
+standalone browser runner exercises the actual unmodified book HTML and modules
+with native textarea/button/keyboard behavior. It can run without a generated
+WASM artifact; it does not qualify renderer output, real IME sessions, OS file
+pickers or actual back/forward-cache restoration. Its lifecycle checks dispatch
+page transition events explicitly.
+
+```sh
+node --test wasm/tests/book_source_formatting*.test.mjs
+# Use an installed Playwright and Chromium; neither is a package dependency.
+FMD_PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs \
+FMD_CHROMIUM=/path/to/chromium \
+node wasm/tests/book_source_formatting.browser.mjs
+```
+
+## Find source text
+
 Enter literal text, choose the whole book or the current chapter, then select
 **Find in source**. Results appear in reading order with chapter, line and column.
 Open a result or use Previous/Next match to select its exact source range in the

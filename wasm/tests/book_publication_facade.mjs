@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { createBookPublicationClient } from "../book_publication.mjs";
+import { createBookPublicationClient, createBookPublicationLinkCheck, createBookPublicationRetainedLinkCheck } from "../book_publication.mjs";
+import { bookTextBytes, parseBookLinkReport } from "../book_session.mjs";
 
 const source = readFileSync(new URL("../book-worker.js", import.meta.url), "utf8");
 const checks = [], configs = [], calls = [], workers = [];
@@ -13,8 +14,8 @@ const context = vm.createContext({ URL, Worker: class {
   constructor(url, options) { workers.push([url, options]); }
 } });
 const dependencies = {
-  "./book_publication.mjs": { createBookPublicationClient },
-  "./book_session.mjs": { prepareBookInput(files, options) {
+  "./book_publication.mjs": { createBookPublicationClient, createBookPublicationLinkCheck, createBookPublicationRetainedLinkCheck },
+  "./book_session.mjs": { bookTextBytes, parseBookLinkReport, prepareBookInput(files, options) {
     captures++;
     return structuredClone({ files, options });
   } },

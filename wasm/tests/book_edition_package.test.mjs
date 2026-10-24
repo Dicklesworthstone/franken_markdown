@@ -81,6 +81,7 @@ const bindings={
  './book_collection.mjs':{createBookCollection:()=>collection,normalizeBookProject(){},readBookProject(){},serializeBookProject(){}},
  './book_controls.mjs':{createBookControls(args){received.source=args;return host}},
  './book_file_controls.mjs':{createBookFileControls(args){assert.equal(args.controls,host);return {...component('files'),controls:facade}}},
+ './book_directory_controls.mjs':{createBookDirectoryControls(args){assert.equal(args.controls,facade);return component('directory')}},
  './book_edition_controls.mjs':{createBookEditionControls(args){received.edition=args;if(failure)throw new Error('installation fixture');return {...component('edition'),dispose(){calls.push('edition.dispose');publisher.dispose()}}}},
  './book_image_controls.mjs':{createBookImagePanel(){},createBookImageControls:()=>component('images')},
  './book_font_controls.mjs':{createBookFontPanel(){},createBookFontControls:()=>component('fonts')},
@@ -104,7 +105,7 @@ if(!failure){assert(calls.indexOf('edition.suspend')<calls.indexOf('source.suspe
 events.get('pagehide')({persisted:false});
 assert.equal(calls.filter(value=>value==='publisher.dispose').length,1);
 if(!failure)assert(calls.indexOf('edition.dispose')<calls.indexOf('source.dispose'));
-for(const name of ['files','history','profile','images','fonts','proof','links','inspection','search','preview','library','source'])assert(calls.includes(name+'.dispose'),name);
+for(const name of ['files','directory','history','profile','images','fonts','proof','links','inspection','search','preview','library','source'])assert(calls.includes(name+'.dispose'),name);
 console.log('application edition wiring and lifecycle passed');
 `;
 for (const fail of [false, true]) {

@@ -75,7 +75,7 @@ function setup(t) {
     new URL("../demo/book_inspection_controls.mjs", import.meta.url),
     "utf8",
   );
-  for (const match of inspectionSource.matchAll(/'(inspection-[a-z-]+)'/g))
+  for (const match of inspectionSource.matchAll(/["'](inspection-[a-z-]+)["']/g))
     el[match[1]] ??= new Element();
   const root = { querySelector: (query) => el[query.slice(1)], createElement: () => new Element() };
   const collection = createBookCollection(),

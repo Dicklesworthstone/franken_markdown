@@ -20,18 +20,27 @@ async function bootstrap(failPreview = false) {
       workers.push(worker); return worker;
     },
     createBookCollection: () => ({}),
+    createBookPublicationWorker() {
+      const worker = { options: {}, disposed: 0, dispose() { this.disposed++; } };
+      workers.push(worker); return worker;
+    },
+    normalizeBookProject: value => value,
+    readBookProject: value => value,
+    serializeBookProject: value => value,
   };
   for (const name of ["Controls", "FontControls", "InspectionControls", "LinkControls",
-    "LibraryControls", "PdfControls", "PreviewControls", "SearchControls"]) {
+    "LibraryControls", "PdfControls", "PublicationControls", "PreviewControls", "SearchControls",
+    "ImageControls", "FileControls", "DirectoryControls", "EditionControls", "SourceHistoryControls"]) {
     context[`createBook${name}`] = options => {
       if (name === "PreviewControls" && failPreview) throw Error("intentional startup failure");
       const instance = { options, suspended: 0, resumed: 0, disposed: 0,
         suspend() { this.suspended++; }, resume() { this.resumed++; },
-        dispose() { this.disposed++; options.worker?.dispose(); }, detach() {} };
+        dispose() { this.disposed++; options.worker?.dispose(); options.publisher?.dispose(); }, detach() {}, reset() {} };
+      if (name === "FileControls") instance.controls = options.controls;
       instances.set(name, instance); return instance;
     };
   }
-  for (const name of ["Font", "Inspection", "Link", "Pdf"]) context[`createBook${name}Panel`] = () => {};
+  for (const name of ["Font", "Inspection", "Link", "Pdf", "Image"]) context[`createBook${name}Panel`] = () => {};
   const key = `__fmdRetainedBootstrap${serial++}`;
   let replacements = 0;
   const code = source.replace(/^import\s*\{([^}]+)\}\s*from\s*"([^"]+)";/gm, (_all, symbols) => {
@@ -58,7 +67,7 @@ async function bootstrap(failPreview = false) {
 
 test("publisher opts only the isolated HTML preview into retention and preserves lifecycle ordering", async () => {
   const f = await bootstrap();
-  assert.equal(f.workers.length, 6);
+  assert.equal(f.workers.length, 7);
   const preview = f.instances.get("PreviewControls");
   assert.deepEqual(preview.options.worker.options, { maxOutputBytes: 64 * 1024 * 1024, retainPreview: true });
   assert.equal(f.workers.filter(worker => worker.options.retainPreview === true).length, 1);
@@ -72,7 +81,7 @@ test("publisher opts only the isolated HTML preview into retention and preserves
 
 test("failed preview startup disposes its owned client without preventing the publisher from loading", async () => {
   const f = await bootstrap(true);
-  assert.equal(f.workers.length, 6);
+  assert.equal(f.workers.length, 7);
   const previewWorker = f.workers.find(worker => worker.options.retainPreview === true);
   assert(previewWorker, "publisher must request retained previews");
   assert.equal(previewWorker.disposed, 1);

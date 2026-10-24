@@ -37,18 +37,14 @@ test("actual publisher and worker entry retain previous features and attach the 
     worker = read("wasm/book_worker_entry.js");
   assert(entry.includes("createBookInspectionPanel(document)"));
   assert(entry.includes("maxOutputBytes: 2 * 1024 * 1024"));
-  assert(
-    entry.includes(
-      "inspection?.dispose(); search?.dispose(); preview?.dispose(); library?.dispose(); controls.dispose();",
-    ),
-  );
+  assert.match(entry, /inspection\?\.dispose\(\);\s*search\?\.dispose\(\);\s*preview\?\.dispose\(\);\s*library\?\.dispose\(\);\s*controls\.dispose\(\);/);
   for (const name of [
     "createBookSearchControls",
     "createBookPreviewControls",
     "createBookLibraryControls",
   ])
     assert(entry.includes(name));
-  assert(worker.includes("inspectBook: files => inspectBook(documents, files)"));
+  assert.match(worker, /inspectBook:\s*\(files\)\s*=>\s*inspectBook\(documents, files\)/);
   assert(worker.includes('from "./franken_markdown.js"'));
   assert(read("wasm/book-worker.d.ts").includes("Promise<BookInspectionOutput>"));
 });

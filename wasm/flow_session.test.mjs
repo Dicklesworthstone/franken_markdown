@@ -360,10 +360,10 @@ test("WASM errors retain stable codes and unexpected traps retain their cause", 
 async function entrypointFixture(classSource) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-flow-transport-"));
   await mkdir(join(dir, "pkg"));
-  for (const file of ["flow.js", "flow_session.mjs"])
+  for (const file of ["flow.js", "flow_session.mjs", "flow_asset_batch.mjs", "flow_export.mjs", "flow_outlines.mjs", "pdf_page.mjs", "pdf_running.mjs", "render_typography.mjs"])
     await copyFile(new URL(file, import.meta.url), join(dir, file));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
-  await writeFile(join(dir, "franken_markdown.js"), "export async function init() {}");
+  await writeFile(join(dir, "franken_markdown.js"), "export async function init() {} export function renderHtml() {} export function renderPdf() {}");
   await writeFile(join(dir, "pkg", "franken_markdown.js"), classSource);
   return import(pathToFileURL(join(dir, "flow.js")));
 }

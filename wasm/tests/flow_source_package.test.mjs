@@ -60,7 +60,13 @@ test("source controls have a separate script and their import graph never reache
   }
   await inspect("wasm/demo/flow-source.js");
   assert(visited.has("wasm/flow_session.mjs"));
-  assert.equal(visited.size, 6);
+  assert.deepEqual([...visited].sort(), [
+    "wasm/demo/flow-source.js", "wasm/demo/flow_document.mjs",
+    "wasm/demo/flow_draft_controls.mjs", "wasm/demo/flow_draft_session.mjs",
+    "wasm/demo/flow_draft_store.mjs", "wasm/demo/flow_file_controls.mjs",
+    "wasm/demo/flow_file_session.mjs", "wasm/demo/source_commands.mjs",
+    "wasm/demo/source_formatting.mjs", "wasm/flow_session.mjs",
+  ]);
 });
 test("source replacement revokes native image ownership and image insertion notifies source observers", async () => {
   const code = await read("wasm/demo/flow-canvas.js");

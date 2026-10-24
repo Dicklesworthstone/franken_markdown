@@ -68,6 +68,7 @@ async function bootstrap(fail = false) {
     // (edf4c26, d16708b). Like the real module, file controls hand later
     // components a descriptor-preserving facade of the controls.
     'demo/book_source_history.mjs': 'export const createBookSourceHistoryControls = options => globalThis.__bookPdfBoot.create("history", options);',
+    'demo/book_directory_controls.mjs': 'export const createBookDirectoryControls = options => globalThis.__bookPdfBoot.create("directory", options);',
     // Edition publishing joined the publisher in d510546.
     'demo/book_edition_controls.mjs': 'export const createBookEditionControls = options => globalThis.__bookPdfBoot.create("edition", options);',
     'demo/book_file_controls.mjs': 'export const createBookFileControls = options => { const files = globalThis.__bookPdfBoot.create("files", options); files.controls = Object.freeze(Object.defineProperties({}, Object.getOwnPropertyDescriptors(options.controls))); return files; };',

@@ -135,11 +135,17 @@ test("a late reading response cannot publish an older desired source", async () 
   f.readGate = gate;
   c.update(input("old"));
   await tick();
+  assert.deepEqual(f.paints, ["old"], "Canvas need not wait for semantic I/O");
   c.update(input("newest"));
+  assert.equal(c.state.document, null);
+  const paintsBeforeNewSource = f.paints.length;
   gate.resolve();
   await c.whenIdle();
   assert.equal(c.state.document.text, "newest");
-  assert.deepEqual(f.paints, ["newest"]);
+  assert.deepEqual(f.paints.slice(paintsBeforeNewSource), ["newest"]);
+  assert.deepEqual(c.state.document.token, {
+    revision: c.state.frame.revision, layoutRevision: c.state.frame.layoutRevision,
+  });
   c.dispose();
 });
 
@@ -220,10 +226,12 @@ test("disposing during a reading page never publishes its late semantic tree", a
   f.readGate = gate;
   c.update(input("pending"));
   await tick();
+  assert.deepEqual(f.paints, ["pending"]);
+  const paintedBeforeDisposal = f.paints.length;
   c.dispose();
   gate.resolve();
   await tick();
   assert.equal(c.state.status, "disposed");
   assert.equal(c.state.document, null);
-  assert.equal(f.paints.length, 0);
+  assert.equal(f.paints.length, paintedBeforeDisposal, "late semantic I/O cannot repaint after disposal");
 });

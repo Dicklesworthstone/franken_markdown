@@ -14,7 +14,9 @@ function checkWorkspace(html) {
   assert.doesNotMatch(html, /'unsafe-eval'/);
   assert.ok(html.includes(createWorkspacePreviewWorker.toString()));
   assert.match(html, /fmd-async-preview-v1/);
-  assert.equal((html.match(/id="fmd-native-runtime"/g)||[]).length,1);
+  // The embedded save runtime also contains this ID as a JavaScript string.
+  // Count payload elements, rather than occurrences inside executable source.
+  assert.equal((html.match(/<script type="application\/json" id="fmd-native-runtime">/g)||[]).length,1);
   const data = JSON.parse(html.split('<script type="application/json" id="fmd-native-runtime">')[1].split('</script>')[0]);
   assert.equal(data.wasm,'AGFzbQEAAAA=');
   assert.equal(data.bindings,fixtureBindings);

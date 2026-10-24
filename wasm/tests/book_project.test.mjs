@@ -37,7 +37,7 @@ test("sparse chapter arrays and forbidden project fields fail validation", () =>
   for (const value of [
     { ...project(), images: [] },
     { ...project(), options: { fontAssets: [] } },
-    { ...project(), schemaVersion: 2 },
+    { ...project(), schemaVersion: 0 },
   ]) {
     assert.throws(() => normalizeBookProject(value));
   }

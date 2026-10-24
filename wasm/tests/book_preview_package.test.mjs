@@ -46,7 +46,7 @@ test("actual publisher starts preview independently and tears it down before its
     html = read("wasm/demo/book.html");
   assert(entry.includes('from "./book_preview_controls.mjs"'));
   assert(entry.includes("worker: createBookWorker({ maxOutputBytes:"));
-  assert(entry.includes("preview?.dispose(); library?.dispose(); controls.dispose();"));
+  assert.match(entry, /preview\?\.dispose\(\);\s*library\?\.dispose\(\);\s*controls\.dispose\(\);/);
   assert(entry.includes("preview?.suspend();"));
   assert(entry.includes("preview?.resume();"));
   const iframe = html.match(/<iframe\b[^>]*id="preview-frame"[^>]*>/)?.[0];

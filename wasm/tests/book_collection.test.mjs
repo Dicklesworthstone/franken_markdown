@@ -107,7 +107,7 @@ test("invalid or authority-bearing projects leave the existing collection untouc
   const revision = book.revision;
   for (const project of [
     {},
-    { schemaVersion: 3, files: [] },
+    { schemaVersion: 0, files: [] },
     { schemaVersion: 1, files: [chapter()], options: { images: [] } },
     { schemaVersion: 1, files: [chapter(), chapter()] },
     { schemaVersion: 1, files: [chapter("../a.md")] },

@@ -259,7 +259,7 @@ test("invalid input never replaces the previously admitted intent", async () => 
   assert.equal(f.sessions[1].source, "good");
   c.dispose();
 });
-test("reading-data failure occurs before painting and leaves the old frame intact", async () => {
+test("reading-data failure is explicit without withholding the current Canvas frame", async () => {
   const f = fixture(),
     c = f.controller;
   c.update(input("safe"));
@@ -268,11 +268,14 @@ test("reading-data failure occurs before painting and leaves the old frame intac
   f.readFailure = true;
   c.update(input("new"));
   await c.whenIdle();
-  assert.equal(c.state.status, "error");
-  assert.equal(c.state.frame, before);
+  assert.equal(c.state.status, "ready");
+  assert.notEqual(c.state.frame, before);
+  assert.equal(c.state.readingError.code, "READING_ERROR");
+  assert.equal(c.state.document, null);
+  assert.equal(c.state.readingPending, false);
   assert.deepEqual(
     f.paints.map((p) => p.source),
-    ["safe"],
+    ["safe", "new"],
   );
   c.dispose();
 });

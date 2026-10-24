@@ -40,7 +40,8 @@ for (const script of ["dsr-wasm-package.sh", "check-wasm-package.sh"])
   });
 test("only the dedicated worker entry imports the actual book renderer", () => {
   assert.match(read("../book_worker_entry.js"), /import \* as book from "\.\/book\.js"/);
-  assert.match(read("../book_worker_entry.js"), /installBookWorker\(self, book\)/);
+  assert.match(read("../book_worker_entry.js"), /installBookWorker\(self,\s*\{\s*\.\.\.book,/);
+  assert.match(read("../book_worker_entry.js"), /renderRetainedBook:\s*retained\.render/);
   assert.match(
     read("../book-worker.js"),
     /new Worker\(new URL\("\.\/book_worker_entry\.js", import\.meta\.url\), \{ type: "module" \}\)/,

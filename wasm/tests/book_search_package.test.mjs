@@ -37,24 +37,19 @@ test("both package assemblers copy the real authoring modules and guide", () => 
 test("actual publisher entry initializes search and tears it down before the source owner", () => {
   const entry = read("wasm/demo/book.js");
   assert(entry.includes('import { createBookSearchControls } from "./book_search_controls.mjs"'));
-  assert(entry.includes("createBookSearchControls({ root: document, controls, collection,"));
-  assert(entry.includes("confirm: text => window.confirm(text)"));
-  assert(
-    entry.includes(
-      "search?.suspend(); preview?.suspend(); library?.suspend(); controls.suspend();",
-    ),
-  );
-  assert(
-    entry.includes(
-      "search?.dispose(); preview?.dispose(); library?.dispose(); controls.dispose();",
-    ),
-  );
+  assert.match(entry, /createBookSearchControls\(\{\s*root: document,\s*controls,\s*collection,/);
+  assert.match(entry, /confirm:\s*\(text\)\s*=>\s*window\.confirm\(text\)/);
+  assert.match(entry, /search\?\.suspend\(\);\s*preview\?\.suspend\(\);\s*library\?\.suspend\(\);\s*controls\.suspend\(\);/);
+  assert.match(entry, /search\?\.dispose\(\);\s*preview\?\.dispose\(\);\s*library\?\.dispose\(\);\s*controls\.dispose\(\);/);
   assert(entry.includes("search?.resume();"));
 });
 test("all actual search controller elements exist once in the publisher markup", () => {
   const html = read("wasm/demo/book.html"),
     controller = read("wasm/demo/book_search_controls.mjs");
-  const ids = JSON.parse(`[${controller.match(/const ids = \[([\s\S]*?)\];/)[1]}]`);
+  const list = controller.match(/const ids = \[([\s\S]*?)\];/)[1];
+  const ids = [...list.matchAll(/"([a-z-]+)"/g)].map(match => match[1]);
+  assert.match(list.replace(/"[a-z-]+"/g, ""), /^[\s,]*$/, "literal DOM ID inventory only");
+  assert(ids.length > 0);
   const found = [...html.matchAll(/id="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(found).size, found.length, "duplicate HTML ids");
   for (const id of ids) assert.equal(found.filter((value) => value === id).length, 1, id);

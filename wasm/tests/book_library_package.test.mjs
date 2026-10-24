@@ -40,7 +40,7 @@ test("publisher entry starts library independently and tears it down before sour
   const entry = read("wasm/demo/book.js"),
     html = read("wasm/demo/book.html");
   assert(entry.includes('from "./book_library_controls.mjs"'));
-  assert(entry.includes("library?.dispose(); controls.dispose();"));
+  assert.match(entry, /library\?\.dispose\(\);\s*controls\.dispose\(\);/);
   for (const id of [
     "library-save",
     "library-copy",

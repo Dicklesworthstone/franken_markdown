@@ -83,11 +83,13 @@ fn subset_tail_since(t: std::time::Instant, acc: &mut u128) {
     *acc += t.elapsed().as_nanos();
 }
 #[cfg(target_arch = "wasm32")]
-fn subset_tail_now() -> () {}
+struct SubsetTailStart;
 #[cfg(target_arch = "wasm32")]
-fn subset_tail_since(t: (), acc: &mut u128) {
-    let _ = (t, acc);
+fn subset_tail_now() -> SubsetTailStart {
+    SubsetTailStart
 }
+#[cfg(target_arch = "wasm32")]
+fn subset_tail_since(_: SubsetTailStart, _: &mut u128) {}
 
 #[inline(always)]
 fn subset_tail_slot_name(slot: u8) -> &'static str {

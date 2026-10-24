@@ -130,6 +130,13 @@ unblock probe; `m80e.6` remains open until current-source verification completes
 The retained-preview helper wiring has shell syntax checks and its existing
 real-engine probe passes against the qualified package.
 
+The final pull also incorporated the concurrent `ca34c49a` math merge (multiple
+integrals, vector accents and extensible radicals/delimiters). Those production
+and golden changes are preserved. The rebased tree passes fmt/shell syntax/diff
+checks, but its Rust execution and generated WASM profiles remain unverified
+under the same disk guard. The `81576af5` results precede that merge; its exact
+source history is preserved in the pre-rebase Git bundle recorded in Beads.
+
 Full native parity, browser lifecycle and release gates remain open. The
 approximately 4.5 MB render-only target and a lower size ratchet are not claimed.
 No release, registry publish, Actions workflow or size-budget change is included.

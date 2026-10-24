@@ -12,8 +12,8 @@ PACKAGE="$ART/package"
 mkdir -p "$PACKAGE/pkg" "$PACKAGE/demo" "$ART/parity"
 cargo build --no-default-features --lib
 cargo build --no-default-features --target wasm32-unknown-unknown --lib
-cargo build --release --no-default-features --features wasm-full --target wasm32-unknown-unknown --lib
-wasm-bindgen "$TARGET_DIR/wasm32-unknown-unknown/release/franken_markdown.wasm" --target web --out-dir "$PACKAGE/pkg"
+cargo build --profile wasm-release --no-default-features --features wasm-full --target wasm32-unknown-unknown --lib
+wasm-bindgen "$TARGET_DIR/wasm32-unknown-unknown/wasm-release/franken_markdown.wasm" --target web --out-dir "$PACKAGE/pkg"
 for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts \
   interactive.js interactive.d.ts interactive_runtime.mjs interactive_preview.mjs NATIVE_PREVIEW.md INTERACTIVE.md \
   native_workspace.js native_workspace.d.ts interactive_export.mjs NATIVE_WORKSPACE.md \
@@ -68,6 +68,8 @@ node wasm/flow_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_worker_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_outlines_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/flow_export_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
+node wasm/book_source_updates_smoke.mjs "$PACKAGE"
+node wasm/site_publication_smoke.mjs "$PACKAGE"
 cargo build --bin fmd
 for ext in html pdf; do
   SOURCE_DATE_EPOCH=1700000000 "$TARGET_DIR/debug/fmd" "$ART/parity/showcase.md" --no-config --to "$ext" --out "$ART/parity/native.$ext"

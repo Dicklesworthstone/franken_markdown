@@ -105,9 +105,9 @@ log "core no-default check"
 cargo check --no-default-features --lib
 
 log "build release wasm-bindgen adapter (real shippable artifact)"
-cargo build --release --target "$target" --no-default-features --features wasm-full --lib
+cargo build --profile wasm-release --target "$target" --no-default-features --features wasm-full --lib
 
-wasm_in="$CARGO_TARGET_DIR/$target/release/franken_markdown.wasm"
+wasm_in="$CARGO_TARGET_DIR/$target/wasm-release/franken_markdown.wasm"
 [ -s "$wasm_in" ] || { log "missing wasm artifact: $wasm_in"; exit 1; }
 
 log "wasm-bindgen --target web"
@@ -263,6 +263,8 @@ node wasm/flow_outlines_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 
 log "headless node: revision-fenced HTML/PDF exports against generated WASM"
 node wasm/flow_export_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
+node wasm/book_source_updates_smoke.mjs "$package_dir" 2>&1 | tee -a "$LEDGER"
+node wasm/site_publication_smoke.mjs "$package_dir" 2>&1 | tee -a "$LEDGER"
 
 log "headless node: cancellable document workers and demo lifecycle"
 node --test wasm/native_pdf_proof.test.mjs wasm/native_pdf_proof_package.test.mjs 2>&1 | tee -a "$LEDGER"

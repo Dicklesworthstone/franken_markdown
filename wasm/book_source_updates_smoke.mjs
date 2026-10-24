@@ -1,14 +1,17 @@
 // Real compiled-WASM integration. No generated-binding or renderer doubles.
 // After building the matching package on a configured DSR host:
-//   node wasm/book_source_updates_smoke.mjs
+//   node wasm/book_source_updates_smoke.mjs [PACKAGE_DIRECTORY]
 // Uses the same session factory as /book, with the actual generated FmdBook.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { createBookBindings } from "./book_session.mjs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 async function main() {
-  const engine = await import("./pkg/franken_markdown.js");
-  await engine.default({ module_or_path: await readFile(new URL("./pkg/franken_markdown_bg.wasm", import.meta.url)) });
+  const packageDir = path.resolve(process.argv[2] || fileURLToPath(new URL(".", import.meta.url)));
+  const { createBookBindings } = await import(pathToFileURL(path.join(packageDir, "book_session.mjs")));
+  const engine = await import(pathToFileURL(path.join(packageDir, "pkg/franken_markdown.js")));
+  await engine.default({ module_or_path: await readFile(path.join(packageDir, "pkg/franken_markdown_bg.wasm")) });
   assert.equal(typeof engine.FmdBook?.prototype?.updateSources, "function", "matching WASM rebuild required");
   const { createBook } = createBookBindings(async () => engine.FmdBook);
   const file = (path, source) => ({ path, source });

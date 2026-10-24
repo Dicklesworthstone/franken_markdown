@@ -154,6 +154,12 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# Browser distributions share the release settings but optimize for transfer size.
+# Keep native release optimization separate from this measured WASM profile.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+
 # Profiling build: keep symbols/frame pointers so samplers can attribute frames.
 # NEVER profile the size-stripped `release` profile.
 [profile.release-perf]

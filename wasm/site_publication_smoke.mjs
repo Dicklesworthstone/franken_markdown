@@ -1,10 +1,12 @@
 // Real-engine smoke, deliberately separate from generated-binding-double tests.
 // Run after building wasm/pkg from this checkout on a configured DSR host:
-//   node wasm/site_publication_smoke.mjs
+//   node wasm/site_publication_smoke.mjs [PACKAGE_DIRECTORY]
 // No network, output files, substituted engine, or third-party ZIP dependency.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { inflateRawSync } from "node:zlib";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 function crc32(bytes) {
   let crc = 0xffffffff;
@@ -62,8 +64,9 @@ function unzip(bytes) {
 }
 
 async function main() {
-  const { init, renderBookSite } = await import("./franken_markdown.js");
-  await init(await readFile(new URL("./pkg/franken_markdown_bg.wasm", import.meta.url)));
+  const packageDir = path.resolve(process.argv[2] || fileURLToPath(new URL(".", import.meta.url)));
+  const { init, renderBookSite } = await import(pathToFileURL(path.join(packageDir, "franken_markdown.js")));
+  await init(await readFile(path.join(packageDir, "pkg/franken_markdown_bg.wasm")));
   const chapters = [
     { path: "guide/start.md", source: "---\ntitle: Opening\nlang: de\n---\n# Shared\n\n[Next](../appendix/end.md#shared)\n\n{{#include snippet.md}}\n\n![First](figure.svg)\n\n<script>alert(1)</script>\n" },
     { path: "appendix/end.md", source: "# Shared\n\n[Back](../guide/start.md#shared)\n\n![Second](figure.svg)\n" },

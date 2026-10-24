@@ -43,14 +43,18 @@ for profile in render full; do
   CARGO_TARGET_DIR="$target_dir" cargo check --locked --no-default-features --features "$feature" --lib
   CARGO_TARGET_DIR="$target_dir" cargo clippy --locked --no-default-features --features "$feature" --lib -- -D warnings
   CARGO_TARGET_DIR="$target_dir" cargo test --locked --no-default-features --features "$feature" --lib
-  CARGO_TARGET_DIR="$target_dir" cargo build --locked --release --no-default-features --features "$feature" \
+  CARGO_TARGET_DIR="$target_dir" cargo build --locked --profile wasm-release --no-default-features --features "$feature" \
     --target wasm32-unknown-unknown --lib
   generated="$ART/generated-$profile"
   mkdir "$generated"
-  wasm-bindgen "$target_dir/wasm32-unknown-unknown/release/franken_markdown.wasm" \
+  wasm-bindgen "$target_dir/wasm32-unknown-unknown/wasm-release/franken_markdown.wasm" \
     --target web --out-dir "$generated"
   node --experimental-vm-modules scripts/assemble-wasm-profile.mjs \
     "$ROOT/wasm" "$generated" "$ART/$profile" "$profile"
+  if [ "$profile" = full ]; then
+    node wasm/book_source_updates_smoke.mjs "$ART/$profile"
+    node wasm/site_publication_smoke.mjs "$ART/$profile"
+  fi
   if ! source_fence; then
     printf 'WASM profiles: source changed during build; artifacts are not verified\n' >&2
     exit 1

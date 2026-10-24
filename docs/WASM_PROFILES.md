@@ -43,6 +43,13 @@ corpora and size budgets are retained. `scripts/dsr-wasm-profiles.sh` is the
 additional DSR-host entrypoint for isolated render/full builds, create-only local
 package assembly and comparison. It does not publish or delete prior artifacts.
 
+The three package builders use Cargo's `wasm-release` profile. It inherits
+`release` (LTO, one codegen unit, aborting panics and stripping), with
+`opt-level = "z"` for transfer size. Native `release` keeps `opt-level = 3`.
+No post-link optimizer or new dependency is required. Full packages also execute
+the existing real-engine book source-update and site-publication smokes against
+the retained package, including the independent ZIP payload/CRC decoder.
+
 `scripts/assemble-wasm-profile.mjs` recursively closes static JavaScript imports
 and re-exports without evaluating them. The render package exports the root
 facade/web component; full retains the source manifest's subpaths. Dynamic
@@ -70,10 +77,20 @@ full export sets, dispatch, errors, request capture and result cleanup. These
 are module-linking/API tests, not native rendering or generated-WASM evidence.
 JavaScript syntax and the Cargo feature dependency closure also passed.
 
-Rust fmt/check/clippy/test were attempted but Cargo is unavailable in the
-implementation environment. No generated profile was built here. Compiler/linker
-behavior, actual size savings, DSR, native parity and browser rendering remain
-unverified. The existing DSR/native tests must run with the matching source and
-all selected feature combinations before release. The approximately 4.5 MB
-render-only target and a lower measured size ratchet are not claimed. No release,
+On 2026-10-24, a DSR/RCH experiment built the same `df772f53` full source and
+feature set with release optimization levels `3` and `z`. Generated WASM changed
+from 8,199,505 to 7,132,900 raw bytes and from 3,596,158 to 3,197,021 gzip bytes
+(gzip mtime zero). Both original ceilings were retained. In the same invocation,
+64 selected HTML/PDF/SVG/EPUB render/diagnostic pairs and 24 analysis pairs matched
+exactly; capabilities matched too. The size candidate passed the existing smoke,
+29 component typography checks and 25 demo download checks in actual Chrome.
+This is selected equivalence and a size measurement, not a throughput claim or
+universal compatibility proof. The unsuccessful Binaryen experiment was not
+adopted.
+
+Native check, Clippy and 4,651 all-target tests passed at `2d37ebd0` (12 ignored).
+These results do not qualify every feature combination or the complete browser
+distribution. Current profile-vs-profile, native parity, browser lifecycle and
+release gates still require their matching-source evidence. The approximately
+4.5 MB render-only target and a lower size ratchet are not claimed. No release,
 registry publish, Actions workflow or size-budget change is included.

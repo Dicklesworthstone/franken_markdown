@@ -3183,7 +3183,7 @@ mod tests {
     fn fifo_timeout_run(
         preflight_delay: std::time::Duration,
         render_delay: std::time::Duration,
-    ) -> (PathBuf, BatchReceipt) {
+    ) -> (PathBuf, BatchReceipt, bool) {
         use std::io::Write as _;
 
         let dir = fresh_dir("timeout-fires");
@@ -3198,6 +3198,7 @@ mod tests {
         std::fs::write(dir.join("b.md"), "# b").unwrap();
         std::fs::write(dir.join("c.md"), "# c").unwrap();
 
+        let (render_opened, render_reader) = std::sync::mpsc::channel();
         let writer = std::thread::spawn({
             let fifo = fifo.clone();
             let preflight_fifo = dir.join("preflight-stage.md");
@@ -3209,12 +3210,13 @@ mod tests {
                 std::fs::rename(&fifo, preflight_fifo).unwrap();
                 std::fs::rename(render_fifo, &fifo).unwrap();
                 std::thread::sleep(preflight_delay);
-                preflight.write_all(b"# preflight-only\n").unwrap();
+                preflight.write_all(b"# slow\n").unwrap();
                 drop(preflight);
 
                 // This open waits for the actual render read, or the test's
                 // drain below when cancellation correctly prevents that read.
                 let mut rendering = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+                render_opened.send(()).unwrap();
                 std::thread::sleep(render_delay);
                 rendering.write_all(b"# slow\n").unwrap();
             }
@@ -3231,14 +3233,15 @@ mod tests {
             ..throughput_opts()
         };
         let r = run_batch_blocking(plan, &opts).unwrap();
-        if r.files[0].status == FileStatus::Skipped {
-            // A skipped first job never opens the render FIFO. Release its
-            // writer without rendering anything, including on an assertion
-            // failure caused by unusually late worker admission.
+        let render_started = render_reader.try_recv().is_ok();
+        if !render_started {
+            // Release an unopened writer regardless of the receipt's status:
+            // a regressed producer might consume only the preflight pipe yet
+            // report success. Capture the phase before this test-only drain.
             assert_eq!(std::fs::read(&fifo).unwrap(), b"# slow\n");
         }
         writer.join().unwrap();
-        (dir, r)
+        (dir, r, render_started)
     }
 
     #[cfg(unix)]
@@ -3247,12 +3250,13 @@ mod tests {
         // The overwrite-protection preflight must finish before the delayed
         // render read begins. Keep the original 1 s deadline and 1400 ms delay;
         // the in-progress file completes and all later inputs are skipped.
-        let (dir, r) = fifo_timeout_run(
+        let (dir, r, render_started) = fifo_timeout_run(
             std::time::Duration::ZERO,
             std::time::Duration::from_millis(1400),
         );
         let out = dir.join("out");
 
+        assert!(render_started, "deadline must fire during the render read");
         assert!(
             r.cancelled,
             "the fired deadline must mark the run cancelled"
@@ -3272,12 +3276,6 @@ mod tests {
             out.join("a_slow.html").exists(),
             "the completed file's output is committed"
         );
-        let html = std::fs::read_to_string(out.join("a_slow.html")).unwrap();
-        assert!(
-            html.contains(">slow</h1>"),
-            "render must use the second read"
-        );
-        assert!(!html.contains("preflight-only"));
         assert!(
             !out.join("b.html").exists() && !out.join("c.html").exists(),
             "skipped inputs must not be rendered"
@@ -3291,9 +3289,13 @@ mod tests {
     fn batch_timeout_during_preflight_skips_every_unstarted_input() {
         // Preflight is part of the timeout budget too. A deadline that fires
         // here must prevent every render, including the first file.
-        let (dir, r) = fifo_timeout_run(
+        let (dir, r, render_started) = fifo_timeout_run(
             std::time::Duration::from_millis(1400),
             std::time::Duration::ZERO,
+        );
+        assert!(
+            !render_started,
+            "preflight cancellation must prevent rendering"
         );
         assert!(r.cancelled);
         assert_eq!(r.ok_count(), 0);

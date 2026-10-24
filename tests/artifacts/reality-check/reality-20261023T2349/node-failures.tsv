@@ -1,0 +1,79 @@
+where	test	first_error
+scripts/font-oracles/flow_composition_data.test.mjs:13:1	all 497 production pairs agree with ICU canonical composition and decomposition	AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+scripts/font-oracles/flow_composition_data.test.mjs:28:1	every two-step composition chain retains canonical identity	AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+wasm/flow_session.test.mjs:370:1	public entrypoint constructs the generated persistent class	Error [ERR_MODULE_NOT_FOUND]: Cannot find module '<temporary-test-package>' imported from <temporary-test-package>
+wasm/flow_session.test.mjs:378:1	public entrypoint rejects mismatched old artifacts with an actionable code	Error [ERR_MODULE_NOT_FOUND]: Cannot find module '<temporary-test-package>' imported from <temporary-test-package>
+wasm/flow_viewport_worker.test.mjs:110:1	forged worker viewport echo closes the session before returning a page	AssertionError [ERR_ASSERTION]: Missing expected rejection.
+wasm/native_workspace_preview_package.test.mjs:26:1	native exporter embeds the worker factory and exact source/resources without another payload	AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+wasm/tests/book_collection.test.mjs:104:1	invalid or authority-bearing projects leave the existing collection untouched	AssertionError [ERR_ASSERTION]: Missing expected exception.
+wasm/tests/book_edition_package.test.mjs:111:3	application entry: owned publisher, source facade and lifecycle order	AssertionError [ERR_ASSERTION]: node:internal/modules/run_main:107
+wasm/tests/book_edition_package.test.mjs:111:3	application entry: edition installation failure preserves other components	AssertionError [ERR_ASSERTION]: node:internal/modules/run_main:107
+wasm/tests/book_inspection_controls.test.mjs:244:1	actual panel is inserted before publishing with unique ids and associated controls	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:251:1	explicit inspection uses every source chapter and does not transmit asset or settings authority	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:262:1	findings, headings and file labels are text, never injected markup	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:271:1	source navigation opens the selected chapter without inventing spans or modifying source	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:283:1	large finding sets are paginated and severity filters reset the page	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:295:1	failed checks are visible and missing statistics are not shown as zero	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:308:1	inspection report downloads are independently prepared and revoked immediately on edits	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:322:1	raw DOM changes without events fence both source navigation and report activation	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:331:1	late old replies cannot replace a newer report	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:345:1	same-size wrong-source reports are rejected even when chapter paths match	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:354:1	invalid current input and source busy state cannot trigger stale analysis	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:367:1	cancel, composition/import transitions and suspension clear results without touching source	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_controls.test.mjs:384:1	dispose terminates inspection and prevents late publication	TypeError: Cannot read properties of undefined (reading 'addEventListener')
+wasm/tests/book_inspection_package.test.mjs:35:1	actual publisher and worker entry retain previous features and attach the source-only inspector	AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+wasm/tests/book_library_controls.test.mjs:173:1	named save captures current DOM/source order and never includes image authority	TypeError: element.addEventListener is not a function
+wasm/tests/book_library_controls.test.mjs:195:1	selecting a different saved book does not redirect the current save target	TypeError: element.addEventListener is not a function
+wasm/tests/book_library_controls.test.mjs:209:1	history controls restore original bytes and revoke old assets and downloads	TypeError: element.addEventListener is not a function
+wasm/tests/book_library_controls.test.mjs:234:1	project-file replacement detaches the previous autosave target	TypeError: element.addEventListener is not a function
+wasm/tests/book_library_controls.test.mjs:252:1	invalid publishing settings cannot save stale model settings	TypeError: element.addEventListener is not a function
+wasm/tests/book_library_controls.test.mjs:265:1	recovery checkpoint distinguishes invalid raw number inputs with the same numeric value	TypeError: element.addEventListener is not a function
+wasm/tests/book_library_controls.test.mjs:278:1	recovery checks current DOM even when no input event was dispatched	TypeError: element.addEventListener is not a function
+wasm/tests/book_library_controls.test.mjs:291:1	unsaved-change warning is removed after save and page suspension, restored after resume	TypeError: element.addEventListener is not a function
+wasm/tests/book_library_controls.test.mjs:311:1	composition disables library replacement and autosave controls	TypeError: element.addEventListener is not a function
+wasm/tests/book_library_controls.test.mjs:322:1	saved names render only as text and deleting the selected record preserves the editor	TypeError: element.addEventListener is not a function
+wasm/tests/book_library_package.test.mjs:39:1	publisher entry starts library independently and tears it down before source disposal	AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+wasm/tests/book_package.test.mjs:41:1	only the dedicated worker entry imports the actual book renderer	AssertionError [ERR_ASSERTION]: The input did not match the regular expression /installBookWorker\(self, book\)/. Input:
+wasm/tests/book_pdf_package.test.mjs:100:1	publisher bootstrap gives proofing its own worker and retires it before the source owner	Error [ERR_MODULE_NOT_FOUND]: Cannot find module '<temporary-test-package>' imported from <temporary-test-package>
+wasm/tests/book_pdf_package.test.mjs:116:1	proof initialization failure disposes only its worker and leaves the remaining publisher features installed	Error [ERR_MODULE_NOT_FOUND]: Cannot find module '<temporary-test-package>' imported from <temporary-test-package>
+wasm/tests/book_preview_package.test.mjs:44:1	actual publisher starts preview independently and tears it down before its source owner	AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+wasm/tests/book_project.test.mjs:35:1	sparse chapter arrays and forbidden project fields fail validation	AssertionError [ERR_ASSERTION]: Missing expected exception.
+wasm/tests/book_publication_package.test.mjs:22:1	actual public ESM facade executes against explicit capture/transport adapters	Error: Command failed: /opt/homebrew/Cellar/node/26.8.1/bin/node --experimental-vm-modules /Users/jemanuel/projects/franken_markdown/wasm/tests/book_publication_facade.mjs
+wasm/tests/book_resource_controls.test.mjs:371:1	chapter inspection excludes include-only files and binds source navigation by path	Error: Missing book inspection controls.
+wasm/tests/book_resource_controls.test.mjs:392:1	resource edits and role changes retire chapter inspection downloads	Error: Missing book inspection controls.
+wasm/tests/book_resource_controls.test.mjs:407:1	include-only drafts do not masquerade as an inspected published book	Error: Missing book inspection controls.
+wasm/tests/book_retained_bootstrap.test.mjs:59:1	publisher opts only the isolated HTML preview into retention and preserves lifecycle ordering	AssertionError [ERR_ASSERTION]: unhandled production import: createBookPublicationWorker
+wasm/tests/book_retained_bootstrap.test.mjs:73:1	failed preview startup disposes its owned client without preventing the publisher from loading	AssertionError [ERR_ASSERTION]: unhandled production import: createBookPublicationWorker
+wasm/tests/book_search_controls.test.mjs:131:1	search is explicit, navigates real editor ranges and leaves source/images untouched	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:148:1	result controls page through all matches without injecting source markup	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:162:1	current-chapter search and review-one affect only the chosen original range	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:177:1	review shows counts and before/after excerpts without changing source or downloads	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:192:1	apply updates the actual editor, invalidates downloads, notifies complete state and preserves image bytes	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:209:1	several replacement batches undo and redo atomically with exact BOM/CRLF restoration	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:226:1	chapter navigation and searching do not destroy replacement history	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:239:1	a new replacement after undo drops only the redo branch	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:250:1	replacement history is bounded to ten batches	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:257:1	rejecting confirmation changes nothing and leaves the review available	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:267:1	asynchronous confirmation cannot overwrite intervening source edits	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:279:1	changed raw replacement text without an event invalidates confirmation	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:292:1	undispatched editor or settings changes fence apply and navigation	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:306:1	undispatched keystrokes are captured, not overwritten by replacement undo	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:313:1	source, settings, image revocation and recovery each clear batch history	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:330:1	IME composition blocks search, replace, history and source navigation	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:349:1	query/replacement composition cancels a pending review without auto-searching	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:359:1	pending imports disable source actions then re-enable them on completion	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:376:1	failed imports also release the source-action busy state	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:382:1	in-flight export replies cannot republish pre-replacement output	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:392:1	invalid settings prevent searching stale model values	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:398:1	noop and failed replacements preserve existing undo history	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:408:1	discard invalidates an outstanding confirmation without touching source	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:420:1	suspension clears results/history and fences late confirmation; resume starts empty	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:435:1	dispose removes listeners, clears private text and prevents delayed mutation	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:451:1	public source APIs reject stale checkpoints and invalid ranges before changing selection	Error: Book controls are missing required elements.
+wasm/tests/book_search_controls.test.mjs:464:1	large-book replacement history prunes at its source-byte budget, not just batch count	Error: Book controls are missing required elements.
+wasm/tests/book_search_package.test.mjs:37:1	actual publisher entry initializes search and tears it down before the source owner	AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+wasm/tests/book_search_package.test.mjs:54:1	all actual search controller elements exist once in the publisher markup	"SyntaxError: Unexpected token ']', ...""story"","
+wasm/tests/flow_preview_controller.test.mjs:262:1	reading-data failure occurs before painting and leaves the old frame intact	AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+wasm/tests/flow_preview_reading.test.mjs:131:1	a late reading response cannot publish an older desired source	AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+wasm/tests/flow_preview_reading.test.mjs:216:1	disposing during a reading page never publishes its late semantic tree	AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+wasm/tests/flow_source_package.test.mjs:41:1	source controls have a separate script and their import graph never reaches WASM or preview code	AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:

@@ -83,6 +83,9 @@ tests/artifacts/perf/
 tests/artifacts/svg-showcase/
 tests/artifacts/visual/
 
+# Reality-check run products; compact reviewed evidence is force-added explicitly.
+tests/artifacts/reality-check/
+
 # Stray render output written to a file literally named "-" (a `--out -` accident)
 /-
 

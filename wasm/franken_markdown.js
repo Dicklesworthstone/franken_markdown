@@ -61,9 +61,10 @@ export async function renderHtml(markdown, options = {}) {
   const htmlFontFormat = stringOption(options.htmlFontFormat);
   if (htmlFontFormat !== undefined)
     requireBindingArguments(renderHtmlConfiguredAdvanced, 20, "HTML font format selection");
-  await init();
   const pdfImages = pdfImagesOption(options.pdfImages);
-  const fontAssets = fontAssetsOption(options.fontAssets);
+  const fontAssets = fontAssetsOption(options.fontAssets).map(asset => ({
+    ...asset, bytes: new Uint8Array(asset.bytes),
+  }));
   const fontScale = fontScaleOption(options.fontScale ?? options.typeSize);
   const destinations = pdfImages.map((image) => image.destination);
   const lengths = new Uint32Array(pdfImages.map((image) => image.bytes.length));
@@ -74,30 +75,32 @@ export async function renderHtml(markdown, options = {}) {
     flatBytes.set(image.bytes, offset);
     offset += image.bytes.length;
   }
-  return normalizeResult(
-    renderHtmlConfiguredAdvanced(
-      String(markdown),
-      stringOption(options.font),
-      darkModeOption(options.darkMode),
-      verbatimOption(options.title),
-      verbatimOption(options.customCss),
-      Boolean(options.allowRawHtml),
-      fontScale,
-      fontBytesForSlot(fontAssets, "body-regular"),
-      fontBytesForSlot(fontAssets, "body-bold"),
-      fontBytesForSlot(fontAssets, "body-italic"),
-      fontBytesForSlot(fontAssets, "body-bold-italic"),
-      fontBytesForSlot(fontAssets, "mono-regular"),
-      fontWeightsForSlots(fontAssets),
-      destinations,
-      flatBytes,
-      lengths,
-      stringOption(options.lang),
-      Boolean(options.toc),
-      integerOption(options.tocDepth, "tocDepth"),
-      ...(htmlFontFormat === undefined ? [] : [htmlFontFormat]),
-    ),
-  );
+  const args = [
+    String(markdown),
+    stringOption(options.font),
+    darkModeOption(options.darkMode),
+    verbatimOption(options.title),
+    verbatimOption(options.customCss),
+    Boolean(options.allowRawHtml),
+    fontScale,
+    fontBytesForSlot(fontAssets, "body-regular"),
+    fontBytesForSlot(fontAssets, "body-bold"),
+    fontBytesForSlot(fontAssets, "body-italic"),
+    fontBytesForSlot(fontAssets, "body-bold-italic"),
+    fontBytesForSlot(fontAssets, "mono-regular"),
+    fontWeightsForSlots(fontAssets),
+    destinations,
+    flatBytes,
+    lengths,
+    stringOption(options.lang),
+    Boolean(options.toc),
+    integerOption(options.tocDepth, "tocDepth"),
+    ...(htmlFontFormat === undefined ? [] : [htmlFontFormat]),
+  ];
+  // Own source, scalar settings and exact asset ranges before initialization
+  // yields, including its already-resolved warm path, as PDF/SVG/EPUB do.
+  await init();
+  return normalizeResult(renderHtmlConfiguredAdvanced(...args));
 }
 
 export async function renderPdf(markdown, options = {}) {
@@ -522,43 +525,38 @@ export async function renderInteractiveHtml(markdown, options = {}) {
 }
 
 export async function documentStats(markdown) {
+  const source = String(markdown);
   await init();
-  return parseJson(wasmDocumentStats(String(markdown)), "document stats JSON");
+  return parseJson(wasmDocumentStats(source), "document stats JSON");
 }
 
 export async function searchIndex(markdown) {
+  const source = String(markdown);
   await init();
-  return parseJson(wasmSearchIndex(String(markdown)), "search index JSON");
+  return parseJson(wasmSearchIndex(source), "search index JSON");
 }
 
 export async function accessibilityAudit(markdown) {
+  const source = String(markdown);
   await init();
-  return parseJson(wasmAccessibilityAudit(String(markdown)), "accessibility audit JSON");
+  return parseJson(wasmAccessibilityAudit(source), "accessibility audit JSON");
 }
 
 export async function semanticDiff(oldMarkdown, newMarkdown, options = {}) {
+  const args = [String(oldMarkdown), String(newMarkdown),
+    verbatimOption(options.oldName), verbatimOption(options.newName)];
   await init();
   return parseJson(
-    wasmSemanticDiff(
-      String(oldMarkdown),
-      String(newMarkdown),
-      verbatimOption(options.oldName),
-      verbatimOption(options.newName),
-    ),
+    wasmSemanticDiff(...args),
     "semantic diff JSON",
   );
 }
 
 export async function renderSemanticDiff(oldMarkdown, newMarkdown, options = {}) {
+  const args = [String(oldMarkdown), String(newMarkdown),
+    verbatimOption(options.oldName), verbatimOption(options.newName)];
   await init();
-  return normalizeResult(
-    wasmRenderSemanticDiffHtml(
-      String(oldMarkdown),
-      String(newMarkdown),
-      verbatimOption(options.oldName),
-      verbatimOption(options.newName),
-    ),
-  );
+  return normalizeResult(wasmRenderSemanticDiffHtml(...args));
 }
 
 export async function renderBookSite(files, options = {}) {

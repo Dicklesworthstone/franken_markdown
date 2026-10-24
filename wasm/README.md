@@ -50,6 +50,20 @@ const pdf = await fmd.renderPdf("# Report", {
 const url = URL.createObjectURL(pdf.blob());
 ```
 
+`renderHtml` captures source, theme, title, CSS, trust flags and other settings,
+and owns copies of the supplied image/font byte ranges before asynchronous
+initialization yields. Later edits to the options, shared request objects or
+caller buffers do not retarget that render. This applies after initialization
+has already completed too. Submit another call to render later changes.
+PDF, SVG and EPUB already use the same request-ownership model.
+
+`documentStats`, `searchIndex`, `accessibilityAudit`, `semanticDiff` and
+`renderSemanticDiff` also capture source strings before initialization yields;
+diff helpers retain the submitted old/new labels. The wrapper tests exercise
+these boundaries with explicit generated-binding doubles, including cold/warm
+initialization, concurrent requests and caller-buffer detachment. They do not
+substitute for rendering/parity checks against a generated WASM artifact.
+
 Every render result has:
 
 - `format`: `html` or `pdf`,

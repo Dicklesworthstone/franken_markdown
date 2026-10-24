@@ -208,6 +208,60 @@ test("page, source, primitive options and binary assets are captured before init
   assert.deepEqual([...args[27]], [720, 540, 72, 72, 72, 24]);
 });
 
+for (const blocked of [true, false]) test(`HTML owns source/settings/all font slots/images across ${blocked ? "cold" : "warm"} initialization`, async () => {
+  const { api, bindings } = await fixture({ blocked }); if (!blocked) await api.init();
+  let source = "# Original";
+  const image = Uint8Array.of(90, 1, 2, 91), other = Uint8Array.of(3, 4);
+  const slots = ["body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"];
+  const fonts = slots.map((slot, i) => ({ slot, bytes: Uint8Array.of(90, i + 5, i + 10, 91).subarray(1, 3), weight: 500 + i }));
+  const options = { font: "serif", darkMode: "off", title: " Before ", customCss: "body { color: red; }",
+    allowRawHtml: false, fontScale: 1.25, lang: "fr", toc: true, tocDepth: 3, htmlFontFormat: "woff2",
+    pdfImages: [{ destination: "before.png", bytes: new DataView(image.buffer, 1, 2) },
+      { destination: "other.png", bytes: other.buffer }], fontAssets: fonts };
+  const pending = api.renderHtml({ toString: () => source }, options);
+  source = "# Changed"; Object.assign(options, { font: "sans", darkMode: "auto", title: "After", customCss: "changed",
+    allowRawHtml: true, fontScale: 2, lang: "en", toc: false, tocDepth: 2, htmlFontFormat: "ttf" });
+  image.fill(0); other.fill(0); options.pdfImages[0].destination = "after.png";
+  for (const font of fonts) { font.bytes.fill(0); font.weight = 100; }
+  options.pdfImages = []; options.fontAssets = [];
+  bindings.finishInit(); const output = await pending, args = bindings.calls[0].args;
+  assert.equal(args.length, 20); assert.deepEqual(args.slice(0, 7), ["# Original", "serif", "disabled", " Before ", "body { color: red; }", false, 1.25]);
+  assert.deepEqual(args.slice(7, 12).map(value => [...value]), slots.map((_, i) => [i + 5, i + 10]));
+  assert.deepEqual([...args[12]], [500, 501, 502, 503, 504]); assert.deepEqual(args[13], ["before.png", "other.png"]);
+  assert.deepEqual([...args[14]], [1, 2, 3, 4]); assert.deepEqual([...args[15]], [2, 2]);
+  assert.deepEqual(args.slice(16), ["fr", true, 3, "woff2"]); assert.equal(output.sourceLength, 10);
+  assert.equal(bindings.initCount, 1); assert.equal(bindings.frees, 1);
+});
+test("concurrent HTML requests sharing mutable inputs retain independent snapshots", async () => {
+  const { api, bindings } = await fixture({ blocked: true });
+  const font = Uint8Array.of(1), image = Uint8Array.of(10);
+  const options = { title: "First", pdfImages: [{ destination: "image.png", bytes: image }],
+    fontAssets: [{ slot: "body-regular", bytes: font }] };
+  const first = api.renderHtml("# First", options); options.title = "Second"; font[0] = 2; image[0] = 20;
+  const second = api.renderHtml("# Second", options); options.title = "After"; font[0] = 3; image[0] = 30;
+  bindings.finishInit(); await Promise.all([first, second]);
+  assert.deepEqual(bindings.calls.map(({ args }) => [args[0], args[3], [...args[7]], [...args[14]]]),
+    [["# First", "First", [1], [10]], ["# Second", "Second", [2], [20]]]);
+  assert.equal(bindings.initCount, 1); assert.equal(bindings.frees, 2);
+});
+test("HTML survives caller buffer detachment after request admission", async () => {
+  const { api, bindings } = await fixture({ blocked: true });
+  const font = Uint8Array.of(90, 5, 6, 91), image = Uint8Array.of(90, 1, 2, 91);
+  const pending = api.renderHtml("# Original", { pdfImages: [{ destination: "image.png", bytes: image.subarray(1, 3) }],
+    fontAssets: [{ slot: "body-regular", bytes: new DataView(font.buffer, 1, 2) }] });
+  structuredClone([font.buffer, image.buffer], { transfer: [font.buffer, image.buffer] });
+  bindings.finishInit(); await pending; const args = bindings.calls[0].args;
+  assert.deepEqual([...args[7]], [5, 6]); assert.deepEqual([...args[14]], [1, 2]);
+  assert.equal(font.byteLength, 0); assert.equal(image.byteLength, 0); assert.equal(bindings.frees, 1);
+});
+test("invalid HTML requests fail before initialization or native rendering", async () => {
+  for (const options of [{ fontScale: 0 }, { tocDepth: -1 }, { pdfImages: [{ destination: "x", bytes: "bad" }] },
+    { fontAssets: [{ slot: "body-regular", bytes: Uint8Array.of(1) }, { slot: "body-regular", bytes: Uint8Array.of(2) }] }]) {
+    const { api, bindings } = await fixture(); await assert.rejects(api.renderHtml("x", options));
+    assert.equal(bindings.initCount, 0); assert.equal(bindings.calls.length, 0);
+  }
+});
+
 test("legacy generated packages render defaults but refuse to silently ignore requested paper", async () => {
   const { api, bindings } = await fixture({ pageBinding: false });
   await api.renderPdf("old");

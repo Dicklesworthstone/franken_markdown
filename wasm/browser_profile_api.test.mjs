@@ -198,3 +198,28 @@ test("nonfunction optional exports are not treated as supported", async () => {
   await assert.rejects(f.api.renderInteractiveHtml("x"), unsupported("wasm-workspace"));
   assert.equal(f.inits, 0);
 });
+
+for (const [method, binding] of [["documentStats", "documentStats"], ["searchIndex", "searchIndex"],
+  ["accessibilityAudit", "accessibilityAudit"], ["semanticDiff", "semanticDiff"]]) {
+  test(`${method} captures its submitted source inputs before initialization yields`, async () => {
+    const hold = gate(), calls = [];
+    const f = await fixture({ [binding]: (...args) => { calls.push(args); return "{}"; } }, hold.promise);
+    let oldText = "# Before", newText = "# New";
+    const oldSource = { toString: () => oldText }, newSource = { toString: () => newText };
+    const options = { oldName: " before.md ", newName: " new.md " };
+    const pending = method === "semanticDiff" ? f.api[method](oldSource, newSource, options) : f.api[method](oldSource);
+    oldText = "# Changed"; newText = "# Changed new"; options.oldName = "after.md"; options.newName = "after-new.md";
+    hold.resolve(); await pending;
+    assert.deepEqual(calls[0], method === "semanticDiff" ? ["# Before", "# New", " before.md ", " new.md "] : ["# Before"]);
+    assert.equal(f.inits, 1);
+  });
+}
+test("rendered semantic diff captures both sources and names before initialization", async () => {
+  const hold = gate(), f = await fixture({}, hold.promise);
+  let oldText = "old", newText = "new";
+  const options = { oldName: "old.md", newName: "new.md" };
+  const pending = f.api.renderSemanticDiff({ toString: () => oldText }, { toString: () => newText }, options);
+  oldText = "after old"; newText = "after new"; options.oldName = "after.md"; options.newName = "after-new.md";
+  hold.resolve(); await pending;
+  assert.deepEqual(f.calls[0].args, ["old", "new", "old.md", "new.md"]); assert.equal(f.frees, 1);
+});

@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const source = readFileSync(new URL('../../src/fonts/flow/positioned/composition.rs', import.meta.url), 'utf8');
-const rows = [...source.matchAll(/\('\\u\{([0-9a-f]+)\}', "([^"]*)", "([^"]*)"\)/gu)]
+const rows = [...source.matchAll(/\(\s*'\\u\{([0-9a-f]+)\}',\s*"([^"]*)",\s*"([^"]*)",?\s*\)/gu)]
   .map(([, hex, bases, composites]) => [String.fromCodePoint(parseInt(hex, 16)), [...bases], [...composites]]);
 const pairs = new Map();
 for (const [mark, bases, composites] of rows) {

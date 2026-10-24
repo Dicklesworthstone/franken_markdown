@@ -2308,6 +2308,9 @@ fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkRe
         i += 1;
         let start = i;
         while i < bytes.len() && bytes[i] != b'>' {
+            if bytes[i] == b'<' {
+                return None;
+            }
             i += 1;
         }
         if i >= bytes.len() || i == start {
@@ -2319,6 +2322,12 @@ fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkRe
     } else {
         let start = i;
         while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            // The general destination parser owns parenthesis balance and
+            // rejects unescaped '<' and controls. Do not let this ASCII fast
+            // path turn malformed source into a definition and delete it.
+            if matches!(bytes[i], b'(' | b')' | b'<') || bytes[i].is_ascii_control() {
+                return None;
+            }
             i += 1;
         }
         if i == start {

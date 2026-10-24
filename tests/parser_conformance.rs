@@ -107,6 +107,58 @@ fn indented_dash_line_is_not_setext_underline() {
 }
 
 #[test]
+fn malformed_ascii_reference_destinations_remain_source_text() {
+    for destination in [
+        "<foo<bar>",
+        "foo<bar",
+        "foo(bar",
+        "foo)bar",
+        "foo\u{0001}bar",
+    ] {
+        let source = format!("[doc]: {destination}\n\n[doc]\n");
+        let doc = parse_markdown(&source);
+        assert_eq!(doc.blocks.len(), 2, "source was consumed: {source:?}");
+        assert!(
+            matches!(&doc.blocks[1], Block::Paragraph(inlines)
+                if inlines == &[Inline::Text("[doc]".to_owned())]),
+            "malformed destination defined a link: {source:?}: {doc:?}"
+        );
+        assert!(
+            franken_markdown::parse::destination_spans(&source).is_empty(),
+            "invalid definition acquired editable destination authority: {source:?}"
+        );
+        assert!(
+            html(&source).contains("[doc]:"),
+            "source was hidden: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn valid_parenthesized_reference_destinations_keep_their_exact_targets() {
+    for (destination, expected) in [
+        ("foo(bar)", "foo(bar)"),
+        ("foo((bar))", "foo((bar))"),
+        ("<foo(bar)>", "foo(bar)"),
+        ("<foo bar>", "foo bar"),
+        ("<>", ""),
+    ] {
+        let source = format!("[doc]: {destination}\n\n[doc]\n");
+        let doc = parse_markdown(&source);
+        assert_eq!(
+            doc.blocks.len(),
+            1,
+            "valid definition was not consumed: {source:?}"
+        );
+        assert!(
+            matches!(&doc.blocks[0], Block::Paragraph(inlines)
+                if matches!(&inlines[..], [Inline::Link { dest, .. }] if dest == expected)),
+            "valid destination changed: {source:?}: {doc:?}"
+        );
+    }
+}
+
+#[test]
 fn full_reference_link_definitions_are_collected_and_not_rendered() {
     let out = html("[docs]: https://example.com/docs \"Docs\"\n\nRead [the docs][docs].");
 

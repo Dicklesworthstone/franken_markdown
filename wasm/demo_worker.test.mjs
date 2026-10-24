@@ -11,11 +11,15 @@ function fixture(t) {
     constructor(tag = "div") { super(); this.tag = tag; }
     appendChild(item) { this.children.push(item); item.parent = this; return item; }
     replaceChildren(...items) { this.children = items; }
+    removeAttribute(name) { delete this[name]; }
     remove() { if (this.parent) this.parent.children = this.parent.children.filter(x => x !== this); }
-    click() { if (this.tag === "a") downloads.push({ href: this.href, download: this.download }); this.dispatchEvent(new Event("click")); }
+    click() {
+      const accepted = this.dispatchEvent(new Event("click", { cancelable: true }));
+      if (accepted && this.tag === "a" && this.href) downloads.push({ href: this.href, download: this.download });
+    }
   }
-  const ids = ["markdown", "render", "download-pdf", "preview", "diagnostics", "status", "source-size", "preview-meta", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers"];
-  const els = Object.fromEntries(ids.map(id => [id, new Element()]));
+  const ids = ["markdown", "render", "download-pdf", "download-html", "preview", "diagnostics", "status", "source-size", "preview-meta", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers"];
+  const els = Object.fromEntries(ids.map(id => [id, new Element(id === "download-html" ? "a" : "div")]));
   els.markdown.value = "# Original";
   els.font.value = "sans"; els["dark-mode"].value = "auto"; els.title.value = "Original title";
   els.author.value = "Author"; els["line-numbers"].checked = true;
@@ -50,6 +54,138 @@ function fixture(t) {
   return { controller, els, win, doc, calls, clients, urls, revoked, downloads, timers, output, input, flush };
 }
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
+
+test("HTML download reuses exact completed bytes and filename without another render", async t => {
+  const f = fixture(t), link = f.els["download-html"];
+  assert.equal(link.hidden, true);
+  const pending = f.controller.renderPreview(), call = f.calls[0];
+  const html = '<!doctype html><html><head><style>body{color:green}</style></head><body>café😀</body></html>';
+  call.resolve(f.output(call, html));
+  assert.equal(await pending, true);
+  assert.equal(f.els.preview.srcdoc, html);
+  assert.equal(link.hidden, false);
+  assert.equal(link.download, "original-title.html");
+  assert.equal(await f.urls[0].blob.text(), html);
+  assert.deepEqual(new Uint8Array(await f.urls[0].blob.arrayBuffer()), new TextEncoder().encode(html));
+  assert.equal(f.downloads.length, 0, "preview completion does not download automatically");
+  link.click(); link.click();
+  assert.equal(f.downloads.length, 2);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.clients.length, 1);
+  assert.deepEqual(f.revoked, [], "repeat activation keeps the current artifact usable");
+});
+
+for (const field of ["markdown", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers"]) {
+  test(`silent ${field} changes block stale HTML activation`, async t => {
+    const f = fixture(t), pending = f.controller.renderPreview();
+    f.calls[0].resolve(f.output(f.calls[0], "completed HTML")); await pending;
+    const element = f.els[field];
+    if (["allow-html", "line-numbers"].includes(field)) element.checked = !element.checked;
+    else element.value += " changed";
+    f.els["download-html"].click();
+    assert.equal(f.downloads.length, 0);
+    assert.equal(f.els["download-html"].hidden, true);
+    assert.equal(f.els["download-html"].href, undefined);
+    assert.deepEqual(f.revoked, [f.urls[0].url]);
+    assert.equal(f.calls.length, 1);
+  });
+}
+
+test("edits and replacement rendering retire HTML URLs before accepting a fresh result", async t => {
+  const f = fixture(t), link = f.els["download-html"];
+  let pending = f.controller.renderPreview();
+  f.calls[0].resolve(f.output(f.calls[0], "first")); await pending;
+  pending = f.controller.renderPreview();
+  assert.equal(link.hidden, true);
+  assert.deepEqual(f.revoked, [f.urls[0].url]);
+  f.calls[1].resolve(f.output(f.calls[1], "second")); await pending;
+  assert.equal(link.hidden, false);
+  f.input("markdown", "Changed");
+  assert.equal(link.hidden, true);
+  assert.deepEqual(f.revoked, f.urls.map(x => x.url));
+  f.controller.dispose();
+  assert.deepEqual(f.revoked, f.urls.map(x => x.url), "no duplicate revocation");
+});
+
+test("HTML and PDF prepared URLs have independent completion and cancellation", async t => {
+  const f = fixture(t), preview = f.controller.renderPreview();
+  f.calls[0].resolve(f.output(f.calls[0], "html")); await preview;
+  const htmlUrl = f.els["download-html"].href;
+  const pdf = f.controller.downloadPdf();
+  f.calls[1].resolve(f.output(f.calls[1])); await pdf;
+  const cancelled = f.controller.downloadPdf();
+  f.els["download-pdf"].click();
+  f.calls[2].resolve(f.output(f.calls[2])); assert.equal(await cancelled, false);
+  assert.equal(f.els["download-html"].href, htmlUrl);
+  assert.equal(f.els["download-html"].hidden, false);
+  assert.deepEqual(f.revoked, []);
+  f.els["download-html"].click();
+  assert.equal(f.downloads.at(-1).href, htmlUrl);
+  f.controller.dispose();
+  assert.deepEqual(new Set(f.revoked), new Set(f.urls.map(x => x.url)));
+  assert.equal(f.revoked.length, f.urls.length);
+});
+
+for (const boundary of ["composition", "suspension", "disposal"]) {
+  test(`${boundary} retires completed HTML download authority`, async t => {
+    const f = fixture(t), pending = f.controller.renderPreview();
+    f.calls[0].resolve(f.output(f.calls[0])); await pending;
+    if (boundary === "composition") f.els.markdown.dispatchEvent(new Event("compositionstart"));
+    else if (boundary === "suspension") f.win.dispatchEvent(new Event("pagehide"));
+    else f.controller.dispose();
+    f.els["download-html"].click();
+    assert.equal(f.downloads.length, 0);
+    assert.equal(f.els["download-html"].hidden, true);
+    assert.equal(f.els["download-html"].href, undefined);
+    assert.deepEqual(f.revoked, f.urls.map(x => x.url));
+  });
+}
+
+test("HTML publication rechecks source after converting the renderer result", async t => {
+  const f = fixture(t), pending = f.controller.renderPreview(), call = f.calls[0];
+  const result = f.output(call);
+  result.blob = () => { f.els.markdown.value = "silently changed"; return new Blob(["stale"]); };
+  call.resolve(result);
+  assert.equal(await pending, false);
+  assert.equal(f.els.preview.srcdoc, "");
+  assert.equal(f.els["download-html"].hidden, true);
+  assert.deepEqual(f.revoked, f.urls.map(x => x.url));
+});
+
+test("blur change after a completed input preview keeps the first download click usable", async t => {
+  const f = fixture(t);
+  f.input("custom-css", "body {color: green}");
+  const pending = f.controller.renderPreview();
+  f.calls[0].resolve(f.output(f.calls[0], "completed")); await pending;
+  const url = f.els["download-html"].href;
+  f.els["custom-css"].dispatchEvent(new Event("change"));
+  f.els["download-html"].click();
+  assert.deepEqual(f.downloads, [{ href: url, download: "original-title.html" }]);
+  assert.deepEqual(f.revoked, []);
+  assert.equal(f.timers.size, 0);
+  assert.equal(f.calls.length, 1);
+});
+
+for (const boundary of ["composition", "suspension"]) {
+  test(`unchanged source gets a fresh preview after ${boundary} ends`, async t => {
+    const f = fixture(t), pending = f.controller.renderPreview();
+    f.calls[0].resolve(f.output(f.calls[0])); await pending;
+    if (boundary === "composition") {
+      f.els.markdown.dispatchEvent(new Event("compositionstart"));
+      f.els.markdown.dispatchEvent(new Event("compositionend"));
+    } else {
+      f.win.dispatchEvent(new Event("pagehide"));
+      const show = new Event("pageshow"); Object.defineProperty(show, "persisted", { value: true });
+      f.win.dispatchEvent(show);
+    }
+    f.flush();
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.calls[1].source, "# Original");
+    f.calls[1].resolve(f.output(f.calls[1])); await settle();
+    assert.equal(f.els["download-html"].hidden, false);
+    assert.notEqual(f.els["download-html"].href, f.urls[0].url);
+  });
+}
 
 test("typing coalesces and late cancelled previews never overwrite newer input", async t => {
   const f = fixture(t);

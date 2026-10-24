@@ -31,8 +31,28 @@ python3 -m http.server 8787 --directory target/fmd-checks/wasm-package
 
 Then open `http://127.0.0.1:8787/demo/`. The demo is plain HTML/CSS/ESM and
 does not require a bundler or network access for normal rendering. It imports
-`../franken_markdown.js`, renders the HTML preview through `renderHtml`, and
-downloads PDF bytes through `renderPdf`.
+the worker renderer, renders the HTML preview in a module worker, and downloads
+PDF bytes through a separate worker. After a preview completes, **Download HTML**
+saves that same standalone document without rendering again. It retains the
+selected theme and embedded fonts, or the replacement custom stylesheet when
+one is supplied. Source or setting changes hide the link
+until a fresh preview completes; page suspension and disposal release its Blob
+URL. The preview stays sandboxed; source HTML uses the safe-markup sanitizer
+unless raw HTML is explicitly enabled for trusted input.
+
+To check real downloads using an existing generated package and installed
+Playwright/Chromium, run:
+
+```bash
+FMD_WASM_PKG=/absolute/path/to/pkg node wasm/tests/demo_html_download.browser.mjs
+```
+
+`FMD_PLAYWRIGHT_MODULE` can select an installed Playwright ESM entrypoint and
+`FMD_CHROMIUM` an installed browser executable. The check runs the repository's
+demo and workers, compares downloaded HTML bytes with the sandboxed preview,
+and records the supplied glue/WASM hashes. Using a release package proves
+compatibility with that artifact; it does not qualify the current Rust source.
+Composition and page transitions in this check are synthetic events.
 
 ## Browser Usage
 

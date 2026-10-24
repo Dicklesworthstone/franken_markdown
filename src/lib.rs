@@ -679,8 +679,9 @@ pub struct HtmlOptions {
     /// A complete replacement stylesheet. When `Some`, it is used verbatim
     /// instead of the generated default theme CSS (user-supplied stylesheets).
     pub custom_css: Option<String>,
-    /// When false (default), raw inline/block HTML in the source is escaped and
-    /// rendered as text rather than passed through — safe for untrusted input.
+    /// When false (default), source HTML passes through the safe-markup sanitizer:
+    /// allowed tags and attributes survive; unsafe markup is escaped or removed.
+    /// Enable only for trusted input to pass source HTML through unfiltered.
     pub allow_raw_html: bool,
     /// Optional caller-supplied fonts. Missing slots use bundled fonts.
     pub font_assets: FontAssets,

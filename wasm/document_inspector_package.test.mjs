@@ -44,7 +44,7 @@ test("Document Lab ships with the demo, preserves existing rendering, and states
   const html = await read("./demo/index.html");
   for (const id of ["document-lab", "open-document-lab", "inspect-document", "download-inspection",
     "inspection-status", "inspection-results", "inspection-metrics", "inspection-structure",
-    "inspection-outline", "inspection-quality", "inspection-accessibility", "markdown", "render", "download-pdf"])
+    "inspection-outline", "inspection-quality", "inspection-accessibility", "markdown", "render", "download-pdf", "download-html"])
     assert.equal(html.split(`id="${id}"`).length - 1, 1, id);
   assert.match(html, /src="\.\/document_lab\.mjs"/);
   assert.match(html, /src="\.\/demo\.js"/);

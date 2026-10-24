@@ -102,6 +102,12 @@
         color: var(--accent-2);
       }
 
+      a.button:not([hidden]) {
+        display: inline-flex;
+        align-items: center;
+        text-decoration: none;
+      }
+
       .button:disabled {
         cursor: wait;
         opacity: 0.62;
@@ -341,6 +347,7 @@
           <a id="open-document-lab" href="#document-lab">Document Lab</a>
           <a href="./review.html" target="_blank" rel="noopener noreferrer">Compare revisions</a>
           <button id="render" class="button primary" type="button">Render</button>
+          <a id="download-html" class="button secondary" hidden>Download HTML</a>
           <button id="download-pdf" class="button secondary" type="button">Download PDF</button>
         </div>
       </div>

@@ -28,7 +28,7 @@ fn main() {
 export function createDemoController(doc, win, factory = createWorkerRenderer) {
   const els = {};
   for (const [key, selector] of Object.entries({
-    markdown: "#markdown", render: "#render", downloadPdf: "#download-pdf",
+    markdown: "#markdown", render: "#render", downloadPdf: "#download-pdf", downloadHtml: "#download-html",
     preview: "#preview", diagnostics: "#diagnostics", status: "#status",
     sourceSize: "#source-size", previewMeta: "#preview-meta", font: "#font",
     darkMode: "#dark-mode", title: "#title", author: "#author", customCss: "#custom-css",
@@ -38,7 +38,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     if (!els[key]) throw new Error(`franken_markdown demo is missing required element ${selector}`);
   }
   let alive = true, suspended = false, composing = false, generation = 0;
-  let timer = null, lastPdfUrl = null;
+  let timer = null, lastPdfUrl = null, lastHtmlUrl = null, preparedHtml = null, observed = null;
   const clients = { html: null, pdf: null }, jobs = { html: null, pdf: null }, listeners = [];
   const fields = ["markdown", "font", "darkMode", "title", "author", "customCss", "allowHtml", "lineNumbers"];
   const raw = () => Object.fromEntries(fields.map(key =>
@@ -85,6 +85,14 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     if (lastPdfUrl !== null) win.URL.revokeObjectURL(lastPdfUrl);
     lastPdfUrl = null;
   }
+  function revokeHtml() {
+    preparedHtml = null;
+    els.downloadHtml.hidden = true;
+    els.downloadHtml.removeAttribute("href");
+    els.downloadHtml.removeAttribute("download");
+    if (lastHtmlUrl !== null) win.URL.revokeObjectURL(lastHtmlUrl);
+    lastHtmlUrl = null;
+  }
   function cancel(kind) {
     const job = jobs[kind];
     jobs[kind] = null; // Fence publication before abort listeners can settle work.
@@ -99,6 +107,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     clearTimer();
     cancel("html");
     cancel("pdf");
+    revokeHtml();
     revokePdf();
     els.preview.srcdoc = "";
     els.previewMeta.textContent = "preview out of date";
@@ -116,6 +125,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     if (kind === "html") clearTimer();
     cancel(kind);
     const captured = raw();
+    if (kind === "html") observed = captured;
     if (!captured.markdown.trim()) {
       invalidate();
       els.previewMeta.textContent = "empty source";
@@ -126,6 +136,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     const job = { raw: captured, generation, abort: new AbortController() };
     jobs[kind] = job;
     if (kind === "html") {
+      revokeHtml();
       els.preview.srcdoc = "";
       els.previewMeta.textContent = "rendering";
     }
@@ -145,7 +156,17 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
       if (kind === "html") {
         // The existing preview iframe remains sandboxed. Worker output is not
         // inserted into the host DOM, and exporting does not grant raw HTML trust.
-        els.preview.srcdoc = output.text();
+        const text = output.text();
+        const base = captured.title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "franken-markdown";
+        const filename = output.filename(base);
+        const url = win.URL.createObjectURL(output.blob());
+        if (!current(kind, job)) { win.URL.revokeObjectURL(url); return false; }
+        lastHtmlUrl = url;
+        preparedHtml = { raw: captured, generation: job.generation };
+        els.preview.srcdoc = text;
+        els.downloadHtml.href = url;
+        els.downloadHtml.download = filename;
+        els.downloadHtml.hidden = false;
       } else {
         revokePdf();
         const url = win.URL.createObjectURL(output.blob());
@@ -175,23 +196,27 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
       }
     }
   }
-  function schedulePreview() {
+  function schedulePreview(force = false) {
     if (!alive || suspended) return;
+    // A textarea's blur can emit change after its input preview has completed.
+    // Retiring that identical result would consume the first download click.
+    if (!force && observed && unchanged(observed)) return;
+    observed = raw();
     invalidate();
     els.sourceSize.textContent = `${new TextEncoder().encode(els.markdown.value).byteLength} bytes`;
     status(composing ? "composing text" : "waiting for edits");
     if (!composing) timer = win.setTimeout(() => { timer = null; void run("html"); }, 180);
   }
   for (const key of fields) {
-    listen(els[key], "input", schedulePreview);
-    listen(els[key], "change", schedulePreview);
+    listen(els[key], "input", () => schedulePreview());
+    listen(els[key], "change", () => schedulePreview());
   }
   listen(els.markdown, "compositionstart", () => {
     composing = true;
     invalidate();
     status("composing text");
   });
-  listen(els.markdown, "compositionend", () => { composing = false; schedulePreview(); });
+  listen(els.markdown, "compositionend", () => { composing = false; schedulePreview(true); });
   listen(els.render, "click", () => {
     if (jobs.html) { cancel("html"); status("render cancelled"); }
     else void run("html");
@@ -199,6 +224,13 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   listen(els.downloadPdf, "click", () => {
     if (jobs.pdf) { cancel("pdf"); status("PDF cancelled"); }
     else void run("pdf");
+  });
+  listen(els.downloadHtml, "click", event => {
+    if (!alive || suspended || composing || !preparedHtml
+      || preparedHtml.generation !== generation || !unchanged(preparedHtml.raw)) {
+      event.preventDefault();
+      revokeHtml();
+    }
   });
   listen(win, "pagehide", () => {
     suspended = true;
@@ -209,7 +241,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     status("paused; source retained");
   });
   listen(win, "pageshow", event => {
-    if (event.persisted) { suspended = false; schedulePreview(); }
+    if (event.persisted) { suspended = false; schedulePreview(true); }
   });
   if (!els.markdown.value) els.markdown.value = sampleMarkdown;
   schedulePreview();

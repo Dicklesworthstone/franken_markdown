@@ -45,6 +45,21 @@ const CASES: &[(&str, &str, Style)] = &[
         r"\mathbb{R} \mathrm{d} \mathbf{v}",
         Style::Display,
     ),
+    (
+        "multiple_integrals",
+        r"\iint_D f \, dA + \iiint\limits_V g",
+        Style::Display,
+    ),
+    (
+        "tall_radical",
+        r"\sqrt{\begin{matrix} a \\ b \\ c \\ d \\ e \end{matrix}}",
+        Style::Display,
+    ),
+    (
+        "tall_paren",
+        r"\left( \begin{matrix} a \\ b \\ c \\ d \\ e \\ f \end{matrix} \right)",
+        Style::Display,
+    ),
 ];
 
 fn golden_dir() -> std::path::PathBuf {

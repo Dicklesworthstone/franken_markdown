@@ -50,9 +50,7 @@ fn render_archival(
             ));
         }
         _ => {
-            return Err(RenderError::InvalidInput(
-                "pdfA must be off or 2b".into(),
-            ));
+            return Err(RenderError::InvalidInput("pdfA must be off or 2b".into()));
         }
     };
     let page = PageStyle::from_browser_geometry(geometry)
@@ -110,16 +108,24 @@ mod tests {
 
     #[test]
     fn exported_archival_method_uses_the_existing_chapter_aware_writer() {
-        let raw = FmdBook { renderer: workspace() };
+        let raw = FmdBook {
+            renderer: workspace(),
+        };
         for strict in [false, true] {
-            let expected = raw.renderer.render_pdf_pdfa(if strict {
-                PdfASettings::a2b_strict()
-            } else {
-                PdfASettings::a2b()
-            }).unwrap();
+            let expected = raw
+                .renderer
+                .render_pdf_pdfa(if strict {
+                    PdfASettings::a2b_strict()
+                } else {
+                    PdfASettings::a2b()
+                })
+                .unwrap();
             let actual = raw.render_pdf_archival("2b", strict, vec![]).unwrap();
             assert_eq!(actual, expected);
-            assert_eq!(actual, raw.render_pdf_archival("2b", strict, vec![]).unwrap());
+            assert_eq!(
+                actual,
+                raw.render_pdf_archival("2b", strict, vec![]).unwrap()
+            );
             let text = String::from_utf8_lossy(&actual);
             assert!(text.contains("/OutputIntents"));
             assert!(text.contains("/Metadata"));
@@ -136,12 +142,18 @@ mod tests {
             [540.0, 720.0, 36.0, 30.0, 24.0, 18.0],
         ] {
             let mut options = book.options().pdf_options();
-            options.theme.page = PageStyle::from_browser_geometry(&geometry).unwrap().unwrap();
-            let expected = book.render_pdf_with_options(&options, PdfASettings::a2b_strict()).unwrap();
+            options.theme.page = PageStyle::from_browser_geometry(&geometry)
+                .unwrap()
+                .unwrap();
+            let expected = book
+                .render_pdf_with_options(&options, PdfASettings::a2b_strict())
+                .unwrap();
             let actual = render_archival(&book, "2b", true, &geometry).unwrap();
             assert_eq!(actual, expected);
-            assert!(String::from_utf8_lossy(&actual)
-                .contains(&format!("/MediaBox [0 0 {} {}]", geometry[0], geometry[1])));
+            assert!(
+                String::from_utf8_lossy(&actual)
+                    .contains(&format!("/MediaBox [0 0 {} {}]", geometry[0], geometry[1]))
+            );
         }
         assert_eq!(book.options().theme.page, page);
         assert_eq!(book.render_pdf().unwrap(), before);
@@ -152,11 +164,16 @@ mod tests {
         let book = workspace();
         let before = book.render_pdf().unwrap();
         for (profile, strict) in [("off", true), ("", false), ("2B", true), ("3b", false)] {
-            assert!(matches!(render_archival(&book, profile, strict, &[]),
-                Err(RenderError::InvalidInput(_))));
+            assert!(matches!(
+                render_archival(&book, profile, strict, &[]),
+                Err(RenderError::InvalidInput(_))
+            ));
         }
-        for geometry in [vec![612.0], vec![f64::NAN; 6],
-            vec![612.0, 792.0, 72.0, 270.000001, 72.0, 270.0]] {
+        for geometry in [
+            vec![612.0],
+            vec![f64::NAN; 6],
+            vec![612.0, 792.0, 72.0, 270.000001, 72.0, 270.0],
+        ] {
             assert!(render_archival(&book, "2b", true, &geometry).is_err());
         }
         assert_eq!(book.render_pdf().unwrap(), before);
@@ -165,8 +182,10 @@ mod tests {
     #[test]
     fn strict_writer_failure_is_not_replaced_by_an_ordinary_export() {
         let book = BookWorkspace::new(&[BookInput {
-            path: "one.md".into(), source: "# One\n\n[Local](file:///private/document)\n".into(),
-        }]).unwrap();
+            path: "one.md".into(),
+            source: "# One\n\n[Local](file:///private/document)\n".into(),
+        }])
+        .unwrap();
         let before = book.render_pdf().unwrap();
         assert!(render_archival(&book, "2b", true, &[]).is_err());
         assert_eq!(book.render_pdf().unwrap(), before);

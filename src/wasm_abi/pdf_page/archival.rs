@@ -1,11 +1,12 @@
 //! Single-document PDF/A emission through the ordinary native document writer.
 //! No synthetic chapter, PDF byte conversion, browser printing or fallback.
 
-use wasm_bindgen::prelude::*;
-use super::{FmdRenderResult, configured_pdf_options, render_error_to_js, render_result,
-    running_content};
-use crate::{PdfASettings, DiagnosticSeverity};
+use super::{
+    FmdRenderResult, configured_pdf_options, render_error_to_js, render_result, running_content,
+};
 use crate::wasm::{self, WasmDiagnostic, WasmOutputFormat, WasmRenderOptions, WasmRenderOutput};
+use crate::{DiagnosticSeverity, PdfASettings};
+use wasm_bindgen::prelude::*;
 
 /// The running-image PDF ABI plus export-local `off` / `2b` and strictness.
 /// Ordinary bindings retain their signatures and behavior. This is emission,
@@ -59,9 +60,20 @@ pub fn render_pdf_configured_archival(
     strict: bool,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let settings = archival_settings(profile, strict).map_err(JsValue::from_str)?;
-    admit_inputs(markdown, &image_destinations, &image_bytes_flat, &image_bytes_lengths,
-        [&body_regular, &body_bold, &body_italic, &body_bold_italic, &mono_regular])
-        .map_err(JsValue::from_str)?;
+    admit_inputs(
+        markdown,
+        &image_destinations,
+        &image_bytes_flat,
+        &image_bytes_lengths,
+        [
+            &body_regular,
+            &body_bold,
+            &body_italic,
+            &body_bold_italic,
+            &mono_regular,
+        ],
+    )
+    .map_err(JsValue::from_str)?;
     // Admit the chrome before copying any asset payloads.
     let mut running = running_content(running_slots, header_rule, footer_rule, skip_first_page)
         .map_err(JsValue::from_str)?;
@@ -123,8 +135,13 @@ fn archival_settings(profile: &str, strict: bool) -> Result<PdfASettings, &'stat
 
 // Both direct ABI callers and worker callers are admitted before parser work,
 // per-resource copies or font decoding. No additional resource authority.
-fn admit_inputs(source: &str, destinations: &[String], bytes: &[u8], lengths: &[u32],
-    fonts: [&[u8]; 5]) -> Result<(), &'static str> {
+fn admit_inputs(
+    source: &str,
+    destinations: &[String],
+    bytes: &[u8],
+    lengths: &[u32],
+    fonts: [&[u8]; 5],
+) -> Result<(), &'static str> {
     if source.len() > 32 * 1024 * 1024 {
         return Err("archival PDF source exceeds 32 MiB");
     }
@@ -134,9 +151,13 @@ fn admit_inputs(source: &str, destinations: &[String], bytes: &[u8], lengths: &[
     let mut seen = std::collections::BTreeSet::new();
     let mut text_bytes = 0usize;
     for destination in destinations {
-        if destination.trim().is_empty() || destination.len() > 8192
-            || !seen.insert(destination.as_str()) {
-            return Err("archival PDF image destinations must be nonempty, unique and at most 8 KiB");
+        if destination.trim().is_empty()
+            || destination.len() > 8192
+            || !seen.insert(destination.as_str())
+        {
+            return Err(
+                "archival PDF image destinations must be nonempty, unique and at most 8 KiB",
+            );
         }
         text_bytes += destination.len();
         if text_bytes > 65536 {
@@ -148,7 +169,9 @@ fn admit_inputs(source: &str, destinations: &[String], bytes: &[u8], lengths: &[
         if length == 0 || length as usize > 32 * 1024 * 1024 {
             return Err("archival PDF image payload must contain 1 byte to 32 MiB");
         }
-        packed = packed.checked_add(length as usize).ok_or("image size overflow")?;
+        packed = packed
+            .checked_add(length as usize)
+            .ok_or("image size overflow")?;
     }
     if packed != bytes.len() {
         return Err("archival PDF packed image lengths do not match the payload");
@@ -158,7 +181,9 @@ fn admit_inputs(source: &str, destinations: &[String], bytes: &[u8], lengths: &[
         if font.len() > 32 * 1024 * 1024 {
             return Err("archival PDF font exceeds 32 MiB");
         }
-        total = total.checked_add(font.len()).ok_or("resource size overflow")?;
+        total = total
+            .checked_add(font.len())
+            .ok_or("resource size overflow")?;
     }
     if total > 128 * 1024 * 1024 {
         return Err("archival PDF image and font resources exceed 128 MiB");
@@ -168,14 +193,19 @@ fn admit_inputs(source: &str, destinations: &[String], bytes: &[u8], lengths: &[
 
 // Same parsing, options and diagnostics as wasm::render_pdf. Only the final
 // native writer selection differs. Kept JsValue-free for native regression tests.
-fn render_archival(source: &str, options: &WasmRenderOptions, settings: PdfASettings)
-    -> crate::Result<WasmRenderOutput> {
+fn render_archival(
+    source: &str,
+    options: &WasmRenderOptions,
+    settings: PdfASettings,
+) -> crate::Result<WasmRenderOutput> {
     if settings == PdfASettings::OFF {
         return wasm::render_pdf(source, options);
     }
     let parsed = crate::parse_markdown_spanned(source);
-    let mut diagnostics: Vec<WasmDiagnostic> = parsed.diagnostics.iter().map(|item| {
-        WasmDiagnostic {
+    let mut diagnostics: Vec<WasmDiagnostic> = parsed
+        .diagnostics
+        .iter()
+        .map(|item| WasmDiagnostic {
             severity: match item.severity {
                 DiagnosticSeverity::Warning => "warning",
                 DiagnosticSeverity::Error => "error",
@@ -183,13 +213,16 @@ fn render_archival(source: &str, options: &WasmRenderOptions, settings: PdfASett
             start: item.span.start,
             end: item.span.end,
             message: item.message.clone(),
-        }
-    }).collect();
+        })
+        .collect();
     let doc = parsed.into_document();
     let pdf_options = options.pdf_options();
     for warning in crate::render_warnings(&doc, &pdf_options) {
         diagnostics.push(WasmDiagnostic {
-            severity: "warning", start: 0, end: 0, message: warning.message(),
+            severity: "warning",
+            start: 0,
+            end: 0,
+            message: warning.message(),
         });
     }
     let bytes = crate::render_pdf_document_pdfa(&doc, &pdf_options, settings)?;
@@ -197,7 +230,9 @@ fn render_archival(source: &str, options: &WasmRenderOptions, settings: PdfASett
         format: WasmOutputFormat::Pdf,
         mime_type: WasmOutputFormat::Pdf.mime_type(),
         extension: WasmOutputFormat::Pdf.extension(),
-        bytes, diagnostics, source_len: source.len(),
+        bytes,
+        diagnostics,
+        source_len: source.len(),
     })
 }
 

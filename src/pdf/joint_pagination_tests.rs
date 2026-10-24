@@ -758,7 +758,12 @@ fn finalized_quote_shape_preserves_segments_and_nested_structure() {
         }
     }
     // Installing decorations must not mutate the cached measured alternative.
-    assert!(alternative.lines.iter().all(|line| line.quote_bars.is_empty()));
+    assert!(
+        alternative
+            .lines
+            .iter()
+            .all(|line| line.quote_bars.is_empty())
+    );
 }
 
 #[test]
@@ -782,7 +787,10 @@ fn quoted_joint_selection_saves_a_page_without_losing_quote_tags() {
     apply(&mut selected, page, &candidates);
     assert_eq!(selected.len(), 13);
     assert!(selected.iter().all(|line| line.quote_bars == bars));
-    assert_eq!(exact_height_page_breaks(&selected, page).unwrap().ends, [13]);
+    assert_eq!(
+        exact_height_page_breaks(&selected, page).unwrap().ends,
+        [13]
+    );
     let texts: Vec<String> = selected
         .iter()
         .map(|line| line.segs.iter().map(seg_display_text).collect())
@@ -792,7 +800,9 @@ fn quoted_joint_selection_saves_a_page_without_losing_quote_tags() {
     let pdf = baseline_pdf(&selected, &opts, &faces, page);
     assert_eq!(emitted_pages(&pdf).len(), 1);
     assert_eq!(
-        String::from_utf8_lossy(&pdf).matches("/S /BlockQuote").count(),
+        String::from_utf8_lossy(&pdf)
+            .matches("/S /BlockQuote")
+            .count(),
         2
     );
     assert_eq!(pdf, baseline_pdf(&selected, &opts, &faces, page));
@@ -904,11 +914,18 @@ fn quoted_footnotes_keep_note_bodies_on_their_first_citation_page() {
         })
         .unwrap();
     for note_line in &selected[range.clone()] {
-        assert!(pages[citation_page].iter().any(|p| std::ptr::eq(p.line, note_line)));
+        assert!(
+            pages[citation_page]
+                .iter()
+                .any(|p| std::ptr::eq(p.line, note_line))
+        );
     }
     let pdf = crate::render_pdf(&source, &opts).unwrap();
     assert_eq!(emitted_pages(&pdf).len(), pages.len());
-    assert_eq!(verification_text_layer(&parsed, &opts).unwrap().page_count, pages.len());
+    assert_eq!(
+        verification_text_layer(&parsed, &opts).unwrap().page_count,
+        pages.len()
+    );
 }
 
 #[test]

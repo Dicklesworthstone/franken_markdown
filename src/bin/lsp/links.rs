@@ -192,7 +192,10 @@ pub fn request_in_workspace(
     source: &str,
     documents: &BTreeMap<String, Buffer>,
 ) -> Result<Json, Failure> {
-    if matches!(method, "textDocument/references" | "textDocument/documentHighlight") {
+    if matches!(
+        method,
+        "textDocument/references" | "textDocument/documentHighlight"
+    ) {
         return usages::request(method, params, uri, documents);
     }
     request_resolving(method, params, uri, source, |destination| {

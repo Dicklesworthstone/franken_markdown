@@ -10,9 +10,10 @@ fn options() -> WasmRenderOptions {
     options.title = Some("  Statement  ".into());
     options.author = Some("Author".into());
     options.metadata_epoch_seconds = Some(0);
-    options.theme.page = crate::PageStyle::from_browser_geometry(
-        &[720.0, 540.0, 36.0, 30.0, 32.0, 18.0],
-    ).unwrap().unwrap();
+    options.theme.page =
+        crate::PageStyle::from_browser_geometry(&[720.0, 540.0, 36.0, 30.0, 32.0, 18.0])
+            .unwrap()
+            .unwrap();
     options.base_font_size = Some(12.0);
     options.heading_scale = Some(1.3);
     options.table_font_size = Some(9.0);
@@ -22,14 +23,18 @@ fn options() -> WasmRenderOptions {
     options.toc_depth = Some(2);
     options.page_numbers = true;
     options.code_line_numbers = true;
-    options.apply_typography_tokens(Some("expansion,homogeneous")).unwrap();
+    options
+        .apply_typography_tokens(Some("expansion,homogeneous"))
+        .unwrap();
     options.pdf_image_assets.push(crate::PdfImageAsset {
-        destination: "chart.svg".into(), bytes: LOGO.to_vec(),
+        destination: "chart.svg".into(),
+        bytes: LOGO.to_vec(),
     });
     options.running.header.left = Some("{title}".into());
     options.running.header.rule = true;
     options.running.header.image = Some(crate::PdfRunningImage {
-        dest: "chart.svg".into(), position: crate::PdfRunningImagePosition::Right,
+        dest: "chart.svg".into(),
+        position: crate::PdfRunningImagePosition::Right,
         height_pt: Some(12),
     });
     options.running.footer.center = Some("{page} / {pages}".into());
@@ -40,9 +45,17 @@ fn options() -> WasmRenderOptions {
 fn archival_admission_is_exact_and_does_not_silently_change_profiles() {
     assert_eq!(archival_settings("off", false).unwrap(), PdfASettings::OFF);
     assert_eq!(archival_settings("2b", false).unwrap(), PdfASettings::a2b());
-    assert_eq!(archival_settings("2b", true).unwrap(), PdfASettings::a2b_strict());
-    for (profile, strict) in [("off", true), ("2B", false), ("", false),
-        ("3b", true), ("PDF/A-2b", false)] {
+    assert_eq!(
+        archival_settings("2b", true).unwrap(),
+        PdfASettings::a2b_strict()
+    );
+    for (profile, strict) in [
+        ("off", true),
+        ("2B", false),
+        ("", false),
+        ("3b", true),
+        ("PDF/A-2b", false),
+    ] {
         assert!(archival_settings(profile, strict).is_err());
     }
 }
@@ -53,8 +66,8 @@ fn direct_archive_matches_the_native_document_writer_not_a_book() {
     let doc = crate::parse_markdown_spanned(SOURCE).into_document();
     let plain = wasm::render_pdf(SOURCE, &options).unwrap();
     for settings in [PdfASettings::a2b(), PdfASettings::a2b_strict()] {
-        let expected = crate::render_pdf_document_pdfa(&doc, &options.pdf_options(), settings)
-            .unwrap();
+        let expected =
+            crate::render_pdf_document_pdfa(&doc, &options.pdf_options(), settings).unwrap();
         let actual = render_archival(SOURCE, &options, settings).unwrap();
         assert_eq!(actual.bytes, expected);
         assert_eq!(actual, render_archival(SOURCE, &options, settings).unwrap());
@@ -77,21 +90,37 @@ fn archival_footer_keeps_rejecting_insufficient_margin() {
     // The original success fixture supplied 24pt below a footer whose baseline
     // and scaled font ascent need 27.2pt. Keep that actual rejection covered;
     // the successful native/ABI parity fixture reserves 32pt instead.
-    options.theme.page = crate::PageStyle::from_browser_geometry(
-        &[720.0, 540.0, 36.0, 30.0, 24.0, 18.0],
-    ).unwrap().unwrap();
-    for settings in [PdfASettings::OFF, PdfASettings::a2b(), PdfASettings::a2b_strict()] {
+    options.theme.page =
+        crate::PageStyle::from_browser_geometry(&[720.0, 540.0, 36.0, 30.0, 24.0, 18.0])
+            .unwrap()
+            .unwrap();
+    for settings in [
+        PdfASettings::OFF,
+        PdfASettings::a2b(),
+        PdfASettings::a2b_strict(),
+    ] {
         let error = render_archival(SOURCE, &options, settings).unwrap_err();
-        assert!(error.to_string().contains("pdf_running_footer_does_not_fit"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("pdf_running_footer_does_not_fit"),
+            "{error}"
+        );
     }
 }
 
 #[test]
 fn off_is_byte_and_diagnostic_identical_to_the_existing_wasm_route() {
-    for source in [SOURCE, "", "# Broken\n\n![Missing](missing.png)\n\n```rust\nfn x() {}"] {
+    for source in [
+        SOURCE,
+        "",
+        "# Broken\n\n![Missing](missing.png)\n\n```rust\nfn x() {}",
+    ] {
         let options = options();
-        assert_eq!(render_archival(source, &options, PdfASettings::OFF).unwrap(),
-            wasm::render_pdf(source, &options).unwrap());
+        assert_eq!(
+            render_archival(source, &options, PdfASettings::OFF).unwrap(),
+            wasm::render_pdf(source, &options).unwrap()
+        );
     }
 }
 
@@ -120,16 +149,48 @@ fn strict_failure_is_not_downgraded_and_does_not_poison_later_exports() {
 #[test]
 fn exported_archival_abi_keeps_all_document_settings_and_running_image_slots() {
     let actual = render_pdf_configured_archival(
-        SOURCE, Some("serif".into()), None, Some("  Statement  ".into()),
-        Some("Author".into()), Some(0.0), false, true,
-        vec!["chart.svg".into()], LOGO.to_vec(), vec![LOGO.len() as u32],
-        vec![], vec![], vec![], vec![], vec![], vec![],
-        Some(12.0), Some(1.3), Some(9.0), true, Some(1.125), Some("de".into()),
-        true, Some(2), None, false, vec![720.0, 540.0, 36.0, 30.0, 32.0, 18.0],
-        ["{title}", "", "", "", "{page} / {pages}", ""].map(String::from).to_vec(),
-        true, false, false, vec!["chart.svg".into(), String::new()], vec![1, 0],
-        vec![12, 0], Some("expansion,homogeneous".into()), "2b", true,
-    ).unwrap();
+        SOURCE,
+        Some("serif".into()),
+        None,
+        Some("  Statement  ".into()),
+        Some("Author".into()),
+        Some(0.0),
+        false,
+        true,
+        vec!["chart.svg".into()],
+        LOGO.to_vec(),
+        vec![LOGO.len() as u32],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        Some(12.0),
+        Some(1.3),
+        Some(9.0),
+        true,
+        Some(1.125),
+        Some("de".into()),
+        true,
+        Some(2),
+        None,
+        false,
+        vec![720.0, 540.0, 36.0, 30.0, 32.0, 18.0],
+        ["{title}", "", "", "", "{page} / {pages}", ""]
+            .map(String::from)
+            .to_vec(),
+        true,
+        false,
+        false,
+        vec!["chart.svg".into(), String::new()],
+        vec![1, 0],
+        vec![12, 0],
+        Some("expansion,homogeneous".into()),
+        "2b",
+        true,
+    )
+    .unwrap();
     let expected = render_archival(SOURCE, &options(), PdfASettings::a2b_strict()).unwrap();
     assert_eq!(actual.bytes(), expected.bytes);
     assert_eq!(actual.diagnostics_json(), expected.diagnostics_json());
@@ -153,6 +214,8 @@ fn raw_abi_resource_admission_refuses_ambiguous_or_broken_packs() {
     ] {
         assert!(admit_inputs("x", &destinations, &bytes, &lengths, empty).is_err());
     }
-    let destinations: Vec<String> = (0..9).map(|i| format!("{}{}", i, "x".repeat(8191))).collect();
+    let destinations: Vec<String> = (0..9)
+        .map(|i| format!("{}{}", i, "x".repeat(8191)))
+        .collect();
     assert!(admit_inputs("x", &destinations, &[7; 9], &[1; 9], empty).is_err());
 }

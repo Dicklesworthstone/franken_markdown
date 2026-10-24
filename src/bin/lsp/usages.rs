@@ -8,10 +8,10 @@ use franken_markdown::book::validation::DocumentLinkAnalysis;
 
 use super::super::{MAX_DOCUMENTS, MAX_SESSION_BYTES};
 use super::{
-    AnchorKind, Buffer, Document, Failure, Json, LineIndex, MAX_BLOCK_BYTES,
-    MAX_DESTINATION_BYTES, MAX_DOCUMENT_BYTES, Position, ReferenceKind, SourceSpan,
-    analyze_document_links, candidate, number, object, parse_markdown_spanned, prefix_text,
-    probe_document, range, references, string, structure, workspace_links,
+    AnchorKind, Buffer, Document, Failure, Json, LineIndex, MAX_BLOCK_BYTES, MAX_DESTINATION_BYTES,
+    MAX_DOCUMENT_BYTES, Position, ReferenceKind, SourceSpan, analyze_document_links, candidate,
+    number, object, parse_markdown_spanned, prefix_text, probe_document, range, references, string,
+    structure, workspace_links,
 };
 
 const MAX_RESULTS: usize = 4096;
@@ -35,8 +35,12 @@ impl Snapshot {
             .map(|block| (block.span, block.node))
             .unzip();
         let document = Document { blocks };
-        let analysis = DocumentLinkAnalysis::with_file_references(&document)
-            .map_err(|_| (-32803, "reference analysis could not complete within its limits"))?;
+        let analysis = DocumentLinkAnalysis::with_file_references(&document).map_err(|_| {
+            (
+                -32803,
+                "reference analysis could not complete within its limits",
+            )
+        })?;
         Ok(Self {
             document,
             spans,
@@ -123,7 +127,11 @@ fn addressed_target<'a>(
         remote = Snapshot::parse(source)?;
         (uri, &remote)
     };
-    let Ok(index) = target.analysis.anchors.binary_search_by(|anchor| anchor.id.cmp(&id)) else {
+    let Ok(index) = target
+        .analysis
+        .anchors
+        .binary_search_by(|anchor| anchor.id.cmp(&id))
+    else {
         return Ok(None);
     };
     let anchor = &target.analysis.anchors[index];
@@ -155,12 +163,17 @@ fn select_target<'a>(
     };
     // A nested container can own several headings. Without independent source
     // spans, a caret there cannot identify one; selecting a verified link can.
-    if !matches!(snapshot.document.blocks.get(owner), Some(Block::Heading { .. })) {
+    if !matches!(
+        snapshot.document.blocks.get(owner),
+        Some(Block::Heading { .. })
+    ) {
         return Ok(None);
     }
-    let mut anchors = snapshot.analysis.anchors.iter().filter(|anchor| {
-        anchor.kind == AnchorKind::Heading && anchor.block_index == owner
-    });
+    let mut anchors = snapshot
+        .analysis
+        .anchors
+        .iter()
+        .filter(|anchor| anchor.kind == AnchorKind::Heading && anchor.block_index == owner);
     let Some(anchor) = anchors.next() else {
         return Ok(None);
     };
@@ -218,7 +231,10 @@ pub(super) fn request(
             .get("context")
             .and_then(|context| context.get("includeDeclaration"))
             .and_then(Json::as_bool)
-            .ok_or((-32602, "references requires context.includeDeclaration boolean"))?
+            .ok_or((
+                -32602,
+                "references requires context.includeDeclaration boolean",
+            ))?
     };
     let requested = Position::parse(params.get("position").ok_or((-32602, "missing position"))?)
         .map_err(|reason| (-32602, reason))?;
@@ -248,7 +264,10 @@ pub(super) fn request(
     // An unsynchronized buffer might contain another use. Never return a
     // deceptively complete workspace result from the last accepted revision.
     if !highlights && documents.values().any(|document| !document.synchronized) {
-        return Err((-32801, "reference search requires synchronized open documents"));
+        return Err((
+            -32801,
+            "reference search requires synchronized open documents",
+        ));
     }
     let mut found = Locations::default();
     let mut work = 0usize;
@@ -265,7 +284,10 @@ pub(super) fn request(
         };
         work += current.analysis.references.len();
         if work > MAX_REFERENCE_WORK {
-            return Err((-32803, "workspace reference count exceeds the search budget"));
+            return Err((
+                -32803,
+                "workspace reference count exceeds the search budget",
+            ));
         }
         for reference in &current.analysis.references {
             if reference.kind != ReferenceKind::Link || reference.finding.is_some() {
@@ -305,7 +327,9 @@ pub(super) fn request(
             .get(owner)
             .ok_or((-32803, "reference owner is no longer open"))?
             .text;
-        let index = indices.entry(owner).or_insert_with(|| LineIndex::new(source));
+        let index = indices
+            .entry(owner)
+            .or_insert_with(|| LineIndex::new(source));
         let location = range(index, source, SourceSpan::new(start, end));
         result.push(if highlights {
             object([

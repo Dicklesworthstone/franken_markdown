@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use super::*;
 use super::super::super::{parse_json, position, read_frame, run, write_frame};
+use super::*;
 
 const A: &str = "file:///docs/a.md";
 const B: &str = "file:///docs/b.md";
@@ -25,8 +25,14 @@ fn documents(entries: &[(&str, &str)]) -> BTreeMap<String, Buffer> {
 fn params(source: &str, needle: &str, declaration: bool) -> Json {
     let offset = source.find(needle).unwrap() + needle.chars().next().unwrap().len_utf8();
     object([
-        ("position", position(LineIndex::new(source).position(source, offset))),
-        ("context", object([("includeDeclaration", Json::Bool(declaration))])),
+        (
+            "position",
+            position(LineIndex::new(source).position(source, offset)),
+        ),
+        (
+            "context",
+            object([("includeDeclaration", Json::Bool(declaration))]),
+        ),
     ])
 }
 
@@ -76,8 +82,14 @@ fn references_deduplicate_source_blocks_and_honor_include_declaration() {
     let rows = search(&docs, A, "Topic", false);
     assert_eq!(starts(&rows), [(A.into(), 2), (A.into(), 4), (A.into(), 8)]);
     let rows = search(&docs, A, "Topic", true);
-    assert_eq!(starts(&rows), [(A.into(), 0), (A.into(), 2), (A.into(), 4), (A.into(), 8)]);
-    assert_eq!(search(&docs, A, "#topic", false), search(&docs, A, "Topic", false));
+    assert_eq!(
+        starts(&rows),
+        [(A.into(), 0), (A.into(), 2), (A.into(), 4), (A.into(), 8)]
+    );
+    assert_eq!(
+        search(&docs, A, "#topic", false),
+        search(&docs, A, "Topic", false)
+    );
 }
 
 #[test]
@@ -96,9 +108,15 @@ fn file_uri_and_extensionless_links_use_the_existing_open_buffer_resolver() {
     let target = "file:///docs/guide.md";
     let docs = documents(&[
         (target, "# Chapter"),
-        (A, "[a](guide#chapter)\n\n[b](./guide.md#chapter)\n\n[c](file:///docs/guide.md#chapter)"),
+        (
+            A,
+            "[a](guide#chapter)\n\n[b](./guide.md#chapter)\n\n[c](file:///docs/guide.md#chapter)",
+        ),
     ]);
-    assert_eq!(starts(&search(&docs, target, "Chapter", false)), [(A.into(), 0), (A.into(), 2), (A.into(), 4)]);
+    assert_eq!(
+        starts(&search(&docs, target, "Chapter", false)),
+        [(A.into(), 0), (A.into(), 2), (A.into(), 4)]
+    );
 }
 
 #[test]
@@ -118,8 +136,14 @@ fn nested_heading_targets_keep_distinct_ids_even_when_their_source_owner_is_shar
         (A, "# Root\n\n> # First\n>\n> # Second"),
         (B, "[first](a.md#first)\n\n[second](a.md#second)"),
     ]);
-    assert_eq!(starts(&search(&docs, B, "a.md#second", false)), [(B.into(), 2)]);
-    assert_eq!(starts(&search(&docs, B, "a.md#first", false)), [(B.into(), 0)]);
+    assert_eq!(
+        starts(&search(&docs, B, "a.md#second", false)),
+        [(B.into(), 2)]
+    );
+    assert_eq!(
+        starts(&search(&docs, B, "a.md#first", false)),
+        [(B.into(), 0)]
+    );
     assert!(search(&docs, A, "Second", false).is_empty());
 }
 
@@ -127,22 +151,44 @@ fn nested_heading_targets_keep_distinct_ids_even_when_their_source_owner_is_shar
 fn duplicate_heading_suffixes_follow_publication_instead_of_title_matching() {
     let source = "# Same\n\n# Same";
     let snapshot = Snapshot::parse(source).unwrap();
-    let first = snapshot.analysis.anchors.iter().find(|a| a.block_index == 0).unwrap();
-    let second = snapshot.analysis.anchors.iter().find(|a| a.block_index == 1).unwrap();
+    let first = snapshot
+        .analysis
+        .anchors
+        .iter()
+        .find(|a| a.block_index == 0)
+        .unwrap();
+    let second = snapshot
+        .analysis
+        .anchors
+        .iter()
+        .find(|a| a.block_index == 1)
+        .unwrap();
     assert_ne!(first.id, second.id);
     let references = format!("[a](a.md#{})\n\n[b](a.md#{})", first.id, second.id);
     let docs = documents(&[(A, source), (B, &references)]);
-    assert_eq!(starts(&search(&docs, B, &format!("a.md#{}", second.id), false)), [(B.into(), 2)]);
+    assert_eq!(
+        starts(&search(&docs, B, &format!("a.md#{}", second.id), false)),
+        [(B.into(), 2)]
+    );
 }
 
 #[test]
 fn reference_style_and_container_links_select_the_same_target() {
     let docs = documents(&[
         (A, "# Topic"),
-        (B, "> [quoted][section]\n\n- [listed](a.md#topic)\n\n[section]: a.md#topic"),
+        (
+            B,
+            "> [quoted][section]\n\n- [listed](a.md#topic)\n\n[section]: a.md#topic",
+        ),
     ]);
-    assert_eq!(starts(&search(&docs, B, "section", false)), [(B.into(), 0), (B.into(), 2)]);
-    assert_eq!(search(&docs, B, "section", false), search(&docs, A, "Topic", false));
+    assert_eq!(
+        starts(&search(&docs, B, "section", false)),
+        [(B.into(), 0), (B.into(), 2)]
+    );
+    assert_eq!(
+        search(&docs, B, "section", false),
+        search(&docs, A, "Topic", false)
+    );
 }
 
 #[test]
@@ -162,12 +208,29 @@ fn utf16_crlf_and_encoded_fragments_preserve_original_source_ranges() {
     let rows = search(&docs, A, "#caf%C3%A9", false);
     assert_eq!(starts(&rows), [(A.into(), 2), (A.into(), 4)]);
     let spans = Snapshot::parse(source).unwrap().spans;
-    assert_eq!(rows[0].get("range"), Some(&range(&LineIndex::new(source), source, spans[1])));
+    assert_eq!(
+        rows[0].get("range"),
+        Some(&range(&LineIndex::new(source), source, spans[1]))
+    );
     let invalid = object([
-        ("position", position(Position { line: 2, character: 1 })),
-        ("context", object([("includeDeclaration", Json::Bool(false))])),
+        (
+            "position",
+            position(Position {
+                line: 2,
+                character: 1,
+            }),
+        ),
+        (
+            "context",
+            object([("includeDeclaration", Json::Bool(false))]),
+        ),
     ]);
-    assert_eq!(request("textDocument/references", &invalid, A, &docs).unwrap_err().0, -32602);
+    assert_eq!(
+        request("textDocument/references", &invalid, A, &docs)
+            .unwrap_err()
+            .0,
+        -32602
+    );
 }
 
 #[test]
@@ -175,7 +238,12 @@ fn stale_buffers_refuse_workspace_results_without_breaking_local_highlights() {
     let mut docs = documents(&[(A, "# Topic\n\n[one](#topic)"), (B, "unrelated")]);
     docs.get_mut(B).unwrap().synchronized = false;
     let query = params(&docs[A].text, "Topic", false);
-    assert_eq!(request("textDocument/references", &query, A, &docs).unwrap_err().0, -32801);
+    assert_eq!(
+        request("textDocument/references", &query, A, &docs)
+            .unwrap_err()
+            .0,
+        -32801
+    );
     let rows = array(request("textDocument/documentHighlight", &query, A, &docs).unwrap());
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].get("kind").and_then(Json::as_u64), Some(3));
@@ -184,39 +252,96 @@ fn stale_buffers_refuse_workspace_results_without_breaking_local_highlights() {
 
 #[test]
 fn cross_buffer_highlights_return_only_current_document_usages() {
-    let docs = documents(&[(A, "# Topic"), (B, "[one](a.md#topic)\n\n[two](a.md#topic)")]);
-    let rows = array(request("textDocument/documentHighlight", &params(&docs[B].text, "a.md#topic", true), B, &docs).unwrap());
+    let docs = documents(&[
+        (A, "# Topic"),
+        (B, "[one](a.md#topic)\n\n[two](a.md#topic)"),
+    ]);
+    let rows = array(
+        request(
+            "textDocument/documentHighlight",
+            &params(&docs[B].text, "a.md#topic", true),
+            B,
+            &docs,
+        )
+        .unwrap(),
+    );
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|row| row.get("uri").is_none()));
-    assert!(rows.iter().all(|row| row.get("kind").and_then(Json::as_u64) == Some(2)));
+    assert!(
+        rows.iter()
+            .all(|row| row.get("kind").and_then(Json::as_u64) == Some(2))
+    );
 }
 
 #[test]
 fn malformed_context_and_unsynchronized_targets_return_protocol_errors() {
     let mut docs = documents(&[(A, "# Topic"), (B, "[one](a.md#topic)")]);
-    let missing = object([("position", position(Position { line: 0, character: 0 }))]);
-    assert_eq!(request("textDocument/references", &missing, A, &docs).unwrap_err().0, -32602);
+    let missing = object([(
+        "position",
+        position(Position {
+            line: 0,
+            character: 0,
+        }),
+    )]);
+    assert_eq!(
+        request("textDocument/references", &missing, A, &docs)
+            .unwrap_err()
+            .0,
+        -32602
+    );
     let invalid = object([
-        ("position", position(Position { line: 0, character: 0 })),
+        (
+            "position",
+            position(Position {
+                line: 0,
+                character: 0,
+            }),
+        ),
         ("context", object([("includeDeclaration", string("true"))])),
     ]);
-    assert_eq!(request("textDocument/references", &invalid, A, &docs).unwrap_err().0, -32602);
+    assert_eq!(
+        request("textDocument/references", &invalid, A, &docs)
+            .unwrap_err()
+            .0,
+        -32602
+    );
     docs.get_mut(A).unwrap().synchronized = false;
     let query = params(&docs[B].text, "a.md#topic", false);
-    assert_eq!(request("textDocument/references", &query, B, &docs).unwrap_err().0, -32801);
+    assert_eq!(
+        request("textDocument/references", &query, B, &docs)
+            .unwrap_err()
+            .0,
+        -32801
+    );
 }
 
 #[test]
 fn excessive_results_are_rejected_not_silently_truncated() {
     let source = format!("# Topic\n\n{}", "[one](#topic)\n\n".repeat(MAX_RESULTS + 1));
     let docs = documents(&[(A, &source)]);
-    assert_eq!(request("textDocument/references", &params(&source, "Topic", false), A, &docs).unwrap_err().0, -32803);
+    assert_eq!(
+        request(
+            "textDocument/references",
+            &params(&source, "Topic", false),
+            A,
+            &docs
+        )
+        .unwrap_err()
+        .0,
+        -32803
+    );
     let uri = "u".repeat(8192);
     let mut locations = Locations::default();
     for start in 0..128 {
-        locations.add(&uri, SourceSpan::new(start, start + 1), false).unwrap();
+        locations
+            .add(&uri, SourceSpan::new(start, start + 1), false)
+            .unwrap();
     }
-    assert!(locations.add(&uri, SourceSpan::new(128, 129), false).is_err());
+    assert!(
+        locations
+            .add(&uri, SourceSpan::new(128, 129), false)
+            .is_err()
+    );
 }
 
 #[test]
@@ -224,9 +349,19 @@ fn synchronized_edits_and_closed_buffers_are_observed_on_the_next_request() {
     let mut docs = documents(&[(A, "# Topic"), (B, "[one](a.md#topic)")]);
     assert_eq!(search(&docs, A, "Topic", false).len(), 1);
     let changes = [object([("text", string("[one](a.md#other)"))])];
-    docs.get_mut(B).unwrap().change(2, &changes, MAX_DOCUMENT_BYTES).unwrap();
+    docs.get_mut(B)
+        .unwrap()
+        .change(2, &changes, MAX_DOCUMENT_BYTES)
+        .unwrap();
     assert!(search(&docs, A, "Topic", false).is_empty());
-    docs.get_mut(B).unwrap().change(3, &[object([("text", string("[one](a.md#topic)"))])], MAX_DOCUMENT_BYTES).unwrap();
+    docs.get_mut(B)
+        .unwrap()
+        .change(
+            3,
+            &[object([("text", string("[one](a.md#topic)"))])],
+            MAX_DOCUMENT_BYTES,
+        )
+        .unwrap();
     assert_eq!(search(&docs, A, "Topic", false).len(), 1);
     docs.remove(B);
     assert!(search(&docs, A, "Topic", false).is_empty());
@@ -257,9 +392,19 @@ fn framed_protocol_advertises_and_dispatches_both_providers() {
             replies.insert(id, reply);
         }
     }
-    let capabilities = replies[&1].get("result").unwrap().get("capabilities").unwrap();
-    assert_eq!(capabilities.get("referencesProvider"), Some(&Json::Bool(true)));
-    assert_eq!(capabilities.get("documentHighlightProvider"), Some(&Json::Bool(true)));
+    let capabilities = replies[&1]
+        .get("result")
+        .unwrap()
+        .get("capabilities")
+        .unwrap();
+    assert_eq!(
+        capabilities.get("referencesProvider"),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        capabilities.get("documentHighlightProvider"),
+        Some(&Json::Bool(true))
+    );
     assert_eq!(array(replies[&2].get("result").unwrap().clone()).len(), 1);
     assert_eq!(array(replies[&3].get("result").unwrap().clone()).len(), 2);
 }

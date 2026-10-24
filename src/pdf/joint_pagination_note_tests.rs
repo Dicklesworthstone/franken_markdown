@@ -165,10 +165,14 @@ fn baseline_reservations_match_the_emitter_bit_for_bit() {
     );
     let notes = PageNotes::scan(&lines).unwrap();
     assert_eq!(notes.first_refs.len(), 3);
-    let reserves = shape_note_reservations(&lines, &notes, 0, notes.body_end, &lines[..notes.body_end])
-        .unwrap();
+    let reserves =
+        shape_note_reservations(&lines, &notes, 0, notes.body_end, &lines[..notes.body_end])
+            .unwrap();
     for (index, reserve) in reserves.iter().enumerate() {
-        assert_eq!(reserve.to_bits(), notes.line_reserve(&lines, index).to_bits());
+        assert_eq!(
+            reserve.to_bits(),
+            notes.line_reserve(&lines, index).to_bits()
+        );
     }
 }
 
@@ -188,26 +192,39 @@ fn moving_citations_reanchors_note_bodies_and_charges_each_body_once() {
             .map(|line| line_leading(line) + line.gap_after)
             .sum::<f32>()
     };
-    assert_eq!(reserves, [0.0, separator + note_height(1), 0.0, separator + note_height(2)]);
+    assert_eq!(
+        reserves,
+        [
+            0.0,
+            separator + note_height(1),
+            0.0,
+            separator + note_height(2)
+        ]
+    );
     // This is the same scan the emitter performs after selected shapes are
     // installed. It must agree even though all original line indices moved.
     let mut replaced = shape.clone();
     replaced.extend(lines[notes.body_end..].iter().cloned());
     let rescanned = PageNotes::scan(&replaced).unwrap();
     for (index, reserve) in reserves.iter().enumerate() {
-        assert_eq!(reserve.to_bits(), rescanned.line_reserve(&replaced, index).to_bits());
+        assert_eq!(
+            reserve.to_bits(),
+            rescanned.line_reserve(&replaced, index).to_bits()
+        );
     }
 }
 
 #[test]
 fn multiple_first_citations_on_one_line_share_one_separator() {
-    let lines = prepared_layout(
-        "One[^one].  \nTwo[^two].\n\n[^one]: First note.\n\n[^two]: Second note.",
-    );
+    let lines =
+        prepared_layout("One[^one].  \nTwo[^two].\n\n[^one]: First note.\n\n[^two]: Second note.");
     let notes = PageNotes::scan(&lines).unwrap();
     let shape = citation_positions(&lines, &[&[], &[1, 2], &[], &[]]);
     let reserves = shape_note_reservations(&lines, &notes, 0, notes.body_end, &shape).unwrap();
-    assert_eq!(reserves[1].to_bits(), notes.reserve(&lines, 0, notes.body_end).to_bits());
+    assert_eq!(
+        reserves[1].to_bits(),
+        notes.reserve(&lines, 0, notes.body_end).to_bits()
+    );
     assert_eq!(reserves.iter().filter(|&&height| height > 0.0).count(), 1);
 }
 
@@ -221,14 +238,16 @@ fn references_already_charged_in_an_earlier_block_are_not_reserved_again() {
     let shape = citation_positions(&lines, &[&[1], &[], &[2], &[]]);
     let reserves = shape_note_reservations(&lines, &notes, start, notes.body_end, &shape).unwrap();
     assert_eq!(reserves[0], 0.0);
-    assert_eq!(reserves[2].to_bits(), notes.reserve(&lines, start, notes.body_end).to_bits());
+    assert_eq!(
+        reserves[2].to_bits(),
+        notes.reserve(&lines, start, notes.body_end).to_bits()
+    );
 }
 
 #[test]
 fn missing_extra_and_reordered_citations_cannot_drop_reservations() {
-    let lines = prepared_layout(
-        "One[^one], two[^two].\n\n[^one]: First note.\n\n[^two]: Second note.",
-    );
+    let lines =
+        prepared_layout("One[^one], two[^two].\n\n[^one]: First note.\n\n[^two]: Second note.");
     let notes = PageNotes::scan(&lines).unwrap();
     for positions in [vec![1], vec![2, 1], vec![1, 1, 2], vec![]] {
         let shape = citation_positions(&lines, &[positions.as_slice()]);
@@ -257,11 +276,17 @@ fn a_plain_paragraph_can_save_a_page_in_a_document_with_page_notes() {
     let shifted = PageNotes::scan(&selected).unwrap();
     assert_eq!(shifted.first_refs[0].0, 13);
     assert!(selected[13].page_break_before);
-    assert_eq!(shifted.first_refs[0].1.start + 1, notes.first_refs[0].1.start);
+    assert_eq!(
+        shifted.first_refs[0].1.start + 1,
+        notes.first_refs[0].1.start
+    );
     assert_note_region_preserved(&baseline, &selected);
     let public_lines = layout(&prepared.blocks, &opts, &faces, page);
     assert_eq!(texts(&selected), texts(&public_lines));
-    assert_eq!(note_plan(&public_lines, page).ends, note_plan(&selected, page).ends);
+    assert_eq!(
+        note_plan(&public_lines, page).ends,
+        note_plan(&selected, page).ends
+    );
 }
 
 #[test]
@@ -277,12 +302,20 @@ fn a_citing_paragraph_uses_its_real_shorter_shape_and_keeps_the_note_on_its_page
     let doc = crate::parse_markdown(&source);
     let mut opts = options_for_notes();
     let faces = Faces::load(&opts).unwrap();
-    let (baseline, candidates) = unselected_notes(&doc, &opts, &faces, PageGeom::from_theme(&opts.theme));
+    let (baseline, candidates) =
+        unselected_notes(&doc, &opts, &faces, PageGeom::from_theme(&opts.theme));
     let notes = PageNotes::scan(&baseline).unwrap();
     let paragraph = &candidates.paragraphs[&baseline[0].flow.group];
-    let shorter = paragraph.alternatives.iter().find(|shape| shape.lines.len() == 13).unwrap();
+    let shorter = paragraph
+        .alternatives
+        .iter()
+        .find(|shape| shape.lines.len() == 13)
+        .unwrap();
     let shape = finalized_shape(&baseline[..notes.body_end], shorter);
-    let required = shape.iter().map(|line| line_leading(line) + line.gap_after).sum::<f32>()
+    let required = shape
+        .iter()
+        .map(|line| line_leading(line) + line.gap_after)
+        .sum::<f32>()
         + notes.reserve(&baseline, 0, notes.body_end);
     opts.theme.page.size.height_pt = required + 72.25;
     let page = PageGeom::from_theme(&opts.theme);
@@ -295,8 +328,18 @@ fn a_citing_paragraph_uses_its_real_shorter_shape_and_keeps_the_note_on_its_page
     let pages = paginate_lines_for_options(&selected, page, &opts);
     assert_eq!(pages.len(), 1);
     assert!(pages[0].iter().any(|placed| placed.line.flow.note == 1));
-    assert!(pages[0].iter().any(|placed| placed.line.segs.iter().any(|seg| seg_page_note(seg) == Some(1))));
-    assert!(selected.iter().all(|line| line_overshoot(line, &page).is_none()));
+    assert!(pages[0].iter().any(|placed| {
+        placed
+            .line
+            .segs
+            .iter()
+            .any(|seg| seg_page_note(seg) == Some(1))
+    }));
+    assert!(
+        selected
+            .iter()
+            .all(|line| line_overshoot(line, &page).is_none())
+    );
 }
 
 #[test]
@@ -304,7 +347,8 @@ fn real_footnote_source_preserves_text_links_emission_and_verification() {
     let source = format!(
         "{} A citation[^one].\n\n{} Repeated[^one] and second[^two].\n\n\
          [^one]: First complete note.\n\n[^two]: Second complete note.",
-        [PROSE; 3].join(" "), [PROSE; 3].join(" "),
+        [PROSE; 3].join(" "),
+        [PROSE; 3].join(" "),
     );
     let doc = crate::parse_markdown(&source);
     let prepared = crate::footnotes::for_pdf_paged(&doc);
@@ -319,21 +363,41 @@ fn real_footnote_source_preserves_text_links_emission_and_verification() {
     let pages = paginate_lines_for_options(&selected, page, &opts);
     for (citing_line, range) in &notes.first_refs {
         let number = selected[range.start].flow.note;
-        let first_page = pages.iter().position(|placed| placed.iter().any(|p| {
-            std::ptr::eq(p.line, &selected[*citing_line])
-        })).unwrap();
-        let note_pages: Vec<_> = pages.iter().enumerate().filter_map(|(index, placed)| {
-            placed.iter().any(|p| p.line.flow.note == number).then_some(index)
-        }).collect();
+        let first_page = pages
+            .iter()
+            .position(|placed| {
+                placed
+                    .iter()
+                    .any(|p| std::ptr::eq(p.line, &selected[*citing_line]))
+            })
+            .unwrap();
+        let note_pages: Vec<_> = pages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, placed)| {
+                placed
+                    .iter()
+                    .any(|p| p.line.flow.note == number)
+                    .then_some(index)
+            })
+            .collect();
         assert_eq!(note_pages, [first_page]);
     }
     let chunked = crate::render_pdf(&source, &opts).unwrap();
     assert_eq!(chunked, crate::render_pdf(&source, &opts).unwrap());
-    assert_eq!(chunked, crate::render_pdf_emitted(&source, &opts, PdfEmitOptions::monolithic()).unwrap());
+    assert_eq!(
+        chunked,
+        crate::render_pdf_emitted(&source, &opts, PdfEmitOptions::monolithic()).unwrap()
+    );
     let verified = verification_text_layer(&doc, &opts).unwrap();
     assert_eq!(verified.page_count, pages.len());
-    let verified_text = verified.pages.iter().flat_map(|page| &page.runs)
-        .map(|run| run.text.as_str()).collect::<Vec<_>>().join(" ");
+    let verified_text = verified
+        .pages
+        .iter()
+        .flat_map(|page| &page.runs)
+        .map(|run| run.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(verified_text.contains("First complete note."));
     assert!(verified_text.contains("Second complete note."));
 }
@@ -367,7 +431,11 @@ fn infeasible_note_space_cannot_be_evaded_by_selecting_an_alternative() {
     let mut page = PageGeom::from_theme(&opts.theme);
     let (baseline, candidates) = unselected_notes(&doc, &opts, &faces, page);
     let notes = PageNotes::scan(&baseline).unwrap();
-    assert!(!candidates.paragraphs[&baseline[0].flow.group].alternatives.is_empty());
+    assert!(
+        !candidates.paragraphs[&baseline[0].flow.group]
+            .alternatives
+            .is_empty()
+    );
     page.bottom = page.top_y() - MIN_CONTENT_DIM;
     assert!(notes.line_reserve(&baseline, 0) + line_leading(&baseline[0]) > MIN_CONTENT_DIM);
     assert!(select(&baseline, page, &candidates).is_none());
@@ -385,5 +453,9 @@ fn a_block_with_only_repeated_citations_has_no_new_reservation() {
     let notes = PageNotes::scan(&lines).unwrap();
     let start = pdf_height_block_end(&lines[..notes.body_end], 0);
     let shape = citation_positions(&lines, &[&[], &[1], &[], &[1]]);
-    assert!(shape_note_reservations(&lines, &notes, start, notes.body_end, &shape).unwrap().is_empty());
+    assert!(
+        shape_note_reservations(&lines, &notes, start, notes.body_end, &shape)
+            .unwrap()
+            .is_empty()
+    );
 }

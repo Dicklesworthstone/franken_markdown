@@ -48,40 +48,66 @@ impl Workspace {
         documents: &BTreeMap<String, Buffer>,
         changed: Option<&str>,
     ) -> Vec<Json> {
-        self.entries.retain(|uri, _| {
-            documents.get(uri).is_some_and(|buffer| buffer.synchronized)
-        });
+        self.entries
+            .retain(|uri, _| documents.get(uri).is_some_and(|buffer| buffer.synchronized));
         for (uri, buffer) in documents {
             if !buffer.synchronized {
                 continue;
             }
-            if self.entries.get(uri).is_some_and(|entry| {
-                entry.snapshot.version == buffer.version
-            }) {
+            if self
+                .entries
+                .get(uri)
+                .is_some_and(|entry| entry.snapshot.version == buffer.version)
+            {
                 continue;
             }
-            self.entries.insert(uri.clone(), Entry {
-                snapshot: diagnostics::snapshot(buffer),
-                sent: None,
-            });
+            self.entries.insert(
+                uri.clone(),
+                Entry {
+                    snapshot: diagnostics::snapshot(buffer),
+                    sent: None,
+                },
+            );
             #[cfg(test)]
-            { self.rebuilds += 1; }
+            {
+                self.rebuilds += 1;
+            }
         }
         // Admission is global and deterministic: do not arbitrarily omit the
         // final URI's edges while implying earlier reports are complete.
-        let work: usize = self.entries.values().filter_map(|entry| {
-            entry.snapshot.links.as_ref().map(|links| links.references.len())
-        }).sum();
+        let work: usize = self
+            .entries
+            .values()
+            .filter_map(|entry| {
+                entry
+                    .snapshot
+                    .links
+                    .as_ref()
+                    .map(|links| links.references.len())
+            })
+            .sum();
         let over_budget = work > MAX_REFERENCE_WORK;
-        let updates: Vec<_> = self.entries.iter().filter_map(|(uri, entry)| {
-            let buffer = documents.get(uri)?;
-            let extra = additions(uri, buffer, &entry.snapshot, documents, &self.entries, over_budget);
-            (entry.sent.as_ref() != Some(&extra)).then_some((uri.clone(), extra))
-        }).collect();
+        let updates: Vec<_> = self
+            .entries
+            .iter()
+            .filter_map(|(uri, entry)| {
+                let buffer = documents.get(uri)?;
+                let extra = additions(
+                    uri,
+                    buffer,
+                    &entry.snapshot,
+                    documents,
+                    &self.entries,
+                    over_budget,
+                );
+                (entry.sent.as_ref() != Some(&extra)).then_some((uri.clone(), extra))
+            })
+            .collect();
         let mut primary = Vec::new();
         let mut others = Vec::new();
         for (uri, extra) in updates {
-            let (Some(entry), Some(buffer)) = (self.entries.get_mut(&uri), documents.get(&uri)) else {
+            let (Some(entry), Some(buffer)) = (self.entries.get_mut(&uri), documents.get(&uri))
+            else {
                 continue;
             };
             let mut findings = entry.snapshot.local.clone();
@@ -102,14 +128,14 @@ impl Workspace {
 }
 
 fn has_truncation(snapshot: &Snapshot) -> bool {
-    snapshot.local.iter().any(|finding| {
-        finding.get("code").and_then(Json::as_str) == Some("diagnostics_truncated")
-    })
+    snapshot
+        .local
+        .iter()
+        .any(|finding| finding.get("code").and_then(Json::as_str) == Some("diagnostics_truncated"))
 }
 
 fn addressed_fragment(destination: &str) -> Option<(&str, &str)> {
-    let destination =
-        destination.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+    let destination = destination.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
     if destination.starts_with(['#', '?']) {
         return None;
     }
@@ -131,7 +157,8 @@ fn target<'a>(
         // Absent and ambiguous identities are unchecked, not missing files.
         Ok(None) => Ok(None),
         Err(_) => Err(UNSYNCHRONIZED),
-        Ok(Some((uri, _))) => entries.get(uri)
+        Ok(Some((uri, _))) => entries
+            .get(uri)
             .and_then(|entry| entry.snapshot.links.as_ref())
             .map(Some)
             .ok_or(INCOMPLETE),
@@ -140,12 +167,15 @@ fn target<'a>(
 
 fn issue_for(analysis: &DocumentLinkAnalysis, destination: &str) -> Option<Issue> {
     let (code, message) = analysis.resolve_fragment(destination).err()?;
-    Some((match code {
-        "missing_anchor" => "workspace_missing_anchor",
-        "invalid_fragment" => "workspace_invalid_fragment",
-        "ambiguous_anchor" => "workspace_ambiguous_anchor",
-        _ => return Some(INCOMPLETE),
-    }, message))
+    Some((
+        match code {
+            "missing_anchor" => "workspace_missing_anchor",
+            "invalid_fragment" => "workspace_invalid_fragment",
+            "ambiguous_anchor" => "workspace_ambiguous_anchor",
+            _ => return Some(INCOMPLETE),
+        },
+        message,
+    ))
 }
 
 fn additions(
@@ -161,12 +191,23 @@ fn additions(
     }
     let source = buffer.text.as_str();
     let index = LineIndex::new(source);
-    let incomplete = || vec![diagnostics::finding(
-        source, &index, SourceSpan::new(0, 0), 2, INCOMPLETE.1, Some(INCOMPLETE.0),
-    )];
+    let incomplete = || {
+        vec![diagnostics::finding(
+            source,
+            &index,
+            SourceSpan::new(0, 0),
+            2,
+            INCOMPLETE.1,
+            Some(INCOMPLETE.0),
+        )]
+    };
     if !snapshot.inventory_complete {
         // Preserve a prior local-analysis refusal rather than multiplying it.
-        return if snapshot.links.is_some() { incomplete() } else { Vec::new() };
+        return if snapshot.links.is_some() {
+            incomplete()
+        } else {
+            Vec::new()
+        };
     }
     let Some(links) = &snapshot.links else {
         return incomplete();
@@ -175,7 +216,11 @@ fn additions(
         return if links.references.iter().any(|reference| {
             reference.kind == ReferenceKind::Link
                 && addressed_fragment(&reference.destination).is_some()
-        }) { incomplete() } else { Vec::new() };
+        }) {
+            incomplete()
+        } else {
+            Vec::new()
+        };
     }
     let mut seen = BTreeSet::new();
     let mut targets = BTreeMap::new();
@@ -184,7 +229,8 @@ fn additions(
         if reference.kind != ReferenceKind::Link {
             continue;
         }
-        let destination = reference.destination
+        let destination = reference
+            .destination
             .trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
         let Some((path, _)) = addressed_fragment(destination) else {
             continue;
@@ -194,24 +240,38 @@ fn additions(
         }
         // Resolve each distinct file path once for this source, regardless of
         // how many fragments or repeated uses address that file.
-        let resolved = *targets.entry(path).or_insert_with(|| target(uri, path, documents, entries));
+        let resolved = *targets
+            .entry(path)
+            .or_insert_with(|| target(uri, path, documents, entries));
         let issue = match resolved {
             Ok(None) => None,
             Ok(Some(analysis)) => issue_for(analysis, destination),
             Err(issue) => Some(issue),
         };
-        let Some((code, message)) = issue else { continue; };
-        let Some(span) = snapshot.spans.get(reference.block_index).copied()
+        let Some((code, message)) = issue else {
+            continue;
+        };
+        let Some(span) = snapshot
+            .spans
+            .get(reference.block_index)
+            .copied()
             .filter(|span| source.get(span.start..span.end).is_some())
         else {
             return incomplete();
         };
         let mut chars = destination.chars();
         let mut display: String = chars.by_ref().take(160).collect();
-        if chars.next().is_some() { display.push('…'); }
-        findings.push(diagnostics::finding(source, &index, span, 2,
+        if chars.next().is_some() {
+            display.push('…');
+        }
+        findings.push(diagnostics::finding(
+            source,
+            &index,
+            span,
+            2,
             &format!("{message} Target: {display}. The range covers its enclosing Markdown block."),
-            Some(code)));
+            Some(code),
+        ));
         // Keep one extra only to trigger the shared truncation diagnostic.
         // Parser/local findings always have priority in the final envelope.
         if findings.len() > MAX_DIAGNOSTICS.saturating_sub(snapshot.local.len()) {

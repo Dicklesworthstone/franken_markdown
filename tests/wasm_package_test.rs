@@ -134,6 +134,27 @@ fn browser_package_sources_export_agent_friendly_api() {
     assert!(package.contains("\"pkg/franken_markdown_bg.wasm\""));
 }
 
+fn has_owned_html_preview_publication(js: &str) -> bool {
+    let mut previous = None;
+    for boundary in [
+        "const text = output.text();",
+        "const url = win.URL.createObjectURL(output.blob());",
+        "if (!current(kind, job)) { win.URL.revokeObjectURL(url); return false; }",
+        "els.preview.srcdoc = text;",
+        "els.downloadHtml.href = url;",
+        "els.downloadHtml.hidden = false;",
+    ] {
+        let Some(position) = js.find(boundary) else {
+            return false;
+        };
+        if previous.is_some_and(|last| last >= position) {
+            return false;
+        }
+        previous = Some(position);
+    }
+    true
+}
+
 #[test]
 fn browser_demo_sources_use_public_worker_package_api() {
     let html = fs::read_to_string("wasm/demo/index.html").unwrap();
@@ -143,6 +164,7 @@ fn browser_demo_sources_use_public_worker_package_api() {
     assert!(html.contains("id=\"markdown\""));
     assert!(html.contains("id=\"preview\""));
     assert!(html.contains("id=\"download-pdf\""));
+    assert!(html.contains("id=\"download-html\""));
     assert!(html.contains("id=\"font\""));
     assert!(html.contains("id=\"dark-mode\""));
     assert!(html.contains("id=\"custom-css\""));
@@ -165,9 +187,39 @@ fn browser_demo_sources_use_public_worker_package_api() {
     assert!(js.contains("codeLineNumbers"));
     assert!(js.contains("URL.createObjectURL(output.blob())"));
     assert!(js.contains("output.filename("));
-    assert!(js.contains("els.preview.srcdoc = output.text()"));
+    // Decode once, then fence Blob conversion before publishing either surface.
+    // Node/browser behavior tests verify the actual bytes and stale-job races.
+    assert!(has_owned_html_preview_publication(&js));
     assert!(!js.contains("fetch("));
     assert!(!js.contains("XMLHttpRequest"));
+}
+
+#[test]
+fn html_preview_source_gate_rejects_unowned_and_premature_publication() {
+    let js = fs::read_to_string("wasm/demo/demo.js").unwrap();
+    assert!(has_owned_html_preview_publication(&js));
+    for invalid in [
+        js.replacen(
+            "const text = output.text();",
+            "const text = \"unrelated\";",
+            1,
+        ),
+        js.replace(
+            "if (!current(kind, job)) { win.URL.revokeObjectURL(url); return false; }",
+            "",
+        ),
+        js.replacen(
+            "const text = output.text();",
+            "const text = output.text();\n        els.preview.srcdoc = text;",
+            1,
+        ),
+        js.replace(
+            "els.downloadHtml.href = url;",
+            "els.downloadHtml.href = lastPdfUrl;",
+        ),
+    ] {
+        assert!(!has_owned_html_preview_publication(&invalid));
+    }
 }
 
 #[test]

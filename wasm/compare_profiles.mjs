@@ -88,7 +88,11 @@ export async function compareProfilePackages(renderDirectory, fullDirectory, rep
   return report;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+// Match Node's default canonical entry and --preserve-symlinks-main alike.
+// Otherwise an aliased CLI could return success without comparing anything.
+const entryPath = process.argv[1] && path.resolve(process.argv[1]);
+const entryRealPath = entryPath && await fs.realpath(entryPath).catch(() => null);
+if ([entryPath, entryRealPath].some(entry => entry && import.meta.url === pathToFileURL(entry).href)) {
   const [render, full, report, sourceCommit, ...extra] = process.argv.slice(2);
   if (!render || !full || !report || !sourceCommit || extra.length) {
     console.error("Usage: node wasm/compare_profiles.mjs RENDER_PACKAGE FULL_PACKAGE REPORT_JSON SOURCE_COMMIT");

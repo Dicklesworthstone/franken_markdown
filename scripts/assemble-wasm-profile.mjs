@@ -149,7 +149,12 @@ export async function assembleWasmProfile({ sourceDir, generatedDir, outputDir, 
   return receipt;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+// Node resolves a symlinked entry point by default but preserves argv[1]. Keep
+// both identities so aliases (including macOS /var) execute the CLI, and the
+// explicit --preserve-symlinks-main mode still works. Imports remain inert.
+const entryPath = process.argv[1] && path.resolve(process.argv[1]);
+const entryRealPath = entryPath && await fs.realpath(entryPath).catch(() => null);
+if ([entryPath, entryRealPath].some(entry => entry && import.meta.url === pathToFileURL(entry).href)) {
   const [sourceDir, generatedDir, outputDir, profile, ...extra] = process.argv.slice(2);
   if (!sourceDir || !generatedDir || !outputDir || !profile || extra.length) {
     console.error("Usage: node --experimental-vm-modules scripts/assemble-wasm-profile.mjs SOURCE GENERATED OUTPUT render|full");

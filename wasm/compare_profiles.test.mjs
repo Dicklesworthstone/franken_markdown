@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { assertProfileSizes, compareProfilePackages } from "./compare_profiles.mjs";
 const full = { rawBytes: 7_700_000, gzipBytes: 3_300_000 };
@@ -34,6 +36,38 @@ async function fixture() {
   }
   return { paths, report: path.join(root, "report.json") };
 }
+
+for (const mode of ["direct", "directory-alias", "file-alias", "preserved-directory-alias", "preserved-file-alias"]) {
+  test(`comparison CLI executes and reports real failure through ${mode}`, async () => {
+    const f = await fixture(), script = fileURLToPath(new URL("./compare_profiles.mjs", import.meta.url));
+    const root = path.dirname(f.report); let entry = script;
+    if (mode.includes("directory")) {
+      const alias = path.join(root, "script directory");
+      await fs.symlink(path.dirname(script), alias, "dir"); entry = path.join(alias, path.basename(script));
+    } else if (mode.includes("file")) {
+      entry = path.join(root, "script alias.mjs"); await fs.symlink(script, entry);
+      // Preserved main aliases resolve relative imports at the alias location.
+      // Keep the actual sibling probe there so entry-point behavior is tested,
+      // rather than an unrelated module-not-found failure before execution.
+      await fs.copyFile(new URL("./flow_profile_probe.mjs", import.meta.url), path.join(root, "flow_profile_probe.mjs"));
+    }
+    const flags = mode.startsWith("preserved") ? ["--preserve-symlinks-main"] : [];
+    const result = spawnSync(process.execPath, [...flags, entry, ...f.paths, f.report, "a".repeat(40)], { encoding: "utf8" });
+    assert.equal(result.status, 1, result.stderr);
+    const report = JSON.parse(await fs.readFile(f.report, "utf8"));
+    assert.equal(report.passed, false); assert.equal(report.errors.length, 2);
+    assert.equal(report.render.rawBytes, 8); assert.equal(report.full.rawBytes, 8);
+    assert.ok(report.errors.every(error => error.message.includes("missing native WASM memory")));
+  });
+}
+
+test("aliased comparison CLI refuses missing arguments without a false zero exit", async () => {
+  const f = await fixture(), alias = path.join(path.dirname(f.report), "compare alias.mjs");
+  await fs.symlink(fileURLToPath(new URL("./compare_profiles.mjs", import.meta.url)), alias);
+  const result = spawnSync(process.execPath, [alias], { encoding: "utf8" });
+  assert.equal(result.status, 64); assert.match(result.stderr, /Usage:/);
+  await assert.rejects(fs.lstat(f.report), { code: "ENOENT" });
+});
 
 test("a valid-but-nonrendering binary fails and leaves a measured failure report", async () => {
   const f = await fixture();

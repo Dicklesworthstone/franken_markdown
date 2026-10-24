@@ -2,9 +2,11 @@
 // empty module, not a renderer. No native linkage or rendering claim is made.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { assembleWasmProfile } from "./assemble-wasm-profile.mjs";
 const wasmHeader = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
@@ -46,6 +48,39 @@ async function fixture() {
   return { root, options, manifest, write, saveManifest, assemble: () => assembleWasmProfile(options) };
 }
 async function absent(filename) { await assert.rejects(fs.lstat(filename), { code: "ENOENT" }); }
+
+for (const mode of ["direct", "directory-alias", "file-alias", "preserved-directory-alias", "preserved-file-alias"]) {
+  test(`CLI executes real assembly through ${mode}`, async () => {
+    const f = await fixture(), script = fileURLToPath(new URL("./assemble-wasm-profile.mjs", import.meta.url));
+    let entry = script;
+    if (mode.includes("directory")) {
+      const alias = path.join(f.root, "script directory");
+      await fs.symlink(path.dirname(script), alias, "dir"); entry = path.join(alias, path.basename(script));
+    } else if (mode.includes("file")) {
+      entry = path.join(f.root, "script alias.mjs"); await fs.symlink(script, entry);
+    }
+    const flags = ["--experimental-vm-modules", ...(mode.startsWith("preserved") ? ["--preserve-symlinks-main"] : [])];
+    const result = spawnSync(process.execPath, [...flags, entry, f.options.sourceDir, f.options.generatedDir, f.options.outputDir, "render"], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(result.stdout);
+    assert.equal(receipt.profile, "render"); assert.ok(receipt.files > 0);
+    const manifest = JSON.parse(await fs.readFile(path.join(f.options.outputDir, "package.json"), "utf8"));
+    assert.equal(manifest.name, "@test/renderer-render");
+    assert.deepEqual(new Uint8Array(await fs.readFile(path.join(f.options.outputDir, "pkg/franken_markdown_bg.wasm"))), wasmHeader);
+  });
+}
+
+test("aliased CLI refuses missing arguments and malformed payloads rather than exiting with false success", async () => {
+  const f = await fixture(), entry = path.join(f.root, "assembler alias.mjs");
+  await fs.symlink(fileURLToPath(new URL("./assemble-wasm-profile.mjs", import.meta.url)), entry);
+  const invalidArgs = spawnSync(process.execPath, ["--experimental-vm-modules", entry], { encoding: "utf8" });
+  assert.equal(invalidArgs.status, 64); assert.match(invalidArgs.stderr, /Usage:/);
+  await fs.writeFile(path.join(f.options.generatedDir, "franken_markdown_bg.wasm"), "malformed");
+  const invalidWasm = spawnSync(process.execPath, ["--experimental-vm-modules", entry,
+    f.options.sourceDir, f.options.generatedDir, f.options.outputDir, "render"], { encoding: "utf8" });
+  assert.equal(invalidWasm.status, 1); assert.match(invalidWasm.stderr, /not a valid module/);
+  await absent(f.options.outputDir);
+});
 
 test("render profile closes nested imports and re-exports without evaluating modules", async () => {
   const f = await fixture(), receipt = await f.assemble();

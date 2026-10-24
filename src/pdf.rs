@@ -63,12 +63,6 @@ type PdfStageStart = ();
 #[cfg(not(target_arch = "wasm32"))]
 static SUBSET_TAIL: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("FMD_SUBSET_TAIL").is_some());
-static TAIL_NOPAIR: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOPAIR").is_some());
-static TAIL_NOHEX: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOHEX").is_some());
-static TAIL_NOGLYPH: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var_os("FMD_TAIL_NOGLYPH").is_some());
 
 #[cfg(not(target_arch = "wasm32"))]
 fn subset_tail_enabled() -> bool {
@@ -33029,7 +33023,7 @@ struct ShapeScratch {
 /// * General route — the original algorithm verbatim, with the intermediate
 ///   buffers borrowed from `scratch`.
 fn shape_run_with_scratch(face: &Face, text: &str, scratch: &mut ShapeScratch) -> ShapedRun {
-    if !*TAIL_NOGLYPH && let Some(run) = text_positioning::prepare(face, text).run {
+    if let Some(run) = text_positioning::prepare(face, text).run {
         return ShapedRun {
             text: text.to_owned(),
             glyphs: run.glyphs.iter().map(|glyph| glyph.id).collect(),
@@ -33043,12 +33037,7 @@ fn shape_run_with_scratch(face: &Face, text: &str, scratch: &mut ShapeScratch) -
     let lig = face.lig.as_ref();
     let tables = face.ascii_tables();
     let bytes = text.as_bytes();
-    // `tables.glyphs` mirrors the unchecked cmap, so the debug toggle that
-    // forces `.notdef` ids must keep taking the general route.
-    if !*TAIL_NOGLYPH
-        && bytes.iter().all(|&b| b < 128)
-        && !bytes.iter().any(|&b| tables.lig_start[usize::from(b)])
-    {
+    if bytes.iter().all(|&b| b < 128) && !bytes.iter().any(|&b| tables.lig_start[usize::from(b)]) {
         let glyphs: Vec<u16> = bytes
             .iter()
             .map(|&b| tables.glyphs[usize::from(b)])
@@ -33072,11 +33061,7 @@ fn shape_run_with_scratch(face: &Face, text: &str, scratch: &mut ShapeScratch) -
     chars.clear();
     chars.extend(glyph_text.chars());
     gids.clear();
-    if *TAIL_NOGLYPH {
-        gids.resize(chars.len(), 0);
-    } else {
-        gids.extend(chars.iter().map(|&c| source.glyph_index(c)));
-    }
+    gids.extend(chars.iter().map(|&c| source.glyph_index(c)));
     lig.substitute_with_spans_into(gids, subst);
     let mut shaped = Vec::with_capacity(gids.len());
     let mut lig_uni = Vec::new();
@@ -33160,13 +33145,9 @@ fn append_kerned_tj_with_spacing(
         .then(|| (source.glyph_index(' '), source.glyph_index('\u{00a0}')));
     out.push_str("[<");
     for (i, &g) in shaped.iter().enumerate() {
-        if *TAIL_NOHEX {
-            out.push_str("<0000>");
-        } else {
-            append_hex_u16(out, map_lookup.get(usize::from(g)).copied().unwrap_or(0));
-        }
+        append_hex_u16(out, map_lookup.get(usize::from(g)).copied().unwrap_or(0));
         if let Some(&next) = shaped.get(i + 1) {
-            let k = if *TAIL_NOPAIR { 0 } else { kern.pair(g, next) };
+            let k = kern.pair(g, next);
             let kern_adjust = if k != 0 {
                 // A TJ number shifts the next glyph left by number/1000 em, so a
                 // tightening (negative) kern becomes a positive number.
@@ -33665,10 +33646,10 @@ mod pdf_writer_tests {
         SvgMarker, SvgPaintOrder, SvgPathOp, SvgPatternPaint, SvgPoly, SvgRect, SvgReusableDef,
         SvgRootBackgroundColor, SvgShadow, SvgShadowLayer, SvgStyle, SvgText, SvgTextAnchor,
         SvgTextDecoration, SvgTextMatrix, SvgTransform, TABLE_LAYOUT_CACHE_MAX_INLINE_NODES,
-        TAIL_NOGLYPH, TableLayoutCache, TableLayoutKey, Tok, TokGroup, WidthCache,
-        append_artifact_rule_stroke, append_decimal_u64, append_decimal_u64_string,
-        append_decimal_usize, append_decimal_usize_string, append_hex_u16, append_i32_bytes,
-        append_i32_string, append_image_xobject_do, append_marked_content_begin,
+        TableLayoutCache, TableLayoutKey, Tok, TokGroup, WidthCache, append_artifact_rule_stroke,
+        append_decimal_u64, append_decimal_u64_string, append_decimal_usize,
+        append_decimal_usize_string, append_hex_u16, append_i32_bytes, append_i32_string,
+        append_image_xobject_do, append_marked_content_begin,
         append_page_background_rounded_rect_fill, append_pdf_cid_font_object,
         append_pdf_cm_operator, append_pdf_fixed2, append_pdf_fixed3,
         append_pdf_font_descriptor_object, append_pdf_fontfile2_stream_object, append_pdf_num,
@@ -35174,16 +35155,7 @@ mod pdf_writer_tests {
     /// kept as the reference for the differential and perf tests below.
     fn shape_run_reference(source: &Font, lig: &Ligatures, text: &str) -> ShapedRun {
         let chars: Vec<char> = text.chars().collect();
-        let gids: Vec<u16> = chars
-            .iter()
-            .map(|&c| {
-                if *TAIL_NOGLYPH {
-                    0
-                } else {
-                    source.glyph_index(c)
-                }
-            })
-            .collect();
+        let gids: Vec<u16> = chars.iter().map(|&c| source.glyph_index(c)).collect();
         let mut shaped = Vec::with_capacity(gids.len());
         let mut lig_uni = Vec::new();
         let mut ci = 0;

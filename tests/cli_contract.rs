@@ -592,6 +592,66 @@ fn pdf_render_accepts_agent_discoverable_line_numbers_flag() {
 }
 
 #[test]
+fn pdf_debug_environment_cannot_change_rendered_bytes() {
+    const VARIABLES: [&str; 5] = [
+        "FMD_TAIL_NOPAIR",
+        "FMD_TAIL_NOHEX",
+        "FMD_TAIL_NOGLYPH",
+        "FMD_SUBSET_TAIL",
+        "FMD_WRAP_PERF",
+    ];
+    let source = "# AVATAR affinity office\n\nCafe\u{0301} **Å** *naïve* \
+                  [AVATAR](https://example.com) and `office`.\n\n\
+                  | Pair | Text |\n| --- | --- |\n| AV | affinity Cafe\u{0301} |\n";
+    let output_path = temp_file("pdf-debug-environment", "pdf");
+    let mut baseline = Vec::new();
+    // Each invocation is a fresh process: the historical switches were latched
+    // by LazyLock, so changing an in-process environment would miss the defect.
+    for family in ["sans", "serif"] {
+        for mask in 0u8..(1 << VARIABLES.len()) {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_fmd"));
+            command.args([
+                "--no-config",
+                "--no-remote-images",
+                "--text",
+                source,
+                "--font",
+                family,
+                "--to",
+                "pdf",
+                "--out",
+            ]);
+            command.arg(&output_path);
+            command.env("SOURCE_DATE_EPOCH", "1700000000");
+            for (index, variable) in VARIABLES.iter().enumerate() {
+                command.env_remove(variable);
+                if mask & (1 << index) != 0 {
+                    command.env(variable, "1");
+                }
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{family} mask={mask:05b}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.stdout.is_empty(), "stdout must remain data-only");
+            let bytes = fs::read(&output_path).unwrap();
+            assert!(bytes.starts_with(b"%PDF-1.7"));
+            if mask == 0 {
+                baseline = bytes;
+            } else {
+                assert!(
+                    bytes == baseline,
+                    "{family} mask={mask:05b}: diagnostic environment changed PDF bytes"
+                );
+            }
+        }
+    }
+    eprintln!("PDF environment matrix retained {}", output_path.display());
+}
+
+#[test]
 fn pdf_render_honors_source_date_epoch_metadata() {
     let out_path = temp_file("source-date-pdf", "pdf");
     let out_path_s = out_path.display().to_string();

@@ -96,7 +96,14 @@ render/full comparison: render is 6,484,424 raw / 2,981,665 gzip bytes, full is
 the earlier experiment used Python gzip). The full WASM hash exactly matches
 the experiment. Ten of twelve real-package smokes and all 54 Chrome checks
 passed. The other two smokes exposed a Node base64 module-loader stack limit;
-their aggregate DSR result remains a non-pass pending the loader repair.
+that original aggregate DSR result remains a non-pass. The `afec81c5` repair
+uses a percent-encoded UTF-8 module URL in Node, preserving per-factory identity
+and browser Blob loading. Fresh render/full builds reproduce both WASM hashes;
+all 23 DSR checks pass, including all twelve real-package smokes, the 54 Chrome
+checks and ten additional actual workspace content-save/reopen/PDF checks. The
+reopened PDF matches the original bytes. Fresh Node tests pass 3,663/3,663 with
+zero skips; focused Rust package tests pass 4/4. Content reopening uses virtual
+HTTPS documents and does not prove local-file navigation or OS lifecycle.
 
 The `e51cc1e9` MCP/LSP/batch all-target run reported 5,058 passed, one failed and
 12 ignored: the timeout FIFO test expects an in-flight render, while input

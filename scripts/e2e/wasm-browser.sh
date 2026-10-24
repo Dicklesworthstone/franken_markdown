@@ -11,6 +11,8 @@
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
+fmd_validate_run_id "wasm-browser" "${1:-wasm-browser}"
+
 # Check before initializing artifacts or building anything. This suite promises
 # package parity: a missing prerequisite is unrun work, never a passing skip.
 missing=()

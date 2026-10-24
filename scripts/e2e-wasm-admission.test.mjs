@@ -11,8 +11,9 @@ import test from "node:test";
 const suite = new URL("./e2e/wasm-browser.sh", import.meta.url);
 const harness = `
 E2E_REPO_ROOT="$ADMISSION_ROOT"
+source "$ADMISSION_ROOT/scripts/validate-run-id.sh"
 ADMISSION_FAILED=0
-e2e_init() { printf 'init\\n' >> "$ADMISSION_TRACE"; E2E_ART="$ADMISSION_ROOT/artifacts"; }
+e2e_init() { fmd_validate_run_id e2e "$1"; printf 'init\\n' >> "$ADMISSION_TRACE"; E2E_ART="$ADMISSION_ROOT/artifacts"; }
 e2e_build_bin() { printf 'build\\n' >> "$ADMISSION_TRACE"; }
 e2e_run() {
   printf '%s\\n' "$1" >> "$ADMISSION_TRACE"
@@ -26,11 +27,12 @@ e2e_finish() { [ "$ADMISSION_FAILED" -eq 0 ]; }
 `;
 
 async function run({ tools = ["node", "wasm-bindgen"], coreExit = 0,
-  packageExit = 0, packageMarker = true } = {}) {
+  packageExit = 0, packageMarker = true, runId = "admission" } = {}) {
   const root = await mkdtemp(join(tmpdir(), "fmd-wasm-admission-"));
   await mkdir(join(root, "scripts/e2e"), { recursive: true });
   await mkdir(join(root, "bin"));
   await copyFile(suite, join(root, "scripts/e2e/wasm-browser.sh"));
+  await copyFile(new URL("./validate-run-id.sh", import.meta.url), join(root, "scripts/validate-run-id.sh"));
   await writeFile(join(root, "scripts/e2e/lib.sh"), harness);
   // Minimal PATH controls command discovery without hiding a real tool later in
   // the host PATH. The sentinels are never used as Node or wasm-bindgen runtimes.
@@ -45,7 +47,7 @@ async function run({ tools = ["node", "wasm-bindgen"], coreExit = 0,
       `#!/bin/bash\nprintf '%s\\n' '${marker}'\nexit ${code}\n`, { mode: 0o755 });
   }
   const trace = join(root, "trace.txt");
-  const result = spawnSync("/bin/bash", [join(root, "scripts/e2e/wasm-browser.sh"), "admission"], {
+  const result = spawnSync("/bin/bash", [join(root, "scripts/e2e/wasm-browser.sh"), runId], {
     encoding: "utf8", timeout: 10000,
     env: { ...process.env, PATH: join(root, "bin"), ADMISSION_ROOT: root, ADMISSION_TRACE: trace },
   });
@@ -54,6 +56,15 @@ async function run({ tools = ["node", "wasm-bindgen"], coreExit = 0,
   try { calls = (await readFile(trace, "utf8")).trim().split("\n"); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
   return { ...result, calls };
+}
+
+for (const runId of ["../escape", ".", "bad id", "bad;id"]) {
+  test(`unsafe run ID ${JSON.stringify(runId)} keeps usage precedence with missing tools`, async () => {
+    const result = await run({ tools: [], runId });
+    assert.equal(result.status, 64, result.stderr);
+    assert.match(result.stderr, /run-id must match/);
+    assert.deepEqual(result.calls, []);
+  });
 }
 
 for (const tools of [[], ["node"], ["wasm-bindgen"]]) {

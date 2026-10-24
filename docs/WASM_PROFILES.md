@@ -47,8 +47,9 @@ The three package builders use Cargo's `wasm-release` profile. It inherits
 `release` (LTO, one codegen unit, aborting panics and stripping), with
 `opt-level = "z"` for transfer size. Native `release` keeps `opt-level = 3`.
 No post-link optimizer or new dependency is required. Full packages also execute
-the existing real-engine book source-update and site-publication smokes against
-the retained package, including the independent ZIP payload/CRC decoder.
+the existing real-engine book source-update, site-publication and retained-preview
+smokes against the retained package, including the independent ZIP payload/CRC
+decoder and cache-update/recovery checks.
 
 `scripts/assemble-wasm-profile.mjs` recursively closes static JavaScript imports
 and re-exports without evaluating them. The render package exports the root
@@ -88,29 +89,47 @@ This is selected equivalence and a size measurement, not a throughput claim or
 universal compatibility proof. The unsuccessful Binaryen experiment was not
 adopted.
 
-Native check, Clippy and 4,651 all-target tests passed at `2d37ebd0` (12 ignored).
-These results do not qualify every feature combination or the complete browser
-distribution. The committed `e51cc1e9` profile builds passed their six-output
-render/full comparison: render is 6,484,424 raw / 2,981,665 gzip bytes, full is
-7,132,900 raw / 3,188,696 gzip bytes (`compare_profiles.mjs`, Node zlib level 9;
-the earlier experiment used Python gzip). The full WASM hash exactly matches
-the experiment. Ten of twelve real-package smokes and all 54 Chrome checks
-passed. The other two smokes exposed a Node base64 module-loader stack limit;
-that original aggregate DSR result remains a non-pass. The `afec81c5` repair
-uses a percent-encoded UTF-8 module URL in Node, preserving per-factory identity
-and browser Blob loading. Fresh render/full builds reproduce both WASM hashes;
-all 23 DSR checks pass, including all twelve real-package smokes, the 54 Chrome
-checks and ten additional actual workspace content-save/reopen/PDF checks. The
-reopened PDF matches the original bytes. Fresh Node tests pass 3,663/3,663 with
-zero skips; focused Rust package tests pass 4/4. Content reopening uses virtual
-HTTPS documents and does not prove local-file navigation or OS lifecycle.
+At source cut `81576af5`, the scoped Rust and profile gates pass. Through
+admitted DSR/RCH lanes, native check/Clippy and 4,651 default all-target tests
+pass; the native
+MCP/LSP/batch all-target suite passes 5,060 tests. Each suite retains 12 ignored
+tests and has zero failures. Thirteen feature checks cover native/WASM core,
+render/full WASM Clippy, render/full native library tests, selected browser
+feature combinations, native MCP/LSP/batch Clippy/tests and doctests. Both
+additional native ABI Clippy gates pass. A separate expected-negative check
+verifies that the unsupported native batch/browser combination is rejected by
+the actual compiler profile guard, rather than treating admission refusal as
+the expected error.
 
-The `e51cc1e9` MCP/LSP/batch all-target run reported 5,058 passed, one failed and
-12 ignored: the timeout FIFO test expects an in-flight render, while input
-protection preflight reads the FIFO before worker admission. Its assertion is
-retained. Core native/WASM builds, selected browser feature checks, native
-MCP/LSP/batch Clippy and doctests passed; the first unqualified native artifact
-transfer was refused and its explicit Linux-target retry passed. Full native
-parity, browser lifecycle and release gates remain open. The approximately
-4.5 MB render-only target and a lower size ratchet are not claimed. No release,
-registry publish, Actions workflow or size-budget change is included.
+At that same cut, all 24 package checks pass with matching wasm-bindgen 0.2.129.
+The six-output render/full comparison measures render at 6,484,424 raw /
+2,981,668 gzip bytes and full at 7,132,900 raw / 3,188,696 gzip bytes (Node zlib
+level 9). All twelve real-package smokes pass, as do 54 component/demo Chrome
+checks and ten actual workspace content-save/reopen/PDF checks. Another 64
+render/diagnostic pairs and 24 analysis pairs match the retained prior module
+exactly. Fresh Node tests pass 3,663/3,663 with zero skips. The Node workspace
+loader uses a percent-encoded UTF-8 module URL with independent factory identity;
+browser Blob loading is preserved. Content reopening uses virtual HTTPS documents
+and does not prove local-file navigation or OS lifecycle.
+
+The reopened PDF matches the original bytes. QPDF validates the selected PDF's
+syntax/streams, Poppler and MuPDF independently recover its accented/Greek text,
+and Poppler reports embedded subset fonts with Unicode mappings. The MuPDF
+raster was inspected too. This single document does not qualify the complete PDF
+environment-variable matrix, corpus appearance or PDF conformance.
+
+Original failures remain recorded in Beads: release-level-3 size overflow, two
+Node workspace loader failures, the batch fixture's mistaken preflight/render
+assumption, and WASM profiling-stub Clippy failures. The timeout fixture retains
+its original one-second deadline and 1,400 ms delay, with separate real FIFO
+reads for preflight and rendering. Production cancellation is unchanged. The
+later `2305404` test-only writer-cleanup refinement has fmt/source review but
+has **not** been compiled or executed: the mandatory Data-volume disk probe
+became critical before its verification started. Bead `m80e.32` records the exact
+unblock probe; `m80e.6` remains open until current-source verification completes.
+The retained-preview helper wiring has shell syntax checks and its existing
+real-engine probe passes against the qualified package.
+
+Full native parity, browser lifecycle and release gates remain open. The
+approximately 4.5 MB render-only target and a lower size ratchet are not claimed.
+No release, registry publish, Actions workflow or size-budget change is included.

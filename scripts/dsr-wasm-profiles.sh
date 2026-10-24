@@ -54,6 +54,7 @@ for profile in render full; do
   if [ "$profile" = full ]; then
     node wasm/book_source_updates_smoke.mjs "$ART/$profile"
     node wasm/site_publication_smoke.mjs "$ART/$profile"
+    node wasm/book_retained_preview_smoke.mjs "$ART/$profile"
   fi
   if ! source_fence; then
     printf 'WASM profiles: source changed during build; artifacts are not verified\n' >&2

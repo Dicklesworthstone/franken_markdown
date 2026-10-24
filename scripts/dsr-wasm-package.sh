@@ -70,6 +70,7 @@ node wasm/flow_outlines_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.w
 node wasm/flow_export_smoke.mjs "$PACKAGE" "$PACKAGE/pkg/franken_markdown_bg.wasm"
 node wasm/book_source_updates_smoke.mjs "$PACKAGE"
 node wasm/site_publication_smoke.mjs "$PACKAGE"
+node wasm/book_retained_preview_smoke.mjs "$PACKAGE"
 cargo build --bin fmd
 for ext in html pdf; do
   SOURCE_DATE_EPOCH=1700000000 "$TARGET_DIR/debug/fmd" "$ART/parity/showcase.md" --no-config --to "$ext" --out "$ART/parity/native.$ext"

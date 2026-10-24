@@ -265,6 +265,7 @@ log "headless node: revision-fenced HTML/PDF exports against generated WASM"
 node wasm/flow_export_smoke.mjs "$package_dir" "$bg" 2>&1 | tee -a "$LEDGER"
 node wasm/book_source_updates_smoke.mjs "$package_dir" 2>&1 | tee -a "$LEDGER"
 node wasm/site_publication_smoke.mjs "$package_dir" 2>&1 | tee -a "$LEDGER"
+node wasm/book_retained_preview_smoke.mjs "$package_dir" 2>&1 | tee -a "$LEDGER"
 
 log "headless node: cancellable document workers and demo lifecycle"
 node --test wasm/native_pdf_proof.test.mjs wasm/native_pdf_proof_package.test.mjs 2>&1 | tee -a "$LEDGER"

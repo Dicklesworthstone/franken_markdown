@@ -79,6 +79,60 @@ try {
   check("suspension removes toolbar", await toolbar.count(), 0);
   await page.evaluate(() => { window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })); });
   check("persisted restoration installs exactly twelve buttons", await toolbar.locator("button").count(), 12);
+  // Synthetic composition is fault injection, not a claim of real IME testing.
+  for (const field of ["#chapter-source", "#chapter-path"]) {
+    await page.locator(field).dispatchEvent("compositionstart");
+    check(`${field} composition blocks formatting`, await toolbar.locator("button:disabled").count(), 12);
+    await page.evaluate(() => {
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    });
+    await page.waitForFunction(() => !document.querySelector('[data-source-command="bold"]').disabled);
+    await editor.fill("recovered source"); await editor.press("ControlOrMeta+a"); await button("bold").click();
+    check(`${field} interrupted composition permits fresh formatting`, await editor.inputValue(), "**recovered source**");
+    await page.locator("#book-history-undo").click();
+    check(`${field} interrupted composition permits fresh undo`, await editor.inputValue(), "recovered source");
+  }
+  // Delay only two named test files at the real File.arrayBuffer boundary.
+  // The app, read/decode logic, lifecycle handlers and source host stay intact.
+  await page.evaluate(() => {
+    const original = File.prototype.arrayBuffer;
+    window.heldSourceReads = new Map(); window.finishedSourceReads = new Set();
+    File.prototype.arrayBuffer = function () {
+      if (!["retired-lifecycle.svg", "fresh-lifecycle.md"].includes(this.name)) return original.call(this);
+      const file = this;
+      return new Promise(resolve => window.heldSourceReads.set(file.name, async () => {
+        const bytes = await original.call(file); resolve(bytes); window.finishedSourceReads.add(file.name);
+      }));
+    };
+  });
+  await page.locator("#import-files").setInputFiles({ name: "retired-lifecycle.svg", mimeType: "image/svg+xml", buffer: Buffer.from("<svg/>") });
+  await page.waitForFunction(() => window.heldSourceReads.has("retired-lifecycle.svg"));
+  check("pending read disables ordinary import controls", await page.locator("#import-files").isDisabled(), true);
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  check("suspension clears old file selection", await page.locator("#import-files").inputValue(), "");
+  check("returning permits a fresh import before the old read completes", await page.locator("#import-files").isDisabled(), false);
+  await page.locator("#import-files").setInputFiles({ name: "fresh-lifecycle.md", mimeType: "text/markdown", buffer: Buffer.from("# Fresh imported source") });
+  await page.waitForFunction(() => window.heldSourceReads.has("fresh-lifecycle.md"));
+  const pendingStatus = await page.locator("#status").textContent();
+  await page.evaluate(async () => {
+    await window.heldSourceReads.get("retired-lifecycle.svg")();
+    // Drain the read/decode/finalizer microtasks; no arbitrary wall-clock wait.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  check("retired finalizer does not unlock the fresh import", await page.locator("#import-files").isDisabled(), true);
+  check("retired callback preserves the fresh file selection", await page.locator("#import-files").evaluate(node => node.files[0]?.name), "fresh-lifecycle.md");
+  check("retired callback preserves current status", await page.locator("#status").textContent(), pendingStatus);
+  check("retired image has no resource grant", await page.locator("#image-list").textContent(), "No images authorized.");
+  await page.evaluate(() => window.heldSourceReads.get("fresh-lifecycle.md")());
+  await page.waitForFunction(() => [...document.querySelector("#chapters").options].some(option => option.textContent.includes("fresh-lifecycle.md")));
+  check("fresh import finishes normally", await page.locator("#import-files").isDisabled(), false);
+  check("fresh import clears its own file selection", await page.locator("#import-files").inputValue(), "");
+  await page.locator("#chapters").selectOption({ label: "2. fresh-lifecycle.md" });
+  check("fresh imported bytes reach the real source editor", await editor.inputValue(), "# Fresh imported source");
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 900 }); await toolbar.scrollIntoViewIfNeeded();
     check(`${width}px viewport has no horizontal page overflow`, await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);

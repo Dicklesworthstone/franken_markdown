@@ -48,6 +48,28 @@ Open a result or use Previous/Next match to select its exact source range in the
 editor. The results list shows 50 rows at a time; page controls reach the rest.
 Search and navigation do not alter source or revoke images.
 
+## Return after leaving the page
+
+Page suspension retires pending source imports and confirmations, clears file
+selections, and ends the editor's source/path composition state. Returning allows
+new edits and imports immediately, even if an old file read has not settled or
+the browser never delivered `compositionend`. Existing image and font access
+must still be authorized again.
+
+An old read may finish in the background. Its result cannot replace source,
+renew resource access, clear a newer file selection, unlock a newer import, or
+replace the current status. Retiring UI ownership does not promise that the
+browser interrupted the underlying read. Resource revocation already prevented
+late source installation; these lifecycle guards also preserve the resumed
+editor's usability and operation ownership.
+
+Nine source-host regressions cover retirement, overlapping source/path
+composition, pending confirmations and old/new import cleanup. The browser runner
+above also exercises delayed `File.arrayBuffer` results and interrupted
+composition through the unmodified app. Its composition and page-transition
+events are explicit fault injections, not real IME or actual back/forward-cache
+acceptance. All original formatting checks remain in the runner.
+
 ## Review, apply, undo
 
 Enter a literal replacement (empty means deletion), then review either the

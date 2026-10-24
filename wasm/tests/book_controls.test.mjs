@@ -270,6 +270,82 @@ test("disposal fences a file read and removes controls", async (t) => {
   f.el["add-chapter"].click();
   await assert.rejects(f.controls.prepare("pdf"), code("SESSION_DISPOSED"));
 });
+function delayedFile(text, name) {
+  const hold = gate(), entered = gate();
+  class SlowFile extends File {
+    async arrayBuffer() { entered.resolve(); await hold.promise; return super.arrayBuffer(); }
+  }
+  return { file: new SlowFile([text], name), hold, entered };
+}
+test("suspension keeps a retired image import from restoring resource authority", async (t) => {
+  const f = setup(t); await initial(f);
+  const slow = delayedFile("<svg/>", "late.svg"), before = f.collection.files;
+  const pending = f.controls.importFiles([slow.file]); await slow.entered.promise;
+  f.controls.suspend(); slow.hold.resolve();
+  await assert.rejects(pending, error => ["ABORTED", "STALE_SOURCE"].includes(error.code));
+  assert.deepEqual(f.collection.files, before); assert.equal(f.collection.images.length, 0);
+});
+test("suspension retires include-only reads without replacing source", async (t) => {
+  const f = setup(t); await initial(f);
+  const slow = delayedFile("shared text", "shared.txt"), before = f.collection.files;
+  const pending = f.controls.importFiles([slow.file], "includes"); await slow.entered.promise;
+  f.controls.suspend(); slow.hold.resolve();
+  await assert.rejects(pending, error => ["ABORTED", "STALE_SOURCE"].includes(error.code)); assert.deepEqual(f.collection.files, before);
+});
+test("project confirmation cannot replace source after suspension", async (t) => {
+  const f = setup(t); await initial(f);
+  const project = f.collection.project(); project.files[0].source = "old pending replacement";
+  const hold = gate(), entered = gate(), before = f.collection.files;
+  f.confirm(() => { entered.resolve(); return hold.promise; });
+  const pending = f.controls.importFiles([new File([JSON.stringify(project)], "book.json")], "project");
+  await entered.promise; f.controls.suspend(); hold.resolve(true);
+  await assert.rejects(pending, error => ["ABORTED", "STALE_SOURCE"].includes(error.code)); assert.deepEqual(f.collection.files, before);
+});
+test("removal confirmation from the previous page lifetime cannot remove a chapter", async (t) => {
+  const f = setup(t); await initial(f); const hold = gate(), before = f.collection.files;
+  f.confirm(() => hold.promise); f.el["remove-chapter"].click(); f.controls.suspend();
+  const status = f.el.status.textContent; hold.resolve(true); await tick();
+  assert.deepEqual(f.collection.files, before); assert.equal(f.el.status.textContent, status);
+});
+for (const id of ["chapter-source", "chapter-path"]) test(`suspension clears interrupted ${id} composition and permits fresh editing`, async (t) => {
+  const f = setup(t); await initial(f); f.el[id].dispatchEvent(new Event("compositionstart"));
+  assert.equal(f.controls.sourceBusy, true); f.controls.suspend(); assert.equal(f.controls.sourceBusy, false);
+  const project = f.collection.project();
+  f.controls.applySources(project.files.map(file => ({ ...file, source: file.source + "new" })), f.controls.checkpoint());
+  assert.equal(f.collection.files[0].source, "# One\r\nnew");
+});
+test("overlapping source/path composition stays busy until both finish", async (t) => {
+  const f = setup(t); await initial(f);
+  f.el["chapter-source"].dispatchEvent(new Event("compositionstart"));
+  f.el["chapter-path"].dispatchEvent(new Event("compositionstart"));
+  f.el["chapter-source"].dispatchEvent(new Event("compositionend")); assert.equal(f.controls.sourceBusy, true);
+  f.el["chapter-path"].dispatchEvent(new Event("compositionend")); assert.equal(f.controls.sourceBusy, false);
+});
+test("retired import cleanup cannot unlock a newer pending import", async (t) => {
+  const f = setup(t); await initial(f);
+  const old = delayedFile("old", "old.md"), fresh = delayedFile("fresh", "fresh.md");
+  const retired = f.controls.importFiles([old.file]); await old.entered.promise; f.controls.suspend();
+  const pending = f.controls.importFiles([fresh.file]); await fresh.entered.promise;
+  old.hold.resolve(); await assert.rejects(retired, code("ABORTED"));
+  assert.equal(f.controls.sourceBusy, true); assert(f.el["import-files"].disabled);
+  await assert.rejects(f.controls.importFiles([new File(["third"], "third.md")]), code("BOOK_BUSY"));
+  fresh.hold.resolve(); await pending; assert.equal(f.controls.sourceBusy, false);
+  assert.deepEqual(f.collection.files.map(file => file.path), ["one.md", "two.md", "fresh.md"]);
+});
+test("retired UI import callbacks preserve newer status and file selection", async (t) => {
+  const f = setup(t); await initial(f);
+  const old = delayedFile("old", "old.md"), fresh = delayedFile("fresh", "fresh.md");
+  f.el["import-files"].files = [old.file]; f.el["import-files"].dispatchEvent(new Event("change"));
+  await old.entered.promise; f.el["import-files"].value = "retired selection"; f.controls.suspend();
+  assert.equal(f.el["import-files"].value, "");
+  f.el["import-files"].value = "fresh selection"; f.el["import-files"].files = [fresh.file];
+  f.el["import-files"].dispatchEvent(new Event("change")); await fresh.entered.promise;
+  const status = f.el.status.textContent; old.hold.resolve(); await tick();
+  assert.equal(f.el["import-files"].value, "fresh selection"); assert.equal(f.el.status.textContent, status);
+  assert.equal(f.controls.sourceBusy, true); fresh.hold.resolve(); await tick();
+  assert.equal(f.el["import-files"].value, ""); assert.equal(f.collection.files.at(-1).path, "fresh.md");
+  assert.match(f.el.status.textContent, /Imported 1 chapters/);
+});
 test("source rescue remains available with invalid publishing settings and a half-edited path", async (t) => {
   const f = setup(t);
   await initial(f);

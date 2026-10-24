@@ -63,6 +63,11 @@ export function createBookControls({
   installPortableBookPanel(root);
   for (const id of ["save-portable", "open-portable", "cancel-portable", "portable-review"])
     el[id] = root.querySelector(`#${id}`);
+  const importModes = [
+    ["import-files", "files"], ["import-folder", "folder"],
+    ["import-includes", "includes"], ["import-include-folder", "include-folder"],
+    ["open-project", "project"], ["open-portable", "portable"],
+  ].filter(([id]) => el[id]);
   const unlisten = [],
     sourceListeners = new Set();
   const capturePublication = createBookCollectionCapture(collection, worker);
@@ -70,6 +75,8 @@ export function createBookControls({
   let portableAbort = null;
   let lastSourceBusy = false;
   let composing = false;
+  const composingFields = new Set();
+  let lifecycle = 0, importOwner = null;
   let resourceRevision = bookCollectionResourceRevision(collection, worker);
   let disposed = false,
     active = 0,
@@ -295,6 +302,7 @@ export function createBookControls({
   }
   async function importFiles(files, mode = "files") {
     alive();
+    const lifetime = lifecycle;
     if (reading) throw bookError("BOOK_BUSY", "A local import is already in progress.");
     if (mode === "portable" && (composing || files.length !== 1))
       throw bookError("BOOK_BUSY", "Finish composing text and choose one portable book file.");
@@ -306,11 +314,15 @@ export function createBookControls({
       view = signature(),
       job = mode === "portable" ? new AbortController() : null;
     let review = null;
+    const owner = {};
+    importOwner = owner;
     portableAbort = job;
     reading = true;
     buttons();
     const fence = () => {
       alive();
+      if (lifetime !== lifecycle)
+        throw bookError("ABORTED", "Import retired on page suspension; nothing was installed.");
       if (job?.signal.aborted)
         throw bookError("ABORTED", "Portable import cancelled; nothing was installed.");
       if (revision !== collection.revision || view !== signature() || (job && composing))
@@ -363,15 +375,20 @@ export function createBookControls({
     } finally {
       discardPortableBookProject(review);
       if (portableAbort === job) portableAbort = null;
-      reading = false;
-      if (!disposed) buttons();
+      // A retired read may settle after a new import has taken ownership.
+      if (importOwner === owner) {
+        importOwner = null;
+        reading = false;
+        if (!disposed) buttons();
+      }
     }
   }
   function invoke(work) {
+    const lifetime = lifecycle;
     try {
-      Promise.resolve(work()).catch(report);
+      Promise.resolve(work()).catch(error => { if (lifetime === lifecycle) report(error); });
     } catch (error) {
-      report(error);
+      if (lifetime === lifecycle) report(error);
     }
   }
   function on(id, type, handler) {
@@ -387,15 +404,19 @@ export function createBookControls({
     invalidate(sourcesOnly);
     list();
   });
-  on("chapter-source", "compositionstart", () => {
-    composing = true;
-    if (portableAbort) invalidate();
-    buttons();
-  });
-  on("chapter-source", "compositionend", () => {
-    composing = false;
-    buttons();
-  });
+  for (const id of ["chapter-source", "chapter-path"]) {
+    on(id, "compositionstart", () => {
+      composingFields.add(id);
+      composing = true;
+      if (portableAbort) invalidate();
+      buttons();
+    });
+    on(id, "compositionend", () => {
+      composingFields.delete(id);
+      composing = composingFields.size > 0;
+      buttons();
+    });
+  }
   on("chapter-source", "input", () => invoke(capture));
   on("chapter-path", "input", () => invoke(capture));
   on("source-role", "change", () =>
@@ -482,6 +503,7 @@ export function createBookControls({
       capture();
       const revision = collection.revision,
         view = signature(),
+        lifetime = lifecycle,
         index = active;
       if (
         (await confirm(
@@ -489,7 +511,7 @@ export function createBookControls({
         )) !== true
       )
         return;
-      if (disposed || revision !== collection.revision || view !== signature())
+      if (disposed || lifetime !== lifecycle || revision !== collection.revision || view !== signature())
         throw bookError(
           "STALE_SOURCE",
           "The source changed during confirmation; it was not removed.",
@@ -505,22 +527,16 @@ export function createBookControls({
       el.status.textContent = "All image access revoked and prepared exports invalidated.";
     }),
   );
-  for (const [id, mode] of [
-    ["import-files", "files"],
-    ["import-folder", "folder"],
-    ["import-includes", "includes"],
-    ["import-include-folder", "include-folder"],
-    ["open-project", "project"],
-    ["open-portable", "portable"],
-  ].filter(([id]) => el[id]))
+  for (const [id, mode] of importModes)
     on(id, "change", () => {
       const files = Array.from(el[id].files ?? []);
       if (!files.length) return;
+      const lifetime = lifecycle;
       invoke(async () => {
         try {
           await importFiles(files, mode);
         } finally {
-          el[id].value = "";
+          if (!disposed && lifetime === lifecycle) el[id].value = "";
         }
       });
     });
@@ -678,6 +694,14 @@ export function createBookControls({
     },
     suspend() {
       if (!disposed) {
+        // File reads cannot always be interrupted. Retire their authority and
+        // UI ownership now, without waiting for their promises or an IME end.
+        lifecycle++;
+        importOwner = null;
+        reading = false;
+        for (const [id] of importModes) el[id].value = "";
+        composingFields.clear();
+        composing = false;
         invalidate();
         pageSetup?.discard();
         collection.revokeImages();
@@ -688,6 +712,9 @@ export function createBookControls({
     },
     dispose() {
       if (disposed) return;
+      lifecycle++;
+      importOwner = null;
+      composingFields.clear();
       disposed = true;
       invalidate();
       unsubscribe();

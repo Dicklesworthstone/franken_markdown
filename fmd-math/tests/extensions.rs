@@ -666,7 +666,7 @@ const AMSSYMB: &[&str] = &[
 
 #[test]
 fn amssymb_symbols_typeset_from_the_bundled_math_faces() {
-    use fmd_math::faces::{FACE_MATH_SYMBOLS, FACE_SYMBOLS};
+    use fmd_math::faces::{FACE_AMS_B_10, FACE_MATH_SYMBOLS, FACE_SYMBOLS};
     let e = engine();
     for name in AMSSYMB {
         let source = format!(r"\{name}");
@@ -674,12 +674,27 @@ fn amssymb_symbols_typeset_from_the_bundled_math_faces() {
             .typeset(&source, Style::Text)
             .unwrap_or_else(|err| panic!("{source}: {err}"));
         assert_eq!(l.glyphs.len(), 1, "{source}: {l:?}");
-        // Noto Sans Math, or cmsy for the thick variants: a math face,
-        // never a text face standing in.
-        assert!(
-            [FACE_SYMBOLS, FACE_MATH_SYMBOLS].contains(&l.glyphs[0].face),
-            "{source}: {l:?}"
-        );
+        if *name == "hslash" {
+            // amssymb.sty's 0x7D is hslash; 0x7E is hbar. Unicode
+            // identifies both as U+210F, so a generic fallback loses this
+            // distinction when the AMS faces become available.
+            assert_eq!(l.glyphs[0].face, FACE_AMS_B_10);
+            assert_eq!(
+                Some(l.glyphs[0].gid),
+                e.faces().tex_glyph(FACE_AMS_B_10, 0x7D)
+            );
+            assert_ne!(
+                l.glyphs[0].gid,
+                e.typeset(r"\hbar", Style::Text).unwrap().glyphs[0].gid
+            );
+        } else {
+            // All remaining original cases keep their Noto/cmsy
+            // requirement: a math face, never a text face standing in.
+            assert!(
+                [FACE_SYMBOLS, FACE_MATH_SYMBOLS].contains(&l.glyphs[0].face),
+                "{source}: {l:?}"
+            );
+        }
     }
     // amssymb's classes: a relation takes thick spaces, a binary operator
     // medium ones, and \square is an ordinary symbol.

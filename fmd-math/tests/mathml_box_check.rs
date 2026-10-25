@@ -46,6 +46,8 @@ const FORMULAS: &[&str] = &[
     r"\text{if } x > 0",
     r"\partial_x \ell + \nabla \cdot E",
     r"a_{ij} = b^{k}_{l}",
+    r"\checkmark \circlearrowleft \circlearrowright \hbar \nmid \mathbb{Z}",
+    r"1 \minus 2 + e^{\minus t}",
 ];
 
 /// Strings at the edge of the grammar. Both paths must agree on each:

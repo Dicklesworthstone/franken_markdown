@@ -226,7 +226,7 @@ pub const fn char_class(ch: char) -> AtomClass {
 #[must_use]
 pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
     match &node.kind {
-        NodeKind::Symbol { class, .. } => Some(*class),
+        NodeKind::Symbol { class, .. } | NodeKind::AmsSymbol { class, .. } => Some(*class),
         NodeKind::BigOp { .. } | NodeKind::OpName { .. } => Some(AtomClass::Op),
         NodeKind::Scripts { base, .. } => base
             .as_deref()

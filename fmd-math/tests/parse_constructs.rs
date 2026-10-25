@@ -19,6 +19,42 @@ fn root_items(node: &Node) -> &[Node] {
     }
 }
 
+#[test]
+fn authored_ams_symbols_keep_semantic_characters_classes_and_source_spans() {
+    use fmd_math::AmsFamily;
+    use fmd_math::atom::AtomClass;
+
+    for (source, ch, family, code, class) in [
+        (r"\checkmark", '✓', AmsFamily::A, 0x58, AtomClass::Ord),
+        (r"\minus", '−', AmsFamily::A, 0x39, AtomClass::Bin),
+        (r"\circlearrowleft", '↺', AmsFamily::A, 0x09, AtomClass::Rel),
+        (
+            r"\circlearrowright",
+            '↻',
+            AmsFamily::A,
+            0x08,
+            AtomClass::Rel,
+        ),
+        (r"\hbar", 'ℏ', AmsFamily::B, 0x7E, AtomClass::Ord),
+        (r"\nmid", '∤', AmsFamily::B, 0x2D, AtomClass::Rel),
+    ] {
+        let root = parse(source).unwrap();
+        let nodes = root_items(&root);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(
+            nodes[0].kind,
+            NodeKind::AmsSymbol {
+                ch,
+                class,
+                family,
+                code
+            }
+        );
+        assert_eq!(nodes[0].span, fmd_math::Span::new(0, source.len()));
+        assert_eq!(fmd_math::atom::intrinsic_class(&nodes[0]), Some(class));
+    }
+}
+
 fn parse_items(src: &str) -> Vec<Node> {
     let root = parse(src).unwrap_or_else(|e| panic!("`{src}` failed: {e}"));
     root_items(&root).to_vec()

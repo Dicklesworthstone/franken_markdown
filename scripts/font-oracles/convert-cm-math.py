@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Offline conversion of the AMS Type 1 Computer Modern math faces to TrueType.
+"""Offline conversion of AMS Type 1 Computer Modern and AMS symbol faces.
 
 franken_manim ADR-0028 (accepted 2026-10-19). Dev-only: fonttools 4.65; never
 run at build or render time, and no production dependency. Run from the
 repository root, pointing at the AMS release's `cm` directory (TeX Live ships it
-as texmf-dist/fonts/type1/public/amsfonts/cm):
+as texmf-dist/fonts/type1/public/amsfonts/cm, with sibling symbols/):
 
     python3 scripts/font-oracles/convert-cm-math.py /path/to/amsfonts/cm
 
@@ -145,6 +145,18 @@ def cmr_unicode(name):
 
 
 # (output stem, source stem, family, size, unicode table or "cmr")
+# Unicode aliases are semantic identities, not guesses from Type 1 glyph names.
+# In particular, AMS-A's shortminus remains PUA-only: ordinary subtraction
+# belongs to cmsy, while the preamble's \\minus selects AMS-A code 0x39.
+AMSA = {"clockwise": [0x21BB], "anticlockwise": [0x21BA], "check": [0x2713]}
+BLACKBOARD_HOLES = {"C": 0x2102, "H": 0x210D, "N": 0x2115, "P": 0x2119,
+                    "Q": 0x211A, "R": 0x211D, "Z": 0x2124}
+AMSB = {
+    **{chr(c): [BLACKBOARD_HOLES.get(chr(c), 0x1D538 + c - ord("A"))]
+       for c in range(ord("A"), ord("Z") + 1)},
+    "notbar": [0x2224], "planckover2pi1": [0x210F],
+}
+
 FACES = [
     ("FmdCmMathItalic10", "cmmi10", "FMD CM Math Italic 10", CMMI),
     ("FmdCmMathItalic7", "cmmi7", "FMD CM Math Italic 7", CMMI),
@@ -156,6 +168,12 @@ FACES = [
     ("FmdCmRoman10", "cmr10", "FMD CM Roman 10", "cmr"),
     ("FmdCmRoman7", "cmr7", "FMD CM Roman 7", "cmr"),
     ("FmdCmRoman5", "cmr5", "FMD CM Roman 5", "cmr"),
+    ("FmdAmsASymbols10", "../symbols/msam10", "FMD AMS A Symbols 10", AMSA),
+    ("FmdAmsASymbols7", "../symbols/msam7", "FMD AMS A Symbols 7", AMSA),
+    ("FmdAmsASymbols5", "../symbols/msam5", "FMD AMS A Symbols 5", AMSA),
+    ("FmdAmsBSymbols10", "../symbols/msbm10", "FMD AMS B Symbols 10", AMSB),
+    ("FmdAmsBSymbols7", "../symbols/msbm7", "FMD AMS B Symbols 7", AMSB),
+    ("FmdAmsBSymbols5", "../symbols/msbm5", "FMD AMS B Symbols 5", AMSB),
 ]
 
 

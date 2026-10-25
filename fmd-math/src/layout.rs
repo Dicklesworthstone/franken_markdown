@@ -633,6 +633,9 @@ impl Engine {
                 char_glyph: None,
             }),
             NodeKind::Symbol { ch, .. } => self.char_atom(*ch, node.span, ctx),
+            NodeKind::AmsSymbol {
+                ch, family, code, ..
+            } => self.ams_atom(*ch, *family, *code, node.span, ctx),
             NodeKind::BigOp { ch, .. } if multi_integral_count(*ch).is_some() => {
                 let count = multi_integral_count(*ch).unwrap_or(2);
                 self.multi_integral(count, self.limits_active(node, ctx), node.span, ctx)
@@ -986,13 +989,56 @@ impl Engine {
             .faces
             .tex_face(face, mapped, ctx.style.style, ctx.text_mode)
             .unwrap_or((face, gid));
+        Ok(self.glyph_atom(face, gid, mapped, span, ctx))
+    }
+
+    /// A named AMS symbol selects its authored code, independently of an
+    /// enclosing alphabet. A custom roster without AMS retains semantic
+    /// Unicode fallback; a present but incomplete AMS face is a precise error.
+    fn ams_atom(
+        &self,
+        ch: char,
+        family: crate::node::AmsFamily,
+        code: u8,
+        span: Span,
+        ctx: LayCtx,
+    ) -> Result<Laid, MathError> {
+        let base = match family {
+            crate::node::AmsFamily::A => crate::faces::FACE_AMS_A_10,
+            crate::node::AmsFamily::B => crate::faces::FACE_AMS_B_10,
+        };
+        if self.faces.font(base).is_none() {
+            return self.char_atom(ch, span, ctx);
+        }
+        let gid = self
+            .faces
+            .tex_glyph(base, code)
+            .ok_or(MathError::UnmappedChar { ch, span })?;
+        let (face, gid) = self
+            .faces
+            .optical(base, crate::faces::tex_code(code), ctx.style.style)
+            .unwrap_or((base, gid));
+        Ok(self.glyph_atom(
+            face,
+            gid,
+            ch,
+            span,
+            LayCtx {
+                text_mode: false,
+                alphabet: None,
+                ..ctx
+            },
+        ))
+    }
+
+    fn glyph_atom(&self, face: FaceId, gid: u16, ch: char, span: Span, ctx: LayCtx) -> Laid {
         let metrics = self.char_metrics(face, gid, ctx.text_mode);
         let size = ctx.size();
-        Ok(Laid {
-            boxx: glyph_box(face, gid, mapped, span, size, metrics),
+        Laid {
+            boxx: glyph_box(face, gid, ch, span, size, metrics),
             italic: metrics.italic * size,
             char_glyph: Some((face, gid)),
-        })
+        }
     }
 
     /// Plain TeX's `\not`: cmsy's zero-width negation slash (code 0x36)

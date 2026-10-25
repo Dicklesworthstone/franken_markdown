@@ -281,6 +281,7 @@ where
             }
         }
         NodeKind::Symbol { .. }
+        | NodeKind::AmsSymbol { .. }
         | NodeKind::BigOp { .. }
         | NodeKind::OpName { .. }
         | NodeKind::SizedDelim { .. }

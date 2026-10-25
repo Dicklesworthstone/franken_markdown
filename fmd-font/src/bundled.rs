@@ -5,7 +5,8 @@
 //! typographic identity and the default face downstream — plus **CM
 //! Typewriter** (code), **IBM Plex Sans** (UI text), the **CM math** faces
 //! TeX sets mathematics in (math italic, symbols and extension at their
-//! optical sizes, converted from the AMS Type 1 release and renamed; see
+//! optical sizes), **AMS-A/B** symbols and blackboard capitals (all converted
+//! from the AMS Type 1 release and renamed; see
 //! `fonts/cm-math/PROVENANCE.json`), and the curated **Noto Sans Math**
 //! symbol-fallback subset. All are SIL OFL; the license texts ship
 //! alongside the binaries under `fonts/` and must accompany redistribution.
@@ -61,13 +62,26 @@ pub const CM_ROMAN_7: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman7.ttf")
 /// CM roman at 5 pt (cmr5): upright second-order script characters.
 pub const CM_ROMAN_5: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman5.ttf");
 
+/// AMS-A symbols at 10 pt (msam10), converted and renamed under the OFL.
+pub const AMS_A_10: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsASymbols10.ttf");
+/// AMS-A symbols at 7 pt (msam7): first-order scripts.
+pub const AMS_A_7: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsASymbols7.ttf");
+/// AMS-A symbols at 5 pt (msam5): second-order scripts.
+pub const AMS_A_5: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsASymbols5.ttf");
+/// AMS-B symbols and blackboard capitals at 10 pt (msbm10).
+pub const AMS_B_10: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsBSymbols10.ttf");
+/// AMS-B at 7 pt (msbm7).
+pub const AMS_B_7: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsBSymbols7.ttf");
+/// AMS-B at 5 pt (msbm5).
+pub const AMS_B_5: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsBSymbols5.ttf");
+
 /// The curated monochrome Noto Emoji subset (emoji fallback face). Regenerated
 /// via `cargo run --example gen_emoji_fallback_font`.
 #[cfg(feature = "emoji-face")]
 pub const NOTO_EMOJI_CURATED: &[u8] = include_bytes!("../fonts/noto-emoji/NotoEmojiCurated.ttf");
 
 /// Every bundled face as `(stable name, bytes)`, in registry order.
-pub const ALL_FACES: [(&str, &[u8]); 20] = [
+pub const ALL_FACES: [(&str, &[u8]); 26] = [
     ("cm-regular", CM_REGULAR),
     ("cm-bold", CM_BOLD),
     ("cm-italic", CM_ITALIC),
@@ -88,6 +102,12 @@ pub const ALL_FACES: [(&str, &[u8]); 20] = [
     ("cm-roman-10", CM_ROMAN_10),
     ("cm-roman-7", CM_ROMAN_7),
     ("cm-roman-5", CM_ROMAN_5),
+    ("ams-a-10", AMS_A_10),
+    ("ams-a-7", AMS_A_7),
+    ("ams-a-5", AMS_A_5),
+    ("ams-b-10", AMS_B_10),
+    ("ams-b-7", AMS_B_7),
+    ("ams-b-5", AMS_B_5),
 ];
 
 #[cfg(test)]

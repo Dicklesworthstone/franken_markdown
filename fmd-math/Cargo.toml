@@ -13,7 +13,7 @@ rust-version = "1.85"
 license-file = "LICENSE"
 description = "Clean-room TeX-mathematics layout engine: TeX-math grammar, the eight atom classes, the inter-atom spacing table, and TeX style propagation (franken_markdown's math subsystem)"
 repository = "https://github.com/Dicklesworthstone/franken_markdown"
-include = ["src/**", "LICENSE"]
+include = ["src/**", "LICENSE", "OFL-AMS.txt"]
 
 [lib]
 name = "fmd_math"

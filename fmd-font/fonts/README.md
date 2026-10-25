@@ -14,6 +14,7 @@ The full TTFs live here; each rendered PDF embeds only the glyphs it actually us
 | Serif (LaTeX)  | Computer Modern | `computer-modern/cmun{rm,bx,ti,bi}.ttf` (Roman / Bold / Italic / BoldItalic) |
 | Mono (code)    | CM Typewriter   | `computer-modern/cmuntt.ttf` |
 | Math (fmd-math) | CM math italic / symbols / extension, roman script sizes | `cm-math/FmdCmMath{Italic,Symbols}{10,7,5}.ttf`, `cm-math/FmdCmMathExtension10.ttf`, `cm-math/FmdCmRoman{7,5}.ttf` |
+| AMS math (fmd-math) | AMS-A and AMS-B symbols, including blackboard capitals | `cm-math/FmdAms{A,B}Symbols{10,7,5}.ttf` |
 | Symbol fallback | Noto Sans Math (curated subset) | `noto-sans-math/NotoSansMathSymbols.ttf` |
 | Emoji fallback (native, `emoji-face`) | Noto Emoji, monochrome (curated subset) | `noto-emoji/NotoEmojiCurated.ttf` |
 | Test-only VF | FmdTestVF (synthetic `wght` axis) | `test-variable/FmdTestVF.ttf` |
@@ -55,6 +56,15 @@ are the single source of truth for the fallback repertoire.
   glyph is addressable at U+F000 + its TFM code position; the characters TeX
   takes from a face are also mapped at their Unicode codepoints (fmd-math's
   `faces` module documents the roles). Decided in franken_manim ADR-0028.
+- **AMS symbols** — AMSFonts' `msam10/7/5` and `msbm10/7/5`, under the same
+  AMS copyright and `cm-math/OFL.txt`. The existing offline converter produces
+  renamed "FMD AMS …" derivatives with the same 1/1000 em bound. Source and
+  output hashes are in `cm-math/PROVENANCE.json`. Private-use mappings preserve
+  every TeX code; reviewed Unicode aliases cover checkmark, circle arrows,
+  hbar, not-divides and blackboard capitals. The short minus stays private-use
+  only, so ordinary subtraction keeps its CM glyph. `fmd-math` uses the
+  corresponding TFM metrics and 7/5 pt optical cuts; Noto remains the fallback
+  for alphabets and symbols these faces do not contain.
 - **Noto Sans Math** — <https://github.com/google/fonts/tree/main/ofl/notosansmath>
   (© The Noto Project Authors), SIL OFL 1.1. License: `noto-sans-math/OFL.txt`.
   Committed as the curated `NotoSansMathSymbols.ttf` subset described above, not

@@ -67,11 +67,13 @@ pub struct MacroSet {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct MacroDef {
-    /// Parameter count, 0..=9.
-    params: u8,
-    /// The body, TeX source.
-    body: String,
+enum MacroDef {
+    /// A pack-defined name whose meaning is implemented by the grammar.
+    Native,
+    Substitution {
+        params: u8,
+        body: String,
+    },
 }
 
 impl MacroSet {
@@ -90,22 +92,15 @@ impl MacroSet {
     pub fn pack(id: &str) -> Option<Self> {
         match id {
             "fmd-math/pack/default" | "default" => {
-                // The Reference's default template declares `\minus`, a
-                // binary-minus shorthand (its one real macro), and ends
+                // The Reference's default template declares `\minus` and ends
                 // with microtype's `\DisableLigatures{encoding = *,
                 // family = *}`, which text mode honors (franken_manim
                 // fm-aia1). The rest of its preamble is package loading
-                // with no native meaning. Built directly — the definition
-                // is static and trivially valid (the tests define the same
-                // macro through the validating path).
+                // with no native meaning. Keep the declared name for
+                // newcommand/renewcommand, but let the grammar select its
+                // authored AMS glyph instead of expanding it to a hyphen.
                 let mut defs = BTreeMap::new();
-                defs.insert(
-                    "minus".to_owned(),
-                    MacroDef {
-                        params: 0,
-                        body: "-".to_owned(),
-                    },
-                );
+                defs.insert("minus".to_owned(), MacroDef::Native);
                 Some(Self {
                     defs,
                     disable_ligatures: true,
@@ -140,7 +135,7 @@ impl MacroSet {
         validate_body(name, params, body)?;
         self.defs.insert(
             name.to_owned(),
-            MacroDef {
+            MacroDef::Substitution {
                 params,
                 body: body.to_owned(),
             },
@@ -167,25 +162,28 @@ impl MacroSet {
 
     /// A deterministic serialization of the whole table — the cache-key
     /// ingredient (hash these bytes; equal bytes ⇔ equal macro semantics).
-    /// Format: a version tag, then `name US params US body RS` per macro in
-    /// sorted order (US/RS are the ASCII unit/record separators, which
-    /// cannot appear in names and are vanishingly unlikely in bodies; the
-    /// version tag changes if this framing ever does).
-    /// A set with ligatures disabled ends with one more record, a group
-    /// separator then `ligatures-off`.
+    /// Version 2: a version tag, ligature flag and u64-LE definition count;
+    /// then each sorted name as u64-LE byte length + UTF-8, followed by a
+    /// native tag (0), or substitution tag (1), parameter byte and a
+    /// length-prefixed UTF-8 body. Body control characters cannot imitate
+    /// another definition, and native bindings differ from substitutions.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut out = b"fmd-math-macroset-v1\x1e".to_vec();
+        let mut out = b"fmd-math-macroset-v2\x1e".to_vec();
+        out.push(u8::from(self.disable_ligatures));
+        out.extend_from_slice(&(self.defs.len() as u64).to_le_bytes());
         for (name, def) in &self.defs {
+            out.extend_from_slice(&(name.len() as u64).to_le_bytes());
             out.extend_from_slice(name.as_bytes());
-            out.push(0x1f);
-            out.push(b'0' + def.params);
-            out.push(0x1f);
-            out.extend_from_slice(def.body.as_bytes());
-            out.push(0x1e);
-        }
-        if self.disable_ligatures {
-            out.extend_from_slice(b"\x1dligatures-off\x1e");
+            match def {
+                MacroDef::Native => out.push(0),
+                MacroDef::Substitution { params, body } => {
+                    out.push(1);
+                    out.push(*params);
+                    out.extend_from_slice(&(body.len() as u64).to_le_bytes());
+                    out.extend_from_slice(body.as_bytes());
+                }
+            }
         }
         out
     }
@@ -250,6 +248,7 @@ fn validate_body(name: &str, params: u8, body: &str) -> Result<(), MathError> {
 
 /// One live macro during expansion: the definition's body, pre-lexed.
 struct Live<'a> {
+    native: bool,
     params: u8,
     body: Vec<Tok<'a>>,
     /// Some(empty) still means argument #1 is optional. Declaration spans
@@ -318,10 +317,19 @@ pub(crate) fn expand<'a>(
     for (name, def) in &set.defs {
         table.insert(
             name.as_str(),
-            Live {
-                params: def.params,
-                body: lex(&def.body),
-                default: None,
+            match def {
+                MacroDef::Native => Live {
+                    native: true,
+                    params: 0,
+                    body: Vec::new(),
+                    default: None,
+                },
+                MacroDef::Substitution { params, body } => Live {
+                    native: false,
+                    params: *params,
+                    body: lex(body),
+                    default: None,
+                },
             },
         );
     }
@@ -492,6 +500,7 @@ impl<'a> Expansion<'a> {
         self.table.insert(
             name,
             Live {
+                native: false,
                 params,
                 body,
                 default,
@@ -512,6 +521,11 @@ impl<'a> Expansion<'a> {
         out: &mut Vec<Tok<'a>>,
     ) -> Result<usize, MathError> {
         let call_start = toks[i].span;
+        if self.table.get(name).is_some_and(|live| live.native) {
+            self.charge(1, call_start)?;
+            out.push(toks[i].clone());
+            return Ok(i + 1);
+        }
         if depth >= EXPANSION_DEPTH_BUDGET {
             return Err(MathError::Malformed {
                 what: format!(
@@ -781,15 +795,24 @@ mod tests {
     }
 
     #[test]
-    fn pack_macros_expand_with_call_site_spans() {
+    fn native_bindings_and_substitutions_keep_call_site_spans() {
         let set = MacroSet::pack("fmd-math/pack/default").unwrap();
         let src = r"a\minus b";
         let toks = expand(lex(src), &set, src.len()).unwrap();
         let minus = toks
             .iter()
-            .find(|t| matches!(t.kind, TokKind::Char('-')))
-            .expect("expanded minus");
+            .find(|t| matches!(t.kind, TokKind::ControlWord("minus")))
+            .expect("native minus reaches the grammar");
         assert_eq!((minus.span.start, minus.span.end), (1, 7));
+        let mut source_macro = MacroSet::new();
+        source_macro.define("probe", 0, "-").unwrap();
+        let src = r"a\probe b";
+        let toks = expand(lex(src), &source_macro, src.len()).unwrap();
+        let dash = toks
+            .iter()
+            .find(|t| matches!(t.kind, TokKind::Char('-')))
+            .unwrap();
+        assert_eq!((dash.span.start, dash.span.end), (1, 7));
     }
 
     #[test]
@@ -921,6 +944,20 @@ mod tests {
         c.define("dd", 0, r"\mathrm{D}").unwrap();
         c.define("half", 1, r"\frac{#1}{2}").unwrap();
         assert_ne!(a.canonical_bytes(), c.canonical_bytes());
+    }
+
+    #[test]
+    fn canonical_bytes_distinguish_record_separators_inside_macro_bodies() {
+        let mut one = MacroSet::new();
+        one.define("a", 0, "x\x1eb\x1f0\x1fy").unwrap();
+        let mut two = MacroSet::new();
+        two.define("a", 0, "x").unwrap();
+        two.define("b", 0, "y").unwrap();
+        assert_ne!(
+            expand_str(r"\b", &one).unwrap(),
+            expand_str(r"\b", &two).unwrap()
+        );
+        assert_ne!(one.canonical_bytes(), two.canonical_bytes());
     }
 
     #[test]

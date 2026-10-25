@@ -160,6 +160,63 @@ fn custom_rosters_keep_unicode_fallback_and_refuse_missing_authored_codes() {
 }
 
 #[test]
+fn default_pack_keeps_authored_minus_and_request_local_shadowing() {
+    let engine = Engine::bundled().unwrap();
+    let pack = fmd_math::MacroSet::pack("fmd-math/pack/default").unwrap();
+    for (style, face) in [
+        (Style::Display, 17),
+        (Style::Text, 17),
+        (Style::Script, 18),
+        (Style::ScriptScript, 19),
+    ] {
+        let layout = engine.typeset_with_macros(r"\minus", style, &pack).unwrap();
+        assert_eq!(layout.glyphs.len(), 1);
+        assert_eq!(layout.glyphs[0].face, fmd_math::FaceId(face));
+        assert_eq!(layout.glyphs[0].ch, '−');
+        assert_eq!(layout.glyphs[0].span, fmd_math::Span::new(0, 6));
+    }
+    assert!(
+        engine
+            .typeset_with_macros(r"\newcommand{\minus}{+}\minus", Style::Text, &pack)
+            .is_err()
+    );
+    let renewed = engine
+        .typeset_with_macros(r"\renewcommand{\minus}{+}\minus", Style::Text, &pack)
+        .unwrap();
+    assert_eq!(renewed.glyphs[0].ch, '+');
+    assert_eq!(
+        engine
+            .typeset_with_macros(r"\minus", Style::Text, &pack)
+            .unwrap()
+            .glyphs[0]
+            .face,
+        fmd_math::FaceId(17)
+    );
+    let empty = fmd_math::MacroSet::new();
+    let mut literal = pack.clone();
+    literal.define("minus", 0, "-").unwrap();
+    assert_ne!(pack.canonical_bytes(), literal.canonical_bytes());
+    assert_eq!(
+        engine
+            .typeset_with_macros(r"\minus", Style::Text, &literal)
+            .unwrap()
+            .glyphs[0]
+            .face,
+        fmd_math::FaceId(8)
+    );
+    assert!(
+        engine
+            .typeset_with_macros(r"\newcommand{\minus}{+}\minus", Style::Text, &empty)
+            .is_ok()
+    );
+    assert!(
+        engine
+            .typeset_with_macros(r"\renewcommand{\minus}{+}\minus", Style::Text, &empty)
+            .is_err()
+    );
+}
+
+#[test]
 fn repeated_typesetting_is_byte_identical() {
     let srcs = [
         r"\frac{1}{1+\frac{1}{x}}",

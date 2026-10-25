@@ -367,6 +367,12 @@ cargo test
 cargo build --no-default-features
 ```
 
+Run `scripts/check-javascript.sh` for the JavaScript runtime and helper tests;
+it requires Node.js and all four checked-in test families. The full
+`scripts/test-all.sh` gauntlet and its `--fast` mode both include this check.
+`--fast` omits coverage and the combined e2e suite, so its success is scoped to
+the selected gates. Native build checks remain subject to DSR/RCH admission.
+
 ## Installation
 
 > The `curl`/PowerShell installers (`install.sh` / `install.ps1`) prefer

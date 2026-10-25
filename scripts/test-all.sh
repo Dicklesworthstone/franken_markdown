@@ -4,9 +4,9 @@
 # One command that runs every test tier — format, lint, unit/integration tests,
 # the batch feature, the property + fuzz + golden suites (via cargo test), the
 # clean-room/determinism/conformance checks, the ratcheted coverage floor, and the
-# comprehensive e2e suite — and prints a single combined pass/fail report with
+# comprehensive e2e suite, plus the JavaScript runtime/helper tests — and prints a single combined pass/fail report with
 # per-gate timing. This is the "did everything pass?" entry point for humans and
-# agents; CI runs the same gates split across parallel jobs.
+# agents; build orchestration uses DSR with admitted RCH execution.
 #
 # Usage:
 #   scripts/test-all.sh           # full gauntlet (slow: coverage + e2e + asupersync)
@@ -19,6 +19,10 @@ cd "$(dirname "$0")/.." || exit
 export CARGO_TARGET_DIR="${FMD_TARGET_DIR:-$PWD/target/fmd-checks}"
 
 FAST=0
+if [ "$#" -gt 1 ]; then
+  echo "test-all: expected at most one argument (try --help)" >&2
+  exit 2
+fi
 case "${1:-}" in
   --fast) FAST=1 ;;
   --help|-h) sed -n '2,20p' "$0"; exit 0 ;;
@@ -83,6 +87,7 @@ run_gate "fmt"                cargo fmt --check
 run_gate "check-all-targets"  cargo check --all-targets
 run_gate "check-no-default"   cargo check --no-default-features --lib
 run_gate "clippy"             cargo clippy --all-targets -- -D warnings
+run_gate "JavaScript runtime+helper tests" scripts/check-javascript.sh
 run_gate "helper shell syntax" check_helper_shell_syntax
 run_gate "helper shellcheck (optional)" check_helper_shellcheck
 run_gate "helper source-shape tests" cargo test --test script_sources_test
@@ -118,5 +123,9 @@ if [ "$FAILED" -ne 0 ]; then
   echo "test-all: FAILED — $FAILED gate(s) did not pass."
   exit 70
 fi
-echo "test-all: ok — every gate passed."
+if [ "$FAST" = 1 ]; then
+  echo "test-all: ok — selected fast gates passed; coverage and e2e run-all were not executed."
+else
+  echo "test-all: ok — every required gate passed."
+fi
 exit 0

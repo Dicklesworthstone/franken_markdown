@@ -1,5 +1,5 @@
 import { createWorkerRenderer } from "../document_worker.mjs";
-import { readMarkdownFile } from "./flow_document.mjs";
+import { markdownDownload, readMarkdownFile } from "./flow_document.mjs";
 
 const sampleMarkdown = `# franken_markdown demo
 
@@ -29,7 +29,7 @@ fn main() {
 export function createDemoController(doc, win, factory = createWorkerRenderer) {
   const els = {};
   for (const [key, selector] of Object.entries({
-    openMarkdown: "#open-markdown", markdownFile: "#markdown-file", fileStatus: "#file-status",
+    downloadMarkdown: "#download-markdown", openMarkdown: "#open-markdown", markdownFile: "#markdown-file", fileStatus: "#file-status",
     markdown: "#markdown", render: "#render", downloadPdf: "#download-pdf", downloadHtml: "#download-html",
     preview: "#preview", diagnostics: "#diagnostics", status: "#status",
     sourceSize: "#source-size", previewMeta: "#preview-meta", font: "#font",
@@ -41,7 +41,8 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   }
   let alive = true, suspended = false, composing = false, generation = 0;
   let timer = null, lastPdfUrl = null, lastHtmlUrl = null, preparedHtml = null, observed = null;
-  let fileJob = null, cleanSource;
+  let fileJob = null, cleanSource, originalSource, sourceFilename = "franken-markdown.md";
+  let sourceDownload = null, sourceDownloadId = 0;
   const clients = { html: null, pdf: null }, jobs = { html: null, pdf: null }, listeners = [];
   const fields = ["markdown", "font", "darkMode", "title", "author", "customCss", "allowHtml", "lineNumbers"];
   const raw = () => Object.fromEntries(fields.map(key =>
@@ -60,7 +61,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     els.render.textContent = jobs.html ? "Cancel render" : "Render";
     els.downloadPdf.textContent = jobs.pdf ? "Cancel PDF" : "Download PDF";
     els.render.disabled = els.downloadPdf.disabled = !alive || suspended || composing;
-    els.openMarkdown.disabled = els.markdownFile.disabled = !alive || suspended || composing;
+    els.openMarkdown.disabled = els.markdownFile.disabled = els.downloadMarkdown.disabled = !alive || suspended || composing;
     els.status.textContent = jobs.html && jobs.pdf ? "rendering HTML and PDF in workers"
       : jobs.html ? "rendering HTML in worker" : jobs.pdf ? "rendering PDF in worker" : message;
   }
@@ -88,6 +89,17 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   function revokePdf() {
     if (lastPdfUrl !== null) win.URL.revokeObjectURL(lastPdfUrl);
     lastPdfUrl = null;
+  }
+  function retireSourceDownload(output) {
+    if (output && !output.revoked) {
+      output.revoked = true;
+      win.URL.revokeObjectURL(output.url);
+    }
+  }
+  function revokeMarkdown() {
+    const previous = sourceDownload;
+    sourceDownload = null;
+    retireSourceDownload(previous);
   }
   function revokeHtml() {
     preparedHtml = null;
@@ -117,6 +129,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     cancel("pdf");
     revokeHtml();
     revokePdf();
+    revokeMarkdown();
     els.preview.srcdoc = "";
     els.previewMeta.textContent = "preview out of date";
   }
@@ -215,6 +228,41 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     status(composing ? "composing text" : "waiting for edits");
     if (!composing) timer = win.setTimeout(() => { timer = null; void run("html"); }, 180);
   }
+  function downloadMarkdown() {
+    if (!alive || suspended || composing) return false;
+    const captured = raw(), revision = generation, id = ++sourceDownloadId;
+    const fresh = () => alive && !suspended && !composing && id === sourceDownloadId
+      && revision === generation && unchanged(captured);
+    let output = null, link = null, requested = false;
+    try {
+      const document = markdownDownload({ filename: sourceFilename,
+        source: captured.markdown === cleanSource ? originalSource : captured.markdown });
+      revokeMarkdown();
+      if (!fresh()) return false;
+      output = { url: win.URL.createObjectURL(document.blob), revoked: false };
+      if (!fresh()) return false;
+      sourceDownload = output;
+      link = doc.createElement("a");
+      link.href = output.url;
+      link.download = document.filename;
+      doc.body.appendChild(link);
+      if (!fresh()) return false;
+      link.click();
+      requested = true;
+      if (fresh()) els.fileStatus.textContent = `Markdown download requested: ${document.filename}.`;
+      return true;
+    } catch (error) {
+      if (fresh()) els.fileStatus.textContent = `${error?.code ?? "SOURCE_DOWNLOAD_ERROR"}: ${error instanceof Error ? error.message : "Markdown download failed."}`;
+      return false;
+    } finally {
+      link?.remove();
+      if (output && (!requested || !fresh())) {
+        if (sourceDownload === output) sourceDownload = null;
+        retireSourceDownload(output);
+      }
+    }
+  }
+  listen(els.downloadMarkdown, "click", () => { downloadMarkdown(); });
   async function openMarkdown(file) {
     if (!alive || suspended || composing || !file) return false;
     const job = { raw: raw(), generation };
@@ -226,7 +274,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
       const next = await readMarkdownFile(file);
       if (!fresh()) return false;
       if (job.raw.markdown !== cleanSource && !win.confirm(
-        `Replace the current draft with ${next.filename}? Download your current output first if you need to keep it.`,
+        `Replace the current draft with ${next.filename}? Choose Download Markdown first if you need to keep the current source.`,
       )) {
         els.fileStatus.textContent = "Open cancelled; current draft retained.";
         return false;
@@ -235,6 +283,8 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
       fileJob = null;
       els.markdown.value = next.source;
       cleanSource = els.markdown.value; // Browsers normalize CR/CRLF in textareas.
+      originalSource = next.source;
+      sourceFilename = next.filename;
       els.title.value = next.filename.replace(/\.(md|markdown|txt)$/i, "") || next.filename;
       els.allowHtml.checked = false;
       // Even an identical import is a document replacement. Retire exports
@@ -299,10 +349,10 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     if (event.persisted) { suspended = false; schedulePreview(true); }
   });
   if (!els.markdown.value) els.markdown.value = sampleMarkdown;
-  cleanSource = els.markdown.value;
+  originalSource = cleanSource = els.markdown.value;
   schedulePreview();
   return Object.freeze({
-    renderPreview: () => run("html"), downloadPdf: () => run("pdf"), openMarkdown,
+    renderPreview: () => run("html"), downloadPdf: () => run("pdf"), openMarkdown, downloadMarkdown,
     dispose() {
       if (!alive) return;
       alive = false;

@@ -731,8 +731,10 @@ build and verify it.
 
 In the [main demo](wasm/demo/index.html), choose **Open Markdown…** to load a
 local UTF-8 `.md`, `.markdown`, or `.txt` file up to 4 MiB, edit it, then download
-HTML or PDF. Opening a file updates the export title and resets raw HTML to its
-safe default; replacing an edited draft asks for confirmation. Invalid files
+HTML or PDF. **Download Markdown** saves the current source even if rendering
+fails. An unchanged imported document keeps its original UTF-8 BOM and line
+endings; edited text uses the editor’s line endings. Opening a file updates the
+export title and resets raw HTML to its safe default; replacing an edited draft asks for confirmation. Invalid files
 leave the draft and its existing exports available. Local images require
 separate authorization in the [workspace demo](wasm/demo/flow-canvas.html).
 

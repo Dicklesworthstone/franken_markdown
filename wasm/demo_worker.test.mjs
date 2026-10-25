@@ -19,7 +19,7 @@ function fixture(t) {
       if (accepted && this.tag === "a" && this.href) downloads.push({ href: this.href, download: this.download });
     }
   }
-  const ids = ["open-markdown", "markdown-file", "file-status", "markdown", "render", "download-pdf", "download-html", "preview", "diagnostics", "status", "source-size", "preview-meta", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers"];
+  const ids = ["download-markdown", "open-markdown", "markdown-file", "file-status", "markdown", "render", "download-pdf", "download-html", "preview", "diagnostics", "status", "source-size", "preview-meta", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers"];
   const els = Object.fromEntries(ids.map(id => [id, new Element(id === "download-html" ? "a" : "div")]));
   els.markdown.value = "# Original";
   els.font.value = "sans"; els["dark-mode"].value = "auto"; els.title.value = "Original title";
@@ -472,4 +472,166 @@ test("file input retries the same file and cancellation emits no replacement", a
   assert.equal(f.els["open-markdown"].disabled, true);
   assert.equal(await f.controller.openMarkdown(new File(["# Blocked"], "blocked.md")), false);
   f.els["open-markdown"].click(); assert.equal(selections, 1);
+});
+
+test("Markdown download captures the draft without starting a renderer or leaving an anchor", async t => {
+  const f = fixture(t);
+  assert.equal(f.controller.downloadMarkdown(), true);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.clients.length, 0);
+  assert.equal(f.downloads.length, 1);
+  assert.equal(f.downloads[0].download, "franken-markdown.md");
+  assert.equal(await f.urls[0].blob.text(), "# Original");
+  assert.equal(f.urls[0].blob.type, "text/markdown; charset=utf-8");
+  assert.equal(f.doc.body.children.length, 0);
+  assert.match(f.els["file-status"].textContent, /download requested/);
+  assert.doesNotMatch(f.els["file-status"].textContent, /saved|overwritten/i);
+});
+
+test("Markdown backup retains imported BOM/CRLF bytes, exports edits, and restores original bytes on exact revert", async t => {
+  const f = fixture(t);
+  // Match the real textarea newline behavior; the decoder itself keeps bytes.
+  let displayed = f.els.markdown.value;
+  Object.defineProperty(f.els.markdown, "value", {
+    get: () => displayed, set: value => { displayed = String(value).replace(/\r\n?/g, "\n"); },
+  });
+  const original = "\ufeff# Résumé\r\n\r\nCafe\u0301 😀\r\n";
+  assert.equal(await f.controller.openMarkdown(new File([original], "Résumé.markdown")), true);
+  assert.equal(f.els.markdown.value, original.replace(/\r\n/g, "\n"));
+  assert.equal(f.controller.downloadMarkdown(), true);
+  assert.equal(f.downloads[0].download, "Résumé.markdown");
+  assert.deepEqual(new Uint8Array(await f.urls[0].blob.arrayBuffer()), new TextEncoder().encode(original));
+  f.input("markdown", "# Edited\n\nKeep these changes.\n");
+  assert.equal(f.controller.downloadMarkdown(), true);
+  assert.equal(await f.urls[1].blob.text(), "# Edited\n\nKeep these changes.\n");
+  f.input("markdown", original.replace(/\r\n/g, "\n"));
+  assert.equal(f.controller.downloadMarkdown(), true);
+  assert.deepEqual(new Uint8Array(await f.urls[2].blob.arrayBuffer()), new TextEncoder().encode(original));
+  assert.equal(f.calls.length, 0);
+});
+
+test("Markdown download never emits an executable source extension", async t => {
+  const f = fixture(t);
+  await f.controller.openMarkdown(new File(["<script>source text</script>"], "source.html"));
+  assert.equal(f.controller.downloadMarkdown(), true);
+  assert.equal(f.downloads[0].download, "source.html.md");
+  assert.equal(await f.urls[0].blob.text(), "<script>source text</script>");
+});
+
+test("renderer failure does not prevent downloading the current Markdown draft", async t => {
+  const f = fixture(t), pending = f.controller.renderPreview();
+  f.calls[0].reject(Object.assign(new Error("worker unavailable"), { code: "WORKER_FAILED" }));
+  assert.equal(await pending, false);
+  f.input("markdown", "# Preserve despite failure");
+  f.els["download-markdown"].click();
+  assert.equal(f.downloads.length, 1);
+  assert.equal(await f.urls[0].blob.text(), "# Preserve despite failure");
+  assert.equal(f.calls.length, 1, "source download never retries or falls back to a renderer");
+});
+
+test("empty Markdown remains downloadable without restoring the sample", async t => {
+  const f = fixture(t); f.input("markdown", "");
+  assert.equal(f.controller.downloadMarkdown(), true);
+  assert.equal(f.urls[0].blob.size, 0);
+  assert.equal(f.els.markdown.value, "");
+  assert.equal(f.calls.length, 0);
+});
+
+for (const [name, source, code] of [
+  ["malformed Unicode", "\ud800", "INVALID_UNICODE"],
+  ["over-budget source", "x".repeat(4 * 1024 * 1024 + 1), "BUDGET_EXCEEDED"],
+]) {
+  test(`source download reports ${name} without publishing or discarding the draft`, t => {
+    const f = fixture(t); f.input("markdown", source);
+    assert.equal(f.controller.downloadMarkdown(), false);
+    assert.equal(f.downloads.length, 0); assert.equal(f.urls.length, 0);
+    assert.equal(f.els.markdown.value, source);
+    assert.match(f.els["file-status"].textContent, new RegExp(code));
+  });
+}
+
+test("repeated Markdown downloads own their URL separately from completed HTML and PDF", async t => {
+  const f = fixture(t), html = f.controller.renderPreview(), pdf = f.controller.downloadPdf();
+  for (const call of f.calls) call.resolve(f.output(call));
+  assert.equal(await html, true); assert.equal(await pdf, true);
+  const htmlUrl = f.els["download-html"].href, pdfUrl = f.downloads[0].href;
+  assert.equal(f.controller.downloadMarkdown(), true);
+  const firstSourceUrl = f.downloads[1].href;
+  assert.equal(f.controller.downloadMarkdown(), true);
+  assert.deepEqual(f.revoked, [firstSourceUrl]);
+  assert.equal(f.els["download-html"].href, htmlUrl);
+  assert.ok(!f.revoked.includes(pdfUrl));
+  assert.equal(f.calls.length, 2);
+  f.input("markdown", "# New draft");
+  for (const url of [htmlUrl, pdfUrl, f.downloads[2].href]) assert.ok(f.revoked.includes(url));
+});
+
+for (const [name, mutate] of [
+  ["composition", f => f.els.markdown.dispatchEvent(new Event("compositionstart"))],
+  ["suspension", f => f.win.dispatchEvent(new Event("pagehide"))],
+  ["disposal", f => f.controller.dispose()],
+]) {
+  test(`${name} retires Markdown URLs and prevents further source downloads`, t => {
+    const f = fixture(t); assert.equal(f.controller.downloadMarkdown(), true);
+    const url = f.downloads[0].href; mutate(f);
+    assert.deepEqual(f.revoked, [url]);
+    assert.equal(f.els["download-markdown"].disabled, true);
+    assert.equal(f.controller.downloadMarkdown(), false);
+    assert.equal(f.downloads.length, 1);
+  });
+}
+
+for (const [name, mutate] of [
+  ["source replacement", f => f.input("markdown", "# Newer source")],
+  ["silent source change", f => { f.els.markdown.value = "# Silent newer source"; }],
+  ["composition", f => f.els.markdown.dispatchEvent(new Event("compositionstart"))],
+  ["suspension", f => f.win.dispatchEvent(new Event("pagehide"))],
+  ["disposal", f => f.controller.dispose()],
+]) {
+  test(`source URL creation rechecks ownership after ${name}`, t => {
+    const f = fixture(t), create = f.win.URL.createObjectURL;
+    f.win.URL.createObjectURL = blob => { const url = create(blob); mutate(f); return url; };
+    assert.equal(f.controller.downloadMarkdown(), false);
+    assert.equal(f.downloads.length, 0);
+    assert.deepEqual(f.revoked, [f.urls[0].url]);
+    assert.equal(f.doc.body.children.length, 0);
+  });
+}
+
+test("a newer reentrant Markdown download retains its own URL when the old request is retired", t => {
+  const f = fixture(t), create = f.win.URL.createObjectURL;
+  let nested = false;
+  f.win.URL.createObjectURL = blob => {
+    const url = create(blob);
+    if (!nested) { nested = true; assert.equal(f.controller.downloadMarkdown(), true); }
+    return url;
+  };
+  assert.equal(f.controller.downloadMarkdown(), false);
+  assert.equal(f.downloads.length, 1);
+  assert.equal(f.downloads[0].href, f.urls[1].url);
+  assert.deepEqual(f.revoked, [f.urls[0].url]);
+  f.controller.dispose();
+  assert.deepEqual(f.revoked, [f.urls[0].url, f.urls[1].url]);
+});
+
+test("source replacement while mounting the download link prevents activation and revokes only once", t => {
+  const f = fixture(t), append = f.doc.body.appendChild.bind(f.doc.body);
+  f.doc.body.appendChild = link => { append(link); f.input("markdown", "# Changed before activation"); return link; };
+  assert.equal(f.controller.downloadMarkdown(), false);
+  assert.equal(f.downloads.length, 0);
+  assert.deepEqual(f.revoked, [f.urls[0].url]);
+  assert.equal(f.doc.body.children.length, 0);
+});
+
+test("source-download click failure releases the temporary anchor and exact URL", t => {
+  const f = fixture(t), create = f.doc.createElement;
+  f.doc.createElement = tag => {
+    const element = create(tag);
+    if (tag === "a") element.click = () => { throw new Error("download activation failed"); };
+    return element;
+  };
+  assert.equal(f.controller.downloadMarkdown(), false);
+  assert.equal(f.doc.body.children.length, 0);
+  assert.deepEqual(f.revoked, [f.urls[0].url]);
+  assert.match(f.els["file-status"].textContent, /SOURCE_DOWNLOAD_ERROR: download activation failed/);
 });

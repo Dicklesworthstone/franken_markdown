@@ -35,7 +35,7 @@ function check(path, expected = [], options = {}) {
   return { ...result, report: JSON.parse(result.stdout) };
 }
 const source = fileURLToPath(new URL('sans.pdf', fixtures));
-const exported = command(tools.qpdf, ['--json-output=2', '--json-stream-data=inline', source]);
+const exported = command(tools.qpdf, ['--json-output=2', '--decode-level=all', '--json-stream-data=inline', source]);
 assert.equal(exported.status, 0, exported.stderr);
 const template = JSON.parse(exported.stdout);
 const objects = document => document.qpdf[1];

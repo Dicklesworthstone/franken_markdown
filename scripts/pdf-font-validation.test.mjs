@@ -164,3 +164,10 @@ test('precomposed tokens are not normalized to match decomposed logical source',
   assert.equal(result.status, 70, result.stdout + result.stderr);
   assert.match(result.report.error, /logical text lacks exact expected token/);
 });
+
+
+test('an empty expected token is rejected instead of reporting vacuous text coverage', () => {
+  const result = command(python, [checker, source, '--expect-text', '']);
+  assert.equal(result.status, 2, result.stdout + result.stderr);
+  assert.match(result.stderr, /--expect-text must be nonempty/);
+});

@@ -373,6 +373,14 @@ it requires Node.js and all four checked-in test families. The full
 `--fast` omits coverage and the combined e2e suite, so its success is scoped to
 the selected gates. Native build checks remain subject to DSR/RCH admission.
 
+The PDF-font integration tests require Python 3, qpdf, MuPDF (`mutool`) and
+Poppler (`pdftotext`). For a read-only font check, run
+`python3 scripts/check-pdf-fonts.py output.pdf --expect-text 'expected text'`.
+It inspects embedded TrueType glyph IDs and widths and checks exact Unicode
+text through both decoders. The JSON report states the measured width
+quantization; its scope excludes layout, PDF/A, PDF/UA and current-source
+qualification. See [fixture provenance](tests/fixtures/pdf-fonts/PROVENANCE.json).
+
 ## Installation
 
 > The `curl`/PowerShell installers (`install.sh` / `install.ps1`) prefer

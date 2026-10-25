@@ -135,7 +135,9 @@ def verify(path, expected):
         data = stream(descriptor["/FontFile2"])
         units, count, advances = ttf_metrics(data)
         widths, default = pdf_widths(descendant)
-        name = dictionary.get("/BaseFont", "").removeprefix("/")
+        raw_name = dictionary.get("/BaseFont")
+        require(isinstance(raw_name, str) and raw_name.startswith("/"), "Invalid embedded font name")
+        name = raw_name.removeprefix("/")
         require(name and name not in fonts, "Missing or ambiguous embedded font name")
         fonts[name] = {"object": reference, "unitsPerEm": units, "glyphCount": count,
                        "fontSha256": hashlib.sha256(data).hexdigest(), "advances": advances,
@@ -196,6 +198,9 @@ def main():
     parser.add_argument("pdf", type=Path)
     parser.add_argument("--expect-text", action="append", default=[], help="Exact Unicode token required in both logical-text decoders (no normalization)")
     args = parser.parse_args()
+    if any(token == "" for token in args.expect_text):
+        parser.error("--expect-text must be nonempty; an empty token cannot establish text coverage")
+    args.pdf = args.pdf.resolve()
     missing = [name for name in ("qpdf", "mutool", "pdftotext") if shutil.which(name) is None]
     if missing:
         print(json.dumps({"ok": False, "scope": SCOPE, "error": "Missing required tools: " + ", ".join(missing)}))

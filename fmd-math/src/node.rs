@@ -289,6 +289,15 @@ pub struct ColorSpec {
     pub color: Result<Color, MathError>,
 }
 
+/// The two AMS symbol families whose TeX code positions identify authored glyphs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AmsFamily {
+    /// AMS-A (`msam`): checkmark, shortminus and circle arrows.
+    A,
+    /// AMS-B (`msbm`): barred h, negated divisibility and blackboard capitals.
+    B,
+}
+
 /// What a node is. See the module docs; every variant is produced by
 /// [`crate::parse`] / [`crate::parse_text`] with full span provenance.
 #[derive(Clone, Debug, PartialEq)]
@@ -304,6 +313,19 @@ pub enum NodeKind {
         ch: char,
         /// Intrinsic atom class.
         class: AtomClass,
+    },
+    /// A named symbol whose TeX font/code is part of its design. Keep the
+    /// semantic character for MathML and provenance: shortminus and ordinary
+    /// subtraction share Unicode but have different authored glyphs.
+    AmsSymbol {
+        /// Semantic character.
+        ch: char,
+        /// Intrinsic atom class.
+        class: AtomClass,
+        /// Authored AMS symbol family.
+        family: AmsFamily,
+        /// TeX code position in that family.
+        code: u8,
     },
     /// A big operator (`\sum`, `\int`, …): an Op atom with a limits mode.
     BigOp {

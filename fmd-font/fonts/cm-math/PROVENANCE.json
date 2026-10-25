@@ -115,6 +115,72 @@
       "glyphs": 128,
       "unicode_mapped": 125,
       "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name CMR5."
+    },
+    {
+      "file": "FmdAmsASymbols10.ttf",
+      "family": "FMD AMS A Symbols 10",
+      "source": "msam10.pfb",
+      "source_font_name": "MSAM10",
+      "source_sha256": "f2e3b470b988a46272125e917531690d3c4d03ac7238f112b07337f972a537fa",
+      "sha256": "b610012b62528ce386a6cdea5d78298733290afdd249d1af1f3b2d10bfd974ae",
+      "glyphs": 128,
+      "unicode_mapped": 3,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name MSAM10."
+    },
+    {
+      "file": "FmdAmsASymbols7.ttf",
+      "family": "FMD AMS A Symbols 7",
+      "source": "msam7.pfb",
+      "source_font_name": "MSAM7",
+      "source_sha256": "c96c9138119d9879757ad8c1ecb2cc25b0cac303ba3ee13d25d117fdbc71d2f3",
+      "sha256": "f40d04b0d399f48e07960374ca4e1e0e147d3e8bbb637f64041ccf1fe6facc91",
+      "glyphs": 128,
+      "unicode_mapped": 3,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name MSAM7."
+    },
+    {
+      "file": "FmdAmsASymbols5.ttf",
+      "family": "FMD AMS A Symbols 5",
+      "source": "msam5.pfb",
+      "source_font_name": "MSAM5",
+      "source_sha256": "a7a1893c3e1af52a1bc02cb2cff4a0acfd2aa7ced13d4a6ce797afc68c9f506f",
+      "sha256": "0d4d7c2e8c072557616be7d0a7068508c3fe8f4129c115e6ca6712920c3f41f8",
+      "glyphs": 128,
+      "unicode_mapped": 3,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name MSAM5."
+    },
+    {
+      "file": "FmdAmsBSymbols10.ttf",
+      "family": "FMD AMS B Symbols 10",
+      "source": "msbm10.pfb",
+      "source_font_name": "MSBM10",
+      "source_sha256": "d2121de7e7c14490a2d352e3b62e62882d6c300235464bfa577e6055696e6e62",
+      "sha256": "ec44a7e4d79b4f72dbaaf2acc6390f6e5caf521ec0f9fec936287aab8e11e9ec",
+      "glyphs": 123,
+      "unicode_mapped": 28,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name MSBM10."
+    },
+    {
+      "file": "FmdAmsBSymbols7.ttf",
+      "family": "FMD AMS B Symbols 7",
+      "source": "msbm7.pfb",
+      "source_font_name": "MSBM7",
+      "source_sha256": "bd86d36def0f2d226cf773a195a88f88e424759f3ddaaf654de2ae670906734e",
+      "sha256": "10911cfc25d1313a78dd5653b290bc33b007319a66738561bd9b301ca8149681",
+      "glyphs": 123,
+      "unicode_mapped": 28,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name MSBM7."
+    },
+    {
+      "file": "FmdAmsBSymbols5.ttf",
+      "family": "FMD AMS B Symbols 5",
+      "source": "msbm5.pfb",
+      "source_font_name": "MSBM5",
+      "source_sha256": "4504066336bdfacd4a5ef1abfe80b8447ed712057ec6f66962eab31eb43a93de",
+      "sha256": "9531e289856ba296fce6a419808167f53f570abf7db83356c4f0165080123d16",
+      "glyphs": 123,
+      "unicode_mapped": 28,
+      "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name MSBM5."
     }
   ]
 }

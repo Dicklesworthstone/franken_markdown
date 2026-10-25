@@ -13,7 +13,7 @@
 //! text size is cmr10 itself ([`FACE_ROMAN_10`]); CM Unicode's Regular,
 //! whose `+ = [ ]` differ from cmr10's, stands for it only in text mode.
 //! A glyph from a face that stands for one of TeX's math-family fonts (the
-//! CM math faces, and CM Regular as cmr10) takes that font's TFM box and
+//! CM/AMS math faces, and CM Regular as cmr10) takes that font's TFM box and
 //! kerns
 //! ([`crate::tfm`]): TeX lays out from the TFM, whose heights, depths and
 //! italic corrections are the designer's, not the ink's. Every other glyph
@@ -128,12 +128,24 @@ pub const FACE_ROMAN_5: FaceId = FaceId(15);
 /// [`FaceId`] of cmr10, TeX's family 0 in math mode at display and text
 /// size: digits, `+ = ( ) [ ]`, upright Greek and operator names.
 pub const FACE_ROMAN_10: FaceId = FaceId(16);
+/// AMS-A at text/display size.
+pub const FACE_AMS_A_10: FaceId = FaceId(17);
+/// AMS-A's first-order script cut.
+pub const FACE_AMS_A_7: FaceId = FaceId(18);
+/// AMS-A's second-order script cut.
+pub const FACE_AMS_A_5: FaceId = FaceId(19);
+/// AMS-B and blackboard capitals at text/display size.
+pub const FACE_AMS_B_10: FaceId = FaceId(20);
+/// AMS-B's first-order script cut.
+pub const FACE_AMS_B_7: FaceId = FaceId(21);
+/// AMS-B's second-order script cut.
+pub const FACE_AMS_B_5: FaceId = FaceId(22);
 
-/// The private-use page the CM math faces map their TFM code positions
-/// into: code `c` of cmmi/cmsy/cmex is `U+F000 + c` in that face (ADR-0028).
+/// The private-use page the CM and AMS faces map their TFM code positions
+/// into: code `c` is `U+F000 + c` in that face (ADR-0028).
 pub const TEX_CODE_PAGE: u32 = 0xF000;
 
-/// The character addressing TFM code position `code` of a CM math face.
+/// The character addressing TFM code position `code` of a CM or AMS face.
 #[must_use]
 pub const fn tex_code(code: u8) -> char {
     match char::from_u32(TEX_CODE_PAGE + code as u32) {
@@ -146,7 +158,8 @@ impl FaceSet {
     /// Build a face set from parsed fonts, in [`FaceId`] order: regular,
     /// italic, bold, bold-italic, typewriter, sans, symbols, then the CM
     /// math faces (math italic, symbols, extension, the 7/5-point italic,
-    /// symbols and roman cuts, and cmr10). A roster without the CM math faces
+    /// symbols and roman cuts, and cmr10), then AMS-A and AMS-B at 10/7/5 pt.
+    /// A roster without the CM or AMS math faces
     /// still lays out: resolution falls back across whatever is present.
     /// Its glyphs take metrics measured from their outlines: only
     /// [`FaceSet::bundled`] knows which faces are TeX's fonts.
@@ -160,7 +173,7 @@ impl FaceSet {
 
     /// The bundled sovereign default: the four CM text faces, CM
     /// Typewriter, IBM Plex Sans, the Noto math-symbol subset, and the CM
-    /// math faces TeX sets mathematics in (ADR-0028).
+    /// CM and AMS math faces TeX sets mathematics in (ADR-0028).
     ///
     /// # Errors
     ///
@@ -186,6 +199,12 @@ impl FaceSet {
             fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_7.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_5.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_10.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::AMS_A_10.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::AMS_A_7.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::AMS_A_5.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::AMS_B_10.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::AMS_B_7.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::AMS_B_5.to_vec())?,
         ];
         let mut faces = Self::from_fonts(fonts);
         faces.tfm = (0..faces.fonts.len()).map(|_| None).collect();
@@ -215,6 +234,12 @@ impl FaceSet {
             (FACE_ROMAN_7, &crate::tfm::CMR7),
             (FACE_ROMAN_5, &crate::tfm::CMR5),
             (FACE_ROMAN_10, &crate::tfm::CMR10),
+            (FACE_AMS_A_10, &crate::tfm::MSAM10),
+            (FACE_AMS_A_7, &crate::tfm::MSAM7),
+            (FACE_AMS_A_5, &crate::tfm::MSAM5),
+            (FACE_AMS_B_10, &crate::tfm::MSBM10),
+            (FACE_AMS_B_7, &crate::tfm::MSBM7),
+            (FACE_AMS_B_5, &crate::tfm::MSBM5),
         ] {
             faces.attach_tfm(face, font, &tex_coded);
         }
@@ -270,9 +295,13 @@ impl FaceSet {
             (Style::Script, FACE_MATH_ITALIC) => FACE_MATH_ITALIC_7,
             (Style::Script, FACE_MATH_SYMBOLS) => FACE_MATH_SYMBOLS_7,
             (Style::Script, FACE_REGULAR) => FACE_ROMAN_7,
+            (Style::Script, FACE_AMS_A_10) => FACE_AMS_A_7,
+            (Style::Script, FACE_AMS_B_10) => FACE_AMS_B_7,
             (Style::ScriptScript, FACE_MATH_ITALIC) => FACE_MATH_ITALIC_5,
             (Style::ScriptScript, FACE_MATH_SYMBOLS) => FACE_MATH_SYMBOLS_5,
             (Style::ScriptScript, FACE_REGULAR) => FACE_ROMAN_5,
+            (Style::ScriptScript, FACE_AMS_A_10) => FACE_AMS_A_5,
+            (Style::ScriptScript, FACE_AMS_B_10) => FACE_AMS_B_5,
             _ => return None,
         };
         let gid = self.font(cut)?.glyph_index(ch);
@@ -454,6 +483,8 @@ pub fn default_math_chain(ch: char) -> &'static [FaceId] {
         &[
             FACE_MATH_SYMBOLS,
             FACE_MATH_ITALIC,
+            FACE_AMS_A_10,
+            FACE_AMS_B_10,
             FACE_REGULAR,
             FACE_SYMBOLS,
             FACE_ITALIC,
@@ -480,7 +511,7 @@ pub fn alphabet_map(font: MathFont, ch: char) -> (char, &'static [FaceId]) {
         MathFont::SansSerif => (ch, &[FACE_SANS, FACE_REGULAR]),
         MathFont::Blackboard => (
             blackboard_char(ch),
-            &[FACE_SYMBOLS, FACE_REGULAR, FACE_ITALIC],
+            &[FACE_AMS_B_10, FACE_SYMBOLS, FACE_REGULAR, FACE_ITALIC],
         ),
         // `\mathcal` is cmsy's calligraphic capitals in TeX; the CM math
         // symbols face maps them at the math-script codepoints.
@@ -569,7 +600,7 @@ mod tests {
             Ok(f) => f,
             Err(e) => panic!("bundled faces: {e}"),
         };
-        assert_eq!(faces.len(), 17);
+        assert_eq!(faces.len(), 23);
         // Letters come from the math italic; digits stay upright.
         let Some((face, gid)) = faces.resolve('x', default_math_chain('x')) else {
             panic!("x must resolve");

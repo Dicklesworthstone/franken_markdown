@@ -528,6 +528,20 @@ impl<'s> Parser<'s> {
     fn command_node(&mut self, name: &str, span: Span, cmd: Cmd) -> Result<Node, MathError> {
         match cmd {
             Cmd::Sym { ch, class, .. } => Ok(Node::new(NodeKind::Symbol { ch, class }, span)),
+            Cmd::AmsSym {
+                ch,
+                class,
+                family,
+                code,
+            } => Ok(Node::new(
+                NodeKind::AmsSymbol {
+                    ch,
+                    class,
+                    family,
+                    code,
+                },
+                span,
+            )),
             Cmd::BigOp { ch, integral } => Ok(Node::new(
                 NodeKind::BigOp {
                     ch,

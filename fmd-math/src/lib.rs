@@ -111,7 +111,7 @@ pub use mbox::{
     Color, FaceId, Layout, PathContour, PathSeg, Placed, PlacedGlyph, PlacedPath, PlacedRule,
 };
 pub use metrics::MathConstants;
-pub use node::{Node, NodeKind, Span};
+pub use node::{AmsFamily, Node, NodeKind, Span};
 pub use spanmap::{Selection, find_occurrences};
 pub use style::{Style, StyleCtx, style_walk};
 

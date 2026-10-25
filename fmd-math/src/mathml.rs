@@ -159,7 +159,9 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             emit_run(w, items, style, None, None);
             w.close("mrow");
         }
-        NodeKind::Symbol { ch, class } => emit_symbol(w, *ch, *class),
+        NodeKind::Symbol { ch, class } | NodeKind::AmsSymbol { ch, class, .. } => {
+            emit_symbol(w, *ch, *class)
+        }
         NodeKind::BigOp { ch, .. } => {
             w.open("mo", &[("movablelimits", "true")]);
             w.char_text(*ch);
@@ -687,7 +689,7 @@ fn collect_text(w: &mut Writer, body: &[Node]) {
     for n in body {
         match &n.kind {
             NodeKind::TextRun { text, .. } => w.text(text),
-            NodeKind::Symbol { ch, .. } => w.char_text(*ch),
+            NodeKind::Symbol { ch, .. } | NodeKind::AmsSymbol { ch, .. } => w.char_text(*ch),
             NodeKind::List(items) | NodeKind::Text { body: items } => collect_text(w, items),
             NodeKind::TextStyled { body, .. } => collect_text(w, body),
             NodeKind::Space(_) => w.buf.push(' '),

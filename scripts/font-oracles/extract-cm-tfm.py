@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline extraction of TeX's font metrics for the Computer Modern math faces.
+"""Offline extraction of TeX's Computer Modern and AMS symbol font metrics.
 
 franken_manim ADR-0028 bundles TeX's own CM math outlines (the AMS Type 1
 release). A Type 1 face carries advances and outlines only; TeX lays out from
@@ -18,9 +18,10 @@ from the symbol and extension fonts loaded at the current size. Under LaTeX's
 article and amsmath those are cmsy10/cmsy7/cmsy5 and cmex10/cmex7/cmex7 at 5 pt,
 per `\\fontname\\scriptfont3` and `\\scriptscriptfont3` (franken_manim fm-giir).
 
-The TFM files are Knuth's Computer Modern metrics, distributed with TeX under
-the Knuth licence (free use; changed files must be renamed). The output is a
-numeric transcription, not a font file. Values are TFM fix_words divided by
+The Computer Modern TFM files are distributed with TeX under the Knuth licence
+(free use; changed files must be renamed). The AMS symbol metrics accompany
+the OFL AMS font release. The output is a numeric transcription, not a font
+file. Values are TFM fix_words divided by
 2^20, so every number is exact in an f64.
 
 Ligatures are not transcribed: the Reference preamble's microtype
@@ -51,6 +52,12 @@ FONTS = [
     ("cmr10", "CMR10", None, "cm"),
     ("cmr7", "CMR7", None, "cm"),
     ("cmr5", "CMR5", None, "cm"),
+    ("msam10", "MSAM10", None, "amsfonts/symbols"),
+    ("msam7", "MSAM7", None, "amsfonts/symbols"),
+    ("msam5", "MSAM5", None, "amsfonts/symbols"),
+    ("msbm10", "MSBM10", None, "amsfonts/symbols"),
+    ("msbm7", "MSBM7", None, "amsfonts/symbols"),
+    ("msbm5", "MSBM5", None, "amsfonts/symbols"),
 ]
 
 STOP_FLAG = 128
@@ -125,12 +132,14 @@ def main() -> None:
         raise SystemExit(__doc__)
     root = Path(sys.argv[1])
     out = [
-        "//! TeX's font metrics for the Computer Modern faces fmd-math sets",
+        "//! TeX's font metrics for the Computer Modern and AMS faces fmd-math sets",
         "//! mathematics in (generated; do not edit by hand).",
         "//!",
         "//! Written by `scripts/font-oracles/extract-cm-tfm.py` from TeX Live's",
         "//! `fonts/tfm/public` (Knuth's Computer Modern metrics: `cm`, and",
-        "//! `amsfonts/cmextra` for cmex7). Values are the TFM fix_words over 2^20,",
+        "//! `amsfonts/cmextra` for cmex7, and `amsfonts/symbols` for AMS).",
+        "//! AMS symbol metrics carry the original AMS OFL notice in `OFL-AMS.txt`.",
+        "//! Values are the TFM fix_words over 2^20,",
         "//! in ems of each font's design size, so they are exact. Ligatures are",
         "//! omitted: the Reference preamble disables them.",
         "//!",

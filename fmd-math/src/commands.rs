@@ -11,8 +11,8 @@
 
 use crate::atom::AtomClass;
 use crate::node::{
-    AccentKind, DelimSize, FracSpec, LineAlign, MathFont, PhantomKind, SpaceKind, StackKind,
-    TextStyle,
+    AccentKind, AmsFamily, DelimSize, FracSpec, LineAlign, MathFont, PhantomKind, SpaceKind,
+    StackKind, TextStyle,
 };
 use crate::style::Style;
 
@@ -60,6 +60,13 @@ pub(crate) enum Cmd {
         ch: char,
         class: AtomClass,
         delim: bool,
+    },
+    /// A semantic symbol with an authored AMS font/code identity.
+    AmsSym {
+        ch: char,
+        class: AtomClass,
+        family: AmsFamily,
+        code: u8,
     },
     /// A big operator.
     BigOp { ch: char, integral: bool },
@@ -155,6 +162,15 @@ const fn sym(ch: char, class: AtomClass) -> Cmd {
     }
 }
 
+const fn ams_sym(ch: char, class: AtomClass, family: AmsFamily, code: u8) -> Cmd {
+    Cmd::AmsSym {
+        ch,
+        class,
+        family,
+        code,
+    }
+}
+
 const fn delim_sym(ch: char, class: AtomClass) -> Cmd {
     Cmd::Sym {
         ch,
@@ -214,7 +230,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "infty" => sym('∞', Ord),
         "partial" => sym('∂', Ord),
         "nabla" => sym('∇', Ord),
-        "hbar" => sym('ℏ', Ord),
+        "hbar" => ams_sym('ℏ', Ord, AmsFamily::B, 0x7E),
         "ell" => sym('ℓ', Ord),
         "wp" => sym('℘', Ord),
         "Re" => sym('ℜ', Ord),
@@ -230,7 +246,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "prime" => sym('′', Ord),
         "angle" => sym('∠', Ord),
         "triangle" => sym('△', Ord),
-        "checkmark" => sym('✓', Ord),
+        "checkmark" => ams_sym('✓', Ord, AmsFamily::A, 0x58),
         // ── Astronomy and misc symbols (fm-j5t.4) ───────────────────────
         // © is an authored CM glyph; ♀ ♂ ♁ are unmapped in every bundled
         // face and draw through the drawn-symbol fallback in layout (the
@@ -293,7 +309,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "ddagger" => sym('‡', Bin),
         // The Reference's default template defines `\minus` (T1 by rank);
         // the built-in default pack maps it to a binary minus sign.
-        "minus" => sym('−', Bin),
+        "minus" => ams_sym('−', Bin, AmsFamily::A, 0x39),
         // ── Relations ───────────────────────────────────────────────────
         "le" | "leq" => sym('≤', Rel),
         "ge" | "geq" => sym('≥', Rel),
@@ -307,7 +323,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "propto" => sym('∝', Rel),
         "perp" => sym('⊥', Rel),
         "mid" => sym('∣', Rel),
-        "nmid" => sym('∤', Rel),
+        "nmid" => ams_sym('∤', Rel, AmsFamily::B, 0x2D),
         "parallel" => sym('∥', Rel),
         "in" => sym('∈', Rel),
         "ni" => sym('∋', Rel),
@@ -358,8 +374,8 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "swarrow" => sym('↙', Rel),
         "nwarrow" => sym('↖', Rel),
         "hookrightarrow" => sym('↪', Rel),
-        "circlearrowleft" => sym('↺', Rel),
-        "circlearrowright" => sym('↻', Rel),
+        "circlearrowleft" => ams_sym('↺', Rel, AmsFamily::A, 0x09),
+        "circlearrowright" => ams_sym('↻', Rel, AmsFamily::A, 0x08),
         "hookleftarrow" => sym('↩', Rel),
         "rightharpoonup" => sym('⇀', Rel),
         "rightharpoondown" => sym('⇁', Rel),

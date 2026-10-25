@@ -10,6 +10,156 @@ use fmd_math::paths::{canonical_dump, layout_dump, resolve_paths};
 use fmd_math::{Engine, Style};
 
 #[test]
+fn ams_symbols_use_authored_faces_metrics_and_optical_cuts() {
+    use fmd_math::FaceId;
+
+    // Independent TFM fix_words / 2^20, from the fonts actually emitted by
+    // the pinned Reference DVI: text, script and scriptscript cuts. The IDs
+    // also lock the appended roster order without deriving it from the loader.
+    let cases = [
+        (
+            r"\checkmark",
+            '✓',
+            17,
+            0x58,
+            [0.8333358764648438, 0.9543695449829102, 1.1527957916259766],
+        ),
+        (
+            r"\minus",
+            '−',
+            17,
+            0x39,
+            [0.5000019073486328, 0.5535736083984375, 0.6250123977661133],
+        ),
+        (
+            r"\circlearrowright",
+            '↻',
+            17,
+            0x08,
+            [0.7777805328369141, 0.8928613662719727, 1.0833492279052734],
+        ),
+        (
+            r"\circlearrowleft",
+            '↺',
+            17,
+            0x09,
+            [0.7777805328369141, 0.8928613662719727, 1.0833492279052734],
+        ),
+        (
+            r"\hbar",
+            'ℏ',
+            20,
+            0x7E,
+            [0.5402803421020508, 0.6329412460327148, 0.7916774749755859],
+        ),
+        (
+            r"\nmid",
+            '∤',
+            20,
+            0x2D,
+            [
+                0.27777862548828125,
+                0.33928775787353516,
+                0.45833778381347656,
+            ],
+        ),
+        (
+            r"\mathbb{Z}",
+            'ℤ',
+            20,
+            0x5A,
+            [0.6666688919067383, 0.666661262512207, 0.6666507720947266],
+        ),
+    ];
+    let engine = Engine::bundled().unwrap();
+    for (source, semantic, base, code, widths) in cases {
+        for (style, cut, scale) in [
+            (Style::Display, 0, 1.0),
+            (Style::Text, 0, 1.0),
+            (Style::Script, 1, 0.7),
+            (Style::ScriptScript, 2, 0.5),
+        ] {
+            let layout = engine.typeset(source, style).unwrap();
+            assert_eq!(layout.glyphs.len(), 1, "{source} {style:?}");
+            assert!(layout.paths.is_empty() && layout.rules.is_empty());
+            let glyph = &layout.glyphs[0];
+            let face = FaceId(base + cut);
+            assert_eq!(glyph.face, face, "{source} {style:?}");
+            assert_eq!(glyph.gid, engine.faces().tex_glyph(face, code).unwrap());
+            assert_eq!(
+                glyph.ch, semantic,
+                "never expose the private-use code as text"
+            );
+            assert!(
+                (layout.width - widths[cut] * scale).abs() < 2e-15,
+                "{source} {style:?}: {}",
+                layout.width
+            );
+            assert!(!resolve_paths(&engine, &layout).unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn shortminus_does_not_replace_ordinary_subtraction_or_lose_its_identity_in_alphabets() {
+    let engine = Engine::bundled().unwrap();
+    let ordinary = engine.typeset("-", Style::Display).unwrap();
+    let short = engine.typeset(r"\minus", Style::Display).unwrap();
+    assert_eq!(ordinary.glyphs[0].face, fmd_math::FaceId(8));
+    assert_eq!(short.glyphs[0].face, fmd_math::FaceId(17));
+    assert!(short.width < ordinary.width);
+    assert_ne!(
+        canonical_dump(&resolve_paths(&engine, &short).unwrap()),
+        canonical_dump(&resolve_paths(&engine, &ordinary).unwrap())
+    );
+    for source in [r"\mathbf{\minus}", r"\mathit{\minus}", r"\mathbb{\minus}"] {
+        let wrapped = engine.typeset(source, Style::Display).unwrap();
+        let start = source.find(r"\minus").unwrap();
+        let expected_span = fmd_math::Span::new(start, start + r"\minus".len());
+        assert_eq!(wrapped.glyphs[0].span, expected_span);
+        assert_eq!(
+            wrapped.glyphs,
+            short
+                .glyphs
+                .iter()
+                .map(|glyph| {
+                    let mut glyph = glyph.clone();
+                    glyph.span = expected_span;
+                    glyph
+                })
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(wrapped.width, short.width);
+    }
+}
+
+#[test]
+fn custom_rosters_keep_unicode_fallback_and_refuse_missing_authored_codes() {
+    use fmd_math::{FaceId, MathError, Span, faces::FaceSet};
+
+    let font =
+        || fmd_font::Font::parse(fmd_font::bundled::NOTO_SANS_MATH_SYMBOLS.to_vec()).unwrap();
+    let source = r"\checkmark";
+    let fallback = Engine::new(FaceSet::from_fonts(vec![font()]));
+    let layout = fallback.typeset(source, Style::Display).unwrap();
+    assert_eq!(layout.glyphs.len(), 1);
+    assert_eq!(layout.glyphs[0].face, FaceId(0));
+    assert_eq!(layout.glyphs[0].ch, '✓');
+
+    // A roster claiming the stable AMS-A slot but lacking its authored code
+    // must report the semantic character and original source span. A Unicode
+    // checkmark in another slot cannot disguise the corrupt AMS face.
+    let incomplete = Engine::new(FaceSet::from_fonts((0..18).map(|_| font()).collect()));
+    assert_eq!(
+        incomplete.typeset(source, Style::Display).unwrap_err(),
+        MathError::UnmappedChar {
+            ch: '✓',
+            span: Span::new(0, source.len()),
+        }
+    );
+}
+
+#[test]
 fn repeated_typesetting_is_byte_identical() {
     let srcs = [
         r"\frac{1}{1+\frac{1}{x}}",
@@ -18,6 +168,8 @@ fn repeated_typesetting_is_byte_identical() {
         r"\left( a + b \right)^n",
         r"e^{i\pi} + 1 = 0",
         r"x_i^2 \cdot y'_j",
+        r"\checkmark \circlearrowleft \circlearrowright \hbar \nmid \mathbb{Z}",
+        r"e^{\minus t} + e^{\minus\minus t}",
     ];
     for src in srcs {
         let mut dumps: Vec<String> = Vec::new();

@@ -40,10 +40,12 @@
 //! # Cache identity
 //!
 //! [`MacroSet::canonical_bytes`] is a deterministic serialization of the
-//! whole table (sorted, delimited, versioned). Consumers fold it into
+//! whole table (sorted, length-framed, versioned). Consumers fold it into
 //! their typeset cache keys, so **a pack change re-typesets, correctly** —
 //! the §14.4 requirement. Inline defaults are part of the source string;
 //! no optional-argument state persists between parse calls.
+//! Combine tables with [`MacroSet::overlay_definitions`], without decoding
+//! the bytes used for cache identity.
 
 use crate::error::MathError;
 use crate::node::Span;
@@ -141,6 +143,13 @@ impl MacroSet {
             },
         );
         Ok(())
+    }
+
+    /// Copy `extra`'s definitions over this table; the extra definition wins
+    /// when both tables define a name. Native bindings and substitution bodies
+    /// are preserved structurally. This set's ligature policy is unchanged.
+    pub fn overlay_definitions(&mut self, extra: &Self) {
+        self.defs.extend(extra.defs.clone());
     }
 
     /// The defined names, sorted.
@@ -987,6 +996,29 @@ mod tests {
         assert!(MacroSet::pack("nonexistent").is_none());
         assert_eq!(MacroSet::pack("default").unwrap().len(), 1);
         assert!(MacroSet::pack("empty").unwrap().is_empty());
+    }
+
+    #[test]
+    fn definition_overlays_preserve_native_bindings_and_receiver_policy() {
+        let mut default = MacroSet::pack("default").unwrap();
+        let mut extra = MacroSet::new();
+        extra.define("half", 1, r"\frac{#1}{2}").unwrap();
+        default.overlay_definitions(&extra);
+        assert_eq!(expand_str(r"\half{x}", &default).unwrap(), r"\frac {x}{2}");
+        assert!(expand_str(r"\newcommand{\minus}{x}", &default).is_err());
+        assert!(default.disable_ligatures);
+        assert_eq!(extra.names().collect::<Vec<_>>(), ["half"]);
+
+        // Native names can also be copied into an empty table, without
+        // copying the pack's separate ligature policy.
+        let mut empty = MacroSet::new();
+        empty.overlay_definitions(&default);
+        assert!(expand_str(r"\newcommand{\minus}{x}", &empty).is_err());
+        assert!(!empty.disable_ligatures);
+        extra.define("minus", 0, "+").unwrap();
+        empty.overlay_definitions(&extra);
+        assert_eq!(expand_str(r"\minus", &empty).unwrap(), "+");
+        assert_eq!(expand_str(r"\minus", &default).unwrap(), r"\minus ");
     }
 
     #[test]

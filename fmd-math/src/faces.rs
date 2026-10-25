@@ -488,6 +488,13 @@ pub fn alphabet_map(font: MathFont, ch: char) -> (char, &'static [FaceId]) {
             calligraphic_char(ch),
             &[FACE_MATH_SYMBOLS, FACE_SYMBOLS, FACE_ITALIC, FACE_REGULAR],
         ),
+        // `\mathscr` is mathrsfs's rsfs10 in TeX, a script distinct from
+        // cmsy's calligraphic: the same Unicode script codepoints, resolved
+        // from Noto Sans Math's script letters before any CM face.
+        MathFont::Script => (
+            calligraphic_char(ch),
+            &[FACE_SYMBOLS, FACE_ITALIC, FACE_REGULAR],
+        ),
     }
 }
 

@@ -35,16 +35,17 @@ use crate::atom::{AtomClass, classify_list, spacing_in_style};
 use crate::error::MathError;
 use crate::faces::{
     FACE_BOLD, FACE_ITALIC, FACE_MATH_EXTENSION, FACE_MATH_ITALIC, FACE_MATH_ITALIC_5,
-    FACE_MATH_ITALIC_7, FACE_MATH_SYMBOLS, FACE_REGULAR, FACE_SYMBOLS, FaceSet, GlyphMetrics,
-    accent_spacing_fallback, alphabet_map, default_math_chain, glyph_metrics, kern_em,
+    FACE_MATH_ITALIC_7, FACE_MATH_SYMBOLS, FACE_REGULAR, FACE_SANS, FACE_SYMBOLS, FACE_TYPEWRITER,
+    FaceSet, GlyphMetrics, accent_spacing_fallback, alphabet_map, default_math_chain,
+    glyph_metrics, kern_em,
 };
 use crate::mbox::{
     BoxKind, Color, FaceId, GlueSpec, Layout, MBox, MNode, PathContour, PathSeg, Positioned,
 };
 use crate::metrics::MathConstants;
 use crate::node::{
-    AccentKind, Delim, DelimSize, FracSpec, FragmentKind, Limits, LineAlign, MathFont, Node,
-    NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
+    AccentKind, Delim, DelimSize, FracSpec, FragmentKind, Length, LengthUnit, Limits, LineAlign,
+    MathFont, Node, NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
 };
 use crate::style::{Style, StyleCtx};
 
@@ -384,6 +385,13 @@ impl Engine {
                         shrink: 0.0,
                     }));
                 }
+                NodeKind::Skip(length) => {
+                    laid_items.push(LineItem::Glue(GlueSpec {
+                        natural: skip_width(*length, ctx),
+                        stretch: 0.0,
+                        shrink: 0.0,
+                    }));
+                }
                 NodeKind::Tie => {
                     laid_items.push(LineItem::Glue(GlueSpec {
                         natural: self.space_width(ctx),
@@ -667,8 +675,10 @@ impl Engine {
                     text_mode: true,
                     alphabet: Some(match style {
                         TextStyle::Bold => MathFont::Bold,
-                        TextStyle::Emph => MathFont::Italic,
-                        TextStyle::Underline => MathFont::Roman,
+                        TextStyle::Emph | TextStyle::Italic => MathFont::Italic,
+                        TextStyle::Underline | TextStyle::Roman => MathFont::Roman,
+                        TextStyle::Typewriter => MathFont::Typewriter,
+                        TextStyle::SansSerif => MathFont::SansSerif,
                     }),
                     ..ctx
                 };
@@ -768,6 +778,9 @@ impl Engine {
                     char_glyph: None,
                 })
             }
+            // In its own function so this recursive frame does not grow
+            // (the nesting bound's stack margin).
+            NodeKind::Boxed { body } => self.boxed(body, node.span, ctx),
             NodeKind::Stack {
                 kind,
                 annotation,
@@ -893,6 +906,7 @@ impl Engine {
             | NodeKind::AlignChange(_)
             | NodeKind::LineSpacing(_)
             | NodeKind::Space(_)
+            | NodeKind::Skip(_)
             | NodeKind::Tie
             | NodeKind::Linebreak
             | NodeKind::AlignTab => Ok(Laid {
@@ -936,6 +950,11 @@ impl Engine {
 
     /// A single-character atom.
     fn char_atom(&self, ch: char, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        if ch == crate::commands::NOT_SLASH && !ctx.text_mode {
+            if let Some(laid) = self.not_slash(span, ctx) {
+                return Ok(laid);
+            }
+        }
         if ctx.alphabet.is_none() && !ctx.text_mode {
             if let Some(laid) = self.negated_relation(ch, span, ctx)? {
                 return Ok(laid);
@@ -991,6 +1010,106 @@ impl Engine {
         Ok(Laid {
             boxx: glyph_box(face, gid, mapped, span, size, metrics),
             italic: metrics.italic * size,
+            char_glyph: Some((face, gid)),
+        })
+    }
+
+    /// amsmath's `\boxed`, `\fbox{$\displaystyle#1$}`: a fresh formula in
+    /// display style at the declared size, even in a script. \fboxsep (3 pt)
+    /// and \fboxrule (0.4 pt) are lengths, which neither the math style nor
+    /// a size declaration scales.
+    fn boxed(&self, body: &Node, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        const SEP: f64 = 0.3;
+        const RULE: f64 = 0.04;
+        let inner = self
+            .clean_box(
+                body,
+                LayCtx {
+                    style: StyleCtx::new(Style::Display),
+                    alphabet: None,
+                    text_mode: false,
+                    align_rows: false,
+                    ..ctx
+                },
+            )?
+            .boxx;
+        let (height, depth) = (inner.height, inner.depth);
+        let width = inner.width + 2.0 * (SEP + RULE);
+        let side = height + depth + 2.0 * SEP;
+        let rule = |width: f64, height: f64| MNode::Rule {
+            width,
+            height,
+            span,
+        };
+        // \fbox's emission order: the top rule, the left rule, the body, the
+        // right rule and the bottom rule; the top and bottom rules span the
+        // corners.
+        let children = vec![
+            Positioned {
+                dx: 0.0,
+                dy: height + SEP,
+                node: rule(width, RULE),
+            },
+            Positioned {
+                dx: 0.0,
+                dy: -(depth + SEP),
+                node: rule(RULE, side),
+            },
+            Positioned {
+                dx: RULE + SEP,
+                dy: 0.0,
+                node: MNode::Box(inner),
+            },
+            Positioned {
+                dx: width - RULE,
+                dy: -(depth + SEP),
+                node: rule(RULE, side),
+            },
+            Positioned {
+                dx: 0.0,
+                dy: -(depth + SEP + RULE),
+                node: rule(width, RULE),
+            },
+        ];
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width,
+                height: height + SEP + RULE,
+                depth: depth + SEP + RULE,
+                children,
+            },
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// `\not` as its own atom: plain TeX's `\mathchar"3236`, cmsy's negation
+    /// slash (code 0x36), a relation of zero width. A relation after it
+    /// follows with no space between them (Rel–Rel), so the slash overprints
+    /// it from its origin, as `\not\subset` and `\not<` set in TeX. `None`
+    /// when the roster has no CM math symbols face.
+    fn not_slash(&self, span: Span, ctx: LayCtx) -> Option<Laid> {
+        let gid = self.faces.tex_glyph(FACE_MATH_SYMBOLS, 0x36)?;
+        let (face, gid) = self
+            .faces
+            .optical(
+                FACE_MATH_SYMBOLS,
+                crate::faces::tex_code(0x36),
+                ctx.style.style,
+            )
+            .unwrap_or((FACE_MATH_SYMBOLS, gid));
+        let metrics = self.char_metrics(face, gid, ctx.text_mode);
+        Some(Laid {
+            boxx: glyph_box(
+                face,
+                gid,
+                crate::commands::NOT_SLASH,
+                span,
+                ctx.size(),
+                metrics,
+            ),
+            italic: 0.0,
             char_glyph: Some((face, gid)),
         })
     }
@@ -1879,9 +1998,21 @@ impl Engine {
         };
         let display = eff.style.style == Style::Display;
         let size = eff.size();
-        let num_box = self.clean_box(num, eff.map(StyleCtx::num))?.boxx;
+        let mut num_box = self.clean_box(num, eff.map(StyleCtx::num))?.boxx;
+        if spec.cfrac.is_some() {
+            // amsmath's `\strut` in the numerator: .7 and .3 of the
+            // baselineskip at the declared size, a rule of no width (and so
+            // no drawn primitive).
+            let skip = self.consts.baseline_skip * eff.decl_size;
+            num_box.height = num_box.height.max(0.7 * skip);
+            num_box.depth = num_box.depth.max(0.3 * skip);
+        }
         let den_box = self.clean_box(den, eff.map(StyleCtx::den))?.boxx;
-        let theta = c.rule_thickness * size;
+        // `\genfrac`'s explicit thickness is TeX's `\above`: a length, which
+        // the math style does not scale.
+        let theta = spec
+            .thickness
+            .map_or(c.rule_thickness * size, |length| skip_width(length, eff));
         let axis = c.axis_height * size;
         // Rule 15b: initial shifts.
         let mut u = if display {
@@ -1913,7 +2044,13 @@ impl Engine {
             }
         }
         let inner_width = num_box.width.max(den_box.width);
-        let num_dx = (inner_width - num_box.width) / 2.0;
+        // `\cfrac[l]` and `[r]` put `\hfill` (fill glue) beside the
+        // numerator, which outranks rebox's `\hss` (fil): flush left or right.
+        let num_dx = match spec.cfrac {
+            Some(LineAlign::Left) => 0.0,
+            Some(LineAlign::Right) => inner_width - num_box.width,
+            _ => (inner_width - num_box.width) / 2.0,
+        };
         let den_dx = (inner_width - den_box.width) / 2.0;
         let height = u + num_box.height;
         let depth = v + den_box.depth;
@@ -1955,8 +2092,13 @@ impl Engine {
             .map_or((None, None), |(l, r)| (Some(l), Some(r)));
         let left = self.delimiter_box(&Delim { ch: l, span }, target, eff)?;
         let right = self.delimiter_box(&Delim { ch: r, span }, target, eff)?;
+        let mut parts = vec![left, core, right];
+        if spec.cfrac.is_some() {
+            // `\kern-\nulldelimiterspace` after the fraction's group.
+            parts.push(kern_box(-self.consts.null_delimiter_space * size));
+        }
         Ok(Laid {
-            boxx: hcat(vec![left, core, right]),
+            boxx: hcat(parts),
             italic: 0.0,
             char_glyph: None,
         })
@@ -2445,6 +2587,23 @@ impl Engine {
                     &Grid {
                         align: AlignRule::AlignPairs,
                         col_sep: 1.0,
+                        jot: self.consts.jot,
+                        ..Grid::centered(1.0)
+                    },
+                    span,
+                )?
+            }
+            "gather*" | "gathered" | "equation*" => {
+                // amsmath's gather: display-style rows, each centred in
+                // the widest, opened by \jot; equation* is one such row.
+                let cells = ctx.map(|s| StyleCtx {
+                    style: Style::Display,
+                    cramped: s.cramped,
+                });
+                self.grid(
+                    rows,
+                    cells,
+                    &Grid {
                         jot: self.consts.jot,
                         ..Grid::centered(1.0)
                     },
@@ -3538,6 +3697,8 @@ fn text_face(ctx: LayCtx) -> FaceId {
     match ctx.alphabet {
         Some(MathFont::Bold) => FACE_BOLD,
         Some(MathFont::Italic) => FACE_ITALIC,
+        Some(MathFont::Typewriter) => FACE_TYPEWRITER,
+        Some(MathFont::SansSerif) => FACE_SANS,
         _ => FACE_REGULAR,
     }
 }
@@ -3831,6 +3992,22 @@ impl MNode {
 }
 
 /// A single positioned glyph box.
+/// `\hspace`'s glue in layout units (ems of the 10 pt design size). A fixed
+/// length stays fixed under size declarations and math styles, as in TeX.
+/// Ems and exes are the text font's, cmr10's quad and x-height at the
+/// declared size, the font `\hspace` reads in math mode too.
+fn skip_width(length: Length, ctx: LayCtx) -> f64 {
+    /// A point is a tenth of the 10 pt design size's em.
+    const POINT: f64 = 0.1;
+    #[allow(clippy::cast_precision_loss)]
+    let value = length.sp as f64 / 65536.0;
+    match length.unit {
+        LengthUnit::Fixed => value * POINT,
+        LengthUnit::Em => value * crate::tfm::CMR10.param(6) * ctx.decl_size,
+        LengthUnit::Ex => value * crate::tfm::CMR10.param(5) * ctx.decl_size,
+    }
+}
+
 fn glyph_box(face: FaceId, gid: u16, ch: char, span: Span, size: f64, m: GlyphMetrics) -> MBox {
     MBox {
         kind: BoxKind::Horizontal,

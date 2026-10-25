@@ -238,6 +238,8 @@ where
         NodeKind::MathFont { body, .. } | NodeKind::Phantom { body, .. } => {
             style_walk(body, ctx, visit);
         }
+        // `\fbox{$\displaystyle…$}`: a fresh, uncramped display formula.
+        NodeKind::Boxed { body } => style_walk(body, StyleCtx::new(Style::Display), visit),
         NodeKind::Stack {
             kind,
             annotation,
@@ -271,6 +273,12 @@ where
                 StyleCtx::new(Style::Script)
             } else if name.starts_with("align") {
                 ctx
+            } else if matches!(name.as_str(), "gather*" | "gathered" | "equation*") {
+                // Display-style rows, as layout sets them.
+                StyleCtx {
+                    style: Style::Display,
+                    cramped: ctx.cramped,
+                }
             } else {
                 StyleCtx::new(Style::Text)
             };
@@ -291,6 +299,7 @@ where
         | NodeKind::LineSpacing(_)
         | NodeKind::ColorChange(_)
         | NodeKind::Space(_)
+        | NodeKind::Skip(_)
         | NodeKind::Tie
         | NodeKind::Linebreak
         | NodeKind::AlignTab

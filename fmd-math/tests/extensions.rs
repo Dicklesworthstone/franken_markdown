@@ -674,18 +674,23 @@ fn amssymb_symbols_typeset_from_the_bundled_math_faces() {
             .typeset(&source, Style::Text)
             .unwrap_or_else(|err| panic!("{source}: {err}"));
         assert_eq!(l.glyphs.len(), 1, "{source}: {l:?}");
-        if *name == "hslash" {
-            // amssymb.sty's 0x7D is hslash; 0x7E is hbar. Unicode
-            // identifies both as U+210F, so a generic fallback loses this
-            // distinction when the AMS faces become available.
+        let authored = match *name {
+            "hslash" => Some((0x7D, r"\hbar")),
+            "nshortmid" => Some((0x2E, r"\nmid")),
+            _ => None,
+        };
+        if let Some((code, distinct)) = authored {
+            // amssymb.sty distinguishes 7D/7E and 2E/2D. Each pair
+            // shares a Unicode character, so Unicode fallback alone
+            // selects the wrong glyph once the AMS faces are present.
             assert_eq!(l.glyphs[0].face, FACE_AMS_B_10);
             assert_eq!(
                 Some(l.glyphs[0].gid),
-                e.faces().tex_glyph(FACE_AMS_B_10, 0x7D)
+                e.faces().tex_glyph(FACE_AMS_B_10, code)
             );
             assert_ne!(
                 l.glyphs[0].gid,
-                e.typeset(r"\hbar", Style::Text).unwrap().glyphs[0].gid
+                e.typeset(distinct, Style::Text).unwrap().glyphs[0].gid
             );
         } else {
             // All remaining original cases keep their Noto/cmsy
@@ -707,6 +712,8 @@ fn amssymb_symbols_typeset_from_the_bundled_math_faces() {
         (r"\boxplus", medium),
         (r"\ltimes", medium),
         (r"\square", 0.0),
+        (r"\hslash", 0.0),
+        (r"\nshortmid", thick),
     ] {
         let sum = width("a") + width(between) + width("b");
         let laid = width(&format!(r"a{between} b"));

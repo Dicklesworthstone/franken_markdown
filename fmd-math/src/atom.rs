@@ -241,6 +241,7 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
         | NodeKind::TextStyled { .. }
         | NodeKind::MathIsland { .. }
         | NodeKind::AlignBlock { .. }
+        | NodeKind::Boxed { .. }
         | NodeKind::Environment { .. } => Some(AtomClass::Ord),
         NodeKind::MathFont { body, .. } | NodeKind::Phantom { body, .. } => intrinsic_class(body),
         NodeKind::Stack { kind, base, .. } => match kind {
@@ -261,6 +262,7 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
         | NodeKind::LineSpacing(_)
         | NodeKind::ColorChange(_)
         | NodeKind::Space(_)
+        | NodeKind::Skip(_)
         | NodeKind::Tie
         | NodeKind::Linebreak
         | NodeKind::AlignTab => None,

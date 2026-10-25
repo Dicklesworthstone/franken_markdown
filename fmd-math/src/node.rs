@@ -116,6 +116,30 @@ pub struct FracSpec {
     /// A forced layout style (`\dfrac` forces display, `\tfrac` text);
     /// `None` follows the ambient style.
     pub forced_style: Option<Style>,
+    /// An explicit bar thickness (`\genfrac`'s third argument, TeX's
+    /// `\above`); `None` is the font's default rule. Read only with `bar`.
+    pub thickness: Option<Length>,
+    /// amsmath's `\cfrac`, with its numerator's alignment: a `\strut` in
+    /// the numerator, `\hfill` beside it for `[l]` and `[r]`, and
+    /// `\kern-\nulldelimiterspace` after the fraction. `None` otherwise.
+    pub cfrac: Option<LineAlign>,
+}
+
+impl FracSpec {
+    /// `\frac` and `\over`: a barred fraction in the ambient style.
+    pub const PLAIN: Self = Self {
+        bar: true,
+        delims: None,
+        forced_style: None,
+        thickness: None,
+        cfrac: None,
+    };
+    /// `\binom` and `\choose`: no bar, wrapped in parentheses.
+    pub const BINOM: Self = Self {
+        bar: false,
+        delims: Some(('(', ')')),
+        ..Self::PLAIN
+    };
 }
 
 /// The accent commands (both true accents and the wide over/under class).
@@ -186,6 +210,14 @@ pub enum TextStyle {
     Emph,
     /// `\underline{…}` in text mode
     Underline,
+    /// `\textit{…}`
+    Italic,
+    /// `\textrm{…}`, `\textup{…}` and `\textnormal{…}`
+    Roman,
+    /// `\texttt{…}`
+    Typewriter,
+    /// `\textsf{…}`
+    SansSerif,
 }
 
 /// The argument-taking math alphabet commands.
@@ -195,6 +227,8 @@ pub enum MathFont {
     Blackboard,
     /// `\mathcal`
     Calligraphic,
+    /// `\mathscr` (mathrsfs, which the Reference's default template loads)
+    Script,
     /// `\mathrm`
     Roman,
     /// `\mathbf`
@@ -252,6 +286,89 @@ impl SpaceKind {
     #[must_use]
     pub const fn is_mu_glue(self) -> bool {
         matches!(self, Self::Thin | Self::Med | Self::Thick | Self::NegThin)
+    }
+}
+
+/// What an explicit [`Length`] counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LengthUnit {
+    /// A fixed length (pt, pc, in, bp, cm, mm, dd, cc, sp), converted to
+    /// scaled points when parsed.
+    Fixed,
+    /// Ems of the text font, its quad.
+    Em,
+    /// Exes of the text font, its x-height.
+    Ex,
+}
+
+/// An explicit length, as TeX's `scan_dimen` reads one: the value times
+/// 65536, so a fixed length is in scaled points (65536 sp = 1 pt), and a
+/// font-relative one counts 65536ths of an em or ex, which layout reads
+/// from the text font.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Length {
+    /// The value times 65536.
+    pub sp: i64,
+    /// What the value counts.
+    pub unit: LengthUnit,
+}
+
+impl Length {
+    /// Parse a TeX length: an optional sign, a decimal number (`.` or `,`
+    /// as the decimal mark) and a unit, with optional spaces between.
+    /// `None` for anything else, including rubber lengths (`\fill`,
+    /// `\stretch{…}`) and `mu`, which `\hspace` does not take.
+    #[must_use]
+    pub fn parse(source: &str) -> Option<Self> {
+        let s = source.trim();
+        let mut negative = false;
+        let mut rest = s;
+        while let Some(c) = rest.chars().next() {
+            match c {
+                '-' => negative = !negative,
+                '+' => {}
+                _ if c.is_whitespace() => {}
+                _ => break,
+            }
+            rest = &rest[c.len_utf8()..];
+        }
+        let digits = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
+            .unwrap_or(rest.len());
+        let (number, unit) = rest.split_at(digits);
+        let number = number.replace(',', ".");
+        if number.is_empty() || number == "." || number.matches('.').count() > 1 {
+            return None;
+        }
+        let value: f64 = number.parse().ok()?;
+        let unit = unit.trim();
+        let unit = unit.strip_prefix("true").map_or(unit, str::trim_start);
+        // Each unit in points, as tex.web §458 converts them.
+        let (points, kind) = match unit {
+            "pt" => (1.0, LengthUnit::Fixed),
+            "pc" => (12.0, LengthUnit::Fixed),
+            "in" => (72.27, LengthUnit::Fixed),
+            "bp" => (72.27 / 72.0, LengthUnit::Fixed),
+            "cm" => (72.27 / 2.54, LengthUnit::Fixed),
+            "mm" => (72.27 / 25.4, LengthUnit::Fixed),
+            "dd" => (1238.0 / 1157.0, LengthUnit::Fixed),
+            "cc" => (14856.0 / 1157.0, LengthUnit::Fixed),
+            "sp" => (1.0 / 65536.0, LengthUnit::Fixed),
+            "em" => (1.0, LengthUnit::Em),
+            "ex" => (1.0, LengthUnit::Ex),
+            _ => return None,
+        };
+        let scaled = (value * points * 65536.0).round();
+        // TeX's \maxdimen, 2^30 - 1 sp: past it, "Dimension too large".
+        if !scaled.is_finite() || scaled > f64::from(0x3FFF_FFFF_u32) {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let sp = scaled as i64;
+        Some(Self {
+            sp: if negative { -sp } else { sp },
+            unit: kind,
+        })
     }
 }
 
@@ -446,6 +563,12 @@ pub enum NodeKind {
         /// The hidden body.
         body: Box<Node>,
     },
+    /// amsmath's `\boxed{…}`: `\fbox{$\displaystyle…$}`, the body in
+    /// display style inside a 0.4 pt frame 3 pt clear of it.
+    Boxed {
+        /// The framed body.
+        body: Box<Node>,
+    },
     /// `\stackrel`/`\overset`/`\underset`.
     Stack {
         /// Which flavor.
@@ -468,6 +591,9 @@ pub enum NodeKind {
     },
     /// An explicit spacing command.
     Space(SpaceKind),
+    /// `\hspace{…}` and `\hspace*{…}`: horizontal glue of an explicit
+    /// length, with no stretch or shrink.
+    Skip(Length),
     /// `~` — a tie (non-breaking interword space).
     Tie,
     /// `\\` — a line break (or, at an environment's own level, the row

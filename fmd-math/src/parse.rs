@@ -17,9 +17,10 @@ use crate::atom::{char_class, intrinsic_class};
 use crate::commands::{self, Cmd};
 use crate::error::MathError;
 use crate::node::{
-    AccentKind, ColorSpec, Delim, FracSpec, FragmentKind, Limits, LineAlign, Node, NodeKind,
-    SpaceKind, Span, TextStyle,
+    AccentKind, ColorSpec, Delim, FracSpec, FragmentKind, Length, Limits, LineAlign, Node,
+    NodeKind, SpaceKind, Span, TextStyle,
 };
+use crate::style::Style;
 use crate::token::{Tok, TokKind, lex};
 
 /// Nesting depth bound: groups, arguments, `\left…\right`, environments,
@@ -528,6 +529,7 @@ impl<'s> Parser<'s> {
     fn command_node(&mut self, name: &str, span: Span, cmd: Cmd) -> Result<Node, MathError> {
         match cmd {
             Cmd::Sym { ch, class, .. } => Ok(Node::new(NodeKind::Symbol { ch, class }, span)),
+            Cmd::Hspace => self.hspace(name, span),
             Cmd::BigOp { ch, integral } => Ok(Node::new(
                 NodeKind::BigOp {
                     ch,
@@ -684,6 +686,11 @@ impl<'s> Parser<'s> {
                     span,
                 ))
             }
+            // These three live in their own functions so this recursive
+            // frame does not grow (the nesting bound's stack margin).
+            Cmd::Boxed => self.boxed(name, span),
+            Cmd::Genfrac => self.genfrac(name, span),
+            Cmd::CFrac => self.cfrac(name, span),
             Cmd::Stack(kind) => {
                 let annotation = self.argument(&format!("first argument of \\{name}"))?;
                 let base = self.argument(&format!("second argument of \\{name}"))?;
@@ -1103,6 +1110,173 @@ impl<'s> Parser<'s> {
                 return Ok(Some((raw, Span::new(open, tok.span.end))));
             }
         }
+    }
+
+    /// amsmath's `\genfrac{ldelim}{rdelim}{thickness}{style}{num}{den}`:
+    /// TeX's `\abovewithdelims`, or `\atopwithdelims` for a 0 pt bar. An
+    /// empty thickness is the font's default rule; the style is empty (the
+    /// ambient one) or 0-3 (display, text, script, scriptscript).
+    fn genfrac(&mut self, name: &str, span: Span) -> Result<Node, MathError> {
+        let left = self.braced_delimiter(&format!("left delimiter of \\{name}"))?;
+        let right = self.braced_delimiter(&format!("right delimiter of \\{name}"))?;
+        let delims = match (left, right) {
+            (None, None) => None,
+            (Some(l), Some(r)) => Some((l, r)),
+            (_, _) => {
+                return Err(MathError::Malformed {
+                    what: format!(
+                        "\\{name} with a delimiter on one side only is not supported \
+                         (franken_manim fm-tex-constructs-t2-1wfq)"
+                    ),
+                    at: span.start,
+                });
+            }
+        };
+        let (raw, raw_span) = self.raw_group(&format!("thickness of \\{name}"))?;
+        let (bar, thickness) = if raw.is_empty() {
+            (true, None)
+        } else {
+            let Some(length) = Length::parse(&raw) else {
+                return Err(MathError::Malformed {
+                    what: format!("\\{name}'s bar thickness `{raw}` is not a length"),
+                    at: raw_span.start,
+                });
+            };
+            (length.sp != 0, Some(length))
+        };
+        let (raw, raw_span) = self.raw_group(&format!("style of \\{name}"))?;
+        let forced_style = match raw.as_str() {
+            "" => None,
+            "0" => Some(Style::Display),
+            "1" => Some(Style::Text),
+            "2" => Some(Style::Script),
+            "3" => Some(Style::ScriptScript),
+            _ => {
+                return Err(MathError::Malformed {
+                    what: format!("\\{name}'s style `{raw}` is not empty or 0-3"),
+                    at: raw_span.start,
+                });
+            }
+        };
+        let num = self.argument(&format!("numerator of \\{name}"))?;
+        let den = self.argument(&format!("denominator of \\{name}"))?;
+        let span = span.union(den.span);
+        Ok(Node::new(
+            NodeKind::Frac {
+                num: Box::new(num),
+                den: Box::new(den),
+                spec: FracSpec {
+                    bar,
+                    delims,
+                    forced_style,
+                    thickness: thickness.filter(|_| bar),
+                    cfrac: None,
+                },
+            },
+            span,
+        ))
+    }
+
+    /// One braced delimiter argument: empty or `.` for none.
+    fn braced_delimiter(&mut self, what: &str) -> Result<Option<char>, MathError> {
+        self.skip_spaces();
+        if !matches!(self.peek().map(|t| &t.kind), Some(TokKind::BeginGroup)) {
+            return Err(MathError::Malformed {
+                what: format!("missing {what} (expected '{{')"),
+                at: self.here(),
+            });
+        }
+        self.pos += 1;
+        self.skip_spaces();
+        let ch = if matches!(self.peek().map(|t| &t.kind), Some(TokKind::EndGroup)) {
+            None
+        } else {
+            self.delimiter(what)?.ch
+        };
+        self.skip_spaces();
+        match self.peek().map(|t| (&t.kind, t.span)) {
+            Some((TokKind::EndGroup, _)) => {
+                self.pos += 1;
+                Ok(ch)
+            }
+            Some((_, at)) => Err(MathError::Malformed {
+                what: format!("{what} must be a single delimiter"),
+                at: at.start,
+            }),
+            None => Err(MathError::Malformed {
+                what: format!("unclosed '{{' in {what}"),
+                at: self.src.len(),
+            }),
+        }
+    }
+
+    /// amsmath's `\boxed{…}`.
+    fn boxed(&mut self, name: &str, span: Span) -> Result<Node, MathError> {
+        let body = self.argument(&format!("argument of \\{name}"))?;
+        let span = span.union(body.span);
+        Ok(Node::new(
+            NodeKind::Boxed {
+                body: Box::new(body),
+            },
+            span,
+        ))
+    }
+
+    /// amsmath's `\cfrac[pos]{num}{den}`: a display-style `\frac` with the
+    /// continued fraction's strut, numerator position and trailing kern.
+    fn cfrac(&mut self, name: &str, span: Span) -> Result<Node, MathError> {
+        let align = self.cfrac_position(name)?;
+        let num = self.argument(&format!("numerator of \\{name}"))?;
+        let den = self.argument(&format!("denominator of \\{name}"))?;
+        let span = span.union(den.span);
+        Ok(Node::new(
+            NodeKind::Frac {
+                num: Box::new(num),
+                den: Box::new(den),
+                spec: FracSpec {
+                    forced_style: Some(Style::Display),
+                    cfrac: Some(align),
+                    ..FracSpec::PLAIN
+                },
+            },
+            span,
+        ))
+    }
+
+    /// `\cfrac`'s optional position: `[c]` (the default), `[l]` or `[r]`.
+    fn cfrac_position(&mut self, name: &str) -> Result<LineAlign, MathError> {
+        let Some((raw, raw_span)) = self.raw_bracket(&format!("position of \\{name}"))? else {
+            return Ok(LineAlign::Center);
+        };
+        match raw.as_str() {
+            "c" => Ok(LineAlign::Center),
+            "l" => Ok(LineAlign::Left),
+            "r" => Ok(LineAlign::Right),
+            _ => Err(MathError::Malformed {
+                what: format!("\\{name}'s position `{raw}` is not l, c or r"),
+                at: raw_span.start,
+            }),
+        }
+    }
+
+    /// `\hspace{len}` and `\hspace*{len}`, in math and text mode alike. The
+    /// star keeps the space at a line break; one-line layout has no breaks
+    /// to discard it at, so both forms set the same glue.
+    fn hspace(&mut self, name: &str, span: Span) -> Result<Node, MathError> {
+        if matches!(self.peek().map(|tok| &tok.kind), Some(TokKind::Char('*'))) {
+            self.pos += 1;
+        }
+        let (raw, raw_span) = self.raw_group(&format!("argument of \\{name}"))?;
+        let Some(length) = Length::parse(&raw) else {
+            return Err(MathError::Malformed {
+                what: format!(
+                    "\\{name}{{{raw}}} needs a fixed length such as 1cm, 6pt or 2em \
+                     (rubber lengths such as \\fill, and mu, are not supported)"
+                ),
+                at: raw_span.start,
+            });
+        };
+        Ok(Node::new(NodeKind::Skip(length), span.union(raw_span)))
     }
 
     fn raw_group(&mut self, what: &str) -> Result<(String, Span), MathError> {
@@ -1736,6 +1910,7 @@ impl<'s> Parser<'s> {
                 Ok(Node::new(NodeKind::List(body), span.union(body_span)))
             }
             Cmd::Spacing(kind) => Ok(Node::new(NodeKind::Space(kind), span)),
+            Cmd::Hspace => self.hspace(name, span),
             // Size declarations are text-mode commands in LaTeX; they mark
             // the rest of the enclosing group, exactly as in math mode.
             Cmd::SizeChange(factor) => Ok(Node::new(NodeKind::SizeChange(factor), span)),

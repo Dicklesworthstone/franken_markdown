@@ -99,8 +99,8 @@ pub mod tfm;
 mod token;
 
 pub use commands::{
-    ConstructStatus, LAYOUT_PENDING_TRACKING, TIER2_TRACKING, Tier, UNTIERED_TRACKING,
-    construct_status,
+    ConstructStatus, LAYOUT_PENDING_TRACKING, OUTSIDE_CORPUS_TRACKING, TIER2_TRACKING, Tier,
+    UNTIERED_TRACKING, construct_status, tier2_tracking,
 };
 pub use error::MathError;
 pub use faces::FaceSet;

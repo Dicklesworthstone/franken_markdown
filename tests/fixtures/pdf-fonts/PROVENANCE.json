@@ -1,0 +1,29 @@
+{
+  "schema": "fmd-pdf-font-fixtures-v1",
+  "engineSource": "81576af55727101e82e1265a924dead11d52cf0c",
+  "engineWasmSha256": "3e2b053667545e6e6ffcfed13a50ae0f109faf0e98ae3f23b5fd79a5e5e8d22f",
+  "sourceSha256": "e5ed21dae204ba150154d0784dca97be17b22f1f21c00f972d676c9c60c9de0a",
+  "limitation": "Generated now with preserved historical full-profile engine. Not current-source, native-CLI, environment-matrix or conformance qualification. These new fixtures are not a regeneration of any prior golden.",
+  "fixtures": [
+    {
+      "path": "sans.pdf",
+      "sha256": "4a9ac8406a538c2779e9a5c3000a34ac58e22df63d3db720d4de718a956e4e81",
+      "bytes": 18079,
+      "options": {
+        "font": "sans",
+        "title": "Independent embedded-font fixture",
+        "metadataEpochSeconds": 1700000000
+      }
+    },
+    {
+      "path": "serif.pdf",
+      "sha256": "eaf1168604ea8d07ea9945ad9ae498395ae43f57ca7bbac81fea713402c0e02c",
+      "bytes": 20600,
+      "options": {
+        "font": "serif",
+        "title": "Independent embedded-font fixture",
+        "metadataEpochSeconds": 1700000000
+      }
+    }
+  ]
+}

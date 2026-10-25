@@ -19,6 +19,30 @@ use crate::style::Style;
 /// Where unsupported-but-known constructs are tracked.
 pub const TIER2_TRACKING: &str = "franken_manim fm-j5t (the tier-2 construct program)";
 
+/// Where the common constructs outside the G0-4 corpus are tracked.
+pub const OUTSIDE_CORPUS_TRACKING: &str =
+    "franken_manim fm-tex-constructs-t2-1wfq (common constructs outside the G0-4 corpus)";
+
+/// Where a tier-2 construct is tracked. `\dx` stays with the corpus
+/// program (its one corpus occurrence is Reference-broken, a standing
+/// refusal); every other one is a construct outside the corpus.
+#[must_use]
+pub fn tier2_tracking(construct: &str) -> &'static str {
+    if construct == r"\dx" {
+        TIER2_TRACKING
+    } else {
+        OUTSIDE_CORPUS_TRACKING
+    }
+}
+
+/// The numbered and line-width display environments, refused by name:
+/// their equation numbers and `multline`'s flush lines sit against
+/// `\linewidth`, which a formula's own box does not have.
+#[inline(always)]
+pub(crate) fn env_is_t2(name: &str) -> bool {
+    matches!(name, "equation" | "gather" | "multline" | "multline*")
+}
+
 /// Where unknown (untiered) constructs should be reported.
 pub const UNTIERED_TRACKING: &str = "https://github.com/Dicklesworthstone/franken_manim/issues";
 
@@ -105,8 +129,16 @@ pub(crate) enum Cmd {
     SizeChange(f64),
     /// A named spacing command (`\quad` …).
     Spacing(SpaceKind),
+    /// `\hspace{len}` or `\hspace*{len}`: glue of an explicit length.
+    Hspace,
     /// A phantom command.
     Phantom(PhantomKind),
+    /// amsmath's `\boxed`.
+    Boxed,
+    /// amsmath's `\genfrac{ldelim}{rdelim}{thickness}{style}{num}{den}`.
+    Genfrac,
+    /// amsmath's `\cfrac[pos]{num}{den}`.
+    CFrac,
     /// `\stackrel`/`\overset`/`\underset`.
     Stack(StackKind),
     /// `\substack{…}` — amsmath's multi-line subscript: one braced
@@ -153,6 +185,10 @@ pub(crate) struct EnvDef {
     /// Takes a braced column-spec argument (`array`).
     pub(crate) has_spec: bool,
 }
+
+/// `\not`'s character: U+0338, Unicode's long solidus overlay. Layout sets
+/// it as plain TeX's `\mathchar"3236`, cmsy's zero-width negation slash.
+pub(crate) const NOT_SLASH: char = '\u{0338}';
 
 const fn sym(ch: char, class: AtomClass) -> Cmd {
     Cmd::Sym {
@@ -271,6 +307,12 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "backslash" => delim_sym('\\', Ord),
         "vert" => delim_sym('|', Ord),
         "Vert" => delim_sym('‖', Ord),
+        // amsmath's paired bars: `\lvert` is `\delimiter"426A30C`, an Open
+        // atom, `\rvert` its Close; `\lVert`/`\rVert` likewise for `\|`.
+        "lvert" => delim_sym('|', Open),
+        "rvert" => delim_sym('|', Close),
+        "lVert" => delim_sym('‖', Open),
+        "rVert" => delim_sym('‖', Close),
         // Dots. `\ldots`-class dots are Inner atoms in TeX (\mathinner);
         // `\vdots` is a plain Ord box. LaTeX's `\hdots` is `\ldots`.
         "ldots" | "dots" | "dotsc" | "dotso" | "hdots" => sym('…', Inner),
@@ -314,6 +356,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "le" | "leq" => sym('≤', Rel),
         "ge" | "geq" => sym('≥', Rel),
         "ne" | "neq" => sym('≠', Rel),
+        "not" => sym(NOT_SLASH, Rel),
         "equiv" => sym('≡', Rel),
         "approx" => sym('≈', Rel),
         "sim" => sym('∼', Rel),
@@ -628,57 +671,47 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         // styling island in text mode (the parser dispatches by mode).
         "underline" => Cmd::Accent(AccentKind::UnderLine),
         // ── Fractions ───────────────────────────────────────────────────
-        "frac" => Cmd::Frac(FracSpec {
-            bar: true,
-            delims: None,
-            forced_style: None,
-        }),
+        "frac" => Cmd::Frac(FracSpec::PLAIN),
         "dfrac" => Cmd::Frac(FracSpec {
-            bar: true,
-            delims: None,
             forced_style: Some(Style::Display),
+            ..FracSpec::PLAIN
         }),
         "tfrac" => Cmd::Frac(FracSpec {
-            bar: true,
-            delims: None,
             forced_style: Some(Style::Text),
+            ..FracSpec::PLAIN
         }),
-        "binom" => Cmd::Frac(FracSpec {
-            bar: false,
-            delims: Some(('(', ')')),
-            forced_style: None,
-        }),
+        "binom" => Cmd::Frac(FracSpec::BINOM),
         // amsmath's `\genfrac(){0pt}{0}` and `\genfrac(){0pt}{1}`.
         "dbinom" => Cmd::Frac(FracSpec {
-            bar: false,
-            delims: Some(('(', ')')),
             forced_style: Some(Style::Display),
+            ..FracSpec::BINOM
         }),
         "tbinom" => Cmd::Frac(FracSpec {
-            bar: false,
-            delims: Some(('(', ')')),
             forced_style: Some(Style::Text),
+            ..FracSpec::BINOM
         }),
-        "over" => Cmd::OverInfix(FracSpec {
-            bar: true,
-            delims: None,
-            forced_style: None,
-        }),
-        "choose" => Cmd::OverInfix(FracSpec {
-            bar: false,
-            delims: Some(('(', ')')),
-            forced_style: None,
-        }),
+        "over" => Cmd::OverInfix(FracSpec::PLAIN),
+        "choose" => Cmd::OverInfix(FracSpec::BINOM),
+        "genfrac" => Cmd::Genfrac,
+        "cfrac" => Cmd::CFrac,
         "sqrt" => Cmd::Radical,
         // ── Text islands and math alphabets ─────────────────────────────
         "text" => Cmd::Text,
         "textbf" => Cmd::TextStyled(TextStyle::Bold),
         "emph" => Cmd::TextStyled(TextStyle::Emph),
+        // LaTeX's text font switches (ADR-0006's alias surface). Each one
+        // sets its whole argument in one face: `\textbf{\textit{…}}` is the
+        // inner face, not LaTeX's bold italic composition.
+        "textit" => Cmd::TextStyled(TextStyle::Italic),
+        "textrm" | "textup" | "textnormal" => Cmd::TextStyled(TextStyle::Roman),
+        "texttt" => Cmd::TextStyled(TextStyle::Typewriter),
+        "textsf" => Cmd::TextStyled(TextStyle::SansSerif),
         "mathbb" => Cmd::Alphabet(MathFont::Blackboard),
         // The default preamble pack maps the Reference template's dsfont
         // `\mathds` to blackboard (T1 by rank, G0-4).
         "mathds" => Cmd::Alphabet(MathFont::Blackboard),
         "mathcal" => Cmd::Alphabet(MathFont::Calligraphic),
+        "mathscr" => Cmd::Alphabet(MathFont::Script),
         "mathrm" => Cmd::Alphabet(MathFont::Roman),
         "mathbf" => Cmd::Alphabet(MathFont::Bold),
         "boldsymbol" => Cmd::Alphabet(MathFont::BoldItalic),
@@ -699,8 +732,10 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "large" => Cmd::SizeChange(1.2),
         "Large" => Cmd::SizeChange(1.44),
         "huge" => Cmd::SizeChange(2.074),
+        "hspace" => Cmd::Hspace,
         "quad" => Cmd::Spacing(SpaceKind::Quad),
         "qquad" => Cmd::Spacing(SpaceKind::Qquad),
+        "boxed" => Cmd::Boxed,
         "phantom" => Cmd::Phantom(PhantomKind::Full),
         "hphantom" => Cmd::Phantom(PhantomKind::Horizontal),
         "vphantom" => Cmd::Phantom(PhantomKind::Vertical),
@@ -775,6 +810,174 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
             size: DelimSize::BBigg,
             class: Some(AtomClass::Rel),
         },
+        // ── amssymb (franken_manim fm-tex-constructs-t2-1wfq) ───────────
+        // The Reference's default template loads amssymb, whose symbols
+        // come from the AMS msam and msbm fonts. Each name keeps amssymb's
+        // class and sets its Unicode codepoint from the bundled math faces
+        // (Noto Sans Math; the thick variants from cmsy). fmd-math bundles
+        // no msam or msbm face, so the shapes are Noto's, not the AMS fonts'.
+        // Names whose glyph no bundled face carries stay untiered.
+        "Bbbk" => sym('𝕜', Ord),                        // U+1D55C, msbm "7C
+        "Bumpeq" => sym('≎', Rel),                      // U+224E, msam "6D
+        "Cap" => sym('⋒', Bin),                         // U+22D2, msam "65
+        "Cup" => sym('⋓', Bin),                         // U+22D3, msam "64
+        "Finv" => sym('Ⅎ', Ord),                        // U+2132, msbm "60
+        "Game" => sym('⅁', Ord),                        // U+2141, msbm "61
+        "Lleftarrow" => sym('⇚', Rel),                  // U+21DA, msam "57
+        "Rrightarrow" => sym('⇛', Rel),                 // U+21DB, msam "56
+        "Subset" => sym('⋐', Rel),                      // U+22D0, msam "62
+        "Supset" => sym('⋑', Rel),                      // U+22D1, msam "63
+        "Vdash" => sym('⊩', Rel),                       // U+22A9, msam "0D
+        "Vvdash" => sym('⊪', Rel),                      // U+22AA, msam "0E
+        "approxeq" => sym('≊', Rel),                    // U+224A, msbm "75
+        "backsim" => sym('∽', Rel),                     // U+223D, msam "76
+        "backsimeq" => sym('⋍', Rel),                   // U+22CD, msam "77
+        "barwedge" => sym('⊼', Bin),                    // U+22BC, msam "5A
+        "because" => sym('∵', Rel),                     // U+2235, msam "2A
+        "beth" => sym('ℶ', Ord),                        // U+2136, msbm "69
+        "between" => sym('≬', Rel),                     // U+226C, msam "47
+        "bigstar" => sym('★', Ord),                     // U+2605, msam "46
+        "blacksquare" => sym('■', Ord),                 // U+25A0, msam "04
+        "blacktriangle" => sym('▴', Ord),               // U+25B4, msam "4E
+        "blacktriangledown" => sym('▾', Ord),           // U+25BE, msam "48
+        "blacktriangleleft" => sym('◀', Rel),           // U+25C0, msam "4A
+        "blacktriangleright" => sym('▶', Rel),          // U+25B6, msam "49
+        "boxdot" => sym('⊡', Bin),                      // U+22A1, msam "00
+        "boxminus" => sym('⊟', Bin),                    // U+229F, msam "0C
+        "boxplus" => sym('⊞', Bin),                     // U+229E, msam "01
+        "boxtimes" => sym('⊠', Bin),                    // U+22A0, msam "02
+        "bumpeq" => sym('≏', Rel),                      // U+224F, msam "6C
+        "centerdot" => sym('⋅', Bin),                   // U+22C5, msam "05
+        "circeq" => sym('≗', Rel),                      // U+2257, msam "24
+        "circledast" => sym('⊛', Bin),                  // U+229B, msam "7E
+        "circledcirc" => sym('⊚', Bin),                 // U+229A, msam "7D
+        "circleddash" => sym('⊝', Bin),                 // U+229D, msam "7F
+        "complement" => sym('∁', Ord),                  // U+2201, msam "7B
+        "curlyeqprec" => sym('⋞', Rel),                 // U+22DE, msam "32
+        "curlyeqsucc" => sym('⋟', Rel),                 // U+22DF, msam "33
+        "curlyvee" => sym('⋎', Bin),                    // U+22CE, msam "67
+        "curlywedge" => sym('⋏', Bin),                  // U+22CF, msam "66
+        "daleth" => sym('ℸ', Ord),                      // U+2138, msbm "6B
+        "divideontimes" => sym('⋇', Bin),               // U+22C7, msbm "3E
+        "doteqdot" | "Doteq" => sym('≑', Rel),          // U+2251, msam "2B
+        "dotplus" => sym('∔', Bin),                     // U+2214, msam "75
+        "downdownarrows" => sym('⇊', Rel),              // U+21CA, msam "15
+        "downharpoonleft" => sym('⇃', Rel),             // U+21C3, msam "19
+        "downharpoonright" => sym('⇂', Rel),            // U+21C2, msam "17
+        "eqcirc" => sym('≖', Rel),                      // U+2256, msam "50
+        "eqsim" => sym('≂', Rel),                       // U+2242, msbm "68
+        "fallingdotseq" => sym('≒', Rel),               // U+2252, msam "3B
+        "geqq" => sym('≧', Rel),                        // U+2267, msam "3D
+        "geqslant" => sym('⩾', Rel),                    // U+2A7E, msam "3E
+        "ggg" | "gggtr" => sym('⋙', Rel),               // U+22D9, msam "6F
+        "gimel" => sym('ℷ', Ord),                       // U+2137, msbm "6A
+        "gneqq" => sym('≩', Rel),                       // U+2269, msbm "09
+        "gnsim" => sym('⋧', Rel),                       // U+22E7, msbm "13
+        "gtrdot" => sym('⋗', Bin),                      // U+22D7, msbm "6D
+        "gtreqless" => sym('⋛', Rel),                   // U+22DB, msam "52
+        "gtrless" => sym('≷', Rel),                     // U+2277, msam "3F
+        "gtrsim" => sym('≳', Rel),                      // U+2273, msam "26
+        "gvertneqq" => sym('≩', Rel),                   // U+2269, msbm "01
+        "hslash" => sym('ℏ', Ord),                      // U+210F, msbm "7D
+        "intercal" => sym('⊺', Bin),                    // U+22BA, msam "7C
+        "leftarrowtail" => sym('↢', Rel),               // U+21A2, msam "1B
+        "leftleftarrows" => sym('⇇', Rel),              // U+21C7, msam "12
+        "leftrightharpoons" => sym('⇋', Rel),           // U+21CB, msam "0B
+        "leftrightsquigarrow" => sym('↭', Rel),         // U+21AD, msam "21
+        "leftthreetimes" => sym('⋋', Bin),              // U+22CB, msam "68
+        "leqq" => sym('≦', Rel),                        // U+2266, msam "35
+        "leqslant" => sym('⩽', Rel),                    // U+2A7D, msam "36
+        "lessdot" => sym('⋖', Bin),                     // U+22D6, msbm "6C
+        "lesseqgtr" => sym('⋚', Rel),                   // U+22DA, msam "51
+        "lessgtr" => sym('≶', Rel),                     // U+2276, msam "37
+        "lesssim" => sym('≲', Rel),                     // U+2272, msam "2E
+        "lhd" => sym('⊲', Bin),                         // U+22B2, msam "43
+        "lll" | "llless" => sym('⋘', Rel),              // U+22D8, msam "6E
+        "lneqq" => sym('≨', Rel),                       // U+2268, msbm "08
+        "lnsim" => sym('⋦', Rel),                       // U+22E6, msbm "12
+        "looparrowleft" => sym('↫', Rel),               // U+21AB, msam "22
+        "looparrowright" => sym('↬', Rel),              // U+21AC, msam "23
+        "ltimes" => sym('⋉', Bin),                      // U+22C9, msbm "6E
+        "lvertneqq" => sym('≨', Rel),                   // U+2268, msbm "00
+        "measuredangle" => sym('∡', Ord),               // U+2221, msam "5D
+        "mho" => sym('℧', Ord),                         // U+2127, msbm "66
+        "multimap" => sym('⊸', Rel),                    // U+22B8, msam "28
+        "nLeftarrow" => sym('⇍', Rel),                  // U+21CD, msbm "3A
+        "nLeftrightarrow" => sym('⇎', Rel),             // U+21CE, msbm "3C
+        "nRightarrow" => sym('⇏', Rel),                 // U+21CF, msbm "3B
+        "nVDash" => sym('⊯', Rel),                      // U+22AF, msbm "33
+        "nVdash" => sym('⊮', Rel),                      // U+22AE, msbm "31
+        "ncong" => sym('≇', Rel),                       // U+2247, msbm "1D
+        "nexists" => sym('∄', Ord),                     // U+2204, msbm "40
+        "ngeq" => sym('≱', Rel),                        // U+2271, msbm "03
+        "ngtr" => sym('≯', Rel),                        // U+226F, msbm "05
+        "nleftarrow" => sym('↚', Rel),                  // U+219A, msbm "38
+        "nleftrightarrow" => sym('↮', Rel),             // U+21AE, msbm "3D
+        "nleq" => sym('≰', Rel),                        // U+2270, msbm "02
+        "nless" => sym('≮', Rel),                       // U+226E, msbm "04
+        "nparallel" => sym('∦', Rel),                   // U+2226, msbm "2C
+        "nprec" => sym('⊀', Rel),                       // U+2280, msbm "06
+        "npreceq" => sym('⋠', Rel),                     // U+22E0, msbm "0E
+        "nrightarrow" => sym('↛', Rel),                 // U+219B, msbm "39
+        "nshortmid" => sym('∤', Rel),                   // U+2224, msbm "2E
+        "nshortparallel" => sym('∦', Rel),              // U+2226, msbm "2F
+        "nsim" => sym('≁', Rel),                        // U+2241, msbm "1C
+        "nsubseteq" => sym('⊈', Rel),                   // U+2288, msbm "2A
+        "nsucc" => sym('⊁', Rel),                       // U+2281, msbm "07
+        "nsucceq" => sym('⋡', Rel),                     // U+22E1, msbm "0F
+        "nsupseteq" => sym('⊉', Rel),                   // U+2289, msbm "2B
+        "ntriangleleft" => sym('⋪', Rel),               // U+22EA, msbm "36
+        "ntrianglelefteq" => sym('⋬', Rel),             // U+22EC, msbm "35
+        "ntriangleright" => sym('⋫', Rel),              // U+22EB, msbm "37
+        "ntrianglerighteq" => sym('⋭', Rel),            // U+22ED, msbm "34
+        "nvDash" => sym('⊭', Rel),                      // U+22AD, msbm "32
+        "nvdash" => sym('⊬', Rel),                      // U+22AC, msbm "30
+        "pitchfork" => sym('⋔', Rel),                   // U+22D4, msam "74
+        "preccurlyeq" => sym('≼', Rel),                 // U+227C, msam "34
+        "precnsim" => sym('⋨', Rel),                    // U+22E8, msbm "10
+        "precsim" => sym('≾', Rel),                     // U+227E, msam "2D
+        "rhd" => sym('⊳', Bin),                         // U+22B3, msam "42
+        "rightarrowtail" => sym('↣', Rel),              // U+21A3, msam "1A
+        "rightrightarrows" => sym('⇉', Rel),            // U+21C9, msam "13
+        "rightsquigarrow" | "leadsto" => sym('⇝', Rel), // U+21DD, msam "20
+        "rightthreetimes" => sym('⋌', Bin),             // U+22CC, msam "69
+        "risingdotseq" => sym('≓', Rel),                // U+2253, msam "3A
+        "rtimes" => sym('⋊', Bin),                      // U+22CA, msbm "6F
+        "shortmid" => sym('∣', Rel),                    // U+2223, msbm "70
+        "shortparallel" => sym('∥', Rel),               // U+2225, msbm "71
+        "sphericalangle" => sym('∢', Ord),              // U+2222, msam "5E
+        "sqsubset" => sym('⊏', Rel),                    // U+228F, msam "40
+        "sqsupset" => sym('⊐', Rel),                    // U+2290, msam "41
+        "square" | "Box" => sym('□', Ord),              // U+25A1, msam "03
+        "subsetneq" => sym('⊊', Rel),                   // U+228A, msbm "28
+        "succcurlyeq" => sym('≽', Rel),                 // U+227D, msam "3C
+        "succnsim" => sym('⋩', Rel),                    // U+22E9, msbm "11
+        "succsim" => sym('≿', Rel),                     // U+227F, msam "25
+        "supsetneq" => sym('⊋', Rel),                   // U+228B, msbm "29
+        "therefore" => sym('∴', Rel),                   // U+2234, msam "29
+        "thickapprox" => sym('≈', Rel),                 // U+2248, msbm "74 (cmsy's thinner ≈)
+        "thicksim" => sym('∼', Rel),                    // U+223C, msbm "73 (cmsy's thinner ∼)
+        "triangledown" => sym('▿', Ord),                // U+25BF, msam "4F
+        "trianglelefteq" => sym('⊴', Rel),              // U+22B4, msam "45
+        "triangleq" => sym('≜', Rel),                   // U+225C, msam "2C
+        "trianglerighteq" => sym('⊵', Rel),             // U+22B5, msam "44
+        "twoheadleftarrow" => sym('↞', Rel),            // U+219E, msam "11
+        "twoheadrightarrow" => sym('↠', Rel),           // U+21A0, msam "10
+        "unlhd" => sym('⊴', Bin),                       // U+22B4, msam "45
+        "unrhd" => sym('⊵', Bin),                       // U+22B5, msam "44
+        "upharpoonleft" => sym('↿', Rel),               // U+21BF, msam "18
+        "upharpoonright" => sym('↾', Rel),              // U+21BE, msam "16
+        "upuparrows" => sym('⇈', Rel),                  // U+21C8, msam "14
+        "vDash" => sym('⊨', Rel),                       // U+22A8, msam "0F
+        "varpropto" => sym('∝', Rel),                   // U+221D, msam "5F
+        "varsubsetneq" => sym('⊊', Rel),                // U+228A, msbm "20
+        "varsupsetneq" => sym('⊋', Rel),                // U+228B, msbm "21
+        "vartriangle" => sym('▵', Rel),                 // U+25B5, msam "4D
+        "vartriangleleft" => sym('⊲', Rel),             // U+22B2, msam "43
+        "vartriangleright" => sym('⊳', Rel),            // U+22B3, msam "42
+        "veebar" => sym('⊻', Bin),                      // U+22BB, msam "59
+        "doublecap" => sym('⋒', Bin),                   // amsfonts: \let\doublecap\Cap
+        "doublecup" => sym('⋓', Bin),                   // amsfonts: \let\doublecup\Cup
         // ── Structure ───────────────────────────────────────────────────
         "left" => Cmd::Left,
         "right" => Cmd::Right,
@@ -790,6 +993,13 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         // ── Known tier-2 vocabulary (G0-4 `construct_table.tsv`) ────────
         // (`\centering` graduated to a real AlignDecl above.)
         "dx" => Cmd::UnsupportedT2,
+        // Common constructs outside the G0-4 corpus, refused by name until
+        // they land ([`OUTSIDE_CORPUS_TRACKING`]): `\mathfrak` needs a
+        // Fraktur face (no bundled face carries the alphabet), `\tag`,
+        // `\sideset` and `\mathchoice` their own layout, and `\cancel` the
+        // cancel package, which the Reference's default template does not
+        // load.
+        "mathfrak" | "tag" | "sideset" | "mathchoice" | "cancel" => Cmd::UnsupportedT2,
         _ => return None,
     })
 }
@@ -811,8 +1021,9 @@ pub(crate) fn ding_char(code: u32) -> Option<char> {
 pub(crate) fn lookup_env(name: &str) -> Option<EnvDef> {
     match name {
         "array" => Some(EnvDef { has_spec: true }),
-        "align" | "align*" | "aligned" | "cases" | "matrix" | "pmatrix" | "bmatrix" | "Bmatrix"
-        | "vmatrix" | "Vmatrix" | "smallmatrix" | "substack" => Some(EnvDef { has_spec: false }),
+        "align" | "align*" | "aligned" | "gather*" | "gathered" | "equation*" | "cases"
+        | "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" | "smallmatrix"
+        | "substack" => Some(EnvDef { has_spec: false }),
         _ => None,
     }
 }
@@ -898,6 +1109,9 @@ pub fn construct_status(construct: &str) -> ConstructStatus {
     if let Some(env) = construct.strip_prefix("env:") {
         if lookup_env(env).is_some() || line_align_env(env).is_some() {
             return ConstructStatus::Supported;
+        }
+        if env_is_t2(env) {
+            return ConstructStatus::UnsupportedT2;
         }
         return ConstructStatus::Unknown;
     }

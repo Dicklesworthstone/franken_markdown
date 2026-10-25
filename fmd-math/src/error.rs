@@ -15,7 +15,7 @@
 //!   faces … ``
 
 use crate::commands::{
-    ConstructStatus, LAYOUT_PENDING_TRACKING, TIER2_TRACKING, UNTIERED_TRACKING, construct_status,
+    ConstructStatus, LAYOUT_PENDING_TRACKING, UNTIERED_TRACKING, construct_status, tier2_tracking,
 };
 use crate::node::Span;
 
@@ -80,9 +80,10 @@ impl core::fmt::Display for MathError {
             Self::UnsupportedCommand { name, span } => match construct_status(name) {
                 ConstructStatus::UnsupportedT2 => write!(
                     f,
-                    "`{name}` is not yet supported; tier T2, tracked at {TIER2_TRACKING} \
-                     (bytes {}..{})",
-                    span.start, span.end
+                    "`{name}` is not yet supported; tier T2, tracked at {} (bytes {}..{})",
+                    tier2_tracking(name),
+                    span.start,
+                    span.end
                 ),
                 ConstructStatus::Supported => write!(
                     f,

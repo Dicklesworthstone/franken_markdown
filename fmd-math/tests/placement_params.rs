@@ -1726,3 +1726,240 @@ fn extensible_pieces_hang_by_their_tfm_height() {
         );
     }
 }
+
+/// Boxes TeX's `\showbox` measures under the Reference's preamble (`[T1]{fontenc}`,
+/// amsmath, amssymb): (source, style, width, height, depth) in points.
+const TIER_TWO_BOXES: &[(&str, Style, f64, f64, f64)] = &[
+    (r"\not=", Style::Text, 7.7778, 6.94444, 1.94443),
+    (r"a\not=b", Style::Text, 22.91077, 6.94444, 1.94443),
+    (r"\not<", Style::Text, 7.7778, 6.94444, 1.94443),
+    (r"\not\subset", Style::Text, 7.7778, 6.94444, 1.94443),
+    (r"\not\in", Style::Text, 6.66669, 6.94444, 1.94443),
+    (r"\lvert x \rvert", Style::Text, 11.27084, 7.5, 2.5),
+    (r"\lVert x \rVert", Style::Text, 15.7153, 7.5, 2.5),
+    (r"a\hspace{1cm}b", Style::Text, 38.03029, 6.94444, 0.0),
+    (r"a\hspace{-3pt}b", Style::Text, 6.57755, 6.94444, 0.0),
+    (r"a\hspace*{5mm}b", Style::Text, 23.80391, 6.94444, 0.0),
+    (r"a\hspace{0.5in}b", Style::Text, 45.71254, 6.94444, 0.0),
+    (r"a\hspace{1cm}b", Style::Script, 36.30705, 4.8611, 0.0),
+    (r"\boxed{x}", Style::Text, 12.51526, 7.70554, 3.4),
+    (r"\boxed{E=mc^2}", Style::Text, 45.68535, 12.04002, 3.4),
+    (
+        r"\boxed{\frac{a}{b}}",
+        Style::Text,
+        14.48587,
+        14.47061,
+        10.2595,
+    ),
+    (r"x^{\boxed{y}}", Style::Text, 18.27686, 14.12636, 0.0),
+    (r"\cfrac{1}{x}", Style::Text, 6.91527, 15.89993, 6.85951),
+    (
+        r"\cfrac{1}{1+\cfrac{1}{x}}",
+        Style::Text,
+        25.33742,
+        15.89993,
+        21.65938,
+    ),
+    (
+        r"\cfrac{1}{1+\cfrac{1}{x}}",
+        Style::Display,
+        25.33742,
+        15.89993,
+        21.65938,
+    ),
+    (r"\cfrac[l]{1}{x+y}", Style::Text, 24.399, 15.89993, 8.80396),
+    (r"\cfrac[r]{1}{x+y}", Style::Text, 24.399, 15.89993, 8.80396),
+    (
+        r"\genfrac{(}{)}{0pt}{}{n}{k}",
+        Style::Text,
+        14.11005,
+        8.50005,
+        3.50006,
+    ),
+    (
+        r"\genfrac{}{}{}{0}{a}{b}",
+        Style::Text,
+        7.68588,
+        11.07062,
+        6.85951,
+    ),
+    (
+        r"\genfrac{[}{]}{1pt}{1}{a}{b}",
+        Style::Text,
+        12.67102,
+        8.50005,
+        3.8611,
+    ),
+    (
+        r"\genfrac{}{}{2pt}{}{a}{b}",
+        Style::Text,
+        6.73764,
+        8.51389,
+        5.3611,
+    ),
+    (
+        r"\genfrac{\{}{\}}{0pt}{}{a}{b}",
+        Style::Display,
+        20.28592,
+        14.5001,
+        9.50012,
+    ),
+];
+
+#[test]
+fn tier_two_constructs_take_tex_boxes() {
+    let e = engine();
+    let close = |ours: f64, tex_pt: f64| (ours - tex_pt / 10.0).abs() < 1e-4;
+    for &(tex, style, width, height, depth) in TIER_TWO_BOXES {
+        let l = e
+            .typeset(tex, style)
+            .unwrap_or_else(|err| panic!("{tex}: {err}"));
+        assert!(
+            close(l.width, width) && close(l.height, height) && close(l.depth, depth),
+            "{tex} in {style:?}: {} x ({} + {}) against TeX's {width} x ({height} + {depth}) pt",
+            l.width,
+            l.height,
+            l.depth
+        );
+    }
+}
+
+#[test]
+fn not_is_cmsys_zero_width_slash_before_its_relation() {
+    use fmd_math::faces::FACE_MATH_SYMBOLS;
+    let e = engine();
+    for tex in [r"\not=", r"\not<", r"\not\subset", r"\not\equiv"] {
+        let l = e.typeset(tex, Style::Text).unwrap();
+        assert_eq!(l.glyphs.len(), 2, "{tex}: the slash and the relation");
+        let (slash, relation) = (&l.glyphs[0], &l.glyphs[1]);
+        assert_eq!(slash.face, FACE_MATH_SYMBOLS, "{tex}");
+        assert_eq!(slash.ch, '\u{0338}', "{tex}");
+        // Rel–Rel: no space, so the slash sits at the relation's origin.
+        assert!((slash.x - relation.x).abs() < 1e-12, "{tex}: {l:?}");
+    }
+    // `\neq` (one atom) and `\not=` (two) set the same ink in the same box.
+    let neq = e.typeset(r"\neq", Style::Text).unwrap();
+    let not = e.typeset(r"\not=", Style::Text).unwrap();
+    assert!((neq.width - not.width).abs() < 1e-12);
+    assert_eq!(
+        neq.glyphs
+            .iter()
+            .map(|g| (g.face, g.gid))
+            .collect::<Vec<_>>(),
+        not.glyphs
+            .iter()
+            .map(|g| (g.face, g.gid))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn hspace_reads_ems_and_exes_from_the_text_font() {
+    let e = engine();
+    let qquad = e.typeset(r"a\qquad b", Style::Text).unwrap().width;
+    let two_em = e.typeset(r"a\hspace{2em}b", Style::Text).unwrap().width;
+    assert!((two_em - qquad).abs() < 1e-12, "2em is a \\qquad");
+    // cmr10's x-height, 0.430555 em, in every math style.
+    for style in [Style::Display, Style::Script] {
+        let ab = e.typeset("ab", style).unwrap().width;
+        let two_ex = e.typeset(r"a\hspace{2ex}b", style).unwrap().width;
+        assert!((two_ex - ab - 2.0 * 0.430_555).abs() < 1e-5, "{style:?}");
+    }
+    // A declared size scales font-relative units, not fixed ones.
+    let large_em = e.typeset(r"\large a\hspace{1em}b", Style::Text).unwrap();
+    let large_ab = e.typeset(r"\large ab", Style::Text).unwrap().width;
+    assert!((large_em.width - large_ab - 1.2 * 1.000_003).abs() < 1e-5);
+    let large_cm = e.typeset(r"\large a\hspace{1cm}b", Style::Text).unwrap();
+    assert!((large_cm.width - large_ab - 2.845_274).abs() < 1e-5);
+}
+
+#[test]
+fn boxed_frames_a_display_formula_in_fixed_rules() {
+    let e = engine();
+    let l = e.typeset(r"\boxed{x}", Style::Text).unwrap();
+    // Four 0.4 pt rules: top and bottom across the width, the sides between.
+    assert_eq!(l.rules.len(), 4, "{l:?}");
+    let x = l.glyphs.iter().find(|g| g.ch == 'x').unwrap();
+    assert!((x.x - 0.34).abs() < 1e-12, "3 pt clear of a 0.4 pt rule");
+    // Even as a script, the body is a display formula at full size.
+    let script = e.typeset(r"x^{\boxed{y}}", Style::Text).unwrap();
+    let y = script.glyphs.iter().find(|g| g.ch == 'y').unwrap();
+    assert!((y.size - 1.0).abs() < 1e-12);
+    // A size declaration scales the body, not the frame.
+    let large = e.typeset(r"\large\boxed{x}", Style::Text).unwrap();
+    let x = large.glyphs.iter().find(|g| g.ch == 'x').unwrap();
+    assert!((x.x - 0.34).abs() < 1e-12);
+    assert!(
+        large
+            .rules
+            .iter()
+            .all(|r| (r.width.min(r.height) - 0.04).abs() < 1e-12)
+    );
+}
+
+#[test]
+fn cfrac_positions_its_numerator() {
+    let e = engine();
+    let one_x = |tex: &str| {
+        let l = e.typeset(tex, Style::Text).unwrap();
+        l.glyphs.iter().find(|g| g.ch == '1').unwrap().x
+    };
+    // \nulldelimiterspace, then the numerator flush left; flush right, the
+    // 23.199 pt fraction less the 5 pt "1"; centred between.
+    assert!((one_x(r"\cfrac[l]{1}{x+y}") - 0.12).abs() < 1e-4);
+    assert!((one_x(r"\cfrac[r]{1}{x+y}") - 1.9399).abs() < 1e-4);
+    assert!((one_x(r"\cfrac{1}{x+y}") - (0.12 + 0.90995)).abs() < 1e-4);
+}
+
+#[test]
+fn text_font_switches_take_their_faces() {
+    use fmd_math::faces::{FACE_ITALIC, FACE_REGULAR, FACE_SANS, FACE_TYPEWRITER};
+    let e = engine();
+    for (tex, face) in [
+        (r"\textit{word}", FACE_ITALIC),
+        (r"\textrm{word}", FACE_REGULAR),
+        (r"\textup{word}", FACE_REGULAR),
+        (r"\textnormal{word}", FACE_REGULAR),
+        (r"\texttt{word}", FACE_TYPEWRITER),
+        (r"\textsf{word}", FACE_SANS),
+    ] {
+        for laid in [
+            e.typeset(tex, Style::Text).unwrap(),
+            e.typeset_text(&format!("a {tex}")).unwrap(),
+        ] {
+            let faces: Vec<_> = laid
+                .glyphs
+                .iter()
+                .filter(|g| "word".contains(g.ch))
+                .map(|g| g.face)
+                .collect();
+            assert_eq!(faces, vec![face; 4], "{tex}: {laid:?}");
+        }
+    }
+}
+
+#[test]
+fn slanted_text_ends_with_its_italic_correction() {
+    // LaTeX's \check@icr: `\textit{italic} text` sets `\kern 0.56512` after
+    // the c (TeX's \showbox, T1 ecti1000; cmti10's is 0.056528 em), and
+    // `\textit{x}.` none, the period being in \nocorrlist.
+    let e = engine();
+    let x_of = |l: &Layout, ch: char| l.glyphs.iter().find(|g| g.ch == ch).unwrap().x;
+    let corrected = e.typeset_text(r"\textit{c}x").unwrap();
+    let before_period = e.typeset_text(r"\textit{c}.x").unwrap();
+    let c_end = x_of(&before_period, '.');
+    assert!((x_of(&corrected, 'x') - c_end - 0.056_528).abs() < 1e-5);
+    let emph = e.typeset_text(r"\emph{c}x").unwrap();
+    assert!((x_of(&emph, 'x') - x_of(&corrected, 'x')).abs() < 1e-12);
+    // A body ending in a space ends in glue, after which \/ adds nothing.
+    let spaced = e.typeset_text(r"\textit{c }x").unwrap();
+    let plain_space = e.typeset_text(r"\textit{c} x").unwrap();
+    assert!(x_of(&plain_space, 'x') - x_of(&spaced, 'x') > 0.05);
+    // In mathematics the correction is inside the text box: before a period too.
+    let math = e.typeset(r"\textit{c}.", Style::Text).unwrap();
+    assert!((x_of(&math, '.') - c_end - 0.056_528).abs() < 1e-5);
+    // Upright switches add none.
+    let upright = e.typeset_text(r"\textrm{c}x").unwrap();
+    let upright_period = e.typeset_text(r"\textrm{c}.x").unwrap();
+    assert!((x_of(&upright, 'x') - x_of(&upright_period, '.')).abs() < 1e-12);
+}

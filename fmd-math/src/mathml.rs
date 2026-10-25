@@ -7,8 +7,8 @@
 
 use crate::atom::AtomClass;
 use crate::node::{
-    AccentKind, Delim, FragmentKind, Limits, MathFont, Node, NodeKind, PhantomKind, SpaceKind,
-    Span, StackKind, TextStyle,
+    AccentKind, Delim, FracSpec, FragmentKind, Length, LengthUnit, Limits, LineAlign, MathFont,
+    Node, NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
 };
 use crate::style::Style;
 
@@ -185,8 +185,13 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             primes,
             style,
         ),
-        NodeKind::Frac { num, den, spec } => {
-            emit_frac(w, num, den, spec.bar, spec.delims, spec.forced_style, style)
+        NodeKind::Frac { num, den, spec } => emit_frac(w, num, den, *spec, style),
+        NodeKind::Boxed { body } => {
+            w.open("menclose", &[("notation", "box")]);
+            w.open("mstyle", &[("displaystyle", "true")]);
+            emit_node(w, body, Style::Display);
+            w.close("mstyle");
+            w.close("menclose");
         }
         NodeKind::Radical { index, radicand } => emit_radical(w, index.as_deref(), radicand, style),
         NodeKind::Accent { accent, base } => emit_accent(w, *accent, base, style),
@@ -239,6 +244,7 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             below,
         } => emit_xarrow(w, *mapsto, above, below.as_deref(), style),
         NodeKind::Space(kind) => emit_space(w, *kind),
+        NodeKind::Skip(length) => emit_skip(w, *length),
         NodeKind::Tie => {
             w.open("mtext", &[]);
             w.buf.push('\u{00A0}');
@@ -545,55 +551,52 @@ fn scripts_as_limits(base: Option<&Node>, style: Style) -> bool {
     }
 }
 
-fn emit_frac(
-    w: &mut Writer,
-    num: &Node,
-    den: &Node,
-    bar: bool,
-    delims: Option<(char, char)>,
-    forced_style: Option<Style>,
-    style: Style,
-) {
-    let wrap_style = forced_style;
-    if let Some(st) = wrap_style {
+fn emit_frac(w: &mut Writer, num: &Node, den: &Node, spec: FracSpec, style: Style) {
+    if let Some(st) = spec.forced_style {
         let ds = if matches!(st, Style::Display) {
             "true"
         } else {
             "false"
         };
         w.open("mstyle", &[("displaystyle", ds)]);
-        emit_frac_body(w, num, den, bar, delims, style);
+        emit_frac_body(w, num, den, spec, style);
         w.close("mstyle");
     } else {
-        emit_frac_body(w, num, den, bar, delims, style);
+        emit_frac_body(w, num, den, spec, style);
     }
 }
 
-fn emit_frac_body(
-    w: &mut Writer,
-    num: &Node,
-    den: &Node,
-    bar: bool,
-    delims: Option<(char, char)>,
-    style: Style,
-) {
-    if let Some((left, right)) = delims {
+fn emit_frac_body(w: &mut Writer, num: &Node, den: &Node, spec: FracSpec, style: Style) {
+    if let Some((left, right)) = spec.delims {
         w.open("mrow", &[]);
         emit_fence(w, left);
-        emit_mfrac(w, num, den, bar, style);
+        emit_mfrac(w, num, den, spec, style);
         emit_fence(w, right);
         w.close("mrow");
     } else {
-        emit_mfrac(w, num, den, bar, style);
+        emit_mfrac(w, num, den, spec, style);
     }
 }
 
-fn emit_mfrac(w: &mut Writer, num: &Node, den: &Node, bar: bool, style: Style) {
-    if bar {
-        w.open("mfrac", &[]);
-    } else {
-        w.open("mfrac", &[("linethickness", "0")]);
+fn emit_mfrac(w: &mut Writer, num: &Node, den: &Node, spec: FracSpec, style: Style) {
+    let thickness = match (spec.bar, spec.thickness) {
+        (false, _) => Some("0".to_owned()),
+        (true, Some(length)) => Some(mathml_length(length)),
+        (true, None) => None,
+    };
+    let numalign = match spec.cfrac {
+        Some(LineAlign::Left) => Some("left"),
+        Some(LineAlign::Right) => Some("right"),
+        _ => None,
+    };
+    let mut attrs: Vec<(&str, &str)> = Vec::new();
+    if let Some(thickness) = &thickness {
+        attrs.push(("linethickness", thickness));
     }
+    if let Some(numalign) = numalign {
+        attrs.push(("numalign", numalign));
+    }
+    w.open("mfrac", &attrs);
     emit_node(w, num, style);
     emit_node(w, den, style);
     w.close("mfrac");
@@ -692,7 +695,7 @@ fn collect_text(w: &mut Writer, body: &[Node]) {
             NodeKind::Symbol { ch, .. } | NodeKind::AmsSymbol { ch, .. } => w.char_text(*ch),
             NodeKind::List(items) | NodeKind::Text { body: items } => collect_text(w, items),
             NodeKind::TextStyled { body, .. } => collect_text(w, body),
-            NodeKind::Space(_) => w.buf.push(' '),
+            NodeKind::Space(_) | NodeKind::Skip(_) => w.buf.push(' '),
             NodeKind::Tie => w.buf.push('\u{00A0}'),
             _ => {}
         }
@@ -702,8 +705,10 @@ fn collect_text(w: &mut Writer, body: &[Node]) {
 fn emit_text_styled(w: &mut Writer, ts: TextStyle, body: &[Node]) {
     let variant = match ts {
         TextStyle::Bold => "bold",
-        TextStyle::Emph => "italic",
-        TextStyle::Underline => "normal",
+        TextStyle::Emph | TextStyle::Italic => "italic",
+        TextStyle::Underline | TextStyle::Roman => "normal",
+        TextStyle::Typewriter => "monospace",
+        TextStyle::SansSerif => "sans-serif",
     };
     w.open("mtext", &[("mathvariant", variant)]);
     collect_text(w, body);
@@ -713,7 +718,7 @@ fn emit_text_styled(w: &mut Writer, ts: TextStyle, body: &[Node]) {
 fn math_font_variant(font: MathFont) -> &'static str {
     match font {
         MathFont::Blackboard => "double-struck",
-        MathFont::Calligraphic => "script",
+        MathFont::Calligraphic | MathFont::Script => "script",
         MathFont::Roman => "normal",
         MathFont::Bold => "bold",
         MathFont::BoldItalic => "bold-italic",
@@ -774,6 +779,26 @@ fn emit_xarrow(w: &mut Writer, mapsto: bool, above: &Node, below: Option<&Node>,
     }
     emit_node(w, above, style);
     w.close(tag);
+}
+
+/// `\hspace` as an `mspace` in MathML's own units: points for a fixed
+/// length, `em` and `ex` as written.
+fn emit_skip(w: &mut Writer, length: Length) {
+    let width = mathml_length(length);
+    w.open("mspace", &[("width", &width)]);
+    w.close("mspace");
+}
+
+/// A [`Length`] in MathML's own units, to the thousandth.
+fn mathml_length(length: Length) -> String {
+    #[allow(clippy::cast_precision_loss)]
+    let value = length.sp as f64 / 65536.0;
+    let unit = match length.unit {
+        LengthUnit::Fixed => "pt",
+        LengthUnit::Em => "em",
+        LengthUnit::Ex => "ex",
+    };
+    format!("{}{unit}", (value * 1000.0).round() / 1000.0)
 }
 
 fn emit_space(w: &mut Writer, kind: SpaceKind) {

@@ -350,7 +350,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "dagger" => sym('†', Bin),
         "ddagger" => sym('‡', Bin),
         // The Reference's default template defines `\minus` (T1 by rank);
-        // the built-in default pack maps it to a binary minus sign.
+        // the default pack reserves its name without replacing this glyph.
         "minus" => ams_sym('−', Bin, AmsFamily::A, 0x39),
         // ── Relations ───────────────────────────────────────────────────
         "le" | "leq" => sym('≤', Rel),

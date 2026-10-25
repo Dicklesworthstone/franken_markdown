@@ -29,7 +29,7 @@
 //!   the expansion site, exactly as macro expansion should;
 //! - rules carry their construct's span (a fraction bar belongs to the
 //!   whole fraction);
-//! - built-in default-pack expansions (`\minus`, `\mathds`) map to the
+//! - native default-pack commands (`\minus`, `\mathds`) map to the
 //!   command occurrence in the source.
 
 use crate::mbox::Layout;

@@ -333,7 +333,7 @@ impl Engine {
         let classes = classify_list(items);
         let mut ctx = outer;
         let mut laid_items: Vec<LineItem> = Vec::new();
-        for (node, class) in items.iter().zip(classes) {
+        for (index, (node, class)) in items.iter().zip(classes).enumerate() {
             match &node.kind {
                 NodeKind::StyleChange(style) => {
                     ctx = ctx.map(|s| StyleCtx {
@@ -415,6 +415,15 @@ impl Engine {
                         laid,
                         class: class.unwrap_or(AtomClass::Ord),
                     });
+                    if let Some(correction) =
+                        slanted_text_correction(node, items.get(index + 1), ctx)
+                    {
+                        laid_items.push(LineItem::Glue(GlueSpec {
+                            natural: correction,
+                            stretch: 0.0,
+                            shrink: 0.0,
+                        }));
+                    }
                 }
             }
         }
@@ -3992,6 +4001,44 @@ impl MNode {
 }
 
 /// A single positioned glyph box.
+/// LaTeX's `\check@icr`: `\textit` and `\emph`, in a slanted font, end with
+/// their last character's italic correction (`\/`), cmti10's. Running text
+/// that goes on with a period or comma (`\nocorrlist`) drops it. In
+/// mathematics the correction sits inside the text box, so a math `.` after
+/// it does not. A body that ends in a space, or in a character cmti10's OT1
+/// table does not share with ASCII, takes none.
+fn slanted_text_correction(node: &Node, next: Option<&Node>, ctx: LayCtx) -> Option<f64> {
+    let NodeKind::TextStyled {
+        style: TextStyle::Italic | TextStyle::Emph,
+        body,
+    } = &node.kind
+    else {
+        return None;
+    };
+    let nocorr = |node: &Node| matches!(&node.kind, NodeKind::TextRun { text, .. } if text.starts_with(['.', ',']));
+    if next.is_some_and(nocorr) {
+        return None;
+    }
+    let last = last_text_char(body)?;
+    if !last.is_ascii_alphanumeric() {
+        return None;
+    }
+    let italic = crate::tfm::CMTI10.char(u8::try_from(last).ok()?)?.italic;
+    (italic > 0.0).then(|| italic * ctx.size())
+}
+
+/// The last character a text body sets, if the body ends in one.
+fn last_text_char(nodes: &[Node]) -> Option<char> {
+    match &nodes.last()?.kind {
+        NodeKind::TextRun { text, .. } => text.chars().last(),
+        NodeKind::Symbol { ch, .. } => Some(*ch),
+        NodeKind::List(items)
+        | NodeKind::Text { body: items }
+        | NodeKind::TextStyled { body: items, .. } => last_text_char(items),
+        _ => None,
+    }
+}
+
 /// `\hspace`'s glue in layout units (ems of the 10 pt design size). A fixed
 /// length stays fixed under size declarations and math styles, as in TeX.
 /// Ems and exes are the text font's, cmr10's quad and x-height at the

@@ -1937,3 +1937,29 @@ fn text_font_switches_take_their_faces() {
         }
     }
 }
+
+#[test]
+fn slanted_text_ends_with_its_italic_correction() {
+    // LaTeX's \check@icr: `\textit{italic} text` sets `\kern 0.56512` after
+    // the c (TeX's \showbox, T1 ecti1000; cmti10's is 0.056528 em), and
+    // `\textit{x}.` none, the period being in \nocorrlist.
+    let e = engine();
+    let x_of = |l: &Layout, ch: char| l.glyphs.iter().find(|g| g.ch == ch).unwrap().x;
+    let corrected = e.typeset_text(r"\textit{c}x").unwrap();
+    let before_period = e.typeset_text(r"\textit{c}.x").unwrap();
+    let c_end = x_of(&before_period, '.');
+    assert!((x_of(&corrected, 'x') - c_end - 0.056_528).abs() < 1e-5);
+    let emph = e.typeset_text(r"\emph{c}x").unwrap();
+    assert!((x_of(&emph, 'x') - x_of(&corrected, 'x')).abs() < 1e-12);
+    // A body ending in a space ends in glue, after which \/ adds nothing.
+    let spaced = e.typeset_text(r"\textit{c }x").unwrap();
+    let plain_space = e.typeset_text(r"\textit{c} x").unwrap();
+    assert!(x_of(&plain_space, 'x') - x_of(&spaced, 'x') > 0.05);
+    // In mathematics the correction is inside the text box: before a period too.
+    let math = e.typeset(r"\textit{c}.", Style::Text).unwrap();
+    assert!((x_of(&math, '.') - c_end - 0.056_528).abs() < 1e-5);
+    // Upright switches add none.
+    let upright = e.typeset_text(r"\textrm{c}x").unwrap();
+    let upright_period = e.typeset_text(r"\textrm{c}.x").unwrap();
+    assert!((x_of(&upright, 'x') - x_of(&upright_period, '.')).abs() < 1e-12);
+}

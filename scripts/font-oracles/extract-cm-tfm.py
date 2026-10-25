@@ -51,6 +51,10 @@ FONTS = [
     ("cmr10", "CMR10", None, "cm"),
     ("cmr7", "CMR7", None, "cm"),
     ("cmr5", "CMR5", None, "cm"),
+    # The text italic's italic corrections, for the `\/` LaTeX's \textit and
+    # \emph append (\check@icr); the Reference's T1 ecti1000 agrees within
+    # 3e-5 em on every letter and digit.
+    ("cmti10", "CMTI10", None, "cm"),
 ]
 
 STOP_FLAG = 128

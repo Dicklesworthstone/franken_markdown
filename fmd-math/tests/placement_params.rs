@@ -501,6 +501,55 @@ fn long_arrows_join_cm_pieces_as_amsmath_does() {
     }
 }
 
+/// amsmath's dots read the token after them (franken_manim
+/// fm-fm-amsmath-dots-context-r11-ymdd). `\dots` is centred before a binary
+/// operator or relation and adds `\,` before a closing delimiter; `\cdots`
+/// and `\dotso` add it before a comma, semicolon, period or closing
+/// delimiter too, `\dotsc` not before a comma. TeX's widths in display
+/// style under the Reference's preamble, in pt.
+#[test]
+fn amsmath_dots_read_the_next_token() {
+    let e = engine();
+    for (tex, tex_pt, dot, count) in [
+        (r"(a\dots)", 28.06355, '.', 3),
+        (r"(a\ldots)", 26.39693, '.', 3),
+        (r"\left(a\dots\right)", 28.06355, '.', 3),
+        (r"\{a\dots\}", 30.28578, '.', 3),
+        (r"\langle a\dots\rangle", 28.06355, '.', 3),
+        (r"a,\dots,b", 31.7996, '.', 3),
+        (r"a\dots b", 24.57741, '.', 3),
+        (r"a\dots.", 23.06354, '.', 4),
+        (r"a+\dots+b", 45.68843, '⋅', 3),
+        (r"a\dots\le b", 36.244, '⋅', 3),
+        (r"a\dots\neq b", 36.244, '⋅', 3),
+        (r"a\cdots b", 24.57741, '⋅', 3),
+        (r"a\cdots,b", 30.68845, '⋅', 3),
+        (r"a\cdots.", 24.73016, '⋅', 3),
+        (r"a\ldots,b", 29.02182, '.', 3),
+        (r"a\dotso,b", 30.68845, '.', 3),
+        (r"a\dotsc;b", 30.68845, '.', 3),
+        (r"a\dotsc,b", 29.02182, '.', 3),
+    ] {
+        let l = e.typeset(tex, Style::Display).unwrap();
+        assert!(
+            (l.width - tex_pt / 10.0).abs() < 1e-4,
+            "{tex}: {} em against TeX's {tex_pt} pt",
+            l.width
+        );
+        let dots = l.glyphs.iter().filter(|g| g.ch == dot).count();
+        assert_eq!(dots, count, "{tex}: {count} {dot:?} in {l:?}");
+    }
+    // At the end of inline math the closing `$` is the token after: TeX
+    // boxes `$a,\dots$` at 23.06354 pt and `$a,\ldots$` at 21.39691 pt.
+    for (source, tex_pt) in [(r"$a,\dots$", 23.06354), (r"$a,\ldots$", 21.39691)] {
+        let width = e.typeset_text(source).unwrap().width;
+        assert!(
+            (width - tex_pt / 10.0).abs() < 1e-4,
+            "{source}: {width} em against TeX's {tex_pt} pt"
+        );
+    }
+}
+
 /// amsmath's `\overset` and `\underset` take their class from `\binrel@`:
 /// the base's spaces against two empty Ords make a relation (thick) or a
 /// binary operator (medium), otherwise a braced Ord. The argument's own

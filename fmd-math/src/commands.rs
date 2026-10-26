@@ -110,6 +110,8 @@ pub(crate) enum Cmd {
     Pmod,
     /// `\mod{…}`: amsmath's unparenthesized modulus.
     Mod,
+    /// One of amsmath's dots, which read the token after them.
+    Dots(Dots),
     /// An accent command.
     Accent(AccentKind),
     /// A two-argument fraction command.
@@ -190,6 +192,23 @@ pub(crate) enum Cmd {
     },
     /// Known tier-2 vocabulary: fail precisely.
     UnsupportedT2,
+}
+
+/// amsmath's dots (amsmath.sty's `\mdots@`, `\dotso`, `\dotsc`, `\cdots`
+/// and `\dotsi`), each of which reads the token after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Dots {
+    /// `\dots`: centred before a binary operator or relation, otherwise
+    /// `\dotsc` before a comma and `\dotso` elsewhere.
+    Auto,
+    /// `\dotso`: low dots.
+    Other,
+    /// `\dotsc`: low dots, for a list with commas.
+    Comma,
+    /// `\cdots`, `\dotsb` and `\dotsm`: centred dots.
+    Centred,
+    /// `\dotsi`: `\!\cdots`, for integrals.
+    Integral,
 }
 
 /// An environment the grammar knows.
@@ -328,8 +347,13 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "rVert" => delim_sym('‖', Close),
         // Dots. `\ldots`-class dots are Inner atoms in TeX (\mathinner);
         // `\vdots` is a plain Ord box. LaTeX's `\hdots` is `\ldots`.
-        "ldots" | "dots" | "dotsc" | "dotso" | "hdots" => sym('…', Inner),
-        "cdots" | "dotsb" => sym('⋯', Inner),
+        // amsmath's own dots read the token after them (`Parser::dots`).
+        "ldots" | "hdots" => sym('…', Inner),
+        "dots" => Cmd::Dots(Dots::Auto),
+        "dotso" => Cmd::Dots(Dots::Other),
+        "dotsc" => Cmd::Dots(Dots::Comma),
+        "cdots" | "dotsb" | "dotsm" => Cmd::Dots(Dots::Centred),
+        "dotsi" => Cmd::Dots(Dots::Integral),
         "vdots" => sym('⋮', Ord),
         "ddots" => sym('⋱', Inner),
         // ── Binary operations ───────────────────────────────────────────

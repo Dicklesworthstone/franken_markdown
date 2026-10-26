@@ -14,7 +14,7 @@
 //! nesting; the chaos suite locks the never-panic property).
 
 use crate::atom::{char_class, intrinsic_class};
-use crate::commands::{self, Cmd};
+use crate::commands::{self, Cmd, Dots};
 use crate::error::MathError;
 use crate::node::{
     AccentKind, CancelKind, ColorSpec, Delim, FracSpec, FragmentKind, Length, Limits, LineAlign,
@@ -355,6 +355,50 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// amsmath's dots (amsmath.sty, `\mdots@` through `\dotsc`), which
+    /// `\futurelet` the token after them:
+    /// - `\dots` is `\cdots` before a binary operator or relation, `\dotsi`
+    ///   before an integral, and otherwise low dots, with `\,` before a
+    ///   closing delimiter or `$`;
+    /// - `\dotso` and `\cdots` add `\,` before a comma, semicolon, period,
+    ///   closing delimiter or `$`, and `\dotsc` the same except before a
+    ///   comma;
+    /// - `\dotsi` is `\!\cdots`.
+    fn dots(&self, kind: Dots, span: Span, items: &mut Vec<Node>) {
+        let next = dots_next(
+            self.toks[self.pos..]
+                .iter()
+                .map(|tok| tok.kind)
+                .find(|kind| !matches!(kind, TokKind::Space)),
+        );
+        let before_stop = matches!(next, DotsNext::Stop | DotsNext::Close);
+        let (centred, neg_thin, thin) = match kind {
+            Dots::Auto => match next {
+                DotsNext::BinRel => (true, false, false),
+                DotsNext::Integral => (true, true, false),
+                DotsNext::Close => (false, false, true),
+                DotsNext::Comma | DotsNext::Stop | DotsNext::Other => (false, false, false),
+            },
+            Dots::Other => (false, false, before_stop || next == DotsNext::Comma),
+            Dots::Centred => (true, false, before_stop || next == DotsNext::Comma),
+            Dots::Comma => (false, false, before_stop),
+            Dots::Integral => (true, true, false),
+        };
+        if neg_thin {
+            items.push(Node::new(NodeKind::Space(SpaceKind::NegThin), span));
+        }
+        items.push(Node::new(
+            NodeKind::Symbol {
+                ch: if centred { '⋯' } else { '…' },
+                class: crate::atom::AtomClass::Inner,
+            },
+            span,
+        ));
+        if thin {
+            items.push(Node::new(NodeKind::Space(SpaceKind::Thin), span));
+        }
+    }
+
     /// A control symbol in math mode. `Ok(None)` never occurs today; the
     /// option leaves room for stop-like symbols without reshaping callers.
     fn math_control_symbol(&mut self, c: char, span: Span) -> Result<Option<Node>, MathError> {
@@ -515,6 +559,7 @@ impl<'s> Parser<'s> {
                 });
             }
             Cmd::Spacing(kind) => items.push(Node::new(NodeKind::Space(kind), span)),
+            Cmd::Dots(kind) => self.dots(kind, span, items),
             other => {
                 let node = self.command_node(name, span, other)?;
                 items.push(node);
@@ -529,6 +574,18 @@ impl<'s> Parser<'s> {
     fn command_node(&mut self, name: &str, span: Span, cmd: Cmd) -> Result<Node, MathError> {
         match cmd {
             Cmd::Sym { ch, class, .. } => Ok(Node::new(NodeKind::Symbol { ch, class }, span)),
+            // An argument's dots see no list after them.
+            Cmd::Dots(kind) => Ok(Node::new(
+                NodeKind::Symbol {
+                    ch: if matches!(kind, Dots::Centred | Dots::Integral) {
+                        '⋯'
+                    } else {
+                        '…'
+                    },
+                    class: crate::atom::AtomClass::Inner,
+                },
+                span,
+            )),
             Cmd::AmsSym {
                 ch,
                 class,
@@ -2127,6 +2184,58 @@ fn set_limits(last: Option<&mut Node>, mode: Limits) -> bool {
             base: Some(base), ..
         }) => set_limits(Some(base.as_mut()), mode),
         _ => false,
+    }
+}
+
+/// What amsmath's dots read in the token after them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DotsNext {
+    /// `,`.
+    Comma,
+    /// `;` or `.`.
+    Stop,
+    /// A closing delimiter of amsmath's `\rightdelim@`, or `$`.
+    Close,
+    /// A binary operator or relation: `\keybin@`'s characters, a Bin or Rel
+    /// symbol (`\not` among them), or a `\DOTSB` big operator.
+    BinRel,
+    /// A `\DOTSI` integral.
+    Integral,
+    /// Anything else, or the end of the list.
+    Other,
+}
+
+/// Classify the token after a dots command. Under pdfTeX amsmath reads a
+/// character only through `\keybin@`, so other characters are `Other`.
+fn dots_next(kind: Option<TokKind<'_>>) -> DotsNext {
+    use crate::atom::AtomClass::{Bin, Rel};
+    match kind {
+        Some(TokKind::Char(',')) => DotsNext::Comma,
+        Some(TokKind::Char(';' | '.')) => DotsNext::Stop,
+        Some(TokKind::Char(')' | ']') | TokKind::ControlSymbol('}') | TokKind::MathShift) => {
+            DotsNext::Close
+        }
+        Some(TokKind::Char('+' | '=' | '<' | '>' | '-' | '*' | ':')) => DotsNext::BinRel,
+        Some(TokKind::ControlWord(
+            "rbrack" | "rbrace" | "rangle" | "rceil" | "rfloor" | "rgroup" | "rmoustache" | "right"
+            | "bigr" | "Bigr" | "biggr" | "Biggr",
+        )) => DotsNext::Close,
+        Some(TokKind::ControlWord(name)) => match commands::lookup(name) {
+            Some(
+                Cmd::Sym {
+                    class: Bin | Rel, ..
+                }
+                | Cmd::AmsSym {
+                    class: Bin | Rel, ..
+                }
+                | Cmd::BigOp {
+                    integral: false, ..
+                },
+            ) => DotsNext::BinRel,
+            Some(Cmd::BigOp { integral: true, .. }) => DotsNext::Integral,
+            _ => DotsNext::Other,
+        },
+        _ => DotsNext::Other,
     }
 }
 

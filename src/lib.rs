@@ -180,7 +180,9 @@ pub use paged_height::{
 };
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
 pub use pdf::{
-    PdfEmitOptions, PdfPageEmission, PdfProfile, PdfStageSummary, RenderWarning, render_warnings,
+    PdfEmitOptions, PdfPageBreakReport, PdfPageEmission, PdfPaginationFailure, PdfPaginationReport,
+    PdfPaginationStrategy, PdfParagraphVariantReport, PdfParagraphVariantStatus, PdfProfile,
+    PdfRenderReport, PdfStageSummary, RenderWarning, render_warnings,
 };
 pub use pdfa::{PdfAMode, PdfASettings};
 pub use resume::{
@@ -1011,6 +1013,34 @@ pub fn render_pdf_document_emitted(
     opts.font_assets.validate()?;
     let doc = transform_footnotes_for_pdf(doc, opts);
     pdf::render_with_emit(&doc, opts, PdfASettings::OFF, emit)
+}
+
+/// Render PDF bytes together with the actual pagination strategy and any
+/// bounded-search or infeasibility fallback that affected this render.
+///
+/// Uses the same transforms, fitting, layout, and writer as
+/// [`render_pdf_document`]. `ExactHeight` applies to final measured lines;
+/// paragraph-alternative admission and selection are reported separately.
+/// Reports do not read clocks or change emitted bytes.
+///
+/// # Errors
+/// See [`render_pdf_document_emitted`].
+pub fn render_pdf_document_reported(
+    doc: &Document,
+    opts: &PdfOptions,
+    emit: PdfEmitOptions,
+) -> Result<PdfRenderReport> {
+    opts.font_assets.validate()?;
+    let doc = transform_footnotes_for_pdf(doc, opts);
+    pdf::render_reported(&doc, opts, PdfASettings::OFF, emit)
+}
+
+/// Convenience wrapper over [`parse_markdown`] + [`render_pdf_document_reported`].
+///
+/// # Errors
+/// See [`render_pdf_document_reported`].
+pub fn render_pdf_reported(src: &str, opts: &PdfOptions) -> Result<PdfRenderReport> {
+    render_pdf_document_reported(&parse_markdown(src), opts, PdfEmitOptions::default())
 }
 
 /// Convenience wrapper over [`parse_markdown`] + [`render_pdf_document_emitted`].

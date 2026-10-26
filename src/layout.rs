@@ -3127,12 +3127,26 @@ pub fn break_paragraph_candidates(
     line_width: LayoutUnit,
     scratch: &mut ParagraphLayoutScratch,
 ) -> ParagraphCandidates {
+    break_paragraph_candidates_reported(items, line_width, scratch).0
+}
+
+/// Preserve the existing public result while allowing PDF diagnostics to
+/// distinguish a state-budget fallback from an ordinary lack of alternatives.
+/// The boolean is true only when the unchanged state-cell limit is exceeded.
+pub(crate) fn break_paragraph_candidates_reported(
+    items: &[ParagraphItem],
+    line_width: LayoutUnit,
+    scratch: &mut ParagraphLayoutScratch,
+) -> (ParagraphCandidates, bool) {
     let mut baseline = Vec::new();
     break_paragraph_into(items, line_width, scratch, &mut baseline);
     if baseline.is_empty() {
-        return ParagraphCandidates {
-            variants: Vec::new(),
-        };
+        return (
+            ParagraphCandidates {
+                variants: Vec::new(),
+            },
+            false,
+        );
     }
 
     let baseline_count = baseline.len();
@@ -3148,16 +3162,22 @@ pub fn break_paragraph_candidates(
         || scratch.pareto_breaking()
         || baseline_count >= usize::MAX - 1
     {
-        return ParagraphCandidates {
-            variants: vec![baseline_variant],
-        };
+        return (
+            ParagraphCandidates {
+                variants: vec![baseline_variant],
+            },
+            false,
+        );
     }
 
     let candidate_stats = break_candidates_into(items, &mut scratch.candidates);
     if scratch.candidates.is_empty() {
-        return ParagraphCandidates {
-            variants: vec![baseline_variant],
-        };
+        return (
+            ParagraphCandidates {
+                variants: vec![baseline_variant],
+            },
+            false,
+        );
     }
     scratch
         .metrics
@@ -3174,9 +3194,12 @@ pub fn break_paragraph_candidates(
         .len()
         .saturating_mul(max_lines.saturating_add(1));
     if cell_count > PARAGRAPH_VARIANT_STATE_CELL_LIMIT {
-        return ParagraphCandidates {
-            variants: vec![baseline_variant],
-        };
+        return (
+            ParagraphCandidates {
+                variants: vec![baseline_variant],
+            },
+            true,
+        );
     }
 
     let candidates = &scratch.candidates;
@@ -3298,9 +3321,12 @@ pub fn break_paragraph_candidates(
     }
 
     let Some(last_index) = candidates.len().checked_sub(1) else {
-        return ParagraphCandidates {
-            variants: vec![baseline_variant],
-        };
+        return (
+            ParagraphCandidates {
+                variants: vec![baseline_variant],
+            },
+            false,
+        );
     };
     let min_lines = baseline_count.saturating_sub(1).max(1);
     let mut variants = Vec::with_capacity(3);
@@ -3342,7 +3368,7 @@ pub fn break_paragraph_candidates(
         variants.push(baseline_variant);
     }
     variants.sort_by_key(|variant| variant.line_count);
-    ParagraphCandidates { variants }
+    (ParagraphCandidates { variants }, false)
 }
 
 /// Paragraph edge protrusion (left of first box, right of last box) in

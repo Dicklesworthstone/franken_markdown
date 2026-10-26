@@ -43,20 +43,30 @@ pub(super) struct Candidates {
     paragraphs: BTreeMap<u32, Paragraph>,
     retained_lines: usize,
     measurement_work: usize,
+    report: PdfParagraphVariantReport,
 }
 
 impl Candidates {
     pub fn new(opts: &PdfOptions, blocks: &[Block]) -> Self {
+        let status = if !opts.optimal_pagination {
+            PdfParagraphVariantStatus::NotRequested
+        } else if opts.gradual_demerits || opts.river_penalty || opts.pareto_line_breaking {
+            PdfParagraphVariantStatus::UnsupportedTypography
+        } else if collect_pdf_footnote_defs(blocks)
+            .iter()
+            .any(|(id, _)| page_note_number(id).is_none())
+        {
+            // The public PDF path prepares numbered, linked citations.
+            PdfParagraphVariantStatus::UnpreparedFootnotes
+        } else {
+            PdfParagraphVariantStatus::NoAlternatives
+        };
         Self {
-            enabled: opts.optimal_pagination
-                && !opts.gradual_demerits
-                && !opts.river_penalty
-                && !opts.pareto_line_breaking
-                // The public PDF path prepares numbered, linked citations.
-                // Keep legacy unprepared definitions on their baseline path.
-                && collect_pdf_footnote_defs(blocks)
-                    .iter()
-                    .all(|(id, _)| page_note_number(id).is_some()),
+            enabled: status == PdfParagraphVariantStatus::NoAlternatives,
+            report: PdfParagraphVariantReport {
+                status,
+                ..PdfParagraphVariantReport::default()
+            },
             ..Self::default()
         }
     }
@@ -69,24 +79,40 @@ impl Candidates {
         self.paragraphs.clear();
         self.retained_lines = 0;
         self.measurement_work = 0;
+        self.report = PdfParagraphVariantReport {
+            status: self.report.status,
+            ..PdfParagraphVariantReport::default()
+        };
     }
 
     pub fn begin_measure(&mut self, items: usize, baseline_count: usize) -> bool {
         let work = items
             .saturating_mul(items)
             .saturating_mul(baseline_count.saturating_add(2));
-        let admitted = self.enabled
-            && items <= MAX_PARAGRAPH_ITEMS
-            && baseline_count >= 4
-            && self
-                .retained_lines
-                .saturating_add(baseline_count.saturating_mul(2))
-                <= MAX_ALTERNATIVE_LINES
-            && self.measurement_work.saturating_add(work) <= MAX_MEASUREMENT_WORK;
-        if admitted {
-            self.measurement_work += work;
+        if !self.enabled || baseline_count < 4 {
+            return false;
         }
-        admitted
+        let item_limit = items > MAX_PARAGRAPH_ITEMS;
+        let line_limit = self
+            .retained_lines
+            .saturating_add(baseline_count.saturating_mul(2))
+            > MAX_ALTERNATIVE_LINES;
+        let work_limit = self.measurement_work.saturating_add(work) > MAX_MEASUREMENT_WORK;
+        if item_limit || line_limit || work_limit {
+            self.report.limited_paragraphs += 1;
+            self.report.paragraph_item_limit |= item_limit;
+            self.report.retained_line_limit |= line_limit;
+            self.report.measurement_work_limit |= work_limit;
+            return false;
+        }
+        self.measurement_work += work;
+        self.report.attempted_paragraphs += 1;
+        true
+    }
+
+    pub fn candidate_state_limit(&mut self) {
+        self.report.candidate_state_limit = true;
+        self.report.limited_paragraphs += 1;
     }
 
     pub fn insert(&mut self, group: u32, baseline_count: usize, alternatives: Vec<Alternative>) {
@@ -98,6 +124,8 @@ impl Candidates {
             .map(|shape| shape.lines.len())
             .sum::<usize>();
         if self.retained_lines.saturating_add(lines) > MAX_ALTERNATIVE_LINES {
+            self.report.retained_line_limit = true;
+            self.report.limited_paragraphs += 1;
             return;
         }
         self.retained_lines += lines;
@@ -317,16 +345,38 @@ fn shape_note_reservations(
 
 /// Atomically select and install paragraph shapes before every consumer of
 /// layout, including the TOC fixpoint, page-budget fitting and text verification.
-pub(super) fn apply(lines: &mut Vec<Line>, page: PageGeom, candidates: &Candidates) {
-    if candidates.paragraphs.is_empty() {
-        return;
+pub(super) fn apply(
+    lines: &mut Vec<Line>,
+    page: PageGeom,
+    candidates: &Candidates,
+) -> PdfParagraphVariantReport {
+    let mut report = candidates.report.clone();
+    if !candidates.paragraphs.is_empty() {
+        match select_reported(lines, page, candidates, &mut report) {
+            Ok(Some(selected)) => *lines = selected,
+            Ok(None) => {}
+            Err(reason) => {
+                report.status = PdfParagraphVariantStatus::Rejected;
+                report.failure = Some(reason);
+            }
+        }
     }
-    if let Some(selected) = select(lines, page, candidates) {
-        *lines = selected;
-    }
+    report
 }
 
+#[cfg(test)]
 fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec<Line>> {
+    select_reported(lines, page, candidates, &mut candidates.report.clone())
+        .ok()
+        .flatten()
+}
+
+fn select_reported(
+    lines: &[Line],
+    page: PageGeom,
+    candidates: &Candidates,
+    report: &mut PdfParagraphVariantReport,
+) -> std::result::Result<Option<Vec<Line>>, PdfPaginationFailure> {
     let notes = PageNotes::scan(lines);
     let body_end = notes.as_ref().map_or(lines.len(), |notes| notes.body_end);
     let body = &lines[..body_end];
@@ -338,7 +388,9 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
     while start < body.len() {
         let end = pdf_height_block_end(body, start);
         if end <= start {
-            return None;
+            return Err(PdfPaginationFailure::InvalidPlan(
+                "joint block span did not advance",
+            ));
         }
         let mut variants = vec![block_variant(body, start, end, 0, |line| {
             notes
@@ -392,6 +444,7 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
             }
         }
         any_alternatives |= !alternatives.is_empty();
+        report.offered_paragraphs += usize::from(!alternatives.is_empty());
         blocks.push(BlockCandidates { variants });
         policies.push(block_policy(body, start));
         choices.push(Choices {
@@ -402,22 +455,31 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
         start = end;
     }
     if !any_alternatives {
-        return None;
+        return Ok(None);
     }
-    let plan = plan_blocks(&blocks, &policies, options(page)).ok()?;
+    let plan =
+        plan_blocks(&blocks, &policies, options(page)).map_err(PdfPaginationFailure::Planner)?;
+    report.status = PdfParagraphVariantStatus::Planned;
     if plan.variants.iter().all(|&variant| variant == 0) {
-        return None;
+        return Ok(None);
     }
 
     let mut selected = Vec::with_capacity(lines.len());
     let mut offsets = Vec::with_capacity(choices.len());
     for (index, choice) in choices.iter_mut().enumerate() {
         offsets.push(selected.len());
-        let variant = *plan.variants.get(index)?;
+        let variant = *plan
+            .variants
+            .get(index)
+            .ok_or(PdfPaginationFailure::InvalidPlan(
+                "joint plan omitted a block",
+            ))?;
         if variant == 0 {
             selected.extend(lines[choice.start..choice.end].iter().cloned());
         } else {
-            selected.append(choice.alternatives.get_mut(variant - 1)?);
+            selected.append(choice.alternatives.get_mut(variant - 1).ok_or(
+                PdfPaginationFailure::InvalidPlan("joint plan selected an unknown variant"),
+            )?);
         }
     }
 
@@ -435,14 +497,24 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
             .get(index + 1)
             .is_none_or(|next| next.page_index != fragment.page_index)
         {
-            expected_ends.push(offsets[fragment.block_index] + fragment.fragment_end);
+            let offset =
+                offsets
+                    .get(fragment.block_index)
+                    .ok_or(PdfPaginationFailure::InvalidPlan(
+                        "joint fragment selected an unknown block",
+                    ))?;
+            expected_ends.push(offset.checked_add(fragment.fragment_end).ok_or(
+                PdfPaginationFailure::InvalidPlan("joint fragment offset overflow"),
+            )?);
         }
     }
     // Re-scan after substitution: both body indices and note-region offsets
     // may have moved. Use the emitter's footnote-aware planner, not the
     // no-reservation bridge, to certify the chosen boundaries.
     let reproduced = if notes.is_some() {
-        let selected_notes = PageNotes::scan(&selected)?;
+        let selected_notes = PageNotes::scan(&selected).ok_or(
+            PdfPaginationFailure::InvalidPlan("joint selection lost the note region"),
+        )?;
         exact_height_page_breaks_reserving(&selected[..selected_notes.body_end], page, |line| {
             selected_notes.line_reserve(&selected, line)
         })?
@@ -450,9 +522,16 @@ fn select(lines: &[Line], page: PageGeom, candidates: &Candidates) -> Option<Vec
         exact_height_page_breaks(&selected, page)?
     };
     if reproduced.ends != expected_ends {
-        return None;
+        return Err(PdfPaginationFailure::InvalidPlan(
+            "joint page boundaries could not be reproduced",
+        ));
     }
-    Some(selected)
+    report.selected_alternatives = plan
+        .variants
+        .iter()
+        .filter(|&&variant| variant != 0)
+        .count();
+    Ok(Some(selected))
 }
 
 #[cfg(test)]

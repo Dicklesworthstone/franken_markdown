@@ -43,6 +43,11 @@ use std::fmt::Write as _;
 mod financial_tables;
 mod inline_image;
 mod joint_pagination;
+mod pagination_report;
+pub use pagination_report::{
+    PdfPageBreakReport, PdfPaginationFailure, PdfPaginationReport, PdfPaginationStrategy,
+    PdfParagraphVariantReport, PdfParagraphVariantStatus, PdfRenderReport,
+};
 mod math;
 mod running;
 mod text_composition;
@@ -2343,6 +2348,29 @@ pub fn render_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> 
         true,
         PdfEmitOptions::default(),
     )
+    .map(|rendered| PdfProfile {
+        bytes: rendered.bytes,
+        stages: rendered.stages,
+    })
+}
+
+/// Render PDF bytes and pagination provenance from the same layout and writer.
+///
+/// No clocks or profiling ledgers are enabled. The page-emission option permits
+/// hosts to check the same contract with chunked or monolithic output.
+///
+/// # Errors
+/// See [`render_with_emit`].
+pub fn render_reported(
+    doc: &Document,
+    opts: &PdfOptions,
+    pdf_a: crate::PdfASettings,
+    emit: PdfEmitOptions,
+) -> Result<PdfRenderReport> {
+    render_inner(doc, opts, pdf_a, false, emit).map(|rendered| PdfRenderReport {
+        bytes: rendered.bytes,
+        pagination: rendered.pagination,
+    })
 }
 
 /// A non-fatal diagnostic about a PDF render: content that was *degraded* rather
@@ -2377,6 +2405,13 @@ pub enum RenderWarning {
     TextShapingUnsupported { source: String, reason: String },
     /// A marked word exhausted the bounded strict-shaping profile.
     TextShapingLimit { source: String, reason: String },
+    /// Exact page planning failed; a weaker algorithm retained complete output.
+    PaginationFallback {
+        strategy: PdfPaginationStrategy,
+        reason: PdfPaginationFailure,
+    },
+    /// Paragraph alternatives were restricted by a mode, budget, or failed search.
+    ParagraphPaginationLimited(PdfParagraphVariantReport),
 }
 
 impl RenderWarning {
@@ -2392,6 +2427,8 @@ impl RenderWarning {
             Self::MathOverflow { .. } => "math_overflow",
             Self::TextShapingUnsupported { .. } => "text_shaping_unsupported",
             Self::TextShapingLimit { .. } => "text_shaping_limit",
+            Self::PaginationFallback { reason, .. } => reason.warning_code(),
+            Self::ParagraphPaginationLimited(_) => "paragraph_pagination_limited",
         }
     }
 
@@ -2399,6 +2436,13 @@ impl RenderWarning {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
+            Self::PaginationFallback { strategy, reason } => format!(
+                "exact PDF pagination could not be honored ({reason}); used {} pagination \
+                 with soft keep/widow/orphan rules; increase the page area or simplify \
+                 unbreakable content to allow the exact planner to fit it",
+                strategy.as_str()
+            ),
+            Self::ParagraphPaginationLimited(report) => report.limitation_message(),
             Self::UnresolvedImage(dest) => format!(
                 "image '{dest}' has no --pdf-image mapping; rendered as alt text \
                  (add --pdf-image '{dest}=PATH')"
@@ -2477,6 +2521,22 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
     }
 
     if let Ok(faces) = Faces::load(opts) {
+        // Only an optimal request needs this layout preflight. Use the same
+        // profile/numbered-note preparation and final fitting as real emission;
+        // otherwise note reservations or fitted geometry could report a
+        // different fallback than the PDF that is actually written.
+        if opts.optimal_pagination {
+            let prepared = crate::transform_footnotes_for_pdf(doc, opts);
+            let (effective, page) = effective_pdf_options(&prepared, opts, &faces);
+            let (lines, paragraph_variants) =
+                layout_with_pagination_report(&prepared.blocks, &effective, &faces, page);
+            let (_, page_breaks) = page_break_plan_and_report(&lines, page, &effective);
+            PdfPaginationReport {
+                page_breaks,
+                paragraph_variants,
+            }
+            .append_warnings(&mut warnings);
+        }
         let mut text = Vec::new();
         collect_text(&doc.blocks, &mut text, &supported_math, &faces);
         let mut missing = 0usize;
@@ -2796,7 +2856,7 @@ fn render_inner(
     pdf_a: crate::PdfASettings,
     profiled: bool,
     emit: PdfEmitOptions,
-) -> Result<PdfProfile> {
+) -> Result<RenderedPdf> {
     let mut profiler = if profiled {
         PdfProfiler::enabled()
     } else {
@@ -2813,16 +2873,16 @@ fn render_inner(
     // Running chrome is validated against the final page geometry before
     // layout, so a band that cannot fit its margin fails fast.
     let running = running::resolve(doc, &effective_opts, &faces, page)?;
-    let lines = profiler.measure(
+    let (lines, paragraph_variants) = profiler.measure(
         "layout",
         doc.blocks.len(),
         "block layout, text measuring, and paragraph line breaking",
-        || layout(&doc.blocks, &effective_opts, &faces, page),
+        || layout_with_pagination_report(&doc.blocks, &effective_opts, &faces, page),
         |_| 0,
     );
     let line_count = lines.len();
     let serialize_started = profiler.checkpoint();
-    let bytes = serialize(
+    let (bytes, page_breaks) = serialize(
         &lines,
         &effective_opts,
         &faces,
@@ -2839,10 +2899,20 @@ fn render_inner(
         "font subsetting, pagination, page streams, and PDF object writing",
         serialize_started,
     );
-    Ok(PdfProfile {
+    Ok(RenderedPdf {
         bytes,
         stages: profiler.finish(),
+        pagination: PdfPaginationReport {
+            page_breaks,
+            paragraph_variants,
+        },
     })
+}
+
+struct RenderedPdf {
+    bytes: Vec<u8>,
+    stages: Vec<PdfStageSummary>,
+    pagination: PdfPaginationReport,
 }
 
 /// How the PDF writer turns laid-out lines into page objects.
@@ -3273,6 +3343,15 @@ fn append_pdf_toc_page(
 // ---- layout -----------------------------------------------------------------
 
 fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) -> Vec<Line> {
+    layout_with_pagination_report(blocks, opts, faces, page).0
+}
+
+fn layout_with_pagination_report(
+    blocks: &[Block],
+    opts: &PdfOptions,
+    faces: &Faces,
+    page: PageGeom,
+) -> (Vec<Line>, PdfParagraphVariantReport) {
     inline_image::prepare(blocks, &opts.image_assets, faces);
     let has_toc = opts.toc || has_toc_marker(blocks);
     if !has_toc {
@@ -3304,8 +3383,8 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
         layout_blocks(blocks, 0.0, &mut out, &mut cx);
         layout_pdf_notes(blocks, &mut out, &mut cx);
-        joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
-        return out;
+        let report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
+        return (out, report);
     }
 
     let toc_entries = collect_pdf_toc_entries(blocks);
@@ -3315,6 +3394,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
     }
 
     let mut final_lines = Vec::new();
+    let mut final_report = PdfParagraphVariantReport::default();
     // One LayoutCx spans the whole fixpoint so every value-pure cache survives
     // across passes: between iterations the document content is identical —
     // only TOC page numbers change, and those affect pagination, never a
@@ -3373,7 +3453,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
         layout_blocks(blocks, 0.0, &mut out, &mut cx);
         layout_pdf_notes(blocks, &mut out, &mut cx);
-        joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
+        final_report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
 
         // Run pagination to find the resulting page of each heading
         let heading_metas = heading_metadata(&out);
@@ -3399,7 +3479,7 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         }
     }
 
-    final_lines
+    (final_lines, final_report)
 }
 
 /// Flow note number of a page-bottom footnote region's separator rule.
@@ -19651,11 +19731,15 @@ fn layout_inlines(
             .paragraph_candidates
             .begin_measure(built.items.len(), baseline_count)
     {
-        Some(crate::layout::break_paragraph_candidates(
+        let (variants, state_limit) = crate::layout::break_paragraph_candidates_reported(
             &built.items,
             content_w,
             &mut cx.paragraph_scratch,
-        ))
+        );
+        if state_limit {
+            cx.paragraph_candidates.candidate_state_limit();
+        }
+        Some(variants)
     } else {
         None
     };
@@ -21578,14 +21662,14 @@ fn serialize(
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, PdfPageBreakReport)> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
     // visually coherent (the one-theme-model doctrine). See `Palette`.
     let palette = Palette::from_colors(&opts.theme.colors);
 
     // One break plan for the chrome page count and the emitter, so both see
     // the same pages (and optimal pagination runs once).
-    let break_plan = page_break_plan_for_options(lines, page, opts);
+    let (break_plan, report) = page_break_plan_and_report(lines, page, opts);
     // Running chrome needs `{pages}` and every page's exact text before font
     // subsetting, so it counts pages with the emitter's own pager up front.
     let mut chrome = running.map(|spec| {
@@ -21922,7 +22006,7 @@ fn serialize(
         profiler,
     )?;
 
-    build_pdf(
+    let bytes = build_pdf(
         &serialized.pages,
         &serialized.outlines,
         &subsets,
@@ -21932,7 +22016,8 @@ fn serialize(
         pdf_a,
         profiler,
         serialized.precompressed,
-    )
+    )?;
+    Ok((bytes, report))
 }
 
 struct RenderScratch {
@@ -29504,17 +29589,61 @@ fn page_break_plan_for_options(
     page: PageGeom,
     opts: &PdfOptions,
 ) -> Option<PageBreakPlan> {
+    page_break_plan_and_report(lines, page, opts).0
+}
+
+/// Keep failure provenance alongside the exact selection used by the writer.
+/// Notes deliberately fall back to the reservation-aware greedy pager; the
+/// legacy DP has no footnote reservations and must never plan those documents.
+fn page_break_plan_and_report(
+    lines: &[Line],
+    page: PageGeom,
+    opts: &PdfOptions,
+) -> (Option<PageBreakPlan>, PdfPageBreakReport) {
     if !opts.optimal_pagination {
-        return None;
+        return (
+            None,
+            PdfPageBreakReport {
+                requested_optimal: false,
+                strategy: PdfPaginationStrategy::Greedy,
+                fallback: None,
+            },
+        );
     }
-    match PageNotes::scan(lines) {
-        None => Some(optimal_page_breaks(lines, page)),
-        // Page notes: the exact planner reserves each note's foot space with
-        // the line citing it. The legacy fallback DP does not model note
-        // space, so a document it would be needed for paginates greedily.
+    let notes = PageNotes::scan(lines);
+    let exact = match &notes {
+        None => exact_height_page_breaks(lines, page),
         Some(notes) => exact_height_page_breaks_reserving(&lines[..notes.body_end], page, |line| {
             notes.line_reserve(lines, line)
         }),
+    };
+    match exact {
+        Ok(plan) => (
+            Some(plan),
+            PdfPageBreakReport {
+                requested_optimal: true,
+                strategy: PdfPaginationStrategy::ExactHeight,
+                fallback: None,
+            },
+        ),
+        Err(reason) => {
+            let (plan, strategy) = if notes.is_some() {
+                (None, PdfPaginationStrategy::Greedy)
+            } else {
+                (
+                    Some(legacy_optimal_page_breaks(lines, page)),
+                    PdfPaginationStrategy::Legacy,
+                )
+            };
+            (
+                plan,
+                PdfPageBreakReport {
+                    requested_optimal: true,
+                    strategy,
+                    fallback: Some(reason),
+                },
+            )
+        }
     }
 }
 
@@ -29743,7 +29872,10 @@ fn pdf_table_continuation_prefix(lines: &[Line], start: usize, end: usize) -> La
     }
 }
 
-fn exact_height_page_breaks(lines: &[Line], page: PageGeom) -> Option<PageBreakPlan> {
+fn exact_height_page_breaks(
+    lines: &[Line],
+    page: PageGeom,
+) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
     exact_height_page_breaks_reserving(lines, page, |_| 0.0)
 }
 
@@ -29753,11 +29885,11 @@ fn exact_height_page_breaks_reserving(
     lines: &[Line],
     page: PageGeom,
     reserve: impl Fn(usize) -> f32,
-) -> Option<PageBreakPlan> {
+) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
     use crate::pagination::height::{BlockCandidates, BlockPolicy, plan_blocks};
 
     if lines.is_empty() {
-        return Some(PageBreakPlan { ends: Vec::new() });
+        return Ok(PageBreakPlan { ends: Vec::new() });
     }
 
     let mut spans = Vec::<(usize, usize)>::new();
@@ -29768,7 +29900,9 @@ fn exact_height_page_breaks_reserving(
     while start < lines.len() {
         let end = pdf_height_block_end(lines, start);
         if end <= start {
-            return None;
+            return Err(PdfPaginationFailure::InvalidPlan(
+                "block span did not advance",
+            ));
         }
         blocks.push(BlockCandidates {
             variants: vec![joint_pagination::block_variant(
@@ -29782,15 +29916,21 @@ fn exact_height_page_breaks_reserving(
         start = end;
     }
 
-    let plan = plan_blocks(&blocks, &policies, joint_pagination::options(page)).ok()?;
+    let plan = plan_blocks(&blocks, &policies, joint_pagination::options(page))
+        .map_err(PdfPaginationFailure::Planner)?;
 
     let mut ends = Vec::with_capacity(plan.page_count);
     for (index, fragment) in plan.fragments.iter().enumerate() {
-        let (_, block_end) = *spans.get(fragment.block_index)?;
-        let (block_start, _) = spans[fragment.block_index];
-        let global_end = block_start.checked_add(fragment.fragment_end)?;
+        let &(block_start, block_end) = spans
+            .get(fragment.block_index)
+            .ok_or(PdfPaginationFailure::InvalidPlan("unknown block index"))?;
+        let global_end = block_start.checked_add(fragment.fragment_end).ok_or(
+            PdfPaginationFailure::InvalidPlan("fragment offset overflow"),
+        )?;
         if global_end > block_end {
-            return None;
+            return Err(PdfPaginationFailure::InvalidPlan(
+                "fragment exceeded its block",
+            ));
         }
         let page_ends_here = plan
             .fragments
@@ -29798,16 +29938,20 @@ fn exact_height_page_breaks_reserving(
             .is_none_or(|next| next.page_index != fragment.page_index);
         if page_ends_here {
             if ends.last().is_some_and(|&previous| global_end <= previous) {
-                return None;
+                return Err(PdfPaginationFailure::InvalidPlan(
+                    "page boundaries did not advance",
+                ));
             }
             ends.push(global_end);
         }
     }
 
     if ends.last().copied() != Some(lines.len()) {
-        return None;
+        return Err(PdfPaginationFailure::InvalidPlan(
+            "plan did not cover every line",
+        ));
     }
-    Some(PageBreakPlan { ends })
+    Ok(PageBreakPlan { ends })
 }
 
 /// Production optimal pagination now uses the exact fixed-point mixed-height
@@ -29817,8 +29961,10 @@ fn exact_height_page_breaks_reserving(
 /// unchanged. The legacy Plass DP remains the guaranteed-progress fallback for
 /// an oversized first line or any future flow shape the stricter planner
 /// deliberately rejects.
+#[cfg(test)]
 fn optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
-    exact_height_page_breaks(lines, page).unwrap_or_else(|| legacy_optimal_page_breaks(lines, page))
+    exact_height_page_breaks(lines, page)
+        .unwrap_or_else(|_| legacy_optimal_page_breaks(lines, page))
 }
 
 fn legacy_optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {

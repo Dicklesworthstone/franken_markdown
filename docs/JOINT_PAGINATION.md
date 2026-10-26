@@ -54,6 +54,36 @@ its existing pagination fallback.
 Default PDF rendering, without `optimal_pagination`, does not collect or select
 alternative paragraph shapes.
 
+### Pagination reports and fallback diagnostics
+
+`render_pdf_reported(source, &options)` returns the PDF bytes with a typed
+`PdfPaginationReport`. For parsed documents and explicit chunked/monolithic
+emission, use `render_pdf_document_reported(&doc, &options, emit_options)`.
+The report comes from the same final fitted layout and page plan as those bytes;
+it does not enable timing instrumentation or alter the PDF.
+
+`page_breaks.strategy` is `ExactHeight`, `Legacy`, or `Greedy`.
+`page_breaks.fallback` preserves the actual solver failure, including the named
+resource budget or infeasible block index. The legacy fallback uses soft
+widow/orphan/keep costs and guarantees progress. When page-foot notes need a
+fallback, the renderer uses the note-aware greedy pager because the legacy DP
+cannot reserve footnote space. These fallbacks remain successful renders, but
+they do not establish the exact planner's hard guarantees.
+
+The separate `paragraph_variants` report records admitted searches, offered and
+selected alternatives, typography-mode restrictions, item/retained-line/work/
+state-cell limits, and rejected joint searches. Exact page breaks for the final
+measured lines do not imply that every paragraph layout was explored. Counts
+refer to the final layout pass, excluding earlier TOC passes and fit probes.
+
+The existing `render_warnings` surface reports `pagination_infeasible`,
+`pagination_budget_exceeded`, or another typed failure code when exact page
+planning falls back, and `paragraph_pagination_limited` when paragraph choices
+were restricted. The CLI surfaces these on stderr (JSONL with `--json`), and
+browser/WASM output includes the corresponding diagnostics. Warning preflight
+uses the same prepared numbered footnotes and fitted page geometry as rendering.
+Default rendering without an optimal request does not run that extra preflight.
+
 ### A measured PDF regression
 
 The fixed prose fixture in `src/pdf/joint_pagination_tests.rs` uses the bundled

@@ -72,6 +72,7 @@ fn baseline_pdf(lines: &[Line], opts: &PdfOptions, faces: &Faces, page: PageGeom
         &mut PdfProfiler::disabled(),
     )
     .unwrap()
+    .0
 }
 
 fn compactable_prose() -> String {
@@ -414,7 +415,18 @@ fn joint_pdf_selects_a_feasible_shorter_shape_and_saves_a_page() {
         .map(|line| line.segs.iter().map(seg_display_text).collect())
         .collect();
     assert_eq!(rejoin_lines(texts.iter().map(String::as_str)), source);
+    let reported = crate::render_pdf_reported(&source, &opts).unwrap();
+    assert_eq!(
+        reported.pagination.paragraph_variants.status,
+        PdfParagraphVariantStatus::Planned
+    );
+    assert_eq!(
+        reported.pagination.paragraph_variants.selected_alternatives,
+        1
+    );
+    assert!(reported.pagination.page_breaks.is_exact());
     let pdf = crate::render_pdf(&source, &opts).unwrap();
+    assert_eq!(reported.bytes, pdf);
     assert_eq!(emitted_pages(&pdf).len(), 1);
     assert_ne!(original_pdf, pdf);
 }
@@ -593,8 +605,18 @@ fn searches_without_retained_alternatives_still_exhaust_the_document_work_budget
     assert!(candidates.paragraphs.is_empty());
     assert!(candidates.measurement_work <= MAX_MEASUREMENT_WORK);
     assert!(!candidates.begin_measure(MAX_PARAGRAPH_ITEMS, 4));
+    let report = apply(
+        &mut Vec::new(),
+        PageGeom::from_theme(&options_for(440.0, 196.0).theme),
+        &candidates,
+    );
+    assert!(report.measurement_work_limit);
+    assert!(report.limited_paragraphs >= 1);
+    assert_eq!(report.attempted_paragraphs, admitted);
     candidates.clear();
     assert!(candidates.begin_measure(MAX_PARAGRAPH_ITEMS, 4));
+    assert_eq!(candidates.report.attempted_paragraphs, 1);
+    assert!(!candidates.report.is_limited());
 }
 
 #[test]
@@ -819,6 +841,7 @@ fn quoted_joint_selection_saves_a_page_without_losing_quote_tags() {
             &mut PdfProfiler::disabled(),
         )
         .unwrap()
+        .0
     );
 }
 

@@ -84,7 +84,9 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
             RenderWarning::MathFallback { .. }
             | RenderWarning::MathOverflow { .. }
             | RenderWarning::TextShapingUnsupported { .. }
-            | RenderWarning::TextShapingLimit { .. } => warning.message(),
+            | RenderWarning::TextShapingLimit { .. }
+            | RenderWarning::PaginationFallback { .. }
+            | RenderWarning::ParagraphPaginationLimited(_) => warning.message(),
         };
         findings.push(VerifyFinding {
             code: warning.code(),

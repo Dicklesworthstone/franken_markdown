@@ -19,9 +19,10 @@ use crate::style::Style;
 /// Where unsupported-but-known constructs are tracked.
 pub const TIER2_TRACKING: &str = "franken_manim fm-j5t (the tier-2 construct program)";
 
-/// Where the common constructs outside the G0-4 corpus are tracked.
-pub const OUTSIDE_CORPUS_TRACKING: &str =
-    "franken_manim fm-tex-constructs-t2-1wfq (common constructs outside the G0-4 corpus)";
+/// Where the constructs outside the G0-4 corpus that are still refused are
+/// tracked: display numbering, `\sideset` and `\cancelto`, which
+/// fm-tex-constructs-t2-1wfq left with no demand in either ranking corpus.
+pub const OUTSIDE_CORPUS_TRACKING: &str = "franken_manim fm-tex-numbered-displays-bxl9 (numbered displays and the constructs outside the G0-4 corpus still refused)";
 
 /// Where a tier-2 construct is tracked. `\dx` stays with the corpus
 /// program (its one corpus occurrence is Reference-broken, a standing

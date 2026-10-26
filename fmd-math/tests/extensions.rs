@@ -875,7 +875,7 @@ fn constructs_outside_the_corpus_refuse_by_name() {
         ] {
             let message = err.to_string();
             assert!(
-                message.contains(construct) && message.contains("fm-tex-constructs-t2-1wfq"),
+                message.contains(construct) && message.contains("fm-tex-numbered-displays-bxl9"),
                 "{source}: {message}"
             );
         }

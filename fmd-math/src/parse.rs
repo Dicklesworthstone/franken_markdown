@@ -1143,7 +1143,7 @@ impl<'s> Parser<'s> {
                 return Err(MathError::Malformed {
                     what: format!(
                         "\\{name} with a delimiter on one side only is not supported \
-                         (franken_manim fm-tex-constructs-t2-1wfq)"
+                         (franken_manim fm-tex-numbered-displays-bxl9)"
                     ),
                     at: span.start,
                 });

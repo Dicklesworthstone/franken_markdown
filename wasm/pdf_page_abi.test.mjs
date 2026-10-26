@@ -8,7 +8,7 @@ import test from "node:test";
 // Execute the exact public wrapper with only the generated WASM binding doubled.
 // This tests ABI selection, argument order and ownership, not native PDF output.
 async function fixture({ pageBinding = true, blocked = false, runningBinding = true, imageBinding = true,
-  typographyBindings = true, gridBinding = true } = {}) {
+  typographyBindings = true, gridBinding = true, strictTokens = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-pdf-page-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
@@ -20,12 +20,17 @@ async function fixture({ pageBinding = true, blocked = false, runningBinding = t
   await writeFile(join(dir, "pkg/franken_markdown.js"), `
     export const calls = [];
     export let initCount = 0, frees = 0;
+    let failure = null;
+    export const failWith = value => { failure = value; };
     let release;
     const ready = new Promise(resolve => { release = resolve; });
     export const finishInit = () => release();
     export default function init() { initCount++; return ${blocked ? "ready" : "Promise.resolve()"}; }
     function result(kind, args) {
       calls.push({ kind, args });
+      if (failure !== null) throw failure;
+      if (!${strictTokens} && args.some(value => typeof value === "string" && value.includes("strict-pagination")))
+        throw "unknown typography option 'strict-pagination'";
       return { format: kind === "html" ? "html" : "pdf",
         mimeType: kind === "html" ? "text/html; charset=utf-8" : "application/pdf",
         extension: kind === "html" ? "html" : "pdf",
@@ -92,9 +97,47 @@ test("typography reaches every PDF binding and font formats reach the existing H
   }
 });
 
+test("strict pagination occupies the existing typography slot for every PDF binding", async () => {
+  const { api, bindings } = await fixture();
+  const variants = [
+    [{}, 27, 28],
+    [{ page: { size: "a4" } }, 28, 29],
+    [{ running: { footer: { center: "{page}" } } }, 32, 33],
+    [{ running: { header: { image: { dest: "logo" } } } }, 35, 36],
+    [{ baselineGridPt: 14 }, 35, 37],
+  ];
+  for (const [settings, slot, count] of variants) {
+    await api.renderPdf("Strict", { ...settings, strictPagination: true });
+    const { args } = bindings.calls.at(-1);
+    assert.equal(args.length, count);
+    assert.equal(args[slot], "strict-pagination");
+  }
+  const delayed = await fixture({ blocked: true });
+  const options = { strictPagination: true };
+  const pending = delayed.api.renderPdf("Owned", options);
+  options.strictPagination = false;
+  delayed.bindings.finishInit();
+  await pending;
+  assert.equal(delayed.bindings.calls[0].args[27], "strict-pagination");
+  for (const strictPagination of ["true", 1, null, {}])
+    await assert.rejects(api.renderPdf("x", { strictPagination }), /strictPagination must be a boolean/);
+});
+
+test("older native token parsers refuse strict policy and typed refusals keep native codes", async () => {
+  const old = await fixture({ strictTokens: false });
+  await assert.rejects(old.api.renderPdf("Strict", { strictPagination: true }),
+    error => error === "unknown typography option 'strict-pagination'");
+  assert.equal(old.bindings.calls.length, 1, "a failed strict request is never retried without its token");
+  const current = await fixture();
+  current.bindings.failWith(JSON.stringify({ code: "PAGINATION_INFEASIBLE",
+    message: "exact page plan is infeasible", reason: "infeasible" }));
+  await assert.rejects(current.api.renderPdf("Strict", { strictPagination: true }),
+    { code: "PAGINATION_INFEASIBLE", reason: "infeasible", message: "exact page plan is infeasible" });
+});
+
 test("old positional ABIs reject requested typography before init and retain default calls", async () => {
   const { api, bindings } = await fixture({ typographyBindings: false });
-  for (const typography of [{ typography: { pareto: true } }, { optimalPagination: true }, { microtype: "expansion" }]) {
+  for (const typography of [{ typography: { pareto: true } }, { optimalPagination: true }, { strictPagination: true }, { microtype: "expansion" }]) {
     for (const options of [{}, { page: { size: "a4" } },
       { running: { footer: { center: "{page}" } } },
       { running: { header: { image: { dest: "brand.svg" } } } }]) {
@@ -107,7 +150,7 @@ test("old positional ABIs reject requested typography before init and retain def
   assert.equal(bindings.initCount, 0);
   assert.equal(bindings.calls.length, 0);
   await api.renderPdf("Default", { typography: { homogeneous: false, pareto: false },
-    optimalPagination: false, microtype: "disabled" });
+    optimalPagination: false, strictPagination: false, microtype: "disabled" });
   await api.renderHtml("Default");
   assert.deepEqual(bindings.calls.map(call => call.args.length), [27, 19]);
 });

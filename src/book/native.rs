@@ -488,8 +488,14 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         } else {
             super::render::render_book_pdf_counted(&loaded.book, &pdf_options)
         };
-        let (bytes, emitted_pages, warnings) =
-            pdf_result.map_err(|e| error(70, "pdf_render_error", e))?;
+        let (bytes, emitted_pages, warnings) = pdf_result.map_err(|e| {
+            let code = if matches!(&e, crate::RenderError::Pagination(_)) {
+                e.code()
+            } else {
+                "pdf_render_error"
+            };
+            error(70, code, e)
+        })?;
         publication.check_page_budget(emitted_pages)?;
         loaded
             .warnings

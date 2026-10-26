@@ -16,6 +16,10 @@ pub enum RenderError {
     /// be subset, or a writer invariant violation. Carries a short, stable
     /// selector for agent-readable diagnostics.
     PdfGeneration(&'static str),
+    /// Explicit strict pagination could not honor the hard constraints over
+    /// the final measured lines. Retains the exact planner failure and its
+    /// budget or block details; no fallback PDF was emitted.
+    Pagination(crate::PdfPaginationFailure),
     /// The Markdown or options were structurally invalid.
     InvalidInput(String),
 }
@@ -27,6 +31,7 @@ impl fmt::Display for RenderError {
             Self::PdfGeneration(what) => {
                 write!(f, "PDF generation failed: {what}")
             }
+            Self::Pagination(failure) => write!(f, "strict PDF pagination failed: {failure}"),
             Self::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
         }
     }
@@ -36,6 +41,7 @@ impl std::error::Error for RenderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(e) => Some(e),
+            Self::Pagination(failure) => Some(failure),
             _ => None,
         }
     }
@@ -54,6 +60,7 @@ impl RenderError {
         match self {
             Self::Io(_) => "io_error",
             Self::PdfGeneration(_) => "pdf_generation",
+            Self::Pagination(failure) => failure.diagnostic_code(),
             Self::InvalidInput(_) => "invalid_input",
         }
     }

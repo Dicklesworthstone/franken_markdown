@@ -87,17 +87,19 @@ test("real Flow workers retain advanced typography snapshots and charge queued r
   const session = await setup(t, { delayMs: 30 });
   const first = session.exportDocument("pdf", {}, session.token), priorBytes = session.pendingBytes;
   const options = { typography: { homogeneous: true, antiriver: false, pareto: true },
-    optimalPagination: true, microtype: "expansion" };
+    optimalPagination: true, strictPagination: true, microtype: "expansion" };
   const queued = session.exportDocument("pdf", options, session.token);
   assert.ok(session.pendingBytes > priorBytes + 56, "nested record and switches participate in admission");
   options.typography.homogeneous = false;
   options.typography.extra = true;
   options.optimalPagination = false;
+  options.strictPagination = false;
   options.microtype = "disabled";
   await first;
   const output = decode(await queued);
   assert.deepEqual(output.typography, { homogeneous: true, antiriver: false, pareto: true });
   assert.equal(output.optimalPagination, true);
+  assert.equal(output.strictPagination, true);
   assert.equal(output.microtype, "expansion");
   for (const htmlFontFormat of ["woff1", "woff2", "ttf"]) {
     const result = decode(await session.exportDocument("html", { htmlFontFormat }, session.token));
@@ -123,7 +125,7 @@ test("Flow refuses malformed typography before RPC and preserves unsupported-pac
   assert.equal(getters, 0);
   assert.equal(session.pendingOperations, 0);
   for (const [format, options] of [["pdf", { typography: { pareto: true } }],
-    ["pdf", { optimalPagination: true }], ["pdf", { microtype: "expansion" }],
+    ["pdf", { optimalPagination: true }], ["pdf", { strictPagination: true }], ["pdf", { microtype: "expansion" }],
     ["html", { htmlFontFormat: "woff2" }]]) {
     await assert.rejects(session.exportDocument(format, options, session.token),
       error => error.code === "UNSUPPORTED_WASM_PACKAGE" && /matching WASM/.test(error.message));
@@ -131,6 +133,22 @@ test("Flow refuses malformed typography before RPC and preserves unsupported-pac
   assert.equal((await session.exportDocument("pdf", {}, session.token)).format, "pdf");
   assert.equal(session.disposed, false);
   assert.equal(session.pendingBytes, 0);
+});
+
+test("strict pagination codes survive real Flow workers and batch export refusals", async t => {
+  for (const reason of ["infeasible", "budget_exceeded"]) {
+    const session = await setup(t, { paginationFailure: reason });
+    const expected = { code: `PAGINATION_${reason.toUpperCase()}`,
+      message: `exact page plan refused: ${reason}` };
+    await assert.rejects(session.exportDocument("pdf", { strictPagination: true }, session.token), expected);
+    await assert.rejects(session.exportDocuments([
+      { format: "html" }, { format: "pdf", options: { strictPagination: true } },
+    ], session.token), expected);
+    assert.equal(decode(await session.exportDocument("pdf", { strictPagination: false }, session.token))
+      .strictPagination, false);
+    assert.equal(session.disposed, false);
+    assert.equal(session.pendingBytes, 0);
+  }
 });
 
 test("a queued edit cannot race ahead of an asynchronous export", async (t) => {

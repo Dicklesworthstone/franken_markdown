@@ -8,6 +8,8 @@ import { createBookWorkerClient, installBookWorker, createRetainedBookPreview } 
 
 const FILES = [{ path: "guide.md", source: "# Guide\n\ntext" }];
 const state = { created: 0, freed: 0, instances: [] };
+const PAGINATION_REFUSAL = JSON.stringify({ code: "PAGINATION_INFEASIBLE",
+  message: "strict book page plan is infeasible", reason: "infeasible" });
 class RecordingBook {
   constructor(paths, sources) {
     state.created++;
@@ -31,7 +33,11 @@ class RecordingBook {
     this.settings.runningImages = args.slice(12).map(value => [...value]);
   }
   setHtmlFontFormat(format) { this.settings.htmlFontFormat = format; }
-  renderPdf() { return new TextEncoder().encode(JSON.stringify(this.settings)); }
+  renderPdf() {
+    if (workerData?.paginationFailure && this.settings.pdf?.[0]?.includes("strict-pagination"))
+      throw PAGINATION_REFUSAL;
+    return new TextEncoder().encode(JSON.stringify(this.settings));
+  }
   renderPdfWithPage(page) { this.settings.page = [...page]; return this.renderPdf(); }
   renderEpub() { return this.renderPdf(); }
   renderSite() { return this.renderPdf(); }
@@ -41,14 +47,14 @@ const api = createBookBindings(async () => RecordingBook);
 const decoded = result => JSON.parse(new TextDecoder().decode(result.bytes));
 const full = () => ({
   title: "Manual", author: "Writer", lang: "de", toc: true, pageNumbers: true,
-  typography: "homogeneous, antiriver,pareto", optimalPagination: true, microtype: "expansion",
+  typography: "homogeneous, antiriver,pareto", optimalPagination: true, strictPagination: true, microtype: "expansion",
   baseFontSize: 12, headingScale: 1.3, tableFontSize: 9, tocDepth: 3, fitToPages: 4,
   codeLineNumbers: true, metadataEpochSeconds: 0, htmlFontFormat: "woff2",
   running: { header: { left: "{title}", right: "{author}", rule: true },
     footer: { center: "{page}/{pages}", right: "{date}", rule: true }, skipFirstPage: true },
   page: { size: "letter" },
 });
-const PDF_ARGS = ["homogeneous,antiriver,pareto,optimal-pagination,expansion",
+const PDF_ARGS = ["homogeneous,antiriver,pareto,optimal-pagination,strict-pagination,expansion",
   12, 1.3, 9, 3, 4, true, 0, ["{title}", "", "{author}", "", "{page}/{pages}", "{date}"], true, true, true];
 
 if (!isMainThread) {
@@ -140,6 +146,7 @@ if (!isMainThread) {
     options.images = [{ destination: "image.png", bytes }];
     const pending = delayed.createBook(files, options);
     options.typography = "unknown";
+    options.strictPagination = false;
     options.baseFontSize = 99;
     options.running.header.left = "changed";
     options.page.size = "a4";
@@ -172,7 +179,7 @@ if (!isMainThread) {
     const guarded = createBookBindings(async () => { loads++; return RecordingBook; });
     for (const option of [
       { typography: ["pareto"] }, { typography: "pareto,misspelled" }, { typography: " ".repeat(257) },
-      { optimalPagination: "false" }, { microtype: "unknown" }, { microtypeProtrusion: 1 },
+      { optimalPagination: "false" }, { strictPagination: "true" }, { strictPagination: null }, { microtype: "unknown" }, { microtypeProtrusion: 1 },
       { baseFontSize: 5.999999999 }, { headingScale: 2.000000001 }, { tableFontSize: NaN },
       { tocDepth: 1.5 }, { fitToPages: 0 }, { fitToPages: 0x100000000 },
       { metadataEpochSeconds: -1 }, { metadataEpochSeconds: Number.MAX_SAFE_INTEGER + 1 },
@@ -220,11 +227,11 @@ if (!isMainThread) {
     Object.defineProperty(Old.prototype, "setHtmlFontFormat", { value: undefined });
     const old = createBookBindings(async () => Old);
     const defaultOutput = decoded(await old.renderBookPdf(FILES, {
-      typography: "", optimalPagination: false, microtype: "off", codeLineNumbers: false, running: {},
+      typography: "", optimalPagination: false, strictPagination: false, microtype: "off", codeLineNumbers: false, running: {},
     }));
     assert.equal(defaultOutput.pdf, undefined);
     const before = state.created;
-    for (const options of [{ typography: "pareto" }, { tocDepth: 2 }, { htmlFontFormat: "ttf" },
+    for (const options of [{ typography: "pareto" }, { strictPagination: true }, { tocDepth: 2 }, { htmlFontFormat: "ttf" },
       { running: { header: { left: "Title" } } }, { metadataEpochSeconds: 0 }]) {
       await assert.rejects(old.createBook(FILES, options), error => error.code === "UNSUPPORTED_BOOK_OPTIONS");
     }
@@ -273,8 +280,8 @@ if (!isMainThread) {
     for (const value of [Infinity, -Infinity, NaN, "12", null]) assert.throws(() => prepareBookInput(FILES, { baseFontSize: value }));
   });
 
-  function workerEndpoint(old = false, oldImages = false, oldGrid = false) {
-    const worker = new Worker(new URL(import.meta.url), { workerData: { old, oldImages, oldGrid } });
+  function workerEndpoint(old = false, oldImages = false, oldGrid = false, paginationFailure = false) {
+    const worker = new Worker(new URL(import.meta.url), { workerData: { old, oldImages, oldGrid, paginationFailure } });
     const callbacks = new Map();
     return {
       postMessage: (message, transfer) => worker.postMessage(message, transfer),
@@ -292,6 +299,7 @@ if (!isMainThread) {
       const options = full(), bytes = Uint8Array.of(4, 5, 6);
       options.images = [{ destination: "figure.png", bytes }];
       const pending = client.render(FILES, "pdf", options);
+      options.strictPagination = false;
       options.running.header.left = "too late";
       options.metadataEpochSeconds = 100;
       const result = decoded(await pending);
@@ -310,6 +318,48 @@ if (!isMainThread) {
         error => error.code === "UNSUPPORTED_BOOK_OPTIONS" && /setPdfOptions/.test(error.message));
       assert.equal(client.busy, false);
       assert.equal(decoded(await client.render(FILES, "pdf")).pdf, undefined);
+    } finally { client.dispose(); }
+  });
+
+  test("retained strict tokens are canonical, old parsers reject them, and every PDF path retains refusal codes", async () => {
+    const flagged = prepareBookInput(FILES, { strictPagination: true });
+    const token = prepareBookInput(FILES, { typography: " strict-pagination " });
+    assert.deepEqual(flagged, token);
+    assert.equal(Object.hasOwn(flagged.options, "strictPagination"), false);
+    assert.equal(flagged.options.typography, "strict-pagination");
+    assert.deepEqual(prepareBookInput(FILES, { strictPagination: false }), prepareBookInput(FILES, {}));
+    assert.equal(prepareBookInput(FILES, { typography: "strict-pagination", strictPagination: false })
+      .options.typography, "strict-pagination", "false aliases cannot erase an explicitly requested token");
+    class OldTokens extends RecordingBook {
+      setPdfOptions(...args) {
+        if (args[0]?.includes("strict-pagination")) throw "unknown typography option 'strict-pagination'";
+        super.setPdfOptions(...args);
+      }
+    }
+    const old = createBookBindings(async () => OldTokens);
+    await assert.rejects(old.createBook(FILES, { strictPagination: true }), /unknown typography option/);
+    class RefusingBook extends RecordingBook {
+      renderPdf() { throw PAGINATION_REFUSAL; }
+      renderPdfArchival() { throw PAGINATION_REFUSAL; }
+    }
+    const refusing = createBookBindings(async () => RefusingBook);
+    const session = await refusing.createBook(FILES, { strictPagination: true });
+    try {
+      for (const options of [{}, { page: { size: "a4" } }, { pdfA: "2b" }]) {
+        assert.throws(() => session.renderPdf(options), { code: "PAGINATION_INFEASIBLE",
+          reason: "infeasible", message: "strict book page plan is infeasible" });
+      }
+    } finally { session.dispose(); }
+  });
+
+  test("typed retained-book refusal crosses a real worker without poisoning its next request", async () => {
+    const client = createBookWorkerClient({ workerFactory: () => workerEndpoint(false, false, false, true),
+      timeoutMs: 10000 });
+    try {
+      await assert.rejects(client.render(FILES, "pdf", { strictPagination: true }),
+        { code: "PAGINATION_INFEASIBLE", message: "strict book page plan is infeasible" });
+      assert.equal(client.busy, false);
+      assert.equal(decoded(await client.render(FILES, "pdf", { strictPagination: false })).pdf, undefined);
     } finally { client.dispose(); }
   });
 
@@ -340,6 +390,7 @@ if (!isMainThread) {
     let prior = state.created;
     const variants = [{}, { htmlFontFormat: "woff2" }, { htmlFontFormat: "ttf" },
       { tocDepth: 2 }, { tocDepth: 3 }, { typography: "pareto" }, { typography: "antiriver" },
+      { strictPagination: true }, { strictPagination: false },
       { baseFontSize: 12 }, { headingScale: 1.3 }, { tableFontSize: 9 }, { fitToPages: 3 },
       { codeLineNumbers: true }, { metadataEpochSeconds: 0 },
       { baselineGridPt: 13.125 }, { baselineGridPt: 14 },

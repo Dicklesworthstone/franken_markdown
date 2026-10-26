@@ -1,6 +1,6 @@
 import { pdfPageGeometry } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeBaselineGridPt, normalizeMicrotype, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeBaselineGridPt, normalizeMicrotype, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
 import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
@@ -184,24 +184,28 @@ export async function renderPdf(markdown, options = {}) {
   // Source, primitive settings, image bytes and font bytes now belong to this
   // request. Asynchronous initialization cannot retarget its page or contents.
   await init();
-  if (baselineGridPt > 0) {
-    return normalizeResult(render(...args, geometry, running?.slots ?? [],
-      running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
-      running?.imageDestinations ?? [], running?.imagePositions ?? new Uint32Array(),
-      running?.imageHeights ?? new Uint32Array(), typography, baselineGridPt));
-  }
-  if (running) {
-    if (running.hasImages) {
-      return normalizeResult(render(...args, geometry, running.slots, running.headerRule,
-        running.footerRule, running.skipFirstPage, running.imageDestinations,
-        running.imagePositions, running.imageHeights, ...tail));
+  try {
+    if (baselineGridPt > 0) {
+      return normalizeResult(render(...args, geometry, running?.slots ?? [],
+        running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
+        running?.imageDestinations ?? [], running?.imagePositions ?? new Uint32Array(),
+        running?.imageHeights ?? new Uint32Array(), typography, baselineGridPt));
     }
-    return normalizeResult(render(...args, geometry, running.slots, running.headerRule,
-      running.footerRule, running.skipFirstPage, ...tail));
+    if (running) {
+      if (running.hasImages) {
+        return normalizeResult(render(...args, geometry, running.slots, running.headerRule,
+          running.footerRule, running.skipFirstPage, running.imageDestinations,
+          running.imagePositions, running.imageHeights, ...tail));
+      }
+      return normalizeResult(render(...args, geometry, running.slots, running.headerRule,
+        running.footerRule, running.skipFirstPage, ...tail));
+    }
+    return normalizeResult(geometry.length
+      ? render(...args, geometry, ...tail)
+      : render(...args, ...tail));
+  } catch (error) {
+    throw normalizePdfPaginationError(error);
   }
-  return normalizeResult(geometry.length
-    ? render(...args, geometry, ...tail)
-    : render(...args, ...tail));
 }
 
 // Opt-in typography/pagination switches as the comma-separated tokens the
@@ -213,6 +217,10 @@ function typographyOption(options) {
   if (typography.antiriver === true) tokens.push("antiriver");
   if (typography.pareto === true) tokens.push("pareto");
   if (options.optimalPagination === true) tokens.push("optimal-pagination");
+  const strict = options.strictPagination;
+  if (strict !== undefined && typeof strict !== "boolean")
+    throw new TypeError("strictPagination must be a boolean");
+  if (strict) tokens.push("strict-pagination");
   if (options.microtype === "expansion") tokens.push("expansion");
   else if (options.microtype !== undefined && !["disabled", "protrusion"].includes(options.microtype)) {
     throw new RangeError(`microtype must be "disabled", "protrusion" or "expansion"`);
@@ -731,8 +739,15 @@ export async function renderBookPdf(files, options = {}) {
     error.code = "UNSUPPORTED_WASM_PACKAGE";
     throw error;
   }
+  if (prepared.strictPagination) {
+    requireBindingArguments(render, prepared.grid > 0 ? 38 : 37, "Strict PDF pagination");
+  }
   await init();
-  return normalizeResult(render(...prepared.args));
+  try {
+    return normalizeResult(render(...prepared.args));
+  } catch (error) {
+    throw normalizePdfPaginationError(error);
+  }
 }
 
 // Keep the old root entry point's coercions, scale presets, result envelope,
@@ -750,13 +765,14 @@ function bookPdfArguments(files, options) {
     allowRawHtml, codeLineNumbers, pdfImages, fontAssets,
     baseFontSize, headingScale, tableFontSize, pageNumbers,
     fontScale, typeSize, lang, toc = true, tocDepth,
-    microtype, microtypeProtrusion, typography, optimalPagination, running,
+    microtype, microtypeProtrusion, typography, optimalPagination, strictPagination, running,
   } = options;
   if (optimalPagination !== undefined && typeof optimalPagination !== "boolean")
     throw new TypeError("optimalPagination must be a boolean");
   const typesetting = typographyOption({
     typography: typography === undefined ? undefined : normalizePdfTypography(typography),
     optimalPagination,
+    strictPagination,
     microtype: microtype === undefined ? undefined : normalizeMicrotype(microtype),
   });
   const bands = pdfRunningOption(normalizePdfRunning(running));
@@ -824,7 +840,7 @@ function bookPdfArguments(files, options) {
   });
   const ownedFonts = fonts.map(asset => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
   return {
-    advanced, complete, grid,
+    advanced, complete, grid, strictPagination,
     args: [paths, sources, family, dark, heading, writer, epoch, raw, lineNumbers,
       images.map(image => image.destination), flat, lengths,
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),

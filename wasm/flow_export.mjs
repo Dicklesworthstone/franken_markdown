@@ -3,7 +3,7 @@
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
+import { isPdfPaginationError, normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
 import {
   FLOW_ASSET_LIMIT,
   FLOW_SOURCE_LIMIT,
@@ -38,6 +38,7 @@ const PDF = [
   "microtype",
   "typography",
   "optimalPagination",
+  "strictPagination",
   "baselineGridPt",
   "page",
   "running",
@@ -155,7 +156,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
       fail("INVALID_OPTIONS", "lang must be a nonempty ASCII language tag");
     result.lang = lang;
   }
-  for (const key of ["toc", ...(format === "pdf" ? ["pageNumbers", "codeLineNumbers", "optimalPagination"] : [])]) {
+  for (const key of ["toc", ...(format === "pdf" ? ["pageNumbers", "codeLineNumbers", "optimalPagination", "strictPagination"] : [])]) {
     if (options[key] === undefined) continue;
     if (typeof options[key] !== "boolean") fail("INVALID_OPTIONS", `${key} must be boolean`);
     result[key] = options[key];
@@ -494,8 +495,9 @@ export function withFlowExports(session, renderers, font = "sans") {
     Object.getOwnPropertyDescriptors(session),
   );
   const convertError = (error) => {
+    error = normalizePdfPaginationError(error);
     if (error instanceof FlowError) return error;
-    if (error instanceof Error && error.code === "UNSUPPORTED_WASM_PACKAGE")
+    if (error instanceof Error && (error.code === "UNSUPPORTED_WASM_PACKAGE" || isPdfPaginationError(error)))
       return new FlowError(error.code, error.message, { cause: error });
     if (typeof WebAssembly !== "undefined" && error instanceof WebAssembly.RuntimeError)
       return new FlowError("WASM_ERROR", "document export trapped; discard this session", { cause: error });

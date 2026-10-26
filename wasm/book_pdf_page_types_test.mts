@@ -4,7 +4,7 @@ import type { FmdPdfPage } from "./franken_markdown.js";
 
 const files: readonly BookFile[] = [{ path: "one.md", source: "# One" }];
 const page: FmdPdfPage = { size: "a4", orientation: "landscape", margins: { leftPt: 24 } };
-const options: BookOptions = { baselineGridPt: 13.125, page, pageNumbers: true };
+const options: BookOptions = { strictPagination: true, baselineGridPt: 13.125, page, pageNumbers: true };
 const session = await createBook(files, options);
 session.renderPdf();
 session.renderPdf({ page });
@@ -23,3 +23,7 @@ session.dispose();
 
 // @ts-expect-error Grid spacing requires numeric points.
 await createBook(files, { baselineGridPt: "14" });
+// @ts-expect-error Strict pagination is a boolean stored at book creation.
+await createBook(files, { strictPagination: "true" });
+// @ts-expect-error Retained publishing settings are not per-render overrides.
+session.renderPdf({ strictPagination: false });

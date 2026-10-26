@@ -35,6 +35,29 @@ export function normalizeHtmlFontFormat(value) {
   return value;
 }
 
+/** Only the native typed-pagination contract becomes a coded host Error.
+ * Other renderer failures retain their existing representation and policy. */
+const PAGINATION_REASONS = Object.freeze({
+  PAGINATION_INFEASIBLE: "infeasible",
+  PAGINATION_BUDGET_EXCEEDED: "budget_exceeded",
+  PAGINATION_INVALID_INPUT: "invalid_input",
+  PAGINATION_COST_OVERFLOW: "cost_overflow",
+  PAGINATION_INVALID_PLAN: "invalid_plan",
+});
+export function isPdfPaginationError(error) {
+  return error instanceof Error && Object.hasOwn(PAGINATION_REASONS, error.code);
+}
+export function normalizePdfPaginationError(error) {
+  if (typeof error !== "string" || error.length > 4096) return error;
+  let value;
+  try { value = JSON.parse(error); } catch { return error; }
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || !Object.hasOwn(PAGINATION_REASONS, value.code)
+      || value.reason !== PAGINATION_REASONS[value.code]
+      || typeof value.message !== "string" || value.message.length > 2048) return error;
+  return Object.assign(new Error(value.message), { code: value.code, reason: value.reason });
+}
+
 /** PDF body-grid spacing in points. Preserve host precision until the core
  * rounds once to milli-points. Zero keeps the default grid disabled. */
 export function normalizeBaselineGridPt(value) {

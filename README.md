@@ -550,6 +550,7 @@ fmd --text '<markdown>' --out out.html
 | `--microtype off\|protrusion\|expansion` | Microtypography for justified PDF body paragraphs: `protrusion` hangs punctuation into the margin and adds ±1.5% glyph expansion; `expansion` is glyph expansion alone. Default `off` keeps output byte-identical |
 | `--typography-homogeneous`, `--typography-antiriver`, `--typography-pareto` | Opt-in line-breaking refinements: gradual adjacent-line spacing demerits, whitespace-river penalties, and Pareto-front Knuth-Plass search |
 | `--pdf-optimal-pagination` | Choose page breaks with a document-wide dynamic program (Plass) instead of greedy page filling |
+| `--pdf-strict-pagination[=true\|false]` | Require the supported hard pagination rules or return a typed refusal; implies optimal pagination. See [the pagination contract](docs/JOINT_PAGINATION.md#require-the-supported-hard-pagination-rules) |
 | `--pdf-baseline-grid-pt <POINTS>` | Opt-in body baseline grid, `1`..`144` pt (rounded once to `0.001` pt); `0` disables a configured grid. Applies to render, watch, batch and book PDF output. Incompatible with `--fit-to-pages` |
 | `--toc`, `--toc-depth <N>` | Insert a table of contents (HTML nav; PDF with dot leaders and page numbers). A `[[_TOC_]]` marker places it explicitly |
 | `--font-scale <xs\|sm\|md\|lg\|xl\|2xl\|FLOAT\|PERCENT>` | Uniform typographic scale for HTML and PDF (alias `--type-size`) |
@@ -818,14 +819,17 @@ Resolution order for the config path:
 | `html_font_format` | `woff1`, `woff2`, `ttf` | `woff1` |
 | `microtype` | `off`, `protrusion`, `expansion` | `off` |
 | `pdf_page_numbers`, `pdf_optimal_pagination` | `true`/`false` | `false` |
+| `pdf_strict_pagination` | `true`/`false`; applies to PDF render, watch, batch and book | `false` |
 | `pdf_baseline_grid_pt` | `0` (disabled), or finite spacing `1`..`144` points | `0` |
 | `typography_homogeneous`, `typography_antiriver`, `typography_pareto` | `true`/`false` | `false` |
 
 The render-default keys apply to `fmd render`, `watch` and `batch`. A flag
 always wins; for `lang`, `toc` and `toc_depth`, document frontmatter also beats
-the config. Switches set to `true` here cannot be turned off per run except
-with `--no-config`. The numeric `pdf_baseline_grid_pt` setting also applies to
-`book`; an explicit `--pdf-baseline-grid-pt 0` disables it for one invocation.
+the config. Most switches set to `true` here require `--no-config` to disable
+them for a run. Strict pagination also supports an explicit
+`--pdf-strict-pagination=false` override. The numeric `pdf_baseline_grid_pt`
+setting also applies to `book`; an explicit `--pdf-baseline-grid-pt 0` disables
+it for one invocation.
 
 Paper and margin flags apply to PDF output from `render`, `watch`, `batch`, and
 `book`. Each flag overrides its configured value; omitted margin sides keep

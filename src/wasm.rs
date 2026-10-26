@@ -111,6 +111,9 @@ pub struct WasmRenderOptions {
     pub river_penalty: bool,
     pub pareto_line_breaking: bool,
     pub optimal_pagination: bool,
+    /// Require exact PDF page breaking; implies optimal pagination and refuses
+    /// a render if the final measured page plan cannot be honored.
+    pub strict_pagination: bool,
     /// Container for HTML font subsets (WOFF1 by default).
     pub html_font_format: HtmlFontFormat,
 }
@@ -435,13 +438,15 @@ impl WasmRenderOptions {
             microtype: self.microtype,
             gradual_demerits: self.gradual_demerits,
             river_penalty: self.river_penalty,
-            optimal_pagination: self.optimal_pagination,
+            optimal_pagination: self.optimal_pagination || self.strict_pagination,
+            strict_pagination: self.strict_pagination,
             pareto_line_breaking: self.pareto_line_breaking,
         }
     }
 
     /// Apply comma-separated typography tokens from a browser host:
-    /// `homogeneous`, `antiriver`, `pareto`, `optimal-pagination`, and the
+    /// `homogeneous`, `antiriver`, `pareto`, `optimal-pagination`,
+    /// `strict-pagination` (which also enables optimal pagination), and the
     /// microtype modes `protrusion` (with the expansion budget, like the CLI)
     /// or `expansion` (glyph expansion only). Empty or absent is a no-op.
     ///
@@ -458,6 +463,10 @@ impl WasmRenderOptions {
                 "antiriver" => self.river_penalty = true,
                 "pareto" => self.pareto_line_breaking = true,
                 "optimal-pagination" => self.optimal_pagination = true,
+                "strict-pagination" => {
+                    self.strict_pagination = true;
+                    self.optimal_pagination = true;
+                }
                 "protrusion" => self.microtype = crate::layout::MicrotypeOptions::CONSERVATIVE,
                 "expansion" => {
                     self.microtype = crate::layout::MicrotypeOptions {
@@ -468,7 +477,7 @@ impl WasmRenderOptions {
                 other => {
                     return Err(format!(
                         "unknown typography option '{other}'; expected homogeneous, antiriver, \
-                         pareto, optimal-pagination, protrusion or expansion"
+                         pareto, optimal-pagination, strict-pagination, protrusion or expansion"
                     ));
                 }
             }

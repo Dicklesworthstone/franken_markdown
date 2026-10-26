@@ -1149,8 +1149,27 @@ fn render_result(output: wasm::WasmRenderOutput) -> FmdRenderResult {
     }
 }
 
-fn render_error_to_js(err: crate::RenderError) -> JsValue {
-    JsValue::from_str(&err.to_string())
+pub(crate) fn render_error_to_js(err: crate::RenderError) -> JsValue {
+    JsValue::from_str(&render_error_message(&err))
+}
+
+fn render_error_message(err: &crate::RenderError) -> String {
+    if let crate::RenderError::Pagination(failure) = err {
+        // Keep the established string-valued ABI. Hosts admit this bounded
+        // structured contract without trying to parse a human error message.
+        let mut out = String::from("{\"code\":\"");
+        push_json_escaped(&mut out, &err.code().to_ascii_uppercase());
+        out.push_str("\",\"message\":\"");
+        // Even six-byte JSON escapes stay below the host's 4096-byte limit.
+        let message: String = err.to_string().chars().take(512).collect();
+        push_json_escaped(&mut out, &message);
+        out.push_str("\",\"reason\":\"");
+        push_json_escaped(&mut out, failure.code());
+        out.push_str("\"}");
+        out
+    } else {
+        err.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -1158,7 +1177,21 @@ fn render_error_to_js(err: crate::RenderError) -> JsValue {
 mod tests {
     #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-    use super::{parse_epoch_u64, split_nonempty_image_assets};
+    use super::{parse_epoch_u64, render_error_message, split_nonempty_image_assets};
+
+    #[test]
+    fn pagination_errors_keep_typed_codes_in_the_existing_string_abi() {
+        let err = crate::RenderError::Pagination(crate::PdfPaginationFailure::InvalidPlan(
+            "unknown \"block\"\n",
+        ));
+        assert_eq!(
+            render_error_message(&err),
+            "{\"code\":\"PAGINATION_INVALID_PLAN\",\"message\":\"strict PDF pagination failed: \
+             PDF pagination plan was rejected: unknown \\\"block\\\"\\n\",\"reason\":\"invalid_plan\"}"
+        );
+        let ordinary = crate::RenderError::InvalidInput("unchanged".into());
+        assert_eq!(render_error_message(&ordinary), ordinary.to_string());
+    }
 
     #[test]
     fn split_nonempty_image_assets_validates_parallel_arrays_without_js_values() {

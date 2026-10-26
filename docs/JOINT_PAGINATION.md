@@ -84,6 +84,61 @@ browser/WASM output includes the corresponding diagnostics. Warning preflight
 uses the same prepared numbered footnotes and fitted page geometry as rendering.
 Default rendering without an optimal request does not run that extra preflight.
 
+### Require the supported hard pagination rules
+
+Use `--pdf-strict-pagination` when an export must either honor the exact
+planner's supported hard rules or fail. The flag applies to native render,
+watch, batch and book PDF output. It implies `--pdf-optimal-pagination`:
+
+```sh
+fmd report.md --to pdf --pdf-strict-pagination --out report.pdf
+fmd config set pdf_strict_pagination true
+fmd report.md --to pdf --pdf-strict-pagination=false --out draft.pdf
+```
+
+The equivalent core option is `PdfOptions::strict_pagination = true`. A successful
+strict render uses exactly the same PDF bytes as a successful best-effort exact
+render with the same measured layout. If the final exact page plan fails,
+rendering returns `RenderError::Pagination(PdfPaginationFailure)` before PDF
+object emission. Ordinary, reported, profiled, PDF/A, chunked and monolithic
+entry points share that decision. Native file exports render before replacing
+their destination, so a refusal preserves the last successful PDF.
+
+The contract covers hard constraints over the final measured body lines:
+two-line minima on split ordinary paragraphs, heading keep-together and
+keep-with-next, forced page breaks, and forbidden splits inside wrapped table
+rows, between a table header and its first row, or at protected hyphen breaks.
+The planned emitters preserve those certified body boundaries. Repeated table
+headers and first-cited page notes participate in the planner's reservations;
+an enabled baseline grid retains its separate placed-row and ink validation.
+
+Strict mode does not require every possible paragraph shape to be explored.
+Optional paragraph-candidate limits, unsupported typography combinations and
+rejected alternatives can retain the original measured shape as long as its
+final page plan satisfies the hard rules. It also does not turn soft layout
+preferences into requirements or assert universal glyph-ink containment.
+Page fitting remains opt-in and bounded: with `fit_to_pages`, candidates whose
+page count relies on a weaker fallback cannot satisfy the fit target. Without
+an explicit fitting request, strictness does not change font sizes or margins.
+
+Rust callers retain the original solver error through pattern matching and the
+`Error::source()` chain. `RenderError::code()` distinguishes
+`pagination_infeasible`, `pagination_budget_exceeded`,
+`pagination_invalid_input`, `pagination_cost_overflow` and
+`pagination_invalid_plan`. An impossible layout and an exhausted search budget
+are therefore different outcomes. Best-effort rendering remains the default;
+its existing successful fallback output and warning codes are unchanged.
+
+Browser callers can supply `{ strictPagination: true }` to PDF rendering,
+DocumentWorker, Flow PDF export and book options, or include `strict-pagination`
+in a book's existing typography string. Rust browser hosts use
+`WasmRenderOptions::strict_pagination`. These choices travel through the existing
+typography ABI without changing positional binding signatures. Strict failures
+become JavaScript errors with the corresponding uppercase `PAGINATION_*` code;
+the original reason is retained by the native error envelope. Older packages
+that cannot honor the option reject it. Retained book exports include strictness
+in their existing canonical typography cache key.
+
 ### A measured PDF regression
 
 The fixed prose fixture in `src/pdf/joint_pagination_tests.rs` uses the bundled

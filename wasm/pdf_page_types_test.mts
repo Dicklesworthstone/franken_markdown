@@ -4,7 +4,7 @@ import { renderPdf, renderHtml, renderEpub, renderBookPdf, createRenderer,
 
 const page: FmdPdfPage = { size: "a4", orientation: "landscape",
   margins: { leftPt: 24, rightPt: 36, topPt: 18, bottomPt: 30 } };
-const options: FmdPdfRenderOptions = { baselineGridPt: 13.125, page, font: "serif", pageNumbers: true, metadataEpochSeconds: 0 };
+const options: FmdPdfRenderOptions = { strictPagination: true, baselineGridPt: 13.125, page, font: "serif", pageNumbers: true, metadataEpochSeconds: 0 };
 for (const size of ["a5", "legal", "tabloid"] as const) {
   await renderPdf("# Paper", { page: { size } });
   await renderBookPdf([{ path: "one.md", source: "# One" }], { page: { size } });
@@ -29,3 +29,7 @@ await renderBookPdf([{ path: "one.md", source: "# One" }], { page: { size: { hei
 await renderPdf("x", { baselineGridPt: "14" });
 // @ts-expect-error A body grid is a PDF-specific option.
 await renderHtml("x", { baselineGridPt: 14 });
+// @ts-expect-error Strict pagination is a PDF-specific boolean.
+await renderPdf("x", { strictPagination: "true" });
+// @ts-expect-error HTML cannot request strict PDF pagination.
+await renderHtml("x", { strictPagination: true });

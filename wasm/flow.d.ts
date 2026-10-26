@@ -475,6 +475,9 @@ export interface FlowPdfExportOptions extends FlowExportOptions {
   typography?: { homogeneous?: boolean; antiriver?: boolean; pareto?: boolean };
   /** Opt into native global page breaking; omitted/false keeps the default. */
   optimalPagination?: boolean;
+  /** Require exact final PDF page breaking; implies optimalPagination.
+   * Default false. Native refusals preserve their PAGINATION_* error code. */
+  strictPagination?: boolean;
 }
 export interface FlowExportOptionsByFormat {
   html: FlowHtmlExportOptions;

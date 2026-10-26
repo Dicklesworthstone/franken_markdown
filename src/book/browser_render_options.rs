@@ -139,6 +139,7 @@ impl PdfSettings {
         options.river_penalty = candidate.river_penalty;
         options.pareto_line_breaking = candidate.pareto_line_breaking;
         options.optimal_pagination = candidate.optimal_pagination;
+        options.strict_pagination = candidate.strict_pagination;
         options.microtype = candidate.microtype;
         options.base_font_size = candidate.base_font_size;
         options.heading_scale = candidate.heading_scale;

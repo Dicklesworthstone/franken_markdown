@@ -560,13 +560,26 @@ fn mixed_content_uses_one_phase_without_changing_font_sizes_or_content_order() {
 
 #[test]
 fn table_headers_and_page_notes_keep_the_page_grid() {
+    for strict in [false, true] {
+        for pitch in [13.333, 16.0] {
+            assert_table_headers_and_page_notes_keep_the_page_grid(pitch, strict);
+        }
+    }
+}
+
+fn assert_table_headers_and_page_notes_keep_the_page_grid(pitch: f32, strict: bool) {
     let mut source = String::from("| HEADER | VALUE |\n|---|---|\n");
     for index in 0..36 {
         source.push_str(&format!("| ROW{index:02} | CELL{index:02} |\n"));
     }
     source.push_str("\nCLAIM[^n]\n\n[^n]: NOTEBODY\n");
-    let opts = options(16.0);
-    let pages = painted_pages(&render_pdf(&source, &opts).unwrap());
+    let mut opts = options(pitch);
+    opts.strict_pagination = strict;
+    let report = franken_markdown::render_pdf_reported(&source, &opts).unwrap();
+    if strict {
+        assert!(report.pagination.page_breaks.is_exact());
+    }
+    let pages = painted_pages(&report.bytes);
     assert!(pages.len() >= 3);
     // Repeated table headers are accessibility artifacts, but are painted
     // within the body and must still meet its grid and ink-clearance contract.
@@ -580,7 +593,7 @@ fn table_headers_and_page_notes_keep_the_page_grid() {
             }
         }
     }
-    check_grid(&visible_rows, &opts, 16.0).unwrap();
+    check_grid(&visible_rows, &opts, f64::from(pitch)).unwrap();
     check_separate_rows(&visible_rows).unwrap();
     let painted = body_text(&pages);
     let header_copies = pages
@@ -788,6 +801,67 @@ fn chunked_and_monolithic_grid_outputs_are_identical() {
     assert_eq!(chunked, monolithic);
     assert_eq!(chunked, render_pdf(&source, &opts).unwrap());
     check_grid(&painted_pages(&chunked), &opts, 16.0).unwrap();
+}
+
+#[test]
+fn strict_grid_preserves_painted_paragraph_minima_and_heading_keeps() {
+    let letters: Vec<_> = ('A'..='Z').map(|letter| letter.to_string()).collect();
+    let source = format!(
+        "# FIRST\n\n{}\n\n# SECOND\n\na  \nb  \nc  \nd",
+        letters.join("  \n")
+    );
+    for pitch in [13.333, 16.0] {
+        let mut opts = options(pitch);
+        opts.strict_pagination = true;
+        let report = franken_markdown::render_pdf_reported(&source, &opts).unwrap();
+        assert!(report.pagination.page_breaks.is_exact());
+        let pages = painted_pages(&report.bytes);
+        assert!(
+            pages.len() >= 3,
+            "exercise first, middle and last paragraph fragments"
+        );
+        check_grid(&pages, &opts, f64::from(pitch)).unwrap();
+        check_separate_rows(&pages).unwrap();
+        let fragments: Vec<String> = pages
+            .iter()
+            .map(|page| {
+                page.runs
+                    .iter()
+                    .filter(|run| {
+                        !run.artifact
+                            && run.text.len() == 1
+                            && run.text.as_bytes()[0].is_ascii_uppercase()
+                    })
+                    .map(|run| run.text.as_str())
+                    .collect()
+            })
+            .filter(|fragment: &String| !fragment.is_empty())
+            .collect();
+        assert!(fragments.len() >= 3);
+        assert_eq!(fragments.concat(), letters.concat());
+        assert!(fragments.iter().all(|fragment| fragment.len() >= 2));
+        let locate = |token: &str| {
+            pages
+                .iter()
+                .position(|page| {
+                    page.runs
+                        .iter()
+                        .any(|run| !run.artifact && run.text == token)
+                })
+                .unwrap()
+        };
+        assert_eq!(locate("FIRST"), locate("A"));
+        assert_eq!(locate("SECOND"), locate("a"));
+        assert_eq!(
+            report.bytes,
+            render_pdf_document_emitted(
+                &parse_markdown(&source),
+                &opts,
+                PdfEmitOptions::monolithic()
+            )
+            .unwrap(),
+        );
+    }
 }
 
 #[test]

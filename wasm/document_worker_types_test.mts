@@ -11,7 +11,7 @@ const pdf: DocumentOutput<"pdf"> = await renderer.renderPdf("# PDF", { pageNumbe
 const pdfExtension: "pdf" = pdf.extension;
 await renderer.renderPdf("# Typeset", {
   typography: { homogeneous: true, antiriver: false, pareto: true },
-  optimalPagination: true, microtype: "expansion", baselineGridPt: 13.125,
+  optimalPagination: true, strictPagination: true, microtype: "expansion", baselineGridPt: 13.125,
 });
 await renderer.renderHtml("# Compressed fonts", { htmlFontFormat: "woff2" });
 await renderer.renderPdf("# Branded PDF", {

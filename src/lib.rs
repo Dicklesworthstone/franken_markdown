@@ -791,6 +791,19 @@ pub struct PdfOptions {
     /// shapes or exhausted searches retain the original layout. See
     /// `docs/JOINT_PAGINATION.md` for admission limits. Default false.
     pub optimal_pagination: bool,
+    /// Require the exact page planner's hard constraints for the final measured
+    /// body lines. Implies [`Self::optimal_pagination`]; failure returns
+    /// [`RenderError::Pagination`] before PDF emission instead of using a weaker
+    /// fallback. Default false preserves best-effort rendering.
+    ///
+    /// The guarantee covers supported paragraph split minima, heading keeps,
+    /// forced breaks and forbidden table/hyphen splits. It does not require
+    /// exhaustive paragraph alternatives, enforce every soft layout preference,
+    /// or guarantee universal glyph-ink containment. Limited optional paragraph
+    /// alternatives are allowed when the final fixed-layout page plan is exact.
+    /// An explicit [`Self::fit_to_pages`] request retains its bounded search,
+    /// but only exact candidate plans count toward its page target.
+    pub strict_pagination: bool,
     /// Enable multi-objective (Pareto) line breaking (Holkner): track bounded
     /// fronts of non-dominated states over two demerit dimensions (structure:
     /// badness/fitness/rivers/overflow; hyphenation: break penalties and
@@ -904,6 +917,11 @@ pub enum PdfRunningImagePosition {
 }
 
 impl PdfOptions {
+    /// All layout consumers must use the same effective pagination request.
+    pub(crate) const fn requests_optimal_pagination(&self) -> bool {
+        self.optimal_pagination || self.strict_pagination
+    }
+
     /// Effective materialized [`TypeScale`](crate::theme::TypeScale) after
     /// applying this render's typography overrides.
     #[must_use]

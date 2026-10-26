@@ -161,15 +161,17 @@ test("PDF typography is deeply owned and HTML font selection reaches the existin
   const f = fixture(), hold = gate();
   f.setGate(hold);
   const options = { typography: { homogeneous: true, antiriver: false, pareto: true },
-    optimalPagination: true, microtype: "expansion" };
+    optimalPagination: true, strictPagination: true, microtype: "expansion" };
   const pending = f.api.exportDocument("pdf", options, f.session.token);
   options.typography.pareto = false;
   options.typography.extra = true;
   options.optimalPagination = false;
+  options.strictPagination = false;
   options.microtype = "disabled";
   assert.deepEqual(f.calls[0].options.typography, { homogeneous: true, antiriver: false, pareto: true });
   assert.equal(Object.isFrozen(f.calls[0].options.typography), true);
   assert.equal(f.calls[0].options.optimalPagination, true);
+  assert.equal(f.calls[0].options.strictPagination, true);
   assert.equal(f.calls[0].options.microtype, "expansion");
   hold.resolve();
   await pending;
@@ -181,6 +183,7 @@ test("PDF typography is deeply owned and HTML font selection reaches the existin
   await f.api.exportDocument("pdf", {}, f.session.token);
   assert.equal(Object.hasOwn(f.calls.at(-1).options, "typography"), false);
   assert.equal(Object.hasOwn(f.calls.at(-1).options, "optimalPagination"), false);
+  assert.equal(Object.hasOwn(f.calls.at(-1).options, "strictPagination"), false);
   const nullPrototype = Object.assign(Object.create(null), { homogeneous: false });
   const normalized = normalizeFlowExport("pdf", { typography: nullPrototype, optimalPagination: false }, f.session.token);
   assert.deepEqual(normalized[1].typography, { homogeneous: false });
@@ -198,9 +201,9 @@ test("typography and font-format admission rejects unknown fields and accessors 
     await assert.rejects(f.api.exportDocument("pdf", { typography }, f.session.token), code("INVALID_OPTIONS"));
   await assert.rejects(f.api.exportDocument("pdf", top, f.session.token), code("INVALID_OPTIONS"));
   for (const [format, options] of [
-    ["pdf", { optimalPagination: "true" }], ["pdf", { microtype: "all" }],
+    ["pdf", { optimalPagination: "true" }], ["pdf", { strictPagination: "true" }], ["pdf", { strictPagination: null }], ["pdf", { microtype: "all" }],
     ["html", { htmlFontFormat: "woff3" }], ["html", { htmlFontFormat: null }],
-    ["html", { typography: {} }], ["html", { optimalPagination: false }],
+    ["html", { typography: {} }], ["html", { optimalPagination: false }], ["html", { strictPagination: false }],
     ["pdf", { htmlFontFormat: "woff2" }], ["epub", { htmlFontFormat: "woff2" }],
     ["epub", { typography: {} }], ["svg", { typography: {} }],
   ]) await assert.rejects(f.api.exportDocument(format, options, f.session.token), code("INVALID_OPTIONS"));
@@ -393,6 +396,20 @@ test("recoverable renderer failure releases the export slot without changing sou
   const result = await f.api.exportDocument("html", {}, f.session.token);
   assert.equal(result.revision, f.session.revision);
   assert.equal(f.session.disposed, false);
+});
+
+test("Flow preserves every typed pagination refusal without parsing the human message", async () => {
+  for (const reason of ["infeasible", "budget_exceeded", "invalid_input", "cost_overflow", "invalid_plan"]) {
+    const f = fixture(), hold = gate();
+    f.setGate(hold);
+    const pending = f.api.exportDocument("pdf", { strictPagination: true }, f.session.token);
+    const expected = `PAGINATION_${reason.toUpperCase()}`;
+    hold.reject(JSON.stringify({ code: expected, reason, message: `native detail: ${reason}` }));
+    await assert.rejects(pending, { code: expected, message: `native detail: ${reason}` });
+    f.setGate(null);
+    await f.api.exportDocument("pdf", { strictPagination: false }, f.session.token);
+    assert.equal(f.session.disposed, false);
+  }
 });
 
 test("WebAssembly traps remain fatal-class errors rather than ordinary export failures", async () => {

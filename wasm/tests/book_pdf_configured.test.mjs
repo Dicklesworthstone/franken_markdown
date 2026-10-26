@@ -9,7 +9,7 @@ const pageModule = new URL("../pdf_page.mjs", import.meta.url).href;
 let serial = 0;
 const dataModule = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 
-async function fixture(advanced = true, complete = advanced, grid = complete) {
+async function fixture(advanced = true, complete = advanced, grid = complete, short = false) {
   const bindingUrl = dataModule(`// isolated generated-binding double ${++serial}
     export const state = { calls: [], loads: 0, freed: 0, wait: null, fail: null, badDiagnostics: false };
     export default async function init() { state.loads++; await state.wait; }
@@ -26,6 +26,8 @@ async function fixture(advanced = true, complete = advanced, grid = complete) {
     export const renderBookPdfConfiguredPage = ${advanced ? "(...args) => output('book-advanced', args)" : "undefined"};
     export const renderBookPdfConfiguredAdvanced = ${complete ? "(...args) => output('book-complete', args)" : "undefined"};
     export const renderBookPdfConfiguredGrid = ${grid ? "(...args) => output('book-grid', args)" : "undefined"};
+    ${complete ? `Object.defineProperty(renderBookPdfConfiguredAdvanced, "length", { value: ${short ? 36 : 37} });` : ""}
+    ${grid ? `Object.defineProperty(renderBookPdfConfiguredGrid, "length", { value: ${short ? 37 : 38} });` : ""}
     export const renderBookPdf = (...args) => output('book-legacy', args);
     export const renderPdfConfiguredPage = (...args) => output('pdf-page', args);
     export const renderPdfConfiguredMulti = (...args) => output('pdf', args);
@@ -198,7 +200,7 @@ test("each new book option selects the additive binding; explicit defaults prese
   const { api, state } = await fixture();
   for (const options of [
     { typography: { homogeneous: true } }, { typography: { antiriver: true } },
-    { typography: { pareto: true } }, { optimalPagination: true }, { microtype: "expansion" },
+    { typography: { pareto: true } }, { optimalPagination: true }, { strictPagination: true }, { microtype: "expansion" },
     { running: { footer: { center: "{page}" } } }, { running: { header: { rule: true } } },
     { running: { header: { image: { dest: "logo.svg" } } } },
   ]) {
@@ -210,7 +212,7 @@ test("each new book option selects the additive binding; explicit defaults prese
   }
   for (const options of [
     { typography: {} }, { typography: { homogeneous: false, antiriver: false, pareto: false } },
-    { optimalPagination: false }, { microtype: "disabled" }, { running: {} },
+    { optimalPagination: false }, { strictPagination: false }, { microtype: "disabled" }, { running: {} },
     { running: { header: { left: "", rule: false }, skipFirstPage: false } },
   ]) {
     await api.renderBookPdf(chapters(), options);
@@ -222,7 +224,7 @@ test("each new book option selects the additive binding; explicit defaults prese
 test("old book bindings fail clearly for each new setting and keep prior configured exports usable", async () => {
   for (const configured of [false, true]) {
     const { api, state } = await fixture(configured, false);
-    for (const options of [{ typography: { pareto: true } }, { optimalPagination: true },
+    for (const options of [{ typography: { pareto: true } }, { optimalPagination: true }, { strictPagination: true },
       { microtype: "expansion" }, { running: { footer: { center: "{page}" } } },
       { running: { header: { image: { dest: "logo.svg" } } } }]) {
       await assert.rejects(api.renderBookPdf(chapters(), options),
@@ -233,6 +235,33 @@ test("old book bindings fail clearly for each new setting and keep prior configu
     await api.renderBookPdf(chapters(), configured ? { page: page(), microtype: "protrusion" } : {});
     assert.equal(state.calls[0].kind, configured ? "book-advanced" : "book-legacy");
   }
+});
+
+test("root book strict policy is captured in the existing slot and refuses old glue or native failure", async () => {
+  const { api, state } = await fixture();
+  let release;
+  state.wait = new Promise(resolve => { release = resolve; });
+  const options = { strictPagination: true };
+  const pending = api.renderBookPdf(chapters(), options);
+  options.strictPagination = false;
+  release();
+  await pending;
+  assert.equal(state.calls[0].args.length, 37);
+  assert.equal(state.calls[0].args[36], "strict-pagination");
+  await api.renderBookPdf(chapters(), { strictPagination: true, baselineGridPt: 14 });
+  assert.equal(state.calls[1].args.length, 38);
+  assert.equal(state.calls[1].args[36], "strict-pagination");
+  assert.equal(state.calls[1].args[37], 14);
+  const old = await fixture(true, true, true, true);
+  for (const settings of [{ strictPagination: true }, { strictPagination: true, baselineGridPt: 14 }])
+    await assert.rejects(old.api.renderBookPdf(chapters(), settings), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  assert.equal(old.state.loads, 0);
+  assert.equal(old.state.calls.length, 0);
+  state.fail = JSON.stringify({ code: "PAGINATION_BUDGET_EXCEEDED",
+    message: "planner budget exceeded", reason: "budget_exceeded" });
+  await assert.rejects(api.renderBookPdf(chapters(), { strictPagination: true }),
+    { code: "PAGINATION_BUDGET_EXCEEDED", reason: "budget_exceeded", message: "planner budget exceeded" });
+  assert.equal(state.calls.length, 3, "a strict refusal is not retried with weaker settings");
 });
 
 test("new book settings and exact logo views are owned before asynchronous initialization", async () => {
@@ -276,7 +305,7 @@ test("malformed book typography and running content fail without evaluating nest
   for (const options of [
     { typography: accessor }, { typography: null }, { typography: "pareto" },
     { typography: { pareto: 1 } }, { typography: { extra: true } },
-    { optimalPagination: "true" }, { microtype: "all" },
+    { optimalPagination: "true" }, { strictPagination: "true" }, { strictPagination: null }, { microtype: "all" },
     { running: { header: band } }, { running: { header: { left: "\ud800" } } },
     { running: { header: { left: "é".repeat(2049) } } }, { running: { skipFirstPage: true } },
     { running: { footer: { image: { dest: "logo", heightPt: 0 } } } },

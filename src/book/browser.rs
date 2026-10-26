@@ -458,7 +458,7 @@ fn render_pdf_with_geometry(renderer: &BookRenderer, geometry: &[f64]) -> crate:
 }
 
 fn to_js(error: RenderError) -> JsValue {
-    JsValue::from_str(&error.to_string())
+    crate::wasm_abi::render_error_to_js(error)
 }
 
 fn book_inputs(paths: Vec<String>, sources: Vec<String>) -> Result<Vec<BookInput>, &'static str> {

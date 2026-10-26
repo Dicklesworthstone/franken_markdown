@@ -4,7 +4,7 @@ export type DocumentFormat = "html" | "pdf" | "svg" | "epub" | "interactive-html
 type Shared = Pick<FmdRenderOptions, "font" | "darkMode" | "fontScale" | "typeSize">;
 export interface DocumentOptions {
   html: Shared & Pick<FmdRenderOptions, "title" | "customCss" | "allowRawHtml" | "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "htmlFontFormat">;
-  pdf: Shared & Pick<FmdPdfRenderOptions, "title" | "author" | "metadataEpochSeconds" | "allowRawHtml" | "codeLineNumbers" | "pageNumbers" | "baseFontSize" | "headingScale" | "tableFontSize" | "lang" | "toc" | "tocDepth" | "fitToPages" | "microtype" | "microtypeProtrusion" | "typography" | "optimalPagination" | "pdfImages" | "fontAssets" | "page" | "running">;
+  pdf: Shared & Pick<FmdPdfRenderOptions, "title" | "author" | "metadataEpochSeconds" | "allowRawHtml" | "codeLineNumbers" | "pageNumbers" | "baseFontSize" | "headingScale" | "tableFontSize" | "lang" | "toc" | "tocDepth" | "fitToPages" | "microtype" | "microtypeProtrusion" | "typography" | "optimalPagination" | "strictPagination" | "baselineGridPt" | "pdfImages" | "fontAssets" | "page" | "running">;
   svg: Shared & Pick<FmdRenderOptions, "maxWidthPt" | "pdfImages" | "fontAssets">;
   epub: Shared & Pick<FmdRenderOptions, "title" | "lang" | "customCss" | "toc" | "tocDepth" | "pdfImages" | "fontAssets">;
   "interactive-html": Shared & Pick<FmdRenderOptions, "title" | "lang">;

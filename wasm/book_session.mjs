@@ -1,7 +1,7 @@
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
 // can be tested without replacing the production renderer or its WASM binary.
 import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
-import { normalizeBaselineGridPt, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeBaselineGridPt, normalizePdfPaginationError, validateBaselineGridFit } from "./render_typography.mjs";
 
 const MAX_CHAPTERS = 4096;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
@@ -165,6 +165,7 @@ function bookRenderOptions(options) {
   // substitute a different value after validation or asynchronous loading.
   const typography = options.typography;
   const optimal = options.optimalPagination;
+  const strict = options.strictPagination;
   const microtype = options.microtype;
   const protrusion = options.microtypeProtrusion;
   const tokens = [];
@@ -172,13 +173,14 @@ function bookRenderOptions(options) {
     if (typeof typography !== "string") throw new TypeError("typography must be a comma-separated string");
     bookTextBytes(typography, 256);
     for (const token of typography.split(",").map(token => token.trim()).filter(Boolean)) {
-      if (!["homogeneous", "antiriver", "pareto", "optimal-pagination", "protrusion", "expansion"].includes(token)) {
+      if (!["homogeneous", "antiriver", "pareto", "optimal-pagination", "strict-pagination", "protrusion", "expansion"].includes(token)) {
         throw new TypeError(`Unknown typography token: '${token}'`);
       }
       tokens.push(token);
     }
   }
   if (boolean(optimal, "optimalPagination")) tokens.push("optimal-pagination");
+  if (boolean(strict, "strictPagination")) tokens.push("strict-pagination");
   if (microtype !== undefined) {
     if (!["off", "protrusion", "expansion", "all"].includes(microtype)) {
       throw new TypeError("microtype must be off, protrusion, expansion, or all");
@@ -688,12 +690,19 @@ export function createBookBindings(loadBookClass) {
         try {
           bytes = raw.renderPdfArchival(archive.pdfA, archive.pdfAStrict, pdfPageGeometry(page));
         } catch (error) {
+          error = normalizePdfPaginationError(error);
           if (typeof error === "string") throw new Error(error.slice(0, 2048));
           throw error;
         }
         return output(bytes, "pdf", raw.sourceLength, archive);
       }
-      if (page === undefined) return output(raw.renderPdf(), "pdf", raw.sourceLength);
+      if (page === undefined) {
+        try {
+          return output(raw.renderPdf(), "pdf", raw.sourceLength);
+        } catch (error) {
+          throw normalizePdfPaginationError(error);
+        }
+      }
       if (typeof raw.renderPdfWithPage !== "function") {
         throw Object.assign(new Error(
           "this WASM build lacks FmdBook.renderPdfWithPage; rebuild the matching package for book PDF page geometry",
@@ -703,6 +712,7 @@ export function createBookBindings(loadBookClass) {
       try {
         bytes = raw.renderPdfWithPage(pdfPageGeometry(page));
       } catch (error) {
+        error = normalizePdfPaginationError(error);
         if (typeof error === "string") throw new Error(error.slice(0, 2048));
         throw error;
       }

@@ -50,12 +50,17 @@ if (!isMainThread) {
           });
         }
         if (workerData.typographySupport === false
-            && (options.optimalPagination || options.microtype === "expansion"
+            && (options.optimalPagination || options.strictPagination || options.microtype === "expansion"
               || Object.values(options.typography ?? {}).some(Boolean)
               || options.htmlFontFormat !== undefined)) {
           throw Object.assign(new Error("Typography requires a rebuilt matching WASM package"), {
             code: "UNSUPPORTED_WASM_PACKAGE",
           });
+        }
+        if (format === "pdf" && options.strictPagination && workerData.paginationFailure) {
+          const reason = workerData.paginationFailure;
+          throw JSON.stringify({ code: `PAGINATION_${reason.toUpperCase()}`,
+            message: `exact page plan refused: ${reason}`, reason });
         }
         const bytes = new TextEncoder().encode(JSON.stringify({ source, options, renders: ++renders },
           (_key, value) => value instanceof Uint8Array ? [...value] : value));
@@ -533,20 +538,22 @@ if (!isMainThread) {
     const plain = JSON.parse((await api.renderPdf("plain")).text()).options;
     assert.equal(Object.hasOwn(plain, "typography"), false);
     assert.equal(Object.hasOwn(plain, "optimalPagination"), false);
+    assert.equal(Object.hasOwn(plain, "strictPagination"), false);
     for (const options of [
-      { typography: { homogeneous: true, antiriver: true, pareto: true }, optimalPagination: true, microtype: "expansion" },
-      { typography: { homogeneous: false, antiriver: false, pareto: false }, optimalPagination: false, microtype: "disabled" },
+      { typography: { homogeneous: true, antiriver: true, pareto: true }, optimalPagination: true, strictPagination: true, microtype: "expansion" },
+      { typography: { homogeneous: false, antiriver: false, pareto: false }, optimalPagination: false, strictPagination: false, microtype: "disabled" },
       { typography: {}, microtype: "protrusion" },
     ]) assert.deepEqual(JSON.parse((await api.renderPdf("typeset", options)).text()).options, options);
     for (const htmlFontFormat of ["woff1", "woff2", "ttf"])
       assert.equal(JSON.parse((await api.renderHtml("fonts", { htmlFontFormat })).text()).options.htmlFontFormat, htmlFontFormat);
-    const targets = [{ format: "pdf", options: { typography: { pareto: true }, optimalPagination: true } },
+    const targets = [{ format: "pdf", options: { typography: { pareto: true }, optimalPagination: true, strictPagination: true } },
       { format: "html", options: { htmlFontFormat: "woff2" } }];
     const publishing = api.publish("publication", targets);
     targets[0].options.typography.pareto = false;
+    targets[0].options.strictPagination = false;
     targets[1].options.htmlFontFormat = "ttf";
     const outputs = (await publishing).outputs.map(output => JSON.parse(output.text()).options);
-    assert.deepEqual(outputs, [{ typography: { pareto: true }, optimalPagination: true }, { htmlFontFormat: "woff2" }]);
+    assert.deepEqual(outputs, [{ typography: { pareto: true }, optimalPagination: true, strictPagination: true }, { htmlFontFormat: "woff2" }]);
   });
 
   test("queued typography owns nested booleans and releases its complete ingress charge", async t => {
@@ -554,18 +561,19 @@ if (!isMainThread) {
     const first = api.renderHtml("slow");
     const priorBytes = api.pendingBytes;
     const options = { typography: { homogeneous: true, antiriver: false, pareto: true },
-      optimalPagination: true, microtype: "expansion" };
+      optimalPagination: true, strictPagination: true, microtype: "expansion" };
     const queued = api.renderPdf("owned", options);
     assert.ok(api.pendingBytes >= priorBytes + 512 + 256 + 3 * 64, "the complete typography record is charged");
     options.typography.homogeneous = false;
     options.typography.pareto = false;
     options.typography.extra = true;
     options.optimalPagination = false;
+    options.strictPagination = false;
     options.microtype = "disabled";
     await first;
     assert.deepEqual(JSON.parse((await queued).text()).options, {
       typography: { homogeneous: true, antiriver: false, pareto: true },
-      optimalPagination: true, microtype: "expansion",
+      optimalPagination: true, strictPagination: true, microtype: "expansion",
     });
     const active = api.renderHtml("slow"), before = api.pendingBytes;
     const abort = new AbortController();
@@ -591,12 +599,13 @@ if (!isMainThread) {
         await rejects(api.renderPdf("x", { typography }), "INVALID_OPTIONS");
       await rejects(api.renderPdf("x", topAccessor), "INVALID_OPTIONS");
       for (const options of [{ optimalPagination: "true" }, { optimalPagination: null },
+        { strictPagination: "true" }, { strictPagination: null },
         { microtype: "all" }, { microtype: true }])
         await rejects(api.renderPdf("x", options), "INVALID_OPTIONS");
       for (const htmlFontFormat of ["woff3", " WOFF2 ", null, 2, {}, true])
         await rejects(api.renderHtml("x", { htmlFontFormat }), "INVALID_OPTIONS");
       for (const format of ["html", "svg", "epub", "interactive-html"])
-        for (const options of [{ typography: {} }, { optimalPagination: false }, { microtype: "expansion" }])
+        for (const options of [{ typography: {} }, { optimalPagination: false }, { strictPagination: false }, { microtype: "expansion" }])
           await rejects(api.render(format, "x", options), "INVALID_OPTIONS");
       for (const format of ["pdf", "svg", "epub", "interactive-html"])
         await rejects(api.render(format, "x", { htmlFontFormat: "woff2" }), "INVALID_OPTIONS");
@@ -623,7 +632,7 @@ if (!isMainThread) {
     const rpc = new OwnedWorkerRpc(new NodeEndpoint({ loadFailure: true }), { timeoutMs: 5000 });
     t.after(() => rpc.dispose());
     for (const [format, options] of [["pdf", { typography: { pareto: "true" } }],
-      ["pdf", { optimalPagination: 1 }], ["html", { htmlFontFormat: "woff3" }]]) {
+      ["pdf", { optimalPagination: 1 }], ["pdf", { strictPagination: 1 }], ["html", { htmlFontFormat: "woff3" }]]) {
       await rejects(rpc.request(format, 512, () => ({ args: [format, "x", options, 4096] })), "INVALID_OPTIONS");
     }
     assert.equal(rpc.closed, false);
@@ -633,7 +642,7 @@ if (!isMainThread) {
 
   test("old typography packages reject without silent downgrade or replay", async t => {
     for (const [format, options] of [["pdf", { typography: { pareto: true } }],
-      ["pdf", { optimalPagination: true }], ["pdf", { microtype: "expansion" }],
+      ["pdf", { optimalPagination: true }], ["pdf", { strictPagination: true }], ["pdf", { microtype: "expansion" }],
       ["html", { htmlFontFormat: "woff2" }]]) {
       const api = renderer(t, {}, { typographySupport: false });
       const first = assert.rejects(api.render(format, "typeset", options),
@@ -642,6 +651,20 @@ if (!isMainThread) {
       await Promise.all([first, queued]);
       assert.equal(api.disposed, true);
       assert.equal(api.pendingBytes, 0);
+    }
+  });
+
+  test("typed strict pagination refusals survive document and publication worker boundaries", async t => {
+    for (const [reason, publish] of [["infeasible", false], ["budget_exceeded", true]]) {
+      const api = renderer(t, {}, { paginationFailure: reason });
+      await api.renderPdf("ordinary", { strictPagination: false });
+      const request = publish
+        ? api.publish("strict", [{ format: "html" }, { format: "pdf", options: { strictPagination: true } }])
+        : api.renderPdf("strict", { strictPagination: true });
+      await assert.rejects(request, { code: `PAGINATION_${reason.toUpperCase()}`,
+        message: `exact page plan refused: ${reason}` });
+      assert.equal(api.pendingBytes, 0);
+      assert.equal(api.disposed, true, "renderer exceptions retain the existing worker lifetime policy");
     }
   });
 

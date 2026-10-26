@@ -19,6 +19,7 @@ const pdf: FlowPdfExportOptions = {
   maxOutputBytes: 1024,
   typography: { homogeneous: true, antiriver: false, pareto: true },
   optimalPagination: true,
+  strictPagination: true,
   microtype: "expansion",
 };
 const a: Promise<FlowExportResult> = direct.exportDocument("html", html, direct.token);

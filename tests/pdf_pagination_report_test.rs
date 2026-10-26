@@ -3,9 +3,10 @@
 
 use franken_markdown::pagination::height::HeightPaginationError;
 use franken_markdown::{
-    PdfEmitOptions, PdfOptions, PdfPaginationFailure, PdfPaginationStrategy,
-    PdfParagraphVariantStatus, RenderWarning, parse_markdown, render_pdf,
-    render_pdf_document_reported, render_pdf_reported, render_warnings,
+    PdfASettings, PdfEmitOptions, PdfOptions, PdfPaginationFailure, PdfPaginationStrategy,
+    PdfParagraphVariantStatus, RenderError, RenderWarning, parse_markdown, render_pdf,
+    render_pdf_document_emitted, render_pdf_document_profiled, render_pdf_document_reported,
+    render_pdf_pdfa, render_pdf_reported, render_warnings,
 };
 use std::collections::BTreeMap;
 
@@ -67,7 +68,7 @@ fn page_contents(pdf: &[u8]) -> Vec<String> {
 
 /// Recover the one-face, single-character-line fixture through its actual
 /// ToUnicode map and painted hex strings. A present font map alone cannot pass.
-fn painted_letters(pdf: &[u8]) -> String {
+fn painted_letters_by_page(pdf: &[u8]) -> Vec<String> {
     let map: BTreeMap<u16, char> = String::from_utf8_lossy(pdf)
         .lines()
         .filter_map(|line| {
@@ -76,8 +77,9 @@ fn painted_letters(pdf: &[u8]) -> String {
             Some((u16::from_str_radix(id, 16).ok()?, char::from_u32(unicode)?))
         })
         .collect();
-    let mut painted = String::new();
+    let mut pages = Vec::new();
     for content in page_contents(pdf) {
+        let mut painted = String::new();
         for line in content.lines().filter(|line| line.contains(" TJ")) {
             let array = line.split_once('[').expect("TJ glyph array").1;
             for tail in array.split('<').skip(1) {
@@ -88,8 +90,13 @@ fn painted_letters(pdf: &[u8]) -> String {
                 }
             }
         }
+        pages.push(painted);
     }
-    painted
+    pages
+}
+
+fn painted_letters(pdf: &[u8]) -> String {
+    painted_letters_by_page(pdf).concat()
 }
 
 #[test]
@@ -248,4 +255,152 @@ fn warning_preflight_uses_fitted_geometry_and_prepared_notes() {
         other => panic!("preflight and final fitted render diverged: {other:?}"),
     }
     assert_eq!(painted_letters(&rendered.bytes), "ABC");
+}
+
+#[test]
+fn strict_alone_uses_exact_breaks_and_preserves_successful_pdf_bytes() {
+    let source = "A  \nB  \nC  \nD  \nE  \nF  \nG  \nH";
+    let ordinary = render_pdf_reported(source, &options(40.0)).unwrap();
+    assert!(ordinary.pagination.page_breaks.is_exact());
+    let mut strict = options(40.0);
+    strict.optimal_pagination = false;
+    strict.strict_pagination = true;
+    let rendered = render_pdf_reported(source, &strict).unwrap();
+    assert_eq!(rendered, ordinary);
+    let painted = painted_letters_by_page(&rendered.bytes);
+    assert!(
+        painted.len() >= 3,
+        "exercise first, middle and last fragments"
+    );
+    assert_eq!(painted.concat(), "ABCDEFGH");
+    assert!(painted.iter().all(|page| page.chars().count() >= 2));
+    let monolithic = render_pdf_document_reported(
+        &parse_markdown(source),
+        &strict,
+        PdfEmitOptions::monolithic(),
+    )
+    .unwrap();
+    assert_eq!(rendered, monolithic);
+}
+
+fn assert_typed_refusal(error: &RenderError, reason: &PdfPaginationFailure) {
+    assert!(matches!(error, RenderError::Pagination(actual) if actual == reason));
+    let chained = std::error::Error::source(error)
+        .unwrap()
+        .downcast_ref::<PdfPaginationFailure>()
+        .expect("the public pagination failure survives the error chain");
+    assert_eq!(chained, reason);
+    if let PdfPaginationFailure::Planner(planner) = reason {
+        assert_eq!(
+            std::error::Error::source(chained)
+                .unwrap()
+                .downcast_ref::<HeightPaginationError>(),
+            Some(planner),
+        );
+    }
+}
+
+#[test]
+fn strict_infeasibility_refuses_every_pdf_entry_point_without_weakening_defaults() {
+    let source = "A  \nB  \nC";
+    let doc = parse_markdown(source);
+    let mut opts = options(40.0);
+    let ordinary = render_pdf_reported(source, &opts).unwrap();
+    let reason = ordinary.pagination.page_breaks.fallback.unwrap();
+    assert!(matches!(
+        reason,
+        PdfPaginationFailure::Planner(HeightPaginationError::NoFeasibleLayout { .. })
+    ));
+    assert_eq!(painted_letters(&ordinary.bytes), "ABC");
+    opts.strict_pagination = true;
+    for result in [
+        render_pdf(source, &opts),
+        render_pdf_reported(source, &opts).map(|report| report.bytes),
+        render_pdf_document_emitted(&doc, &opts, PdfEmitOptions::default()),
+        render_pdf_document_emitted(&doc, &opts, PdfEmitOptions::monolithic()),
+        render_pdf_document_profiled(&doc, &opts).map(|profile| profile.bytes),
+        render_pdf_pdfa(source, &opts, PdfASettings::a2b()),
+    ] {
+        let error = result.expect_err("strict mode must never emit a weaker fallback");
+        assert_eq!(error.code(), "pagination_infeasible");
+        assert_typed_refusal(&error, &reason);
+    }
+    opts.strict_pagination = false;
+    assert_eq!(render_pdf(source, &opts).unwrap(), ordinary.bytes);
+}
+
+#[test]
+fn strict_budget_refusal_is_distinct_from_infeasibility() {
+    let mut opts = options(10_001.0);
+    opts.strict_pagination = true;
+    let error = render_pdf("A", &opts).unwrap_err();
+    assert_eq!(error.code(), "pagination_budget_exceeded");
+    assert_typed_refusal(
+        &error,
+        &PdfPaginationFailure::Planner(HeightPaginationError::BudgetExceeded("page capacity")),
+    );
+}
+
+#[test]
+fn strict_footnotes_and_wasm_return_the_same_typed_refusal() {
+    let source = "A[^n]  \nB  \nC\n\n[^n]: N";
+    let mut opts = options(40.0);
+    let baseline = render_pdf_reported(source, &opts).unwrap();
+    assert_eq!(
+        baseline.pagination.page_breaks.strategy,
+        PdfPaginationStrategy::Greedy
+    );
+    let reason = baseline.pagination.page_breaks.fallback.unwrap();
+    opts.strict_pagination = true;
+    assert_typed_refusal(&render_pdf(source, &opts).unwrap_err(), &reason);
+    let browser = franken_markdown::wasm::WasmRenderOptions {
+        theme: opts.theme,
+        strict_pagination: true,
+        ..franken_markdown::wasm::WasmRenderOptions::default()
+    };
+    assert_typed_refusal(
+        &franken_markdown::wasm::render_pdf(source, &browser).unwrap_err(),
+        &reason,
+    );
+}
+
+#[test]
+fn strict_accepts_exact_layout_despite_optional_paragraph_limits() {
+    let source = ["word"; 600].join(" ");
+    let mut opts = options(700.0);
+    opts.strict_pagination = true;
+    let result = render_pdf_reported(&source, &opts).unwrap();
+    assert!(result.pagination.page_breaks.is_exact());
+    assert!(result.pagination.paragraph_variants.paragraph_item_limit);
+    opts.gradual_demerits = true;
+    let restricted = render_pdf_reported("A", &opts).unwrap();
+    assert!(restricted.pagination.page_breaks.is_exact());
+    assert_eq!(
+        restricted.pagination.paragraph_variants.status,
+        PdfParagraphVariantStatus::UnsupportedTypography,
+    );
+    let empty = render_pdf_reported("", &opts).unwrap();
+    assert!(empty.pagination.page_breaks.is_exact());
+    assert_eq!(page_contents(&empty.bytes).len(), 1);
+}
+
+#[test]
+fn strict_fitting_searches_past_an_infeasible_original_layout() {
+    let source = "A  \nB  \nC";
+    let mut opts = options(40.0);
+    let fallback = render_pdf_reported(source, &opts).unwrap();
+    let fallback_pages = page_contents(&fallback.bytes).len();
+    assert!(fallback_pages > 1);
+    opts.strict_pagination = true;
+    assert_eq!(
+        render_pdf(source, &opts).unwrap_err().code(),
+        "pagination_infeasible"
+    );
+    // The weaker original plan already meets this target. Strict fitting must
+    // keep searching instead of accepting that invalid early return.
+    opts.fit_to_pages = Some(fallback_pages);
+    let fitted = render_pdf_reported(source, &opts).unwrap();
+    assert!(fitted.pagination.page_breaks.is_exact());
+    assert_eq!(page_contents(&fitted.bytes).len(), 1);
+    assert_eq!(painted_letters(&fitted.bytes), "ABC");
 }

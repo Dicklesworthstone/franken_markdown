@@ -77,11 +77,16 @@ installFlowWorker(endpoint, async (source, options) => {
     if (workerData?.delayMs)
       await new Promise((resolve) => setTimeout(resolve, workerData.delayMs));
     if (settings.title === "reject-render") throw new Error("explicit renderer rejection");
-    if (workerData?.typographySupport === false && (settings.optimalPagination
+    if (workerData?.typographySupport === false && (settings.optimalPagination || settings.strictPagination
         || settings.microtype === "expansion" || Object.values(settings.typography ?? {}).some(Boolean)
         || settings.htmlFontFormat !== undefined)) {
       throw Object.assign(new Error("Typography requires matching WASM bindings"),
         { code: "UNSUPPORTED_WASM_PACKAGE" });
+    }
+    if (format === "pdf" && settings.strictPagination && workerData?.paginationFailure) {
+      const reason = workerData.paginationFailure;
+      throw JSON.stringify({ code: `PAGINATION_${reason.toUpperCase()}`,
+        message: `exact page plan refused: ${reason}`, reason });
     }
     return {
       format,
@@ -96,6 +101,7 @@ installFlowWorker(endpoint, async (source, options) => {
           running: settings.running,
           typography: settings.typography,
           optimalPagination: settings.optimalPagination,
+          strictPagination: settings.strictPagination,
           microtype: settings.microtype,
           htmlFontFormat: settings.htmlFontFormat,
           images: settings.pdfImages.map((image) => [image.destination, [...image.bytes]]),

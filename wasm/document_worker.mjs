@@ -4,7 +4,7 @@ import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker, workerLimits } from 
 
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
+import { isPdfPaginationError, normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
 
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const DOCUMENT_SOURCE_LIMIT = 4 * 1024 * 1024;
@@ -20,7 +20,7 @@ const FORMATS = Object.freeze({
 const SHARED = ["font", "darkMode", "fontScale", "typeSize"];
 const SETTINGS = {
   html: [...SHARED, "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
-  pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "pdfImages", "fontAssets", "page", "running", "baselineGridPt"],
+  pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "strictPagination", "pdfImages", "fontAssets", "page", "running", "baselineGridPt"],
   svg: [...SHARED, "maxWidthPt", "pdfImages", "fontAssets"],
   epub: [...SHARED, "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets"],
   "interactive-html": [...SHARED, "title", "lang"],
@@ -129,7 +129,7 @@ function normalize(format, source, options, knownSourceLength) {
         baselineGridPt: normalizeBaselineGridPt }[key];
       try { out[key] = normalize(value); }
       catch (error) { fail(error.code, error.message); }
-    } else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion", "optimalPagination"].includes(key)) {
+    } else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion", "optimalPagination", "strictPagination"].includes(key)) {
       if (typeof value !== "boolean") fail("INVALID_OPTIONS", `${key} must be boolean`);
     } else if (["fontScale", "typeSize"].includes(key)) {
       if (typeof value === "string") text(value, 64, key);
@@ -525,9 +525,11 @@ export function installDocumentWorker(endpoint, loadRenderer) {
       const value = ownedOutput(output);
       return { state: null, value, transfer: [value.bytes.buffer] };
     } catch (error) {
-      // Preserve the direct API's actionable package-mismatch signal. All
-      // other renderer exceptions still fail closed as RENDER_FAILED.
-      const code = error?.code === "UNSUPPORTED_WASM_PACKAGE" ? error.code : "RENDER_FAILED";
+      error = normalizePdfPaginationError(error);
+      // Preserve actionable capability and typed pagination refusals. Other
+      // renderer exceptions still fail closed as RENDER_FAILED.
+      const code = error?.code === "UNSUPPORTED_WASM_PACKAGE" || isPdfPaginationError(error)
+        ? error.code : "RENDER_FAILED";
       const fatal = error instanceof FlowWorkerError ? error
         : new FlowWorkerError(code, error instanceof Error ? error.message : String(error));
       fatal.fatal = true;

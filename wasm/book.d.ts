@@ -74,11 +74,15 @@ export interface BookOptions {
    * Independent of publication strictLinks. Failures never downgrade to PDF. */
   pdfAStrict?: boolean;
   /** Comma-separated homogeneous, antiriver, pareto, optimal-pagination,
-   * protrusion or expansion. Unknown tokens fail before WASM initialization.
+   * strict-pagination, protrusion or expansion. Unknown tokens fail before WASM initialization.
    * Requires FmdBook.setPdfOptions; old packages fail explicitly.
    */
   typography?: string;
   optimalPagination?: boolean;
+  /** Require exact final PDF page breaking; implies optimal pagination.
+   * False/omitted keeps existing behavior. Refusals carry a PAGINATION_* code;
+   * older native token parsers reject this policy instead of dropping it. */
+  strictPagination?: boolean;
   /** An explicit mode overrides microtype tokens in typography. */
   microtype?: "off" | "protrusion" | "expansion" | "all";
   /** Compatibility shortcut, applied after microtype. */

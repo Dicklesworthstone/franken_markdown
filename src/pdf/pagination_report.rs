@@ -52,7 +52,8 @@ impl PdfPaginationFailure {
         }
     }
 
-    pub(super) const fn warning_code(&self) -> &'static str {
+    /// Shared stable selector for best-effort warnings and strict refusals.
+    pub(crate) const fn diagnostic_code(&self) -> &'static str {
         match self {
             Self::Planner(HeightPaginationError::BudgetExceeded(_)) => "pagination_budget_exceeded",
             Self::Planner(HeightPaginationError::NoFeasibleLayout { .. }) => {

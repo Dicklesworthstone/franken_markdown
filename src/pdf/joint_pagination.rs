@@ -48,7 +48,7 @@ pub(super) struct Candidates {
 
 impl Candidates {
     pub fn new(opts: &PdfOptions, blocks: &[Block]) -> Self {
-        let status = if !opts.optimal_pagination {
+        let status = if !opts.requests_optimal_pagination() {
             PdfParagraphVariantStatus::NotRequested
         } else if opts.gradual_demerits || opts.river_penalty || opts.pareto_line_breaking {
             PdfParagraphVariantStatus::UnsupportedTypography

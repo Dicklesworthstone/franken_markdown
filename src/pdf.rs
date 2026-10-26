@@ -2437,7 +2437,7 @@ impl RenderWarning {
             Self::MathOverflow { .. } => "math_overflow",
             Self::TextShapingUnsupported { .. } => "text_shaping_unsupported",
             Self::TextShapingLimit { .. } => "text_shaping_limit",
-            Self::PaginationFallback { reason, .. } => reason.warning_code(),
+            Self::PaginationFallback { reason, .. } => reason.diagnostic_code(),
             Self::ParagraphPaginationLimited(_) => "paragraph_pagination_limited",
         }
     }
@@ -2535,7 +2535,7 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
         // profile/numbered-note preparation and final fitting as real emission;
         // otherwise note reservations or fitted geometry could report a
         // different fallback than the PDF that is actually written.
-        if opts.optimal_pagination {
+        if opts.requests_optimal_pagination() {
             let prepared = crate::transform_footnotes_for_pdf(doc, opts);
             let (effective, page) = effective_pdf_options(&prepared, opts, &faces);
             let (lines, paragraph_variants) =
@@ -2783,6 +2783,18 @@ fn collect_token_text(mut toks: Vec<Tok>, out: &mut Vec<(u8, String)>, faces: &F
     );
 }
 
+/// A strict fit candidate is usable only when its final measured lines admit
+/// exact page boundaries. A weaker fallback cannot satisfy the requested page
+/// target. Keep unsuccessful candidates in the existing bounded fit search;
+/// final serialization retains the typed failure if no exact choice is found.
+fn page_count_for_fit(lines: &[Line], page: PageGeom, opts: &PdfOptions) -> Option<usize> {
+    let (plan, report) = page_break_plan_and_report(lines, page, opts);
+    if opts.strict_pagination && !report.is_exact() {
+        return None;
+    }
+    Some(count_pages_with(lines, page, plan.as_ref()))
+}
+
 fn fit_to_target_pages(
     doc: &Document,
     opts: &PdfOptions,
@@ -2791,9 +2803,9 @@ fn fit_to_target_pages(
 ) -> (PdfOptions, PageGeom) {
     let base_page = PageGeom::from_theme(&opts.theme);
     let initial_lines = layout(&doc.blocks, opts, faces, base_page);
-    let initial_pages = paginate_lines_for_options(&initial_lines, base_page, opts).len();
+    let initial_pages = page_count_for_fit(&initial_lines, base_page, opts);
 
-    if initial_pages <= target_pages {
+    if initial_pages.is_some_and(|pages| pages <= target_pages) {
         return (opts.clone(), base_page);
     }
 
@@ -2826,15 +2838,15 @@ fn fit_to_target_pages(
 
         let candidate_page = PageGeom::from_theme(&candidate_opts.theme);
         let lines = layout(&doc.blocks, &candidate_opts, faces, candidate_page);
-        let pages = paginate_lines_for_options(&lines, candidate_page, &candidate_opts).len();
+        let pages = page_count_for_fit(&lines, candidate_page, &candidate_opts);
 
-        if pages <= target_pages {
+        if pages.is_some_and(|pages| pages <= target_pages) {
             best_opts = candidate_opts;
             best_page = candidate_page;
             min_achieved_pages = pages;
             low = mid;
         } else {
-            if pages < min_achieved_pages {
+            if pages.is_some_and(|pages| min_achieved_pages.is_none_or(|best| pages < best)) {
                 min_achieved_pages = pages;
                 best_opts = candidate_opts;
                 best_page = candidate_page;
@@ -21780,6 +21792,11 @@ fn serialize(
     // One break plan for the chrome page count and the emitter, so both see
     // the same pages (and optimal pagination runs once).
     let (break_plan, report) = page_break_plan_and_report(lines, page, opts);
+    if opts.strict_pagination && !report.is_exact() {
+        return Err(RenderError::Pagination(report.fallback.clone().unwrap_or(
+            PdfPaginationFailure::InvalidPlan("exact page boundaries were not selected"),
+        )));
+    }
     baseline_grid::validate_layout(lines, page, break_plan.as_ref())?;
     // Running chrome needs `{pages}` and every page's exact text before font
     // subsetting, so it counts pages with the emitter's own pager up front.
@@ -29489,7 +29506,7 @@ fn page_break_plan_and_report(
     opts: &PdfOptions,
 ) -> (Option<PageBreakPlan>, PdfPageBreakReport) {
     let page = baseline_grid::page_for_lines(page, lines);
-    if !opts.optimal_pagination {
+    if !opts.requests_optimal_pagination() {
         return (
             None,
             PdfPageBreakReport {

@@ -147,7 +147,7 @@ fn resetting_the_profile_preserves_metadata_theme_assets_and_source() {
     };
     let bytes = options.pdf_image_assets[0].bytes.as_ptr();
     settings(Some(
-        "homogeneous,antiriver,pareto,optimal-pagination,expansion",
+        "homogeneous,antiriver,pareto,optimal-pagination,strict-pagination,expansion",
     ))
     .apply(&mut options);
     assert!(
@@ -155,6 +155,7 @@ fn resetting_the_profile_preserves_metadata_theme_assets_and_source() {
             && options.river_penalty
             && options.pareto_line_breaking
             && options.optimal_pagination
+            && options.strict_pagination
     );
     assert!(options.microtype.max_expansion_per_mille > 0);
     settings(None).apply(&mut options);
@@ -163,6 +164,7 @@ fn resetting_the_profile_preserves_metadata_theme_assets_and_source() {
             && !options.river_penalty
             && !options.pareto_line_breaking
             && !options.optimal_pagination
+            && !options.strict_pagination
     );
     assert_eq!(options.microtype.max_expansion_per_mille, 0);
     assert_eq!(options.pdf_image_assets[0].bytes.as_ptr(), bytes);
@@ -183,6 +185,7 @@ fn invalid_tokens_do_not_partially_mutate_the_last_valid_profile() {
         "homogeneous,unknown",
         "pareto,unknown",
         "optimal-pagination,unknown",
+        "strict-pagination,unknown",
     ] {
         let result = PdfSettings::new(
             Some(token),
@@ -219,6 +222,31 @@ fn invalid_tokens_do_not_partially_mutate_the_last_valid_profile() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn strict_pagination_token_and_direct_field_reach_the_native_book_policy() {
+    let mut book = BookRenderer::new(&[BookInput {
+        path: "strict.md".into(),
+        source: "# Exact pages\n\nA short paragraph with feasible page breaks.\n".into(),
+    }])
+    .unwrap();
+    settings(Some("strict-pagination")).apply(book.options_mut());
+    assert!(book.options().strict_pagination && book.options().optimal_pagination);
+    let native = PdfOptions {
+        strict_pagination: true,
+        ..PdfOptions::default()
+    };
+    assert_eq!(
+        book.render_pdf().unwrap(),
+        crate::book::render_book_pdf(book.book(), &native).unwrap()
+    );
+    let direct = WasmRenderOptions {
+        strict_pagination: true,
+        ..WasmRenderOptions::default()
+    };
+    assert!(direct.pdf_options().strict_pagination && direct.pdf_options().optimal_pagination);
+    assert!(!WasmRenderOptions::default().pdf_options().strict_pagination);
 }
 
 #[test]

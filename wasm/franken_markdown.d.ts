@@ -144,6 +144,11 @@ export interface FmdPdfRunning {
   skipFirstPage?: boolean;
 }
 export interface FmdPdfRenderOptions extends FmdRenderOptions {
+  /** Require exact page breaking for the final measured lines; implies
+   * optimalPagination. Default false. Refuses fallback with an Error carrying
+   * a PAGINATION_* code (for example PAGINATION_INFEASIBLE or
+   * PAGINATION_BUDGET_EXCEEDED). Requires a matching WASM token parser. */
+  strictPagination?: boolean;
   /** Opt-in PDF body baseline spacing in points, 1..144 (rounded to 0.001 pt).
    * Omitted/0 keeps the grid disabled. Incompatible with fitToPages. Requires
    * matching baseline-grid WASM bindings; old packages fail explicitly. */

@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import { createRetainedBook, createCachedBookRenderer, BOOK_OUTPUT_CACHE_LIMITS } from "../book_retained.mjs";
+import { prepareBookInput } from "../book_session.mjs";
 
 const encode = value => new TextEncoder().encode(JSON.stringify(value));
 const code = expected => cause => cause?.code === expected;
@@ -168,6 +169,25 @@ const settingsChanges = Object.fromEntries([
   ["fontWeight", input => { input.options.fontAssets[0].weight++; }],
   ["revokeFonts", input => { input.options.fontAssets = []; }],
 ]);
+
+test("strict pagination token prevents cached non-strict bytes from satisfying a strict request", async () => {
+  const h = fixture(), input = capture();
+  const ordinary = prepareBookInput(input.files, input.options);
+  const strict = prepareBookInput(input.files, { ...input.options, strictPagination: true });
+  assert.equal(strict.options.typography, "optimal-pagination,strict-pagination");
+  assert.equal(Object.hasOwn(strict.options, "strictPagination"), false);
+  await h.render(ordinary);
+  const fresh = await h.render(strict);
+  assert.equal(h.stats.exports.length, 2);
+  assert.equal(h.stats.creates, 2);
+  assert.deepEqual(fresh.bytes, (await h.fresh(strict, "pdf")).bytes);
+  const repeated = await h.render(structuredClone(strict));
+  assert.deepEqual(repeated.bytes, fresh.bytes);
+  assert.equal(h.stats.exports.length, 2);
+  await h.render(ordinary);
+  assert.equal(h.stats.exports.length, 3, "returning to non-strict policy rebuilds the retained book");
+  h.cached.clear();
+});
 for (const [name, change] of Object.entries(settingsChanges)) test(`render dependency invalidation: ${name}`, async () => {
   const h = fixture(); await h.render(); const next = capture(); change(next);
   // These are already-normalized-input tests, not native option admission.

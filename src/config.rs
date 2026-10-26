@@ -42,6 +42,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "typography_antiriver",
     "typography_pareto",
     "pdf_optimal_pagination",
+    "pdf_strict_pagination",
     "pdf_baseline_grid_pt",
 ];
 
@@ -63,6 +64,8 @@ pub struct RenderDefaults {
     pub typography_antiriver: Option<bool>,
     pub typography_pareto: Option<bool>,
     pub pdf_optimal_pagination: Option<bool>,
+    /// Require exact page-boundary planning; refuse a weaker fallback.
+    pub pdf_strict_pagination: Option<bool>,
     /// Validated baseline-grid spacing in points, or `0` to disable the grid.
     pub pdf_baseline_grid_pt: Option<String>,
 }
@@ -76,6 +79,7 @@ impl RenderDefaults {
             "typography_antiriver" => &mut self.typography_antiriver,
             "typography_pareto" => &mut self.typography_pareto,
             "pdf_optimal_pagination" => &mut self.pdf_optimal_pagination,
+            "pdf_strict_pagination" => &mut self.pdf_strict_pagination,
             _ => return None,
         })
     }
@@ -95,6 +99,7 @@ impl RenderDefaults {
             ("typography_antiriver", flag(self.typography_antiriver)),
             ("typography_pareto", flag(self.typography_pareto)),
             ("pdf_optimal_pagination", flag(self.pdf_optimal_pagination)),
+            ("pdf_strict_pagination", flag(self.pdf_strict_pagination)),
             ("pdf_baseline_grid_pt", self.pdf_baseline_grid_pt.clone()),
         ]
         .into_iter()
@@ -183,7 +188,8 @@ impl RenderDefaults {
                 | "typography_homogeneous"
                 | "typography_antiriver"
                 | "typography_pareto"
-                | "pdf_optimal_pagination" => "false",
+                | "pdf_optimal_pagination"
+                | "pdf_strict_pagination" => "false",
                 _ => return None,
             }
             .to_string(),
@@ -899,5 +905,36 @@ mod tests {
             "JSON default must name the v1 strategy, got {}",
             default.to_json()
         );
+    }
+
+    #[test]
+    fn strict_pagination_defaults_off_and_round_trips_boolean_policy() {
+        let mut config = FmdConfig::default();
+        assert!(CONFIG_KEYS.contains(&"pdf_strict_pagination"));
+        assert_eq!(config.render.pdf_strict_pagination, None);
+        assert_eq!(
+            config.get_resolved("pdf_strict_pagination").as_deref(),
+            Some("false")
+        );
+        for (value, expected) in [("true", true), ("false", false)] {
+            config
+                .set_key_value("pdf_strict_pagination", value)
+                .unwrap();
+            assert_eq!(config.render.pdf_strict_pagination, Some(expected));
+            let serialized = config.try_to_file_string().unwrap();
+            assert!(serialized.contains(&format!("pdf_strict_pagination={value}\n")));
+            assert_eq!(FmdConfig::parse(&serialized).unwrap(), config);
+            assert!(
+                config
+                    .to_json()
+                    .contains(&format!("\"pdf_strict_pagination\":{value}"))
+            );
+        }
+        let previous = config.clone();
+        let error = config
+            .set_key_value("pdf_strict_pagination", "sometimes")
+            .unwrap_err();
+        assert!(error.to_string().contains("must be `true` or `false`"));
+        assert_eq!(config, previous);
     }
 }

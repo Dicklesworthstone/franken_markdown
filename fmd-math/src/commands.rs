@@ -997,6 +997,50 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "veebar" => ams_sym('⊻', Bin, AmsFamily::A, 0x59),         // U+22BB
         "doublecap" => ams_sym('⋒', Bin, AmsFamily::A, 0x65),      // amsfonts: \let\doublecap\Cap
         "doublecup" => ams_sym('⋓', Bin, AmsFamily::A, 0x64),      // amsfonts: \let\doublecup\Cup
+        // amssymb names no face carried before the AMS faces were bundled.
+        // Six with no single Unicode character (\nleqslant, \ngeqslant,
+        // \nleqq, \ngeqq, \nsubseteqq, \nsupseteqq) stay untiered.
+        "lozenge" => ams_sym('◊', Ord, AmsFamily::A, 0x06), // U+25CA
+        "blacklozenge" => ams_sym('⧫', Ord, AmsFamily::A, 0x07), // U+29EB
+        "leftrightarrows" => ams_sym('⇆', Rel, AmsFamily::A, 0x1C), // U+21C6
+        "rightleftarrows" => ams_sym('⇄', Rel, AmsFamily::A, 0x1D), // U+21C4
+        "Lsh" => ams_sym('↰', Rel, AmsFamily::A, 0x1E),     // U+21B0
+        "Rsh" => ams_sym('↱', Rel, AmsFamily::A, 0x1F),     // U+21B1
+        "gtrapprox" => ams_sym('⪆', Rel, AmsFamily::A, 0x27), // U+2A86
+        "lessapprox" => ams_sym('⪅', Rel, AmsFamily::A, 0x2F), // U+2A85
+        "eqslantless" => ams_sym('⪕', Rel, AmsFamily::A, 0x30), // U+2A95
+        "eqslantgtr" => ams_sym('⪖', Rel, AmsFamily::A, 0x31), // U+2A96
+        "backprime" => ams_sym('‵', Ord, AmsFamily::A, 0x38), // U+2035
+        "lesseqqgtr" => ams_sym('⪋', Rel, AmsFamily::A, 0x53), // U+2A8B
+        "gtreqqless" => ams_sym('⪌', Rel, AmsFamily::A, 0x54), // U+2A8C
+        "doublebarwedge" => ams_sym('⩞', Bin, AmsFamily::A, 0x5B), // U+2A5E
+        "smallsmile" => ams_sym('⌣', Rel, AmsFamily::A, 0x60), // U+2323
+        "smallfrown" => ams_sym('⌢', Rel, AmsFamily::A, 0x61), // U+2322
+        "subseteqq" => ams_sym('⫅', Rel, AmsFamily::A, 0x6A), // U+2AC5
+        "supseteqq" => ams_sym('⫆', Rel, AmsFamily::A, 0x6B), // U+2AC6
+        "circledS" => ams_sym('Ⓢ', Ord, AmsFamily::A, 0x73), // U+24C8
+        "lneq" => ams_sym('⪇', Rel, AmsFamily::B, 0x0C),    // U+2A87
+        "gneq" => ams_sym('⪈', Rel, AmsFamily::B, 0x0D),    // U+2A88
+        "precneqq" => ams_sym('⪵', Rel, AmsFamily::B, 0x16), // U+2AB5
+        "succneqq" => ams_sym('⪶', Rel, AmsFamily::B, 0x17), // U+2AB6
+        "precnapprox" => ams_sym('⪹', Rel, AmsFamily::B, 0x18), // U+2AB9
+        "succnapprox" => ams_sym('⪺', Rel, AmsFamily::B, 0x19), // U+2ABA
+        "lnapprox" => ams_sym('⪉', Rel, AmsFamily::B, 0x1A), // U+2A89
+        "gnapprox" => ams_sym('⪊', Rel, AmsFamily::B, 0x1B), // U+2A8A
+        "diagup" => ams_sym('╱', Ord, AmsFamily::B, 0x1E),  // U+2571
+        "diagdown" => ams_sym('╲', Ord, AmsFamily::B, 0x1F), // U+2572
+        "subsetneqq" => ams_sym('⫋', Rel, AmsFamily::B, 0x24), // U+2ACB
+        "supsetneqq" => ams_sym('⫌', Rel, AmsFamily::B, 0x25), // U+2ACC
+        "varsubsetneqq" => ams_sym('⫋', Rel, AmsFamily::B, 0x26), // U+2ACB, the variant form
+        "varsupsetneqq" => ams_sym('⫌', Rel, AmsFamily::B, 0x27), // U+2ACC, the variant form
+        "eth" => ams_sym('ð', Ord, AmsFamily::B, 0x67),     // U+00F0
+        "succapprox" => ams_sym('⪸', Rel, AmsFamily::B, 0x76), // U+2AB8
+        "precapprox" => ams_sym('⪷', Rel, AmsFamily::B, 0x77), // U+2AB7
+        "curvearrowleft" => ams_sym('↶', Rel, AmsFamily::B, 0x78), // U+21B6
+        "curvearrowright" => ams_sym('↷', Rel, AmsFamily::B, 0x79), // U+21B7
+        "digamma" => ams_sym('ϝ', Ord, AmsFamily::B, 0x7A), // U+03DD
+        "varkappa" => ams_sym('ϰ', Ord, AmsFamily::B, 0x7B), // U+03F0
+        "backepsilon" => ams_sym('϶', Rel, AmsFamily::B, 0x7F), // U+03F6
         // ── Structure ───────────────────────────────────────────────────
         "left" => Cmd::Left,
         "right" => Cmd::Right,

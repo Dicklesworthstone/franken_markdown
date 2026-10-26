@@ -213,6 +213,20 @@ fn mod_kern_follows_the_display_attr() {
     );
 }
 
+/// The layout joins `\longrightarrow`'s CM pieces (fm-fm-long-arrows-joinrel-
+/// r11-b2c5); MathML keeps the one Unicode arrow each command means.
+#[test]
+fn long_arrows_stay_one_mathml_operator() {
+    for (tex, mo) in [
+        (r"a\longrightarrow b", "<mo>⟶</mo>"),
+        (r"a\Longrightarrow b", "<mo>⟹</mo>"),
+        (r"a\mapsto b", "<mo>↦</mo>"),
+        (r"a\hookrightarrow b", "<mo>↪</mo>"),
+    ] {
+        assert_contains("long-arrow-mo", tex, &[mo]);
+    }
+}
+
 #[test]
 fn element_path_skips_math_wrapper() {
     let node = parse("x").unwrap();

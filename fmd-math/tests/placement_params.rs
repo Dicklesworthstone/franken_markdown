@@ -419,6 +419,113 @@ fn cong_is_latexs_vereq_stack() {
     assert!((w - 2.291077).abs() < 1e-4, "a\\cong b: {w}");
 }
 
+/// fontmath.ltx and amsmath build the long arrows from shorter relations
+/// (franken_manim fm-fm-long-arrows-joinrel-r11-b2c5): `\longrightarrow` is
+/// `\relbar\joinrel\rightarrow`, a smashed cmsy minus, \joinrel's -3 mu and
+/// cmsy's arrow. TeX's boxes under the Reference's preamble, in pt, with
+/// the glyphs in order: two CM pieces where the Reference has two, never a
+/// fallback face's single arrow.
+#[test]
+fn long_arrows_join_cm_pieces_as_amsmath_does() {
+    let e = engine();
+    let close = |ours: f64, tex_pt: f64| (ours - tex_pt / 10.0).abs() < 1e-4;
+    for (tex, w, h, d, glyphs) in [
+        (r"\longrightarrow", 16.11119, 3.66875, 0.0, &['−', '→'][..]),
+        (r"\Longrightarrow", 16.11119, 3.66875, 0.0, &['=', '⇒']),
+        (r"\longleftarrow", 16.11119, 3.66875, 0.0, &['←', '−']),
+        (r"\Longleftarrow", 16.11119, 3.66875, 0.0, &['⇐', '=']),
+        (r"\longleftrightarrow", 18.3334, 3.66875, 0.0, &['←', '→']),
+        (r"\Longleftrightarrow", 18.3334, 3.66875, 0.0, &['⇐', '⇒']),
+        (r"\mapsto", 10.00002, 3.66875, 0.0, &['↦', '→']),
+        (r"\longmapsto", 16.11119, 3.66875, 0.0, &['⟼', '−', '→']),
+        (r"\hookrightarrow", 11.11118, 4.63747, 0.0, &['↪', '→']),
+        (r"\hookleftarrow", 11.11118, 4.63747, 0.0, &['←', '↩']),
+        (
+            r"\scriptstyle\longrightarrow",
+            12.85652,
+            2.68855,
+            0.0,
+            &['−', '→'],
+        ),
+        (
+            r"\scriptstyle\Longrightarrow",
+            12.74542,
+            2.68855,
+            0.0,
+            &['=', '⇒'],
+        ),
+        (r"\scriptstyle\mapsto", 7.97224, 2.68855, 0.0, &['↦', '→']),
+        (
+            r"\scriptstyle\hookrightarrow",
+            8.9815,
+            3.45709,
+            0.0,
+            &['↪', '→'],
+        ),
+        (
+            r"\scriptscriptstyle\longrightarrow",
+            10.99553,
+            1.98203,
+            0.0,
+            &['−', '→'],
+        ),
+        (
+            r"\scriptscriptstyle\hookrightarrow",
+            7.87048,
+            2.57402,
+            0.07402,
+            &['↪', '→'],
+        ),
+    ] {
+        let l = e.typeset(tex, Style::Text).unwrap();
+        assert!(
+            close(l.width, w) && close(l.height, h) && close(l.depth, d),
+            "{tex}: {} x ({} + {}) against TeX's {w} x ({h} + {d}) pt",
+            l.width,
+            l.height,
+            l.depth
+        );
+        let chars: Vec<char> = l.glyphs.iter().map(|g| g.ch).collect();
+        assert_eq!(chars, glyphs, "{tex}");
+    }
+    // The arrow starts at the minus's width less 3 mu: 7.7778 - 1.66663 pt.
+    let l = e.typeset(r"\longrightarrow", Style::Text).unwrap();
+    assert!(close(glyph_x(&l, '→') - glyph_x(&l, '−'), 6.11117), "{l:?}");
+    // One relation, with thick spaces on either side and limits over it.
+    for (tex, w, h) in [
+        (r"a\longrightarrow b", 31.24416, 6.94444),
+        (r"a\overset{f}{\longrightarrow}b", 31.24416, 12.00206),
+    ] {
+        let l = e.typeset(tex, Style::Display).unwrap();
+        assert!(close(l.width, w) && close(l.height, h), "{tex}: {l:?}");
+    }
+}
+
+/// amsmath's `\overset` and `\underset` take their class from `\binrel@`:
+/// the base's spaces against two empty Ords make a relation (thick) or a
+/// binary operator (medium), otherwise a braced Ord. The argument's own
+/// braces do not hide the class; a second pair does. TeX's widths in
+/// display style under the Reference's preamble, in pt.
+#[test]
+fn overset_classes_follow_amsmaths_binrel() {
+    let e = engine();
+    for (tex, tex_pt) in [
+        (r"x\overset{a}{=}y", 24.31009),
+        (r"x\overset{f}{\longrightarrow}y", 32.64348),
+        (r"x\underset{a}{\longrightarrow}y", 32.64348),
+        (r"x\overset{a}{+}y", 23.199),
+        (r"x\overset{a}{{=}}y", 18.75467),
+        (r"x\overset{a}{b}y", 15.31451),
+        (r"x\overset{a}{b=c}y", 32.9293),
+    ] {
+        let width = e.typeset(tex, Style::Display).unwrap().width;
+        assert!(
+            (width - tex_pt / 10.0).abs() < 1e-4,
+            "{tex}: {width} em against TeX's {tex_pt} pt"
+        );
+    }
+}
+
 #[test]
 fn integrals_take_side_scripts_even_in_display() {
     let l = engine().typeset(r"\int_0^1", Style::Display).unwrap();

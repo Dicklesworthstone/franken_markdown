@@ -1005,6 +1005,9 @@ impl Engine {
             if let Some(laid) = self.vereq_relation(ch, span, ctx)? {
                 return Ok(laid);
             }
+            if let Some(laid) = self.joined_relation(ch, span, ctx)? {
+                return Ok(laid);
+            }
         }
         let (face, gid, mapped) = match self.resolve_math_char(ch, span, ctx) {
             Ok(hit) => hit,
@@ -1430,6 +1433,87 @@ impl Engine {
         };
         Ok(Some(Laid {
             boxx,
+            italic: 0.0,
+            char_glyph: None,
+        }))
+    }
+
+    /// The arrows fontmath.ltx and amsmath build from shorter relations:
+    /// `\longrightarrow` is `\relbar\joinrel\rightarrow`, `\Longrightarrow`
+    /// is `\Relbar\joinrel\Rightarrow`, `\mapsto` is `\mapstochar\rightarrow`
+    /// and `\hookrightarrow` is `\lhook\joinrel\rightarrow`, with
+    /// `\joinrel` = `\mathrel{\mkern-3mu}`, `\relbar` = `\mathrel{\smash-}`
+    /// and `\Relbar` = `\mathrel=`. Relations abut one another, so the
+    /// pieces sit side by side as one relation, each glyph TeX's own, and
+    /// the box is the hlist's: its height the tallest piece's, its depth
+    /// floored at zero. `None` for every other character, and when the roster
+    /// lacks the CM math faces whose codes `\mapstochar` and the hooks are.
+    fn joined_relation(
+        &self,
+        ch: char,
+        span: Span,
+        ctx: LayCtx,
+    ) -> Result<Option<Laid>, MathError> {
+        /// One relation of a joined arrow.
+        #[derive(Clone, Copy)]
+        enum Piece {
+            /// A character, as its own atom sets it.
+            Char(char),
+            /// `\relbar`: the minus, smashed to no height or depth.
+            Bar,
+            /// `\joinrel`'s -3 mu.
+            Join,
+            /// A TFM code of a CM math face: cmsy's `\mapstochar`, cmmi's
+            /// `\lhook` and `\rhook`.
+            Code(FaceId, u8),
+        }
+        use Piece::{Bar, Char, Code, Join};
+        const MAPSTOCHAR: Piece = Code(FACE_MATH_SYMBOLS, 0x37);
+        let pieces: &[Piece] = match ch {
+            '⟶' => &[Bar, Join, Char('→')],
+            '⟵' => &[Char('←'), Join, Bar],
+            '⟷' => &[Char('←'), Join, Char('→')],
+            '⟹' => &[Char('='), Join, Char('⇒')],
+            '⟸' => &[Char('⇐'), Join, Char('=')],
+            '⟺' => &[Char('⇐'), Join, Char('⇒')],
+            '↦' => &[MAPSTOCHAR, Char('→')],
+            '⟼' => &[MAPSTOCHAR, Bar, Join, Char('→')],
+            '↪' => &[Code(FACE_MATH_ITALIC, 0x2C), Join, Char('→')],
+            '↩' => &[Char('←'), Join, Code(FACE_MATH_ITALIC, 0x2D)],
+            _ => return Ok(None),
+        };
+        if self.faces.tex_glyph(FACE_MATH_SYMBOLS, 0x37).is_none()
+            || self.faces.tex_glyph(FACE_MATH_ITALIC, 0x2C).is_none()
+        {
+            return Ok(None);
+        }
+        let size = ctx.size();
+        let mut boxes = Vec::with_capacity(pieces.len());
+        for &piece in pieces {
+            boxes.push(match piece {
+                Char(c) => self.char_atom(c, span, ctx)?.boxx,
+                Bar => MBox {
+                    height: 0.0,
+                    depth: 0.0,
+                    ..self.char_atom('−', span, ctx)?.boxx
+                },
+                // \mkern's mu, as for the mu glue (§716).
+                Join => kern_box(-3.0 / 18.0 * self.consts_at(&ctx).quad * size),
+                Code(face, code) => {
+                    let Some(gid) = self.faces.tex_glyph(face, code) else {
+                        return Ok(None);
+                    };
+                    let (face, gid) = self
+                        .faces
+                        .optical(face, crate::faces::tex_code(code), ctx.style.style)
+                        .unwrap_or((face, gid));
+                    let metrics = self.char_metrics(face, gid, ctx.text_mode);
+                    glyph_box(face, gid, ch, span, size, metrics)
+                }
+            });
+        }
+        Ok(Some(Laid {
+            boxx: hcat(boxes),
             italic: 0.0,
             char_glyph: None,
         }))

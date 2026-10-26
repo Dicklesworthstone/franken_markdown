@@ -258,7 +258,7 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
         NodeKind::MathFont { body, .. } | NodeKind::Phantom { body, .. } => intrinsic_class(body),
         NodeKind::Stack { kind, base, .. } => match kind {
             StackKind::Stackrel => Some(AtomClass::Rel),
-            StackKind::Overset | StackKind::Underset => intrinsic_class(base),
+            StackKind::Overset | StackKind::Underset => Some(binrel_class(base)),
         },
         // The labeled extensible arrows space as relations, like the plain
         // arrows they stretch.
@@ -294,13 +294,20 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
 /// class nor interrupt atom adjacency.
 #[must_use]
 pub fn classify_list(items: &[Node]) -> Vec<Option<AtomClass>> {
+    classify(items, false)
+}
+
+/// [`classify_list`]'s rules for `items` alone or, with `between_ords`, set
+/// between two empty Ords, where a Bin that opens or closes the list keeps
+/// its class.
+fn classify(items: &[Node], between_ords: bool) -> Vec<Option<AtomClass>> {
     let mut classes: Vec<Option<AtomClass>> = items.iter().map(intrinsic_class).collect();
     let mut prev_atom: Option<usize> = None;
     for i in 0..classes.len() {
         let Some(current) = classes[i] else { continue };
         if current == AtomClass::Bin {
             let degrade = match prev_atom {
-                None => true,
+                None => !between_ords,
                 Some(p) => matches!(
                     classes[p],
                     Some(
@@ -327,12 +334,43 @@ pub fn classify_list(items: &[Node]) -> Vec<Option<AtomClass>> {
         }
         prev_atom = Some(i);
     }
-    if let Some(p) = prev_atom {
+    if let Some(p) = prev_atom.filter(|_| !between_ords) {
         if classes[p] == Some(AtomClass::Bin) {
             classes[p] = Some(AtomClass::Ord);
         }
     }
     classes
+}
+
+/// amsmath's `\binrel@{#2}`, which classes `\overset{#1}{#2}` and
+/// `\underset`: it sets `{}#2{}` in text style with `\thickmuskip` 1 mu,
+/// `\medmuskip` -1 mu and `\thinmuskip` 0 and takes away `#2` set alone, so
+/// only the spaces against the two empty Ords count. A wider box makes the
+/// construction a relation and a narrower one a binary operator; otherwise
+/// `\binrel@@` leaves a braced Ord. The argument's braces are the macro's,
+/// so `\overset{f}{\longrightarrow}` is a relation and `\overset{a}{{=}}`
+/// an Ord.
+fn binrel_class(base: &Node) -> AtomClass {
+    let items = match &base.kind {
+        NodeKind::List(items) => items.as_slice(),
+        _ => std::slice::from_ref(base),
+    };
+    let classes: Vec<AtomClass> = classify(items, true).into_iter().flatten().collect();
+    let (Some(&first), Some(&last)) = (classes.first(), classes.last()) else {
+        return AtomClass::Ord;
+    };
+    let mu = |space: Spacing| match space {
+        Spacing::Thick => 1,
+        Spacing::Med => -1,
+        Spacing::None | Spacing::Thin => 0,
+    };
+    let width = mu(spacing_in_style(AtomClass::Ord, first, Style::Text))
+        + mu(spacing_in_style(last, AtomClass::Ord, Style::Text));
+    match width {
+        1.. => AtomClass::Rel,
+        ..0 => AtomClass::Bin,
+        0 => AtomClass::Ord,
+    }
 }
 
 #[cfg(test)]

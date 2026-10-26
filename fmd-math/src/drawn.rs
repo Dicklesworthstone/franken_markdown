@@ -752,6 +752,99 @@ fn earth(em: f64) -> DrawnSym {
     }
 }
 
+/// A straight line from one point (ems) to another.
+pub(crate) type Segment = ((f64, f64), (f64, f64));
+
+/// sec 22.5°: a 45° arc's quad control sits on its bisector at `r·sec(π/8)`.
+const SEC22: f64 = 1.082_392_200_292_393_9;
+
+/// Round-pen strokes of radius `r` along `lines` (the cancel package's
+/// line-font strokes): one line is a capsule; lines sharing a midpoint (the
+/// `\xcancel` cross) are one contour around their union, as [`plus`] is, so
+/// no fill rule punches the crossing. Walked counterclockwise: each arm
+/// out along its right edge, round its cap, back along its left edge to the
+/// corner it makes with the next arm. Besides add/sub/mul/div this uses only
+/// `sqrt`, which IEEE 754 rounds correctly on every platform.
+pub(crate) fn strokes(lines: &[Segment], r: f64) -> Vec<PathContour> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let mid = |(a, b): Segment| ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+    let centre = mid(lines[0]);
+    // Arms from the shared midpoint: (unit direction, tip).
+    let mut arms: Vec<((f64, f64), (f64, f64))> = Vec::new();
+    for &(a, b) in lines {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len <= 0.0 {
+            continue;
+        }
+        let u = (dx / len, dy / len);
+        arms.push((u, b));
+        arms.push(((-u.0, -u.1), a));
+    }
+    if arms.is_empty() {
+        return Vec::new();
+    }
+    // Counterclockwise order by angle, without atan2: half-plane, then the
+    // cross product within it.
+    let upper = |u: (f64, f64)| u.1 > 0.0 || (u.1 == 0.0 && u.0 > 0.0);
+    arms.sort_by(|a, b| {
+        upper(b.0).cmp(&upper(a.0)).then_with(|| {
+            let cross = a.0.0 * b.0.1 - a.0.1 * b.0.0;
+            0.0_f64
+                .partial_cmp(&cross)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        })
+    });
+    let left = |u: (f64, f64)| (-u.1, u.0);
+    let off = |p: (f64, f64), n: (f64, f64), k: f64| (p.0 + n.0 * k, p.1 + n.1 * k);
+    // The corner between arm `a`'s left edge and arm `b`'s right edge. The
+    // two arms of one straight stroke share that edge: the corner is then
+    // its point beside the midpoint.
+    let corner = |a: (f64, f64), b: (f64, f64)| {
+        let p = off(centre, left(a), r);
+        let q = off(centre, left(b), -r);
+        let denom = a.0 * b.1 - a.1 * b.0;
+        if denom.abs() < 1e-12 {
+            return p;
+        }
+        let t = ((q.0 - p.0) * b.1 - (q.1 - p.1) * b.0) / denom;
+        (p.0 + a.0 * t, p.1 + a.1 * t)
+    };
+    let n = arms.len();
+    let corners: Vec<(f64, f64)> = (0..n)
+        .map(|i| corner(arms[i].0, arms[(i + 1) % n].0))
+        .collect();
+    // A cap: the half circle about `tip` from the right edge to the left,
+    // in four 45° quads through the arm's direction.
+    let cap = |u: (f64, f64), tip: (f64, f64), segments: &mut Vec<PathSeg>| {
+        let n = left(u);
+        let unit = |v: (f64, f64)| {
+            let len = (v.0 * v.0 + v.1 * v.1).sqrt();
+            (v.0 / len, v.1 / len)
+        };
+        let dirs = [
+            (-n.0, -n.1),
+            unit((u.0 - n.0, u.1 - n.1)),
+            u,
+            unit((u.0 + n.0, u.1 + n.1)),
+            n,
+        ];
+        for pair in dirs.windows(2) {
+            let bisector = unit((pair[0].0 + pair[1].0, pair[0].1 + pair[1].1));
+            segments.push(quad(off(tip, bisector, r * SEC22), off(tip, pair[1], r)));
+        }
+    };
+    let mut segments = Vec::new();
+    for (&(u, tip), &corner) in arms.iter().zip(&corners) {
+        segments.push(line(off(tip, left(u), -r)));
+        cap(u, tip, &mut segments);
+        segments.push(line(corner));
+    }
+    vec![contour(corners[n - 1], segments)]
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

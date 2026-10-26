@@ -254,6 +254,8 @@ where
         }
         // `\fbox{$\displaystyle…$}`: a fresh, uncramped display formula.
         NodeKind::Boxed { body } => style_walk(body, StyleCtx::new(Style::Display), visit),
+        // `\mathpalette`'s fresh formula: the style in force, uncramped.
+        NodeKind::Cancel { body, .. } => style_walk(body, StyleCtx::new(ctx.style), visit),
         NodeKind::Stack {
             kind,
             annotation,

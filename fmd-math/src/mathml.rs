@@ -7,8 +7,8 @@
 
 use crate::atom::AtomClass;
 use crate::node::{
-    AccentKind, Delim, FracSpec, FragmentKind, Length, LengthUnit, Limits, LineAlign, LogoKind,
-    MathFont, Node, NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
+    AccentKind, CancelKind, Delim, FracSpec, FragmentKind, Length, LengthUnit, Limits, LineAlign,
+    LogoKind, MathFont, Node, NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
 };
 use crate::style::Style;
 
@@ -191,6 +191,16 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             w.open("mstyle", &[("displaystyle", "true")]);
             emit_node(w, body, Style::Display);
             w.close("mstyle");
+            w.close("menclose");
+        }
+        NodeKind::Cancel { kind, body } => {
+            let notation = match kind {
+                CancelKind::Rising => "updiagonalstrike",
+                CancelKind::Falling => "downdiagonalstrike",
+                CancelKind::Cross => "updiagonalstrike downdiagonalstrike",
+            };
+            w.open("menclose", &[("notation", notation)]);
+            emit_node(w, body, style);
             w.close("menclose");
         }
         NodeKind::Radical { index, radicand } => emit_radical(w, index.as_deref(), radicand, style),
@@ -728,6 +738,7 @@ fn math_font_variant(font: MathFont) -> &'static str {
     match font {
         MathFont::Blackboard => "double-struck",
         MathFont::Calligraphic | MathFont::Script => "script",
+        MathFont::Fraktur => "fraktur",
         MathFont::Roman => "normal",
         MathFont::Bold => "bold",
         MathFont::BoldItalic => "bold-italic",
@@ -916,7 +927,7 @@ fn env_columnalign(name: &str, spec: Option<&str>, cols: usize) -> Option<String
         }
     }
     match name {
-        "align" | "align*" | "aligned" => {
+        "align*" | "aligned" => {
             if cols == 0 {
                 return None;
             }

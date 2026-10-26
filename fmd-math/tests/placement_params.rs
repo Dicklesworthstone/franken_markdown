@@ -1825,6 +1825,114 @@ const TIER_TWO_BOXES: &[(&str, Style, f64, f64, f64)] = &[
         6.6428,
         0.0,
     ),
+    // \mathfrak: eufm10/7/5's TFM boxes, Letterlike capitals and digits
+    // included; `+` stays cmr10's.
+    (r"\mathfrak{g}", Style::Text, 5.037, 4.75342, 1.89056),
+    (r"\mathfrak{su}(2)", Style::Text, 22.37648, 7.5, 2.5),
+    (r"\mathfrak{A}", Style::Text, 7.17603, 6.91406, 0.0),
+    (r"\mathfrak{CHIRZ}", Style::Text, 33.17397, 6.91406, 1.26038),
+    (r"\mathfrak{0123}", Style::Text, 20.07239, 4.75342, 1.89056),
+    (r"\mathfrak{a+b}", Style::Text, 22.35826, 6.91406, 0.83333),
+    (r"x^{\mathfrak{p}}", Style::Text, 10.413, 7.29956, 0.0),
+    (
+        r"x_{\mathfrak{a}_{\mathfrak{b}}}",
+        Style::Text,
+        14.95657,
+        4.30554,
+        2.56544,
+    ),
+    (r"\mathfrak{g}", Style::Script, 4.22226, 3.33006, 1.32446),
+    (
+        r"\mathfrak{g}",
+        Style::ScriptScript,
+        3.98697,
+        2.39014,
+        0.95062,
+    ),
+    (
+        r"\mathfrak{gl}_n",
+        Style::Display,
+        13.27567,
+        6.91406,
+        2.39055,
+    ),
+    (r"\mathfrak{xyz}", Style::Text, 12.78018, 4.75342, 1.89056),
+    // cancel.sty: every slope of both branches, the 2/6/8 pt floors (the
+    // empty body, the period), scripts and display style.
+    (r"\cancel{x}", Style::Text, 5.71527, 7.15277, 0.34723),
+    (r"\bcancel{x}", Style::Text, 5.71527, 7.15277, 0.34723),
+    (r"\xcancel{x}", Style::Text, 5.71527, 7.15277, 0.34723),
+    (r"\cancel{x+y}", Style::Text, 23.199, 5.09319, 1.94444),
+    (
+        r"\cancel{\frac{a}{b}}",
+        Style::Text,
+        6.73764,
+        7.9464,
+        3.44841,
+    ),
+    (
+        r"\cancel{\frac{a}{b}}",
+        Style::Display,
+        7.68588,
+        12.07054,
+        6.85951,
+    ),
+    (r"\cancel{abcdefgh}", Style::Text, 40.62854, 7.8275, 1.94444),
+    (r"a\cancel{b}c", Style::Text, 13.9051, 8.47221, 0.0),
+    (r"x^{\cancel{2}}", Style::Text, 10.2014, 10.88448, 0.0),
+    (r"\cancel{x}", Style::Script, 4.53473, 6.50694, 0.99306),
+    (
+        r"\cancel{x}",
+        Style::ScriptScript,
+        3.95836,
+        6.07639,
+        1.42361,
+    ),
+    (
+        r"\cancel{\int_0^1 f}",
+        Style::Text,
+        18.79169,
+        11.0657,
+        3.5556,
+    ),
+    (r"\cancel{xy}", Style::Text, 10.97687, 4.42303, 1.94444),
+    (r"\cancel{xyzwuv}", Style::Text, 34.42601, 4.21553, 1.94444),
+    (r"\cancel{ab}", Style::Text, 9.57755, 7.81096, 0.0),
+    (r"\cancel{mm}", Style::Text, 17.56027, 4.59778, 0.34723),
+    (r"\cancel{\Bigg|}", Style::Text, 3.33333, 17.86, 12.50015),
+    (r"\cancel{\big(}", Style::Text, 4.58336, 9.49998, 3.50006),
+    (
+        r"\cancel{\frac{abc}{d}}",
+        Style::Text,
+        13.82805,
+        10.585,
+        3.44841,
+    ),
+    (
+        r"\cancel{\frac{ab}{cd}}",
+        Style::Text,
+        10.2543,
+        9.795,
+        3.44841,
+    ),
+    (
+        r"\cancel{\sum_{i}^{n}}",
+        Style::Display,
+        14.44447,
+        17.51263,
+        12.79865,
+    ),
+    (r"\cancel{.}", Style::Text, 2.77779, 5.52777, 1.97223),
+    (r"\cancel{}", Style::Text, 0.0, 5.0, 2.5),
+    (r"\cancel{f}", Style::Text, 5.97226, 7.94, 1.94444),
+    (r"2\cancel{x}^2", Style::Text, 15.20142, 8.14003, 0.34723),
+    (
+        r"\frac{\cancel{a}b}{\cancel{a}c}",
+        Style::Text,
+        10.31139,
+        10.59998,
+        5.59998,
+    ),
 ];
 
 #[test]
@@ -1841,6 +1949,115 @@ fn tier_two_constructs_take_tex_boxes() {
             l.width,
             l.height,
             l.depth
+        );
+    }
+}
+
+/// Every on-curve point of a layout's paths, ems.
+fn path_points(l: &fmd_math::Layout) -> Vec<(f64, f64)> {
+    use fmd_math::PathSeg;
+    let mut points = Vec::new();
+    for path in &l.paths {
+        for c in &path.contours {
+            points.push(c.start);
+            for s in &c.segments {
+                match s {
+                    PathSeg::Line { to } | PathSeg::Quad { to, .. } => points.push(*to),
+                }
+            }
+        }
+    }
+    points
+}
+
+#[test]
+fn cancel_strokes_run_corner_to_corner_of_tex_line_boxes() {
+    // TeX's ink (dvisvgm of the line font's characters): \cancel{x}'s 5 x
+    // 10 pt line starts 0.35764 pt right of the box and 2.84723 pt below the
+    // baseline; \cancel{x+y}'s 25.199 x 6.29749 pt line starts 1 pt left of
+    // it and 1.20430 pt below. The pen is round, 0.4 pt across, so each tip
+    // overshoots its end by 0.2 pt along the line. The tolerance is the box
+    // oracle's: the strokes follow the body's box, and `x+y` is 1.6e-5 em
+    // wider than TeX's.
+    let e = engine();
+    for (tex, x0, y0, run, rise) in [
+        (r"\cancel{x}", 0.35764, -2.84723, 5.0, 10.0_f64),
+        (r"\cancel{x+y}", -1.0, -1.20430, 25.199, 6.29749),
+    ] {
+        let l = e.typeset(tex, Style::Text).unwrap();
+        assert_eq!(l.paths.len(), 1, "{tex}");
+        assert_eq!(l.paths[0].contours.len(), 1, "{tex}");
+        let len = (run * run + rise * rise).sqrt();
+        let (ux, uy) = (run / len, rise / len);
+        let low = (0.1 * (x0 - 0.2 * ux), 0.1 * (y0 - 0.2 * uy));
+        let high = (0.1 * (x0 + run + 0.2 * ux), 0.1 * (y0 + rise + 0.2 * uy));
+        let points = path_points(&l);
+        for tip in [low, high] {
+            assert!(
+                points
+                    .iter()
+                    .any(|p| (p.0 - tip.0).abs() < 1e-4 && (p.1 - tip.1).abs() < 1e-4),
+                "{tex}: no cap apex at {tip:?} in {points:?}"
+            );
+        }
+    }
+    // \bcancel falls where \cancel rises; \xcancel is both, as one contour
+    // with four caps.
+    let rising = path_points(&e.typeset(r"\cancel{x}", Style::Text).unwrap());
+    let falling = path_points(&e.typeset(r"\bcancel{x}", Style::Text).unwrap());
+    // The 1:2 line's unit direction, and its ends: x from 0.035764 to
+    // 0.535764 em, y from -0.284723 to 0.715277 em.
+    let (ux, uy) = (1.0 / 5.0_f64.sqrt(), 2.0 / 5.0_f64.sqrt());
+    let (left, right) = (0.035_764 - 0.02 * ux, 0.535_764 + 0.02 * ux);
+    let (top, bottom) = (0.715_277 + 0.02 * uy, -0.284_723 - 0.02 * uy);
+    let has = |ps: &[(f64, f64)], x: f64, y: f64| {
+        ps.iter()
+            .any(|p| (p.0 - x).abs() < 1e-5 && (p.1 - y).abs() < 1e-5)
+    };
+    assert!(
+        has(&rising, right, top) && has(&rising, left, bottom),
+        "{rising:?}"
+    );
+    assert!(
+        has(&falling, left, top) && has(&falling, right, bottom),
+        "{falling:?}"
+    );
+    assert!(!has(&rising, left, top) && !has(&falling, right, top));
+    let cross = e.typeset(r"\xcancel{x}", Style::Text).unwrap();
+    assert_eq!(cross.paths.len(), 1);
+    assert_eq!(cross.paths[0].contours.len(), 1);
+    // Per arm: out along an edge, a four-quad cap, back to a corner.
+    assert_eq!(cross.paths[0].contours[0].segments.len(), 4 * (1 + 4 + 1));
+    // The body keeps its own position: the x sits where it does alone.
+    let alone = e.typeset("x", Style::Text).unwrap();
+    let struck = e.typeset(r"\cancel{x}", Style::Text).unwrap();
+    assert_eq!(struck.glyphs.len(), 1);
+    assert!((struck.glyphs[0].x - alone.glyphs[0].x).abs() < 1e-12);
+    assert!((struck.glyphs[0].y - alone.glyphs[0].y).abs() < 1e-12);
+}
+
+#[test]
+fn cancel_strikes_text_bodies_and_reads_as_menclose() {
+    use fmd_math::faces::{FACE_MATH_ITALIC, FACE_REGULAR};
+    let e = engine();
+    // TexText: cancel.sty strikes `\hbox{…}`, so the body stays text.
+    let text = e.typeset_text(r"a \cancel{word} b").unwrap();
+    assert_eq!(text.paths.len(), 1);
+    assert!(
+        text.glyphs.iter().all(|g| g.face == FACE_REGULAR),
+        "{text:?}"
+    );
+    let math = e.typeset(r"\cancel{w}", Style::Text).unwrap();
+    assert_eq!(math.glyphs[0].face, FACE_MATH_ITALIC);
+    for (tex, notation) in [
+        (r"\cancel{x}", "updiagonalstrike"),
+        (r"\bcancel{x}", "downdiagonalstrike"),
+        (r"\xcancel{x}", "updiagonalstrike downdiagonalstrike"),
+    ] {
+        let mathml = fmd_math::to_mathml(&fmd_math::parse(tex).unwrap(), false);
+        assert!(
+            mathml.contains(&format!(r#"<menclose notation="{notation}">"#)),
+            "{tex}: {mathml}"
         );
     }
 }

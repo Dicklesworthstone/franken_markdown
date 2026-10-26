@@ -5,8 +5,9 @@
 //! typographic identity and the default face downstream — plus **CM
 //! Typewriter** (code), **IBM Plex Sans** (UI text), the **CM math** faces
 //! TeX sets mathematics in (math italic, symbols and extension at their
-//! optical sizes), **AMS-A/B** symbols and blackboard capitals (all converted
-//! from the AMS Type 1 release and renamed; see
+//! optical sizes), **AMS-A/B** symbols and blackboard capitals, **Euler
+//! Fraktur** (`\mathfrak`; all converted from the AMS Type 1 release and
+//! renamed; see
 //! `fonts/cm-math/PROVENANCE.json`), and the curated **Noto Sans Math**
 //! symbol-fallback subset. All are SIL OFL; the license texts ship
 //! alongside the binaries under `fonts/` and must accompany redistribution.
@@ -74,6 +75,13 @@ pub const AMS_B_10: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsBSymbols10.tt
 pub const AMS_B_7: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsBSymbols7.ttf");
 /// AMS-B at 5 pt (msbm5).
 pub const AMS_B_5: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsBSymbols5.ttf");
+/// Euler Fraktur at 10 pt (eufm10), `\mathfrak`'s face, converted and renamed
+/// under the OFL.
+pub const EULER_FRAKTUR_10: &[u8] = include_bytes!("../fonts/cm-math/FmdEulerFraktur10.ttf");
+/// Euler Fraktur at 7 pt (eufm7): first-order scripts.
+pub const EULER_FRAKTUR_7: &[u8] = include_bytes!("../fonts/cm-math/FmdEulerFraktur7.ttf");
+/// Euler Fraktur at 5 pt (eufm5): second-order scripts.
+pub const EULER_FRAKTUR_5: &[u8] = include_bytes!("../fonts/cm-math/FmdEulerFraktur5.ttf");
 
 /// The curated monochrome Noto Emoji subset (emoji fallback face). Regenerated
 /// via `cargo run --example gen_emoji_fallback_font`.
@@ -81,7 +89,7 @@ pub const AMS_B_5: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsBSymbols5.ttf"
 pub const NOTO_EMOJI_CURATED: &[u8] = include_bytes!("../fonts/noto-emoji/NotoEmojiCurated.ttf");
 
 /// Every bundled face as `(stable name, bytes)`, in registry order.
-pub const ALL_FACES: [(&str, &[u8]); 26] = [
+pub const ALL_FACES: [(&str, &[u8]); 29] = [
     ("cm-regular", CM_REGULAR),
     ("cm-bold", CM_BOLD),
     ("cm-italic", CM_ITALIC),
@@ -108,6 +116,9 @@ pub const ALL_FACES: [(&str, &[u8]); 26] = [
     ("ams-b-10", AMS_B_10),
     ("ams-b-7", AMS_B_7),
     ("ams-b-5", AMS_B_5),
+    ("euler-fraktur-10", EULER_FRAKTUR_10),
+    ("euler-fraktur-7", EULER_FRAKTUR_7),
+    ("euler-fraktur-5", EULER_FRAKTUR_5),
 ];
 
 #[cfg(test)]
@@ -164,6 +175,28 @@ mod tests {
         assert_ne!(roman7.glyph_index('Γ'), 0);
         for ch in ['0', '+', '=', '(', '[', ']', 's', 'Γ', '\u{F02B}'] {
             assert_ne!(roman10.glyph_index(ch), 0, "cmr10 maps {ch:?}");
+        }
+    }
+
+    /// eufm maps its letters at the Fraktur codepoints (the five Letterlike
+    /// capitals included) and its digits at ASCII; the ASCII letters and
+    /// the punctuation stay code-addressed, so only `\mathfrak` reaches them.
+    #[test]
+    fn euler_fraktur_maps_fraktur_letters_and_digits() {
+        for bytes in [
+            super::EULER_FRAKTUR_10,
+            super::EULER_FRAKTUR_7,
+            super::EULER_FRAKTUR_5,
+        ] {
+            let frak = Font::parse(bytes.to_vec()).expect("eufm face parses");
+            for ch in [
+                '𝔄', 'ℭ', 'ℌ', 'ℑ', 'ℜ', 'ℨ', '𝔤', '𝔷', '0', '9', '\u{F041}', '\u{F02B}',
+            ] {
+                assert_ne!(frak.glyph_index(ch), 0, "eufm maps {ch:?}");
+            }
+            assert_eq!(frak.glyph_index('A'), 0);
+            assert_eq!(frak.glyph_index('+'), 0);
+            assert_eq!(frak.glyph_index('ℭ'), frak.glyph_index('\u{F043}'));
         }
     }
 }

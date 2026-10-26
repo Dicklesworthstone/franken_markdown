@@ -181,6 +181,39 @@
       "glyphs": 123,
       "unicode_mapped": 28,
       "copyright": "Copyright (c) 1997, 2009 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name MSBM5."
+    },
+    {
+      "file": "FmdEulerFraktur10.ttf",
+      "family": "FMD Euler Fraktur 10",
+      "source": "eufm10.pfb",
+      "source_font_name": "EUFM10",
+      "source_sha256": "0d4adc0d8d6b3fd993fe138b6863126d7122cd1ae180d0a19eca0759bf7d0975",
+      "sha256": "eb89942b4128ecacfd47d0577a9604ace32da94b6abdddc07eb706b67556c859",
+      "glyphs": 93,
+      "unicode_mapped": 62,
+      "copyright": "Copyright (c) 1997, 2009, 2011 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name EUFM10."
+    },
+    {
+      "file": "FmdEulerFraktur7.ttf",
+      "family": "FMD Euler Fraktur 7",
+      "source": "eufm7.pfb",
+      "source_font_name": "EUFM7",
+      "source_sha256": "8c5202802ed024ad905ab81b34a882c9473acf9e9ab7a717bcee3f0f57e985f2",
+      "sha256": "87864c1a73275448d8e5828081896c1a6622c08d354312f3178b38b09a2e3fb4",
+      "glyphs": 93,
+      "unicode_mapped": 62,
+      "copyright": "Copyright (c) 1997, 2009, 2011 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name EUFM7."
+    },
+    {
+      "file": "FmdEulerFraktur5.ttf",
+      "family": "FMD Euler Fraktur 5",
+      "source": "eufm5.pfb",
+      "source_font_name": "EUFM5",
+      "source_sha256": "5e9e9e208ecdc198f68f87785ef84fccf3ab93291c7ead0a9ea1b1d6107983ee",
+      "sha256": "45bc3569bbbce3d8113f14da9af0906b8db4403d0418ea75a896c517cba206bd",
+      "glyphs": 93,
+      "unicode_mapped": 62,
+      "copyright": "Copyright (c) 1997, 2009, 2011 American Mathematical Society (<http://www.ams.org>), with Reserved Font Name EUFM5."
     }
   ]
 }

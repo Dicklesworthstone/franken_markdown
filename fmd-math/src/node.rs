@@ -229,6 +229,8 @@ pub enum MathFont {
     Calligraphic,
     /// `\mathscr` (mathrsfs, which the Reference's default template loads)
     Script,
+    /// `\mathfrak` (amssymb's Euler Fraktur)
+    Fraktur,
     /// `\mathrm`
     Roman,
     /// `\mathbf`
@@ -287,6 +289,17 @@ impl SpaceKind {
     pub const fn is_mu_glue(self) -> bool {
         matches!(self, Self::Thin | Self::Med | Self::Thick | Self::NegThin)
     }
+}
+
+/// The cancel package's strike-throughs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelKind {
+    /// `\cancel`: one stroke rising left to right.
+    Rising,
+    /// `\bcancel`: one stroke falling left to right.
+    Falling,
+    /// `\xcancel`: both.
+    Cross,
 }
 
 /// The kernel's logos.
@@ -598,6 +611,14 @@ pub enum NodeKind {
     /// display style inside a 0.4 pt frame 3 pt clear of it.
     Boxed {
         /// The framed body.
+        body: Box<Node>,
+    },
+    /// The cancel package's `\cancel`, `\bcancel` and `\xcancel`: the body
+    /// in the style in force, struck through by 0.4 pt line-font strokes.
+    Cancel {
+        /// Which strokes.
+        kind: CancelKind,
+        /// The struck body.
         body: Box<Node>,
     },
     /// `\stackrel`/`\overset`/`\underset`.

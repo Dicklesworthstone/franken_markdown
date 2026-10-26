@@ -2,9 +2,11 @@
 //! mathematics in (generated; do not edit by hand).
 //!
 //! Written by `scripts/font-oracles/extract-cm-tfm.py` from TeX Live's
-//! `fonts/tfm/public` (Knuth's Computer Modern metrics: `cm`, and
-//! `amsfonts/cmextra` for cmex7, and `amsfonts/symbols` for AMS).
-//! AMS symbol metrics carry the original AMS OFL notice in `OFL-AMS.txt`.
+//! `fonts/tfm/public`: Knuth's Computer Modern metrics from `cm`, cmex7
+//! from `amsfonts/cmextra`, AMS from `amsfonts/symbols` and Euler
+//! Fraktur from `amsfonts/euler`.
+//! AMS symbol and Euler metrics carry the original AMS OFL notice in
+//! `OFL-AMS.txt`.
 //! Values are the TFM fix_words over 2^20,
 //! in ems of each font's design size, so they are exact. Ligatures are
 //! omitted: the Reference preamble disables them.
@@ -28,6 +30,9 @@
 //! - `msbm7.tfm` 361b5530a4b410c6274e9330c11e993843c62e394323aeaa6e0aee61e8042444
 //! - `msbm5.tfm` 9e0909a297a3097e50960158d324006ddd5302db665400fa1fdf966df14e1a17
 //! - `cmti10.tfm` 46a66e937f809c4fbe317947b583a14b408aca41ecb835eca3be46391190432a
+//! - `eufm10.tfm` f0b7018ade501b4647c116a9ed1df10612cf8c173d0657ea17c5f1f6003fd1a1
+//! - `eufm7.tfm` 23cdb6f111156554ea02f45f63c38a31e8e591d497b3810e7c71304f866dde74
+//! - `eufm5.tfm` a7293dbf5c5c9d6dcbe75405f1a628788e0bc23b0a00e7b289d21eae163f7285
 
 /// One character's TFM box, in ems of the font's design size.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3917,5 +3922,428 @@ pub static CMTI10: TfmFont = TfmFont {
         (0x72, 0x6F, -0.05111122131347656),
         (0x72, 0x71, -0.05111122131347656),
         (0x77, 0x6C, 0.05111122131347656),
+    ],
+};
+
+/// `eufm10.tfm`.
+#[rustfmt::skip]
+pub static EUFM10: TfmFont = TfmFont {
+    name: "eufm10",
+    space: 0.33333301544189453,
+    skew_char: None,
+    params: &[0.0, 0.33333301544189453, 0.0, 0.0, 0.475341796875, 1.0, 0.0, 0.37811279296875, 0.27008056640625, 0.297088623046875, 0.37811279296875, 0.16204833984375, 0.405120849609375, 0.37811279296875, 0.3240966796875, 0.189056396484375, 0.243072509765625, 0.405120849609375, 0.027008056640625, 2.198452949523926, 0.999298095703125, 0.2565765380859375],
+    chars: &[
+        Some(TfmChar { width: 0.49748802185058594, height: 0.621185302734375, depth: 0.0, italic: 0.0 }), // 0x00
+        Some(TfmChar { width: 0.49829864501953125, height: 0.621185302734375, depth: 0.0, italic: 0.0 }), // 0x01
+        Some(TfmChar { width: 0.3332796096801758, height: 0.69140625, depth: 0.189056396484375, italic: 0.0 }), // 0x02
+        Some(TfmChar { width: 0.32922840118408203, height: 0.69140625, depth: 0.189056396484375, italic: 0.0 }), // 0x03
+        Some(TfmChar { width: 0.5034303665161133, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x04
+        Some(TfmChar { width: 0.3330097198486328, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x05
+        Some(TfmChar { width: 0.3340892791748047, height: 0.621185302734375, depth: 0.0, italic: 0.0 }), // 0x06
+        Some(TfmChar { width: 0.5007295608520508, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x07
+        None, // 0x08
+        None, // 0x09
+        None, // 0x0A
+        None, // 0x0B
+        None, // 0x0C
+        None, // 0x0D
+        None, // 0x0E
+        None, // 0x0F
+        None, // 0x10
+        None, // 0x11
+        Some(TfmChar { width: 0.21471405029296875, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x12
+        Some(TfmChar { width: 0.21471405029296875, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x13
+        None, // 0x14
+        None, // 0x15
+        None, // 0x16
+        None, // 0x17
+        None, // 0x18
+        None, // 0x19
+        None, // 0x1A
+        None, // 0x1B
+        None, // 0x1C
+        None, // 0x1D
+        None, // 0x1E
+        None, // 0x1F
+        None, // 0x20
+        Some(TfmChar { width: 0.29573822021484375, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x21
+        None, // 0x22
+        None, // 0x23
+        None, // 0x24
+        None, // 0x25
+        Some(TfmChar { width: 0.7378597259521484, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x26
+        Some(TfmChar { width: 0.21201324462890625, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x27
+        Some(TfmChar { width: 0.38864612579345703, height: 0.7494735717773438, depth: 0.24982452392578125, italic: 0.0 }), // 0x28
+        Some(TfmChar { width: 0.38864612579345703, height: 0.7494735717773438, depth: 0.24982452392578125, italic: 0.0 }), // 0x29
+        Some(TfmChar { width: 0.27764320373535156, height: 0.621185302734375, depth: 0.0, italic: 0.0 }), // 0x2A
+        Some(TfmChar { width: 0.7562255859375, height: 0.5828342437744141, depth: 0.08318519592285156, italic: 0.0 }), // 0x2B
+        Some(TfmChar { width: 0.27764320373535156, height: 0.1080322265625, depth: 0.0, italic: 0.0 }), // 0x2C
+        Some(TfmChar { width: 0.7562255859375, height: 0.5828342437744141, depth: 0.08318519592285156, italic: 0.0 }), // 0x2D
+        Some(TfmChar { width: 0.27764320373535156, height: 0.1080322265625, depth: 0.0, italic: 0.0 }), // 0x2E
+        Some(TfmChar { width: 0.5018100738525391, height: 0.7494735717773438, depth: 0.24982452392578125, italic: 0.0 }), // 0x2F
+        Some(TfmChar { width: 0.5018100738525391, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x30
+        Some(TfmChar { width: 0.5018100738525391, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x31
+        Some(TfmChar { width: 0.5018100738525391, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x32
+        Some(TfmChar { width: 0.5018100738525391, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x33
+        Some(TfmChar { width: 0.5018100738525391, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x34
+        Some(TfmChar { width: 0.5018100738525391, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x35
+        Some(TfmChar { width: 0.5018100738525391, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x36
+        Some(TfmChar { width: 0.5018100738525391, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x37
+        Some(TfmChar { width: 0.5018100738525391, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x38
+        Some(TfmChar { width: 0.5018100738525391, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x39
+        Some(TfmChar { width: 0.216064453125, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x3A
+        Some(TfmChar { width: 0.216064453125, height: 0.475341796875, depth: 0.12603759765625, italic: 0.0 }), // 0x3B
+        None, // 0x3C
+        Some(TfmChar { width: 0.7562255859375, height: 0.36865997314453125, depth: -0.13098907470703125, italic: 0.0 }), // 0x3D
+        None, // 0x3E
+        Some(TfmChar { width: 0.36244773864746094, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x3F
+        None, // 0x40
+        Some(TfmChar { width: 0.7176036834716797, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x41
+        Some(TfmChar { width: 0.8839740753173828, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x42
+        Some(TfmChar { width: 0.6125431060791016, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x43
+        Some(TfmChar { width: 0.831578254699707, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x44
+        Some(TfmChar { width: 0.6627779006958008, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x45
+        Some(TfmChar { width: 0.6111927032470703, height: 0.69140625, depth: 0.12603759765625, italic: 0.0 }), // 0x46
+        Some(TfmChar { width: 0.7853946685791016, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x47
+        Some(TfmChar { width: 0.7203044891357422, height: 0.69140625, depth: 0.063018798828125, italic: 0.0 }), // 0x48
+        Some(TfmChar { width: 0.5544757843017578, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x49
+        Some(TfmChar { width: 0.5523147583007812, height: 0.69140625, depth: 0.12603759765625, italic: 0.0 }), // 0x4A
+        Some(TfmChar { width: 0.6684494018554688, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x4B
+        Some(TfmChar { width: 0.6660184860229492, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x4C
+        Some(TfmChar { width: 1.0495328903198242, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x4D
+        Some(TfmChar { width: 0.832118034362793, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x4E
+        Some(TfmChar { width: 0.8269863128662109, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x4F
+        Some(TfmChar { width: 0.8275270462036133, height: 0.69140625, depth: 0.189056396484375, italic: 0.0 }), // 0x50
+        Some(TfmChar { width: 0.8269863128662109, height: 0.69140625, depth: 0.037811279296875, italic: 0.0 }), // 0x51
+        Some(TfmChar { width: 0.8280668258666992, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x52
+        Some(TfmChar { width: 0.8286075592041016, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x53
+        Some(TfmChar { width: 0.6689891815185547, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x54
+        Some(TfmChar { width: 0.6457624435424805, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x55
+        Some(TfmChar { width: 0.8313083648681641, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x56
+        Some(TfmChar { width: 1.0460224151611328, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x57
+        Some(TfmChar { width: 0.7192249298095703, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x58
+        Some(TfmChar { width: 0.8329286575317383, height: 0.69140625, depth: 0.189056396484375, italic: 0.0 }), // 0x59
+        Some(TfmChar { width: 0.6020097732543945, height: 0.69140625, depth: 0.12603759765625, italic: 0.0 }), // 0x5A
+        Some(TfmChar { width: 0.27764320373535156, height: 0.7494735717773438, depth: 0.24982452392578125, italic: 0.0 }), // 0x5B
+        None, // 0x5C
+        Some(TfmChar { width: 0.27764320373535156, height: 0.7494735717773438, depth: 0.24982452392578125, italic: 0.0 }), // 0x5D
+        Some(TfmChar { width: 0.4996490478515625, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x5E
+        None, // 0x5F
+        None, // 0x60
+        Some(TfmChar { width: 0.5004596710205078, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x61
+        Some(TfmChar { width: 0.513153076171875, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x62
+        Some(TfmChar { width: 0.38945579528808594, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x63
+        Some(TfmChar { width: 0.4985685348510742, height: 0.621185302734375, depth: 0.0, italic: 0.0 }), // 0x64
+        Some(TfmChar { width: 0.4005298614501953, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x65
+        Some(TfmChar { width: 0.32625770568847656, height: 0.69140625, depth: 0.189056396484375, italic: 0.0 }), // 0x66
+        Some(TfmChar { width: 0.5037002563476562, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x67
+        Some(TfmChar { width: 0.5212554931640625, height: 0.69140625, depth: 0.189056396484375, italic: 0.0 }), // 0x68
+        Some(TfmChar { width: 0.2789936065673828, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x69
+        Some(TfmChar { width: 0.2808837890625, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x6A
+        Some(TfmChar { width: 0.38945579528808594, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x6B
+        Some(TfmChar { width: 0.27953338623046875, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x6C
+        Some(TfmChar { width: 0.766758918762207, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x6D
+        Some(TfmChar { width: 0.5266571044921875, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x6E
+        Some(TfmChar { width: 0.4888458251953125, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x6F
+        Some(TfmChar { width: 0.5004596710205078, height: 0.523956298828125, depth: 0.189056396484375, italic: 0.0 }), // 0x70
+        Some(TfmChar { width: 0.48911571502685547, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x71
+        Some(TfmChar { width: 0.38918590545654297, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x72
+        Some(TfmChar { width: 0.44266223907470703, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x73
+        Some(TfmChar { width: 0.3330097198486328, height: 0.621185302734375, depth: 0.0, italic: 0.0 }), // 0x74
+        Some(TfmChar { width: 0.5172042846679688, height: 0.475341796875, depth: 0.0, italic: 0.0 }), // 0x75
+        Some(TfmChar { width: 0.5118026733398438, height: 0.523956298828125, depth: 0.0, italic: 0.0 }), // 0x76
+        Some(TfmChar { width: 0.7735109329223633, height: 0.523956298828125, depth: 0.0, italic: 0.0 }), // 0x77
+        Some(TfmChar { width: 0.38864612579345703, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x78
+        Some(TfmChar { width: 0.4988384246826172, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x79
+        Some(TfmChar { width: 0.3905363082885742, height: 0.475341796875, depth: 0.189056396484375, italic: 0.0 }), // 0x7A
+        None, // 0x7B
+        None, // 0x7C
+        Some(TfmChar { width: 0.21471405029296875, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x7D
+        None, // 0x7E
+        Some(TfmChar { width: 0.37811279296875, height: 0.69140625, depth: 0.0, italic: 0.0 }), // 0x7F
+    ],
+    kerns: &[
+    ],
+};
+
+/// `eufm7.tfm`.
+#[rustfmt::skip]
+pub static EUFM7: TfmFont = TfmFont {
+    name: "eufm7",
+    space: 0.33333301544189453,
+    skew_char: None,
+    params: &[0.0, 0.33333301544189453, 0.0, 0.0, 0.4757251739501953, 1.0, 0.0, 0.37841796875, 0.27029895782470703, 0.29732799530029297, 0.37841796875, 0.16217899322509766, 0.40544795989990234, 0.37841796875, 0.3243579864501953, 0.189208984375, 0.2432689666748047, 0.40544795989990234, 0.027029991149902344, 2.200227737426758, 1.0001049041748047, 0.25678348541259766],
+    chars: &[
+        Some(TfmChar { width: 0.596461296081543, height: 0.6216869354248047, depth: 0.0, italic: 0.0 }), // 0x00
+        Some(TfmChar { width: 0.5973377227783203, height: 0.6216869354248047, depth: 0.0, italic: 0.0 }), // 0x01
+        Some(TfmChar { width: 0.4188671112060547, height: 0.6919641494750977, depth: 0.189208984375, italic: 0.0 }), // 0x02
+        Some(TfmChar { width: 0.41448497772216797, height: 0.6919641494750977, depth: 0.189208984375, italic: 0.0 }), // 0x03
+        Some(TfmChar { width: 0.6028881072998047, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x04
+        Some(TfmChar { width: 0.41857433319091797, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x05
+        Some(TfmChar { width: 0.41974353790283203, height: 0.6216869354248047, depth: 0.0, italic: 0.0 }), // 0x06
+        Some(TfmChar { width: 0.5999670028686523, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x07
+        None, // 0x08
+        None, // 0x09
+        None, // 0x0A
+        None, // 0x0B
+        None, // 0x0C
+        None, // 0x0D
+        None, // 0x0E
+        None, // 0x0F
+        None, // 0x10
+        None, // 0x11
+        Some(TfmChar { width: 0.2906360626220703, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x12
+        Some(TfmChar { width: 0.2906360626220703, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x13
+        None, // 0x14
+        None, // 0x15
+        None, // 0x16
+        None, // 0x17
+        None, // 0x18
+        None, // 0x19
+        None, // 0x1A
+        None, // 0x1B
+        None, // 0x1C
+        None, // 0x1D
+        None, // 0x1E
+        None, // 0x1F
+        None, // 0x20
+        Some(TfmChar { width: 0.378265380859375, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x21
+        None, // 0x22
+        None, // 0x23
+        None, // 0x24
+        None, // 0x25
+        Some(TfmChar { width: 0.8564281463623047, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x26
+        Some(TfmChar { width: 0.28771495819091797, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x27
+        Some(TfmChar { width: 0.4787464141845703, height: 0.7500782012939453, depth: 0.25002574920654297, italic: 0.0 }), // 0x28
+        Some(TfmChar { width: 0.4787464141845703, height: 0.7500782012939453, depth: 0.25002574920654297, italic: 0.0 }), // 0x29
+        Some(TfmChar { width: 0.35869503021240234, height: 0.6216869354248047, depth: 0.0, italic: 0.0 }), // 0x2A
+        Some(TfmChar { width: 0.8762903213500977, height: 0.5833044052124023, depth: 0.083251953125, italic: 0.0 }), // 0x2B
+        Some(TfmChar { width: 0.35869503021240234, height: 0.10811901092529297, depth: 0.0, italic: 0.0 }), // 0x2C
+        Some(TfmChar { width: 0.8762903213500977, height: 0.5833044052124023, depth: 0.083251953125, italic: 0.0 }), // 0x2D
+        Some(TfmChar { width: 0.35869503021240234, height: 0.10811901092529297, depth: 0.0, italic: 0.0 }), // 0x2E
+        Some(TfmChar { width: 0.60113525390625, height: 0.7500782012939453, depth: 0.25002574920654297, italic: 0.0 }), // 0x2F
+        Some(TfmChar { width: 0.60113525390625, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x30
+        Some(TfmChar { width: 0.60113525390625, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x31
+        Some(TfmChar { width: 0.60113525390625, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x32
+        Some(TfmChar { width: 0.60113525390625, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x33
+        Some(TfmChar { width: 0.60113525390625, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x34
+        Some(TfmChar { width: 0.60113525390625, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x35
+        Some(TfmChar { width: 0.60113525390625, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x36
+        Some(TfmChar { width: 0.60113525390625, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x37
+        Some(TfmChar { width: 0.60113525390625, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x38
+        Some(TfmChar { width: 0.60113525390625, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x39
+        Some(TfmChar { width: 0.2920970916748047, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x3A
+        Some(TfmChar { width: 0.2920970916748047, height: 0.4757251739501953, depth: 0.12613964080810547, italic: 0.0 }), // 0x3B
+        None, // 0x3C
+        Some(TfmChar { width: 0.8762903213500977, height: 0.36895751953125, depth: -0.13109493255615234, italic: 0.0 }), // 0x3D
+        None, // 0x3E
+        Some(TfmChar { width: 0.45041370391845703, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x3F
+        None, // 0x40
+        Some(TfmChar { width: 0.8345203399658203, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x41
+        Some(TfmChar { width: 1.0144519805908203, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x42
+        Some(TfmChar { width: 0.7208948135375977, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x43
+        Some(TfmChar { width: 0.9577856063842773, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x44
+        Some(TfmChar { width: 0.7752246856689453, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x45
+        Some(TfmChar { width: 0.7194347381591797, height: 0.6919641494750977, depth: 0.12613964080810547, italic: 0.0 }), // 0x46
+        Some(TfmChar { width: 0.9078369140625, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x47
+        Some(TfmChar { width: 0.8374414443969727, height: 0.6919641494750977, depth: 0.06306934356689453, italic: 0.0 }), // 0x48
+        Some(TfmChar { width: 0.6580944061279297, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x49
+        Some(TfmChar { width: 0.655756950378418, height: 0.6919641494750977, depth: 0.12613964080810547, italic: 0.0 }), // 0x4A
+        Some(TfmChar { width: 0.7813587188720703, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x4B
+        Some(TfmChar { width: 0.7787303924560547, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x4C
+        Some(TfmChar { width: 1.193507194519043, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x4D
+        Some(TfmChar { width: 0.958369255065918, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x4E
+        Some(TfmChar { width: 0.95281982421875, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x4F
+        Some(TfmChar { width: 0.953404426574707, height: 0.6919641494750977, depth: 0.189208984375, italic: 0.0 }), // 0x50
+        Some(TfmChar { width: 0.95281982421875, height: 0.6919641494750977, depth: 0.037841796875, italic: 0.0 }), // 0x51
+        Some(TfmChar { width: 0.9539880752563477, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x52
+        Some(TfmChar { width: 0.9545726776123047, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x53
+        Some(TfmChar { width: 0.7819433212280273, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x54
+        Some(TfmChar { width: 0.7568225860595703, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x55
+        Some(TfmChar { width: 0.957493782043457, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x56
+        Some(TfmChar { width: 1.1897106170654297, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x57
+        Some(TfmChar { width: 0.836273193359375, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x58
+        Some(TfmChar { width: 0.9592456817626953, height: 0.6919641494750977, depth: 0.189208984375, italic: 0.0 }), // 0x59
+        Some(TfmChar { width: 0.709503173828125, height: 0.6919641494750977, depth: 0.12613964080810547, italic: 0.0 }), // 0x5A
+        Some(TfmChar { width: 0.35869503021240234, height: 0.7500782012939453, depth: 0.25002574920654297, italic: 0.0 }), // 0x5B
+        None, // 0x5C
+        Some(TfmChar { width: 0.35869503021240234, height: 0.7500782012939453, depth: 0.25002574920654297, italic: 0.0 }), // 0x5D
+        Some(TfmChar { width: 0.5987987518310547, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x5E
+        None, // 0x5F
+        None, // 0x60
+        Some(TfmChar { width: 0.599675178527832, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x61
+        Some(TfmChar { width: 0.6134033203125, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x62
+        Some(TfmChar { width: 0.47962284088134766, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x63
+        Some(TfmChar { width: 0.597630500793457, height: 0.6216869354248047, depth: 0.0, italic: 0.0 }), // 0x64
+        Some(TfmChar { width: 0.49159908294677734, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x65
+        Some(TfmChar { width: 0.4112720489501953, height: 0.6919641494750977, depth: 0.189208984375, italic: 0.0 }), // 0x66
+        Some(TfmChar { width: 0.603179931640625, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x67
+        Some(TfmChar { width: 0.622166633605957, height: 0.6919641494750977, depth: 0.189208984375, italic: 0.0 }), // 0x68
+        Some(TfmChar { width: 0.3601551055908203, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x69
+        Some(TfmChar { width: 0.3621997833251953, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x6A
+        Some(TfmChar { width: 0.47962284088134766, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x6B
+        Some(TfmChar { width: 0.36073970794677734, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x6C
+        Some(TfmChar { width: 0.8876819610595703, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x6D
+        Some(TfmChar { width: 0.6280078887939453, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x6E
+        Some(TfmChar { width: 0.5871143341064453, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x6F
+        Some(TfmChar { width: 0.599675178527832, height: 0.524378776550293, depth: 0.189208984375, italic: 0.0 }), // 0x70
+        Some(TfmChar { width: 0.587407112121582, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x71
+        Some(TfmChar { width: 0.47933101654052734, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x72
+        Some(TfmChar { width: 0.537165641784668, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x73
+        Some(TfmChar { width: 0.41857433319091797, height: 0.6216869354248047, depth: 0.0, italic: 0.0 }), // 0x74
+        Some(TfmChar { width: 0.6177845001220703, height: 0.4757251739501953, depth: 0.0, italic: 0.0 }), // 0x75
+        Some(TfmChar { width: 0.611943244934082, height: 0.524378776550293, depth: 0.0, italic: 0.0 }), // 0x76
+        Some(TfmChar { width: 0.894984245300293, height: 0.524378776550293, depth: 0.0, italic: 0.0 }), // 0x77
+        Some(TfmChar { width: 0.4787464141845703, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x78
+        Some(TfmChar { width: 0.5979223251342773, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x79
+        Some(TfmChar { width: 0.4807910919189453, height: 0.4757251739501953, depth: 0.189208984375, italic: 0.0 }), // 0x7A
+        None, // 0x7B
+        None, // 0x7C
+        Some(TfmChar { width: 0.2906360626220703, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x7D
+        None, // 0x7E
+        Some(TfmChar { width: 0.46735477447509766, height: 0.6919641494750977, depth: 0.0, italic: 0.0 }), // 0x7F
+    ],
+    kerns: &[
+    ],
+};
+
+/// `eufm5.tfm`.
+#[rustfmt::skip]
+pub static EUFM5: TfmFont = TfmFont {
+    name: "eufm5",
+    space: 0.33333396911621094,
+    skew_char: None,
+    params: &[0.0, 0.33333396911621094, 0.0, 0.0, 0.47802734375, 1.0, 0.0, 0.3802490234375, 0.2716064453125, 0.29876708984375, 0.3802490234375, 0.1629638671875, 0.40740966796875, 0.3802490234375, 0.325927734375, 0.19012451171875, 0.24444580078125, 0.40740966796875, 0.02716064453125, 2.210873603820801, 1.00494384765625, 0.258026123046875],
+    chars: &[
+        Some(TfmChar { width: 0.7899532318115234, height: 0.62469482421875, depth: 0.0, italic: 0.0 }), // 0x00
+        Some(TfmChar { width: 0.790924072265625, height: 0.62469482421875, depth: 0.0, italic: 0.0 }), // 0x01
+        Some(TfmChar { width: 0.5932741165161133, height: 0.6953125, depth: 0.19012451171875, italic: 0.0 }), // 0x02
+        Some(TfmChar { width: 0.5884218215942383, height: 0.6953125, depth: 0.19012451171875, italic: 0.0 }), // 0x03
+        Some(TfmChar { width: 0.7970705032348633, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x04
+        Some(TfmChar { width: 0.5929508209228516, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x05
+        Some(TfmChar { width: 0.5942440032958984, height: 0.62469482421875, depth: 0.0, italic: 0.0 }), // 0x06
+        Some(TfmChar { width: 0.7938356399536133, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x07
+        None, // 0x08
+        None, // 0x09
+        None, // 0x0A
+        None, // 0x0B
+        None, // 0x0C
+        None, // 0x0D
+        None, // 0x0E
+        None, // 0x0F
+        None, // 0x10
+        None, // 0x11
+        Some(TfmChar { width: 0.451263427734375, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x12
+        Some(TfmChar { width: 0.451263427734375, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x13
+        None, // 0x14
+        None, // 0x15
+        None, // 0x16
+        None, // 0x17
+        None, // 0x18
+        None, // 0x19
+        None, // 0x1A
+        None, // 0x1B
+        None, // 0x1C
+        None, // 0x1D
+        None, // 0x1E
+        None, // 0x1F
+        None, // 0x20
+        Some(TfmChar { width: 0.548309326171875, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x21
+        None, // 0x22
+        None, // 0x23
+        None, // 0x24
+        None, // 0x25
+        Some(TfmChar { width: 1.0778560638427734, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x26
+        Some(TfmChar { width: 0.448028564453125, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x27
+        Some(TfmChar { width: 0.6595888137817383, height: 0.7537078857421875, depth: 0.2512359619140625, italic: 0.0 }), // 0x28
+        Some(TfmChar { width: 0.6595888137817383, height: 0.7537078857421875, depth: 0.2512359619140625, italic: 0.0 }), // 0x29
+        Some(TfmChar { width: 0.5266361236572266, height: 0.62469482421875, depth: 0.0, italic: 0.0 }), // 0x2A
+        Some(TfmChar { width: 1.099853515625, height: 0.5861263275146484, depth: 0.08365440368652344, italic: 0.0 }), // 0x2B
+        Some(TfmChar { width: 0.5266361236572266, height: 0.108642578125, depth: 0.0, italic: 0.0 }), // 0x2C
+        Some(TfmChar { width: 1.099853515625, height: 0.5861263275146484, depth: 0.08365440368652344, italic: 0.0 }), // 0x2D
+        Some(TfmChar { width: 0.5266361236572266, height: 0.108642578125, depth: 0.0, italic: 0.0 }), // 0x2E
+        Some(TfmChar { width: 0.7951297760009766, height: 0.7537078857421875, depth: 0.2512359619140625, italic: 0.0 }), // 0x2F
+        Some(TfmChar { width: 0.7951297760009766, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x30
+        Some(TfmChar { width: 0.7951297760009766, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x31
+        Some(TfmChar { width: 0.7951297760009766, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x32
+        Some(TfmChar { width: 0.7951297760009766, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x33
+        Some(TfmChar { width: 0.7951297760009766, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x34
+        Some(TfmChar { width: 0.7951297760009766, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x35
+        Some(TfmChar { width: 0.7951297760009766, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x36
+        Some(TfmChar { width: 0.7951297760009766, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x37
+        Some(TfmChar { width: 0.7951297760009766, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x38
+        Some(TfmChar { width: 0.7951297760009766, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x39
+        Some(TfmChar { width: 0.452880859375, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x3A
+        Some(TfmChar { width: 0.452880859375, height: 0.47802734375, depth: 0.12674903869628906, italic: 0.0 }), // 0x3B
+        None, // 0x3C
+        Some(TfmChar { width: 1.099853515625, height: 0.3707427978515625, depth: -0.1317291259765625, italic: 0.0 }), // 0x3D
+        None, // 0x3E
+        Some(TfmChar { width: 0.6282100677490234, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x3F
+        None, // 0x40
+        Some(TfmChar { width: 1.0535945892333984, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x41
+        Some(TfmChar { width: 1.2528629302978516, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x42
+        Some(TfmChar { width: 0.9277591705322266, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x43
+        Some(TfmChar { width: 1.1901063919067383, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x44
+        Some(TfmChar { width: 0.9879274368286133, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x45
+        Some(TfmChar { width: 0.9261417388916016, height: 0.6953125, depth: 0.12674903869628906, italic: 0.0 }), // 0x46
+        Some(TfmChar { width: 1.1347904205322266, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x47
+        Some(TfmChar { width: 1.0568294525146484, height: 0.6953125, depth: 0.06337547302246094, italic: 0.0 }), // 0x48
+        Some(TfmChar { width: 0.8582096099853516, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x49
+        Some(TfmChar { width: 0.855621337890625, height: 0.6953125, depth: 0.12674903869628906, italic: 0.0 }), // 0x4A
+        Some(TfmChar { width: 0.994720458984375, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x4B
+        Some(TfmChar { width: 0.9918088912963867, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x4C
+        Some(TfmChar { width: 1.4511594772338867, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x4D
+        Some(TfmChar { width: 1.1907529830932617, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x4E
+        Some(TfmChar { width: 1.1846065521240234, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x4F
+        Some(TfmChar { width: 1.1852540969848633, height: 0.6953125, depth: 0.19012451171875, italic: 0.0 }), // 0x50
+        Some(TfmChar { width: 1.1846065521240234, height: 0.6953125, depth: 0.03802490234375, italic: 0.0 }), // 0x51
+        Some(TfmChar { width: 1.1859006881713867, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x52
+        Some(TfmChar { width: 1.1865482330322266, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x53
+        Some(TfmChar { width: 0.9953670501708984, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x54
+        Some(TfmChar { width: 0.9675474166870117, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x55
+        Some(TfmChar { width: 1.1897830963134766, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x56
+        Some(TfmChar { width: 1.4469547271728516, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x57
+        Some(TfmChar { width: 1.0555362701416016, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x58
+        Some(TfmChar { width: 1.1917238235473633, height: 0.6953125, depth: 0.19012451171875, italic: 0.0 }), // 0x59
+        Some(TfmChar { width: 0.9151430130004883, height: 0.6953125, depth: 0.12674903869628906, italic: 0.0 }), // 0x5A
+        Some(TfmChar { width: 0.5266361236572266, height: 0.7537078857421875, depth: 0.2512359619140625, italic: 0.0 }), // 0x5B
+        None, // 0x5C
+        Some(TfmChar { width: 0.5266361236572266, height: 0.7537078857421875, depth: 0.2512359619140625, italic: 0.0 }), // 0x5D
+        Some(TfmChar { width: 0.79254150390625, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x5E
+        None, // 0x5F
+        None, // 0x60
+        Some(TfmChar { width: 0.7935123443603516, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x61
+        Some(TfmChar { width: 0.8087158203125, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x62
+        Some(TfmChar { width: 0.6605587005615234, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x63
+        Some(TfmChar { width: 0.7912473678588867, height: 0.62469482421875, depth: 0.0, italic: 0.0 }), // 0x64
+        Some(TfmChar { width: 0.6738224029541016, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x65
+        Some(TfmChar { width: 0.5848636627197266, height: 0.6953125, depth: 0.19012451171875, italic: 0.0 }), // 0x66
+        Some(TfmChar { width: 0.797393798828125, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x67
+        Some(TfmChar { width: 0.81842041015625, height: 0.6953125, depth: 0.19012451171875, italic: 0.0 }), // 0x68
+        Some(TfmChar { width: 0.5282535552978516, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x69
+        Some(TfmChar { width: 0.530517578125, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x6A
+        Some(TfmChar { width: 0.6605587005615234, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x6B
+        Some(TfmChar { width: 0.528900146484375, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x6C
+        Some(TfmChar { width: 1.1124696731567383, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x6D
+        Some(TfmChar { width: 0.82489013671875, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x6E
+        Some(TfmChar { width: 0.77960205078125, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x6F
+        Some(TfmChar { width: 0.7935123443603516, height: 0.52691650390625, depth: 0.19012451171875, italic: 0.0 }), // 0x70
+        Some(TfmChar { width: 0.7799253463745117, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x71
+        Some(TfmChar { width: 0.6602354049682617, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x72
+        Some(TfmChar { width: 0.7242860794067383, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x73
+        Some(TfmChar { width: 0.5929508209228516, height: 0.62469482421875, depth: 0.0, italic: 0.0 }), // 0x74
+        Some(TfmChar { width: 0.813568115234375, height: 0.47802734375, depth: 0.0, italic: 0.0 }), // 0x75
+        Some(TfmChar { width: 0.807098388671875, height: 0.52691650390625, depth: 0.0, italic: 0.0 }), // 0x76
+        Some(TfmChar { width: 1.1205568313598633, height: 0.52691650390625, depth: 0.0, italic: 0.0 }), // 0x77
+        Some(TfmChar { width: 0.6595888137817383, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x78
+        Some(TfmChar { width: 0.7915706634521484, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x79
+        Some(TfmChar { width: 0.6618528366088867, height: 0.47802734375, depth: 0.19012451171875, italic: 0.0 }), // 0x7A
+        None, // 0x7B
+        None, // 0x7C
+        Some(TfmChar { width: 0.451263427734375, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x7D
+        None, // 0x7E
+        Some(TfmChar { width: 0.64697265625, height: 0.6953125, depth: 0.0, italic: 0.0 }), // 0x7F
+    ],
+    kerns: &[
     ],
 };

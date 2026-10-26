@@ -11,8 +11,8 @@
 
 use crate::atom::AtomClass;
 use crate::node::{
-    AccentKind, AmsFamily, DelimSize, FracSpec, LineAlign, LogoKind, MathFont, PhantomKind,
-    SpaceKind, StackKind, TextStyle,
+    AccentKind, AmsFamily, CancelKind, DelimSize, FracSpec, LineAlign, LogoKind, MathFont,
+    PhantomKind, SpaceKind, StackKind, TextStyle,
 };
 use crate::style::Style;
 
@@ -37,10 +37,14 @@ pub fn tier2_tracking(construct: &str) -> &'static str {
 
 /// The numbered and line-width display environments, refused by name:
 /// their equation numbers and `multline`'s flush lines sit against
-/// `\linewidth`, which a formula's own box does not have.
+/// `\linewidth`, which a formula's own box does not have. Numbered `align`
+/// is refused with them rather than set without its numbers.
 #[inline(always)]
 pub(crate) fn env_is_t2(name: &str) -> bool {
-    matches!(name, "equation" | "gather" | "multline" | "multline*")
+    matches!(
+        name,
+        "equation" | "gather" | "align" | "multline" | "multline*"
+    )
 }
 
 /// Where unknown (untiered) constructs should be reported.
@@ -139,6 +143,8 @@ pub(crate) enum Cmd {
     Phantom(PhantomKind),
     /// amsmath's `\boxed`.
     Boxed,
+    /// The cancel package's `\cancel`, `\bcancel` or `\xcancel`.
+    Cancel(CancelKind),
     /// amsmath's `\genfrac{ldelim}{rdelim}{thickness}{style}{num}{den}`.
     Genfrac,
     /// amsmath's `\cfrac[pos]{num}{den}`.
@@ -716,6 +722,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "mathds" => Cmd::Alphabet(MathFont::Blackboard),
         "mathcal" => Cmd::Alphabet(MathFont::Calligraphic),
         "mathscr" => Cmd::Alphabet(MathFont::Script),
+        "mathfrak" => Cmd::Alphabet(MathFont::Fraktur),
         "mathrm" => Cmd::Alphabet(MathFont::Roman),
         "mathbf" => Cmd::Alphabet(MathFont::Bold),
         "boldsymbol" => Cmd::Alphabet(MathFont::BoldItalic),
@@ -743,6 +750,11 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "quad" => Cmd::Spacing(SpaceKind::Quad),
         "qquad" => Cmd::Spacing(SpaceKind::Qquad),
         "boxed" => Cmd::Boxed,
+        // The cancel package (not in the Reference's default template: a
+        // superset, BN-05).
+        "cancel" => Cmd::Cancel(CancelKind::Rising),
+        "bcancel" => Cmd::Cancel(CancelKind::Falling),
+        "xcancel" => Cmd::Cancel(CancelKind::Cross),
         "phantom" => Cmd::Phantom(PhantomKind::Full),
         "hphantom" => Cmd::Phantom(PhantomKind::Horizontal),
         "vphantom" => Cmd::Phantom(PhantomKind::Vertical),
@@ -821,8 +833,10 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         // The Reference's default template loads amssymb, whose symbols
         // come from the AMS msam and msbm fonts. Each name keeps amssymb's
         // class and sets its Unicode codepoint from the bundled math faces
-        // (Noto Sans Math; the thick variants from cmsy). fmd-math bundles
-        // no msam or msbm face, so the shapes are Noto's, not the AMS fonts'.
+        // (Noto Sans Math; the thick variants from cmsy). The msam and msbm
+        // faces are bundled now, but these names do not route to them yet
+        // (unlike the `ams_sym` entries), so their shapes are Noto's; each
+        // comment gives the AMS code a move to `ams_sym` needs (fm-0byq).
         // Names whose glyph no bundled face carries stay untiered.
         "Bbbk" => sym('𝕜', Ord),               // U+1D55C, msbm "7C
         "Bumpeq" => sym('≎', Rel),             // U+224E, msam "6D
@@ -1001,12 +1015,10 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         // (`\centering` graduated to a real AlignDecl above.)
         "dx" => Cmd::UnsupportedT2,
         // Common constructs outside the G0-4 corpus, refused by name until
-        // they land ([`OUTSIDE_CORPUS_TRACKING`]): `\mathfrak` needs a
-        // Fraktur face (no bundled face carries the alphabet), `\tag` and
-        // `\sideset` their own layout, and `\cancel` the
-        // cancel package, which the Reference's default template does not
-        // load.
-        "mathfrak" | "tag" | "sideset" | "cancel" => Cmd::UnsupportedT2,
+        // they land ([`OUTSIDE_CORPUS_TRACKING`]): `\tag` and `\sideset`
+        // need their own layout, and `\cancelto` the cancel package's
+        // arrow and its script.
+        "tag" | "sideset" | "cancelto" => Cmd::UnsupportedT2,
         _ => return None,
     })
 }
@@ -1028,8 +1040,8 @@ pub(crate) fn ding_char(code: u32) -> Option<char> {
 pub(crate) fn lookup_env(name: &str) -> Option<EnvDef> {
     match name {
         "array" => Some(EnvDef { has_spec: true }),
-        "align" | "align*" | "aligned" | "gather*" | "gathered" | "equation*" | "cases"
-        | "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" | "smallmatrix"
+        "align*" | "aligned" | "gather*" | "gathered" | "equation*" | "cases" | "matrix"
+        | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" | "smallmatrix"
         | "substack" => Some(EnvDef { has_spec: false }),
         _ => None,
     }

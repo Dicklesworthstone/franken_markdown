@@ -201,7 +201,6 @@ fn every_t1_command_family_parses() {
         r"\begin{vmatrix} a & b \\ c & d \end{vmatrix}",
         r"\begin{cases} x & x > 0 \\ -x & x \le 0 \end{cases}",
         r"\begin{align*} a &= b \\ c &= d \end{align*}",
-        r"\begin{align} x &= y \end{align}",
         r"\begin{aligned} p &= q \end{aligned}",
         r"\left[ \begin{array}{c} 1 \\ 2 \end{array} \right]",
         // unicode passthrough

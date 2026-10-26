@@ -739,6 +739,32 @@ fn mathscr_is_a_script_distinct_from_mathcal() {
 }
 
 #[test]
+fn mathfrak_sets_euler_fraktur_at_its_optical_sizes() {
+    use fmd_math::faces::{FACE_FRAKTUR_5, FACE_FRAKTUR_7, FACE_FRAKTUR_10, FACE_ROMAN_10};
+    let e = engine();
+    let l = e.typeset(r"\mathfrak{gR1}", Style::Text).unwrap();
+    let chars: Vec<char> = l.glyphs.iter().map(|g| g.ch).collect();
+    // Semantic codepoints: the U+1D504 block, the Letterlike ℜ, and the
+    // digit as itself (Unicode has no Fraktur digits).
+    assert_eq!(chars, ['𝔤', 'ℜ', '1']);
+    assert!(l.glyphs.iter().all(|g| g.face == FACE_FRAKTUR_10), "{l:?}");
+    // Scripts take eufm7 and eufm5, as ueuf.fd selects them.
+    let s = e
+        .typeset(r"x_{\mathfrak{a}_{\mathfrak{b}}}", Style::Text)
+        .unwrap();
+    let face = |ch| s.glyphs.iter().find(|g| g.ch == ch).unwrap().face;
+    assert_eq!(face('𝔞'), FACE_FRAKTUR_7);
+    assert_eq!(face('𝔟'), FACE_FRAKTUR_5);
+    // A fixed-family character keeps its face under the alphabet: TeX
+    // switches only letters and digits.
+    let plus = e.typeset(r"\mathfrak{a+b}", Style::Text).unwrap();
+    assert_eq!(plus.glyphs[1].ch, '+');
+    assert_eq!(plus.glyphs[1].face, FACE_ROMAN_10);
+    let mathml = fmd_math::to_mathml(&fmd_math::parse(r"\mathfrak{g}").unwrap(), false);
+    assert!(mathml.contains(r#"mathvariant="fraktur""#), "{mathml}");
+}
+
+#[test]
 fn gather_rows_are_centred_display_formulas() {
     let e = engine();
     let gather = e
@@ -771,17 +797,70 @@ fn gather_rows_are_centred_display_formulas() {
     }
 }
 
+/// Glyph x positions (ems) relative to the first glyph, row by row.
+fn relative_xs(l: &fmd_math::Layout) -> Vec<f64> {
+    let mut glyphs: Vec<_> = l.glyphs.iter().collect();
+    glyphs.sort_by(|a, b| b.y.total_cmp(&a.y).then(a.x.total_cmp(&b.x)));
+    let first = glyphs[0].x;
+    glyphs.iter().map(|g| g.x - first).collect()
+}
+
+#[test]
+fn display_align_spreads_its_pairs_across_the_line() {
+    // TeX under the Reference template (`\centering` and `align*`, which
+    // the Tex surface wraps every string in): glyph x in pt, rows top to
+    // bottom. Each gap between pairs, and each margin, is the line's
+    // leftover over three. Microtype does not move them.
+    let tex: [f64; 16] = [
+        104.431, 112.4946, 123.0501, 215.965, 223.0702, 233.6258, 86.5179, 94.4553, 104.4553,
+        112.4946, 123.0501, 214.5679, 223.0702, 233.6258, 241.0539, 251.0539,
+    ];
+    let mut rows = [tex[..6].to_vec(), tex[6..].to_vec()];
+    for row in &mut rows {
+        row.sort_by(f64::total_cmp);
+    }
+    let first = rows[0][0];
+    let want: Vec<f64> = rows.concat().iter().map(|x| (x - first) / 10.0).collect();
+    let e = engine();
+    let source = r"a&=b & c&=d \\ x+y&=1 & u&=v+w";
+    for l in [
+        e.typeset(source, Style::Text).unwrap(),
+        e.typeset_text(&format!(r"\begin{{align*}} {source} \end{{align*}}"))
+            .unwrap(),
+    ] {
+        let got = relative_xs(&l);
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(&want) {
+            assert!((g - w).abs() < 1e-3, "{got:?} against TeX's {want:?}");
+        }
+    }
+    // `aligned` is no display: \minalignsep (10 pt) between its pairs. TeX's
+    // glyph x, pt: 139.6118 147.6754 158.2309 172.5226 179.6278 190.1833.
+    let aligned = e
+        .typeset(r"\begin{aligned} a&=b & c&=d \end{aligned}", Style::Text)
+        .unwrap();
+    let want = [0.0, 8.0636, 18.6191, 32.9108, 40.016, 50.5715];
+    let got = relative_xs(&aligned);
+    assert_eq!(got.len(), want.len());
+    for (g, w) in got.iter().zip(want) {
+        assert!(
+            (g - w / 10.0).abs() < 1e-3,
+            "{got:?} against TeX's {want:?} pt"
+        );
+    }
+}
+
 #[test]
 fn constructs_outside_the_corpus_refuse_by_name() {
     use fmd_math::{ConstructStatus, construct_status};
     let e = engine();
     for (source, construct) in [
-        (r"\mathfrak{A}", r"\mathfrak"),
         (r"x = y \tag{1}", r"\tag"),
         (r"\sideset{}{'}\sum_n", r"\sideset"),
-        (r"\cancel{x}", r"\cancel"),
+        (r"\cancelto{0}{x}", r"\cancelto"),
         (r"\begin{equation} x \end{equation}", "env:equation"),
         (r"\begin{gather} x \end{gather}", "env:gather"),
+        (r"\begin{align} x \end{align}", "env:align"),
         (r"\begin{multline} x \end{multline}", "env:multline"),
         (r"\begin{multline*} x \end{multline*}", "env:multline*"),
     ] {

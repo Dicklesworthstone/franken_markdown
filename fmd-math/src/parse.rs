@@ -17,8 +17,8 @@ use crate::atom::{char_class, intrinsic_class};
 use crate::commands::{self, Cmd};
 use crate::error::MathError;
 use crate::node::{
-    AccentKind, ColorSpec, Delim, FracSpec, FragmentKind, Length, Limits, LineAlign, Node,
-    NodeKind, SpaceKind, Span, TextStyle,
+    AccentKind, CancelKind, ColorSpec, Delim, FracSpec, FragmentKind, Length, Limits, LineAlign,
+    Node, NodeKind, SpaceKind, Span, TextStyle,
 };
 use crate::style::Style;
 use crate::token::{Tok, TokKind, lex};
@@ -702,9 +702,10 @@ impl<'s> Parser<'s> {
                     span,
                 ))
             }
-            // These three live in their own functions so this recursive
-            // frame does not grow (the nesting bound's stack margin).
+            // These live in their own functions so this recursive frame does
+            // not grow (the nesting bound's stack margin).
             Cmd::Boxed => self.boxed(name, span),
+            Cmd::Cancel(kind) => self.cancel(name, kind, span),
             Cmd::Genfrac => self.genfrac(name, span),
             Cmd::CFrac => self.cfrac(name, span),
             Cmd::Stack(kind) => {
@@ -1253,6 +1254,19 @@ impl<'s> Parser<'s> {
         ))
     }
 
+    /// The cancel package's `\cancel{…}` family in math mode.
+    fn cancel(&mut self, name: &str, kind: CancelKind, span: Span) -> Result<Node, MathError> {
+        let body = self.argument(&format!("argument of \\{name}"))?;
+        let span = span.union(body.span);
+        Ok(Node::new(
+            NodeKind::Cancel {
+                kind,
+                body: Box::new(body),
+            },
+            span,
+        ))
+    }
+
     /// amsmath's `\cfrac[pos]{num}{den}`: a display-style `\frac` with the
     /// continued fraction's strut, numerator position and trailing kern.
     fn cfrac(&mut self, name: &str, span: Span) -> Result<Node, MathError> {
@@ -1602,10 +1616,21 @@ impl<'s> Parser<'s> {
     }
 
     /// A `^`/`_`/`'` script cluster attaching to the preceding atom (or to
-    /// an empty base, as TeX does when a script opens a list).
+    /// an empty base, as TeX does when a script opens a list). A
+    /// `\mathchoice` is not an atom when TeX reads the script, and neither is
+    /// `\cancel` (a `\mathpalette`, so a choice too): the script takes an
+    /// empty base after it, as TeX's does.
     fn script_cluster(&mut self, items: &mut Vec<Node>) -> Result<(), MathError> {
         let base = match items.last() {
-            Some(last) if intrinsic_class(last).is_some() => items.pop().map(Box::new),
+            Some(last)
+                if intrinsic_class(last).is_some()
+                    && !matches!(
+                        last.kind,
+                        NodeKind::MathChoice { .. } | NodeKind::Cancel { .. }
+                    ) =>
+            {
+                items.pop().map(Box::new)
+            }
             _ => None,
         };
         let mut sup: Option<Box<Node>> = None;
@@ -1939,6 +1964,17 @@ impl<'s> Parser<'s> {
             Cmd::Text => {
                 let (body, body_span) = self.text_island_argument(name)?;
                 Ok(Node::new(NodeKind::List(body), span.union(body_span)))
+            }
+            // In text mode cancel.sty strikes `\hbox{…}`: a text body.
+            Cmd::Cancel(kind) => {
+                let (body, body_span) = self.text_island_argument(name)?;
+                Ok(Node::new(
+                    NodeKind::Cancel {
+                        kind,
+                        body: Box::new(Node::new(NodeKind::List(body), body_span)),
+                    },
+                    span.union(body_span),
+                ))
             }
             Cmd::Spacing(kind) => Ok(Node::new(NodeKind::Space(kind), span)),
             Cmd::Hspace => self.hspace(name, span),

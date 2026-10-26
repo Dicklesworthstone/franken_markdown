@@ -19,8 +19,8 @@ article and amsmath those are cmsy10/cmsy7/cmsy5 and cmex10/cmex7/cmex7 at 5 pt,
 per `\\fontname\\scriptfont3` and `\\scriptscriptfont3` (franken_manim fm-giir).
 
 The Computer Modern TFM files are distributed with TeX under the Knuth licence
-(free use; changed files must be renamed). The AMS symbol metrics accompany
-the OFL AMS font release. The output is a numeric transcription, not a font
+(free use; changed files must be renamed). The AMS symbol and Euler Fraktur
+metrics accompany the OFL AMS font release. The output is a numeric transcription, not a font
 file. Values are TFM fix_words divided by
 2^20, so every number is exact in an f64.
 
@@ -62,6 +62,11 @@ FONTS = [
     # \emph append (\check@icr); the Reference's T1 ecti1000 agrees within
     # 3e-5 em on every letter and digit.
     ("cmti10", "CMTI10", None, "cm"),
+    # \mathfrak's Euler Fraktur, which amssymb loads through eufrak (ueuf.fd
+    # sets eufm7 at 7 pt and eufm5 at 5 pt).
+    ("eufm10", "EUFM10", None, "amsfonts/euler"),
+    ("eufm7", "EUFM7", None, "amsfonts/euler"),
+    ("eufm5", "EUFM5", None, "amsfonts/euler"),
 ]
 
 STOP_FLAG = 128
@@ -140,9 +145,11 @@ def main() -> None:
         "//! mathematics in (generated; do not edit by hand).",
         "//!",
         "//! Written by `scripts/font-oracles/extract-cm-tfm.py` from TeX Live's",
-        "//! `fonts/tfm/public` (Knuth's Computer Modern metrics: `cm`, and",
-        "//! `amsfonts/cmextra` for cmex7, and `amsfonts/symbols` for AMS).",
-        "//! AMS symbol metrics carry the original AMS OFL notice in `OFL-AMS.txt`.",
+        "//! `fonts/tfm/public`: Knuth's Computer Modern metrics from `cm`, cmex7",
+        "//! from `amsfonts/cmextra`, AMS from `amsfonts/symbols` and Euler",
+        "//! Fraktur from `amsfonts/euler`.",
+        "//! AMS symbol and Euler metrics carry the original AMS OFL notice in",
+        "//! `OFL-AMS.txt`.",
         "//! Values are the TFM fix_words over 2^20,",
         "//! in ems of each font's design size, so they are exact. Ligatures are",
         "//! omitted: the Reference preamble disables them.",

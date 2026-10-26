@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 
-use fmd_math::faces::{FACE_MATH_EXTENSION, blackboard_char, calligraphic_char};
+use fmd_math::faces::{FACE_MATH_EXTENSION, blackboard_char, calligraphic_char, fraktur_char};
 use fmd_math::{Engine, Layout, Style, parse, to_mathml};
 
 /// Tier-1 construct families: scripts, fractions, radicals, big operators
@@ -40,6 +40,7 @@ const FORMULAS: &[&str] = &[
     r"\sqrt[3]{x^2 + y^2}",
     r"f'(x) + g''(x)",
     r"\mathcal{L} + \mathbb{R} + \mathrm{d}x",
+    r"\mathfrak{g} \oplus \mathfrak{Rh}_2",
     r"x \in A \notin B",
     r"\lim_{x \to 0} \frac{\sin x}{x} = 1",
     r"\log_2 n \cdot \max(a, b)",
@@ -60,7 +61,8 @@ const EDGES: &[&str] = &[r"\undefinedcommand{x}", r"\frac{a}", r"x^", r"\left( x
 /// compares as `L`.
 fn fold(ch: char) -> char {
     for base in ('A'..='Z').chain('a'..='z').chain('0'..='9') {
-        if calligraphic_char(base) == ch || blackboard_char(base) == ch {
+        if calligraphic_char(base) == ch || blackboard_char(base) == ch || fraktur_char(base) == ch
+        {
             return base;
         }
     }

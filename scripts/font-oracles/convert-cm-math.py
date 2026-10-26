@@ -156,6 +156,19 @@ AMSB = {
        for c in range(ord("A"), ord("Z") + 1)},
     "notbar": [0x2224], "planckover2pi1": [0x210F],
 }
+# eufm: \mathfrak's Euler Fraktur (amssymb loads eufrak). Letters map to the
+# Fraktur codepoints, with the Letterlike holes; Unicode has no Fraktur digits,
+# so the digits keep their ASCII codepoints inside this face only. Punctuation
+# and the alternate letter forms stay PUA-only: TeX's math alphabet switches
+# only variable-family characters.
+FRAKTUR_HOLES = {"C": 0x212D, "H": 0x210C, "I": 0x2111, "R": 0x211C, "Z": 0x2128}
+FRAKTUR = {
+    **{chr(c): [FRAKTUR_HOLES.get(chr(c), 0x1D504 + c - ord("A"))]
+       for c in range(ord("A"), ord("Z") + 1)},
+    **{chr(c): [0x1D51E + c - ord("a")] for c in range(ord("a"), ord("z") + 1)},
+    **{name: [ord("0") + d] for d, name in enumerate(
+        ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"])},
+}
 
 FACES = [
     ("FmdCmMathItalic10", "cmmi10", "FMD CM Math Italic 10", CMMI),
@@ -174,6 +187,9 @@ FACES = [
     ("FmdAmsBSymbols10", "../symbols/msbm10", "FMD AMS B Symbols 10", AMSB),
     ("FmdAmsBSymbols7", "../symbols/msbm7", "FMD AMS B Symbols 7", AMSB),
     ("FmdAmsBSymbols5", "../symbols/msbm5", "FMD AMS B Symbols 5", AMSB),
+    ("FmdEulerFraktur10", "../euler/eufm10", "FMD Euler Fraktur 10", FRAKTUR),
+    ("FmdEulerFraktur7", "../euler/eufm7", "FMD Euler Fraktur 7", FRAKTUR),
+    ("FmdEulerFraktur5", "../euler/eufm5", "FMD Euler Fraktur 5", FRAKTUR),
 ]
 
 

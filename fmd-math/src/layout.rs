@@ -44,8 +44,9 @@ use crate::mbox::{
 };
 use crate::metrics::MathConstants;
 use crate::node::{
-    AccentKind, Delim, DelimSize, FracSpec, FragmentKind, Length, LengthUnit, Limits, LineAlign,
-    LogoKind, MathFont, Node, NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
+    AccentKind, CancelKind, Delim, DelimSize, FracSpec, FragmentKind, Length, LengthUnit, Limits,
+    LineAlign, LogoKind, MathFont, Node, NodeKind, PhantomKind, SpaceKind, Span, StackKind,
+    TextStyle,
 };
 use crate::style::{Style, StyleCtx};
 
@@ -793,6 +794,7 @@ impl Engine {
             // In its own function so this recursive frame does not grow
             // (the nesting bound's stack margin).
             NodeKind::Boxed { body } => self.boxed(body, node.span, ctx),
+            NodeKind::Cancel { kind, body } => self.cancel(body, *kind, node.span, ctx),
             NodeKind::Logo(kind) => self.logo(*kind, node.span, ctx),
             NodeKind::MathChoice { branches } => {
                 self.lay_node(&branches[ctx.style.style.choice_index()], ctx)
@@ -1136,6 +1138,73 @@ impl Engine {
                 width,
                 height: height + SEP + RULE,
                 depth: depth + SEP + RULE,
+                children,
+            },
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// The cancel package's `\cancel`, `\bcancel` and `\xcancel` (cancel.sty
+    /// v2.2's `\@cancel` and `\@can@slash`). The body is its own formula in
+    /// the style in force (`\mathpalette`). Each stroke is a picture-mode
+    /// `\line` whose box [`cancel_line`] sizes, centred on the body and kept
+    /// out of its width (`\hidewidth`). Both rows of the `\ooalign` are
+    /// `\vcenter`ed in fresh text-style formulas, so the text axis applies
+    /// at every style. The overlay keeps the stroke row's height and the body
+    /// row's depth, and is raised back by the body's height less its centred
+    /// height, which returns the body to its own baseline. The line font
+    /// draws each line corner to corner of its box with a 0.4 pt round pen.
+    fn cancel(
+        &self,
+        body: &Node,
+        kind: CancelKind,
+        span: Span,
+        ctx: LayCtx,
+    ) -> Result<Laid, MathError> {
+        const PT: f64 = 0.1;
+        // A fresh formula: the style in force, uncramped, no alphabet.
+        let fresh = LayCtx {
+            style: StyleCtx::new(ctx.style.style),
+            alphabet: None,
+            align_rows: false,
+            ..ctx
+        };
+        let inner = self.formula_box(body, fresh)?;
+        let (width, h, d) = (inner.width, inner.height, inner.depth);
+        let text = ctx.map(|_| StyleCtx::new(Style::Text));
+        let axis = self.consts_at(&text).axis_height * text.size();
+        let (run, rise) = cancel_line(width, h + d);
+        let raise = h - ((h + d) / 2.0 + axis);
+        let (x0, x1) = ((width - run) / 2.0, (width + run) / 2.0);
+        let (y0, y1) = (axis - rise / 2.0 + raise, axis + rise / 2.0 + raise);
+        let lines: &[crate::drawn::Segment] = match kind {
+            CancelKind::Rising => &[((x0, y0), (x1, y1))],
+            CancelKind::Falling => &[((x0, y1), (x1, y0))],
+            CancelKind::Cross => &[((x0, y0), (x1, y1)), ((x0, y1), (x1, y0))],
+        };
+        // TeX emits the strokes' row before the body's.
+        let children = vec![
+            Positioned {
+                dx: 0.0,
+                dy: 0.0,
+                node: MNode::Path {
+                    contours: crate::drawn::strokes(lines, 0.2 * PT),
+                    span,
+                },
+            },
+            Positioned {
+                dx: 0.0,
+                dy: 0.0,
+                node: MNode::Box(inner),
+            },
+        ];
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width,
+                height: (rise / 2.0 + axis).max(0.0) + raise,
+                depth: ((h + d) / 2.0 - axis).max(0.0) - raise,
                 children,
             },
             italic: 0.0,
@@ -2086,6 +2155,7 @@ impl Engine {
                 col_sep: 1.0,
                 jot: self.consts.jot,
                 first_baseline: true,
+                display_width: Some(LINE_WIDTH),
                 ..Grid::centered(1.0)
             },
             span,
@@ -2687,10 +2757,11 @@ impl Engine {
                     span,
                 )?
             }
-            "align" | "align*" | "aligned" => {
+            "align*" | "aligned" => {
                 // Display-style cells; r,l alternation with the alignment
-                // point closed up; \minalignsep between pairs; \jot opens
-                // the rows.
+                // point closed up; \jot opens the rows. `aligned` sets
+                // \minalignsep between pairs; `align*`, a display, spreads
+                // them across the line.
                 let cells = ctx.map(|s| StyleCtx {
                     style: Style::Display,
                     cramped: s.cramped,
@@ -2702,6 +2773,7 @@ impl Engine {
                         align: AlignRule::AlignPairs,
                         col_sep: 1.0,
                         jot: self.consts.jot,
+                        display_width: (name == "align*").then_some(LINE_WIDTH),
                         ..Grid::centered(1.0)
                     },
                     span,
@@ -2802,12 +2874,27 @@ impl Engine {
             .iter()
             .map(|r| r.iter().map(|b| b.depth).fold(strut_d, f64::max))
             .collect();
-        // 3. Column x positions.
+        // 3. Column x positions. A display-level align spreads its pairs
+        // over the line: every gap, the outer two included, is the line's
+        // leftover over (pairs + 1), and at least \minalignsep (amsmath's
+        // \align@). The outer gaps carry no ink, so the box keeps only the
+        // inner ones.
+        #[allow(clippy::cast_precision_loss)]
+        let pair_gap = grid
+            .display_width
+            .filter(|_| matches!(grid.align, AlignRule::AlignPairs))
+            .map(|line| {
+                let used: f64 = col_w.iter().sum();
+                ((line - used) / (ncols.div_ceil(2) as f64 + 1.0)).max(grid.col_sep * size)
+            });
         let mut col_x = vec![0.0_f64; ncols];
         let mut x = grid.outer_pad * size;
         for (j, w) in col_w.iter().enumerate() {
             if j > 0 {
-                x += grid.sep_before(j) * size;
+                x += match pair_gap {
+                    Some(gap) if j % 2 == 0 => gap,
+                    _ => grid.sep_before(j) * size,
+                };
             }
             col_x[j] = x;
             x += w;
@@ -3917,7 +4004,14 @@ struct Grid {
     /// `\arraystretch`), and rows stack depth to height with no
     /// interline glue. `None` for the baselineskip-stacked grids.
     array_stretch: Option<f64>,
+    /// A display-level `align`'s line width (ems): its column pairs spread
+    /// across the line. `None` keeps `col_sep` between pairs (`aligned`).
+    display_width: Option<f64>,
 }
+
+/// The Reference page's `\linewidth`, 345 pt (the standalone class's
+/// article geometry), in ems: the width display environments span.
+const LINE_WIDTH: f64 = 34.5;
 
 impl Grid {
     /// All-centered columns with the given separation — the matrix baseline.
@@ -3925,6 +4019,7 @@ impl Grid {
         Self {
             first_baseline: false,
             array_stretch: None,
+            display_width: None,
             align: AlignRule::AllCenter,
             col_sep,
             outer_pad: 0.0,
@@ -4142,6 +4237,62 @@ fn last_text_char(nodes: &[Node]) -> Option<char> {
         | NodeKind::TextStyled { body: items, .. } => last_text_char(items),
         _ => None,
     }
+}
+
+/// The run and rise (ems) of the picture `\line` cancel.sty's `\@can@slash`
+/// draws over a body `width` wide and `total` tall, in TeX's scaled-point
+/// arithmetic. The line font's slopes are few, so the body's proportions
+/// pick one. A wide body gets a shallow slope over its width plus 2 pt. A
+/// tall body gets a steep slope over its total height plus 2 pt, with the
+/// run a fraction of that height. The floors are 2 pt (width), 6 pt
+/// (height) and 8 pt (the measured side). LaTeX's `\@sline` then lays
+/// line-font characters end to end and moves the last back to end at the
+/// run. It raises that one by whole thousandths of a character's height,
+/// so the rise is the tiling's, a little short of the slope's. One case
+/// departs from TeX: a run shorter than one character draws nothing in
+/// LaTeX (it warns). Here it keeps its slope's rise.
+fn cancel_line(width: f64, total: f64) -> (f64, f64) {
+    const PT: i64 = 65_536;
+    const SP_PER_EM: f64 = 655_360.0;
+    #[allow(clippy::cast_possible_truncation)]
+    let sp = |em: f64| (em * SP_PER_EM).round() as i64;
+    // `\ifcase` on the truncated ratio: 0, 1, 2, 3, or 4 and beyond.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let case = |ratio: i64| ratio.clamp(0, 4) as usize;
+    let w = sp(width).max(2 * PT);
+    let t = sp(total).max(6 * PT);
+    let ((x, y), run) = if t < w {
+        let w = w.max(8 * PT);
+        let i = case(t * 5 / w);
+        ([(6, 1), (4, 1), (2, 1), (4, 3), (1, 1)][i], w + 2 * PT)
+    } else {
+        let t = t.max(8 * PT) + 2 * PT;
+        let i = case(w * 5 / t);
+        // `\dimen@ .16\totalheight`: TeX reads the factor in 2^-16 units.
+        let factor = [10_486, 16_384, 32_768, 49_152, 65_536][i];
+        (
+            [(1, 6), (1, 4), (1, 2), (3, 4), (1, 1)][i],
+            t * factor / 65_536,
+        )
+    };
+    // line10's characters: the long side 10 pt, the short side its slope's
+    // share of that, as the TFM rounds it.
+    let long = 10 * PT;
+    let short = |a: i64, b: i64| (long * a + b / 2) / b;
+    let (cw, ch) = if x >= y {
+        (long, short(y, x))
+    } else {
+        (short(x, y), long)
+    };
+    let whole = (run - 1) / cw;
+    let rise = if run < cw {
+        run * y / x
+    } else {
+        ch * whole + ch * ((run - cw * whole) * 1000 / cw) / 1000
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let em = |sp: i64| sp as f64 / SP_PER_EM;
+    (em(run), em(rise))
 }
 
 /// `\hspace`'s glue in layout units (ems of the 10 pt design size). A fixed

@@ -15,6 +15,7 @@ The full TTFs live here; each rendered PDF embeds only the glyphs it actually us
 | Mono (code)    | CM Typewriter   | `computer-modern/cmuntt.ttf` |
 | Math (fmd-math) | CM math italic / symbols / extension, roman script sizes | `cm-math/FmdCmMath{Italic,Symbols}{10,7,5}.ttf`, `cm-math/FmdCmMathExtension10.ttf`, `cm-math/FmdCmRoman{7,5}.ttf` |
 | AMS math (fmd-math) | AMS-A and AMS-B symbols, including blackboard capitals | `cm-math/FmdAms{A,B}Symbols{10,7,5}.ttf` |
+| Fraktur (fmd-math) | Euler Fraktur, `\mathfrak`'s face | `cm-math/FmdEulerFraktur{10,7,5}.ttf` |
 | Symbol fallback | Noto Sans Math (curated subset) | `noto-sans-math/NotoSansMathSymbols.ttf` |
 | Emoji fallback (native, `emoji-face`) | Noto Emoji, monochrome (curated subset) | `noto-emoji/NotoEmojiCurated.ttf` |
 | Test-only VF | FmdTestVF (synthetic `wght` axis) | `test-variable/FmdTestVF.ttf` |
@@ -65,6 +66,13 @@ are the single source of truth for the fallback repertoire.
   only, so ordinary subtraction keeps its CM glyph. `fmd-math` uses the
   corresponding TFM metrics and 7/5 pt optical cuts; Noto remains the fallback
   for alphabets and symbols these faces do not contain.
+- **Euler Fraktur** — AMSFonts' `eufm10/7/5`, the faces amssymb's `\mathfrak`
+  sets (through eufrak's `ueuf.fd`), under the same AMS copyright and
+  `cm-math/OFL.txt`, which names them as Reserved Font Names. The same converter
+  produces renamed "FMD Euler Fraktur …" derivatives. Letters map at the
+  Mathematical Fraktur codepoints (the five Letterlike capitals included) and
+  digits at ASCII; punctuation and the alternate letter forms are code-addressed
+  only.
 - **Noto Sans Math** — <https://github.com/google/fonts/tree/main/ofl/notosansmath>
   (© The Noto Project Authors), SIL OFL 1.1. License: `noto-sans-math/OFL.txt`.
   Committed as the curated `NotoSansMathSymbols.ttf` subset described above, not

@@ -140,6 +140,12 @@ pub const FACE_AMS_B_10: FaceId = FaceId(20);
 pub const FACE_AMS_B_7: FaceId = FaceId(21);
 /// AMS-B's second-order script cut.
 pub const FACE_AMS_B_5: FaceId = FaceId(22);
+/// Euler Fraktur (eufm10), `\mathfrak`'s face at text/display size.
+pub const FACE_FRAKTUR_10: FaceId = FaceId(23);
+/// Euler Fraktur's first-order script cut (eufm7).
+pub const FACE_FRAKTUR_7: FaceId = FaceId(24);
+/// Euler Fraktur's second-order script cut (eufm5).
+pub const FACE_FRAKTUR_5: FaceId = FaceId(25);
 
 /// The private-use page the CM and AMS faces map their TFM code positions
 /// into: code `c` is `U+F000 + c` in that face (ADR-0028).
@@ -158,7 +164,8 @@ impl FaceSet {
     /// Build a face set from parsed fonts, in [`FaceId`] order: regular,
     /// italic, bold, bold-italic, typewriter, sans, symbols, then the CM
     /// math faces (math italic, symbols, extension, the 7/5-point italic,
-    /// symbols and roman cuts, and cmr10), then AMS-A and AMS-B at 10/7/5 pt.
+    /// symbols and roman cuts, and cmr10), then AMS-A, AMS-B and Euler
+    /// Fraktur at 10/7/5 pt.
     /// A roster without the CM or AMS math faces
     /// still lays out: resolution falls back across whatever is present.
     /// Its glyphs take metrics measured from their outlines: only
@@ -172,8 +179,8 @@ impl FaceSet {
     }
 
     /// The bundled sovereign default: the four CM text faces, CM
-    /// Typewriter, IBM Plex Sans, the Noto math-symbol subset, and the CM
-    /// CM and AMS math faces TeX sets mathematics in (ADR-0028).
+    /// Typewriter, IBM Plex Sans, the Noto math-symbol subset, and the CM,
+    /// AMS and Euler Fraktur math faces TeX sets mathematics in (ADR-0028).
     ///
     /// # Errors
     ///
@@ -205,6 +212,9 @@ impl FaceSet {
             fmd_font::Font::parse(fmd_font::bundled::AMS_B_10.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::AMS_B_7.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::AMS_B_5.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::EULER_FRAKTUR_10.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::EULER_FRAKTUR_7.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::EULER_FRAKTUR_5.to_vec())?,
         ];
         let mut faces = Self::from_fonts(fonts);
         faces.tfm = (0..faces.fonts.len()).map(|_| None).collect();
@@ -240,6 +250,9 @@ impl FaceSet {
             (FACE_AMS_B_10, &crate::tfm::MSBM10),
             (FACE_AMS_B_7, &crate::tfm::MSBM7),
             (FACE_AMS_B_5, &crate::tfm::MSBM5),
+            (FACE_FRAKTUR_10, &crate::tfm::EUFM10),
+            (FACE_FRAKTUR_7, &crate::tfm::EUFM7),
+            (FACE_FRAKTUR_5, &crate::tfm::EUFM5),
         ] {
             faces.attach_tfm(face, font, &tex_coded);
         }
@@ -297,11 +310,13 @@ impl FaceSet {
             (Style::Script, FACE_REGULAR) => FACE_ROMAN_7,
             (Style::Script, FACE_AMS_A_10) => FACE_AMS_A_7,
             (Style::Script, FACE_AMS_B_10) => FACE_AMS_B_7,
+            (Style::Script, FACE_FRAKTUR_10) => FACE_FRAKTUR_7,
             (Style::ScriptScript, FACE_MATH_ITALIC) => FACE_MATH_ITALIC_5,
             (Style::ScriptScript, FACE_MATH_SYMBOLS) => FACE_MATH_SYMBOLS_5,
             (Style::ScriptScript, FACE_REGULAR) => FACE_ROMAN_5,
             (Style::ScriptScript, FACE_AMS_A_10) => FACE_AMS_A_5,
             (Style::ScriptScript, FACE_AMS_B_10) => FACE_AMS_B_5,
+            (Style::ScriptScript, FACE_FRAKTUR_10) => FACE_FRAKTUR_5,
             _ => return None,
         };
         let gid = self.font(cut)?.glyph_index(ch);
@@ -526,6 +541,30 @@ pub fn alphabet_map(font: MathFont, ch: char) -> (char, &'static [FaceId]) {
             calligraphic_char(ch),
             &[FACE_SYMBOLS, FACE_ITALIC, FACE_REGULAR],
         ),
+        // `\mathfrak` is eufm (amssymb's eufrak). Its letters and digits
+        // are the only characters a math alphabet switches; anything else
+        // keeps its own face, as TeX's fixed-family characters do.
+        MathFont::Fraktur => (
+            fraktur_char(ch),
+            &[FACE_FRAKTUR_10, FACE_REGULAR, FACE_SYMBOLS],
+        ),
+    }
+}
+
+/// The Fraktur codepoint of a letter: the Letterlike exceptions (ℭ ℌ ℑ ℜ ℨ)
+/// first, then the U+1D504 block. Digits and everything else pass through;
+/// the Fraktur face maps its own digits at ASCII.
+#[must_use]
+pub fn fraktur_char(ch: char) -> char {
+    match ch {
+        'C' => 'ℭ',
+        'H' => 'ℌ',
+        'I' => 'ℑ',
+        'R' => 'ℜ',
+        'Z' => 'ℨ',
+        'A'..='Z' => offset_char(0x1D504, ch, 'A'),
+        'a'..='z' => offset_char(0x1D51E, ch, 'a'),
+        other => other,
     }
 }
 
@@ -607,7 +646,7 @@ mod tests {
             Ok(f) => f,
             Err(e) => panic!("bundled faces: {e}"),
         };
-        assert_eq!(faces.len(), 23);
+        assert_eq!(faces.len(), 26);
         // Letters come from the math italic; digits stay upright.
         let Some((face, gid)) = faces.resolve('x', default_math_chain('x')) else {
             panic!("x must resolve");

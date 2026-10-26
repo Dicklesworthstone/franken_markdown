@@ -757,4 +757,23 @@ if (!isMainThread) {
     assert.equal(api.disposed, true);
     assert.equal(api.pendingBytes, 0);
   });
+  test("PDF baseline spacing survives worker queue snapshots and rejects invalid combinations early", async t => {
+    const api = renderer(t);
+    const blocking = api.renderHtml("slow");
+    const options = { baselineGridPt: 13.125, optimalPagination: true };
+    const pending = api.renderPdf("grid", options);
+    options.baselineGridPt = 72;
+    await blocking;
+    assert.equal(JSON.parse((await pending).text()).options.baselineGridPt, 13.125);
+    let starts = 0;
+    const guarded = createWorkerRenderer({ workerFactory() { starts++; assert.fail("must reject before startup"); } });
+    try {
+      for (const baselineGridPt of [-1, 0.5, 145, NaN, Infinity, "14", null])
+        await rejects(guarded.renderPdf("x", { baselineGridPt }), "INVALID_OPTIONS");
+      await rejects(guarded.renderPdf("x", { baselineGridPt: 14, fitToPages: 2 }), "INVALID_OPTIONS");
+      await rejects(guarded.renderHtml("x", { baselineGridPt: 14 }), "INVALID_OPTIONS");
+      assert.equal(starts, 0); assert.equal(guarded.pendingBytes, 0);
+    } finally { guarded.dispose(); }
+  });
+
 }

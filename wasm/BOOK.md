@@ -72,6 +72,20 @@ settings keep the existing 29-argument binding. Book contents and page numbers
 remain enabled by default, and omitted, empty, or disabled new settings do not
 change output.
 
+## Body baseline grids
+
+Both root `renderBookPdf(files, { baselineGridPt: 14 })` and retained
+`createBook(files, { baselineGridPt: 14 })` support the shared PDF body grid.
+The `book-worker` options retain the same setting across source updates.
+Spacing must be `1`..`144` points (rounded to `0.001` pt); omitted or `0` disables
+it. An enabled grid cannot be combined with `fitToPages`. Paper overrides,
+ordinary PDF and archival exports preserve it, and changing spacing invalidates
+retained publication output. The root helper requires `renderBookPdfConfiguredGrid`;
+retained books require the additive `FmdBook.setBaselineGridPt` method. Older
+packages reject an enabled setting, while default requests keep existing ABIs.
+See [grid geometry and host admission](README.md#pdf-baseline-grids) for the
+body/figure/running-band policy and exact compatibility boundaries.
+
 ## Complete workflow
 
 Add `.md`/`.markdown` files, PNG/JPEG/SVG image files, or a folder. Folder import

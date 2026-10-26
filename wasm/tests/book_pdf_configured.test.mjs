@@ -9,7 +9,7 @@ const pageModule = new URL("../pdf_page.mjs", import.meta.url).href;
 let serial = 0;
 const dataModule = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 
-async function fixture(advanced = true, complete = advanced) {
+async function fixture(advanced = true, complete = advanced, grid = complete) {
   const bindingUrl = dataModule(`// isolated generated-binding double ${++serial}
     export const state = { calls: [], loads: 0, freed: 0, wait: null, fail: null, badDiagnostics: false };
     export default async function init() { state.loads++; await state.wait; }
@@ -25,6 +25,7 @@ async function fixture(advanced = true, complete = advanced) {
     }
     export const renderBookPdfConfiguredPage = ${advanced ? "(...args) => output('book-advanced', args)" : "undefined"};
     export const renderBookPdfConfiguredAdvanced = ${complete ? "(...args) => output('book-complete', args)" : "undefined"};
+    export const renderBookPdfConfiguredGrid = ${grid ? "(...args) => output('book-grid', args)" : "undefined"};
     export const renderBookPdf = (...args) => output('book-legacy', args);
     export const renderPdfConfiguredPage = (...args) => output('pdf-page', args);
     export const renderPdfConfiguredMulti = (...args) => output('pdf', args);
@@ -358,4 +359,31 @@ test("root single-document PDF calls still use their existing ABI and geometry o
   await api.renderPdf("# Solo", { page: page(), typography: { antiriver: true } });
   assert.equal(state.calls[3].args.length, 29);
   assert.equal(state.calls[3].args[28], "antiriver");
+});
+
+
+test("book body grids use an additive 38-argument ABI without dropping advanced settings", async () => {
+  const { api, state } = await fixture();
+  await api.renderBookPdf(chapters(), { baselineGridPt: 13.125, page: page(),
+    typography: { pareto: true }, running: { footer: { center: "{page}/{pages}" } } });
+  const { kind, args } = state.calls[0];
+  assert.equal(kind, "book-grid"); assert.equal(args.length, 38);
+  assert.deepEqual([...args[28]], [720, 540, 18, 24, 30, 36]);
+  assert.deepEqual(args[29], ["", "", "", "", "{page}/{pages}", ""]);
+  assert.equal(args[36], "pareto"); assert.equal(args[37], 13.125);
+  await api.renderBookPdf(chapters(), { baselineGridPt: 0 });
+  assert.equal(state.calls[1].kind, "book-legacy"); assert.equal(state.calls[1].args.length, 8);
+});
+
+test("old book packages refuse requested grids before asset access and invalid grids never initialize", async () => {
+  const old = await fixture(true, true, false);
+  const options = { baselineGridPt: 14 };
+  Object.defineProperty(options, "pdfImages", { get() { assert.fail("grid capability must precede assets"); } });
+  await assert.rejects(old.api.renderBookPdf(chapters(), options), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  const current = await fixture();
+  for (const baselineGridPt of [0.1, -2, 144.01, NaN, Infinity, "12", null])
+    await assert.rejects(current.api.renderBookPdf(chapters(), { baselineGridPt }), { code: "INVALID_OPTIONS" });
+  await assert.rejects(current.api.renderBookPdf(chapters(), { baselineGridPt: 12, fitToPages: 3 }),
+    { code: "INVALID_OPTIONS", message: /pdf_baseline_grid_incompatible:/ });
+  assert.equal(old.state.loads, 0); assert.equal(current.state.loads, 0);
 });

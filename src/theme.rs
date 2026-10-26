@@ -441,11 +441,57 @@ impl Default for PageMargins {
     }
 }
 
+/// An opt-in PDF body baseline grid, stored in integer milli-points.
+///
+/// The grid starts at the top content edge of each page. Body text, including
+/// headings, code, tables, lists, quotes and page notes, advances to this grid.
+/// Running headers/footers and glyphs inside figures retain their own geometry.
+/// A grid cannot be combined with a positive `PdfOptions::fit_to_pages` target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BaselineGrid {
+    spacing_milli_points: u32,
+}
+
+impl BaselineGrid {
+    /// Admit a finite pitch from 1 through 144 points, rounded once to the
+    /// nearest milli-point. Disable the grid with `PageStyle::baseline_grid =
+    /// None`; zero is not an enabled pitch.
+    ///
+    /// # Errors
+    /// Returns `RenderError::InvalidInput` with a `pdf_baseline_grid:` prefix
+    /// for a non-finite or out-of-range value, before renderer-precision casts.
+    pub fn from_points(spacing: f64) -> crate::Result<Self> {
+        if !spacing.is_finite() || !(1.0..=144.0).contains(&spacing) {
+            return Err(crate::RenderError::InvalidInput(
+                "pdf_baseline_grid: spacing must be a finite value from 1 through 144 points"
+                    .to_string(),
+            ));
+        }
+        Ok(Self {
+            spacing_milli_points: (spacing * 1000.0).round() as u32,
+        })
+    }
+
+    /// Admitted pitch in points, after milli-point quantization.
+    #[must_use]
+    pub fn spacing_points(self) -> f64 {
+        f64::from(self.spacing_milli_points) / 1000.0
+    }
+
+    /// Exact pitch used by the PDF pager, in milli-points.
+    #[must_use]
+    pub const fn spacing_milli_points(self) -> u32 {
+        self.spacing_milli_points
+    }
+}
+
 /// Page style contract for PDF and future paged WASM/native renderers.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct PageStyle {
     pub size: PageSize,
     pub margins: PageMargins,
+    /// Optional body baseline grid. `None` preserves ordinary layout bytes.
+    pub baseline_grid: Option<BaselineGrid>,
 }
 
 /// A render theme.
@@ -705,7 +751,7 @@ fn spacing_json(spacing: &ThemeSpacing) -> String {
 }
 
 fn page_json(page: &PageStyle) -> String {
-    format!(
+    let mut json = format!(
         "{{\"size\":{{\"name\":\"{}\",\"width_pt\":{},\"height_pt\":{}}},\
          \"margins\":{{\"top_pt\":{},\"right_pt\":{},\"bottom_pt\":{},\"left_pt\":{}}}}}",
         json_escape(page.size.name),
@@ -715,7 +761,15 @@ fn page_json(page: &PageStyle) -> String {
         json_num(page.margins.right_pt),
         json_num(page.margins.bottom_pt),
         json_num(page.margins.left_pt),
-    )
+    );
+    if let Some(grid) = page.baseline_grid {
+        json.pop();
+        json.push_str(&format!(
+            ",\"baseline_grid_pt\":{}}}",
+            grid.spacing_points()
+        ));
+    }
+    json
 }
 
 fn json_num(value: f32) -> String {

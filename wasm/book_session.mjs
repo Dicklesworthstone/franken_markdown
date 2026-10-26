@@ -1,6 +1,7 @@
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
 // can be tested without replacing the production renderer or its WASM binary.
 import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
+import { normalizeBaselineGridPt, validateBaselineGridFit } from "./render_typography.mjs";
 
 const MAX_CHAPTERS = 4096;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
@@ -201,6 +202,11 @@ function bookRenderOptions(options) {
     const value = options[key];
     if (value !== undefined) result[key] = boundedNumber(value, key, min, max, integer);
   }
+  const grid = normalizeBaselineGridPt(options.baselineGridPt);
+  validateBaselineGridFit(grid, result.fitToPages);
+  // Retained books start with no grid. Explicit zero keeps old-package/default
+  // compatibility without requiring an unnecessary new native method.
+  if (grid > 0) result.baselineGridPt = grid;
   if (boolean(options.codeLineNumbers, "codeLineNumbers")) result.codeLineNumbers = true;
   const running = bookRunning(options.running);
   if (running !== undefined) result.running = running;
@@ -235,6 +241,7 @@ function requireBookOptions(target, settings) {
   for (const [name, requested] of [
     [pdfOptionMethod(settings), pdfOptionArgs(settings) !== null],
     ["setHtmlFontFormat", settings.htmlFontFormat !== undefined],
+    ["setBaselineGridPt", settings.baselineGridPt !== undefined],
   ]) {
     if (requested && typeof target?.[name] !== "function") {
       throw Object.assign(new Error(
@@ -781,6 +788,9 @@ export function createBookBindings(loadBookClass) {
         "this WASM build lacks FmdBook; rebuild the browser package with the updated Rust source",
       );
     }
+    // Inputs have already been snapshotted to preserve ownership across this
+    // asynchronous load. Refuse unsupported options before native construction
+    // or any mutation; do not weaken snapshot ownership to avoid that JS copy.
     requireBookOptions(BookClass.prototype, settings);
     // Editable books must retain expansion policy even before their first
     // include is authored. Old render-only packages keep their original gate.
@@ -824,6 +834,7 @@ export function createBookBindings(loadBookClass) {
       raw.setTheme(settings.font, settings.darkMode);
       raw.setNavigation(settings.toc, settings.pageNumbers);
       if (settings.fontScale !== undefined) raw.setFontScale(settings.fontScale);
+      if (settings.baselineGridPt !== undefined) raw.setBaselineGridPt(settings.baselineGridPt);
       for (const image of settings.images) raw.setImage(image.destination, image.bytes);
       for (const font of settings.fontAssets) {
         raw.setFont(font.slot, font.bytes);

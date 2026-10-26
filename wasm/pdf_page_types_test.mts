@@ -4,7 +4,7 @@ import { renderPdf, renderHtml, renderEpub, renderBookPdf, createRenderer,
 
 const page: FmdPdfPage = { size: "a4", orientation: "landscape",
   margins: { leftPt: 24, rightPt: 36, topPt: 18, bottomPt: 30 } };
-const options: FmdPdfRenderOptions = { page, font: "serif", pageNumbers: true, metadataEpochSeconds: 0 };
+const options: FmdPdfRenderOptions = { baselineGridPt: 13.125, page, font: "serif", pageNumbers: true, metadataEpochSeconds: 0 };
 for (const size of ["a5", "legal", "tabloid"] as const) {
   await renderPdf("# Paper", { page: { size } });
   await renderBookPdf([{ path: "one.md", source: "# One" }], { page: { size } });
@@ -24,3 +24,8 @@ await renderBookPdf([{ path: "one.md", source: "# One" }], { page });
 await (await createRenderer()).renderBookPdf([{ path: "one.md", source: "# One" }], options);
 // @ts-expect-error Book custom dimensions also require both axes.
 await renderBookPdf([{ path: "one.md", source: "# One" }], { page: { size: { heightPt: 792 } } });
+
+// @ts-expect-error Grid points cannot be coerced strings.
+await renderPdf("x", { baselineGridPt: "14" });
+// @ts-expect-error A body grid is a PDF-specific option.
+await renderHtml("x", { baselineGridPt: 14 });

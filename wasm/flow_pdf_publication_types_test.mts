@@ -13,7 +13,7 @@ const page: FlowPdfPage = { size: "a4", orientation: "landscape", margins: { top
 const nativePage: FmdPdfPage = page;
 const nativeRunning: FmdPdfRunning = running;
 const workerPage: WorkerPage = nativePage;
-const options: FlowPdfExportOptions = { page: workerPage, running: nativeRunning, title: "Print", pageNumbers: true };
+const options: FlowPdfExportOptions = { baselineGridPt: 13.125, page: workerPage, running: nativeRunning, title: "Print", pageNumbers: true };
 void direct.exportDocument("pdf", options, direct.token);
 void worker.exportDocument("pdf", options, worker.token, { timeoutMs: 10000 });
 void worker.exportDocument("pdf", { running: { header: { image: logo } },

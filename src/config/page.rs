@@ -97,6 +97,50 @@ pub(crate) fn configure(
     // Native config preserves the selected spelling for round trips. Browser
     // and MCP requests use the same geometry without persisting a paper name.
     page.size.name = paper.name;
+    page.baseline_grid = theme.page.baseline_grid;
     theme.page = page;
+    Ok(())
+}
+
+/// Admit a persisted grid without losing host precision. Zero is the explicit
+/// host spelling for disabling a configured grid; positive values use the core
+/// constructor and its stable typed error.
+pub(crate) fn parse_baseline_grid(value: &str) -> crate::Result<Option<crate::BaselineGrid>> {
+    let points = value.trim().parse::<f64>().map_err(|_| {
+        crate::RenderError::InvalidInput(
+            "pdf_baseline_grid: spacing must be 0 (disabled) or a number from 1 through 144 points"
+                .to_string(),
+        )
+    })?;
+    baseline_grid(points)
+}
+
+fn baseline_grid(points: f64) -> crate::Result<Option<crate::BaselineGrid>> {
+    if points == 0.0 {
+        Ok(None)
+    } else {
+        crate::BaselineGrid::from_points(points).map(Some)
+    }
+}
+
+/// Apply an explicit native flag before its persistent default. Call after
+/// page admission so paper/margin reconstruction cannot discard the grid.
+pub(crate) fn configure_baseline_grid(
+    theme: &mut Theme,
+    explicit: Option<f64>,
+    configured: Option<&str>,
+    fit_to_pages: Option<usize>,
+) -> crate::Result<()> {
+    let grid = match (explicit, configured) {
+        (Some(points), _) => baseline_grid(points)?,
+        (None, Some(value)) => parse_baseline_grid(value)?,
+        (None, None) => theme.page.baseline_grid,
+    };
+    if grid.is_some() && fit_to_pages.is_some_and(|pages| pages > 0) {
+        return Err(crate::RenderError::InvalidInput(
+            "pdf_baseline_grid_incompatible: baseline grids cannot be combined with fit_to_pages; remove the page-fit target or disable the grid".into(),
+        ));
+    }
+    theme.page.baseline_grid = grid;
     Ok(())
 }

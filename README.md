@@ -550,6 +550,7 @@ fmd --text '<markdown>' --out out.html
 | `--microtype off\|protrusion\|expansion` | Microtypography for justified PDF body paragraphs: `protrusion` hangs punctuation into the margin and adds ±1.5% glyph expansion; `expansion` is glyph expansion alone. Default `off` keeps output byte-identical |
 | `--typography-homogeneous`, `--typography-antiriver`, `--typography-pareto` | Opt-in line-breaking refinements: gradual adjacent-line spacing demerits, whitespace-river penalties, and Pareto-front Knuth-Plass search |
 | `--pdf-optimal-pagination` | Choose page breaks with a document-wide dynamic program (Plass) instead of greedy page filling |
+| `--pdf-baseline-grid-pt <POINTS>` | Opt-in body baseline grid, `1`..`144` pt (rounded once to `0.001` pt); `0` disables a configured grid. Applies to render, watch, batch and book PDF output. Incompatible with `--fit-to-pages` |
 | `--toc`, `--toc-depth <N>` | Insert a table of contents (HTML nav; PDF with dot leaders and page numbers). A `[[_TOC_]]` marker places it explicitly |
 | `--font-scale <xs\|sm\|md\|lg\|xl\|2xl\|FLOAT\|PERCENT>` | Uniform typographic scale for HTML and PDF (alias `--type-size`) |
 | `--fit-to-pages <N>` | Shrink type and spacing until the PDF fits in `N` pages (alias `--target-pages`) |
@@ -575,6 +576,30 @@ fmd --text '<markdown>' --out out.html
 | `--remote-image-timeout-secs <n>` | Per-image timeout for remote PDF image fetches (default `20`) |
 | `--max-input-bytes <n>` | Refuse file/stdin/`--text` input above `n` bytes before parsing (default `67108864`, 64 MiB) |
 | `--json` | Emit a stable JSON status envelope to stderr after writing outputs |
+
+### PDF baseline grids
+
+Use `fmd report.md --to pdf --pdf-baseline-grid-pt 14 --out report.pdf` to align
+body text, headings, code, tables, lists, quotes and footnotes to a common rhythm.
+The grid starts at each page's top content edge; baseline distances below that
+edge are integer multiples of the chosen spacing. Rows may occupy multiple
+steps to preserve their leading and painted ink. Point values are independent
+of font scale. The default is disabled and preserves existing PDF bytes.
+
+Figures retain their measured height and internal drawing coordinates; the body
+grid resumes after them. Inline formula internals and running header/footer bands
+retain their own placement. After rounding the body bottom to the grid and
+reserving ink clearance, at least 40 points of usable body height must remain.
+The renderer reports an error when that minimum or content bounds cannot fit;
+it does not clip content or shrink fonts to satisfy a grid. A grid cannot be
+combined with `--fit-to-pages`, because fitting changes type sizes and margins;
+remove the fit target or disable the grid with `--pdf-baseline-grid-pt 0`.
+
+Rust callers set
+`options.theme.page.baseline_grid = Some(BaselineGrid::from_points(14.0)?);`.
+The constructor accepts finite values from `1` through `144` points and rounds
+once to the nearest milli-point. Browser PDF options expose `baselineGridPt`
+through direct, worker, Flow export and book APIs; see [the browser guide](wasm/README.md#pdf-baseline-grids).
 
 PDF render warnings are also reported on stderr. They are intentionally
 structured and stable enough for agents to notice lossy fallbacks such as
@@ -793,12 +818,14 @@ Resolution order for the config path:
 | `html_font_format` | `woff1`, `woff2`, `ttf` | `woff1` |
 | `microtype` | `off`, `protrusion`, `expansion` | `off` |
 | `pdf_page_numbers`, `pdf_optimal_pagination` | `true`/`false` | `false` |
+| `pdf_baseline_grid_pt` | `0` (disabled), or finite spacing `1`..`144` points | `0` |
 | `typography_homogeneous`, `typography_antiriver`, `typography_pareto` | `true`/`false` | `false` |
 
 The render-default keys apply to `fmd render`, `watch` and `batch`. A flag
 always wins; for `lang`, `toc` and `toc_depth`, document frontmatter also beats
 the config. Switches set to `true` here cannot be turned off per run except
-with `--no-config`.
+with `--no-config`. The numeric `pdf_baseline_grid_pt` setting also applies to
+`book`; an explicit `--pdf-baseline-grid-pt 0` disables it for one invocation.
 
 Paper and margin flags apply to PDF output from `render`, `watch`, `batch`, and
 `book`. Each flag overrides its configured value; omitted margin sides keep

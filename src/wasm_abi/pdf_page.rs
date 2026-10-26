@@ -13,7 +13,9 @@ use crate::wasm;
 
 mod archival;
 mod book_advanced;
+mod grid;
 pub use book_advanced::render_book_pdf_configured_advanced;
+pub use grid::{render_book_pdf_configured_grid, render_pdf_configured_grid};
 
 /// Render using the ordinary PDF engine with explicit paper and margins.
 ///

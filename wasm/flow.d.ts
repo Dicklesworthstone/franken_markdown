@@ -449,6 +449,9 @@ export interface FlowSvgExportOptions {
   maxOutputBytes?: number;
 }
 export interface FlowPdfExportOptions extends FlowExportOptions {
+  /** Opt-in body baseline spacing: 1..144 pt, rounded to 0.001 pt; 0 disables.
+   * Incompatible with fitToPages. Captured before enqueue. */
+  baselineGridPt?: number;
   /** Shared native paper contract. Copied before enqueue; units are points. */
   page?: FmdPdfPage;
   /** At most 4096 UTF-8 bytes per slot and 16384 UTF-16 units combined. Unknown

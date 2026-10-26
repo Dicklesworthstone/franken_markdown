@@ -227,3 +227,20 @@ test("paper and running options are refused on HTML, EPUB and SVG", () => {
     }
   }
 });
+
+
+test("Flow PDF grid requests are captured and validated before native or asset work", async () => {
+  const f = fixture();
+  const options = { baselineGridPt: 13.125, page: { size: "a4" } };
+  const captured = normalizeFlowExport("pdf", options, token);
+  options.baselineGridPt = 99;
+  await f.api.exportDocument(...captured);
+  assert.equal(f.calls[0].options.baselineGridPt, 13.125);
+  assert.deepEqual(normalizeFlowExport(...structuredClone(captured)), captured);
+  const invalid = fixture();
+  for (const baselineGridPt of [0.1, -1, 144.001, NaN, Infinity, "14", null])
+    await assert.rejects(invalid.api.exportDocument("pdf", { baselineGridPt }, token), code("INVALID_OPTIONS"));
+  await assert.rejects(invalid.api.exportDocument("pdf", { baselineGridPt: 14, fitToPages: 2 }, token),
+    code("INVALID_OPTIONS"));
+  assert.equal(invalid.reads, 0); assert.equal(invalid.calls.length, 0);
+});

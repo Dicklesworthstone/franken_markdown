@@ -40,6 +40,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
+mod baseline_grid;
 mod financial_tables;
 mod inline_image;
 mod joint_pagination;
@@ -370,6 +371,8 @@ struct Line {
     /// Actual ink above/below the baseline for strictly positioned text.
     /// Zero preserves the historical ordinary/composable-text line box.
     text_ink: (f32, f32),
+    /// Admitted fixed-point vertical metrics; absent on the unchanged default path.
+    grid: Option<baseline_grid::LineGrid>,
     segs: Vec<Seg>,
     image: Option<ImageLine>,
 }
@@ -1867,6 +1870,7 @@ struct PageGeom {
     top: f32,
     bottom: f32,
     content_w: f32,
+    grid: Option<baseline_grid::PageGrid>,
 }
 
 impl PageGeom {
@@ -1897,6 +1901,10 @@ impl PageGeom {
             top,
             bottom,
             content_w: (width - left - right).max(MIN_CONTENT_DIM),
+            grid: theme
+                .page
+                .baseline_grid
+                .map(|grid| baseline_grid::PageGrid::new(grid, height - top, bottom)),
         }
     }
 
@@ -2843,7 +2851,9 @@ fn effective_pdf_options(
     opts: &PdfOptions,
     faces: &Faces,
 ) -> (PdfOptions, PageGeom) {
-    if let Some(target_pages) = opts.fit_to_pages.filter(|&target| target > 0) {
+    if let Some(target_pages) = opts.fit_to_pages.filter(|&target| target > 0)
+        && opts.theme.page.baseline_grid.is_none()
+    {
         fit_to_target_pages(doc, opts, faces, target_pages)
     } else {
         (opts.clone(), PageGeom::from_theme(&opts.theme))
@@ -2857,6 +2867,7 @@ fn render_inner(
     profiled: bool,
     emit: PdfEmitOptions,
 ) -> Result<RenderedPdf> {
+    baseline_grid::validate_options(opts)?;
     let mut profiler = if profiled {
         PdfProfiler::enabled()
     } else {
@@ -3268,6 +3279,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                grid: None,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -3382,7 +3394,9 @@ fn layout_with_pagination_report(
         };
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
         layout_blocks(blocks, 0.0, &mut out, &mut cx);
+        baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         layout_pdf_notes(blocks, &mut out, &mut cx);
+        baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         let report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
         return (out, report);
     }
@@ -3452,7 +3466,9 @@ fn layout_with_pagination_report(
         cx.toc_page_map = page_map.clone();
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
         layout_blocks(blocks, 0.0, &mut out, &mut cx);
+        baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         layout_pdf_notes(blocks, &mut out, &mut cx);
+        baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         final_report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
 
         // Run pagination to find the resulting page of each heading
@@ -3544,7 +3560,8 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
         }
     }
 
-    let capacity = (cx.page.top_y() - cx.page.bottom).max(MIN_CONTENT_DIM);
+    let note_page = baseline_grid::page_for_lines(cx.page, out);
+    let capacity = (note_page.top_y() - note_page.bottom).max(MIN_CONTENT_DIM);
     let body_scale = cx.type_scale;
     cx.type_scale.body *= PAGE_NOTE_SIZE_SCALE;
     cx.type_scale.code *= PAGE_NOTE_SIZE_SCALE;
@@ -3569,11 +3586,15 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
             if let Some(last) = note.lines.last_mut() {
                 last.gap_after = PAGE_NOTE_GAP;
             }
-            note.height = note
-                .lines
-                .iter()
-                .map(|line| line_leading(line) + line.gap_after)
-                .sum();
+            baseline_grid::apply(&mut note.lines, cx.opts.theme.page.baseline_grid, cx.faces);
+            note.height = if cx.opts.theme.page.baseline_grid.is_some() {
+                baseline_grid::height(note.lines.iter())
+            } else {
+                note.lines
+                    .iter()
+                    .map(|line| line_leading(line) + line.gap_after)
+                    .sum()
+            };
             if note.height > capacity * PAGE_NOTE_MAX_SHARE {
                 // The ordinary full-size endnote layout is produced below.
                 // Do not retain a second measured copy of an oversized note.
@@ -3589,7 +3610,12 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
     }
     cx.type_scale = body_scale;
 
-    let separator = page_note_separator(cx.page);
+    let mut separator = page_note_separator(cx.page);
+    baseline_grid::apply(
+        std::slice::from_mut(&mut separator),
+        cx.opts.theme.page.baseline_grid,
+        cx.faces,
+    );
     let separator_height = line_leading(&separator) + separator.gap_after;
     admit_page_notes(&mut notes, out, capacity, separator_height, false);
     if notes.iter().any(|note| !note.at_foot) {
@@ -3685,6 +3711,7 @@ fn page_note_separator(page: PageGeom) -> Line {
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        grid: None,
         segs: Vec::new(),
         image: None,
     }
@@ -4599,6 +4626,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         table_footing: Vec::new(),
                         heading_source: None,
                         text_ink: (0.0, 0.0),
+                        grid: None,
                         segs,
                         page_break_before: false,
                         image: None,
@@ -4647,6 +4675,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     table_footing: Vec::new(),
                     heading_source: None,
                     text_ink: (0.0, 0.0),
+                    grid: None,
                     segs,
                     page_break_before: false,
                     image: None,
@@ -4734,6 +4763,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                grid: None,
                 segs: Vec::new(),
                 image: None,
             });
@@ -4931,6 +4961,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        grid: None,
         segs: Vec::new(),
         image: None,
     });
@@ -5023,6 +5054,7 @@ fn push_figure_line(
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        grid: None,
         segs: Vec::new(),
         image: Some(ImageLine {
             image,
@@ -18229,6 +18261,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                grid: None,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -18263,6 +18296,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        grid: None,
         segs: Vec::new(),
         page_break_before: false,
         image: None,
@@ -19766,6 +19800,7 @@ fn layout_inlines(
             if lines.len() != variant.line_count {
                 continue;
             }
+            baseline_grid::apply(&mut lines, cx.opts.theme.page.baseline_grid, cx.faces);
             alternatives.push(joint_pagination::Alternative {
                 lines,
                 extra_demerits: variant.demerits.saturating_sub(baseline_demerits),
@@ -19874,6 +19909,7 @@ fn emit_broken_paragraph(
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            grid: None,
             segs,
             page_break_before: false,
             image: None,
@@ -19942,6 +19978,7 @@ fn layout_prefixed_inlines(
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            grid: None,
             segs: vec![marker],
             image: None,
         });
@@ -20022,6 +20059,7 @@ fn layout_prefixed_inlines(
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            grid: None,
             segs,
             page_break_before: false,
             image: None,
@@ -20099,6 +20137,7 @@ fn layout_inlines_greedy(
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            grid: None,
             segs,
             page_break_before: false,
             image: None,
@@ -21670,6 +21709,7 @@ fn serialize(
     // One break plan for the chrome page count and the emitter, so both see
     // the same pages (and optimal pagination runs once).
     let (break_plan, report) = page_break_plan_and_report(lines, page, opts);
+    baseline_grid::validate_layout(lines, page, break_plan.as_ref())?;
     // Running chrome needs `{pages}` and every page's exact text before font
     // subsetting, so it counts pages with the emitter's own pager up front.
     let mut chrome = running.map(|spec| {
@@ -22195,6 +22235,12 @@ impl PageNotes {
         if notes.is_empty() {
             return 0.0;
         }
+        if lines[self.separator].grid.is_some() {
+            return baseline_grid::height(
+                std::iter::once(&lines[self.separator])
+                    .chain(notes.iter().flat_map(|(_, range)| &lines[range.clone()])),
+            );
+        }
         let height = |line: &Line| line_leading(line) + line.gap_after;
         height(&lines[self.separator])
             + notes
@@ -22209,6 +22255,12 @@ impl PageNotes {
         let notes = self.notes_in(start, end);
         if notes.is_empty() {
             return 0.0;
+        }
+        if lines[self.separator].grid.is_some() {
+            return baseline_grid::height(
+                std::iter::once(&lines[self.separator])
+                    .chain(notes.iter().flat_map(|(_, range)| &lines[range.clone()])),
+            );
         }
         let height = |line: &Line| line_leading(line) + line.gap_after;
         height(&lines[self.separator])
@@ -22310,6 +22362,10 @@ fn place_page_notes<'a>(
     let mut y = page.bottom + notes.reserve(lines, start, end);
     let region = std::iter::once(&lines[notes.separator])
         .chain(foot.iter().flat_map(|(_, range)| &lines[range.clone()]));
+    if page.grid.is_some() {
+        baseline_grid::place_notes(region, page.bottom, placed);
+        return;
+    }
     for line in region {
         y -= line_leading(line);
         placed.push(Placed {
@@ -22328,6 +22384,7 @@ fn next_placed_page<'a>(
     plan: Option<&PageBreakPlan>,
     notes: Option<&PageNotes>,
 ) -> Option<Vec<Placed<'a>>> {
+    let page = baseline_grid::page_for_lines(page, lines);
     if let Some(notes) = notes {
         return next_placed_page_with_notes(lines, notes, start, page, emitted_any, plan);
     }
@@ -24478,6 +24535,7 @@ mod font_slot_text_refs_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            grid: None,
             segs,
             page_break_before: false,
             image,
@@ -29600,6 +29658,7 @@ fn page_break_plan_and_report(
     page: PageGeom,
     opts: &PdfOptions,
 ) -> (Option<PageBreakPlan>, PdfPageBreakReport) {
+    let page = baseline_grid::page_for_lines(page, lines);
     if !opts.optimal_pagination {
         return (
             None,
@@ -30051,6 +30110,9 @@ fn choose_page_break_with_void_control(
     page: PageGeom,
 ) -> (usize, Option<usize>) {
     let baseline_end = choose_page_break(lines, start, page);
+    if page.grid.is_some() {
+        return (baseline_end, None);
+    }
     if baseline_end >= lines.len() {
         return (baseline_end, None);
     }
@@ -30471,6 +30533,7 @@ mod keep_with_next_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            grid: None,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -30649,6 +30712,7 @@ mod keep_with_next_tests {
             top: 0.0,
             bottom: 0.0,
             content_w: 100.0,
+            grid: None,
         };
 
         assert_eq!(choose_page_break(&lines, 0, page), 3);
@@ -30669,6 +30733,7 @@ mod void_budget_tests {
             top: 0.0,
             bottom: 0.0,
             content_w: 400.0,
+            grid: None,
         }
     }
 
@@ -30697,6 +30762,7 @@ mod void_budget_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            grid: None,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -30771,6 +30837,13 @@ mod void_budget_tests {
 }
 
 fn line_leading(line: &Line) -> f32 {
+    line.grid.map_or_else(
+        || natural_line_leading(line),
+        baseline_grid::LineGrid::leading,
+    )
+}
+
+fn natural_line_leading(line: &Line) -> f32 {
     let (above, below) = inline_math_extents(line);
     line.size * 1.32 + above + below + financial_tables::footing_depth(line)
 }
@@ -30779,7 +30852,13 @@ fn line_leading(line: &Line) -> f32 {
 /// baseline below the row's top. Image dimensions continue to drive pagination.
 fn line_text_position(line: &Line, y: f32) -> (f32, f32) {
     match line.image.as_ref().and_then(|image| image.marker_size) {
-        Some(size) => (size, y + line_leading(line) - size * 1.32),
+        Some(size) => (
+            size,
+            y + line.grid.map_or_else(
+                || line_leading(line) - size * 1.32,
+                |grid| grid.marker_offset(size, !line.quote_bars.is_empty()),
+            ),
+        ),
         None => (line.size, y),
     }
 }
@@ -30797,6 +30876,14 @@ fn place_lines_shrunk<'a>(
 ) -> Vec<Placed<'a>> {
     let repeated = repeated_table_header_lines(lines, start);
     let mut placed = Vec::with_capacity(repeated.len() + end.saturating_sub(start));
+    if page.grid.is_some() {
+        baseline_grid::place(
+            repeated.into_iter().chain(lines[start..end].iter()),
+            page.top_y(),
+            &mut placed,
+        );
+        return placed;
+    }
     let mut y = page.top_y();
     let mut idx = start;
     // A line's baseline sits above its inline formulas' extra depth, which
@@ -33948,6 +34035,7 @@ mod pdf_writer_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            grid: None,
             segs: texts
                 .iter()
                 .map(|text| Seg {
@@ -33977,6 +34065,7 @@ mod pdf_writer_tests {
             top: 36.0,
             bottom: 36.0,
             content_w: 180.0,
+            grid: None,
         }
     }
 
@@ -35806,6 +35895,7 @@ mod pdf_writer_tests {
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                grid: None,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -35974,6 +36064,7 @@ mod pdf_writer_tests {
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                grid: None,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -36115,6 +36206,7 @@ mod pdf_writer_tests {
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                grid: None,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -36236,6 +36328,7 @@ mod pdf_writer_tests {
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                grid: None,
                 segs: vec![
                     Seg {
                         x: 0.0,
@@ -36338,6 +36431,7 @@ mod pdf_writer_tests {
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                grid: None,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -40309,6 +40403,7 @@ mod table_wrap_tests {
             top: 72.0,
             bottom: 72.0,
             content_w: 468.0,
+            grid: None,
         }
     }
 
@@ -41314,6 +41409,7 @@ mod coverage_gap_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            grid: None,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -42614,6 +42710,7 @@ mod coverage_gap_tests {
             top: 36.0,
             bottom: 36.0,
             content_w: 248.0,
+            grid: None,
         }
     }
 
@@ -43096,12 +43193,15 @@ fn line_overshoot(line: &Line, page: &PageGeom) -> Option<f32> {
 /// layout + pagination pipeline the PDF writer runs. Returns `None` when font
 /// loading fails (never panics).
 pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<VerifyTextLayer> {
+    baseline_grid::validate_options(opts).ok()?;
     let lowered = crate::safe_html::lower(doc);
     let doc = &*lowered;
     let faces = Faces::load(opts).ok()?;
     let (effective_opts, page) = effective_pdf_options(doc, opts, &faces);
     let lines = layout(&doc.blocks, &effective_opts, &faces, page);
-    let pages = paginate_lines_for_options(&lines, page, &effective_opts);
+    let plan = page_break_plan_for_options(&lines, page, &effective_opts);
+    baseline_grid::validate_layout(&lines, page, plan.as_ref()).ok()?;
+    let pages = paginate_lines_with(&lines, page, plan.as_ref());
     let mut out_pages = Vec::with_capacity(pages.len());
     for (idx, placed) in pages.iter().enumerate() {
         let mut runs = Vec::with_capacity(placed.len());
@@ -43288,6 +43388,7 @@ mod plass_pagination_tests {
             top: 0.0,
             bottom: 0.0,
             content_w: 400.0,
+            grid: None,
         }
     }
 
@@ -43316,6 +43417,7 @@ mod plass_pagination_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            grid: None,
             segs: Vec::new(),
             page_break_before: false,
             image: None,

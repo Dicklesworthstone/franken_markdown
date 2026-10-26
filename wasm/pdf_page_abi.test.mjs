@@ -8,7 +8,7 @@ import test from "node:test";
 // Execute the exact public wrapper with only the generated WASM binding doubled.
 // This tests ABI selection, argument order and ownership, not native PDF output.
 async function fixture({ pageBinding = true, blocked = false, runningBinding = true, imageBinding = true,
-  typographyBindings = true } = {}) {
+  typographyBindings = true, gridBinding = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-pdf-page-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
@@ -38,7 +38,9 @@ async function fixture({ pageBinding = true, blocked = false, runningBinding = t
     ${pageBinding ? 'export const renderPdfConfiguredPage = (...args) => result("page", args);' : ""}
     ${runningBinding ? 'export const renderPdfConfiguredRunning = (...args) => result("running", args);' : ""}
     ${imageBinding ? 'export const renderPdfConfiguredRunningImages = (...args) => result("running-images", args);' : ""}
+    ${gridBinding ? 'export const renderPdfConfiguredGrid = (...args) => result("grid", args);' : ""}
     ${unused.map(name => `export const ${name} = () => { throw new Error("unexpected ${name}"); };`).join("\n")}
+    ${gridBinding ? 'Object.defineProperty(renderPdfConfiguredGrid, "length", { value: 37 });' : ""}
     // Model the explicit parameter counts in generated wasm-bindgen glue.
     Object.defineProperty(renderPdfConfiguredMulti, "length", { value: ${typographyBindings ? 28 : 27} });
     Object.defineProperty(renderHtmlConfiguredAdvanced, "length", { value: ${typographyBindings ? 20 : 19} });
@@ -338,4 +340,45 @@ test("malformed running options fail before initialization; old packages refuse 
     { code: "UNSUPPORTED_WASM_PACKAGE" });
   await old.api.renderPdf("x", { running: {} });
   assert.equal(old.bindings.calls[0].kind, "legacy");
+});
+
+
+test("baseline grids use a new complete ABI and retain geometry, chrome and owned payloads", async () => {
+  const { api, bindings } = await fixture({ blocked: true });
+  const bytes = Uint8Array.of(99, 1, 2, 3, 88);
+  const options = { baselineGridPt: 13.1254, page: { size: "a5", margins: 36 },
+    typography: { pareto: true }, optimalPagination: true,
+    running: { header: { image: { dest: "brand.svg", heightPt: 18 } }, footer: { center: "{page}" } },
+    pdfImages: [{ destination: "brand.svg", bytes: bytes.subarray(1, 4) }] };
+  const pending = api.renderPdf("# Grid", options);
+  options.baselineGridPt = 24;
+  options.running.header.image.dest = "changed.svg";
+  bytes.fill(7);
+  bindings.finishInit(); await pending;
+  const { kind, args } = bindings.calls[0];
+  assert.equal(kind, "grid"); assert.equal(args.length, 37);
+  assert.deepEqual([...args[9]], [1, 2, 3]);
+  assert.deepEqual([...args[27]], [148 * 72 / 25.4, 210 * 72 / 25.4, 36, 36, 36, 36]);
+  assert.deepEqual(args[28], ["", "", "", "", "{page}", ""]);
+  assert.deepEqual(args[32], ["brand.svg", ""]);
+  assert.equal(args[35], "pareto,optimal-pagination");
+  assert.equal(args[36], 13.1254);
+});
+
+test("invalid grids and missing grid bindings reject before asset access or WASM initialization", async () => {
+  const current = await fixture(), old = await fixture({ gridBinding: false });
+  for (const baselineGridPt of [-1, 0.5, 144.001, NaN, Infinity, "14", null]) {
+    const options = { baselineGridPt };
+    Object.defineProperty(options, "pdfImages", { get() { assert.fail("assets must not be read"); } });
+    await assert.rejects(current.api.renderPdf("x", options), { code: "INVALID_OPTIONS" });
+  }
+  await assert.rejects(current.api.renderPdf("x", { baselineGridPt: 14, fitToPages: 2 }),
+    { code: "INVALID_OPTIONS", message: /pdf_baseline_grid_incompatible:/ });
+  const options = { baselineGridPt: 14 };
+  Object.defineProperty(options, "fontAssets", { get() { assert.fail("old package must fail before asset access"); } });
+  await assert.rejects(old.api.renderPdf("x", options), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  assert.equal(current.bindings.initCount, 0); assert.equal(old.bindings.initCount, 0);
+  await old.api.renderPdf("default", { baselineGridPt: 0 });
+  assert.equal(old.bindings.calls[0].kind, "legacy");
+  assert.equal(old.bindings.calls[0].args.length, 27);
 });

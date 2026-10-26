@@ -42,6 +42,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "typography_antiriver",
     "typography_pareto",
     "pdf_optimal_pagination",
+    "pdf_baseline_grid_pt",
 ];
 
 /// Persistent render defaults from the native config. `None` means the key
@@ -62,6 +63,8 @@ pub struct RenderDefaults {
     pub typography_antiriver: Option<bool>,
     pub typography_pareto: Option<bool>,
     pub pdf_optimal_pagination: Option<bool>,
+    /// Validated baseline-grid spacing in points, or `0` to disable the grid.
+    pub pdf_baseline_grid_pt: Option<String>,
 }
 
 impl RenderDefaults {
@@ -92,6 +95,7 @@ impl RenderDefaults {
             ("typography_antiriver", flag(self.typography_antiriver)),
             ("typography_pareto", flag(self.typography_pareto)),
             ("pdf_optimal_pagination", flag(self.pdf_optimal_pagination)),
+            ("pdf_baseline_grid_pt", self.pdf_baseline_grid_pt.clone()),
         ]
         .into_iter()
         .filter_map(|(key, value)| value.map(|value| (key, value)))
@@ -148,6 +152,15 @@ impl RenderDefaults {
                 choice(&["woff1", "woff2", "ttf"]).map(|v| self.html_font_format = v)
             }
             "microtype" => choice(&["off", "protrusion", "expansion"]).map(|v| self.microtype = v),
+            "pdf_baseline_grid_pt" => page::parse_baseline_grid(value)
+                .map(|grid| {
+                    self.pdf_baseline_grid_pt =
+                        Some(grid.map_or_else(
+                            || "0".to_string(),
+                            |grid| grid.spacing_points().to_string(),
+                        ));
+                })
+                .map_err(|error| error.to_string()),
             _ => return None,
         };
         Some(result)
@@ -164,6 +177,7 @@ impl RenderDefaults {
                 "font_scale" => "md",
                 "html_font_format" => "woff1",
                 "microtype" => "off",
+                "pdf_baseline_grid_pt" => "0",
                 "toc"
                 | "pdf_page_numbers"
                 | "typography_homogeneous"
@@ -181,7 +195,9 @@ impl RenderDefaults {
             .entries()
             .into_iter()
             .map(|(key, value)| {
-                let is_raw = value == "true" || value == "false" || key == "toc_depth";
+                let is_raw = value == "true"
+                    || value == "false"
+                    || matches!(key, "toc_depth" | "pdf_baseline_grid_pt");
                 if is_raw {
                     format!("\"{key}\":{value}")
                 } else {

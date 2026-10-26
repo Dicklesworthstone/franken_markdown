@@ -156,6 +156,7 @@ const settingsChanges = Object.fromEntries([
   ...["fontScale", "baseFontSize", "tableFontSize", "tocDepth", "fitToPages", "metadataEpochSeconds"].map(key => [key, input => { input.options[key]++; }]),
   ["expandIncludes", input => { input.options.expandIncludes = false; input.options.includeSources = []; }],
   ["headingScale", input => { input.options.headingScale = 1.4; }],
+  ["baselineGridPt", input => { delete input.options.fitToPages; input.options.baselineGridPt = 13.125; }],
   ["paper", input => { input.options.page.size.widthPt++; }],
   ["margin", input => { input.options.page.margins.leftPt++; }],
   ["running", input => { input.options.running.header.left += "!"; }],

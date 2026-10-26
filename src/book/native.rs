@@ -71,7 +71,7 @@ pub(crate) struct BookArgs {
     #[arg(long, value_enum, default_value_t = BookTarget::Both)]
     to: BookTarget,
     /// Check expanded HTML navigation only; write no publications. Exit 65 for findings.
-    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage", "pdf_fonts", "pdf_font_weights", "font_scale", "page_size", "margin_top_pt", "margin_right_pt", "margin_bottom_pt", "margin_left_pt", "pdf_line_numbers", "toc_depth", "book_publishing"])]
+    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage", "pdf_fonts", "pdf_font_weights", "font_scale", "page_size", "margin_top_pt", "margin_right_pt", "margin_bottom_pt", "margin_left_pt", "pdf_baseline_grid_pt", "pdf_line_numbers", "toc_depth", "book_publishing"])]
     check_links: bool,
     /// Refuse publication on expanded-navigation findings before rendering or writes.
     #[arg(long, conflicts_with = "robot_triage")]
@@ -117,6 +117,10 @@ pub(crate) struct BookArgs {
     /// PDF left margin in points; overrides the configured value.
     #[arg(long)]
     margin_left_pt: Option<f64>,
+    /// Opt-in PDF body baseline grid in points (1..=144); 0 disables a configured grid.
+    /// Incompatible with --fit-to-pages. Requires --to pdf or both.
+    #[arg(long, value_name = "POINTS")]
+    pdf_baseline_grid_pt: Option<f64>,
     /// Render line numbers in the PDF book's fenced code blocks.
     #[arg(long)]
     pdf_line_numbers: bool,

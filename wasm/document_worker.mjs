@@ -4,7 +4,7 @@ import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker, workerLimits } from 
 
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfTypography } from "./render_typography.mjs";
+import { normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
 
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const DOCUMENT_SOURCE_LIMIT = 4 * 1024 * 1024;
@@ -20,7 +20,7 @@ const FORMATS = Object.freeze({
 const SHARED = ["font", "darkMode", "fontScale", "typeSize"];
 const SETTINGS = {
   html: [...SHARED, "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
-  pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "pdfImages", "fontAssets", "page", "running"],
+  pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "pdfImages", "fontAssets", "page", "running", "baselineGridPt"],
   svg: [...SHARED, "maxWidthPt", "pdfImages", "fontAssets"],
   epub: [...SHARED, "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets"],
   "interactive-html": [...SHARED, "title", "lang"],
@@ -123,9 +123,10 @@ function normalize(format, source, options, knownSourceLength) {
     } else if (key === "running") {
       try { out.running = normalizePdfRunning(value); }
       catch (error) { fail(error.code, error.message); }
-    } else if (["typography", "microtype", "htmlFontFormat"].includes(key)) {
+    } else if (["typography", "microtype", "htmlFontFormat", "baselineGridPt"].includes(key)) {
       const normalize = { typography: normalizePdfTypography,
-        microtype: normalizeMicrotype, htmlFontFormat: normalizeHtmlFontFormat }[key];
+        microtype: normalizeMicrotype, htmlFontFormat: normalizeHtmlFontFormat,
+        baselineGridPt: normalizeBaselineGridPt }[key];
       try { out[key] = normalize(value); }
       catch (error) { fail(error.code, error.message); }
     } else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion", "optimalPagination"].includes(key)) {
@@ -149,6 +150,8 @@ function normalize(format, source, options, knownSourceLength) {
       if (choices && !choices.includes(value)) fail("INVALID_OPTIONS", `invalid ${key}`);
     }
   }
+  try { validateBaselineGridFit(out.baselineGridPt, out.fitToPages); }
+  catch (error) { fail(error.code, error.message); }
   // Charge the retained input graph before allocating binary snapshots. This is
   // ingress accounting, not a promise about the renderer's temporary WASM heap.
   // A canonical page retains three records and six numeric fields.

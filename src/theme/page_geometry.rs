@@ -96,6 +96,7 @@ impl PageStyle {
                 bottom_pt: bottom32,
                 left_pt: left32,
             },
+            baseline_grid: None,
         })
     }
 }

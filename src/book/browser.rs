@@ -209,6 +209,18 @@ impl FmdBook {
         Ok(())
     }
 
+    /// Set the opt-in body baseline spacing in points. Zero disables it;
+    /// positive spacings must be finite values from 1 through 144 points.
+    /// Paper overrides preserve this setting, including archival exports.
+    ///
+    /// # Errors
+    /// Invalid or page-fitting-incompatible settings leave the retained book
+    /// unchanged. This additive method does not alter earlier setter arities.
+    #[wasm_bindgen(js_name = setBaselineGridPt)]
+    pub fn set_baseline_grid_pt(&mut self, points: f64) -> Result<(), JsValue> {
+        render_options::set_baseline_grid(self.renderer.options_mut(), points).map_err(to_js)
+    }
+
     /// Replace detailed PDF layout, typography, metadata epoch and running
     /// bands as one transaction. Absent fields reset this profile to defaults;
     /// title, author, theme, assets, source and navigation enablement survive.
@@ -250,6 +262,7 @@ impl FmdBook {
             footer_rule,
             skip_first_page,
         )
+        .and_then(|settings| settings.with_grid(self.renderer.options().theme.page.baseline_grid))
         .map_err(to_js)?;
         settings.apply(self.renderer.options_mut());
         Ok(())
@@ -299,6 +312,7 @@ impl FmdBook {
         .and_then(|settings| {
             settings.with_running_images(image_destinations, image_positions, image_heights)
         })
+        .and_then(|settings| settings.with_grid(self.renderer.options().theme.page.baseline_grid))
         .map_err(to_js)?;
         settings.apply(self.renderer.options_mut());
         Ok(())
@@ -434,10 +448,11 @@ impl FmdBook {
 fn render_pdf_with_geometry(renderer: &BookRenderer, geometry: &[f64]) -> crate::Result<Vec<u8>> {
     let page = crate::PageStyle::from_browser_geometry(geometry)
         .map_err(|message| RenderError::InvalidInput(message.to_string()))?;
-    let Some(page) = page else {
+    let Some(mut page) = page else {
         return renderer.render_pdf();
     };
     let mut options = renderer.options().pdf_options();
+    page.baseline_grid = options.theme.page.baseline_grid;
     options.theme.page = page;
     super::render_book_pdf(renderer.book(), &options)
 }

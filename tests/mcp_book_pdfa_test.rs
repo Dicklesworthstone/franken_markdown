@@ -127,6 +127,7 @@ fn single_pdfa_request_reaches_the_core_with_geometry_and_explicit_metadata() {
             bottom_pt: 36.0,
             left_pt: 36.0,
         },
+        baseline_grid: None,
     };
     let expected = core()
         .render_pdf_with_options(&options, PdfASettings::a2b_strict())

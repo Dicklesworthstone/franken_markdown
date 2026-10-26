@@ -144,6 +144,10 @@ export interface FmdPdfRunning {
   skipFirstPage?: boolean;
 }
 export interface FmdPdfRenderOptions extends FmdRenderOptions {
+  /** Opt-in PDF body baseline spacing in points, 1..144 (rounded to 0.001 pt).
+   * Omitted/0 keeps the grid disabled. Incompatible with fitToPages. Requires
+   * matching baseline-grid WASM bindings; old packages fail explicitly. */
+  baselineGridPt?: number;
   /** PDF layout for single documents and books; margins must leave a 72-point content rectangle. */
   page?: FmdPdfPage;
   /** Running header/footer for single-document PDF renders. A band that does not fit its margin fails the render. */

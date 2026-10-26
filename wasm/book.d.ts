@@ -93,6 +93,11 @@ export interface BookOptions {
   tocDepth?: number;
   /** Adaptive target, integer 1..=4294967295; not a hard page-count guarantee. */
   fitToPages?: number;
+  /** Opt-in body baseline spacing in points, 1..144, rounded to 0.001 pt.
+   * Omitted/0 disables. Incompatible with fitToPages. Requires the additive
+   * FmdBook.setBaselineGridPt method; older packages fail before construction.
+   * Retained source updates and export-local page overrides preserve the grid. */
+  baselineGridPt?: number;
   codeLineNumbers?: boolean;
   /** Nonnegative safe-integer epoch; no ambient clock is read. */
   metadataEpochSeconds?: number;

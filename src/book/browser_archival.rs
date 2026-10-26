@@ -55,10 +55,11 @@ fn render_archival(
     };
     let page = PageStyle::from_browser_geometry(geometry)
         .map_err(|message| RenderError::InvalidInput(message.to_string()))?;
-    let Some(page) = page else {
+    let Some(mut page) = page else {
         return renderer.render_pdf_pdfa(settings);
     };
     let mut options = renderer.options().pdf_options();
+    page.baseline_grid = options.theme.page.baseline_grid;
     options.theme.page = page;
     renderer.render_pdf_with_options(&options, settings)
 }

@@ -21,6 +21,7 @@ class RecordingBook {
   setTheme(...args) { this.settings.theme = args; }
   setNavigation(...args) { this.settings.navigation = args; }
   setFontScale(scale) { this.settings.fontScale = scale; }
+  setBaselineGridPt(points) { this.settings.baselineGridPt = points; }
   setImage(destination, bytes) { (this.settings.images ??= []).push([destination, [...bytes]]); }
   setFont(slot, bytes) { (this.settings.fonts ??= []).push([slot, [...bytes]]); }
   setFontWeight(slot, weight) { this.settings.weight = [slot, weight]; }
@@ -53,6 +54,7 @@ const PDF_ARGS = ["homogeneous,antiriver,pareto,optimal-pagination,expansion",
 if (!isMainThread) {
   if (workerData?.old) delete RecordingBook.prototype.setPdfOptions;
   if (workerData?.oldImages) delete RecordingBook.prototype.setPdfOptionsWithRunningImages;
+  if (workerData?.oldGrid) delete RecordingBook.prototype.setBaselineGridPt;
   installBookWorker({
     addEventListener(type, listener) { parentPort.on(type, data => listener({ data })); },
     postMessage(data, transfer) { parentPort.postMessage(data, transfer); },
@@ -271,8 +273,8 @@ if (!isMainThread) {
     for (const value of [Infinity, -Infinity, NaN, "12", null]) assert.throws(() => prepareBookInput(FILES, { baseFontSize: value }));
   });
 
-  function workerEndpoint(old = false, oldImages = false) {
-    const worker = new Worker(new URL(import.meta.url), { workerData: { old, oldImages } });
+  function workerEndpoint(old = false, oldImages = false, oldGrid = false) {
+    const worker = new Worker(new URL(import.meta.url), { workerData: { old, oldImages, oldGrid } });
     const callbacks = new Map();
     return {
       postMessage: (message, transfer) => worker.postMessage(message, transfer),
@@ -340,6 +342,7 @@ if (!isMainThread) {
       { tocDepth: 2 }, { tocDepth: 3 }, { typography: "pareto" }, { typography: "antiriver" },
       { baseFontSize: 12 }, { headingScale: 1.3 }, { tableFontSize: 9 }, { fitToPages: 3 },
       { codeLineNumbers: true }, { metadataEpochSeconds: 0 },
+      { baselineGridPt: 13.125 }, { baselineGridPt: 14 },
       { running: { header: { left: "First" } } }, { running: { header: { left: "Second" } } },
       { running: { header: { image: { dest: "logo" } } } },
       { running: { header: { image: { dest: "logo", position: "right", heightPt: 24 } } } }];
@@ -354,4 +357,45 @@ if (!isMainThread) {
       }
     } finally { preview.clear(); }
   });
+  test("retained book grids are captured before loading and old packages refuse before construction", async () => {
+    let ready;
+    const delayed = createBookBindings(() => new Promise(resolve => { ready = resolve; }));
+    const bytes = Uint8Array.of(1, 2, 3);
+    const options = { baselineGridPt: 13.125, images: [{ destination: "x.png", bytes }] };
+    const pending = delayed.createBook(FILES, options);
+    options.baselineGridPt = 72; bytes.fill(9);
+    ready(RecordingBook);
+    const session = await pending;
+    assert.equal(decoded(session.renderPdf()).baselineGridPt, 13.125);
+    assert.deepEqual(decoded(session.renderPdf()).images, [["x.png", [1, 2, 3]]]);
+    session.dispose();
+    class OldBook extends RecordingBook {}
+    Object.defineProperty(OldBook.prototype, "setBaselineGridPt", { value: undefined });
+    const old = createBookBindings(async () => OldBook), before = state.created;
+    await assert.rejects(old.createBook(FILES, { baselineGridPt: 14 }), { code: "UNSUPPORTED_BOOK_OPTIONS" });
+    assert.equal(state.created, before, "capability refusal precedes native construction and setters");
+    const defaults = await old.createBook(FILES, { baselineGridPt: 0 }); defaults.dispose();
+    for (const baselineGridPt of [0.5, 145, NaN, Infinity, "14", null])
+      assert.throws(() => prepareBookInput(FILES, { baselineGridPt }), { code: "INVALID_OPTIONS" });
+    assert.throws(() => prepareBookInput(FILES, { baselineGridPt: 14, fitToPages: 2 }),
+      { code: "INVALID_OPTIONS", message: /pdf_baseline_grid_incompatible:/ });
+  });
+
+  test("book-worker grid capture reaches the native setter and preserves missing-capability errors", async () => {
+    const client = createBookWorkerClient({ workerFactory: () => workerEndpoint(), timeoutMs: 10000 });
+    try {
+      const options = { baselineGridPt: 13.125, page: { size: "a4" } };
+      const pending = client.render(FILES, "pdf", options);
+      options.baselineGridPt = 72;
+      assert.equal(decoded(await pending).baselineGridPt, 13.125);
+    } finally { client.dispose(); }
+    const old = createBookWorkerClient({ workerFactory: () => workerEndpoint(false, false, true), timeoutMs: 10000 });
+    try {
+      await assert.rejects(old.render(FILES, "pdf", { baselineGridPt: 14 }),
+        error => error.code === "UNSUPPORTED_BOOK_OPTIONS" && /setBaselineGridPt/.test(error.message));
+      assert.equal(old.busy, false);
+      assert.equal(decoded(await old.render(FILES, "pdf", { baselineGridPt: 0 })).baselineGridPt, undefined);
+    } finally { old.dispose(); }
+  });
+
 }

@@ -29,12 +29,13 @@ pub(super) fn prepare(
     if !matches!(args.to, BookTarget::Pdf | BookTarget::Both)
         && (args.page_size.is_some()
             || margins.iter().any(Option::is_some)
-            || args.pdf_line_numbers)
+            || args.pdf_line_numbers
+            || args.pdf_baseline_grid_pt.is_some())
     {
         return Err(error(
             64,
             "unsupported_target_option",
-            "page size, margins and --pdf-line-numbers require --to pdf or --to both",
+            "page size, margins, --pdf-line-numbers and --pdf-baseline-grid-pt require --to pdf or --to both",
         ));
     }
     let font_scale = args.font_scale.as_deref().or(defaults.font_scale.as_deref()).map(|value| {
@@ -46,6 +47,13 @@ pub(super) fn prepare(
     }
     if matches!(args.to, BookTarget::Pdf | BookTarget::Both) {
         configure_page(&mut theme, args.page_size.as_deref(), margins)?;
+        crate::config::page::configure_baseline_grid(
+            &mut theme,
+            args.pdf_baseline_grid_pt,
+            defaults.pdf_baseline_grid_pt.as_deref(),
+            args.publishing.fit_to_pages,
+        )
+        .map_err(|err| error(64, err.code(), err.to_string()))?;
     }
     let fonts = args.pdf_fonts.iter().map(|spec| {
         let (slot, path) = spec.split_once('=').ok_or_else(|| error(64, "usage_error",

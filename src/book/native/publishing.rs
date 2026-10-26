@@ -43,7 +43,7 @@ pub(super) struct PublishingArgs {
     pdf_optimal_pagination: Option<bool>,
     /// Fit the assembled PDF, including contents and chapter breaks, to N pages.
     #[arg(long, visible_alias = "target-pages", value_name = "PAGES")]
-    fit_to_pages: Option<usize>,
+    pub(super) fit_to_pages: Option<usize>,
     /// PDF base body size in points (6..=24); overrides the PDF font scale.
     #[arg(long, value_name = "POINTS")]
     pdf_base_font_size: Option<f64>,

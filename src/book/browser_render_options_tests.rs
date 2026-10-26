@@ -384,3 +384,40 @@ fn default_profile_remains_byte_identical() {
     settings(None).apply(book.options_mut());
     assert_eq!(book.render_pdf().unwrap(), before);
 }
+
+#[test]
+fn baseline_grid_and_fitting_are_transactional_in_both_option_orders() {
+    let mut options = WasmRenderOptions::default();
+    set_baseline_grid(&mut options, 13.1254).unwrap();
+    let before = options.theme.page.baseline_grid;
+    assert_eq!(before.unwrap().spacing_milli_points(), 13125);
+    for value in [f64::NAN, f64::INFINITY, -1.0, 0.5, 144.001] {
+        assert!(set_baseline_grid(&mut options, value).is_err());
+        assert_eq!(options.theme.page.baseline_grid, before);
+    }
+    let fitting = || {
+        PdfSettings::new(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(2.0),
+            false,
+            None,
+            Vec::new(),
+            false,
+            false,
+            false,
+        )
+        .unwrap()
+    };
+    assert!(fitting().with_grid(before).is_err());
+    assert_eq!(options.fit_to_pages, None);
+    assert_eq!(options.theme.page.baseline_grid, before);
+    set_baseline_grid(&mut options, 0.0).unwrap();
+    fitting().with_grid(None).unwrap().apply(&mut options);
+    assert!(set_baseline_grid(&mut options, 14.0).is_err());
+    assert_eq!(options.fit_to_pages, Some(2));
+    assert!(options.theme.page.baseline_grid.is_none());
+}

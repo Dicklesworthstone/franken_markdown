@@ -111,6 +111,37 @@ Every render result has:
 - `diagnostics`: recoverable parser diagnostics,
 - `text()`, `blob()`, and `filename()` helpers.
 
+## PDF baseline grids
+
+```js
+const pdf = await fmd.renderPdf(markdown, {
+  baselineGridPt: 13.125,
+  page: { size: "a4", margins: 48 },
+});
+```
+
+`baselineGridPt` accepts `0` (disabled) or a finite number from `1` through `144`
+points. The native core rounds once to `0.001` pt. It aligns body text, headings,
+code, tables, lists, quotes and footnotes from each page's top content edge.
+Rows may occupy multiple steps to preserve leading and painted ink. After
+rounding the body bottom to the grid and reserving ink clearance, at least
+40 points of usable body height must remain; insufficient capacity is an error.
+Figures retain their internal coordinates; body alignment resumes after their
+measured box. Internal formula glyphs and running margin bands retain their own
+placement. Oversized grid content fails explicitly. `fitToPages` and an enabled
+grid are incompatible because fitting changes type size and margins.
+
+The option is shared by `renderPdf`, root `renderBookPdf`, Document Worker PDF
+requests, Flow PDF exports, and retained `book`/`book-worker` options. Direct
+requests use the additive `renderPdfConfiguredGrid` or
+`renderBookPdfConfiguredGrid` binding. Old packages reject enabled requests with
+`UNSUPPORTED_WASM_PACKAGE` before asset copying or initialization. Retained books
+use `FmdBook.setBaselineGridPt`; they snapshot inputs before asynchronous loading
+and reject missing support with `UNSUPPORTED_BOOK_OPTIONS` before native book
+construction. Their page overrides and retained publication caches preserve the
+grid. Omitted or zero values keep existing calls, signatures and default bytes.
+These are programmatic options; the editor and book workbench add no new controls.
+
 ## PDF running logos
 
 Single-document and book PDFs can repeat a host-supplied logo in either margin band:

@@ -66,6 +66,7 @@ fn custom_page() -> PageStyle {
             bottom_pt: 20.0,
             left_pt: 20.0,
         },
+        baseline_grid: None,
     }
 }
 
@@ -373,6 +374,7 @@ fn named_paper_reaches_pdf_files_books_and_verification_in_both_orientations() {
                             bottom_pt: 30.0,
                             left_pt: 36.0,
                         },
+                        baseline_grid: None,
                     },
                     ..Default::default()
                 },

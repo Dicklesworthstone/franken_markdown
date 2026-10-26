@@ -124,6 +124,13 @@ impl PdfSettings {
         Ok(self)
     }
 
+    /// Retained page settings are outside this replace-all profile. Reject a
+    /// fitting target that would violate its grid before committing any field.
+    pub(super) fn with_grid(self, grid: Option<crate::BaselineGrid>) -> Result<Self> {
+        grid_fit(grid, self.0.fit_to_pages)?;
+        Ok(self)
+    }
+
     /// Infallible commit after all fields have been admitted. No asset copies,
     /// source changes, theme resets, or increment to the source revision.
     pub(super) fn apply(self, options: &mut WasmRenderOptions) {
@@ -142,6 +149,26 @@ impl PdfSettings {
         options.metadata_epoch_seconds = candidate.metadata_epoch_seconds;
         options.running = candidate.running;
     }
+}
+
+pub(super) fn set_baseline_grid(options: &mut WasmRenderOptions, points: f64) -> Result<()> {
+    let grid = if points == 0.0 {
+        None
+    } else {
+        Some(crate::BaselineGrid::from_points(points)?)
+    };
+    grid_fit(grid, options.fit_to_pages)?;
+    options.theme.page.baseline_grid = grid;
+    Ok(())
+}
+
+fn grid_fit(grid: Option<crate::BaselineGrid>, fit: Option<usize>) -> Result<()> {
+    if grid.is_some() && fit.is_some_and(|pages| pages > 0) {
+        return Err(invalid(
+            "pdf_baseline_grid_incompatible: baseline grids cannot be combined with fit_to_pages; remove the page-fit target or disable the grid",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

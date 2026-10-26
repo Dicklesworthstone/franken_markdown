@@ -3,7 +3,7 @@
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfTypography } from "./render_typography.mjs";
+import { normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
 import {
   FLOW_ASSET_LIMIT,
   FLOW_SOURCE_LIMIT,
@@ -38,6 +38,7 @@ const PDF = [
   "microtype",
   "typography",
   "optimalPagination",
+  "baselineGridPt",
   "page",
   "running",
   "pdfImages",
@@ -174,6 +175,12 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
     }
   } else {
     const { page, running, pdfImages } = options;
+    if (options.baselineGridPt !== undefined) {
+      try {
+        result.baselineGridPt = normalizeBaselineGridPt(options.baselineGridPt);
+        validateBaselineGridFit(result.baselineGridPt, options.fitToPages);
+      } catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
+    }
     if (page !== undefined) {
       try {
         result.page = normalizePdfPage(page);

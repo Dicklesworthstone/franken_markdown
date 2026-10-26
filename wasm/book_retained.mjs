@@ -10,7 +10,7 @@ function samePaths(left, right) {
 function sameOptions(a, b) {
   for (const key of ["title", "author", "lang", "customCss", "toc", "pageNumbers", "font",
     "darkMode", "fontScale", "expandIncludes", "typography", "baseFontSize", "headingScale",
-    "tableFontSize", "tocDepth", "fitToPages", "codeLineNumbers", "metadataEpochSeconds",
+    "tableFontSize", "tocDepth", "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds",
     "htmlFontFormat", "pdfA", "pdfAStrict"]) {
     if (a[key] !== b[key]) return false;
   }
@@ -142,7 +142,7 @@ export const BOOK_OUTPUT_CACHE_LIMITS = Object.freeze({
 const optionKeys = new Set([
   "title", "author", "lang", "customCss", "toc", "pageNumbers", "font", "darkMode",
   "fontScale", "expandIncludes", "typography", "baseFontSize", "headingScale",
-  "tableFontSize", "tocDepth", "fitToPages", "codeLineNumbers", "metadataEpochSeconds",
+  "tableFontSize", "tocDepth", "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds",
   "htmlFontFormat", "page", "running", "images", "fontAssets", "includeSources",
   "pdfA", "pdfAStrict",
 ]);

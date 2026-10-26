@@ -4,7 +4,7 @@ import type { FmdPdfPage } from "./franken_markdown.js";
 
 const files: readonly BookFile[] = [{ path: "one.md", source: "# One" }];
 const page: FmdPdfPage = { size: "a4", orientation: "landscape", margins: { leftPt: 24 } };
-const options: BookOptions = { page, pageNumbers: true };
+const options: BookOptions = { baselineGridPt: 13.125, page, pageNumbers: true };
 const session = await createBook(files, options);
 session.renderPdf();
 session.renderPdf({ page });
@@ -20,3 +20,6 @@ session.renderPdf({ font: "serif" });
 // @ts-expect-error Export-local geometry must not change the EPUB API.
 session.renderEpub({ page });
 session.dispose();
+
+// @ts-expect-error Grid spacing requires numeric points.
+await createBook(files, { baselineGridPt: "14" });

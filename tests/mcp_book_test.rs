@@ -213,6 +213,7 @@ fn pdf_geometry_typography_metadata_and_running_text_reach_book_rendering() {
             bottom_pt: 40.0,
             left_pt: 40.0,
         },
+        baseline_grid: None,
     };
     let expected = render_book_pdf(core().book(), &options).unwrap();
     assert_ne!(

@@ -131,6 +131,21 @@ impl WasmRenderOptions {
         }
     }
 
+    /// Return a copy with an opt-in PDF body baseline grid. Zero disables it;
+    /// positive spacings must be finite values from 1 through 144 points.
+    /// Grid geometry is shared by single-document and book PDF rendering.
+    ///
+    /// # Errors
+    /// Returns the core typed validation error for an invalid spacing.
+    pub fn with_baseline_grid_pt(mut self, points: f64) -> crate::Result<Self> {
+        self.theme.page.baseline_grid = if points == 0.0 {
+            None
+        } else {
+            Some(crate::BaselineGrid::from_points(points)?)
+        };
+        Ok(self)
+    }
+
     /// Return a copy with the given authoring profile.
     #[must_use]
     pub fn with_profile(mut self, profile: crate::Profile) -> Self {

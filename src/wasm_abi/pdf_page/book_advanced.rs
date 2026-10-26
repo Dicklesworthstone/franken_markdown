@@ -139,7 +139,7 @@ pub fn render_book_pdf_configured_advanced(
 
 // Native-testable admission before any JsValue error construction or rendering.
 #[allow(clippy::too_many_arguments)]
-fn book_presentation(
+pub(super) fn book_presentation(
     typography: Option<&str>,
     slots: Vec<String>,
     header_rule: bool,

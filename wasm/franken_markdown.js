@@ -1,6 +1,6 @@
 import { pdfPageGeometry } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeMicrotype, normalizePdfTypography } from "./render_typography.mjs";
+import { normalizeBaselineGridPt, normalizeMicrotype, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
 import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
@@ -105,9 +105,14 @@ export async function renderHtml(markdown, options = {}) {
 
 export async function renderPdf(markdown, options = {}) {
   // Admit and capture geometry before initializing WASM or copying assets.
+  const baselineGridPt = normalizeBaselineGridPt(options.baselineGridPt);
+  const fitToPages = integerOption(options.fitToPages, "fitToPages");
+  validateBaselineGridFit(baselineGridPt, fitToPages);
   const geometry = pdfPageGeometry(options.page);
   const running = pdfRunningOption(options.running);
-  const render = running?.hasImages
+  const render = baselineGridPt > 0
+    ? requireBrowserBinding("renderPdfConfiguredGrid", "baseline-grid support")
+    : running?.hasImages
     ? wasmBindings.renderPdfConfiguredRunningImages
     : running ? wasmBindings.renderPdfConfiguredRunning
     : geometry.length ? wasmBindings.renderPdfConfiguredPage : renderPdfConfiguredMulti;
@@ -120,7 +125,7 @@ export async function renderPdf(markdown, options = {}) {
   }
   const typography = typographyOption(options);
   if (typography !== undefined) {
-    const count = running?.hasImages ? 36 : running ? 33 : geometry.length ? 29 : 28;
+    const count = baselineGridPt > 0 ? 37 : running?.hasImages ? 36 : running ? 33 : geometry.length ? 29 : 28;
     requireBindingArguments(render, count, "PDF typography and optimal pagination");
   }
   const pdfImages = pdfImagesOption(options.pdfImages);
@@ -170,7 +175,7 @@ export async function renderPdf(markdown, options = {}) {
     stringOption(options.lang),
     Boolean(options.toc),
     integerOption(options.tocDepth, "tocDepth"),
-    integerOption(options.fitToPages, "fitToPages"),
+    fitToPages,
     options.microtype === "protrusion" || options.microtypeProtrusion === true,
   ];
   // The typography tokens ride as one optional trailing argument, sent only
@@ -179,6 +184,12 @@ export async function renderPdf(markdown, options = {}) {
   // Source, primitive settings, image bytes and font bytes now belong to this
   // request. Asynchronous initialization cannot retarget its page or contents.
   await init();
+  if (baselineGridPt > 0) {
+    return normalizeResult(render(...args, geometry, running?.slots ?? [],
+      running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
+      running?.imageDestinations ?? [], running?.imagePositions ?? new Uint32Array(),
+      running?.imageHeights ?? new Uint32Array(), typography, baselineGridPt));
+  }
   if (running) {
     if (running.hasImages) {
       return normalizeResult(render(...args, geometry, running.slots, running.headerRule,
@@ -703,12 +714,15 @@ function bookSiteArguments(files, options) {
 
 export async function renderBookPdf(files, options = {}) {
   if (typeof wasmBindings.renderBookPdfConfiguredPage !== "function"
-      && typeof wasmBindings.renderBookPdfConfiguredAdvanced !== "function") {
+      && typeof wasmBindings.renderBookPdfConfiguredAdvanced !== "function"
+      && typeof wasmBindings.renderBookPdfConfiguredGrid !== "function") {
     requireBrowserBinding("renderBookPdf", "wasm-book");
   }
   // Capture source, primitive settings, geometry and owned assets before init.
   const prepared = bookPdfArguments(files, options);
-  const render = prepared.complete
+  const render = prepared.grid > 0
+    ? requireBrowserBinding("renderBookPdfConfiguredGrid", "wasm-book with baseline-grid support")
+    : prepared.complete
     ? requireBrowserBinding("renderBookPdfConfiguredAdvanced", "wasm-book with typography and running content")
     : prepared.advanced ? wasmBindings.renderBookPdfConfiguredPage
     : requireBrowserBinding("renderBookPdf", "wasm-book");
@@ -725,11 +739,17 @@ export async function renderBookPdf(files, options = {}) {
 // TOC/page-number defaults and narrow ABI. Only configured requests need the
 // additive ABI; neither images nor newer options may silently disappear.
 function bookPdfArguments(files, options) {
+  const grid = normalizeBaselineGridPt(options.baselineGridPt);
+  const target = integerOption(options.fitToPages, "fitToPages");
+  validateBaselineGridFit(grid, target);
+  // A requested grid must not be dropped by older packages, and refusal must
+  // precede source normalization and all host asset validation/copying.
+  if (grid > 0) requireBrowserBinding("renderBookPdfConfiguredGrid", "wasm-book with baseline-grid support");
   const {
     page, font, darkMode, title, author, metadataEpochSeconds,
     allowRawHtml, codeLineNumbers, pdfImages, fontAssets,
     baseFontSize, headingScale, tableFontSize, pageNumbers,
-    fontScale, typeSize, lang, toc = true, tocDepth, fitToPages,
+    fontScale, typeSize, lang, toc = true, tocDepth,
     microtype, microtypeProtrusion, typography, optimalPagination, running,
   } = options;
   if (optimalPagination !== undefined && typeof optimalPagination !== "boolean")
@@ -740,7 +760,7 @@ function bookPdfArguments(files, options) {
     microtype: microtype === undefined ? undefined : normalizeMicrotype(microtype),
   });
   const bands = pdfRunningOption(normalizePdfRunning(running));
-  const complete = typesetting !== undefined || bands !== null;
+  const complete = typesetting !== undefined || bands !== null || grid > 0;
   const geometry = pdfPageGeometry(page);
   if (!Array.isArray(files) || files.length === 0 || files.length > 4096) {
     throw new RangeError("book needs 1..=4096 source files");
@@ -763,7 +783,6 @@ function bookPdfArguments(files, options) {
   const lineNumbers = Boolean(codeLineNumbers), numbers = pageNumbers !== false;
   const base = numberOption(baseFontSize), ratio = numberOption(headingScale);
   const table = numberOption(tableFontSize), depth = integerOption(tocDepth, "tocDepth");
-  const target = integerOption(fitToPages, "fitToPages");
   if (typeof toc !== "boolean") throw new TypeError("toc must be a boolean");
   if (depth !== undefined && depth > 6) throw new RangeError("tocDepth must be 1..6");
   if (target !== undefined && target > 0xffffffff) throw new RangeError("fitToPages exceeds the u32 ABI limit");
@@ -805,7 +824,7 @@ function bookPdfArguments(files, options) {
   });
   const ownedFonts = fonts.map(asset => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
   return {
-    advanced, complete,
+    advanced, complete, grid,
     args: [paths, sources, family, dark, heading, writer, epoch, raw, lineNumbers,
       images.map(image => image.destination), flat, lengths,
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
@@ -815,7 +834,7 @@ function bookPdfArguments(files, options) {
       ...(complete ? [bands?.slots ?? [], bands?.headerRule ?? false, bands?.footerRule ?? false,
         bands?.skipFirstPage ?? false, bands?.imageDestinations ?? [],
         bands?.imagePositions ?? new Uint32Array(), bands?.imageHeights ?? new Uint32Array(),
-        typesetting] : [])],
+        typesetting] : []), ...(grid > 0 ? [grid] : [])],
   };
 }
 

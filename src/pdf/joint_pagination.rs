@@ -151,7 +151,12 @@ pub(super) fn block_variant(
 ) -> BlockVariant {
     let fragment_heights = lines[start..end]
         .iter()
-        .map(|line| lu_from_points_f32((line_leading(line) + line.gap_after).max(0.001)))
+        .map(|line| {
+            line.grid.map_or_else(
+                || lu_from_points_f32((line_leading(line) + line.gap_after).max(0.001)),
+                baseline_grid::LineGrid::height,
+            )
+        })
         .collect();
     let reservations: Vec<f32> = (start..end).map(reserve).collect();
     let fragment_reservations = if reservations.iter().all(|&points| points == 0.0) {
@@ -239,7 +244,10 @@ fn finalized_shape(baseline: &[Line], alternative: &Alternative) -> Vec<Line> {
     let mut result = alternative.lines.clone();
     let count = result.len();
     let first = &baseline[0];
-    let gap_after = baseline[baseline.len() - 1].gap_after;
+    let last = &baseline[baseline.len() - 1];
+    let gap_after = last
+        .grid
+        .map_or(last.gap_after, baseline_grid::LineGrid::natural_gap);
     for (index, line) in result.iter_mut().enumerate() {
         line.flow = FlowMark {
             index,
@@ -255,6 +263,7 @@ fn finalized_shape(baseline: &[Line], alternative: &Alternative) -> Vec<Line> {
         line.page_break_before = index == 0 && first.page_break_before;
         line.gap_after = if index + 1 == count { gap_after } else { 0.0 };
     }
+    baseline_grid::finalize_alternative(&mut result, first);
     result
 }
 
@@ -284,6 +293,7 @@ fn cost_context(line: &Line) -> Line {
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        grid: line.grid,
         segs: Vec::new(),
         image: None,
     }
@@ -331,12 +341,19 @@ fn shape_note_reservations(
             .filter_map(|number| pending.remove(&number))
             .collect();
         if !first_here.is_empty() {
-            reservations[index] = separator
-                + first_here
-                    .iter()
-                    .flat_map(|range| &lines[range.clone()])
-                    .map(height)
-                    .sum::<f32>();
+            reservations[index] = if lines[notes.separator].grid.is_some() {
+                baseline_grid::height(
+                    std::iter::once(&lines[notes.separator])
+                        .chain(first_here.iter().flat_map(|range| &lines[range.clone()])),
+                )
+            } else {
+                separator
+                    + first_here
+                        .iter()
+                        .flat_map(|range| &lines[range.clone()])
+                        .map(height)
+                        .sum::<f32>()
+            };
         }
     }
     // A missing first citation must never silently drop its reserved body.
@@ -351,6 +368,7 @@ pub(super) fn apply(
     candidates: &Candidates,
 ) -> PdfParagraphVariantReport {
     let mut report = candidates.report.clone();
+    let page = baseline_grid::page_for_lines(page, lines);
     if !candidates.paragraphs.is_empty() {
         match select_reported(lines, page, candidates, &mut report) {
             Ok(Some(selected)) => *lines = selected,

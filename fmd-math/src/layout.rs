@@ -2098,14 +2098,26 @@ impl Engine {
             .width
             .max(upper.as_ref().map_or(0.0, |b| b.width))
             .max(lower.as_ref().map_or(0.0, |b| b.width));
+        // TeX reboxes each narrower box to the common width (`rebox`): the
+        // new hbox's hpack starts from zero height and depth, so a negative
+        // extent (amsmath's `\vbox to-1.4\ex@` over `\dddot`) clamps to 0.
+        let extent = |b: &MBox| {
+            if b.width < width {
+                (b.height.max(0.0), b.depth.max(0.0))
+            } else {
+                (b.height, b.depth)
+            }
+        };
         let op_dx = (width - op.width) / 2.0;
-        let mut height = op.height;
-        let mut depth = op.depth;
+        let (op_height, op_depth) = extent(&op);
+        let mut height = op_height;
+        let mut depth = op_depth;
         let mut children = Vec::new();
         if let Some(up) = upper {
-            let gap = (c.big_op_spacing1 * size).max(c.big_op_spacing3 * size - up.depth);
-            let dy = op.height + gap + up.depth;
-            height = dy + up.height + c.big_op_spacing5 * size;
+            let (up_height, up_depth) = extent(&up);
+            let gap = (c.big_op_spacing1 * size).max(c.big_op_spacing3 * size - up_depth);
+            let dy = op_height + gap + up_depth;
+            height = dy + up_height + c.big_op_spacing5 * size;
             children.push(Positioned {
                 dx: (width - up.width) / 2.0 + delta / 2.0,
                 dy,
@@ -2113,9 +2125,10 @@ impl Engine {
             });
         }
         let lower = lower.map(|low| {
-            let gap = (c.big_op_spacing2 * size).max(c.big_op_spacing4 * size - low.height);
-            let dy = -(op.depth + gap + low.height);
-            depth = -dy + low.depth + c.big_op_spacing5 * size;
+            let (low_height, low_depth) = extent(&low);
+            let gap = (c.big_op_spacing2 * size).max(c.big_op_spacing4 * size - low_height);
+            let dy = -(op_depth + gap + low_height);
+            depth = -dy + low_depth + c.big_op_spacing5 * size;
             Positioned {
                 dx: (width - low.width) / 2.0 - delta / 2.0,
                 dy,
@@ -2477,87 +2490,50 @@ impl Engine {
             | AccentKind::WideHat
             | AccentKind::WideTilde => self.stretchy_accent(kind, base, ctx, span),
             AccentKind::Dddot | AccentKind::Ddddot => {
-                // amsmath builds `\dddot`/`\ddddot` from a row of dots (no
-                // face carries U+20DB/U+20DC): resolve the single dot mark
-                // once and place n copies contiguously by ink width,
-                // centered over the base with rule 12's raise and skew.
+                // amsmath's `\dddot#1` is `{\mathop{\kern\z@#1}\limits^{\vbox
+                // to-1.4\ex@{\kern-\tw@\ex@\hbox{\,\normalfont...}\vss}}}`, with
+                // four periods for `\ddddot`. It is no accent: the base is an
+                // operator whose upper limit is a row of text periods (rule 13a),
+                // so the box is as wide as the row, and the braces make the
+                // whole an Ord. The row is amsmath's `\,` (.1667em) and periods
+                // of the Reference's T1 text font, ecrm1000, at the declared
+                // size; the math style does not scale them.
+                const PERIOD_WIDTH: f64 = 0.27771;
+                const PERIOD_HEIGHT: f64 = 0.10553;
+                const QUAD: f64 = 0.999756;
                 let n: u8 = if matches!(kind, AccentKind::Dddot) {
                     3
                 } else {
                     4
                 };
-                let base_laid = self.clean_box(base, ctx.map(StyleCtx::cramp))?;
-                let combining = accent_char(AccentKind::Dot);
-                let Some((used, (face, gid))) = self
-                    .faces
-                    .resolve(combining, &[FACE_REGULAR, FACE_ITALIC, FACE_SYMBOLS])
-                    .map(|hit| (combining, hit))
-                    .or_else(|| {
-                        accent_spacing_fallback(combining).and_then(|alt| {
-                            self.faces
-                                .resolve(alt, &[FACE_REGULAR, FACE_SYMBOLS])
-                                .map(|hit| (alt, hit))
+                let text_size = ctx.decl_size;
+                let ex = amsmath_ex(text_size);
+                let thin = 0.1667 * QUAD * text_size;
+                let advance = PERIOD_WIDTH * text_size;
+                let dot = self.text_period(span, ctx)?;
+                // The vbox ends in \vss, so its depth is zero, and the row's
+                // baseline sits 0.6\ex@ less the row's height above the box's
+                // own baseline.
+                let row_dy = 0.6 * ex - PERIOD_HEIGHT * text_size;
+                let upper = MBox {
+                    kind: BoxKind::Horizontal,
+                    width: thin + advance * f64::from(n),
+                    height: -1.4 * ex,
+                    depth: 0.0,
+                    children: (0..n)
+                        .map(|i| Positioned {
+                            dx: thin + advance * f64::from(i),
+                            dy: row_dy,
+                            node: MNode::Box(dot.clone()),
                         })
-                    })
-                else {
-                    return Err(MathError::UnmappedChar {
-                        ch: combining,
-                        span,
-                    });
+                        .collect(),
                 };
-                // In math mode the dot is cmr10's own accent character.
-                let (face, gid) = self
-                    .faces
-                    .math_roman(face, used, ctx.text_mode)
-                    .unwrap_or((face, gid));
-                let Some(font) = self.faces.font(face) else {
-                    return Err(MathError::UnmappedChar {
-                        ch: combining,
-                        span,
-                    });
-                };
-                let upm = f64::from(font.units_per_em.max(1));
-                let bbox = font.glyph_bbox(gid).unwrap_or([0, 0, 0, 0]);
-                let ink_left = f64::from(bbox[0]) / upm * size;
-                let ink_right = f64::from(bbox[2]) / upm * size;
-                let ink_top = f64::from(bbox[3]) / upm * size;
-                let ink_bottom = f64::from(bbox[1]) / upm * size;
-                let ink_w = ink_right - ink_left;
-                let row_w = ink_w * f64::from(n);
-                let h = base_laid.boxx.height;
-                let dy = h - h.min(c.x_height * size);
-                let skew = self.accent_skew(&base_laid, ctx);
-                let row_left = base_laid.boxx.width / 2.0 + skew - row_w / 2.0;
-                let width = base_laid.boxx.width;
-                let height = base_laid.boxx.height.max(dy + ink_top);
-                let depth = base_laid.boxx.depth.max(-(dy + ink_bottom));
-                let mut children = Vec::with_capacity(usize::from(n) + 1);
-                for i in 0..n {
-                    children.push(Positioned {
-                        dx: row_left + ink_w * f64::from(i) - ink_left,
-                        dy,
-                        node: MNode::Glyph {
-                            face,
-                            gid,
-                            ch: combining,
-                            size,
-                            span,
-                        },
-                    });
-                }
-                children.push(Positioned {
-                    dx: 0.0,
-                    dy: 0.0,
-                    node: MNode::Box(base_laid.boxx),
-                });
+                // `\kern\z@` makes the nucleus a list, which TeX neither
+                // centres on the axis nor shifts the limit by its italic
+                // correction.
+                let op = self.clean_box(base, ctx)?.boxx;
                 Ok(Laid {
-                    boxx: MBox {
-                        kind: BoxKind::Horizontal,
-                        width,
-                        height,
-                        depth,
-                        children,
-                    },
+                    boxx: self.with_limits(op, Some(upper), None, ctx, 0.0),
                     italic: 0.0,
                     char_glyph: None,
                 })
@@ -4334,6 +4310,27 @@ fn cancel_line(width: f64, total: f64) -> (f64, f64) {
 /// length stays fixed under size declarations and math styles, as in TeX.
 /// Ems and exes are the text font's, cmr10's quad and x-height at the
 /// declared size, the font `\hspace` reads in math mode too.
+/// amsgen's `\ex@` at a declared size factor (`\compute@ex@`), in ems of the
+/// 10 pt design size: 1 pt at 10 pt; each half point of size away from 10 pt
+/// moves it by a factor 0.97 towards 0 pt (smaller) or 2 pt (larger); 1.5 pt
+/// above 20 pt.
+fn amsmath_ex(decl_size: f64) -> f64 {
+    let points = 10.0 * decl_size;
+    if points > 20.0 {
+        return 0.15;
+    }
+    // Half points away from 10 pt, less amsgen's 1000 sp fudge.
+    let steps = ((2.0 * (10.0 - points)).abs() - 1000.0 / 65536.0)
+        .ceil()
+        .max(0.0);
+    let delta = 1.0 - 0.97_f64.powf(steps);
+    0.1 * if points < 10.0 {
+        1.0 - delta
+    } else {
+        1.0 + delta
+    }
+}
+
 fn skip_width(length: Length, ctx: LayCtx) -> f64 {
     /// A point is a tenth of the 10 pt design size's em.
     const POINT: f64 = 0.1;

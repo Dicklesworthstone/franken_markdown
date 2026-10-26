@@ -945,38 +945,38 @@ fn formerly_pending_constructs_now_lay_out() {
         "the surface integral operator renders"
     );
 
-    // The dot accents (fm-j5t): \dddot is a row of three dot marks over
-    // the base, \ddddot four — amsmath's own construction.
+    // The dot accents (fm-j5t, fm-ew7o): amsmath's \dddot and \ddddot set the
+    // base as an operator under a row of three or four text periods
+    // (\limits, rule 13a). TeX's \showbox of `\dddot{x}` in display style:
+    // x centred 2.14132 pt in; the periods' baselines 1.99998 pt over x's
+    // top, less the vbox's -0.45529 pt of \vss (5.85023 pt up), from
+    // amsmath's 1.66661 pt `\,` on at ecrm1000's 2.7771 pt advance.
     let dots3 = e.typeset(r"\dddot x", Style::Display).unwrap();
-    assert_eq!(dots3.glyphs.len(), 4, "x and three dots");
+    assert_eq!(dots3.glyphs.len(), 4, "x and three periods");
     let dots4 = e.typeset(r"\ddddot x", Style::Display).unwrap();
-    assert_eq!(dots4.glyphs.len(), 5, "x and four dots");
-    // Rule 12 lowers the accent by min(h(x), σ5): x is exactly σ5 tall,
-    // so the dot marks share its baseline and only their ink rises above it.
-    let x_y = dots3.glyphs.iter().find(|g| g.ch == 'x').unwrap().y;
-    assert!(
-        dots3
-            .glyphs
-            .iter()
-            .filter(|g| g.ch != 'x')
-            .all(|g| (g.y - x_y).abs() < EPS),
-        "{dots3:?}"
-    );
-    let x_alone = e.typeset("x", Style::Display).unwrap();
-    assert!(
-        dots3.height > x_alone.height + 0.2,
-        "dots sit above the base"
-    );
-    // A base shorter than σ5 does not lower them below its own top.
-    let dots_dot = e.typeset(r"\dddot .", Style::Display).unwrap();
-    let marks: Vec<f64> = dots_dot
-        .glyphs
-        .iter()
-        .filter(|g| g.ch != '.')
-        .map(|g| g.y)
-        .collect();
-    assert_eq!(marks.len(), 3, "{dots_dot:?}");
-    assert!(marks.iter().all(|y| y.abs() < EPS), "{marks:?}");
+    assert_eq!(dots4.glyphs.len(), 5, "x and four periods");
+    let x = dots3.glyphs.iter().find(|g| g.ch == 'x').unwrap();
+    assert!((x.x - 0.214132).abs() < 1e-5 && x.y.abs() < EPS, "{x:?}");
+    let periods: Vec<_> = dots3.glyphs.iter().filter(|g| g.ch == '.').collect();
+    assert_eq!(periods.len(), 3, "{dots3:?}");
+    for (i, g) in periods.iter().enumerate() {
+        let want_x = 0.166661 + 0.27771 * i as f64;
+        assert!(
+            (g.x - want_x).abs() < 1e-5
+                && (g.y - 0.585023).abs() < 1e-5
+                && (g.size - 1.0).abs() < EPS,
+            "period {i}: {g:?}"
+        );
+    }
+    // In script style the base and the limit spacings shrink (cmex7's ξ11
+    // is 1.39998 pt), but the periods are text at the declared size.
+    let script = e.typeset(r"\dddot x", Style::Script).unwrap();
+    for g in script.glyphs.iter().filter(|g| g.ch == '.') {
+        assert!(
+            (g.y - 0.395858).abs() < 1e-5 && (g.size - 1.0).abs() < EPS,
+            "{g:?}"
+        );
+    }
 
     // The labeled extensible arrows (fm-j5t): a drawn band stretched to
     // its script-style label, label riding above as a limit; \xmapsto
@@ -2023,6 +2023,21 @@ const TIER_TWO_BOXES: &[(&str, Style, f64, f64, f64)] = &[
     (r"a \mod b", Style::Script, 33.96777, 4.8611, 0.0),
     (r"a \pmod b", Style::Display, 49.85509, 7.5, 2.5),
     (r"a \pmod{n}", Style::Text, 51.56578, 7.5, 2.5),
+    // amsmath's \dddot and \ddddot: the base as an operator under a row of
+    // text periods (fm-ew7o). The braces make the whole an Ord, so `a` and
+    // `b` abut it, and the row keeps its text size in every style.
+    (r"\dddot{x}", Style::Display, 9.99791, 5.90553, 0.0),
+    (r"\ddddot{x}", Style::Display, 12.77501, 5.90553, 0.0),
+    (r"\dddot{x}", Style::Text, 9.99791, 5.90553, 0.0),
+    (r"\dddot{x}", Style::Script, 9.99791, 4.01387, 0.0),
+    (r"\dddot{x}", Style::ScriptScript, 9.99791, 2.46704, 0.0),
+    (r"a\dddot{x}b", Style::Display, 19.57545, 6.94444, 0.0),
+    (r"\dddot{xyzw}", Style::Display, 23.49542, 7.30553, 1.94444),
+    (r"\dddot{f}", Style::Display, 9.99791, 8.54443, 1.94444),
+    (r"\ddddot{y}", Style::Text, 12.77501, 5.90553, 1.94444),
+    (r"\dddot{x}^2", Style::Display, 14.48404, 8.64003, 0.0),
+    (r"\dddot{x}_i", Style::Display, 13.3272, 5.90553, 1.49998),
+    (r"\ddddot {x}(t) +", Style::Display, 31.94173, 7.5, 2.5),
 ];
 
 /// amsmath's `\mod` and `\pod` read `\if@display` (fm-eo8l). The Tex surface

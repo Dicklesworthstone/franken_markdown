@@ -727,6 +727,10 @@ fn amssymb_symbols_typeset_from_the_bundled_math_faces() {
     // (2E/2D) share Unicode characters, so only the code tells them apart;
     // \thickapprox and \thicksim are msbm's thick forms, not cmsy's.
     for (source, face, code) in [
+        // fm-0byq's acceptance pair: amsfonts' \checkmark (\mathhexbox
+        // \symAMSa58) and a blackboard capital through msbm's ℝ.
+        (r"\checkmark", FACE_AMS_A_10, 0x58),
+        (r"\mathbb{R}", FACE_AMS_B_10, 0x52),
         (r"\leqslant", FACE_AMS_A_10, 0x36),
         (r"\square", FACE_AMS_A_10, 0x03),
         (r"\therefore", FACE_AMS_A_10, 0x29),

@@ -1033,9 +1033,10 @@ fn ding_refusals_are_precise() {
 }
 
 #[test]
-fn pmod_expands_to_the_amsmath_display_form() {
-    // `\mkern18mu(\operator@font mod\mkern6mu #1)`: upright letters, not an
-    // operator atom, and 6 mu as two thin spaces.
+fn pmod_expands_to_the_amsmath_form() {
+    // `\if@display\mkern18mu\else\mkern8mu\fi(\operator@font mod\mkern6mu
+    // #1)`: the display-conditional kern, upright letters, not an operator
+    // atom, and 6 mu as two thin spaces.
     use fmd_math::node::SpaceKind;
     let items = parse_items(r"a \equiv b \pmod{n}");
     let Some(NodeKind::List(pmod)) = items.last().map(|node| &node.kind) else {
@@ -1046,7 +1047,10 @@ fn pmod_expands_to_the_amsmath_display_form() {
         matches!(
             kinds.as_slice(),
             [
-                NodeKind::Space(SpaceKind::Quad),
+                NodeKind::DisplayKern {
+                    display_mu: 18,
+                    text_mu: 8
+                },
                 NodeKind::Symbol { ch: '(', .. },
                 NodeKind::MathFont { .. },
                 NodeKind::Space(SpaceKind::Thin),

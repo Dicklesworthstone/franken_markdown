@@ -192,6 +192,27 @@ fn display_vs_inline_attr() {
     );
 }
 
+/// amsmath's `\mod` leads with 18 mu in display math and 12 mu inline
+/// (fm-eo8l).
+#[test]
+fn mod_kern_follows_the_display_attr() {
+    let node = parse(r"a \mod b").unwrap();
+    let block = to_mathml(&node, true);
+    let inline = to_mathml(&node, false);
+    assert_ok(
+        "mod-block",
+        r"a \mod b",
+        block.contains(r#"<mspace width="1em">"#),
+        &block,
+    );
+    assert_ok(
+        "mod-inline",
+        r"a \mod b",
+        inline.contains(r#"<mspace width="0.667em">"#) && !inline.contains(r#"width="1em""#),
+        &inline,
+    );
+}
+
 #[test]
 fn element_path_skips_math_wrapper() {
     let node = parse("x").unwrap();

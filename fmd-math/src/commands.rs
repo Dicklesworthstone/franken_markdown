@@ -108,6 +108,8 @@ pub(crate) enum Cmd {
     OperatorName,
     /// `\pmod{…}`: amsmath's parenthesized modulus.
     Pmod,
+    /// `\mod{…}`: amsmath's unparenthesized modulus.
+    Mod,
     /// An accent command.
     Accent(AccentKind),
     /// A two-argument fraction command.
@@ -609,12 +611,14 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
             rendered: "ker",
             limits: false,
         },
-        // `\mod`/`\bmod` carry their own leading-space quirk; the layout
-        // bead refines the spacing, the parse surface is an operator name.
-        "mod" | "bmod" => Cmd::OpName {
+        // amsmath's `\bmod` is a Bin "mod" between 5 mu kerns that cancel
+        // its medium spaces; as an operator name it sets 2 mu narrow on
+        // each side. It occurs nowhere in the corpus.
+        "bmod" => Cmd::OpName {
             rendered: "mod",
             limits: false,
         },
+        "mod" => Cmd::Mod,
         "pmod" => Cmd::Pmod,
         "lim" => Cmd::OpName {
             rendered: "lim",

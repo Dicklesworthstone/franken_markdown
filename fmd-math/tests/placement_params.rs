@@ -1989,7 +1989,67 @@ const TIER_TWO_BOXES: &[(&str, Style, f64, f64, f64)] = &[
         13.70952,
         6.85951,
     ),
+    // amsmath's \mod and \pmod in the Reference's align*, where \if@display
+    // holds: an 18 mu kern, upright "mod" as one Ord (cmr10's o-d kern
+    // inside) and 6 mu before the argument (fm-eo8l).
+    (
+        r"p \equiv 1 \mod 4",
+        Style::Display,
+        60.86424,
+        6.94444,
+        1.94444,
+    ),
+    (
+        r"p \equiv 1 \mod 4",
+        Style::Text,
+        60.86424,
+        6.94444,
+        1.94444,
+    ),
+    (
+        r"\times n \mod 256",
+        Style::Display,
+        61.27994,
+        6.94444,
+        0.83333,
+    ),
+    (
+        r"x \equiv y \mod{n+1}",
+        Style::Display,
+        80.03433,
+        6.94444,
+        1.94444,
+    ),
+    (r"a \mod b", Style::Script, 33.96777, 4.8611, 0.0),
+    (r"a \pmod b", Style::Display, 49.85509, 7.5, 2.5),
+    (r"a \pmod{n}", Style::Text, 51.56578, 7.5, 2.5),
 ];
+
+/// amsmath's `\mod` and `\pod` read `\if@display` (fm-eo8l). The Tex surface
+/// is the Reference's align*, a display (the rows above); a TexText `$…$`
+/// island is inline math, with 12 mu and 8 mu; its `$$…$$` islands and
+/// align* blocks are displays again. TeX boxes the inline forms
+/// `$p \equiv 1 \mod 4$` at 57.53099 pt and `$a \pmod{n}$` at 46.01036 pt.
+#[test]
+fn mod_kerns_follow_amsmath_display_flag() {
+    let e = engine();
+    for (source, tex_pt) in [
+        (r"$p \equiv 1 \mod 4$", 57.53099),
+        (r"$a \pmod{n}$", 46.01036),
+        (r"$$p \equiv 1 \mod 4$$", 60.86424),
+        (r"\begin{align*}p \equiv 1 \mod 4\end{align*}", 60.86424),
+        (r"$$a \pmod{n}$$", 51.56578),
+    ] {
+        let width = e
+            .typeset_text(source)
+            .unwrap_or_else(|err| panic!("{source}: {err}"))
+            .width;
+        assert!(
+            (width - tex_pt / 10.0).abs() < 1e-4,
+            "{source}: {width} em against TeX's {tex_pt} pt"
+        );
+    }
+}
 
 #[test]
 fn tier_two_constructs_take_tex_boxes() {

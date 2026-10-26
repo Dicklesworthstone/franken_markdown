@@ -275,6 +275,7 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
         | NodeKind::ColorChange(_)
         | NodeKind::Space(_)
         | NodeKind::Skip(_)
+        | NodeKind::DisplayKern { .. }
         | NodeKind::Tie
         | NodeKind::Linebreak
         | NodeKind::AlignTab => None,

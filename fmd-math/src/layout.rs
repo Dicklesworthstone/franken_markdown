@@ -181,6 +181,7 @@ impl Engine {
             decl_size: 1.0,
             line_stretch: 1.0,
             align_rows,
+            in_display: align_rows,
             color: None,
         };
         let rows = items
@@ -218,6 +219,12 @@ struct LayCtx {
     /// Whether stacked `\\` lines are the Tex surface's align* rows, which
     /// amsmath opens up by \jot. False for TexText paragraphs.
     align_rows: bool,
+    /// amsmath's `\if@display`: the material sits in display math. The Tex
+    /// surface is the Reference's align*, whose `\everydisplay` sets it, and
+    /// inline math inside a display (an align* cell, a `\text` island) keeps
+    /// it. In TexText it holds only inside `$$…$$` islands and the display
+    /// environments (align*, gather*, equation*).
+    in_display: bool,
     /// The `\color` in force, group-scoped like the size declaration;
     /// `None` leaves the consumer's own colour.
     color: Option<Color>,
@@ -389,6 +396,22 @@ impl Engine {
                 NodeKind::Skip(length) => {
                     laid_items.push(LineItem::Glue(GlueSpec {
                         natural: skip_width(*length, ctx),
+                        stretch: 0.0,
+                        shrink: 0.0,
+                    }));
+                }
+                NodeKind::DisplayKern {
+                    display_mu,
+                    text_mu,
+                } => {
+                    let mu = if ctx.in_display {
+                        *display_mu
+                    } else {
+                        *text_mu
+                    };
+                    // \mkern's mu, like the mu glue above (§716).
+                    laid_items.push(LineItem::Glue(GlueSpec {
+                        natural: f64::from(mu) / 18.0 * self.consts_at(&ctx).quad * ctx.size(),
                         stretch: 0.0,
                         shrink: 0.0,
                     }));
@@ -737,6 +760,7 @@ impl Engine {
                             },
                             alphabet: None,
                             text_mode: false,
+                            in_display: ctx.in_display || *display,
                             ..ctx
                         },
                     )?,
@@ -925,6 +949,7 @@ impl Engine {
             | NodeKind::LineSpacing(_)
             | NodeKind::Space(_)
             | NodeKind::Skip(_)
+            | NodeKind::DisplayKern { .. }
             | NodeKind::Tie
             | NodeKind::Linebreak
             | NodeKind::AlignTab => Ok(Laid {
@@ -2677,6 +2702,16 @@ impl Engine {
         ctx: LayCtx,
         span: Span,
     ) -> Result<Laid, MathError> {
+        // align*, gather* and equation* are displays, so `\everydisplay` sets
+        // amsmath's \if@display in their cells, a TexText one's included.
+        let ctx = if matches!(name, "align*" | "gather*" | "equation*") {
+            LayCtx {
+                in_display: true,
+                ..ctx
+            }
+        } else {
+            ctx
+        };
         // amsmath sets matrix/cases cells in text style (script styles keep
         // their size); align-class cells are display style.
         let text_cells = ctx.map(|s| StyleCtx {

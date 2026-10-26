@@ -317,6 +317,7 @@ where
         | NodeKind::ColorChange(_)
         | NodeKind::Space(_)
         | NodeKind::Skip(_)
+        | NodeKind::DisplayKern { .. }
         | NodeKind::Logo(_)
         | NodeKind::Tie
         | NodeKind::Linebreak

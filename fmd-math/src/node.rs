@@ -646,6 +646,17 @@ pub enum NodeKind {
     /// `\hspace{…}` and `\hspace*{…}`: horizontal glue of an explicit
     /// length, with no stretch or shrink.
     Skip(Length),
+    /// amsmath's `\if@display\mkern<display_mu>mu\else\mkern<text_mu>mu\fi`,
+    /// which leads `\mod` (18/12) and `\pod` (18/8): math units at the style
+    /// in force, chosen by whether the formula sits in display math. The Tex
+    /// surface is the Reference's align*, a display; TexText's `$…$` islands
+    /// are not, its `$$…$$` islands and display environments are.
+    DisplayKern {
+        /// The kern inside display math, in mu.
+        display_mu: i32,
+        /// The kern in inline math, in mu.
+        text_mu: i32,
+    },
     /// The kernel's `\TeX` and `\LaTeX` logos.
     Logo(LogoKind),
     /// TeX's `\mathchoice{D}{T}{S}{SS}`: the branch for the style in force.

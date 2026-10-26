@@ -571,10 +571,10 @@ impl<'s> Parser<'s> {
                     span.union(raw_span),
                 ))
             }
-            // amsmath's display form, `\mkern18mu(\operator@font mod\mkern6mu
-            // #1)`: a quad, the parenthesis, upright "mod" (ordinary letters,
-            // not an operator atom), 6 mu and the argument. Inline amsmath
-            // leads with 8 mu instead. Generated material carries the
+            // amsmath's `\pod{\operator@font mod\mkern6mu#1}`, where `\pod`
+            // is `\if@display\mkern18mu\else\mkern8mu\fi(#1)`: the kern, the
+            // parenthesis, upright "mod" (ordinary letters, not an operator
+            // atom), 6 mu and the argument. Generated material carries the
             // command's span, as macro bodies do.
             Cmd::Pmod => {
                 let argument = self.argument("argument of \\pmod")?;
@@ -584,7 +584,13 @@ impl<'s> Parser<'s> {
                 let letters = "mod".chars().map(|ch| sym(ch, AtomClass::Ord)).collect();
                 Ok(Node::new(
                     NodeKind::List(vec![
-                        Node::new(NodeKind::Space(SpaceKind::Quad), span),
+                        Node::new(
+                            NodeKind::DisplayKern {
+                                display_mu: 18,
+                                text_mu: 8,
+                            },
+                            span,
+                        ),
                         sym('(', AtomClass::Open),
                         Node::new(
                             NodeKind::MathFont {
@@ -597,6 +603,49 @@ impl<'s> Parser<'s> {
                         Node::new(NodeKind::Space(SpaceKind::Thin), span),
                         argument,
                         sym(')', AtomClass::Close),
+                    ]),
+                    whole,
+                ))
+            }
+            // amsmath's `\if@display\mkern18mu\else\mkern12mu\fi{\operator@font
+            // mod}\,\,#1`: the kern, the upright word "mod" as one Ord (TeX's
+            // braces), 6 mu and the argument, with no class spacing around
+            // the word.
+            Cmd::Mod => {
+                let argument = self.argument("argument of \\mod")?;
+                let whole = span.union(argument.span);
+                use crate::atom::AtomClass;
+                let letters = "mod"
+                    .chars()
+                    .map(|ch| {
+                        Node::new(
+                            NodeKind::Symbol {
+                                ch,
+                                class: AtomClass::Ord,
+                            },
+                            span,
+                        )
+                    })
+                    .collect();
+                Ok(Node::new(
+                    NodeKind::List(vec![
+                        Node::new(
+                            NodeKind::DisplayKern {
+                                display_mu: 18,
+                                text_mu: 12,
+                            },
+                            span,
+                        ),
+                        Node::new(
+                            NodeKind::MathFont {
+                                font: crate::node::MathFont::Roman,
+                                body: Box::new(Node::new(NodeKind::List(letters), span)),
+                            },
+                            span,
+                        ),
+                        Node::new(NodeKind::Space(SpaceKind::Thin), span),
+                        Node::new(NodeKind::Space(SpaceKind::Thin), span),
+                        argument,
                     ]),
                     whole,
                 ))

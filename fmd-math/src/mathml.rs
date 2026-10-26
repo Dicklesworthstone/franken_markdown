@@ -45,7 +45,7 @@ pub fn to_mathml(node: &Node, display: bool) -> String {
 #[must_use]
 pub fn to_mathml_with_capacity(node: &Node, display: bool, tex_len: usize) -> String {
     let cap = MATHML_CAPACITY_FLOOR + tex_len.saturating_mul(MATHML_BYTES_PER_TEX_BYTE);
-    let mut w = Writer::with_capacity(cap);
+    let mut w = Writer::with_capacity(cap, display);
     let display_val = if display { "block" } else { "inline" };
     w.open("math", &[("xmlns", MATHML_NS), ("display", display_val)]);
     let style = if display { Style::Display } else { Style::Text };
@@ -61,7 +61,7 @@ pub fn to_mathml_with_capacity(node: &Node, display: bool, tex_len: usize) -> St
 ///
 /// A top-level [`NodeKind::List`] becomes a single `<mrow>`.
 pub fn to_mathml_element(node: &Node) -> String {
-    let mut w = Writer::with_capacity(0);
+    let mut w = Writer::with_capacity(0, true);
     emit_node(&mut w, node, Style::Display);
     w.buf
 }
@@ -74,12 +74,16 @@ pub fn mathml_well_formed(xml: &str) -> Result<(), String> {
 
 struct Writer {
     buf: String,
+    /// amsmath's `\if@display` for [`NodeKind::DisplayKern`]: a block
+    /// root, or inside a display island.
+    in_display: bool,
 }
 
 impl Writer {
-    fn with_capacity(cap: usize) -> Self {
+    fn with_capacity(cap: usize, in_display: bool) -> Self {
         Self {
             buf: String::with_capacity(cap),
+            in_display,
         }
     }
 
@@ -226,9 +230,12 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             } else {
                 Style::Text
             };
+            let outer = w.in_display;
+            w.in_display |= *display;
             w.open("mrow", &[]);
             emit_run(w, body, inner_style, None, None);
             w.close("mrow");
+            w.in_display = outer;
         }
         NodeKind::StyleChange(_)
         | NodeKind::AlignChange(_)
@@ -255,6 +262,14 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
         } => emit_xarrow(w, *mapsto, above, below.as_deref(), style),
         NodeKind::Space(kind) => emit_space(w, *kind),
         NodeKind::Skip(length) => emit_skip(w, *length),
+        NodeKind::DisplayKern {
+            display_mu,
+            text_mu,
+        } => {
+            let width = em_from_mu(if w.in_display { *display_mu } else { *text_mu });
+            w.open("mspace", &[("width", &width)]);
+            w.close("mspace");
+        }
         NodeKind::MathChoice { branches } => {
             emit_node(w, &branches[style.choice_index()], style);
         }
@@ -713,7 +728,9 @@ fn collect_text(w: &mut Writer, body: &[Node]) {
             NodeKind::Symbol { ch, .. } | NodeKind::AmsSymbol { ch, .. } => w.char_text(*ch),
             NodeKind::List(items) | NodeKind::Text { body: items } => collect_text(w, items),
             NodeKind::TextStyled { body, .. } => collect_text(w, body),
-            NodeKind::Space(_) | NodeKind::Skip(_) => w.buf.push(' '),
+            NodeKind::Space(_) | NodeKind::Skip(_) | NodeKind::DisplayKern { .. } => {
+                w.buf.push(' ');
+            }
             NodeKind::Logo(kind) => w.text(logo_text(*kind)),
             NodeKind::Tie => w.buf.push('\u{00A0}'),
             _ => {}

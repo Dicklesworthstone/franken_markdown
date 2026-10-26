@@ -180,9 +180,10 @@ pub use paged_height::{
 };
 pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
 pub use pdf::{
-    PdfEmitOptions, PdfPageBreakReport, PdfPageEmission, PdfPaginationFailure, PdfPaginationReport,
-    PdfPaginationStrategy, PdfParagraphVariantReport, PdfParagraphVariantStatus, PdfProfile,
-    PdfRenderReport, PdfStageSummary, RenderWarning, render_warnings,
+    PdfCompression, PdfEmitOptions, PdfPageBreakReport, PdfPageEmission, PdfPaginationFailure,
+    PdfPaginationReport, PdfPaginationStrategy, PdfParagraphVariantReport,
+    PdfParagraphVariantStatus, PdfProfile, PdfRenderReport, PdfStageSummary, RenderWarning,
+    render_warnings,
 };
 pub use pdfa::{PdfAMode, PdfASettings};
 pub use resume::{

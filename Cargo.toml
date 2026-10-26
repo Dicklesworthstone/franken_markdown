@@ -87,6 +87,10 @@ cli = ["dep:clap", "emoji-face"]
 # Enabled by `cli`; the core and WASM builds leave it off, so their output is
 # unchanged and emoji there stay `.notdef` with a `missing_glyphs` warning.
 emoji-face = ["fmd-font/emoji-face"]
+# Explicit native PDF compression adapter. This feature adds no dependencies
+# and never spawns workers by itself: each render must supply a bounded
+# PdfCompression::NativeWorkers policy. The default and WASM core stay sequential.
+native-compression = []
 # Browser package adapter only. The no-default core stays dependency-free; this
 # feature exists because Rust 2024 treats manual `no_mangle`/`export_name` ABI
 # exports as unsafe attributes, and the project forbids unsafe code.

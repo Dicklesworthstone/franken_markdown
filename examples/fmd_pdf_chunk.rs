@@ -66,6 +66,7 @@ fn run() -> Result<(), String> {
         emission: args.emission,
         max_retained_bytes: args.max_heap_mb.map(|mb| mb.saturating_mul(1024 * 1024)),
         verbose: args.verbose,
+        ..PdfEmitOptions::default()
     };
     let started = Instant::now();
     log_phase("parse+pdf", source.len(), "render_pdf_document_emitted");

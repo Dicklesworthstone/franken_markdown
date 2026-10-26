@@ -44,6 +44,8 @@ mod baseline_grid;
 mod financial_tables;
 mod inline_image;
 mod joint_pagination;
+#[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
+mod native_compression;
 mod pagination_report;
 pub use pagination_report::{
     PdfPageBreakReport, PdfPaginationFailure, PdfPaginationReport, PdfPaginationStrategy,
@@ -2867,6 +2869,7 @@ fn render_inner(
     profiled: bool,
     emit: PdfEmitOptions,
 ) -> Result<RenderedPdf> {
+    emit.compression.validate()?;
     baseline_grid::validate_options(opts)?;
     let mut profiler = if profiled {
         PdfProfiler::enabled()
@@ -2942,12 +2945,63 @@ pub enum PdfPageEmission {
     Monolithic,
 }
 
+/// Explicit execution policy for PDF page-stream compression.
+///
+/// The default renderer is synchronous on every target, including native
+/// library and batch callers. Native workers require the opt-in
+/// `native-compression` Cargo feature and an explicit budget on this render.
+/// Scheduling never changes compression primitives, page order or PDF bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PdfCompression {
+    /// Compress each page on the calling thread; no compression workers spawn.
+    #[default]
+    Sequential,
+    /// Permit at most `max_workers` native compression workers (1 through 4).
+    ///
+    /// One worker, small inputs, or any retained-byte ceiling use the calling
+    /// thread. Resource pressure may reduce the pool or fall back to sequential
+    /// compression. All successfully started workers are joined before the
+    /// renderer returns, including on an error.
+    ///
+    /// Requires `native-compression` on a non-WASM target. An unavailable
+    /// policy or out-of-range budget is an explicit input error; it is never
+    /// silently accepted as a native scheduling request.
+    NativeWorkers { max_workers: usize },
+}
+
+impl PdfCompression {
+    fn validate(self) -> Result<()> {
+        match self {
+            Self::Sequential => Ok(()),
+            Self::NativeWorkers { max_workers } => {
+                if !(1..=4).contains(&max_workers) {
+                    return Err(RenderError::InvalidInput(
+                        "pdf_compression: max_workers must be from 1 through 4".to_string(),
+                    ));
+                }
+                #[cfg(any(not(feature = "native-compression"), target_arch = "wasm32"))]
+                {
+                    Err(RenderError::InvalidInput(
+                        "pdf_compression_unavailable: native workers require the native-compression feature on a native target".to_string(),
+                    ))
+                }
+                #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
+                {
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
 /// Writer options that are not part of [`PdfOptions`] (so complete
 /// `PdfOptions { ... }` literals in CLI/WASM/tests stay compiling).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PdfEmitOptions {
     /// Page emission strategy. Default is chunked.
     pub emission: PdfPageEmission,
+    /// Explicit compression scheduling. Default is synchronous on the caller.
+    pub compression: PdfCompression,
     /// Optional ceiling on writer-owned retained bytes (subset fonts, images,
     /// compressed page streams, annotations, structure marks). `None` is
     /// unlimited. Exceeding it is [`RenderError::InvalidInput`] with a
@@ -2962,6 +3016,7 @@ impl Default for PdfEmitOptions {
     fn default() -> Self {
         Self {
             emission: PdfPageEmission::Chunked,
+            compression: PdfCompression::Sequential,
             max_retained_bytes: None,
             verbose: false,
         }
@@ -2969,11 +3024,26 @@ impl Default for PdfEmitOptions {
 }
 
 impl PdfEmitOptions {
+    #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
+    fn native_compression_workers(self) -> usize {
+        // The existing retained-byte accounting covers synchronous streams.
+        // Keeping that path under a ceiling avoids uncounted in-flight pages
+        // or per-worker scratch changing its admission semantics.
+        if self.max_retained_bytes.is_some() {
+            return 1;
+        }
+        match self.compression {
+            PdfCompression::Sequential => 1,
+            PdfCompression::NativeWorkers { max_workers } => max_workers,
+        }
+    }
+
     /// Monolithic writer used only as a byte-parity baseline.
     #[must_use]
     pub const fn monolithic() -> Self {
         Self {
             emission: PdfPageEmission::Monolithic,
+            compression: PdfCompression::Sequential,
             max_retained_bytes: None,
             verbose: false,
         }
@@ -2984,6 +3054,7 @@ impl PdfEmitOptions {
     pub const fn chunked_with_ceiling(max_retained_bytes: usize) -> Self {
         Self {
             emission: PdfPageEmission::Chunked,
+            compression: PdfCompression::Sequential,
             max_retained_bytes: Some(max_retained_bytes),
             verbose: false,
         }
@@ -22056,6 +22127,7 @@ fn serialize(
         pdf_a,
         profiler,
         serialized.precompressed,
+        emit,
     )?;
     Ok((bytes, report))
 }
@@ -22551,10 +22623,14 @@ fn serialize_pages_chunked(
     let mut page_idx = 0usize;
     let mut page_buffer_reserved_bytes = 0usize;
     let mut zlib_scratch = crate::compress::ZlibCompressScratch::new();
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut pipeline: Option<ChunkedCompressPipeline> = None;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
+    let mut pipeline: Option<native_compression::Pipeline> = None;
+    #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
     let mut cumulative_stream_bytes = 0usize;
+    #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
+    let max_workers = emit.native_compression_workers();
+    #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
+    let mut may_start_pool = max_workers > 1;
     let notes = PageNotes::scan(lines);
     while let Some(placed) = next_placed_page(
         lines,
@@ -22579,15 +22655,17 @@ fn serialize_pages_chunked(
             &mut scratch,
         );
         page_buffer_reserved_bytes = page_buffer_reserved_bytes.saturating_add(reserved);
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
         {
-            cumulative_stream_bytes += content.stream.len();
-            if pipeline.is_none() && cumulative_stream_bytes >= CHUNKED_COMPRESS_POOL_MIN_BYTES {
-                pipeline =
-                    ChunkedCompressPipeline::spawn(chunked_compress_worker_count(), page_idx);
+            cumulative_stream_bytes = cumulative_stream_bytes.saturating_add(content.stream.len());
+            if may_start_pool && cumulative_stream_bytes >= native_compression::MIN_PARALLEL_BYTES {
+                pipeline = native_compression::Pipeline::spawn(max_workers, page_idx);
+                // Resource failure is a synchronous fallback for the rest of
+                // this render, not a new spawn attempt on every following page.
+                may_start_pool = false;
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
         match pipeline.as_mut() {
             Some(pipeline) => {
                 // The uncompressed stream moves to a worker; the main thread
@@ -22602,8 +22680,8 @@ fn serialize_pages_chunked(
                 compressed.push(owned);
             }
         }
-        // wasm32 has no worker pool: compress each page stream inline.
-        #[cfg(target_arch = "wasm32")]
+        // The portable core has no native scheduling module at all.
+        #[cfg(any(not(feature = "native-compression"), target_arch = "wasm32"))]
         {
             let stream = page_stream(&content.stream, &mut zlib_scratch);
             let owned = own_page_stream(stream);
@@ -22611,9 +22689,9 @@ fn serialize_pages_chunked(
             compressed.push(owned);
         }
         scratch.pages.push(content);
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
         if let Some(pipeline) = pipeline.as_mut() {
-            pipeline.drain_ready(&mut compressed);
+            pipeline.drain_ready(&mut compressed)?;
         }
         check_retained_ceiling(
             emit.max_retained_bytes,
@@ -22625,7 +22703,7 @@ fn serialize_pages_chunked(
         page_idx += 1;
         pdf_emit_phase(emit.verbose, "page", page_idx, "mode=chunked");
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
     if let Some(pipeline) = pipeline.as_mut() {
         pipeline.finish(&mut compressed)?;
     }
@@ -22647,254 +22725,6 @@ fn serialize_pages_chunked(
         profiler,
     )
 }
-/// Maximum worker threads for chunked per-page stream compression. Each
-/// worker holds one page stream plus its hash scratch at a time, so the pool
-/// adds at most `CHUNKED_COMPRESS_MAX_WORKERS` in-flight page streams of
-/// memory — far below the all-pages-retained peak the chunked emitter exists
-/// to avoid.
-#[cfg(not(target_arch = "wasm32"))]
-const CHUNKED_COMPRESS_MAX_WORKERS: usize = 4;
-
-/// Minimum cumulative uncompressed page-stream bytes before spawning the
-/// bounded compression pool, mirroring the sequential-mode gate in
-/// [`compress_page_streams_inner`]: smaller renders lose more to thread
-/// startup than parallel DEFLATE recovers.
-#[cfg(not(target_arch = "wasm32"))]
-const CHUNKED_COMPRESS_POOL_MIN_BYTES: usize = 256 * 1024;
-
-#[cfg(not(target_arch = "wasm32"))]
-fn chunked_compress_worker_count() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(CHUNKED_COMPRESS_MAX_WORKERS)
-}
-
-/// Shared work queue for the bounded chunked-compression pool. Multiple
-/// workers pop from one FIFO deque; the main thread closes the queue to
-/// release them.
-#[cfg(not(target_arch = "wasm32"))]
-struct ChunkedCompressWorkQueue {
-    state: std::sync::Mutex<ChunkedCompressWorkState>,
-    ready: std::sync::Condvar,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct ChunkedCompressWorkState {
-    closed: bool,
-    pending: std::collections::VecDeque<(usize, String)>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl ChunkedCompressWorkQueue {
-    fn new() -> Self {
-        Self {
-            state: std::sync::Mutex::new(ChunkedCompressWorkState {
-                closed: false,
-                pending: std::collections::VecDeque::new(),
-            }),
-            ready: std::sync::Condvar::new(),
-        }
-    }
-
-    fn push(&self, item: (usize, String)) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.pending.push_back(item);
-        drop(state);
-        self.ready.notify_one();
-    }
-
-    fn close(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.closed = true;
-        drop(state);
-        self.ready.notify_all();
-    }
-}
-
-/// Pull page streams off the shared work queue, compress each with a
-/// thread-private scratch, and return it tagged with its page index. The
-/// main thread reassembles results strictly in page order, so the emitted
-/// PDF bytes are identical to inline compression; only wall-clock overlaps.
-#[cfg(not(target_arch = "wasm32"))]
-fn compress_pool_worker(
-    queue: std::sync::Arc<ChunkedCompressWorkQueue>,
-    result_tx: std::sync::mpsc::Sender<(usize, OwnedPdfStream)>,
-) {
-    let mut scratch = crate::compress::ZlibCompressScratch::new();
-    loop {
-        let item = {
-            let mut state = queue
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            loop {
-                if let Some(item) = state.pending.pop_front() {
-                    break item;
-                }
-                if state.closed {
-                    return;
-                }
-                state = queue
-                    .ready
-                    .wait(state)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-            }
-        };
-        let owned = own_page_stream(page_stream(&item.1, &mut scratch));
-        if result_tx.send((item.0, owned)).is_err() {
-            break;
-        }
-    }
-}
-
-/// Bounded worker pool that overlaps per-page stream DEFLATE with the main
-/// thread's pagination of the NEXT page. Chunked emission keeps peak RSS low
-/// by never retaining every uncompressed page stream; the pool preserves that
-/// bound: at most one page stream per worker exists outside the main thread,
-/// and nothing is ever added to the page-ordered `compressed` vector out of
-/// order.
-#[cfg(not(target_arch = "wasm32"))]
-struct ChunkedCompressPipeline {
-    queue: std::sync::Arc<ChunkedCompressWorkQueue>,
-    result_rx: std::sync::mpsc::Receiver<(usize, OwnedPdfStream)>,
-    in_flight_cap: usize,
-    submitted: usize,
-    drained: usize,
-    done: std::collections::BTreeMap<usize, OwnedPdfStream>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl ChunkedCompressPipeline {
-    fn spawn(workers: usize, initial_page: usize) -> Option<Self> {
-        let queue = std::sync::Arc::new(ChunkedCompressWorkQueue::new());
-        let (result_tx, result_rx) = std::sync::mpsc::channel();
-        let mut spawned = 0usize;
-        for _ in 0..workers {
-            let worker_queue = std::sync::Arc::clone(&queue);
-            let worker_tx = result_tx.clone();
-            if std::thread::Builder::new()
-                .name("fmd-pdf-page-compress".to_string())
-                .spawn(move || compress_pool_worker(worker_queue, worker_tx))
-                .is_ok()
-            {
-                spawned += 1;
-            }
-        }
-        if spawned == 0 {
-            return None;
-        }
-        Some(Self {
-            in_flight_cap: spawned,
-            queue,
-            result_rx,
-            submitted: initial_page,
-            drained: initial_page,
-            done: std::collections::BTreeMap::new(),
-        })
-    }
-
-    /// Hand one page stream to the pool. While the in-flight cap is
-    /// saturated, block until the next in-order result drains.
-    fn submit(
-        &mut self,
-        page_idx: usize,
-        stream: String,
-        out: &mut Vec<OwnedPdfStream>,
-    ) -> Result<()> {
-        if self.submitted > self.drained && self.submitted - self.drained >= self.in_flight_cap {
-            self.drain_next(out)?;
-        }
-        self.queue.push((page_idx, stream));
-        self.submitted += 1;
-        Ok(())
-    }
-
-    /// Non-blocking drain of every result that has already completed, in page
-    /// order. Pages still in flight are not counted by the caller's
-    /// `check_retained_ceiling` probe; the authoritative ceiling check in
-    /// [`finish_serialized_pages`] runs after [`Self::finish`] drains
-    /// everything, and in-flight bytes are bounded by `in_flight_cap` pages.
-    fn drain_ready(&mut self, out: &mut Vec<OwnedPdfStream>) {
-        if self.submitted == self.drained {
-            return;
-        }
-        while let Ok((page_idx, owned)) = self.result_rx.try_recv() {
-            self.done.insert(page_idx, owned);
-            while let Some(owned) = self.done.remove(&self.drained) {
-                out.push(owned);
-                self.drained += 1;
-            }
-        }
-    }
-
-    /// Blocking in-order drain of the next result. Requires a live pool.
-    fn drain_next(&mut self, out: &mut Vec<OwnedPdfStream>) -> Result<()> {
-        loop {
-            if let Some(owned) = self.done.remove(&self.drained) {
-                out.push(owned);
-                self.drained += 1;
-                return Ok(());
-            }
-            let (page_idx, owned) = self.result_rx.recv().map_err(|_| {
-                // Do not spin forever if every compressor exits before returning all submitted
-                // pages. Worker failures are not expected, but a disconnected result channel is
-                // terminal: `finish` previously retried without changing either counter.
-                RenderError::PdfGeneration(
-                    "chunked PDF compression workers exited before all pages completed",
-                )
-            })?;
-            self.done.insert(page_idx, owned);
-        }
-    }
-
-    /// Drain every submitted page so `compressed` is complete and in page
-    /// order, then release the workers by closing the work queue.
-    fn finish(&mut self, out: &mut Vec<OwnedPdfStream>) -> Result<()> {
-        while self.submitted > self.drained {
-            self.drain_next(out)?;
-        }
-        self.queue.close();
-        Ok(())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for ChunkedCompressPipeline {
-    fn drop(&mut self) {
-        self.queue.close();
-    }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-#[test]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-fn disconnected_chunked_compression_pool_fails_instead_of_spinning() {
-    let queue = std::sync::Arc::new(ChunkedCompressWorkQueue::new());
-    let (result_tx, result_rx) = std::sync::mpsc::channel();
-    drop(result_tx);
-    let mut pipeline = ChunkedCompressPipeline {
-        queue,
-        result_rx,
-        in_flight_cap: 1,
-        submitted: 1,
-        drained: 0,
-        done: std::collections::BTreeMap::new(),
-    };
-
-    let error = pipeline
-        .finish(&mut Vec::new())
-        .expect_err("a dead worker pool must fail closed");
-
-    assert!(error.to_string().contains("compression workers exited"));
-}
-
 #[allow(clippy::too_many_arguments)]
 fn finish_serialized_pages(
     mut scratch: RenderScratch,
@@ -32071,10 +31901,11 @@ fn append_marked_content_begin(out: &mut String, tag: &str, mcid: usize) {
 fn compress_page_streams<'a>(
     pages: &'a [PageContent],
     profiler: &mut PdfProfiler,
-) -> Vec<PdfStream<'a>> {
+    emit: PdfEmitOptions,
+) -> Result<Vec<PdfStream<'a>>> {
     let total_input = pages.iter().map(|page| page.stream.len()).sum::<usize>();
     let started = profiler.checkpoint();
-    let page_streams = compress_page_streams_inner(pages);
+    let page_streams = compress_page_streams_inner(pages, emit)?;
     let compressed_bytes = page_streams
         .iter()
         .map(|stream| stream.bytes.len())
@@ -32086,45 +31917,20 @@ fn compress_page_streams<'a>(
         "encode page content streams and apply FlateDecode when it wins",
         started,
     );
-    page_streams
+    Ok(page_streams)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(clippy::expect_used)]
-fn compress_page_streams_inner(pages: &[PageContent]) -> Vec<PdfStream<'_>> {
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(pages.len().max(1));
-    let total_input = pages.iter().map(|page| page.stream.len()).sum::<usize>();
-    // Thread spawn plus per-thread hash scratch costs more than parallel
-    // compression recovers on tiny renders; keep those sequential.
-    if workers < 4 || total_input < 256 * 1024 {
-        return compress_page_streams_sequential(pages);
+fn compress_page_streams_inner(
+    pages: &[PageContent],
+    emit: PdfEmitOptions,
+) -> Result<Vec<PdfStream<'_>>> {
+    #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
+    if emit.native_compression_workers() > 1 {
+        return native_compression::compress_pages(pages, emit.native_compression_workers());
     }
-    let chunk_size = pages.len().div_ceil(workers);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = pages
-            .chunks(chunk_size)
-            .map(|chunk| {
-                scope.spawn(move || {
-                    let mut scratch = crate::compress::ZlibCompressScratch::new();
-                    chunk
-                        .iter()
-                        .map(|page| page_stream(&page.stream, &mut scratch))
-                        .collect::<Vec<PdfStream<'_>>>()
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|handle| {
-                handle
-                    .join()
-                    .expect("page content stream compression thread panicked")
-            })
-            .collect()
-    })
+    #[cfg(any(not(feature = "native-compression"), target_arch = "wasm32"))]
+    let _ = emit;
+    Ok(compress_page_streams_sequential(pages))
 }
 
 fn compress_page_streams_sequential(pages: &[PageContent]) -> Vec<PdfStream<'_>> {
@@ -32133,11 +31939,6 @@ fn compress_page_streams_sequential(pages: &[PageContent]) -> Vec<PdfStream<'_>>
         .iter()
         .map(|page| page_stream(&page.stream, &mut scratch))
         .collect()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn compress_page_streams_inner(pages: &[PageContent]) -> Vec<PdfStream<'_>> {
-    compress_page_streams_sequential(pages)
 }
 
 fn page_stream<'a>(
@@ -32393,6 +32194,7 @@ fn build_pdf(
     pdf_a: crate::PdfASettings,
     profiler: &mut PdfProfiler,
     precompressed: Option<Vec<OwnedPdfStream>>,
+    emit: PdfEmitOptions,
 ) -> Result<Vec<u8>> {
     let build_started = profiler.checkpoint();
     let p = pages.len();
@@ -32557,7 +32359,7 @@ fn build_pdf(
             );
             streams
         }
-        None => compress_page_streams(pages, profiler)
+        None => compress_page_streams(pages, profiler, emit)?
             .into_iter()
             .map(own_page_stream)
             .collect(),

@@ -891,6 +891,12 @@ config-free render.
                  synchronous render core per file.
 ```
 
+PDF page compression also runs on the calling thread by default. Native hosts
+can enable the dependency-free `native-compression` feature and explicitly set
+`PdfEmitOptions::compression` to a budget of one through four workers. See
+[the compression policy guide](docs/NATIVE_PDF_COMPRESSION.md) for ordering,
+resource limits, failure behavior, and a Rust example.
+
 Core modules:
 
 | Module | Purpose |

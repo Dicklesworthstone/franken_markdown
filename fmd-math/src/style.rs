@@ -26,6 +26,17 @@ pub enum Style {
 }
 
 impl Style {
+    /// Which of `\mathchoice{D}{T}{S}{SS}`'s branches this style sets.
+    #[must_use]
+    pub const fn choice_index(self) -> usize {
+        match self {
+            Self::Display => 0,
+            Self::Text => 1,
+            Self::Script => 2,
+            Self::ScriptScript => 3,
+        }
+    }
+
     /// True for the script styles, where medium/thick inter-atom spaces are
     /// suppressed and `\sum`-class operators stop taking display limits.
     #[inline(always)]
@@ -238,6 +249,9 @@ where
         NodeKind::MathFont { body, .. } | NodeKind::Phantom { body, .. } => {
             style_walk(body, ctx, visit);
         }
+        NodeKind::MathChoice { branches } => {
+            style_walk(&branches[ctx.style.choice_index()], ctx, visit);
+        }
         // `\fbox{$\displaystyle…$}`: a fresh, uncramped display formula.
         NodeKind::Boxed { body } => style_walk(body, StyleCtx::new(Style::Display), visit),
         NodeKind::Stack {
@@ -301,6 +315,7 @@ where
         | NodeKind::ColorChange(_)
         | NodeKind::Space(_)
         | NodeKind::Skip(_)
+        | NodeKind::Logo(_)
         | NodeKind::Tie
         | NodeKind::Linebreak
         | NodeKind::AlignTab

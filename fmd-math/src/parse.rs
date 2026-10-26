@@ -544,6 +544,8 @@ impl<'s> Parser<'s> {
                 span,
             )),
             Cmd::Hspace => self.hspace(name, span),
+            Cmd::Logo(kind) => Ok(Node::new(NodeKind::Logo(kind), span)),
+            Cmd::MathChoice => self.math_choice(name, span),
             Cmd::BigOp { ch, integral } => Ok(Node::new(
                 NodeKind::BigOp {
                     ch,
@@ -1222,6 +1224,21 @@ impl<'s> Parser<'s> {
                 at: self.src.len(),
             }),
         }
+    }
+
+    /// TeX's `\mathchoice{D}{T}{S}{SS}`: four branches, one set.
+    fn math_choice(&mut self, name: &str, span: Span) -> Result<Node, MathError> {
+        let display = self.argument(&format!("display branch of \\{name}"))?;
+        let text = self.argument(&format!("text branch of \\{name}"))?;
+        let script = self.argument(&format!("script branch of \\{name}"))?;
+        let scriptscript = self.argument(&format!("scriptscript branch of \\{name}"))?;
+        let span = span.union(scriptscript.span);
+        Ok(Node::new(
+            NodeKind::MathChoice {
+                branches: Box::new([display, text, script, scriptscript]),
+            },
+            span,
+        ))
     }
 
     /// amsmath's `\boxed{…}`.
@@ -1925,6 +1942,7 @@ impl<'s> Parser<'s> {
             }
             Cmd::Spacing(kind) => Ok(Node::new(NodeKind::Space(kind), span)),
             Cmd::Hspace => self.hspace(name, span),
+            Cmd::Logo(kind) => Ok(Node::new(NodeKind::Logo(kind), span)),
             // Size declarations are text-mode commands in LaTeX; they mark
             // the rest of the enclosing group, exactly as in math mode.
             Cmd::SizeChange(factor) => Ok(Node::new(NodeKind::SizeChange(factor), span)),

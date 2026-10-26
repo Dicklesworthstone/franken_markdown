@@ -242,7 +242,11 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
         | NodeKind::MathIsland { .. }
         | NodeKind::AlignBlock { .. }
         | NodeKind::Boxed { .. }
+        | NodeKind::Logo(_)
         | NodeKind::Environment { .. } => Some(AtomClass::Ord),
+        // A choice's branch depends on the style, which classification does
+        // not see: TeX inserts the chosen list, fmd-math spaces it as an Ord.
+        NodeKind::MathChoice { .. } => Some(AtomClass::Ord),
         NodeKind::MathFont { body, .. } | NodeKind::Phantom { body, .. } => intrinsic_class(body),
         NodeKind::Stack { kind, base, .. } => match kind {
             StackKind::Stackrel => Some(AtomClass::Rel),

@@ -35,9 +35,9 @@ use crate::atom::{AtomClass, classify_list, spacing_in_style};
 use crate::error::MathError;
 use crate::faces::{
     FACE_BOLD, FACE_ITALIC, FACE_MATH_EXTENSION, FACE_MATH_ITALIC, FACE_MATH_ITALIC_5,
-    FACE_MATH_ITALIC_7, FACE_MATH_SYMBOLS, FACE_REGULAR, FACE_SANS, FACE_SYMBOLS, FACE_TYPEWRITER,
-    FaceSet, GlyphMetrics, accent_spacing_fallback, alphabet_map, default_math_chain,
-    glyph_metrics, kern_em,
+    FACE_MATH_ITALIC_7, FACE_MATH_SYMBOLS, FACE_REGULAR, FACE_ROMAN_7, FACE_ROMAN_10, FACE_SANS,
+    FACE_SYMBOLS, FACE_TYPEWRITER, FaceSet, GlyphMetrics, accent_spacing_fallback, alphabet_map,
+    default_math_chain, glyph_metrics, kern_em,
 };
 use crate::mbox::{
     BoxKind, Color, FaceId, GlueSpec, Layout, MBox, MNode, PathContour, PathSeg, Positioned,
@@ -45,7 +45,7 @@ use crate::mbox::{
 use crate::metrics::MathConstants;
 use crate::node::{
     AccentKind, Delim, DelimSize, FracSpec, FragmentKind, Length, LengthUnit, Limits, LineAlign,
-    MathFont, Node, NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
+    LogoKind, MathFont, Node, NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
 };
 use crate::style::{Style, StyleCtx};
 
@@ -793,6 +793,10 @@ impl Engine {
             // In its own function so this recursive frame does not grow
             // (the nesting bound's stack margin).
             NodeKind::Boxed { body } => self.boxed(body, node.span, ctx),
+            NodeKind::Logo(kind) => self.logo(*kind, node.span, ctx),
+            NodeKind::MathChoice { branches } => {
+                self.lay_node(&branches[ctx.style.style.choice_index()], ctx)
+            }
             NodeKind::Stack {
                 kind,
                 annotation,
@@ -1132,6 +1136,61 @@ impl Engine {
                 width,
                 height: height + SEP + RULE,
                 depth: depth + SEP + RULE,
+                children,
+            },
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// The kernel's logos, set as LaTeX sets them in Computer Modern (TeX's
+    /// `\showbox`): `\TeX` is `T\kern-.1667em\lower.5ex\hbox{E}\kern-.125em X`,
+    /// and `\LaTeX` is `L\kern-.36em`, then an A in the script size (cmr7)
+    /// whose top is level with the T's, `\kern-.15em` and `\TeX`. The letters
+    /// are cmr10's and cmr7's with their TFM metrics; ems and exes are
+    /// cmr10's at the size in force. Each letter is its own glyph, as in the
+    /// Reference's DVI.
+    fn logo(&self, kind: LogoKind, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        let size = ctx.size();
+        let quad = crate::tfm::CMR10.param(6) * size;
+        let ex = crate::tfm::CMR10.param(5) * size;
+        let glyph = |face: FaceId, ch: char, scale: f64| -> Result<MBox, MathError> {
+            let gid = u8::try_from(ch)
+                .ok()
+                .and_then(|code| self.faces.tex_glyph(face, code))
+                .ok_or(MathError::UnmappedChar { ch, span })?;
+            let metrics = self.char_metrics(face, gid, false);
+            Ok(glyph_box(face, gid, ch, span, scale, metrics))
+        };
+        let tee = glyph(FACE_ROMAN_10, 'T', size)?;
+        let mut children = Vec::new();
+        let (mut pen, mut height, mut depth) = (0.0_f64, 0.0_f64, 0.0_f64);
+        let mut put = |boxx: MBox, dy: f64, kern_after: f64| {
+            height = height.max(boxx.height + dy);
+            depth = depth.max(boxx.depth - dy);
+            let advance = boxx.width;
+            children.push(Positioned {
+                dx: pen,
+                dy,
+                node: MNode::Box(boxx),
+            });
+            pen += advance + kern_after;
+        };
+        if kind == LogoKind::LaTeX {
+            put(glyph(FACE_ROMAN_10, 'L', size)?, 0.0, -0.36 * quad);
+            let small = glyph(FACE_ROMAN_7, 'A', 0.7 * size)?;
+            let raise = tee.height - small.height;
+            put(small, raise, -0.15 * quad);
+        }
+        put(tee, 0.0, -0.1667 * quad);
+        put(glyph(FACE_ROMAN_10, 'E', size)?, -0.5 * ex, -0.125 * quad);
+        put(glyph(FACE_ROMAN_10, 'X', size)?, 0.0, 0.0);
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width: pen,
+                height,
+                depth,
                 children,
             },
             italic: 0.0,

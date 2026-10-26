@@ -1804,6 +1804,27 @@ const TIER_TWO_BOXES: &[(&str, Style, f64, f64, f64)] = &[
         14.5001,
         9.50012,
     ),
+    (
+        r"\mathchoice{a}{bb}{ccc}{dddd}",
+        Style::Text,
+        8.58331,
+        6.94444,
+        0.0,
+    ),
+    (
+        r"\mathchoice{a}{bb}{ccc}{dddd}",
+        Style::Display,
+        5.28589,
+        4.30554,
+        0.0,
+    ),
+    (
+        r"x^{\mathchoice{a}{bb}{ccc}{dddd}}",
+        Style::Text,
+        16.93651,
+        6.6428,
+        0.0,
+    ),
 ];
 
 #[test]
@@ -1962,4 +1983,44 @@ fn slanted_text_ends_with_its_italic_correction() {
     let upright = e.typeset_text(r"\textrm{c}x").unwrap();
     let upright_period = e.typeset_text(r"\textrm{c}.x").unwrap();
     assert!((x_of(&upright, 'x') - x_of(&upright_period, '.')).abs() < 1e-12);
+}
+
+#[test]
+fn the_logos_are_the_kernels_constructions_in_computer_modern() {
+    use fmd_math::faces::{FACE_ROMAN_7, FACE_ROMAN_10};
+    // TeX's \showbox in Computer Modern (OT1; the Reference's T1 ecrm
+    // differs by up to 6e-4 em): \TeX 18.6108 x (6.83331 + 2.15277) pt and
+    // \LaTeX 25.66368 pt, its A raised 2.04997 pt.
+    let e = engine();
+    let close = |ours: f64, tex_pt: f64| (ours - tex_pt / 10.0).abs() < 1e-4;
+    for (tex, width) in [(r"\TeX", 18.6108), (r"\LaTeX", 25.66368)] {
+        for l in [
+            e.typeset(tex, Style::Text).unwrap(),
+            e.typeset_text(tex).unwrap(),
+        ] {
+            assert!(
+                close(l.width, width) && close(l.height, 6.83331) && close(l.depth, 2.15277),
+                "{tex}: {} x ({} + {})",
+                l.width,
+                l.height,
+                l.depth
+            );
+        }
+    }
+    let l = e.typeset_text(r"\LaTeX").unwrap();
+    let letters: Vec<_> = l.glyphs.iter().map(|g| (g.ch, g.face)).collect();
+    assert_eq!(
+        letters,
+        [
+            ('L', FACE_ROMAN_10),
+            ('A', FACE_ROMAN_7),
+            ('T', FACE_ROMAN_10),
+            ('E', FACE_ROMAN_10),
+            ('X', FACE_ROMAN_10)
+        ]
+    );
+    let a = &l.glyphs[1];
+    assert!((a.size - 0.7).abs() < 1e-12 && close(a.y, 2.04997), "{a:?}");
+    let e_glyph = &l.glyphs[3];
+    assert!(close(e_glyph.y, -2.15277), "{e_glyph:?}");
 }

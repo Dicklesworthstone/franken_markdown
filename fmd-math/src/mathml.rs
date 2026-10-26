@@ -7,8 +7,8 @@
 
 use crate::atom::AtomClass;
 use crate::node::{
-    AccentKind, Delim, FracSpec, FragmentKind, Length, LengthUnit, Limits, LineAlign, MathFont,
-    Node, NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
+    AccentKind, Delim, FracSpec, FragmentKind, Length, LengthUnit, Limits, LineAlign, LogoKind,
+    MathFont, Node, NodeKind, PhantomKind, SpaceKind, Span, StackKind, TextStyle,
 };
 use crate::style::Style;
 
@@ -245,6 +245,14 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
         } => emit_xarrow(w, *mapsto, above, below.as_deref(), style),
         NodeKind::Space(kind) => emit_space(w, *kind),
         NodeKind::Skip(length) => emit_skip(w, *length),
+        NodeKind::MathChoice { branches } => {
+            emit_node(w, &branches[style.choice_index()], style);
+        }
+        NodeKind::Logo(kind) => {
+            w.open("mtext", &[]);
+            w.text(logo_text(*kind));
+            w.close("mtext");
+        }
         NodeKind::Tie => {
             w.open("mtext", &[]);
             w.buf.push('\u{00A0}');
@@ -696,6 +704,7 @@ fn collect_text(w: &mut Writer, body: &[Node]) {
             NodeKind::List(items) | NodeKind::Text { body: items } => collect_text(w, items),
             NodeKind::TextStyled { body, .. } => collect_text(w, body),
             NodeKind::Space(_) | NodeKind::Skip(_) => w.buf.push(' '),
+            NodeKind::Logo(kind) => w.text(logo_text(*kind)),
             NodeKind::Tie => w.buf.push('\u{00A0}'),
             _ => {}
         }
@@ -779,6 +788,13 @@ fn emit_xarrow(w: &mut Writer, mapsto: bool, above: &Node, below: Option<&Node>,
     }
     emit_node(w, above, style);
     w.close(tag);
+}
+
+const fn logo_text(kind: LogoKind) -> &'static str {
+    match kind {
+        LogoKind::TeX => "TeX",
+        LogoKind::LaTeX => "LaTeX",
+    }
 }
 
 /// `\hspace` as an `mspace` in MathML's own units: points for a fixed

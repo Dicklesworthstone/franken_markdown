@@ -779,7 +779,6 @@ fn constructs_outside_the_corpus_refuse_by_name() {
         (r"\mathfrak{A}", r"\mathfrak"),
         (r"x = y \tag{1}", r"\tag"),
         (r"\sideset{}{'}\sum_n", r"\sideset"),
-        (r"\mathchoice{a}{b}{c}{d}", r"\mathchoice"),
         (r"\cancel{x}", r"\cancel"),
         (r"\begin{equation} x \end{equation}", "env:equation"),
         (r"\begin{gather} x \end{gather}", "env:gather"),

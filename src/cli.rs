@@ -1486,7 +1486,7 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
         Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
     };
     // lang/toc/toc_depth merge below frontmatter, so they wait for it.
-    apply_config_render_defaults(&mut args.style, &config.render, false);
+    apply_config_render_defaults(&mut args.style, &config.render);
 
     let mut input_paths = Vec::new();
     if !no_config {
@@ -2429,7 +2429,7 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     if !no_config {
         input_paths.push(config_path());
     }
-    apply_config_render_defaults(&mut args.style, &config.render, true);
+    apply_config_render_defaults(&mut args.style, &config.render);
     let mut theme = config.to_theme();
     if let Some(font) = args.font {
         theme = theme.with_font(font.into());
@@ -2623,7 +2623,8 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
         max_pdf_image_bytes: args.style.max_pdf_image_bytes,
     };
 
-    match batch::run_batch_blocking_with_protected_inputs(plan, &opts, &input_paths) {
+    match batch::run_batch_blocking_with_protected_inputs(plan, &opts, &input_paths, &config.render)
+    {
         Ok(mut receipt) => {
             // Record any unexpandable paths as per-file failures. Strict mode
             // already returned above, so this only runs under --continue-on-error
@@ -3835,15 +3836,7 @@ fn apply_pdf_page_style(
 fn apply_config_render_defaults(
     style: &mut RenderStyleArgs,
     defaults: &crate::config::RenderDefaults,
-    include_document_keys: bool,
 ) {
-    if include_document_keys {
-        if style.lang.is_none() {
-            style.lang.clone_from(&defaults.lang);
-        }
-        style.toc |= defaults.toc.unwrap_or(false);
-        style.toc_depth = style.toc_depth.or(defaults.toc_depth);
-    }
     if style.font_scale.is_none() {
         style.font_scale.clone_from(&defaults.font_scale);
     }

@@ -1057,20 +1057,76 @@ fn source_overwrite_errors(
         .collect()
 }
 
+/// Each worker keeps immutable shared options. Per-file metadata is merged
+/// into fresh options, so one input cannot change the next input's defaults.
+struct BatchRenderOptions {
+    html: HtmlOptions,
+    pdf: PdfOptions,
+    document_defaults: crate::config::RenderDefaults,
+    max_input_bytes: u64,
+    max_pdf_image_bytes: u64,
+}
+
+impl BatchRenderOptions {
+    fn html_for(&self, frontmatter: Option<&crate::parse::Frontmatter>) -> HtmlOptions {
+        let mut options = self.html.clone();
+        options.title = options
+            .title
+            .or_else(|| frontmatter.and_then(|fm| fm.title.clone()));
+        options.lang = options
+            .lang
+            .or_else(|| frontmatter.and_then(|fm| fm.lang.clone()))
+            .or_else(|| self.document_defaults.lang.clone());
+        options.toc |= frontmatter
+            .and_then(|fm| fm.toc)
+            .or(self.document_defaults.toc)
+            .unwrap_or(false);
+        options.toc_depth = options
+            .toc_depth
+            .or_else(|| frontmatter.and_then(|fm| fm.toc_depth))
+            .or(self.document_defaults.toc_depth);
+        options
+    }
+
+    fn pdf_for(&self, frontmatter: Option<&crate::parse::Frontmatter>) -> PdfOptions {
+        let mut options = self.pdf.clone();
+        options.title = options
+            .title
+            .or_else(|| frontmatter.and_then(|fm| fm.title.clone()));
+        options.author = options
+            .author
+            .or_else(|| frontmatter.and_then(|fm| fm.author.clone()));
+        options.lang = options
+            .lang
+            .or_else(|| frontmatter.and_then(|fm| fm.lang.clone()))
+            .or_else(|| self.document_defaults.lang.clone());
+        options.toc |= frontmatter
+            .and_then(|fm| fm.toc)
+            .or(self.document_defaults.toc)
+            .unwrap_or(false);
+        options.toc_depth = options
+            .toc_depth
+            .or_else(|| frontmatter.and_then(|fm| fm.toc_depth))
+            .or(self.document_defaults.toc_depth);
+        options
+    }
+}
+
 fn render_one(
     input: &Path,
     format: OutputFormat,
     out_dir: Option<&Path>,
-    html: &HtmlOptions,
-    pdf: &PdfOptions,
-    max_input_bytes: u64,
-    max_pdf_image_bytes: u64,
+    options: &BatchRenderOptions,
 ) -> FileEntry {
     let mut input_paths = vec![input.to_path_buf()];
-    let md = match read_expanded_input(input, max_input_bytes, &mut input_paths) {
+    let md = match read_expanded_input(input, options.max_input_bytes, &mut input_paths) {
         Ok(text) => text,
         Err(e) => return failed(input, FileErrorKind::Input, e),
     };
+    // Match native render: includes expand before the leading frontmatter is
+    // interpreted. The AST parser skips that block; the render options must
+    // separately receive its title, author, language and TOC settings.
+    let frontmatter = crate::parse::split_frontmatter(&md).0;
     let doc = parse_markdown(&md);
     if let Some(dir) = out_dir
         && let Err(e) = std::fs::create_dir_all(dir)
@@ -1084,13 +1140,13 @@ fn render_one(
 
     let mut rendered = Vec::new();
     if format.wants_html() {
-        let mut html_opts = html.clone();
+        let mut html_opts = options.html_for(frontmatter.as_ref());
         if let Err(e) = append_auto_image_assets_for_input(
             input,
             &doc,
             &mut html_opts.image_assets,
             "HTML",
-            max_pdf_image_bytes,
+            options.max_pdf_image_bytes,
             &mut input_paths,
         ) {
             return failed(input, FileErrorKind::Input, e);
@@ -1114,13 +1170,13 @@ fn render_one(
         }
     }
     if format.wants_pdf() {
-        let mut pdf_opts = pdf.clone();
+        let mut pdf_opts = options.pdf_for(frontmatter.as_ref());
         if let Err(e) = append_auto_image_assets_for_input(
             input,
             &doc,
             &mut pdf_opts.image_assets,
             "PDF",
-            max_pdf_image_bytes,
+            options.max_pdf_image_bytes,
             &mut input_paths,
         ) {
             return failed(input, FileErrorKind::Input, e);
@@ -1145,13 +1201,13 @@ fn render_one(
     }
 
     if matches!(format, OutputFormat::Epub) {
-        let mut epub_opts = html.clone();
+        let mut epub_opts = options.html_for(frontmatter.as_ref());
         if let Err(e) = append_auto_image_assets_for_input(
             input,
             &doc,
             &mut epub_opts.image_assets,
             "EPUB",
-            max_pdf_image_bytes,
+            options.max_pdf_image_bytes,
             &mut input_paths,
         ) {
             return failed(input, FileErrorKind::Input, e);
@@ -1172,22 +1228,27 @@ fn render_one(
         }
     }
     if matches!(format, OutputFormat::Svg) {
-        let mut images = pdf.image_assets.clone();
+        let mut images = options.pdf.image_assets.clone();
         if let Err(e) = append_auto_image_assets_for_input(
             input,
             &doc,
             &mut images,
             "SVG",
-            max_pdf_image_bytes,
+            options.max_pdf_image_bytes,
             &mut input_paths,
         ) {
             return failed(input, FileErrorKind::Input, e);
         }
         let svg_opts = crate::SvgOptions {
-            theme: pdf.theme.clone(),
+            theme: options.pdf.theme.clone(),
             ..crate::SvgOptions::default()
         };
-        match crate::svg::render_svg_with_resources(&doc, &svg_opts, &pdf.font_assets, &images) {
+        match crate::svg::render_svg_with_resources(
+            &doc,
+            &svg_opts,
+            &options.pdf.font_assets,
+            &images,
+        ) {
             Ok((bytes, _, _)) => rendered.push(PendingOutput {
                 kind: "svg",
                 path: output_path(input, out_dir, "svg"),
@@ -1317,7 +1378,15 @@ pub async fn render_batch(
     opts: &BatchOptions,
     budget: WorkerBudget,
 ) -> Outcome<BatchReceipt, BatchError> {
-    render_batch_with_protected_inputs(cx, plan, opts, budget, &[]).await
+    render_batch_with_protected_inputs(
+        cx,
+        plan,
+        opts,
+        budget,
+        &[],
+        &crate::config::RenderDefaults::default(),
+    )
+    .await
 }
 
 async fn render_batch_with_protected_inputs(
@@ -1326,6 +1395,7 @@ async fn render_batch_with_protected_inputs(
     opts: &BatchOptions,
     budget: WorkerBudget,
     host_inputs: &[PathBuf],
+    document_defaults: &crate::config::RenderDefaults,
 ) -> Outcome<BatchReceipt, BatchError> {
     // Cooperative cancellation/budget observation at the batch boundary.
     if cx.checkpoint().is_err() {
@@ -1402,12 +1472,15 @@ async fn render_batch_with_protected_inputs(
         let cancelled = Arc::clone(&cancelled);
         let collisions = Arc::clone(&collisions);
         let overwrite_errors = Arc::clone(&overwrite_errors);
-        let html = opts.html.clone();
-        let pdf = opts.pdf.clone();
+        let options = BatchRenderOptions {
+            html: opts.html.clone(),
+            pdf: opts.pdf.clone(),
+            document_defaults: document_defaults.clone(),
+            max_input_bytes: opts.max_input_bytes,
+            max_pdf_image_bytes: opts.max_pdf_image_bytes,
+        };
         let out_dir = plan.out_dir.clone();
         let format = plan.format;
-        let max_input_bytes = opts.max_input_bytes;
-        let max_pdf_image_bytes = opts.max_pdf_image_bytes;
         tasks.push(handle.spawn(async move {
             let mut entries: Vec<(usize, FileEntry)> = Vec::new();
             let mut stop = false;
@@ -1442,10 +1515,7 @@ async fn render_batch_with_protected_inputs(
                             &inputs[i],
                             format,
                             out_dir.as_deref(),
-                            &html,
-                            &pdf,
-                            max_input_bytes,
-                            max_pdf_image_bytes,
+                            &options,
                         )
                     }))
                     .unwrap_or_else(|_| {
@@ -1508,15 +1578,23 @@ pub fn run_batch_blocking(
     plan: BatchPlan,
     opts: &BatchOptions,
 ) -> Result<BatchReceipt, BatchError> {
-    run_batch_blocking_with_protected_inputs(plan, opts, &[])
+    run_batch_blocking_with_protected_inputs(
+        plan,
+        opts,
+        &[],
+        &crate::config::RenderDefaults::default(),
+    )
 }
 
 /// Host-only resources (CSS, fonts, explicit images and configuration) arrive
 /// as bytes in render options, so the CLI supplies their source paths here.
+/// Document defaults stay separate from explicit options until each input's
+/// frontmatter has been read, preserving flag > frontmatter > config precedence.
 pub(crate) fn run_batch_blocking_with_protected_inputs(
     plan: BatchPlan,
     opts: &BatchOptions,
     host_inputs: &[PathBuf],
+    document_defaults: &crate::config::RenderDefaults,
 ) -> Result<BatchReceipt, BatchError> {
     let c_avail = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -1541,7 +1619,15 @@ pub(crate) fn run_batch_blocking_with_protected_inputs(
     let outcome = runtime.block_on(async move {
         match Cx::current() {
             Some(cx) => {
-                render_batch_with_protected_inputs(&cx, plan, opts, budget, host_inputs).await
+                render_batch_with_protected_inputs(
+                    &cx,
+                    plan,
+                    opts,
+                    budget,
+                    host_inputs,
+                    document_defaults,
+                )
+                .await
             }
             None => Outcome::Err(BatchError::NoContext),
         }

@@ -1933,6 +1933,62 @@ const TIER_TWO_BOXES: &[(&str, Style, f64, f64, f64)] = &[
         10.59998,
         5.59998,
     ),
+    // amssymb: msam and msbm's TFM boxes, at the script cut too (fm-0byq).
+    (r"\leqslant", Style::Text, 7.7778, 6.36665, 1.36665),
+    (r"\square", Style::Text, 7.7778, 6.75, 0.0),
+    (r"\therefore", Style::Text, 6.66669, 6.9224, 0.0),
+    (r"\nleq", Style::Text, 7.7778, 7.93828, 3.02742),
+    (r"\Bbbk", Style::Text, 5.55557, 6.88889, 0.0),
+    (r"\thickapprox", Style::Text, 7.7778, 4.8312, 0.0),
+    (
+        r"\twoheadrightarrow",
+        Style::Text,
+        10.00002,
+        5.22394,
+        0.13539,
+    ),
+    (r"\curlyvee", Style::Text, 7.60416, 5.4986, 0.0),
+    (r"\circledast", Style::Text, 7.7778, 5.81978, 0.81978),
+    (r"\lessgtr", Style::Text, 7.7778, 6.75, 1.80801),
+    (r"a\leqslant b", Style::Text, 22.91077, 6.94444, 1.36665),
+    (r"\leqslant", Style::Script, 6.25002, 4.82222, 1.3297),
+    (r"x^{\nleq}", Style::Text, 12.46529, 9.78418, 0.0),
+    (r"\doublecap", Style::Text, 6.66669, 5.4986, 0.0),
+    // LaTeX's fractions are Ords: no thin space against an Ord, an Open or a
+    // Punct (fm-0byq's ink oracle rows).
+    (r"a\frac{b}{c}d", Style::Text, 16.4645, 8.79842, 3.44841),
+    (r"a\frac{b}{c}d", Style::Display, 17.2183, 13.70952, 6.85951),
+    (r"a\binom{b}{c}d", Style::Display, 29.5406, 14.5001, 9.50012),
+    (
+        r"a\tbinom{b}{c}d",
+        Style::Display,
+        23.23122,
+        9.2984,
+        3.50006,
+    ),
+    (
+        r"a\genfrac{[}{]}{0pt}{}{b}{c}d",
+        Style::Display,
+        25.37392,
+        14.5001,
+        9.50012,
+    ),
+    (
+        r"a\cfrac{b}{c}d",
+        Style::Display,
+        16.01831,
+        15.89993,
+        6.85951,
+    ),
+    (r"a{b\choose c}d", Style::Display, 29.5406, 14.5001, 9.50012),
+    (r"\frac{b}{c},", Style::Display, 9.50534, 13.70952, 6.85951),
+    (
+        r"\frac{b}{c}(x)",
+        Style::Display,
+        20.22063,
+        13.70952,
+        6.85951,
+    ),
 ];
 
 #[test]

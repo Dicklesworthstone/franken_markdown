@@ -56,7 +56,8 @@ fn intrinsic_classes_of_symbol_families() {
         (r",", Punct),
         (r";", Punct),
         (r"\colon", Punct),
-        (r"\frac{a}{b}", Inner),
+        // LaTeX braces \frac (`{…\@@over…}`): an Ord, not TeX's Inner noad.
+        (r"\frac{a}{b}", Ord),
         (r"\left( x \right)", Inner),
         (r"\cdots", Inner),
         (r"\ldots", Inner),
@@ -133,7 +134,8 @@ fn binary_between_ordinaries_stays_binary() {
     assert_eq!(classes(r"a \cdot b"), vec![Ord, Bin, Ord]);
     // Close and Inner on the left keep a following Bin binary.
     assert_eq!(classes(r"(a)+b"), vec![Open, Ord, Close, Bin, Ord]);
-    assert_eq!(classes(r"\frac{1}{2}+b"), vec![Inner, Bin, Ord]);
+    assert_eq!(classes(r"\left(a\right)+b"), vec![Inner, Bin, Ord]);
+    assert_eq!(classes(r"\frac{1}{2}+b"), vec![Ord, Bin, Ord]);
 }
 
 #[test]

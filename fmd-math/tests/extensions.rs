@@ -666,7 +666,7 @@ const AMSSYMB: &[&str] = &[
 
 #[test]
 fn amssymb_symbols_typeset_from_the_bundled_math_faces() {
-    use fmd_math::faces::{FACE_AMS_B_10, FACE_MATH_SYMBOLS, FACE_SYMBOLS};
+    use fmd_math::faces::{FACE_AMS_A_10, FACE_AMS_B_10};
     let e = engine();
     for name in AMSSYMB {
         let source = format!(r"\{name}");
@@ -674,32 +674,33 @@ fn amssymb_symbols_typeset_from_the_bundled_math_faces() {
             .typeset(&source, Style::Text)
             .unwrap_or_else(|err| panic!("{source}: {err}"));
         assert_eq!(l.glyphs.len(), 1, "{source}: {l:?}");
-        let authored = match *name {
-            "hslash" => Some((0x7D, r"\hbar")),
-            "nshortmid" => Some((0x2E, r"\nmid")),
-            _ => None,
-        };
-        if let Some((code, distinct)) = authored {
-            // amssymb.sty distinguishes 7D/7E and 2E/2D. Each pair
-            // shares a Unicode character, so Unicode fallback alone
-            // selects the wrong glyph once the AMS faces are present.
-            assert_eq!(l.glyphs[0].face, FACE_AMS_B_10);
-            assert_eq!(
-                Some(l.glyphs[0].gid),
-                e.faces().tex_glyph(FACE_AMS_B_10, code)
-            );
-            assert_ne!(
-                l.glyphs[0].gid,
-                e.typeset(distinct, Style::Text).unwrap().glyphs[0].gid
-            );
-        } else {
-            // All remaining original cases keep their Noto/cmsy
-            // requirement: a math face, never a text face standing in.
-            assert!(
-                [FACE_SYMBOLS, FACE_MATH_SYMBOLS].contains(&l.glyphs[0].face),
-                "{source}: {l:?}"
-            );
-        }
+        // Every amssymb name sets its authored msam or msbm glyph.
+        assert!(
+            [FACE_AMS_A_10, FACE_AMS_B_10].contains(&l.glyphs[0].face),
+            "{source}: {l:?}"
+        );
+    }
+    // The family and code amssymb.sty's \DeclareMathSymbol gives each name,
+    // sampled across both faces. hslash/hbar (7D/7E) and nshortmid/nmid
+    // (2E/2D) share Unicode characters, so only the code tells them apart;
+    // \thickapprox and \thicksim are msbm's thick forms, not cmsy's.
+    for (source, face, code) in [
+        (r"\leqslant", FACE_AMS_A_10, 0x36),
+        (r"\square", FACE_AMS_A_10, 0x03),
+        (r"\therefore", FACE_AMS_A_10, 0x29),
+        (r"\doublecap", FACE_AMS_A_10, 0x65),
+        (r"\nleq", FACE_AMS_B_10, 0x02),
+        (r"\Bbbk", FACE_AMS_B_10, 0x7C),
+        (r"\thickapprox", FACE_AMS_B_10, 0x74),
+        (r"\thicksim", FACE_AMS_B_10, 0x73),
+        (r"\hslash", FACE_AMS_B_10, 0x7D),
+        (r"\hbar", FACE_AMS_B_10, 0x7E),
+        (r"\nshortmid", FACE_AMS_B_10, 0x2E),
+        (r"\nmid", FACE_AMS_B_10, 0x2D),
+    ] {
+        let glyph = e.typeset(source, Style::Text).unwrap().glyphs[0].clone();
+        assert_eq!(glyph.face, face, "{source}");
+        assert_eq!(Some(glyph.gid), e.faces().tex_glyph(face, code), "{source}");
     }
     // amssymb's classes: a relation takes thick spaces, a binary operator
     // medium ones, and \square is an ordinary symbol.

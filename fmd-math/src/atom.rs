@@ -231,7 +231,14 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
         NodeKind::Scripts { base, .. } => base
             .as_deref()
             .map_or(Some(AtomClass::Ord), intrinsic_class),
-        NodeKind::Frac { .. } | NodeKind::LeftRight { .. } => Some(AtomClass::Inner),
+        // LaTeX's \frac is `{\begingroup#1\endgroup\@@over#2}`, and amsmath's
+        // \genfrac, \binom, \dfrac, \tfrac and \cfrac are braced the same
+        // way: the braces make every one an Ord, with no thin spaces against
+        // an Ord, an Open or a Punct (TeX: `a\frac{b}{c}d` is a, the fraction
+        // and d, abutted). Only a bare `\over` makes TeX's Inner fraction
+        // noad, and that one takes its whole list, so it meets no sibling.
+        NodeKind::Frac { .. } => Some(AtomClass::Ord),
+        NodeKind::LeftRight { .. } => Some(AtomClass::Inner),
         NodeKind::SizedDelim { class, .. } => Some(*class),
         NodeKind::Radical { .. }
         | NodeKind::Accent { .. }

@@ -67,17 +67,33 @@ const INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES: usize = 128 * 1024;
 const INLINE_PARSE_CACHE_MAX_TRACKED_HASHES: usize = INLINE_PARSE_CACHE_MAX_ENTRIES;
 
 /// Link/image labels and strikethrough recurse during tokenization, before the
-/// separate emphasis-tree depth limit can apply. Bound that recursion and the
-/// total amount of reparsed label text within one inline run. Rejected outer
-/// links can otherwise reparse their inner links exponentially.
+/// separate emphasis-tree depth limit can apply. Bound that recursion and all
+/// speculative inline scans within one run: rejected outer links can reparse
+/// labels exponentially, while unmatched delimiters, HTML and destinations can
+/// otherwise rescan overlapping suffixes quadratically.
 const MAX_INLINE_PARSE_RECURSION: usize = 64;
-const INLINE_NESTED_WORK_MULTIPLIER: usize = 64;
+const INLINE_PARSE_WORK_MULTIPLIER: usize = 64;
 
 #[derive(Default)]
 struct InlineWorkBudget {
     depth: usize,
     remaining: usize,
     exhausted: bool,
+}
+
+impl InlineWorkBudget {
+    /// Charge actual inspected characters, including failed speculative parses.
+    /// A scanner may finish one linear pass before charging it, so exhaustion
+    /// costs at most one extra input-length scan. The outermost inline parser
+    /// then preserves the complete source and discards speculative destinations.
+    fn charge(&mut self, scanned: usize) -> bool {
+        if self.exhausted || scanned > self.remaining {
+            self.exhausted = true;
+            return false;
+        }
+        self.remaining -= scanned;
+        true
+    }
 }
 
 #[derive(Default)]
@@ -3985,7 +4001,7 @@ fn parse_inlines_chars_nested(
 ) -> Vec<Inline> {
     if profiler.inline_work.exhausted
         || profiler.inline_work.depth >= MAX_INLINE_PARSE_RECURSION
-        || chars.len() > profiler.inline_work.remaining
+        || !profiler.inline_work.charge(chars.len())
     {
         // Abandon speculative work without collecting another potentially large
         // label. The outermost run preserves the complete source as literal text
@@ -3993,7 +4009,6 @@ fn parse_inlines_chars_nested(
         profiler.inline_work.exhausted = true;
         return Vec::new();
     }
-    profiler.inline_work.remaining -= chars.len();
     let started = profiler.checkpoint();
     profiler.inline_parse_depth += 1;
     let inlines = if !inline_chars_needs_full_parse(chars) {
@@ -4151,7 +4166,7 @@ fn parse_inlines_chars_with_refs_profiled(
     if outermost {
         profiler.inline_work.remaining = bytes
             .len()
-            .saturating_mul(INLINE_NESTED_WORK_MULTIPLIER)
+            .saturating_mul(INLINE_PARSE_WORK_MULTIPLIER)
             .max(4096);
         profiler.inline_work.exhausted = false;
     }
@@ -4218,8 +4233,11 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '`' => {
-                let n = run_len(bytes, i, '`');
-                if let Some(end) = find_code_close(bytes, i + n, '`', n) {
+                let Some(n) = run_len(bytes, i, '`', &mut profiler.inline_work) else {
+                    break;
+                };
+                if let Some(end) = find_code_close(bytes, i + n, '`', n, &mut profiler.inline_work)
+                {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Code(normalize_code_span(
                         &bytes[i + n..end],
@@ -4233,7 +4251,11 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '!' if i + 1 < bytes.len() && bytes[i + 1] == '[' => {
-                let pairs = bracket_pairs.get_or_insert_with(|| compute_bracket_pairs(bytes));
+                let pairs = bracket_pairs
+                    .get_or_insert_with(|| compute_bracket_pairs(bytes, &mut profiler.inline_work));
+                if profiler.inline_work.exhausted {
+                    break;
+                }
                 if let Some((alt, dest, title, next, token)) =
                     parse_link_like(bytes, i + 1, pairs, refs, profiler, true)
                 {
@@ -4284,7 +4306,11 @@ fn parse_inlines_chars_with_refs_profiled(
                 // exempt — their description is flattened to alt text — so this
                 // guard applies only to the link-forming paths, not the `!` image
                 // path above. Without it, `[a [b](/u)](/u)` emits nested <a>.
-                let pairs = bracket_pairs.get_or_insert_with(|| compute_bracket_pairs(bytes));
+                let pairs = bracket_pairs
+                    .get_or_insert_with(|| compute_bracket_pairs(bytes, &mut profiler.inline_work));
+                if profiler.inline_work.exhausted {
+                    break;
+                }
                 if let Some((content, dest, title, next, token)) =
                     parse_link_like(bytes, i, pairs, refs, profiler, false)
                 {
@@ -4308,7 +4334,9 @@ fn parse_inlines_chars_with_refs_profiled(
                         content,
                     }));
                     i = next;
-                } else if let Some((html, next)) = parse_inline_html(bytes, i) {
+                } else if let Some((html, next)) =
+                    parse_inline_html(bytes, i, &mut profiler.inline_work)
+                {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Html(html)));
                     i = next;
@@ -4318,7 +4346,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '<' => {
-                if let Some((label, dest, next)) = parse_autolink(bytes, i) {
+                if let Some((label, dest, next)) =
+                    parse_autolink(bytes, i, &mut profiler.inline_work)
+                {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
                         dest,
@@ -4326,7 +4356,9 @@ fn parse_inlines_chars_with_refs_profiled(
                         content: vec![Inline::Text(label)],
                     }));
                     i = next;
-                } else if let Some((html, next)) = parse_inline_html(bytes, i) {
+                } else if let Some((html, next)) =
+                    parse_inline_html(bytes, i, &mut profiler.inline_work)
+                {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Html(html)));
                     i = next;
@@ -4345,9 +4377,13 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '$' => {
-                let n = run_len(bytes, i, '$');
+                let Some(n) = run_len(bytes, i, '$', &mut profiler.inline_work) else {
+                    break;
+                };
                 if n >= 2 {
-                    if let Some((inner, next)) = parse_math_delim(bytes, i, 2) {
+                    if let Some((inner, next)) =
+                        parse_math_delim(bytes, i, 2, &mut profiler.inline_work)
+                    {
                         flush(&mut buf, &mut els);
                         els.push(InlineEl::Node(Inline::DisplayMath(inner)));
                         i = next;
@@ -4355,7 +4391,9 @@ fn parse_inlines_chars_with_refs_profiled(
                     }
                 }
                 if n == 1 {
-                    if let Some((inner, next)) = parse_math_delim(bytes, i, 1) {
+                    if let Some((inner, next)) =
+                        parse_math_delim(bytes, i, 1, &mut profiler.inline_work)
+                    {
                         flush(&mut buf, &mut els);
                         els.push(InlineEl::Node(Inline::Math(inner)));
                         i = next;
@@ -4365,8 +4403,10 @@ fn parse_inlines_chars_with_refs_profiled(
                 buf.push(c);
                 i += 1;
             }
-            '~' if run_len(bytes, i, '~') >= 2 => {
-                if let Some((start, end, next)) = parse_delim(bytes, i, '~', 2) {
+            '~' => {
+                if let Some((start, end, next)) =
+                    parse_delim(bytes, i, '~', 2, &mut profiler.inline_work)
+                {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Strikethrough(
                         parse_inlines_chars_nested(&bytes[start..end], refs, context, profiler),
@@ -4383,7 +4423,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 // actual pairing into emphasis/strong is deferred to
                 // `resolve_emphasis` (the delimiter-stack pass) so that nested and
                 // overlapping runs resolve correctly.
-                let n = run_len(bytes, i, c);
+                let Some(n) = run_len(bytes, i, c, &mut profiler.inline_work) else {
+                    break;
+                };
                 let before = i.checked_sub(1).map(|idx| bytes[idx]);
                 let after = bytes.get(i + n).copied();
                 let (can_open, can_close) = emphasis_flanking(before, after, c);
@@ -4831,8 +4873,9 @@ fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &m
 }
 
 #[inline(always)]
-fn run_len(chars: &[char], i: usize, ch: char) -> usize {
-    chars[i..].iter().take_while(|&&c| c == ch).count()
+fn run_len(chars: &[char], i: usize, ch: char, work: &mut InlineWorkBudget) -> Option<usize> {
+    let count = chars[i..].iter().take_while(|&&c| c == ch).count();
+    work.charge(count).then_some(count)
 }
 
 fn is_intraword_underscore_run(chars: &[char], i: usize, run: usize) -> bool {
@@ -4845,26 +4888,34 @@ fn is_intraword_underscore_run(chars: &[char], i: usize, run: usize) -> bool {
 }
 
 #[inline(always)]
-fn find_code_close(chars: &[char], from: usize, ch: char, n: usize) -> Option<usize> {
-    // A code span opened by `n` backticks closes only on a *maximal* backtick run
-    // of exactly `n`. Stepping by 1 would let a position `m - n` bytes into a
-    // longer run of `m > n` backticks match (its forward `run_len` is `n`), falsely
-    // closing the span in the middle of that run (e.g. `` `foo``bar`` ``). So skip
-    // each backtick run whole: a run that is not length `n` cannot contain a valid
-    // closer, and the next candidate begins only after it.
+fn find_code_close(
+    chars: &[char],
+    from: usize,
+    ch: char,
+    n: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<usize> {
+    // A code span opened by `n` backticks closes only on a maximal run of
+    // exactly `n`. Charge failed searches too: many distinct unmatched run
+    // lengths would otherwise each rescan the entire remaining paragraph.
     let mut i = from;
+    let mut found = None;
     while i < chars.len() {
         if chars[i] == ch {
-            let run = run_len(chars, i, ch);
+            let run = run_len(chars, i, ch, work)?;
             if run == n {
-                return Some(i);
+                found = Some(i);
+                break;
             }
             i += run;
         } else {
             i += 1;
         }
     }
-    None
+    if !work.charge(i - from) {
+        return None;
+    }
+    found
 }
 
 fn normalize_code_span(chars: &[char]) -> String {
@@ -4902,8 +4953,14 @@ fn normalize_code_span(chars: &[char]) -> String {
 
 /// Parse a balanced delimiter run `<ch>{want} ... <ch>{want}` returning the
 /// inner text's char range plus the index just past the close.
-fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(usize, usize, usize)> {
-    let open_run = run_len(chars, i, ch);
+fn parse_delim(
+    chars: &[char],
+    i: usize,
+    ch: char,
+    want: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<(usize, usize, usize)> {
+    let open_run = run_len(chars, i, ch, work)?;
     if open_run < want {
         return None;
     }
@@ -4913,27 +4970,37 @@ fn parse_delim(chars: &[char], i: usize, ch: char, want: usize) -> Option<(usize
         return None;
     }
     let mut j = after;
+    let mut found = None;
     while j < chars.len() {
         if chars[j] == ch {
-            let run = run_len(chars, j, ch);
+            let run = run_len(chars, j, ch, work)?;
             if run >= want
                 && j > after
                 && chars[j - 1] != ' '
                 && !is_intraword_underscore_run(chars, j, run)
             {
-                return Some((after, j, j + want));
+                found = Some((after, j, j + want));
+                break;
             }
             j += run;
         } else {
             j += 1;
         }
     }
-    None
+    if !work.charge(j - after) {
+        return None;
+    }
+    found
 }
 
 /// Parse a math delimiter run `$` or `$$`, returning inner TeX text and next index.
-fn parse_math_delim(chars: &[char], i: usize, want: usize) -> Option<(String, usize)> {
-    let open_run = run_len(chars, i, '$');
+fn parse_math_delim(
+    chars: &[char],
+    i: usize,
+    want: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<(String, usize)> {
+    let open_run = run_len(chars, i, '$', work)?;
     if open_run != want {
         return None;
     }
@@ -4942,28 +5009,34 @@ fn parse_math_delim(chars: &[char], i: usize, want: usize) -> Option<(String, us
         return None;
     }
     let mut j = after;
+    let mut found = None;
     while j < chars.len() {
         if chars[j] == '\\' && j + 1 < chars.len() {
             j += 2;
             continue;
         }
         if chars[j] == '$' {
-            let run = run_len(chars, j, '$');
+            let run = run_len(chars, j, '$', work)?;
             if run == want
                 && j > after
                 && chars[j - 1] != ' '
                 && chars[j - 1] != '\t'
                 && chars[j - 1] != '\n'
             {
-                let inner: String = chars[after..j].iter().collect();
-                return Some((inner, j + want));
+                found = Some(j);
+                break;
             }
             j += run;
         } else {
             j += 1;
         }
     }
-    None
+    if !work.charge(j - after) {
+        return None;
+    }
+    let end = found?;
+    let inner: String = chars[after..end].iter().collect();
+    Some((inner, end + want))
 }
 
 /// True when `inlines` contain a link at any nesting depth. CommonMark bans
@@ -5024,7 +5097,11 @@ fn parse_link_like(
     let (dest, title) = if chars.get(k) == Some(&')') {
         (String::new(), None)
     } else {
-        let dest = parse_link_destination(chars, &mut k)?;
+        let dest = parse_link_destination(chars, &mut k);
+        if !profiler.inline_work.charge(k - destination_start) {
+            return None;
+        }
+        let dest = dest?;
         destination_end = k;
         let spaces_start = k;
         skip_link_whitespace(chars, &mut k);
@@ -5035,7 +5112,12 @@ fn parse_link_like(
             if k == spaces_start {
                 return None;
             }
-            let title = parse_link_title(chars, &mut k)?;
+            let title_start = k;
+            let title = parse_link_title(chars, &mut k);
+            if !profiler.inline_work.charge(k - title_start) {
+                return None;
+            }
+            let title = title?;
             skip_link_whitespace(chars, &mut k);
             Some(title)
         };
@@ -5289,28 +5371,28 @@ fn parse_reference_link_like(
     ))
 }
 
-fn parse_autolink(chars: &[char], i: usize) -> Option<(String, String, usize)> {
+fn parse_autolink(
+    chars: &[char],
+    i: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<(String, String, usize)> {
     if chars.get(i) != Some(&'<') {
         return None;
     }
     // Autolink content runs to the closing `>` and may not contain whitespace,
-    // `<`, or ASCII control characters (CommonMark).
+    // `<`, or ASCII control characters (CommonMark). Find the boundary before
+    // allocating, and account for unsuccessful scans as well as accepted links.
     let mut j = i + 1;
-    let mut content = String::new();
-    while j < chars.len() {
-        let ch = chars[j];
-        if ch == '>' {
+    while let Some(&ch) = chars.get(j) {
+        if ch == '>' || ch == '<' || ch.is_whitespace() || ch.is_control() {
             break;
         }
-        if ch == '<' || ch.is_whitespace() || ch.is_control() {
-            return None;
-        }
-        content.push(ch);
         j += 1;
     }
-    if chars.get(j) != Some(&'>') || content.is_empty() {
+    if !work.charge(j - i) || chars.get(j) != Some(&'>') || j == i + 1 {
         return None;
     }
+    let content: String = chars[i + 1..j].iter().collect();
     if is_uri_autolink(&content) {
         // URI autolinks keep the destination verbatim (including `tel:`, `urn:`,
         // `mailto:`, and other opaque schemes that lack `://`).
@@ -5624,24 +5706,26 @@ const fn bare_url_trailing_punctuation(ch: char) -> bool {
     matches!(ch, '.' | ',' | ';' | ':' | '!' | '?')
 }
 
-fn trim_unmatched_trailing_parens(chars: &[char], start: usize, mut end: usize) -> usize {
-    while end > start && chars[end - 1] == ')' && has_unmatched_closing_paren(chars, start, end) {
-        end -= 1;
+fn trim_unmatched_trailing_parens(chars: &[char], start: usize, end: usize) -> usize {
+    if end <= start || chars[end - 1] != ')' {
+        return end;
     }
-    end
-}
-
-fn has_unmatched_closing_paren(chars: &[char], start: usize, end: usize) -> bool {
-    let mut opens = 0usize;
-    let mut closes = 0usize;
-    for &ch in &chars[start..end] {
-        if ch == '(' {
-            opens += 1;
-        } else if ch == ')' {
-            closes += 1;
-        }
-    }
-    closes > opens
+    // Each removed ')' decreases the excess close count by one. Count that
+    // excess once instead of rescanning the URL for every trailing parenthesis
+    // (quadratic on an otherwise ordinary URL followed by a long ')' run).
+    let (opens, closes) = chars[start..end]
+        .iter()
+        .fold((0usize, 0usize), |counts, ch| match ch {
+            '(' => (counts.0 + 1, counts.1),
+            ')' => (counts.0, counts.1 + 1),
+            _ => counts,
+        });
+    let trailing = chars[start..end]
+        .iter()
+        .rev()
+        .take_while(|&&ch| ch == ')')
+        .count();
+    end - trailing.min(closes.saturating_sub(opens))
 }
 
 fn decode_numeric_reference(value: &str, radix: u32) -> Option<char> {
@@ -5695,9 +5779,32 @@ fn is_html_whitespace(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0C')
 }
 
-fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
-    if chars.get(i) != Some(&'<') {
+fn parse_inline_html(
+    chars: &[char],
+    i: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<(String, usize)> {
+    if work.exhausted {
         return None;
+    }
+    let result = scan_inline_html_end(chars, i);
+    let scanned = match result {
+        Ok(end) | Err(end) => end.saturating_sub(i),
+    };
+    // Attribute whitespace can be inspected twice when '=' is absent.
+    if !work.charge(scanned.saturating_mul(2)) {
+        return None;
+    }
+    let next = result.ok()?;
+    Some((chars[i..next].iter().collect(), next))
+}
+
+/// Return the end of a tag, or the furthest inspected offset on failure.
+/// Returning the cursor even for malformed tags lets the caller bound repeated
+/// scans without imposing a fixed length cap on valid HTML attributes.
+fn scan_inline_html_end(chars: &[char], i: usize) -> Result<usize, usize> {
+    if chars.get(i) != Some(&'<') {
+        return Err(i);
     }
     let n = chars.len();
     // 1. Comment: <!-- ... -->
@@ -5708,36 +5815,33 @@ fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
         let mut j = i + 4;
         while j + 2 < n {
             if chars[j] == '-' && chars[j + 1] == '-' && chars[j + 2] == '>' {
-                let html: String = chars[i..=j + 2].iter().collect();
-                return Some((html, j + 3));
+                return Ok(j + 3);
             }
             j += 1;
         }
-        return None;
+        return Err(j);
     }
     // 2. Processing instruction: <? ... ?>
     if chars.get(i + 1) == Some(&'?') {
         let mut j = i + 2;
         while j + 1 < n {
             if chars[j] == '?' && chars[j + 1] == '>' {
-                let html: String = chars[i..=j + 1].iter().collect();
-                return Some((html, j + 2));
+                return Ok(j + 2);
             }
             j += 1;
         }
-        return None;
+        return Err(j);
     }
     // 3. CDATA: <![CDATA[ ... ]]>
     if i + 8 < n && chars[i + 1..i + 9].iter().collect::<String>() == "![CDATA[" {
         let mut j = i + 9;
         while j + 2 < n {
             if chars[j] == ']' && chars[j + 1] == ']' && chars[j + 2] == '>' {
-                let html: String = chars[i..=j + 2].iter().collect();
-                return Some((html, j + 3));
+                return Ok(j + 3);
             }
             j += 1;
         }
-        return None;
+        return Err(j);
     }
     // 4. Declaration: <!ASCII_UPPER ... >
     if chars.get(i + 1) == Some(&'!') && chars.get(i + 2).is_some_and(|c| c.is_ascii_uppercase()) {
@@ -5746,16 +5850,15 @@ fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
             j += 1;
         }
         if j < n && chars[j] == '>' {
-            let html: String = chars[i..=j].iter().collect();
-            return Some((html, j + 1));
+            return Ok(j + 1);
         }
-        return None;
+        return Err(j);
     }
     // 5. Closing tag: </tag_name whitespace* >
     if chars.get(i + 1) == Some(&'/') {
         let mut j = i + 2;
         if j >= n || !is_html_tag_name_start(chars[j]) {
-            return None;
+            return Err(j);
         }
         while j < n && is_html_tag_name_char(chars[j]) {
             j += 1;
@@ -5764,15 +5867,14 @@ fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
             j += 1;
         }
         if j < n && chars[j] == '>' {
-            let html: String = chars[i..=j].iter().collect();
-            return Some((html, j + 1));
+            return Ok(j + 1);
         }
-        return None;
+        return Err(j);
     }
     // 6. Open tag: <tag_name (whitespace+ attr)* whitespace* /? >
     let mut j = i + 1;
     if j >= n || !is_html_tag_name_start(chars[j]) {
-        return None;
+        return Err(j);
     }
     while j < n && is_html_tag_name_char(chars[j]) {
         j += 1;
@@ -5789,17 +5891,15 @@ fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
                 j += 1;
             }
             if j < n && chars[j] == '>' {
-                let html: String = chars[i..=j].iter().collect();
-                return Some((html, j + 1));
+                return Ok(j + 1);
             }
-            return None;
+            return Err(j);
         }
         if j < n && chars[j] == '>' {
-            let html: String = chars[i..=j].iter().collect();
-            return Some((html, j + 1));
+            return Ok(j + 1);
         }
         if !had_ws || j >= n || !is_html_attr_name_start(chars[j]) {
-            return None;
+            return Err(j);
         }
         while j < n && is_html_attr_name_char(chars[j]) {
             j += 1;
@@ -5814,7 +5914,7 @@ fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
                 j += 1;
             }
             if j >= n {
-                return None;
+                return Err(j);
             }
             if chars[j] == '"' {
                 j += 1;
@@ -5822,7 +5922,7 @@ fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
                     j += 1;
                 }
                 if j >= n || chars[j] != '"' {
-                    return None;
+                    return Err(j);
                 }
                 j += 1;
             } else if chars[j] == '\'' {
@@ -5831,7 +5931,7 @@ fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
                     j += 1;
                 }
                 if j >= n || chars[j] != '\'' {
-                    return None;
+                    return Err(j);
                 }
                 j += 1;
             } else {
@@ -5843,7 +5943,7 @@ fn parse_inline_html(chars: &[char], i: usize) -> Option<(String, usize)> {
                     j += 1;
                 }
                 if j == val_start {
-                    return None;
+                    return Err(j);
                 }
             }
         } else {
@@ -5972,7 +6072,7 @@ impl PairTable for WideTable {
 
 /// The single pairing pass (nesting + backslash-escape rules verbatim from the
 /// pre-pass-25 `compute_bracket_pairs`); `S` picks only the storage width.
-fn compute_bracket_pairs_in<S: PairTable>(chars: &[char]) -> S {
+fn compute_bracket_pairs_in<S: PairTable>(chars: &[char], work: &mut InlineWorkBudget) -> S {
     let mut pairs = S::unpaired(chars.len());
     // Real inline runs peak at nesting depth 1-2 (measured across the perf
     // corpora; only degenerate `[[[…` runs go deeper), so len/64 covers every
@@ -5981,21 +6081,23 @@ fn compute_bracket_pairs_in<S: PairTable>(chars: &[char]) -> S {
     // measured 9-24% SLOWER end-to-end than either this or no presize.
     let mut open_stack: Vec<usize> = Vec::with_capacity(chars.len() / 64);
     let mut i = 0;
-    while i < chars.len() {
+    while i < chars.len() && !work.exhausted {
         match chars[i] {
             '\\' => i += 1, // skip the escaped char, exactly as find_closing_bracket does
             '`' => {
-                let n = run_len(chars, i, '`');
-                if let Some(end) = find_code_close(chars, i + n, '`', n) {
+                let Some(n) = run_len(chars, i, '`', work) else {
+                    break;
+                };
+                if let Some(end) = find_code_close(chars, i + n, '`', n, work) {
                     i = end + n - 1;
                 } else {
                     i += n - 1;
                 }
             }
             '<' => {
-                if let Some((_, _, next)) = parse_autolink(chars, i) {
+                if let Some((_, _, next)) = parse_autolink(chars, i, work) {
                     i = next - 1;
-                } else if let Some((_, next)) = parse_inline_html(chars, i) {
+                } else if let Some((_, next)) = parse_inline_html(chars, i, work) {
                     i = next - 1;
                 }
             }
@@ -6012,15 +6114,15 @@ fn compute_bracket_pairs_in<S: PairTable>(chars: &[char]) -> S {
     pairs
 }
 
-fn compute_bracket_pairs(chars: &[char]) -> BracketPairs {
+fn compute_bracket_pairs(chars: &[char], work: &mut InlineWorkBudget) -> BracketPairs {
     // Indices are < len, so len <= u32::MAX keeps every recorded index at
     // u32::MAX - 1 or below — the sentinel stays collision-free even at the
     // boundary. On wasm32 (usize == u32) the comparison is tautologically true
     // and Compact is the only live arm.
     if chars.len() <= u32::MAX as usize {
-        BracketPairs::Compact(compute_bracket_pairs_in::<CompactTable>(chars).0)
+        BracketPairs::Compact(compute_bracket_pairs_in::<CompactTable>(chars, work).0)
     } else {
-        BracketPairs::Wide(compute_bracket_pairs_in::<WideTable>(chars).0)
+        BracketPairs::Wide(compute_bracket_pairs_in::<WideTable>(chars, work).0)
     }
 }
 
@@ -7799,14 +7901,21 @@ mod fenced_indent_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod bracket_tests {
     use super::{
-        BracketPairs, CompactTable, PairTable, WideTable, compute_bracket_pairs,
+        BracketPairs, CompactTable, InlineWorkBudget, PairTable, WideTable, compute_bracket_pairs,
         compute_bracket_pairs_in, normalize_reference_label_chars,
     };
     use crate::{HtmlOptions, render_html};
 
+    fn work() -> InlineWorkBudget {
+        InlineWorkBudget {
+            remaining: usize::MAX,
+            ..InlineWorkBudget::default()
+        }
+    }
+
     fn pairs(s: &str) -> Vec<Option<usize>> {
         let chars = s.chars().collect::<Vec<char>>();
-        let table = compute_bracket_pairs(&chars);
+        let table = compute_bracket_pairs(&chars, &mut work());
         (0..chars.len()).map(|i| table.partner(i)).collect()
     }
 
@@ -7837,8 +7946,8 @@ mod bracket_tests {
         ];
         for src in battery {
             let chars = src.chars().collect::<Vec<char>>();
-            let compact = compute_bracket_pairs_in::<CompactTable>(&chars);
-            let wide = compute_bracket_pairs_in::<WideTable>(&chars);
+            let compact = compute_bracket_pairs_in::<CompactTable>(&chars, &mut work());
+            let wide = compute_bracket_pairs_in::<WideTable>(&chars, &mut work());
             for i in 0..=chars.len() {
                 assert_eq!(
                     compact.partner(i),
@@ -7849,7 +7958,7 @@ mod bracket_tests {
             // Every testable slice routes to the compact 4-byte table (len is
             // far below the u32::MAX guard), and the routed entry answers
             // exactly what both raw representations compute.
-            match compute_bracket_pairs(&chars) {
+            match compute_bracket_pairs(&chars, &mut work()) {
                 BracketPairs::Compact(table) => {
                     let routed = BracketPairs::Compact(table);
                     for i in 0..=chars.len() {

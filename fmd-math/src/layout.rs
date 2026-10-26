@@ -4319,11 +4319,16 @@ fn amsmath_ex(decl_size: f64) -> f64 {
     if points > 20.0 {
         return 0.15;
     }
-    // Half points away from 10 pt, less amsgen's 1000 sp fudge.
-    let steps = ((2.0 * (10.0 - points)).abs() - 1000.0 / 65536.0)
-        .ceil()
-        .max(0.0);
-    let delta = 1.0 - 0.97_f64.powf(steps);
+    // amsgen's own loop: one factor of 0.97 per half point away from 10 pt,
+    // less its 1000 sp fudge. Repeated multiplication, not `powf`, keeps the
+    // certified path off platform libm (ADR-0010).
+    let mut remaining = (2.0 * (10.0 - points)).abs() - 1000.0 / 65536.0;
+    let mut fuzz = 1.0_f64;
+    while remaining > 0.0 {
+        fuzz *= 0.97;
+        remaining -= 1.0;
+    }
+    let delta = 1.0 - fuzz;
     0.1 * if points < 10.0 {
         1.0 - delta
     } else {
@@ -4360,5 +4365,32 @@ fn glyph_box(face: FaceId, gid: u16, ch: char, span: Span, size: f64, m: GlyphMe
                 span,
             },
         }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::amsmath_ex;
+
+    /// TeX's `\the\ex@` after math at each LaTeX size (article, amsmath):
+    /// 1.0, 0.94089, 0.88527, 1.11473, 1.23982 and 1.5 pt at 10, 9, 8, 12,
+    /// 14.4 and 20.74 pt. TeX rounds each `0.97` step to whole sp, so the
+    /// float loop lands within a few sp.
+    #[test]
+    fn ex_follows_amsgen_at_each_size() {
+        for (decl_size, tex_pt) in [
+            (1.0, 1.0),
+            (0.9, 0.94089),
+            (0.8, 0.88527),
+            (1.2, 1.11473),
+            (1.44, 1.23982),
+            (2.074, 1.5),
+        ] {
+            let ex_pt = amsmath_ex(decl_size) * 10.0;
+            assert!(
+                (ex_pt - tex_pt).abs() < 1e-4,
+                "at {decl_size}: {ex_pt} pt against TeX's {tex_pt} pt"
+            );
+        }
     }
 }

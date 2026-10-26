@@ -289,6 +289,15 @@ impl SpaceKind {
     }
 }
 
+/// The kernel's logos.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogoKind {
+    /// `\TeX`: `T\kern-.1667em\lower.5ex\hbox{E}\kern-.125em X`.
+    TeX,
+    /// `\LaTeX`: L, a script-size A top-aligned with T, then `\TeX`.
+    LaTeX,
+}
+
 /// What an explicit [`Length`] counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LengthUnit {
@@ -616,6 +625,13 @@ pub enum NodeKind {
     /// `\hspace{…}` and `\hspace*{…}`: horizontal glue of an explicit
     /// length, with no stretch or shrink.
     Skip(Length),
+    /// The kernel's `\TeX` and `\LaTeX` logos.
+    Logo(LogoKind),
+    /// TeX's `\mathchoice{D}{T}{S}{SS}`: the branch for the style in force.
+    MathChoice {
+        /// The display, text, script and scriptscript branches.
+        branches: Box<[Node; 4]>,
+    },
     /// `~` — a tie (non-breaking interword space).
     Tie,
     /// `\\` — a line break (or, at an environment's own level, the row

@@ -11,8 +11,8 @@
 
 use crate::atom::AtomClass;
 use crate::node::{
-    AccentKind, AmsFamily, DelimSize, FracSpec, LineAlign, MathFont, PhantomKind, SpaceKind,
-    StackKind, TextStyle,
+    AccentKind, AmsFamily, DelimSize, FracSpec, LineAlign, LogoKind, MathFont, PhantomKind,
+    SpaceKind, StackKind, TextStyle,
 };
 use crate::style::Style;
 
@@ -131,6 +131,10 @@ pub(crate) enum Cmd {
     Spacing(SpaceKind),
     /// `\hspace{len}` or `\hspace*{len}`: glue of an explicit length.
     Hspace,
+    /// `\TeX` or `\LaTeX`.
+    Logo(LogoKind),
+    /// TeX's `\mathchoice{D}{T}{S}{SS}`.
+    MathChoice,
     /// A phantom command.
     Phantom(PhantomKind),
     /// amsmath's `\boxed`.
@@ -733,6 +737,9 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "Large" => Cmd::SizeChange(1.44),
         "huge" => Cmd::SizeChange(2.074),
         "hspace" => Cmd::Hspace,
+        "TeX" => Cmd::Logo(LogoKind::TeX),
+        "LaTeX" => Cmd::Logo(LogoKind::LaTeX),
+        "mathchoice" => Cmd::MathChoice,
         "quad" => Cmd::Spacing(SpaceKind::Quad),
         "qquad" => Cmd::Spacing(SpaceKind::Qquad),
         "boxed" => Cmd::Boxed,
@@ -995,11 +1002,11 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         "dx" => Cmd::UnsupportedT2,
         // Common constructs outside the G0-4 corpus, refused by name until
         // they land ([`OUTSIDE_CORPUS_TRACKING`]): `\mathfrak` needs a
-        // Fraktur face (no bundled face carries the alphabet), `\tag`,
-        // `\sideset` and `\mathchoice` their own layout, and `\cancel` the
+        // Fraktur face (no bundled face carries the alphabet), `\tag` and
+        // `\sideset` their own layout, and `\cancel` the
         // cancel package, which the Reference's default template does not
         // load.
-        "mathfrak" | "tag" | "sideset" | "mathchoice" | "cancel" => Cmd::UnsupportedT2,
+        "mathfrak" | "tag" | "sideset" | "cancel" => Cmd::UnsupportedT2,
         _ => return None,
     })
 }

@@ -2877,21 +2877,21 @@ fn a_blank_line_ends_the_paragraph() {
 fn a_line_break_drops_the_glue_before_it() {
     // `\\` in the alignment environments is LaTeX's \@centercr: \unskip
     // drops the `\quad`, and \par the space before it, so the first line is
-    // "Probability of the evidence" (TeX: 11.794469 em) and stays centred on
-    // the second (10.352795 em).
+    // "Weigh how likely the clue is" (TeX: 12.227795 em) and stays centred on
+    // the second (11.405576 em).
     use fmd_math::MacroSet;
     let pack = MacroSet::pack("fmd-math/pack/default").unwrap();
     let layout = engine()
         .typeset_text_with_macros(
-            r"\begin{center}Probability of the evidence \quad \\if the hypothesis is true\end{center}",
+            r"\begin{center}Weigh how likely the clue is \quad \\given that the guess holds\end{center}",
             &pack,
         )
         .unwrap();
     let lines = text_lines(&layout);
     assert_eq!(lines.len(), 2);
     assert!(((lines[0].1 + lines[0].2) - (lines[1].1 + lines[1].2)).abs() < 1e-4);
-    assert_eq!(lines[0].3, "Probabilityoftheevidence");
+    assert_eq!(lines[0].3, "Weighhowlikelytheclueis");
     let (first, second) = (lines[0].2 - lines[0].1, lines[1].2 - lines[1].1);
-    assert!((first - 11.794469).abs() < 1e-4, "{first}");
-    assert!((second - 10.352795).abs() < 1e-4, "{second}");
+    assert!((first - 12.227795).abs() < 1e-4, "{first}");
+    assert!((second - 11.405576).abs() < 1e-4, "{second}");
 }

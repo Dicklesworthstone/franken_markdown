@@ -99,7 +99,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 |---|---|
 | Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, GitHub-style sanitizing of raw HTML by default (an allowlisted subset stays markup in HTML and becomes native nodes in PDF/SVG/EPUB; unknown tags stay escaped), and a ratcheted CommonMark 0.31.2 conformance floor |
 | HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, GitHub emoji shortcodes (`:rocket:` becomes 🚀), shared syntax highlighting, and optional stylesheet replacement |
-| PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, UAX #14 CJK line breaking, body justification, selectable text, outlines, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
+| PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, UAX #14 CJK line breaking, body justification, selectable text, hierarchical heading bookmarks, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
 | Financial tables | Opt-in `---.` decimal columns align mixed-precision amounts using measured fonts; plain `---` and `===` marker rows add single/double rules beneath totals across PDF, HTML and SVG. Values, styles and links remain intact; see [financial tables](docs/FINANCIAL_TABLES.md) |
 | PDF footnotes | Page-bottom notes under a short rule with linked superscript marks, never separated from the line that cites them; see [PDF footnotes](docs/PDF_FOOTNOTES.md) |
@@ -201,6 +201,12 @@ title/author/`SOURCE_DATE_EPOCH` metadata, hierarchical tagged-PDF structure,
 compressed page streams, measured-column tables, syntax-highlighted code panels,
 standalone PNG embedding, and vector SVG drawing for supported diagrams. Full
 widow/orphan control and finer block pagination remain roadmap work.
+
+PDF bookmarks follow the document's heading hierarchy. Skipped heading levels
+nest under the nearest preceding lower-level heading, and sibling sections stay
+at the same level. Alert labels retain their visual styling without consuming
+heading anchors or adding bookmarks, so local links, the table of contents, and
+book links resolve to the actual source headings.
 
 ---
 

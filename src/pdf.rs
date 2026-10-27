@@ -53,6 +53,7 @@ pub use pagination_report::{
     PdfParagraphVariantReport, PdfParagraphVariantStatus, PdfRenderReport,
 };
 mod math;
+mod navigation;
 mod running;
 mod table_panels;
 mod text_composition;
@@ -23045,6 +23046,7 @@ fn generate_page_content(
             scratch.outlines.push(OutlineEntry {
                 id: meta.id.clone(),
                 title: meta.title.clone(),
+                level: meta.level,
                 page_index: page_idx,
                 y: (y + line.size * 0.9).min(page.top_y()),
             });
@@ -23063,6 +23065,7 @@ fn generate_page_content(
                 scratch.outlines.push(OutlineEntry {
                     id,
                     title: String::new(),
+                    level: 0,
                     page_index: page_idx,
                     y: (y + line.size * 0.9).min(page.top_y()),
                 });
@@ -24126,6 +24129,8 @@ struct Rect {
 struct OutlineEntry {
     id: String,
     title: String,
+    /// Actual heading level, or zero for a non-bookmark note destination.
+    level: u8,
     page_index: usize,
     y: f32,
 }
@@ -24133,6 +24138,7 @@ struct OutlineEntry {
 struct HeadingMeta {
     id: String,
     title: String,
+    level: u8,
 }
 
 /// Identity from the prepared heading AST, before line breaking, font fallback,
@@ -24163,6 +24169,7 @@ struct HeadingIdState {
 }
 
 impl HeadingIdState {
+    #[cfg(test)]
     fn heading_id(&mut self, text: &str) -> String {
         self.heading_id_from_slug(slug(text))
     }
@@ -24193,51 +24200,31 @@ impl HeadingIdState {
 }
 
 fn heading_metadata(lines: &[Line]) -> BTreeMap<u32, HeadingMeta> {
-    let mut order = Vec::new();
-    let mut titles: BTreeMap<u32, String> = BTreeMap::new();
-    let mut sources = BTreeMap::new();
+    let mut state = HeadingIdState::default();
+    let mut out = BTreeMap::new();
     for line in lines
         .iter()
         .filter(|line| line.flow.kind == FlowKind::Heading && line.flow.group != 0)
     {
-        if !titles.contains_key(&line.flow.group) {
-            order.push(line.flow.group);
-        }
-        if let Some(source) = line.heading_source.as_deref() {
-            sources.entry(line.flow.group).or_insert(source);
-        }
-        let title = titles.entry(line.flow.group).or_default();
-        if !title.is_empty() && !title.ends_with(' ') {
-            title.push(' ');
-        }
-        for seg in &line.segs {
-            title.push_str(seg_display_text(seg));
-        }
-    }
-
-    let mut state = HeadingIdState::default();
-    let mut out = BTreeMap::new();
-    for group in order {
-        if let Some(source) = sources.get(&group) {
-            let id = state.heading_id_from_slug(source.slug.clone());
-            out.insert(
-                group,
-                HeadingMeta {
-                    id,
-                    title: source.title.clone(),
-                },
-            );
+        // FlowKind::Heading also gives alert labels their keep-with-next
+        // behavior. Only an actual AST heading owns a navigation destination:
+        // synthetic labels must not consume a slug, appear in bookmarks, or
+        // shift the book renderer's source-heading ordinals.
+        let Some(source) = line.heading_source.as_deref() else {
+            continue;
+        };
+        if out.contains_key(&line.flow.group) {
             continue;
         }
-        // Synthetic heading-like lines (such as alert labels) have no AST
-        // heading. Keep their existing visible-text identity.
-        let title = titles
-            .remove(&group)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "Section".to_string());
-        let id = state.heading_id(&title);
-        out.insert(group, HeadingMeta { id, title });
+        let id = state.heading_id_from_slug(source.slug.clone());
+        out.insert(
+            line.flow.group,
+            HeadingMeta {
+                id,
+                title: source.title.clone(),
+                level: line.flow.heading_level.clamp(1, 6),
+            },
+        );
     }
     out
 }
@@ -31370,8 +31357,17 @@ struct PdfOutlineItemObjectParts<'a> {
     parent_object_id: usize,
     prev_object_id: Option<usize>,
     next_object_id: Option<usize>,
+    children: Option<PdfOutlineChildren>,
     page_object_id: usize,
     y: f32,
+}
+
+struct PdfOutlineChildren {
+    first_object_id: usize,
+    last_object_id: usize,
+    /// All descendants are initially open, so the positive /Count includes
+    /// every descendant, not merely the number of immediate children.
+    count: usize,
 }
 
 struct PdfType0FontObjectParts<'a> {
@@ -31459,6 +31455,14 @@ fn append_pdf_outline_item_object(
     if let Some(next) = parts.next_object_id {
         out.extend_from_slice(b" /Next ");
         append_pdf_object_ref_bytes(out, next);
+    }
+    if let Some(children) = parts.children {
+        out.extend_from_slice(b" /First ");
+        append_pdf_object_ref_bytes(out, children.first_object_id);
+        out.extend_from_slice(b" /Last ");
+        append_pdf_object_ref_bytes(out, children.last_object_id);
+        out.extend_from_slice(b" /Count ");
+        append_decimal_usize(out, children.count);
     }
     out.extend_from_slice(b" /Dest [");
     append_pdf_object_ref_bytes(out, parts.page_object_id);
@@ -32334,12 +32338,15 @@ fn build_pdf(
     let ni = images.len();
     let title = opts.title.clone().unwrap_or_default();
     let author = opts.author.clone().unwrap_or_default();
-    // Page-note destinations resolve links but are not bookmarks.
+    // Page-note destinations resolve links but are not bookmarks. Classify by
+    // structural role, not their spelling: a real heading may legitimately
+    // have a slug such as "fmd-fn-1".
     let bookmarks: Vec<&OutlineEntry> = outlines
         .iter()
-        .filter(|outline| page_note_number(&outline.id).is_none())
+        .filter(|outline| outline.level != 0)
         .collect();
     let outline_count = bookmarks.len();
+    let outline_tree = navigation::OutlineTree::new(bookmarks.iter().map(|entry| entry.level));
     let dest_ids: BTreeSet<&str> = outlines.iter().map(|o| o.id.as_str()).collect();
     let dest_by_id: BTreeMap<&str, &OutlineEntry> =
         outlines.iter().map(|o| (o.id.as_str(), o)).collect();
@@ -32770,28 +32777,36 @@ fn build_pdf(
         }
     }
 
-    if outline_count > 0 {
+    if let (Some(first), Some(last)) = (outline_tree.first, outline_tree.last) {
         append_pdf_object_str(
             &mut buf,
             &mut offsets,
             outline_root_obj,
             &format!(
                 "<< /Type /Outlines /First {first} 0 R /Last {last} 0 R /Count {count} >>",
-                first = outline_item_obj(0),
-                last = outline_item_obj(outline_count - 1),
+                first = outline_item_obj(first),
+                last = outline_item_obj(last),
                 count = outline_count,
             ),
         );
-        for (i, outline) in bookmarks.iter().enumerate() {
+        for (i, (outline, node)) in bookmarks.iter().zip(&outline_tree.nodes).enumerate() {
             append_pdf_outline_item_object(
                 &mut buf,
                 &mut offsets,
                 PdfOutlineItemObjectParts {
                     object_id: outline_item_obj(i),
                     title: &outline.title,
-                    parent_object_id: outline_root_obj,
-                    prev_object_id: (i != 0).then(|| outline_item_obj(i - 1)),
-                    next_object_id: (i + 1 != outline_count).then(|| outline_item_obj(i + 1)),
+                    parent_object_id: node.parent.map_or(outline_root_obj, outline_item_obj),
+                    prev_object_id: node.previous.map(outline_item_obj),
+                    next_object_id: node.next.map(outline_item_obj),
+                    children: node
+                        .first
+                        .zip(node.last)
+                        .map(|(first, last)| PdfOutlineChildren {
+                            first_object_id: outline_item_obj(first),
+                            last_object_id: outline_item_obj(last),
+                            count: node.descendants,
+                        }),
                     page_object_id: page_obj(outline.page_index),
                     y: outline.y,
                 },
@@ -33753,6 +33768,7 @@ fn valid_pdf_fragment(fragment: &str) -> bool {
     !fragment.is_empty() && !fragment.chars().any(|c| c.is_ascii_control())
 }
 
+#[cfg(test)]
 fn slug(text: &str) -> String {
     crate::anchors::text_slug(text)
 }
@@ -38356,6 +38372,7 @@ mod pdf_writer_tests {
                     parent_object_id,
                     prev_object_id,
                     next_object_id,
+                    children: None,
                     page_object_id,
                     y,
                 },

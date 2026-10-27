@@ -414,28 +414,15 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     );
     let reference_started = profiler.checkpoint();
     let has_reference_candidate = src.contains("]:");
-    let (lines, mut refs, kept_reference_candidate, rebuilt_reference_lines) =
-        if has_reference_candidate {
-            collect_link_references_tracked(
-                lines,
-                profiler.destinations.as_mut(),
-                profiler.block_spans.as_mut(),
-            )
-        } else {
-            (lines, ReferenceMap::new(), false, false)
-        };
-    // Also collect definitions nested inside blockquotes/list items, so a use
-    // anywhere in the document (including a forward reference) can resolve a
-    // definition that lives inside a container. CommonMark allows definitions
-    // inside block containers; the container body's own definition lines are
-    // removed when it is parsed (see the blockquote branch / parse_list). The
-    // `]:` guard skips this whole traversal when no line can be a reference
-    // definition (every ref-def has `]:` where its label closes), so a document
-    // with no references — including a pathologically deep nested list — never
-    // pays for the extra structural walk.
-    if kept_reference_candidate {
-        collect_nested_references_tracked(&lines, &mut refs, 0, profiler.destinations.as_mut());
-    }
+    let (lines, refs, _, rebuilt_reference_lines) = if has_reference_candidate {
+        collect_link_references_tracked(
+            lines,
+            profiler.destinations.as_mut(),
+            profiler.block_spans.as_mut(),
+        )
+    } else {
+        (lines, ReferenceMap::new(), false, false)
+    };
     let reference_allocations = if has_reference_candidate {
         refs.len()
             + if rebuilt_reference_lines {
@@ -872,9 +859,19 @@ fn collect_link_reference_metadata_into(
 
 fn collect_link_reference_metadata_into_tracked(
     lines: &[&str],
+    consumed: Option<&mut ConsumedReferenceLines>,
+    refs: &mut ReferenceMap,
+    tracker: Option<&mut destinations::DestinationTracker>,
+) -> bool {
+    collect_link_reference_metadata_at_depth(lines, consumed, refs, tracker, 0)
+}
+
+fn collect_link_reference_metadata_at_depth(
+    lines: &[&str],
     mut consumed: Option<&mut ConsumedReferenceLines>,
     refs: &mut ReferenceMap,
     mut tracker: Option<&mut destinations::DestinationTracker>,
+    depth: usize,
 ) -> bool {
     let mut i = 0usize;
     // Whether the current position is a lazy continuation of an open top-level
@@ -931,26 +928,49 @@ fn collect_link_reference_metadata_into_tracked(
         }
 
         // A block quote is its own block. Consume the whole run — its `>` lines
-        // plus any lazy paragraph continuations — exactly as the block parser and
-        // `collect_nested_references` do, so a `[label]: dest` line that lazily
+        // plus any lazy paragraph continuations — exactly as the block parser
+        // does, so a `[label]: dest` line that lazily
         // continues the quote's open paragraph is not mistaken for a top-level
         // boundary definition and stripped, which silently deleted the line and
-        // phantom-defined the label. Definitions genuinely inside the quote are
-        // collected separately by `collect_nested_references`.
+        // phantom-defined the label. Recurse at this source position so earlier
+        // quoted definitions keep precedence over later top-level/list ones.
         if scan.maybe_blockquote && blockquote_marker_start(line) {
-            let mut last_inner: Option<std::borrow::Cow<'_, str>> = None;
+            let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
+            let mut inner: Vec<std::borrow::Cow<'_, str>> = Vec::new();
             while i < lines.len() {
                 if blockquote_marker_start(lines[i]) {
                     kept_reference_candidate |= lines[i].contains("]:");
-                    last_inner = Some(strip_blockquote_marker(lines[i]));
+                    let stripped = strip_blockquote_marker(lines[i]);
+                    if let std::borrow::Cow::Owned(copied) = &stripped
+                        && let Some(tracker) = &mut tracker
+                    {
+                        tracker.map_suffix(copied, lines[i]);
+                    }
+                    inner.push(stripped);
                     i += 1;
-                } else if blockquote_lazy_continuation(last_inner.as_deref(), lines[i]) {
+                } else if blockquote_lazy_continuation(
+                    inner.last().map(|line| line.as_ref()),
+                    lines[i],
+                ) {
                     kept_reference_candidate |= lines[i].contains("]:");
-                    last_inner = Some(std::borrow::Cow::Borrowed(trim_start_space_tab(lines[i])));
+                    inner.push(std::borrow::Cow::Borrowed(trim_start_space_tab(lines[i])));
                     i += 1;
                 } else {
                     break;
                 }
+            }
+            if depth < MAX_BLOCK_NESTING_DEPTH {
+                let inner_lines: Vec<&str> = inner.iter().map(|line| line.as_ref()).collect();
+                collect_link_reference_metadata_at_depth(
+                    &inner_lines,
+                    None,
+                    refs,
+                    tracker.as_deref_mut(),
+                    depth + 1,
+                );
+            }
+            if let Some(tracker) = &mut tracker {
+                tracker.restore(checkpoint);
             }
             in_paragraph = false;
             continue;
@@ -970,11 +990,20 @@ fn collect_link_reference_metadata_into_tracked(
         // GFM footnote definitions (`[^id]: content`) are NOT link reference
         // definitions: the footnote block parser consumes them later. Skip the
         // whole body here so it is not extracted as a `[label]: dest` link ref
-        // (which would silently delete the footnote). The nested collector
-        // resolves real reference definitions after removing the note indent.
-        if !in_paragraph && footnote_definition_marker(line) {
-            let used = footnote_extent(&lines[i..], |line| *line);
+        // (which would silently delete the footnote). Resolve its nested
+        // definitions after removing the note indent, in source order.
+        if !in_paragraph && let Some((_, content)) = scan_footnote_definition(line) {
+            let (body, used) = footnote_body_lines(&lines[i..], content);
             kept_reference_candidate |= lines[i..i + used].iter().any(|line| line.contains("]:"));
+            if depth < MAX_BLOCK_NESTING_DEPTH {
+                collect_link_reference_metadata_at_depth(
+                    &body,
+                    None,
+                    refs,
+                    tracker.as_deref_mut(),
+                    depth + 1,
+                );
+            }
             i += used;
             in_paragraph = false;
             continue;
@@ -990,6 +1019,42 @@ fn collect_link_reference_metadata_into_tracked(
             && let Some(used) = table_extent(&lines[i..])
         {
             i += used;
+            continue;
+        }
+
+        // Lists own their indented code and lazy paragraphs. Reuse their real
+        // boundary before inspecting definitions, so a code example cannot
+        // define a reference and a dedented definition after code is not lost.
+        // Harvest item definitions now to retain first-definition source order.
+        if scan.maybe_list_marker
+            && let Some(marker) = list_marker(line)
+            && (!in_paragraph || marker_interrupts_paragraph(&marker))
+        {
+            let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
+            let split = split_list_items_with_first_marker_tracked(
+                &lines[i..],
+                marker,
+                tracker.as_deref_mut(),
+            );
+            let used = split.used.max(1);
+            kept_reference_candidate |= lines[i..i + used].iter().any(|line| line.contains("]:"));
+            if depth < MAX_BLOCK_NESTING_DEPTH {
+                for (_, body) in &split.items {
+                    let body_lines: Vec<&str> = body.iter().map(|line| line.as_ref()).collect();
+                    collect_link_reference_metadata_at_depth(
+                        &body_lines,
+                        None,
+                        refs,
+                        tracker.as_deref_mut(),
+                        depth + 1,
+                    );
+                }
+            }
+            if let Some(tracker) = &mut tracker {
+                tracker.restore(checkpoint);
+            }
+            i += used;
+            in_paragraph = false;
             continue;
         }
 
@@ -1180,209 +1245,6 @@ fn line_is_plain_paragraph_fast_path(line: &str, scan: ParserLineScan) -> bool {
         && !scan.maybe_html
         && !scan.maybe_list_marker
 }
-
-/// Collect link reference definitions nested inside blockquotes and merge them
-/// into `refs` (existing keys win, matching CommonMark "first definition wins").
-/// The blockquote body is extracted exactly as the block parser extracts it
-/// (`strip_blockquote_marker` + lazy continuation) so the two agree on scope,
-/// and the definition is collected paragraph-aware just like the top level.
-/// Fenced code is skipped so a `[label]: dest`-looking code line is never
-/// treated as a definition. Bounded by [`MAX_BLOCK_NESTING_DEPTH`] against
-/// adversarial nesting. (List-item bodies are a separate, deliberately-scoped
-/// follow-up.)
-fn collect_nested_references_tracked(
-    lines: &[&str],
-    refs: &mut ReferenceMap,
-    depth: usize,
-    mut tracker: Option<&mut destinations::DestinationTracker>,
-) {
-    if depth >= MAX_BLOCK_NESTING_DEPTH {
-        return;
-    }
-    let mut i = 0;
-    // Whether the previous non-blank line left an open paragraph. Mirrors the
-    // top-level collector: a list marker that cannot interrupt a paragraph (an
-    // ordered start != 1, or an empty item) is then a lazy continuation, not a
-    // list, so its "item body" must not be harvested as a nested definition.
-    let mut in_paragraph = false;
-    while i < lines.len() {
-        let line = lines[i];
-        if is_blank_line(line) {
-            in_paragraph = false;
-            i += 1;
-            continue;
-        }
-        if let Some(is_paragraph_text) = reference_collector_plain_nonblank_line_fast_path(line) {
-            in_paragraph = is_paragraph_text;
-            i += 1;
-            continue;
-        }
-        let scan = scan_markdown_line(line);
-        // Fenced code contents are literal, never definitions — skip the fence.
-        if scan.maybe_fence
-            && let Some((fence_ch, fence_len, _info)) = open_fence(line)
-        {
-            i += 1;
-            while i < lines.len() && !is_close_fence(lines[i], fence_ch, fence_len) {
-                i += 1;
-            }
-            i += 1;
-            in_paragraph = false;
-            continue;
-        }
-        // An indented (4+ column) line is indented code, not a container — the
-        // block parser checks this before blockquotes/lists (and breaks an open
-        // paragraph on it), so we must too, or a `> [x]: dest`/`- [x]: dest`-
-        // looking code line would be wrongly read as a nested blockquote/list and
-        // its "definition" collected. A real container never starts at 4+ columns.
-        if indented_code_start(line) {
-            in_paragraph = false;
-            i += 1;
-            continue;
-        }
-        // HTML block contents are literal — skip the whole block so a
-        // `> [x]: dest`/`- [x]: dest`-looking line inside raw HTML is not read as
-        // a nested container and its "definition" collected.
-        if scan.maybe_html
-            && let Some(end_cond) = html_block_kind(line)
-        {
-            i = html_block_end(lines, i, end_cond, |l| *l);
-            in_paragraph = false;
-            continue;
-        }
-        if !in_paragraph && let Some((_id, content)) = scan_footnote_definition(line) {
-            let (body, used) = footnote_body_lines(&lines[i..], content);
-            collect_link_reference_metadata_into_tracked(&body, None, refs, tracker.as_deref_mut());
-            collect_nested_references_tracked(&body, refs, depth + 1, tracker.as_deref_mut());
-            i += used;
-            in_paragraph = false;
-            continue;
-        }
-        if scan.maybe_blockquote && blockquote_marker_start(line) {
-            let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
-            let mut inner: Vec<std::borrow::Cow<'_, str>> = Vec::new();
-            while i < lines.len() {
-                if blockquote_marker_start(lines[i]) {
-                    let stripped = strip_blockquote_marker(lines[i]);
-                    if let std::borrow::Cow::Owned(copied) = &stripped {
-                        if let Some(tracker) = &mut tracker {
-                            tracker.map_suffix(copied, lines[i]);
-                        }
-                    }
-                    inner.push(stripped);
-                    i += 1;
-                } else if blockquote_lazy_continuation(inner.last().map(|c| c.as_ref()), lines[i]) {
-                    inner.push(std::borrow::Cow::Borrowed(trim_start_space_tab(lines[i])));
-                    i += 1;
-                } else {
-                    break;
-                }
-            }
-            let inner_borrowed: Vec<&str> = inner.iter().map(|c| c.as_ref()).collect();
-            collect_link_reference_metadata_into_tracked(
-                &inner_borrowed,
-                None,
-                refs,
-                tracker.as_deref_mut(),
-            );
-            collect_nested_references_tracked(
-                &inner_borrowed,
-                refs,
-                depth + 1,
-                tracker.as_deref_mut(),
-            );
-            if let Some(tracker) = &mut tracker {
-                tracker.restore(checkpoint);
-            }
-            in_paragraph = false;
-            continue;
-        }
-        // A GFM table is a distinct block (never a container), but its rows are
-        // not recognized by `line_is_paragraph_text`, so skip them explicitly to
-        // keep `in_paragraph` accurate — otherwise a table's rows leave it wrongly
-        // "open" and a following ordered-marker list (which then sits at a block
-        // boundary) is skipped as a lazy continuation, dropping a nested def. A
-        // table cannot interrupt a paragraph, so this only applies at a boundary.
-        if !in_paragraph
-            && i + 1 < lines.len()
-            && scan.contains_pipe
-            && let Some(used) = table_extent(&lines[i..])
-        {
-            i += used;
-            continue;
-        }
-        // List items: split into per-item bodies exactly as the block parser
-        // does (shared list splitting) and collect each item's definitions.
-        // A marker that cannot interrupt an open paragraph is a lazy continuation
-        // of that paragraph, not a list, so skip it without harvesting.
-        if scan.maybe_list_marker
-            && let Some(marker) = list_marker(line)
-        {
-            if in_paragraph && !marker_interrupts_paragraph(&marker) {
-                i += 1;
-                continue;
-            }
-            let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
-            let split = split_list_items_with_first_marker_tracked(
-                &lines[i..],
-                marker,
-                tracker.as_deref_mut(),
-            );
-            for (_, body) in &split.items {
-                let str_refs: Vec<&str> = body.iter().map(|s| s.as_ref()).collect();
-                collect_link_reference_metadata_into_tracked(
-                    &str_refs,
-                    None,
-                    refs,
-                    tracker.as_deref_mut(),
-                );
-                collect_nested_references_tracked(
-                    &str_refs,
-                    refs,
-                    depth + 1,
-                    tracker.as_deref_mut(),
-                );
-            }
-            if let Some(tracker) = &mut tracker {
-                tracker.restore(checkpoint);
-            }
-            i += split.used.max(1);
-            in_paragraph = false;
-            continue;
-        }
-        // A boundary reference definition does not itself open a paragraph, and it
-        // may carry its title on the following line. Skip both (mirroring the flat
-        // collector) so `in_paragraph` stays accurate — otherwise
-        // `line_is_paragraph_text` misreads the def line as open paragraph text and
-        // a following non-interrupting ordered marker (a list at a boundary) is
-        // skipped as a lazy continuation, dropping a nested definition it contains.
-        // The def itself is harvested by the `collect_link_reference_metadata` call
-        // on each container body, so this branch only advances and resets state.
-        if !in_paragraph
-            && scan.maybe_reference
-            && let Some((_, _, used)) = parse_multiline_reference_definition(&lines[i..])
-        {
-            in_paragraph = false;
-            i += used;
-            continue;
-        }
-        // A setext underline following paragraph text closes that paragraph into a
-        // heading (the block parser does this before its paragraph break checks),
-        // so the next line is at a block boundary. Without this a `===` — which
-        // `line_is_paragraph_text` treats as ordinary text — would keep the
-        // paragraph "open" and a following ordered-marker list (which then sits at
-        // a boundary) would be skipped as a lazy continuation, dropping a nested
-        // definition it contains.
-        if in_paragraph && scan.maybe_setext_underline && setext_underline(line).is_some() {
-            in_paragraph = false;
-            i += 1;
-            continue;
-        }
-        in_paragraph = line_is_paragraph_text_with_scan(line, scan);
-        i += 1;
-    }
-}
-
 /// Defensive recursion bound for block nesting (blockquotes, lists). Real
 /// documents nest only a handful of levels; this cap is far beyond any legitimate
 /// use yet low enough that even a debug build (with large stack frames) cannot
@@ -1785,7 +1647,7 @@ fn parse_blocks_with_refs_profiled(
             let inner_str_refs: Vec<&str> = inner.iter().map(|s| s.as_ref()).collect();
             // Remove reference-definition lines from the blockquote body so they
             // are not rendered as literal text; they were already collected into
-            // the shared `refs` map by `collect_nested_references`.
+            // the shared `refs` map by the source-ordered reference pass.
             let inner_kept = if inner_str_refs.iter().any(|line| line.contains("]:")) {
                 let (consumed, _) = collect_link_reference_metadata(&inner_str_refs);
                 strip_consumed_references(&inner_str_refs, &consumed)
@@ -3376,8 +3238,8 @@ fn marker_interrupts_paragraph(marker: &Marker<'_>) -> bool {
 /// content-indent strips, and lazy continuations are all slices of the original
 /// input; inserted structural blanks use the shared empty string. Shared by
 /// `parse_list_profiled_with_first_marker` (which parses each body) and
-/// `collect_nested_references` (which recurses into each body to find nested
-/// reference definitions), so the two agree exactly on item boundaries.
+/// reference collection (which recurses into each body to find nested
+/// definitions), so the two agree exactly on item boundaries.
 struct ListSplit<'a> {
     ordered: bool,
     start: u64,
@@ -3385,6 +3247,249 @@ struct ListSplit<'a> {
     /// `(task marker, body lines)` per item.
     items: Vec<(Option<bool>, Vec<std::borrow::Cow<'a, str>>)>,
     used: usize,
+}
+
+#[derive(Clone, Copy)]
+enum ListTailContainer {
+    Quote,
+    List {
+        indent: usize,
+        content_indent: usize,
+        ordered: bool,
+    },
+}
+
+#[derive(Default)]
+enum ListTailLeaf {
+    #[default]
+    Boundary,
+    Paragraph {
+        table_columns: Option<usize>,
+    },
+    Fence {
+        ch: char,
+        len: usize,
+    },
+    IndentedCode,
+    Html(HtmlBlockEnd),
+    Math,
+    Table,
+    Footnote,
+}
+
+/// Track the current leaf block while a list item is collected. Laziness is
+/// permitted only for an open paragraph, including one inside nested lists or
+/// quotes. Looking only at the previous line mistakes fenced/HTML/code content
+/// for prose, while looking only at indentation rejects hanging paragraphs.
+/// Each line visits at most the parser's bounded container depth; no accumulated
+/// item body is reparsed to decide whether a dedented line belongs to it.
+#[derive(Default)]
+struct ListItemTail {
+    containers: Vec<ListTailContainer>,
+    leaf: ListTailLeaf,
+    // The existing definition grammar admits at most eight nonblank lines.
+    // Keep that bounded candidate so syntax inside a multiline title is not
+    // mistaken for a heading/fence. Definitions are removed from paragraphs
+    // after collection; their remaining text can still continue lazily.
+    reference_lines: Vec<String>,
+}
+
+impl ListItemTail {
+    fn can_continue_lazily(&self, line: &str) -> bool {
+        matches!(self.leaf, ListTailLeaf::Paragraph { .. })
+            && !is_blank_line(line)
+            && !scanned_paragraph_interrupt(BlockStartScan::new(line, trim_space_tab(line)))
+    }
+
+    fn is_literal(&self) -> bool {
+        matches!(
+            self.leaf,
+            ListTailLeaf::Fence { .. }
+                | ListTailLeaf::IndentedCode
+                | ListTailLeaf::Html(_)
+                | ListTailLeaf::Math
+        )
+    }
+
+    fn retains_literal_blank(&self) -> bool {
+        matches!(
+            self.leaf,
+            ListTailLeaf::Fence { .. }
+                | ListTailLeaf::Html(HtmlBlockEnd::Marker(_))
+                | ListTailLeaf::Math
+        ) && !self
+            .containers
+            .iter()
+            .any(|container| matches!(container, ListTailContainer::Quote))
+    }
+
+    fn observe(&mut self, line: &str) {
+        self.observe_at(line, 0);
+    }
+
+    fn observe_at(&mut self, line: &str, depth: usize) {
+        if let Some(container) = self.containers.get(depth).copied() {
+            let sibling = match container {
+                ListTailContainer::Quote => {
+                    if blockquote_marker_start(line) {
+                        self.observe_at(strip_blockquote_marker(line).as_ref(), depth + 1);
+                        return;
+                    }
+                    false
+                }
+                ListTailContainer::List {
+                    indent,
+                    content_indent,
+                    ordered,
+                } => {
+                    if is_blank_line(line) || leading_spaces(line) >= content_indent {
+                        self.observe_at(strip_n(line, content_indent), depth + 1);
+                        return;
+                    }
+                    list_marker(line).is_some_and(|next| {
+                        (next.indent == indent && next.ordered == ordered)
+                            || marker_interrupts_paragraph(&next)
+                    })
+                }
+            };
+            if !sibling && self.can_continue_lazily(line) {
+                return;
+            }
+            self.containers.truncate(depth);
+            self.leaf = ListTailLeaf::Boundary;
+            self.reference_lines.clear();
+        }
+
+        if !self.reference_lines.is_empty() {
+            if is_blank_line(line) || self.reference_lines.len() >= 8 {
+                self.reference_lines.clear();
+            } else {
+                self.reference_lines.push(line.to_owned());
+                let candidate: Vec<&str> =
+                    self.reference_lines.iter().map(String::as_str).collect();
+                if let Some((_, reference, used)) = parse_multiline_reference_definition(&candidate)
+                    && used == candidate.len()
+                {
+                    self.leaf = ListTailLeaf::Paragraph {
+                        table_columns: None,
+                    };
+                    if reference.title.is_some() {
+                        self.reference_lines.clear();
+                    }
+                    return;
+                }
+            }
+        }
+
+        match self.leaf {
+            ListTailLeaf::Fence { ch, len } => {
+                if is_close_fence(line, ch, len) {
+                    self.leaf = ListTailLeaf::Boundary;
+                }
+                return;
+            }
+            ListTailLeaf::Html(end) => {
+                let closed = match end {
+                    HtmlBlockEnd::Marker(markers) => markers
+                        .iter()
+                        .any(|marker| contains_ascii_ignore_case(line, marker)),
+                    HtmlBlockEnd::Blank => is_blank_line(line),
+                };
+                if closed {
+                    self.leaf = ListTailLeaf::Boundary;
+                }
+                return;
+            }
+            ListTailLeaf::Math => {
+                if trim_unicode_ws(line).ends_with("$$") {
+                    self.leaf = ListTailLeaf::Boundary;
+                }
+                return;
+            }
+            ListTailLeaf::IndentedCode | ListTailLeaf::Footnote
+                if is_blank_line(line) || leading_spaces(line) >= 4 =>
+            {
+                return;
+            }
+            ListTailLeaf::Table if !is_blank_line(line) && line.contains('|') => return,
+            ListTailLeaf::Paragraph { table_columns } if !is_blank_line(line) => {
+                if table_columns.is_some()
+                    && table_columns == validated_table_delimiter_cell_count(line)
+                {
+                    self.leaf = ListTailLeaf::Table;
+                    return;
+                }
+                if setext_underline(line).is_some() {
+                    self.leaf = ListTailLeaf::Boundary;
+                    return;
+                }
+                if !scanned_paragraph_interrupt(BlockStartScan::new(line, trim_space_tab(line))) {
+                    self.leaf = ListTailLeaf::Paragraph {
+                        table_columns: None,
+                    };
+                    return;
+                }
+            }
+            _ => {}
+        }
+        self.leaf = ListTailLeaf::Boundary;
+        if is_blank_line(line) || is_thematic_break(line) || atx_heading(line).is_some() {
+            return;
+        }
+        if let Some((ch, len, _)) = open_fence(line) {
+            self.leaf = ListTailLeaf::Fence { ch, len };
+        } else if leading_spaces(line) < 4
+            && trim_start_unicode_ws(line).starts_with("$$")
+            && (trim_unicode_ws(line).ends_with("$$") || !trim_unicode_ws(line)[2..].contains("$$"))
+        {
+            let math = trim_unicode_ws(line);
+            if math.len() < 4 || !math.ends_with("$$") {
+                self.leaf = ListTailLeaf::Math;
+            }
+        } else if indented_code_start(line) {
+            self.leaf = ListTailLeaf::IndentedCode;
+        } else if footnote_definition_marker(line) {
+            self.leaf = ListTailLeaf::Footnote;
+        } else if blockquote_marker_start(line) {
+            if depth < MAX_BLOCK_NESTING_DEPTH {
+                self.reference_lines.clear();
+                self.containers.push(ListTailContainer::Quote);
+                self.observe_at(strip_blockquote_marker(line).as_ref(), depth + 1);
+            }
+        } else if let Some(end) = html_block_kind(line) {
+            self.leaf = ListTailLeaf::Html(end);
+            // A comment or raw-text element may close on its opening line.
+            if matches!(end, HtmlBlockEnd::Marker(_)) {
+                self.observe_at(line, depth);
+            }
+        } else if let Some(marker) = list_marker(line) {
+            if depth < MAX_BLOCK_NESTING_DEPTH {
+                self.reference_lines.clear();
+                self.containers.push(ListTailContainer::List {
+                    indent: marker.indent,
+                    content_indent: marker.content_indent,
+                    ordered: marker.ordered,
+                });
+                self.observe_at(split_task_marker(marker.rest.as_ref()).1, depth + 1);
+            }
+        } else {
+            if self.reference_lines.is_empty() && trim_start_space_tab(line).starts_with('[') {
+                self.reference_lines.push(line.to_owned());
+                if let Some((_, reference, _)) = parse_multiline_reference_definition(&[line]) {
+                    self.leaf = ListTailLeaf::Paragraph {
+                        table_columns: None,
+                    };
+                    if reference.title.is_some() {
+                        self.reference_lines.clear();
+                    }
+                    return;
+                }
+            }
+            self.leaf = ListTailLeaf::Paragraph {
+                table_columns: line.contains('|').then(|| split_table_row_cell_count(line)),
+            };
+        }
+    }
 }
 
 fn split_list_items_with_first_marker_tracked<'a>(
@@ -3409,8 +3514,8 @@ fn split_list_items_with_first_marker_tracked<'a>(
         };
         let item_origin = lines[i];
         let mut item_lines: Vec<std::borrow::Cow<'a, str>> = vec![m.rest.clone()];
-        let mut open_fence_state: Option<(char, usize)> =
-            open_fence(m.rest.as_ref()).map(|(ch, len, _)| (ch, len));
+        let mut tail = ListItemTail::default();
+        tail.observe(split_task_marker(m.rest.as_ref()).1);
         i += 1;
 
         if items.is_empty()
@@ -3428,15 +3533,13 @@ fn split_list_items_with_first_marker_tracked<'a>(
         }
 
         while i < lines.len() {
-            if let Some((ch, len)) = open_fence_state {
+            if is_blank_line(lines[i]) && tail.retains_literal_blank() {
                 let stripped = if leading_spaces(lines[i]) >= m.content_indent {
                     strip_n(lines[i], m.content_indent)
                 } else {
-                    trim_start_space_tab(lines[i])
+                    ""
                 };
-                if is_close_fence(stripped, ch, len) {
-                    open_fence_state = None;
-                }
+                tail.observe(stripped);
                 item_lines.push(std::borrow::Cow::Borrowed(stripped));
                 i += 1;
                 continue;
@@ -3477,6 +3580,7 @@ fn split_list_items_with_first_marker_tracked<'a>(
                         tight = false;
                     }
                 }
+                tail.observe("");
                 item_lines.push(std::borrow::Cow::Borrowed(""));
                 i += 1;
                 continue;
@@ -3505,9 +3609,6 @@ fn split_list_items_with_first_marker_tracked<'a>(
 
             if leading_spaces(lines[i]) >= m.content_indent {
                 let stripped = strip_n(lines[i], m.content_indent);
-                if let Some((ch, len, _)) = open_fence(stripped) {
-                    open_fence_state = Some((ch, len));
-                }
                 // A non-1-start ordered marker cannot interrupt a paragraph, so
                 // after prose it would be lazily absorbed; a blank line forces it
                 // into its own sub-list. But when the previous content line is
@@ -3517,15 +3618,18 @@ fn split_list_items_with_first_marker_tracked<'a>(
                 let prev_is_list_item = item_lines
                     .last()
                     .is_some_and(|prev| list_marker(prev.as_ref()).is_some());
-                if !prev_is_list_item
+                if !tail.is_literal()
+                    && !prev_is_list_item
                     && list_marker(stripped)
                         .is_some_and(|marker| marker.ordered && marker.start != 1)
                     && item_lines
                         .last()
                         .is_some_and(|prev| !is_blank_line(prev.as_ref()))
                 {
+                    tail.observe("");
                     item_lines.push(std::borrow::Cow::Borrowed(""));
                 }
+                tail.observe(stripped);
                 item_lines.push(std::borrow::Cow::Borrowed(stripped));
             } else if item_lines
                 .last()
@@ -3538,11 +3642,12 @@ fn split_list_items_with_first_marker_tracked<'a>(
                 break;
             } else {
                 // CommonMark lazy continuation: an unindented, non-marker line
-                // continues the current OPEN paragraph/list item.
-                let lazy = trim_start_space_tab(lines[i]);
-                if let Some((ch, len, _)) = open_fence(lazy) {
-                    open_fence_state = Some((ch, len));
+                // continues only an OPEN paragraph, never a code/HTML block or
+                // completed heading, and cannot start a new block outside it.
+                if !tail.can_continue_lazily(lines[i]) {
+                    break;
                 }
+                let lazy = trim_start_space_tab(lines[i]);
                 if setext_underline(lazy).is_some()
                     || (list_marker(lazy).is_some()
                         && (leading_spaces(lines[i]) >= 4 || list_marker(lines[i]).is_none()))
@@ -3551,8 +3656,10 @@ fn split_list_items_with_first_marker_tracked<'a>(
                     if let Some(tracker) = &mut tracker {
                         tracker.map_suffix(&copied, lazy);
                     }
+                    tail.observe(&copied);
                     item_lines.push(std::borrow::Cow::Owned(copied));
                 } else {
+                    tail.observe(lazy);
                     item_lines.push(std::borrow::Cow::Borrowed(lazy));
                 }
             }
@@ -3599,7 +3706,7 @@ fn parse_list_split(
         let str_refs: Vec<&str> = body.iter().map(|s| s.as_ref()).collect();
         // Remove reference-definition lines from the item body so they are not
         // rendered as literal text; they were already collected into the shared
-        // `refs` map by `collect_nested_references`.
+        // `refs` map by the source-ordered reference pass.
         let kept = if str_refs.iter().any(|line| line.contains("]:")) {
             let (consumed, _) = collect_link_reference_metadata(&str_refs);
             strip_consumed_references(&str_refs, &consumed)

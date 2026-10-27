@@ -247,7 +247,9 @@ mod tests {
         );
         let labels: Vec<_> = lines
             .iter()
-            .filter(|line| line.flow.kind == FlowKind::Heading && line.heading_source.is_none())
+            .filter(|line| {
+                line.flow.kind == FlowKind::Heading && line.heading_source.is_none() && !line.rule
+            })
             .collect();
         assert_eq!(labels.len(), 2);
         assert!(
@@ -271,5 +273,18 @@ mod tests {
                 .collect::<String>(),
             "Warning"
         );
+
+        // H1/H2 hairlines also lack source identity, but share their actual
+        // heading's flow group. They are decorative rules, not alert labels.
+        let heading_rules: Vec<_> = lines
+            .iter()
+            .filter(|line| line.flow.kind == FlowKind::Heading && line.rule)
+            .collect();
+        assert_eq!(heading_rules.len(), 4);
+        assert!(heading_rules.iter().all(|rule| {
+            rule.heading_source.is_none()
+                && rule.segs.is_empty()
+                && metadata.contains_key(&rule.flow.group)
+        }));
     }
 }

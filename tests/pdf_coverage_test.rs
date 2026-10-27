@@ -1429,21 +1429,91 @@ fn pdf_image_asset_branch_corpus_exercises_svg_and_png_rejection_edges() {
 
 #[test]
 fn pdf_table_minimum_width_floor_positions_columns_on_tiny_pages() {
-    // content_w - margins = 60pt < the 72pt table floor, so avail clamps to 72;
-    // 72 - 3*14 gutters = 30 <= 3*18 min widths -> every column sits at the
-    // 18pt floor with no extra units to allocate.
-    let pdf = render_pdf(
-        "| a | b | c |\n|---|---|---|\n| d | e | f |\n",
-        &small_page_opts(100.0, 220.0),
-    )
-    .unwrap();
-    let xs = text_x_positions(&pdf, "10.00");
-    for expected in [27.0, 59.0, 91.0] {
-        assert!(
-            xs.iter().any(|x| (x - expected).abs() < 0.01),
-            "min-width columns should sit at x=27/59/91 (left + gutter halves + 18pt \
-             floors); saw {xs:?}"
+    let md = "| a | b | c |\n|---|---|---|\n| d | e | f |\n";
+    // A 60pt body fits one 18pt column plus its 14pt gutter. Preserve all
+    // three source columns as consecutive panels instead of placing the last
+    // column at x=91 outside the body's right edge at x=80. The 96pt-body
+    // control fits all three minimum-width columns in one ordinary table.
+    for (width, expected_runs, expected_xs, tables, rows) in [
+        (
+            100.0,
+            vec![
+                ("table_header", "a"),
+                ("table_row", "d"),
+                ("table_header", "b"),
+                ("table_row", "e"),
+                ("table_header", "c"),
+                ("table_row", "f"),
+            ],
+            vec![27.0; 6],
+            3,
+            6,
+        ),
+        (
+            136.0,
+            vec![("table_header", "abc"), ("table_row", "def")],
+            vec![27.0, 59.0, 91.0, 27.0, 59.0, 91.0],
+            1,
+            2,
+        ),
+    ] {
+        let options = small_page_opts(width, 220.0);
+        // This is the renderer's layout verification surface, not text
+        // decoded from the PDF. Check the complete source-cell order and the
+        // last segment's right edge before separately checking emitted ink.
+        let layer =
+            franken_markdown::pdf::verification_text_layer(&parse_markdown(md), &options).unwrap();
+        let cells: Vec<_> = layer
+            .pages
+            .iter()
+            .flat_map(|page| &page.runs)
+            .filter(|run| matches!(run.kind, "table_header" | "table_row"))
+            .collect();
+        assert_eq!(
+            cells
+                .iter()
+                .map(|run| (run.kind, run.text.as_str()))
+                .collect::<Vec<_>>(),
+            expected_runs,
+            "all six source cells must survive in panel order at width {width}"
         );
+        for cell in cells {
+            assert!(
+                cell.overshoot.is_none(),
+                "cell exceeds its body measure: {cell:?}"
+            );
+            assert!(
+                (20.0..=width - 20.0).contains(&cell.x),
+                "cell starts outside body: {cell:?}"
+            );
+            assert!(
+                (20.0..=200.0).contains(&cell.y),
+                "cell baseline leaves page body: {cell:?}"
+            );
+            assert!(
+                (cell.size - 10.0).abs() < 0.01,
+                "panels retain the ordinary table font: {cell:?}"
+            );
+        }
+
+        let pdf = render_pdf(md, &options).unwrap();
+        let xs = text_x_positions(&pdf, "10.00");
+        assert_eq!(xs.len(), 6, "the PDF must paint all six cells at 10pt");
+        for (actual, expected) in xs.iter().zip(expected_xs) {
+            assert!(
+                (actual - expected).abs() < 0.01,
+                "unexpected cell placement at width {width}: {xs:?}"
+            );
+        }
+        let text = as_text(&pdf);
+        for (tag, count) in [("Table", tables), ("TR", rows), ("TH", 3), ("TD", 3)] {
+            assert_eq!(
+                text.matches(&format!("/Type /StructElem /S /{tag} "))
+                    .count(),
+                count,
+                "complete tagged table grid at width {width}"
+            );
+        }
     }
 }
 

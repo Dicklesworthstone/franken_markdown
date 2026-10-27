@@ -104,21 +104,91 @@ fn render(md: &str, opts: &PdfOptions) -> Vec<u8> {
     render_pdf(md, opts).unwrap()
 }
 
-/// Per-page content-stream bodies that carry text (each begins a `BT /F`).
+/// Decode text-bearing page content through xref and /Contents references.
+/// Compressed payloads are bounded by /Length, never scanned as PDF syntax.
 fn text_streams(bytes: &[u8]) -> Vec<String> {
-    let text = as_text(bytes);
+    let number_after = |text: &str, key: &str| -> usize {
+        text.split_once(key)
+            .unwrap()
+            .1
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let marker = b"startxref\n";
+    let at = bytes
+        .windows(marker.len())
+        .rposition(|part| part == marker)
+        .unwrap();
+    let xref = number_after(std::str::from_utf8(&bytes[at..]).unwrap(), "startxref\n");
+    let xref_text = std::str::from_utf8(&bytes[xref..]).unwrap();
+    let mut lines = xref_text.lines();
+    assert_eq!(lines.next(), Some("xref"));
+    let section: Vec<_> = lines.next().unwrap().split_whitespace().collect();
+    assert_eq!(section[0], "0");
+    let count: usize = section[1].parse().unwrap();
+    let offsets: Vec<usize> = lines
+        .take(count)
+        .map(|line| line.split_whitespace().next().unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(offsets.len(), count);
+    let object = |id: usize| {
+        let start = offsets[id];
+        let end = offsets
+            .iter()
+            .copied()
+            .filter(|&at| at > start)
+            .min()
+            .unwrap_or(xref);
+        let header = format!("{id} 0 obj\n");
+        assert!(bytes[start..end].starts_with(header.as_bytes()));
+        &bytes[start + header.len()..end]
+    };
+    let dictionary = |id| {
+        let body = object(id);
+        let end = body
+            .windows(8)
+            .position(|part| part == b"\nstream\n")
+            .unwrap_or(body.len());
+        std::str::from_utf8(&body[..end]).unwrap()
+    };
+    let catalog = dictionary(number_after(xref_text, "/Root "));
+    let pages = dictionary(number_after(catalog, "/Pages "));
+    let kids: Vec<_> = pages
+        .split_once("/Kids [")
+        .unwrap()
+        .1
+        .split_once(']')
+        .unwrap()
+        .0
+        .split_whitespace()
+        .collect();
+    assert_eq!(kids.len() % 3, 0);
     let mut streams = Vec::new();
-    let mut search = text.as_str();
-    while let Some(pos) = search.find("stream\n") {
-        let body_start = pos + "stream\n".len();
-        let Some(body_end_rel) = search[body_start..].find("endstream") else {
-            break;
+    for kid in kids.chunks_exact(3) {
+        assert_eq!(&kid[1..], &["0", "R"]);
+        let page = dictionary(kid[0].parse().unwrap());
+        let content_id = number_after(page, "/Contents ");
+        let content = object(content_id);
+        let start = content
+            .windows(8)
+            .position(|part| part == b"\nstream\n")
+            .unwrap()
+            + 8;
+        let dict = dictionary(content_id);
+        let payload = &content[start..start + number_after(dict, "/Length ")];
+        let decoded = if dict.contains("/FlateDecode") {
+            franken_markdown::zlib_decompress(payload, 1 << 24).unwrap()
+        } else {
+            assert!(!dict.contains("/Filter"), "unsupported content filter");
+            payload.to_vec()
         };
-        let body = &search[body_start..body_start + body_end_rel];
+        let body = String::from_utf8(decoded).unwrap();
         if body.contains("BT /F") {
-            streams.push(body.to_string());
+            streams.push(body);
         }
-        search = &search[body_start + body_end_rel + "endstream".len()..];
     }
     streams
 }
@@ -365,17 +435,96 @@ fn pdf_table_with_long_unbreakable_cell_words_measures_and_wraps() {
 }
 
 #[test]
-fn pdf_many_column_table_allocates_minimum_widths_on_a_narrow_page() {
+fn pdf_many_column_table_preserves_readable_panels_on_a_narrow_page() {
     let md = "\
 | a | b | c | d | e | f | g |
 |---|---|---|---|---|---|---|
 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
 | 11 | 22 | 33 | 44 | 55 | 66 | 77 |
 ";
-    let pdf = render(md, &small_page_opts(120.0, 400.0));
+    let opts = small_page_opts(120.0, 400.0);
+    let pdf = render(md, &opts);
     let text = as_text(&pdf);
-    assert!(text.contains("/S /Table"), "narrow table still tagged");
-    assert_eq!(page_count(&pdf), 1, "the tiny table fits on one page");
+    // The real 80pt body fits two readable columns, not all seven. Six
+    // successive panels retain a/1/11 as row context and paginate vertically.
+    assert_eq!(page_count(&pdf), 2, "readable panels occupy two pages");
+    for (tag, count) in [("Table", 6), ("TR", 18), ("TH", 12), ("TD", 24)] {
+        assert_eq!(text.matches(&format!("/S /{tag} ")).count(), count, "{tag}");
+    }
+
+    let layer = franken_markdown::pdf::verification_text_layer(&parse_markdown(md), &opts).unwrap();
+    assert_eq!(layer.page_count, page_count(&pdf));
+    let runs: Vec<_> = layer
+        .pages
+        .iter()
+        .flat_map(|page| &page.runs)
+        .filter(|run| matches!(run.kind, "table_header" | "table_row"))
+        .collect();
+    let mut headers: Vec<_> = runs
+        .iter()
+        .filter(|run| run.kind == "table_header")
+        .map(|run| run.text.as_str())
+        .collect();
+    headers.dedup(); // A panel header can repeat when its rows cross a page.
+    assert_eq!(headers, ["ab", "ac", "ad", "ae", "af", "ag"]);
+    let rows: Vec<_> = runs
+        .iter()
+        .filter(|run| run.kind == "table_row")
+        .map(|run| run.text.as_str())
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "12", "1122", "13", "1133", "14", "1144", "15", "1155", "16", "1166", "17", "1177"
+        ],
+        "all 21 source cells must survive, with only the identifying column repeated"
+    );
+    for run in &runs {
+        assert_eq!(run.size, 10.0, "panels retain nominal readable type");
+        assert!(
+            run.overshoot.is_none(),
+            "table exceeds its body measure: {run:?}"
+        );
+        assert!(
+            (20.0..100.0).contains(&run.x),
+            "table starts outside its body: {run:?}"
+        );
+        assert!(
+            (20.0..=380.0).contains(&run.y),
+            "table baseline is outside its page: {run:?}"
+        );
+    }
+
+    // Check the emitted operators as well as the pre-emission text layer:
+    // every short cell must paint at 10pt inside the actual body rectangle.
+    let streams = text_streams(&pdf);
+    assert_eq!(streams.len(), 2);
+    let mut painted_cells = 0;
+    for placement in streams
+        .iter()
+        .flat_map(|stream| stream.split("BT /F").skip(1))
+    {
+        let (_, placement) = placement.split_once(' ').unwrap();
+        let (size, position) = placement.split_once(" Tf 1 0 0 1 ").unwrap();
+        assert_eq!(size, "10.00");
+        let mut coordinates = position.split_whitespace();
+        let x: f32 = coordinates.next().unwrap().parse().unwrap();
+        let y: f32 = coordinates.next().unwrap().parse().unwrap();
+        assert!(
+            (20.0..100.0).contains(&x),
+            "painted cell x={x} exceeds body"
+        );
+        assert!(
+            (20.0..=380.0).contains(&y),
+            "painted cell y={y} exceeds body"
+        );
+        painted_cells += 1;
+    }
+    assert_eq!(
+        painted_cells,
+        runs.len() * 2,
+        "each panel row paints both cells"
+    );
 }
 
 #[test]

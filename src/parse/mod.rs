@@ -68,7 +68,7 @@ const INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES: usize = 128 * 1024;
 /// can still qualify after a fresh pair of sightings.
 const INLINE_PARSE_CACHE_MAX_TRACKED_HASHES: usize = INLINE_PARSE_CACHE_MAX_ENTRIES;
 
-/// Link/image labels and strikethrough recurse during tokenization, before the
+/// Link/image labels recurse during tokenization, before the
 /// separate emphasis-tree depth limit can apply. Bound that recursion and all
 /// speculative inline scans within one run: rejected outer links can reparse
 /// labels exponentially, while unmatched delimiters, HTML and destinations can
@@ -3993,7 +3993,7 @@ enum InlineContext {
 }
 
 /// Nested-inline entry for spans that already exist as a slice of the parent
-/// run's char buffer (link text, reference-link text, strikethrough inner).
+/// run's char buffer (link text and reference-link text).
 /// Behaves exactly like `parse_inlines_with_refs_profiled` at depth > 0 — no
 /// cache consult or insert (admission is depth-0 only) — while skipping the
 /// collect-to-String + re-decode round-trip through
@@ -4179,7 +4179,7 @@ fn parse_inlines_chars_with_refs_profiled(
     profiler.inline_work.depth += 1;
     // Inline parsing is two phases. Phase 1 (this loop) tokenizes the text into a
     // flat list of `InlineEl` nodes: finalized inlines (code, links, images,
-    // autolinks, raw HTML, breaks) interleaved with raw `*`/`_` emphasis
+    // autolinks, raw HTML, breaks) interleaved with raw `*`/`_`/`~~`
     // delimiter runs. Phase 2 (`resolve_emphasis`) runs the CommonMark
     // "process emphasis" delimiter-stack algorithm over that list to pair openers
     // with closers and build the correct nested `Emphasis`/`Strong` tree.
@@ -4414,22 +4414,8 @@ fn parse_inlines_chars_with_refs_profiled(
                 buf.push(c);
                 i += 1;
             }
-            '~' => {
-                if let Some((start, end, next)) =
-                    parse_delim(bytes, i, '~', 2, &mut profiler.inline_work)
-                {
-                    flush(&mut buf, &mut els);
-                    els.push(InlineEl::Node(Inline::Strikethrough(
-                        parse_inlines_chars_nested(&bytes[start..end], refs, context, profiler),
-                    )));
-                    i = next;
-                } else {
-                    buf.push(c);
-                    i += 1;
-                }
-            }
-            '*' | '_' => {
-                // Push a `*`/`_` delimiter run onto the node list with its
+            '*' | '_' | '~' => {
+                // Push a delimiter run onto the node list with its
                 // CommonMark left/right-flanking can_open/can_close flags. The
                 // actual pairing into emphasis/strong is deferred to
                 // `resolve_emphasis` (the delimiter-stack pass) so that nested and
@@ -4440,7 +4426,10 @@ fn parse_inlines_chars_with_refs_profiled(
                 let before = i.checked_sub(1).map(|idx| bytes[idx]);
                 let after = bytes.get(i + n).copied();
                 let (can_open, can_close) = emphasis_flanking(before, after, c);
-                if can_open || can_close {
+                // This renderer supports double-tilde strikethrough. A longer
+                // run is literal, not an opener embedded in a partial run.
+                let supported_run = c != '~' || n == 2;
+                if supported_run && (can_open || can_close) {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Delim {
                         ch: c,
@@ -4493,7 +4482,7 @@ fn parse_inlines_chars_with_refs_profiled(
         return Vec::new();
     }
     // Trim only trailing source spaces, preserving decoded character references
-    // at paragraph ends and inside nested link/strikethrough content.
+    // at paragraph ends and inside nested link content.
     let trailing_spaces = bytes.iter().rev().take_while(|&&ch| ch == ' ').count();
     for _ in 0..trailing_spaces {
         buf.pop();
@@ -4566,7 +4555,7 @@ enum InlineEl {
     /// links, images, autolinks, raw HTML, breaks, and emphasis/strong/strike
     /// subtrees produced by `resolve_emphasis` itself).
     Node(Inline),
-    /// An unresolved run of `*` or `_` emphasis delimiters.
+    /// An unresolved run of `*`, `_`, or `~~` delimiters.
     Delim {
         ch: char,
         /// Remaining (not yet consumed) delimiter characters.
@@ -4578,7 +4567,7 @@ enum InlineEl {
     },
 }
 
-/// CommonMark left/right-flanking classification for a `*`/`_` delimiter run.
+/// CommonMark left/right-flanking classification for an emphasis/strike run.
 ///
 /// Returns `(can_open, can_close)`. `before`/`after` are the characters
 /// immediately adjacent to the run (the start and end of the text count as
@@ -4716,7 +4705,7 @@ fn resolve_emphasis(els: Vec<InlineEl>) -> Vec<Inline> {
     out
 }
 
-/// Defensive bound on emphasis/strong nesting depth. Real prose never nests
+/// Defensive bound on emphasis/strong/strike nesting depth. Real prose never nests
 /// inline emphasis more than a handful deep; a pathological run like
 /// `***…***x***…***` would otherwise build a tree thousands of levels deep,
 /// which overflows the stack when it is later rendered or dropped (recursive
@@ -4724,21 +4713,23 @@ fn resolve_emphasis(els: Vec<InlineEl>) -> Vec<Inline> {
 /// delimiters as literal text — mirroring [`MAX_BLOCK_NESTING_DEPTH`].
 const MAX_INLINE_NESTING_DEPTH: usize = 1000;
 const OPENERS_BOTTOM_SLOTS_PER_CHAR: usize = 6;
-const OPENERS_BOTTOM_LEN: usize = OPENERS_BOTTOM_SLOTS_PER_CHAR * 2;
+const OPENERS_BOTTOM_LEN: usize = OPENERS_BOTTOM_SLOTS_PER_CHAR * 3;
 
 fn opener_bottom_index(ch: char, slot: usize) -> usize {
-    debug_assert!(matches!(ch, '*' | '_'));
+    debug_assert!(matches!(ch, '*' | '_' | '~'));
     debug_assert!(slot < OPENERS_BOTTOM_SLOTS_PER_CHAR);
-    if ch == '*' {
-        slot
-    } else {
-        OPENERS_BOTTOM_SLOTS_PER_CHAR + slot
-    }
+    let character = match ch {
+        '*' => 0,
+        '_' => 1,
+        _ => 2,
+    };
+    character * OPENERS_BOTTOM_SLOTS_PER_CHAR + slot
 }
 
 /// The CommonMark "process emphasis" pass: walk closers left to right, match each
 /// to the nearest compatible opener honoring the rule of three, and wrap the
-/// enclosed nodes in `Strong` (2 delimiters) or `Emphasis` (1 delimiter).
+/// enclosed nodes in `Strong` (2 delimiters), `Emphasis` (1 delimiter), or
+/// `Strikethrough` (2 tildes).
 fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &mut Option<usize>) {
     let mut openers_bottom = [None; OPENERS_BOTTOM_LEN];
     let step_budget = els.len().saturating_mul(64).max(4096);
@@ -4792,7 +4783,8 @@ fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &m
             {
                 // Rule of three: if either delimiter can both open and close, the
                 // summed run lengths must not be a multiple of 3 unless both are.
-                let odd_match = (closer_can_open || *can_close)
+                let odd_match = cch != '~'
+                    && (closer_can_open || *can_close)
                     && (*orig + corig) % 3 == 0
                     && !(*orig % 3 == 0 && corig % 3 == 0);
                 if !odd_match {
@@ -4845,7 +4837,9 @@ fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &m
             }
             m = nxt;
         }
-        let node = if use_delims == 2 {
+        let node = if cch == '~' {
+            Inline::Strikethrough(content)
+        } else if use_delims == 2 {
             Inline::Strong(content)
         } else {
             Inline::Emphasis(content)
@@ -4887,15 +4881,6 @@ fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &m
 fn run_len(chars: &[char], i: usize, ch: char, work: &mut InlineWorkBudget) -> Option<usize> {
     let count = chars[i..].iter().take_while(|&&c| c == ch).count();
     work.charge(count).then_some(count)
-}
-
-fn is_intraword_underscore_run(chars: &[char], i: usize, run: usize) -> bool {
-    if chars.get(i) != Some(&'_') {
-        return false;
-    }
-    let before = i.checked_sub(1).and_then(|idx| chars.get(idx));
-    let after = chars.get(i + run);
-    before.is_some_and(|ch| ch.is_alphanumeric()) && after.is_some_and(|ch| ch.is_alphanumeric())
 }
 
 #[inline(always)]
@@ -4960,48 +4945,6 @@ fn normalize_code_span(chars: &[char]) -> String {
     } else {
         body.iter().collect()
     }
-}
-
-/// Parse a balanced delimiter run `<ch>{want} ... <ch>{want}` returning the
-/// inner text's char range plus the index just past the close.
-fn parse_delim(
-    chars: &[char],
-    i: usize,
-    ch: char,
-    want: usize,
-    work: &mut InlineWorkBudget,
-) -> Option<(usize, usize, usize)> {
-    let open_run = run_len(chars, i, ch, work)?;
-    if open_run < want {
-        return None;
-    }
-    // No space immediately after the opener (left-flanking-ish heuristic).
-    let after = i + want;
-    if after >= chars.len() || chars[after] == ' ' || chars[after] == '\n' {
-        return None;
-    }
-    let mut j = after;
-    let mut found = None;
-    while j < chars.len() {
-        if chars[j] == ch {
-            let run = run_len(chars, j, ch, work)?;
-            if run >= want
-                && j > after
-                && chars[j - 1] != ' '
-                && !is_intraword_underscore_run(chars, j, run)
-            {
-                found = Some((after, j, j + want));
-                break;
-            }
-            j += run;
-        } else {
-            j += 1;
-        }
-    }
-    if !work.charge(j - after) {
-        return None;
-    }
-    found
 }
 
 /// Parse a math delimiter run `$` or `$$`, returning inner TeX text and next index.
@@ -5574,10 +5517,7 @@ fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, 
     {
         end += 1;
     }
-    while end > i && bare_url_trailing_punctuation(chars[end - 1]) {
-        end -= 1;
-    }
-    end = trim_unmatched_trailing_parens(chars, i, end);
+    end = trim_bare_url_suffix(chars, i, end);
     if end == i || (is_www && end <= i + 4) {
         return None;
     }
@@ -5708,22 +5648,26 @@ fn bare_url_left_boundary(chars: &[char], i: usize) -> bool {
     if i == 0 {
         return true;
     }
-    chars
-        .get(i - 1)
-        .is_some_and(|ch| ch.is_whitespace() || matches!(ch, '(' | '[' | '{' | '"' | '\''))
+    chars.get(i - 1).is_some_and(|ch| {
+        ch.is_whitespace() || matches!(ch, '(' | '[' | '{' | '"' | '\'' | '*' | '_' | '~')
+    })
 }
 
 const fn bare_url_trailing_punctuation(ch: char) -> bool {
-    matches!(ch, '.' | ',' | ';' | ':' | '!' | '?')
+    matches!(ch, '.' | ',' | ';' | ':' | '!' | '?' | '*' | '_' | '~')
 }
 
-fn trim_unmatched_trailing_parens(chars: &[char], start: usize, end: usize) -> usize {
+/// GFM autolinks preserve punctuation in the interior, including Markdown
+/// delimiters, while excluding sentence/formatting suffixes and unmatched ')'.
+/// Count parentheses once, then trim in one backward pass: alternating ')~'
+/// suffixes must not re-scan the whole URL for every removed character.
+fn trim_bare_url_suffix(chars: &[char], start: usize, mut end: usize) -> usize {
+    while end > start && bare_url_trailing_punctuation(chars[end - 1]) {
+        end -= 1;
+    }
     if end <= start || chars[end - 1] != ')' {
         return end;
     }
-    // Each removed ')' decreases the excess close count by one. Count that
-    // excess once instead of rescanning the URL for every trailing parenthesis
-    // (quadratic on an otherwise ordinary URL followed by a long ')' run).
     let (opens, closes) = chars[start..end]
         .iter()
         .fold((0usize, 0usize), |counts, ch| match ch {
@@ -5731,12 +5675,18 @@ fn trim_unmatched_trailing_parens(chars: &[char], start: usize, end: usize) -> u
             ')' => (counts.0, counts.1 + 1),
             _ => counts,
         });
-    let trailing = chars[start..end]
-        .iter()
-        .rev()
-        .take_while(|&&ch| ch == ')')
-        .count();
-    end - trailing.min(closes.saturating_sub(opens))
+    let mut excess = closes.saturating_sub(opens);
+    while end > start {
+        if bare_url_trailing_punctuation(chars[end - 1]) {
+            end -= 1;
+        } else if chars[end - 1] == ')' && excess > 0 {
+            end -= 1;
+            excess -= 1;
+        } else {
+            break;
+        }
+    }
+    end
 }
 
 fn decode_numeric_reference(value: &str, radix: u32) -> Option<char> {
@@ -6719,7 +6669,7 @@ mod emphasis_dos_tests {
 
     #[test]
     fn strikethrough_and_emphasis_nest_and_measure() {
-        // Exercises the `~~` strikethrough recursion path and the Strikethrough
+        // Exercises the shared strikethrough delimiter stack and the Strikethrough
         // arm of the depth measure, and confirms mixed nesting is preserved.
         let out = parse_inlines("~~a *b* c~~");
         assert_eq!(
@@ -7702,8 +7652,8 @@ mod inline_helper_branch_tests {
         INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES, INLINE_PARSE_CACHE_MAX_TRACKED_HASHES,
         INLINE_PARSE_CACHE_MIN_BYTES, InlineParseCache, collect_inline_chars_from_text,
         inline_cache_size_allows, inline_cache_text_hash, inline_http_scheme_before_colon,
-        is_email_autolink, is_intraword_underscore_run, parse_angle_link_destination,
-        parse_bare_url_autolink, reference_collector_ordered_marker_candidate,
+        is_email_autolink, parse_angle_link_destination, parse_bare_url_autolink, parse_inlines,
+        reference_collector_ordered_marker_candidate,
     };
     use crate::ast::Inline;
 
@@ -7721,9 +7671,11 @@ mod inline_helper_branch_tests {
         assert!(inline_http_scheme_before_colon(b"https://example", 5));
         assert!(!inline_http_scheme_before_colon(b"ftp://example", 3));
 
-        let chars = "a_b".chars().collect::<Vec<_>>();
-        assert!(is_intraword_underscore_run(&chars, 1, 1));
-        assert!(!is_intraword_underscore_run(&chars, 0, 1));
+        assert_eq!(parse_inlines("a_b"), vec![Inline::Text("a_b".into())]);
+        assert_eq!(
+            parse_inlines("_a_"),
+            vec![Inline::Emphasis(vec![Inline::Text("a".into())])]
+        );
 
         assert!(is_email_autolink("a@b.com"));
         assert!(!is_email_autolink("@b.com"));

@@ -11,7 +11,7 @@
 
 use super::{
     EmbeddedFace, EmbeddedFaceLookup, F_BODY, Faces, Fill, ImageLine, LinkAnnotation, PageGeom,
-    Palette, PdfImageData, Seg, ShapedRunCache, SvgPageResources, append_image_xobject_do,
+    Palette, PdfImageData, Seg, ShapedRunCache, SvgPageResources, append_oriented_image_xobject_do,
     append_rgb_stroke_line_operator, append_svg_text_viewport_clip, civil_from_unix_days, draw_seg,
     draw_svg_image, fallback_slot_runs, font_size_of, parse_pdf_image_asset, seg_text_hash,
     text_composition, text_positioning,
@@ -564,7 +564,8 @@ fn resolve_image(
         max_width = max_width
             .min(((page.content_w - size - 2.0 * SLOT_GAP_PT) / 2.0 - same_side_gap).max(0.0));
     }
-    let aspect = image.width_px as f32 / image.height_px.max(1) as f32;
+    let (display_w, display_h) = image.display_dimensions();
+    let aspect = display_w as f32 / display_h.max(1) as f32;
     let height = requested
         .height_pt
         .map_or(size * 0.75, f32::from)
@@ -921,9 +922,10 @@ pub(super) fn draw_page(
                     shaped_cache,
                 );
             } else if let Some(index) = image_index.get(image.image.key.as_str()) {
-                append_image_xobject_do(
+                append_oriented_image_xobject_do(
                     body,
                     *index,
+                    image.image.orientation(),
                     placement.width,
                     placement.height,
                     placement.x,

@@ -147,10 +147,8 @@ pub(super) fn resolve_tokens(toks: &mut Vec<Tok>, faces: &Faces) {
         let alt = fields.next().unwrap_or_default();
         match table.get(dest).and_then(Option::as_ref) {
             Some(image) => {
-                tok.text = format!(
-                    "{}x{}{SEP}{dest}{SEP}{alt}",
-                    image.width_px, image.height_px
-                );
+                let (width, height) = image.display_dimensions();
+                tok.text = format!("{width}x{height}{SEP}{dest}{SEP}{alt}");
                 out.push(tok);
             }
             None => push_text_tokens(alt, alt_slot, tok.strike, tok.link, &mut out),
@@ -253,7 +251,7 @@ pub(super) fn gallery_images<'a>(
             _ => {
                 let (dest, _, _) = standalone_image(std::slice::from_ref(inline))?;
                 let image = image_for(faces, dest.trim())?;
-                let natural_h = image.height_px as f32 * PDF_IMAGE_DPI_SCALE;
+                let natural_h = image.display_dimensions().1 as f32 * PDF_IMAGE_DPI_SCALE;
                 large |= natural_h >= GALLERY_MIN_HEIGHT_EM * size;
                 images.push(inline);
             }

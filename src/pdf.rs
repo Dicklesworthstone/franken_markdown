@@ -44,6 +44,7 @@ mod baseline_grid;
 mod financial_tables;
 mod inline_image;
 mod joint_pagination;
+mod jpeg_orientation;
 #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
 mod native_compression;
 mod pagination_report;
@@ -417,6 +418,21 @@ struct PdfImageData {
     /// Optional 8-bit grayscale soft mask (FlateDecode), one sample per pixel,
     /// carrying the source image's alpha channel as a PDF `/SMask`.
     smask: Option<Vec<u8>>,
+}
+
+impl PdfImageData {
+    fn orientation(&self) -> jpeg_orientation::Orientation {
+        match self.filter {
+            PdfImageStreamFilter::Dct(orientation) => orientation,
+            _ => jpeg_orientation::Orientation::Normal,
+        }
+    }
+
+    /// Display geometry follows EXIF; the XObject keeps encoded sample axes.
+    fn display_dimensions(&self) -> (u32, u32) {
+        self.orientation()
+            .display_dimensions(self.width_px, self.height_px)
+    }
 }
 
 #[derive(Clone)]
@@ -1504,7 +1520,7 @@ enum PdfImageStreamFilter {
     FlatePngPredictor,
     /// A raw baseline/extended/progressive JPEG stream (`/DCTDecode`); the PDF
     /// reader decodes the JPEG directly, so the bytes pass through untouched.
-    Dct,
+    Dct(jpeg_orientation::Orientation),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -5099,8 +5115,9 @@ fn push_figure_line(
 ) -> bool {
     let max_w = (cx.page.content_w - indent).max(MIN_CONTENT_DIM);
     let max_h = (cx.page.top_y() - cx.page.bottom).max(MIN_CONTENT_DIM);
-    let natural_w = image.width_px as f32 * PDF_IMAGE_DPI_SCALE;
-    let natural_h = image.height_px as f32 * PDF_IMAGE_DPI_SCALE;
+    let (display_w, display_h) = image.display_dimensions();
+    let natural_w = display_w as f32 * PDF_IMAGE_DPI_SCALE;
+    let natural_h = display_h as f32 * PDF_IMAGE_DPI_SCALE;
     if natural_w <= 0.0 || natural_h <= 0.0 {
         return false;
     }
@@ -5289,7 +5306,7 @@ fn parse_jpeg_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
         vector: None,
         color: header.color,
         data: bytes.to_vec(),
-        filter: PdfImageStreamFilter::Dct,
+        filter: PdfImageStreamFilter::Dct(jpeg_orientation::Orientation::from_jpeg(bytes)),
         smask: None,
     })
 }
@@ -7416,6 +7433,9 @@ fn parse_svg_embedded_image(
     let image = if let Some(png) = decode_svg_png_data_uri(href) {
         let key = svg_inline_png_key(&png);
         parse_png_image_asset(&key, &png)?
+    } else if let Some(jpeg) = decode_svg_jpeg_data_uri(href) {
+        let key = svg_inline_image_key("svg-inline-jpeg", &jpeg);
+        parse_jpeg_image_asset(&key, &jpeg)?
     } else {
         let svg = decode_svg_svg_data_uri(href)?;
         let key = svg_inline_svg_key(&svg);
@@ -7438,26 +7458,24 @@ fn parse_svg_embedded_image(
 }
 
 fn decode_svg_png_data_uri(href: &str) -> Option<Vec<u8>> {
-    let (metadata, payload) = href.trim().split_once(',')?;
-    let metadata = metadata.trim().to_ascii_lowercase();
-    let suffix = metadata.strip_prefix("data:image/png")?;
-    if !suffix.is_empty() && !suffix.starts_with(';') {
-        return None;
-    }
-    if !suffix
-        .split(';')
-        .skip(1)
-        .any(|part| part.trim() == "base64")
-    {
-        return None;
-    }
-    decode_svg_base64_payload(payload)
+    decode_svg_image_data_uri(href, "image/png", true)
+}
+
+fn decode_svg_jpeg_data_uri(href: &str) -> Option<Vec<u8>> {
+    decode_svg_image_data_uri(href, "image/jpeg", false)
 }
 
 fn decode_svg_svg_data_uri(href: &str) -> Option<Vec<u8>> {
+    decode_svg_image_data_uri(href, "image/svg+xml", false)
+}
+
+/// Decode only an explicitly supported embedded format. Container validation
+/// still belongs to its image parser, so a MIME label never authorizes a
+/// different payload. Both decoders enforce the existing per-image byte bound.
+fn decode_svg_image_data_uri(href: &str, mime: &str, require_base64: bool) -> Option<Vec<u8>> {
     let (metadata, payload) = href.trim().split_once(',')?;
     let metadata = metadata.trim().to_ascii_lowercase();
-    let suffix = metadata.strip_prefix("data:image/svg+xml")?;
+    let suffix = metadata.strip_prefix("data:")?.strip_prefix(mime)?;
     if !suffix.is_empty() && !suffix.starts_with(';') {
         return None;
     }
@@ -7467,8 +7485,10 @@ fn decode_svg_svg_data_uri(href: &str) -> Option<Vec<u8>> {
         .any(|part| part.trim() == "base64")
     {
         decode_svg_base64_payload(payload)
-    } else {
+    } else if !require_base64 {
         decode_svg_data_uri_payload(payload)
+    } else {
+        None
     }
 }
 
@@ -23238,9 +23258,10 @@ fn generate_page_content(
                         shaped_cache,
                     );
                 } else if let Some(idx) = image_index.get(image.image.key.as_str()) {
-                    append_image_xobject_do(
+                    append_oriented_image_xobject_do(
                         &mut body,
                         *idx,
+                        image.image.orientation(),
                         image.width_pt,
                         image.height_pt,
                         line.rule_x,
@@ -26457,7 +26478,14 @@ fn draw_svg_embedded_image(
     }
     if let Some(idx) = raster_idx {
         let name = image_name(idx);
-        append_pdf_cm_operator(body, draw_w, 0.0, 0.0, -draw_h, draw_x, draw_y + draw_h);
+        append_oriented_image_matrix(
+            body,
+            image.image.orientation(),
+            draw_w,
+            -draw_h,
+            draw_x,
+            draw_y + draw_h,
+        );
         body.push_str(" /");
         body.push_str(&name);
         body.push_str(" Do ");
@@ -26603,8 +26631,9 @@ fn svg_uniform_svg_transform_scale(transform: SvgTransform) -> Option<f32> {
 }
 
 fn svg_embedded_image_rect(image: &SvgEmbeddedImage) -> (f32, f32, f32, f32, bool) {
-    let intrinsic_w = image.image.width_px as f32;
-    let intrinsic_h = image.image.height_px as f32;
+    let (display_w, display_h) = image.image.display_dimensions();
+    let intrinsic_w = display_w as f32;
+    let intrinsic_h = display_h as f32;
 
     match image.preserve_aspect.mode {
         SvgAspectScaleMode::None => (image.x, image.y, image.w, image.h, false),
@@ -29180,7 +29209,15 @@ fn draw_inline_image_seg(
             draw.shaped_cache,
         );
     } else if let Some(idx) = draw.image_index.get(image.key.as_str()) {
-        append_image_xobject_do(body, *idx, image_box.width, image_box.height, seg.x, bottom);
+        append_oriented_image_xobject_do(
+            body,
+            *idx,
+            image.orientation(),
+            image_box.width,
+            image_box.height,
+            seg.x,
+            bottom,
+        );
     }
     let rect = Rect {
         x0: seg.x,
@@ -32583,7 +32620,7 @@ fn build_pdf(
         // unfiltered samples and needs no predictor.
         let filter_name = match image.filter {
             PdfImageStreamFilter::Flate | PdfImageStreamFilter::FlatePngPredictor => "/FlateDecode",
-            PdfImageStreamFilter::Dct => "/DCTDecode",
+            PdfImageStreamFilter::Dct(_) => "/DCTDecode",
         };
         append_pdf_object_header(&mut buf, image_obj(k));
         buf.extend_from_slice(b"<< /Type /XObject /Subtype /Image /Width ");
@@ -33385,6 +33422,53 @@ fn append_image_xobject_do(
     out.push(' ');
     append_pdf_num(out, y);
     out.push_str(" cm /Im");
+    append_decimal_usize_string(out, image_index + 1);
+    out.push_str(" Do Q\n");
+}
+
+/// Compose the EXIF unit-square transform with the caller's placement. A
+/// negative height is intentional in SVG's downward-pointing coordinate space.
+fn append_oriented_image_matrix(
+    out: &mut String,
+    orientation: jpeg_orientation::Orientation,
+    width: f32,
+    height: f32,
+    x: f32,
+    y: f32,
+) {
+    if orientation == jpeg_orientation::Orientation::Normal {
+        append_pdf_cm_operator(out, width, 0.0, 0.0, height, x, y);
+        return;
+    }
+    let [a, b, c, d, e, f] = orientation.matrix();
+    append_pdf_cm_operator(
+        out,
+        width * a,
+        height * b,
+        width * c,
+        height * d,
+        x + width * e,
+        y + height * f,
+    );
+}
+
+fn append_oriented_image_xobject_do(
+    out: &mut String,
+    image_index: usize,
+    orientation: jpeg_orientation::Orientation,
+    width: f32,
+    height: f32,
+    x: f32,
+    y: f32,
+) {
+    if orientation == jpeg_orientation::Orientation::Normal {
+        // Keep the ordinary path's output byte-for-byte stable.
+        append_image_xobject_do(out, image_index, width, height, x, y);
+        return;
+    }
+    out.push_str("q ");
+    append_oriented_image_matrix(out, orientation, width, height, x, y);
+    out.push_str(" /Im");
     append_decimal_usize_string(out, image_index + 1);
     out.push_str(" Do Q\n");
 }

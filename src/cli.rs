@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
 mod font_coverage;
+pub(crate) mod protected_paths;
 pub(crate) mod source_origins;
 
 use crate::ast::{Block, Document, Inline};
@@ -977,6 +978,12 @@ fn run_watch_directory(
     }
     let paths = md_files.iter().chain(&extras).cloned().collect();
     let mut watcher = PollWatcher::new(paths, interval, SystemClock);
+    let protected = watch_directory_inputs(&watcher, no_config);
+    for input in &md_files {
+        if let Err(error) = validate_watch_directory_input(&args, input, &protected) {
+            return fail_json(64, "usage_error", &error, json);
+        }
+    }
     let mut first_rendered = None;
     for input in &md_files {
         if let Some(per_file) = render_watched_directory_file(&args, input, json, no_config)
@@ -1009,10 +1016,16 @@ fn run_watch_directory(
         preview.as_ref(),
         json,
     );
+    let mut rebuild = std::collections::BTreeSet::new();
+    let mut blocked = std::collections::BTreeSet::new();
     loop {
         std::thread::sleep(interval);
         let events = watcher.poll();
-        let mut rebuild = std::collections::BTreeSet::new();
+        if !events.is_empty() {
+            // A dependency/source repair can release another document's
+            // blocked output even when that document was not edited itself.
+            rebuild.extend(blocked.iter().cloned());
+        }
         for event in &events {
             let affected = watcher.affected_roots(&event.path);
             if extras.contains(&event.path) || affected.is_empty() {
@@ -1026,6 +1039,7 @@ fn run_watch_directory(
             if let Err(error) = validate_watch_directory_outputs(&args, &discovered) {
                 return fail_json(64, "usage_error", &error, json);
             }
+            rebuild.extend(blocked.iter().cloned());
             for input in &discovered {
                 if !md_files.contains(input) {
                     rebuild.insert(input.clone());
@@ -1048,11 +1062,25 @@ fn run_watch_directory(
             }
             md_files = discovered;
             watcher.replace_paths(md_files.iter().chain(&extras).cloned().collect());
+            blocked.retain(|input| md_files.contains(input));
         }
-        for input in rebuild {
+        // A settling source intentionally retains its old dependency graph.
+        // Keep queued rebuilds until all pending saves have settled so a
+        // newly introduced image/include cannot be overwritten using old edges.
+        if watcher.pending_len() != 0 || rebuild.is_empty() {
+            continue;
+        }
+        let protected = watch_directory_inputs(&watcher, no_config);
+        for input in std::mem::take(&mut rebuild) {
             if !md_files.contains(&input) {
                 continue;
             }
+            if let Err(error) = validate_watch_directory_input(&args, &input, &protected) {
+                let _ = fail_json(64, "usage_error", &error, json);
+                blocked.insert(input);
+                continue;
+            }
+            blocked.remove(&input);
             if let Some(per_file) = render_watched_directory_file(&args, &input, json, no_config) {
                 if let Some(preview) = preview.as_ref() {
                     refresh_watch_preview(preview, &per_file, no_config);
@@ -1100,16 +1128,63 @@ fn watch_directory_args(args: &WatchArgs, input: &Path) -> Result<WatchArgs, Str
 }
 
 fn validate_watch_directory_outputs(args: &WatchArgs, inputs: &[PathBuf]) -> Result<(), String> {
-    let mut destinations = std::collections::BTreeMap::new();
+    let mut destinations = protected_paths::ProtectedInputs::default();
+    let mut owners = std::collections::BTreeMap::new();
     for input in inputs {
-        let per_file = watch_directory_args(args, input)?;
-        let key = per_file.out.to_string_lossy().to_lowercase();
-        if let Some(previous) = destinations.insert(key, input) {
+        for output in watch_directory_outputs(args, input)? {
+            if let Some(previous_output) = destinations.source_for(&output) {
+                let previous = owners
+                    .get(previous_output)
+                    .copied()
+                    .unwrap_or(previous_output);
+                return Err(format!(
+                    "{} and {} map to the same output {}; rename one source before watching",
+                    previous.display(),
+                    input.display(),
+                    output.display()
+                ));
+            }
+            destinations.insert(&output);
+            owners.insert(output, input.as_path());
+        }
+    }
+    Ok(())
+}
+
+fn watch_directory_outputs(args: &WatchArgs, input: &Path) -> Result<Vec<PathBuf>, String> {
+    let per_file = watch_directory_args(args, input)?;
+    Ok(if matches!(args.to, Target::Both) {
+        vec![per_file.out.clone(), per_file.out.with_extension("pdf")]
+    } else {
+        vec![per_file.out]
+    })
+}
+
+fn watch_directory_inputs(
+    watcher: &PollWatcher<SystemClock>,
+    no_config: bool,
+) -> protected_paths::ProtectedInputs {
+    let mut protected = protected_paths::ProtectedInputs::default();
+    for path in watcher.input_paths() {
+        protected.insert(path);
+    }
+    if !no_config {
+        protected.insert(&config_path());
+    }
+    protected
+}
+
+fn validate_watch_directory_input(
+    args: &WatchArgs,
+    input: &Path,
+    protected: &protected_paths::ProtectedInputs,
+) -> Result<(), String> {
+    for output in watch_directory_outputs(args, input)? {
+        if let Some(source) = protected.source_for(&output) {
             return Err(format!(
-                "{} and {} map to the same output {}; rename one source before watching",
-                previous.display(),
-                input.display(),
-                per_file.out.display()
+                "refusing to overwrite watched input {} with output {}; choose a distinct output directory or remove the conflicting reference",
+                source.display(),
+                output.display()
             ));
         }
     }

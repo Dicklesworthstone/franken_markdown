@@ -200,6 +200,13 @@ impl<C: Clock> PollWatcher<C> {
         &self.paths
     }
 
+    /// Render sources that no watched document may replace: explicit roots,
+    /// host assets, includes and images. Ordinary navigation links remain
+    /// watch dependencies, but may legitimately name generated sibling pages.
+    pub(crate) fn input_paths(&self) -> impl Iterator<Item = &Path> {
+        self.dependencies.input_paths()
+    }
+
     /// Pending (not yet debounced) change count — for verbose logs.
     #[must_use]
     pub fn pending_len(&self) -> usize {

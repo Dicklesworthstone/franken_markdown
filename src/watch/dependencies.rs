@@ -4,15 +4,42 @@
 //! the historical existing-file behavior: a broken document link should not
 //! allocate a watcher for an arbitrary URL. No target contents are read here.
 
-use crate::ast::{Block, Inline};
+use crate::ast::{Block, Document, Inline};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 pub(super) fn paths(markdown: &str, base_dir: &Path) -> Vec<PathBuf> {
     let document = crate::parse_markdown(markdown);
+    document_paths(&document, base_dir).watched
+}
+
+#[derive(Default)]
+struct DocumentPaths {
+    watched: Vec<PathBuf>,
+    images: BTreeSet<PathBuf>,
+}
+
+fn render_paths(markdown: &str, base_dir: &Path) -> DocumentPaths {
+    let document = crate::parse_markdown(markdown);
+    let mut paths = document_paths(&document, base_dir);
+    // Native asset loaders lower the supported safe-HTML subset before
+    // collecting images. Those images are render inputs too, even though the
+    // historical public Markdown dependency helper leaves raw HTML alone.
+    if let std::borrow::Cow::Owned(lowered) = crate::safe_html::lower(&document) {
+        for image in document_paths(&lowered, base_dir).images {
+            if !paths.watched.contains(&image) {
+                paths.watched.push(image.clone());
+            }
+            paths.images.insert(image);
+        }
+    }
+    paths
+}
+
+fn document_paths(document: &Document, base_dir: &Path) -> DocumentPaths {
     let mut pending: Vec<_> = document.blocks.iter().rev().map(Node::Block).collect();
     let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
+    let mut out = DocumentPaths::default();
     while let Some(node) = pending.pop() {
         let destination = match node {
             Node::Block(Block::Paragraph(inlines) | Block::Heading { inlines, .. }) => {
@@ -72,8 +99,13 @@ pub(super) fn paths(markdown: &str, base_dir: &Path) -> Vec<PathBuf> {
                     Ok(metadata) => metadata.is_file(),
                     Err(error) => image && error.kind() == std::io::ErrorKind::NotFound,
                 };
-                if watch && seen.insert(path.clone()) {
-                    out.push(path);
+                if watch {
+                    if image {
+                        out.images.insert(path.clone());
+                    }
+                    if seen.insert(path.clone()) {
+                        out.watched.push(path);
+                    }
                 }
             }
         }
@@ -148,6 +180,8 @@ pub(super) struct Graph {
 struct Snapshot {
     fingerprint: super::Fingerprint,
     paths: Vec<PathBuf>,
+    /// Images and included sources, excluding navigational link targets.
+    inputs: BTreeSet<PathBuf>,
     includes: std::collections::BTreeMap<PathBuf, Option<super::Fingerprint>>,
     entries: BTreeSet<PathBuf>,
     complete: bool,
@@ -199,6 +233,14 @@ impl Graph {
         &self.failures
     }
 
+    pub(super) fn input_paths(&self) -> impl Iterator<Item = &Path> {
+        self.roots.iter().map(PathBuf::as_path).chain(
+            self.documents
+                .values()
+                .flat_map(|snapshot| snapshot.inputs.iter().map(PathBuf::as_path)),
+        )
+    }
+
     pub(super) fn refresh(
         &mut self,
         observed: &std::collections::BTreeMap<PathBuf, Option<super::Fingerprint>>,
@@ -241,12 +283,15 @@ impl Graph {
             let mut entries: BTreeSet<_> = expansion.entries.keys().cloned().collect();
             expansion.dependencies.extend(expansion.entries);
             let complete = expansion.result.is_ok();
-            let mut paths = paths(expansion.result.as_deref().unwrap_or(&source), base);
+            let discovered = render_paths(expansion.result.as_deref().unwrap_or(&source), base);
+            let mut paths = discovered.watched;
+            let mut inputs = discovered.images;
             if !complete {
                 // Retain working asset edges during a missing include or bad
                 // save, but also watch newly discovered include destinations.
                 if let Some(old) = old {
                     paths.extend(old.paths.iter().cloned());
+                    inputs.extend(old.inputs.iter().cloned());
                     entries.extend(old.entries.iter().cloned());
                     for (path, fingerprint) in &old.includes {
                         expansion
@@ -260,6 +305,7 @@ impl Graph {
                 self.failures.remove(root);
             }
             paths.extend(expansion.dependencies.keys().cloned());
+            inputs.extend(expansion.dependencies.keys().cloned());
             let mut unique = BTreeSet::new();
             paths.retain(|path| unique.insert(path.clone()));
             self.documents.insert(
@@ -267,6 +313,7 @@ impl Graph {
                 Snapshot {
                     fingerprint: expected,
                     paths,
+                    inputs,
                     includes: expansion.dependencies,
                     entries,
                     complete,

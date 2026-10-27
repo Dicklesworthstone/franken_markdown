@@ -78,6 +78,22 @@ impl Watch {
             }
         }
     }
+
+    fn assert_refused(&mut self) {
+        self.event("refusing to overwrite watched input");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert_eq!(status.code(), Some(64));
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "unsafe initial watch did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 impl Drop for Watch {
     fn drop(&mut self) {
@@ -96,6 +112,24 @@ fn wait_contains(path: &Path, content: &str) -> String {
         assert!(
             Instant::now() < deadline,
             "{} never contained {content}",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_changed(path: &Path, previous: &[u8]) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(bytes) = std::fs::read(path)
+            && !bytes.is_empty()
+            && bytes != previous
+        {
+            return bytes;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} was not rebuilt",
             path.display()
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -229,4 +263,210 @@ fn colliding_sources_and_directory_measure_are_refused_before_rendering() {
         .unwrap();
     assert_eq!(result.status.code(), Some(64));
     assert!(String::from_utf8_lossy(&result.stderr).contains("--measure"));
+}
+
+const DRAWING: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="red"/></svg>"#;
+
+#[test]
+fn initial_image_conflicts_preserve_all_inputs_before_any_output_is_written() {
+    for source in [
+        "![Drawing][art]\n\n[art]: a.svg?view=1#panel\n",
+        "<img src=\"a.svg\" alt=\"Drawing\">\n",
+        "{{#include fragment.txt}}\n",
+    ] {
+        let dir = Directory::new();
+        let root = dir.path("sources");
+        let first = dir.write("sources/a.md", "# Alpha\n");
+        let second = dir.write("sources/b.md", source);
+        let asset = dir.write("sources/a.svg", DRAWING);
+        dir.write("sources/fragment.txt", "![Included drawing](a.svg)\n");
+        let mut watch = Watch::start(&root, &root, &["--to", "svg"]);
+        watch.assert_refused();
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "# Alpha\n");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), source);
+        assert_eq!(std::fs::read_to_string(&asset).unwrap(), DRAWING);
+        assert!(!root.join("b.svg").exists());
+
+        // Sharing the image is safe with a distinct output directory.
+        let output = dir.path("output");
+        std::fs::create_dir(&output).unwrap();
+        let safe_watch = Watch::start(&root, &output, &["--to", "svg"]);
+        safe_watch.event("\"event\":\"watching\"");
+        assert!(output.join("a.svg").is_file());
+        assert!(output.join("b.svg").is_file());
+        assert_eq!(std::fs::read_to_string(asset).unwrap(), DRAWING);
+    }
+}
+
+#[test]
+fn include_inputs_and_both_format_siblings_are_protected_even_when_missing() {
+    for (target, include) in [("html", "a.html"), ("both", "a.pdf")] {
+        for exists in [false, true] {
+            let dir = Directory::new();
+            let root = dir.path("sources");
+            dir.write("sources/a.md", "# Alpha\n");
+            dir.write("sources/b.md", &format!("{{{{#include {include}}}}}\n"));
+            let fragment = root.join(include);
+            if exists {
+                std::fs::write(&fragment, "Owned source fragment.\n").unwrap();
+            }
+            let mut watch = Watch::start(&root, &root, &["--to", target]);
+            watch.assert_refused();
+            if exists {
+                assert_eq!(
+                    std::fs::read_to_string(&fragment).unwrap(),
+                    "Owned source fragment.\n"
+                );
+            } else {
+                assert!(
+                    !fragment.exists(),
+                    "an export must not create a missing include"
+                );
+            }
+            assert!(!root.join("b.html").exists());
+            assert!(!root.join("b.pdf").exists());
+            if target == "both" {
+                assert!(
+                    !root.join("a.html").exists(),
+                    "reject both siblings before either write"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn shared_css_font_and_explicit_image_paths_are_reserved_before_rendering() {
+    for option in ["--css", "--pdf-font", "--pdf-image"] {
+        let dir = Directory::new();
+        let root = dir.path("sources");
+        dir.write("sources/a.md", "# Alpha\n");
+        dir.write("sources/b.md", "# Beta\n");
+        let resource = dir.write("sources/a.html", DRAWING);
+        let spec = match option {
+            "--pdf-font" => format!("body-regular={}", resource.display()),
+            "--pdf-image" => format!("logo={}", resource.display()),
+            _ => resource.display().to_string(),
+        };
+        let mut watch = Watch::start(&root, &root, &[option, &spec]);
+        watch.assert_refused();
+        assert_eq!(std::fs::read_to_string(resource).unwrap(), DRAWING);
+        assert!(!root.join("b.html").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn aliased_output_directories_and_dangling_image_aliases_cannot_replace_inputs() {
+    use std::os::unix::fs::symlink;
+
+    let dir = Directory::new();
+    let root = dir.path("sources");
+    dir.write("sources/nested/a.md", "# Alpha\n");
+    dir.write("sources/b.md", "![Owned drawing](nested/a.svg)\n");
+    let asset = dir.write("sources/nested/a.svg", DRAWING);
+    let output = dir.path("output");
+    std::fs::create_dir(&output).unwrap();
+    symlink(root.join("nested"), output.join("nested")).unwrap();
+    let mut watch = Watch::start(&root, &output, &["--to", "svg"]);
+    watch.assert_refused();
+    assert_eq!(std::fs::read_to_string(asset).unwrap(), DRAWING);
+    assert!(!output.join("b.svg").exists());
+
+    let dir = Directory::new();
+    let root = dir.path("sources");
+    dir.write("sources/a.md", "# Alpha\n");
+    dir.write("sources/b.md", "![Missing drawing](alias.svg)\n");
+    symlink("a.svg", root.join("alias.svg")).unwrap();
+    let mut watch = Watch::start(&root, &root, &["--to", "svg"]);
+    watch.assert_refused();
+    assert!(!root.join("a.svg").exists());
+    assert!(!root.join("b.svg").exists());
+    assert_eq!(
+        std::fs::read_link(root.join("alias.svg")).unwrap(),
+        Path::new("a.svg")
+    );
+}
+
+#[test]
+fn a_new_root_cannot_overwrite_an_existing_roots_asset_and_recovers_after_repair() {
+    let dir = Directory::new();
+    let root = dir.path("sources");
+    let source = dir.write("sources/b.md", "# Beta\n\n![Drawing](a.svg)\n");
+    let asset = dir.write("sources/a.svg", DRAWING);
+    let mut watch = Watch::start(&root, &root, &["--to", "svg"]);
+    watch.event("\"event\":\"watching\"");
+    dir.write("sources/a.md", "# New alpha chapter\n");
+    dir.write("sources/c.md", "# Independent chapter\n");
+    watch.event("refusing to overwrite watched input");
+    wait_changed(&root.join("c.svg"), &[]);
+    assert_eq!(std::fs::read_to_string(&asset).unwrap(), DRAWING);
+    assert!(
+        watch.child.try_wait().unwrap().is_none(),
+        "conflicts leave watch running"
+    );
+
+    std::fs::write(source, "# Beta repaired\n").unwrap();
+    wait_changed(&asset, DRAWING.as_bytes());
+    assert!(watch.child.try_wait().unwrap().is_none());
+}
+
+#[test]
+fn refresh_conflicts_survive_failed_source_reads_and_only_block_the_unsafe_output() {
+    let dir = Directory::new();
+    let root = dir.path("sources");
+    let first = dir.write("sources/a.md", "# Alpha original\n");
+    let second = dir.write("sources/b.md", "# Beta original\n");
+    let independent = dir.write("sources/c.md", "# Gamma original\n");
+    let mut watch = Watch::start(&root, &root, &["--to", "svg"]);
+    watch.event("\"event\":\"watching\"");
+    let asset = root.join("a.svg");
+    let original = std::fs::read(&asset).unwrap();
+    let previous_independent = std::fs::read(root.join("c.svg")).unwrap();
+
+    std::fs::write(&second, "# Beta uses alpha\n\n![Drawing](a.svg)\n").unwrap();
+    watch.event(&format!("\"path\":\"{}\"", second.display()));
+    std::fs::write(&first, "# Alpha changed\n").unwrap();
+    std::fs::write(&independent, "# Gamma changed independently\n").unwrap();
+    watch.event("refusing to overwrite watched input");
+    wait_changed(&root.join("c.svg"), &previous_independent);
+    assert_eq!(std::fs::read(&asset).unwrap(), original);
+
+    // Both unreadable UTF-8 and an unsuccessful include expansion retain the
+    // last known image input instead of releasing it for another root to write.
+    for bad_source in [
+        &[0xff][..],
+        b"{{#include missing-fragment.txt}}\n".as_slice(),
+    ] {
+        std::fs::write(&second, bad_source).unwrap();
+        watch.event("\"code\":\"input_error\"");
+        assert_eq!(std::fs::read(&asset).unwrap(), original);
+        assert!(watch.child.try_wait().unwrap().is_none());
+    }
+
+    // The blocked Alpha edit is queued across those failures. Removing the
+    // dependency retries it without requiring another edit to Alpha itself.
+    std::fs::write(&second, "# Beta repaired\n").unwrap();
+    wait_changed(&asset, &original);
+    assert!(watch.child.try_wait().unwrap().is_none());
+}
+
+#[test]
+fn navigation_links_to_generated_sibling_pages_do_not_reserve_those_outputs() {
+    let dir = Directory::new();
+    let root = dir.path("sources");
+    dir.write("sources/a.md", "# Alpha\n\n[Beta](b.html#beta)\n");
+    let second = dir.write("sources/b.md", "# Beta\n");
+    dir.write("sources/b.html", "Previous export\n");
+    let mut watch = Watch::start(&root, &root, &[]);
+    watch.event("\"event\":\"watching\"");
+    assert!(
+        std::fs::read_to_string(root.join("a.html"))
+            .unwrap()
+            .contains("href=\"b.html#beta\"")
+    );
+    wait_contains(&root.join("b.html"), "<h1 id=\"beta\"");
+    std::fs::write(second, "# Beta revised\n").unwrap();
+    wait_contains(&root.join("b.html"), "Beta revised");
+    assert!(watch.child.try_wait().unwrap().is_none());
 }

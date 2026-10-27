@@ -3,8 +3,10 @@
 `fmd watch` now discovers image dependencies through the shared Markdown AST,
 not a scan for `](...)`. Full, collapsed and shortcut reference images, images
 inside headings, quotes, lists, tables and links, and escaped image destinations
-participate. Code examples, unused reference definitions, math and raw HTML do
-not authorize additional file reads.
+participate. The native watcher also applies the renderer's supported safe-HTML
+lowering, so an admitted `<img>` is watched as an image. Code examples, unused
+reference definitions, math and unsupported raw HTML do not authorize additional
+file reads.
 
 Image paths are retained before the file exists. Creating an image later,
 editing it, saving by temporary-file rename, deleting it and restoring it all
@@ -40,8 +42,9 @@ parsed. A linked Markdown file is watched as a file, without recursively
 crawling its links or images. Includes use the renderer's own expansion engine:
 nested includes, line ranges and named anchors work, while fenced/indented code
 examples and content outside a selected snippet stay literal. Included files
-need not have a Markdown extension. Raw HTML and CSS `@import` dependencies
-are outside this graph.
+need not have a Markdown extension. Arbitrary HTML resources and CSS `@import`
+dependencies are outside this graph; only images recognized by the renderer's
+safe-HTML lowering join the image dependency set.
 
 Relative Markdown destinations in included content use their defining file's
 directory. If `document.md` includes `parts/chapter.md`, then that snippet's
@@ -109,6 +112,36 @@ Directory preview starts with the first successful render and publishes its
 loopback URL immediately after initialization. Later successful rebuilds update
 the preview; a failed rebuild preserves its working document.
 
+### Protecting source material across documents
+
+Before the first directory render, every planned output is checked against the
+whole tree's Markdown roots, selected includes, image inputs and explicit host
+resources (`--css`, configured CSS, `--pdf-font` and `--pdf-image`). Both the HTML
+and PDF sibling paths participate for `--to both`. An output that would replace
+any of these inputs is refused with exit 64 before publishing any document. For
+example, an in-place SVG watch cannot replace `diagram.svg` with the export of
+`diagram.md` while another document uses that file as its source image.
+
+The guard recognizes existing file identities, directory aliases and missing
+paths, including dangling aliases. It does not create a missing image or include
+by publishing an unrelated document into that path. Ordinary navigation links
+are kept separate: `[Next](next.html)` may still point to a generated sibling
+page. A distinct output directory is allowed when its destinations do not alias
+protected inputs.
+
+The same check runs after dependency changes and newly discovered sources.
+During a running watch, only a conflicting document's publication is skipped;
+other documents continue to rebuild and the last successful output is retained.
+Removing the conflicting reference or source retries blocked edits without
+requiring another edit to their original document. Invalid UTF-8 and failed
+include expansion retain the previous successful input graph, so a failed save
+does not release another document's source image for overwrite. Queued rebuilds
+wait for pending saves to settle before using the refreshed graph.
+
+These checks use the watcher's observed filesystem state. As with ordinary
+native rendering, they are not an atomic filesystem transaction against external
+processes changing files between admission and publication.
+
 ## Debounce correctness
 
 A burst is compared with the contents before the burst. A first creation stays
@@ -135,6 +168,10 @@ PDF-preview metadata/assets, and per-file/expanded include budgets.
 `tests/watch_directory.rs` runs the CLI against complete/nested directories,
 simultaneous changes, shared dependencies/stylesheets, source creation/removal,
 PDF filenames, initial preview and collision admission.
+It also checks complete-directory overwrite admission, existing and missing
+includes/images, both-format siblings, host resources, directory/dangling
+aliases, failed-refresh retention, isolated conflicts, repair retries and
+ordinary links to generated sibling pages.
 `tests/transclusion_origins.rs` checks included assets and link origins across
 HTML/EPUB export, selected/nested sources, native book checks and watch refresh.
 

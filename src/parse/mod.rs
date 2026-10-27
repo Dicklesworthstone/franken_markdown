@@ -4416,8 +4416,8 @@ fn parse_inlines_chars_with_refs_profiled(
             }
             '*' | '_' | '~' => {
                 // Push a delimiter run onto the node list with its
-                // CommonMark left/right-flanking can_open/can_close flags. The
-                // actual pairing into emphasis/strong is deferred to
+                // source-boundary can_open/can_close flags. The actual pairing
+                // into emphasis/strong/strike is deferred to
                 // `resolve_emphasis` (the delimiter-stack pass) so that nested and
                 // overlapping runs resolve correctly.
                 let Some(n) = run_len(bytes, i, c, &mut profiler.inline_work) else {
@@ -4425,7 +4425,17 @@ fn parse_inlines_chars_with_refs_profiled(
                 };
                 let before = i.checked_sub(1).map(|idx| bytes[idx]);
                 let after = bytes.get(i + n).copied();
-                let (can_open, can_close) = emphasis_flanking(before, after, c);
+                // Strike keeps its source-whitespace boundary rule. Punctuation,
+                // including an entity's final `;`, must not prevent a valid pair
+                // next to a word. Emphasis retains CommonMark flanking rules.
+                let (can_open, can_close) = if c == '~' {
+                    (
+                        after.is_some_and(|ch| !ch.is_whitespace()),
+                        before.is_some_and(|ch| !ch.is_whitespace()),
+                    )
+                } else {
+                    emphasis_flanking(before, after, c)
+                };
                 // This renderer supports double-tilde strikethrough. A longer
                 // run is literal, not an opener embedded in a partial run.
                 let supported_run = c != '~' || n == 2;
@@ -4567,7 +4577,7 @@ enum InlineEl {
     },
 }
 
-/// CommonMark left/right-flanking classification for an emphasis/strike run.
+/// CommonMark left/right-flanking classification for an emphasis run.
 ///
 /// Returns `(can_open, can_close)`. `before`/`after` are the characters
 /// immediately adjacent to the run (the start and end of the text count as

@@ -163,6 +163,39 @@ fn nested_and_overlapping_emphasis_uses_one_delimiter_stack() {
 }
 
 #[test]
+fn strike_source_boundaries_preserve_entity_spaces_and_adjacent_punctuation() {
+    for (source, content) in [
+        ("before~~word&#32;~~next", "word "),
+        ("before~~word&#x20;~~next", "word "),
+        ("before~~word&nbsp;~~next", "word\u{00a0}"),
+        ("before~~&#32;word~~next", " word"),
+        ("before~~&nbsp;word~~next", "\u{00a0}word"),
+        ("before~~word;~~next", "word;"),
+        ("before~~(word)~~next", "(word)"),
+        ("before~~!word~~next", "!word"),
+    ] {
+        assert_eq!(
+            parse_inlines(source),
+            vec![text("before"), strike(vec![text(content)]), text("next")],
+            "{source:?}"
+        );
+        assert_eq!(
+            fragment(source),
+            format!("<p>before<del>{content}</del>next</p>\n"),
+            "{source:?}"
+        );
+    }
+    // Tilde compatibility does not relax CommonMark emphasis punctuation or
+    // intraword underscore boundaries.
+    for (source, expected) in [
+        ("before*word&#32;*next", "before*word *next"),
+        ("before_word&#32;_next", "before_word _next"),
+    ] {
+        assert_eq!(parse_inlines(source), vec![text(expected)], "{source:?}");
+    }
+}
+
+#[test]
 fn strike_requires_complete_double_tilde_runs_and_nonwhitespace_content() {
     for source in [
         "~~~word~~~",

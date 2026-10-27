@@ -133,7 +133,7 @@ layout path or adding runtime dependencies.
 | Area | Result on `main` |
 |---|---|
 | Document fidelity | Tables, code blocks, blockquotes, lists, links, images, SVG diagrams, headings, and metadata all render through the same AST and theme model for HTML and PDF |
-| Table quality | The allocator measures content ranges and spends column width where it reduces wrapping. Performance-plan style tables no longer force narrow, ugly header wraps |
+| Table quality | The allocator measures content ranges and spends column width where it reduces wrapping. Very wide PDF tables split into readable column panels, repeating the first column when space permits and retaining every source column, links, financial footing rules, and accessible header associations |
 | Syntax highlighting | Rust, Python, JavaScript/TypeScript, JSON/JSONC, Bash/shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS/SCSS/Sass, Markdown, and Mermaid/MMD use the same clean-room highlighting model in HTML and PDF |
 | Diagram support | ASCII diagrams and frankenmermaid-generated SVGs are now first-class documentation assets in the PDF path instead of screenshots or browser-only fallbacks |
 | Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `hwb()` colors, `color-mix()` alpha, missing paint-server fallback alpha, and embedded PNG/JPEG data URIs |
@@ -949,6 +949,13 @@ Honest about what the renderer does not do yet.
   intros), basic widow handling, and repeatable table headers across page breaks
   work today; full widow/orphan control and finer block pagination remain
   roadmap.
+- **Wide PDF tables use successive column panels.** Each panel can continue
+  across pages with repeated headers. The first column repeats as row context
+  when at least two columns fit; very narrow pages use single-column panels in
+  source order. Panel sizing preserves readable minimum column widths and can
+  split a table that would otherwise fit only after tighter spacing. Individual
+  unbreakable formulas or images wider than their cell retain the existing
+  overflow behavior.
 - **PDF vs HTML gaps.** The PDF path does not render arbitrary CSS. Images
   inside running prose and table cells (badges, icons) are drawn inline as
   unbreakable boxes up to 1.75 em tall and tagged `/Figure` with their alt

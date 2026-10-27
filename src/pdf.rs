@@ -54,6 +54,7 @@ pub use pagination_report::{
 };
 mod math;
 mod running;
+mod table_panels;
 mod text_composition;
 mod text_positioning;
 
@@ -17751,6 +17752,11 @@ struct TableLayoutSpec<'a> {
     page: PageGeom,
     group: u32,
     nominal_size: f32,
+    /// A horizontal panel selects source columns without changing the source
+    /// table's financial-row semantics. `None` keeps the ordinary cached path.
+    columns: Option<&'a [usize]>,
+    /// Normalize financial rows on the complete table, before selecting columns.
+    financial_rows: Option<&'a [crate::table_format::FinancialRow<'a>]>,
     faces: &'a Faces,
     width_cache: &'a RefCell<WidthCache>,
     /// Per-render interned link targets: cell tokenization interns link
@@ -17890,11 +17896,46 @@ fn layout_table(
 ) {
     let page = cx.page;
     let nominal_size = cx.type_scale.table;
+    let financial_rows = crate::table_format::financial_rows(table);
+    let ncol = table
+        .head
+        .len()
+        .max(table.align.len())
+        .max(financial_rows.as_ref().map_or_else(
+            || table.rows.iter().map(Vec::len).max().unwrap_or(0),
+            |rows| rows.iter().map(|row| row.cells.len()).max().unwrap_or(0),
+        ));
+    let (indent, capacity) = table_panels::geometry(page.content_w, indent);
+    if ncol > capacity {
+        // A panel keeps readable cell widths and gutters instead of letting the
+        // minimum grid extend outside the page. Each panel is its own table
+        // flow, so repeated headers, row continuation and tagged cell ownership
+        // use the existing pagination path. Do not put multiple flow groups in
+        // the single-table cache: a cache hit stamps one group on its template.
+        for (index, columns) in table_panels::Columns::new(ncol, capacity).enumerate() {
+            let panel_group = if index == 0 { group } else { cx.alloc_flow() };
+            let spec = TableLayoutSpec {
+                indent,
+                page,
+                group: panel_group,
+                nominal_size,
+                columns: Some(&columns),
+                financial_rows: financial_rows.as_deref(),
+                faces: cx.faces,
+                width_cache: &cx.width_cache,
+                links: &mut cx.links,
+            };
+            layout_table_uncached(table, spec, out);
+        }
+        return;
+    }
     let spec = TableLayoutSpec {
         indent,
         page,
         group,
         nominal_size,
+        columns: None,
+        financial_rows: financial_rows.as_deref(),
         faces: cx.faces,
         width_cache: &cx.width_cache,
         links: &mut cx.links,
@@ -17997,30 +18038,34 @@ fn is_numeric_cell_text(text: &str) -> bool {
 }
 
 fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec<Line>) {
-    let financial_rows = crate::table_format::financial_rows(table);
-    let row_count = financial_rows.as_ref().map_or(table.rows.len(), Vec::len);
+    let financial_rows = spec.financial_rows;
+    let row_count = financial_rows.map_or(table.rows.len(), <[_]>::len);
     let source_cells = |index: usize| {
-        financial_rows
-            .as_ref()
-            .map_or(table.rows[index].as_slice(), |rows| rows[index].cells)
+        financial_rows.map_or(table.rows[index].as_slice(), |rows| rows[index].cells)
     };
     let mut size = spec.nominal_size;
-    let ncol = table.head.len().max(
-        (0..row_count)
-            .map(|index| source_cells(index).len())
-            .max()
-            .unwrap_or(0),
+    let ncol = spec.columns.map_or_else(
+        || {
+            table.head.len().max(table.align.len()).max(
+                (0..row_count)
+                    .map(|index| source_cells(index).len())
+                    .max()
+                    .unwrap_or(0),
+            )
+        },
+        <[_]>::len,
     );
     if ncol == 0 {
         return;
     }
+    let source_column = |column: usize| spec.columns.map_or(column, |columns| columns[column]);
     let faces = spec.faces;
     let width_cache = spec.width_cache;
     let page = spec.page;
     let group = spec.group;
     let indent = spec.indent;
     let left = page.left + indent;
-    let avail = (page.content_w - indent).max(72.0);
+    let avail = page.content_w - indent;
     let mut pad = TABLE_COL_GUTTER; // inter-column gutter (half on each side of a column)
 
     // Tokenize each cell once. Measurement and wrapping use the same styled
@@ -18028,28 +18073,40 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     // keeping header bolding, links, and strikethrough behavior identical.
     let perf = wrap_perf_enabled();
     let t_tok = perf.then(std::time::Instant::now);
-    let head_toks: Vec<Vec<Tok>> = table
-        .head
-        .iter()
-        .map(|cell| cell_tokens(cell, true, faces, &mut *spec.links))
+    let head_toks: Vec<Vec<Tok>> = (0..ncol)
+        .map(|column| {
+            table
+                .head
+                .get(source_column(column))
+                .map_or_else(Vec::new, |cell| {
+                    cell_tokens(cell, true, faces, &mut *spec.links)
+                })
+        })
         .collect();
     let row_toks: Vec<Vec<Vec<Tok>>> = (0..row_count)
         .map(|index| {
-            source_cells(index)
-                .iter()
-                .map(|cell| cell_tokens(cell, false, faces, &mut *spec.links))
+            (0..ncol)
+                .map(|column| {
+                    source_cells(index)
+                        .get(source_column(column))
+                        .map_or_else(Vec::new, |cell| {
+                            cell_tokens(cell, false, faces, &mut *spec.links)
+                        })
+                })
                 .collect()
         })
         .collect();
-    let decimal_cells = financial_rows.as_ref().map(|rows| {
+    let decimal_cells = financial_rows.map(|rows| {
         rows.iter()
             .map(|row| {
-                row.cells
-                    .iter()
-                    .enumerate()
-                    .map(|(column, cell)| {
-                        table.align.get(column) == Some(&Align::Decimal)
-                            && crate::table_format::decimal_cell_text(cell)
+                (0..ncol)
+                    .map(|column| {
+                        let source = source_column(column);
+                        table.align.get(source) == Some(&Align::Decimal)
+                            && row
+                                .cells
+                                .get(source)
+                                .and_then(|cell| crate::table_format::decimal_cell_text(cell))
                                 .and_then(|text| crate::table_format::decimal_anchor(&text))
                                 .is_some()
                     })
@@ -18202,8 +18259,13 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     };
     let inferred_align: Vec<Align> = (0..ncol)
         .map(|k| {
-            if table.align.get(k).copied().unwrap_or(Align::None) != Align::None {
-                return table.align.get(k).copied().unwrap_or(Align::None);
+            let align = table
+                .align
+                .get(source_column(k))
+                .copied()
+                .unwrap_or(Align::None);
+            if align != Align::None {
+                return align;
             }
             if row_toks.len() < 2 {
                 return Align::None;
@@ -18278,7 +18340,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 }
                 let cw = colw.get(k).copied().unwrap_or(0.0);
                 let base = tx.get(k).copied().unwrap_or(left);
-                let effective_align = match table.align.get(k) {
+                let effective_align = match table.align.get(source_column(k)) {
                     Some(Align::Decimal) => Align::Decimal,
                     Some(Align::Right) => Align::Right,
                     Some(Align::Center) => Align::Center,
@@ -18364,7 +18426,6 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 table_source_row: Some(TableSourceRow {
                     index: source_row.map_or(0, |index| {
                         financial_rows
-                            .as_ref()
                             .map_or(index, |rows| rows[index].source_index)
                             .saturating_add(1) as u32
                     }),
@@ -18433,10 +18494,18 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             i % 2 == 0,
             Some(i),
         ));
-        if let Some(rows) = &financial_rows
+        if let Some(rows) = financial_rows
             && let Some(last) = out.last_mut()
         {
-            financial_tables::attach_footing(last, &rows[i].rules, &tx, &colw);
+            if let Some(columns) = spec.columns {
+                let rules: Vec<_> = columns
+                    .iter()
+                    .map(|&column| rows[i].rules.get(column).copied().unwrap_or_default())
+                    .collect();
+                financial_tables::attach_footing(last, &rules, &tx, &colw);
+            } else {
+                financial_tables::attach_footing(last, &rows[i].rules, &tx, &colw);
+            }
         }
     }
     out.push(rule(0.0));
@@ -34847,11 +34916,14 @@ mod pdf_writer_tests {
     ) -> (usize, u32) {
         let start = out.len();
         let group = cx.alloc_flow();
+        let financial_rows = crate::table_format::financial_rows(table);
         let spec = super::TableLayoutSpec {
             indent,
             page: cx.page,
             group,
             nominal_size: cx.type_scale.table,
+            columns: None,
+            financial_rows: financial_rows.as_deref(),
             faces: cx.faces,
             width_cache: &cx.width_cache,
             links: &mut cx.links,

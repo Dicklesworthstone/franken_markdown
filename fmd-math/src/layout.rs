@@ -124,7 +124,7 @@ impl Engine {
     /// the extensions bead's constructs.
     pub fn typeset(&self, source: &str, style: Style) -> Result<Layout, MathError> {
         let root = crate::parse(source)?;
-        self.finish(&root, StyleCtx::new(style), true)
+        self.finish(&root, StyleCtx::new(style), true, None)
     }
 
     /// Typeset a TexText-contract string (text mainland + math islands).
@@ -134,7 +134,7 @@ impl Engine {
     /// As [`Engine::typeset`].
     pub fn typeset_text(&self, source: &str) -> Result<Layout, MathError> {
         let root = crate::parse_text(source)?;
-        self.finish(&root, StyleCtx::new(Style::Text), false)
+        self.finish(&root, StyleCtx::new(Style::Text), false, None)
     }
 
     /// [`Engine::typeset`], against a macro set (a preamble pack and/or
@@ -150,7 +150,7 @@ impl Engine {
         macros: &crate::macros::MacroSet,
     ) -> Result<Layout, MathError> {
         let root = crate::parse_with_macros(source, macros)?;
-        self.finish(&root, StyleCtx::new(style), true)
+        self.finish(&root, StyleCtx::new(style), true, None)
     }
 
     /// [`Engine::typeset_text`], against a macro set.
@@ -164,12 +164,25 @@ impl Engine {
         macros: &crate::macros::MacroSet,
     ) -> Result<Layout, MathError> {
         let root = crate::parse_text_with_macros(source, macros)?;
-        self.finish(&root, StyleCtx::new(Style::Text), false)
+        self.finish(
+            &root,
+            StyleCtx::new(Style::Text),
+            false,
+            macros.line_width(),
+        )
     }
 
     /// Lay out a parsed root. `align_rows`: the root is the Tex surface,
     /// whose `\\` lines are align* rows; false for TexText paragraphs.
-    fn finish(&self, root: &Node, ctx: StyleCtx, align_rows: bool) -> Result<Layout, MathError> {
+    /// `line_width`: the paragraphs' line, ems, past which TexText lines
+    /// break; `None` never breaks.
+    fn finish(
+        &self,
+        root: &Node,
+        ctx: StyleCtx,
+        align_rows: bool,
+        line_width: Option<f64>,
+    ) -> Result<Layout, MathError> {
         let items = match &root.kind {
             NodeKind::List(items) => items.as_slice(),
             _ => std::slice::from_ref(root),
@@ -183,14 +196,23 @@ impl Engine {
             align_rows,
             in_display: align_rows,
             color: None,
+            line_width,
         };
         let rows = items
             .iter()
             .any(|n| matches!(n.kind, NodeKind::Linebreak | NodeKind::AlignTab));
         let boxx = if align_rows && rows {
             self.align_star_rows(items, ctx, root.span)?
-        } else {
+        } else if align_rows {
             self.hlist(items, ctx)?
+        } else {
+            // TexText's mainland is flush left (`\raggedright`); the
+            // alignment environments set their own.
+            let paragraph = line_width.map(|width| Paragraph {
+                width,
+                align: LineAlign::Left,
+            });
+            self.paragraph(items, ctx, paragraph)?
         };
         let mut layout = Layout {
             width: boxx.width,
@@ -228,6 +250,17 @@ struct LayCtx {
     /// The `\color` in force, group-scoped like the size declaration;
     /// `None` leaves the consumer's own colour.
     color: Option<Color>,
+    /// The TexText paragraphs' line width, ems (`\linewidth`): the
+    /// mainland and the alignment environments break lines wider than it.
+    line_width: Option<f64>,
+}
+
+/// A paragraph's line: its width, ems, and alignment
+/// (franken_manim fm-texttext-line-breaking-r11-bfdx).
+#[derive(Clone, Copy)]
+struct Paragraph {
+    width: f64,
+    align: LineAlign,
 }
 
 impl LayCtx {
@@ -265,7 +298,18 @@ impl Engine {
     /// size changes) persist across the line split: `\\` does not end the
     /// enclosing group.
     fn hlist(&self, items: &[Node], ctx: LayCtx) -> Result<MBox, MathError> {
-        let mut lines: Vec<(MBox, f64, f64)> = Vec::new();
+        self.paragraph(items, ctx, None)
+    }
+
+    /// [`Self::hlist`] for TexText's mainland: with a [`Paragraph`], a line
+    /// wider than its width breaks as TeX breaks it.
+    fn paragraph(
+        &self,
+        items: &[Node],
+        ctx: LayCtx,
+        paragraph: Option<Paragraph>,
+    ) -> Result<MBox, MathError> {
+        let mut lines: Vec<(MBox, LayCtx)> = Vec::new();
         let mut ctx = ctx;
         let mut sources: Vec<&[Node]> = items
             .split(|n| matches!(n.kind, NodeKind::Linebreak))
@@ -280,48 +324,66 @@ impl Engine {
         for line in sources {
             let (boxx, after) = self.line(line, ctx)?;
             ctx = after;
-            lines.push((boxx, ctx.size(), ctx.line_stretch));
+            paragraph_lines(boxx, ctx, paragraph, &mut lines);
         }
-        if lines.len() == 1 {
-            return lines
-                .pop()
-                .map(|(boxx, _, _)| boxx)
-                .ok_or(MathError::Malformed {
-                    what: "internal: empty line vector".to_owned(),
-                    at: 0,
-                });
-        }
-        // Stack lines: baseline-to-baseline is \baselineskip (grown when
-        // boxes would come closer than \lineskip), read at each line's own
-        // size. The box baseline is the first line's. Mathematics lines are
-        // the Tex surface's align* rows, which amsmath opens up by \jot
-        // (both skips); text paragraphs keep plain line spacing.
+        // Mathematics lines are the Tex surface's align* rows, which amsmath
+        // opens up by \jot (both skips); text paragraphs keep plain line
+        // spacing.
         let jot = if ctx.align_rows && !ctx.text_mode {
             self.consts.jot
         } else {
             0.0
         };
+        let align = paragraph.map_or(LineAlign::Left, |p| p.align);
+        self.stack_lines(lines, align, jot)
+    }
+
+    /// Stack laid lines, each with the context it ended in: baseline to
+    /// baseline is \baselineskip (grown when boxes would come closer than
+    /// \lineskip), read at each line's own size, opened up by `jot`. Each
+    /// line takes `align` within the widest. The box baseline is the first
+    /// line's; one line is returned as it is.
+    fn stack_lines(
+        &self,
+        mut lines: Vec<(MBox, LayCtx)>,
+        align: LineAlign,
+        jot: f64,
+    ) -> Result<MBox, MathError> {
+        if lines.len() == 1 {
+            return lines
+                .pop()
+                .map(|(boxx, _)| boxx)
+                .ok_or(MathError::Malformed {
+                    what: "internal: empty line vector".to_owned(),
+                    at: 0,
+                });
+        }
+        let width = lines.iter().map(|(line, _)| line.width).fold(0.0, f64::max);
         let mut children = Vec::new();
         let mut baseline = 0.0_f64;
         let mut prev_depth = 0.0_f64;
-        let mut width = 0.0_f64;
         let mut depth = 0.0_f64;
         let mut height = 0.0_f64;
-        for (i, (line, size, stretch)) in lines.into_iter().enumerate() {
+        for (i, (line, ctx)) in lines.into_iter().enumerate() {
+            let size = ctx.size();
             if i == 0 {
                 height = line.height;
             } else {
                 // setspace's \baselinestretch scales the natural skip; the
                 // \lineskip floor still applies unstretched.
-                let natural = (self.consts.baseline_skip * stretch + jot) * size;
+                let natural = self.baseline_skip_at(&ctx) * ctx.line_stretch + jot * size;
                 let min_gap = prev_depth + line.height + (self.consts.line_skip + jot) * size;
                 baseline -= natural.max(min_gap);
             }
-            width = width.max(line.width);
             depth = (-baseline) + line.depth;
             prev_depth = line.depth;
+            let dx = match align {
+                LineAlign::Left => 0.0,
+                LineAlign::Center => (width - line.width) / 2.0,
+                LineAlign::Right => width - line.width,
+            };
             children.push(Positioned {
-                dx: 0.0,
+                dx,
                 dy: baseline,
                 node: MNode::Box(line),
             });
@@ -335,13 +397,36 @@ impl Engine {
         })
     }
 
+    /// LaTeX's \baselineskip at `ctx`'s size, ems. Each size command of
+    /// size10.clo sets its own skip, which is not 1.2 times its size
+    /// (\Large is 14.4 pt on 18 pt, \huge 20.74 pt on 25 pt); the script
+    /// styles scale it.
+    fn baseline_skip_at(&self, ctx: &LayCtx) -> f64 {
+        let declared = [
+            (0.5, 0.6),
+            (0.8, 0.95),
+            (0.9, 1.1),
+            (1.2, 1.4),
+            (1.44, 1.8),
+            (2.074, 2.5),
+        ]
+        .iter()
+        .find(|(size, _)| (ctx.decl_size - size).abs() < 1e-9)
+        .map_or(self.consts.baseline_skip * ctx.decl_size, |&(_, skip)| skip);
+        declared * ctx.style.style.size_factor()
+    }
+
     /// One line of a horizontal list; also returns the context after the
     /// line's declarations, so `\\`-separated lines inherit them.
     fn line(&self, items: &[Node], outer: LayCtx) -> Result<(MBox, LayCtx), MathError> {
         let classes = classify_list(items);
         let mut ctx = outer;
         let mut laid_items: Vec<LineItem> = Vec::new();
+        // TeX's \spacefactor: the characters before a space size it.
+        let mut space_factor = 1000_u16;
         for (index, (node, class)) in items.iter().zip(classes).enumerate() {
+            let factor_before = space_factor;
+            space_factor = space_factor_through(std::slice::from_ref(node), space_factor);
             match &node.kind {
                 NodeKind::StyleChange(style) => {
                     ctx = ctx.map(|s| StyleCtx {
@@ -387,17 +472,29 @@ impl Engine {
                         // cmr10 at the declared size, in every math style.
                         eighteenths * crate::tfm::CMR10.param(6) * ctx.decl_size
                     };
+                    // `\ ` is the interword glue, stretch and shrink too;
+                    // it and the \hskip quads are legal breaks, the mu
+                    // kerns are not.
+                    let (stretch, shrink) = if matches!(kind, SpaceKind::ControlSpace) {
+                        let font = &crate::tfm::CMR10;
+                        (font.param(3) * ctx.size(), font.param(4) * ctx.size())
+                    } else {
+                        (0.0, 0.0)
+                    };
                     laid_items.push(LineItem::Glue(GlueSpec {
                         natural: em,
-                        stretch: 0.0,
-                        shrink: 0.0,
+                        stretch,
+                        shrink,
+                        breakable: !kind.is_mu_glue(),
                     }));
                 }
+                // `\hspace` is \hskip glue, a legal break.
                 NodeKind::Skip(length) => {
                     laid_items.push(LineItem::Glue(GlueSpec {
                         natural: skip_width(*length, ctx),
                         stretch: 0.0,
                         shrink: 0.0,
+                        breakable: true,
                     }));
                 }
                 NodeKind::DisplayKern {
@@ -414,6 +511,7 @@ impl Engine {
                         natural: f64::from(mu) / 18.0 * self.consts_at(&ctx).quad * ctx.size(),
                         stretch: 0.0,
                         shrink: 0.0,
+                        breakable: false,
                     }));
                 }
                 NodeKind::Tie => {
@@ -421,7 +519,46 @@ impl Engine {
                         natural: self.space_width(ctx),
                         stretch: 0.0,
                         shrink: 0.0,
+                        breakable: false,
                     }));
+                }
+                // A text run sets word by word: each space is TeX's
+                // interword glue, a legal break. Spaces end kerning, so the
+                // words sit exactly where the whole run would set them.
+                NodeKind::TextRun { text, char_spans } => {
+                    let class = class.unwrap_or(AtomClass::Ord);
+                    let mut factor = factor_before;
+                    let mut word: Option<(usize, usize)> = None;
+                    let mut count = 0;
+                    for (byte, ch) in text.char_indices() {
+                        if ch == ' ' {
+                            if let Some((start, first)) = word.take() {
+                                let spans = char_spans.get(first..count);
+                                laid_items.push(self.text_word(
+                                    &text[start..byte],
+                                    spans,
+                                    node.span,
+                                    class,
+                                    ctx,
+                                )?);
+                            }
+                            laid_items.push(LineItem::Glue(self.interword_glue(ctx, factor)));
+                        } else {
+                            word.get_or_insert((byte, count));
+                            factor = space_factor_after(factor, ch);
+                        }
+                        count += 1;
+                    }
+                    if let Some((start, first)) = word {
+                        let spans = char_spans.get(first..count);
+                        laid_items.push(self.text_word(
+                            &text[start..],
+                            spans,
+                            node.span,
+                            class,
+                            ctx,
+                        )?);
+                    }
                 }
                 _ => {
                     if let Some(kern) = self.multi_integral_kern(node, ctx) {
@@ -429,6 +566,7 @@ impl Engine {
                             natural: -kern,
                             stretch: 0.0,
                             shrink: 0.0,
+                            breakable: false,
                         }));
                     }
                     let mut laid = lone_op_box(node, self.lay_node(node, ctx)?);
@@ -446,6 +584,7 @@ impl Engine {
                             natural: correction,
                             stretch: 0.0,
                             shrink: 0.0,
+                            breakable: false,
                         }));
                     }
                 }
@@ -917,30 +1056,50 @@ impl Engine {
                 self.environment(name, spec.as_deref(), rows, ctx, node.span)
             }
             NodeKind::AlignBlock { align, lines } => {
-                // `flushleft` / `center` / `flushright`: a single-column
-                // grid whose one column takes the block's line alignment.
-                // The grid engine supplies the shared \baselineskip /
-                // \lineskip stacking and the \vcenter axis centering the
-                // matrix family uses; only the column rule differs.
-                let cell_align = match align {
-                    LineAlign::Left => CellAlign::Left,
-                    LineAlign::Center => CellAlign::Center,
-                    LineAlign::Right => CellAlign::Right,
-                };
-                // Each line is one single-cell row (cells are `List` nodes,
-                // the same shape the environments feed the grid).
-                let rows: Vec<Vec<Node>> = lines.iter().map(|line| vec![line.clone()]).collect();
-                let boxx = self.grid(
-                    &rows,
-                    ctx,
-                    &Grid {
-                        align: AlignRule::Columns(vec![cell_align]),
-                        ..Grid::centered(1.0)
-                    },
-                    node.span,
-                )?;
+                // `flushleft` / `center` / `flushright`: paragraph lines in
+                // the block's alignment. Their `\\` is LaTeX's \par, so
+                // declarations carry from line to line, and under a line
+                // width a line wider than it breaks as TeX breaks it. The
+                // stack is \vcenter'd on the axis, as the matrix family's
+                // grids are.
+                let paragraph = ctx.line_width.map(|width| Paragraph {
+                    width,
+                    align: *align,
+                });
+                let mut laid = Vec::new();
+                let mut line_ctx = ctx;
+                for line in lines {
+                    let items = match &line.kind {
+                        NodeKind::List(items) => items.as_slice(),
+                        _ => std::slice::from_ref(line),
+                    };
+                    let (boxx, after) = self.line(items, line_ctx)?;
+                    line_ctx = after;
+                    paragraph_lines(boxx, after, paragraph, &mut laid);
+                }
+                if laid.is_empty() {
+                    return Ok(Laid {
+                        boxx: MBox::empty(BoxKind::Vertical),
+                        italic: 0.0,
+                        char_glyph: None,
+                    });
+                }
+                let stack = self.stack_lines(laid, *align, 0.0)?;
+                let total = stack.height + stack.depth;
+                let axis = self.consts_at(&ctx).axis_height * ctx.size();
+                let height = total / 2.0 + axis;
                 Ok(Laid {
-                    boxx,
+                    boxx: MBox {
+                        kind: BoxKind::Vertical,
+                        width: stack.width,
+                        height,
+                        depth: (total / 2.0 - axis).max(0.0),
+                        children: vec![Positioned {
+                            dx: 0.0,
+                            dy: height - stack.height,
+                            node: MNode::Box(stack),
+                        }],
+                    },
                     italic: 0.0,
                     char_glyph: None,
                 })
@@ -1898,20 +2057,53 @@ impl Engine {
         }
     }
 
+    /// One word of a text run, as an atom: its glyphs, kerned, in the
+    /// colour in force.
+    fn text_word(
+        &self,
+        word: &str,
+        spans: Option<&[Span]>,
+        run_span: Span,
+        class: AtomClass,
+        ctx: LayCtx,
+    ) -> Result<LineItem, MathError> {
+        let span = match spans.and_then(|spans| spans.first().zip(spans.last())) {
+            Some((first, last)) => first.union(*last),
+            None => run_span,
+        };
+        let mut laid = self.word_box(word, span, spans, ctx, text_face(ctx), true)?;
+        if let Some(color) = ctx.color {
+            laid.boxx = colored_box(color, laid.boxx);
+        }
+        Ok(LineItem::Atom { laid, class })
+    }
+
+    /// TeX's interword glue after a space factor (tex.web §1044): from 2000
+    /// the font's extra space widens it (after a sentence's end, `.` `?`
+    /// `!`, and after `:`); the stretch grows and the shrink falls with the
+    /// factor. The text font's parameters are cmr10's at the size.
+    fn interword_glue(&self, ctx: LayCtx, space_factor: u16) -> GlueSpec {
+        let font = &crate::tfm::CMR10;
+        let size = ctx.size();
+        let factor = f64::from(space_factor) / 1000.0;
+        let extra = if space_factor >= 2000 {
+            font.param(7) * size
+        } else {
+            0.0
+        };
+        GlueSpec {
+            natural: self.space_width(ctx) + extra,
+            stretch: font.param(3) * size * factor,
+            shrink: font.param(4) * size / factor,
+            breakable: true,
+        }
+    }
+
+    /// The text font's interword space: cmr10's fontdimen 2 at the size,
+    /// the space TeX's interword glue and `\ ` take (the outline face's
+    /// own space advance is 0.0008 em narrower).
     fn space_width(&self, ctx: LayCtx) -> f64 {
-        let width = self
-            .faces
-            .font(FACE_REGULAR)
-            .map(|font| {
-                let gid = font.glyph_index(' ');
-                if gid == 0 {
-                    self.consts.fallback_space
-                } else {
-                    self.metrics_of(FACE_REGULAR, gid).advance
-                }
-            })
-            .unwrap_or(self.consts.fallback_space);
-        width * ctx.size()
+        crate::tfm::CMR10.space * ctx.size()
     }
 
     // ── The Appendix-G constructions ────────────────────────────────────
@@ -4301,6 +4493,219 @@ impl MNode {
             Self::Box(b) | Self::Colored(_, b) => b.depth,
             _ => 0.0,
         }
+    }
+}
+
+/// LaTeX's `\sfcode`s under `\nonfrenchspacing` (read from TeX under the
+/// Reference's template): sentence-ending punctuation 3000, `:` 2000, `;`
+/// 1500, `,` 1250, capital letters 999, and the closing marks `)`, `'` and
+/// `]` 0, which leave the factor as it was. The curly quotes stand for the
+/// `'` and `` ` `` they are made of.
+fn sfcode(ch: char) -> u16 {
+    match ch {
+        '.' | '?' | '!' => 3000,
+        ':' => 2000,
+        ';' => 1500,
+        ',' => 1250,
+        'A'..='Z' => 999,
+        ')' | '\'' | ']' | '\u{2019}' | '\u{201D}' => 0,
+        _ => 1000,
+    }
+}
+
+/// The space factor after a character (tex.web §1034): a code of 0 keeps
+/// it; a code above 1000 right after a capital (factor 999) gives 1000, so
+/// `U.S. Army` keeps ordinary spaces.
+fn space_factor_after(factor: u16, ch: char) -> u16 {
+    match sfcode(ch) {
+        0 => factor,
+        code if code <= 1000 || factor >= 1000 => code,
+        _ => 1000,
+    }
+}
+
+/// The space factor after a list's material. Text characters set it,
+/// including inside a font switch (`\emph{end.}`); declarations, spaces and
+/// ties leave it; anything else (math, a box) makes it 1000.
+fn space_factor_through(nodes: &[Node], factor: u16) -> u16 {
+    nodes.iter().fold(factor, |factor, node| match &node.kind {
+        NodeKind::TextRun { text, .. } => text
+            .chars()
+            .filter(|ch| *ch != ' ')
+            .fold(factor, space_factor_after),
+        NodeKind::TextStyled { body, .. } | NodeKind::List(body) => {
+            space_factor_through(body, factor)
+        }
+        NodeKind::StyleChange(_)
+        | NodeKind::SizeChange(_)
+        | NodeKind::ColorChange(_)
+        | NodeKind::AlignChange(_)
+        | NodeKind::LineSpacing(_)
+        | NodeKind::Space(_)
+        | NodeKind::Skip(_)
+        | NodeKind::DisplayKern { .. }
+        | NodeKind::Tie
+        | NodeKind::Fragment(_) => factor,
+        _ => 1000,
+    })
+}
+
+/// A laid paragraph line, broken when a [`Paragraph`] is given and the
+/// line is wider than it; each resulting line keeps `ctx`, the context its
+/// material ended in.
+fn paragraph_lines(
+    line: MBox,
+    ctx: LayCtx,
+    paragraph: Option<Paragraph>,
+    out: &mut Vec<(MBox, LayCtx)>,
+) {
+    match paragraph {
+        Some(paragraph) if line.width > paragraph.width => {
+            out.extend(
+                break_paragraph(line, paragraph)
+                    .into_iter()
+                    .map(|part| (part, ctx)),
+            );
+        }
+        _ => out.push((line, ctx)),
+    }
+}
+
+/// Break one laid line into the lines TeX's line breaker chooses
+/// ([`crate::linebreak`]) at its breakable glue, each glue being a legal
+/// break when a box precedes it. A break drops the glue after it; a line
+/// wider than the paragraph shrinks its glue, as far as the glue allows.
+/// Lines are never stretched: the ragged alignments put their slack in
+/// `\leftskip` and `\rightskip`.
+fn break_paragraph(line: MBox, paragraph: Paragraph) -> Vec<MBox> {
+    use crate::linebreak::{Breakpoint, Params, Totals, break_lines, sp};
+    let children = &line.children;
+    let count = children.len();
+    let glue = |k: usize| match &children[k].node {
+        MNode::Glue(spec) => Some(*spec),
+        _ => None,
+    };
+    // Each child's left edge (a glue child is placed at its right edge),
+    // and the running stretch and shrink before it.
+    let start: Vec<f64> = children
+        .iter()
+        .map(|child| match &child.node {
+            MNode::Glue(spec) => child.dx - spec.natural,
+            _ => child.dx,
+        })
+        .collect();
+    let mut running = Vec::with_capacity(count + 1);
+    let (mut stretch, mut shrink) = (0, 0);
+    for k in 0..count {
+        running.push((stretch, shrink));
+        if let Some(spec) = glue(k) {
+            stretch += sp(spec.stretch);
+            shrink += sp(spec.shrink);
+        }
+    }
+    running.push((stretch, shrink));
+    let totals = |k: usize, x: f64| Totals {
+        width: sp(x),
+        stretch: running[k].0,
+        shrink: running[k].1,
+    };
+    let Some(last) = (0..count).rev().find(|&k| glue(k).is_none()) else {
+        return vec![line];
+    };
+    // The paragraph's end drops its last glue (\par's \unskip).
+    let end_x = if last + 1 < count {
+        start[last + 1]
+    } else {
+        line.width
+    };
+    let mut points = Vec::new();
+    let mut spans = Vec::new();
+    for k in 1..count {
+        let Some(spec) = glue(k) else { continue };
+        if !spec.breakable || glue(k - 1).is_some() {
+            continue;
+        }
+        let Some(next) = (k + 1..count).find(|&m| glue(m).is_none()) else {
+            continue;
+        };
+        points.push(Breakpoint {
+            before: totals(k, start[k]),
+            after: totals(next, start[next]),
+            penalty: 0,
+            flagged: false,
+        });
+        spans.push((k, next));
+    }
+    let params = Params::tex_text(paragraph.width, paragraph.align == LineAlign::Center);
+    let chosen = break_lines(&points, totals(last + 1, end_x), &params);
+    if chosen.is_empty() {
+        return vec![line];
+    }
+    let mut lines = Vec::with_capacity(chosen.len() + 1);
+    let mut first = 0;
+    for index in chosen {
+        let (glue_at, next) = spans[index];
+        lines.push(set_line(
+            &children[first..glue_at],
+            start[first],
+            start[glue_at],
+            paragraph.width,
+        ));
+        first = next;
+    }
+    lines.push(set_line(
+        &children[first..=last],
+        start[first],
+        end_x,
+        paragraph.width,
+    ));
+    lines
+}
+
+/// One broken line from `left` to `right` of the original line: its
+/// children moved to the line's own origin, its glue shrunk when it is
+/// wider than `width` (TeX's glue set, §664: by the ratio that fits, at
+/// most the whole shrink).
+fn set_line(children: &[Positioned<MNode>], left: f64, right: f64, width: f64) -> MBox {
+    let natural = right - left;
+    let shrink: f64 = children
+        .iter()
+        .map(|child| match &child.node {
+            MNode::Glue(spec) => spec.shrink,
+            _ => 0.0,
+        })
+        .sum();
+    let ratio = if natural > width && shrink > 0.0 {
+        ((natural - width) / shrink).min(1.0)
+    } else {
+        0.0
+    };
+    let mut shift = left;
+    let mut height = 0.0_f64;
+    let mut depth = 0.0_f64;
+    let moved = children
+        .iter()
+        .map(|child| {
+            if let MNode::Glue(spec) = &child.node {
+                shift += ratio * spec.shrink;
+            }
+            if let MNode::Box(inner) | MNode::Colored(_, inner) = &child.node {
+                height = height.max(inner.height + child.dy);
+                depth = depth.max(inner.depth - child.dy);
+            }
+            Positioned {
+                dx: child.dx - shift,
+                dy: child.dy,
+                node: child.node.clone(),
+            }
+        })
+        .collect();
+    MBox {
+        kind: BoxKind::Horizontal,
+        width: natural - ratio * shrink,
+        height,
+        depth,
+        children: moved,
     }
 }
 

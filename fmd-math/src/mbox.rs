@@ -179,6 +179,9 @@ pub(crate) struct GlueSpec {
     pub(crate) stretch: f64,
     /// Shrink allowance, ems.
     pub(crate) shrink: f64,
+    /// A legal line break in a paragraph (TeX breaks at glue that follows
+    /// a box): interword spaces and `\hskip`s, not kerns or ties.
+    pub(crate) breakable: bool,
 }
 
 /// A child of a box, positioned relative to the box's origin (its left
@@ -381,6 +384,7 @@ mod tests {
                     natural: 3.0 / 18.0,
                     stretch: 1.5 / 18.0,
                     shrink: 1.0 / 18.0,
+                    breakable: false,
                 }),
             },
             Positioned {

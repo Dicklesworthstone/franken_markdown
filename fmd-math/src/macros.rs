@@ -70,6 +70,9 @@ pub struct MacroSet {
     /// functions, `\log`, `\ln`, `\exp`, `\det` and `\Pr` take its argument
     /// forms (`\cos(x)` is `\cos\mathopen{}\mathclose{\left(x\right)}`).
     physics: bool,
+    /// The document's `\linewidth`, in TeX's scaled points: TexText
+    /// paragraphs break lines wider than it. `None` never breaks.
+    line_width: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,7 +108,9 @@ impl MacroSet {
                 // option, whose function arguments the grammar sets
                 // (franken_manim fm-fm-physics-trig-parens-r11-nou8). The
                 // rest of its preamble is package loading with no native
-                // meaning. Keep the declared name for
+                // meaning. Its document is `\documentclass[preview]{standalone}`,
+                // whose \linewidth is 345 pt, where TexText paragraphs break
+                // (franken_manim fm-texttext-line-breaking-r11-bfdx). Keep the declared name for
                 // newcommand/renewcommand, but let the grammar select its
                 // authored AMS glyph instead of expanding it to a hyphen.
                 let mut defs = BTreeMap::new();
@@ -114,6 +119,7 @@ impl MacroSet {
                     defs,
                     disable_ligatures: true,
                     physics: true,
+                    line_width: Some(345 * 65_536),
                 })
             }
             "fmd-math/pack/basic" | "basic" | "fmd-math/pack/empty" | "empty" => Some(Self::new()),
@@ -179,17 +185,20 @@ impl MacroSet {
 
     /// A deterministic serialization of the whole table — the cache-key
     /// ingredient (hash these bytes; equal bytes ⇔ equal macro semantics).
-    /// Version 3: a version tag, ligature and physics flags and u64-LE
-    /// definition count;
+    /// Version 4: a version tag, ligature and physics flags, the line width
+    /// (a presence byte, then i64-LE scaled points) and u64-LE definition
+    /// count;
     /// then each sorted name as u64-LE byte length + UTF-8, followed by a
     /// native tag (0), or substitution tag (1), parameter byte and a
     /// length-prefixed UTF-8 body. Body control characters cannot imitate
     /// another definition, and native bindings differ from substitutions.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut out = b"fmd-math-macroset-v3\x1e".to_vec();
+        let mut out = b"fmd-math-macroset-v4\x1e".to_vec();
         out.push(u8::from(self.disable_ligatures));
         out.push(u8::from(self.physics));
+        out.push(u8::from(self.line_width.is_some()));
+        out.extend_from_slice(&self.line_width.unwrap_or(0).to_le_bytes());
         out.extend_from_slice(&(self.defs.len() as u64).to_le_bytes());
         for (name, def) in &self.defs {
             out.extend_from_slice(&(name.len() as u64).to_le_bytes());
@@ -221,6 +230,15 @@ impl MacroSet {
     #[must_use]
     pub fn physics(&self) -> bool {
         self.physics
+    }
+
+    /// The width, ems, past which TexText paragraph lines break (the
+    /// document's `\linewidth`): 34.5 under the default pack, as in the
+    /// Reference's document; `None` (one line per `\\`) otherwise.
+    #[must_use]
+    pub fn line_width(&self) -> Option<f64> {
+        #[allow(clippy::cast_precision_loss)]
+        self.line_width.map(|sp| sp as f64 / 655_360.0)
     }
 }
 

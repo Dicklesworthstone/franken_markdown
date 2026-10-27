@@ -86,6 +86,7 @@ mod drawn;
 mod error;
 pub mod faces;
 mod layout;
+mod linebreak;
 pub mod macros;
 pub mod mathml;
 pub mod mbox;

@@ -2637,3 +2637,191 @@ fn the_logos_are_the_kernels_constructions_in_computer_modern() {
     let e_glyph = &l.glyphs[3];
     assert!(close(e_glyph.y, -2.15277), "{e_glyph:?}");
 }
+
+/// The lines of a laid plain-text paragraph, top to bottom: each line's
+/// baseline, left edge, right edge (its last glyph's advance) and the
+/// characters it sets. Every glyph of a plain-text line sits on its
+/// baseline, and text glyphs take cmr10's widths.
+fn text_lines(layout: &Layout) -> Vec<(f64, f64, f64, String)> {
+    let mut lines: Vec<(f64, f64, f64, String)> = Vec::new();
+    for g in &layout.glyphs {
+        let code = u8::try_from(g.ch).unwrap();
+        let advance = fmd_math::tfm::CMR10.char(code).unwrap().width * g.size;
+        match lines.iter_mut().find(|line| (line.0 - g.y).abs() < EPS) {
+            Some(line) => {
+                line.2 = g.x + advance;
+                line.3.push(g.ch);
+            }
+            None => lines.push((g.y, g.x, g.x + advance, g.ch.to_string())),
+        }
+    }
+    lines.sort_by(|a, b| b.0.total_cmp(&a.0));
+    lines
+}
+
+/// TeX's lines of a `\centering` paragraph at 345 pt, as `(natural width
+/// in pt, characters)` from `\showbox` and each line's `\unhcopy` (OT1
+/// cmr10, fmd-math's text metrics, in `article`), against fmd-math's
+/// `center` block under the default pack.
+fn assert_breaks_like_tex(text: &str, tex: &[(f64, &str)]) {
+    use fmd_math::MacroSet;
+    let pack = MacroSet::pack("fmd-math/pack/default").unwrap();
+    let source = format!(r"\begin{{center}}{text}\end{{center}}");
+    let layout = engine().typeset_text_with_macros(&source, &pack).unwrap();
+    let lines = text_lines(&layout);
+    assert_eq!(lines.len(), tex.len(), "{text}: {lines:?}");
+    let centre = (lines[0].1 + lines[0].2) / 2.0;
+    for (i, ((y, left, right, chars), (natural_pt, tex_chars))) in lines.iter().zip(tex).enumerate()
+    {
+        assert_eq!(
+            chars,
+            &tex_chars.replace([' ', '~'], ""),
+            "{text}: line {i}"
+        );
+        // A line wider than 345 pt shrinks its glue to exactly 345 pt.
+        let set = (natural_pt / 10.0).min(34.5);
+        assert!(
+            ((right - left) - set).abs() < 1e-4,
+            "{text}: line {i} is {} wide, TeX {set}",
+            right - left
+        );
+        // Centred lines share a centre, and stack \baselineskip apart.
+        assert!(
+            ((left + right) / 2.0 - centre).abs() < 1e-4,
+            "{text}: line {i} centre"
+        );
+        assert!(
+            (y - (lines[0].0 - 1.2 * i as f64)).abs() < 1e-9,
+            "{text}: line {i} baseline {y}"
+        );
+    }
+}
+
+#[test]
+fn a_paragraph_wider_than_its_line_breaks_where_tex_breaks_it() {
+    // The default pack's line is the Reference's \linewidth, 345 pt. Every
+    // ragged line has badness 0, so TeX's tie rule fills the first line;
+    // the second line's width includes the extra space after "it." (TeX's
+    // space factor).
+    assert_breaks_like_tex(
+        "Every paragraph that is wider than its line breaks where the line breaker of TeX would break it. The lines are centred, and they stack twelve points apart.",
+        &[
+            (
+                331.9172,
+                "Every paragraph that is wider than its line breaks where the line breaker of",
+            ),
+            (
+                344.7227,
+                "TeX would break it. The lines are centred, and they stack twelve points apart.",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_line_shrinks_rather_than_breaking_when_tex_shrinks_it() {
+    // One letter shorter, the first line takes "TeX" by shrinking its
+    // interword glue (glue set -0.09111, badness 1): demerits 121 beat
+    // the 100 a further break would add to the next line's.
+    assert_breaks_like_tex(
+        "Every paragraph that is wider than its line breaks where is line breaker of TeX would break it. The lines are centred, and they stack twelve points apart.",
+        &[
+            (
+                346.4172,
+                "Every paragraph that is wider than its line breaks where is line breaker of TeX",
+            ),
+            (
+                323.0561,
+                "would break it. The lines are centred, and they stack twelve points apart.",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_tie_is_not_a_line_break() {
+    assert_breaks_like_tex(
+        "Words joined by a tie stay together on one line, even near the end of a long line of words that would otherwise break.",
+        &[
+            (
+                331.3061,
+                "Words joined by a tie stay together on one line, even near the end of a long",
+            ),
+            (181.3059, "line of words that would otherwise break."),
+        ],
+    );
+    assert_breaks_like_tex(
+        "Words joined by a tie stay together on one line, even near the end of a long~line of words that would otherwise break.",
+        &[
+            (
+                309.6394,
+                "Words joined by a tie stay together on one line, even near the end of a",
+            ),
+            (202.9726, "long~line of words that would otherwise break."),
+        ],
+    );
+}
+
+#[test]
+fn packs_without_a_line_width_never_break() {
+    use fmd_math::MacroSet;
+    let text = r"\begin{center}Every paragraph that is wider than its line breaks where the line breaker of TeX would break it.\end{center}";
+    for pack in ["empty", "basic"] {
+        let pack = MacroSet::pack(pack).unwrap();
+        assert_eq!(pack.line_width(), None);
+        let layout = engine().typeset_text_with_macros(text, &pack).unwrap();
+        assert_eq!(text_lines(&layout).len(), 1);
+    }
+    assert_eq!(MacroSet::pack("default").unwrap().line_width(), Some(34.5));
+}
+
+#[test]
+fn interword_glue_follows_texs_space_factor() {
+    // TeX's \hbox widths (OT1 cmr10, `article`, \nonfrenchspacing): from a
+    // space factor of 2000 the space gains cmr10's extra space; a capital
+    // before the period keeps the factor at 1000, and `)` passes it on.
+    let e = engine();
+    for (text, tex_pt) in [
+        ("Yes. No", 34.77782),
+        ("Yes No", 30.88892),
+        ("U.S. Army", 46.69455),
+        ("end.) Next", 47.77788),
+        ("a, b; c: d", 40.00006),
+        ("Why? Because! So", 82.69460),
+        ("$x$. Next", 34.04866),
+    ] {
+        let width = e.typeset_text(text).unwrap().width;
+        assert!(
+            (width - tex_pt / 10.0).abs() < 1e-4,
+            "{text}: {width} vs TeX {}",
+            tex_pt / 10.0
+        );
+    }
+    // Across a font switch: the factor after `\emph{end.}` is the
+    // period's, so the space after it is the widened one.
+    let spaced = e.typeset_text(r"\emph{end.} Next").unwrap().width;
+    let joined = e.typeset_text(r"\emph{end.}Next").unwrap().width;
+    let font = &fmd_math::tfm::CMR10;
+    assert!((spaced - joined - (font.space + font.param(7))).abs() < 1e-6);
+}
+
+#[test]
+fn size_declarations_set_latexs_baselineskip() {
+    // size10.clo: \Large is 14.4 pt on an 18 pt \baselineskip, \small 9 pt
+    // on 11 pt; normal lines are 12 pt apart.
+    let e = engine();
+    for (text, pitch) in [
+        (r"\Large ab\\cd", 1.8),
+        (r"\small ab\\cd", 1.1),
+        (r"ab\\cd", 1.2),
+        (r"\begin{center}\Large ab\\cd\end{center}", 1.8),
+    ] {
+        let layout = e.typeset_text(text).unwrap();
+        let lines = text_lines(&layout);
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(
+            (lines[0].0 - lines[1].0 - pitch).abs() < 1e-9,
+            "{text}: {lines:?}"
+        );
+    }
+}

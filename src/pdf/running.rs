@@ -914,6 +914,7 @@ pub(super) fn draw_page(
                     image,
                     placement.x,
                     placement.y,
+                    false,
                     image_index,
                     page_resources,
                     subsets,

@@ -2266,6 +2266,8 @@ struct PdfWordContext<'a> {
     /// tag so mixed-script paragraphs cannot reuse English points for German.
     hyphen_cache: &'a RefCell<HashMap<String, Vec<usize>>>,
     width_cache: &'a RefCell<WidthCache>,
+    /// Only overfull image-containing source words gain object-boundary breaks.
+    image_measure: Option<LayoutUnit>,
 }
 
 #[derive(Clone, Copy)]
@@ -17258,6 +17260,8 @@ fn wrap_cell_styled(
     let mut cur_w = 0.0;
     let mut pending: Option<Tok> = None;
     for t in toks {
+        let fitted_image = inline_image::fitted_token(t, size, max_width);
+        let t = fitted_image.as_ref().unwrap_or(t);
         if t.hard_break {
             pending = None;
             if !cur.is_empty() {
@@ -17282,8 +17286,8 @@ fn wrap_cell_styled(
         // boundaries so it can never overflow the column (and run off the page);
         // this preserves the run's style. The leftover tail stays on the current
         // line so a following word can still pack after it.
-        // Formulas and images are never split: at worst one sits alone on
-        // its row (the column allocator reserves its width as min-content).
+        // Inline objects are never split. Images have already been fitted to
+        // this cell; formulas retain the allocator's min-content behavior.
         if ww > max_width && max_width > 0.0 && !is_inline_object(t.slot) {
             if !cur.is_empty() {
                 lines.push(build_cell_line_owned(
@@ -19155,6 +19159,7 @@ struct TokMeasureRun {
 /// link flags) that produced it. Words -> `Box`; a single space between two
 /// words -> `Glue`; a trailing forced penalty ends the paragraph. Leading,
 /// duplicate, and trailing spaces are collapsed for cleaner breakpoints.
+#[allow(clippy::too_many_arguments)]
 fn build_paragraph<'a>(
     toks: &[Tok],
     fs: FontSize,
@@ -19163,6 +19168,7 @@ fn build_paragraph<'a>(
     doc_lang: Option<&'a str>,
     hyphen_cache: &'a RefCell<HashMap<String, Vec<usize>>>,
     width_cache: &'a RefCell<WidthCache>,
+    image_measure: Option<LayoutUnit>,
 ) -> BuiltParagraph {
     let mut built = BuiltParagraph::with_capacity(toks.len().saturating_add(1));
     let mut word: Vec<Tok> = Vec::new();
@@ -19173,6 +19179,7 @@ fn build_paragraph<'a>(
         doc_lang,
         hyphen_cache,
         width_cache,
+        image_measure,
     };
 
     for tok in toks {
@@ -19411,6 +19418,48 @@ fn fill_pdf_emergency_break_points(len: usize, points: Vec<PdfBreakPoint>) -> Ve
 
 fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordContext<'_>) {
     if word.is_empty() {
+        return;
+    }
+
+    // Adjacent badges, or prose touching an image without spaces, otherwise
+    // form one indivisible word even after each image fits by itself. Give an
+    // overfull group break opportunities around its images without adding a
+    // visible space or changing already-fitting source words. Text-only parts
+    // keep the ordinary hyphenation policy; formulas remain indivisible.
+    if word.len() > 1
+        && word.iter().any(|tok| tok.slot == F_IMAGE)
+        && cx.image_measure.is_some_and(|measure| {
+            measure_word_cached(word, cx.fs, cx.faces, cx.width_cache) > measure
+        })
+    {
+        let mut first = true;
+        let mut emit = |part: &mut Vec<Tok>| {
+            if part.is_empty() {
+                return;
+            }
+            if !first {
+                built.items.push(ParagraphItem::Penalty(Penalty {
+                    width: LayoutUnit::ZERO,
+                    penalty: 0,
+                    flagged: false,
+                }));
+                built.item_toks.push(TokGroup::empty());
+                built.break_toks.push(None);
+            }
+            flush_pdf_word(built, part, cx);
+            first = false;
+        };
+        let mut part = Vec::new();
+        for tok in std::mem::take(word) {
+            if tok.slot == F_IMAGE {
+                emit(&mut part);
+                part.push(tok);
+                emit(&mut part);
+            } else {
+                part.push(tok);
+            }
+        }
+        emit(&mut part);
         return;
     }
 
@@ -19873,11 +19922,24 @@ impl<'a> PdfWordSplitter<'a> {
     }
 }
 
+/// Image-bearing paragraphs use the available width after indentation, even
+/// below the historical minimum retained for text-only paragraphs.
+fn inline_paragraph_measure(toks: &[Tok], page: PageGeom, indent: f32) -> LayoutUnit {
+    let width = if toks.iter().any(|tok| tok.slot == F_IMAGE) {
+        // An indented image must fit the real remaining body, even when it is
+        // narrower than the historical text-only paragraph minimum.
+        (page.right_x() - page.left - indent).max(1.0)
+    } else {
+        (page.content_w - indent).max(MIN_CONTENT_DIM)
+    };
+    lu_from_points_f32(width)
+}
+
 /// Optimal-break (Knuth-Plass) styled tokens into baseline lines of positioned
 /// segments. Falls back to the greedy wrapper only if the optimizer yields
 /// nothing (effectively unreachable given the trailing forced penalty).
 fn layout_inlines(
-    toks: Vec<Tok>,
+    mut toks: Vec<Tok>,
     indent: f32,
     size: f32,
     gap_after: f32,
@@ -19888,6 +19950,8 @@ fn layout_inlines(
     let start = out.len();
     let left = cx.page.left + indent;
     let fs = font_size_of(size);
+    let content_w = inline_paragraph_measure(&toks, cx.page, indent);
+    inline_image::fit_tokens(&mut toks, size, content_w.to_points_f32());
     let mut policy = ParagraphPolicy::for_flow(flow.kind);
     // Microtypography is justified-paragraph-only (ragged flows get nothing,
     // mirroring the expansion-credit rule): the solver must never produce a
@@ -19911,6 +19975,7 @@ fn layout_inlines(
         cx.opts.lang.as_deref(),
         &cx.hyphen_cache,
         &cx.width_cache,
+        Some(content_w),
     );
 
     // No renderable words -> just advance the vertical gap (old empty behavior).
@@ -19919,7 +19984,6 @@ fn layout_inlines(
         return;
     }
 
-    let content_w = lu_from_points_f32((cx.page.content_w - indent).max(MIN_CONTENT_DIM));
     cx.break_paragraph(&built.items, content_w, policy);
     if cx.line_breaks.is_empty() {
         // Emergency fallback: the optimizer produced nothing.
@@ -20120,7 +20184,7 @@ struct PrefixSpec {
 }
 
 fn layout_prefixed_inlines(
-    toks: Vec<Tok>,
+    mut toks: Vec<Tok>,
     marker: Seg,
     spec: PrefixSpec,
     out: &mut Vec<Line>,
@@ -20129,6 +20193,8 @@ fn layout_prefixed_inlines(
     let start = out.len();
     let left = cx.page.left + spec.content_indent;
     let fs = font_size_of(spec.size);
+    let content_w = inline_paragraph_measure(&toks, cx.page, spec.content_indent);
+    inline_image::fit_tokens(&mut toks, spec.size, content_w.to_points_f32());
     let mut policy = ParagraphPolicy::for_flow(spec.flow.kind);
     policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
     policy.river_penalty = cx.opts.river_penalty;
@@ -20141,6 +20207,7 @@ fn layout_prefixed_inlines(
         cx.opts.lang.as_deref(),
         &cx.hyphen_cache,
         &cx.width_cache,
+        Some(content_w),
     );
 
     if !built.has_boxes {
@@ -20168,8 +20235,6 @@ fn layout_prefixed_inlines(
         return;
     }
 
-    let content_w =
-        lu_from_points_f32((cx.page.content_w - spec.content_indent).max(MIN_CONTENT_DIM));
     cx.break_paragraph(&built.items, content_w, policy);
     if cx.line_breaks.is_empty() {
         let before = out.len();
@@ -20261,7 +20326,7 @@ fn layout_prefixed_inlines(
 /// regression oracle in tests).
 #[allow(clippy::too_many_arguments)]
 fn layout_inlines_greedy(
-    toks: Vec<Tok>,
+    mut toks: Vec<Tok>,
     indent: f32,
     size: f32,
     gap_after: f32,
@@ -20271,7 +20336,8 @@ fn layout_inlines_greedy(
     out: &mut Vec<Line>,
 ) {
     let left = page.left + indent;
-    let max = (page.content_w - indent).max(MIN_CONTENT_DIM);
+    let max = inline_paragraph_measure(&toks, page, indent).to_points_f32();
+    inline_image::fit_tokens(&mut toks, size, max);
     let mut lines: Vec<Vec<Tok>> = Vec::new();
     let mut cur: Vec<Tok> = Vec::new();
     let mut cur_w = 0.0_f32;
@@ -23331,6 +23397,7 @@ fn generate_page_content(
                         image,
                         line.rule_x,
                         y,
+                        false,
                         image_index,
                         &mut page_resources,
                         subsets,
@@ -24669,7 +24736,11 @@ fn svg_transform_preserves_stroke_scale(transform: SvgTransform) -> bool {
         && (transform.d - 1.0).abs() <= 0.0001
 }
 
-fn append_svg_image_transform_prefix(body: &mut String, transform: SvgImageTransform) {
+fn append_svg_image_transform_prefix(
+    body: &mut String,
+    transform: SvgImageTransform,
+    precise: bool,
+) {
     body.push_str("q ");
     if let Some((x, y, w, h)) = transform.viewport_clip {
         append_pdf_num(body, x);
@@ -24681,15 +24752,53 @@ fn append_svg_image_transform_prefix(body: &mut String, transform: SvgImageTrans
         append_pdf_num(body, h);
         body.push_str(" re W n ");
     }
-    append_pdf_cm_operator(
-        body,
-        transform.sx,
-        0.0,
-        0.0,
-        -transform.sy,
-        transform.tx,
-        transform.ty,
-    );
+    if precise {
+        // A tiny scale rounded to two decimals can enlarge a fitted banner
+        // beyond its cell or erase it entirely. Keep at least nine significant
+        // digits, including subnormal f32 scales, without PDF-forbidden
+        // exponent notation. This path is used only by fitted inline images.
+        for (index, value) in [
+            transform.sx,
+            0.0,
+            0.0,
+            -transform.sy,
+            transform.tx,
+            transform.ty,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index != 0 {
+                body.push(' ');
+            }
+            let value = finite_pdf_scalar(value);
+            let mut magnitude = value.abs();
+            let mut precision = 9;
+            while magnitude > 0.0 && magnitude < 1.0 && precision < 55 {
+                magnitude *= 10.0;
+                precision += 1;
+            }
+            let start = body.len();
+            let _ = write!(body, "{value:.precision$}");
+            while body.len() > start && body.ends_with('0') {
+                body.pop();
+            }
+            if body.ends_with('.') {
+                body.pop();
+            }
+        }
+        body.push_str(" cm");
+    } else {
+        append_pdf_cm_operator(
+            body,
+            transform.sx,
+            0.0,
+            0.0,
+            -transform.sy,
+            transform.tx,
+            transform.ty,
+        );
+    }
     body.push('\n');
 }
 
@@ -24860,6 +24969,7 @@ fn draw_svg_image(
     image: &ImageLine,
     x: f32,
     y: f32,
+    precise_transform: bool,
     image_index: &BTreeMap<&str, usize>,
     page_resources: &mut SvgPageResources<'_>,
     subsets: &[EmbeddedFace<'_>],
@@ -24914,7 +25024,7 @@ fn draw_svg_image(
             continue;
         }
         if !in_shape_group {
-            append_svg_image_transform_prefix(body, transform);
+            append_svg_image_transform_prefix(body, transform, precise_transform);
             in_shape_group = true;
         }
         draw_svg_shape(
@@ -29266,6 +29376,7 @@ fn draw_inline_image_seg(
             &line_image,
             seg.x,
             bottom,
+            parts.max_width.is_some(),
             draw.image_index,
             draw.page_resources,
             draw.subsets,
@@ -35586,6 +35697,7 @@ mod pdf_writer_tests {
             None,
             &cache,
             &width_cache,
+            None,
         );
         let expected = toks.len().saturating_add(1);
 
@@ -35648,7 +35760,8 @@ mod pdf_writer_tests {
         ];
 
         for (case_idx, (toks, policy)) in cases.into_iter().enumerate() {
-            let built = build_paragraph(&toks, fs, &faces, policy, None, &cache, &width_cache);
+            let built =
+                build_paragraph(&toks, fs, &faces, policy, None, &cache, &width_cache, None);
             let scanned = built
                 .items
                 .iter()
@@ -35683,7 +35796,8 @@ mod pdf_writer_tests {
         ] {
             let mut toks = Vec::new();
             push_text_tokens(text, F_BODY, false, None, &mut toks);
-            let built = build_paragraph(&toks, fs, &faces, policy, None, &cache, &width_cache);
+            let built =
+                build_paragraph(&toks, fs, &faces, policy, None, &cache, &width_cache, None);
             let boxes: Vec<_> = built
                 .items
                 .iter()
@@ -35765,6 +35879,7 @@ mod pdf_writer_tests {
             None,
             &cache,
             &width_cache,
+            None,
         );
         assert!(
             built
@@ -35801,6 +35916,7 @@ mod pdf_writer_tests {
             None,
             &cache,
             &width_cache,
+            None,
         );
         let boxes = built
             .items
@@ -38033,7 +38149,7 @@ mod pdf_writer_tests {
             viewport_clip: Some((3.0, 4.5, 20.25, 30.75)),
         };
         let mut direct = String::new();
-        append_svg_image_transform_prefix(&mut direct, transform);
+        append_svg_image_transform_prefix(&mut direct, transform, false);
         let legacy = format!(
             "q {x} {y} {w} {h} re W n {a} 0 0 {d} {e} {f} cm\n",
             x = pdf_num(3.0),

@@ -141,3 +141,30 @@ fn oversized_epub_images_fail_before_replacing_existing_output() {
         b"keep existing publication"
     );
 }
+
+#[test]
+fn xml_invalid_epub_source_fails_before_replacing_existing_publication() {
+    let dir = workspace();
+    std::fs::write(
+        dir.join("document.md"),
+        "# Publication\n\nBefore\u{1f}after.\n",
+    )
+    .unwrap();
+    let saved = b"previous successful publication";
+    std::fs::write(dir.join("document.epub"), saved).unwrap();
+    let output = export(&dir, &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(70),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains("XML 1.0-forbidden character U+001F"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("chapter-1.xhtml"), "{diagnostic}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(std::fs::read(dir.join("document.epub")).unwrap(), saved);
+}

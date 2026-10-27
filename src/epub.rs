@@ -31,6 +31,10 @@
 //! XHTML well-formedness. MathML emitted by the crate's math engine is already
 //! namespace-qualified and free of self-closing tags, so it passes through
 //! unchanged. The manifest declares embedded MathML and SVG content.
+//! Unavailable images retain visible alternative text and source metadata,
+//! without leaving external image requests in the publication. XML-forbidden
+//! Unicode scalars fail before archive emission instead of producing an EPUB
+//! that reading systems cannot parse.
 //!
 //! Determinism: no clocks, no environment reads, no hash-iteration leaks. The
 //! one timestamp-shaped field the EPUB 3 schema mandates
@@ -82,6 +86,9 @@ const CONTAINER_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 /// metadata derives from the content itself. Supported base64 PNG, JPEG,
 /// GIF and SVG images become deduplicated archive resources. The core never
 /// fetches missing images from the network or filesystem.
+/// Missing or unsupported images become visible, accessible text placeholders
+/// retaining their alternative text, title and original source URL. Supply
+/// `opts.image_assets` to include those illustrations in the publication.
 ///
 /// The default stylesheet follows `opts.theme`: body family, relative text
 /// scale, heading/code/table hierarchy, spacing, light/dark palettes and code
@@ -102,6 +109,8 @@ const CONTAINER_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 /// validate, instance and subset successfully within 32 MiB per face, 128 MiB
 /// aggregate, 64 MiB repertoire text and 65536 characters. Font-enabled
 /// publications additionally enforce a 256 MiB uncompressed-content limit.
+/// XML 1.0-forbidden characters in emitted text or metadata also return
+/// [`RenderError::InvalidInput`], with the affected member and byte offset.
 pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     let mut repertoire = embedded_fonts::Repertoire::new(embedded_fonts::enabled(opts)?);
     let title = opts
@@ -159,6 +168,9 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     fonts.link(&mut chapter, opts.custom_css.is_some())?;
     fonts.link(&mut nav, opts.custom_css.is_some())?;
     fonts.manifest(&mut opf)?;
+    validate_xml_characters(&chapter, "chapter-1.xhtml")?;
+    validate_xml_characters(&nav, "nav.xhtml")?;
+    validate_xml_characters(&opf, "content.opf")?;
     fonts.check_output(
         [
             chapter.len(),
@@ -319,6 +331,24 @@ fn push_void_tag_xhtml(tag: &str, out: &mut String) {
 
 // ---------------------------------------------------------------------------
 // XML escaping (total: every text node and attribute value passes through).
+
+/// XML 1.0's Char production excludes C0 controls other than TAB/LF/CR and
+/// U+FFFE/U+FFFF. Rust strings already exclude surrogate code points. Numeric
+/// escaping cannot make these scalars legal, so refuse the publication without
+/// silently deleting or replacing user text. This is a character admission
+/// check, not a claim to implement a general-purpose XML validator.
+fn validate_xml_characters(text: &str, member: &str) -> Result<()> {
+    if let Some((offset, ch)) = text.char_indices().find(|(_, ch)| {
+        (*ch < '\u{20}' && !matches!(ch, '\t' | '\n' | '\r'))
+            || matches!(ch, '\u{fffe}' | '\u{ffff}')
+    }) {
+        return Err(RenderError::InvalidInput(format!(
+            "epub: {member} contains XML 1.0-forbidden character U+{:04X} at byte {offset}; remove it from the source or metadata",
+            u32::from(ch)
+        )));
+    }
+    Ok(())
+}
 
 /// XML text-node escaping: `&`, `<`, `>` — the same byte set as the scanner's
 /// HTML text scanner, so bulk-copy clean runs between escapable bytes. All

@@ -716,7 +716,15 @@ fn epub_container_and_opf_are_well_formed() {
 
 #[test]
 fn epub_chapter_and_nav_are_well_formed_xhtml() {
-    let bytes = fixture_epub(&HtmlOptions::default());
+    const CHART_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
+        31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    let bytes = fixture_epub(&HtmlOptions {
+        image_assets: vec![franken_markdown::PdfImageAsset::new("chart.png", CHART_PNG)],
+        ..HtmlOptions::default()
+    });
 
     let chapter = entry_text(&bytes, "OEBPS/chapter-1.xhtml");
     assert_well_formed_xml(&chapter);
@@ -739,7 +747,7 @@ fn epub_chapter_and_nav_are_well_formed_xhtml() {
     );
     assert!(chapter.contains("<br/>"), "hard break self-closed");
     assert!(
-        chapter.contains("<img src=\"chart.png\" alt=\"chart\" title=\"Chart\"/>"),
+        chapter.contains("<img src=\"assets/image-1.png\" alt=\"chart\" title=\"Chart\"/>"),
         "image self-closed"
     );
     assert!(
@@ -1042,3 +1050,6 @@ fn book_raw_html_resources_and_anchors_resolve_in_every_publication() {
         "all links in this book are internal"
     );
 }
+
+#[path = "epub/validity.rs"]
+mod epub_validity;

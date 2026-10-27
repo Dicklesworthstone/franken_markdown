@@ -13,8 +13,8 @@ ZIP writer and manifest builder each emit them once. Every referring chapter
 keeps its own SVG/MathML properties. There is no process-global cache, source-AST
 mutation, filesystem access, or network fetch.
 
-Only img/src attributes are rewritten. Prose, code, links, alt text, other
-attributes and quoted tag-shaped text retain their bytes. Raw image bytes enter
+For packaged images, only img/src attributes are rewritten. Prose, code,
+links, alt text, other attributes and quoted tag-shaped text retain their bytes. Raw image bytes enter
 the publication identifier before rewriting, so changing a shared illustration
 still changes the content-derived edition identity.
 
@@ -54,3 +54,27 @@ Five additional regressions exercise exact acceptance and one-byte refusal
 through the real book preparation path, with and without fonts; metadata-only
 expansion; repeated images whose transient HTML exceeds their packaged content;
 and overflow-safe, nonmutating budget refusal. They are authored, not executed.
+
+## Unavailable images and XML text
+
+An image whose bytes were not supplied is represented by a visible
+`[Image unavailable: alternative text]` placeholder in single-document and book
+EPUB exports. It keeps an accessible label, the original title and
+`data-image-source` metadata. An enclosing hyperlink remains intact. Native book
+receipts continue to report their existing missing/unsupported image warnings.
+Provide `HtmlOptions.image_assets`, `BookRenderer::set_image`, or the native
+`--pdf-image DEST=PATH` override to embed the illustration instead. Supplied
+remote URL keys are supported and are never fetched by the render core.
+
+This replaces broken image references in the archive. EPUB 3.3
+[requires images inside the container](https://www.w3.org/TR/epub-33/#sec-resource-locations);
+adding a `remote-resources` property would not make an externally hosted image
+conforming. Ordinary web hyperlinks and resolved image resource bytes are
+unchanged. This behavior does not validate arbitrary custom CSS or SVG payloads.
+
+If emitted chapter text, navigation or metadata contains a character excluded
+by the [XML 1.0 character range](https://www.w3.org/TR/xml/#charsets), export
+returns `InvalidInput` identifying the archive member, code point and byte
+offset. The source is not silently changed and no archive is returned. Native
+render exits with code 70 before replacing an existing output. TAB, LF, CR,
+legal Unicode text and escaped literal entity examples retain their behavior.

@@ -7,7 +7,7 @@ use franken_markdown::{Book, HtmlOptions, PdfImageAsset, RenderError, Result};
 use super::{
     Block, CONTAINER_XML, DCTERMS_MODIFIED, MIMETYPE, NavHeading, ZipWriter, chapter_xhtml,
     collect_headings, embedded_fonts, escape_xml_attr, escape_xml_text, extract_main_body, fnv1a64,
-    html_fragment_to_xhtml, push_nav_headings, resources, theme,
+    html_fragment_to_xhtml, push_nav_headings, resources, theme, validate_xml_characters,
 };
 
 #[path = "book_images.rs"]
@@ -49,6 +49,8 @@ struct PreparedBook {
 /// occurrence retains its generated filename. Unique payloads, not references,
 /// count toward the book's image limits.
 /// No filesystem or network access occurs in the render core.
+/// Unavailable images retain visible alternative text and original source
+/// metadata rather than references to resources absent from the container.
 ///
 /// `opts.title` and `opts.lang` describe the book. Chapter titles and language
 /// overrides come from the book model. `opts.custom_css` replaces the default
@@ -68,6 +70,8 @@ struct PreparedBook {
 /// repertoire limits as single-document EPUB export. Fonts are validated and
 /// instanced once per book, declared once, and linked from every chapter and
 /// the navigation document. Custom CSS stays verbatim and last in the cascade.
+/// XML 1.0-forbidden characters in emitted text or metadata are rejected
+/// before any archive bytes are returned.
 pub fn render_book_epub(book: &Book, opts: &HtmlOptions) -> Result<Vec<u8>> {
     let prepared = prepare_book(book, opts)?;
     let mut zip = ZipWriter::new();
@@ -216,11 +220,14 @@ fn prepare_book_with_budget(
     }
     for chapter in &mut chapters {
         fonts.link(&mut chapter.xhtml, opts.custom_css.is_some())?;
+        validate_xml_characters(&chapter.xhtml, &chapter.file)?;
     }
     let mut opf = package(title, lang, &identity.finish(), &chapters);
     let mut nav = navigation(title, lang, &chapters);
     fonts.manifest(&mut opf)?;
     fonts.link(&mut nav, opts.custom_css.is_some())?;
+    validate_xml_characters(&opf, "content.opf")?;
+    validate_xml_characters(&nav, "nav.xhtml")?;
     let prepared = PreparedBook {
         chapters,
         opf,

@@ -24,7 +24,9 @@ pub(super) struct Chapter {
 }
 
 /// Package supported base64 image URLs in first-use order. Identical URLs
-/// share one resource. Other URLs retain their existing renderer semantics.
+/// share one resource. An unavailable image becomes an explicit, accessible
+/// text placeholder: EPUB requires images inside the container, and this
+/// pure core cannot fetch an unresolved local or remote destination.
 pub(super) fn prepare(html: &str) -> Result<Chapter, &'static str> {
     prepare_with_prefix(html, "")
 }
@@ -105,6 +107,8 @@ pub(super) fn prepare_with_prefix(html: &str, prefix: &str) -> Result<Chapter, &
             chapter.body.push_str(&tag[..range.start]);
             chapter.body.push_str(&chapter.resources[index].href);
             chapter.body.push_str(&tag[range.end..]);
+        } else if opens(tag, "img") {
+            push_image_fallback(tag, &mut chapter.body);
         } else {
             chapter.body.push_str(tag);
         }
@@ -112,6 +116,56 @@ pub(super) fn prepare_with_prefix(html: &str, prefix: &str) -> Result<Chapter, &
     }
     chapter.body.push_str(rest);
     Ok(chapter)
+}
+
+/// Preserve the image's alternative text and source without leaving an
+/// unmanifested resource reference in an otherwise readable publication.
+/// Attribute values here have already been escaped by the HTML renderer.
+/// Keep their entity references intact; escape raw quotes/angles as well so
+/// the scanner's accepted single-quoted values remain safe when rewrapped.
+fn push_image_fallback(tag: &str, out: &mut String) {
+    fn value(value: &str, out: &mut String) {
+        for part in value.split_inclusive(['<', '>', '"']) {
+            if let Some((last, prefix)) = part.as_bytes().split_last() {
+                let replacement = match last {
+                    b'<' => "&lt;",
+                    b'>' => "&gt;",
+                    b'"' => "&quot;",
+                    _ => {
+                        out.push_str(part);
+                        continue;
+                    }
+                };
+                out.push_str(&part[..prefix.len()]);
+                out.push_str(replacement);
+            }
+        }
+    }
+
+    let alt = attribute(tag, "alt").map(|range| &tag[range]);
+    out.push_str(
+        "<span class=\"fmd-image-unavailable\" role=\"img\" aria-label=\"Image unavailable",
+    );
+    if let Some(alt) = alt.filter(|text| !text.is_empty()) {
+        out.push_str(": ");
+        value(alt, out);
+    }
+    out.push('"');
+    for (original, name) in [("src", "data-image-source"), ("title", "title")] {
+        if let Some(range) = attribute(tag, original) {
+            out.push(' ');
+            out.push_str(name);
+            out.push_str("=\"");
+            value(&tag[range], out);
+            out.push('"');
+        }
+    }
+    out.push_str(">[Image unavailable");
+    if let Some(alt) = alt.filter(|text| !text.is_empty()) {
+        out.push_str(": ");
+        value(alt, out);
+    }
+    out.push_str("]</span>");
 }
 
 /// The first unquoted `>`; quoted attribute values may contain `>` or `<`.
@@ -285,18 +339,68 @@ mod tests {
     }
 
     #[test]
-    fn leaves_external_unsupported_and_malformed_images_unchanged() -> Result<(), &'static str> {
+    fn unavailable_images_keep_visible_alternatives_without_resource_requests()
+    -> Result<(), &'static str> {
         for html in [
             "<img src=\"https://example.com/a.png\"/>",
             "<img src=\"local.png\"/>",
             "<img src=\"data:text/plain;base64,AQID\"/>",
             "<img src=\"data:image/png;base64,!!!!\"/>",
-            "<img src=\"unterminated",
         ] {
             let chapter = prepare(html)?;
-            assert_eq!(chapter.body, html);
+            assert!(chapter.body.contains("[Image unavailable]</span>"));
+            assert!(chapter.body.contains("role=\"img\""));
+            assert!(!chapter.body.contains("<img"));
+            let source = &html[attribute(html, "src").ok_or("missing source")?];
+            assert!(chapter.body.contains(source));
             assert!(chapter.resources.is_empty());
         }
+        // Truncated markup cannot be emitted by the HTML renderer. Do not
+        // mistake partial attributes for an image that can be rewritten.
+        assert_eq!(
+            prepare("<img src=\"unterminated")?.body,
+            "<img src=\"unterminated"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn image_fallback_retains_escaped_alt_title_and_enclosing_link() -> Result<(), &'static str> {
+        let html = "<a href=\"https://example.com/details\"><img src=\"missing.png?a=1&amp;b=2\" alt=\"A &amp; B &lt;tag&gt;\" title=\"Original &quot;title&quot;\"/></a>";
+        let chapter = prepare(html)?;
+        assert!(
+            chapter
+                .body
+                .starts_with("<a href=\"https://example.com/details\">")
+        );
+        assert!(chapter.body.ends_with("]</span></a>"));
+        assert!(
+            chapter
+                .body
+                .contains("data-image-source=\"missing.png?a=1&amp;b=2\"")
+        );
+        assert!(
+            chapter
+                .body
+                .contains("title=\"Original &quot;title&quot;\"")
+        );
+        assert!(
+            chapter
+                .body
+                .contains("aria-label=\"Image unavailable: A &amp; B &lt;tag&gt;\"")
+        );
+        assert!(
+            chapter
+                .body
+                .contains("[Image unavailable: A &amp; B &lt;tag&gt;]")
+        );
+        let quotes = prepare("<img src='missing\".png' alt='a < b > c'/> ")?;
+        assert!(
+            quotes
+                .body
+                .contains("data-image-source=\"missing&quot;.png\"")
+        );
+        assert!(quotes.body.contains("[Image unavailable: a &lt; b &gt; c]"));
         Ok(())
     }
 

@@ -1,5 +1,5 @@
 import { validateFlowExportBatchResult, validateFlowExportResult } from "./flow_export.mjs";
-import { sourceText, validateViewportPage } from "./flow_session.mjs";
+import { sourceText, validateFlowPage, validateViewportPage } from "./flow_session.mjs";
 import {
   acknowledgedState,
   fields,
@@ -330,6 +330,30 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
               throw new FlowWorkerError(
                 "WORKER_PROTOCOL_ERROR",
                 "viewport acknowledgment does not match its request",
+                { cause: error },
+              );
+            }
+          });
+        const pageKey = { snapshot: "items", readingOrder: "nodes", pendingAssets: "requests" }[method];
+        if (pageKey || method === "hitTest" || method === "selectText")
+          return pending.then((result) => {
+            try {
+              const expected = pageKey ? normalized[0].token
+                : method === "hitTest" ? normalized[2] : normalized[3];
+              const actual = flowToken(result);
+              if (expected && (actual.revision !== expected.revision ||
+                actual.layoutRevision !== expected.layoutRevision))
+                throw new Error("flow response does not match the requested snapshot");
+              if (pageKey)
+                validateFlowPage(result, pageKey, normalized[0].offset, normalized[0].limit);
+              return result;
+            } catch (error) {
+              // Run before the RPC pumps queued mutations: a reply for another
+              // page or snapshot cannot authorize further use of this worker.
+              rpc.dispose();
+              throw new FlowWorkerError(
+                "WORKER_PROTOCOL_ERROR",
+                "flow read acknowledgment does not match its request",
                 { cause: error },
               );
             }

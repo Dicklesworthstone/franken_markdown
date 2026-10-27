@@ -218,7 +218,8 @@ function response(value, expected) {
   }
   return parsed;
 }
-function checkedPage(value, key, offset, limit) {
+// Direct and worker reads must expose exactly the requested dense inventory page.
+export function validateFlowPage(value, key, offset, limit) {
   if (
     !Number.isInteger(value.total) ||
     value.total < offset ||
@@ -400,7 +401,7 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
           ? b.readingJson(expected.revision, expected.layoutRevision, offset, limit)
           : b.pendingAssetsJson(expected.revision, offset, limit),
     );
-    return checkedPage(
+    return validateFlowPage(
       response(data, expected),
       kind === "snapshot" ? "items" : kind === "reading" ? "nodes" : "requests",
       offset,

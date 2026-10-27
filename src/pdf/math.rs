@@ -7,6 +7,7 @@
 
 use std::cell::OnceCell;
 use std::collections::{BTreeSet, HashMap};
+use std::mem::size_of;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use fmd_math::{Color, Engine, Layout, PathContour, PathSeg, Placed, Style};
@@ -19,6 +20,7 @@ use super::{
 };
 
 const MAX_SOURCE_BYTES: usize = 64 * 1024;
+const SOURCE_LIMIT_REASON: &str = "formula exceeds the 64 KiB source limit";
 const MAX_PRIMITIVES: usize = 4096;
 const MAX_PATH_SEGMENTS: usize = 262_144;
 const MAX_COORDINATE: f64 = 1_000_000.0;
@@ -70,7 +72,7 @@ fn typeset_formula(
     style: Style,
 ) -> std::result::Result<Formula, String> {
     if source.len() > MAX_SOURCE_BYTES {
-        return Err("formula exceeds the 64 KiB source limit".to_string());
+        return Err(SOURCE_LIMIT_REASON.to_string());
     }
     let mut layout = engine
         .typeset(source, style)
@@ -180,24 +182,125 @@ pub(super) struct InlineFormula {
     pub(super) descent: f32,
 }
 
-/// Distinct inline source/style pairs kept in the process-wide memo; beyond it, layouts
-/// are recomputed rather than stored.
+/// Distinct source/style pairs and owned payload kept in the process-wide memo.
+/// A full memo declines new entries without changing the computed formula.
 const INLINE_MEMO_ENTRIES: usize = 4096;
+const INLINE_MEMO_BYTES: usize = 32 * 1024 * 1024;
+
+type InlineResult = std::result::Result<Arc<InlineFormula>, String>;
+
+/// The payload budget counts owned string capacities, the formula itself and
+/// every outline vector's capacity. Map storage, Arc headers and allocator
+/// bookkeeping are excluded; the entry cap independently bounds the number of
+/// cached results. Fonts and in-flight computations are not memo payload.
+struct InlineMemo {
+    by_style: [HashMap<String, InlineResult>; 2],
+    retained_payload_bytes: usize,
+    max_entries: usize,
+    max_payload_bytes: usize,
+}
+
+impl InlineMemo {
+    fn new(max_entries: usize, max_payload_bytes: usize) -> Self {
+        Self {
+            by_style: Default::default(),
+            retained_payload_bytes: 0,
+            max_entries,
+            max_payload_bytes,
+        }
+    }
+
+    fn get(&self, source: &str, display: bool) -> Option<&InlineResult> {
+        self.by_style[usize::from(display)].get(source)
+    }
+
+    /// Called with the memo mutex held, including after a racing cache miss.
+    /// Keep the first result rather than replacing it or charging it twice.
+    fn insert_if_room(&mut self, source: &str, display: bool, result: &InlineResult) {
+        if source.len() > MAX_SOURCE_BYTES
+            || self.get(source, display).is_some()
+            || self.by_style.iter().map(HashMap::len).sum::<usize>() >= self.max_entries
+        {
+            return;
+        }
+        let payload_bytes = match result {
+            Ok(formula) => formula.retained_payload_bytes(),
+            // Cloning an error can discard spare capacity. Check its length
+            // first, then account for the actual owned clone below.
+            Err(reason) => Some(reason.len()),
+        };
+        let Some(payload_bytes) = payload_bytes else {
+            return;
+        };
+        let remaining = self.max_payload_bytes - self.retained_payload_bytes;
+        let Some(minimum_bytes) = source.len().checked_add(payload_bytes) else {
+            return;
+        };
+        if minimum_bytes > remaining {
+            return;
+        }
+        // Do not copy a source or error that already cannot fit the budget.
+        let key = source.to_owned();
+        let stored = result.clone();
+        let stored_payload_bytes = match &stored {
+            Ok(_) => payload_bytes,
+            Err(reason) => reason.capacity(),
+        };
+        let Some(bytes) = key.capacity().checked_add(stored_payload_bytes) else {
+            return;
+        };
+        if bytes > remaining {
+            return;
+        }
+        self.by_style[usize::from(display)].insert(key, stored);
+        self.retained_payload_bytes += bytes;
+    }
+}
+
+impl InlineFormula {
+    fn retained_payload_bytes(&self) -> Option<usize> {
+        let mut bytes = size_of::<Self>().checked_add(
+            self.paths
+                .capacity()
+                .checked_mul(size_of::<FormulaPath>())?,
+        )?;
+        for path in &self.paths {
+            bytes = bytes.checked_add(
+                path.contours
+                    .capacity()
+                    .checked_mul(size_of::<PathContour>())?,
+            )?;
+            for contour in &path.contours {
+                bytes = bytes.checked_add(
+                    contour
+                        .segments
+                        .capacity()
+                        .checked_mul(size_of::<PathSeg>())?,
+                )?;
+            }
+        }
+        Some(bytes)
+    }
+}
 
 /// The inline layout of `source` in its authored text or display style,
 /// memoized per process. Measurement, line metrics and drawing share the same
 /// formula. An `Err` keeps the complete visible TeX fallback. Separate maps
 /// allow borrowed source lookups without allocating a composite cache key.
-pub(super) fn inline_formula(
-    source: &str,
-    display: bool,
-) -> std::result::Result<Arc<InlineFormula>, String> {
-    type Memo = Mutex<[HashMap<String, std::result::Result<Arc<InlineFormula>, String>>; 2]>;
+pub(super) fn inline_formula(source: &str, display: bool) -> InlineResult {
+    // Refuse before any memo lookup or engine initialization. In particular,
+    // never retain a rejected, arbitrarily large source as a cached error key.
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err(SOURCE_LIMIT_REASON.to_string());
+    }
     static ENGINE: OnceLock<std::result::Result<Engine, String>> = OnceLock::new();
-    static MEMO: OnceLock<Memo> = OnceLock::new();
-    let memo = MEMO.get_or_init(Memo::default);
-    if let Some(hit) =
-        memo.lock().unwrap_or_else(PoisonError::into_inner)[usize::from(display)].get(source)
+    static MEMO: OnceLock<Mutex<InlineMemo>> = OnceLock::new();
+    let memo =
+        MEMO.get_or_init(|| Mutex::new(InlineMemo::new(INLINE_MEMO_ENTRIES, INLINE_MEMO_BYTES)));
+    if let Some(hit) = memo
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(source, display)
     {
         return hit.clone();
     }
@@ -220,10 +323,9 @@ pub(super) fn inline_formula(
                 descent: (-formula.bounds.bottom) as f32,
             })
         });
-    let mut memo = memo.lock().unwrap_or_else(PoisonError::into_inner);
-    if memo.iter().map(HashMap::len).sum::<usize>() < INLINE_MEMO_ENTRIES {
-        memo[usize::from(display)].insert(source.to_owned(), result.clone());
-    }
+    memo.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert_if_room(source, display, &result);
     result
 }
 
@@ -648,5 +750,211 @@ impl Bounds {
         self.bottom = self.bottom.min(y);
         self.top = self.top.max(y);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod memo_tests {
+    use super::*;
+
+    fn outlined_formula(
+        path_capacity: usize,
+        contour_capacity: usize,
+        segment_capacity: usize,
+    ) -> Arc<InlineFormula> {
+        let mut segments = Vec::with_capacity(segment_capacity);
+        segments.push(PathSeg::Line { to: (1.0, 0.0) });
+        segments.push(PathSeg::Quad {
+            ctrl: (1.0, 1.0),
+            to: (0.0, 1.0),
+        });
+        let mut contours = Vec::with_capacity(contour_capacity);
+        contours.push(PathContour {
+            start: (0.0, 0.0),
+            segments,
+        });
+        let mut paths = Vec::with_capacity(path_capacity);
+        paths.push(FormulaPath {
+            contours,
+            color: None,
+        });
+        Arc::new(InlineFormula {
+            paths,
+            advance: 1.0,
+            ascent: 1.0,
+            descent: 0.0,
+        })
+    }
+
+    #[test]
+    fn memo_admission_respects_exact_payload_boundary() {
+        let formula = outlined_formula(1, 1, 2);
+        let source = "x";
+        let bytes = source.to_owned().capacity()
+            + size_of::<InlineFormula>()
+            + formula.paths.capacity() * size_of::<FormulaPath>()
+            + formula.paths[0].contours.capacity() * size_of::<PathContour>()
+            + formula.paths[0].contours[0].segments.capacity() * size_of::<PathSeg>();
+        let result = Ok(Arc::clone(&formula));
+        let mut too_small = InlineMemo::new(4, bytes - 1);
+        too_small.insert_if_room(source, false, &result);
+        assert!(too_small.get(source, false).is_none());
+        assert_eq!(too_small.retained_payload_bytes, 0);
+        assert_eq!(Arc::strong_count(&formula), 2);
+
+        let mut exact = InlineMemo::new(4, bytes);
+        exact.insert_if_room(source, false, &result);
+        let retained = exact.get(source, false).unwrap().as_ref().unwrap();
+        assert!(Arc::ptr_eq(retained, &formula));
+        assert_eq!(exact.retained_payload_bytes, bytes);
+        assert_eq!(Arc::strong_count(&formula), 3);
+        exact.insert_if_room("y", false, &result);
+        assert!(exact.get("y", false).is_none());
+        assert_eq!(exact.retained_payload_bytes, bytes);
+    }
+
+    #[test]
+    fn memo_charges_spare_capacity_at_every_outline_level() {
+        // Each formula has the same one path, one contour and two segments,
+        // but just one of its three owned vectors has substantial spare room.
+        let length_only_bytes = 1
+            + size_of::<InlineFormula>()
+            + size_of::<FormulaPath>()
+            + size_of::<PathContour>()
+            + 2 * size_of::<PathSeg>();
+        for formula in [
+            outlined_formula(32, 1, 2),
+            outlined_formula(1, 32, 2),
+            outlined_formula(1, 1, 64),
+        ] {
+            let result = Ok(Arc::clone(&formula));
+            let mut memo = InlineMemo::new(4, length_only_bytes);
+            memo.insert_if_room("x", false, &result);
+            assert!(memo.get("x", false).is_none());
+            assert_eq!(memo.retained_payload_bytes, 0);
+            assert_eq!(Arc::strong_count(&formula), 2);
+        }
+    }
+
+    #[test]
+    fn memo_charges_owned_error_and_key_storage() {
+        let mut reason = String::with_capacity(4096);
+        reason.push_str("unsupported command");
+        let bytes = "bad".to_owned().capacity() + reason.clone().capacity();
+        assert!(reason.capacity() > bytes);
+        let result = Err(reason);
+        let mut too_small = InlineMemo::new(4, bytes - 1);
+        too_small.insert_if_room("bad", false, &result);
+        assert!(too_small.get("bad", false).is_none());
+        assert_eq!(too_small.retained_payload_bytes, 0);
+
+        let mut exact = InlineMemo::new(4, bytes);
+        exact.insert_if_room("bad", false, &result);
+        let (key, stored) = exact.by_style[0].iter().next().unwrap();
+        let Err(stored_reason) = stored else {
+            panic!("the cached result must preserve the error");
+        };
+        assert_eq!(stored_reason, "unsupported command");
+        assert_eq!(exact.retained_payload_bytes, bytes);
+        assert_eq!(bytes, key.capacity() + stored_reason.capacity());
+    }
+
+    #[test]
+    fn memo_never_retains_oversized_rejected_source() {
+        let source = "x".repeat(MAX_SOURCE_BYTES + 1);
+        let result = Err(SOURCE_LIMIT_REASON.to_string());
+        let mut memo = InlineMemo::new(4, usize::MAX);
+        for display in [false, true] {
+            assert!(matches!(
+                inline_formula(&source, display),
+                Err(reason) if reason == SOURCE_LIMIT_REASON
+            ));
+            memo.insert_if_room(&source, display, &result);
+            assert!(memo.get(&source, display).is_none());
+        }
+        assert_eq!(memo.retained_payload_bytes, 0);
+    }
+
+    #[test]
+    fn memo_duplicate_admission_keeps_original_result_and_style_identity() {
+        let first = outlined_formula(1, 1, 2);
+        let second = outlined_formula(2, 2, 4);
+        let first_result = Ok(Arc::clone(&first));
+        let second_result = Ok(Arc::clone(&second));
+        let mut memo = InlineMemo::new(4, usize::MAX);
+        memo.insert_if_room("x", false, &first_result);
+        let first_bytes = memo.retained_payload_bytes;
+
+        // Two callers can compute the same miss before either takes the lock.
+        // The second insertion must preserve the winner and its accounting.
+        memo.insert_if_room("x", false, &second_result);
+        assert_eq!(memo.retained_payload_bytes, first_bytes);
+        assert!(Arc::ptr_eq(
+            memo.get("x", false).unwrap().as_ref().unwrap(),
+            &first
+        ));
+        assert_eq!(Arc::strong_count(&second), 2);
+
+        memo.insert_if_room("x", true, &second_result);
+        assert!(Arc::ptr_eq(
+            memo.get("x", true).unwrap().as_ref().unwrap(),
+            &second
+        ));
+        assert_eq!(memo.by_style.iter().map(HashMap::len).sum::<usize>(), 2);
+        assert_eq!(
+            memo.retained_payload_bytes,
+            first_bytes + "x".to_owned().capacity() + second.retained_payload_bytes().unwrap()
+        );
+    }
+
+    #[test]
+    fn memo_entry_limit_is_shared_between_styles() {
+        let mut memo = InlineMemo::new(2, usize::MAX);
+        let result = Err("unsupported command".to_string());
+        memo.insert_if_room("a", false, &result);
+        memo.insert_if_room("a", true, &result);
+        let bytes = memo.retained_payload_bytes;
+        memo.insert_if_room("b", false, &result);
+        memo.insert_if_room("b", true, &result);
+        assert!(memo.get("a", false).is_some());
+        assert!(memo.get("a", true).is_some());
+        assert!(memo.get("b", false).is_none());
+        assert!(memo.get("b", true).is_none());
+        assert_eq!(memo.retained_payload_bytes, bytes);
+    }
+
+    #[test]
+    fn memo_refusal_preserves_paint_and_releases_unretained_geometry() {
+        let formula = outlined_formula(1, 1, 2);
+        let weak = Arc::downgrade(&formula);
+        let result = Ok(Arc::clone(&formula));
+        let mut expected = String::new();
+        append_inline_formula(&mut expected, &formula, 10.0, 20.0, 12.0);
+        for mut memo in [InlineMemo::new(4, 0), InlineMemo::new(0, usize::MAX)] {
+            memo.insert_if_room("x", false, &result);
+            assert!(memo.get("x", false).is_none());
+            let mut actual = String::new();
+            append_inline_formula(&mut actual, result.as_ref().unwrap(), 10.0, 20.0, 12.0);
+            assert_eq!(actual, expected);
+            assert_eq!(Arc::strong_count(&formula), 2);
+        }
+        drop(result);
+        drop(formula);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn memo_releases_admitted_geometry_when_dropped() {
+        let formula = outlined_formula(1, 1, 2);
+        let weak = Arc::downgrade(&formula);
+        let result = Ok(Arc::clone(&formula));
+        let mut memo = InlineMemo::new(4, usize::MAX);
+        memo.insert_if_room("x", false, &result);
+        drop(result);
+        drop(formula);
+        assert!(weak.upgrade().is_some());
+        drop(memo);
+        assert!(weak.upgrade().is_none());
     }
 }

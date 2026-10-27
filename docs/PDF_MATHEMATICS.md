@@ -42,7 +42,7 @@ placeholder glyph. Surrounding prose remains normal selectable text.
 
 ## Limits and fallback
 
-A display formula accepts at most 64 KiB of source, 4,096 layout primitives
+Each display or inline formula accepts at most 64 KiB of source, 4,096 layout primitives
 and 262,144 outline segments. Geometry must be finite and bounded. Unsupported
 commands or exceeded limits preserve the original TeX as readable text and
 produce a `math_fallback` render warning. Successful formulas use math-font
@@ -79,6 +79,20 @@ Unsupported sources keep their visible TeX in the monospace face with a
 `math_fallback` warning. A formula wider than the text measure at body size
 overflows its line whole, with a `math_overflow` warning.
 
+Inline layouts are memoized across renders by exact source and text/display
+style. The memo retains at most 4,096 entries and 32 MiB of owned payload,
+including source and error string capacities, formula values, and the full
+allocated capacities of path, contour and segment vectors. Sources beyond
+the 64 KiB limit are rejected before entering this memo. When either budget
+is full, new formulas still render normally and are recomputed as needed;
+existing cached results stay available. Concurrent misses for the same source
+and style do not replace or double-charge the first cached result.
+
+This is a retained-payload limit, not a whole-process memory limit. Hash-map
+storage, reference-count and allocator bookkeeping, bundled math fonts, and
+in-flight layout computations are outside that count. The entry cap separately
+limits the number of cached results.
+
 ## Verification
 
 `cargo test --test pdf_math_test` exercises display formula geometry, native/browser
@@ -91,3 +105,8 @@ without overlapping their page numbers and retain their heading links.
 `cargo test --test pdf_inline_math_test` covers inline outlines and tagging, line
 growth against the formula's own metrics, fallback and overflow warnings, and
 headings and table cells.
+
+`cargo test --lib pdf::math::memo_tests` checks exact byte-budget boundaries,
+spare vector capacities, source/error ownership, style identity, duplicate
+admission, shared entry limits, unchanged paint after cache refusal, and
+release of unretained geometry with small local memo budgets.

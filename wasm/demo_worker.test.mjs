@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
+import { createHash } from "node:crypto";
 import { createDemoController } from "./demo/demo.js";
+import { createWorkerRenderer } from "./document_worker.mjs";
 
 // Production controller, explicit DOM/window/renderer doubles. These tests do
 // not claim native browser CSP, download, iframe or generated-WASM validation.
-function fixture(t) {
-  const downloads = [], urls = [], revoked = [], calls = [], clients = [];
+function fixture(t, { directory = true, rendererFactory } = {}) {
+  const downloads = [], urls = [], revoked = [], calls = [], clients = [], workerSettings = [];
   class Element extends EventTarget {
     value = ""; checked = false; disabled = false; textContent = ""; srcdoc = ""; children = [];
     constructor(tag = "div") { super(); this.tag = tag; }
@@ -19,11 +22,13 @@ function fixture(t) {
       if (accepted && this.tag === "a" && this.href) downloads.push({ href: this.href, download: this.download });
     }
   }
-  const ids = ["download-markdown", "open-markdown", "markdown-file", "file-status", "markdown", "render", "download-pdf", "download-html", "preview", "diagnostics", "status", "source-size", "preview-meta", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers"];
+  const ids = ["download-markdown", "open-markdown", "markdown-file", "file-status", "markdown", "render", "download-pdf", "download-html", "preview", "diagnostics", "status", "source-size", "preview-meta", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers",
+    "image-files", "image-folder", "image-document-path", "apply-image-folder", "clear-images", "cancel-images", "image-status", "image-references", "image-folder-help"];
   const els = Object.fromEntries(ids.map(id => [id, new Element(id === "download-html" ? "a" : "div")]));
   els.markdown.value = "# Original";
   els.font.value = "sans"; els["dark-mode"].value = "auto"; els.title.value = "Original title";
   els.author.value = "Author"; els["line-numbers"].checked = true;
+  if (directory) els["image-folder"].webkitdirectory = true;
   const doc = { querySelector: selector => els[selector.slice(1)], createElement: tag => new Element(tag), body: new Element("body") };
   const win = new EventTarget(), timers = new Map();
   let sequence = 0;
@@ -34,7 +39,9 @@ function fixture(t) {
     createObjectURL(blob) { const url = `blob:fixture-${urls.length}`; urls.push({ url, blob }); return url; },
     revokeObjectURL(url) { revoked.push(url); },
   };
-  const factory = () => {
+  const factory = options => {
+    workerSettings.push(options);
+    if (rendererFactory) return rendererFactory(options);
     const client = { disposed: false, dispose() { this.disposed = true; }, render(kind, source, options, controls) {
       let resolve, reject;
       const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -53,7 +60,7 @@ function fixture(t) {
   };
   const input = (id, value) => { els[id].value = value; els[id].dispatchEvent(new Event("input")); };
   const flush = () => { const tasks = [...timers.values()]; timers.clear(); for (const task of tasks) task(); };
-  return { controller, els, win, doc, calls, clients, urls, revoked, downloads, timers, output, input, flush };
+  return { controller, els, win, doc, calls, clients, urls, revoked, downloads, timers, output, input, flush, workerSettings };
 }
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
 
@@ -634,4 +641,333 @@ test("source-download click failure releases the temporary anchor and exact URL"
   assert.equal(f.doc.body.children.length, 0);
   assert.deepEqual(f.revoked, [f.urls[0].url]);
   assert.match(f.els["file-status"].textContent, /SOURCE_DOWNLOAD_ERROR: download activation failed/);
+});
+
+function localImage(name, bytes = [1, 2, 3], path) {
+  const file = new File([new Uint8Array(bytes)], name);
+  if (path) Object.defineProperty(file, "webkitRelativePath", { value: path });
+  return file;
+}
+async function imageRender(f, kind = "html") {
+  const count = f.calls.length;
+  const pending = kind === "html" ? f.controller.renderPreview() : f.controller.downloadPdf();
+  assert.equal(f.calls.length, count + 1);
+  const call = f.calls.at(-1);
+  call.resolve(f.output(call));
+  assert.equal(await pending, true);
+  return call;
+}
+
+test("local image selection feeds the same exact assets to HTML and PDF without rewriting Markdown", async t => {
+  const f = fixture(t), source = f.els.markdown.value;
+  assert.equal(await f.controller.importImages([
+    localImage("photo.jpg", [1, 2]), localImage("chart a.svg", [3, 4]),
+  ]), true);
+  assert.equal(f.els.markdown.value, source);
+  assert.match(f.els["image-references"].textContent, /chart%20a\.svg/);
+  const html = await imageRender(f), pdf = await imageRender(f, "pdf");
+  assert.deepEqual(pdf.options.pdfImages, html.options.pdfImages);
+  assert.deepEqual([...html.options.pdfImages.find(image => image.destination === "photo.jpg").bytes], [1, 2]);
+  assert.deepEqual([...html.options.pdfImages.find(image => image.destination === "./chart%20a.svg").bytes], [3, 4]);
+  assert.equal(f.workerSettings[0].maxPendingBytes, 64 * 1024 * 1024);
+  assert.equal(f.workerSettings[1].maxPendingBytes, 64 * 1024 * 1024);
+  assert.equal(f.els["clear-images"].disabled, false);
+  assert.equal(f.els["cancel-images"].disabled, true);
+});
+
+test("image replacement retires old HTML/PDF work before publishing the new grant", async t => {
+  const f = fixture(t);
+  await f.controller.importImages([localImage("picture.png", [1])]);
+  const oldHtml = f.controller.renderPreview(), oldPdf = f.controller.downloadPdf();
+  const oldCalls = [...f.calls];
+  assert.equal(await f.controller.importImages([localImage("picture.png", [2])]), true);
+  for (const call of oldCalls) {
+    assert.equal(call.controls.signal.aborted, true);
+    assert.equal(call.client.disposed, true);
+    call.resolve(f.output(call, "old image output"));
+  }
+  assert.equal(await oldHtml, false);
+  assert.equal(await oldPdf, false);
+  assert.equal(f.downloads.length, 0);
+  assert.equal(f.els.preview.srcdoc, "");
+  const current = await imageRender(f);
+  assert.equal(current.options.pdfImages[0].bytes[0], 2);
+});
+
+test("typing retains the current explicit image grant but opening another document revokes it", async t => {
+  const f = fixture(t);
+  await f.controller.importImages([localImage("picture.png", [7])]);
+  f.input("markdown", "# Edited document");
+  assert.equal((await imageRender(f)).options.pdfImages[0].bytes[0], 7);
+  assert.equal(await f.controller.openMarkdown(new File(["# Edited document"], "other.md")), true);
+  assert.equal((await imageRender(f)).options.pdfImages, undefined);
+  assert.equal(f.els["image-references"].textContent, "");
+  assert.equal(f.els["clear-images"].disabled, true);
+});
+
+test("image loading blocks rendered downloads while original Markdown remains downloadable", async t => {
+  const f = fixture(t), selected = delayedFile("picture.png", "bytes");
+  await imageRender(f);
+  const oldUrl = f.els["download-html"].href;
+  const pending = f.controller.importImages([selected.file]);
+  assert.ok(f.revoked.includes(oldUrl));
+  assert.equal(f.els["download-html"].hidden, true);
+  assert.equal(f.els.render.disabled, true);
+  assert.equal(f.els["download-pdf"].disabled, true);
+  assert.equal(await f.controller.renderPreview(), false);
+  assert.equal(await f.controller.downloadPdf(), false);
+  assert.equal(f.controller.downloadMarkdown(), true);
+  assert.equal(await f.urls.at(-1).blob.text(), f.els.markdown.value);
+  selected.resolve();
+  assert.equal(await pending, true);
+  assert.equal(f.els.render.disabled, false);
+});
+
+for (const [name, mutate] of [
+  ["source input", f => f.input("markdown", "# Newer source")],
+  ["silent source change", f => { f.els.markdown.value = "# Silent source"; }],
+  ["settings input", f => f.input("title", "New title")],
+  ["silent settings change", f => { f.els.title.value = "Silent title"; }],
+  ["composition", f => f.els.markdown.dispatchEvent(new Event("compositionstart"))],
+]) {
+  test(`${name} during image loading cannot install an outdated selection`, async t => {
+    const f = fixture(t), selected = delayedFile("new.png", "new bytes");
+    await f.controller.importImages([localImage("previous.png", [9])]);
+    const pending = f.controller.importImages([selected.file]);
+    mutate(f);
+    selected.resolve();
+    assert.equal(await pending, false);
+    if (name === "composition") f.els.markdown.dispatchEvent(new Event("compositionend"));
+    const current = await imageRender(f);
+    assert.equal(current.options.pdfImages[0].destination, "previous.png");
+    assert.equal(current.options.pdfImages[0].bytes[0], 9);
+  });
+}
+
+test("cancel stops waiting for file reads and keeps the previously committed images", async t => {
+  const f = fixture(t), selected = delayedFile("new.png", "new bytes");
+  await f.controller.importImages([localImage("previous.png", [9])]);
+  const pending = f.controller.importImages([selected.file]);
+  assert.equal(f.controller.cancelImages(), true);
+  assert.equal(await pending, false, "cancellation settles before File.arrayBuffer finishes");
+  assert.match(f.els["image-status"].textContent, /cancelled/);
+  assert.equal((await imageRender(f)).options.pdfImages[0].bytes[0], 9);
+  const url = f.els["download-html"].href;
+  selected.resolve(); await settle();
+  assert.equal(f.els["download-html"].href, url);
+});
+
+test("revoke removes images and retires in-flight reads without later resurrection", async t => {
+  const f = fixture(t), selected = delayedFile("new.png", "new bytes");
+  await f.controller.importImages([localImage("previous.png")]);
+  const pending = f.controller.importImages([selected.file]);
+  assert.equal(f.controller.clearImages(), true);
+  assert.equal(await pending, false);
+  selected.resolve(); await settle();
+  assert.equal((await imageRender(f)).options.pdfImages, undefined);
+  assert.equal(f.els["image-references"].textContent, "");
+  assert.match(f.els["image-status"].textContent, /revoked/);
+});
+
+test("a newer image selection owns state and cleanup even when an old read settles last", async t => {
+  const f = fixture(t), old = delayedFile("old.png", "old bytes");
+  const first = f.controller.importImages([old.file]);
+  const second = f.controller.importImages([localImage("current.svg", [8])]);
+  assert.equal(await second, true);
+  assert.equal(await first, false);
+  const status = f.els["image-status"].textContent;
+  old.resolve(); await settle();
+  assert.equal(f.els["image-status"].textContent, status);
+  assert.equal((await imageRender(f)).options.pdfImages[0].destination, "current.svg");
+});
+
+for (const imageFirst of [true, false]) {
+  test(`a newer Markdown open owns replacement when the older image read settles ${imageFirst ? "first" : "last"}`, async t => {
+    const f = fixture(t), image = delayedFile("older.png", "old image bytes");
+    const markdown = delayedFile("newer.md", "# Newer document");
+    await f.controller.importImages([localImage("previous.png", [9])]);
+    const imageRead = f.controller.importImages([image.file]);
+    const sourceRead = f.controller.openMarkdown(markdown.file);
+    assert.equal(await imageRead, false, "opening source retires the older read immediately");
+    if (imageFirst) { image.resolve(); await settle(); }
+    markdown.resolve();
+    assert.equal(await sourceRead, true);
+    const status = f.els["file-status"].textContent;
+    if (!imageFirst) { image.resolve(); await settle(); }
+    assert.equal(f.els.markdown.value, "# Newer document");
+    assert.equal(f.els["file-status"].textContent, status);
+    assert.match(status, /Opened newer\.md/);
+    assert.equal((await imageRender(f)).options.pdfImages, undefined);
+  });
+}
+
+for (const failure of ["read failure", "declined replacement"]) {
+  test(`a newer Markdown ${failure} retains committed images after retiring an older image read`, async t => {
+    const f = fixture(t), image = delayedFile("older.png", "old image bytes");
+    const markdown = delayedFile("newer.md", "# Rejected document");
+    await f.controller.importImages([localImage("previous.png", [9])]);
+    f.input("markdown", "# Keep current draft");
+    f.win.confirm = () => false;
+    const imageRead = f.controller.importImages([image.file]);
+    const sourceRead = f.controller.openMarkdown(markdown.file);
+    assert.equal(await imageRead, false);
+    if (failure === "read failure") markdown.reject(new Error("source read failed"));
+    else markdown.resolve();
+    assert.equal(await sourceRead, false);
+    image.resolve(); await settle();
+    assert.equal(f.els.markdown.value, "# Keep current draft");
+    const current = await imageRender(f);
+    assert.equal(current.options.pdfImages[0].destination, "previous.png");
+    assert.equal(current.options.pdfImages[0].bytes[0], 9);
+  });
+}
+
+test("image loading deadline releases controls and does not discard the previous grant", async t => {
+  const f = fixture(t), selected = delayedFile("new.png", "new bytes");
+  await f.controller.importImages([localImage("previous.png", [9])]);
+  const pending = f.controller.importImages([selected.file]);
+  assert.equal(f.timers.size, 1, "only the image deadline is active");
+  [...f.timers.values()][0]();
+  assert.equal(await pending, false);
+  assert.match(f.els["image-status"].textContent, /timed out/);
+  assert.equal(f.els.render.disabled, false);
+  assert.equal((await imageRender(f)).options.pdfImages[0].bytes[0], 9);
+  selected.resolve(); await settle();
+});
+
+test("failed and partially read selections preserve all previously committed image bytes", async t => {
+  const f = fixture(t);
+  await f.controller.importImages([localImage("previous.png", [9])]);
+  const broken = localImage("broken.svg");
+  broken.arrayBuffer = async () => { throw new Error("file read failed"); };
+  for (const files of [[localImage("document.md")], [localImage("new.jpg", [1]), broken]]) {
+    assert.equal(await f.controller.importImages(files), false);
+    assert.equal((await imageRender(f)).options.pdfImages[0].destination, "previous.png");
+    assert.match(f.els["image-status"].textContent, /previous image selection is retained/);
+  }
+});
+
+for (const retire of ["suspend", "dispose"]) {
+  test(`${retire} releases selected image bytes and pending read ownership`, async t => {
+    const f = fixture(t), selected = delayedFile("new.png", "new bytes");
+    await f.controller.importImages([localImage("previous.png")]);
+    const pending = f.controller.importImages([selected.file]);
+    if (retire === "suspend") f.win.dispatchEvent(new Event("pagehide"));
+    else f.controller.dispose();
+    assert.equal(await pending, false);
+    assert.equal(f.els["image-files"].disabled, true);
+    assert.equal(f.els["image-references"].textContent, "");
+    selected.resolve(); await settle();
+    assert.equal(await f.controller.importImages([localImage("late.png")]), false);
+    if (retire === "suspend") {
+      const event = new Event("pageshow"); event.persisted = true; f.win.dispatchEvent(event);
+      assert.equal((await imageRender(f)).options.pdfImages, undefined);
+      assert.equal(await f.controller.importImages([localImage("fresh.png")]), true);
+    }
+  });
+}
+
+test("folder controls preserve nested image paths and ignore source-file contents", async t => {
+  const f = fixture(t);
+  const image = localImage("diagram.svg", [4], "project/shared/diagram.svg");
+  const source = localImage("guide.md", [9], "project/docs/guide.md");
+  source.arrayBuffer = () => { throw new Error("source contents must not be read"); };
+  f.els["image-folder"].files = [image, source];
+  f.els["image-folder"].dispatchEvent(new Event("change"));
+  assert.equal(f.els["apply-image-folder"].disabled, false);
+  f.els["image-document-path"].value = "docs/guide.md";
+  f.els["apply-image-folder"].click();
+  await new Promise(setImmediate);
+  assert.match(f.els["image-status"].textContent, /1 local image authorized/);
+  assert.equal(f.els.markdown.value, "# Original");
+  const call = await imageRender(f);
+  assert.deepEqual(call.options.pdfImages.map(asset => asset.destination), ["../shared/diagram.svg", "./../shared/diagram.svg"]);
+});
+
+test("individual-image picker captures files before resetting for same-file retries", async t => {
+  const f = fixture(t), picker = f.els["image-files"];
+  Object.defineProperty(picker, "value", {
+    get: () => "",
+    set(value) { if (value === "") this.files = []; },
+  });
+  const image = localImage("picture.png", [6]);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    picker.files = [image];
+    picker.dispatchEvent(new Event("change"));
+    assert.deepEqual(picker.files, []);
+    await new Promise(setImmediate);
+    assert.match(f.els["image-status"].textContent, /1 local image authorized/);
+    assert.equal((await imageRender(f)).options.pdfImages[0].bytes[0], 6);
+  }
+});
+
+test("changing the folder-path draft cancels pending loading before a new mapping can apply", async t => {
+  const f = fixture(t), selected = delayedFile("new.png", "new bytes");
+  Object.defineProperty(selected.file, "webkitRelativePath", { value: "root/new.png" });
+  f.els["image-document-path"].value = "docs/guide.md";
+  const pending = f.controller.importImages([selected.file], { folder: true, documentPath: "docs/guide.md" });
+  f.input("image-document-path", "elsewhere/guide.md");
+  assert.equal(await pending, false);
+  selected.resolve(); await settle();
+  assert.equal((await imageRender(f)).options.pdfImages, undefined);
+});
+
+test("unsupported folder pickers retain working individual-file imports", async t => {
+  const f = fixture(t, { directory: false });
+  assert.equal(f.els["image-folder"].disabled, true);
+  assert.equal(f.els["apply-image-folder"].disabled, true);
+  assert.match(f.els["image-folder-help"].textContent, /unavailable/);
+  assert.equal(await f.controller.importImages([localImage("picture.png")]), true);
+  assert.equal((await imageRender(f)).options.pdfImages[0].destination, "picture.png");
+});
+
+function physicalImageRenderer(settings) {
+  return createWorkerRenderer({ ...settings, workerFactory: () => {
+    const worker = new Worker(new URL("./tests/demo_image_worker_fixture.mjs", import.meta.url));
+    const listeners = new Map();
+    worker.on("error", () => {});
+    return {
+      postMessage: (message, transfer) => worker.postMessage(message, transfer),
+      terminate: () => worker.terminate(),
+      addEventListener(kind, listener) {
+        const wrapped = kind === "message" ? data => listener({ data }) : error => listener({ error });
+        listeners.set(listener, wrapped); worker.on(kind, wrapped);
+      },
+      removeEventListener(kind, listener) {
+        worker.off(kind, listeners.get(listener)); listeners.delete(listener);
+      },
+    };
+  } });
+}
+
+test("physical HTML and PDF workers receive identical captured folder resources", async t => {
+  const f = fixture(t, { rendererFactory: physicalImageRenderer });
+  const bytes = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><rect width="5" height="7"/></svg>');
+  f.els.markdown.value = "# Figure\n\n![Diagram](../images/diagram.svg)";
+  assert.equal(await f.controller.importImages([
+    localImage("diagram.svg", bytes, "project/images/diagram.svg"),
+  ], { folder: true, documentPath: "docs/guide.md" }), true);
+  assert.equal(await f.controller.renderPreview(), true);
+  const html = JSON.parse(f.els.preview.srcdoc);
+  assert.equal(await f.controller.downloadPdf(), true);
+  const pdf = JSON.parse(await f.urls.at(-1).blob.text());
+  assert.deepEqual(pdf, html);
+  assert.equal(html.source, f.els.markdown.value);
+  assert.deepEqual(html.images.map(image => image.destination), ["../images/diagram.svg", "./../images/diagram.svg"]);
+  assert(html.images.every(image => image.sha256 === createHash("sha256").update(bytes).digest("hex")));
+  f.controller.clearImages();
+  assert.equal(await f.controller.renderPreview(), true);
+  assert.deepEqual(JSON.parse(f.els.preview.srcdoc).images, []);
+});
+
+test("the demo's explicit worker budget admits an eight-MiB image and its literal path alias", async t => {
+  const f = fixture(t, { rendererFactory: physicalImageRenderer });
+  const bytes = new Uint8Array(8 * 1024 * 1024).fill(7);
+  assert.equal(await f.controller.importImages([localImage("large.png", bytes)]), true);
+  assert.equal(await f.controller.renderPreview(), true);
+  const receipt = JSON.parse(f.els.preview.srcdoc);
+  assert.equal(receipt.images.length, 2);
+  assert(receipt.images.every(image => image.size === bytes.length));
+  assert.equal(f.workerSettings[0].maxPendingOperations, 1);
+  assert.equal(f.workerSettings[0].maxPendingBytes, 64 * 1024 * 1024);
 });

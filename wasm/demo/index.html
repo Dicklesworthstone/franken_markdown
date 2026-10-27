@@ -151,8 +151,26 @@
 
       .editor-body {
         display: grid;
-        grid-template-rows: auto 1fr;
+        grid-template-rows: auto auto auto minmax(240px, 1fr);
         min-height: 0;
+      }
+
+      .image-controls {
+        min-width: 0;
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+      }
+
+      .image-controls summary { cursor: pointer; font-weight: 650; }
+      .image-controls .field { margin: 10px 0; }
+      .image-controls input[type="file"] { height: auto; padding: 6px; }
+      .image-controls .actions { flex-wrap: wrap; }
+      .image-controls pre {
+        max-height: 10rem;
+        overflow: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
 
       .controls {
@@ -401,6 +419,28 @@
                 </label>
               </div>
             </div>
+            <details class="image-controls">
+              <summary>Local images for preview and exports</summary>
+              <p>Choose PNG, JPEG or SVG images for this document. Nothing is uploaded. Each selection replaces the previous image access after loading succeeds; Markdown is unchanged. Up to 128 images, 8 MiB each and 32 MiB combined. The complete image request, including path aliases, is also capped at 48 MiB.</p>
+              <label class="field">Select individual images
+                <input id="image-files" type="file" multiple accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml" aria-describedby="image-status" />
+              </label>
+              <label class="field">Or choose a folder containing the document and its images
+                <input id="image-folder" type="file" webkitdirectory multiple aria-describedby="image-folder-help image-status" />
+              </label>
+              <label class="field">Markdown path within that folder
+                <input id="image-document-path" type="text" maxlength="4096" placeholder="docs/guide.md (blank uses the folder root)" autocomplete="off" spellcheck="false" aria-describedby="image-folder-help" />
+              </label>
+              <p id="image-folder-help">The path excludes the selected folder's name. Only its PNG/JPEG/SVG files are read; source and other files are ignored. Choose a small document folder with at most 4096 entries. Nested and parent-relative image paths remain inside that selected folder.</p>
+              <div class="actions">
+                <button id="apply-image-folder" class="button secondary" type="button" disabled>Use this image folder</button>
+                <button id="cancel-images" class="button secondary" type="button" disabled>Cancel image loading</button>
+                <button id="clear-images" class="button secondary" type="button" disabled>Revoke image access</button>
+              </div>
+              <p id="image-status" class="status" role="status" aria-live="polite">No local images selected. Opening another Markdown file or leaving this page revokes image access.</p>
+              <p>These references use the authorized relative paths. Copy a reference into Markdown if needed; image decoding and SVG sanitization are performed by the renderer.</p>
+              <pre id="image-references" aria-label="Markdown references for the selected images"></pre>
+            </details>
             <textarea id="markdown" spellcheck="false"></textarea>
           </div>
         </section>

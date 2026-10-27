@@ -54,6 +54,51 @@ and records the supplied glue/WASM hashes. Using a release package proves
 compatibility with that artifact; it does not qualify the current Rust source.
 Composition and page transitions in this check are synthetic events.
 
+### Local images in the HTML/PDF demo
+
+Open **Local images for preview and exports** beneath the settings. Select PNG,
+JPEG or SVG files, or choose a document folder and enter the Markdown file's path
+within it, such as `docs/guide.md`. Folder selection strips the selected root;
+only image files are read. With that example, `../images/chart.png` resolves to
+the selected folder's `images/chart.png`. Selecting a folder does not open its
+Markdown or read other file contents. Browsers without folder selection retain
+the individual-image picker.
+
+The preview, its exact-byte HTML download and PDF export receive the same
+captured image bytes through the existing document workers. No source rewriting,
+network loader or second image renderer is introduced. The native engine still
+validates image content and sanitizes embedded SVG; file extensions alone do not
+prove an image will render. The panel lists Markdown references you can copy.
+It supplies literal plain and URI-encoded relative paths, with optional `./`;
+arbitrary equivalent URL spellings are not inferred. Absolute paths, URLs,
+queries, fragments and paths outside the selected folder acquire no file access.
+
+A complete new selection replaces the old grant only after admission and reading
+succeed. Rendering and rendered downloads pause during the read; cancelling or a
+read failure retains the previous selection. Typing retains committed images,
+but changes during a pending read retire that read. **Revoke image access**,
+opening another Markdown file, page suspension and disposal release the grant
+and retire affected previews/downloads. Returning to the page requires selecting
+images again. Markdown downloads remain available during image loading and
+contain source only; retain original image files separately.
+
+Limits are 128 images, 8 MiB per image, 32 MiB combined file bytes, and 4096 folder
+entries. Literal destination aliases have a separate 48 MiB image-payload and
+512 Ki UTF-16-unit key budget, checked before reading. This demo explicitly uses
+the existing 64 MiB document-worker ingress ceiling so accepted aliases, source
+and settings fit together. Each import has a 30-second deadline. Cancellation
+retires ownership immediately; an underlying browser `File.arrayBuffer()` read
+may finish later and cannot install its result.
+
+`node --test wasm/demo_worker.test.mjs wasm/tests/document_image_sources.test.mjs`
+exercises the production controller, existing path grants, real `File`/`Blob`
+bytes and physical document-worker transport. The worker integration uses an
+explicit native-renderer receipt double; it does not qualify generated WASM,
+browser appearance, SVG sanitization or PDF output. Existing real-browser
+download checks remain separate.
+
+### Web component
+
 The `./web-component` entry registers `<fmd-view>` for fetched or inline
 Markdown. Its shadow view applies the renderer's palette, body typography and
 embedded body/mono fonts; `font="sans"` and `font="serif"` can coexist on the

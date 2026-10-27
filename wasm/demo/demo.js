@@ -1,5 +1,6 @@
 import { createWorkerRenderer } from "../document_worker.mjs";
 import { markdownDownload, readMarkdownFile } from "./flow_document.mjs";
+import { captureDocumentImageFiles } from "./local_image_sources.mjs";
 
 const sampleMarkdown = `# franken_markdown demo
 
@@ -35,6 +36,9 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     sourceSize: "#source-size", previewMeta: "#preview-meta", font: "#font",
     darkMode: "#dark-mode", title: "#title", author: "#author", customCss: "#custom-css",
     allowHtml: "#allow-html", lineNumbers: "#line-numbers",
+    imageFiles: "#image-files", imageFolder: "#image-folder", imageDocumentPath: "#image-document-path",
+    applyImageFolder: "#apply-image-folder", clearImages: "#clear-images", cancelImages: "#cancel-images",
+    imageStatus: "#image-status", imageReferences: "#image-references", imageFolderHelp: "#image-folder-help",
   })) {
     els[key] = doc.querySelector(selector);
     if (!els[key]) throw new Error(`franken_markdown demo is missing required element ${selector}`);
@@ -43,6 +47,8 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   let timer = null, lastPdfUrl = null, lastHtmlUrl = null, preparedHtml = null, observed = null;
   let fileJob = null, cleanSource, originalSource, sourceFilename = "franken-markdown.md";
   let sourceDownload = null, sourceDownloadId = 0;
+  let imageAssets = [], imageJob = null;
+  const directorySupported = "webkitdirectory" in els.imageFolder;
   const clients = { html: null, pdf: null }, jobs = { html: null, pdf: null }, listeners = [];
   const fields = ["markdown", "font", "darkMode", "title", "author", "customCss", "allowHtml", "lineNumbers"];
   const raw = () => Object.fromEntries(fields.map(key =>
@@ -51,7 +57,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     const current = raw();
     return fields.every(key => current[key] === expected[key]);
   };
-  const current = (kind, job) => alive && !suspended && !composing && jobs[kind] === job
+  const current = (kind, job) => alive && !suspended && !composing && !imageJob && jobs[kind] === job
     && generation === job.generation && unchanged(job.raw);
   const listen = (target, event, handler) => {
     target.addEventListener(event, handler);
@@ -60,10 +66,89 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   function status(message) {
     els.render.textContent = jobs.html ? "Cancel render" : "Render";
     els.downloadPdf.textContent = jobs.pdf ? "Cancel PDF" : "Download PDF";
-    els.render.disabled = els.downloadPdf.disabled = !alive || suspended || composing;
+    els.render.disabled = els.downloadPdf.disabled = !alive || suspended || composing || imageJob !== null;
     els.openMarkdown.disabled = els.markdownFile.disabled = els.downloadMarkdown.disabled = !alive || suspended || composing;
     els.status.textContent = jobs.html && jobs.pdf ? "rendering HTML and PDF in workers"
       : jobs.html ? "rendering HTML in worker" : jobs.pdf ? "rendering PDF in worker" : message;
+    refreshImageControls();
+  }
+  function refreshImageControls() {
+    const blocked = !alive || suspended || composing;
+    els.imageFiles.disabled = blocked;
+    els.imageFolder.disabled = els.imageDocumentPath.disabled = blocked || !directorySupported;
+    els.applyImageFolder.disabled = els.imageFolder.disabled || !els.imageFolder.files?.length;
+    els.clearImages.disabled = blocked || (!imageAssets.length && !imageJob);
+    els.cancelImages.disabled = blocked || imageJob === null;
+  }
+  function retireImageImport(message) {
+    const previous = imageJob;
+    imageJob = null;
+    if (!previous) return false;
+    win.clearTimeout(previous.timer);
+    previous.abort.abort();
+    if (message && alive) els.imageStatus.textContent = message;
+    refreshImageControls();
+    return true;
+  }
+  function releaseImages() {
+    retireImageImport();
+    imageAssets = [];
+    els.imageFiles.value = els.imageFolder.value = els.imageDocumentPath.value = "";
+    els.imageReferences.textContent = "";
+    els.imageStatus.textContent = "Image access revoked. Select images again to include them in previews and exports.";
+    refreshImageControls();
+  }
+  function clearImages() {
+    if (!alive) return false;
+    releaseImages();
+    schedulePreview(true);
+    return true;
+  }
+  function cancelImages() {
+    if (!alive || !retireImageImport("Image loading cancelled. The previous image selection is retained.")) return false;
+    schedulePreview(true);
+    return true;
+  }
+  async function importImages(files, { folder = false, documentPath = "" } = {}) {
+    if (!alive || suspended || composing) return false;
+    // A new selection retires old publications immediately. The previous grant
+    // survives until the complete new selection is admitted and read.
+    invalidate();
+    const job = { raw: raw(), generation, abort: new AbortController() };
+    imageJob = job;
+    const owns = () => alive && !suspended && imageJob === job;
+    const fresh = () => owns() && !composing && generation === job.generation && unchanged(job.raw);
+    els.imageStatus.textContent = "Reading selected images; rendering resumes when the complete selection is ready…";
+    status("reading local images");
+    try {
+      const selected = captureDocumentImageFiles(files, { folder, documentPath });
+      job.timer = win.setTimeout(() => {
+        if (!owns()) return;
+        retireImageImport("Image loading timed out. The previous selection is retained; choose the files again to retry.");
+        schedulePreview(true);
+      }, 30000);
+      const assets = await selected.read(job.abort.signal);
+      if (!fresh()) {
+        if (owns()) els.imageStatus.textContent = "The draft changed during image loading; nothing was installed. Choose the images again.";
+        return false;
+      }
+      imageAssets = assets;
+      els.imageReferences.textContent = selected.references.join("\n");
+      els.imageFiles.value = els.imageFolder.value = "";
+      els.imageStatus.textContent = `${selected.count} local image${selected.count === 1 ? "" : "s"} authorized (${selected.totalBytes.toLocaleString()} bytes).`
+        + (folder ? ` Paths are relative to ${documentPath || "the selected folder root"}.` : " Paths use the selected filenames.")
+        + " Preview and HTML/PDF exports use these same bytes. Check the render diagnostics for unsupported or invalid images.";
+      return true;
+    } catch (error) {
+      if (owns()) els.imageStatus.textContent = `${error?.code ?? "IMAGE_READ_ERROR"}: ${error instanceof Error ? error.message : "Images could not be read."} The previous image selection is retained.`;
+      return false;
+    } finally {
+      if (imageJob === job) {
+        win.clearTimeout(job.timer);
+        imageJob = null;
+        schedulePreview(true);
+      }
+    }
   }
   function diagnostics(items) {
     els.diagnostics.replaceChildren();
@@ -123,6 +208,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
       fileJob = null;
       els.fileStatus.textContent = "File opening cancelled because the draft or page changed. Choose the file again.";
     }
+    retireImageImport("Image loading cancelled because the draft or page changed. Choose the images again.");
     generation++;
     clearTimer();
     cancel("html");
@@ -133,16 +219,17 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     els.preview.srcdoc = "";
     els.previewMeta.textContent = "preview out of date";
   }
-  function options(kind, snapshot) {
+  function options(kind, snapshot, images) {
     const common = { font: snapshot.font, darkMode: snapshot.darkMode,
-      title: snapshot.title.trim() || undefined, allowRawHtml: snapshot.allowHtml };
+      title: snapshot.title.trim() || undefined, allowRawHtml: snapshot.allowHtml,
+      ...(images.length ? { pdfImages: images } : {}) };
     return kind === "html" ? { ...common,
       customCss: snapshot.customCss.trim() ? snapshot.customCss : undefined }
       : { ...common, author: snapshot.author.trim() || undefined,
         codeLineNumbers: snapshot.lineNumbers, metadataEpochSeconds: 1700000000 };
   }
   async function run(kind) {
-    if (!alive || suspended || composing) return false;
+    if (!alive || suspended || composing || imageJob) return false;
     if (kind === "html") clearTimer();
     cancel(kind);
     const captured = raw();
@@ -154,7 +241,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
       status("empty source");
       return false;
     }
-    const job = { raw: captured, generation, abort: new AbortController() };
+    const job = { raw: captured, generation, images: imageAssets, abort: new AbortController() };
     jobs[kind] = job;
     if (kind === "html") {
       revokeHtml();
@@ -165,8 +252,8 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     let completion = "render failed";
     try {
       if (!clients[kind] || clients[kind].disposed)
-        clients[kind] = factory({ maxPendingOperations: 1 });
-      const output = await clients[kind].render(kind, captured.markdown, options(kind, captured), { signal: job.abort.signal });
+        clients[kind] = factory({ maxPendingOperations: 1, maxPendingBytes: 64 * 1024 * 1024 });
+      const output = await clients[kind].render(kind, captured.markdown, options(kind, captured, job.images), { signal: job.abort.signal });
       if (!current(kind, job)) {
         if (jobs[kind] === job) {
           els.preview.srcdoc = "";
@@ -265,6 +352,9 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   listen(els.downloadMarkdown, "click", () => { downloadMarkdown(); });
   async function openMarkdown(file) {
     if (!alive || suspended || composing || !file) return false;
+    // The later source selection owns replacement. Retire an earlier image
+    // read before capturing fileJob, so its cleanup cannot cancel this open.
+    cancelImages();
     const job = { raw: raw(), generation };
     fileJob = job; // A newer selection owns publication, even if an old read settles last.
     const owns = () => alive && !suspended && fileJob === job;
@@ -287,11 +377,12 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
       sourceFilename = next.filename;
       els.title.value = next.filename.replace(/\.(md|markdown|txt)$/i, "") || next.filename;
       els.allowHtml.checked = false;
+      releaseImages();
       // Even an identical import is a document replacement. Retire exports
       // before notifying Document Lab through its existing input listener.
       schedulePreview(true);
       els.markdown.dispatchEvent(new Event("input", { bubbles: true }));
-      els.fileStatus.textContent = `Opened ${next.filename}. Raw HTML is off. Local images need separate authorization in the workspace demo.`;
+      els.fileStatus.textContent = `Opened ${next.filename}. Raw HTML is off. Select its local images below to include them in the preview and exports.`;
       els.markdown.focus();
       return true;
     } catch (error) {
@@ -312,6 +403,27 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     els.markdownFile.value = ""; // A failed/cancelled file can be selected again.
     if (file) void openMarkdown(file);
   });
+  listen(els.imageFiles, "change", () => {
+    const files = els.imageFiles.files;
+    // Admission captures at most 128 entries synchronously before its first
+    // await. Do not copy an arbitrarily large FileList just to reject it.
+    if (files?.length) void importImages(files);
+    els.imageFiles.value = "";
+  });
+  listen(els.imageFolder, "change", () => {
+    cancelImages();
+    if (alive && !suspended && directorySupported && els.imageFolder.files?.length)
+      els.imageStatus.textContent = "Folder selected. Set the Markdown path within it, then use this image folder. The current grant is unchanged until loading succeeds.";
+    refreshImageControls();
+  });
+  listen(els.imageDocumentPath, "input", () => { cancelImages(); });
+  listen(els.imageDocumentPath, "change", () => { cancelImages(); });
+  listen(els.applyImageFolder, "click", () => {
+    if (directorySupported && els.imageFolder.files?.length)
+      void importImages(els.imageFolder.files, { folder: true, documentPath: els.imageDocumentPath.value });
+  });
+  listen(els.clearImages, "click", clearImages);
+  listen(els.cancelImages, "click", cancelImages);
   for (const key of fields) {
     listen(els[key], "input", () => schedulePreview());
     listen(els[key], "change", () => schedulePreview());
@@ -331,7 +443,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     else void run("pdf");
   });
   listen(els.downloadHtml, "click", event => {
-    if (!alive || suspended || composing || !preparedHtml
+    if (!alive || suspended || composing || imageJob || !preparedHtml
       || preparedHtml.generation !== generation || !unchanged(preparedHtml.raw)) {
       event.preventDefault();
       revokeHtml();
@@ -340,6 +452,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   listen(win, "pagehide", () => {
     suspended = true;
     composing = false;
+    releaseImages();
     invalidate();
     for (const kind of ["html", "pdf"]) { clients[kind]?.dispose(); clients[kind] = null; }
     els.allowHtml.checked = false;
@@ -349,13 +462,17 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     if (event.persisted) { suspended = false; schedulePreview(true); }
   });
   if (!els.markdown.value) els.markdown.value = sampleMarkdown;
+  if (!directorySupported)
+    els.imageFolderHelp.textContent = "Folder selection is unavailable in this browser. Select individual images above; only their filenames are authorized.";
   originalSource = cleanSource = els.markdown.value;
   schedulePreview();
   return Object.freeze({
     renderPreview: () => run("html"), downloadPdf: () => run("pdf"), openMarkdown, downloadMarkdown,
+    importImages, clearImages, cancelImages,
     dispose() {
       if (!alive) return;
       alive = false;
+      releaseImages();
       invalidate();
       for (const kind of ["html", "pdf"]) { clients[kind]?.dispose(); clients[kind] = null; }
       for (const [target, event, handler] of listeners) target.removeEventListener(event, handler);

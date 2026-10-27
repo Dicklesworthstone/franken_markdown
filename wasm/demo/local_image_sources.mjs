@@ -11,6 +11,12 @@ const MAX_PATH_UNITS = 4096;
 const MAX_DIRECTORY_PATH_UNITS = 1024 * 1024;
 const MAX_URL_UNITS = 65536;
 const MAX_REFERENCE_UNITS = 1024 * 1024;
+// Native document assets use literal destination keys. Bound the additional
+// aliases before reading bytes; together with the demo's source/CSS limits this
+// fits its explicitly configured 64 MiB document-worker ingress budget.
+const MAX_DOCUMENT_ASSET_BYTES = 48 * 1024 * 1024;
+const MAX_DOCUMENT_KEY_UNITS = 512 * 1024;
+const inventories = new WeakMap();
 const encodedName = (name) => encodeURIComponent(name).replace(
   /[!'()*]/g,
   (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
@@ -52,7 +58,7 @@ function loader(lookup) {
 /** Snapshot an explicit flat picker grant. No directory traversal, URL resolution,
  * percent decoding, credential inference, network fallback or mutable file map. */
 export function createLocalImageSources(files) {
-  const byName = new Map(), references = [];
+  const byName = new Map(), references = [], entries = [];
   let count = 0, total = 0;
   for (const file of files) {
     if (++count > MAX_FILES) fail("Select at most 128 images");
@@ -66,13 +72,17 @@ export function createLocalImageSources(files) {
       byName.set(name, file);
     }
     references.push(reference(file.name, encoded));
+    entries.push({ file, name: file.name, destination: encoded, rawDestination: file.name });
   }
-  return Object.freeze({
+  const lookup = (url) => typeof url === "string"
+    ? byName.get(url.startsWith("./") ? url.slice(2) : url) : undefined;
+  const sources = Object.freeze({
     count,
     references: Object.freeze(references),
-    load: loader((url) => typeof url === "string"
-      ? byName.get(url.startsWith("./") ? url.slice(2) : url) : undefined),
+    load: loader(lookup),
   });
+  inventories.set(sources, { entries, lookup });
+  return sources;
 }
 
 function pathParts(path) {
@@ -86,6 +96,10 @@ function pathParts(path) {
  * Nothing is read until load(); nonimage files grant no readable authority.
  * The directory name is removed, not guessed from a request or browser URL. */
 export function createDirectoryImageSources(files, { documentPath = "" } = {}) {
+  return directoryImageSources(files, documentPath, false);
+}
+
+function directoryImageSources(files, documentPath, svg) {
   let base = [];
   if (documentPath !== "") {
     const parts = pathParts(documentPath);
@@ -111,12 +125,12 @@ export function createDirectoryImageSources(files, { documentPath = "" } = {}) {
     seen.add(relative);
     // Extensions restrict the grant, not the decoder. FlowImageAssets still
     // validates the actual container and pixel limits before allocating ink.
-    if (!/\.(png|jpe?g)$/i.test(parts.at(-1))) continue;
-    if (++count > MAX_FILES) fail("Select a folder with at most 128 PNG/JPEG images");
+    if (!(svg ? /\.(png|jpe?g|svg)$/i : /\.(png|jpe?g)$/i).test(parts.at(-1))) continue;
+    if (++count > MAX_FILES) fail("Select a folder with at most 128 images");
     if (!file.size || file.size > MAX_FILE_BYTES || (total += file.size) > MAX_TOTAL_BYTES)
       fail("Selected images exceed the 8 MiB per-file or 32 MiB total limit");
     byPath.set(relative, file);
-    entries.push({ path: parts.slice(1), name: parts.at(-1) });
+    entries.push({ path: parts.slice(1), name: parts.at(-1), file });
   }
   // Stable insertion order independent of a platform's directory enumeration.
   entries.sort((a, b) => {
@@ -124,13 +138,14 @@ export function createDirectoryImageSources(files, { documentPath = "" } = {}) {
     return left < right ? -1 : left > right ? 1 : 0;
   });
   let referenceUnits = 0;
-  const references = entries.map(({ path, name }) => {
+  const references = entries.map((entry) => {
+    const { path, name } = entry;
     let shared = 0;
     while (shared < base.length && shared < path.length - 1 && base[shared] === path[shared]) shared++;
-    const destination = [
-      ...Array(base.length - shared).fill(".."),
-      ...path.slice(shared).map(encodedName),
-    ].join("/");
+    const ascent = Array(base.length - shared).fill("..");
+    const destination = [...ascent, ...path.slice(shared).map(encodedName)].join("/");
+    entry.destination = destination;
+    entry.rawDestination = [...ascent, ...path.slice(shared)].join("/");
     const markdown = reference(name, destination);
     if ((referenceUnits += markdown.length) > MAX_REFERENCE_UNITS)
       fail("Generated image references exceed the 1 MiB limit");
@@ -158,12 +173,85 @@ export function createDirectoryImageSources(files, { documentPath = "" } = {}) {
     }
     return byPath.get(resolved.join("/"));
   };
-  return Object.freeze({
+  const sources = Object.freeze({
     count,
     rootName: root ?? "",
     documentPath,
     references: Object.freeze(references),
     load: loader(lookup),
+  });
+  inventories.set(sources, { entries, lookup });
+  return sources;
+}
+
+function abortable(value, signal) {
+  return new Promise((resolve, reject) => {
+    const clear = () => signal.removeEventListener("abort", abort);
+    const abort = () => { clear(); reject(signal.reason); };
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(value).then(result => { clear(); resolve(result); }, error => { clear(); reject(error); });
+    if (signal.aborted) abort();
+  });
+}
+
+/** Capture a bounded document-renderer grant using the same local/folder path
+ * policy as Flow. SVG directory entries are enabled only here; the existing
+ * Flow directory grant stays PNG/JPEG-only. No Markdown parsing, image decoding
+ * or network loading occurs.
+ * Native HTML/PDF validate the actual bytes and sanitize SVG when rendering. */
+export function captureDocumentImageFiles(files, { folder = false, documentPath = "" } = {}) {
+  if (typeof folder !== "boolean") fail("Choose individual files or one folder");
+  const sources = folder
+    ? directoryImageSources(files, documentPath, true) : createLocalImageSources(files);
+  const { entries, lookup } = inventories.get(sources);
+  if (!entries.length) fail("Choose at least one PNG, JPEG or SVG image");
+  if (entries.some(entry => !/\.(png|jpe?g|svg)$/i.test(entry.name)))
+    fail("Choose PNG, JPEG or SVG image files");
+  const bindings = [], seen = new Map();
+  let expandedBytes = 0, keyUnits = 0, totalBytes = 0;
+  for (const entry of entries) {
+    totalBytes += entry.file.size;
+    const candidates = new Set([entry.destination, entry.rawDestination,
+      `./${entry.destination}`, `./${entry.rawDestination}`]);
+    for (const destination of candidates) {
+      // In particular, a literal '%' filename must not take over the decoded
+      // alias of a different selected file. The established lookup decides.
+      if (destination.trim() !== destination || lookup(destination) !== entry.file) continue;
+      if (seen.has(destination)) {
+        if (seen.get(destination) !== entry.file) fail("Ambiguous image destination aliases");
+        continue;
+      }
+      if (destination.length > 8192 || new TextEncoder().encode(destination).length > 8192)
+        fail("An image destination exceeds the document renderer's 8 KiB key limit");
+      if ((keyUnits += destination.length) > MAX_DOCUMENT_KEY_UNITS)
+        fail("Image destination aliases exceed the document metadata limit");
+      if ((expandedBytes += entry.file.size) > MAX_DOCUMENT_ASSET_BYTES)
+        fail("Images and their destination aliases exceed the 48 MiB render limit; choose fewer images");
+      seen.set(destination, entry.file);
+      bindings.push({ destination, entry });
+    }
+  }
+  return Object.freeze({
+    count: sources.count,
+    rootName: sources.rootName ?? "",
+    documentPath: folder ? documentPath : "",
+    references: sources.references,
+    totalBytes,
+    async read(signal = new AbortController().signal) {
+      signal.throwIfAborted();
+      const owned = new Map();
+      for (const entry of entries) {
+        const bytes = await abortable(sources.load({ url: entry.destination }, {
+          signal, maxBytes: MAX_FILE_BYTES,
+        }), signal);
+        signal.throwIfAborted();
+        if (!bytes) fail("An image no longer belongs to the captured selection");
+        owned.set(entry, new Uint8Array(bytes));
+      }
+      return Object.freeze(bindings.map(({ destination, entry }) => Object.freeze({
+        destination, bytes: owned.get(entry),
+      })));
+    },
   });
 }
 

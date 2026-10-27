@@ -7416,6 +7416,9 @@ fn parse_svg_embedded_image(
     let image = if let Some(png) = decode_svg_png_data_uri(href) {
         let key = svg_inline_png_key(&png);
         parse_png_image_asset(&key, &png)?
+    } else if let Some(jpeg) = decode_svg_jpeg_data_uri(href) {
+        let key = svg_inline_image_key("svg-inline-jpeg", &jpeg);
+        parse_jpeg_image_asset(&key, &jpeg)?
     } else {
         let svg = decode_svg_svg_data_uri(href)?;
         let key = svg_inline_svg_key(&svg);
@@ -7438,26 +7441,24 @@ fn parse_svg_embedded_image(
 }
 
 fn decode_svg_png_data_uri(href: &str) -> Option<Vec<u8>> {
-    let (metadata, payload) = href.trim().split_once(',')?;
-    let metadata = metadata.trim().to_ascii_lowercase();
-    let suffix = metadata.strip_prefix("data:image/png")?;
-    if !suffix.is_empty() && !suffix.starts_with(';') {
-        return None;
-    }
-    if !suffix
-        .split(';')
-        .skip(1)
-        .any(|part| part.trim() == "base64")
-    {
-        return None;
-    }
-    decode_svg_base64_payload(payload)
+    decode_svg_image_data_uri(href, "image/png", true)
+}
+
+fn decode_svg_jpeg_data_uri(href: &str) -> Option<Vec<u8>> {
+    decode_svg_image_data_uri(href, "image/jpeg", false)
 }
 
 fn decode_svg_svg_data_uri(href: &str) -> Option<Vec<u8>> {
+    decode_svg_image_data_uri(href, "image/svg+xml", false)
+}
+
+/// Decode only an explicitly supported embedded format. Container validation
+/// still belongs to its image parser, so a MIME label never authorizes a
+/// different payload. Both decoders enforce the existing per-image byte bound.
+fn decode_svg_image_data_uri(href: &str, mime: &str, require_base64: bool) -> Option<Vec<u8>> {
     let (metadata, payload) = href.trim().split_once(',')?;
     let metadata = metadata.trim().to_ascii_lowercase();
-    let suffix = metadata.strip_prefix("data:image/svg+xml")?;
+    let suffix = metadata.strip_prefix("data:")?.strip_prefix(mime)?;
     if !suffix.is_empty() && !suffix.starts_with(';') {
         return None;
     }
@@ -7467,8 +7468,10 @@ fn decode_svg_svg_data_uri(href: &str) -> Option<Vec<u8>> {
         .any(|part| part.trim() == "base64")
     {
         decode_svg_base64_payload(payload)
-    } else {
+    } else if !require_base64 {
         decode_svg_data_uri_payload(payload)
+    } else {
+        None
     }
 }
 

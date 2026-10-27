@@ -521,6 +521,7 @@ pub(super) fn layout_block(
         heading_source: None,
         text_ink: (0.0, 0.0),
         grid: None,
+        hyphenated: false,
         segs: Vec::new(),
         image: Some(ImageLine {
             image,

@@ -108,6 +108,10 @@ The contract covers hard constraints over the final measured body lines:
 two-line minima on split ordinary paragraphs, heading keep-together and
 keep-with-next, forced page breaks, and forbidden splits inside wrapped table
 rows, between a table header and its first row, or at protected hyphen breaks.
+Hyphen protection follows an actual selected intra-word break, including
+dictionary hyphenation and a wrapped compound word. A literal `-` in a table
+cell, at the end of a code line, or before a Markdown hard line break does not
+make the following lines inseparable.
 The planned emitters preserve those certified body boundaries. Repeated table
 headers and first-cited page notes participate in the planner's reservations;
 an enabled baseline grid retains its separate placed-row and ink validation.

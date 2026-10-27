@@ -390,6 +390,10 @@ struct Line {
     text_ink: (f32, f32),
     /// Admitted fixed-point vertical metrics; absent on the unchanged default path.
     grid: Option<baseline_grid::LineGrid>,
+    /// A chosen intra-word break ends in a hyphen (inserted by the dictionary
+    /// or present in a compound word). The following line continues that word;
+    /// literal punctuation before whitespace or a structural boundary does not.
+    hyphenated: bool,
     segs: Vec<Seg>,
     image: Option<ImageLine>,
 }
@@ -3399,6 +3403,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 heading_source: None,
                 text_ink: (0.0, 0.0),
                 grid: None,
+                hyphenated: false,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -3831,6 +3836,7 @@ fn page_note_separator(page: PageGeom) -> Line {
         heading_source: None,
         text_ink: (0.0, 0.0),
         grid: None,
+        hyphenated: false,
         segs: Vec::new(),
         image: None,
     }
@@ -4759,6 +4765,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         heading_source: None,
                         text_ink: (0.0, 0.0),
                         grid: None,
+                        hyphenated: false,
                         segs,
                         page_break_before: false,
                         image: None,
@@ -4808,6 +4815,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     heading_source: None,
                     text_ink: (0.0, 0.0),
                     grid: None,
+                    hyphenated: false,
                     segs,
                     page_break_before: false,
                     image: None,
@@ -4896,6 +4904,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 heading_source: None,
                 text_ink: (0.0, 0.0),
                 grid: None,
+                hyphenated: false,
                 segs: Vec::new(),
                 image: None,
             });
@@ -5094,6 +5103,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         heading_source: None,
         text_ink: (0.0, 0.0),
         grid: None,
+        hyphenated: false,
         segs: Vec::new(),
         image: None,
     });
@@ -5188,6 +5198,7 @@ fn push_figure_line(
         heading_source: None,
         text_ink: (0.0, 0.0),
         grid: None,
+        hyphenated: false,
         segs: Vec::new(),
         image: Some(ImageLine {
             image,
@@ -18476,6 +18487,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 heading_source: None,
                 text_ink: (0.0, 0.0),
                 grid: None,
+                hyphenated: false,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -18511,6 +18523,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         heading_source: None,
         text_ink: (0.0, 0.0),
         grid: None,
+        hyphenated: false,
         segs: Vec::new(),
         page_break_before: false,
         image: None,
@@ -20245,6 +20258,7 @@ fn emit_broken_paragraph(
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
+            hyphenated: chosen_hyphenated_break(&built.items, lb, &cx.line_toks),
             segs,
             page_break_before: false,
             image: None,
@@ -20318,6 +20332,7 @@ fn layout_prefixed_inlines(
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
+            hyphenated: false,
             segs: vec![marker],
             image: None,
         });
@@ -20401,6 +20416,7 @@ fn layout_prefixed_inlines(
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
+            hyphenated: chosen_hyphenated_break(&built.items, &lb, &cx.line_toks),
             segs,
             page_break_before: false,
             image: None,
@@ -20481,6 +20497,7 @@ fn layout_inlines_greedy(
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
+            hyphenated: false,
             segs,
             page_break_before: false,
             image: None,
@@ -20708,6 +20725,20 @@ fn chosen_forced_break(items: &[ParagraphItem], lb: &crate::layout::LineBreak) -
             ..
         }))
     )
+}
+
+/// Only a selected intra-word penalty can make the drawn hyphen a word
+/// continuation. A literal hyphen before inter-word glue or a hard line break
+/// is ordinary source content, as are hyphens on code lines and table rows.
+/// Looking at the chosen token avoids inspecting opaque math/image payloads.
+fn chosen_hyphenated_break(items: &[ParagraphItem], lb: &LineBreak, line: &[LineTok]) -> bool {
+    matches!(
+        items.get(lb.end),
+        Some(ParagraphItem::Penalty(penalty)) if penalty.penalty != FORCED_BREAK_PENALTY
+    ) && line.last().is_some_and(|last| {
+        !is_inline_object(last.tok.slot)
+            && token_visible_text(&last.tok).ends_with(['-', '\u{AD}', '\u{2010}'])
+    })
 }
 
 fn glue_flex(glue: Glue, delta: i64) -> i64 {
@@ -24680,6 +24711,7 @@ mod font_slot_text_refs_tests {
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
+            hyphenated: false,
             segs,
             page_break_before: false,
             image,
@@ -30093,12 +30125,10 @@ fn pdf_split_is_hard_forbidden(lines: &[Line], candidate: usize) -> bool {
         }
     }
 
-    // A discretionary hyphen joins the two physical lines into one word. The
-    // exact planner treats this as structural; if no legal partition exists,
-    // the wrapper falls back to the legacy guaranteed-progress DP.
-    before.segs.last().is_some_and(|seg| {
-        seg.text.ends_with('-') || seg.text.ends_with('\u{AD}') || seg.text.ends_with('\u{2010}')
-    })
+    // An actual intra-word hyphen break joins these physical lines. Source
+    // punctuation alone does not: '-' is a common missing-value table cell
+    // and a valid ending for code and hard-break prose lines.
+    before.hyphenated
 }
 
 fn pdf_table_continuation_prefix(lines: &[Line], start: usize, end: usize) -> LayoutUnit {
@@ -30522,16 +30552,9 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         }
     }
 
-    // Never break across a page boundary immediately after a hyphenated line:
-    // a word must not be split across physical pages.
-    if before
-        .segs
-        .last()
-        .map(|s| {
-            s.text.ends_with('-') || s.text.ends_with('\u{AD}') || s.text.ends_with('\u{2010}')
-        })
-        .unwrap_or(false)
-    {
+    // Keep an actual hyphenated word continuation on one physical page. The
+    // line breaker records this decision before runs are merged or cached.
+    if before.hyphenated {
         penalty += 1_200_000.0;
     }
 
@@ -30734,6 +30757,7 @@ mod keep_with_next_tests {
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
+            hyphenated: false,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -30963,6 +30987,7 @@ mod void_budget_tests {
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
+            hyphenated: false,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -34284,6 +34309,7 @@ mod pdf_writer_tests {
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
+            hyphenated: false,
             segs: texts
                 .iter()
                 .map(|text| Seg {
@@ -36168,6 +36194,7 @@ mod pdf_writer_tests {
                 heading_source: None,
                 text_ink: (0.0, 0.0),
                 grid: None,
+                hyphenated: false,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -36337,6 +36364,7 @@ mod pdf_writer_tests {
                 heading_source: None,
                 text_ink: (0.0, 0.0),
                 grid: None,
+                hyphenated: false,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -36479,6 +36507,7 @@ mod pdf_writer_tests {
                 heading_source: None,
                 text_ink: (0.0, 0.0),
                 grid: None,
+                hyphenated: false,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -36601,6 +36630,7 @@ mod pdf_writer_tests {
                 heading_source: None,
                 text_ink: (0.0, 0.0),
                 grid: None,
+                hyphenated: false,
                 segs: vec![
                     Seg {
                         x: 0.0,
@@ -36704,6 +36734,7 @@ mod pdf_writer_tests {
                 heading_source: None,
                 text_ink: (0.0, 0.0),
                 grid: None,
+                hyphenated: false,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -41722,6 +41753,7 @@ mod coverage_gap_tests {
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
+            hyphenated: false,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -43730,6 +43762,7 @@ mod plass_pagination_tests {
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
+            hyphenated: false,
             segs: Vec::new(),
             page_break_before: false,
             image: None,

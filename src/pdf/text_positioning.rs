@@ -478,6 +478,7 @@ pub(super) fn append_fitted_line(
         let mut repaired = line.clone();
         repaired.segs.clear();
         repaired.gap_after = if index == last { line.gap_after } else { 0.0 };
+        repaired.hyphenated = index == last && line.hyphenated;
         let mut x = left;
         for run in row.runs {
             let width = run.width;

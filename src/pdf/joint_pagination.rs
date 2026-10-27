@@ -294,6 +294,7 @@ fn cost_context(line: &Line) -> Line {
         heading_source: None,
         text_ink: (0.0, 0.0),
         grid: line.grid,
+        hyphenated: line.hyphenated,
         segs: Vec::new(),
         image: None,
     }

@@ -151,21 +151,22 @@
 
       .editor-body {
         display: grid;
-        grid-template-rows: auto auto auto minmax(240px, 1fr);
+        grid-template-rows: auto auto auto auto minmax(240px, 1fr);
         min-height: 0;
       }
 
-      .image-controls {
+      .image-controls, .draft-controls {
         min-width: 0;
         padding: 10px;
         border-bottom: 1px solid var(--line);
         font-size: 12px;
       }
 
-      .image-controls summary { cursor: pointer; font-weight: 650; }
+      .image-controls summary, .draft-controls summary { cursor: pointer; font-weight: 650; }
       .image-controls .field { margin: 10px 0; }
       .image-controls input[type="file"] { height: auto; padding: 6px; }
-      .image-controls .actions { flex-wrap: wrap; }
+      .image-controls .actions, .draft-controls .actions { flex-wrap: wrap; }
+      .draft-controls .check { margin: 10px 0; }
       .image-controls pre {
         max-height: 10rem;
         overflow: auto;
@@ -440,6 +441,22 @@
               <p id="image-status" class="status" role="status" aria-live="polite">No local images selected. Opening another Markdown file or leaving this page revokes image access.</p>
               <p>These references use the authorized relative paths. Copy a reference into Markdown if needed; image decoding and SVG sanitization are performed by the renderer.</p>
               <pre id="image-references" aria-label="Markdown references for the selected images"></pre>
+            </details>
+            <details class="draft-controls" open>
+              <summary>Local draft recovery</summary>
+              <label class="check">
+                <input id="remember-draft" type="checkbox" disabled aria-describedby="draft-help draft-status" />
+                <span>Autosave Markdown on this device</span>
+              </label>
+              <div class="actions">
+                <button id="save-draft" class="button secondary" type="button" disabled>Save draft now</button>
+                <button id="refresh-draft" class="button secondary" type="button" disabled>Refresh recovery</button>
+                <button id="restore-draft" class="button secondary" type="button" disabled>Restore stored draft</button>
+                <button id="forget-draft" class="button secondary" type="button" disabled>Forget stored draft</button>
+              </div>
+              <p id="draft-status" class="status" role="status" aria-live="polite">Checking this browser for a stored draft. The editor will not be replaced automatically.</p>
+              <p id="draft-help">Autosave is off until you enable it. Only Markdown and its filename are stored on this device; settings, raw HTML permission and local image access are never saved. Turning autosave off keeps the stored copy. Forgetting removes the stored copy, keeps the current editor and turns autosave off.</p>
+              <p>A recovery copy is offered after reload; restore it explicitly, then enable autosave again if wanted. Pending or failed commits may lose changes when this page closes. Browser storage can be cleared or evicted: use Download Markdown for an independent copy.</p>
             </details>
             <textarea id="markdown" spellcheck="false"></textarea>
           </div>

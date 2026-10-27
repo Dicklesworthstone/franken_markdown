@@ -1,6 +1,8 @@
 import { createWorkerRenderer } from "../document_worker.mjs";
 import { markdownDownload, readMarkdownFile } from "./flow_document.mjs";
 import { captureDocumentImageFiles } from "./local_image_sources.mjs";
+import { createDraftControls } from "./flow_draft_controls.mjs";
+import { openDraftStore } from "./flow_draft_store.mjs";
 
 const sampleMarkdown = `# franken_markdown demo
 
@@ -25,9 +27,12 @@ fn main() {
 - Download a PDF generated from the same Markdown source.
 `;
 
-// The factory seam is for host integration and controller tests, not a renderer
-// selected by page content. The production default only starts module workers.
-export function createDemoController(doc, win, factory = createWorkerRenderer) {
+// Renderer/storage seams are for host integration and controller tests, never
+// selected by page content. The production renderer only starts module workers.
+export function createDemoController(doc, win, factory = createWorkerRenderer, {
+  openStore = () => openDraftStore({ indexedDB: win.indexedDB, name: "franken-markdown-demo-source-draft-v1" }),
+  draftDelayMs = 400,
+} = {}) {
   const els = {};
   for (const [key, selector] of Object.entries({
     downloadMarkdown: "#download-markdown", openMarkdown: "#open-markdown", markdownFile: "#markdown-file", fileStatus: "#file-status",
@@ -39,6 +44,8 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     imageFiles: "#image-files", imageFolder: "#image-folder", imageDocumentPath: "#image-document-path",
     applyImageFolder: "#apply-image-folder", clearImages: "#clear-images", cancelImages: "#cancel-images",
     imageStatus: "#image-status", imageReferences: "#image-references", imageFolderHelp: "#image-folder-help",
+    rememberDraft: "#remember-draft", refreshDraft: "#refresh-draft", restoreDraft: "#restore-draft",
+    forgetDraft: "#forget-draft", saveDraft: "#save-draft", draftStatus: "#draft-status",
   })) {
     els[key] = doc.querySelector(selector);
     if (!els[key]) throw new Error(`franken_markdown demo is missing required element ${selector}`);
@@ -48,6 +55,10 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   let fileJob = null, cleanSource, originalSource, sourceFilename = "franken-markdown.md";
   let sourceDownload = null, sourceDownloadId = 0;
   let imageAssets = [], imageJob = null;
+  let drafts = null;
+  // Source intent has a separate channel: starting a file read or composition
+  // fences recovery without pretending that the textarea has already changed.
+  const sourceChanges = new EventTarget(), filenameChanges = new EventTarget();
   const directorySupported = "webkitdirectory" in els.imageFolder;
   const clients = { html: null, pdf: null }, jobs = { html: null, pdf: null }, listeners = [];
   const fields = ["markdown", "font", "darkMode", "title", "author", "customCss", "allowHtml", "lineNumbers"];
@@ -315,6 +326,55 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     status(composing ? "composing text" : "waiting for edits");
     if (!composing) timer = win.setTimeout(() => { timer = null; void run("html"); }, 180);
   }
+  function sourceDocument() {
+    return { filename: sourceFilename,
+      source: els.markdown.value === cleanSource ? originalSource : els.markdown.value };
+  }
+  function sourceChanged() {
+    if (alive && !suspended) sourceChanges.dispatchEvent(new Event("input"));
+  }
+  function requireReplacement() {
+    if (!alive || suspended || composing)
+      throw Object.assign(new Error("Finish text composition and return to the active editor before restoring a draft."), { code: "SOURCE_BUSY" });
+  }
+  function replaceSource(next, action) {
+    requireReplacement();
+    fileJob = null;
+    els.markdown.value = next.source;
+    cleanSource = els.markdown.value; // Browsers normalize CR/CRLF in textareas.
+    originalSource = next.source;
+    sourceFilename = next.filename;
+    els.title.value = next.filename.replace(/\.(md|markdown|txt)$/i, "") || next.filename;
+    els.allowHtml.checked = false;
+    releaseImages();
+    // Even an identical import/recovery is a replacement. Retire exports
+    // before notifying draft storage and Document Lab through input listeners.
+    schedulePreview(true);
+    els.markdown.dispatchEvent(new Event("input", { bubbles: true }));
+    els.fileStatus.textContent = `${action} ${next.filename}. Raw HTML is off. Select its local images below to include them in the preview and exports.`;
+    els.markdown.focus();
+  }
+  function startDrafts() {
+    drafts?.dispose();
+    drafts = createDraftControls({
+      sourceEditor: sourceChanges, filename: filenameChanges,
+      remember: els.rememberDraft, refresh: els.refreshDraft, restore: els.restoreDraft,
+      forget: els.forgetDraft, save: els.saveDraft, status: els.draftStatus,
+      readDocument: sourceDocument,
+      restoreDocument: next => replaceSource(next, "Restored"),
+      confirmRestore: next => {
+        requireReplacement();
+        return win.confirm(`Restore ${next.filename} from browser draft storage and replace the current editor? Download Markdown first to keep the current source. Raw HTML will be turned off and local image access revoked.`);
+      },
+      confirmForget: name => win.confirm(`Forget the stored draft ${name ?? ""}? This removes only its stored source, keeps the current editor and turns autosave off. Download Markdown first for a separate copy.`),
+      openStore, delayMs: draftDelayMs,
+    });
+  }
+  function pauseDrafts() {
+    drafts?.dispose();
+    drafts = null;
+    els.draftStatus.textContent = "Local recovery is paused. Only previously acknowledged commits are stored; this pause does not save current changes.";
+  }
   function downloadMarkdown() {
     if (!alive || suspended || composing) return false;
     const captured = raw(), revision = generation, id = ++sourceDownloadId;
@@ -352,6 +412,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   listen(els.downloadMarkdown, "click", () => { downloadMarkdown(); });
   async function openMarkdown(file) {
     if (!alive || suspended || composing || !file) return false;
+    sourceChanged(); // A later file-open intent supersedes an in-flight restore.
     // The later source selection owns replacement. Retire an earlier image
     // read before capturing fileJob, so its cleanup cannot cancel this open.
     cancelImages();
@@ -370,20 +431,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
         return false;
       }
       if (!fresh()) return false;
-      fileJob = null;
-      els.markdown.value = next.source;
-      cleanSource = els.markdown.value; // Browsers normalize CR/CRLF in textareas.
-      originalSource = next.source;
-      sourceFilename = next.filename;
-      els.title.value = next.filename.replace(/\.(md|markdown|txt)$/i, "") || next.filename;
-      els.allowHtml.checked = false;
-      releaseImages();
-      // Even an identical import is a document replacement. Retire exports
-      // before notifying Document Lab through its existing input listener.
-      schedulePreview(true);
-      els.markdown.dispatchEvent(new Event("input", { bubbles: true }));
-      els.fileStatus.textContent = `Opened ${next.filename}. Raw HTML is off. Select its local images below to include them in the preview and exports.`;
-      els.markdown.focus();
+      replaceSource(next, "Opened");
       return true;
     } catch (error) {
       if (owns()) els.fileStatus.textContent = `${error?.code ? `${error.code}: ` : ""}${error instanceof Error ? error.message : "The file could not be opened."}`;
@@ -428,8 +476,10 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     listen(els[key], "input", () => schedulePreview());
     listen(els[key], "change", () => schedulePreview());
   }
+  listen(els.markdown, "input", sourceChanged);
   listen(els.markdown, "compositionstart", () => {
     composing = true;
+    sourceChanged(); // Fence a recovery read even before the first IME input.
     invalidate();
     status("composing text");
   });
@@ -452,6 +502,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
   listen(win, "pagehide", () => {
     suspended = true;
     composing = false;
+    pauseDrafts();
     releaseImages();
     invalidate();
     for (const kind of ["html", "pdf"]) { clients[kind]?.dispose(); clients[kind] = null; }
@@ -459,12 +510,13 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     status("paused; source retained");
   });
   listen(win, "pageshow", event => {
-    if (event.persisted) { suspended = false; schedulePreview(true); }
+    if (event.persisted) { suspended = false; startDrafts(); schedulePreview(true); }
   });
   if (!els.markdown.value) els.markdown.value = sampleMarkdown;
   if (!directorySupported)
     els.imageFolderHelp.textContent = "Folder selection is unavailable in this browser. Select individual images above; only their filenames are authorized.";
   originalSource = cleanSource = els.markdown.value;
+  startDrafts();
   schedulePreview();
   return Object.freeze({
     renderPreview: () => run("html"), downloadPdf: () => run("pdf"), openMarkdown, downloadMarkdown,
@@ -472,6 +524,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer) {
     dispose() {
       if (!alive) return;
       alive = false;
+      pauseDrafts();
       releaseImages();
       invalidate();
       for (const kind of ["html", "pdf"]) { clients[kind]?.dispose(); clients[kind] = null; }

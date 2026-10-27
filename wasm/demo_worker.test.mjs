@@ -23,7 +23,8 @@ function fixture(t, { directory = true, rendererFactory } = {}) {
     }
   }
   const ids = ["download-markdown", "open-markdown", "markdown-file", "file-status", "markdown", "render", "download-pdf", "download-html", "preview", "diagnostics", "status", "source-size", "preview-meta", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers",
-    "image-files", "image-folder", "image-document-path", "apply-image-folder", "clear-images", "cancel-images", "image-status", "image-references", "image-folder-help"];
+    "image-files", "image-folder", "image-document-path", "apply-image-folder", "clear-images", "cancel-images", "image-status", "image-references", "image-folder-help",
+    "remember-draft", "refresh-draft", "restore-draft", "forget-draft", "save-draft", "draft-status"];
   const els = Object.fromEntries(ids.map(id => [id, new Element(id === "download-html" ? "a" : "div")]));
   els.markdown.value = "# Original";
   els.font.value = "sans"; els["dark-mode"].value = "auto"; els.title.value = "Original title";

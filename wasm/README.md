@@ -54,6 +54,65 @@ and records the supplied glue/WASM hashes. Using a release package proves
 compatibility with that artifact; it does not qualify the current Rust source.
 Composition and page transitions in this check are synthetic events.
 
+### Local source draft recovery
+
+The primary HTML/PDF demo includes **Local draft recovery** below the settings
+and image controls. Enable **Autosave Markdown on this device** to keep one
+source draft in this browser. Autosave is off by default; merely finding a
+stored draft never replaces the editor or authorizes new writes. After a reload,
+use **Restore stored draft**, confirm replacing the current editor, then enable
+autosave again if wanted. **Save draft now** commits pending changes immediately
+when autosave is enabled. **Refresh recovery** reconnects storage and checks for
+the latest stored revision, leaving current text intact and autosave off.
+
+Only the Markdown source and its original filename are persisted. Untouched
+imports and recovered copies retain UTF-8 BOM and CR/CRLF bytes for subsequent
+source downloads even though the browser normalizes textarea line endings.
+Once edited, the current textarea text is saved. Recovery turns off raw HTML,
+revokes local image access, and retires old previews and downloads before
+installing the recovered source. Settings, image bytes, font grants, rendered
+output and filesystem handles are not stored. The main demo uses its own
+`franken-markdown-demo-source-draft-v1` IndexedDB database, separate from the
+Flow demo's source draft.
+
+Turning autosave off stops future saves and retains the previously committed
+copy. **Forget stored draft** asks for confirmation, removes only that stored
+copy, keeps the current editor and turns autosave off. A second tab cannot
+silently overwrite a newer stored revision: a conflict pauses autosave and
+offers an explicit refresh. Pending and failed transactions have visible status;
+only a completed transaction is reported as acknowledged. Storage failures leave
+source editing and Markdown downloads available. A late recovery read cannot
+replace more recent typing, a new file selection or a newly started composition.
+
+Leaving or suspending the page closes recovery storage and stops pending work;
+it does not perform or claim an unload save. Returning through the browser's
+back/forward cache keeps the in-memory editor, checks storage again and requires
+fresh consent to restore or autosave. Browser storage can be cleared or evicted,
+so use **Download Markdown** to keep an independent copy. That download requests
+a source file; it is not an acknowledgment that the browser saved it to disk.
+
+Focused controller checks run with:
+
+```bash
+node wasm/tests/demo_draft_recovery.test.mjs
+node wasm/demo_worker.test.mjs
+```
+
+For native browser storage, reloads, competing tabs and exact source downloads:
+
+```bash
+node wasm/tests/demo_draft_recovery.browser.mjs
+```
+
+The browser check supports `FMD_PLAYWRIGHT_MODULE`, `FMD_CHROMIUM` and
+`FMD_BROWSER_OUTPUT`. It runs the production demo and recovery modules with an
+explicit renderer double; it does not qualify worker/WASM rendering. IndexedDB,
+file inputs, textarea normalization, reloads, conflicts and downloads are real;
+composition and back/forward-cache lifecycle events are synthetic. Set
+`FMD_DRAFT_BASELINE_REF` to a pre-recovery Git revision to run the same first
+feature assertion against its original demo files; that negative check is
+expected to fail after reproducing the baseline's loss of edits on reload.
+
 ### Local images in the HTML/PDF demo
 
 Open **Local images for preview and exports** beneath the settings. Select PNG,

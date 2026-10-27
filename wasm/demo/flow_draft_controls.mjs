@@ -28,6 +28,9 @@ export function createDraftControls({
     if (disposed) throw new FlowError("SESSION_DISPOSED", "Draft controls are disposed.");
   };
   function render() {
+    // A resumed/remounted controller may already own these same elements.
+    // Late operations of a disposed owner must not touch its successor's UI.
+    if (disposed) return;
     const value = owner?.state,
       busy = operation !== null || value?.busy === true;
     remember.checked = value?.enabled === true;
@@ -41,7 +44,6 @@ export function createDraftControls({
     restore.disabled = disposed || busy || !value?.available;
     forget.disabled = disposed || busy || !value?.ready || value.storedFilename === null;
     save.disabled = disposed || busy || !value?.enabled || !value.dirty;
-    if (disposed) return;
     const error = failure ?? value?.error;
     if (error)
       status.textContent = `${error.code ?? "STORAGE_UNAVAILABLE"}: ${error.message ?? "Draft storage failed."} Download Markdown to keep an independent copy; Refresh recovery retries storage.`;
@@ -181,7 +183,8 @@ export function createDraftControls({
       disposed = true;
       owner?.dispose();
       owner = null;
-      render();
+      remember.checked = false;
+      remember.disabled = refresh.disabled = restore.disabled = forget.disabled = save.disabled = true;
       remember.removeEventListener("change", onRemember);
       refresh.removeEventListener("click", onRefresh);
       restore.removeEventListener("click", onRestore);

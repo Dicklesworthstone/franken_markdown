@@ -302,3 +302,36 @@ test("disposal removes input and command listeners and leaves buttons disabled",
   assert.equal(f.refresh.disabled, true);
   assert.equal(f.save.disabled, true);
 });
+
+for (const completion of ["database open", "recovery confirmation"]) {
+  test(`late ${completion} cannot mutate controls after their ownership was released`, async () => {
+    const f = fixture({ source: "saved", filename: "saved.md" }), hold = gate();
+    let pending;
+    if (completion === "database open") {
+      f.gate(hold);
+      pending = f.controls.whenIdle();
+    } else {
+      await f.controls.whenIdle();
+      f.approveRestore(hold.promise);
+      pending = f.controls.restore();
+    }
+    await tick();
+    f.controls.dispose();
+    const buttons = [f.remember, f.refresh, f.restore, f.forget, f.save];
+    for (const button of buttons) assert.equal(button.disabled, true);
+    assert.equal(f.remember.checked, false);
+    // The host has reassigned these elements after the old owner disposed.
+    // Any later callback must leave the new owner's DOM state untouched.
+    for (const button of buttons) button.disabled = false;
+    f.remember.checked = true;
+    f.status.textContent = "New owner status";
+    hold.resolve(true);
+    if (completion === "database open") await pending;
+    else await assert.rejects(pending, error => error.code === "SESSION_DISPOSED");
+    for (const button of buttons) assert.equal(button.disabled, false);
+    assert.equal(f.remember.checked, true);
+    assert.equal(f.status.textContent, "New owner status");
+    assert.equal(f.replacements, 0);
+    assert.equal(f.closes, 1);
+  });
+}

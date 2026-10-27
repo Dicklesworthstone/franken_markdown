@@ -59,6 +59,13 @@ run's colour unless explicitly overridden by a scoped colour declaration.
 A formula inside a link keeps the link colour for its uncoloured parts, together
 with the link's underline and annotation.
 
+Inline `$$…$$` retains display style in PDF as it does in HTML and SVG.
+Large operators use their display-size glyphs and limits, and fractions use
+the display layout even inside a sentence, heading or table cell. The result
+remains one inline box; its actual display-style dimensions drive wrapping,
+line height, baseline-grid placement and tagged formula bounds. Single-dollar
+`$…$` formulas retain their existing text-style layout.
+
 A formula taller than the text grows its line. Ink above 1.0 em or below 0.3 em
 of the line's size adds that much leading, and the baseline rises by the extra
 depth, the way TeX's box heights and depths space lines. A line holding a

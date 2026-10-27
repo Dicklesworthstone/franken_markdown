@@ -141,8 +141,8 @@ fn measure(line: &Line, faces: &Faces, scratch: &mut ShapeScratch) -> LineGrid {
     let mut above = line.text_ink.0;
     let mut below = line.text_ink.1;
     for seg in &line.segs {
-        if seg.slot == F_MATH {
-            if let Ok(formula) = math::inline_formula(&seg.text) {
+        if is_inline_math(seg.slot) {
+            if let Ok(formula) = math::inline_formula(&seg.text, seg.slot == F_DISPLAY_MATH) {
                 above = above.max(formula.ascent * size);
                 below = below.max(formula.descent * size);
             }

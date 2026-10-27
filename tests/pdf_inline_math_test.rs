@@ -190,3 +190,244 @@ fn an_over_wide_inline_formula_overflows_whole_and_is_named() {
     let (_, content) = render(&markdown);
     assert_eq!(content.matches("/Formula <</MCID ").count(), 1);
 }
+
+/// Inspect painted path endpoints and extraction anchors, without consulting
+/// PDF layout internals or its verification text layer.
+struct PaintedFormula {
+    bounds: [f64; 4],
+    x: f64,
+    y: f64,
+    size: f64,
+}
+
+fn painted_formulas(content: &str) -> Vec<PaintedFormula> {
+    content
+        .match_indices("/Span <</ActualText ")
+        .filter_map(|(at, _)| {
+            let start = content[..at].rfind(">> BDC\n")? + ">> BDC\n".len();
+            let mut bounds = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            for line in content[start..at].lines() {
+                let parts: Vec<_> = line.split_whitespace().collect();
+                if !matches!(parts.last(), Some(&"m" | &"l" | &"c")) || parts.len() < 3 {
+                    continue;
+                }
+                let x: f64 = parts[parts.len() - 3].parse().unwrap();
+                let y: f64 = parts[parts.len() - 2].parse().unwrap();
+                bounds[0] = bounds[0].min(x);
+                bounds[1] = bounds[1].min(y);
+                bounds[2] = bounds[2].max(x);
+                bounds[3] = bounds[3].max(y);
+            }
+            if !bounds.iter().all(|v| v.is_finite()) {
+                return None;
+            }
+            let matrix = content[at..].lines().find(|line| line.contains(" Tm"))?;
+            let numbers: Vec<f64> = matrix
+                .split_once(" Tm")?
+                .0
+                .split_whitespace()
+                .rev()
+                .take(6)
+                .map(|v| v.parse().unwrap())
+                .collect();
+            let size = matrix
+                .split_once(" Tf")?
+                .0
+                .split_whitespace()
+                .last()?
+                .parse()
+                .unwrap();
+            Some(PaintedFormula {
+                bounds,
+                x: numbers[1],
+                y: numbers[0],
+                size,
+            })
+        })
+        .collect()
+}
+
+fn assert_painted_style(formula: &PaintedFormula, source: &str, display: bool) {
+    use franken_markdown::math::{Engine, PathSeg, Style, paths};
+    let engine = Engine::bundled().unwrap();
+    let layout = engine
+        .typeset(source, if display { Style::Display } else { Style::Text })
+        .unwrap();
+    let mut expected = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    let mut visit = |(x, y): (f64, f64)| {
+        let x = formula.x + x * formula.size;
+        let y = formula.y + y * formula.size;
+        expected[0] = expected[0].min(x);
+        expected[1] = expected[1].min(y);
+        expected[2] = expected[2].max(x);
+        expected[3] = expected[3].max(y);
+    };
+    for contour in paths::resolve_paths(&engine, &layout).unwrap() {
+        visit(contour.start);
+        for segment in contour.segments {
+            match segment {
+                PathSeg::Line { to } | PathSeg::Quad { to, .. } => visit(to),
+            }
+        }
+    }
+    for (actual, expected) in formula.bounds.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() < 0.03,
+            "display={display}, source={source:?}: painted {:?}, expected coordinate {expected}",
+            formula.bounds
+        );
+    }
+}
+
+#[test]
+fn inline_display_math_preserves_display_operators_limits_and_fractions() {
+    for source in [r"\sum_{i=1}^{n} i", r"\int_0^1 x^2 dx", r"\frac{a+b}{c+d}"] {
+        let (text_pdf, text) = render(&format!("Before ${source}$ after."));
+        let (display_pdf, display) = render(&format!("Before $${source}$$ after."));
+        assert_ne!(
+            display_pdf, text_pdf,
+            "the two math styles must not collapse"
+        );
+        let text_formulas = painted_formulas(&text);
+        let display_formulas = painted_formulas(&display);
+        assert_eq!(text_formulas.len(), 1);
+        assert_eq!(display_formulas.len(), 1);
+        assert_painted_style(&text_formulas[0], source, false);
+        assert_painted_style(&display_formulas[0], source, true);
+        let escaped = source.replace('\\', "\\\\");
+        assert!(String::from_utf8_lossy(&display_pdf).contains(&format!("/Alt ({escaped})")));
+        assert!(display.contains(&format!("/ActualText ({escaped})")));
+        assert!(
+            !display.contains("/F10 "),
+            "display math is not a font slot"
+        );
+    }
+}
+
+#[test]
+fn identical_sources_keep_separate_styles_in_repeated_table_layouts() {
+    let source = r"\sum_{i=1}^{n} i";
+    for displays in [[false, true], [true, false]] {
+        let mut markdown = String::new();
+        for display in displays {
+            let delimiter = if display { "$$" } else { "$" };
+            markdown.push_str(&format!(
+                "| Formula |\n| --- |\n| {delimiter}{source}{delimiter} |\n\nSeparator.\n\n"
+            ));
+        }
+        let (_, content) = render(&markdown);
+        let formulas = painted_formulas(&content);
+        assert_eq!(formulas.len(), 2);
+        for (formula, display) in formulas.iter().zip(displays) {
+            assert_painted_style(formula, source, display);
+        }
+    }
+}
+
+#[test]
+fn display_math_style_reaches_headings_lists_quotes_definitions_and_footnotes() {
+    let source = r"\sum_{i=1}^{n} i";
+    let math = format!("$${source}$$");
+    for markdown in [
+        format!("# Heading {math}\n"),
+        format!("> Before {math} after.\n"),
+        format!("- Before {math} after.\n"),
+        format!("Term {math}\n: Definition {math}\n"),
+        format!("Evidence[^n].\n\n[^n]: Before {math} after.\n"),
+        format!("Before [{math}](https://example.com/equation) after.\n"),
+    ] {
+        let (_, content) = render(&markdown);
+        let formulas = painted_formulas(&content);
+        assert!(!formulas.is_empty(), "missing formula in {markdown:?}");
+        for formula in formulas {
+            assert_painted_style(&formula, source, true);
+        }
+    }
+}
+
+#[test]
+fn display_math_expands_grid_rows_and_keeps_emission_modes_identical() {
+    use franken_markdown::{
+        BaselineGrid, PdfEmitOptions, PdfPageEmission, render_pdf_document_emitted,
+    };
+    let source = r"\sum_{i=1}^{n} \frac{1}{i^2}";
+    let document = parse_markdown(&format!("Before $${source}$$ after.\n\nNext paragraph."));
+    let mut options = PdfOptions {
+        strict_pagination: true,
+        ..PdfOptions::default()
+    };
+    options.theme.page.baseline_grid = Some(BaselineGrid::from_points(12.0).unwrap());
+    let pdf = render_pdf_document(&document, &options).unwrap();
+    let monolithic = render_pdf_document_emitted(
+        &document,
+        &options,
+        PdfEmitOptions {
+            emission: PdfPageEmission::Monolithic,
+            ..PdfEmitOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(pdf, monolithic);
+    let content = page_content(&pdf);
+    let formulas = painted_formulas(&content);
+    assert_eq!(formulas.len(), 1);
+    assert_painted_style(&formulas[0], source, true);
+    let top = options.theme.page.size.height_pt - options.theme.page.margins.top_pt;
+    for y in text_baselines(&content) {
+        let steps = (top - y) / 12.0;
+        assert!(
+            (steps - steps.round()).abs() < 0.002,
+            "off-grid baseline: {y}"
+        );
+    }
+}
+
+#[test]
+fn display_math_warning_measurements_use_the_authored_style() {
+    use franken_markdown::math::{Engine, Style};
+    let source = [r"\sum_{i=1}^{n} i"; 4].join("+");
+    let engine = Engine::bundled().unwrap();
+    let mut options = PdfOptions::default();
+    let size = f64::from(options.type_scale().body);
+    let widths = [Style::Text, Style::Display]
+        .map(|style| engine.typeset(&source, style).unwrap().width * size);
+    assert!(
+        (widths[0] - widths[1]).abs() > 1.0,
+        "probe must distinguish styles"
+    );
+    let measure = ((widths[0] + widths[1]) / 2.0) as f32;
+    options.theme.page.size.width_pt =
+        measure + options.theme.page.margins.left_pt + options.theme.page.margins.right_pt;
+    for (display, width) in [(false, widths[0]), (true, widths[1])] {
+        let delimiter = if display { "$$" } else { "$" };
+        let document = parse_markdown(&format!("Before {delimiter}{source}{delimiter} after."));
+        let warnings = render_warnings(&document, &options);
+        let overflow = warnings
+            .iter()
+            .any(|warning| matches!(warning, RenderWarning::MathOverflow { .. }));
+        assert_eq!(
+            overflow,
+            width > f64::from(measure),
+            "display={display}: {warnings:?}"
+        );
+    }
+    let unsupported = parse_markdown(r"Before $$\fmnNotACommand{x}$$ after.");
+    assert!(render_warnings(&unsupported, &PdfOptions::default()).iter().any(|warning| matches!(
+        warning, RenderWarning::MathFallback { source, .. } if source == r"\fmnNotACommand{x}"
+    )));
+    let (_, content) = render(r"Before $$\fmnNotACommand{x}$$ after.");
+    assert!(
+        content.contains("/F4 "),
+        "unsupported display math retains visible TeX"
+    );
+}

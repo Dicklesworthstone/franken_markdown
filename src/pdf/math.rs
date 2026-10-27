@@ -180,23 +180,24 @@ pub(super) struct InlineFormula {
     pub(super) descent: f32,
 }
 
-/// Distinct inline sources kept in the process-wide memo; beyond it, layouts
+/// Distinct inline source/style pairs kept in the process-wide memo; beyond it, layouts
 /// are recomputed rather than stored.
 const INLINE_MEMO_ENTRIES: usize = 4096;
 
-/// The inline layout of `source`, memoized per process. fmd-math layout is a
-/// pure function of the source, so measurement, line metrics and drawing all
-/// see the same formula without any of them threading it through. An `Err`
-/// is the reason the source keeps its visible TeX fallback.
-pub(super) fn inline_formula(source: &str) -> std::result::Result<Arc<InlineFormula>, String> {
-    type Memo = Mutex<HashMap<String, std::result::Result<Arc<InlineFormula>, String>>>;
+/// The inline layout of `source` in its authored text or display style,
+/// memoized per process. Measurement, line metrics and drawing share the same
+/// formula. An `Err` keeps the complete visible TeX fallback. Separate maps
+/// allow borrowed source lookups without allocating a composite cache key.
+pub(super) fn inline_formula(
+    source: &str,
+    display: bool,
+) -> std::result::Result<Arc<InlineFormula>, String> {
+    type Memo = Mutex<[HashMap<String, std::result::Result<Arc<InlineFormula>, String>>; 2]>;
     static ENGINE: OnceLock<std::result::Result<Engine, String>> = OnceLock::new();
     static MEMO: OnceLock<Memo> = OnceLock::new();
     let memo = MEMO.get_or_init(Memo::default);
-    if let Some(hit) = memo
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(source)
+    if let Some(hit) =
+        memo.lock().unwrap_or_else(PoisonError::into_inner)[usize::from(display)].get(source)
     {
         return hit.clone();
     }
@@ -204,7 +205,13 @@ pub(super) fn inline_formula(source: &str) -> std::result::Result<Arc<InlineForm
         .get_or_init(|| Engine::bundled().map_err(|error| error.to_string()))
         .as_ref()
         .map_err(Clone::clone)
-        .and_then(|engine| typeset_formula(engine, source, Style::Text))
+        .and_then(|engine| {
+            typeset_formula(
+                engine,
+                source,
+                if display { Style::Display } else { Style::Text },
+            )
+        })
         .map(|formula| {
             Arc::new(InlineFormula {
                 paths: formula.paths,
@@ -214,8 +221,8 @@ pub(super) fn inline_formula(source: &str) -> std::result::Result<Arc<InlineForm
             })
         });
     let mut memo = memo.lock().unwrap_or_else(PoisonError::into_inner);
-    if memo.len() < INLINE_MEMO_ENTRIES {
-        memo.insert(source.to_owned(), result.clone());
+    if memo.iter().map(HashMap::len).sum::<usize>() < INLINE_MEMO_ENTRIES {
+        memo[usize::from(display)].insert(source.to_owned(), result.clone());
     }
     result
 }
@@ -456,19 +463,18 @@ pub(super) fn collect_warnings<'a>(
 /// Report every inline `$…$` the inline lane cannot typeset (it keeps its
 /// visible TeX source), and every one wider than the text `measure` at
 /// `body_size` (it never splits, so it overflows), walking the same blocks
-/// the text scan does. Each distinct source is reported once.
+/// the text scan does. Each distinct source/style pair is reported once.
 pub(super) fn collect_inline_warnings(
     blocks: &[Block],
     body_size: f32,
     measure: f32,
     warnings: &mut Vec<RenderWarning>,
 ) {
-    fn walk_inlines<'a>(items: &'a [super::Inline], sources: &mut Vec<&'a str>) {
+    fn walk_inlines<'a>(items: &'a [super::Inline], sources: &mut Vec<(&'a str, bool)>) {
         for item in items {
             match item {
-                super::Inline::Math(source) | super::Inline::DisplayMath(source) => {
-                    sources.push(source);
-                }
+                super::Inline::Math(source) => sources.push((source, false)),
+                super::Inline::DisplayMath(source) => sources.push((source, true)),
                 super::Inline::Strong(inner)
                 | super::Inline::Emphasis(inner)
                 | super::Inline::Strikethrough(inner) => walk_inlines(inner, sources),
@@ -477,7 +483,7 @@ pub(super) fn collect_inline_warnings(
             }
         }
     }
-    fn walk_blocks<'a>(items: &'a [Block], sources: &mut Vec<&'a str>) {
+    fn walk_blocks<'a>(items: &'a [Block], sources: &mut Vec<(&'a str, bool)>) {
         for block in items {
             match block {
                 Block::Heading { inlines: text, .. } | Block::Paragraph(text) => {
@@ -513,11 +519,11 @@ pub(super) fn collect_inline_warnings(
     let mut sources = Vec::new();
     walk_blocks(blocks, &mut sources);
     let mut seen = BTreeSet::new();
-    for source in sources {
-        if !seen.insert(source) {
+    for (source, display) in sources {
+        if !seen.insert((source, display)) {
             continue;
         }
-        match inline_formula(source) {
+        match inline_formula(source, display) {
             Err(reason) => warnings.push(RenderWarning::MathFallback {
                 source: source.chars().take(120).collect(),
                 reason,

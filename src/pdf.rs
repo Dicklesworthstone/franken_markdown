@@ -189,12 +189,20 @@ const F_MATH: u8 = 8;
 /// unbreakable box that is never a font. Its token text encodes the image's
 /// natural size, destination and alt text.
 const F_IMAGE: u8 = 9;
+/// An inline `$$…$$` formula retains display-style operators and limits while
+/// sharing the outlined inline-object lane. It is never a font resource.
+const F_DISPLAY_MATH: u8 = 10;
+
+#[inline]
+fn is_inline_math(slot: u8) -> bool {
+    matches!(slot, F_MATH | F_DISPLAY_MATH)
+}
 
 /// Slots that are drawn objects rather than shaped text: never merged into a
 /// neighbouring run, split, hyphenated, re-slotted, protruded or `Tz`-scaled.
 #[inline]
 fn is_inline_object(slot: u8) -> bool {
-    slot == F_MATH || slot == F_IMAGE
+    is_inline_math(slot) || slot == F_IMAGE
 }
 
 /// The text a segment stands for in outlines and text layers: an inline
@@ -212,7 +220,7 @@ fn inline_object_advance(slot: u8, text: &str, size: f32) -> f32 {
     if slot == F_IMAGE {
         inline_image::advance(text, size)
     } else {
-        inline_math_advance(text, size)
+        inline_math_advance(text, size, slot == F_DISPLAY_MATH)
     }
 }
 const SLOTS: [u8; 7] = [
@@ -4267,6 +4275,7 @@ enum TableLayoutInlineKey {
     Code(String),
     /// An inline formula: laid out as outlines, unlike code with the same text.
     Math(String),
+    DisplayMath(String),
     Link {
         dest: String,
         title: Option<String>,
@@ -4376,9 +4385,13 @@ fn table_layout_inline_key(
             add_table_layout_key_bytes(inline_bytes, html.len())?;
             Some(TableLayoutInlineKey::Html(html.clone()))
         }
-        Inline::Math(code) | Inline::DisplayMath(code) => {
+        Inline::Math(code) => {
             add_table_layout_key_bytes(inline_bytes, code.len())?;
             Some(TableLayoutInlineKey::Math(code.clone()))
+        }
+        Inline::DisplayMath(code) => {
+            add_table_layout_key_bytes(inline_bytes, code.len())?;
+            Some(TableLayoutInlineKey::DisplayMath(code.clone()))
         }
     }
 }
@@ -18733,7 +18746,8 @@ fn tokenize(
                 strike,
             }),
             Inline::Html(h) => push_text_tokens(h, slot_of(bold, italic, false), strike, link, out),
-            Inline::Math(t) | Inline::DisplayMath(t) => push_math_token(t, strike, link, out),
+            Inline::Math(t) => push_math_token(t, false, strike, link, out),
+            Inline::DisplayMath(t) => push_math_token(t, true, strike, link, out),
         }
     }
 }
@@ -18741,11 +18755,17 @@ fn tokenize(
 /// An inline formula fmd-math typesets becomes one unbreakable [`F_MATH`]
 /// token carrying its source (fm-djcw); anything it cannot typeset keeps its
 /// visible TeX in the monospace face, and `render_warnings` names it.
-fn push_math_token(source: &str, strike: bool, link: Option<u32>, out: &mut Vec<Tok>) {
-    if math::inline_formula(source).is_ok() {
+fn push_math_token(
+    source: &str,
+    display: bool,
+    strike: bool,
+    link: Option<u32>,
+    out: &mut Vec<Tok>,
+) {
+    if math::inline_formula(source, display).is_ok() {
         out.push(Tok {
             text: source.to_owned(),
-            slot: F_MATH,
+            slot: if display { F_DISPLAY_MATH } else { F_MATH },
             space: false,
             hard_break: false,
             link,
@@ -18758,8 +18778,8 @@ fn push_math_token(source: &str, strike: bool, link: Option<u32>, out: &mut Vec<
 
 /// The advance of an inline formula at `size` points. Only formulas that
 /// typeset become [`F_MATH`] tokens, so a miss measures as nothing.
-fn inline_math_advance(source: &str, size: f32) -> f32 {
-    math::inline_formula(source).map_or(0.0, |formula| formula.advance * size)
+fn inline_math_advance(source: &str, size: f32, display: bool) -> f32 {
+    math::inline_formula(source, display).map_or(0.0, |formula| formula.advance * size)
 }
 
 /// Ink a text line already leaves room for, in ems of its size: above the
@@ -18774,8 +18794,8 @@ fn inline_math_extents(line: &Line) -> (f32, f32) {
     let mut above = (line.text_ink.0 - INLINE_MATH_ASCENT_ROOM * line.size).max(0.0);
     let mut below = (line.text_ink.1 - INLINE_MATH_DESCENT_ROOM * line.size).max(0.0);
     for seg in &line.segs {
-        if seg.slot == F_MATH
-            && let Ok(formula) = math::inline_formula(&seg.text)
+        if is_inline_math(seg.slot)
+            && let Ok(formula) = math::inline_formula(&seg.text, seg.slot == F_DISPLAY_MATH)
         {
             above = above.max((formula.ascent - INLINE_MATH_ASCENT_ROOM) * line.size);
             below = below.max((formula.descent - INLINE_MATH_DESCENT_ROOM) * line.size);
@@ -23471,7 +23491,9 @@ fn generate_page_content(
                         next_mcid += 1;
                         continue;
                     }
-                    if let (F_MATH, Some((_, path))) = (seg.slot, text_path.as_ref()) {
+                    if is_inline_math(seg.slot)
+                        && let Some((_, path)) = text_path.as_ref()
+                    {
                         if text_open {
                             body.push_str("EMC\n");
                             text_open = false;
@@ -23497,14 +23519,16 @@ fn generate_page_content(
                             palette,
                         );
                         body.push_str("EMC\n");
-                        let bbox = math::inline_formula(&seg.text).ok().map(|formula| {
-                            [
-                                seg.x,
-                                y - formula.descent * line.size,
-                                seg.x + seg.width,
-                                y + formula.ascent * line.size,
-                            ]
-                        });
+                        let bbox = math::inline_formula(&seg.text, seg.slot == F_DISPLAY_MATH)
+                            .ok()
+                            .map(|formula| {
+                                [
+                                    seg.x,
+                                    y - formula.descent * line.size,
+                                    seg.x + seg.width,
+                                    y + formula.ascent * line.size,
+                                ]
+                            });
                         marks.push(StructMark {
                             mcid: next_mcid,
                             path: formula_path,
@@ -24379,7 +24403,7 @@ fn collect_font_slot_text_refs(lines: &[Line]) -> [FontSlotTextRefs<'_>; SLOTS.l
             if seg.text.is_empty() {
                 continue;
             }
-            if seg.slot == F_MATH {
+            if is_inline_math(seg.slot) {
                 // An inline formula is outlines plus an invisible body anchor.
                 refs[0].texts.push(math::TEXT_ANCHOR);
             } else if let Some(slot_idx) = pdf_font_slot_index(seg.slot) {
@@ -29164,7 +29188,7 @@ fn draw_seg(
     if seg.text.is_empty() {
         return;
     }
-    if seg.slot == F_MATH {
+    if is_inline_math(seg.slot) {
         draw_inline_math_seg(
             body,
             annots,
@@ -29288,7 +29312,7 @@ fn draw_inline_math_seg(
     faces: &Faces,
     palette: &Palette,
 ) {
-    let Ok(formula) = math::inline_formula(&seg.text) else {
+    let Ok(formula) = math::inline_formula(&seg.text, seg.slot == F_DISPLAY_MATH) else {
         return;
     };
     if seg.fill != *current_fill {
@@ -36980,10 +37004,15 @@ mod pdf_writer_tests {
                     push_text_tokens_reference(h, slot_of(bold, italic, false), strike, link, out)
                 }
                 Inline::Math(t) | Inline::DisplayMath(t) => {
-                    if math::inline_formula(t).is_ok() {
+                    let display = matches!(inl, Inline::DisplayMath(_));
+                    if math::inline_formula(t, display).is_ok() {
                         out.push(RefTok {
                             text: t.clone(),
-                            slot: F_MATH,
+                            slot: if display {
+                                super::F_DISPLAY_MATH
+                            } else {
+                                F_MATH
+                            },
                             space: false,
                             hard_break: false,
                             link: link.cloned(),

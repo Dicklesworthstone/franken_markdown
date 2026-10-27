@@ -4185,11 +4185,12 @@ fn var_delimiter(ch: char, target: f64, style: Style) -> Option<DelimChoice> {
         }
         if cmex_recipe(ch).is_some() {
             // §713 builds the extensible to the target from the pieces, the
-            // same heights in cmex7 and cmex10.
+            // same heights in cmex7 and cmex10. A bar has no successors, so
+            // its extensible covers modest targets too.
             return Some(DelimChoice {
                 variant: DelimVariant::Cmex { cmex7 },
                 scale,
-                total: tex_delimiter_total(ch, (target / scale).max(3.0 + 1e-6)),
+                total: tex_delimiter_total(ch, target / scale),
             });
         }
     }

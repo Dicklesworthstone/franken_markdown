@@ -2930,6 +2930,16 @@ fn delimiters_walk_texs_size_chain() {
             0.0,
         ),
         (r"x^{\sqrt{\frac{1}{2}}}", 20.35146, 11.69139, 0.0),
+        // A bar has no successors: its extensible covers every target past
+        // the small variant, from cmex10 or cmex7.
+        (r"\left|\frac{1}{2}\right|", 14.06667, 14.50012, 9.50012),
+        (
+            r"\left|\frac{\frac{1}{2}}{3}\right|",
+            15.45277,
+            15.79677,
+            9.50012,
+        ),
+        (r"x^{\left|\frac{1}{2}\right|}", 17.57367, 11.07639, 0.0),
     ] {
         let l = e
             .typeset_with_macros(tex, Style::Display, &default)

@@ -7022,25 +7022,42 @@ mod refdef_paragraph_tests {
         assert_eq!(kept, vec!["See [text]: not a boundary definition"]);
         assert!(
             !kept_reference_candidate,
-            "plain inline-looking text must not force the nested-reference walk"
+            "plain inline-looking text is not an unconsumed definition candidate"
         );
         assert!(
             !rebuilt_lines,
             "no consumed lines means the original line vector can be reused"
         );
 
-        let (kept, refs, kept_reference_candidate, rebuilt_lines) =
-            collect_link_references(vec!["> [a]: /x"]);
-        assert!(refs.is_empty(), "top-level quote body is collected later");
-        assert_eq!(kept, vec!["> [a]: /x"]);
-        assert!(
-            kept_reference_candidate,
-            "blockquote definitions must still trigger nested reference collection"
-        );
-        assert!(
-            !rebuilt_lines,
-            "unconsumed container references should keep the original vector"
-        );
+        for (source, destination) in [
+            ("> [a]: /quoted", "/quoted"),
+            ("- [a]: /list", "/list"),
+            ("[^note]: [a]: /café#part", "/café#part"),
+        ] {
+            let (kept, refs, kept_reference_candidate, rebuilt_lines) =
+                collect_link_references(vec![source]);
+            assert_eq!(refs.len(), 1, "one-pass container reference: {source:?}");
+            assert_eq!(
+                refs.get("a").map(|reference| reference.dest.as_str()),
+                Some(destination),
+                "container definitions are collected in the same source-ordered pass"
+            );
+            assert_eq!(kept, vec![source]);
+            assert!(
+                kept_reference_candidate,
+                "container definition lines remain for the container's block parse"
+            );
+            assert!(
+                !rebuilt_lines,
+                "unconsumed container references should keep the original vector"
+            );
+            let spans = super::destination_spans(source);
+            assert_eq!(spans.len(), 1, "tracked container reference: {source:?}");
+            assert_eq!(spans[0].dest, destination);
+            let start = source.find(destination).unwrap();
+            assert_eq!(spans[0].range, start..start + destination.len());
+            assert_eq!(&source[spans[0].range.clone()], destination);
+        }
 
         let (kept, refs, kept_reference_candidate, rebuilt_lines) =
             collect_link_references(vec!["[a]: /x", "text", "[b]: /y"]);

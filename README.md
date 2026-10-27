@@ -959,9 +959,10 @@ Honest about what the renderer does not do yet.
   across pages with repeated headers. The first column repeats as row context
   when at least two columns fit; very narrow pages use single-column panels in
   source order. Panel sizing preserves readable minimum column widths and can
-  split a table that would otherwise fit only after tighter spacing. Individual
-  unbreakable formulas or images wider than their cell retain the existing
-  overflow behavior.
+  split a table that would otherwise fit only after tighter spacing. Inline
+  formulas and images scale down uniformly when they exceed their actual cell
+  width, keeping their content, link targets and accessibility bounds inside
+  that cell.
 - **PDF vs HTML gaps.** The PDF path does not render arbitrary CSS. Images
   inside running prose and table cells (badges, icons) are drawn inline as
   unbreakable boxes up to 1.75 em tall and tagged `/Figure` with their alt
@@ -981,9 +982,14 @@ Honest about what the renderer does not do yet.
   than 40% of a page fall back to a trailing Notes section, and notes are never
   split across pages. See [PDF footnotes](docs/PDF_FOOTNOTES.md).
 - **PDF mathematics.** Display and inline equations use real math glyphs and
-  geometry (inline formulas are unbreakable boxes inside running prose, tagged
-  `/Formula`); unsupported commands preserve their source and report
-  `math_fallback`.
+  geometry. Inline formulas remain whole and scale down only when needed to fit
+  their paragraph, heading, list or table cell; `math_overflow` reports that
+  adjustment. Their `/Formula` tags retain the original TeX, including in table
+  cells. Unsupported commands preserve visible source and report `math_fallback`.
+- **PDF inline code preserves literal text.** Repeated, leading and trailing
+  spaces remain fixed-width code glyphs. Long code spans wrap at source
+  separators or measured character boundaries without inserting hyphens or
+  stretching their internal spaces to justify the surrounding prose.
 - **SVG support is practical, not browser-complete.** The PDF renderer covers
   the shapes, gradients, masks, clips, markers, CSS variables/selectors,
   embedded PNG/JPEGs, marker view boxes/orientation/units, and `paint-order` behavior

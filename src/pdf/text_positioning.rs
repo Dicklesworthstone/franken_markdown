@@ -418,9 +418,11 @@ pub(super) fn stamp_lines(lines: &mut [Line], faces: &super::Faces) {
 /// them can change strict-shaper admission (for example a later unsupported
 /// mark makes the complete word fall back to nonzero hmtx mark advances).
 /// Final lines must fit their actual joined glyph run before pagination.
-/// This recovery only touches an overfull marked line; ordinary KP output is
-/// retained exactly. Existing cluster-aware cell wrapping supplies the bounded
-/// hard-wrap path and keeps styles, links, and every source cluster together.
+/// Fixed-width inline code can also make a visibly overfull line cheaper than
+/// several underfull no-glue lines in the optimizer. Recover those literal
+/// lines without changing their source spacing or shrinking their glyphs.
+/// Ordinary fitting KP output is retained exactly. Existing cluster-aware cell
+/// wrapping keeps styles, links, and every source cluster together.
 pub(super) fn append_fitted_line(
     out: &mut Vec<Line>,
     line: Line,
@@ -432,11 +434,13 @@ pub(super) fn append_fitted_line(
         .segs
         .last()
         .is_some_and(|seg| seg.x + seg.width > right + 0.01);
+    let literal = cx.line_toks.iter().any(|token| token.tok.literal);
     if !overfull
-        || !line
-            .segs
-            .iter()
-            .any(|seg| seg.text.chars().any(text_composition::is_mark))
+        || (!literal
+            && !line
+                .segs
+                .iter()
+                .any(|seg| seg.text.chars().any(text_composition::is_mark)))
     {
         out.push(line);
         return;
@@ -451,6 +455,7 @@ pub(super) fn append_fitted_line(
             && last.slot == tok.slot
             && last.link == tok.link
             && last.strike == tok.strike
+            && last.literal == tok.literal
         {
             last.text.push_str(&tok.text);
         } else {

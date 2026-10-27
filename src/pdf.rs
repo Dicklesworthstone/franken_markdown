@@ -42,7 +42,9 @@ use std::fmt::Write as _;
 
 mod baseline_grid;
 mod financial_tables;
+mod inline_code;
 mod inline_image;
+mod inline_math_fit;
 mod joint_pagination;
 mod jpeg_orientation;
 #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
@@ -210,6 +212,8 @@ fn is_inline_object(slot: u8) -> bool {
 fn seg_display_text(seg: &Seg) -> &str {
     if seg.slot == F_IMAGE {
         inline_image::alt_text(&seg.text)
+    } else if is_inline_math(seg.slot) {
+        inline_math_fit::source(&seg.text)
     } else {
         &seg.text
     }
@@ -2168,6 +2172,9 @@ struct Tok {
     slot: u8,
     space: bool,
     hard_break: bool,
+    /// Literal inline-code source: spaces are glyphs, never prose glue, and
+    /// line breaking must not add hyphens. Retained through font fallback.
+    literal: bool,
     /// Interned index (per-render [`LinkIntern`]) of the active link target
     /// when this token came from safe inline link content; `None` = no link.
     /// Index equality is exactly link-target equality (content-keyed intern),
@@ -2274,7 +2281,7 @@ struct PdfWordContext<'a> {
     /// tag so mixed-script paragraphs cannot reuse English points for German.
     hyphen_cache: &'a RefCell<HashMap<String, Vec<usize>>>,
     width_cache: &'a RefCell<WidthCache>,
-    /// Only overfull image-containing source words gain object-boundary breaks.
+    /// Real available width for object-boundary breaks and literal code fitting.
     image_measure: Option<LayoutUnit>,
 }
 
@@ -2431,8 +2438,10 @@ pub enum RenderWarning {
     /// An unsupported or excessive equation, display or inline `$…$`,
     /// retained its visible TeX.
     MathFallback { source: String, reason: String },
-    /// An inline formula is wider than the text measure at body size. It
-    /// never splits, so it overflows its line. Widths are whole points.
+    /// An inline formula's natural ink/advance exceeded its actual containing
+    /// measure and was scaled down uniformly to fit. The source and paths are
+    /// retained whole. Widths are whole points; the stable legacy selector is
+    /// `math_overflow`.
     MathOverflow {
         source: String,
         width_pt: u32,
@@ -2511,8 +2520,9 @@ impl RenderWarning {
                 width_pt,
                 measure_pt,
             } => format!(
-                "inline formula {source:?} is {width_pt} pt wide, more than the {measure_pt} pt \
-                 text measure; it overflows its line (set it as a display equation)"
+                "inline formula {source:?} is naturally {width_pt} pt wide, more than its \
+                 {measure_pt} pt containing measure; scaled down to fit without splitting \
+                 (use a display equation or a wider measure for larger mathematics)"
             ),
         }
     }
@@ -2528,12 +2538,7 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
     let doc = &*lowered;
     let mut warnings = Vec::new();
     let supported_math = math::collect_warnings(&doc.blocks, &mut warnings);
-    math::collect_inline_warnings(
-        &doc.blocks,
-        opts.type_scale().body,
-        PageGeom::from_theme(&opts.theme).content_w,
-        &mut warnings,
-    );
+    let has_inline_math = math::collect_inline_warnings(&doc.blocks, &mut warnings);
     let mut image_text = Vec::new();
 
     let mut dests = Vec::new();
@@ -2559,21 +2564,24 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
     }
 
     if let Ok(faces) = Faces::load(opts) {
-        // Only an optimal request needs this layout preflight. Use the same
+        // Pagination and inline-math fits need actual layout. Use the same
         // profile/numbered-note preparation and final fitting as real emission;
         // otherwise note reservations or fitted geometry could report a
         // different fallback than the PDF that is actually written.
-        if opts.requests_optimal_pagination() {
+        if opts.requests_optimal_pagination() || has_inline_math {
             let prepared = crate::transform_footnotes_for_pdf(doc, opts);
             let (effective, page) = effective_pdf_options(&prepared, opts, &faces);
             let (lines, paragraph_variants) =
                 layout_with_pagination_report(&prepared.blocks, &effective, &faces, page);
-            let (_, page_breaks) = page_break_plan_and_report(&lines, page, &effective);
-            PdfPaginationReport {
-                page_breaks,
-                paragraph_variants,
+            inline_math_fit::append_warnings(&lines, &mut warnings);
+            if opts.requests_optimal_pagination() {
+                let (_, page_breaks) = page_break_plan_and_report(&lines, page, &effective);
+                PdfPaginationReport {
+                    page_breaks,
+                    paragraph_variants,
+                }
+                .append_warnings(&mut warnings);
             }
-            .append_warnings(&mut warnings);
         }
         let mut text = Vec::new();
         collect_text(&doc.blocks, &mut text, &supported_math, &faces);
@@ -3985,8 +3993,9 @@ mod pdf_footnote_layout_tests {
     }
 
     /// fm-djcw: a typeset inline formula is one unbreakable token carrying its
-    /// source, however many spaces it holds; an unsupported one keeps the
-    /// monospace word tokens of its visible TeX.
+    /// source, however many spaces it holds. Unsupported math keeps its exact
+    /// literal monospace source; paragraph construction supplies wrapping
+    /// opportunities without collapsing spaces or inserting hyphens.
     #[test]
     fn tokenize_makes_one_unbreakable_token_per_inline_formula() {
         let tokens = |source: &str| {
@@ -4007,9 +4016,16 @@ mod pdf_footnote_layout_tests {
         assert_eq!(typeset[0].slot, super::F_MATH);
         assert_eq!(typeset[0].text, r"a + b + \frac{c}{d}");
         assert!(!typeset[0].space);
-        let fallback = tokens(r"\fmnNotACommand{x} y");
-        assert!(fallback.len() > 1, "the visible TeX keeps its word breaks");
-        assert!(fallback.iter().all(|tok| tok.slot == super::F_MONO));
+        assert!(!typeset[0].hard_break);
+        assert!(!typeset[0].literal);
+        let source = r"  \fmnNotACommand{x}  y  ";
+        let fallback = tokens(source);
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].slot, super::F_MONO);
+        assert_eq!(fallback[0].text, source);
+        assert!(fallback[0].literal);
+        assert!(!fallback[0].space);
+        assert!(!fallback[0].hard_break);
     }
 
     #[test]
@@ -17053,6 +17069,7 @@ fn split_cell_separator_tokens(toks: Vec<Tok>, faces: &Faces) -> Vec<Tok> {
                     slot: tok.slot,
                     space: false,
                     hard_break: false,
+                    literal: tok.literal,
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -17068,6 +17085,7 @@ fn split_cell_separator_tokens(toks: Vec<Tok>, faces: &Faces) -> Vec<Tok> {
                     slot: tok.slot,
                     space: false,
                     hard_break: false,
+                    literal: tok.literal,
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -17275,6 +17293,8 @@ fn wrap_cell_styled(
     for t in toks {
         let fitted_image = inline_image::fitted_token(t, size, max_width);
         let t = fitted_image.as_ref().unwrap_or(t);
+        let fitted_math = inline_math_fit::fitted_token(t, size, max_width);
+        let t = fitted_math.as_ref().unwrap_or(t);
         if t.hard_break {
             pending = None;
             if !cur.is_empty() {
@@ -17299,8 +17319,8 @@ fn wrap_cell_styled(
         // boundaries so it can never overflow the column (and run off the page);
         // this preserves the run's style. The leftover tail stays on the current
         // line so a following word can still pack after it.
-        // Inline objects are never split. Images have already been fitted to
-        // this cell; formulas retain the allocator's min-content behavior.
+        // Inline objects are never split. Images and formulas have already
+        // been fitted to the actual containing cell, including their ink.
         if ww > max_width && max_width > 0.0 && !is_inline_object(t.slot) {
             if !cur.is_empty() {
                 lines.push(build_cell_line_owned(
@@ -17312,10 +17332,11 @@ fn wrap_cell_styled(
                 cur_w = 0.0;
             }
             pending = None;
-            if !t.text.is_ascii() && t.text.chars().any(text_composition::is_mark) {
-                // Table cells have their own hard-wrap path. Keep source
-                // clusters atomic here too, and measure the complete candidate
-                // run so composition/kerning agree with the emitted glyphs.
+            if t.literal || (!t.text.is_ascii() && t.text.chars().any(text_composition::is_mark)) {
+                // Table cells and final literal-code repairs share this path.
+                // Keep source clusters atomic and measure each whole candidate
+                // run so host-font ligatures, composition and kerning agree
+                // with the emitted glyphs.
                 let mut chunk = String::new();
                 let mut chunk_w = 0.0;
                 for cluster in text_composition::source_clusters(&t.text) {
@@ -17384,6 +17405,7 @@ fn wrap_cell_styled(
                         slot: t.slot,
                         space: false,
                         hard_break: false,
+                        literal: t.literal,
                         link: t.link,
                         strike: t.strike,
                     };
@@ -17414,6 +17436,7 @@ fn wrap_cell_styled(
                     slot: t.slot,
                     space: false,
                     hard_break: false,
+                    literal: t.literal,
                     link: t.link,
                     strike: t.strike,
                 });
@@ -18711,7 +18734,7 @@ fn tokenize(
                 );
             }
             Inline::Text(t) => push_text_tokens(t, slot_of(bold, italic, false), strike, link, out),
-            Inline::Code(t) => push_text_tokens(t, F_MONO, strike, link, out),
+            Inline::Code(t) => inline_code::push_token(t, strike, link, out),
             Inline::Strong(c) => tokenize(c, true, italic, strike, link, intern, out),
             Inline::Emphasis(c) => tokenize(c, bold, true, strike, link, intern, out),
             Inline::Strikethrough(c) => tokenize(c, bold, italic, true, link, intern, out),
@@ -18734,6 +18757,7 @@ fn tokenize(
                 slot: slot_of(bold, italic, false),
                 space: true,
                 hard_break: false,
+                literal: false,
                 link,
                 strike,
             }),
@@ -18742,6 +18766,7 @@ fn tokenize(
                 slot: slot_of(bold, italic, false),
                 space: true,
                 hard_break: true,
+                literal: false,
                 link,
                 strike,
             }),
@@ -18764,22 +18789,23 @@ fn push_math_token(
 ) {
     if math::inline_formula(source, display).is_ok() {
         out.push(Tok {
-            text: source.to_owned(),
+            text: inline_math_fit::token_text(source),
             slot: if display { F_DISPLAY_MATH } else { F_MATH },
             space: false,
             hard_break: false,
+            literal: false,
             link,
             strike,
         });
     } else {
-        push_text_tokens(source, F_MONO, strike, link, out);
+        inline_code::push_token(source, strike, link, out);
     }
 }
 
 /// The advance of an inline formula at `size` points. Only formulas that
 /// typeset become [`F_MATH`] tokens, so a miss measures as nothing.
 fn inline_math_advance(source: &str, size: f32, display: bool) -> f32 {
-    math::inline_formula(source, display).map_or(0.0, |formula| formula.advance * size)
+    inline_math_fit::placement(source, size, display).map_or(0.0, |formula| formula.advance)
 }
 
 /// Ink a text line already leaves room for, in ems of its size: above the
@@ -18795,10 +18821,24 @@ fn inline_math_extents(line: &Line) -> (f32, f32) {
     let mut below = (line.text_ink.1 - INLINE_MATH_DESCENT_ROOM * line.size).max(0.0);
     for seg in &line.segs {
         if is_inline_math(seg.slot)
-            && let Ok(formula) = math::inline_formula(&seg.text, seg.slot == F_DISPLAY_MATH)
+            && let Some(formula) =
+                inline_math_fit::placement(&seg.text, line.size, seg.slot == F_DISPLAY_MATH)
         {
-            above = above.max((formula.ascent - INLINE_MATH_ASCENT_ROOM) * line.size);
-            below = below.max((formula.descent - INLINE_MATH_DESCENT_ROOM) * line.size);
+            let (extra_ascent, extra_descent) = if formula.fitted {
+                (
+                    formula.ascent - INLINE_MATH_ASCENT_ROOM * line.size,
+                    formula.descent - INLINE_MATH_DESCENT_ROOM * line.size,
+                )
+            } else {
+                // Keep the historical operation order for ordinary formulas:
+                // floating-point regrouping can move a pagination boundary.
+                (
+                    (formula.formula.ascent - INLINE_MATH_ASCENT_ROOM) * line.size,
+                    (formula.formula.descent - INLINE_MATH_DESCENT_ROOM) * line.size,
+                )
+            };
+            above = above.max(extra_ascent);
+            below = below.max(extra_descent);
         } else if seg.slot == F_IMAGE
             && let Some(image) = inline_image::image_box(&seg.text, line.size)
         {
@@ -18822,6 +18862,7 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
                     slot,
                     space: false,
                     hard_break: false,
+                    literal: false,
                     link,
                     strike,
                 });
@@ -18831,6 +18872,7 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
                 slot,
                 space: true,
                 hard_break: false,
+                literal: false,
                 link,
                 strike,
             });
@@ -18843,6 +18885,7 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
             slot,
             space: false,
             hard_break: false,
+            literal: false,
             link,
             strike,
         });
@@ -18943,6 +18986,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
                 && !is_inline_object(tok.slot)
                 && tok.link == last.link
                 && tok.strike == last.strike
+                && tok.literal == last.literal
             {
                 last.text.push_str(&tok.text);
             } else {
@@ -18973,6 +19017,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
         }
         let link = tok.link;
         let strike = tok.strike;
+        let literal = tok.literal;
         let replaced = runs.len();
         toks.splice(
             i..=i,
@@ -18981,6 +19026,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
                 slot: run_slot,
                 space: false,
                 hard_break: false,
+                literal,
                 link,
                 strike,
             }),
@@ -19441,13 +19487,13 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         return;
     }
 
-    // Adjacent badges, or prose touching an image without spaces, otherwise
-    // form one indivisible word even after each image fits by itself. Give an
-    // overfull group break opportunities around its images without adding a
+    // Adjacent objects, or prose touching math/images without spaces, otherwise
+    // form one indivisible word even after each object fits by itself. Give an
+    // overfull group break opportunities around its objects without adding a
     // visible space or changing already-fitting source words. Text-only parts
     // keep the ordinary hyphenation policy; formulas remain indivisible.
     if word.len() > 1
-        && word.iter().any(|tok| tok.slot == F_IMAGE)
+        && word.iter().any(|tok| is_inline_object(tok.slot))
         && cx.image_measure.is_some_and(|measure| {
             measure_word_cached(word, cx.fs, cx.faces, cx.width_cache) > measure
         })
@@ -19471,7 +19517,7 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
         };
         let mut part = Vec::new();
         for tok in std::mem::take(word) {
-            if tok.slot == F_IMAGE {
+            if is_inline_object(tok.slot) {
                 emit(&mut part);
                 part.push(tok);
                 emit(&mut part);
@@ -19494,6 +19540,10 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
             cx.width_cache,
             cx.policy.microtype,
         );
+        return;
+    }
+    if word.iter().any(|tok| tok.literal) {
+        inline_code::flush_word(built, word, cx);
         return;
     }
     let stats = pdf_word_stats(word);
@@ -19590,6 +19640,7 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
                     slot: tok.slot,
                     space: false,
                     hard_break: false,
+                    literal: tok.literal,
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -19927,9 +19978,17 @@ impl<'a> PdfWordSplitter<'a> {
             if let Some(text) = rest.get(..taken_bytes)
                 && !text.is_empty()
             {
-                let mut part = tok.clone();
-                part.text = text.to_string();
-                out.push(part);
+                // A literal code span may be large. Copy only this slice,
+                // rather than cloning its full source for every wrapped line.
+                out.push(Tok {
+                    text: text.to_string(),
+                    slot: tok.slot,
+                    space: tok.space,
+                    hard_break: tok.hard_break,
+                    literal: tok.literal,
+                    link: tok.link,
+                    strike: tok.strike,
+                });
             }
             self.cursor += taken_chars;
             self.byte += taken_bytes;
@@ -19942,12 +20001,15 @@ impl<'a> PdfWordSplitter<'a> {
     }
 }
 
-/// Image-bearing paragraphs use the available width after indentation, even
-/// below the historical minimum retained for text-only paragraphs.
+/// Inline code and objects use the available width after indentation, even
+/// below the historical minimum retained for ordinary prose.
 fn inline_paragraph_measure(toks: &[Tok], page: PageGeom, indent: f32) -> LayoutUnit {
-    let width = if toks.iter().any(|tok| tok.slot == F_IMAGE) {
-        // An indented image must fit the real remaining body, even when it is
-        // narrower than the historical text-only paragraph minimum.
+    let width = if toks
+        .iter()
+        .any(|tok| tok.literal || is_inline_object(tok.slot))
+    {
+        // Literal code and inline objects must fit the real remaining body,
+        // even below the historical prose-only paragraph minimum.
         (page.right_x() - page.left - indent).max(1.0)
     } else {
         (page.content_w - indent).max(MIN_CONTENT_DIM)
@@ -19972,11 +20034,14 @@ fn layout_inlines(
     let fs = font_size_of(size);
     let content_w = inline_paragraph_measure(&toks, cx.page, indent);
     inline_image::fit_tokens(&mut toks, size, content_w.to_points_f32());
+    inline_math_fit::fit_tokens(&mut toks, size, content_w.to_points_f32());
     let mut policy = ParagraphPolicy::for_flow(flow.kind);
     // Microtypography is justified-paragraph-only (ragged flows get nothing,
     // mirroring the expansion-credit rule): the solver must never produce a
     // line whose fit depends on an effect the emitter does not apply.
-    policy.microtype = if policy.justify {
+    // Literal code keeps fixed advances; the breaker must not borrow glyph
+    // expansion that would stretch its source whitespace.
+    policy.microtype = if policy.justify && !toks.iter().any(|tok| tok.literal) {
         cx.opts.microtype
     } else {
         crate::layout::MicrotypeOptions::DISABLED
@@ -20151,7 +20216,11 @@ fn emit_broken_paragraph(
             policy.microtype.max_expansion_per_mille,
             &cx.links.targets,
         );
-        if policy.justify && i + 1 < n && !chosen_forced_break(&built.items, lb) {
+        if policy.justify
+            && i + 1 < n
+            && !chosen_forced_break(&built.items, lb)
+            && !cx.line_toks.iter().any(|tok| tok.tok.literal)
+        {
             true_up_justified_line(
                 &mut segs,
                 left + (content_w + right_protrusion).to_points_f32(),
@@ -20215,6 +20284,7 @@ fn layout_prefixed_inlines(
     let fs = font_size_of(spec.size);
     let content_w = inline_paragraph_measure(&toks, cx.page, spec.content_indent);
     inline_image::fit_tokens(&mut toks, spec.size, content_w.to_points_f32());
+    inline_math_fit::fit_tokens(&mut toks, spec.size, content_w.to_points_f32());
     let mut policy = ParagraphPolicy::for_flow(spec.flow.kind);
     policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
     policy.river_penalty = cx.opts.river_penalty;
@@ -20301,7 +20371,11 @@ fn layout_prefixed_inlines(
             policy.microtype.max_expansion_per_mille,
             &cx.links.targets,
         );
-        if policy.justify && i + 1 < n && !chosen_forced_break(&built.items, &lb) {
+        if policy.justify
+            && i + 1 < n
+            && !chosen_forced_break(&built.items, &lb)
+            && !cx.line_toks.iter().any(|tok| tok.tok.literal)
+        {
             true_up_justified_line(
                 &mut segs,
                 left + content_w.to_points_f32(),
@@ -20358,6 +20432,7 @@ fn layout_inlines_greedy(
     let left = page.left + indent;
     let max = inline_paragraph_measure(&toks, page, indent).to_points_f32();
     inline_image::fit_tokens(&mut toks, size, max);
+    inline_math_fit::fit_tokens(&mut toks, size, max);
     let mut lines: Vec<Vec<Tok>> = Vec::new();
     let mut cur: Vec<Tok> = Vec::new();
     let mut cur_w = 0.0_f32;
@@ -23280,6 +23355,56 @@ fn generate_page_content(
                     next_mcid += 1;
                     continue;
                 }
+                if is_inline_math(seg.slot) {
+                    // Math retains its own semantics within the logical cell,
+                    // just as a cell image retains its /Figure. Repeated
+                    // header paint remains an artifact, not a duplicate child.
+                    if !repeated_header {
+                        path.push(SElem {
+                            key: SKey::InlineFormula(next_mcid),
+                            tag: "Formula",
+                        });
+                    }
+                    append_table_cell_content_begin(
+                        &mut body,
+                        if repeated_header { cell_tag } else { "Formula" },
+                        next_mcid,
+                        repeated_header,
+                    );
+                    draw_seg(
+                        &mut body,
+                        &mut annots,
+                        &mut current_fill,
+                        next_mcid,
+                        seg,
+                        line.size,
+                        y,
+                        subsets,
+                        subset_lookup,
+                        faces,
+                        shaped_cache,
+                        palette,
+                    );
+                    body.push_str("EMC\n");
+                    marks.push(StructMark {
+                        mcid: next_mcid,
+                        path,
+                        alt: (!repeated_header)
+                            .then(|| inline_math_fit::source(&seg.text).to_string()),
+                        bbox: (!repeated_header)
+                            .then(|| {
+                                inline_math_fit::placement(
+                                    &seg.text,
+                                    line.size,
+                                    seg.slot == F_DISPLAY_MATH,
+                                )
+                                .map(|formula| formula.bbox(seg.x, y, seg.width))
+                            })
+                            .flatten(),
+                    });
+                    next_mcid += 1;
+                    continue;
+                }
                 append_table_cell_content_begin(&mut body, cell_tag, next_mcid, repeated_header);
                 draw_seg(
                     &mut body,
@@ -23519,20 +23644,16 @@ fn generate_page_content(
                             palette,
                         );
                         body.push_str("EMC\n");
-                        let bbox = math::inline_formula(&seg.text, seg.slot == F_DISPLAY_MATH)
-                            .ok()
-                            .map(|formula| {
-                                [
-                                    seg.x,
-                                    y - formula.descent * line.size,
-                                    seg.x + seg.width,
-                                    y + formula.ascent * line.size,
-                                ]
-                            });
+                        let bbox = inline_math_fit::placement(
+                            &seg.text,
+                            line.size,
+                            seg.slot == F_DISPLAY_MATH,
+                        )
+                        .map(|formula| formula.bbox(seg.x, y, seg.width));
                         marks.push(StructMark {
                             mcid: next_mcid,
                             path: formula_path,
-                            alt: Some(seg.text.clone()),
+                            alt: Some(inline_math_fit::source(&seg.text).to_string()),
                             bbox,
                         });
                         next_mcid += 1;
@@ -29312,20 +29433,27 @@ fn draw_inline_math_seg(
     faces: &Faces,
     palette: &Palette,
 ) {
-    let Ok(formula) = math::inline_formula(&seg.text, seg.slot == F_DISPLAY_MATH) else {
+    let Some(formula) = inline_math_fit::placement(&seg.text, size, seg.slot == F_DISPLAY_MATH)
+    else {
         return;
     };
     if seg.fill != *current_fill {
         append_rgb_fill_operator(body, fill_rgb(seg.fill, palette));
         *current_fill = seg.fill;
     }
-    math::append_inline_formula(body, &formula, seg.x, y, size);
+    math::append_inline_formula(
+        body,
+        &formula.formula,
+        seg.x + formula.x_offset,
+        y,
+        formula.size,
+    );
     math::append_inline_anchor(
         body,
-        &seg.text,
+        formula.source,
         seg.x,
         y,
-        size,
+        formula.size,
         subsets,
         subset_lookup,
         faces,
@@ -29336,10 +29464,14 @@ fn draw_inline_math_seg(
         current_fill,
         owner_mcid,
         seg,
-        size,
+        formula.size,
         y,
         palette,
-        (0.0, 0.0),
+        if formula.fitted {
+            (formula.ascent, formula.descent)
+        } else {
+            (0.0, 0.0)
+        },
     );
 }
 
@@ -34341,6 +34473,7 @@ mod pdf_writer_tests {
             slot,
             space: false,
             hard_break: false,
+            literal: false,
             link,
             strike,
         })
@@ -34474,6 +34607,7 @@ mod pdf_writer_tests {
             slot: F_BODY,
             space,
             hard_break: false,
+            literal: false,
             link: None,
             strike: false,
         })
@@ -34952,6 +35086,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: false,
                     hard_break: false,
+                    literal: false,
                     link: None,
                     strike: false,
                 },
@@ -34960,6 +35095,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: false,
                     hard_break: true,
+                    literal: false,
                     link: None,
                     strike: false,
                 },
@@ -34968,6 +35104,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: false,
                     hard_break: false,
+                    literal: false,
                     link: None,
                     strike: false,
                 },
@@ -34976,6 +35113,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: true,
                     hard_break: false,
+                    literal: false,
                     link: None,
                     strike: false,
                 },
@@ -34984,6 +35122,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: false,
                     hard_break: false,
+                    literal: false,
                     link: None,
                     strike: false,
                 },
@@ -35433,6 +35572,7 @@ mod pdf_writer_tests {
             slot: F_BODY,
             space: false,
             hard_break: false,
+            literal: false,
             link: None,
             strike: false,
         };
@@ -35488,6 +35628,7 @@ mod pdf_writer_tests {
             slot: F_BODY,
             space: false,
             hard_break: false,
+            literal: false,
             link: None,
             strike: false,
         };
@@ -35674,6 +35815,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -35682,6 +35824,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: true,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -35690,6 +35833,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -35739,6 +35883,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: true,
                     hard_break: false,
+                    literal: false,
                     link: None,
                     strike: false,
                 }],
@@ -35750,6 +35895,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: true,
                     hard_break: true,
+                    literal: false,
                     link: None,
                     strike: false,
                 }],
@@ -35852,6 +35998,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -35860,6 +36007,7 @@ mod pdf_writer_tests {
                 slot: F_BOLD,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -36792,6 +36940,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -36800,6 +36949,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -36808,6 +36958,7 @@ mod pdf_writer_tests {
                 slot: F_BOLD,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -36847,6 +36998,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: false,
                     hard_break: false,
+                    literal: false,
                     link: None,
                     strike: false,
                 },
@@ -36858,6 +37010,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: false,
                     hard_break: false,
+                    literal: false,
                     link: None,
                     strike: false,
                 },
@@ -36890,6 +37043,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: false,
                     hard_break: false,
+                    literal: false,
                     link: None,
                     strike: false,
                 },
@@ -36901,6 +37055,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: true,
                     hard_break: false,
+                    literal: false,
                     link: None,
                     strike: false,
                 },
@@ -36912,6 +37067,7 @@ mod pdf_writer_tests {
                     slot: F_BODY,
                     space: false,
                     hard_break: false,
+                    literal: false,
                     link: None,
                     strike: false,
                 },
@@ -36968,7 +37124,18 @@ mod pdf_writer_tests {
                 Inline::Text(t) => {
                     push_text_tokens_reference(t, slot_of(bold, italic, false), strike, link, out)
                 }
-                Inline::Code(t) => push_text_tokens_reference(t, F_MONO, strike, link, out),
+                Inline::Code(t) => {
+                    if !t.is_empty() {
+                        out.push(RefTok {
+                            text: t.clone(),
+                            slot: F_MONO,
+                            space: false,
+                            hard_break: false,
+                            link: link.cloned(),
+                            strike,
+                        });
+                    }
+                }
                 Inline::Strong(c) => tokenize_reference(c, true, italic, strike, link, out),
                 Inline::Emphasis(c) => tokenize_reference(c, bold, true, strike, link, out),
                 Inline::Strikethrough(c) => {
@@ -37018,8 +37185,15 @@ mod pdf_writer_tests {
                             link: link.cloned(),
                             strike,
                         });
-                    } else {
-                        push_text_tokens_reference(t, F_MONO, strike, link, out);
+                    } else if !t.is_empty() {
+                        out.push(RefTok {
+                            text: t.clone(),
+                            slot: F_MONO,
+                            space: false,
+                            hard_break: false,
+                            link: link.cloned(),
+                            strike,
+                        });
                     }
                 }
             }
@@ -37473,6 +37647,7 @@ mod pdf_writer_tests {
                 slot,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -37484,6 +37659,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: true,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -37495,6 +37671,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: true,
             },
@@ -37506,6 +37683,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: Some(0),
                 strike: false,
             },
@@ -37580,6 +37758,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -37591,6 +37770,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: true,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -37772,6 +37952,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: false,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },
@@ -37783,6 +37964,7 @@ mod pdf_writer_tests {
                 slot: F_BODY,
                 space: true,
                 hard_break: false,
+                literal: false,
                 link: None,
                 strike: false,
             },

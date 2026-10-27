@@ -74,6 +74,7 @@ pub(super) fn push_token(
         slot: F_IMAGE,
         space: false,
         hard_break: false,
+        literal: false,
         link,
         strike,
     });
@@ -334,6 +335,7 @@ mod tests {
             slot: F_IMAGE,
             space: false,
             hard_break: false,
+            literal: false,
             link: Some(7),
             strike: true,
         }

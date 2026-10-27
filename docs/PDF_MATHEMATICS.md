@@ -54,7 +54,7 @@ Inline `$…$` in prose, headings, list items, definition lists and table cells
 goes through the same engine, in text style at the line's font size. Each
 formula is one unbreakable box in the paragraph's line breaking. It never
 splits, and the words around it do not hyphenate against it. Its advance is the
-formula's layout width. Its outlines are filled on the text baseline in the
+formula's layout width when it fits. Its outlines are filled on the text baseline in the
 run's colour unless explicitly overridden by a scoped colour declaration.
 A formula inside a link keeps the link colour for its uncoloured parts, together
 with the link's underline and annotation.
@@ -76,8 +76,30 @@ Each inline formula is its own `/Formula` structure element inside its
 paragraph, with its TeX source as `/Alt` and a bounding box. Like display
 equations, it carries `/ActualText` through an invisible anchor glyph.
 Unsupported sources keep their visible TeX in the monospace face with a
-`math_fallback` warning. A formula wider than the text measure at body size
-overflows its line whole, with a `math_overflow` warning.
+`math_fallback` warning.
+
+An inline formula whose natural width exceeds its actual containing measure
+scales down uniformly, keeping all of its paths and its TeX source. Fitting
+includes both the layout advance and the visible ink, so negative kerns and
+overhanging glyphs cannot defeat the width cap. The cap follows the formula
+through line measurement, drawing, link annotations and tagged bounding boxes;
+its scaled height also participates in leading and baseline-grid validation.
+Ordinary formulas retain their original size and advances. Surrounding prose
+keeps its normal font size.
+
+The containing measure is the heading, paragraph or list's remaining width,
+or the actual allocated table-cell width after table sizing. When touching
+prose or another formula makes an otherwise unbreakable group too wide, line
+breaking may separate the complete formula from its neighbors without adding
+or removing source spaces. A formula itself is never split. Table formulas
+have their own `/Formula` child inside the logical cell; repeated table-header
+paint remains an artifact rather than duplicating that logical child.
+
+The stable `math_overflow` warning now reports that the natural formula
+exceeded its containing measure and was scaled to fit. Diagnostics use the
+final measured layout, including heading sizes, table columns, nested
+indentation, footnotes and page fitting. For larger readable mathematics,
+use a display equation or a wider page/table column.
 
 Inline layouts are memoized across renders by exact source and text/display
 style. The memo retains at most 4,096 entries and 32 MiB of owned payload,
@@ -103,8 +125,10 @@ containers, narrow pages, and Unicode coverage. When installed, independent
 separate measured-column tests in `src/pdf/toc_tests.rs`; long titles wrap
 without overlapping their page numbers and retain their heading links.
 `cargo test --test pdf_inline_math_test` covers inline outlines and tagging, line
-growth against the formula's own metrics, fallback and overflow warnings, and
-headings and table cells.
+growth against the formula's own metrics, fallback and fitting warnings, and
+headings and table cells. `cargo test --test pdf_inline_math_fit_test` checks
+actual emitted outline bounds, cell tags and links, negative kerns, nested
+flows, baseline grids, strict pagination and emitter parity.
 
 `cargo test --lib pdf::math::memo_tests` checks exact byte-budget boundaries,
 spare vector capacities, source/error ownership, style identity, duplicate

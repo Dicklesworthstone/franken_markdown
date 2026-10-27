@@ -170,7 +170,7 @@ fn inline_formulas_in_headings_and_table_cells_draw_outlines() {
 }
 
 #[test]
-fn an_over_wide_inline_formula_overflows_whole_and_is_named() {
+fn an_over_wide_inline_formula_fits_whole_and_is_named() {
     let source = (0..120)
         .map(|index| format!("x_{{{index}}}"))
         .collect::<Vec<_>>()
@@ -186,7 +186,8 @@ fn an_over_wide_inline_formula_overflows_whole_and_is_named() {
         overflow,
         RenderWarning::MathOverflow { width_pt, measure_pt, .. } if width_pt > measure_pt
     ));
-    // Still one formula, drawn whole: it never splits across lines.
+    assert!(overflow.message().contains("scaled down to fit"));
+    // Still one formula, drawn whole: fitting never splits its source.
     let (_, content) = render(&markdown);
     assert_eq!(content.matches("/Formula <</MCID ").count(), 1);
 }

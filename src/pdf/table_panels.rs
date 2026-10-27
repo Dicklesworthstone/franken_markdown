@@ -3,8 +3,8 @@
 //! Panels retain the first source column as row context when two columns fit.
 //! On the smallest valid measures, one-column panels still make progress and
 //! preserve every source column in order. This handles structural grid width;
-//! an individual unbreakable formula wider than a column keeps the existing
-//! inline-object overflow policy.
+//! individual inline formulas and images are fitted to their final cell measure
+//! by the shared inline-object placement path.
 
 use super::{TABLE_COL_GUTTER, TABLE_MIN_COL_WIDTH};
 

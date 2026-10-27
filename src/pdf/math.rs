@@ -176,6 +176,10 @@ pub(super) struct InlineFormula {
     paths: Vec<FormulaPath>,
     /// The layout box width.
     pub(super) advance: f32,
+    /// Horizontal extent of both the advance box and every outline control
+    /// point. Fitting must include negative kerns and italic overhangs.
+    pub(super) left: f32,
+    pub(super) right: f32,
     /// Extent above the baseline: the layout height or the ink, whichever is taller.
     pub(super) ascent: f32,
     /// Extent below the baseline, likewise.
@@ -319,6 +323,8 @@ pub(super) fn inline_formula(source: &str, display: bool) -> InlineResult {
             Arc::new(InlineFormula {
                 paths: formula.paths,
                 advance: formula.advance as f32,
+                left: formula.bounds.left as f32,
+                right: formula.bounds.right as f32,
                 ascent: formula.bounds.top as f32,
                 descent: (-formula.bounds.bottom) as f32,
             })
@@ -563,15 +569,10 @@ pub(super) fn collect_warnings<'a>(
 }
 
 /// Report every inline `$…$` the inline lane cannot typeset (it keeps its
-/// visible TeX source), and every one wider than the text `measure` at
-/// `body_size` (it never splits, so it overflows), walking the same blocks
-/// the text scan does. Each distinct source/style pair is reported once.
-pub(super) fn collect_inline_warnings(
-    blocks: &[Block],
-    body_size: f32,
-    measure: f32,
-    warnings: &mut Vec<RenderWarning>,
-) {
+/// visible TeX source), walking the same blocks the text scan does. Each
+/// distinct source/style pair is reported once. Successful formulas return true
+/// so the caller can collect fitting diagnostics from their actual final layout.
+pub(super) fn collect_inline_warnings(blocks: &[Block], warnings: &mut Vec<RenderWarning>) -> bool {
     fn walk_inlines<'a>(items: &'a [super::Inline], sources: &mut Vec<(&'a str, bool)>) {
         for item in items {
             match item {
@@ -621,6 +622,7 @@ pub(super) fn collect_inline_warnings(
     let mut sources = Vec::new();
     walk_blocks(blocks, &mut sources);
     let mut seen = BTreeSet::new();
+    let mut supported = false;
     for (source, display) in sources {
         if !seen.insert((source, display)) {
             continue;
@@ -630,16 +632,10 @@ pub(super) fn collect_inline_warnings(
                 source: source.chars().take(120).collect(),
                 reason,
             }),
-            Ok(formula) if formula.advance * body_size > measure => {
-                warnings.push(RenderWarning::MathOverflow {
-                    source: source.chars().take(120).collect(),
-                    width_pt: (formula.advance * body_size).ceil() as u32,
-                    measure_pt: measure.floor() as u32,
-                });
-            }
-            Ok(_) => {}
+            Ok(_) => supported = true,
         }
     }
+    supported
 }
 
 /// PDF extractors require a text-showing operator before they honor
@@ -782,6 +778,8 @@ mod memo_tests {
         Arc::new(InlineFormula {
             paths,
             advance: 1.0,
+            left: 0.0,
+            right: 1.0,
             ascent: 1.0,
             descent: 0.0,
         })

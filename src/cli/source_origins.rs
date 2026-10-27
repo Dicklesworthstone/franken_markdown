@@ -1,8 +1,9 @@
 //! Preserve file-relative resource destinations after native transclusion.
 //!
 //! Include expansion records exact source origins. The parser identifies real
-//! Markdown destination tokens in the final expanded context, so rebasing does
-//! not modify code, raw HTML, titles, or the spelling of reference labels. This
+//! Markdown destinations and supported HTML URL attributes in the final expanded
+//! context, so rebasing does not modify code, titles, comments, unsupported HTML
+//! attributes, or the spelling of reference labels. This
 //! module operates only on strings: the native callers retain all filesystem
 //! authorization, symlink checks, and read budgets.
 
@@ -20,7 +21,8 @@ pub(crate) fn rebase_destinations(
 ) -> Result<String, String> {
     let mut edits = Vec::new();
     let mut output_len = expanded.text.len();
-    for destination in crate::parse::destination_spans(&expanded.text) {
+    for source in crate::parse::resource_destination_spans(&expanded.text) {
+        let destination = source.token;
         let Some(location) = expanded.source_at(destination.range.start) else {
             continue;
         };
@@ -41,7 +43,15 @@ pub(crate) fn rebase_destinations(
         if rebased == destination.dest {
             continue;
         }
-        let replacement = markdown_destination(&rebased);
+        let replacement = match source.syntax {
+            crate::parse::DestinationSyntax::Markdown => markdown_destination(&rebased),
+            crate::parse::DestinationSyntax::HtmlAttribute => {
+                crate::safe_html::attribute_value(&rebased)
+            }
+            crate::parse::DestinationSyntax::HtmlAttributeContent => {
+                crate::safe_html::attribute_content(&rebased)
+            }
+        };
         output_len = output_len
             .checked_sub(destination.range.len())
             .and_then(|len| len.checked_add(replacement.len()))
@@ -58,7 +68,7 @@ pub(crate) fn rebase_destinations(
     let mut offset = 0;
     for (range, replacement) in edits {
         let Some(unchanged) = expanded.text.get(offset..range.start) else {
-            return Err("include_origin: overlapping Markdown destination spans".into());
+            return Err("include_origin: overlapping resource destination spans".into());
         };
         output.push_str(unchanged);
         output.push_str(&replacement);
@@ -257,6 +267,69 @@ mod tests {
         assert!(rebased.contains("[chart]: <parts/chart.svg#view> 'Title'"));
         assert!(rebased.contains("`![literal](chart.svg)`"));
         assert!(rebased.contains("```md\n[code](next.md)\n```"));
+    }
+
+    #[test]
+    fn included_html_rebases_only_supported_attribute_values_at_their_exact_origins() {
+        let source = "<img src='same.svg'>\n\n{{#include part}}\n";
+        let included = "中 <IMG SRC = 'same.svg?x=1&amp;y=2' alt='中 > image'> <a href=next.md#target title='keep'>Next</a>\n\n<div>\n<img src='same.svg'>\n<a href='../guide/#intro'>Guide</a>\n<!-- <img src='same.svg'> -->\n<span title=\"<a href='next.md'>\">text</span>\n</div>\n\n`<img src='same.svg'>`\n\n```html\n<a href='next.md'>example</a>\n```\n";
+        let expanded = crate::transclude::expand_includes_mapped(source, "root.md", &|_, _| {
+            Ok(Some((included.into(), "parts/snippet.md".into())))
+        })
+        .unwrap();
+        let rebased =
+            rebase_destinations(expanded, "root.md", |origin| Some(origin.into()), 4096).unwrap();
+        assert!(rebased.starts_with("<img src='same.svg'>"));
+        assert!(rebased.contains("SRC = \"parts/same.svg?x=1&amp;y=2\" alt='中 > image'"));
+        assert!(rebased.contains("href=\"parts/next.md#target\" title='keep'"));
+        assert!(rebased.contains("<img src=\"parts/same.svg\">"));
+        assert!(rebased.contains("<a href=\"guide/#intro\">Guide</a>"));
+        assert!(rebased.contains("<!-- <img src='same.svg'> -->"));
+        assert!(rebased.contains("title=\"<a href='next.md'>\""));
+        assert!(rebased.contains("`<img src='same.svg'>`"));
+        assert!(rebased.contains("```html\n<a href='next.md'>example</a>\n```"));
+    }
+
+    #[test]
+    fn included_html_rebasing_obeys_the_expanded_output_budget() {
+        let expanded =
+            crate::transclude::expand_includes_mapped("{{#include part}}", "root.md", &|_, _| {
+                Ok(Some((
+                    "<img src=a.svg>".into(),
+                    "long_directory/part.md".into(),
+                )))
+            })
+            .unwrap();
+        let budget = expanded.text.len();
+        assert!(
+            rebase_destinations(expanded, "root.md", |origin| Some(origin.into()), budget)
+                .unwrap_err()
+                .contains("include_output_budget")
+        );
+    }
+
+    #[test]
+    fn newline_wrapped_html_values_keep_quotes_whitespace_and_container_prefixes() {
+        for included in [
+            "Inline <img src=\"\n  chart.svg\n\" title='keep'>.\n",
+            "> <div>\r\n> <img src='\r\n> chart.svg\r\n> '>\r\n> <a href='\r\n> next.md?x=&#39;&amp;y=&quot;#next\r\n> '>Next</a>\r\n> </div>\r\n",
+            "- <img src='\n  chart.svg\n  '>\n",
+        ] {
+            let expanded = crate::transclude::expand_includes_mapped(
+                "{{#include parts/snippet.txt}}\n",
+                "root.md",
+                &|_, _| Ok(Some((included.into(), "parts/snippet.txt".into()))),
+            )
+            .unwrap();
+            let expected = expanded
+                .text
+                .replace("chart.svg", "parts/chart.svg")
+                .replace("next.md?", "parts/next.md?");
+            let rebased =
+                rebase_destinations(expanded, "root.md", |origin| Some(origin.into()), 4096)
+                    .unwrap();
+            assert_eq!(rebased, expected, "{included}");
+        }
     }
 
     #[test]

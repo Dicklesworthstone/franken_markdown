@@ -102,6 +102,46 @@ fn included_images_and_links_use_the_defining_file_in_html_and_epub() {
 }
 
 #[test]
+fn included_html_images_and_anchors_use_the_defining_file_in_html_and_epub() {
+    let dir = Workspace::new();
+    dir.write("root.md", "# Root\n\n{{#include parts/chapter.md}}\n");
+    dir.write(
+        "parts/chapter.md",
+        "<p><img src='chart.svg' alt='Chart'><a href='next.md?x=1&amp;y=2#next'>Next</a></p>\n",
+    );
+    dir.write("parts/chart.svg", SVG);
+    dir.write("chart.svg", b"wrong asset in the root directory");
+    succeeded(&dir.run(&["root.md", "--out", "root.html"]));
+    let html = dir.text("root.html");
+    assert!(html.contains(&embedded_image()));
+    assert!(html.contains("href=\"parts/next.md?x=1&amp;y=2#next\""));
+    succeeded(&dir.run(&["root.md", "--to", "epub", "--out", "root.epub"]));
+    let expected = render_epub(&parse_markdown("# Root\n\n<p><img src='parts/chart.svg' alt='Chart'><a href='parts/next.md?x=1&amp;y=2#next'>Next</a></p>\n"), &HtmlOptions {
+        image_assets: vec![PdfImageAsset::new("parts/chart.svg", SVG.to_vec())],
+        ..HtmlOptions::default()
+    }).unwrap();
+    assert_eq!(std::fs::read(dir.0.join("root.epub")).unwrap(), expected);
+}
+
+#[test]
+fn newline_wrapped_html_image_in_text_include_keeps_its_asset_origin() {
+    let dir = Workspace::new();
+    let root = dir.write("root.md", "# Root\n\n{{#include parts/snippet.txt}}\n");
+    dir.write("parts/snippet.txt", "<div>\n<img src=\"\nchart.svg\n\" alt='Chart'><a href='\nnext.md?x=1&amp;y=2#next\n'>Next</a>\n</div>\n");
+    let chart = dir.write("parts/chart.svg", SVG);
+    dir.write("chart.svg", b"wrong asset in the root directory");
+    dir.write("parts/next.md", "# Next\n");
+    let watcher = PollWatcher::new(vec![root], Duration::ZERO, ManualClock::new());
+    assert!(watcher.dependency_failures().is_empty());
+    assert!(watcher.paths().contains(&chart));
+    assert!(!watcher.paths().contains(&dir.0.join("chart.svg")));
+    succeeded(&dir.run(&["root.md", "--out", "root.html"]));
+    let html = dir.text("root.html");
+    assert!(html.contains(&embedded_image()));
+    assert!(html.contains("href=\"parts/next.md?x=1&amp;y=2#next\""));
+}
+
+#[test]
 fn nested_anchor_and_line_selectors_keep_the_selected_fragments_origin() {
     let dir = Workspace::new();
     dir.write("root.md", "# Root\n\n{{#include parts/chapter.md:shown}}\n");

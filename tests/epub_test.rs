@@ -1,17 +1,14 @@
 //! Tests for `src/zip.rs` (deterministic ZIP writer) and `src/epub.rs`
-//! (EPUB 3 renderer). Included via `#[path]` so they run standalone before
-//! the modules are registered in `lib.rs`. Tests may unwrap/panic for
-//! clarity.
+//! (EPUB 3 renderer). EPUB assertions exercise the public library renderer;
+//! tests may unwrap/panic for clarity.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../src/epub.rs"]
-mod epub;
 #[path = "epub/theme.rs"]
 mod epub_theme;
 #[path = "../src/zip.rs"]
 mod zip;
 
-use franken_markdown::{HtmlOptions, parse_markdown, zlib_decompress};
+use franken_markdown::{HtmlOptions, epub, parse_markdown, zlib_decompress};
 use zip::{ZipWriter, crc32};
 
 // ---------------------------------------------------------------------------
@@ -813,6 +810,56 @@ fn epub_unicode_and_safe_markup_navigation_targets_the_published_chapter() {
 }
 
 #[test]
+fn epub_raw_html_heading_navigation_matches_actual_ids_in_documents_and_books() {
+    use franken_markdown::{BookInput, build_book};
+
+    let source = "<h1>Café</h1>\n\n# Café\n\n# Café-2\n\n<blockquote><h2>中文</h2></blockquote>\n\n## 中文\n";
+    let options = HtmlOptions::default();
+    let document = parse_markdown(source);
+    let book = build_book(&[BookInput {
+        path: "headings.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for archive in [
+        epub::render_epub(&document, &options).unwrap(),
+        epub::render_book_epub(&book, &options).unwrap(),
+    ] {
+        let nav = entry_text(&archive, "OEBPS/nav.xhtml");
+        let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+        let mut previous = 0;
+        for (id, title) in [
+            ("café", "Café"),
+            ("café-2", "Café"),
+            ("café-2-2", "Café-2"),
+            ("中文", "中文"),
+            ("中文-2", "中文"),
+        ] {
+            let link = format!("<a href=\"chapter-1.xhtml#{id}\">{title}</a>");
+            let offset = nav
+                .find(&link)
+                .unwrap_or_else(|| panic!("missing {link}: {nav}"));
+            assert!(offset >= previous, "navigation changed heading order");
+            previous = offset + link.len();
+            assert!(
+                chapter.contains(&format!("id=\"{id}\">{title}</h")),
+                "wrong heading for {id}: {chapter}"
+            );
+        }
+        assert_well_formed_xml(&nav);
+        assert_well_formed_xml(&chapter);
+    }
+
+    // An already-native equivalent has the same body, navigation, metadata and
+    // deterministic ZIP bytes; the repair does not invent another slug policy.
+    let native = parse_markdown("# Café\n\n# Café\n\n# Café-2\n\n> ## 中文\n\n## 中文\n");
+    assert_eq!(
+        epub::render_epub(&document, &options).unwrap(),
+        epub::render_epub(&native, &options).unwrap()
+    );
+}
+
+#[test]
 fn epub_render_is_byte_deterministic() {
     let a = fixture_epub(&HtmlOptions::default());
     let b = fixture_epub(&HtmlOptions::default());
@@ -909,5 +956,89 @@ fn epub_empty_document_is_valid() {
     assert!(
         nav.contains("<li><a href=\"chapter-1.xhtml\">Document</a></li>"),
         "nav falls back to a single document link"
+    );
+}
+
+#[test]
+fn book_raw_html_resources_and_anchors_resolve_in_every_publication() {
+    use franken_markdown::book::BookRenderer;
+    use franken_markdown::{BookInput, PdfImageAsset, render_html_document};
+
+    fn svg(color: &str) -> Vec<u8> {
+        format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"12\"><rect width=\"24\" height=\"12\" fill=\"{color}\"/></svg>").into_bytes()
+    }
+    fn image_src(html: &str) -> &str {
+        html.split("<img ")
+            .nth(1)
+            .unwrap()
+            .split("src=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+    }
+    fn image_uri(bytes: &[u8]) -> String {
+        let html = render_html_document(
+            &parse_markdown("![image](figure.svg)"),
+            &HtmlOptions {
+                image_assets: vec![PdfImageAsset::new("figure.svg", bytes.to_vec())],
+                ..HtmlOptions::default()
+            },
+        )
+        .unwrap();
+        image_src(&html).to_owned()
+    }
+
+    let mut renderer = BookRenderer::new(&[
+        BookInput {
+            path: "guide/start.md".into(),
+            source: "# Start\n\n<div><a href='../appendix/end.md?print=1&amp;mode=view#end'>Next</a><img src='figure.svg' alt='first'></div>\n\n`<a href='../appendix/end.md'>example</a>`\n".into(),
+        },
+        BookInput {
+            path: "appendix/end.md".into(),
+            source: "# End\n\nInline <a href='../guide/start.md#start'><img src=figure.svg alt='second'></a>.\n".into(),
+        },
+    ]).unwrap();
+    let first = svg("blue");
+    let second = svg("green");
+    renderer
+        .set_image("guide/figure.svg", first.clone())
+        .unwrap();
+    renderer
+        .set_image("appendix/figure.svg", second.clone())
+        .unwrap();
+    renderer.set_image("figure.svg", svg("red")).unwrap();
+    assert_eq!(renderer.validate_links().unwrap().finding_count(), 0);
+
+    let site = renderer.render_site().unwrap();
+    let start = entry_text(&site, "guide__start.html");
+    let end = entry_text(&site, "appendix__end.html");
+    assert!(start.contains("href=\"appendix__end.html?print=1&amp;mode=view#end\""));
+    assert!(end.contains("href=\"guide__start.html#start\""));
+    assert_eq!(image_src(&start), image_uri(&first));
+    assert_eq!(image_src(&end), image_uri(&second));
+    assert!(start.contains("href='../appendix/end.md'&gt;example"));
+
+    let archive = renderer.render_epub().unwrap();
+    let start = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+    let end = entry_text(&archive, "OEBPS/chapter-2.xhtml");
+    assert_well_formed_xml(&start);
+    assert_well_formed_xml(&end);
+    assert!(start.contains("href=\"chapter-2.xhtml?print=1&amp;mode=view#end\""));
+    assert!(end.contains("href=\"chapter-1.xhtml#start\""));
+    for (page, expected) in [(&start, &first), (&end, &second)] {
+        let path = format!("OEBPS/{}", image_src(page));
+        let entries = parse_central_directory(&archive);
+        let resource = entries.iter().find(|entry| entry.name == path).unwrap();
+        assert_eq!(recover_entry(&archive, resource), *expected);
+    }
+    let pdf = renderer.render_pdf().unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(pdf.starts_with(b"%PDF-"));
+    assert!(!pdf_text.contains("fmd-book-pdf-nav/"));
+    assert!(
+        !pdf_text.contains("/URI"),
+        "all links in this book are internal"
     );
 }

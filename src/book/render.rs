@@ -1,12 +1,14 @@
 //! Reusable, host-independent book rendering from one parsed book.
 
+#[cfg(test)]
+use crate::Inline;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Book, BookInput, build_book, inject_book_nav, merge, out_name, paths};
 use crate::wasm::WasmRenderOptions;
 use crate::{
-    Block, Document, HtmlOptions, Inline, PdfImageAsset, PdfOptions, RenderError, Result,
-    ZipWriter, render_html_document,
+    Block, Document, HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Result, ZipWriter,
+    render_html_document,
 };
 
 #[path = "chapter_preview.rs"]
@@ -361,27 +363,25 @@ fn asset_keys(assets: &[PdfImageAsset]) -> BTreeSet<&str> {
 }
 
 pub(super) fn resolve_site_links(blocks: &mut [Block], source: &str, known: &BTreeMap<&str, &str>) {
-    walk_inline_nodes(blocks, &mut |inline| {
-        if let Inline::Link { dest, .. } = inline {
-            if let Some((target, suffix)) =
+    crate::safe_html::visit_destinations(blocks, &mut |dest, kind| {
+        if kind == crate::safe_html::UrlKind::Link
+            && let Some((target, suffix)) =
                 paths::chapter_destination(source, dest, |path| known.contains_key(path))
-            {
-                if let Some(output) = known.get(target.as_str()) {
-                    *dest = format!("{output}{suffix}");
-                }
-            }
+            && let Some(output) = known.get(target.as_str())
+        {
+            *dest = format!("{output}{suffix}");
         }
     });
 }
 
 fn resolve_images(blocks: &mut [Block], source: &str, keys: &BTreeSet<&str>) {
-    walk_inline_nodes(blocks, &mut |inline| {
-        if let Inline::Image { dest, .. } = inline {
-            if let Some((target, suffix)) = paths::destination(source, dest) {
-                let key = format!("{target}{suffix}");
-                if keys.contains(key.as_str()) {
-                    *dest = key;
-                }
+    crate::safe_html::visit_destinations(blocks, &mut |dest, kind| {
+        if kind == crate::safe_html::UrlKind::Image
+            && let Some((target, suffix)) = paths::destination(source, dest)
+        {
+            let key = format!("{target}{suffix}");
+            if keys.contains(key.as_str()) {
+                *dest = key;
             }
         }
     });
@@ -390,6 +390,7 @@ fn resolve_images(blocks: &mut [Block], source: &str, keys: &BTreeSet<&str>) {
 // Links and images share structural traversal, not destination semantics.
 // In particular, an image whose URL resembles a chapter must remain an image
 // asset, and a link around an image must visit both distinct nodes.
+#[cfg(test)]
 fn walk_inline_nodes(blocks: &mut [Block], visit: &mut impl FnMut(&mut Inline)) {
     for block in blocks {
         match block {
@@ -426,6 +427,7 @@ fn walk_inline_nodes(blocks: &mut [Block], visit: &mut impl FnMut(&mut Inline)) 
     }
 }
 
+#[cfg(test)]
 fn visit_inline_nodes(inlines: &mut [Inline], visit: &mut impl FnMut(&mut Inline)) {
     for inline in inlines {
         visit(inline);

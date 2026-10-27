@@ -26,10 +26,20 @@ them. For example, `parts/shared.md` can use `![Chart](chart.svg)` and
 still names `parts/next.md#setup`. Nested includes and line/anchor selectors
 retain that same origin. A reference-style link uses the origin of its
 destination definition, even when the link itself appears in another file.
+Supported HTML links and images (`<a href="next.md#setup">` and
+`<img src="chart.svg">`) retain that same defining-file origin. Book sites,
+PDF navigation and EPUB chapters resolve their links to the corresponding
+published chapter, and chapter-relative HTML images use that chapter's assets.
+EPUB navigation also uses the same lowered headings as its chapter bodies,
+including supported HTML headings and their collision-safe generated IDs.
+This applies to both standalone documents and books; arbitrary HTML `id`
+attributes remain outside the navigation checker's scope.
 
-The native loader rebases actual Markdown destination tokens after expansion.
-Code examples, raw HTML, labels and titles keep their source text; URL queries
-and fragments remain attached. The resulting input is shared by publication
+The native loader rebases actual Markdown destination tokens and supported HTML
+URL attribute values after expansion. Markdown code examples, comments, unsupported HTML
+attributes, labels and titles keep their source text; URL queries and fragments
+remain attached. HTML entities are decoded once and changed attributes are
+safely quoted, with all surrounding markup retained. The resulting input is shared by publication
 and `--check-links`, so checks resolve against the same published chapter
 paths. Local resources remain subject to the existing book-root and regular-file
 policies; expansion does not authorize external filesystem or network access.

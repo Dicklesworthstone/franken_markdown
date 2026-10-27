@@ -89,6 +89,24 @@ fn missing_chapters_anchors_and_invalid_fragments_are_distinct() {
 }
 
 #[test]
+fn supported_html_links_are_checked_with_decoded_destinations_and_source_owners() {
+    let book = build_book(&[
+        file("guide/start.md", "# Start\n\nInline <a href='../end.md?x=1&amp;y=2#target'>valid</a>.\n\n<div><a href='missing.md'>missing chapter</a><a href='../end.md#absent'>missing heading</a><img src='image.md'><a href='https://example.org/'>web</a><!-- <a href='comment.md'> --></div>\n\n`<a href='code.md'>`\n"),
+        file("end.md", "# Target\n"),
+    ]).unwrap();
+    let report = check_book_links(&book).unwrap();
+    assert_eq!(codes(&report), ["missing_chapter", "missing_anchor"]);
+    assert_eq!(report.chapters[0].checked, 3);
+    assert_eq!(report.chapters[0].external, 1);
+    let analysis = DocumentLinkAnalysis::with_file_references(&book.chapters[0].doc).unwrap();
+    assert_eq!(analysis.references.len(), 3);
+    assert_eq!(analysis.references[0].block_index, 1);
+    assert_eq!(analysis.references[0].destination, "/end.md?x=1&y=2#target");
+    assert_eq!(analysis.references[1].block_index, 2);
+    assert_eq!(analysis.references[2].block_index, 2);
+}
+
+#[test]
 fn percent_decoding_is_once_and_output_page_links_are_recognized() {
     let book = build_book(&[
             file("guide/start.md", "[space](../a%20b.md#%68ello) [percent](../a%2520b.md#hello) [output](./a~20b.html#hello)"),

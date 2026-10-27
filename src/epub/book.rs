@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use franken_markdown::{Book, HtmlOptions, PdfImageAsset, RenderError, Result};
 
 use super::{
-    Block, CONTAINER_XML, DCTERMS_MODIFIED, Inline, MIMETYPE, NavHeading, ZipWriter, chapter_xhtml,
+    Block, CONTAINER_XML, DCTERMS_MODIFIED, MIMETYPE, NavHeading, ZipWriter, chapter_xhtml,
     collect_headings, embedded_fonts, escape_xml_attr, escape_xml_text, extract_main_body, fnv1a64,
     html_fragment_to_xhtml, push_nav_headings, resources, theme,
 };
@@ -154,8 +154,10 @@ fn prepare_book_with_budget(
             .unwrap_or(lang);
         html_opts.title = Some(source.title.clone());
         html_opts.lang = Some(chapter_lang.to_string());
-        let page =
-            franken_markdown::html::render(&franken_markdown::safe_html::lower(&doc), &html_opts);
+        let lowered = franken_markdown::safe_html::lower(&doc);
+        let headings = collect_headings(&lowered.blocks);
+        let page = franken_markdown::html::render(&lowered, &html_opts);
+        drop(lowered);
         // Bound one transient render as before, but do not charge its base64
         // image copies to the publication. Only the externalized XHTML and
         // unique image payloads are retained in the archive.
@@ -189,7 +191,7 @@ fn prepare_book_with_budget(
             title: source.title.clone(),
             file: chapter_file(index),
             xhtml,
-            headings: collect_headings(&doc.blocks),
+            headings,
             content,
         });
     }
@@ -350,73 +352,24 @@ fn rewrite_blocks(
     known: &BTreeMap<String, usize>,
     assets: &[PdfImageAsset],
 ) {
-    for block in blocks {
-        match block {
-            Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
-                rewrite_inlines(inlines, source, known, assets);
-            }
-            Block::BlockQuote(blocks) | Block::FootnoteDefinition { blocks, .. } => {
-                rewrite_blocks(blocks, source, known, assets);
-            }
-            Block::List(list) => {
-                for item in &mut list.items {
-                    rewrite_blocks(&mut item.blocks, source, known, assets);
+    franken_markdown::safe_html::visit_destinations(blocks, &mut |dest, kind| {
+        let Some((target, suffix)) = destination(source, dest) else {
+            return;
+        };
+        match kind {
+            franken_markdown::safe_html::UrlKind::Link => {
+                if let Some(&index) = known.get(&target) {
+                    *dest = format!("{}{suffix}", chapter_file(index));
                 }
             }
-            Block::Table(table) => {
-                for cell in &mut table.head {
-                    rewrite_inlines(cell, source, known, assets);
-                }
-                for row in &mut table.rows {
-                    for cell in row {
-                        rewrite_inlines(cell, source, known, assets);
-                    }
+            franken_markdown::safe_html::UrlKind::Image => {
+                let key = format!("{target}{suffix}");
+                if assets.iter().any(|asset| asset.destination.trim() == key) {
+                    *dest = key;
                 }
             }
-            Block::DefinitionList(items) => {
-                for item in items {
-                    for inlines in item.terms.iter_mut().chain(&mut item.definitions) {
-                        rewrite_inlines(inlines, source, known, assets);
-                    }
-                }
-            }
-            _ => {}
         }
-    }
-}
-
-fn rewrite_inlines(
-    inlines: &mut [Inline],
-    source: &str,
-    known: &BTreeMap<String, usize>,
-    assets: &[PdfImageAsset],
-) {
-    for inline in inlines {
-        match inline {
-            Inline::Link { dest, content, .. } => {
-                if let Some((target, suffix)) = destination(source, dest) {
-                    if let Some(&index) = known.get(&target) {
-                        *dest = format!("{}{suffix}", chapter_file(index));
-                    }
-                }
-                rewrite_inlines(content, source, known, assets);
-            }
-            Inline::Image { dest, .. } => {
-                if let Some((target, suffix)) = destination(source, dest) {
-                    let key = format!("{target}{suffix}");
-                    if assets.iter().any(|asset| asset.destination.trim() == key) {
-                        *dest = key;
-                    }
-                }
-            }
-            Inline::Emphasis(content)
-            | Inline::Strong(content)
-            | Inline::Strikethrough(content) => {
-                rewrite_inlines(content, source, known, assets);
-            }
-            _ => {}
-        }
-    }
+    });
 }
 
 /// Length-prefix every component with a fixed-width integer, independent of

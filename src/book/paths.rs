@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Book, BookChapter, BookInput};
-use crate::{Block, Document, Inline, RenderError, Result};
+use crate::{Block, Document, RenderError, Result};
 
 /// Validate every input before parsing any chapter. Output-name collisions
 /// are errors, not implicit last-writer-wins publication of the wrong chapter.
@@ -307,66 +307,15 @@ pub(super) fn rewrite_from(doc: &mut Document, source: &str, book: &Book) -> Res
 
 fn rewrite_blocks(blocks: &mut [Block], rewrite: &mut impl FnMut(&str) -> Option<String>) -> usize {
     let mut count = 0;
-    for block in blocks {
-        match block {
-            Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
-                count += rewrite_inlines(inlines, rewrite);
-            }
-            Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
-                count += rewrite_blocks(inner, rewrite);
-            }
-            Block::List(list) => {
-                for item in &mut list.items {
-                    count += rewrite_blocks(&mut item.blocks, rewrite);
-                }
-            }
-            Block::Table(table) => {
-                for cell in &mut table.head {
-                    count += rewrite_inlines(cell, rewrite);
-                }
-                for row in &mut table.rows {
-                    for cell in row {
-                        count += rewrite_inlines(cell, rewrite);
-                    }
-                }
-            }
-            Block::DefinitionList(items) => {
-                for item in items {
-                    for inlines in item.terms.iter_mut().chain(&mut item.definitions) {
-                        count += rewrite_inlines(inlines, rewrite);
-                    }
-                }
-            }
-            _ => {}
+    crate::safe_html::visit_destinations(blocks, &mut |dest, kind| {
+        if kind == crate::safe_html::UrlKind::Link
+            && let Some(replacement) = rewrite(dest)
+            && replacement != *dest
+        {
+            *dest = replacement;
+            count += 1;
         }
-    }
-    count
-}
-
-fn rewrite_inlines(
-    inlines: &mut [Inline],
-    rewrite: &mut impl FnMut(&str) -> Option<String>,
-) -> usize {
-    let mut count = 0;
-    for inline in inlines {
-        match inline {
-            Inline::Link { dest, content, .. } => {
-                if let Some(replacement) = rewrite(dest) {
-                    if replacement != *dest {
-                        *dest = replacement;
-                        count += 1;
-                    }
-                }
-                count += rewrite_inlines(content, rewrite);
-            }
-            Inline::Emphasis(content)
-            | Inline::Strong(content)
-            | Inline::Strikethrough(content) => {
-                count += rewrite_inlines(content, rewrite);
-            }
-            _ => {}
-        }
-    }
+    });
     count
 }
 
@@ -375,6 +324,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+    use crate::Inline;
 
     #[test]
     fn paths_are_normalized_without_escaping_the_book() {

@@ -39,6 +39,13 @@ summary identifies unverified categories and states that no publication outputs
 were written. Findings are not invented line/column positions: a reference may
 originate in an included source.
 
+Supported raw HTML anchors participate in the same checks as Markdown links.
+Both inline `<a href="chapter.md#section">` tags and anchors inside HTML blocks
+are resolved after native include-origin rebasing; missing chapters and missing
+heading fragments can therefore stop `--deny-broken-links` publication. Comments,
+Markdown code examples, image sources, and unsupported URL attributes do not become chapter
+references. Arbitrary HTML `id` attributes remain outside the checker’s scope.
+
 Source-discovery warnings remain separate stderr diagnostics. In JSON mode,
 each warning is one JSON line with `level: "warning"`,
 `code: "book_input_warning"`, and an escaped `message`. Such warnings do not

@@ -710,19 +710,29 @@ fn metadata_epoch() -> Result<Option<u64>, Failure> {
 }
 
 fn unresolved_links(doc: &Document, source: &str, known: &BTreeSet<&str>) -> usize {
+    fn missing(destination: &str, source: &str, known: &BTreeSet<&str>) -> usize {
+        usize::from(
+            super::resolve_book_destination(source, destination).is_some_and(|(target, _)| {
+                let lower = target.to_ascii_lowercase();
+                (lower.ends_with(".md") || lower.ends_with(".markdown"))
+                    && !known.contains(target.as_str())
+            }),
+        )
+    }
+    fn html(raw: &str, source: &str, known: &BTreeSet<&str>) -> usize {
+        crate::safe_html::url_spans(raw)
+            .filter(|span| span.kind == crate::safe_html::UrlKind::Link)
+            .map(|span| missing(&span.destination, source, known))
+            .sum()
+    }
     fn inlines(values: &[Inline], source: &str, known: &BTreeSet<&str>) -> usize {
         values
             .iter()
             .map(|inline| match inline {
                 Inline::Link { dest, content, .. } => {
-                    let missing =
-                        super::resolve_book_destination(source, dest).is_some_and(|(target, _)| {
-                            let lower = target.to_ascii_lowercase();
-                            (lower.ends_with(".md") || lower.ends_with(".markdown"))
-                                && !known.contains(target.as_str())
-                        });
-                    usize::from(missing) + inlines(content, source, known)
+                    missing(dest, source, known) + inlines(content, source, known)
                 }
+                Inline::Html(raw) => html(raw, source, known),
                 Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
                     inlines(inner, source, known)
                 }
@@ -738,6 +748,7 @@ fn unresolved_links(doc: &Document, source: &str, known: &BTreeSet<&str>) -> usi
                 | Block::Heading {
                     inlines: values, ..
                 } => inlines(values, source, known),
+                Block::HtmlBlock(raw) => html(raw, source, known),
                 Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
                     blocks(inner, source, known)
                 }

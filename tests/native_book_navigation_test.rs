@@ -122,3 +122,52 @@ fn combined_publication_keeps_valid_aliases_and_unresolved_links_distinct() {
             .starts_with(b"%PDF-")
     );
 }
+
+#[test]
+fn raw_html_chapter_links_participate_in_receipts_and_fail_before_publication() {
+    let root = workspace();
+    fs::write(root.join("book/guide/start.md"), "# Guide\n\nInline <a href='../target.md?x=1&amp;y=2#target'>Actual</a>.\n\n<div><a href='missing.md'>Missing chapter</a><a href='../target.md#absent'>Missing heading</a><!-- <a href='comment.md'> --><img src='image.md'></div>\n").unwrap();
+    let receipt = publish(&root, "html");
+    assert!(receipt.contains("\"unresolved_links\":1"), "{receipt}");
+    let html = fs::read_to_string(root.join("site/guide__start.html")).unwrap();
+    assert!(html.contains("href=\"target.html?x=1&amp;y=2#target\""));
+    for args in [
+        vec!["--check-links", "--json"],
+        vec![
+            "--deny-broken-links",
+            "--to",
+            "html",
+            "--out-dir",
+            "guarded",
+            "--json",
+        ],
+    ] {
+        let check_only = args[0] == "--check-links";
+        let output = Command::new(env!("CARGO_BIN_EXE_fmd"))
+            .args(["--no-config", "book", "book"])
+            .args(args)
+            .env_remove("SOURCE_DATE_EPOCH")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(65),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if check_only {
+            assert!(report.contains("missing_chapter"), "{report}");
+            assert!(report.contains("missing_anchor"), "{report}");
+        } else {
+            assert!(report.contains("book_link_findings"), "{report}");
+            assert!(report.contains("2 broken expanded-book"), "{report}");
+        }
+    }
+    assert!(!root.join("guarded").exists());
+}

@@ -120,8 +120,12 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     html_opts.custom_css = Some(String::new());
     html_opts.allow_raw_html = false;
     // Raw HTML is lowered to native nodes (only tags outside the safe subset
-    // remain, escaped) so chapter XHTML stays well-formed and valid.
-    let page = franken_markdown::html::render(&franken_markdown::safe_html::lower(doc), &html_opts);
+    // remain, escaped) so chapter XHTML stays well-formed and valid. Navigation
+    // must use these same nodes: a raw HTML heading consumes an emitted ID too.
+    let lowered = franken_markdown::safe_html::lower(doc);
+    let page = franken_markdown::html::render(&lowered, &html_opts);
+    let mut nav = nav_xhtml(&title, &lang, &lowered);
+    drop(lowered);
     let body = extract_main_body(&page).ok_or_else(|| {
         RenderError::InvalidInput("epub: HTML renderer <main> wrapper not found".to_string())
     })?;
@@ -151,7 +155,6 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     } else {
         chapter_xhtml(&title, &lang, &prepared.body)
     };
-    let mut nav = nav_xhtml(&title, &lang, doc);
     let mut opf = content_opf(&title, &lang, &identifier, &prepared);
     fonts.link(&mut chapter, opts.custom_css.is_some())?;
     fonts.link(&mut nav, opts.custom_css.is_some())?;

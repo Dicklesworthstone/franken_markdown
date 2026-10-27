@@ -3,6 +3,7 @@
 //! Neither title matching nor a prediction of line wrapping/page positions is
 //! used to bind links. Footnotes may move without losing their source scope.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
@@ -249,7 +250,86 @@ fn chapter_ranges(book: &Book, document: &Document) -> Result<Vec<Range<usize>>>
     Ok(ranges)
 }
 
-fn prepare(book: &Book, mut document: Document, options: &PdfOptions) -> Result<Plan> {
+/// Lower the already assembled chapters independently, after their original
+/// boundaries have been validated. Lowering can remove a comment or expand
+/// one HTML block into several blocks, so source lengths cannot index the
+/// result. Consume the merged blocks to retain scoped notes and resolved
+/// images, and carry explicit ranges past authored PageBreak blocks.
+fn normalize_chapters(
+    document: Document,
+    ranges: &[Range<usize>],
+) -> Result<(Document, Vec<Range<usize>>)> {
+    let mut original = document.blocks.into_iter();
+    let mut blocks = Vec::with_capacity(original.len());
+    let mut normalized_ranges = Vec::with_capacity(ranges.len());
+    for (index, range) in ranges.iter().enumerate() {
+        if index > 0 {
+            blocks.push(
+                original
+                    .next()
+                    .ok_or_else(|| invalid("missing chapter break"))?,
+            );
+        }
+        let chapter = Document {
+            blocks: original.by_ref().take(range.len()).collect(),
+        };
+        if chapter.blocks.len() != range.len() {
+            return Err(invalid("missing chapter block"));
+        }
+        let normalized = match crate::safe_html::lower(&chapter) {
+            Cow::Borrowed(_) => chapter,
+            Cow::Owned(lowered) => lowered,
+        };
+        let start = blocks.len();
+        blocks.extend(normalized.blocks);
+        normalized_ranges.push(start..blocks.len());
+    }
+    if original.next().is_some() {
+        return Err(invalid("extra chapter block"));
+    }
+    Ok((Document { blocks }, normalized_ranges))
+}
+
+/// Map source Markdown heading ordinals to their positions after HTML
+/// lowering. Raw HTML headings become PDF bookmarks, but HTML publication
+/// does not assign them Markdown IDs: they must not consume collision
+/// suffixes or capture a Markdown link to a later identically named heading.
+fn normalized_heading_positions(blocks: &[Block]) -> (Vec<usize>, usize) {
+    fn walk(blocks: &[Block], positions: &mut Vec<usize>, count: &mut usize) {
+        for block in blocks {
+            match block {
+                Block::Heading { .. } => {
+                    positions.push(*count);
+                    *count += 1;
+                }
+                Block::HtmlBlock(_) => {
+                    let source = Document {
+                        blocks: vec![block.clone()],
+                    };
+                    let lowered = crate::safe_html::lower(&source);
+                    let mut headings = Vec::new();
+                    collect_headings(&lowered.blocks, &mut headings);
+                    *count += headings.len();
+                }
+                Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
+                    walk(inner, positions, count);
+                }
+                Block::List(list) => {
+                    for item in &list.items {
+                        walk(&item.blocks, positions, count);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut positions = Vec::new();
+    let mut count = 0;
+    walk(blocks, &mut positions, &mut count);
+    (positions, count)
+}
+
+fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan> {
     let sources: Vec<String> = book
         .chapters
         .iter()
@@ -266,7 +346,8 @@ fn prepare(book: &Book, mut document: Document, options: &PdfOptions) -> Result<
     if known.len() != sources.len() {
         return Err(invalid("duplicate chapter path"));
     }
-    let ranges = chapter_ranges(book, &document)?;
+    let original_ranges = chapter_ranges(book, &document)?;
+    let (mut document, ranges) = normalize_chapters(document, &original_ranges)?;
     let mut starts = BTreeSet::new();
     let mut reserved = BTreeSet::new();
     let mut candidates = 0usize;
@@ -313,7 +394,7 @@ fn prepare(book: &Book, mut document: Document, options: &PdfOptions) -> Result<
         .collect();
     let mut original = document.blocks.into_iter();
     let mut blocks = Vec::with_capacity(original.len().saturating_add(starts.len()));
-    let mut ranges = Vec::with_capacity(book.chapters.len());
+    let mut assembled_ranges = Vec::with_capacity(book.chapters.len());
     for (index, chapter) in book.chapters.iter().enumerate() {
         if index > 0 {
             blocks.push(
@@ -334,14 +415,14 @@ fn prepare(book: &Book, mut document: Document, options: &PdfOptions) -> Result<
                 inlines: vec![Inline::Text(title.clone())],
             });
         }
-        for _ in 0..chapter.doc.blocks.len() {
+        for _ in 0..ranges[index].len() {
             blocks.push(
                 original
                     .next()
                     .ok_or_else(|| invalid("missing chapter block"))?,
             );
         }
-        ranges.push(start..blocks.len());
+        assembled_ranges.push(start..blocks.len());
     }
     if original.next().is_some() {
         return Err(invalid("extra chapter block"));
@@ -352,6 +433,7 @@ fn prepare(book: &Book, mut document: Document, options: &PdfOptions) -> Result<
     let mut landings = Vec::with_capacity(book.chapters.len());
     let mut base = 0usize;
     for (index, chapter) in book.chapters.iter().enumerate() {
+        let (positions, normalized_count) = normalized_heading_positions(&chapter.doc.blocks);
         let mut source_headings = Vec::new();
         collect_headings(&chapter.doc.blocks, &mut source_headings);
         let source_order: Vec<usize> = crate::footnotes::heading_origins_for_pdf(&chapter.doc)
@@ -381,12 +463,18 @@ fn prepare(book: &Book, mut document: Document, options: &PdfOptions) -> Result<
         let shift = usize::from(insert_heading[index]);
         let mut map = BTreeMap::new();
         for (entry, ordinal) in entries.into_iter().zip(source_order) {
-            map.insert(entry.anchor, base + shift + ordinal);
+            let normalized = positions
+                .get(ordinal)
+                .ok_or_else(|| invalid("normalized heading ordinal is invalid"))?;
+            map.insert(entry.anchor, base + shift + *normalized);
         }
         aliases.push(map);
-        let chapter_blocks = &document.blocks[ranges[index].clone()];
+        let chapter_blocks = &document.blocks[assembled_ranges[index].clone()];
         let mut assembled = Vec::new();
         collect_headings(chapter_blocks, &mut assembled);
+        if assembled.len() != normalized_count + shift {
+            return Err(invalid("HTML lowering and heading provenance disagree"));
+        }
         let landing = leading_heading(chapter_blocks)
             .and_then(|first| {
                 assembled
@@ -401,7 +489,7 @@ fn prepare(book: &Book, mut document: Document, options: &PdfOptions) -> Result<
     }
 
     let mut tokens: BTreeMap<Option<usize>, String> = BTreeMap::new();
-    for (index, range) in ranges.into_iter().enumerate() {
+    for (index, range) in assembled_ranges.into_iter().enumerate() {
         walk_links(&mut document.blocks[range], &mut |dest| {
             let Some(target) = local_target(index, &sources[index], dest, &known) else {
                 return;
@@ -497,56 +585,11 @@ fn collect_headings<'a>(blocks: &'a [Block], out: &mut Vec<&'a Block>) {
 }
 
 fn walk_links(blocks: &mut [Block], visit: &mut impl FnMut(&mut String)) {
-    for block in blocks {
-        match block {
-            Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
-                walk_inline_links(inlines, visit)
-            }
-            Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
-                walk_links(inner, visit)
-            }
-            Block::List(list) => {
-                for item in &mut list.items {
-                    walk_links(&mut item.blocks, visit);
-                }
-            }
-            Block::Table(table) => {
-                for cell in &mut table.head {
-                    walk_inline_links(cell, visit);
-                }
-                for row in &mut table.rows {
-                    for cell in row {
-                        walk_inline_links(cell, visit);
-                    }
-                }
-            }
-            Block::DefinitionList(items) => {
-                for item in items {
-                    for content in item.terms.iter_mut().chain(&mut item.definitions) {
-                        walk_inline_links(content, visit);
-                    }
-                }
-            }
-            _ => {}
+    crate::safe_html::visit_destinations(blocks, &mut |dest, kind| {
+        if kind == crate::safe_html::UrlKind::Link {
+            visit(dest);
         }
-    }
-}
-
-fn walk_inline_links(inlines: &mut [Inline], visit: &mut impl FnMut(&mut String)) {
-    for inline in inlines {
-        match inline {
-            Inline::Link { dest, content, .. } => {
-                visit(dest);
-                walk_inline_links(content, visit);
-            }
-            Inline::Emphasis(content)
-            | Inline::Strong(content)
-            | Inline::Strikethrough(content) => {
-                walk_inline_links(content, visit);
-            }
-            _ => {}
-        }
-    }
+    });
 }
 
 #[cfg(test)]
@@ -597,6 +640,171 @@ mod tests {
             vec![Some(0), Some(2), Some(1), Some(2), Some(1)]
         );
         assert_eq!(book.chapters[0].doc, original);
+    }
+
+    #[test]
+    fn raw_html_anchors_share_chapter_scope_without_mutating_the_html_source() {
+        let book = book(&[
+            (
+                "guide/one.md",
+                "# Same\n\nInline <a href='two.md?print=1&amp;x=2#same'>next</a>.\n\n<div><a href='#same'>self</a><a href='two.md#absent'>missing</a><a href='https://example.org/'>web</a></div>\n",
+            ),
+            ("guide/two.md", "# Same\n\n<a href='one.md#same'>back</a>\n"),
+        ]);
+        let originals: Vec<_> = book
+            .chapters
+            .iter()
+            .map(|chapter| chapter.doc.clone())
+            .collect();
+        let html =
+            crate::render_html_document(&book.chapters[0].doc, &crate::HtmlOptions::default())
+                .unwrap();
+        let document = book_pdf_document(&book);
+        let mut plan = prepare(&book, document, &PdfOptions::default()).unwrap();
+        assert_eq!(resolved(&mut plan), [Some(1), Some(0), None, Some(0)]);
+        let mut external = 0;
+        walk_links(&mut plan.document.blocks, &mut |dest| {
+            external += usize::from(dest == "https://example.org/");
+        });
+        assert_eq!(external, 1);
+        assert_eq!(
+            book.chapters
+                .iter()
+                .map(|chapter| &chapter.doc)
+                .collect::<Vec<_>>(),
+            originals.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            crate::render_html_document(&book.chapters[0].doc, &crate::HtmlOptions::default())
+                .unwrap(),
+            html
+        );
+    }
+
+    #[test]
+    fn links_removed_by_pdf_lowering_never_insert_a_chapter_title() {
+        for source in [
+            "<pre><code><a href='two.md'>example</a></code></pre>",
+            "Before <code><a href='two.md'>example</a></code> after.",
+            "Before <kbd><a href='two.md'>example</a></kbd> after.",
+            "Before <samp><a href='two.md'>example</a></samp> after.",
+            "Before <tt><a href='two.md'>example</a></tt> after.",
+            "Before <code>[example](two.md)</code> after.",
+            "<a href='two.md'/>",
+        ] {
+            let book = book(&[
+                ("one.md", source),
+                ("two.md", "Target chapter begins with prose."),
+            ]);
+            let options = PdfOptions::default();
+            let document = book_pdf_document(&book);
+            let expected = render_pdf_document(&document, &options).unwrap();
+            let plan = prepare(&book, document, &options).unwrap();
+            assert!(plan.targets.is_empty(), "dormant link in {source}");
+            let mut headings = Vec::new();
+            collect_headings(&plan.document.blocks, &mut headings);
+            assert!(headings.is_empty(), "no generated heading for {source}");
+            assert_eq!(render_plan(plan, &options).unwrap(), expected);
+        }
+    }
+
+    fn assert_bound_links(bytes: &[u8], count: usize) {
+        let pdf = String::from_utf8_lossy(bytes);
+        assert!(!pdf.contains(PREFIX));
+        let links: Vec<_> = pdf.split("/Subtype /Link").skip(1).collect();
+        assert_eq!(links.len(), count);
+        for link in links {
+            let dictionary = link.split_once("endobj").unwrap().0;
+            assert!(
+                dictionary.contains("/Dest ["),
+                "bound page destination: {dictionary}"
+            );
+            assert!(!dictionary.contains("/S /URI"));
+        }
+    }
+
+    #[test]
+    fn raw_html_headings_and_links_render_with_matching_pdf_provenance() {
+        let book = book(&[
+            (
+                "one.md",
+                "<h1>Raw heading</h1>\n\n<a href='two.md#target'>Next</a>\n\n> <div><h2>Nested raw heading</h2></div>\n",
+            ),
+            ("two.md", "# Target\n\n<a href='one.md'>Back</a>\n"),
+        ]);
+        let options = PdfOptions::default();
+        let mut plan = prepare(&book, book_pdf_document(&book), &options).unwrap();
+        assert_eq!(resolved(&mut plan), [Some(2), Some(0)]);
+        assert_bound_links(&render_plan(plan, &options).unwrap(), 2);
+    }
+
+    #[test]
+    fn raw_html_bookmarks_do_not_capture_markdown_heading_ids() {
+        let book = book(&[
+            ("one.md", "# Source\n\n<a href='two.md#same'>Next</a>\n"),
+            (
+                "two.md",
+                "<h1>Same</h1>\n\n# Same\n\n<a href='#same'>Self</a>\n",
+            ),
+        ]);
+        let options = PdfOptions::default();
+        let mut plan = prepare(&book, book_pdf_document(&book), &options).unwrap();
+        // The raw heading is PDF ordinal 1; both source links address the
+        // native Markdown heading, whose chapter-local HTML ID is still same.
+        assert_eq!(resolved(&mut plan), [Some(2), Some(2)]);
+        assert_bound_links(&render_plan(plan, &options).unwrap(), 2);
+    }
+
+    #[test]
+    fn normalization_retains_merged_notes_assets_and_authored_page_breaks() {
+        let mut book = book(&[
+            (
+                "guide/one.md",
+                "# One\n\nReference[^n].\n\n<div><img src='../image.svg' alt='asset'><a href='../two.md#target'>Next</a></div>\n\n[^n]: <div><h2>Raw note heading</h2><a href='../two.md#target'>Note link</a></div>\n",
+            ),
+            (
+                "two.md",
+                "# Target\n\nAnother[^n].\n\n[^n]: Separate note.\n",
+            ),
+        ]);
+        book.chapters[0].doc.blocks.insert(1, Block::PageBreak);
+        let options = PdfOptions {
+            image_assets: vec![crate::PdfImageAsset::new(
+                "image.svg",
+                br#"<svg width="20" height="10"><rect width="20" height="10"/></svg>"#.to_vec(),
+            )],
+            ..PdfOptions::default()
+        };
+        let document =
+            crate::book::book_pdf_document_with_assets(&book, &options.image_assets).unwrap();
+        let plan = prepare(&book, document, &options).unwrap();
+        assert_eq!(
+            plan.document
+                .blocks
+                .iter()
+                .filter(|block| **block == Block::PageBreak)
+                .count(),
+            2
+        );
+        let notes: Vec<_> = plan
+            .document
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::FootnoteDefinition { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes, ["fmd-book-1-n", "fmd-book-2-n"]);
+        let mut asset_keys = Vec::new();
+        let mut inspected = plan.document.clone();
+        crate::safe_html::visit_destinations(&mut inspected.blocks, &mut |dest, kind| {
+            if kind == crate::safe_html::UrlKind::Image {
+                asset_keys.push(dest.clone());
+            }
+        });
+        assert_eq!(asset_keys, ["image.svg"]);
+        assert_bound_links(&render_plan(plan, &options).unwrap(), 2);
     }
 
     #[test]

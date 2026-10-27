@@ -4,6 +4,7 @@
 //! and footnote anchors follow safe HTML emission; raw HTML IDs, images, and
 //! non-chapter downloads are outside this check and never acquire authority.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Book, BookRenderer, paths};
@@ -134,7 +135,8 @@ impl BookRenderer {
 /// percent-encoded fragments, duplicate headings, and referenced notes in their
 /// actual emission order. Unreferenced note bodies and code examples are ignored.
 ///
-/// The report verifies Markdown chapter navigation, not external URLs, local
+/// The report verifies Markdown and supported HTML-anchor chapter navigation,
+/// not external URLs, local
 /// downloads, raw HTML IDs, asset availability, or final PDF/EPUB destinations.
 /// It does not mutate the book or grant access to any file or URL.
 ///
@@ -260,7 +262,7 @@ pub fn check_book_links(book: &Book) -> Result<LinkReport> {
                     };
                     result.checked += 1;
                     let problem = resolve_fragment(&navigation[target], &suffix).err();
-                    (*destination, problem)
+                    (destination.as_ref(), problem)
                 }
             };
             if let Some((code, message)) = problem {
@@ -388,7 +390,8 @@ fn admit_blocks(blocks: &[Block], depth: usize, budget: &mut Budget) -> Result<(
                 }
                 budget.text(code)?;
             }
-            Block::MathBlock(text) | Block::HtmlBlock(text) => budget.text(text)?,
+            Block::HtmlBlock(text) => admit_html(text, depth + 1, budget)?,
+            Block::MathBlock(text) => budget.text(text)?,
             _ => {}
         }
     }
@@ -419,9 +422,9 @@ fn admit_inlines(inlines: &[Inline], depth: usize, budget: &mut Budget) -> Resul
                     budget.text(title)?;
                 }
             }
+            Inline::Html(text) => admit_html(text, depth + 1, budget)?,
             Inline::Text(text)
             | Inline::Code(text)
-            | Inline::Html(text)
             | Inline::Math(text)
             | Inline::DisplayMath(text) => budget.text(text)?,
             Inline::FootnoteRef { id } => budget.text(id)?,
@@ -431,10 +434,22 @@ fn admit_inlines(inlines: &[Inline], depth: usize, budget: &mut Budget) -> Resul
     Ok(())
 }
 
+fn admit_html(html: &str, depth: usize, budget: &mut Budget) -> Result<()> {
+    budget.text(html)?;
+    // One raw AST node can contain many anchors. Charge their eventual
+    // navigation entries before collecting any decoded destinations.
+    for span in crate::safe_html::url_spans(html) {
+        if span.kind == crate::safe_html::UrlKind::Link {
+            budget.node(depth)?;
+        }
+    }
+    Ok(())
+}
+
 // Keep source ownership at top-level AST-block granularity. Nested and note
 // visitors retain the owning index; no substring search invents an inline span.
 enum Reference<'a> {
-    Link(&'a str, usize),
+    Link(Cow<'a, str>, usize),
     Note(&'a str, usize),
 }
 struct Navigation<'a> {
@@ -543,6 +558,7 @@ fn visit_blocks<'a>(blocks: &'a [Block], owner: usize, nav: &mut Navigation<'a>)
                 visit_inlines(inlines, owner, nav);
             }
             Block::Paragraph(inlines) => visit_inlines(inlines, owner, nav),
+            Block::HtmlBlock(html) => visit_html(html, owner, nav),
             Block::BlockQuote(blocks) => visit_blocks(blocks, owner, nav),
             Block::List(list) => {
                 for item in &list.items {
@@ -569,9 +585,11 @@ fn visit_inlines<'a>(inlines: &'a [Inline], owner: usize, nav: &mut Navigation<'
     for inline in inlines {
         match inline {
             Inline::Link { dest, content, .. } => {
-                nav.references.push(Reference::Link(dest, owner));
+                nav.references
+                    .push(Reference::Link(Cow::Borrowed(dest), owner));
                 visit_inlines(content, owner, nav);
             }
+            Inline::Html(html) => visit_html(html, owner, nav),
             Inline::FootnoteRef { id } => {
                 nav.references.push(Reference::Note(id, owner));
                 if let Some((&id, _)) = nav.definitions.get_key_value(id.as_str()) {
@@ -585,6 +603,15 @@ fn visit_inlines<'a>(inlines: &'a [Inline], owner: usize, nav: &mut Navigation<'
                 visit_inlines(inner, owner, nav)
             }
             _ => {}
+        }
+    }
+}
+
+fn visit_html(html: &str, owner: usize, nav: &mut Navigation<'_>) {
+    for span in crate::safe_html::url_spans(html) {
+        if span.kind == crate::safe_html::UrlKind::Link {
+            nav.references
+                .push(Reference::Link(Cow::Owned(span.destination), owner));
         }
     }
 }

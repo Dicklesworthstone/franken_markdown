@@ -97,14 +97,46 @@ pub(crate) fn destination_spans(source: &str) -> Vec<DestinationSpan> {
     if !source.contains('[') {
         return Vec::new();
     }
+    tracked_destinations(source, false)
+        .into_iter()
+        .filter(|span| span.syntax == DestinationSyntax::Markdown)
+        .map(|span| span.token)
+        .collect()
+}
+
+/// Internal source edits need the token's syntax, while the public Markdown
+/// destination API deliberately retains its existing recognition contract.
+pub(crate) struct SourceDestination {
+    pub token: DestinationSpan,
+    pub syntax: DestinationSyntax,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DestinationSyntax {
+    Markdown,
+    HtmlAttribute,
+    HtmlAttributeContent,
+}
+
+#[cfg(feature = "cli")]
+pub(crate) fn resource_destination_spans(source: &str) -> Vec<SourceDestination> {
+    if !source.contains(['[', '<']) {
+        return Vec::new();
+    }
+    tracked_destinations(source, true)
+}
+
+fn tracked_destinations(source: &str, html: bool) -> Vec<SourceDestination> {
     let mut profiler = ParseProfiler::disabled();
-    profiler.destinations = Some(DestinationTracker::new(source));
+    let mut tracker = DestinationTracker::new(source);
+    tracker.html = html;
+    profiler.destinations = Some(tracker);
     let _document = parse_document_inner(source, &mut profiler);
     let mut spans = profiler
         .destinations
         .map_or_else(Vec::new, |tracker| tracker.spans);
-    spans.sort_by_key(|span| (span.range.start, span.range.end));
-    spans.dedup_by(|right, left| right.range == left.range);
+    spans.sort_by_key(|span| (span.token.range.start, span.token.range.end));
+    spans.dedup_by(|right, left| right.token.range == left.token.range);
     spans
 }
 
@@ -203,7 +235,8 @@ pub(super) struct DestinationTracker {
     // the displaced map so unwinding restores its caller's source identity.
     text_order: Vec<(usize, Option<TextMap>)>,
     chars: Vec<CharMap>,
-    spans: Vec<DestinationSpan>,
+    spans: Vec<SourceDestination>,
+    html: bool,
 }
 
 impl DestinationTracker {
@@ -215,6 +248,7 @@ impl DestinationTracker {
             text_order: Vec::new(),
             chars: Vec::new(),
             spans: Vec::new(),
+            html: false,
         }
     }
 
@@ -363,8 +397,18 @@ impl DestinationTracker {
     }
 
     pub(super) fn record(&mut self, chars: &[char], token: Range<usize>, dest: &str) {
+        self.record_token(chars, token, dest, DestinationSyntax::Markdown);
+    }
+
+    fn record_token(
+        &mut self,
+        chars: &[char],
+        token: Range<usize>,
+        dest: &str,
+        syntax: DestinationSyntax,
+    ) -> bool {
         if token.is_empty() || dest.is_empty() {
-            return;
+            return false;
         }
         let address = chars.as_ptr() as usize;
         let char_size = std::mem::size_of::<char>();
@@ -377,15 +421,86 @@ impl DestinationTracker {
             (offset <= map.widths.len() && chars.len() <= map.widths.len() - offset)
                 .then_some((map, offset))
         }) else {
-            return;
+            return false;
         };
         let Some(range) = map.source_range(offset + token.start..offset + token.end) else {
-            return;
+            return false;
         };
-        self.spans.push(DestinationSpan {
-            range,
-            dest: dest.to_string(),
+        self.spans.push(SourceDestination {
+            token: DestinationSpan {
+                range,
+                dest: dest.to_string(),
+            },
+            syntax,
         });
+        true
+    }
+
+    /// Invoked only after the Markdown parser accepts a real HTML node. Code,
+    /// escaped tags, titles and failed speculative parses cannot supply URLs.
+    pub(super) fn inline_html(&mut self, chars: &[char], start: usize, html: &str) {
+        if !self.html {
+            return;
+        }
+        for span in crate::safe_html::url_spans(html) {
+            let begin = start + html[..span.range.start].chars().count();
+            let end = begin + html[span.range.clone()].chars().count();
+            if !self.record_token(
+                chars,
+                begin..end,
+                &span.destination,
+                DestinationSyntax::HtmlAttribute,
+            ) && let Some(content) = span.quoted_content_range(html)
+            {
+                let begin = start + html[..content.start].chars().count();
+                let end = begin + html[content].chars().count();
+                self.record_token(
+                    chars,
+                    begin..end,
+                    &span.destination,
+                    DestinationSyntax::HtmlAttributeContent,
+                );
+            }
+        }
+    }
+
+    pub(super) fn block_html(&mut self, html: &str, lines: &[&str]) {
+        if !self.html {
+            return;
+        }
+        let mut offset = 0;
+        let parts: Vec<_> = lines
+            .iter()
+            .map(|line| {
+                let part = (offset, *line);
+                offset += line.len() + 1;
+                part
+            })
+            .collect();
+        let checkpoint = self.checkpoint();
+        self.map_parts(html, &parts);
+        for span in crate::safe_html::url_spans(html) {
+            let mapped = self
+                .text_range(&html[span.range.clone()])
+                .map(|range| (range, DestinationSyntax::HtmlAttribute))
+                .or_else(|| {
+                    let content = span.quoted_content_range(html)?;
+                    Some((
+                        self.text_range(&html[content])?,
+                        DestinationSyntax::HtmlAttributeContent,
+                    ))
+                });
+            if let Some((range, syntax)) = mapped {
+                self.spans.push(SourceDestination {
+                    token: DestinationSpan {
+                        range,
+                        dest: span.destination,
+                    },
+                    syntax,
+                });
+            }
+        }
+        self.restore(checkpoint);
     }
 
     /// Invoked only after the real paragraph-aware collector accepts a def.
@@ -494,6 +609,49 @@ impl ParseProfiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_spans_follow_real_html_nodes_and_preserve_markdown_only_api() {
+        let source = "`<img src='code.svg'>`\n\n```html\n<a href='fenced.md'>x</a>\n```\n\n> 中 <img src='same.svg'> <a href='next.md?x=1&amp;y=2'>next</a>\n\n<div>\n<!-- <img src='comment.svg'> -->\n<img src=\"same.svg\" title=\"<a href='title.md'>\">\n<a href='block.md'>block</a>\n</div>\n\n[Markdown](real.md) ![<img src='alt.svg'>](image.svg)\n";
+        let spans = tracked_destinations(source, true);
+        let actual: Vec<_> = spans
+            .iter()
+            .map(|span| {
+                (
+                    &source[span.token.range.clone()],
+                    span.token.dest.as_str(),
+                    span.syntax != DestinationSyntax::Markdown,
+                )
+            })
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                ("'same.svg'", "same.svg", true),
+                ("'next.md?x=1&amp;y=2'", "next.md?x=1&y=2", true),
+                ("\"same.svg\"", "same.svg", true),
+                ("'block.md'", "block.md", true),
+                ("real.md", "real.md", false),
+                ("image.svg", "image.svg", false),
+            ]
+        );
+        let markdown: Vec<_> = destination_spans(source)
+            .into_iter()
+            .map(|span| span.dest)
+            .collect();
+        assert_eq!(markdown, ["real.md", "image.svg"]);
+    }
+
+    #[test]
+    fn html_block_spans_keep_container_and_crlf_coordinates() {
+        let source = "> <div>\r\n> <img src='one.svg'>\r\n> <a\r\n> href=\"next.md#target\">Next</a>\r\n> </div>\r\n\r\n- <img src='two.svg'>\r\n";
+        let spans = tracked_destinations(source, true);
+        let values: Vec<_> = spans
+            .iter()
+            .map(|span| &source[span.token.range.clone()])
+            .collect();
+        assert_eq!(values, ["'one.svg'", "\"next.md#target\"", "'two.svg'"]);
+    }
 
     #[test]
     fn nested_registration_restores_each_displaced_utf8_origin() {

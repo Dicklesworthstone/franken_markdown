@@ -128,7 +128,8 @@ impl DocumentLinkAnalysis {
     /// not a filesystem checker. File destinations retain their parser-decoded
     /// spelling and enclosing block index. Both `target_block_index` and `finding`
     /// are `None` for these unchecked links; only the host can resolve them.
-    /// Images, code, raw HTML, unreferenced notes and network URLs stay excluded.
+    /// Supported HTML anchors retain their decoded href and enclosing block.
+    /// Images, code, unreferenced notes and network URLs stay excluded.
     /// Explicit `file:` URLs are included but still counted as `external`, matching
     /// the original analysis counters. Existing same-document findings, anchor IDs,
     /// publication order and [`analyze_document_links`] behavior are unchanged.
@@ -203,7 +204,7 @@ fn analyze(doc: &Document, include_files: bool) -> Result<DocumentLinkAnalysis> 
                 } else {
                     resolve_fragment(&nav, dest).map(|anchor| anchor.map(|entry| entry.block_index))
                 };
-                (*destination, *owner, ReferenceKind::Link, resolved)
+                (destination.as_ref(), *owner, ReferenceKind::Link, resolved)
             }
         };
         let (target_block_index, finding) = match resolved {

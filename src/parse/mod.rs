@@ -24,6 +24,8 @@ pub use frontmatter::{Frontmatter, split_frontmatter};
 
 mod destinations;
 pub use destinations::DestinationSpan;
+#[cfg(feature = "cli")]
+pub(crate) use destinations::{DestinationSyntax, resource_destination_spans};
 
 /// Exact source tokens for parsed inline link/image destinations and accepted
 /// reference definitions. Ranges are UTF-8 byte offsets in this exact source,
@@ -1808,6 +1810,9 @@ fn parse_blocks_with_refs_profiled(
             let start = i;
             i = html_block_end(lines, i, end_cond, |l| *l);
             let html = lines[start..i].join("\n");
+            if let Some(tracker) = &mut profiler.destinations {
+                tracker.block_html(&html, &lines[start..i]);
+            }
             profiler.record_since(
                 "html_block",
                 i - start,
@@ -4337,6 +4342,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 } else if let Some((html, next)) =
                     parse_inline_html(bytes, i, &mut profiler.inline_work)
                 {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.inline_html(bytes, i, &html);
+                    }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Html(html)));
                     i = next;
@@ -4359,6 +4367,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 } else if let Some((html, next)) =
                     parse_inline_html(bytes, i, &mut profiler.inline_work)
                 {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.inline_html(bytes, i, &html);
+                    }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Html(html)));
                     i = next;

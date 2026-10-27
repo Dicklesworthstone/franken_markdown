@@ -216,13 +216,13 @@ fn markup_at(s: &str) -> Option<(Piece<'_>, usize)> {
 }
 
 fn parse_tag(s: &str) -> Option<(Tag, usize)> {
-    parse_tag_with_image_source(s).map(|(tag, len, _)| (tag, len))
+    parse_tag_with_destination(s).map(|(tag, len, _)| (tag, len))
 }
 
-/// Retain the first `src` attribute's original value range for image rebasing.
+/// Retain the first supported URL attribute's original value range for rebasing.
 /// The range includes its quotes (if any), so an unquoted source can safely
 /// become a quoted URL without changing any neighboring source bytes.
-fn parse_tag_with_image_source(s: &str) -> Option<(Tag, usize, Option<std::ops::Range<usize>>)> {
+fn parse_tag_with_destination(s: &str) -> Option<(Tag, usize, Option<std::ops::Range<usize>>)> {
     let bytes = s.as_bytes();
     let mut i = 1usize;
     let closing = bytes.get(i) == Some(&b'/');
@@ -242,8 +242,13 @@ fn parse_tag_with_image_source(s: &str) -> Option<(Tag, usize, Option<std::ops::
     let name = s[name_start..i].to_ascii_lowercase();
     let mut attrs = Vec::new();
     let mut self_closing = false;
-    let mut image_source = None;
-    let mut saw_source = false;
+    let destination_name = match name.as_str() {
+        "a" => "href",
+        "img" => "src",
+        _ => "",
+    };
+    let mut destination = None;
+    let mut saw_destination = false;
     loop {
         let before_space = i;
         while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
@@ -251,11 +256,11 @@ fn parse_tag_with_image_source(s: &str) -> Option<(Tag, usize, Option<std::ops::
         }
         match bytes.get(i)? {
             b'>' => {
-                return Some((tag(name, closing, self_closing, attrs), i + 1, image_source));
+                return Some((tag(name, closing, self_closing, attrs), i + 1, destination));
             }
             b'/' if bytes.get(i + 1) == Some(&b'>') && !closing => {
                 self_closing = true;
-                return Some((tag(name, closing, self_closing, attrs), i + 2, image_source));
+                return Some((tag(name, closing, self_closing, attrs), i + 2, destination));
             }
             _ if closing => return None,
             // Attributes must be separated from the name and each other.
@@ -307,48 +312,110 @@ fn parse_tag_with_image_source(s: &str) -> Option<(Tag, usize, Option<std::ops::
                     value = decode_entities(&s[start..j]);
                 }
             }
-            if name == "img" && attr_name == "src" && !saw_source {
-                image_source = Some(value_start..j);
+            if attr_name == destination_name && !saw_destination {
+                destination = Some(value_start..j);
             }
             i = j;
         }
-        saw_source |= attr_name == "src";
+        saw_destination |= attr_name == destination_name;
         attrs.push((attr_name, value));
     }
 }
 
-/// Rewrite actual image source attributes using the same tokenizer and entity
-/// decoding as safe HTML rendering. Everything outside the changed attribute
-/// values stays byte-for-byte intact, including comments and author markup.
-/// A failed callback leaves the caller's source untouched.
+/// One supported HTML URL, with its complete original attribute-value token.
+/// The first attribute wins, matching both safe lowering and HTML sanitizing.
+pub(crate) struct UrlSpan {
+    pub range: std::ops::Range<usize>,
+    pub destination: String,
+    pub kind: UrlKind,
+}
+
+impl UrlSpan {
+    /// A quoted URL's meaningful source bytes, excluding its original quotes
+    /// and surrounding literal whitespace. This lets native source edits keep
+    /// line breaks and container prefixes that a Markdown HTML node omits.
+    pub(crate) fn quoted_content_range(&self, html: &str) -> Option<std::ops::Range<usize>> {
+        let raw = html.get(self.range.clone())?;
+        let quote = *raw.as_bytes().first()?;
+        if !matches!(quote, b'\'' | b'"') || raw.as_bytes().last() != Some(&quote) {
+            return None;
+        }
+        let inner = raw.get(1..raw.len().checked_sub(1)?)?;
+        let trimmed = inner.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let start = self.range.start + 1 + inner.len() - inner.trim_start().len();
+        Some(start..start + trimmed.len())
+    }
+}
+
+pub(crate) fn url_spans(html: &str) -> impl Iterator<Item = UrlSpan> + '_ {
+    let mut cursor = 0;
+    std::iter::from_fn(move || {
+        while let Some(relative) = html[cursor..].find('<') {
+            let start = cursor + relative;
+            let Some((piece, len)) = markup_at(&html[start..]) else {
+                cursor = start + 1;
+                continue;
+            };
+            cursor = start + len;
+            let Piece::Tag(tag, original) = piece else {
+                continue;
+            };
+            let (attribute, kind) = match tag.name.as_str() {
+                "a" if !tag.closing => ("href", UrlKind::Link),
+                "img" if !tag.closing => ("src", UrlKind::Image),
+                _ => continue,
+            };
+            if let Some(destination) = tag.attr(attribute).map(str::trim).filter(|s| !s.is_empty())
+                && let Some((_, _, Some(range))) = parse_tag_with_destination(original)
+            {
+                return Some(UrlSpan {
+                    range: start + range.start..start + range.end,
+                    destination: destination.to_owned(),
+                    kind,
+                });
+            }
+        }
+        None
+    })
+}
+
+/// Serialize one attribute value without exposing quotes or entity spellings
+/// to another round of parsing. Callers preserve every surrounding source byte.
+pub(crate) fn attribute_value(destination: &str) -> String {
+    let mut out = String::with_capacity(destination.len() + 2);
+    out.push('"');
+    push_escaped(destination, &mut out);
+    out.push('"');
+    out
+}
+
 #[cfg(feature = "cli")]
-pub(crate) fn rewrite_image_sources<E>(
+pub(crate) fn attribute_content(destination: &str) -> String {
+    let mut out = String::with_capacity(destination.len());
+    push_escaped(destination, &mut out);
+    out
+}
+
+/// Rewrite supported URL attributes using the same tokenizer and entity
+/// decoding as safe HTML rendering. Comments, unsupported attributes, author
+/// markup and unchanged values stay byte-for-byte intact. Failed callbacks
+/// leave the caller's source untouched.
+fn rewrite_urls<E>(
     html: &str,
-    mut rewrite: impl FnMut(&str) -> Result<Option<String>, E>,
+    mut rewrite: impl FnMut(&str, UrlKind) -> Result<Option<String>, E>,
 ) -> Result<Option<String>, E> {
     let mut out = String::new();
-    let mut cursor = 0;
     let mut last = 0;
-    while let Some(relative) = html[cursor..].find('<') {
-        let start = cursor + relative;
-        let Some((piece, len)) = markup_at(&html[start..]) else {
-            cursor = start + 1;
-            continue;
-        };
-        cursor = start + len;
-        if let Piece::Tag(tag, original) = piece
-            && tag.name == "img"
-            && !tag.closing
-            && let Some(source) = tag.attr("src").map(str::trim).filter(|s| !s.is_empty())
-            && let Some(replacement) = rewrite(source)?
-            && replacement != source
-            && let Some((_, _, Some(range))) = parse_tag_with_image_source(original)
+    for span in url_spans(html) {
+        if let Some(replacement) = rewrite(&span.destination, span.kind)?
+            && replacement != span.destination
         {
-            out.push_str(&html[last..start + range.start]);
-            out.push('"');
-            push_escaped(&replacement, &mut out);
-            out.push('"');
-            last = start + range.end;
+            out.push_str(&html[last..span.range.start]);
+            out.push_str(&attribute_value(&replacement));
+            last = span.range.end;
         }
     }
     if last == 0 {
@@ -356,6 +423,86 @@ pub(crate) fn rewrite_image_sources<E>(
     } else {
         out.push_str(&html[last..]);
         Ok(Some(out))
+    }
+}
+
+#[cfg(feature = "cli")]
+pub(crate) fn rewrite_image_sources<E>(
+    html: &str,
+    mut rewrite: impl FnMut(&str) -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
+    rewrite_urls(html, |destination, kind| match kind {
+        UrlKind::Image => rewrite(destination),
+        UrlKind::Link => Ok(None),
+    })
+}
+
+/// Visit Markdown and supported raw HTML destinations without lowering HTML
+/// or changing the document's block structure. Book PDF navigation relies on
+/// those chapter boundaries until its final rendering pass.
+pub(crate) fn visit_destinations(
+    blocks: &mut [Block],
+    visit: &mut impl FnMut(&mut String, UrlKind),
+) {
+    fn html(raw: &mut String, visit: &mut impl FnMut(&mut String, UrlKind)) {
+        let changed = rewrite_urls(raw, |destination, kind| {
+            let mut value = destination.to_owned();
+            visit(&mut value, kind);
+            Ok::<_, std::convert::Infallible>(Some(value))
+        });
+        if let Ok(Some(changed)) = changed {
+            *raw = changed;
+        }
+    }
+
+    fn inlines(nodes: &mut [Inline], visit: &mut impl FnMut(&mut String, UrlKind)) {
+        for node in nodes {
+            match node {
+                Inline::Link { dest, content, .. } => {
+                    visit(dest, UrlKind::Link);
+                    inlines(content, visit);
+                }
+                Inline::Image { dest, .. } => visit(dest, UrlKind::Image),
+                Inline::Html(raw) => html(raw, visit),
+                Inline::Emphasis(content)
+                | Inline::Strong(content)
+                | Inline::Strikethrough(content) => inlines(content, visit),
+                _ => {}
+            }
+        }
+    }
+
+    for block in blocks {
+        match block {
+            Block::Paragraph(content)
+            | Block::Heading {
+                inlines: content, ..
+            } => {
+                inlines(content, visit);
+            }
+            Block::HtmlBlock(raw) => html(raw, visit),
+            Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
+                visit_destinations(inner, visit);
+            }
+            Block::List(list) => {
+                for item in &mut list.items {
+                    visit_destinations(&mut item.blocks, visit);
+                }
+            }
+            Block::Table(table) => {
+                for cell in table.head.iter_mut().chain(table.rows.iter_mut().flatten()) {
+                    inlines(cell, visit);
+                }
+            }
+            Block::DefinitionList(items) => {
+                for item in items {
+                    for content in item.terms.iter_mut().chain(&mut item.definitions) {
+                        inlines(content, visit);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1469,6 +1616,39 @@ mod tests {
 
     fn text(value: &str) -> Inline {
         Inline::Text(value.to_string())
+    }
+
+    #[test]
+    fn destination_rewriting_keeps_link_and_image_roles_and_exact_other_bytes() {
+        let raw = "<p data-src='other.svg'><!-- <a href='comment.md'> -->&lt;a href='literal.md'&gt;<span title=\"<a href='title.md'>\">x</span><A HREF = 'next.md?x=1&amp;y=2' href='ignored.md'>next</A><IMG src=next.md alt='image'><iframe src='unsafe.md'></iframe><a href><a href='' href='ignored.md'></p>";
+        let mut seen = Vec::new();
+        let changed = rewrite_urls(raw, |destination, kind| {
+            seen.push((destination.to_owned(), kind));
+            let prefix = match kind {
+                UrlKind::Link => "chapter/",
+                UrlKind::Image => "assets/",
+            };
+            Ok::<_, ()>(Some(format!("{prefix}{destination}")))
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            seen,
+            [
+                ("next.md?x=1&y=2".into(), UrlKind::Link),
+                ("next.md".into(), UrlKind::Image),
+            ]
+        );
+        assert_eq!(
+            changed,
+            raw.replace("'next.md?x=1&amp;y=2'", "\"chapter/next.md?x=1&amp;y=2\"")
+                .replace("src=next.md", "src=\"assets/next.md\"")
+        );
+        assert_eq!(rewrite_urls(raw, |_, _| Ok::<_, ()>(None)), Ok(None));
+        assert_eq!(
+            rewrite_urls(raw, |_, _| Err::<Option<String>, _>("budget")),
+            Err("budget")
+        );
     }
 
     #[cfg(feature = "cli")]

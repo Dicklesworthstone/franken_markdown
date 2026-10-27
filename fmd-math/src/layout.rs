@@ -935,7 +935,7 @@ impl Engine {
             NodeKind::LeftRight { left, right, body } => self.left_right(left, right, body, ctx),
             NodeKind::SizedDelim { size, delim, .. } => {
                 let target = fixed_delim_target(*size) * ctx.size();
-                let boxx = self.delimiter_box(delim, target, ctx)?;
+                let boxx = self.delimiter_box(delim, target, ctx, DelimSearch::Fixed)?;
                 Ok(Laid {
                     boxx,
                     italic: 0.0,
@@ -1046,7 +1046,7 @@ impl Engine {
                     self.char_atom(ch, delim.span, ctx)
                 } else {
                     Ok(Laid {
-                        boxx: kern_box(self.consts.null_delimiter_space * ctx.size()),
+                        boxx: kern_box(self.consts.null_delimiter_space),
                         italic: 0.0,
                         char_glyph: None,
                     })
@@ -2580,12 +2580,14 @@ impl Engine {
         let (l, r) = spec
             .delims
             .map_or((None, None), |(l, r)| (Some(l), Some(r)));
-        let left = self.delimiter_box(&Delim { ch: l, span }, target, eff)?;
-        let right = self.delimiter_box(&Delim { ch: r, span }, target, eff)?;
+        let left =
+            self.delimiter_box(&Delim { ch: l, span }, target, eff, DelimSearch::SizeChain)?;
+        let right =
+            self.delimiter_box(&Delim { ch: r, span }, target, eff, DelimSearch::SizeChain)?;
         let mut parts = vec![left, core, right];
         if spec.cfrac.is_some() {
             // `\kern-\nulldelimiterspace` after the fraction's group.
-            parts.push(kern_box(-self.consts.null_delimiter_space * size));
+            parts.push(kern_box(-self.consts.null_delimiter_space));
         }
         Ok(Laid {
             boxx: hcat(parts),
@@ -2619,9 +2621,14 @@ impl Engine {
             },
             target,
             ctx,
+            DelimSearch::SizeChain,
         )?;
+        // §737: the overbar is as thick as the sign is high (its TFM
+        // height), and so is the kern above it: θ at text size, but a script
+        // radical whose sign is the text size's surd takes that surd's.
+        let bar = self.radical_bar(target, ctx).unwrap_or(theta);
         let sign_total = sign.height + sign.depth;
-        let excess = sign_total - target;
+        let excess = sign_total - bar - (x.height + x.depth + psi);
         if excess > 0.0 {
             psi += excess / 2.0;
         }
@@ -2632,10 +2639,10 @@ impl Engine {
         // height includes the overbar's kern of one rule thickness above the
         // rule (§705).
         let rule_y = x.height + psi;
-        let sign_dy = rule_y + theta - sign.height;
+        let sign_dy = rule_y + bar - sign.height;
         let mut pen = 0.0_f64;
         let mut children = Vec::new();
-        let mut total_height = rule_y + 2.0 * theta;
+        let mut total_height = rule_y + 2.0 * bar;
         let mut total_depth = x.depth.max(sign.depth - sign_dy);
         // Degree: plain TeX's \r@@t, `\mkern5mu\raise.6\dimen@\copy\rootbox
         // \mkern-10mu\box0` with \dimen@ the radical box's height minus its
@@ -2677,7 +2684,7 @@ impl Engine {
             dy: rule_y,
             node: MNode::Rule {
                 width: x.width,
-                height: theta,
+                height: bar,
                 span,
             },
         });
@@ -3264,8 +3271,18 @@ impl Engine {
         let delta = (inner.height - axis).max(inner.depth + axis);
         let target =
             (2.0 * delta * c.delimiter_factor).max(2.0 * delta - c.delimiter_shortfall * size);
-        let left_box = self.delimiter_box(&Delim { ch: left, span }, target, ctx)?;
-        let right_box = self.delimiter_box(&Delim { ch: right, span }, target, ctx)?;
+        let left_box = self.delimiter_box(
+            &Delim { ch: left, span },
+            target,
+            ctx,
+            DelimSearch::SizeChain,
+        )?;
+        let right_box = self.delimiter_box(
+            &Delim { ch: right, span },
+            target,
+            ctx,
+            DelimSearch::SizeChain,
+        )?;
         Ok(hcat(vec![left_box, inner, right_box]))
     }
 
@@ -3559,13 +3576,41 @@ impl Engine {
         let delta = (inner.height - axis).max(inner.depth + axis);
         let target =
             (2.0 * delta * c.delimiter_factor).max(2.0 * delta - c.delimiter_shortfall * size);
-        let left_box = self.delimiter_box(left, target, ctx)?;
-        let right_box = self.delimiter_box(right, target, ctx)?;
+        let left_box = self.delimiter_box(left, target, ctx, DelimSearch::SizeChain)?;
+        let right_box = self.delimiter_box(right, target, ctx, DelimSearch::SizeChain)?;
         Ok(Laid {
             boxx: hcat(vec![left_box, inner, right_box]),
             italic: 0.0,
             char_glyph: None,
         })
+    }
+
+    /// The height of the radical sign TeX's `var_delimiter` sets for
+    /// `target` (tex.web §737's `height(y)`): the surd's TFM height in the
+    /// font it comes from, or an extensible's top piece's. `None` in a
+    /// zero-size style.
+    fn radical_bar(&self, target: f64, ctx: LayCtx) -> Option<f64> {
+        use crate::tfm::{CMEX7, CMEX10, CMSY5, CMSY7, CMSY10};
+        if ctx.size() <= 0.0 {
+            return None;
+        }
+        let choice = var_delimiter('√', target / ctx.decl_size, ctx.style.style)?;
+        let height = match choice.variant {
+            DelimVariant::Small { style } => {
+                match style {
+                    Style::Script => &CMSY7,
+                    Style::ScriptScript => &CMSY5,
+                    Style::Display | Style::Text => &CMSY10,
+                }
+                .char(0x70)?
+                .height
+            }
+            DelimVariant::Cmex { cmex7 } => {
+                let code = cmex_successor('√', choice.total).unwrap_or(0x76);
+                if cmex7 { &CMEX7 } else { &CMEX10 }.char(code)?.height
+            }
+        };
+        Some(height * choice.scale * ctx.decl_size)
     }
 
     /// The ADR-0005 delimiter mechanism, complete, at the size TeX's
@@ -3583,22 +3628,57 @@ impl Engine {
         delim: &Delim,
         target_total: f64,
         ctx: LayCtx,
+        search: DelimSearch,
     ) -> Result<MBox, MathError> {
+        // A null delimiter is `\nulldelimiterspace`, a dimen of 1.2 pt that
+        // no style or size scales (tex.web §706).
         let Some(ch) = delim.ch else {
-            return Ok(kern_box(self.consts.null_delimiter_space * ctx.size()));
+            return Ok(kern_box(self.consts.null_delimiter_space));
         };
         // TeX sets the variant it finds for the target, not the target:
-        // every mechanism below draws at that total.
-        let target_total = if ctx.size() > 0.0 {
-            tex_delimiter_total(ch, target_total / ctx.size()) * ctx.size()
-        } else {
-            target_total
+        // every mechanism below draws at that total. The small variant may
+        // come from a larger size's font than the style's own.
+        let mut small_style = ctx.style.style;
+        let mut small_size = ctx.size();
+        let target_total = match search {
+            _ if ctx.size() <= 0.0 => target_total,
+            DelimSearch::SizeChain => {
+                match var_delimiter(ch, target_total / ctx.decl_size, ctx.style.style) {
+                    Some(choice) => {
+                        let scale = choice.scale * ctx.decl_size;
+                        match choice.variant {
+                            DelimVariant::Small { style } => {
+                                small_style = style;
+                                small_size = scale;
+                            }
+                            DelimVariant::Cmex { cmex7 } => {
+                                if let Some(boxx) = self.cmex_delimiter(
+                                    ch,
+                                    choice.total,
+                                    scale,
+                                    cmex7,
+                                    ctx,
+                                    delim.span,
+                                ) {
+                                    return Ok(boxx);
+                                }
+                            }
+                        }
+                        choice.total * scale
+                    }
+                    None => target_total,
+                }
+            }
+            DelimSearch::Fixed => {
+                let total = tex_delimiter_total(ch, target_total / ctx.size());
+                if let Some(boxx) =
+                    self.cmex_delimiter(ch, total, ctx.size(), false, ctx, delim.span)
+                {
+                    return Ok(boxx);
+                }
+                total * ctx.size()
+            }
         };
-        if ctx.size() > 0.0
-            && let Some(boxx) = self.cmex_delimiter(ch, target_total / ctx.size(), ctx, delim.span)
-        {
-            return Ok(boxx);
-        }
         // The small variant is the character's own face, as TeX sets it:
         // cmsy for braces, bars, angles, floors and ceilings, cmmi for the
         // slash, and math family 0 for parentheses and brackets. Family 0 is
@@ -3618,7 +3698,7 @@ impl Engine {
             )
             .map(|(face, gid)| {
                 self.faces
-                    .tex_face(face, ch, ctx.style.style, ctx.text_mode)
+                    .tex_face(face, ch, small_style, ctx.text_mode)
                     .unwrap_or((face, gid))
             })
         else {
@@ -3659,7 +3739,7 @@ impl Engine {
             });
         };
         let m = self.char_metrics(face, gid, ctx.text_mode);
-        let natural_total = (m.height + m.depth) * ctx.size();
+        let natural_total = (m.height + m.depth) * small_size;
         let scale = if natural_total >= target_total || natural_total <= 0.0 {
             1.0
         } else {
@@ -3694,7 +3774,7 @@ impl Engine {
                 }],
             });
         }
-        let size = ctx.size() * scale;
+        let size = small_size * scale;
         let gh = m.height * size;
         let gd = m.depth * size;
         let axis = self.consts_at(&ctx).axis_height * ctx.size();
@@ -3708,7 +3788,7 @@ impl Engine {
                 )
             })
         });
-        let (width, dx) = framed(ch, target_total, ctx.size(), m.advance * size, ink);
+        let (width, dx) = framed(ch, target_total, small_size, m.advance * size, ink);
         Ok(MBox {
             kind: BoxKind::Horizontal,
             width,
@@ -3730,21 +3810,31 @@ impl Engine {
 }
 
 impl Engine {
-    /// cmex10's own delimiter at a total TeX's `var_delimiter` lands on
-    /// (`total` ems, from [`tex_delimiter_total`]): a 1.2, 1.8, 2.4 or
-    /// 3.0 em successor glyph, or past those the extensible recipe built
-    /// from cmex's pieces as tex.web §713 stacks them — top, repeaters,
-    /// middle, repeaters, bottom, each piece's char box filling its slot.
-    /// Axis-centered; the box width is the glyph's TFM width. `None` at the
-    /// small variant, when the roster lacks cmex10, or when `ch` has no cmex
-    /// form at `total` (characters TeX does not chain), which leaves the
-    /// drawn construction to serve.
-    fn cmex_delimiter(&self, ch: char, total: f64, ctx: LayCtx, span: Span) -> Option<MBox> {
+    /// cmex's own delimiter at a total TeX's `var_delimiter` lands on
+    /// (`total` ems of the cmex font at `size`): a 1.2, 1.8, 2.4 or 3.0 em
+    /// successor glyph, or past those the extensible recipe built from
+    /// cmex's pieces as tex.web §713 stacks them — top, repeaters, middle,
+    /// repeaters, bottom, each piece's char box filling its slot. Centred on
+    /// the style's axis; the box width is the glyph's TFM width. Below text
+    /// size the font is cmex7 (`cmex7`), whose delimiters have cmex10's
+    /// heights but wider boxes; the roster carries cmex10's outlines only,
+    /// so they are drawn centred in cmex7's box. `None` at the small
+    /// variant, when the roster lacks cmex10, or when `ch` has no cmex form
+    /// at `total` (characters TeX does not chain), which leaves the drawn
+    /// construction to serve.
+    fn cmex_delimiter(
+        &self,
+        ch: char,
+        total: f64,
+        size: f64,
+        cmex7: bool,
+        ctx: LayCtx,
+        span: Span,
+    ) -> Option<MBox> {
         if total <= 1.0 + 1e-9 {
             return None;
         }
-        let size = ctx.size();
-        let top = self.consts_at(&ctx).axis_height * size + total * size / 2.0;
+        let top = self.consts_at(&ctx).axis_height * ctx.size() + total * size / 2.0;
         let piece = |code: u8| self.faces.tex_glyph(FACE_MATH_EXTENSION, code);
         let glyph = |gid: u16, dy: f64| Positioned {
             dx: 0.0,
@@ -3759,7 +3849,9 @@ impl Engine {
         };
         let mut children = Vec::new();
         let width_gid;
+        let width_code;
         if let Some(code) = cmex_successor(ch, total) {
+            width_code = code;
             let gid = piece(code)?;
             // The successor's TFM height is its ink top (0.04 em); its box,
             // height plus depth `total`, centers on the axis.
@@ -3772,6 +3864,7 @@ impl Engine {
                 + recipe.mid.map_or(0.0, |(_, h)| h)
                 + recipe.bot.map_or(0.0, |(_, h)| h);
             let (rep, rep_size) = recipe.rep;
+            width_code = rep;
             let sides = if recipe.mid.is_some() { 2.0 } else { 1.0 };
             let per_side = ((total - fixed) / (rep_size * sides)).round().max(0.0);
             // A recipe of at most 3.6 em of fixed pieces plus whole
@@ -3805,13 +3898,24 @@ impl Engine {
         }
         // TeX's box is the TFM width; the Type 1 advance is that width
         // rounded to 1/1000 em, which would drift every delimited array.
-        let width = tex_delimiter_frame(ch, total).map_or_else(
+        let cmex10_width = tex_delimiter_frame(ch, total).map_or_else(
             || {
                 self.char_metrics(FACE_MATH_EXTENSION, width_gid, false)
                     .advance
             },
             |(advance, _, _)| advance,
         ) * size;
+        let width = match crate::tfm::CMEX7.char(width_code) {
+            Some(metrics) if cmex7 => {
+                let width = metrics.width * size;
+                let dx = (width - cmex10_width) / 2.0;
+                for child in &mut children {
+                    child.dx += dx;
+                }
+                width
+            }
+            _ => cmex10_width,
+        };
         Some(MBox {
             kind: BoxKind::Horizontal,
             width,
@@ -3947,6 +4051,149 @@ fn tex_delimiter_total(ch: char, target: f64) -> f64 {
         Some((fixed, step)) => fixed + ((need - fixed) / step).ceil().max(0.0) * step,
         None => successors.last().copied().unwrap_or(target),
     }
+}
+
+/// How a delimiter's size is found. `\left`, `\right`, radicals and
+/// fraction delimiters walk TeX's size chain ([`var_delimiter`]); the
+/// `\big` family keeps cmex10 at the style's size.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DelimSearch {
+    SizeChain,
+    Fixed,
+}
+
+/// The font a delimiter variant comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DelimVariant {
+    /// The small variant (cmr, cmmi or cmsy), from the font of a style's
+    /// size.
+    Small { style: Style },
+    /// cmex: a successor or an extensible, from cmex7 below text size, as
+    /// amsfonts declares the OMX family, or cmex10.
+    Cmex { cmex7: bool },
+}
+
+/// The variant TeX's `var_delimiter` sets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DelimChoice {
+    variant: DelimVariant,
+    /// The font's size, ems of the 10 pt em (1.0, 0.7 or 0.5).
+    scale: f64,
+    /// The variant's height plus depth, ems of its font; an extensible's is
+    /// the height TeX builds it to.
+    total: f64,
+}
+
+/// TeX's `var_delimiter` (tex.web §707) for `ch` covering `target` ems (of
+/// the 10 pt em) in `style`. The small variant is tried in the style's font
+/// and then in each larger size's up to text size; then the large variant's
+/// charlist, in cmex7 below text size and cmex10 at it. Each candidate
+/// counts only if larger than the largest so far, the first to cover the
+/// target wins, and an extensible ends the search at once. So in a script
+/// `\left(` that needs more than cmr7's paren takes cmr10's, and past that
+/// skips cmex7's 1.2 em paren (smaller than cmr10's) for its 1.8 em one.
+/// `None` for a character TeX does not chain.
+fn var_delimiter(ch: char, target: f64, style: Style) -> Option<DelimChoice> {
+    use crate::tfm::{
+        CMEX7, CMEX10, CMMI5, CMMI7, CMMI10, CMR5, CMR7, CMR10, CMSY5, CMSY7, CMSY10,
+    };
+    // The small variant: plain TeX's \delcode and \delimiter family and
+    // code (0 cmr, 1 cmmi, 2 cmsy).
+    let small: Option<(u8, u8)> = match ch {
+        '(' => Some((0, 0x28)),
+        ')' => Some((0, 0x29)),
+        '[' => Some((0, 0x5B)),
+        ']' => Some((0, 0x5D)),
+        '/' => Some((1, 0x3D)),
+        '⌊' => Some((2, 0x62)),
+        '⌋' => Some((2, 0x63)),
+        '⌈' => Some((2, 0x64)),
+        '⌉' => Some((2, 0x65)),
+        '{' => Some((2, 0x66)),
+        '}' => Some((2, 0x67)),
+        '⟨' | '〈' => Some((2, 0x68)),
+        '⟩' | '〉' => Some((2, 0x69)),
+        '|' => Some((2, 0x6A)),
+        '‖' => Some((2, 0x6B)),
+        '\\' => Some((2, 0x6E)),
+        '√' => Some((2, 0x70)),
+        _ => None,
+    };
+    let (family, code) = small?;
+    let sizes: &[Style] = match style {
+        Style::Display | Style::Text => &[Style::Text],
+        Style::Script => &[Style::Script, Style::Text],
+        Style::ScriptScript => &[Style::ScriptScript, Style::Script, Style::Text],
+    };
+    let mut best: Option<DelimChoice> = None;
+    let mut largest = 0.0_f64;
+    // A candidate counts only when larger than the largest so far; it wins
+    // when it covers the target (`u >= v`, compared in scaled points by TeX,
+    // so 1e-9 em forgives decimal rounding).
+    let mut try_variant = |choice: DelimChoice| -> bool {
+        let u = choice.total * choice.scale;
+        if u > largest + 1e-9 {
+            largest = u;
+            best = Some(choice);
+            return u >= target - 1e-9;
+        }
+        false
+    };
+    for &size in sizes {
+        let font = match (family, size) {
+            (0, Style::Script) => &CMR7,
+            (0, Style::ScriptScript) => &CMR5,
+            (0, _) => &CMR10,
+            (1, Style::Script) => &CMMI7,
+            (1, Style::ScriptScript) => &CMMI5,
+            (1, _) => &CMMI10,
+            (_, Style::Script) => &CMSY7,
+            (_, Style::ScriptScript) => &CMSY5,
+            _ => &CMSY10,
+        };
+        if let Some(c) = font.char(code)
+            && try_variant(DelimChoice {
+                variant: DelimVariant::Small { style: size },
+                scale: size.size_factor(),
+                total: c.height + c.depth,
+            })
+        {
+            return best;
+        }
+    }
+    // The large variant's charlist: cmex's successors, then its extensible.
+    // Each successor at its nominal total, which its TFM height plus depth
+    // matches to 2e-6 em (cmex10's 2.4 em paren is 2.4000015).
+    let successors: Vec<(f64, u8)> = [1.2, 1.8, 2.4, 3.0]
+        .iter()
+        .filter_map(|&total| cmex_successor(ch, total).map(|code| (total, code)))
+        .collect();
+    for &size in sizes {
+        let cmex7 = size != Style::Text;
+        let font = if cmex7 { &CMEX7 } else { &CMEX10 };
+        let scale = size.size_factor();
+        for &(total, code) in &successors {
+            if font.char(code).is_some()
+                && try_variant(DelimChoice {
+                    variant: DelimVariant::Cmex { cmex7 },
+                    scale,
+                    total,
+                })
+            {
+                return best;
+            }
+        }
+        if cmex_recipe(ch).is_some() {
+            // §713 builds the extensible to the target from the pieces, the
+            // same heights in cmex7 and cmex10.
+            return Some(DelimChoice {
+                variant: DelimVariant::Cmex { cmex7 },
+                scale,
+                total: tex_delimiter_total(ch, (target / scale).max(3.0 + 1e-6)),
+            });
+        }
+    }
+    best
 }
 
 /// The cmex10 frame of the variant TeX sets for `ch` at `total` ems: its box

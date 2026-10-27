@@ -2895,3 +2895,56 @@ fn a_line_break_drops_the_glue_before_it() {
     assert!((first - 12.227795).abs() < 1e-4, "{first}");
     assert!((second - 11.405576).abs() < 1e-4, "{second}");
 }
+
+#[test]
+fn delimiters_walk_texs_size_chain() {
+    // tex.web §707 under the Reference's preamble (amsfonts declares
+    // cmex7 below 7.5 pt). TeX's \showbox picks: in a script, cmr10's paren
+    // (the text size's small variant), then cmex7's 2.4 em paren past it,
+    // then cmex7's extensible; in a scriptscript, cmr10's paren too; a
+    // script \sqrt takes cmsy10's surd. Boxes from \sbox{$\displaystyle …$}
+    // with amsmath's \if@display, in pt.
+    use fmd_math::MacroSet;
+    let e = engine();
+    let default = MacroSet::pack("fmd-math/pack/default").unwrap();
+    for (tex, w, h, d) in [
+        (r"\left(\frac{1}{3}\right)", 22.1223, 14.5001, 9.50012),
+        (r"x^{\left(\frac{1}{3}\right)}", 19.7959, 11.07639, 0.0),
+        (r"x^{y^{\left(\frac{1}{3}\right)}}", 24.60265, 14.88239, 0.0),
+        (
+            r"x^{\left(\frac{\frac{1}{2}}{3}\right)}",
+            26.27234,
+            17.87654,
+            0.0,
+        ),
+        (
+            r"x^{\left(\frac{\frac{\frac{1}{2}}{3}}{4}\right)}",
+            30.8251,
+            26.27934,
+            0.0,
+        ),
+        (
+            r"x^{\left(\frac{1}{\frac{1}{\frac{1}{\frac{1}{2}}}}\right)}",
+            33.2251,
+            34.75319,
+            0.0,
+        ),
+        (r"x^{\sqrt{\frac{1}{2}}}", 20.35146, 11.69139, 0.0),
+    ] {
+        let l = e
+            .typeset_with_macros(tex, Style::Display, &default)
+            .unwrap();
+        assert!(
+            (l.width - w / 10.0).abs() < 1e-4
+                && (l.height - h / 10.0).abs() < 1e-4
+                && (l.depth - d / 10.0).abs() < 1e-4,
+            "{tex}: ({}, {}, {}) against TeX's ({}, {}, {})",
+            l.width,
+            l.height,
+            l.depth,
+            w / 10.0,
+            h / 10.0,
+            d / 10.0
+        );
+    }
+}

@@ -143,7 +143,6 @@ impl Orientation {
     /// Affine transform inside a unit square whose origin is bottom left,
     /// matching PDF image space. Layout has already exchanged displayed axes
     /// for orientations 5 through 8; the encoded sample dimensions stay intact.
-    #[allow(dead_code)] // The SVG measurement copy does not paint PDF images.
     pub(super) const fn matrix(self) -> [f32; 6] {
         match self {
             Self::Normal => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],

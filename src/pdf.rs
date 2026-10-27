@@ -5288,6 +5288,15 @@ fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
     }
 }
 
+/// Apply bounded EXIF orientation to encoded dimensions already validated by
+/// the caller's JPEG container reader. This shares display geometry with SVG
+/// without validating or decoding the image's pixel data.
+#[doc(hidden)]
+#[must_use]
+pub fn jpeg_display_dimensions(bytes: &[u8], width: u32, height: u32) -> (u32, u32) {
+    jpeg_orientation::Orientation::from_jpeg(bytes).display_dimensions(width, height)
+}
+
 /// A JPEG asset embeds as a `/DCTDecode` XObject with the original bytes
 /// untouched: zero re-encoding, deterministic output, and the reader's own
 /// JPEG decoder does the sample reconstruction.

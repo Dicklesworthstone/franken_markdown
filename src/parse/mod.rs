@@ -936,29 +936,9 @@ fn collect_link_reference_metadata_at_depth(
         // quoted definitions keep precedence over later top-level/list ones.
         if scan.maybe_blockquote && blockquote_marker_start(line) {
             let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
-            let mut inner: Vec<std::borrow::Cow<'_, str>> = Vec::new();
-            while i < lines.len() {
-                if blockquote_marker_start(lines[i]) {
-                    kept_reference_candidate |= lines[i].contains("]:");
-                    let stripped = strip_blockquote_marker(lines[i]);
-                    if let std::borrow::Cow::Owned(copied) = &stripped
-                        && let Some(tracker) = &mut tracker
-                    {
-                        tracker.map_suffix(copied, lines[i]);
-                    }
-                    inner.push(stripped);
-                    i += 1;
-                } else if blockquote_lazy_continuation(
-                    inner.last().map(|line| line.as_ref()),
-                    lines[i],
-                ) {
-                    kept_reference_candidate |= lines[i].contains("]:");
-                    inner.push(std::borrow::Cow::Borrowed(trim_start_space_tab(lines[i])));
-                    i += 1;
-                } else {
-                    break;
-                }
-            }
+            let (inner, used) = split_blockquote_lines_tracked(&lines[i..], tracker.as_deref_mut());
+            kept_reference_candidate |= lines[i..i + used].iter().any(|line| line.contains("]:"));
+            i += used;
             if depth < MAX_BLOCK_NESTING_DEPTH {
                 let inner_lines: Vec<&str> = inner.iter().map(|line| line.as_ref()).collect();
                 collect_link_reference_metadata_at_depth(
@@ -1608,36 +1588,9 @@ fn parse_blocks_with_refs_profiled(
         if scanned_blockquote_start(scan) {
             let started = profiler.checkpoint();
             let checkpoint = profiler.destination_checkpoint();
-            let mut inner: Vec<std::borrow::Cow<'_, str>> = Vec::new();
-            while i < lines.len() {
-                if blockquote_marker_start(lines[i]) {
-                    let stripped = strip_blockquote_marker(lines[i]);
-                    if let std::borrow::Cow::Owned(copied) = &stripped {
-                        profiler.destination_suffix(copied, lines[i]);
-                    }
-                    inner.push(stripped);
-                    i += 1;
-                } else if blockquote_lazy_continuation(inner.last().map(|s| s.as_ref()), lines[i]) {
-                    // CommonMark lazy continuation: a non-blank, non-`>` line that
-                    // does not start a new block continues the blockquote's open
-                    // paragraph instead of ending the quote. A lazy line cannot be a
-                    // setext heading underline (CommonMark §4.3).
-                    let trimmed = trim_start_space_tab(lines[i]);
-                    if setext_underline(trimmed).is_some()
-                        || (list_marker(trimmed).is_some()
-                            && (leading_spaces(lines[i]) >= 4 || list_marker(lines[i]).is_none()))
-                    {
-                        let copied = format!("\\{trimmed}");
-                        profiler.destination_suffix(&copied, trimmed);
-                        inner.push(std::borrow::Cow::Owned(copied));
-                    } else {
-                        inner.push(std::borrow::Cow::Borrowed(trimmed));
-                    }
-                    i += 1;
-                } else {
-                    break;
-                }
-            }
+            let (inner, used) =
+                split_blockquote_lines_tracked(&lines[i..], profiler.destinations.as_mut());
+            i += used;
             let inner_line_count = inner.len();
             let inner_bytes = if profiler.enabled {
                 inner.iter().map(|line| line.len()).sum()
@@ -2544,80 +2497,53 @@ fn blockquote_marker_start(line: &str) -> bool {
     blockquote_marker_offset(line).is_some()
 }
 
-/// True when `line` lazily continues an open paragraph inside a block quote.
+/// Strip one blockquote container, keeping exactly its marked lines and lazy
+/// continuations of an open paragraph. The current leaf block, rather than the
+/// previous physical line, owns laziness: code/HTML bodies and completed blocks
+/// must not capture unquoted prose or reference definitions.
 ///
-/// CommonMark lets a block quote's paragraph be continued by a following line
-/// that omits the `>` marker ("laziness"), provided the previous quoted line was
-/// open paragraph text and the continuation line would not itself start a new
-/// block. `prev` is the previously collected (already `>`-stripped) quote line.
-fn innermost_is_open_paragraph(mut p: &str) -> bool {
-    loop {
-        if blockquote_marker_start(p) {
-            let stripped = strip_blockquote_marker(p);
-            match stripped {
-                std::borrow::Cow::Borrowed(s) => {
-                    p = s;
-                    continue;
-                }
-                std::borrow::Cow::Owned(s) => {
-                    let trimmed = trim_space_tab(&s);
-                    if is_blank_line(trimmed) || leading_spaces(&s) >= 4 {
-                        return false;
-                    }
-                    return !is_thematic_break(&s)
-                        && atx_heading(&s).is_none()
-                        && open_fence(&s).is_none()
-                        && !html_block_start(&s);
-                }
+/// Both semantic parsing and reference collection use this split. Copied tab
+/// expansion and escaped lazy markers retain their original source coordinates.
+fn split_blockquote_lines_tracked<'a>(
+    lines: &[&'a str],
+    mut tracker: Option<&mut destinations::DestinationTracker>,
+) -> (Vec<std::borrow::Cow<'a, str>>, usize) {
+    let mut inner = Vec::new();
+    let mut tail = ContainerTail::default();
+    let mut used = 0;
+    for &line in lines {
+        let stripped = if blockquote_marker_start(line) {
+            let stripped = strip_blockquote_marker(line);
+            if let std::borrow::Cow::Owned(copied) = &stripped
+                && let Some(tracker) = &mut tracker
+            {
+                tracker.map_suffix(copied, line);
             }
-        }
-        if let Some(m) = list_marker(p) {
-            match m.rest {
-                std::borrow::Cow::Borrowed(s) => {
-                    p = s;
-                    continue;
+            stripped
+        } else if tail.can_continue_lazily(line) {
+            // Removing the container indentation must not promote a lazy line
+            // into a setext heading or a list marker inside the collected body.
+            let trimmed = trim_start_space_tab(line);
+            if setext_underline(trimmed).is_some()
+                || (list_marker(trimmed).is_some()
+                    && (leading_spaces(line) >= 4 || list_marker(line).is_none()))
+            {
+                let copied = format!("\\{trimmed}");
+                if let Some(tracker) = &mut tracker {
+                    tracker.map_suffix(&copied, trimmed);
                 }
-                std::borrow::Cow::Owned(s) => {
-                    let trimmed = trim_space_tab(&s);
-                    if is_blank_line(trimmed) || leading_spaces(&s) >= 4 {
-                        return false;
-                    }
-                    return !is_thematic_break(&s)
-                        && atx_heading(&s).is_none()
-                        && open_fence(&s).is_none()
-                        && !html_block_start(&s);
-                }
+                std::borrow::Cow::Owned(copied)
+            } else {
+                std::borrow::Cow::Borrowed(trimmed)
             }
-        }
-        break;
+        } else {
+            break;
+        };
+        tail.observe(stripped.as_ref());
+        inner.push(stripped);
+        used += 1;
     }
-    if is_blank_line(p) || leading_spaces(p) >= 4 {
-        return false;
-    }
-    !is_thematic_break(p)
-        && atx_heading(p).is_none()
-        && open_fence(p).is_none()
-        && !html_block_start(p)
-}
-
-fn blockquote_lazy_continuation(prev: Option<&str>, line: &str) -> bool {
-    if is_blank_line(line) {
-        return false;
-    }
-    // Only an OPEN paragraph can be lazily continued: the innermost quoted line
-    // must be plain paragraph text, not a blank, indented code block, or block opener.
-    let prev_is_open_paragraph = prev.is_some_and(innermost_is_open_paragraph);
-    if !prev_is_open_paragraph {
-        return false;
-    }
-    // The continuation line itself must be paragraph text, not a block starter
-    // (a heading, fence, thematic break, list that interrupts, or HTML block all
-    // end the quote rather than continue it).
-    !is_thematic_break(line)
-        && atx_heading(line).is_none()
-        && open_fence(line).is_none()
-        && !html_block_start(line)
-        && !list_marker_interrupts_paragraph(line)
+    (inner, used)
 }
 
 /// The end condition for a started HTML block (CommonMark block types 1-7).
@@ -3250,7 +3176,7 @@ struct ListSplit<'a> {
 }
 
 #[derive(Clone, Copy)]
-enum ListTailContainer {
+enum TailContainer {
     Quote,
     List {
         indent: usize,
@@ -3260,7 +3186,7 @@ enum ListTailContainer {
 }
 
 #[derive(Default)]
-enum ListTailLeaf {
+enum TailLeaf {
     #[default]
     Boundary,
     Paragraph {
@@ -3277,16 +3203,16 @@ enum ListTailLeaf {
     Footnote,
 }
 
-/// Track the current leaf block while a list item is collected. Laziness is
+/// Track the current leaf block while a quote or list item is collected. Laziness is
 /// permitted only for an open paragraph, including one inside nested lists or
 /// quotes. Looking only at the previous line mistakes fenced/HTML/code content
 /// for prose, while looking only at indentation rejects hanging paragraphs.
 /// Each line visits at most the parser's bounded container depth; no accumulated
-/// item body is reparsed to decide whether a dedented line belongs to it.
+/// container body is reparsed to decide whether a lazy line belongs to it.
 #[derive(Default)]
-struct ListItemTail {
-    containers: Vec<ListTailContainer>,
-    leaf: ListTailLeaf,
+struct ContainerTail {
+    containers: Vec<TailContainer>,
+    leaf: TailLeaf,
     // The existing definition grammar admits at most eight nonblank lines.
     // Keep that bounded candidate so syntax inside a multiline title is not
     // mistaken for a heading/fence. Definitions are removed from paragraphs
@@ -3294,9 +3220,9 @@ struct ListItemTail {
     reference_lines: Vec<String>,
 }
 
-impl ListItemTail {
+impl ContainerTail {
     fn can_continue_lazily(&self, line: &str) -> bool {
-        matches!(self.leaf, ListTailLeaf::Paragraph { .. })
+        matches!(self.leaf, TailLeaf::Paragraph { .. })
             && !is_blank_line(line)
             && !scanned_paragraph_interrupt(BlockStartScan::new(line, trim_space_tab(line)))
     }
@@ -3304,23 +3230,18 @@ impl ListItemTail {
     fn is_literal(&self) -> bool {
         matches!(
             self.leaf,
-            ListTailLeaf::Fence { .. }
-                | ListTailLeaf::IndentedCode
-                | ListTailLeaf::Html(_)
-                | ListTailLeaf::Math
+            TailLeaf::Fence { .. } | TailLeaf::IndentedCode | TailLeaf::Html(_) | TailLeaf::Math
         )
     }
 
     fn retains_literal_blank(&self) -> bool {
         matches!(
             self.leaf,
-            ListTailLeaf::Fence { .. }
-                | ListTailLeaf::Html(HtmlBlockEnd::Marker(_))
-                | ListTailLeaf::Math
+            TailLeaf::Fence { .. } | TailLeaf::Html(HtmlBlockEnd::Marker(_)) | TailLeaf::Math
         ) && !self
             .containers
             .iter()
-            .any(|container| matches!(container, ListTailContainer::Quote))
+            .any(|container| matches!(container, TailContainer::Quote))
     }
 
     fn observe(&mut self, line: &str) {
@@ -3330,14 +3251,14 @@ impl ListItemTail {
     fn observe_at(&mut self, line: &str, depth: usize) {
         if let Some(container) = self.containers.get(depth).copied() {
             let sibling = match container {
-                ListTailContainer::Quote => {
+                TailContainer::Quote => {
                     if blockquote_marker_start(line) {
                         self.observe_at(strip_blockquote_marker(line).as_ref(), depth + 1);
                         return;
                     }
                     false
                 }
-                ListTailContainer::List {
+                TailContainer::List {
                     indent,
                     content_indent,
                     ordered,
@@ -3356,7 +3277,7 @@ impl ListItemTail {
                 return;
             }
             self.containers.truncate(depth);
-            self.leaf = ListTailLeaf::Boundary;
+            self.leaf = TailLeaf::Boundary;
             self.reference_lines.clear();
         }
 
@@ -3370,7 +3291,7 @@ impl ListItemTail {
                 if let Some((_, reference, used)) = parse_multiline_reference_definition(&candidate)
                     && used == candidate.len()
                 {
-                    self.leaf = ListTailLeaf::Paragraph {
+                    self.leaf = TailLeaf::Paragraph {
                         table_columns: None,
                     };
                     if reference.title.is_some() {
@@ -3382,13 +3303,13 @@ impl ListItemTail {
         }
 
         match self.leaf {
-            ListTailLeaf::Fence { ch, len } => {
+            TailLeaf::Fence { ch, len } => {
                 if is_close_fence(line, ch, len) {
-                    self.leaf = ListTailLeaf::Boundary;
+                    self.leaf = TailLeaf::Boundary;
                 }
                 return;
             }
-            ListTailLeaf::Html(end) => {
+            TailLeaf::Html(end) => {
                 let closed = match end {
                     HtmlBlockEnd::Marker(markers) => markers
                         .iter()
@@ -3396,35 +3317,35 @@ impl ListItemTail {
                     HtmlBlockEnd::Blank => is_blank_line(line),
                 };
                 if closed {
-                    self.leaf = ListTailLeaf::Boundary;
+                    self.leaf = TailLeaf::Boundary;
                 }
                 return;
             }
-            ListTailLeaf::Math => {
+            TailLeaf::Math => {
                 if trim_unicode_ws(line).ends_with("$$") {
-                    self.leaf = ListTailLeaf::Boundary;
+                    self.leaf = TailLeaf::Boundary;
                 }
                 return;
             }
-            ListTailLeaf::IndentedCode | ListTailLeaf::Footnote
+            TailLeaf::IndentedCode | TailLeaf::Footnote
                 if is_blank_line(line) || leading_spaces(line) >= 4 =>
             {
                 return;
             }
-            ListTailLeaf::Table if !is_blank_line(line) && line.contains('|') => return,
-            ListTailLeaf::Paragraph { table_columns } if !is_blank_line(line) => {
+            TailLeaf::Table if !is_blank_line(line) && line.contains('|') => return,
+            TailLeaf::Paragraph { table_columns } if !is_blank_line(line) => {
                 if table_columns.is_some()
                     && table_columns == validated_table_delimiter_cell_count(line)
                 {
-                    self.leaf = ListTailLeaf::Table;
+                    self.leaf = TailLeaf::Table;
                     return;
                 }
                 if setext_underline(line).is_some() {
-                    self.leaf = ListTailLeaf::Boundary;
+                    self.leaf = TailLeaf::Boundary;
                     return;
                 }
                 if !scanned_paragraph_interrupt(BlockStartScan::new(line, trim_space_tab(line))) {
-                    self.leaf = ListTailLeaf::Paragraph {
+                    self.leaf = TailLeaf::Paragraph {
                         table_columns: None,
                     };
                     return;
@@ -3432,32 +3353,32 @@ impl ListItemTail {
             }
             _ => {}
         }
-        self.leaf = ListTailLeaf::Boundary;
+        self.leaf = TailLeaf::Boundary;
         if is_blank_line(line) || is_thematic_break(line) || atx_heading(line).is_some() {
             return;
         }
         if let Some((ch, len, _)) = open_fence(line) {
-            self.leaf = ListTailLeaf::Fence { ch, len };
+            self.leaf = TailLeaf::Fence { ch, len };
         } else if leading_spaces(line) < 4
             && trim_start_unicode_ws(line).starts_with("$$")
             && (trim_unicode_ws(line).ends_with("$$") || !trim_unicode_ws(line)[2..].contains("$$"))
         {
             let math = trim_unicode_ws(line);
             if math.len() < 4 || !math.ends_with("$$") {
-                self.leaf = ListTailLeaf::Math;
+                self.leaf = TailLeaf::Math;
             }
         } else if indented_code_start(line) {
-            self.leaf = ListTailLeaf::IndentedCode;
+            self.leaf = TailLeaf::IndentedCode;
         } else if footnote_definition_marker(line) {
-            self.leaf = ListTailLeaf::Footnote;
+            self.leaf = TailLeaf::Footnote;
         } else if blockquote_marker_start(line) {
             if depth < MAX_BLOCK_NESTING_DEPTH {
                 self.reference_lines.clear();
-                self.containers.push(ListTailContainer::Quote);
+                self.containers.push(TailContainer::Quote);
                 self.observe_at(strip_blockquote_marker(line).as_ref(), depth + 1);
             }
         } else if let Some(end) = html_block_kind(line) {
-            self.leaf = ListTailLeaf::Html(end);
+            self.leaf = TailLeaf::Html(end);
             // A comment or raw-text element may close on its opening line.
             if matches!(end, HtmlBlockEnd::Marker(_)) {
                 self.observe_at(line, depth);
@@ -3465,7 +3386,7 @@ impl ListItemTail {
         } else if let Some(marker) = list_marker(line) {
             if depth < MAX_BLOCK_NESTING_DEPTH {
                 self.reference_lines.clear();
-                self.containers.push(ListTailContainer::List {
+                self.containers.push(TailContainer::List {
                     indent: marker.indent,
                     content_indent: marker.content_indent,
                     ordered: marker.ordered,
@@ -3476,7 +3397,7 @@ impl ListItemTail {
             if self.reference_lines.is_empty() && trim_start_space_tab(line).starts_with('[') {
                 self.reference_lines.push(line.to_owned());
                 if let Some((_, reference, _)) = parse_multiline_reference_definition(&[line]) {
-                    self.leaf = ListTailLeaf::Paragraph {
+                    self.leaf = TailLeaf::Paragraph {
                         table_columns: None,
                     };
                     if reference.title.is_some() {
@@ -3485,7 +3406,7 @@ impl ListItemTail {
                     return;
                 }
             }
-            self.leaf = ListTailLeaf::Paragraph {
+            self.leaf = TailLeaf::Paragraph {
                 table_columns: line.contains('|').then(|| split_table_row_cell_count(line)),
             };
         }
@@ -3514,7 +3435,7 @@ fn split_list_items_with_first_marker_tracked<'a>(
         };
         let item_origin = lines[i];
         let mut item_lines: Vec<std::borrow::Cow<'a, str>> = vec![m.rest.clone()];
-        let mut tail = ListItemTail::default();
+        let mut tail = ContainerTail::default();
         tail.observe(split_task_marker(m.rest.as_ref()).1);
         i += 1;
 

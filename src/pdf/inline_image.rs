@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn fitted_svg_transform_retains_tiny_scales_without_exponents() {
+    fn svg_transform_retains_tiny_scales_without_exponents() {
         for scale in [
             176.0 / 1200.0,
             0.000_014_667,
@@ -517,7 +517,7 @@ mod tests {
                 viewport_clip: None,
             };
             let mut precise = String::new();
-            append_svg_image_transform_prefix(&mut precise, transform, true);
+            append_svg_image_transform_prefix(&mut precise, transform);
             let fields: Vec<_> = precise.split_ascii_whitespace().collect();
             assert_eq!(fields.len(), 8, "{precise}");
             assert_eq!(fields[0], "q");
@@ -528,19 +528,18 @@ mod tests {
             assert_eq!(fields[5].parse::<f32>().unwrap(), 31.125);
             assert_eq!(fields[6].parse::<f32>().unwrap(), 98.75);
         }
-        let mut legacy = String::new();
+        let mut ordinary = String::new();
         append_svg_image_transform_prefix(
-            &mut legacy,
+            &mut ordinary,
             SvgImageTransform {
-                sx: 176.0 / 1200.0,
-                sy: 176.0 / 1200.0,
-                tx: 31.125,
+                sx: 0.75,
+                sy: 0.75,
+                tx: 31.25,
                 ty: 98.75,
                 viewport_clip: None,
             },
-            false,
         );
-        assert_eq!(legacy, "q 0.15 0 0 -0.15 31.13 98.75 cm\n");
+        assert_eq!(ordinary, "q 0.75 0 0 -0.75 31.25 98.75 cm\n");
     }
 
     fn parts_from_unresolved_is_none() -> bool {

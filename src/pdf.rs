@@ -23397,7 +23397,6 @@ fn generate_page_content(
                         image,
                         line.rule_x,
                         y,
-                        false,
                         image_index,
                         &mut page_resources,
                         subsets,
@@ -24664,8 +24663,11 @@ impl SvgImageTransform {
 }
 
 fn svg_image_transform(svg: &PdfSvgImage, image: &ImageLine, x: f32, y: f32) -> SvgImageTransform {
-    let raw_sx = image.width_pt / svg.view_box.w.max(1.0);
-    let raw_sy = image.height_pt / svg.view_box.h.max(1.0);
+    // Parsing guarantees positive viewBox dimensions. They are SVG user units,
+    // not pixels: a fractional unit can describe an entire image just as a
+    // million-unit coordinate system can. Clamping either changes the artwork.
+    let raw_sx = image.width_pt / svg.view_box.w;
+    let raw_sy = image.height_pt / svg.view_box.h;
     match svg.preserve_aspect.mode {
         SvgAspectScaleMode::None => {
             let tx = x - svg.view_box.x * raw_sx;
@@ -24736,11 +24738,7 @@ fn svg_transform_preserves_stroke_scale(transform: SvgTransform) -> bool {
         && (transform.d - 1.0).abs() <= 0.0001
 }
 
-fn append_svg_image_transform_prefix(
-    body: &mut String,
-    transform: SvgImageTransform,
-    precise: bool,
-) {
+fn append_svg_image_transform_prefix(body: &mut String, transform: SvgImageTransform) {
     body.push_str("q ");
     if let Some((x, y, w, h)) = transform.viewport_clip {
         append_pdf_num(body, x);
@@ -24752,54 +24750,42 @@ fn append_svg_image_transform_prefix(
         append_pdf_num(body, h);
         body.push_str(" re W n ");
     }
-    if precise {
-        // A tiny scale rounded to two decimals can enlarge a fitted banner
-        // beyond its cell or erase it entirely. Keep at least nine significant
-        // digits, including subnormal f32 scales, without PDF-forbidden
-        // exponent notation. This path is used only by fitted inline images.
-        for (index, value) in [
-            transform.sx,
-            0.0,
-            0.0,
-            -transform.sy,
-            transform.tx,
-            transform.ty,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if index != 0 {
-                body.push(' ');
-            }
-            let value = finite_pdf_scalar(value);
-            let mut magnitude = value.abs();
-            let mut precision = 9;
-            while magnitude > 0.0 && magnitude < 1.0 && precision < 55 {
-                magnitude *= 10.0;
-                precision += 1;
-            }
-            let start = body.len();
-            let _ = write!(body, "{value:.precision$}");
-            while body.len() > start && body.ends_with('0') {
-                body.pop();
-            }
-            if body.ends_with('.') {
-                body.pop();
-            }
+    // SVG coordinates have no pixel-sized lower or upper bound. Rounding the
+    // outer matrix to two decimals can distort a diagram or erase it entirely,
+    // while text and link bounds still use the original transform. Preserve
+    // every f32 coefficient, including tiny scales, without PDF-forbidden
+    // exponent notation, for figures, inline images and running artwork alike.
+    for (index, value) in [
+        transform.sx,
+        0.0,
+        0.0,
+        -transform.sy,
+        transform.tx,
+        transform.ty,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index != 0 {
+            body.push(' ');
         }
-        body.push_str(" cm");
-    } else {
-        append_pdf_cm_operator(
-            body,
-            transform.sx,
-            0.0,
-            0.0,
-            -transform.sy,
-            transform.tx,
-            transform.ty,
-        );
+        let value = finite_pdf_scalar(value);
+        let mut magnitude = value.abs();
+        let mut precision = 9;
+        while magnitude > 0.0 && magnitude < 1.0 && precision < 55 {
+            magnitude *= 10.0;
+            precision += 1;
+        }
+        let start = body.len();
+        let _ = write!(body, "{value:.precision$}");
+        while body.len() > start && body.ends_with('0') {
+            body.pop();
+        }
+        if body.ends_with('.') {
+            body.pop();
+        }
     }
-    body.push('\n');
+    body.push_str(" cm\n");
 }
 
 fn append_svg_root_background(
@@ -24969,7 +24955,6 @@ fn draw_svg_image(
     image: &ImageLine,
     x: f32,
     y: f32,
-    precise_transform: bool,
     image_index: &BTreeMap<&str, usize>,
     page_resources: &mut SvgPageResources<'_>,
     subsets: &[EmbeddedFace<'_>],
@@ -25024,7 +25009,7 @@ fn draw_svg_image(
             continue;
         }
         if !in_shape_group {
-            append_svg_image_transform_prefix(body, transform, precise_transform);
+            append_svg_image_transform_prefix(body, transform);
             in_shape_group = true;
         }
         draw_svg_shape(
@@ -29376,7 +29361,6 @@ fn draw_inline_image_seg(
             &line_image,
             seg.x,
             bottom,
-            parts.max_width.is_some(),
             draw.image_index,
             draw.page_resources,
             draw.subsets,
@@ -38149,7 +38133,7 @@ mod pdf_writer_tests {
             viewport_clip: Some((3.0, 4.5, 20.25, 30.75)),
         };
         let mut direct = String::new();
-        append_svg_image_transform_prefix(&mut direct, transform, false);
+        append_svg_image_transform_prefix(&mut direct, transform);
         let legacy = format!(
             "q {x} {y} {w} {h} re W n {a} 0 0 {d} {e} {f} cm\n",
             x = pdf_num(3.0),

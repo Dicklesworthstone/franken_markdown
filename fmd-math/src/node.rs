@@ -613,6 +613,14 @@ pub enum NodeKind {
         /// The framed body.
         body: Box<Node>,
     },
+    /// TeX's `\mathord`, `\mathbin`, `\mathrel`, `\mathopen`, `\mathclose`,
+    /// `\mathpunct` and `\mathinner`: the body as one atom of `class`.
+    Classed {
+        /// The atom's class.
+        class: AtomClass,
+        /// The atom's nucleus.
+        body: Box<Node>,
+    },
     /// The cancel package's `\cancel`, `\bcancel` and `\xcancel`: the body
     /// in the style in force, struck through by 0.4 pt line-font strokes.
     Cancel {

@@ -26,9 +26,14 @@ use crate::token::{Tok, TokKind, lex};
 /// Nesting depth bound: groups, arguments, `\left…\right`, environments,
 /// and islands all descend one level. Real formulas in the G0-4 corpus stay
 /// in single digits; the bound exists so hostile input errors cleanly
-/// instead of exhausting the stack (64 keeps an ample margin against the
-/// 2 MiB test-thread stack even in unoptimized builds, where the parser's
-/// frames are largest).
+/// instead of exhausting the stack. Measured 2026-10-26 in an unoptimized
+/// build, where the parser's frames are largest: the chaos suite's
+/// adversarial shapes need between 1.25 and 1.5 MB at this bound, against
+/// the 2 MiB test-thread stack. An unoptimized frame holds every match
+/// arm's temporaries, so a large arm of a recursive function (`math_list`,
+/// `math_control_word`, `command_node`) belongs in a function of its own;
+/// before `command_node`'s largest arms moved out, the same inputs needed
+/// more than 2.06 MB.
 pub(crate) const MAX_DEPTH: usize = 64;
 
 /// The shared empty macro set (the plain entry points still run the
@@ -52,6 +57,7 @@ pub(crate) fn parse_math_with<'s>(
     let toks = crate::macros::expand(lex(source), macros, source.len())?;
     let mut parser = Parser::with_tokens(source, toks);
     parser.ligatures = macros.ligatures();
+    parser.physics = macros.physics();
     let (items, reason) = parser.math_list(Stops {
         top: true,
         ..Stops::default()
@@ -70,12 +76,13 @@ pub(crate) fn parse_math_with<'s>(
             what: "\\right without a matching \\left".to_owned(),
             at: span.start,
         }),
-        Reason::CellTab(span) | Reason::CellBreak(span) | Reason::BracketClose(span) => {
-            Err(MathError::Malformed {
-                what: "internal: unexpected list stop".to_owned(),
-                at: span.start,
-            })
-        }
+        Reason::CellTab(span)
+        | Reason::CellBreak(span)
+        | Reason::BracketClose(span)
+        | Reason::ParenClose(span) => Err(MathError::Malformed {
+            what: "internal: unexpected list stop".to_owned(),
+            at: span.start,
+        }),
         Reason::EnvEnd { span, .. } => Err(MathError::Malformed {
             what: "\\end without a matching \\begin".to_owned(),
             at: span.start,
@@ -96,6 +103,7 @@ pub(crate) fn parse_text_mode_with<'s>(
     let toks = crate::macros::expand(lex(source), macros, source.len())?;
     let mut parser = Parser::with_tokens(source, toks);
     parser.ligatures = macros.ligatures();
+    parser.physics = macros.physics();
     let (items, reason) = parser.text_list(false, false)?;
     match reason {
         Reason::EndOfInput => Ok(Node::new(NodeKind::List(items), Span::new(0, source.len()))),
@@ -123,6 +131,9 @@ struct Stops {
     env: bool,
     /// `]` closes the list (`\sqrt[…]` indices).
     bracket: bool,
+    /// A `)` that closes no `(` of this list closes it (physics' delimited
+    /// arguments, which xparse nests).
+    paren: bool,
 }
 
 /// Why a list ended.
@@ -135,6 +146,7 @@ enum Reason {
     CellTab(Span),
     CellBreak(Span),
     BracketClose(Span),
+    ParenClose(Span),
     EnvEnd { name: String, span: Span },
 }
 
@@ -147,7 +159,8 @@ impl Reason {
             | Self::MathShift(s)
             | Self::CellTab(s)
             | Self::CellBreak(s)
-            | Self::BracketClose(s) => *s,
+            | Self::BracketClose(s)
+            | Self::ParenClose(s) => *s,
             Self::EnvEnd { span, .. } => *span,
         }
     }
@@ -181,6 +194,12 @@ struct Parser<'s> {
     depth: usize,
     /// Text mode sets TeX's font ligatures (`MacroSet::ligatures`).
     ligatures: bool,
+    /// The physics package's function arguments apply (`MacroSet::physics`).
+    physics: bool,
+    /// Token indices of the delimiters closing the physics arguments being
+    /// parsed. xparse consumes them, so `\argclose` follows the argument
+    /// instead and amsmath's dots see no closing delimiter.
+    argument_closes: Vec<usize>,
 }
 
 impl<'s> Parser<'s> {
@@ -192,6 +211,8 @@ impl<'s> Parser<'s> {
             pos: 0,
             depth: 0,
             ligatures: true,
+            physics: false,
+            argument_closes: Vec::new(),
         }
     }
 
@@ -247,6 +268,8 @@ impl<'s> Parser<'s> {
     fn math_list(&mut self, stops: Stops) -> Result<(Vec<Node>, Reason), MathError> {
         let mut items: Vec<Node> = Vec::new();
         let mut over: Option<(usize, FracSpec, Span)> = None;
+        // `(`s this list opened, for the `paren` stop.
+        let mut parens = 0_usize;
         let reason = loop {
             let Some(tok) = self.peek().cloned() else {
                 break Reason::EndOfInput;
@@ -298,8 +321,19 @@ impl<'s> Parser<'s> {
                     self.pos += 1;
                     break Reason::BracketClose(tok.span);
                 }
+                TokKind::Char(')') if stops.paren && parens == 0 => {
+                    self.pos += 1;
+                    break Reason::ParenClose(tok.span);
+                }
                 TokKind::Char(c) => {
                     self.pos += 1;
+                    if stops.paren {
+                        match c {
+                            '(' => parens += 1,
+                            ')' => parens -= 1,
+                            _ => {}
+                        }
+                    }
                     let mapped = map_math_char(c);
                     items.push(Node::new(
                         NodeKind::Symbol {
@@ -365,12 +399,14 @@ impl<'s> Parser<'s> {
     ///   comma;
     /// - `\dotsi` is `\!\cdots`.
     fn dots(&self, kind: Dots, span: Span, items: &mut Vec<Node>) {
-        let next = dots_next(
-            self.toks[self.pos..]
-                .iter()
-                .map(|tok| tok.kind)
-                .find(|kind| !matches!(kind, TokKind::Space)),
-        );
+        let next_index =
+            (self.pos..self.toks.len()).find(|&i| !matches!(self.toks[i].kind, TokKind::Space));
+        let next = match next_index {
+            // A physics argument's closing delimiter is xparse's, and
+            // `\argclose` comes after the argument instead.
+            Some(index) if self.argument_closes.contains(&index) => DotsNext::Other,
+            index => dots_next(index.map(|i| self.toks[i].kind)),
+        };
         let before_stop = matches!(next, DotsNext::Stop | DotsNext::Close);
         let (centred, neg_thin, thin) = match kind {
             Dots::Auto => match next {
@@ -397,6 +433,463 @@ impl<'s> Parser<'s> {
         if thin {
             items.push(Node::new(NodeKind::Space(SpaceKind::Thin), span));
         }
+    }
+
+    /// The pifont escape (fm-j5t.4): a braced decimal code. The implemented
+    /// codes live in `commands::ding_char`; anything else fails precisely,
+    /// by full name.
+    fn ding(&mut self, span: Span) -> Result<Node, MathError> {
+        let (raw, raw_span) = self.raw_group("argument of \\ding")?;
+        let span = span.union(raw_span);
+        let Ok(code) = raw.parse::<u32>() else {
+            return Err(MathError::Malformed {
+                what: format!("the argument of \\ding must be a pifont number, got '{raw}'"),
+                at: raw_span.start,
+            });
+        };
+        let Some(ch) = commands::ding_char(code) else {
+            return Err(MathError::UnsupportedCommand {
+                name: format!("\\ding{{{code}}}"),
+                span,
+            });
+        };
+        Ok(Node::new(
+            NodeKind::Symbol {
+                ch,
+                class: crate::atom::AtomClass::Ord,
+            },
+            span,
+        ))
+    }
+
+    /// `\left<delim> … \right<delim>`, or with a fragment's null `\right`
+    /// when the closing `\right` lives in a later piece.
+    fn left_right(&mut self, span: Span) -> Result<Node, MathError> {
+        let left = self.delimiter("\\left")?;
+        let (body, reason) = self.descend(span.start, |p| {
+            p.math_list(Stops {
+                right: true,
+                ..Stops::default()
+            })
+        })?;
+        let right = match reason {
+            Reason::Right(_) => self.delimiter("\\right")?,
+            // A `\left` whose `\right` lives in a later piece: fragment-close
+            // with the null delimiter.
+            Reason::EndOfInput => Delim {
+                ch: None,
+                span: Span::new(self.src.len(), self.src.len()),
+            },
+            other => {
+                return Err(MathError::Malformed {
+                    what: format!(
+                        "\\left at byte {} is closed by something other than \\right",
+                        span.start
+                    ),
+                    at: other.span().start,
+                });
+            }
+        };
+        let span = span.union(right.span);
+        Ok(Node::new(NodeKind::LeftRight { left, right, body }, span))
+    }
+
+    /// `\sqrt[index]{radicand}`.
+    fn radical(&mut self, span: Span) -> Result<Node, MathError> {
+        self.skip_spaces();
+        let index = if matches!(self.peek().map(|t| t.kind), Some(TokKind::Char('['))) {
+            let open = self.here();
+            self.pos += 1;
+            let (ix_items, reason) = self.descend(open, |p| {
+                p.math_list(Stops {
+                    bracket: true,
+                    ..Stops::default()
+                })
+            })?;
+            match reason {
+                Reason::BracketClose(close) => Some(Box::new(Node::new(
+                    NodeKind::List(ix_items),
+                    Span::new(open, close.end),
+                ))),
+                Reason::EndOfInput => {
+                    return Err(MathError::Malformed {
+                        what: format!("unclosed '[' in \\sqrt index opened at byte {open}"),
+                        at: self.src.len(),
+                    });
+                }
+                other => {
+                    return Err(MathError::Malformed {
+                        what: format!(
+                            "the \\sqrt index opened at byte {open} is not closed by ']'"
+                        ),
+                        at: other.span().start,
+                    });
+                }
+            }
+        } else {
+            None
+        };
+        let radicand = self.argument("argument of \\sqrt")?;
+        let span = span.union(radicand.span);
+        Ok(Node::new(
+            NodeKind::Radical {
+                index,
+                radicand: Box::new(radicand),
+            },
+            span,
+        ))
+    }
+
+    /// amsmath's `\pod{\operator@font mod\mkern6mu#1}`, where `\pod` is
+    /// `\if@display\mkern18mu\else\mkern8mu\fi(#1)`: the kern, the
+    /// parenthesis, upright "mod" (ordinary letters, not an operator atom),
+    /// 6 mu and the argument. Generated material carries the command's span,
+    /// as macro bodies do.
+    fn pmod(&mut self, span: Span) -> Result<Node, MathError> {
+        let argument = self.argument("argument of \\pmod")?;
+        let whole = span.union(argument.span);
+        use crate::atom::AtomClass;
+        let sym = |ch, class| Node::new(NodeKind::Symbol { ch, class }, span);
+        let letters = "mod".chars().map(|ch| sym(ch, AtomClass::Ord)).collect();
+        Ok(Node::new(
+            NodeKind::List(vec![
+                Node::new(
+                    NodeKind::DisplayKern {
+                        display_mu: 18,
+                        text_mu: 8,
+                    },
+                    span,
+                ),
+                sym('(', AtomClass::Open),
+                Node::new(
+                    NodeKind::MathFont {
+                        font: crate::node::MathFont::Roman,
+                        body: Box::new(Node::new(NodeKind::List(letters), span)),
+                    },
+                    span,
+                ),
+                Node::new(NodeKind::Space(SpaceKind::Thin), span),
+                Node::new(NodeKind::Space(SpaceKind::Thin), span),
+                argument,
+                sym(')', AtomClass::Close),
+            ]),
+            whole,
+        ))
+    }
+
+    /// amsmath's `\if@display\mkern18mu\else\mkern12mu\fi{\operator@font
+    /// mod}\,\,#1`: the kern, the upright word "mod" as one Ord (TeX's
+    /// braces), 6 mu and the argument, with no class spacing around the word.
+    fn modulus(&mut self, span: Span) -> Result<Node, MathError> {
+        let argument = self.argument("argument of \\mod")?;
+        let whole = span.union(argument.span);
+        use crate::atom::AtomClass;
+        let letters = "mod"
+            .chars()
+            .map(|ch| {
+                Node::new(
+                    NodeKind::Symbol {
+                        ch,
+                        class: AtomClass::Ord,
+                    },
+                    span,
+                )
+            })
+            .collect();
+        Ok(Node::new(
+            NodeKind::List(vec![
+                Node::new(
+                    NodeKind::DisplayKern {
+                        display_mu: 18,
+                        text_mu: 12,
+                    },
+                    span,
+                ),
+                Node::new(
+                    NodeKind::MathFont {
+                        font: crate::node::MathFont::Roman,
+                        body: Box::new(Node::new(NodeKind::List(letters), span)),
+                    },
+                    span,
+                ),
+                Node::new(NodeKind::Space(SpaceKind::Thin), span),
+                Node::new(NodeKind::Space(SpaceKind::Thin), span),
+                argument,
+            ]),
+            whole,
+        ))
+    }
+
+    /// amsmath's `\xrightarrow` and `\xmapsto`: an optional bracketed
+    /// below-label, then the mandatory braced above-label.
+    fn xarrow(&mut self, name: &str, span: Span, mapsto: bool) -> Result<Node, MathError> {
+        self.skip_spaces();
+        let below = if matches!(self.peek().map(|t| t.kind), Some(TokKind::Char('['))) {
+            let open = self.here();
+            self.pos += 1;
+            let (items, reason) = self.descend(open, |p| {
+                p.math_list(Stops {
+                    bracket: true,
+                    ..Stops::default()
+                })
+            })?;
+            match reason {
+                Reason::BracketClose(close) => Some(Box::new(Node::new(
+                    NodeKind::List(items),
+                    Span::new(open, close.end),
+                ))),
+                Reason::EndOfInput => {
+                    return Err(MathError::Malformed {
+                        what: format!(
+                            "unclosed '[' in the \\{name} below-label opened at byte {open}"
+                        ),
+                        at: self.src.len(),
+                    });
+                }
+                other => {
+                    return Err(MathError::Malformed {
+                        what: format!(
+                            "the \\{name} below-label opened at byte {open} is not \
+                             closed by ']'"
+                        ),
+                        at: other.span().start,
+                    });
+                }
+            }
+        } else {
+            None
+        };
+        let above = self.argument(&format!("argument of \\{name}"))?;
+        let span = span.union(above.span);
+        Ok(Node::new(
+            NodeKind::XArrow {
+                mapsto,
+                above: Box::new(above),
+                below,
+            },
+            span,
+        ))
+    }
+
+    /// TeX's `\mathord` … `\mathinner`: the argument as one atom of `class`.
+    fn classed(
+        &mut self,
+        name: &str,
+        span: Span,
+        class: crate::atom::AtomClass,
+    ) -> Result<Node, MathError> {
+        let body = self.argument(&format!("argument of \\{name}"))?;
+        let span = span.union(body.span);
+        Ok(Node::new(
+            NodeKind::Classed {
+                class,
+                body: Box::new(body),
+            },
+            span,
+        ))
+    }
+
+    /// A function physics redefines, in list position: the operator, then
+    /// its physics arguments ([`Self::physics_arguments`]).
+    fn physics_function(
+        &mut self,
+        name: &str,
+        span: Span,
+        cmd: Cmd,
+        items: &mut Vec<Node>,
+    ) -> Result<(), MathError> {
+        let op = self.command_node(name, span, cmd)?;
+        match physics_form(name) {
+            Some(form) => self.physics_arguments(op, form, items),
+            None => {
+                items.push(op);
+                Ok(())
+            }
+        }
+    }
+
+    /// physics.sty's argument forms for the functions it redefines under its
+    /// default `trig` option, which the Reference's template loads:
+    /// - `\trigbraces` (`m o d()`), the trig functions, `\log` and `\ln`:
+    ///   `\cos[2](x)` is `\cos^{2}\argopen(x\argclose)`; a `[2]` with no
+    ///   `(` after it stays as literal brackets;
+    /// - `\opbraces` (`m g o d()`), `\exp`, `\det` and `\Pr`: the first of a
+    ///   braced `{x}`, a bracketed `[x]` and a delimited `(x)` is `\fbraces`'s
+    ///   braced argument between auto-sized braces, brackets or parentheses;
+    ///   a later `[x]` or `(x)` stays literal.
+    ///
+    /// `\argopen(x\argclose)` is `\mathopen{}\mathclose{\left(x\right)}`: an
+    /// empty Open atom, then a Close atom around the sized pair. xparse skips
+    /// spaces before each argument and nests `(`/`)`. An argument with no
+    /// closing delimiter in this list (a piece of a multi-part Tex) is not an
+    /// argument, and the operator stays plain.
+    fn physics_arguments(
+        &mut self,
+        op: Node,
+        form: PhysicsForm,
+        items: &mut Vec<Node>,
+    ) -> Result<(), MathError> {
+        let braced = match form {
+            PhysicsForm::OpBraces => {
+                self.skip_spaces();
+                match self.peek().cloned() {
+                    Some(Tok {
+                        kind: TokKind::BeginGroup,
+                        span,
+                    }) => {
+                        self.pos += 1;
+                        Some(self.math_group_body(span)?)
+                    }
+                    _ => None,
+                }
+            }
+            PhysicsForm::TrigBraces => None,
+        };
+        let bracketed = self.physics_delimited('[')?;
+        let parenthesized = self.physics_delimited('(')?;
+        use crate::atom::AtomClass;
+        let literal =
+            |items: &mut Vec<Node>, open: char, close: char, (body, span): (Vec<Node>, Span)| {
+                items.push(Node::new(
+                    NodeKind::Symbol {
+                        ch: open,
+                        class: AtomClass::Open,
+                    },
+                    Span::new(span.start, span.start + 1),
+                ));
+                items.extend(body);
+                items.push(Node::new(
+                    NodeKind::Symbol {
+                        ch: close,
+                        class: AtomClass::Close,
+                    },
+                    Span::new(span.end - 1, span.end),
+                ));
+            };
+        // `\fbraces` passes its argument braced: one group in the pair.
+        let grouped =
+            |(body, span): (Vec<Node>, Span)| (vec![Node::new(NodeKind::List(body), span)], span);
+        match form {
+            PhysicsForm::TrigBraces => match (bracketed, parenthesized) {
+                (power, Some(argument)) => {
+                    let op = match power {
+                        Some((power, span)) => {
+                            let whole = op.span.union(span);
+                            Node::new(
+                                NodeKind::Scripts {
+                                    base: Some(Box::new(op)),
+                                    sub: None,
+                                    sup: Some(Box::new(Node::new(NodeKind::List(power), span))),
+                                    primes: Vec::new(),
+                                },
+                                whole,
+                            )
+                        }
+                        None => op,
+                    };
+                    items.push(op);
+                    push_argument(items, '(', ')', argument);
+                }
+                (Some(power), None) => {
+                    items.push(op);
+                    literal(items, '[', ']', power);
+                }
+                (None, None) => items.push(op),
+            },
+            PhysicsForm::OpBraces => {
+                items.push(op);
+                match (braced, bracketed, parenthesized) {
+                    (Some(group), bracketed, parenthesized) => {
+                        let span = group.span;
+                        push_argument(items, '{', '}', (vec![group], span));
+                        if let Some(bracketed) = bracketed {
+                            literal(items, '[', ']', bracketed);
+                        }
+                        if let Some(parenthesized) = parenthesized {
+                            literal(items, '(', ')', parenthesized);
+                        }
+                    }
+                    (None, Some(bracketed), parenthesized) => {
+                        push_argument(items, '[', ']', grouped(bracketed));
+                        if let Some(parenthesized) = parenthesized {
+                            literal(items, '(', ')', parenthesized);
+                        }
+                    }
+                    (None, None, Some(parenthesized)) => {
+                        push_argument(items, '(', ')', grouped(parenthesized));
+                    }
+                    (None, None, None) => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One of physics' bracket- or parenthesis-delimited arguments, after
+    /// optional spaces: its list and the span from the opening delimiter
+    /// through the closing one. `None`, with nothing consumed, when the next
+    /// token is not `open` or the list ends before the closing delimiter.
+    fn physics_delimited(&mut self, open: char) -> Result<Option<(Vec<Node>, Span)>, MathError> {
+        let start = self.pos;
+        self.skip_spaces();
+        let Some(Tok {
+            kind: TokKind::Char(c),
+            span: open_span,
+        }) = self.peek().cloned()
+        else {
+            self.pos = start;
+            return Ok(None);
+        };
+        if c != open {
+            self.pos = start;
+            return Ok(None);
+        }
+        self.pos += 1;
+        let close = self.matching_close(open);
+        self.argument_closes.extend(close);
+        let parsed = self.descend(open_span.start, |p| {
+            p.math_list(Stops {
+                bracket: open == '[',
+                paren: open == '(',
+                ..Stops::default()
+            })
+        });
+        if close.is_some() {
+            self.argument_closes.pop();
+        }
+        // Anything else, a refusal included, is plain material that the
+        // ordinary list will parse (and refuse) itself.
+        match parsed {
+            Ok((body, Reason::BracketClose(close) | Reason::ParenClose(close))) => {
+                Ok(Some((body, open_span.union(close))))
+            }
+            Ok(_) | Err(_) => {
+                self.pos = start;
+                Ok(None)
+            }
+        }
+    }
+
+    /// The token index of the delimiter closing a physics argument whose
+    /// `open` was just consumed, counted as xparse counts: outside braces, a
+    /// `(` nests a `(`-argument and the first `]` closes a `[`-argument.
+    fn matching_close(&self, open: char) -> Option<usize> {
+        let close = if open == '(' { ')' } else { ']' };
+        let (mut braces, mut nested) = (0_usize, 0_usize);
+        for (index, tok) in self.toks.iter().enumerate().skip(self.pos) {
+            match tok.kind {
+                TokKind::BeginGroup => braces += 1,
+                TokKind::EndGroup if braces == 0 => return None,
+                TokKind::EndGroup => braces -= 1,
+                TokKind::Char(c) if braces == 0 && c == close && nested == 0 => {
+                    return Some(index);
+                }
+                TokKind::Char(c) if braces == 0 && c == close => nested -= 1,
+                TokKind::Char('(') if braces == 0 && open == '(' => nested += 1,
+                _ => {}
+            }
+        }
+        None
     }
 
     /// A control symbol in math mode. `Ok(None)` never occurs today; the
@@ -560,6 +1053,11 @@ impl<'s> Parser<'s> {
             }
             Cmd::Spacing(kind) => items.push(Node::new(NodeKind::Space(kind), span)),
             Cmd::Dots(kind) => self.dots(kind, span, items),
+            // In its own function so this recursive frame does not grow (the
+            // nesting bound's stack margin).
+            cmd @ Cmd::OpName { .. } if self.physics && physics_form(name).is_some() => {
+                self.physics_function(name, span, cmd, items)?;
+            }
             other => {
                 let node = self.command_node(name, span, other)?;
                 items.push(node);
@@ -574,18 +1072,10 @@ impl<'s> Parser<'s> {
     fn command_node(&mut self, name: &str, span: Span, cmd: Cmd) -> Result<Node, MathError> {
         match cmd {
             Cmd::Sym { ch, class, .. } => Ok(Node::new(NodeKind::Symbol { ch, class }, span)),
+            // In their own functions so this recursive frame does not grow.
+            Cmd::Classed(class) => self.classed(name, span, class),
             // An argument's dots see no list after them.
-            Cmd::Dots(kind) => Ok(Node::new(
-                NodeKind::Symbol {
-                    ch: if matches!(kind, Dots::Centred | Dots::Integral) {
-                        '⋯'
-                    } else {
-                        '…'
-                    },
-                    class: crate::atom::AtomClass::Inner,
-                },
-                span,
-            )),
+            Cmd::Dots(kind) => Ok(plain_dots(kind, span)),
             Cmd::AmsSym {
                 ch,
                 class,
@@ -628,85 +1118,8 @@ impl<'s> Parser<'s> {
                     span.union(raw_span),
                 ))
             }
-            // amsmath's `\pod{\operator@font mod\mkern6mu#1}`, where `\pod`
-            // is `\if@display\mkern18mu\else\mkern8mu\fi(#1)`: the kern, the
-            // parenthesis, upright "mod" (ordinary letters, not an operator
-            // atom), 6 mu and the argument. Generated material carries the
-            // command's span, as macro bodies do.
-            Cmd::Pmod => {
-                let argument = self.argument("argument of \\pmod")?;
-                let whole = span.union(argument.span);
-                use crate::atom::AtomClass;
-                let sym = |ch, class| Node::new(NodeKind::Symbol { ch, class }, span);
-                let letters = "mod".chars().map(|ch| sym(ch, AtomClass::Ord)).collect();
-                Ok(Node::new(
-                    NodeKind::List(vec![
-                        Node::new(
-                            NodeKind::DisplayKern {
-                                display_mu: 18,
-                                text_mu: 8,
-                            },
-                            span,
-                        ),
-                        sym('(', AtomClass::Open),
-                        Node::new(
-                            NodeKind::MathFont {
-                                font: crate::node::MathFont::Roman,
-                                body: Box::new(Node::new(NodeKind::List(letters), span)),
-                            },
-                            span,
-                        ),
-                        Node::new(NodeKind::Space(SpaceKind::Thin), span),
-                        Node::new(NodeKind::Space(SpaceKind::Thin), span),
-                        argument,
-                        sym(')', AtomClass::Close),
-                    ]),
-                    whole,
-                ))
-            }
-            // amsmath's `\if@display\mkern18mu\else\mkern12mu\fi{\operator@font
-            // mod}\,\,#1`: the kern, the upright word "mod" as one Ord (TeX's
-            // braces), 6 mu and the argument, with no class spacing around
-            // the word.
-            Cmd::Mod => {
-                let argument = self.argument("argument of \\mod")?;
-                let whole = span.union(argument.span);
-                use crate::atom::AtomClass;
-                let letters = "mod"
-                    .chars()
-                    .map(|ch| {
-                        Node::new(
-                            NodeKind::Symbol {
-                                ch,
-                                class: AtomClass::Ord,
-                            },
-                            span,
-                        )
-                    })
-                    .collect();
-                Ok(Node::new(
-                    NodeKind::List(vec![
-                        Node::new(
-                            NodeKind::DisplayKern {
-                                display_mu: 18,
-                                text_mu: 12,
-                            },
-                            span,
-                        ),
-                        Node::new(
-                            NodeKind::MathFont {
-                                font: crate::node::MathFont::Roman,
-                                body: Box::new(Node::new(NodeKind::List(letters), span)),
-                            },
-                            span,
-                        ),
-                        Node::new(NodeKind::Space(SpaceKind::Thin), span),
-                        Node::new(NodeKind::Space(SpaceKind::Thin), span),
-                        argument,
-                    ]),
-                    whole,
-                ))
-            }
+            Cmd::Pmod => self.pmod(span),
+            Cmd::Mod => self.modulus(span),
             Cmd::Accent(kind) => {
                 let base = self.argument(&format!("argument of \\{name}"))?;
                 let span = span.union(base.span);
@@ -731,50 +1144,7 @@ impl<'s> Parser<'s> {
                     span,
                 ))
             }
-            Cmd::Radical => {
-                self.skip_spaces();
-                let index = if matches!(self.peek().map(|t| t.kind), Some(TokKind::Char('['))) {
-                    let open = self.here();
-                    self.pos += 1;
-                    let (ix_items, reason) = self.descend(open, |p| {
-                        p.math_list(Stops {
-                            bracket: true,
-                            ..Stops::default()
-                        })
-                    })?;
-                    match reason {
-                        Reason::BracketClose(close) => Some(Box::new(Node::new(
-                            NodeKind::List(ix_items),
-                            Span::new(open, close.end),
-                        ))),
-                        Reason::EndOfInput => {
-                            return Err(MathError::Malformed {
-                                what: format!("unclosed '[' in \\sqrt index opened at byte {open}"),
-                                at: self.src.len(),
-                            });
-                        }
-                        other => {
-                            return Err(MathError::Malformed {
-                                what: format!(
-                                    "the \\sqrt index opened at byte {open} is not closed by ']'"
-                                ),
-                                at: other.span().start,
-                            });
-                        }
-                    }
-                } else {
-                    None
-                };
-                let radicand = self.argument("argument of \\sqrt")?;
-                let span = span.union(radicand.span);
-                Ok(Node::new(
-                    NodeKind::Radical {
-                        index,
-                        radicand: Box::new(radicand),
-                    },
-                    span,
-                ))
-            }
+            Cmd::Radical => self.radical(span),
             Cmd::Text => {
                 let (body, body_span) = self.text_island_argument(name)?;
                 Ok(Node::new(NodeKind::Text { body }, span.union(body_span)))
@@ -827,56 +1197,7 @@ impl<'s> Parser<'s> {
                     span,
                 ))
             }
-            Cmd::XArrow { mapsto } => {
-                // amsmath's shape: an optional bracketed below-label, then
-                // the mandatory braced above-label.
-                self.skip_spaces();
-                let below = if matches!(self.peek().map(|t| t.kind), Some(TokKind::Char('['))) {
-                    let open = self.here();
-                    self.pos += 1;
-                    let (items, reason) = self.descend(open, |p| {
-                        p.math_list(Stops {
-                            bracket: true,
-                            ..Stops::default()
-                        })
-                    })?;
-                    match reason {
-                        Reason::BracketClose(close) => Some(Box::new(Node::new(
-                            NodeKind::List(items),
-                            Span::new(open, close.end),
-                        ))),
-                        Reason::EndOfInput => {
-                            return Err(MathError::Malformed {
-                                what: format!(
-                                    "unclosed '[' in the \\{name} below-label opened at byte {open}"
-                                ),
-                                at: self.src.len(),
-                            });
-                        }
-                        other => {
-                            return Err(MathError::Malformed {
-                                what: format!(
-                                    "the \\{name} below-label opened at byte {open} is not \
-                                     closed by ']'"
-                                ),
-                                at: other.span().start,
-                            });
-                        }
-                    }
-                } else {
-                    None
-                };
-                let above = self.argument(&format!("argument of \\{name}"))?;
-                let span = span.union(above.span);
-                Ok(Node::new(
-                    NodeKind::XArrow {
-                        mapsto,
-                        above: Box::new(above),
-                        below,
-                    },
-                    span,
-                ))
-            }
+            Cmd::XArrow { mapsto } => self.xarrow(name, span, mapsto),
             Cmd::Substack => self.substack(span),
             Cmd::Color => {
                 let (color, span) = self.color_arguments(name, span)?;
@@ -896,34 +1217,7 @@ impl<'s> Parser<'s> {
                 }
                 Ok(Node::new(NodeKind::List(items), span))
             }
-            Cmd::Ding => {
-                // The pifont escape (fm-j5t.4): a braced decimal code. The
-                // implemented codes live in `commands::ding_char`; anything
-                // else fails precisely, by full name.
-                let (raw, raw_span) = self.raw_group("argument of \\ding")?;
-                let span = span.union(raw_span);
-                let Ok(code) = raw.parse::<u32>() else {
-                    return Err(MathError::Malformed {
-                        what: format!(
-                            "the argument of \\ding must be a pifont number, got '{raw}'"
-                        ),
-                        at: raw_span.start,
-                    });
-                };
-                let Some(ch) = commands::ding_char(code) else {
-                    return Err(MathError::UnsupportedCommand {
-                        name: format!("\\ding{{{code}}}"),
-                        span,
-                    });
-                };
-                Ok(Node::new(
-                    NodeKind::Symbol {
-                        ch,
-                        class: crate::atom::AtomClass::Ord,
-                    },
-                    span,
-                ))
-            }
+            Cmd::Ding => self.ding(span),
             Cmd::SizedDelim { size, class } => {
                 let delim = self.delimiter(&format!("\\{name}"))?;
                 let span = span.union(delim.span);
@@ -936,35 +1230,7 @@ impl<'s> Parser<'s> {
                     span,
                 ))
             }
-            Cmd::Left => {
-                let left = self.delimiter("\\left")?;
-                let (body, reason) = self.descend(span.start, |p| {
-                    p.math_list(Stops {
-                        right: true,
-                        ..Stops::default()
-                    })
-                })?;
-                let right = match reason {
-                    Reason::Right(_) => self.delimiter("\\right")?,
-                    // A `\left` whose `\right` lives in a later piece:
-                    // fragment-close with the null delimiter.
-                    Reason::EndOfInput => Delim {
-                        ch: None,
-                        span: Span::new(self.src.len(), self.src.len()),
-                    },
-                    other => {
-                        return Err(MathError::Malformed {
-                            what: format!(
-                                "\\left at byte {} is closed by something other than \\right",
-                                span.start
-                            ),
-                            at: other.span().start,
-                        });
-                    }
-                };
-                let span = span.union(right.span);
-                Ok(Node::new(NodeKind::LeftRight { left, right, body }, span))
-            }
+            Cmd::Left => self.left_right(span),
             Cmd::Begin => self.environment(span, false),
             Cmd::UnsupportedT2 => Err(MathError::UnsupportedCommand {
                 name: format!("\\{name}"),
@@ -2203,6 +2469,82 @@ enum DotsNext {
     Integral,
     /// Anything else, or the end of the list.
     Other,
+}
+
+/// A dots command without its look-ahead: low or centred dots as one Inner
+/// atom.
+fn plain_dots(kind: Dots, span: Span) -> Node {
+    Node::new(
+        NodeKind::Symbol {
+            ch: if matches!(kind, Dots::Centred | Dots::Integral) {
+                '⋯'
+            } else {
+                '…'
+            },
+            class: crate::atom::AtomClass::Inner,
+        },
+        span,
+    )
+}
+
+/// Which of physics.sty's argument macros a redefined function is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PhysicsForm {
+    /// `\trigbraces`: `m o d()`.
+    TrigBraces,
+    /// `\opbraces`: `m g o d()`.
+    OpBraces,
+}
+
+/// The physics form of a function the grammar names, under the package's
+/// default `trig` option.
+fn physics_form(name: &str) -> Option<PhysicsForm> {
+    match name {
+        "sin" | "cos" | "tan" | "csc" | "sec" | "cot" | "arcsin" | "arccos" | "arctan" | "sinh"
+        | "cosh" | "tanh" | "coth" | "log" | "ln" => Some(PhysicsForm::TrigBraces),
+        "exp" | "det" | "Pr" => Some(PhysicsForm::OpBraces),
+        _ => None,
+    }
+}
+
+/// physics' `\argopen<open>body\argclose<close>`, which is
+/// `\mathopen{}\mathclose{\left<open>body\right<close>}`: an empty Open
+/// atom, then a Close atom around the sized pair. `span` runs from the
+/// opening delimiter through the closing one.
+fn push_argument(items: &mut Vec<Node>, open: char, close: char, (body, span): (Vec<Node>, Span)) {
+    use crate::atom::AtomClass;
+    let (left, right) = (
+        Span::new(span.start, span.start + 1),
+        Span::new(span.end - 1, span.end),
+    );
+    items.push(Node::new(
+        NodeKind::Classed {
+            class: AtomClass::Open,
+            body: Box::new(Node::new(NodeKind::List(Vec::new()), left)),
+        },
+        left,
+    ));
+    let pair = Node::new(
+        NodeKind::LeftRight {
+            left: Delim {
+                ch: Some(open),
+                span: left,
+            },
+            right: Delim {
+                ch: Some(close),
+                span: right,
+            },
+            body,
+        },
+        span,
+    );
+    items.push(Node::new(
+        NodeKind::Classed {
+            class: AtomClass::Close,
+            body: Box::new(pair),
+        },
+        span,
+    ));
 }
 
 /// Classify the token after a dots command. Under pdfTeX amsmath reads a

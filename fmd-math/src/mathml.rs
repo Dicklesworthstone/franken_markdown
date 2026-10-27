@@ -190,6 +190,8 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             style,
         ),
         NodeKind::Frac { num, den, spec } => emit_frac(w, num, den, *spec, style),
+        // TeX's class is spacing, which MathML's renderer chooses itself.
+        NodeKind::Classed { body, .. } => emit_node(w, body, style),
         NodeKind::Boxed { body } => {
             w.open("menclose", &[("notation", "box")]);
             w.open("mstyle", &[("displaystyle", "true")]);

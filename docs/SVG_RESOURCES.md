@@ -39,13 +39,8 @@ not CSS float layout; very wide images may move to their own line.
 Image dimensions use CSS pixels converted to poster points (96 px = 72 pt).
 SVG absolute width/height units and viewBox aspect ratios are recognized;
 relative dimensions use viewBox geometry where present. Without intrinsic
-size or viewBox, the default is 300 by 150 CSS pixels. JPEG dimensions include
-EXIF orientation: quarter-turns and transposes exchange width and height before
-fitting and reserving line space. The original JPEG bytes, including metadata,
-remain embedded for the viewer to orient; the poster does not rotate them a
-second time or recompress pixels. Missing or malformed orientation metadata
-keeps the stored dimensions. The renderer does not interpret a stylesheet to
-infer image dimensions.
+size or viewBox, the default is 300 by 150 CSS pixels. The renderer does not
+interpret a stylesheet to infer image dimensions or apply EXIF orientation.
 
 The same canonical image payload is emitted once in a `symbol` definition,
 then referenced by sized `use` elements. Repeated occurrences may have distinct
@@ -69,7 +64,6 @@ Reference contracts:
 - SVG image embedding: https://www.w3.org/TR/SVG2/embedded.html
 - Secure image processing: https://www.w3.org/TR/SVG2/conform.html
 - Intrinsic dimensions: https://www.w3.org/TR/SVG2/coords.html#IntrinsicSizing
-- Image orientation and displayed dimensions: https://www.w3.org/TR/css-images-3/#the-image-orientation
 
 PNG containers require valid chunk bounds/CRCs, IHDR, IDAT and IEND; JPEG
 metadata is scanned through its frame and scan headers; SVG receives bounded,

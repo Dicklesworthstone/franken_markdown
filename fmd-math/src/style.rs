@@ -246,7 +246,9 @@ where
             };
             walk_list(body, StyleCtx::new(style), visit);
         }
-        NodeKind::MathFont { body, .. } | NodeKind::Phantom { body, .. } => {
+        NodeKind::MathFont { body, .. }
+        | NodeKind::Phantom { body, .. }
+        | NodeKind::Classed { body, .. } => {
             style_walk(body, ctx, visit);
         }
         NodeKind::MathChoice { branches } => {

@@ -109,7 +109,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
 | PNG, SVG, and JPEG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG/JPEG destinations, and PDF renders fetch remote http(s) images at render time (timeout + size cap, `--no-remote-images` to opt out, clean alt-text fallback offline). HTML embeds supported assets as data URIs; PDF draws PNG/SVG directly and embeds JPEG bytes losslessly via `/DCTDecode`. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
-| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, missing `url(...)` paint fallback alpha, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG/JPEG data URIs, and current frankenmermaid output |
+| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, missing `url(...)` paint fallback alpha, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
 | Native safety | HTML, PDF, config, and batch outputs are staged where applicable. `--to both` rolls back sibling outputs on later failure, and the CLI refuses to overwrite the input file |
@@ -136,7 +136,7 @@ layout path or adding runtime dependencies.
 | Table quality | The allocator measures content ranges and spends column width where it reduces wrapping. Performance-plan style tables no longer force narrow, ugly header wraps |
 | Syntax highlighting | Rust, Python, JavaScript/TypeScript, JSON/JSONC, Bash/shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS/SCSS/Sass, Markdown, and Mermaid/MMD use the same clean-room highlighting model in HTML and PDF |
 | Diagram support | ASCII diagrams and frankenmermaid-generated SVGs are now first-class documentation assets in the PDF path instead of screenshots or browser-only fallbacks |
-| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `hwb()` colors, `color-mix()` alpha, missing paint-server fallback alpha, and embedded PNG/JPEG data URIs |
+| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `hwb()` colors, `color-mix()` alpha, missing paint-server fallback alpha, and embedded PNG data URIs |
 | Agent and CI friendliness | JSON capabilities, JSON doctor output, robot docs, stable exit codes, `SOURCE_DATE_EPOCH`, staged writes, and no-default/WASM gates make the tool easy to script and verify |
 | Performance work | Parser, HTML, PDF layout/writing, font subsetting, compression, SVG drawing, and batch orchestration hot paths have been profiled and optimized in behavior-preserving passes with golden-output checks |
 
@@ -957,12 +957,7 @@ Honest about what the renderer does not do yet.
   auto-loads relative local image destinations for file-input HTML/PDF renders,
   HTML embeds supported assets as data URIs, and `--pdf-image` can provide or
   override assets explicitly for HTML, PDF, SVG and EPUB, including stdin and
-  raw-text input with extensionless destination keys. JPEG EXIF orientation is
-  honored for standalone figures, inline images, running header/footer images,
-  and JPEGs embedded in SVG, including mirrored orientations. Layout uses the
-  displayed dimensions while PDF embeds the original JPEG bytes without
-  recompression. Missing or malformed orientation metadata retains ordinary
-  unrotated placement.
+  raw-text input with extensionless destination keys.
 - **PDF footnotes.** Notes print at the foot of the page carrying their first
   reference, with linked superscript marks; unreferenced notes and notes taller
   than 40% of a page fall back to a trailing Notes section, and notes are never
@@ -973,7 +968,7 @@ Honest about what the renderer does not do yet.
   `math_fallback`.
 - **SVG support is practical, not browser-complete.** The PDF renderer covers
   the shapes, gradients, masks, clips, markers, CSS variables/selectors,
-  embedded PNG/JPEGs, marker view boxes/orientation/units, and `paint-order` behavior
+  embedded PNGs, marker view boxes/orientation/units, and `paint-order` behavior
   needed by the current showcase and frankenmermaid output. Unsupported SVG
   features are reported as structured render warnings rather than silently
   pretending to match a browser.

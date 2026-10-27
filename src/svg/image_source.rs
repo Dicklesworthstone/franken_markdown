@@ -3,11 +3,6 @@
 
 #[path = "image_source/data_uri.rs"]
 mod data_uri;
-// The SVG backend is also compiled by a standalone #[path] test harness. Reuse
-// the PDF metadata reader by source path so both entry points use the same
-// bounded EXIF interpretation without exposing a new public API.
-#[path = "../pdf/jpeg_orientation.rs"]
-mod jpeg_orientation;
 
 use super::SvgWarning;
 use std::collections::BTreeMap;
@@ -39,11 +34,6 @@ pub(super) fn inspect(bytes: &[u8]) -> Result<(&'static str, f64, f64), SvgWarni
     } else if bytes.starts_with(&[0xff, 0xd8]) {
         let (w, h) = jpeg_size(bytes)
             .ok_or_else(|| failure("svg_image_invalid", "invalid JPEG container"))?;
-        // The embedded bytes retain EXIF for the viewer to orient the pixels.
-        // Reserve their displayed aspect ratio, including quarter-turns, so
-        // fitting and following lines agree with the image the viewer draws.
-        let (w, h) = jpeg_orientation::Orientation::from_jpeg(bytes)
-            .display_dimensions(u32::from(w), u32::from(h));
         ("image/jpeg", f64::from(w), f64::from(h))
     } else {
         let source = std::str::from_utf8(bytes).map_err(|_| {

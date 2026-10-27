@@ -550,6 +550,115 @@ fn amsmath_dots_read_the_next_token() {
     }
 }
 
+/// The Reference's template loads physics, whose default `trig` option gives
+/// the trig functions, `\log`, `\ln`, `\exp`, `\det` and `\Pr` argument forms
+/// (franken_manim fm-fm-physics-trig-parens-r11-nou8): `\cos(x)` is
+/// `\cos\mathopen{}\mathclose{\left(x\right)}`, `\cos[2](x)` raises the 2,
+/// and `\exp{x}` sets visible braces. The default pack carries them; the
+/// empty pack keeps plain LaTeX. TeX's display boxes under each preamble, pt.
+#[test]
+fn physics_function_arguments_follow_the_default_pack() {
+    use fmd_math::MacroSet;
+    let e = engine();
+    let close = |ours: f64, tex_pt: f64| (ours - tex_pt / 10.0).abs() < 1e-4;
+    let default = MacroSet::pack("fmd-math/pack/default").unwrap();
+    for (tex, w, h, d) in [
+        (r"\cos(x)", 26.88197, 7.5, 2.5),
+        (r"\cos (x)", 26.88197, 7.5, 2.5),
+        (r"\cos(x)y", 32.14357, 7.5, 2.5),
+        (r"\cos(x)(y)", 39.92137, 7.5, 2.5),
+        (r"\cos(x),", 29.65976, 7.5, 2.5),
+        (r"\cos(x)+1", 44.10413, 7.5, 2.5),
+        (r"a\cos(x)", 33.83449, 7.5, 2.5),
+        (r"\cos((a)b)", 38.52205, 7.5, 2.5),
+        (r"\cos(\frac{a}{b})", 33.01924, 11.50008, 6.85951),
+        (r"\cos[2](x)", 31.3681, 8.64003, 2.5),
+        (r"\cos[2] (x)", 31.3681, 8.64003, 2.5),
+        (r"\sin[2] x", 28.54866, 7.5, 2.5),
+        (r"\sin^2(x)", 30.257, 8.7175, 2.5),
+        (r"\log(x)", 26.40976, 7.5, 2.5),
+        (r"\exp(x)", 28.77089, 7.5, 2.5),
+        (r"\exp{x}", 30.99312, 7.5, 2.5),
+        (r"\det(A)", 29.16673, 7.5, 2.5),
+        // Inside the argument `\dots` sees `\argclose`, not `)`: no `\,`.
+        (r"\sin(\dots)", 31.72221, 7.5, 2.5),
+    ] {
+        let l = e
+            .typeset_with_macros(tex, Style::Display, &default)
+            .unwrap();
+        assert!(
+            close(l.width, w) && close(l.height, h) && close(l.depth, d),
+            "{tex}: {} x ({} + {}) against TeX's {w} x ({h} + {d}) pt",
+            l.width,
+            l.height,
+            l.depth
+        );
+    }
+    // Plain LaTeX (article + amsmath): ordinary parentheses and braces.
+    let empty = MacroSet::pack("fmd-math/pack/empty").unwrap();
+    for (tex, w, h, d) in [
+        (r"\cos(\frac{a}{b})", 28.85258, 11.07062, 6.85951),
+        (r"\exp{x}", 22.65971, 4.30554, 1.94444),
+    ] {
+        let l = e.typeset_with_macros(tex, Style::Display, &empty).unwrap();
+        assert!(
+            close(l.width, w) && close(l.height, h) && close(l.depth, d),
+            "{tex} without physics: {l:?}"
+        );
+    }
+    // A piece of a multi-part Tex keeps the plain operator.
+    assert!(
+        e.typeset_with_macros(r"\cos(", Style::Display, &default)
+            .is_ok()
+    );
+}
+
+/// LaTeX's operator names are `\mathop{\operator@font …}`: the word is a
+/// sub-list, so its last character's italic correction (cmr10's `g`,
+/// 0.01389 em) stays inside the operator's box. TeX's display widths under
+/// article + amsmath, in pt.
+#[test]
+fn operator_names_keep_their_last_italic_correction() {
+    let e = engine();
+    for (tex, tex_pt) in [
+        (r"\log x", 20.29858),
+        (r"\arg z", 20.8125),
+        (r"\deg x", 22.5208),
+        (r"\lg x", 15.29857),
+        (r"\max x", 25.99307),
+        (r"\operatorname{erg} x", 20.8819),
+    ] {
+        let width = e.typeset(tex, Style::Display).unwrap().width;
+        assert!(
+            (width - tex_pt / 10.0).abs() < 1e-4,
+            "{tex}: {width} em against TeX's {tex_pt} pt"
+        );
+    }
+}
+
+/// TeX's class primitives set their argument as one atom of the class.
+/// TeX's display widths under article + amsmath, in pt.
+#[test]
+fn class_primitives_space_their_atom() {
+    let e = engine();
+    for (tex, tex_pt) in [
+        (r"x\mathrel{y}z", 21.62259),
+        (r"x\mathbin{y}z", 20.5115),
+        (r"x\mathopen{y}z", 16.06717),
+        (r"x\mathclose{y}z", 16.06717),
+        (r"x\mathpunct{y}z", 17.7338),
+        (r"x\mathinner{y}z", 19.40042),
+        (r"x\mathord{=}z", 18.58337),
+        (r"\mathrel{=}", 7.7778),
+    ] {
+        let width = e.typeset(tex, Style::Display).unwrap().width;
+        assert!(
+            (width - tex_pt / 10.0).abs() < 1e-4,
+            "{tex}: {width} em against TeX's {tex_pt} pt"
+        );
+    }
+}
+
 /// amsmath's `\overset` and `\underset` take their class from `\binrel@`:
 /// the base's spaces against two empty Ords make a relation (thick) or a
 /// binary operator (medium), otherwise a braced Ord. The argument's own

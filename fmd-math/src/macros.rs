@@ -66,6 +66,10 @@ pub struct MacroSet {
     /// `''`, `--` and `---` as the characters they are made of, not as
     /// the font's ligatures (curly double quotes, en and em dashes).
     disable_ligatures: bool,
+    /// The physics package with its default `trig` option: the trig
+    /// functions, `\log`, `\ln`, `\exp`, `\det` and `\Pr` take its argument
+    /// forms (`\cos(x)` is `\cos\mathopen{}\mathclose{\left(x\right)}`).
+    physics: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,8 +101,11 @@ impl MacroSet {
                 // The Reference's default template declares `\minus` and ends
                 // with microtype's `\DisableLigatures{encoding = *,
                 // family = *}`, which text mode honors (franken_manim
-                // fm-aia1). The rest of its preamble is package loading
-                // with no native meaning. Keep the declared name for
+                // fm-aia1). It loads physics with the default `trig`
+                // option, whose function arguments the grammar sets
+                // (franken_manim fm-fm-physics-trig-parens-r11-nou8). The
+                // rest of its preamble is package loading with no native
+                // meaning. Keep the declared name for
                 // newcommand/renewcommand, but let the grammar select its
                 // authored AMS glyph instead of expanding it to a hyphen.
                 let mut defs = BTreeMap::new();
@@ -106,6 +113,7 @@ impl MacroSet {
                 Some(Self {
                     defs,
                     disable_ligatures: true,
+                    physics: true,
                 })
             }
             "fmd-math/pack/basic" | "basic" | "fmd-math/pack/empty" | "empty" => Some(Self::new()),
@@ -171,15 +179,17 @@ impl MacroSet {
 
     /// A deterministic serialization of the whole table — the cache-key
     /// ingredient (hash these bytes; equal bytes ⇔ equal macro semantics).
-    /// Version 2: a version tag, ligature flag and u64-LE definition count;
+    /// Version 3: a version tag, ligature and physics flags and u64-LE
+    /// definition count;
     /// then each sorted name as u64-LE byte length + UTF-8, followed by a
     /// native tag (0), or substitution tag (1), parameter byte and a
     /// length-prefixed UTF-8 body. Body control characters cannot imitate
     /// another definition, and native bindings differ from substitutions.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut out = b"fmd-math-macroset-v2\x1e".to_vec();
+        let mut out = b"fmd-math-macroset-v3\x1e".to_vec();
         out.push(u8::from(self.disable_ligatures));
+        out.push(u8::from(self.physics));
         out.extend_from_slice(&(self.defs.len() as u64).to_le_bytes());
         for (name, def) in &self.defs {
             out.extend_from_slice(&(name.len() as u64).to_le_bytes());
@@ -203,6 +213,14 @@ impl MacroSet {
     #[must_use]
     pub fn ligatures(&self) -> bool {
         !self.disable_ligatures
+    }
+
+    /// Whether the physics package's function arguments apply (`\cos(x)`
+    /// auto-sizes its parentheses). The default pack loads it, as the
+    /// Reference's template does.
+    #[must_use]
+    pub fn physics(&self) -> bool {
+        self.physics
     }
 }
 

@@ -689,8 +689,15 @@ impl Engine {
                 };
                 self.op_glyph(*ch, node.span, ctx, scale)
             }
+            // LaTeX's `\log` is `\mathop{\operator@font log}`: the word is a
+            // sub-list, whose last character keeps its italic correction
+            // inside the operator's box (tex.web §752), and a sub-list
+            // nucleus gives make_op no δ of its own (§749).
             NodeKind::OpName { name, .. } => {
-                self.word_box(name, node.span, None, ctx, FACE_REGULAR, false)
+                let mut laid = self.word_box(name, node.span, None, ctx, FACE_REGULAR, false)?;
+                laid.boxx.width += laid.italic;
+                laid.italic = 0.0;
+                Ok(laid)
             }
             NodeKind::TextRun { text, char_spans } => {
                 self.word_box(text, node.span, Some(char_spans), ctx, text_face(ctx), true)
@@ -818,6 +825,8 @@ impl Engine {
             // In its own function so this recursive frame does not grow
             // (the nesting bound's stack margin).
             NodeKind::Boxed { body } => self.boxed(body, node.span, ctx),
+            // The class only spaces the atom; the nucleus lays out as itself.
+            NodeKind::Classed { body, .. } => self.lay_node(body, ctx),
             NodeKind::Cancel { kind, body } => self.cancel(body, *kind, node.span, ctx),
             NodeKind::Logo(kind) => self.logo(*kind, node.span, ctx),
             NodeKind::MathChoice { branches } => {

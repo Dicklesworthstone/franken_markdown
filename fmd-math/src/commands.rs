@@ -112,6 +112,8 @@ pub(crate) enum Cmd {
     Mod,
     /// One of amsmath's dots, which read the token after them.
     Dots(Dots),
+    /// TeX's `\mathord` … `\mathinner`: the argument as one atom of a class.
+    Classed(AtomClass),
     /// An accent command.
     Accent(AccentKind),
     /// A two-argument fraction command.
@@ -349,6 +351,14 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         // `\vdots` is a plain Ord box. LaTeX's `\hdots` is `\ldots`.
         // amsmath's own dots read the token after them (`Parser::dots`).
         "ldots" | "hdots" => sym('…', Inner),
+        // TeX's class primitives (`\mathop` is a big operator, not here).
+        "mathord" => Cmd::Classed(Ord),
+        "mathbin" => Cmd::Classed(Bin),
+        "mathrel" => Cmd::Classed(Rel),
+        "mathopen" => Cmd::Classed(Open),
+        "mathclose" => Cmd::Classed(Close),
+        "mathpunct" => Cmd::Classed(Punct),
+        "mathinner" => Cmd::Classed(Inner),
         "dots" => Cmd::Dots(Dots::Auto),
         "dotso" => Cmd::Dots(Dots::Other),
         "dotsc" => Cmd::Dots(Dots::Comma),

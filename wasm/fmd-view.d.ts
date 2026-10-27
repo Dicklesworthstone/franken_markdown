@@ -30,6 +30,16 @@ export interface FmdViewEventMap {
  * The document theme is scoped to the shadow host. Embedded body/mono faces
  * have per-render family names; replacing or disconnecting a view retires only
  * its registrations. A failed render/font load retains the previous view.
+ *
+ * Relative link/image URLs in fetched HTTP(S) Markdown resolve against the
+ * final response URL, including redirects. Inline Markdown and opaque data/blob
+ * sources retain ordinary host-relative URLs; explicit URL schemes and embedded
+ * image data stay unchanged. Unmodified local-fragment clicks and native Enter
+ * activation scroll and focus targets inside this component without changing
+ * the host URL/history. Same-source path/query links with fragments are local;
+ * external, modified, download and alternate-target links keep browser behavior.
+ * The fmd-rendered byte count describes the original renderer result, before
+ * view-only URL, selector and font adaptations.
  */
 export interface FmdView extends HTMLElement {
   addEventListener<K extends keyof FmdViewEventMap>(

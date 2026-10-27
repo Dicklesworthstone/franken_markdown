@@ -109,12 +109,33 @@ the original renderer byte counts and diagnostics. A font/render failure emits
 `fmd-error` and keeps the previous view. This uses browser CSSOM and FontFace
 APIs without adding a framework or changing the native renderer.
 
+Fetched HTTP(S) Markdown resolves relative links and images from the final
+response URL, including redirects. A view of `docs/guide.md` can therefore use
+`images/chart.png` or `../intro.md` independently of the embedding page's path.
+The browser loads those image URLs under the host's normal content policy;
+embedded data images retain their exact URLs. Inline Markdown and opaque
+`data:`/`blob:` sources retain ordinary host-relative resource URLs.
+
+Heading, table-of-contents and footnote links navigate the component's own
+shadow-tree targets. Clicking or pressing Enter scrolls and moves keyboard focus
+to the target; the next Tab continues from there. Matching source-document links
+with fragments behave the same way, including relative and absolute spellings
+with the same path and query. Host URL/history and sibling component IDs remain
+independent. Modified clicks, downloads, other browsing targets, external links
+and links without a matching target retain normal browser behavior. Failed or
+superseded renders keep the previous publication's navigation intact.
+
 Run `node wasm/tests/run_fmd_view.mjs` for the browser lifecycle suite (explicit
 renderer boundary fixtures and delayed native font decoding), or
 `FMD_WASM_PKG=/absolute/path/to/pkg node wasm/tests/fmd_view_typography.browser.mjs`
 for real generated-renderer typography, font isolation and standalone metric
 comparisons. Both accept the installed Playwright/Chromium environment options
 above. A released package remains historical artifact evidence.
+`node wasm/tests/fmd_view_navigation.browser.mjs` uses the same installed browser
+options to exercise real HTTP redirects, image loads, shadow DOM, focus and
+native keyboard activation against a loopback fixture server. Its renderer is an
+explicit boundary double, so the results establish component navigation behavior
+and preserve renderer byte-count reporting; they do not qualify generated WASM.
 
 ## Browser Usage
 

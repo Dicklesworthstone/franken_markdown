@@ -335,7 +335,7 @@ fn optional_group(
 fn skip_spaces(toks: &[Tok<'_>], index: &mut usize) {
     while toks
         .get(*index)
-        .is_some_and(|token| matches!(token.kind, TokKind::Space))
+        .is_some_and(|token| matches!(token.kind, TokKind::Space | TokKind::Par))
     {
         *index += 1;
     }
@@ -834,6 +834,7 @@ mod tests {
                 TokKind::Tie => "~".into(),
                 TokKind::MathShift => "$".into(),
                 TokKind::Space => " ".into(),
+                TokKind::Par => "\n\n".into(),
                 TokKind::Char(c) => (*c).to_string(),
             })
             .collect())

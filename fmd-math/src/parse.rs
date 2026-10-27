@@ -104,7 +104,7 @@ pub(crate) fn parse_text_mode_with<'s>(
     let mut parser = Parser::with_tokens(source, toks);
     parser.ligatures = macros.ligatures();
     parser.physics = macros.physics();
-    let (items, reason) = parser.text_list(false, false)?;
+    let (items, reason) = parser.text_list(false, false, true)?;
     match reason {
         Reason::EndOfInput => Ok(Node::new(NodeKind::List(items), Span::new(0, source.len()))),
         Reason::EndGroup(span) => Err(MathError::Malformed {
@@ -232,7 +232,10 @@ impl<'s> Parser<'s> {
 
     #[inline(always)]
     fn skip_spaces(&mut self) {
-        while matches!(self.peek().map(|t| t.kind), Some(TokKind::Space)) {
+        while matches!(
+            self.peek().map(|t| t.kind),
+            Some(TokKind::Space | TokKind::Par)
+        ) {
             self.pos += 1;
         }
     }
@@ -275,7 +278,9 @@ impl<'s> Parser<'s> {
                 break Reason::EndOfInput;
             };
             match tok.kind {
-                TokKind::Space => {
+                // Math mode ignores whitespace; a blank line there is a TeX
+                // error the grammar tolerates, as it always has.
+                TokKind::Space | TokKind::Par => {
                     self.pos += 1;
                 }
                 TokKind::EndGroup => {
@@ -399,8 +404,8 @@ impl<'s> Parser<'s> {
     ///   comma;
     /// - `\dotsi` is `\!\cdots`.
     fn dots(&self, kind: Dots, span: Span, items: &mut Vec<Node>) {
-        let next_index =
-            (self.pos..self.toks.len()).find(|&i| !matches!(self.toks[i].kind, TokKind::Space));
+        let next_index = (self.pos..self.toks.len())
+            .find(|&i| !matches!(self.toks[i].kind, TokKind::Space | TokKind::Par));
         let next = match next_index {
             // A physics argument's closing delimiter is xparse's, and
             // `\argclose` comes after the argument instead.
@@ -1361,7 +1366,8 @@ impl<'s> Parser<'s> {
                 self.pos += 1;
                 // `\text{…}` and its kin are boxes: horizontal mode from the
                 // first token, so a leading space is glue (`n\text{ terms}`).
-                let (items, reason) = self.descend(tok.span.start, |p| p.text_list(false, true))?;
+                let (items, reason) =
+                    self.descend(tok.span.start, |p| p.text_list(false, true, false))?;
                 match reason {
                     Reason::EndGroup(close) => Ok((items, tok.span.union(close))),
                     Reason::EndOfInput => Err(MathError::Malformed {
@@ -1859,7 +1865,8 @@ impl<'s> Parser<'s> {
         let mut lines: Vec<Node> = Vec::new();
         let end_span = loop {
             let line_fallback = self.here();
-            let (items, reason) = self.descend(begin_span.start, |p| p.text_list(true, false))?;
+            let (items, reason) =
+                self.descend(begin_span.start, |p| p.text_list(true, false, true))?;
             let line_span = list_span(&items, line_fallback);
             lines.push(Node::new(NodeKind::List(items), line_span));
             match reason {
@@ -2077,10 +2084,18 @@ impl<'s> Parser<'s> {
     /// the line ([`Reason::CellBreak`]) and `\end{name}` ends the body
     /// ([`Reason::EnvEnd`]).
     #[allow(clippy::too_many_lines)]
-    fn text_list(&mut self, env: bool, started: bool) -> Result<(Vec<Node>, Reason), MathError> {
+    fn text_list(
+        &mut self,
+        env: bool,
+        started: bool,
+        paragraph: bool,
+    ) -> Result<(Vec<Node>, Reason), MathError> {
         let mut items: Vec<Node> = Vec::new();
         let mut run = String::new();
         let mut run_spans: Vec<Span> = Vec::new();
+        // The line break a paragraph end last made, which the end of the
+        // list drops: a final \par sets no empty line.
+        let mut par_break: Option<usize> = None;
         let reason = loop {
             let Some(tok) = self.peek().cloned() else {
                 break Reason::EndOfInput;
@@ -2101,6 +2116,31 @@ impl<'s> Parser<'s> {
                     if !run.is_empty() || line_begun(&items, started) {
                         run.push(' ');
                         run_spans.push(tok.span);
+                    }
+                }
+                // A blank line or `\par` (`paragraph`: the mainland or an
+                // alignment environment's line) ends the paragraph, as `\\`
+                // ends a line under the Reference's `\centering`: its last
+                // glue goes (\par's \unskip), and a line not begun, or
+                // already ended, ends nothing. In a box or a group it stays an
+                // interword space.
+                TokKind::Par => {
+                    self.pos += 1;
+                    if !paragraph {
+                        if !run.is_empty() || line_begun(&items, started) {
+                            run.push(' ');
+                            run_spans.push(tok.span);
+                        }
+                        continue;
+                    }
+                    unskip(&mut items, &mut run, &mut run_spans);
+                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
+                    if line_begun(&items, false) {
+                        if env {
+                            break Reason::CellBreak(tok.span);
+                        }
+                        items.push(Node::new(NodeKind::Linebreak, tok.span));
+                        par_break = Some(items.len() - 1);
                     }
                 }
                 TokKind::Tie => {
@@ -2170,7 +2210,7 @@ impl<'s> Parser<'s> {
                     let inner_started = !run.is_empty() || line_begun(&items, started);
                     flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     let (body, reason) =
-                        self.descend(tok.span.start, |p| p.text_list(false, inner_started))?;
+                        self.descend(tok.span.start, |p| p.text_list(false, inner_started, false))?;
                     match reason {
                         Reason::EndGroup(close) => {
                             items.push(Node::new(NodeKind::List(body), tok.span.union(close)));
@@ -2245,13 +2285,17 @@ impl<'s> Parser<'s> {
                         }
                         _ => {}
                     }
-                    // LaTeX's `\\` begins with `\unskip`: the interword
-                    // space before a line break is not part of the line it
-                    // ends, so a centered or flush-right line does not
-                    // carry half a space of offset.
-                    if c == '\\' && run.ends_with(' ') {
-                        run.pop();
-                        run_spans.pop();
+                    // LaTeX's `\\` begins with `\unskip`: the glue before a
+                    // line break (an interword space, a `\quad`) is not part
+                    // of the line it ends, so a centered or flush-right line
+                    // does not carry it as offset. In the alignment
+                    // environments `\\` is \@centercr, whose \par drops one
+                    // more glue.
+                    if c == '\\' {
+                        unskip(&mut items, &mut run, &mut run_spans);
+                        if env {
+                            unskip(&mut items, &mut run, &mut run_spans);
+                        }
                     }
                     flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     match c {
@@ -2281,6 +2325,10 @@ impl<'s> Parser<'s> {
                         }
                     }
                 }
+                TokKind::ControlWord("par") if paragraph => {
+                    // `\par` is a blank line's paragraph end, spelled out.
+                    self.toks[self.pos].kind = TokKind::Par;
+                }
                 TokKind::ControlWord(name) => {
                     flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     if env && name == "end" {
@@ -2297,6 +2345,9 @@ impl<'s> Parser<'s> {
             }
         };
         flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
+        if par_break.is_some_and(|index| index + 1 == items.len()) {
+            items.pop();
+        }
         Ok((items, reason))
     }
 
@@ -2605,6 +2656,34 @@ fn line_begun(items: &[Node], started: bool) -> bool {
         .take_while(|node| !breaks(node))
         .any(sets_material)
         || (started && !items.iter().any(breaks))
+}
+
+/// TeX's `\unskip` at the end of a line: the last glue goes, whether a
+/// trailing interword space of the pending run or the last finished run, or
+/// an `\hskip` (`\quad`, `\hspace`, a control space). The text-mode `\,`
+/// family are kerns, which it leaves.
+fn unskip(items: &mut Vec<Node>, run: &mut String, run_spans: &mut Vec<Span>) {
+    if run.ends_with(' ') {
+        run.pop();
+        run_spans.pop();
+        return;
+    }
+    if !run.is_empty() {
+        return;
+    }
+    match items.last_mut().map(|node| &mut node.kind) {
+        Some(NodeKind::Space(kind)) if !kind.is_mu_glue() => {
+            items.pop();
+        }
+        Some(NodeKind::Skip(_)) => {
+            items.pop();
+        }
+        Some(NodeKind::TextRun { text, char_spans }) if text.ends_with(' ') => {
+            text.pop();
+            char_spans.pop();
+        }
+        _ => {}
+    }
 }
 
 fn flush_run(items: &mut Vec<Node>, run: &mut String, run_spans: &mut Vec<Span>, ligatures: bool) {

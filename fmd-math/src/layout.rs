@@ -1060,8 +1060,7 @@ impl Engine {
                 // the block's alignment. Their `\\` is LaTeX's \par, so
                 // declarations carry from line to line, and under a line
                 // width a line wider than it breaks as TeX breaks it. The
-                // stack is \vcenter'd on the axis, as the matrix family's
-                // grids are.
+                // block keeps its first line's baseline, as a paragraph does.
                 let paragraph = ctx.line_width.map(|width| Paragraph {
                     width,
                     align: *align,
@@ -1077,29 +1076,13 @@ impl Engine {
                     line_ctx = after;
                     paragraph_lines(boxx, after, paragraph, &mut laid);
                 }
-                if laid.is_empty() {
-                    return Ok(Laid {
-                        boxx: MBox::empty(BoxKind::Vertical),
-                        italic: 0.0,
-                        char_glyph: None,
-                    });
-                }
-                let stack = self.stack_lines(laid, *align, 0.0)?;
-                let total = stack.height + stack.depth;
-                let axis = self.consts_at(&ctx).axis_height * ctx.size();
-                let height = total / 2.0 + axis;
+                let boxx = if laid.is_empty() {
+                    MBox::empty(BoxKind::Vertical)
+                } else {
+                    self.stack_lines(laid, *align, 0.0)?
+                };
                 Ok(Laid {
-                    boxx: MBox {
-                        kind: BoxKind::Vertical,
-                        width: stack.width,
-                        height,
-                        depth: (total / 2.0 - axis).max(0.0),
-                        children: vec![Positioned {
-                            dx: 0.0,
-                            dy: height - stack.height,
-                            node: MNode::Box(stack),
-                        }],
-                    },
+                    boxx,
                     italic: 0.0,
                     char_glyph: None,
                 })

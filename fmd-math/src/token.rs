@@ -6,7 +6,8 @@
 //! character, `%` opens a comment running to end of line, and the special
 //! characters `{ } ^ _ & ~ $` lex to their own token kinds. Everything else
 //! is a character token. Whitespace runs collapse to one [`TokKind::Space`]
-//! token (math mode ignores it; text mode renders one interword space).
+//! token (math mode ignores it; text mode renders one interword space), and a
+//! run holding a blank line to one [`TokKind::Par`], TeX's paragraph end.
 //!
 //! The lexer is infallible: every byte sequence lexes to a token stream.
 //! Errors (unknown commands, malformed structure) are the parser's to
@@ -44,6 +45,8 @@ pub(crate) enum TokKind<'src> {
     MathShift,
     /// A run of whitespace.
     Space,
+    /// A run of whitespace holding a blank line, which TeX reads as `\par`.
+    Par,
     /// Any other single character.
     Char(char),
 }
@@ -77,9 +80,14 @@ pub(crate) fn lex(source: &str) -> Vec<Tok<'_>> {
                                 break;
                             }
                         }
-                        // TeX consumes whitespace after a control word.
-                        while let Some(&(_, c)) = iter.peek() {
+                        // TeX consumes whitespace after a control word, but
+                        // a blank line there is still a paragraph end: the
+                        // line after the word's own begins in state N.
+                        let (mut newlines, mut gap_end) = (0, end);
+                        while let Some(&(i, c)) = iter.peek() {
                             if c.is_whitespace() {
+                                newlines += usize::from(c == '\n');
+                                gap_end = i + c.len_utf8();
                                 iter.next();
                             } else {
                                 break;
@@ -90,6 +98,12 @@ pub(crate) fn lex(source: &str) -> Vec<Tok<'_>> {
                             kind: TokKind::ControlWord(name),
                             span: Span::new(start, end),
                         });
+                        if newlines >= 2 {
+                            toks.push(Tok {
+                                kind: TokKind::Par,
+                                span: Span::new(end, gap_end),
+                            });
+                        }
                     }
                     Some((i, c)) => {
                         iter.next();
@@ -117,8 +131,10 @@ pub(crate) fn lex(source: &str) -> Vec<Tok<'_>> {
             '$' => toks.push(single(TokKind::MathShift, start, 1)),
             c if c.is_whitespace() => {
                 let mut end = start + c.len_utf8();
+                let mut newlines = usize::from(c == '\n');
                 while let Some(&(i, c2)) = iter.peek() {
                     if c2.is_whitespace() {
+                        newlines += usize::from(c2 == '\n');
                         end = i + c2.len_utf8();
                         iter.next();
                     } else {
@@ -126,7 +142,11 @@ pub(crate) fn lex(source: &str) -> Vec<Tok<'_>> {
                     }
                 }
                 toks.push(Tok {
-                    kind: TokKind::Space,
+                    kind: if newlines >= 2 {
+                        TokKind::Par
+                    } else {
+                        TokKind::Space
+                    },
                     span: Span::new(start, end),
                 });
             }

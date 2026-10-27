@@ -2825,3 +2825,73 @@ fn size_declarations_set_latexs_baselineskip() {
         );
     }
 }
+
+#[test]
+fn a_blank_line_ends_the_paragraph() {
+    // TeX reads a blank line as \par, which under the Reference's
+    // \centering ends the line as `\\` does. Repeated blank lines, a blank
+    // line after `\\` and a final one set no empty line: every variant is
+    // TeX's two-line box (6.94444 pt above the first baseline, 12 pt to the
+    // second, 1.94444 pt below it) with "Special" (3.08334 em) on line one.
+    use fmd_math::MacroSet;
+    let pack = MacroSet::pack("fmd-math/pack/default").unwrap();
+    for body in [
+        "Special\n\nproblem",
+        "Special\n\n\n\nproblem\n\n",
+        "Special \\\\\n\nproblem",
+        "Special\\par problem",
+    ] {
+        let source = format!("\\begin{{center}}{body}\\end{{center}}");
+        let layout = engine().typeset_text_with_macros(&source, &pack).unwrap();
+        let lines = text_lines(&layout);
+        assert_eq!(lines.len(), 2, "{body:?}: {lines:?}");
+        assert_eq!(lines[0].3, "Special", "{body:?}");
+        assert!(
+            (lines[0].2 - lines[0].1 - 3.08334).abs() < 1e-4,
+            "{body:?}: {lines:?}"
+        );
+        assert!(
+            ((lines[0].1 + lines[0].2) - (lines[1].1 + lines[1].2)).abs() < 1e-4,
+            "{body:?}"
+        );
+        // The block keeps its first line's baseline.
+        assert!(
+            (layout.height - 0.694444).abs() < 1e-4,
+            "{body:?}: {}",
+            layout.height
+        );
+        assert!(
+            (layout.depth - 1.394444).abs() < 1e-4,
+            "{body:?}: {}",
+            layout.depth
+        );
+    }
+    // In a box a blank line is only a space, as before.
+    let boxed = engine()
+        .typeset_text_with_macros("\\text{a\n\nb}", &pack)
+        .unwrap();
+    assert_eq!(text_lines(&boxed).len(), 1);
+}
+
+#[test]
+fn a_line_break_drops_the_glue_before_it() {
+    // `\\` in the alignment environments is LaTeX's \@centercr: \unskip
+    // drops the `\quad`, and \par the space before it, so the first line is
+    // "Probability of the evidence" (TeX: 11.794469 em) and stays centred on
+    // the second (10.352795 em).
+    use fmd_math::MacroSet;
+    let pack = MacroSet::pack("fmd-math/pack/default").unwrap();
+    let layout = engine()
+        .typeset_text_with_macros(
+            r"\begin{center}Probability of the evidence \quad \\if the hypothesis is true\end{center}",
+            &pack,
+        )
+        .unwrap();
+    let lines = text_lines(&layout);
+    assert_eq!(lines.len(), 2);
+    assert!(((lines[0].1 + lines[0].2) - (lines[1].1 + lines[1].2)).abs() < 1e-4);
+    assert_eq!(lines[0].3, "Probabilityoftheevidence");
+    let (first, second) = (lines[0].2 - lines[0].1, lines[1].2 - lines[1].1);
+    assert!((first - 11.794469).abs() < 1e-4, "{first}");
+    assert!((second - 10.352795).abs() < 1e-4, "{second}");
+}

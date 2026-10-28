@@ -2958,3 +2958,40 @@ fn delimiters_walk_texs_size_chain() {
         );
     }
 }
+
+#[test]
+fn script_greek_capitals_take_cmr7_and_cmr5() {
+    // cmr's upright Greek capitals (codes 0-10) at script and scriptscript
+    // size are cmr7's and cmr5's own designs, as digits are; scaling cmr10's
+    // set them 0.0736 em narrow in a script (franken_manim
+    // fm-script-greek-capitals-r12-nbcf, found by its grammar differential).
+    // TeX Live's \showbox under the Reference preamble (display style,
+    // amsmath's \if@display), in pt.
+    use fmd_math::MacroSet;
+    let e = engine();
+    let default = MacroSet::pack("fmd-math/pack/default").unwrap();
+    for (tex, w, h, d) in [
+        (r"C_{\Delta}", 14.21669, 6.83331, 1.49998),
+        (r"{\scriptstyle \Delta \, 1}", 11.92134, 4.78334, 0.0),
+        (r"{\scriptscriptstyle \Delta}", 5.4862, 3.3988, 0.0),
+        (r"\sqrt[\Omega]{1}", 15.3474, 9.56036, 0.8396),
+        (r"\tbinom{2}{\Omega - 3}", 25.11122, 8.94841, 4.28175),
+        (r"\tfrac{\Delta}{b}", 8.96947, 8.72066, 3.44841),
+    ] {
+        let l = e
+            .typeset_with_macros(tex, Style::Display, &default)
+            .unwrap();
+        assert!(
+            (l.width - w / 10.0).abs() < 1e-4
+                && (l.height - h / 10.0).abs() < 1e-4
+                && (l.depth - d / 10.0).abs() < 1e-4,
+            "{tex}: ({}, {}, {}) against TeX's ({}, {}, {})",
+            l.width,
+            l.height,
+            l.depth,
+            w / 10.0,
+            h / 10.0,
+            d / 10.0
+        );
+    }
+}

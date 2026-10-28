@@ -339,10 +339,24 @@ impl FaceSet {
         if let Some(cut) = self.optical(face, ch, style) {
             return Some(cut);
         }
+        // The converted cuts address a character by its TFM code (U+F000 +
+        // code, ADR-0028); only ASCII also sits at its own code point. So
+        // cmr's Greek capitals (codes 0-10), dotless i and the ligatures reach
+        // cmr7 and cmr5 through the code the base face's TFM gives them.
+        if let Some(cut) = self.optical_by_code(face, ch, style) {
+            return Some(cut);
+        }
         if !matches!(style, Style::Display | Style::Text) {
             return None;
         }
         self.math_roman(face, ch, text_mode)
+    }
+
+    /// [`FaceSet::optical`] for `ch` addressed by its TFM code in `face`.
+    fn optical_by_code(&self, face: FaceId, ch: char, style: Style) -> Option<(FaceId, u16)> {
+        let gid = self.font(face)?.glyph_index(ch);
+        let (_, code) = self.tfm(face, gid)?;
+        self.optical(face, tex_code(code), style)
     }
 
     /// cmr10's glyph for `ch`, TeX's family 0 in math mode, where CM Regular

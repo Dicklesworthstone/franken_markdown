@@ -523,6 +523,19 @@
           <label>Left margin (pt)<input name="left" data-page type="number" min="0" max="14400" step="any" required></label>
         </div>
       </fieldset>
+      <fieldset><legend>PDF typesetting</legend>
+        <p>These settings affect PDF export. The HTML preview does not show page breaks. Exact page layout refuses an export when the required page constraints cannot be met.</p>
+        <div data-grid>
+          <label>Page layout<select name="pagination"><option value="default">Standard</option><option value="optimal">Optimize page breaks</option><option value="strict">Require exact page breaks</option></select></label>
+          <label>Microtypography<select name="microtype"><option value="disabled">Off</option><option value="expansion">Glyph expansion</option><option value="protrusion">Optical margins and glyph expansion</option></select></label>
+          <label><input name="homogeneous" type="checkbox"> Smooth spacing between adjacent lines</label>
+          <label><input name="antiriver" type="checkbox"> Reduce rivers of whitespace</label>
+          <label><input name="pareto" type="checkbox"> Try more line-break alternatives</label>
+          <label>Baseline grid (pt, blank = off)<input name="baselineGridPt" type="number" min="1" max="144" step="any" placeholder="Off" aria-describedby="fmd-typesetting-fit-help"></label>
+          <label>Fit to pages (blank = no target)<input name="fitToPages" type="number" min="1" max="4294967295" step="1" placeholder="No target" aria-describedby="fmd-typesetting-fit-help"></label>
+        </div>
+        <p id="fmd-typesetting-fit-help">A baseline grid uses fixed spacing from 1 to 144 points. Page fitting adjusts type size and margins to reach a page-count target. Choose one; they cannot be combined.</p>
+      </fieldset>
       <p data-status role="status" aria-live="polite" tabindex="-1"></p>
       <div style="display:flex;gap:12px;justify-content:flex-end"><button class="fmd-btn" type="button" data-cancel>Cancel</button><button class="fmd-btn fmd-btn-primary" type="submit">Apply settings</button></div>
     </form>`;
@@ -535,6 +548,9 @@
     const numbers = ['fontScale', 'tocDepth'];
     const texts = ['font', 'darkMode', 'title', 'author', 'lang'];
     const settingsFields = [...flags, ...numbers, ...texts];
+    const typographyFlags = ['homogeneous', 'antiriver', 'pareto'];
+    const pdfFields = ['pagination', 'microtype', ...typographyFlags, 'baselineGridPt', 'fitToPages'];
+    const formFields = [...settingsFields, ...pdfFields];
     const geometryFields = ['width', 'height', 'top', 'right', 'bottom', 'left'];
     const paperDimensions = {
       letter: [612, 792],
@@ -543,11 +559,11 @@
       legal: [612, 1008],
       tabloid: [792, 1224],
     };
-    const raw = name => flags.includes(name) ? field(name).checked : field(name).value;
+    const raw = name => flags.includes(name) || typographyFlags.includes(name) ? field(name).checked : field(name).value;
     let opened = null, initial = null, applying = null, panelRevision = 0;
     const asynchronous = native.settingsMode === 'worker';
     const submit = form.querySelector('button[type="submit"]');
-    const draft = () => JSON.stringify([...settingsFields, 'paper', 'orientation', ...geometryFields].map(raw));
+    const draft = () => JSON.stringify([...formFields, 'paper', 'orientation', ...geometryFields].map(raw));
     function release(operation) {
       for (const [node, disabled] of operation.buttons) node.disabled = disabled;
       submit.disabled = false; submit.textContent = 'Apply settings';
@@ -603,7 +619,15 @@
       for (const name of flags) field(name).checked = opened[name];
       for (const name of numbers) field(name).value = opened[name] ?? (name === 'tocDepth' ? 3 : 1);
       for (const name of texts) field(name).value = opened[name] ?? '';
-      initial = Object.fromEntries(settingsFields.map(name => [name, raw(name)]));
+      for (const name of typographyFlags) field(name).checked = opened.typography?.[name] === true;
+      field('pagination').value = opened.strictPagination ? 'strict' : opened.optimalPagination ? 'optimal' : 'default';
+      // The expansion token is applied after the legacy protrusion scalar by
+      // the native ABI, so an explicit expansion mode wins over that alias.
+      field('microtype').value = opened.microtype === 'expansion' ? 'expansion'
+        : opened.microtypeProtrusion ? 'protrusion' : opened.microtype ?? 'disabled';
+      field('baselineGridPt').value = opened.baselineGridPt > 0 ? opened.baselineGridPt : '';
+      field('fitToPages').value = opened.fitToPages ?? '';
+      initial = Object.fromEntries(formFields.map(name => [name, raw(name)]));
       const geometry = opened.pageGeometry ?? [612, 792, 72, 72, 72, 72];
       geometryFields.forEach((name, i) => { field(name).value = geometry[i]; });
       field('paper').value = opened.pageGeometry ? 'custom' : 'default';
@@ -662,6 +686,28 @@
         for (const name of settingsFields) if (raw(name) !== initial[name]) {
           patch[name] = flags.includes(name) ? raw(name) : numbers.includes(name) ? field(name).valueAsNumber
             : ['title', 'author', 'lang'].includes(name) && raw(name) === '' ? undefined : raw(name);
+        }
+        for (const name of typographyFlags) if (raw(name) !== initial[name]) {
+          // Keep unedited and omitted nested switches exactly as saved. The
+          // runtime captures the fresh object before starting its preflight.
+          patch.typography ??= {...opened.typography};
+          patch.typography[name] = raw(name);
+        }
+        if (raw('pagination') !== initial.pagination) {
+          patch.optimalPagination = raw('pagination') !== 'default';
+          patch.strictPagination = raw('pagination') === 'strict';
+        }
+        if (raw('microtype') !== initial.microtype) {
+          patch.microtype = raw('microtype');
+          // The saved alias also enables protrusion. An explicit new choice
+          // must be able to turn it off, while a no-op preserves its spelling.
+          if (opened.microtypeProtrusion) patch.microtypeProtrusion = false;
+        }
+        for (const name of ['baselineGridPt', 'fitToPages']) if (raw(name) !== initial[name]) {
+          patch[name] = raw(name) === '' ? undefined : field(name).valueAsNumber;
+        }
+        if (raw('baselineGridPt') !== '' && raw('fitToPages') !== '') {
+          throw Error('A fixed baseline grid and a page-count target cannot be combined. Clear one value before applying settings.');
         }
         const geometry = field('paper').value === 'default' ? undefined : geometryFields.map(name => field(name).valueAsNumber);
         if (JSON.stringify(geometry) !== JSON.stringify(opened.pageGeometry)) patch.pageGeometry = geometry;

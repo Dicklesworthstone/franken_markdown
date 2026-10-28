@@ -89,6 +89,21 @@ an enabled fixed baseline grid. Microtype accepts `disabled`, `protrusion` or
 `expansion`; `microtypeProtrusion: true` retains its existing alias behavior.
 The three `typography` switches are optional booleans.
 
+Authors can change these options in **Document settings → PDF typesetting**.
+Choose standard, optimized or exact page breaks; enable smoother spacing,
+whitespace-river reduction and additional line-break alternatives; select glyph
+expansion or optical margins; and enter a baseline spacing or page-count target.
+Leave either numeric field blank to turn it off. The dialog rejects a fixed grid
+combined with page fitting and retains the draft so it can be corrected.
+
+Apply uses the existing background settings transaction. Cancel, a changed draft
+or a source edit prevents an unfinished result from becoming current. Save HTML
+during that work retains committed settings. An unchanged Apply preserves omitted
+options, explicit disabled values and saved aliases; changing one line-quality
+switch preserves the other switches. Settings preflight checks HTML rendering and
+available PDF capabilities. PDF layout is evaluated on export, where exact-page
+constraints can still return a typed refusal without downloading a substitute.
+
 These settings require matching generated bindings when they add ABI
 capabilities. The embedded renderer rejects old bindings with
 `UNSUPPORTED_WASM_PACKAGE` during initialization or before a settings transaction
@@ -96,6 +111,12 @@ commits. Omitted or disabled
 options preserve the earlier PDF call shape. The standalone runtime and worker
 adapter tests verify persistence, routing and failure behavior; they do not
 replace generated-WASM rendering or PDF layout acceptance.
+
+`node wasm/native_workspace_typography_browser.mjs` exercises the shipped dialog,
+runtime and disposable workers in Chromium, including save/reopen, PDF argument
+routing, capability refusal and draft races. Set `FMD_PLAYWRIGHT_MODULE` and
+`FMD_CHROMIUM_BIN` when those host tools are outside their normal locations. The
+test uses explicit native ABI adapters, not a generated renderer or PDF layout.
 
 **Save HTML** and **Ctrl/Cmd+Shift+S** flush current rendering and retain source,
 runtime, assets and view settings in another editable file. Saved generations

@@ -7,6 +7,9 @@ import {renderPdf, type FmdRenderOutput} from './franken_markdown.js';
 const source: FmdNativeSourceProjectOutput = createNativeSourceProject('# Document', {
   font: 'serif', fontScale: 1.125, allowRawHtml: false, metadataEpochSeconds: 0,
   page: {size: 'a4', margins: 36},
+  typography: {homogeneous: true, antiriver: false, pareto: true},
+  optimalPagination: true, strictPagination: true, baselineGridPt: 13.375,
+  microtype: 'expansion',
   pdfImages: [{destination: 'chart.png', bytes: new DataView(new ArrayBuffer(8))}],
   fontAssets: [{slot: 'body-regular', bytes: new Uint8Array([1]), weight: 525}],
 });
@@ -33,6 +36,10 @@ createNativeSourceProject('', {bindings: 'code'});
 const publication: FmdRenderOutput = source;
 // @ts-expect-error The workspace retains the safe-HTML contract.
 createNativeSourceProject('', {allowRawHtml: true});
+// @ts-expect-error Pagination policy is a boolean, not a truthy string.
+createNativeSourceProject('', {strictPagination: 'true'});
+// @ts-expect-error Only native microtype modes are admitted.
+createNativeSourceProject('', {microtype: 'automatic'});
 // @ts-expect-error Blob reading must be explicit before this synchronous API.
 readNativeSourceProject(new Blob());
 // @ts-expect-error The source result binding cannot be replaced accidentally.

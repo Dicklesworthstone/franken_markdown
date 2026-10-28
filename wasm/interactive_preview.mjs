@@ -9,6 +9,12 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
     throw new RangeError('Preview timeout must be 1..120000 milliseconds');
   }
   const error = (code, message) => Object.assign(new Error(message), {code});
+  function paginationReason(value) {
+    const reasons = {PAGINATION_INFEASIBLE: 'infeasible', PAGINATION_BUDGET_EXCEEDED: 'budget_exceeded',
+      PAGINATION_INVALID_INPUT: 'invalid_input', PAGINATION_COST_OVERFLOW: 'cost_overflow', PAGINATION_INVALID_PLAN: 'invalid_plan'};
+    return value && Object.hasOwn(reasons, value.code) && value.reason === reasons[value.code]
+      ? value.reason : undefined;
+  }
   function text(value, limit, name) {
     if (typeof value !== 'string' || value.length > limit) throw error('PREVIEW_LIMIT', name + ' exceeds its byte limit');
     let length = 0;
@@ -72,10 +78,11 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
   }
   // Worker-owned WASM and resource cache. No URLs or functions arrive in render
   // requests. A state revision replaces the renderer only after validation.
-  async function serve(makeRenderer, validatePublication, exportTypes, validateReport) {
+  async function serve(makeRenderer, validatePublication, exportTypes, validateReport, paginationReason) {
     let bindings = null, data = null, renderer = null, initialized = false;
     const report = (id, err) => self.postMessage({type: 'error', id,
-      code: err?.code === 'UNSUPPORTED_WASM_PACKAGE' ? err.code : undefined,
+      code: err?.code === 'UNSUPPORTED_WASM_PACKAGE' || paginationReason(err) ? err.code : undefined,
+      reason: paginationReason(err),
       message: String(err?.message ?? err).slice(0, 2048)});
     self.onmessage = async ({data: request}) => {
       const id = request?.id;
@@ -159,7 +166,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       } catch (err) { report(id, err); }
     };
   }
-  const source = `(${serve.toString()})(${factory.toString()}, ${validatePublication.toString()}, ${JSON.stringify(exportTypes)}, ${validateReport.toString()});`;
+  const source = `(${serve.toString()})(${factory.toString()}, ${validatePublication.toString()}, ${JSON.stringify(exportTypes)}, ${validateReport.toString()}, ${paginationReason.toString()});`;
   let worker = null, moduleUrl = null, timer = null, started = false, closed = false;
   let active = null, queued = null, sequence = 0;
   let lastOptions = null, lastImages = null;
@@ -175,6 +182,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       String(reason?.message || reason).replace(/preview|export/gi, 'analysis').slice(0, 2048));
   }
   function exportError(reason) {
+    if (paginationReason(reason)) return reason;
     return error(String(reason?.code || 'EXPORT_FAILED').replace(/^PREVIEW_/, 'EXPORT_'),
       String(reason?.message || reason).replace(/preview/gi, 'export').slice(0, 2048));
   }
@@ -234,8 +242,11 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
     if (result.type === 'error') {
       // Do not reuse a resource cache whose attempted revision was rejected.
       lastOptions = null; lastImages = null;
-      settle(job, null, error(result.code === 'UNSUPPORTED_WASM_PACKAGE' ? result.code : 'PREVIEW_RENDER_FAILED',
-        String(result.message).slice(0, 2048)));
+      const reason = job.format === 'pdf' ? paginationReason(result) : undefined;
+      const failure = error(result.code === 'UNSUPPORTED_WASM_PACKAGE' || reason ? result.code : 'PREVIEW_RENDER_FAILED',
+        String(result.message).slice(0, 2048));
+      if (reason) failure.reason = reason;
+      settle(job, null, failure);
     } else if (!job.settled) {
       try {
         if (job.kind) {

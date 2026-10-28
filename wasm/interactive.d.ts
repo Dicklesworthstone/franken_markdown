@@ -1,4 +1,4 @@
-import type { FmdRenderOptions, FmdRenderOutput } from './franken_markdown.js';
+import type { FmdPdfRenderOptions, FmdRenderOutput } from './franken_markdown.js';
 
 /** Executable code, not document data. Supply trusted wasm-bindgen --target web
  * JavaScript and the matching binary from the same build as the installed
@@ -15,9 +15,11 @@ export interface FmdOfflineRuntime {
  * Other render options are rejected, not silently discarded. Raw HTML and custom
  * CSS are not enabled in this offline, safe-parsed workspace API.
  */
-export interface FmdOfflineWorkspaceOptions extends Pick<FmdRenderOptions,
+export interface FmdOfflineWorkspaceOptions extends Pick<FmdPdfRenderOptions,
   'font' | 'darkMode' | 'title' | 'lang' | 'toc' | 'tocDepth' | 'author' |
-  'metadataEpochSeconds' | 'pageNumbers' | 'codeLineNumbers' | 'pdfImages' | 'fontAssets'> {
+  'metadataEpochSeconds' | 'pageNumbers' | 'codeLineNumbers' | 'pdfImages' | 'fontAssets' |
+  'typography' | 'optimalPagination' | 'strictPagination' | 'baselineGridPt' |
+  'microtype' | 'microtypeProtrusion' | 'fitToPages'> {
   /** Numeric 0.5..3 (default 1). View zoom is separate from PDF typography. */
   fontScale?: number;
 }

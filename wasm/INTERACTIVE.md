@@ -58,6 +58,45 @@ language, table of contents, page numbers and code-line-number settings reach th
 existing PDF ABI. Toolbar zoom changes viewing size, not PDF typography. The
 browser's own menu-driven Print command is not the native PDF exporter.
 
+### PDF typesetting retained in saved documents
+
+Both `renderOfflineWorkspace` and `createNativeWorkspaceExporter().render` accept
+the core's PDF typesetting options. They survive Save HTML, subsequent edits,
+background PDF export and data-only source-project round trips:
+
+```js
+const document = exporter.render(markdown, {
+  font: 'serif',
+  page: {size: 'a4', margins: 36},
+  typography: {homogeneous: true, antiriver: true, pareto: true},
+  optimalPagination: true,
+  strictPagination: true,
+  baselineGridPt: 13.375,
+  microtype: 'expansion',
+});
+```
+
+`optimalPagination` requests the measured-line planner; `strictPagination`
+requires its hard constraints and refuses a fallback. A native refusal retains
+its `PAGINATION_*` error code and `reason` through the background worker, and no
+replacement PDF is returned. Existing layout diagnostics travel with successful
+exports. This exposes the same bounded native algorithms, not a second layout
+implementation in JavaScript.
+
+`baselineGridPt` is zero (disabled) or 1–144 points; the core rounds to
+milli-points. `fitToPages` requests adaptive fitting and cannot be combined with
+an enabled fixed baseline grid. Microtype accepts `disabled`, `protrusion` or
+`expansion`; `microtypeProtrusion: true` retains its existing alias behavior.
+The three `typography` switches are optional booleans.
+
+These settings require matching generated bindings when they add ABI
+capabilities. The embedded renderer rejects old bindings with
+`UNSUPPORTED_WASM_PACKAGE` during initialization or before a settings transaction
+commits. Omitted or disabled
+options preserve the earlier PDF call shape. The standalone runtime and worker
+adapter tests verify persistence, routing and failure behavior; they do not
+replace generated-WASM rendering or PDF layout acceptance.
+
 **Save HTML** and **Ctrl/Cmd+Shift+S** flush current rendering and retain source,
 runtime, assets and view settings in another editable file. Saved generations
 reuse a single runtime payload; unused assets are retained for later edits.

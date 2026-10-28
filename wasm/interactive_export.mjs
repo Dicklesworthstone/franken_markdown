@@ -3,6 +3,7 @@
 import {bootNativeWorkspace, createNativeWorkspaceRenderer} from './interactive_runtime.mjs';
 import {createWorkspacePreviewWorker} from './interactive_preview.mjs';
 import {pdfPageGeometry} from './pdf_page.mjs';
+import {normalizeBaselineGridPt, normalizeMicrotype, normalizePdfTypography, validateBaselineGridFit} from './render_typography.mjs';
 import {createNativePdfProof} from './native_pdf_proof.mjs';
 import {registerNativePdfProof} from './native_pdf_proof_ui.mjs';
 import {installNativeSourceProjectDownload} from './native_source_project_ui.mjs';
@@ -84,7 +85,8 @@ function captureRuntime(input) {
 function captureOptions(input) {
   const allowed = new Set(['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth',
-    'pdfImages', 'fontAssets', 'allowRawHtml', 'page']);
+    'pdfImages', 'fontAssets', 'allowRawHtml', 'page', 'typography', 'optimalPagination',
+    'strictPagination', 'baselineGridPt', 'microtype', 'microtypeProtrusion', 'fitToPages']);
   record(input, 'workspace options');
   for (const key of Object.keys(input)) if (!allowed.has(key)) {
     throw new TypeError(`Unsupported native workspace option: ${key}`);
@@ -93,6 +95,23 @@ function captureOptions(input) {
     metadataEpochSeconds, pageNumbers = false, codeLineNumbers = false,
     toc = false, tocDepth, pdfImages = [], fontAssets = [], allowRawHtml = false, page} = input;
   const geometry = pdfPageGeometry(page);
+  const pdfSettings = {};
+  for (const key of ['optimalPagination', 'strictPagination', 'microtypeProtrusion']) {
+    const value = input[key];
+    if (value !== undefined) {
+      if (typeof value !== 'boolean') throw new TypeError(key + ' must be boolean');
+      pdfSettings[key] = value;
+    }
+  }
+  if (input.typography !== undefined) pdfSettings.typography = normalizePdfTypography(input.typography);
+  if (input.microtype !== undefined) pdfSettings.microtype = normalizeMicrotype(input.microtype);
+  if (input.baselineGridPt !== undefined) pdfSettings.baselineGridPt = normalizeBaselineGridPt(input.baselineGridPt);
+  if (input.fitToPages !== undefined) {
+    const value = input.fitToPages;
+    if (!Number.isSafeInteger(value) || value < 1 || value > 0xffffffff) throw new RangeError('fitToPages must be 1..4294967295');
+    pdfSettings.fitToPages = value;
+  }
+  validateBaselineGridFit(pdfSettings.baselineGridPt, pdfSettings.fitToPages);
   if (!['sans', 'serif'].includes(font)) throw new TypeError('font must be sans or serif');
   if (!['auto', 'disabled'].includes(darkMode)) throw new TypeError('darkMode must be auto or disabled');
   if (!Number.isFinite(fontScale) || fontScale < 0.5 || fontScale > 3) throw new RangeError('fontScale must be from 0.5 through 3');
@@ -137,7 +156,7 @@ function captureOptions(input) {
   }
   return {
     options: {font, darkMode, fontScale, title, author, lang, metadataEpochSeconds,
-      pageNumbers, codeLineNumbers, toc, tocDepth,
+      pageNumbers, codeLineNumbers, toc, tocDepth, ...pdfSettings,
       ...(geometry.length ? {pageGeometry: Array.from(geometry)} : {})},
     // All admission has finished. Serialize exact views now, never caller buffers
     // or remote URLs. Stable font-slot order avoids incidental input-order drift.

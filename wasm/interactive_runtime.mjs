@@ -39,8 +39,10 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     return json;
   }
   const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
-    'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry'];
-  function settingData(value) {
+    'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry',
+    'typography', 'optimalPagination', 'strictPagination', 'baselineGridPt',
+    'microtype', 'microtypeProtrusion', 'fitToPages'];
+  function settingData(value, keys = settingKeys) {
     // Inspect descriptors before reading values: accessors, inherited options,
     // symbols and unsupported switches must not enter a saved workspace.
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Settings must be a data object');
@@ -49,7 +51,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     const result = {};
     for (const key of Reflect.ownKeys(value)) {
       const field = Object.getOwnPropertyDescriptor(value, key);
-      if (!settingKeys.includes(key) || !field || !Object.hasOwn(field, 'value')) {
+      if (!keys.includes(key) || !field || !Object.hasOwn(field, 'value')) {
         throw new TypeError('Unsupported settings field or accessor');
       }
       result[key] = field.value;
@@ -82,6 +84,29 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     if (value.tocDepth !== undefined && (!Number.isInteger(value.tocDepth) || value.tocDepth < 1 || value.tocDepth > 6)) {
       throw new RangeError('tocDepth must be 1..6');
     }
+    for (const key of ['optimalPagination', 'strictPagination', 'microtypeProtrusion']) {
+      if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new TypeError(key + ' must be boolean');
+    }
+    if (value.typography !== undefined) {
+      const typography = settingData(value.typography, ['homogeneous', 'antiriver', 'pareto']);
+      for (const [key, enabled] of Object.entries(typography)) {
+        if (enabled === undefined) delete typography[key];
+        else if (typeof enabled !== 'boolean') throw new TypeError('typography.' + key + ' must be boolean');
+      }
+      value.typography = Object.freeze(typography);
+    }
+    if (value.microtype !== undefined && !['disabled', 'protrusion', 'expansion'].includes(value.microtype)) {
+      throw new TypeError('microtype must be disabled, protrusion or expansion');
+    }
+    if (value.baselineGridPt !== undefined && (!Number.isFinite(value.baselineGridPt)
+        || (value.baselineGridPt !== 0 && (value.baselineGridPt < 1 || value.baselineGridPt > 144)))) {
+      throw new RangeError('baselineGridPt must be 0 or a finite number from 1 through 144');
+    }
+    if (value.fitToPages !== undefined && (!Number.isSafeInteger(value.fitToPages)
+        || value.fitToPages < 1 || value.fitToPages > 0xffffffff)) throw new RangeError('fitToPages must be 1..4294967295');
+    if (value.baselineGridPt > 0 && value.fitToPages > 0) {
+      throw new RangeError('pdf_baseline_grid_incompatible: baseline grids cannot be combined with fitToPages');
+    }
     if (value.pageGeometry !== undefined) {
       const input = value.pageGeometry;
       // Copy data elements without invoking an iterator, getter or sparse-array
@@ -100,13 +125,45 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
           || extent(g[0], g[5], g[3]) < 72 || extent(g[1], g[2], g[4]) < 72) {
         throw new RangeError('Invalid saved PDF page geometry');
       }
-      if (typeof bindings.renderPdfConfiguredPage !== 'function') {
+      if (!(value.baselineGridPt > 0) && typeof bindings.renderPdfConfiguredPage !== 'function') {
         throw Object.assign(new Error('PDF paper and margins require matching page-capable WASM bindings'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
       }
       value.pageGeometry = Object.freeze(g);
     }
+    // A positional ABI can silently ignore a new trailing argument. Admit the
+    // exact requested capability before decoding saved assets or staging state.
+    pdfBinding(value);
     // Omitted optional fields remain omitted across JSON save/reopen cycles.
     return Object.freeze(Object.fromEntries(settingKeys.filter(key => value[key] !== undefined).map(key => [key, value[key]])));
+  }
+  function typographyTokens(settings) {
+    const tokens = [];
+    for (const key of ['homogeneous', 'antiriver', 'pareto']) if (settings.typography?.[key]) tokens.push(key);
+    if (settings.optimalPagination) tokens.push('optimal-pagination');
+    if (settings.strictPagination) tokens.push('strict-pagination');
+    if (settings.microtype === 'expansion') tokens.push('expansion');
+    return tokens.length ? tokens.join(',') : undefined;
+  }
+  function pdfBinding(settings) {
+    const grid = settings.baselineGridPt > 0;
+    const binding = bindings[grid ? 'renderPdfConfiguredGrid'
+      : settings.pageGeometry ? 'renderPdfConfiguredPage' : 'renderPdfConfiguredMulti'];
+    const needed = grid ? 37 : typographyTokens(settings) === undefined ? 0 : settings.pageGeometry ? 29 : 28;
+    if (typeof binding !== 'function' || binding.length < needed) {
+      throw Object.assign(new Error('PDF typography, pagination and baseline grids require matching WASM bindings'),
+        {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    }
+    return binding;
+  }
+  function paginationError(error) {
+    if (typeof error !== 'string' || error.length > 4096) return error;
+    let data;
+    try {data = JSON.parse(error);} catch {return error;}
+    const reasons = {PAGINATION_INFEASIBLE: 'infeasible', PAGINATION_BUDGET_EXCEEDED: 'budget_exceeded',
+      PAGINATION_INVALID_INPUT: 'invalid_input', PAGINATION_COST_OVERFLOW: 'cost_overflow', PAGINATION_INVALID_PLAN: 'invalid_plan'};
+    if (!data || !Object.hasOwn(reasons, data.code) || reasons[data.code] !== data.reason
+        || typeof data.message !== 'string' || data.message.length > 2048) return error;
+    return Object.assign(new Error(data.message), {code: data.code, reason: data.reason});
   }
   let options = captureSettings({font: 'sans', darkMode: 'auto', fontScale: 1,
     pageNumbers: false, codeLineNumbers: false, toc: false, ...settingData(payload.options)});
@@ -612,15 +669,25 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       ), 'image/svg+xml');
     },
     pdf(markdown) {
+      const render = pdfBinding(options), typography = typographyTokens(options);
       const args = [
         source(markdown), options.font, options.darkMode, options.title, options.author,
         options.metadataEpochSeconds, false, options.codeLineNumbers,
         images.destinations, images.flat, images.lengths, ...fontBytes, weights,
         undefined, undefined, undefined, options.pageNumbers,
-        options.fontScale, options.lang, options.toc, options.tocDepth, undefined, false,
+        options.fontScale, options.lang, options.toc, options.tocDepth, options.fitToPages,
+        options.microtype === 'protrusion' || options.microtypeProtrusion === true,
       ];
-      const result = pageGeometry ? bindings.renderPdfConfiguredPage(...args, pageGeometry)
-        : bindings.renderPdfConfiguredMulti(...args);
+      let result;
+      try {
+        if (options.baselineGridPt > 0) {
+          result = render(...args, pageGeometry ?? new Float64Array(), [], false, false, false,
+            [], new Uint32Array(), new Uint32Array(), typography, options.baselineGridPt);
+        } else {
+          const tail = typography === undefined ? [] : [typography];
+          result = pageGeometry ? render(...args, pageGeometry, ...tail) : render(...args, ...tail);
+        }
+      } catch (error) {throw paginationError(error);}
       const bytes = take(result, 'application/pdf');
       if (String.fromCharCode(...bytes.subarray(0, 5)) !== '%PDF-') throw new Error('Native renderer returned invalid PDF bytes');
       return bytes;

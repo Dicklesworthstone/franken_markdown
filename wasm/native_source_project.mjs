@@ -8,7 +8,9 @@ export function createNativeSourceProjectCodec(overrides = {}) {
     totalDestinationBytes: 65536, outputBytes: 256 * MiB};
   const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
   const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
-    'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry'];
+    'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry',
+    'typography', 'optimalPagination', 'strictPagination', 'baselineGridPt',
+    'microtype', 'microtypeProtrusion', 'fitToPages'];
   const fail = (code, message) => { throw Object.assign(new Error(message), {code}); };
   const invalid = message => fail('INVALID_SOURCE_PROJECT', message);
   const exceeded = label => fail('SOURCE_PROJECT_LIMIT', label + ' exceeds the source-project limit');
@@ -68,6 +70,23 @@ export function createNativeSourceProjectCodec(overrides = {}) {
       if (value[key] !== undefined) textSize(value[key], maximum, key);
     if (value.metadataEpochSeconds !== undefined && (!Number.isSafeInteger(value.metadataEpochSeconds) || value.metadataEpochSeconds < 0)) invalid('Invalid explicit metadata epoch');
     if (value.tocDepth !== undefined && (!Number.isInteger(value.tocDepth) || value.tocDepth < 1 || value.tocDepth > 6)) invalid('tocDepth must be 1..6');
+    for (const key of ['optimalPagination', 'strictPagination', 'microtypeProtrusion']) {
+      if (value[key] !== undefined && typeof value[key] !== 'boolean') invalid(key + ' must be boolean');
+    }
+    if (value.typography !== undefined) {
+      const typography = record(value.typography, ['homogeneous', 'antiriver', 'pareto']);
+      for (const [key, enabled] of Object.entries(typography)) {
+        if (enabled === undefined) delete typography[key];
+        else if (typeof enabled !== 'boolean') invalid('typography.' + key + ' must be boolean');
+      }
+      value.typography = Object.freeze(typography);
+    }
+    if (value.microtype !== undefined && !['disabled', 'protrusion', 'expansion'].includes(value.microtype)) invalid('Invalid microtype');
+    if (value.baselineGridPt !== undefined && (!Number.isFinite(value.baselineGridPt)
+        || (value.baselineGridPt !== 0 && (value.baselineGridPt < 1 || value.baselineGridPt > 144)))) invalid('baselineGridPt must be 0 or 1..144');
+    if (value.fitToPages !== undefined && (!Number.isSafeInteger(value.fitToPages)
+        || value.fitToPages < 1 || value.fitToPages > 0xffffffff)) invalid('fitToPages must be 1..4294967295');
+    if (value.baselineGridPt > 0 && value.fitToPages > 0) invalid('pdf_baseline_grid_incompatible: baseline grids cannot be combined with fitToPages');
     if (value.pageGeometry !== undefined) {
       if (!Array.isArray(value.pageGeometry) || value.pageGeometry.length !== 6) invalid('Page geometry requires six finite numbers');
       const g = array(value.pageGeometry, 6, 'Page geometry');
@@ -226,6 +245,7 @@ export function createNativeSourceProjectCodec(overrides = {}) {
   }
   function renderOptions(input) {
     const {data} = snapshot(input, true), options = {...data.options, allowRawHtml: false};
+    if (options.typography !== undefined) options.typography = {...options.typography};
     const geometry = options.pageGeometry;
     delete options.pageGeometry;
     if (geometry !== undefined) {

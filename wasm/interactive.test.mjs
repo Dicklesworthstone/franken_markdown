@@ -9,7 +9,7 @@ import {pathToFileURL} from 'node:url';
 const dir = await mkdtemp(join(tmpdir(),'fmd-offline-contract-'));
 after(() => rm(dir,{recursive:true,force:true}));
 await writeFile(join(dir,'package.json'),'{"type":"module"}');
-for(const file of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs']) await copyFile(new URL(file,import.meta.url),join(dir,file));
+for(const file of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs','render_typography.mjs']) await copyFile(new URL(file,import.meta.url),join(dir,file));
 await writeFile(join(dir,'franken_markdown.js'),`
 export const state={calls:[], gate:null,legacy:false,preWorker:false};
 export async function init(bytes) { state.calls.push({kind:'init',bytes}); if(state.gate) await state.gate; }
@@ -32,6 +32,27 @@ function payload(output) {
   return JSON.parse(output.text().split('<script type="application/json" id="fmd-native-runtime">')[1].split('</script>')[0]);
 }
 function reset() {state.calls=[];state.gate=null;state.legacy=false;state.preWorker=false;}
+
+test('PDF typesetting is captured before init and retained separately from lightweight shell settings',async()=>{
+  reset();let release;state.gate=new Promise(resolve=>{release=resolve;});
+  const options={title:'Owned',font:'serif',fontScale:1.25,author:'A',
+    typography:{homogeneous:true,pareto:true},optimalPagination:true,strictPagination:true,
+    baselineGridPt:13.375,microtype:'expansion'};
+  const pending=renderOfflineWorkspace('Source',runtime(),options);
+  options.typography.pareto=false;options.baselineGridPt=24;options.title='Later';release();
+  const p=payload(await pending);
+  assert.deepEqual(p.options.typography,{homogeneous:true,pareto:true});
+  assert.equal(p.options.baselineGridPt,13.375);assert.equal(p.options.strictPagination,true);
+  assert.equal(p.options.microtype,'expansion');assert.equal(p.options.title,'Owned');
+  assert.deepEqual(state.calls.find(call=>call.kind==='render').options,{title:'Owned',lang:undefined});
+});
+
+test('invalid or incompatible PDF typesetting is refused before runtime initialization',async()=>{
+  for(const options of [{baselineGridPt:12,fitToPages:2},{baselineGridPt:145},
+    {strictPagination:'true'},{typography:{pareto:1}},{microtype:'unknown'},{fitToPages:0}]) {
+    reset();await assert.rejects(renderOfflineWorkspace('x',runtime(),options));assert.equal(state.calls.length,0);
+  }
+});
 
 test('public output contains runtime/assets, enforces offline CSP and preserves result helpers',async()=>{
   reset();

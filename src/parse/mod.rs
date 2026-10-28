@@ -216,6 +216,9 @@ struct ParseProfiler {
     inline_cache: InlineParseCache,
     inline_parse_depth: usize,
     inline_work: InlineWorkBudget,
+    // GFM table escapes also apply inside code spans. Keep the original cell
+    // source for destination tracking, and scope this decoding to its inlines.
+    table_cell_code_escapes: bool,
     /// Current block-nesting recursion depth, used to bound deeply-nested
     /// blockquote/list input so pathological untrusted documents cannot overflow
     /// the stack (a DoS). Threaded for free since the profiler is already `&mut`
@@ -235,6 +238,7 @@ impl ParseProfiler {
             inline_cache: InlineParseCache::default(),
             inline_parse_depth: 0,
             inline_work: InlineWorkBudget::default(),
+            table_cell_code_escapes: false,
             block_depth: 0,
             destinations: None,
             block_spans: None,
@@ -248,6 +252,7 @@ impl ParseProfiler {
             inline_cache: InlineParseCache::default(),
             inline_parse_depth: 0,
             inline_work: InlineWorkBudget::default(),
+            table_cell_code_escapes: false,
             block_depth: 0,
             destinations: None,
             block_spans: None,
@@ -729,7 +734,7 @@ fn table_ends_at(lines: &[&str], end: usize) -> bool {
 }
 
 fn table_body_row_starts_at(lines: &[&str], start: usize) -> bool {
-    start < lines.len() && !is_blank_line(lines[start]) && lines[start].contains('|')
+    start < lines.len() && is_table_row_source(lines[start])
 }
 
 fn collect_link_reference_metadata(lines: &[&str]) -> (ConsumedReferenceLines, ReferenceMap) {
@@ -1160,7 +1165,7 @@ fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize>
     }
     let header = text(&lines[0]);
     let delimiter = text(&lines[1]);
-    if !header.contains('|') {
+    if !is_table_row_source(header) {
         return None;
     }
     let delimiter_cols = validated_table_delimiter_cell_count(delimiter)?;
@@ -1171,12 +1176,38 @@ fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize>
     let mut i = 2;
     while i < lines.len() {
         let line = text(&lines[i]);
-        if is_blank_line(line) || !line.contains('|') {
+        if !is_table_row_source(line) {
             break;
         }
         i += 1;
     }
     Some(i)
+}
+
+/// Only ordinary pipe-bearing text can become a table header or body row.
+/// Block markers keep their own priority: a list's first line must not become
+/// a top-level table header, and a following fence must not become a row whose
+/// literal definitions gain scope. Share admission with reference collection
+/// and container laziness. Reference-looking rows are still cells; a link
+/// definition is not a block opener here. Keep the existing pipe requirement.
+fn is_table_row_source(line: &str) -> bool {
+    if is_blank_line(line) || !line.contains('|') {
+        return false;
+    }
+    let scan = BlockStartScan::new(line, trim_space_tab(line));
+    let math = trim_unicode_ws(line);
+    let starts_math = scan.indent < 4
+        && math.starts_with("$$")
+        && (math.ends_with("$$") || !math[2..].contains("$$"));
+    !scanned_thematic_break(scan)
+        && scanned_atx_heading(scan).is_none()
+        && scanned_open_fence(scan).is_none()
+        && !scanned_indented_code_start(scan)
+        && !scanned_blockquote_start(scan)
+        && scanned_html_block_kind(scan).is_none()
+        && scanned_list_marker(scan).is_none()
+        && !footnote_definition_marker(line)
+        && !starts_math
 }
 
 /// True when `line` is ordinary paragraph text: a non-blank line that does not
@@ -1640,7 +1671,7 @@ fn parse_blocks_with_refs_profiled(
             continue;
         }
         if i + 1 < lines.len()
-            && line.contains('|')
+            && is_table_row_source(line)
             && let Some(align) = validated_table_delimiter_alignments(lines[i + 1])
         {
             let started = profiler.checkpoint();
@@ -3332,7 +3363,7 @@ impl ContainerTail {
             {
                 return;
             }
-            TailLeaf::Table if !is_blank_line(line) && line.contains('|') => return,
+            TailLeaf::Table if is_table_row_source(line) => return,
             TailLeaf::Paragraph { table_columns } if !is_blank_line(line) => {
                 if table_columns.is_some()
                     && table_columns == validated_table_delimiter_cell_count(line)
@@ -3407,7 +3438,7 @@ impl ContainerTail {
                 }
             }
             self.leaf = TailLeaf::Paragraph {
-                table_columns: line.contains('|').then(|| split_table_row_cell_count(line)),
+                table_columns: is_table_row_source(line).then(|| split_table_row_cell_count(line)),
             };
         }
     }
@@ -3738,86 +3769,71 @@ fn split_table_row(line: &str) -> Vec<&str> {
 }
 
 fn split_table_row_cell_count(line: &str) -> usize {
-    let t = trim_space_tab(line);
-    let t = t.strip_prefix('|').unwrap_or(t);
-    let t = t.strip_suffix('|').unwrap_or(t);
-    if !t.as_bytes().iter().any(|b| matches!(b, b'`' | b'\\')) {
-        return t.split('|').count();
-    }
-
-    let bytes = t.as_bytes();
-    let mut count = 1usize;
-    let mut code_ticks = 0usize;
-    let mut prev_backslash = false;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if c == b'`' && !prev_backslash {
-            let ticks = ascii_run_len(bytes, i, b'`');
-            if code_ticks == 0 {
-                code_ticks = ticks;
-            } else if code_ticks == ticks {
-                code_ticks = 0;
-            }
-            prev_backslash = false;
-            i += ticks;
-            continue;
-        }
-        if c == b'|' && !prev_backslash && code_ticks == 0 {
-            count += 1;
-        } else if c == b'\\' && !prev_backslash {
-            prev_backslash = true;
-            i += 1;
-            continue;
-        }
-        prev_backslash = false;
-        i += 1;
-    }
+    let mut count = 0;
+    visit_table_row_cells(line, |_| count += 1);
     count
 }
 
 fn split_table_row_into<'a>(line: &'a str, cells: &mut Vec<&'a str>) {
     cells.clear();
+    visit_table_row_cells(line, |cell| cells.push(cell));
+}
+
+fn visit_table_row_cells<'a>(line: &'a str, mut emit: impl FnMut(&'a str)) {
     let t = trim_space_tab(line);
     let t = t.strip_prefix('|').unwrap_or(t);
-    let t = t.strip_suffix('|').unwrap_or(t);
     if !t.as_bytes().iter().any(|b| matches!(b, b'`' | b'\\')) {
-        cells.extend(t.split('|').map(trim_unicode_ws));
+        for cell in t.strip_suffix('|').unwrap_or(t).split('|') {
+            emit(trim_unicode_ws(cell));
+        }
         return;
     }
-    // Split on unescaped `|` outside inline code spans.
+    // Preserve the established extension that protects unescaped pipes inside
+    // matched code spans. An unmatched opener is literal and cannot hide later
+    // cell separators. Index maximal backtick runs once, so adversarial rows
+    // with many unmatched lengths cannot repeatedly rescan the remaining row.
     let bytes = t.as_bytes();
+    let mut code_runs: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut pos = 0;
+    while pos < bytes.len() {
+        if bytes[pos] == b'`' {
+            let len = ascii_run_len(bytes, pos, b'`');
+            code_runs.entry(len).or_default().push(pos);
+            pos += len;
+        } else {
+            pos += 1;
+        }
+    }
     let mut cell_start = 0usize;
-    let mut code_ticks = 0usize;
-    let mut prev_backslash = false;
     let mut i = 0usize;
     while i < bytes.len() {
-        let c = bytes[i];
-        if c == b'`' && !prev_backslash {
-            let ticks = ascii_run_len(bytes, i, b'`');
-            if code_ticks == 0 {
-                code_ticks = ticks;
-            } else if code_ticks == ticks {
-                code_ticks = 0;
+        if bytes[i] == b'\\' {
+            // Escapes apply outside code. Inside code the next same-length
+            // run closes even when immediately preceded by a backslash.
+            i += usize::from(i + 1 < bytes.len()) + 1;
+        } else if bytes[i] == b'`' {
+            let len = ascii_run_len(bytes, i, b'`');
+            let close = code_runs
+                .get(&len)
+                .and_then(|runs| runs.get(runs.partition_point(|&start| start < i + len)));
+            if let Some(&end) = close {
+                i = end + len;
+            } else {
+                i += len;
             }
-            prev_backslash = false;
-            i += ticks;
-            continue;
-        }
-        if c == b'|' && !prev_backslash && code_ticks == 0 {
-            cells.push(trim_unicode_ws(&t[cell_start..i]));
+        } else if bytes[i] == b'|' {
+            emit(trim_unicode_ws(&t[cell_start..i]));
             cell_start = i + 1;
+            i += 1;
         } else {
-            if c == b'\\' && !prev_backslash {
-                prev_backslash = true;
-                i += 1;
-                continue;
-            }
+            i += 1;
         }
-        prev_backslash = false;
-        i += 1;
     }
-    cells.push(trim_unicode_ws(&t[cell_start..]));
+    // Only an actual final separator is optional. A final escaped pipe belongs
+    // to the cell and must not be stripped before the scanner sees its escape.
+    if cell_start < t.len() || t.is_empty() {
+        emit(trim_unicode_ws(&t[cell_start..]));
+    }
 }
 
 #[cfg(test)]
@@ -3880,23 +3896,35 @@ fn parse_table_profiled(
     }
     let head: Vec<Vec<Inline>> = header
         .iter()
-        .map(|c| parse_inlines_with_refs_profiled(c, refs, profiler))
+        .map(|c| parse_table_cell_profiled(c, refs, profiler))
         .collect();
     let mut rows = Vec::new();
     let mut row_cells = Vec::with_capacity(cols);
     let mut i = 2;
-    while i < lines.len() && !is_blank_line(lines[i]) && lines[i].contains('|') {
+    while i < lines.len() && is_table_row_source(lines[i]) {
         split_table_row_into(lines[i], &mut row_cells);
         let mut cells: Vec<Vec<Inline>> = row_cells
             .iter()
             .take(cols)
-            .map(|c| parse_inlines_with_refs_profiled(c, refs, profiler))
+            .map(|c| parse_table_cell_profiled(c, refs, profiler))
             .collect();
         cells.resize_with(cols, Vec::new);
         rows.push(cells);
         i += 1;
     }
     Some((Table { align, head, rows }, i))
+}
+
+fn parse_table_cell_profiled(
+    text: &str,
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> Vec<Inline> {
+    let previous = profiler.table_cell_code_escapes;
+    profiler.table_cell_code_escapes = text.contains("\\|");
+    let parsed = parse_inlines_with_refs_profiled(text, refs, profiler);
+    profiler.table_cell_code_escapes = previous;
+    parsed
 }
 
 // ---- inline parser ----------------------------------------------------------
@@ -3920,6 +3948,7 @@ fn parse_inlines_with_refs_profiled(
     let started = profiler.checkpoint();
     let maybe_cacheable = profiler.destinations.is_none()
         && profiler.inline_parse_depth == 0
+        && !profiler.table_cell_code_escapes
         && inline_cache_size_allows(text);
     let needs_full_parse = maybe_cacheable.then(|| inline_text_needs_full_parse(text));
     let cacheable = maybe_cacheable && needs_full_parse == Some(true);
@@ -4272,9 +4301,13 @@ fn parse_inlines_chars_with_refs_profiled(
                 if let Some(end) = find_code_close(bytes, i + n, '`', n, &mut profiler.inline_work)
                 {
                     flush(&mut buf, &mut els);
-                    els.push(InlineEl::Node(Inline::Code(normalize_code_span(
-                        &bytes[i + n..end],
-                    ))));
+                    let code = normalize_code_span(&bytes[i + n..end]);
+                    let code = if profiler.table_cell_code_escapes && code.contains("\\|") {
+                        code.replace("\\|", "|")
+                    } else {
+                        code
+                    };
+                    els.push(InlineEl::Node(Inline::Code(code)));
                     i = end + n;
                 } else {
                     for _ in 0..n {

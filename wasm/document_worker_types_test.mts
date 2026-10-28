@@ -24,6 +24,9 @@ const svgExtension: "svg" = svg.extension;
 await renderer.renderHtml("# HTML", { customCss: "body{}", pdfImages: [{ destination: "a.png", bytes: new Uint8Array([1]) }] });
 await renderer.renderEpub("# Book", { title: "Book", lang: "en" });
 await renderer.renderInteractiveHtml("# Editable", { fontScale: "lg" });
+await renderer.renderInteractiveHtml("# Configured", {customCss: 'main{}', toc: true, tocDepth: 2,
+  htmlFontFormat: 'woff2', pdfImages: [{destination: 'chart.png', bytes: new Uint8Array([1])}],
+  fontAssets: [{slot: 'body-regular', bytes: new Uint8Array([2]), weight: 600}]});
 // EPUB shares the existing host-owned resource input.
 await renderer.renderEpub("# Book", { pdfImages: [] });
 // @ts-expect-error EPUB has no PDF running bands.

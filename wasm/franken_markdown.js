@@ -534,13 +534,127 @@ function epubTextBytes(text, maximum, label) {
 }
 
 export async function renderInteractiveHtml(markdown, options = {}) {
-  const render = requireBrowserBinding("renderInteractiveHtmlConfigured", "wasm-workspace");
-  // Capture the request before initialization yields, as the publication APIs do.
-  const args = [String(markdown), stringOption(options.font), darkModeOption(options.darkMode),
-    verbatimOption(options.title), stringOption(options.lang),
-    fontScaleOption(options.fontScale ?? options.typeSize)];
+  if (typeof wasmBindings.renderInteractiveHtmlConfiguredAdvanced !== "function")
+    requireBrowserBinding("renderInteractiveHtmlConfigured", "wasm-workspace");
+  const prepared = interactiveHtmlArguments(markdown, options);
+  const render = requireBrowserBinding(prepared.advanced
+    ? "renderInteractiveHtmlConfiguredAdvanced" : "renderInteractiveHtmlConfigured", "wasm-workspace");
+  if (prepared.advanced) requireBindingArguments(render, 20, "Configured interactive HTML");
   await init();
-  return normalizeResult(render(...args));
+  return normalizeResult(render(...prepared.args));
+}
+
+function interactiveHtmlArguments(markdown, input) {
+  const fields = ["font", "darkMode", "title", "lang", "fontScale", "typeSize", "customCss",
+    "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"];
+  function data(value, keys, label) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be a data object`);
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== null && Object.getPrototypeOf(prototype) !== null) throw new TypeError(`${label} must be a plain data object`);
+    const result = {};
+    for (const key of Reflect.ownKeys(value)) {
+      const field = Object.getOwnPropertyDescriptor(value, key);
+      if (!keys.includes(key) || !field || !Object.hasOwn(field, "value")) throw new TypeError(`Unsupported ${label} field or accessor`);
+      result[key] = field.value;
+    }
+    return result;
+  }
+  function text(value, maximum, label) {
+    if (typeof value !== "string" || value.length > maximum) throw new RangeError(`Interactive ${label} exceeds its UTF-8 limit`);
+    let size = 0;
+    for (const ch of value) {
+      const cp = ch.codePointAt(0);
+      if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError(`Interactive ${label} contains an unpaired surrogate`);
+      size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+      if (size > maximum) throw new RangeError(`Interactive ${label} exceeds its UTF-8 limit`);
+    }
+    return size;
+  }
+  const options = data(input, fields, "interactive HTML option"), source = String(markdown);
+  text(source, 32 * 1024 * 1024, "source");
+  for (const [key, limit] of [["title", 65536], ["lang", 1024], ["customCss", 1024 * 1024]])
+    if (options[key] !== undefined && options[key] !== null) text(options[key], limit, key);
+  for (const key of ["font", "darkMode", "htmlFontFormat"])
+    if (options[key] !== undefined && options[key] !== null && typeof options[key] !== "string")
+      throw new TypeError(key + " must be a string");
+  if (options.allowRawHtml !== undefined && options.allowRawHtml !== false)
+    throw new TypeError("Interactive workspaces require safe Markdown; allowRawHtml must be false");
+  if (options.toc !== undefined && typeof options.toc !== "boolean") throw new TypeError("toc must be boolean");
+  const font = stringOption(options.font), dark = darkModeOption(options.darkMode);
+  if (font !== undefined && !["sans", "serif"].includes(font)) throw new TypeError("font must be sans or serif");
+  const title = verbatimOption(options.title), lang = stringOption(options.lang);
+  const css = verbatimOption(options.customCss), scale = fontScaleOption(options.fontScale ?? options.typeSize);
+  const depth = integerOption(options.tocDepth, "tocDepth"), format = stringOption(options.htmlFontFormat);
+  if (depth !== undefined && depth > 6) throw new RangeError("tocDepth must be 1..6");
+  if (format !== undefined && !["ttf", "woff1", "woff2"].includes(format)) throw new TypeError("htmlFontFormat must be ttf, woff1 or woff2");
+  function assets(value, fonts) {
+    if (value === undefined || value === null) return [];
+    const count = fonts ? 5 : 4096;
+    if (!Array.isArray(value) || value.length > count || Reflect.ownKeys(value).length !== value.length + 1)
+      throw new RangeError(`Interactive assets must be a dense array with at most ${count} entries`);
+    const result = [];
+    for (let i = 0; i < value.length; i++) {
+      const field = Object.getOwnPropertyDescriptor(value, String(i));
+      if (!field || !Object.hasOwn(field, "value")) throw new TypeError("Interactive assets must be data entries");
+      result.push(data(field.value, fonts ? ["slot", "bytes", "weight"] : ["destination", "bytes"], "asset"));
+    }
+    return result;
+  }
+  const rawImages = assets(options.pdfImages, false), rawFonts = assets(options.fontAssets, true);
+  const advanced = font === "serif" || dark === "disabled" || (scale !== undefined && scale !== 1)
+    || css !== undefined || Boolean(options.toc) || depth !== undefined || format !== undefined
+    || rawImages.length > 0 || rawFonts.length > 0;
+  if (!advanced) return {advanced, args: [source, font, dark, title, lang, scale]};
+  const binding = requireBrowserBinding("renderInteractiveHtmlConfiguredAdvanced", "wasm-workspace with configured HTML");
+  requireBindingArguments(binding, 20, "Configured interactive HTML");
+  // Read the built-in byte-view slots, never caller-overridden .buffer or
+  // .byteLength properties. Accept cross-realm views and exact DataView slices.
+  const bufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
+  const typed = Object.getPrototypeOf(Uint8Array.prototype);
+  const typedBuffer = Object.getOwnPropertyDescriptor(typed, "buffer").get;
+  const typedOffset = Object.getOwnPropertyDescriptor(typed, "byteOffset").get;
+  const typedLength = Object.getOwnPropertyDescriptor(typed, "byteLength").get;
+  const viewBuffer = Object.getOwnPropertyDescriptor(DataView.prototype, "buffer").get;
+  const viewOffset = Object.getOwnPropertyDescriptor(DataView.prototype, "byteOffset").get;
+  const viewLength = Object.getOwnPropertyDescriptor(DataView.prototype, "byteLength").get;
+  function bytes(value) {
+    let buffer = value, offset = 0, length;
+    if (ArrayBuffer.isView(value)) {
+      try {
+        buffer = typedBuffer.call(value); offset = typedOffset.call(value); length = typedLength.call(value);
+      } catch {
+        buffer = viewBuffer.call(value); offset = viewOffset.call(value); length = viewLength.call(value);
+      }
+      bufferLength.call(buffer); // Shared memory is never an immutable input.
+    } else length = bufferLength.call(value);
+    return new Uint8Array(buffer, offset, length);
+  }
+  for (const asset of rawImages) text(asset.destination, 8192, "image destination");
+  for (const asset of rawFonts) text(asset.slot, 64, "font slot");
+  const images = pdfImagesOption(rawImages.map(asset => ({...asset, bytes: bytes(asset.bytes)})));
+  const fonts = fontAssetsOption(rawFonts.map(asset => ({...asset, bytes: bytes(asset.bytes)})));
+  let total = 0, destinationBytes = 0;
+  const destinations = new Set();
+  for (const image of images) {
+    destinationBytes += text(image.destination, 8192, "image destination");
+    if (destinations.has(image.destination) || /[\u0000-\u001f\u007f-\u009f]/u.test(image.destination)) throw new TypeError("Interactive image destinations must be unique and control-free");
+    destinations.add(image.destination);
+  }
+  if (destinationBytes > 65536) throw new RangeError("Interactive image destinations exceed 64 KiB");
+  for (const asset of [...images, ...fonts]) {
+    if (!asset.bytes.byteLength || asset.bytes.byteLength > 32 * 1024 * 1024) throw new RangeError("Interactive assets must contain 1 byte through 32 MiB");
+    total += asset.bytes.byteLength;
+    if (total > 128 * 1024 * 1024) throw new RangeError("Interactive assets exceed 128 MiB combined");
+  }
+  const lengths = Uint32Array.from(images, image => image.bytes.byteLength);
+  const flat = new Uint8Array(images.reduce((n, image) => n + image.bytes.byteLength, 0));
+  let offset = 0;
+  for (const image of images) {flat.set(image.bytes, offset); offset += image.bytes.byteLength;}
+  const ownedFonts = fonts.map(asset => ({...asset, bytes: new Uint8Array(asset.bytes)}));
+  return {advanced, args: [source, font, dark, title, css, false, scale,
+    ...["body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"].map(slot => fontBytesForSlot(ownedFonts, slot)),
+    fontWeightsForSlots(ownedFonts), images.map(image => image.destination), flat, lengths,
+    lang, Boolean(options.toc), depth, format]};
 }
 
 export async function documentStats(markdown) {

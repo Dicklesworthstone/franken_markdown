@@ -1,4 +1,4 @@
-import type { FmdDiagnostic, FmdRenderOptions, FmdPdfRenderOptions, FmdDiffOptions, FmdSemanticDiff } from "./franken_markdown.js";
+import type { FmdDiagnostic, FmdRenderOptions, FmdPdfRenderOptions, FmdInteractiveRenderOptions, FmdDiffOptions, FmdSemanticDiff } from "./franken_markdown.js";
 
 export type DocumentFormat = "html" | "pdf" | "svg" | "epub" | "interactive-html";
 type Shared = Pick<FmdRenderOptions, "font" | "darkMode" | "fontScale" | "typeSize">;
@@ -7,7 +7,7 @@ export interface DocumentOptions {
   pdf: Shared & Pick<FmdPdfRenderOptions, "title" | "author" | "metadataEpochSeconds" | "allowRawHtml" | "codeLineNumbers" | "pageNumbers" | "baseFontSize" | "headingScale" | "tableFontSize" | "lang" | "toc" | "tocDepth" | "fitToPages" | "microtype" | "microtypeProtrusion" | "typography" | "optimalPagination" | "strictPagination" | "baselineGridPt" | "pdfImages" | "fontAssets" | "page" | "running">;
   svg: Shared & Pick<FmdRenderOptions, "maxWidthPt" | "pdfImages" | "fontAssets">;
   epub: Shared & Pick<FmdRenderOptions, "title" | "lang" | "customCss" | "toc" | "tocDepth" | "pdfImages" | "fontAssets">;
-  "interactive-html": Shared & Pick<FmdRenderOptions, "title" | "lang">;
+  "interactive-html": FmdInteractiveRenderOptions;
 }
 export interface DocumentOutput<K extends DocumentFormat = DocumentFormat> {
   readonly format: K;

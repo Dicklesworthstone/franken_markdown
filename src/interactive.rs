@@ -13,6 +13,7 @@ use crate::ast::Document;
 use crate::html::render_fragment;
 
 mod assets;
+mod presentation;
 
 #[inline(always)]
 fn escape_html_to(s: &str, out: &mut String) {
@@ -67,7 +68,29 @@ fn push_source_json(s: &str, out: &mut String) {
 /// Render an interactive self-hosting single-file HTML workspace.
 #[must_use]
 pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOptions) -> String {
+    if presentation::is_requested(opts) {
+        render_interactive_html_advanced(doc, markdown_src, opts)
+    } else {
+        render_workspace(doc, markdown_src, opts, false)
+    }
+}
+
+pub(crate) fn render_interactive_html_advanced(
+    doc: &Document,
+    markdown_src: &str,
+    opts: &HtmlOptions,
+) -> String {
+    render_workspace(doc, markdown_src, opts, true)
+}
+
+fn render_workspace(
+    doc: &Document,
+    markdown_src: &str,
+    opts: &HtmlOptions,
+    styled: bool,
+) -> String {
     let initial_rendered = render_fragment(&doc.blocks, opts);
+    let css = styled.then(|| crate::html::editable_stylesheet(opts));
     let title = opts.title.as_deref().unwrap_or("FrankenMarkdown Document");
 
     let mut out = String::with_capacity(initial_rendered.len() + markdown_src.len() + 16384);
@@ -129,7 +152,11 @@ pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOp
   <main class="fmd-preview-pane fmd" id="preview-pane">
     <div class="fmd-content" id="fmd-content">"#,
     );
-    out.push_str(&initial_rendered);
+    if let Some(css) = &css {
+        presentation::push_frame(&initial_rendered, opts, css, &mut out);
+    } else {
+        out.push_str(&initial_rendered);
+    }
     out.push_str(
         r#"</div>
   </main>
@@ -161,9 +188,21 @@ pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOp
     // The same explicit image bytes must survive editing and save/reopen.
     assets::push_manifest(opts, &mut out);
 
+    if let Some(css) = &css {
+        presentation::push_manifest(opts, css, &mut out);
+    }
+
     // Client-side JavaScript
     out.push_str("<script>\n");
-    out.push_str(INTERACTIVE_JS);
+    if styled {
+        out.push_str(include_str!("interactive_renderer.js"));
+        out.push('\n');
+        out.push_str(include_str!("interactive/presentation.js"));
+        out.push('\n');
+        out.push_str(INTERACTIVE_CONTROLLER_JS);
+    } else {
+        out.push_str(INTERACTIVE_JS);
+    }
     out.push_str("\n</script>\n</body>\n</html>\n");
 
     out
@@ -487,6 +526,16 @@ aside.callout-caution { border-left-color: #cf222e; }
 const INTERACTIVE_JS: &str = concat!(
     include_str!("interactive_renderer.js"),
     "\n",
+    include_str!("interactive_controller.js"),
+    "\n",
+    include_str!("interactive_import.js"),
+    "\n",
+    include_str!("interactive_search.js"),
+    "\n",
+    include_str!("interactive_fonts.js"),
+);
+
+const INTERACTIVE_CONTROLLER_JS: &str = concat!(
     include_str!("interactive_controller.js"),
     "\n",
     include_str!("interactive_import.js"),

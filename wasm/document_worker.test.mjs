@@ -607,7 +607,7 @@ if (!isMainThread) {
       for (const format of ["html", "svg", "epub", "interactive-html"])
         for (const options of [{ typography: {} }, { optimalPagination: false }, { strictPagination: false }, { microtype: "expansion" }])
           await rejects(api.render(format, "x", options), "INVALID_OPTIONS");
-      for (const format of ["pdf", "svg", "epub", "interactive-html"])
+      for (const format of ["pdf", "svg", "epub"])
         await rejects(api.render(format, "x", { htmlFontFormat: "woff2" }), "INVALID_OPTIONS");
       assert.equal(starts, 0);
       assert.equal(getters, 0);
@@ -724,15 +724,23 @@ if (!isMainThread) {
     assert.equal(font.byteLength, 4);
   });
 
-  test("EPUB option failures preserve queue capacity and interactive HTML stays narrow", async t => {
+  test("EPUB option failures preserve queue capacity and configured interactive HTML keeps owned resources", async t => {
     const api = renderer(t);
     for (const options of [{ toc: 1 }, { tocDepth: 0 }, { tocDepth: 7 }, { page: {} },
       { pdfImages: [{ destination: "x", bytes: new Uint8Array(new SharedArrayBuffer(2)) }] }])
       await rejects(api.renderEpub("x", options), "INVALID_OPTIONS");
     await rejects(api.renderEpub("x", { customCss: "x".repeat(1024 * 1024 + 1) }), "BUDGET_EXCEEDED");
-    await rejects(api.renderInteractiveHtml("x", { pdfImages: [] }), "INVALID_OPTIONS");
+    await rejects(api.renderInteractiveHtml("x", { allowRawHtml: true }), "INVALID_OPTIONS");
     assert.equal(api.pendingOperations, 0);
     assert.equal(api.pendingBytes, 0);
+    const interactive = {customCss: 'main{color:red}', toc: true, tocDepth: 2,
+      htmlFontFormat: 'woff2', pdfImages: [{destination: 'chart.png', bytes: Uint8Array.of(1, 2)}],
+      fontAssets: [{slot: 'body-regular', weight: 550, bytes: Uint8Array.of(3, 4)}]};
+    const html = await api.renderInteractiveHtml('Current', interactive);
+    const captured = JSON.parse(html.text()).options;
+    assert.equal(captured.customCss, interactive.customCss); assert.equal(captured.tocDepth, 2);
+    assert.equal(captured.htmlFontFormat, 'woff2'); assert.equal(captured.fontAssets[0].weight, 550);
+    assert.deepEqual(captured.pdfImages[0].bytes, [1, 2]);
     for (const options of [{}, { customCss: "", toc: false, tocDepth: 1, pdfImages: [], fontAssets: [] }]) {
       const output = await api.renderEpub("valid", options);
       assert.deepEqual(JSON.parse(output.text()).options, options);

@@ -247,6 +247,121 @@ pub fn render_interactive_html_configured(
     ))
 }
 
+/// Render an editable workspace with persistent HTML styling and explicit
+/// resources. The preview is isolated from application controls; subsequent
+/// edits use the documented lightweight parser with the same fonts and styles.
+///
+/// # Errors
+/// Rejects raw HTML passthrough, invalid resources/options and oversized inputs.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(feature = "wasm-workspace", wasm_bindgen(js_name = renderInteractiveHtmlConfiguredAdvanced))]
+pub fn render_interactive_html_configured_advanced(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    custom_css: Option<String>,
+    allow_raw_html: bool,
+    font_scale: Option<f64>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    lang: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    html_font_format: Option<String>,
+) -> std::result::Result<FmdRenderResult, JsValue> {
+    if allow_raw_html {
+        return Err(JsValue::from_str(
+            "Interactive workspaces require safe Markdown; allowRawHtml must be false",
+        ));
+    }
+    const MIB: usize = 1024 * 1024;
+    let fonts = [
+        &body_regular,
+        &body_bold,
+        &body_italic,
+        &body_bold_italic,
+        &mono_regular,
+    ];
+    let resource_bytes = fonts.iter().fold(image_bytes_flat.len(), |total, bytes| {
+        total.saturating_add(bytes.len())
+    });
+    if markdown.len() > 32 * MIB
+        || custom_css.as_ref().is_some_and(|css| css.len() > MIB)
+        || title.as_ref().is_some_and(|text| text.len() > 65536)
+        || lang.as_ref().is_some_and(|text| text.len() > 1024)
+        || fonts.iter().any(|font| font.len() > 32 * MIB)
+        || resource_bytes > 128 * MIB
+        || image_destinations.len() > 4096
+        || image_bytes_lengths
+            .iter()
+            .any(|&len| len as usize > 32 * MIB)
+        || image_destinations.iter().any(|key| key.len() > 8192)
+        || image_destinations
+            .iter()
+            .fold(0usize, |n, key| n.saturating_add(key.len()))
+            > 65536
+    {
+        return Err(JsValue::from_str(
+            "Interactive workspace exceeds its source, settings or resource byte limit",
+        ));
+    }
+    let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
+    options.title = nonempty_verbatim(title);
+    options.custom_css = nonempty_verbatim(custom_css);
+    options.font_scale = positive_f32(font_scale, "fontScale")?;
+    options.lang = empty_to_none(lang);
+    options.toc = toc;
+    options.toc_depth = heading_depth(toc_depth)?;
+    if let Some(format) = empty_to_none(html_font_format) {
+        options.html_font_format = crate::HtmlFontFormat::parse(&format)
+            .ok_or_else(|| JsValue::from_str("htmlFontFormat must be ttf, woff1 or woff2"))?;
+    }
+    for (destination, bytes) in
+        split_nonempty_image_assets(&image_destinations, &image_bytes_flat, &image_bytes_lengths)
+            .map_err(JsValue::from_str)?
+    {
+        options = options
+            .with_pdf_image_asset(destination.to_string(), bytes.to_vec())
+            .map_err(render_error_to_js)?;
+    }
+    apply_font_assets(
+        &mut options,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+    )?;
+    apply_font_weights(&mut options, &font_weights)?;
+    let document = parse_markdown(markdown);
+    let html = crate::interactive::render_interactive_html_advanced(
+        &document,
+        markdown,
+        &options.html_options(),
+    );
+    if html.len() > 256 * MIB {
+        return Err(JsValue::from_str(
+            "Interactive workspace output exceeds 256 MiB",
+        ));
+    }
+    Ok(artifact_result(
+        "interactive-html",
+        "text/html; charset=utf-8",
+        "html",
+        html.into_bytes(),
+        markdown.len(),
+        "[]".to_string(),
+    ))
+}
+
 /// Compile in-memory Markdown files into a deterministic, zero-JavaScript HTML
 /// site ZIP. The host owns file selection; the core owns include expansion,
 /// link rewriting, navigation, parsing, rendering, and the search index.

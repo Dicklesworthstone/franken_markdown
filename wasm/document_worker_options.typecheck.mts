@@ -26,8 +26,9 @@ const epub: Promise<DocumentOutput<"epub">> = worker.render("epub", "book", {
 worker.renderSvg("x", { page: { size: "a4" } });
 // @ts-expect-error EPUB does not support raw HTML passthrough.
 worker.renderEpub("x", { allowRawHtml: true });
-// @ts-expect-error Interactive HTML does not accept document resource arrays.
-worker.renderInteractiveHtml("x", { pdfImages: [] });
+worker.renderInteractiveHtml("x", { pdfImages: [], customCss: "p{}", toc: true, htmlFontFormat: "woff2" });
+// @ts-expect-error Lightweight interactive editing requires safe Markdown.
+worker.renderInteractiveHtml("x", { allowRawHtml: true });
 // @ts-expect-error Named paper sizes are limited to the documented choices.
 worker.renderPdf("x", { page: { size: "ledger" } });
 // @ts-expect-error Running bands are PDF-only, including generic dispatch.

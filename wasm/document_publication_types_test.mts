@@ -29,8 +29,9 @@ void [all, extension, target];
 renderer.publish("x", [{ format: "pdf", options: { customCss: "p {}" } }]);
 // @ts-expect-error A mixed target list must still preserve per-format option types.
 renderer.publish("x", [{ format: "pdf" }, { format: "html", options: { page: {} } }]);
-// @ts-expect-error Interactive HTML does not accept host image resources.
 renderer.publish("x", [{ format: "interactive-html", options: { pdfImages: [] } }]);
+// @ts-expect-error Interactive HTML cannot pass raw source through the editor.
+renderer.publish("x", [{ format: "interactive-html", options: { allowRawHtml: true } }]);
 // @ts-expect-error Unknown formats are not rendered.
 renderer.publish("x", [{ format: "zip" }]);
 // @ts-expect-error A publication needs explicit targets.

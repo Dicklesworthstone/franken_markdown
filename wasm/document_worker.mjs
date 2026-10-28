@@ -23,7 +23,7 @@ const SETTINGS = {
   pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "strictPagination", "pdfImages", "fontAssets", "page", "running", "baselineGridPt"],
   svg: [...SHARED, "maxWidthPt", "pdfImages", "fontAssets"],
   epub: [...SHARED, "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets"],
-  "interactive-html": [...SHARED, "title", "lang"],
+  "interactive-html": [...SHARED, "title", "lang", "customCss", "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
 };
 const SLOTS = ["body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"];
 const fail = (code, message) => { throw new FlowWorkerError(code, message); };
@@ -113,6 +113,8 @@ function normalize(format, source, options, knownSourceLength) {
     fail("INVALID_OPTIONS", "unsupported document format");
   const sourceLength = knownSourceLength ?? text(source, DOCUMENT_SOURCE_LIMIT, "Markdown");
   const out = record(options, SETTINGS[format], "render option");
+  if (format === "interactive-html" && out.allowRawHtml !== undefined && out.allowRawHtml !== false)
+    fail("INVALID_OPTIONS", "Interactive workspaces require safe Markdown; allowRawHtml must be false");
   for (const [key, value] of Object.entries(out)) {
     if (key === "pdfImages" || key === "fontAssets") out[key] = assets(value, key === "fontAssets");
     else if (key === "page") {

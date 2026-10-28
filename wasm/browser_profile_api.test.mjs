@@ -171,13 +171,13 @@ test("legacy site rejects publication-only features before initialization", asyn
 test("workspace-only build captures source and metadata before initialization yields", async () => {
   const hold = gate(), f = await fixture({ renderInteractiveHtmlConfigured: true }, hold.promise);
   let text = "# Before";
-  const input = { toString: () => text }, options = { title: "  Before  ", font: "serif", typeSize: "lg" };
+  const input = { toString: () => text }, options = { title: "  Before  ", font: "sans", typeSize: "md" };
   const pending = f.api.renderInteractiveHtml(input, options);
   text = "# After"; options.title = "After"; options.font = "sans";
   hold.resolve();
   const result = await pending;
   assert.equal(result.format, "interactive-html");
-  assert.deepEqual(f.calls[0].args, ["# Before", "serif", undefined, "  Before  ", undefined, 1.125]);
+  assert.deepEqual(f.calls[0].args, ["# Before", "sans", undefined, "  Before  ", undefined, 1]);
   assert.equal(f.frees, 1);
 });
 

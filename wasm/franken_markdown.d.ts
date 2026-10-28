@@ -159,6 +159,17 @@ export interface FmdPdfRenderOptions extends FmdRenderOptions {
   running?: FmdPdfRunning;
 }
 
+/** Lightweight editable HTML. Configured styles, full font faces, images and
+ * navigation survive edits and Save HTML; Markdown editing uses its documented
+ * JavaScript subset. Raw passthrough and PDF-only options are rejected.
+ * Non-default presentation requires matching configured-workspace bindings.
+ */
+export interface FmdInteractiveRenderOptions extends Pick<FmdRenderOptions,
+  "font" | "darkMode" | "title" | "lang" | "fontScale" | "typeSize" | "customCss" |
+  "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "htmlFontFormat"> {
+  allowRawHtml?: false;
+}
+
 export interface FmdRenderOutput {
   format: FmdOutputFormat;
   mimeType: string;
@@ -243,7 +254,7 @@ export interface FmdRenderer {
   renderBookSite(files: readonly FmdBookFile[], options?: FmdBookSiteOptions): Promise<FmdBookSiteOutput>;
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
-  renderInteractiveHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+  renderInteractiveHtml(markdown: string, options?: FmdInteractiveRenderOptions): Promise<FmdRenderOutput>;
   renderPdf(markdown: string, options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
   renderSemanticDiff(
     oldMarkdown: string,
@@ -337,7 +348,7 @@ export function renderEpub(markdown: string, options?: FmdRenderOptions): Promis
 export function renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
 export function renderInteractiveHtml(
   markdown: string,
-  options?: FmdRenderOptions,
+  options?: FmdInteractiveRenderOptions,
 ): Promise<FmdRenderOutput>;
 export function renderPdf(markdown: string, options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
 export function renderSemanticDiff(

@@ -172,6 +172,77 @@ pub(crate) fn stylesheet(doc: &Document, opts: &HtmlOptions) -> String {
         .map_or_else(|| default_css(doc, opts), sanitize_custom_css)
 }
 
+/// An editor can introduce glyphs and styles absent from its initial source.
+/// Retain complete validated faces, using the same weight instancing and font
+/// container encoders as ordinary HTML instead of initial-document subsets.
+pub(crate) fn editable_stylesheet(opts: &HtmlOptions) -> String {
+    let mut css = String::new();
+    let mut woff = crate::compress::ZlibCompressScratch::new();
+    let mut woff2 = crate::brotli::BrotliCompressScratch::new();
+    for (family, style, weight, face) in [
+        (
+            "FMD Body",
+            "normal",
+            "400",
+            body_font_face(&opts.font_assets, opts.theme.font, FontStyle::Regular),
+        ),
+        (
+            "FMD Body",
+            "normal",
+            "700",
+            body_font_face(&opts.font_assets, opts.theme.font, FontStyle::Bold),
+        ),
+        (
+            "FMD Body",
+            "italic",
+            "400",
+            body_font_face(&opts.font_assets, opts.theme.font, FontStyle::Italic),
+        ),
+        (
+            "FMD Body",
+            "italic",
+            "700",
+            body_font_face(&opts.font_assets, opts.theme.font, FontStyle::BoldItalic),
+        ),
+        (
+            "FMD Mono",
+            "normal",
+            "400",
+            mono_font_face(&opts.font_assets, FontStyle::Regular),
+        ),
+    ] {
+        let bytes = if let Some(pin) = face.instance_weight {
+            instance_host_font(face.slot, face.bytes, pin)
+                .map_or_else(|_| face.bytes.to_vec(), |font| font.as_sfnt().to_vec())
+        } else {
+            face.bytes.to_vec()
+        };
+        push_font_payload(
+            &mut css,
+            family,
+            style,
+            weight,
+            &bytes,
+            opts.html_font_format,
+            &mut woff,
+            &mut woff2,
+        );
+    }
+    if let Some(custom) = &opts.custom_css {
+        css.push_str(&sanitize_custom_css(custom));
+        css
+    } else {
+        default_css_with_fonts(
+            opts,
+            EmbeddedFontCss {
+                css,
+                has_body: true,
+                has_mono: true,
+            },
+        )
+    }
+}
+
 /// Make caller-supplied CSS safe to inline in a raw-text `<style>` element.
 ///
 /// The HTML tokenizer ends a `<style>` element at the first case-insensitive
@@ -1887,8 +1958,12 @@ fn allowed_url_scheme(scheme: &str, context: UrlContext) -> bool {
 
 /// The default, dependency-free, gorgeous stylesheet.
 fn default_css(doc: &Document, opts: &HtmlOptions) -> String {
+    let embedded = embedded_font_css(doc, &opts.theme, &opts.font_assets, opts.html_font_format);
+    default_css_with_fonts(opts, embedded)
+}
+
+fn default_css_with_fonts(opts: &HtmlOptions, embedded: EmbeddedFontCss) -> String {
     let theme = &opts.theme;
-    let embedded = embedded_font_css(doc, theme, &opts.font_assets, opts.html_font_format);
     let body_font = if embedded.has_body {
         format!("\"FMD Body\", {}", theme.body_font_stack())
     } else {
@@ -2575,20 +2650,43 @@ fn push_font_face(
             parsed.and_then(|font| font.subset(&keep).or_else(|| Some(font.as_sfnt().to_vec())))
         })
         .unwrap_or_else(|| font_face.bytes.to_vec());
+    push_font_payload(
+        css,
+        family,
+        style,
+        weight,
+        &subset,
+        format,
+        woff_scratch,
+        woff2_scratch,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_font_payload(
+    css: &mut String,
+    family: &str,
+    style: &str,
+    weight: &str,
+    sfnt: &[u8],
+    format: crate::HtmlFontFormat,
+    woff_scratch: &mut crate::compress::ZlibCompressScratch,
+    woff2_scratch: &mut crate::brotli::BrotliCompressScratch,
+) {
     let (payload, mime, format_hint) = match format {
         crate::HtmlFontFormat::Woff2 => {
-            match crate::woff2::encode_woff2_with_scratch(&subset, woff2_scratch) {
+            match crate::woff2::encode_woff2_with_scratch(sfnt, woff2_scratch) {
                 Ok(woff2) => (woff2, "font/woff2", "woff2"),
-                Err(_) => (subset.clone(), "font/ttf", "truetype"),
+                Err(_) => (sfnt.to_vec(), "font/ttf", "truetype"),
             }
         }
         crate::HtmlFontFormat::Woff1 => {
-            match crate::woff1::encode_woff1_with_scratch(&subset, woff_scratch) {
+            match crate::woff1::encode_woff1_with_scratch(sfnt, woff_scratch) {
                 Ok(woff) => (woff, "font/woff", "woff"),
-                Err(_) => (subset.clone(), "font/ttf", "truetype"),
+                Err(_) => (sfnt.to_vec(), "font/ttf", "truetype"),
             }
         }
-        crate::HtmlFontFormat::Ttf => (subset.clone(), "font/ttf", "truetype"),
+        crate::HtmlFontFormat::Ttf => (sfnt.to_vec(), "font/ttf", "truetype"),
     };
     let encoded_len = base64_encoded_len(payload.len());
     css.reserve(font_face_css_capacity(

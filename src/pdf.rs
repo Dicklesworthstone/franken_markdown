@@ -43976,9 +43976,7 @@ mod plass_pagination_tests {
         assert_eq!(start, lines.len());
     }
 
-    #[test]
-    fn exact_bridge_never_splits_a_wrapped_table_row() {
-        let pg = page(75.0);
+    fn wrapped_table_with_preceding_paragraph(count: usize) -> Vec<Line> {
         let mut lines = vec![
             line(FlowKind::TableHeader, 77, 0, 1),
             line(FlowKind::TableRule, 77, 0, 1),
@@ -43986,23 +43984,119 @@ mod plass_pagination_tests {
             line(FlowKind::TableRow, 77, 1, 2),
             line(FlowKind::TableRow, 77, 0, 1),
         ];
-        // Body before the table makes a tempting but structurally illegal
-        // first-row split in a local fill strategy.
-        lines.splice(0..0, (0..3).map(|i| line(FlowKind::Paragraph, 12, i, 3)));
-        let plan = exact_height_page_breaks(&lines, pg).expect("exact plan");
-        for &end in &plan.ends {
-            if end == 0 || end >= lines.len() {
-                continue;
-            }
-            let before = &lines[end - 1];
-            let after = &lines[end];
-            assert!(
-                !(before.flow.group == after.flow.group
-                    && before.flow.kind == FlowKind::TableRow
-                    && before.flow.index + 1 < before.flow.count),
-                "page boundary {end} split a logical table row"
-            );
+        lines.splice(
+            0..0,
+            (0..count).map(|i| line(FlowKind::Paragraph, 12, i, count)),
+        );
+        lines
+    }
+
+    #[test]
+    fn exact_bridge_refuses_caption_that_cannot_fit_its_wrapped_first_row() {
+        // Preserve the original eight-line row fixture. At 14.52 pt per line,
+        // its three-line caption plus header, rule, and complete two-line first
+        // row require 101.64 pt. Each block fits separately, but their hard
+        // association cannot fit on a 75 pt page.
+        let lines = wrapped_table_with_preceding_paragraph(3);
+        let error = exact_height_page_breaks(&lines, page(75.0))
+            .err()
+            .expect("the original captioned table is infeasible");
+        assert!(
+            matches!(
+                error,
+                PdfPaginationFailure::Planner(
+                    crate::pagination::height::HeightPaginationError::NoFeasibleLayout {
+                        block_index: 1
+                    }
+                )
+            ),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn exact_bridge_never_splits_a_wrapped_table_row() {
+        let pg = page(75.0);
+        // Four preceding paragraph lines are ordinary body text, so the table
+        // can start on the next page without violating a short-caption keep.
+        // Retain the original 75 pt capacity, 11 pt sizes, and zero gaps.
+        let mut lines = wrapped_table_with_preceding_paragraph(4);
+        // Two more wrapped rows force real table continuations. A continuation
+        // has room for three body lines after its repeated header/rule, making
+        // a cut inside the next two-line row a tempting but illegal fill.
+        for _ in 0..2 {
+            lines.extend((0..2).map(|i| line(FlowKind::TableRow, 77, i, 2)));
         }
+        let plan = exact_height_page_breaks(&lines, pg).expect("feasible wrapped-row plan");
+        assert_plan_legal(&lines, &plan.ends, pg);
+        assert!(
+            plan.ends
+                .iter()
+                .filter(|&&end| end > 4 && end < lines.len())
+                .count()
+                >= 2,
+            "the table must exercise multiple continuation pages"
+        );
+
+        let mut start = 0usize;
+        for &end in &plan.ends {
+            // These positions come from the fixture's source row boundaries,
+            // independently of the production forbidden-split predicate.
+            assert!(
+                [2, 4, 8, 9, 11, 13].contains(&end),
+                "page boundary {end} is not a legal paragraph/table-row end"
+            );
+            let repeated_header_lines = if start > 4 { 2 } else { 0 };
+            assert!(
+                (end - start + repeated_header_lines) * 14_520 <= 75_000,
+                "page {start}..{end} exceeds capacity including its two repeated header lines"
+            );
+            if repeated_header_lines != 0 {
+                let repeated = repeated_table_header_lines(&lines, start);
+                assert_eq!(repeated.len(), 2);
+                assert_eq!(repeated[0].flow.kind, FlowKind::TableHeader);
+                assert_eq!(repeated[1].flow.kind, FlowKind::TableRule);
+            }
+            if end < lines.len() {
+                let before = &lines[end - 1];
+                let after = &lines[end];
+                assert!(
+                    !(before.flow.group == after.flow.group
+                        && before.flow.kind == FlowKind::TableRow
+                        && before.flow.index + 1 < before.flow.count),
+                    "page boundary {end} split a logical table row"
+                );
+            }
+            start = end;
+        }
+        assert_eq!(start, lines.len(), "every source line is covered");
+    }
+
+    #[test]
+    fn exact_bridge_refuses_a_wrapped_row_that_cannot_fit_on_one_page() {
+        let mut lines = vec![
+            line(FlowKind::TableHeader, 77, 0, 1),
+            line(FlowKind::TableRule, 77, 0, 1),
+        ];
+        lines.extend((0..4).map(|i| line(FlowKind::TableRow, 77, i, 4)));
+        // No caption is involved: header + rule + one complete wrapped row
+        // require 87.12 pt at the same 11 pt size. If the row's hard exclusion
+        // were reduced to the existing finite soft penalty, an expensive
+        // two-page split would succeed and this negative control would fail.
+        let error = exact_height_page_breaks(&lines, page(75.0))
+            .err()
+            .expect("an oversized logical row must not split under an exact plan");
+        assert!(
+            matches!(
+                error,
+                PdfPaginationFailure::Planner(
+                    crate::pagination::height::HeightPaginationError::NoFeasibleLayout {
+                        block_index: 0
+                    }
+                )
+            ),
+            "unexpected refusal: {error}"
+        );
     }
 
     #[test]

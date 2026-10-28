@@ -4212,9 +4212,9 @@ fn parse_inlines_chars_with_refs_profiled(
     // "process emphasis" delimiter-stack algorithm over that list to pair openers
     // with closers and build the correct nested `Emphasis`/`Strong` tree.
     let mut els: Vec<InlineEl> = Vec::new();
-    // Build `[`→`]` matches lazily. Most inline runs contain no links/images, so
-    // they should not pay for the bracket-pair vector; once a bracket candidate
-    // exists, all link/reference attempts share the same linear precompute.
+    // A link label has fixed tokenization rules, so its candidates can share a
+    // compact bracket table. Prose must instead probe only an actual tokenizer
+    // candidate: a `[` inside an already consumed GFM bare URL is not an opener.
     let mut bracket_pairs: Option<BracketPairs> = None;
     let maybe_bare_email = context == InlineContext::Prose && bytes.contains(&'@');
     let mut buf = String::new();
@@ -4284,13 +4284,20 @@ fn parse_inlines_chars_with_refs_profiled(
                 }
             }
             '!' if i + 1 < bytes.len() && bytes[i + 1] == '[' => {
-                let pairs = bracket_pairs
-                    .get_or_insert_with(|| compute_bracket_pairs(bytes, &mut profiler.inline_work));
+                let close = if context == InlineContext::LinkLabel {
+                    bracket_pairs
+                        .get_or_insert_with(|| {
+                            compute_bracket_pairs(bytes, refs, &mut profiler.inline_work)
+                        })
+                        .partner(i + 1)
+                } else {
+                    find_link_label_close(bytes, i, i + 1, refs, &mut profiler.inline_work)
+                };
                 if profiler.inline_work.exhausted {
                     break;
                 }
                 if let Some((alt, dest, title, next, token)) =
-                    parse_link_like(bytes, i + 1, pairs, refs, profiler, true)
+                    parse_link_like(bytes, i + 1, close, refs, profiler, true)
                 {
                     if let Some(tracker) = &mut profiler.destinations {
                         tracker.record(bytes, token, &dest);
@@ -4303,7 +4310,7 @@ fn parse_inlines_chars_with_refs_profiled(
                     }));
                     i = next;
                 } else if let Some((alt, dest, title, next)) =
-                    parse_reference_link_like(bytes, i + 1, pairs, refs, profiler, true)
+                    parse_reference_link_like(bytes, i + 1, close, refs, profiler, true)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Image {
@@ -4339,13 +4346,20 @@ fn parse_inlines_chars_with_refs_profiled(
                 // exempt — their description is flattened to alt text — so this
                 // guard applies only to the link-forming paths, not the `!` image
                 // path above. Without it, `[a [b](/u)](/u)` emits nested <a>.
-                let pairs = bracket_pairs
-                    .get_or_insert_with(|| compute_bracket_pairs(bytes, &mut profiler.inline_work));
+                let close = if context == InlineContext::LinkLabel {
+                    bracket_pairs
+                        .get_or_insert_with(|| {
+                            compute_bracket_pairs(bytes, refs, &mut profiler.inline_work)
+                        })
+                        .partner(i)
+                } else {
+                    find_link_label_close(bytes, i, i, refs, &mut profiler.inline_work)
+                };
                 if profiler.inline_work.exhausted {
                     break;
                 }
                 if let Some((content, dest, title, next, token)) =
-                    parse_link_like(bytes, i, pairs, refs, profiler, false)
+                    parse_link_like(bytes, i, close, refs, profiler, false)
                 {
                     if let Some(tracker) = &mut profiler.destinations {
                         tracker.record(bytes, token, &dest);
@@ -4358,7 +4372,7 @@ fn parse_inlines_chars_with_refs_profiled(
                     }));
                     i = next;
                 } else if let Some((content, dest, title, next)) =
-                    parse_reference_link_like(bytes, i, pairs, refs, profiler, false)
+                    parse_reference_link_like(bytes, i, close, refs, profiler, false)
                 {
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
@@ -5065,11 +5079,70 @@ fn skip_link_whitespace(chars: &[char], i: &mut usize) {
 /// A parsed inline link or image: content, destination, title, end index, source span.
 type LinkLikeParse = (Vec<Inline>, String, Option<String>, usize, Range<usize>);
 
+/// The destination/title suffix of an inline link or image. Both bracket
+/// matching and AST construction use this grammar, so punctuation in an accepted
+/// destination or title cannot become brackets, code, or mathematics in its label.
+struct InlineLinkTarget {
+    dest: String,
+    title: Option<String>,
+    next: usize,
+    token: Range<usize>,
+}
+
+fn parse_inline_link_target(
+    chars: &[char],
+    close: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<InlineLinkTarget> {
+    if chars.get(close) != Some(&']') || chars.get(close + 1) != Some(&'(') {
+        return None;
+    }
+    let mut k = close + 2;
+    let target = (|| {
+        skip_link_whitespace(chars, &mut k);
+        let destination_start = k;
+        let mut destination_end = k;
+        let (dest, title) = if chars.get(k) == Some(&')') {
+            (String::new(), None)
+        } else {
+            let dest = parse_link_destination(chars, &mut k)?;
+            destination_end = k;
+            let spaces_start = k;
+            skip_link_whitespace(chars, &mut k);
+            let title = if chars.get(k) == Some(&')') {
+                None
+            } else {
+                if k == spaces_start {
+                    return None;
+                }
+                let title = parse_link_title(chars, &mut k)?;
+                skip_link_whitespace(chars, &mut k);
+                Some(title)
+            };
+            (dest, title)
+        };
+        if chars.get(k) != Some(&')') {
+            return None;
+        }
+        Some(InlineLinkTarget {
+            dest,
+            title,
+            next: k + 1,
+            token: destination_start..destination_end,
+        })
+    })();
+    // Include failed destination/title scans and all interstitial whitespace.
+    // A rejected suffix remains ordinary source, but retrying it is never free.
+    work.charge(k.saturating_sub(close).saturating_add(1))
+        .then_some(target)
+        .flatten()
+}
+
 /// Parse `[content](dest "title")` starting at the `[`.
 fn parse_link_like(
     chars: &[char],
     i: usize,
-    bracket_pairs: &BracketPairs,
+    close: Option<usize>,
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
     image: bool,
@@ -5077,51 +5150,15 @@ fn parse_link_like(
     if chars.get(i) != Some(&'[') {
         return None;
     }
-    let j = bracket_pairs.partner(i)?;
-    if chars.get(j) != Some(&']') || chars.get(j + 1) != Some(&'(') {
-        return None;
-    }
-    let mut k = j + 2;
-
-    skip_link_whitespace(chars, &mut k);
-    let destination_start = k;
-    let mut destination_end = k;
-    let (dest, title) = if chars.get(k) == Some(&')') {
-        (String::new(), None)
-    } else {
-        let dest = parse_link_destination(chars, &mut k);
-        if !profiler.inline_work.charge(k - destination_start) {
-            return None;
-        }
-        let dest = dest?;
-        destination_end = k;
-        let spaces_start = k;
-        skip_link_whitespace(chars, &mut k);
-
-        let title = if chars.get(k) == Some(&')') {
-            None
-        } else {
-            if k == spaces_start {
-                return None;
-            }
-            let title_start = k;
-            let title = parse_link_title(chars, &mut k);
-            if !profiler.inline_work.charge(k - title_start) {
-                return None;
-            }
-            let title = title?;
-            skip_link_whitespace(chars, &mut k);
-            Some(title)
-        };
-        (dest, title)
-    };
-
-    if chars.get(k) != Some(&')') {
-        return None;
-    }
+    let close = close?;
+    let target = parse_inline_link_target(chars, close, &mut profiler.inline_work)?;
     let mark = profiler.destination_mark();
-    let content =
-        parse_inlines_chars_nested(&chars[i + 1..j], refs, InlineContext::LinkLabel, profiler);
+    let content = parse_inlines_chars_nested(
+        &chars[i + 1..close],
+        refs,
+        InlineContext::LinkLabel,
+        profiler,
+    );
     let nested_link = !image && contains_link(&content);
     if image || nested_link {
         profiler.destination_rollback(mark);
@@ -5131,10 +5168,10 @@ fn parse_link_like(
     }
     Some((
         content,
-        dest,
-        title,
-        k + 1,
-        destination_start..destination_end,
+        target.dest,
+        target.title,
+        target.next,
+        target.token,
     ))
 }
 
@@ -5289,10 +5326,71 @@ fn parse_link_title(chars: &[char], i: &mut usize) -> Option<String> {
 /// otherwise collect its whole bracket span just to fail the lookup).
 const MAX_REFERENCE_LABEL_LEN: usize = 999;
 
+/// A reference label is literal source with escaped brackets, not an inline
+/// label: backticks and other markup never hide its closing bracket. A malformed
+/// or overlong following label does not prevent a preceding shortcut reference.
+fn scan_reference_label(
+    chars: &[char],
+    open: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<(Range<usize>, usize)> {
+    if chars.get(open) != Some(&'[') {
+        return None;
+    }
+    let start = open + 1;
+    let mut i = start;
+    let mut found = None;
+    while i < chars.len() && i - start <= MAX_REFERENCE_LABEL_LEN {
+        match chars[i] {
+            ']' => {
+                found = Some((start..i, i + 1));
+                break;
+            }
+            '[' => break,
+            '\\' if chars.get(i + 1).is_some() => i += 2,
+            _ => i += 1,
+        }
+    }
+    work.charge(i.saturating_sub(open).saturating_add(1))
+        .then_some(found)
+        .flatten()
+}
+
+fn reference_label_key(label: &[char], work: &mut InlineWorkBudget) -> Option<String> {
+    if label.len() > MAX_REFERENCE_LABEL_LEN || !work.charge(label.len().saturating_mul(2)) {
+        return None;
+    }
+    normalize_reference_label_chars(label)
+}
+
+fn reference_link_target<'a>(
+    chars: &[char],
+    open: usize,
+    close: usize,
+    refs: &'a ReferenceMap,
+    work: &mut InlineWorkBudget,
+) -> Option<(&'a LinkReference, usize)> {
+    if refs.is_empty() {
+        return None;
+    }
+    if let Some((label, next)) = scan_reference_label(chars, close + 1, work) {
+        let label = if label.is_empty() {
+            reference_label_key(&chars[open + 1..close], work)?
+        } else {
+            reference_label_key(&chars[label], work)?
+        };
+        // A syntactically complete full/collapsed reference owns its label even
+        // if unresolved. Only malformed following labels allow shortcut fallback.
+        return refs.get(&label).map(|reference| (reference, next));
+    }
+    let label = reference_label_key(&chars[open + 1..close], work)?;
+    refs.get(&label).map(|reference| (reference, close + 1))
+}
+
 fn parse_reference_link_like(
     chars: &[char],
     i: usize,
-    bracket_pairs: &BracketPairs,
+    close: Option<usize>,
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
     image: bool,
@@ -5300,47 +5398,9 @@ fn parse_reference_link_like(
     if chars.get(i) != Some(&'[') {
         return None;
     }
-    let close = bracket_pairs.partner(i)?;
-    let text_len = close.saturating_sub(i + 1);
-
-    // Resolve the reference LABEL (used for the lookup) without collecting the
-    // possibly-huge first bracket unless it is actually the label, and reject any
-    // over-length label in O(1).
-    let (label, next) = if chars.get(close + 1) == Some(&'[') {
-        let label_start = close + 2;
-        let label_close = bracket_pairs.partner(close + 1)?;
-        if label_close > label_start {
-            // [text][label]: the second bracket is the explicit label.
-            if label_close - label_start > MAX_REFERENCE_LABEL_LEN {
-                return None;
-            }
-            (
-                normalize_reference_label_chars(&chars[label_start..label_close])?,
-                label_close + 1,
-            )
-        } else {
-            // [text][]: collapsed — the label is the first bracket's text.
-            if text_len > MAX_REFERENCE_LABEL_LEN {
-                return None;
-            }
-            (
-                normalize_reference_label_chars(&chars[i + 1..close])?,
-                label_close + 1,
-            )
-        }
-    } else {
-        // [text]: shortcut — the label is the first bracket's text.
-        if text_len > MAX_REFERENCE_LABEL_LEN {
-            return None;
-        }
-        (
-            normalize_reference_label_chars(&chars[i + 1..close])?,
-            close + 1,
-        )
-    };
-
-    let reference = refs.get(&label)?;
-    // Only now, with a real reference, parse the link text in place as content.
+    let close = close?;
+    let (reference, next) =
+        reference_link_target(chars, i, close, refs, &mut profiler.inline_work)?;
     let mark = profiler.destination_mark();
     let content = parse_inlines_chars_nested(
         &chars[i + 1..close],
@@ -5974,15 +6034,10 @@ fn find_closing_bracket(chars: &[char], open: usize) -> Option<usize> {
     None
 }
 
-/// Match every `[` to its closing `]` in one pass, so link parsing can look up a
-/// bracket's partner in O(1) instead of rescanning from each `[`.
-///
-/// `partner(open) == Some(close)` iff a `[` at `open` is closed by a `]` at
-/// `close`, with the exact nesting and backslash-escape rules of
-/// [`find_closing_bracket`] (a `\` skips the next char, so `\[`/`\]` are inert).
-/// Rescanning per `[` made a line like `[[[…]]]` quadratic; one stack pass is
-/// linear and byte-for-byte equivalent (`find_closing_bracket(open)` returns the
-/// `]` that pops `open`, which is exactly what this records).
+/// Pair source brackets within a link label, where GFM bare autolinks are
+/// disabled. Opaque inline atoms and accepted link targets own their source. The
+/// stack walks the label once; speculative recognizers share the inline work
+/// budget, including failed scans. A lookup is O(1).
 ///
 /// The table is 4 bytes per char (`u32` + sentinel) instead of the 16 of
 /// `Option<usize>` whenever the slice fits `u32` indices — every reachable
@@ -6023,8 +6078,8 @@ impl BracketPairs {
 }
 
 /// Storage half of the pairing pass: how each representation starts all-unpaired,
-/// records one pair, and reads one back. Pure storage — every decision stays in
-/// the shared generic loop, so the two representations cannot diverge.
+/// records one pair, and reads one back. Pairing decisions stay in the shared
+/// generic loop, including the allocation-free single-candidate representation.
 trait PairTable {
     fn unpaired(len: usize) -> Self;
     fn record(&mut self, open: usize, close: usize);
@@ -6069,20 +6124,66 @@ impl PairTable for WideTable {
     }
 }
 
-/// The single pairing pass (nesting + backslash-escape rules verbatim from the
-/// pre-pass-25 `compute_bracket_pairs`); `S` picks only the storage width.
-fn compute_bracket_pairs_in<S: PairTable>(chars: &[char], work: &mut InlineWorkBudget) -> S {
+/// A prose probe needs only its root pair. Nested pairs are overwritten, and
+/// the scanner stops as soon as it records the requested root's closing bracket.
+struct SinglePair(Option<(usize, usize)>);
+
+impl PairTable for SinglePair {
+    fn unpaired(_len: usize) -> Self {
+        SinglePair(None)
+    }
+    fn record(&mut self, open: usize, close: usize) {
+        self.0 = Some((open, close));
+    }
+    #[cfg(test)]
+    fn partner(&self, open: usize) -> Option<usize> {
+        self.0
+            .filter(|&(index, _)| index == open)
+            .map(|(_, close)| close)
+    }
+}
+
+/// Start at the actual prose tokenizer's candidate, never at punctuation in a
+/// consumed URL. Successful neighboring links scan disjoint labels. Repeated
+/// rejected or unmatched candidates charge every walk to the shared work budget.
+fn find_link_label_close(
+    chars: &[char],
+    start: usize,
+    open: usize,
+    refs: &ReferenceMap,
+    work: &mut InlineWorkBudget,
+) -> Option<usize> {
+    compute_bracket_pairs_in::<SinglePair>(chars, refs, work, start, Some(open))
+        .0
+        .filter(|&(index, _)| index == open)
+        .map(|(_, close)| close)
+}
+
+struct OpenBracket {
+    index: usize,
+    image: bool,
+    may_form_link: bool,
+    contains_link: bool,
+}
+
+/// `S` chooses only the table storage width. Matching recognizes the same
+/// opaque atoms and target grammar as the tokenizer. Accepted inner links make
+/// an outer link invalid; an accepted image instead flattens its label, so links
+/// inside it must not invalidate an enclosing link.
+fn compute_bracket_pairs_in<S: PairTable>(
+    chars: &[char],
+    refs: &ReferenceMap,
+    work: &mut InlineWorkBudget,
+    start: usize,
+    root: Option<usize>,
+) -> S {
     let mut pairs = S::unpaired(chars.len());
-    // Real inline runs peak at nesting depth 1-2 (measured across the perf
-    // corpora; only degenerate `[[[…` runs go deeper), so len/64 covers every
-    // measured shape in one allocation while costing 1/32 of the compact
-    // table itself. The bracket-count alternative (a counting pre-pass)
-    // measured 9-24% SLOWER end-to-end than either this or no presize.
-    let mut open_stack: Vec<usize> = Vec::with_capacity(chars.len() / 64);
-    let mut i = 0;
-    while i < chars.len() && !work.exhausted {
+    let capacity = if root.is_some() { 4 } else { chars.len() / 64 };
+    let mut open_stack: Vec<OpenBracket> = Vec::with_capacity(capacity);
+    let mut i = start;
+    while i < chars.len() && work.charge(1) {
         match chars[i] {
-            '\\' => i += 1, // skip the escaped char, exactly as find_closing_bracket does
+            '\\' => i += 1,
             '`' => {
                 let Some(n) = run_len(chars, i, '`', work) else {
                     break;
@@ -6093,17 +6194,77 @@ fn compute_bracket_pairs_in<S: PairTable>(chars: &[char], work: &mut InlineWorkB
                     i += n - 1;
                 }
             }
+            '$' => {
+                let Some(n) = run_len(chars, i, '$', work) else {
+                    break;
+                };
+                if let Some((_, next)) =
+                    parse_math_delim(chars, i, if n >= 2 { 2 } else { 1 }, work)
+                {
+                    i = next - 1;
+                }
+            }
             '<' => {
                 if let Some((_, _, next)) = parse_autolink(chars, i, work) {
+                    if let Some(parent) = open_stack.last_mut() {
+                        parent.contains_link = true;
+                    }
                     i = next - 1;
                 } else if let Some((_, next)) = parse_inline_html(chars, i, work) {
                     i = next - 1;
                 }
             }
-            '[' => open_stack.push(i),
+            '!' if chars.get(i + 1) == Some(&'[') => {
+                // This branch, rather than inspecting the preceding character
+                // at '[', distinguishes a real image from an escaped literal '!'.
+                i += 1;
+                open_stack.push(OpenBracket {
+                    index: i,
+                    image: true,
+                    may_form_link: true,
+                    contains_link: false,
+                });
+            }
+            '[' => {
+                let footnote = chars.get(i + 1) == Some(&'^');
+                if footnote && let Some((_, next)) = parse_footnote_ref_id(chars, i + 2) {
+                    i = next - 1;
+                } else {
+                    open_stack.push(OpenBracket {
+                        index: i,
+                        image: false,
+                        may_form_link: !footnote,
+                        contains_link: false,
+                    });
+                }
+            }
             ']' => {
                 if let Some(open) = open_stack.pop() {
-                    pairs.record(open, i);
+                    pairs.record(open.index, i);
+                    if root == Some(open.index) {
+                        break;
+                    }
+                    let next = if open.may_form_link && (open.image || !open.contains_link) {
+                        parse_inline_link_target(chars, i, work)
+                            .map(|target| target.next)
+                            .or_else(|| {
+                                reference_link_target(chars, open.index, i, refs, work)
+                                    .map(|(_, next)| next)
+                            })
+                    } else {
+                        None
+                    };
+                    let contains_link = if next.is_some() {
+                        !open.image
+                    } else {
+                        open.contains_link
+                    };
+                    if contains_link && let Some(parent) = open_stack.last_mut() {
+                        parent.contains_link = true;
+                    }
+                    if let Some(next) = next {
+                        i = next - 1;
+                    }
                 }
             }
             _ => {}
@@ -6113,15 +6274,21 @@ fn compute_bracket_pairs_in<S: PairTable>(chars: &[char], work: &mut InlineWorkB
     pairs
 }
 
-fn compute_bracket_pairs(chars: &[char], work: &mut InlineWorkBudget) -> BracketPairs {
+fn compute_bracket_pairs(
+    chars: &[char],
+    refs: &ReferenceMap,
+    work: &mut InlineWorkBudget,
+) -> BracketPairs {
     // Indices are < len, so len <= u32::MAX keeps every recorded index at
     // u32::MAX - 1 or below — the sentinel stays collision-free even at the
     // boundary. On wasm32 (usize == u32) the comparison is tautologically true
     // and Compact is the only live arm.
     if chars.len() <= u32::MAX as usize {
-        BracketPairs::Compact(compute_bracket_pairs_in::<CompactTable>(chars, work).0)
+        BracketPairs::Compact(
+            compute_bracket_pairs_in::<CompactTable>(chars, refs, work, 0, None).0,
+        )
     } else {
-        BracketPairs::Wide(compute_bracket_pairs_in::<WideTable>(chars, work).0)
+        BracketPairs::Wide(compute_bracket_pairs_in::<WideTable>(chars, refs, work, 0, None).0)
     }
 }
 
@@ -7933,7 +8100,7 @@ mod bracket_tests {
 
     fn pairs(s: &str) -> Vec<Option<usize>> {
         let chars = s.chars().collect::<Vec<char>>();
-        let table = compute_bracket_pairs(&chars, &mut work());
+        let table = compute_bracket_pairs(&chars, &super::ReferenceMap::new(), &mut work());
         (0..chars.len()).map(|i| table.partner(i)).collect()
     }
 
@@ -7964,8 +8131,20 @@ mod bracket_tests {
         ];
         for src in battery {
             let chars = src.chars().collect::<Vec<char>>();
-            let compact = compute_bracket_pairs_in::<CompactTable>(&chars, &mut work());
-            let wide = compute_bracket_pairs_in::<WideTable>(&chars, &mut work());
+            let compact = compute_bracket_pairs_in::<CompactTable>(
+                &chars,
+                &super::ReferenceMap::new(),
+                &mut work(),
+                0,
+                None,
+            );
+            let wide = compute_bracket_pairs_in::<WideTable>(
+                &chars,
+                &super::ReferenceMap::new(),
+                &mut work(),
+                0,
+                None,
+            );
             for i in 0..=chars.len() {
                 assert_eq!(
                     compact.partner(i),
@@ -7976,7 +8155,7 @@ mod bracket_tests {
             // Every testable slice routes to the compact 4-byte table (len is
             // far below the u32::MAX guard), and the routed entry answers
             // exactly what both raw representations compute.
-            match compute_bracket_pairs(&chars, &mut work()) {
+            match compute_bracket_pairs(&chars, &super::ReferenceMap::new(), &mut work()) {
                 BracketPairs::Compact(table) => {
                     let routed = BracketPairs::Compact(table);
                     for i in 0..=chars.len() {

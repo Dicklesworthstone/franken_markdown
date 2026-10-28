@@ -106,8 +106,26 @@ their destination, so a refusal preserves the last successful PDF.
 
 The contract covers hard constraints over the final measured body lines:
 two-line minima on split ordinary paragraphs, heading keep-together and
-keep-with-next, forced page breaks, and forbidden splits inside wrapped table
-rows, between a table header and its first row, or at protected hyphen breaks.
+keep-with-next, short-caption/list-introduction keeps, forced page breaks, and
+forbidden splits inside wrapped table rows, between a table header and its
+first row, or at protected hyphen breaks.
+
+A complete paragraph of one to three measured lines immediately before a
+figure, table, code block, or list stays together with that subject's first
+legal fragment. The rest of a long subject can continue on later pages: a table
+keeps its header and first complete row, and a split list paragraph still obeys
+its two-line minima. The association is inferred only within the same quote
+and list item; an introduction may enter its own child list. It does not cross
+sibling items, quote boundaries, or the start of another prepared note. An
+explicit chapter/page break takes precedence over an inferred caption keep.
+Longer paragraphs and ordinary
+paragraph-to-paragraph boundaries retain their existing rules.
+
+When the whole caption and the smallest legal subject fragment cannot fit on
+one page, strict rendering returns typed infeasibility. Optimal best-effort
+rendering reports the fallback and preserves all content. No implicit font
+shrinking or margin changes make an impossible kept group appear feasible.
+
 Hyphen protection follows an actual selected intra-word break, including
 dictionary hyphenation and a wrapped compound word. A literal `-` in a table
 cell, at the end of a code line, or before a Markdown hard line break does not
@@ -131,7 +149,14 @@ Rust callers retain the original solver error through pattern matching and the
 `pagination_invalid_input`, `pagination_cost_overflow` and
 `pagination_invalid_plan`. An impossible layout and an exhausted search budget
 are therefore different outcomes. Best-effort rendering remains the default;
-its existing successful fallback output and warning codes are unchanged.
+rendering without an optimal request retains its existing output and the
+fallback warning codes are unchanged.
+
+The emitted-page regressions in `tests/pdf_keep_pagination_test.rs` decode the
+PDF's own font maps and painted glyphs. They cover caption relocation, long
+subject continuations, oversized groups, nested ownership, forced breaks and
+native/WASM and chunked/monolithic agreement. Run them with
+`cargo test --test pdf_keep_pagination_test`.
 
 Browser callers can supply `{ strictPagination: true }` to PDF rendering,
 DocumentWorker, Flow PDF export and book options, or include `strict-pagination`

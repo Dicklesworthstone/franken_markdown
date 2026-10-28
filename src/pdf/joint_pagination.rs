@@ -182,6 +182,52 @@ pub(super) fn block_variant(
     }
 }
 
+/// Promote the existing short-caption/list-introduction preference to a hard
+/// association only when measured blocks have an unambiguous shared owner.
+/// A following list adds one child container; sibling items, quote changes,
+/// and new note destinations are separate content even when flattened lines
+/// happen to be adjacent. Explicit page breaks override inferred associations.
+fn short_introduction_keeps_next(lines: &[Line], start: usize) -> bool {
+    let first = &lines[start];
+    if first.flow.kind != FlowKind::Paragraph
+        || first.flow.index != 0
+        || !(1..=3).contains(&first.flow.count)
+    {
+        return false;
+    }
+    let end = pdf_height_block_end(lines, start);
+    if end - start != first.flow.count {
+        return false;
+    }
+    let Some(after) = lines.get(end) else {
+        return false;
+    };
+    if after.page_break_before
+        || after.flow.note_destination != 0
+        || first.flow.note != after.flow.note
+        || after.flow.index != 0
+        || (!after.flow.list_start
+            && !matches!(
+                after.flow.kind,
+                FlowKind::TableHeader | FlowKind::Code | FlowKind::Image
+            ))
+        || !first
+            .quote_bars
+            .iter()
+            .map(|&(id, _)| id)
+            .eq(after.quote_bars.iter().map(|&(id, _)| id))
+    {
+        return false;
+    }
+    let next_depth = first.list_path.len() + usize::from(after.flow.list_start);
+    after.list_path.len() == next_depth
+        && first
+            .list_path
+            .iter()
+            .zip(&after.list_path)
+            .all(|(before, after)| before.list == after.list && before.item == after.item)
+}
+
 pub(super) fn block_policy(lines: &[Line], start: usize) -> BlockPolicy {
     let first = &lines[start];
     let mut policy = if first.flow.kind == FlowKind::Paragraph {
@@ -195,7 +241,7 @@ pub(super) fn block_policy(lines: &[Line], start: usize) -> BlockPolicy {
     } else {
         break_penalty(lines, start).round() as i64
     };
-    if first.flow.kind == FlowKind::Heading {
+    if first.flow.kind == FlowKind::Heading || short_introduction_keeps_next(lines, start) {
         policy.keep_together = true;
         policy.keep_with_next = true;
     }

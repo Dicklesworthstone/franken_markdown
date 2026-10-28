@@ -784,7 +784,8 @@ pub struct PdfOptions {
     /// line — the two-line seed of a vertical whitespace channel ("river").
     /// Default false — classic behavior, byte-identical output.
     pub river_penalty: bool,
-    /// Opt-in document-wide page planning with widow/orphan and heading rules.
+    /// Opt-in document-wide page planning with widow/orphan, heading, and
+    /// short-caption/list-introduction keep rules.
     /// Eligible ordinary paragraphs offer measured shapes with one fewer or
     /// one additional line at the same width and font size. Their actual
     /// line-breaking costs join the page costs in a bounded search; unsupported
@@ -797,10 +798,14 @@ pub struct PdfOptions {
     /// fallback. Default false preserves best-effort rendering.
     ///
     /// The guarantee covers supported paragraph split minima, heading keeps,
-    /// forced breaks and forbidden table/hyphen splits. It does not require
-    /// exhaustive paragraph alternatives, enforce every soft layout preference,
-    /// or guarantee universal glyph-ink containment. Limited optional paragraph
-    /// alternatives are allowed when the final fixed-layout page plan is exact.
+    /// short captions/list introductions kept with their first legal subject
+    /// fragment, forced breaks and forbidden table/hyphen splits. Inferred
+    /// caption keeps cover complete 1–3-line paragraphs in the same quote/list
+    /// item; they may enter a child list and never override an explicit break.
+    /// It does not require exhaustive paragraph alternatives, enforce every soft
+    /// layout preference, or guarantee universal glyph-ink containment. Limited
+    /// optional paragraph alternatives are allowed when the final fixed-layout
+    /// page plan is exact.
     /// An explicit [`Self::fit_to_pages`] request retains its bounded search,
     /// but only exact candidate plans count toward its page target.
     pub strict_pagination: bool,

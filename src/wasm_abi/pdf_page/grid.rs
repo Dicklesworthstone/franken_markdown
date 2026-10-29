@@ -234,7 +234,7 @@ pub fn render_book_pdf_configured_grid(
 }
 
 // Native-testable admission, before any JsValue construction or large copies.
-fn admit_grid(
+pub(super) fn admit_grid(
     points: f64,
     fit_to_pages: Option<u32>,
 ) -> crate::Result<Option<crate::BaselineGrid>> {

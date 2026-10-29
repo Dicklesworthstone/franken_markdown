@@ -449,6 +449,11 @@ export interface FlowSvgExportOptions {
   maxOutputBytes?: number;
 }
 export interface FlowPdfExportOptions extends FlowExportOptions {
+  /** Native single-document archival emission. Omitted/off preserves ordinary
+   * PDF; requires matching bindings and does not certify PDF/A conformance. */
+  pdfA?: "off" | "2b";
+  /** Native archival policy; true requires pdfA: "2b". No ordinary fallback. */
+  pdfAStrict?: boolean;
   /** Opt-in body baseline spacing: 1..144 pt, rounded to 0.001 pt; 0 disables.
    * Incompatible with fitToPages. Captured before enqueue. */
   baselineGridPt?: number;
@@ -513,4 +518,7 @@ export interface FlowExportResult extends FlowToken {
   /** Owned output. No host, WASM, or worker buffer is detached from its owner. */
   readonly bytes: Uint8Array;
   readonly diagnostics: readonly FlowExportDiagnostic[];
+  /** Present only for successfully emitted archival PDF output. */
+  readonly pdfA?: "2b";
+  readonly pdfAStrict?: boolean;
 }

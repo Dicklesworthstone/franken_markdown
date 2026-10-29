@@ -144,6 +144,13 @@ export interface FmdPdfRunning {
   skipFirstPage?: boolean;
 }
 export interface FmdPdfRenderOptions extends FmdRenderOptions {
+  /** Single-document PDF/A-2b emission; default/off retains ordinary PDF.
+   * Requires matching archival WASM bindings. This selects the native writer;
+   * it is not independent PDF/A validation or certification. */
+  pdfA?: "off" | "2b";
+  /** Apply the native archival writer's strict policy. Requires pdfA: "2b".
+   * Native refusal never falls back to an ordinary PDF. */
+  pdfAStrict?: boolean;
   /** Require exact page breaking for the final measured lines; implies
    * optimalPagination. Default false. Refuses fallback with an Error carrying
    * a PAGINATION_* code (for example PAGINATION_INFEASIBLE or
@@ -177,6 +184,9 @@ export interface FmdRenderOutput {
   sourceLength: number;
   bytes: Uint8Array;
   diagnostics: FmdDiagnostic[];
+  /** Present only after successful single-document archival emission. */
+  readonly pdfA?: "2b";
+  readonly pdfAStrict?: boolean;
   text(): string;
   blob(): Blob;
   filename(baseName?: string): string;
@@ -250,7 +260,7 @@ export interface FmdRenderer {
   capabilities(): Promise<FmdCapabilities>;
   accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
   documentStats(markdown: string): Promise<FmdDocumentStats>;
-  renderBookPdf(files: FmdBookFile[], options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
+  renderBookPdf(files: FmdBookFile[], options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">): Promise<FmdRenderOutput>;
   renderBookSite(files: readonly FmdBookFile[], options?: FmdBookSiteOptions): Promise<FmdBookSiteOutput>;
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
@@ -335,10 +345,11 @@ export function accessibilityAudit(markdown: string): Promise<FmdAccessibilityRe
 export function documentStats(markdown: string): Promise<FmdDocumentStats>;
 /** Publish ordered chapters with the same PDF typography, running bands and
  * explicit pdfImages as renderPdf. Advanced settings require matching generated
- * WASM; older packages reject them with UNSUPPORTED_WASM_PACKAGE. */
+ * WASM; older packages reject them with UNSUPPORTED_WASM_PACKAGE.
+ * For chapter-aware PDF/A emission, use renderBookPdf from the ./book entry. */
 export function renderBookPdf(
   files: FmdBookFile[],
-  options?: FmdPdfRenderOptions,
+  options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">,
 ): Promise<FmdRenderOutput>;
 export function renderBookSite(
   files: readonly FmdBookFile[],

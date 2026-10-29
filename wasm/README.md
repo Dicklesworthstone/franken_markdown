@@ -236,6 +236,23 @@ Every render result has:
 - `diagnostics`: recoverable parser diagnostics,
 - `text()`, `blob()`, and `filename()` helpers.
 
+## Single-document PDF/A emission
+
+`renderPdf(markdown, { pdfA: '2b', pdfAStrict: true })` selects the native
+single-document archival writer. The same options work in document workers,
+atomic document publications and Flow PDF exports. Paper, running bands, fonts,
+images and typesetting settings are preserved; a positive baseline grid requires
+the matching extended archival binding. Missing bindings and native refusals
+never fall back to ordinary PDF.
+
+Successful archival outputs carry `pdfA: '2b'` and the captured `pdfAStrict`
+boolean. Workers verify that receipt against the request before publishing;
+ordinary/off exports keep their original envelope. These are emission settings,
+not independent PDF/A validation or certification. See
+[the single-document PDF/A guide](../docs/BROWSER_PDFA.md) for direct, worker and
+Flow examples and the compatibility contract. Chapter-aware archival exports
+continue to use the `./book` entry.
+
 ## PDF baseline grids
 
 ```js

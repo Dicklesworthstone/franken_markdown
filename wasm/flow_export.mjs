@@ -3,7 +3,7 @@
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { isPdfPaginationError, normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
+import { isPdfPaginationError, normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
 import {
   FLOW_ASSET_LIMIT,
   FLOW_SOURCE_LIMIT,
@@ -43,6 +43,8 @@ const PDF = [
   "page",
   "running",
   "pdfImages",
+  "pdfA",
+  "pdfAStrict",
 ];
 const fail = (code, message) => {
   throw new FlowError(code, message);
@@ -175,6 +177,8 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
       result.customCss = text(options.customCss, "customCss", FLOW_SOURCE_LIMIT);
     }
   } else {
+    try { Object.assign(result, normalizePdfArchival(options.pdfA, options.pdfAStrict)); }
+    catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
     const { page, running, pdfImages } = options;
     if (options.baselineGridPt !== undefined) {
       try {
@@ -433,7 +437,7 @@ function checkDiagnostics(value, sourceLength) {
 }
 
 // Also checked on worker acknowledgment, BEFORE publishing any new local state.
-export function validateFlowExportResult(value, expected, maxOutputBytes = FLOW_EXPORT_LIMIT) {
+export function validateFlowExportResult(value, expected, maxOutputBytes = FLOW_EXPORT_LIMIT, expectedPolicy) {
   if (
     !value ||
     value.schemaVersion !== 1 ||
@@ -458,6 +462,8 @@ export function validateFlowExportResult(value, expected, maxOutputBytes = FLOW_
   }
   identity(value.revision);
   identity(value.layoutRevision);
+  try { pdfArchivalReceipt(value, expectedPolicy); }
+  catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
   if (!byteView(value.bytes, maxOutputBytes).length)
     fail("INVALID_WASM_RESPONSE", "empty export result");
   checkDiagnostics(value.diagnostics, value.sourceLengthBytes);
@@ -473,7 +479,7 @@ export function validateFlowExportBatchResult(value, requests, expected) {
     const request = requests[i], output = value[i];
     if (!request || output?.format !== request.format)
       fail("INVALID_WASM_RESPONSE", "export batch format order mismatched the request");
-    validateFlowExportResult(output, expected, request.options.maxOutputBytes);
+    validateFlowExportResult(output, expected, request.options.maxOutputBytes, request.options);
     total += output.bytes.byteLength;
     if (total > FLOW_EXPORT_BATCH_LIMIT)
       fail("BUDGET_EXCEEDED", "combined export output budget exceeded");
@@ -539,6 +545,9 @@ export function withFlowExports(session, renderers, font = "sans") {
           fail("INVALID_WASM_RESPONSE", "document renderer returned the wrong format");
         const bytes = byteView(output.bytes, maxOutputBytes);
         checkDiagnostics(output.diagnostics, sourceLengthBytes);
+        let archival;
+        try { archival = pdfArchivalReceipt(output, settings); }
+        catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
         results.push(Object.freeze({
           schemaVersion: 1,
           ...expected,
@@ -548,6 +557,7 @@ export function withFlowExports(session, renderers, font = "sans") {
           sourceLengthBytes,
           assetCount: assets.pdfImages.length,
           assetBytes: assets.assetBytes,
+          ...archival,
           bytes: new Uint8Array(bytes),
           diagnostics: Object.freeze(
             output.diagnostics.map((item) =>

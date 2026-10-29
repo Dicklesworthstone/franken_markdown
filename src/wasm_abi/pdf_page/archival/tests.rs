@@ -148,6 +148,15 @@ fn strict_failure_is_not_downgraded_and_does_not_poison_later_exports() {
 
 #[test]
 fn exported_archival_abi_keeps_all_document_settings_and_running_image_slots() {
+    assert_archival_abi_settings(None);
+}
+
+#[test]
+fn exported_archival_abi_preserves_grid_with_page_running_images_and_typography() {
+    assert_archival_abi_settings(Some(13.1254));
+}
+
+fn assert_archival_abi_settings(baseline_grid_pt: Option<f64>) {
     let actual = render_pdf_configured_archival(
         SOURCE,
         Some("serif".into()),
@@ -189,9 +198,13 @@ fn exported_archival_abi_keeps_all_document_settings_and_running_image_slots() {
         Some("expansion,homogeneous".into()),
         "2b",
         true,
+        baseline_grid_pt,
     )
     .unwrap();
-    let expected = render_archival(SOURCE, &options(), PdfASettings::a2b_strict()).unwrap();
+    let mut expected_options = options();
+    expected_options.theme.page.baseline_grid =
+        baseline_grid_pt.map(|spacing| crate::BaselineGrid::from_points(spacing).unwrap());
+    let expected = render_archival(SOURCE, &expected_options, PdfASettings::a2b_strict()).unwrap();
     assert_eq!(actual.bytes(), expected.bytes);
     assert_eq!(actual.diagnostics_json(), expected.diagnostics_json());
     assert_eq!(actual.source_length(), SOURCE.len());

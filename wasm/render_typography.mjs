@@ -35,6 +35,30 @@ export function normalizeHtmlFontFormat(value) {
   return value;
 }
 
+/** Single-document archival emission policy. Ordinary calls retain their
+ * original ABI and output envelope; explicit off is identical to omission. */
+export function normalizePdfArchival(profile, strict) {
+  if (profile !== undefined && profile !== "off" && profile !== "2b")
+    invalid("pdfA must be off or 2b");
+  if (strict !== undefined && typeof strict !== "boolean")
+    invalid("pdfAStrict must be boolean");
+  if (strict === true && profile !== "2b") invalid("pdfAStrict requires pdfA: 2b");
+  return Object.freeze(profile === "2b" ? { pdfA: "2b", pdfAStrict: strict ?? false } : {});
+}
+
+/** Validate a successful exporter receipt, not PDF/A conformance. Supplying
+ * expected also fences against an older worker silently dropping the policy. */
+export function pdfArchivalReceipt(output, expected, code = "INVALID_WASM_RESPONSE") {
+  const profile = output?.pdfA, strict = output?.pdfAStrict;
+  const present = profile !== undefined || strict !== undefined;
+  const valid = !present || (output.format === "pdf" && profile === "2b" && typeof strict === "boolean");
+  const matches = expected === undefined || (profile === expected.pdfA && strict === expected.pdfAStrict);
+  if (!valid || !matches) throw Object.assign(new Error(
+    "PDF output did not acknowledge the requested archival emission policy; rebuild matching renderer and worker packages",
+  ), { code });
+  return present ? { pdfA: profile, pdfAStrict: strict } : {};
+}
+
 /** Only the native typed-pagination contract becomes a coded host Error.
  * Other renderer failures retain their existing representation and policy. */
 const PAGINATION_REASONS = Object.freeze({

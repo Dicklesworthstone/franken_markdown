@@ -1,6 +1,6 @@
 import { pdfPageGeometry } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeBaselineGridPt, normalizeMicrotype, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeBaselineGridPt, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
 import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
@@ -105,12 +105,15 @@ export async function renderHtml(markdown, options = {}) {
 
 export async function renderPdf(markdown, options = {}) {
   // Admit and capture geometry before initializing WASM or copying assets.
+  const archival = normalizePdfArchival(options.pdfA, options.pdfAStrict);
   const baselineGridPt = normalizeBaselineGridPt(options.baselineGridPt);
   const fitToPages = integerOption(options.fitToPages, "fitToPages");
   validateBaselineGridFit(baselineGridPt, fitToPages);
   const geometry = pdfPageGeometry(options.page);
   const running = pdfRunningOption(options.running);
-  const render = baselineGridPt > 0
+  const render = archival.pdfA
+    ? requireBrowserBinding("renderPdfConfiguredArchival", "single-document PDF/A emission")
+    : baselineGridPt > 0
     ? requireBrowserBinding("renderPdfConfiguredGrid", "baseline-grid support")
     : running?.hasImages
     ? wasmBindings.renderPdfConfiguredRunningImages
@@ -123,13 +126,25 @@ export async function renderPdf(markdown, options = {}) {
     error.code = "UNSUPPORTED_WASM_PACKAGE";
     throw error;
   }
+  if (archival.pdfA) requireBindingArguments(render, baselineGridPt > 0 ? 39 : 38,
+    baselineGridPt > 0 ? "PDF/A with baseline-grid support" : "Single-document PDF/A emission");
   const typography = typographyOption(options);
   if (typography !== undefined) {
-    const count = baselineGridPt > 0 ? 37 : running?.hasImages ? 36 : running ? 33 : geometry.length ? 29 : 28;
+    const count = archival.pdfA ? 38 : baselineGridPt > 0 ? 37 : running?.hasImages ? 36 : running ? 33 : geometry.length ? 29 : 28;
     requireBindingArguments(render, count, "PDF typography and optimal pagination");
   }
-  const pdfImages = pdfImagesOption(options.pdfImages);
-  const fontAssets = fontAssetsOption(options.fontAssets).map(asset => ({
+  const source = archival.pdfA ? String(markdown) : undefined;
+  const imageInput = options.pdfImages, fontInput = options.fontAssets;
+  if (archival.pdfA) {
+    archivalPdfTextBytes(source, 32 * 1024 * 1024);
+    for (const [input, maximum, label] of [[imageInput, 4096, "pdfImages"], [fontInput, 5, "fontAssets"]]) {
+      if (input != null && (!Array.isArray(input) || input.length > maximum))
+        throw new RangeError(`PDF/A ${label} must be an array with at most ${maximum} entries`);
+    }
+  }
+  const pdfImages = pdfImagesOption(imageInput), fonts = fontAssetsOption(fontInput);
+  if (archival.pdfA) admitArchivalPdfAssets(pdfImages, fonts);
+  const fontAssets = fonts.map(asset => ({
     ...asset, bytes: new Uint8Array(asset.bytes),
   }));
   const fontScale = fontScaleOption(options.fontScale ?? options.typeSize);
@@ -150,7 +165,7 @@ export async function renderPdf(markdown, options = {}) {
   }
 
   const args = [
-    String(markdown),
+    source ?? String(markdown),
     stringOption(options.font),
     darkModeOption(options.darkMode),
     verbatimOption(options.title),
@@ -185,6 +200,14 @@ export async function renderPdf(markdown, options = {}) {
   // request. Asynchronous initialization cannot retarget its page or contents.
   await init();
   try {
+    if (archival.pdfA) {
+      const result = normalizeResult(render(...args, geometry, running?.slots ?? [],
+        running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
+        running?.imageDestinations ?? [], running?.imagePositions ?? new Uint32Array(),
+        running?.imageHeights ?? new Uint32Array(), typography, archival.pdfA, archival.pdfAStrict,
+        ...(baselineGridPt > 0 ? [baselineGridPt] : [])));
+      return Object.freeze({ ...result, ...archival });
+    }
     if (baselineGridPt > 0) {
       return normalizeResult(render(...args, geometry, running?.slots ?? [],
         running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
@@ -205,6 +228,37 @@ export async function renderPdf(markdown, options = {}) {
       : render(...args, ...tail));
   } catch (error) {
     throw normalizePdfPaginationError(error);
+  }
+}
+
+// Match the archival native admission before allocating host payload copies.
+function archivalPdfTextBytes(text, maximum) {
+  if (text.length > maximum) throw new RangeError("PDF/A text exceeds its UTF-8 byte limit");
+  let bytes = 0;
+  for (const character of text) {
+    const cp = character.codePointAt(0);
+    if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError("PDF/A text contains an unpaired surrogate");
+    bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    if (bytes > maximum) throw new RangeError("PDF/A text exceeds its UTF-8 byte limit");
+  }
+  return bytes;
+}
+function admitArchivalPdfAssets(images, fonts) {
+  const destinations = new Set();
+  let textBytes = 0, total = 0;
+  for (const image of images) {
+    textBytes += archivalPdfTextBytes(image.destination, 8192);
+    if (textBytes > 65536) throw new RangeError("PDF/A image destinations exceed 64 KiB");
+    if (destinations.has(image.destination)) throw new TypeError("PDF/A image destinations must be unique");
+    destinations.add(image.destination);
+  }
+  for (const { bytes } of [...images, ...fonts]) {
+    Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(bytes.buffer);
+    new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength); // Reject detached views.
+    if (bytes.byteLength === 0 || bytes.byteLength > 32 * 1024 * 1024)
+      throw new RangeError("PDF/A assets must contain 1 byte through 32 MiB");
+    total += bytes.byteLength;
+    if (total > 128 * 1024 * 1024) throw new RangeError("PDF/A assets exceed 128 MiB combined");
   }
 }
 
@@ -868,6 +922,8 @@ export async function renderBookPdf(files, options = {}) {
 // TOC/page-number defaults and narrow ABI. Only configured requests need the
 // additive ABI; neither images nor newer options may silently disappear.
 function bookPdfArguments(files, options) {
+  if (options.pdfA !== undefined || options.pdfAStrict !== undefined)
+    throw new TypeError("Book PDF/A emission requires renderBookPdf from the ./book entry point");
   const grid = normalizeBaselineGridPt(options.baselineGridPt);
   const target = integerOption(options.fitToPages, "fitToPages");
   validateBaselineGridFit(grid, target);

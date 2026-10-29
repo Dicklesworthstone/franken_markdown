@@ -8,7 +8,9 @@ use crate::wasm::{self, WasmDiagnostic, WasmOutputFormat, WasmRenderOptions, Was
 use crate::{DiagnosticSeverity, PdfASettings};
 use wasm_bindgen::prelude::*;
 
-/// The running-image PDF ABI plus export-local `off` / `2b` and strictness.
+/// The running-image PDF ABI plus export-local `off` / `2b`, strictness and an
+/// optional body baseline grid. Omitting the final argument preserves the
+/// original archival binding's default output.
 /// Ordinary bindings retain their signatures and behavior. This is emission,
 /// not independent PDF/A validation. Metadata uses the supplied epoch, never
 /// the clock. Strict mode fails on the native writer's forbidden URI actions;
@@ -58,8 +60,11 @@ pub fn render_pdf_configured_archival(
     typography: Option<String>,
     profile: &str,
     strict: bool,
+    baseline_grid_pt: Option<f64>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let settings = archival_settings(profile, strict).map_err(JsValue::from_str)?;
+    let grid = super::grid::admit_grid(baseline_grid_pt.unwrap_or(0.0), fit_to_pages)
+        .map_err(render_error_to_js)?;
     admit_inputs(
         markdown,
         &image_destinations,
@@ -115,6 +120,7 @@ pub fn render_pdf_configured_archival(
         page_geometry,
     )?
     .with_running(running);
+    options.theme.page.baseline_grid = grid;
     options
         .apply_typography_tokens(typography.as_deref())
         .map_err(|e| JsValue::from_str(&e))?;

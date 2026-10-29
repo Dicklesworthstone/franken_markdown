@@ -362,7 +362,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         return pending.then((result) => {
           try {
             if (method === "exportDocument") {
-              validateFlowExportResult(result, normalized[2], normalized[1].maxOutputBytes);
+              validateFlowExportResult(result, normalized[2], normalized[1].maxOutputBytes, normalized[1]);
               if (result.format !== normalized[0]) throw new Error("unexpected export format");
             } else {
               validateFlowExportBatchResult(result, normalized[0], normalized[1]);
@@ -638,7 +638,7 @@ export function installFlowWorker(endpoint, createSession) {
       const state = { token: session.token, layout: session.layoutOptions };
       let transfer = [];
       if (method === "exportDocument") {
-        validateFlowExportResult(value, state.token, normalized[1].maxOutputBytes);
+        validateFlowExportResult(value, state.token, normalized[1].maxOutputBytes, normalized[1]);
         if (
           value.format !== normalized[0] ||
           value.revision !== normalized[2].revision ||

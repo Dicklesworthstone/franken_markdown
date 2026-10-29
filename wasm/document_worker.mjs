@@ -4,7 +4,7 @@ import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker, workerLimits } from 
 
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { isPdfPaginationError, normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
+import { isPdfPaginationError, normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
 
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const DOCUMENT_SOURCE_LIMIT = 4 * 1024 * 1024;
@@ -20,7 +20,7 @@ const FORMATS = Object.freeze({
 const SHARED = ["font", "darkMode", "fontScale", "typeSize"];
 const SETTINGS = {
   html: [...SHARED, "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
-  pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "strictPagination", "pdfImages", "fontAssets", "page", "running", "baselineGridPt"],
+  pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "strictPagination", "pdfImages", "fontAssets", "page", "running", "baselineGridPt", "pdfA", "pdfAStrict"],
   svg: [...SHARED, "maxWidthPt", "pdfImages", "fontAssets"],
   epub: [...SHARED, "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets"],
   "interactive-html": [...SHARED, "title", "lang", "customCss", "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
@@ -113,6 +113,13 @@ function normalize(format, source, options, knownSourceLength) {
     fail("INVALID_OPTIONS", "unsupported document format");
   const sourceLength = knownSourceLength ?? text(source, DOCUMENT_SOURCE_LIMIT, "Markdown");
   const out = record(options, SETTINGS[format], "render option");
+  if (format === "pdf") {
+    let archival;
+    try { archival = normalizePdfArchival(out.pdfA, out.pdfAStrict); }
+    catch (error) { fail(error.code, error.message); }
+    delete out.pdfA; delete out.pdfAStrict;
+    Object.assign(out, archival);
+  }
   if (format === "interactive-html" && out.allowRawHtml !== undefined && out.allowRawHtml !== false)
     fail("INVALID_OPTIONS", "Interactive workspaces require safe Markdown; allowRawHtml must be false");
   for (const [key, value] of Object.entries(out)) {
@@ -131,7 +138,7 @@ function normalize(format, source, options, knownSourceLength) {
         baselineGridPt: normalizeBaselineGridPt }[key];
       try { out[key] = normalize(value); }
       catch (error) { fail(error.code, error.message); }
-    } else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion", "optimalPagination", "strictPagination"].includes(key)) {
+    } else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion", "optimalPagination", "strictPagination", "pdfAStrict"].includes(key)) {
       if (typeof value !== "boolean") fail("INVALID_OPTIONS", `${key} must be boolean`);
     } else if (["fontScale", "typeSize"].includes(key)) {
       if (typeof value === "string") text(value, 64, key);
@@ -179,7 +186,7 @@ function snapshot(input, maxOutputBytes) {
   }
   return { args: [input.format, input.source, options, maxOutputBytes], transfer };
 }
-function result(value, format, max, expectedLength) {
+function result(value, format, max, expectedLength, expectedPolicy) {
   const spec = format === "diff-html" ? ["renderSemanticDiff", "text/html; charset=utf-8", "html"] : FORMATS[format];
   if (!value || value.format !== format || value.mimeType !== spec[1] || value.extension !== spec[2]
       || !Number.isSafeInteger(value.sourceLength) || value.sourceLength < 0
@@ -188,6 +195,8 @@ function result(value, format, max, expectedLength) {
       || !(value.bytes instanceof Uint8Array) || !Array.isArray(value.diagnostics)
       || value.diagnostics.length > 1024)
     fail("WORKER_PROTOCOL_ERROR", "invalid document result");
+  try { pdfArchivalReceipt(value, expectedPolicy, "WORKER_PROTOCOL_ERROR"); }
+  catch (error) { fail(error.code, error.message); }
   bytes(value.bytes, max);
   let size = 0;
   for (const item of value.diagnostics) {
@@ -276,6 +285,7 @@ function comparisonHelpers(value, max, expected) {
 function ownedOutput(output) {
   return { format: output.format, mimeType: output.mimeType, extension: output.extension,
     sourceLength: output.sourceLength, bytes: new Uint8Array(output.bytes),
+    ...pdfArchivalReceipt(output),
     diagnostics: output.diagnostics.map(({ severity, start, end, message, code, scope }) => ({
       severity, start, end, message,
       ...(code === undefined ? {} : { code }),
@@ -364,7 +374,7 @@ function publicationEnvelope(value, max, expected) {
         || (expected !== undefined && output.format !== expected.formats[index]))
       fail("WORKER_PROTOCOL_ERROR", "publication target identity mismatch");
     formats.add(output.format);
-    result(output, output.format, max - total, value.sourceLength);
+    result(output, output.format, max - total, value.sourceLength, expected?.policies[index]);
     let size;
     try { size = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(output.bytes.buffer); }
     catch { fail("WORKER_PROTOCOL_ERROR", "publication output must not be shared"); }
@@ -394,7 +404,7 @@ async function publishInWorker(engine, input, max) {
   // every output succeeds; keep copies independent of reused native storage.
   for (const target of input.targets) {
     const output = await engine[FORMATS[target.format][0]](input.source, target.options);
-    result(output, target.format, max - totalBytes, input.sourceLength);
+    result(output, target.format, max - totalBytes, input.sourceLength, target.options);
     publicationDiagnosticBudget([...outputs, output]);
     totalBytes += output.bytes.byteLength;
     outputs.push(ownedOutput(output));
@@ -466,7 +476,8 @@ export function createWorkerRenderer(options = {}) {
       }
       const expected = format === "compare"
         ? { oldSourceLength: input.oldSourceLength, newSourceLength: input.newSourceLength }
-        : format === "publish" ? { sourceLength: input.sourceLength, formats: input.targets.map(target => target.format) }
+        : format === "publish" ? { sourceLength: input.sourceLength, formats: input.targets.map(target => target.format),
+          policies: input.targets.map(target => normalizePdfArchival(target.options.pdfA, target.options.pdfAStrict)) }
         : input.sourceLength;
       const prepare = () => {
         if (format === "compare") return { args: [input.oldMarkdown, input.newMarkdown, input.options, maxOutputBytes] };
@@ -477,7 +488,7 @@ export function createWorkerRenderer(options = {}) {
         try {
           if (format === "publish") return publicationHelpers(value, maxOutputBytes, expected);
           return format === "compare" ? comparisonHelpers(value, maxOutputBytes, expected)
-            : helpers(result(value, format, maxOutputBytes, expected));
+            : helpers(result(value, format, maxOutputBytes, expected, input.options));
         }
         catch (error) { rpc.dispose(); throw error; }
       });
@@ -521,7 +532,7 @@ export function installDocumentWorker(endpoint, loadRenderer) {
       if (method === "compare") return await compareInWorker(engine, input, max);
       if (method === "publish") return await publishInWorker(engine, input, max);
       const output = await engine[FORMATS[method][0]](input.source, input.options);
-      result(output, method, max, input.sourceLength);
+      result(output, method, max, input.sourceLength, input.options);
       // Never detach a binding's storage. Only transfer the owned boundary copy;
       // helper functions in the public render result are deliberately not cloned.
       const value = ownedOutput(output);

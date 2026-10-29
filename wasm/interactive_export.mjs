@@ -3,7 +3,7 @@
 import {bootNativeWorkspace, createNativeWorkspaceRenderer} from './interactive_runtime.mjs';
 import {createWorkspacePreviewWorker} from './interactive_preview.mjs';
 import {pdfPageGeometry} from './pdf_page.mjs';
-import {normalizeBaselineGridPt, normalizeMicrotype, normalizePdfTypography, validateBaselineGridFit} from './render_typography.mjs';
+import {normalizeBaselineGridPt, normalizeMicrotype, normalizePdfArchival, normalizePdfTypography, validateBaselineGridFit} from './render_typography.mjs';
 import {createNativePdfProof} from './native_pdf_proof.mjs';
 import {registerNativePdfProof} from './native_pdf_proof_ui.mjs';
 import {installNativeSourceProjectDownload} from './native_source_project_ui.mjs';
@@ -86,7 +86,7 @@ function captureOptions(input) {
   const allowed = new Set(['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth',
     'pdfImages', 'fontAssets', 'allowRawHtml', 'page', 'typography', 'optimalPagination',
-    'strictPagination', 'baselineGridPt', 'microtype', 'microtypeProtrusion', 'fitToPages']);
+    'strictPagination', 'baselineGridPt', 'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict']);
   record(input, 'workspace options');
   for (const key of Object.keys(input)) if (!allowed.has(key)) {
     throw new TypeError(`Unsupported native workspace option: ${key}`);
@@ -96,6 +96,10 @@ function captureOptions(input) {
     toc = false, tocDepth, pdfImages = [], fontAssets = [], allowRawHtml = false, page} = input;
   const geometry = pdfPageGeometry(page);
   const pdfSettings = {};
+  const {pdfA, pdfAStrict} = input;
+  normalizePdfArchival(pdfA, pdfAStrict);
+  if (pdfA !== undefined) pdfSettings.pdfA = pdfA;
+  if (pdfAStrict !== undefined) pdfSettings.pdfAStrict = pdfAStrict;
   for (const key of ['optimalPagination', 'strictPagination', 'microtypeProtrusion']) {
     const value = input[key];
     if (value !== undefined) {

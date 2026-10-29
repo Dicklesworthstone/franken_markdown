@@ -10,7 +10,7 @@ export function createNativeSourceProjectCodec(overrides = {}) {
   const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry',
     'typography', 'optimalPagination', 'strictPagination', 'baselineGridPt',
-    'microtype', 'microtypeProtrusion', 'fitToPages'];
+    'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict'];
   const fail = (code, message) => { throw Object.assign(new Error(message), {code}); };
   const invalid = message => fail('INVALID_SOURCE_PROJECT', message);
   const exceeded = label => fail('SOURCE_PROJECT_LIMIT', label + ' exceeds the source-project limit');
@@ -70,6 +70,9 @@ export function createNativeSourceProjectCodec(overrides = {}) {
       if (value[key] !== undefined) textSize(value[key], maximum, key);
     if (value.metadataEpochSeconds !== undefined && (!Number.isSafeInteger(value.metadataEpochSeconds) || value.metadataEpochSeconds < 0)) invalid('Invalid explicit metadata epoch');
     if (value.tocDepth !== undefined && (!Number.isInteger(value.tocDepth) || value.tocDepth < 1 || value.tocDepth > 6)) invalid('tocDepth must be 1..6');
+    if (value.pdfA !== undefined && !['off', '2b'].includes(value.pdfA)) invalid('pdfA must be off or 2b');
+    if (value.pdfAStrict !== undefined && typeof value.pdfAStrict !== 'boolean') invalid('pdfAStrict must be boolean');
+    if (value.pdfAStrict && value.pdfA !== '2b') invalid('pdfAStrict requires pdfA: 2b');
     for (const key of ['optimalPagination', 'strictPagination', 'microtypeProtrusion']) {
       if (value[key] !== undefined && typeof value[key] !== 'boolean') invalid(key + ' must be boolean');
     }

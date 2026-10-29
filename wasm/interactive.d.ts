@@ -19,7 +19,7 @@ export interface FmdOfflineWorkspaceOptions extends Pick<FmdPdfRenderOptions,
   'font' | 'darkMode' | 'title' | 'lang' | 'toc' | 'tocDepth' | 'author' |
   'metadataEpochSeconds' | 'pageNumbers' | 'codeLineNumbers' | 'pdfImages' | 'fontAssets' |
   'typography' | 'optimalPagination' | 'strictPagination' | 'baselineGridPt' |
-  'microtype' | 'microtypeProtrusion' | 'fitToPages'> {
+  'microtype' | 'microtypeProtrusion' | 'fitToPages' | 'pdfA' | 'pdfAStrict'> {
   /** Numeric 0.5..3 (default 1). View zoom is separate from PDF typography. */
   fontScale?: number;
 }

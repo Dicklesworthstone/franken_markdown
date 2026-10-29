@@ -80,6 +80,36 @@ Flow sessions use the same policy with
 source/layout fence and archival receipt. A native refusal is recoverable for
 the retained Flow session; a mismatched worker acknowledgment retires it.
 
+## Saved native and offline workspaces
+
+`pdfA` and `pdfAStrict` are supported by `exporter.render(markdown, options)`
+after `const exporter = await createNativeWorkspaceExporter(runtime)` from
+`@franken-suite/franken-markdown/interactive/exporter`.
+`renderOfflineWorkspace(markdown, runtime, options)` from
+`@franken-suite/franken-markdown/interactive` accepts the same policy.
+These settings control subsequent PDF exports and survive
+saving and reopening the HTML workspace. Unchanged omitted settings and explicit
+`off`/`false` values retain their original spelling.
+
+The `createNativeSourceProject` and `readNativeSourceProject` APIs also preserve
+these settings in `.fmd.json` projects. `exporter.renderProject(project.bytes)`
+reopens that source, assets and policy using the exporter's explicitly supplied
+trusted runtime; the project contains no executable bindings or WASM.
+
+In **Document settings → PDF typesetting**, the **PDF format** selector offers
+**Standard PDF**, **PDF/A-2b archival**, and **PDF/A-2b archival, strict**. Applying
+a changed selection commits the profile and strictness together. Cancelling or
+failing the settings preflight preserves the previous committed settings. The
+HTML preview does not validate archival output; the native strict policy is
+enforced when exporting the PDF.
+
+The native renderer requires the archival binding's 38-argument ABI, or 39
+arguments when a positive baseline grid is requested. Missing or older archival bindings
+fail with `UNSUPPORTED_WASM_PACKAGE`; initialization failures in a saved page are
+shown as native runtime errors. No path falls back to ordinary PDF. The separate
+HTML-only `renderInteractiveHtml` API rejects `pdfA` and `pdfAStrict`, including
+explicit `off` and `false`, because it cannot retain PDF export settings.
+
 ## Verification boundaries
 
 `wasm/pdfa_api.test.mjs` executes the production facade with explicit generated

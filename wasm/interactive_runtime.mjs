@@ -41,7 +41,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry',
     'typography', 'optimalPagination', 'strictPagination', 'baselineGridPt',
-    'microtype', 'microtypeProtrusion', 'fitToPages'];
+    'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict'];
   function settingData(value, keys = settingKeys) {
     // Inspect descriptors before reading values: accessors, inherited options,
     // symbols and unsupported switches must not enter a saved workspace.
@@ -84,6 +84,9 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     if (value.tocDepth !== undefined && (!Number.isInteger(value.tocDepth) || value.tocDepth < 1 || value.tocDepth > 6)) {
       throw new RangeError('tocDepth must be 1..6');
     }
+    if (value.pdfA !== undefined && !['off', '2b'].includes(value.pdfA)) throw new TypeError('pdfA must be off or 2b');
+    if (value.pdfAStrict !== undefined && typeof value.pdfAStrict !== 'boolean') throw new TypeError('pdfAStrict must be boolean');
+    if (value.pdfAStrict && value.pdfA !== '2b') throw new TypeError('pdfAStrict requires pdfA: 2b');
     for (const key of ['optimalPagination', 'strictPagination', 'microtypeProtrusion']) {
       if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new TypeError(key + ' must be boolean');
     }
@@ -125,7 +128,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
           || extent(g[0], g[5], g[3]) < 72 || extent(g[1], g[2], g[4]) < 72) {
         throw new RangeError('Invalid saved PDF page geometry');
       }
-      if (!(value.baselineGridPt > 0) && typeof bindings.renderPdfConfiguredPage !== 'function') {
+      if (value.pdfA !== '2b' && !(value.baselineGridPt > 0) && typeof bindings.renderPdfConfiguredPage !== 'function') {
         throw Object.assign(new Error('PDF paper and margins require matching page-capable WASM bindings'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
       }
       value.pageGeometry = Object.freeze(g);
@@ -146,11 +149,12 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   }
   function pdfBinding(settings) {
     const grid = settings.baselineGridPt > 0;
-    const binding = bindings[grid ? 'renderPdfConfiguredGrid'
+    const archival = settings.pdfA === '2b';
+    const binding = bindings[archival ? 'renderPdfConfiguredArchival' : grid ? 'renderPdfConfiguredGrid'
       : settings.pageGeometry ? 'renderPdfConfiguredPage' : 'renderPdfConfiguredMulti'];
-    const needed = grid ? 37 : typographyTokens(settings) === undefined ? 0 : settings.pageGeometry ? 29 : 28;
+    const needed = archival ? grid ? 39 : 38 : grid ? 37 : typographyTokens(settings) === undefined ? 0 : settings.pageGeometry ? 29 : 28;
     if (typeof binding !== 'function' || binding.length < needed) {
-      throw Object.assign(new Error('PDF typography, pagination and baseline grids require matching WASM bindings'),
+      throw Object.assign(new Error('PDF archival, typography, pagination and baseline grids require matching WASM bindings'),
         {code: 'UNSUPPORTED_WASM_PACKAGE'});
     }
     return binding;
@@ -680,7 +684,11 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       ];
       let result;
       try {
-        if (options.baselineGridPt > 0) {
+        if (options.pdfA === '2b') {
+          result = render(...args, pageGeometry ?? new Float64Array(), [], false, false, false,
+            [], new Uint32Array(), new Uint32Array(), typography, '2b', options.pdfAStrict ?? false,
+            ...(options.baselineGridPt > 0 ? [options.baselineGridPt] : []));
+        } else if (options.baselineGridPt > 0) {
           result = render(...args, pageGeometry ?? new Float64Array(), [], false, false, false,
             [], new Uint32Array(), new Uint32Array(), typography, options.baselineGridPt);
         } else {

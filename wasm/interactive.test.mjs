@@ -25,6 +25,7 @@ export async function renderInteractiveHtml(source,options) {
 }
 `);
 const {renderOfflineWorkspace}=await import(pathToFileURL(join(dir,'interactive.js')));
+const {createNativeWorkspaceRenderer}=await import(pathToFileURL(join(dir,'interactive_runtime.mjs')));
 const {state}=await import(pathToFileURL(join(dir,'franken_markdown.js')));
 const wasm=()=>Uint8Array.of(0,97,115,109,1,0,0,0);
 const runtime=()=>({bindings:'export default async function() {}',wasm:wasm()});
@@ -32,19 +33,86 @@ function payload(output) {
   return JSON.parse(output.text().split('<script type="application/json" id="fmd-native-runtime">')[1].split('</script>')[0]);
 }
 function reset() {state.calls=[];state.gate=null;state.legacy=false;state.preWorker=false;}
+function pdfBindings(archival = 39) {
+  const calls = [];
+  const bindings = {renderHtmlConfiguredAdvanced() {throw Error('Unexpected preview render');}};
+  for (const [name, arity] of [['renderPdfConfiguredMulti', 28], ['renderPdfConfiguredArchival', archival]]) {
+    if (arity === null) continue;
+    const render = (...args) => {
+      calls.push({name, args});
+      const bytes = new TextEncoder().encode('%PDF-ADAPTER\n' + args[0]);
+      return {bytes, mimeType: 'application/pdf', diagnosticsJson: () => '[]', free() {bytes.fill(0);}};
+    };
+    Object.defineProperty(render, 'length', {value: arity});
+    bindings[name] = render;
+  }
+  return {bindings, calls};
+}
 
-test('PDF typesetting is captured before init and retained separately from lightweight shell settings',async()=>{
+test('PDF typesetting and archival policy are owned before init and reopen separately from shell settings',async()=>{
   reset();let release;state.gate=new Promise(resolve=>{release=resolve;});
   const options={title:'Owned',font:'serif',fontScale:1.25,author:'A',
     typography:{homogeneous:true,pareto:true},optimalPagination:true,strictPagination:true,
-    baselineGridPt:13.375,microtype:'expansion'};
+    baselineGridPt:13.375,microtype:'expansion',pdfA:'2b',pdfAStrict:true};
   const pending=renderOfflineWorkspace('Source',runtime(),options);
-  options.typography.pareto=false;options.baselineGridPt=24;options.title='Later';release();
+  options.typography.pareto=false;options.baselineGridPt=24;options.title='Later';
+  options.pdfA='off';options.pdfAStrict=false;release();
   const p=payload(await pending);
   assert.deepEqual(p.options.typography,{homogeneous:true,pareto:true});
   assert.equal(p.options.baselineGridPt,13.375);assert.equal(p.options.strictPagination,true);
   assert.equal(p.options.microtype,'expansion');assert.equal(p.options.title,'Owned');
+  assert.equal(p.options.pdfA,'2b');assert.equal(p.options.pdfAStrict,true);
   assert.deepEqual(state.calls.find(call=>call.kind==='render').options,{title:'Owned',lang:undefined});
+  const f=pdfBindings();
+  const renderer=createNativeWorkspaceRenderer(f.bindings,p);
+  assert.equal(new TextDecoder().decode(renderer.pdf('Source')),'%PDF-ADAPTER\nSource');
+  assert.deepEqual(f.calls.map(call=>call.name),['renderPdfConfiguredArchival']);
+  assert.deepEqual(f.calls[0].args.slice(36),['2b',true,13.375]);
+  assert.equal(f.calls[0].args[3],'Owned');
+  assert.equal(f.calls[0].args[35],'homogeneous,pareto,optimal-pagination,strict-pagination,expansion');
+});
+
+test('archival policy spelling survives saved workspace reopening and a second export',async()=>{
+  for(const options of [{},{pdfA:'off'},{pdfAStrict:false},{pdfA:'off',pdfAStrict:false},
+    {pdfA:'2b'},{pdfA:'2b',pdfAStrict:false},{pdfA:'2b',pdfAStrict:true}]) {
+    reset();
+    const p=payload(await renderOfflineWorkspace('Source',runtime(),options));
+    // Old ordinary bindings must remain usable; a pre-grid archival binding is
+    // sufficient when the saved document has no baseline grid.
+    const f=pdfBindings(options.pdfA==='2b'?38:null);
+    const renderer=createNativeWorkspaceRenderer(f.bindings,p);
+    for(const key of ['pdfA','pdfAStrict']) {
+      assert.equal(Object.hasOwn(p.options,key),Object.hasOwn(options,key));
+      assert.equal(p.options[key],options[key]);
+      assert.equal(Object.hasOwn(renderer.settings,key),Object.hasOwn(options,key));
+    }
+    const reopened=payload(await renderOfflineWorkspace('Source',runtime(),renderer.settings));
+    assert.deepEqual(reopened,p);
+    createNativeWorkspaceRenderer(f.bindings,reopened).pdf('Source');
+    const {name,args}=f.calls[0];
+    assert.equal(name,options.pdfA==='2b'?'renderPdfConfiguredArchival':'renderPdfConfiguredMulti');
+    assert.equal(args.length,options.pdfA==='2b'?38:27);
+    if(options.pdfA==='2b') assert.deepEqual(args.slice(36),['2b',options.pdfAStrict??false]);
+  }
+});
+
+test('invalid archival policy rejects before initializing or creating the HTML shell',async()=>{
+  for(const options of [{pdfA:'3b'},{pdfA:null},{pdfA:true},{pdfAStrict:true},
+    {pdfA:'off',pdfAStrict:true},{pdfA:'2b',pdfAStrict:'true'},{pdfAStrict:null}]) {
+    reset();
+    await assert.rejects(renderOfflineWorkspace('Source',runtime(),options),{code:'INVALID_OPTIONS'});
+    assert.deepEqual(state.calls,[]);
+  }
+});
+
+test('saved archival workspaces refuse missing or too-old native bindings without ordinary fallback',async()=>{
+  for(const [arity,grid] of [[null,undefined],[37,undefined],[38,12]]) {
+    reset();
+    const p=payload(await renderOfflineWorkspace('Source',runtime(),{pdfA:'2b',baselineGridPt:grid}));
+    const f=pdfBindings(arity);
+    assert.throws(()=>createNativeWorkspaceRenderer(f.bindings,p),{code:'UNSUPPORTED_WASM_PACKAGE'});
+    assert.deepEqual(f.calls,[]);
+  }
 });
 
 test('invalid or incompatible PDF typesetting is refused before runtime initialization',async()=>{

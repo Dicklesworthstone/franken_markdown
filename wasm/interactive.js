@@ -1,14 +1,14 @@
 import { init, renderInteractiveHtml } from './franken_markdown.js';
 import { bootNativeWorkspace, createNativeWorkspaceRenderer } from './interactive_runtime.mjs';
 import {createWorkspacePreviewWorker} from './interactive_preview.mjs';
-import {normalizeBaselineGridPt, normalizeMicrotype, normalizePdfTypography, validateBaselineGridFit} from './render_typography.mjs';
+import {normalizeBaselineGridPt, normalizeMicrotype, normalizePdfArchival, normalizePdfTypography, validateBaselineGridFit} from './render_typography.mjs';
 
 const MiB = 1024 * 1024;
 const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
 const fields = ['font', 'darkMode', 'title', 'lang', 'fontScale', 'toc', 'tocDepth',
   'author', 'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'pdfImages', 'fontAssets',
   'typography', 'optimalPagination', 'strictPagination', 'baselineGridPt',
-  'microtype', 'microtypeProtrusion', 'fitToPages'];
+  'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict'];
 
 // Count without allocating an encoded copy. Reject unpaired surrogates rather
 // than silently changing the Markdown, asset keys, or trusted binding source.
@@ -74,6 +74,11 @@ function capture(markdown, runtime, input) {
     author: captured.author, metadataEpochSeconds: captured.metadataEpochSeconds,
     pageNumbers: captured.pageNumbers ?? false, codeLineNumbers: captured.codeLineNumbers ?? false,
   };
+  normalizePdfArchival(captured.pdfA, captured.pdfAStrict);
+  // Validate policy while retaining omitted and explicit off/false settings in
+  // saved documents, just like the standalone native workspace exporter.
+  if (captured.pdfA !== undefined) options.pdfA = captured.pdfA;
+  if (captured.pdfAStrict !== undefined) options.pdfAStrict = captured.pdfAStrict;
   for (const key of ['optimalPagination', 'strictPagination', 'microtypeProtrusion']) {
     if (captured[key] !== undefined) {
       if (typeof captured[key] !== 'boolean') throw new TypeError(key + ' must be boolean');

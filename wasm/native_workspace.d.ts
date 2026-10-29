@@ -16,7 +16,7 @@ export interface FmdNativeWorkspaceOptions extends Pick<FmdPdfRenderOptions,
   'font' | 'darkMode' | 'title' | 'author' | 'lang' | 'metadataEpochSeconds' |
   'pageNumbers' | 'codeLineNumbers' | 'toc' | 'tocDepth' | 'pdfImages' | 'fontAssets' |
   'typography' | 'optimalPagination' | 'strictPagination' | 'baselineGridPt' |
-  'microtype' | 'microtypeProtrusion' | 'fitToPages'> {
+  'microtype' | 'microtypeProtrusion' | 'fitToPages' | 'pdfA' | 'pdfAStrict'> {
   /** Numeric uniform scale from 0.5 through 3; view zoom remains independent. */
   fontScale?: number;
   allowRawHtml?: false;

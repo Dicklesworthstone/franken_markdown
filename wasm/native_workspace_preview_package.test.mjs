@@ -34,7 +34,7 @@ test('public exporter imports from a fresh package copy and embeds the actual wo
   // only the wrapper/native ABI below is an explicit adapter.
   const dir = await mkdtemp(join(tmpdir(),'fmd-preview-package-'));
   await writeFile(join(dir,'package.json'),'{"type":"module"}');
-  for (const name of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs']) {
+  for (const name of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs','render_typography.mjs']) {
     await copyFile(new URL(name,import.meta.url),join(dir,name));
   }
   await writeFile(join(dir,'shell.html'),await fixtureShell());
@@ -54,10 +54,24 @@ test('public exporter imports from a fresh package copy and embeds the actual wo
   await writeFile(join(dir,'workspace.html'),result.bytes);
 });
 
+test('a package missing the shared typography module cannot import the public exporter', async()=>{
+  const dir = await mkdtemp(join(tmpdir(),'fmd-preview-package-incomplete-'));
+  await writeFile(join(dir,'package.json'),'{"type":"module"}');
+  for (const name of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs']) {
+    await copyFile(new URL(name,import.meta.url),join(dir,name));
+  }
+  await writeFile(join(dir,'franken_markdown.js'),
+    'export function init() {} export function renderInteractiveHtml() {}');
+  await assert.rejects(import(pathToFileURL(join(dir,'interactive.js'))), {
+    code: 'ERR_MODULE_NOT_FOUND',
+    url: pathToFileURL(join(dir,'render_typography.mjs')).href,
+  });
+});
+
 test('npm inventory and both package assemblers include the transitive workspace modules', async()=>{
   const manifest=JSON.parse(await readFile(new URL('package.json',import.meta.url),'utf8'));
   const required=['interactive.js','interactive.d.ts','interactive_runtime.mjs','interactive_preview.mjs',
-    'native_workspace.js','native_workspace.d.ts','interactive_export.mjs','pdf_page.mjs','NATIVE_PREVIEW.md'];
+    'native_workspace.js','native_workspace.d.ts','interactive_export.mjs','pdf_page.mjs','render_typography.mjs','NATIVE_PREVIEW.md'];
   for(const name of required) assert.ok(manifest.files.includes(name),`manifest: ${name}`);
   for(const script of ['check-wasm-package.sh','dsr-wasm-package.sh']) {
     const text=await readFile(new URL('../scripts/'+script,import.meta.url),'utf8');

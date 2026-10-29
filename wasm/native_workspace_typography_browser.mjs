@@ -34,10 +34,11 @@ function pdf(a,name) {
 export const renderPdfConfiguredMulti=Object.defineProperty((...a)=>pdf(a,'multi'),'length',{value:28});
 export const renderPdfConfiguredPage=Object.defineProperty((...a)=>pdf(a,'page'),'length',{value:29});
 export const renderPdfConfiguredGrid=Object.defineProperty((...a)=>pdf(a,'grid'),'length',{value:37});
+export const renderPdfConfiguredArchival=Object.defineProperty((...a)=>pdf(a,'archival'),'length',{value:39});
 `;
 function fixture({options = {}, old = false, markdown = source} = {}) {
   const payload = {version: 1, wasm: 'AGFzbQEAAAA=',
-    bindings: old ? bindings.replace('value:28', 'value:27').replace('value:29', 'value:28').replace('value:37', 'value:36') : bindings,
+    bindings: old ? bindings.replace('value:28', 'value:27').replace('value:29', 'value:28').replace('value:37', 'value:36').replace('value:39', 'value:37') : bindings,
     options: {font: 'serif', darkMode: 'disabled', fontScale: 1.25, title: 'Original',
       author: 'Exact\r\nAuthor', lang: 'fr', metadataEpochSeconds: 0, ...options},
     images: [{destination: 'chart.png', bytes: 'AQID'}],
@@ -193,7 +194,8 @@ try {
 
   const oldPage = await load(fixture({old: true})), oldBefore = await savedPayload(oldPage);
   for (const configure of [() => field(oldPage, 'pagination').selectOption('strict'),
-    () => field(oldPage, 'pareto').check(), () => field(oldPage, 'baselineGridPt').fill('12')]) {
+    () => field(oldPage, 'pareto').check(), () => field(oldPage, 'baselineGridPt').fill('12'),
+    () => field(oldPage, 'pdfProfile').selectOption('2b-strict')]) {
     await panel(oldPage); await configure(); await apply(oldPage); await settled(oldPage);
     assert.match(await oldPage.locator('[data-status]').textContent(), /matching WASM bindings/);
     assert.equal(await savedPayload(oldPage), oldBefore); await cancel(oldPage);
@@ -201,14 +203,14 @@ try {
   check('older binaries refuse newly selected PDF capabilities before committing the draft');
 
   const racePage = await load(fixture()), raceBefore = await savedPayload(racePage);
-  for (const name of ['homogeneous', 'antiriver', 'pareto', 'pagination', 'microtype', 'baselineGridPt', 'fitToPages']) {
+  for (const name of ['homogeneous', 'antiriver', 'pareto', 'pagination', 'microtype', 'baselineGridPt', 'fitToPages', 'pdfProfile']) {
     await panel(racePage); await field(racePage, 'title').fill('Slow settings'); await apply(racePage);
     await racePage.waitForFunction(() => window.__fmdNativeRuntime.settingsPending);
     // No input/change event: the final draft-identity comparison itself must
     // include every added control, not just rely on event cancellation.
     await field(racePage, name).evaluate(node => {
       if (node.type === 'checkbox') node.checked = true;
-      else node.value = node.name === 'pagination' ? 'strict' : node.name === 'microtype' ? 'expansion' : '12';
+      else node.value = node.name === 'pdfProfile' ? '2b-strict' : node.name === 'pagination' ? 'strict' : node.name === 'microtype' ? 'expansion' : '12';
     });
     await settled(racePage);
     assert.equal(await savedPayload(racePage), raceBefore);
@@ -235,6 +237,36 @@ try {
   await panel(refusePage); await field(refusePage, 'pagination').selectOption('default'); await apply(refusePage); await settled(refusePage);
   assert.equal((await pdf(refusePage)).args.length, 27); assert.equal(downloads, 1);
   check('a strict-pagination refusal downloads no substitute PDF and changing page policy lets the next export recover');
+
+  const archivePage = await load(fixture());
+  await panel(archivePage); assert.equal(await field(archivePage, 'pdfProfile').inputValue(), 'off');
+  await field(archivePage, 'pdfProfile').selectOption('2b-strict');
+  await field(archivePage, 'baselineGridPt').fill('13.1254');
+  await field(archivePage, 'pagination').selectOption('strict');
+  await field(archivePage, 'paper').selectOption('a4');
+  await apply(archivePage); await settled(archivePage);
+  const archived = await settings(archivePage), archivalPdf = await pdf(archivePage);
+  assert.equal(archived.pdfA, '2b'); assert.equal(archived.pdfAStrict, true);
+  assert.equal(archivalPdf.name, 'archival'); assert.equal(archivalPdf.args.length, 39);
+  assert.deepEqual(archivalPdf.args[27], archived.pageGeometry);
+  assert.equal(archivalPdf.args[35], 'optimal-pagination,strict-pagination');
+  assert.deepEqual(archivalPdf.args.slice(36), ['2b', true, 13.1254]);
+  const archiveReopened = await load(await download(archivePage, 'btn-save-html'));
+  assert.deepEqual(await settings(archiveReopened), archived);
+  assert.deepEqual((await pdf(archiveReopened)).args, archivalPdf.args);
+  await panel(archiveReopened); assert.equal(await field(archiveReopened, 'pdfProfile').inputValue(), '2b-strict');
+  await apply(archiveReopened); await settled(archiveReopened);
+  assert.deepEqual(await settings(archiveReopened), archived);
+  check('archival PDF settings, strictness, paper and baseline grid persist in saved HTML and route through the native archival worker');
+
+  await panel(archiveReopened); await field(archiveReopened, 'pdfProfile').selectOption('off');
+  await apply(archiveReopened); await settled(archiveReopened);
+  const ordinaryAgain = await settings(archiveReopened);
+  assert.equal(ordinaryAgain.pdfA, 'off'); assert.equal(ordinaryAgain.pdfAStrict, false);
+  assert.equal(ordinaryAgain.baselineGridPt, archived.baselineGridPt);
+  assert.deepEqual(ordinaryAgain.pageGeometry, archived.pageGeometry);
+  assert.equal((await pdf(archiveReopened)).name, 'grid');
+  check('switching archival export off restores ordinary PDF without dropping document typesetting');
 
   assert.deepEqual(requests, []); assert.deepEqual(errors, []);
   check('complete browser workflow makes no external requests and reports no page runtime errors');

@@ -80,6 +80,7 @@ test('raw passthrough, PDF-only options and option accessors are refused without
   const f = await fixture(); let reads = 0;
   const getter = {}; Object.defineProperty(getter, 'customCss', {get() {reads++; return 'p{}';}});
   for (const options of [getter, {allowRawHtml: true}, {pageNumbers: true}, {strictPagination: true},
+    {pdfA: '2b'}, {pdfA: 'off'}, {pdfAStrict: true}, {pdfAStrict: false},
     {typography: {}}, {author: 'A'}, {toc: 1}, {tocDepth: 7}, {font: 'mono'}, {htmlFontFormat: 'woff3'}])
     await assert.rejects(f.api.renderInteractiveHtml('x', options));
   assert.equal(reads, 0); assert.equal(f.inits, 0); assert.equal(f.calls.length, 0);

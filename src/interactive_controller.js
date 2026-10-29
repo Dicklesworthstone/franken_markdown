@@ -526,6 +526,7 @@
       <fieldset><legend>PDF typesetting</legend>
         <p>These settings affect PDF export. The HTML preview does not show page breaks. Exact page layout refuses an export when the required page constraints cannot be met.</p>
         <div data-grid>
+          <label>PDF format<select name="pdfProfile"><option value="off">Standard PDF</option><option value="2b">PDF/A-2b archival</option><option value="2b-strict">PDF/A-2b archival, strict</option></select></label>
           <label>Page layout<select name="pagination"><option value="default">Standard</option><option value="optimal">Optimize page breaks</option><option value="strict">Require exact page breaks</option></select></label>
           <label>Microtypography<select name="microtype"><option value="disabled">Off</option><option value="expansion">Glyph expansion</option><option value="protrusion">Optical margins and glyph expansion</option></select></label>
           <label><input name="homogeneous" type="checkbox"> Smooth spacing between adjacent lines</label>
@@ -549,7 +550,7 @@
     const texts = ['font', 'darkMode', 'title', 'author', 'lang'];
     const settingsFields = [...flags, ...numbers, ...texts];
     const typographyFlags = ['homogeneous', 'antiriver', 'pareto'];
-    const pdfFields = ['pagination', 'microtype', ...typographyFlags, 'baselineGridPt', 'fitToPages'];
+    const pdfFields = ['pdfProfile', 'pagination', 'microtype', ...typographyFlags, 'baselineGridPt', 'fitToPages'];
     const formFields = [...settingsFields, ...pdfFields];
     const geometryFields = ['width', 'height', 'top', 'right', 'bottom', 'left'];
     const paperDimensions = {
@@ -620,6 +621,7 @@
       for (const name of numbers) field(name).value = opened[name] ?? (name === 'tocDepth' ? 3 : 1);
       for (const name of texts) field(name).value = opened[name] ?? '';
       for (const name of typographyFlags) field(name).checked = opened.typography?.[name] === true;
+      field('pdfProfile').value = opened.pdfA === '2b' ? opened.pdfAStrict ? '2b-strict' : '2b' : 'off';
       field('pagination').value = opened.strictPagination ? 'strict' : opened.optimalPagination ? 'optimal' : 'default';
       // The expansion token is applied after the legacy protrusion scalar by
       // the native ABI, so an explicit expansion mode wins over that alias.
@@ -692,6 +694,12 @@
           // runtime captures the fresh object before starting its preflight.
           patch.typography ??= {...opened.typography};
           patch.typography[name] = raw(name);
+        }
+        if (raw('pdfProfile') !== initial.pdfProfile) {
+          const profile = raw('pdfProfile');
+          if (!['off', '2b', '2b-strict'].includes(profile)) throw Error('Choose a supported PDF format');
+          patch.pdfA = profile === 'off' ? 'off' : '2b';
+          patch.pdfAStrict = profile === '2b-strict';
         }
         if (raw('pagination') !== initial.pagination) {
           patch.optimalPagination = raw('pagination') !== 'default';

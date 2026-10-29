@@ -4,10 +4,11 @@ Isolated from the engine workspace. See `docs/FUZZING.md` for how to *run*
 the three libFuzzer targets. This file is the **crash triage runbook**
 (m7fs.2).
 
-## When nightly libFuzzer exits non-zero
+## When libFuzzer exits non-zero
 
-1. **Grab the artifact.** CI uploads `fuzz/artifacts/` and
-   `tests/artifacts/fuzz/`. A crashing input is usually
+1. **Grab the artifact.** `scripts/fuzz-smoke.sh` leaves `fuzz/artifacts/`
+   and `tests/artifacts/fuzz/` (no hosted job runs it; see
+   `docs/FUZZING.md`). A crashing input is usually
    `fuzz/artifacts/<target>/crash-<hash>` or a `crash-*` file next to the
    corpus.
 2. **Reproduce.** Confirm the bytes still panic the engine:

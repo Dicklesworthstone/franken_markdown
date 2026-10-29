@@ -39,10 +39,16 @@ cargo fuzz run fuzz_zlib -- -max_total_time=30
 
 ## CI
 
-`.github/workflows/fuzz.yml` builds the fuzz crate on a nightly schedule and
-on `workflow_dispatch`. A PR canary compiles the bins (`--build-only`); a
-scheduled job runs 30 s per target. A crash fails the job and uploads
-`fuzz/artifacts/`.
+There is no hosted fuzz job. `.github/workflows/fuzz.yml` went with the other
+hosted workflows in `eb220dd`, which routed validation through DSR, and no
+DSR script runs these targets. Run `scripts/fuzz-smoke.sh` by hand, or on an
+owned host.
+
+fmd-math and fmd-font's outline decoders are fuzzed from franken_manim's
+`fuzz/` crate, which builds both at that repo's `SUITE.lock` pin. Its
+targets include `tex_math`, `tex_layout`, `ttf_font_parse`,
+`ttf_glyf_outlines` and `ttf_cff`. Its weekly job and campaign records live
+there (`fuzz/campaigns/`).
 
 This is the README-dev surface for m7fs.1. The engine's existing deterministic
 LCG harness (`tests/parser_fuzz.rs`) stays; it is not a substitute for

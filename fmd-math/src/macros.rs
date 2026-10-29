@@ -26,7 +26,9 @@
 //!   is a precise [`MathError::Malformed`] naming the macro, never a hang.
 //! - **Expansion is budgeted**: token-copy and substitution work, including
 //!   intermediate replacements that disappear during rescanning, and nesting
-//!   depth are capped. Visible and empty-output fan-out bombs error cleanly.
+//!   depth are capped, each breach a [`MathError::Budget`]
+//!   ([`BudgetKind::MacroWork`], [`BudgetKind::MacroNesting`]). Visible and
+//!   empty-output fan-out bombs error cleanly.
 //!
 //! # Provenance (§11.3)
 //!
@@ -47,7 +49,7 @@
 //! Combine tables with [`MacroSet::overlay_definitions`], without decoding
 //! the bytes used for cache identity.
 
-use crate::error::MathError;
+use crate::error::{BudgetKind, MathError};
 use crate::node::Span;
 use crate::token::{Tok, TokKind, lex};
 use std::collections::BTreeMap;
@@ -572,10 +574,9 @@ impl<'a> Expansion<'a> {
             return Ok(i + 1);
         }
         if depth >= EXPANSION_DEPTH_BUDGET {
-            return Err(MathError::Malformed {
-                what: format!(
-                    "macro expansion nests deeper than {EXPANSION_DEPTH_BUDGET} (at \\{name})"
-                ),
+            return Err(MathError::Budget {
+                kind: BudgetKind::MacroNesting,
+                limit: EXPANSION_DEPTH_BUDGET,
                 at: call_start.start,
             });
         }
@@ -755,10 +756,9 @@ impl<'a> Expansion<'a> {
     }
 
     fn budget_error(span: Span) -> MathError {
-        MathError::Malformed {
-            what: format!(
-                "macro expansion requires more than {EXPANSION_TOKEN_BUDGET} token work units"
-            ),
+        MathError::Budget {
+            kind: BudgetKind::MacroWork,
+            limit: EXPANSION_TOKEN_BUDGET,
             at: span.start,
         }
     }
@@ -936,10 +936,48 @@ mod tests {
             set.define(name, 0, &body).unwrap();
         }
         let err = expand_str(r"\r", &set).unwrap_err();
-        let msg = err.to_string();
         assert!(
-            msg.contains("more than") || msg.contains("nests deeper"),
-            "{msg}"
+            matches!(
+                err,
+                MathError::Budget {
+                    kind: BudgetKind::MacroWork,
+                    limit: EXPANSION_TOKEN_BUDGET,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        assert!(err.to_string().contains("token work units"), "{err}");
+    }
+
+    #[test]
+    fn deep_macro_chains_hit_the_nesting_budget() {
+        // \deepaa calls \deepab, … one call per level: 40 levels against the
+        // 32-level budget, refused at the outermost call.
+        let name = |i: u8| {
+            format!(
+                "deep{}{}",
+                char::from(b'a' + i / 26),
+                char::from(b'a' + i % 26)
+            )
+        };
+        let mut set = MacroSet::new();
+        for i in 0..40 {
+            let body = if i == 39 {
+                "x".to_owned()
+            } else {
+                format!("\\{}", name(i + 1))
+            };
+            set.define(&name(i), 0, &body).unwrap();
+        }
+        let err = expand_str(&format!("y\\{}", name(0)), &set).unwrap_err();
+        assert_eq!(
+            err,
+            MathError::Budget {
+                kind: BudgetKind::MacroNesting,
+                limit: EXPANSION_DEPTH_BUDGET,
+                at: 1,
+            }
         );
     }
 

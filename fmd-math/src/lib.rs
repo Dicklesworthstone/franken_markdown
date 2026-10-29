@@ -103,7 +103,7 @@ pub use commands::{
     ConstructStatus, LAYOUT_PENDING_TRACKING, OUTSIDE_CORPUS_TRACKING, TIER2_TRACKING, Tier,
     UNTIERED_TRACKING, construct_status, tier2_tracking,
 };
-pub use error::MathError;
+pub use error::{BudgetKind, Budgets, MathError};
 pub use faces::FaceSet;
 pub use layout::Engine;
 pub use macros::MacroSet;
@@ -124,8 +124,9 @@ pub use style::{Style, StyleCtx, style_walk};
 ///
 /// [`MathError::UnsupportedCommand`] for constructs outside the implemented
 /// surface (named precisely, tier-tagged); [`MathError::Malformed`] for
-/// structural faults (unbalanced groups, double scripts, stray `\right`,
-/// over-deep nesting), with the byte offset of the offense.
+/// structural faults (unbalanced groups, double scripts, stray `\right`),
+/// with the byte offset of the offense; [`MathError::Budget`] for a string
+/// over [`Budgets::DEFAULT`]'s input budget or nested past the depth bound.
 pub fn parse(source: &str) -> Result<Node, MathError> {
     parse::parse_math(source)
 }
@@ -152,7 +153,7 @@ pub fn parse_text(source: &str) -> Result<Node, MathError> {
 /// As [`parse`], plus the macro-expansion errors ([`macros`]): recursion
 /// refusal, budget overruns, malformed definitions — every one precise.
 pub fn parse_with_macros(source: &str, macros: &MacroSet) -> Result<Node, MathError> {
-    parse::parse_math_with(source, macros)
+    parse::parse_math_with(source, macros, Budgets::DEFAULT.max_input_bytes)
 }
 
 /// [`parse_text`], against a macro set.
@@ -161,5 +162,5 @@ pub fn parse_with_macros(source: &str, macros: &MacroSet) -> Result<Node, MathEr
 ///
 /// As [`parse_with_macros`].
 pub fn parse_text_with_macros(source: &str, macros: &MacroSet) -> Result<Node, MathError> {
-    parse::parse_text_mode_with(source, macros)
+    parse::parse_text_mode_with(source, macros, Budgets::DEFAULT.max_input_bytes)
 }

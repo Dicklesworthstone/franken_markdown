@@ -32,7 +32,7 @@
 use std::sync::{PoisonError, RwLock};
 
 use crate::atom::{AtomClass, classify_list, spacing_in_style};
-use crate::error::MathError;
+use crate::error::{BudgetKind, Budgets, MathError};
 use crate::faces::{
     FACE_BOLD, FACE_ITALIC, FACE_MATH_EXTENSION, FACE_MATH_ITALIC, FACE_MATH_ITALIC_5,
     FACE_MATH_ITALIC_7, FACE_MATH_SYMBOLS, FACE_REGULAR, FACE_ROMAN_7, FACE_ROMAN_10, FACE_SANS,
@@ -65,17 +65,34 @@ pub struct Engine {
     /// `RwLock`, not a `RefCell`, so one `Engine` stays `Send + Sync` and
     /// can be shared by threads laying out in parallel.
     glyph_memo: RwLock<Vec<Vec<Option<GlyphMetrics>>>>,
+    /// The input and output budgets every typeset call enforces.
+    budgets: Budgets,
 }
 
 impl Engine {
-    /// Build an engine over a face roster with the CM constants.
+    /// Build an engine over a face roster with the CM constants and the
+    /// default [`Budgets`].
     #[must_use]
     pub fn new(faces: FaceSet) -> Self {
         Self {
             faces,
             consts: crate::metrics::CM,
             glyph_memo: RwLock::new(Vec::new()),
+            budgets: Budgets::DEFAULT,
         }
+    }
+
+    /// This engine with other input and output budgets.
+    #[must_use]
+    pub fn with_budgets(mut self, budgets: Budgets) -> Self {
+        self.budgets = budgets;
+        self
+    }
+
+    /// The budgets every typeset call enforces.
+    #[must_use]
+    pub fn budgets(&self) -> Budgets {
+        self.budgets
     }
 
     /// The engine over the bundled sovereign face set.
@@ -120,10 +137,16 @@ impl Engine {
     /// # Errors
     ///
     /// Parse errors pass through; layout adds [`MathError::UnmappedChar`]
-    /// for characters no face covers and named layout-pending errors for
-    /// the extensions bead's constructs.
+    /// for characters no face covers, named layout-pending errors for the
+    /// extensions bead's constructs, and [`MathError::Budget`] for a string
+    /// over this engine's input budget or a layout over its glyph or
+    /// path-segment budget.
     pub fn typeset(&self, source: &str, style: Style) -> Result<Layout, MathError> {
-        let root = crate::parse(source)?;
+        let root = crate::parse::parse_math_with(
+            source,
+            crate::parse::empty_macros(),
+            self.budgets.max_input_bytes,
+        )?;
         self.finish(&root, StyleCtx::new(style), true, None)
     }
 
@@ -133,7 +156,11 @@ impl Engine {
     ///
     /// As [`Engine::typeset`].
     pub fn typeset_text(&self, source: &str) -> Result<Layout, MathError> {
-        let root = crate::parse_text(source)?;
+        let root = crate::parse::parse_text_mode_with(
+            source,
+            crate::parse::empty_macros(),
+            self.budgets.max_input_bytes,
+        )?;
         self.finish(&root, StyleCtx::new(Style::Text), false, None)
     }
 
@@ -149,7 +176,7 @@ impl Engine {
         style: Style,
         macros: &crate::macros::MacroSet,
     ) -> Result<Layout, MathError> {
-        let root = crate::parse_with_macros(source, macros)?;
+        let root = crate::parse::parse_math_with(source, macros, self.budgets.max_input_bytes)?;
         self.finish(&root, StyleCtx::new(style), true, None)
     }
 
@@ -163,7 +190,8 @@ impl Engine {
         source: &str,
         macros: &crate::macros::MacroSet,
     ) -> Result<Layout, MathError> {
-        let root = crate::parse_text_with_macros(source, macros)?;
+        let root =
+            crate::parse::parse_text_mode_with(source, macros, self.budgets.max_input_bytes)?;
         self.finish(
             &root,
             StyleCtx::new(Style::Text),
@@ -221,7 +249,43 @@ impl Engine {
             ..Layout::default()
         };
         boxx.flatten_into(0.0, 0.0, &mut layout);
+        self.check_output_budgets(&layout)?;
         Ok(layout)
+    }
+
+    /// The output budgets: a layout placing more glyphs or drawing more path
+    /// segments than this engine allows is refused, pointing at the source of
+    /// the first primitive past the limit.
+    fn check_output_budgets(&self, layout: &Layout) -> Result<(), MathError> {
+        let Budgets {
+            max_glyphs,
+            max_path_segments,
+            ..
+        } = self.budgets;
+        if let Some(glyph) = layout.glyphs.get(max_glyphs) {
+            return Err(MathError::Budget {
+                kind: BudgetKind::Glyphs,
+                limit: max_glyphs,
+                at: glyph.span.start,
+            });
+        }
+        let mut segments = 0_usize;
+        for path in &layout.paths {
+            segments = segments.saturating_add(
+                path.contours
+                    .iter()
+                    .map(|contour| contour.segments.len())
+                    .fold(0_usize, usize::saturating_add),
+            );
+            if segments > max_path_segments {
+                return Err(MathError::Budget {
+                    kind: BudgetKind::PathSegments,
+                    limit: max_path_segments,
+                    at: path.span.start,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -418,6 +482,11 @@ impl Engine {
 
     /// One line of a horizontal list; also returns the context after the
     /// line's declarations, so `\\`-separated lines inherit them.
+    ///
+    /// Every nesting level passes through this loop, so its frame keeps only
+    /// the declarations and the recursion; the glue arithmetic, the text
+    /// runs and the assembly pass are methods of their own (see
+    /// [`Self::lay_node`]).
     fn line(&self, items: &[Node], outer: LayCtx) -> Result<(MBox, LayCtx), MathError> {
         let classes = classify_list(items);
         let mut ctx = outer;
@@ -457,36 +526,7 @@ impl Engine {
                     FragmentKind::UnmatchedClose | FragmentKind::RedundantMathShift,
                 ) => {}
                 NodeKind::Space(kind) => {
-                    let eighteenths = f64::from(kind.mu()) / 18.0;
-                    let em = if ctx.text_mode {
-                        // Text spaces are ems of the text face at its size.
-                        eighteenths * ctx.size()
-                    } else if kind.is_mu_glue() {
-                        // 18 mu is family 2's quad at the current size (§716).
-                        eighteenths * self.consts_at(&ctx).quad * ctx.size()
-                    } else if matches!(kind, SpaceKind::ControlSpace) {
-                        // `\ ` is the text font's interword space.
-                        crate::tfm::CMR10.space * ctx.decl_size
-                    } else {
-                        // \quad and \qquad are \hskip ems of the text font,
-                        // cmr10 at the declared size, in every math style.
-                        eighteenths * crate::tfm::CMR10.param(6) * ctx.decl_size
-                    };
-                    // `\ ` is the interword glue, stretch and shrink too;
-                    // it and the \hskip quads are legal breaks, the mu
-                    // kerns are not.
-                    let (stretch, shrink) = if matches!(kind, SpaceKind::ControlSpace) {
-                        let font = &crate::tfm::CMR10;
-                        (font.param(3) * ctx.size(), font.param(4) * ctx.size())
-                    } else {
-                        (0.0, 0.0)
-                    };
-                    laid_items.push(LineItem::Glue(GlueSpec {
-                        natural: em,
-                        stretch,
-                        shrink,
-                        breakable: !kind.is_mu_glue(),
-                    }));
+                    laid_items.push(LineItem::Glue(self.space_glue(*kind, ctx)));
                 }
                 // `\hspace` is \hskip glue, a legal break.
                 NodeKind::Skip(length) => {
@@ -501,18 +541,11 @@ impl Engine {
                     display_mu,
                     text_mu,
                 } => {
-                    let mu = if ctx.in_display {
-                        *display_mu
-                    } else {
-                        *text_mu
-                    };
-                    // \mkern's mu, like the mu glue above (§716).
-                    laid_items.push(LineItem::Glue(GlueSpec {
-                        natural: f64::from(mu) / 18.0 * self.consts_at(&ctx).quad * ctx.size(),
-                        stretch: 0.0,
-                        shrink: 0.0,
-                        breakable: false,
-                    }));
+                    laid_items.push(LineItem::Glue(self.display_kern_glue(
+                        *display_mu,
+                        *text_mu,
+                        ctx,
+                    )));
                 }
                 NodeKind::Tie => {
                     laid_items.push(LineItem::Glue(GlueSpec {
@@ -522,74 +555,144 @@ impl Engine {
                         breakable: false,
                     }));
                 }
-                // A text run sets word by word: each space is TeX's
-                // interword glue, a legal break. Spaces end kerning, so the
-                // words sit exactly where the whole run would set them.
                 NodeKind::TextRun { text, char_spans } => {
-                    let class = class.unwrap_or(AtomClass::Ord);
-                    let mut factor = factor_before;
-                    let mut word: Option<(usize, usize)> = None;
-                    let mut count = 0;
-                    for (byte, ch) in text.char_indices() {
-                        if ch == ' ' {
-                            if let Some((start, first)) = word.take() {
-                                let spans = char_spans.get(first..count);
-                                laid_items.push(self.text_word(
-                                    &text[start..byte],
-                                    spans,
-                                    node.span,
-                                    class,
-                                    ctx,
-                                )?);
-                            }
-                            laid_items.push(LineItem::Glue(self.interword_glue(ctx, factor)));
-                        } else {
-                            word.get_or_insert((byte, count));
-                            factor = space_factor_after(factor, ch);
-                        }
-                        count += 1;
-                    }
-                    if let Some((start, first)) = word {
-                        let spans = char_spans.get(first..count);
-                        laid_items.push(self.text_word(
-                            &text[start..],
-                            spans,
-                            node.span,
-                            class,
-                            ctx,
-                        )?);
-                    }
+                    self.text_run_items(
+                        text,
+                        char_spans,
+                        node.span,
+                        class.unwrap_or(AtomClass::Ord),
+                        factor_before,
+                        ctx,
+                        &mut laid_items,
+                    )?;
                 }
-                _ => {
-                    if let Some(kern) = self.multi_integral_kern(node, ctx) {
-                        laid_items.push(LineItem::Glue(GlueSpec {
-                            natural: -kern,
-                            stretch: 0.0,
-                            shrink: 0.0,
-                            breakable: false,
-                        }));
-                    }
-                    let mut laid = lone_op_box(node, self.lay_node(node, ctx)?);
-                    if let Some(color) = ctx.color {
-                        laid.boxx = colored_box(color, laid.boxx);
-                    }
-                    laid_items.push(LineItem::Atom {
-                        laid,
-                        class: class.unwrap_or(AtomClass::Ord),
-                    });
-                    if let Some(correction) =
-                        slanted_text_correction(node, items.get(index + 1), ctx)
-                    {
-                        laid_items.push(LineItem::Glue(GlueSpec {
-                            natural: correction,
-                            stretch: 0.0,
-                            shrink: 0.0,
-                            breakable: false,
-                        }));
-                    }
-                }
+                _ => self.atom_items(node, items.get(index + 1), class, ctx, &mut laid_items)?,
             }
         }
+        Ok((self.assemble_line(laid_items, ctx), ctx))
+    }
+
+    /// An explicit space's glue.
+    fn space_glue(&self, kind: SpaceKind, ctx: LayCtx) -> GlueSpec {
+        let eighteenths = f64::from(kind.mu()) / 18.0;
+        let em = if ctx.text_mode {
+            // Text spaces are ems of the text face at its size.
+            eighteenths * ctx.size()
+        } else if kind.is_mu_glue() {
+            // 18 mu is family 2's quad at the current size (§716).
+            eighteenths * self.consts_at(&ctx).quad * ctx.size()
+        } else if matches!(kind, SpaceKind::ControlSpace) {
+            // `\ ` is the text font's interword space.
+            crate::tfm::CMR10.space * ctx.decl_size
+        } else {
+            // \quad and \qquad are \hskip ems of the text font,
+            // cmr10 at the declared size, in every math style.
+            eighteenths * crate::tfm::CMR10.param(6) * ctx.decl_size
+        };
+        // `\ ` is the interword glue, stretch and shrink too;
+        // it and the \hskip quads are legal breaks, the mu
+        // kerns are not.
+        let (stretch, shrink) = if matches!(kind, SpaceKind::ControlSpace) {
+            let font = &crate::tfm::CMR10;
+            (font.param(3) * ctx.size(), font.param(4) * ctx.size())
+        } else {
+            (0.0, 0.0)
+        };
+        GlueSpec {
+            natural: em,
+            stretch,
+            shrink,
+            breakable: !kind.is_mu_glue(),
+        }
+    }
+
+    /// An amsmath display-dependent `\mkern`.
+    fn display_kern_glue(&self, display_mu: i32, text_mu: i32, ctx: LayCtx) -> GlueSpec {
+        let mu = if ctx.in_display { display_mu } else { text_mu };
+        // \mkern's mu, like the mu glue of `space_glue` (§716).
+        GlueSpec {
+            natural: f64::from(mu) / 18.0 * self.consts_at(&ctx).quad * ctx.size(),
+            stretch: 0.0,
+            shrink: 0.0,
+            breakable: false,
+        }
+    }
+
+    /// A text run sets word by word: each space is TeX's
+    /// interword glue, a legal break. Spaces end kerning, so the
+    /// words sit exactly where the whole run would set them.
+    #[allow(clippy::too_many_arguments)]
+    fn text_run_items(
+        &self,
+        text: &str,
+        char_spans: &[Span],
+        span: Span,
+        class: AtomClass,
+        factor_before: u16,
+        ctx: LayCtx,
+        laid_items: &mut Vec<LineItem>,
+    ) -> Result<(), MathError> {
+        let mut factor = factor_before;
+        let mut word: Option<(usize, usize)> = None;
+        let mut count = 0;
+        for (byte, ch) in text.char_indices() {
+            if ch == ' ' {
+                if let Some((start, first)) = word.take() {
+                    let spans = char_spans.get(first..count);
+                    laid_items.push(self.text_word(&text[start..byte], spans, span, class, ctx)?);
+                }
+                laid_items.push(LineItem::Glue(self.interword_glue(ctx, factor)));
+            } else {
+                word.get_or_insert((byte, count));
+                factor = space_factor_after(factor, ch);
+            }
+            count += 1;
+        }
+        if let Some((start, first)) = word {
+            let spans = char_spans.get(first..count);
+            laid_items.push(self.text_word(&text[start..], spans, span, class, ctx)?);
+        }
+        Ok(())
+    }
+
+    /// One atom of a line, with the kerns around it.
+    fn atom_items(
+        &self,
+        node: &Node,
+        next: Option<&Node>,
+        class: Option<AtomClass>,
+        ctx: LayCtx,
+        laid_items: &mut Vec<LineItem>,
+    ) -> Result<(), MathError> {
+        if let Some(kern) = self.multi_integral_kern(node, ctx) {
+            laid_items.push(LineItem::Glue(GlueSpec {
+                natural: -kern,
+                stretch: 0.0,
+                shrink: 0.0,
+                breakable: false,
+            }));
+        }
+        let mut laid = lone_op_box(node, self.lay_node(node, ctx)?);
+        if let Some(color) = ctx.color {
+            laid.boxx = colored_box(color, laid.boxx);
+        }
+        laid_items.push(LineItem::Atom {
+            laid,
+            class: class.unwrap_or(AtomClass::Ord),
+        });
+        if let Some(correction) = slanted_text_correction(node, next, ctx) {
+            laid_items.push(LineItem::Glue(GlueSpec {
+                natural: correction,
+                stretch: 0.0,
+                shrink: 0.0,
+                breakable: false,
+            }));
+        }
+        Ok(())
+    }
+
+    /// A line's laid items as one box: inter-atom glue and font kerns.
+    fn assemble_line(&self, laid_items: Vec<LineItem>, ctx: LayCtx) -> MBox {
         // The face of each item's successor when that successor is a single
         // character, for rule 17's math_text_char exception below.
         let next_char_face: Vec<Option<FaceId>> = (0..laid_items.len())
@@ -668,16 +771,13 @@ impl Engine {
                 }
             }
         }
-        Ok((
-            MBox {
-                kind: BoxKind::Horizontal,
-                width: x,
-                height,
-                depth,
-                children,
-            },
-            ctx,
-        ))
+        MBox {
+            kind: BoxKind::Horizontal,
+            width: x,
+            height,
+            depth,
+            children,
+        }
     }
 
     /// A node set as its own formula, as TeX sets array cells, phantoms,
@@ -704,7 +804,13 @@ impl Engine {
     }
 
     /// Lay one node into an atom box.
-    #[allow(clippy::too_many_lines)]
+    ///
+    /// This is the recursion's dispatch: every nesting level passes through
+    /// it once or twice, so each arm only calls a method of its own. An
+    /// unoptimized frame holds every arm's temporaries; with them inline
+    /// this frame was 16 KiB, and 64 nested `matrix` environments needed
+    /// 3.5 MiB of stack, past a 2 MiB thread's (franken_manim
+    /// fm-fmd-math-fuzz-budgets-k8fe; the nesting bound's stack margin).
     fn lay_node(&self, node: &Node, ctx: LayCtx) -> Result<Laid, MathError> {
         match &node.kind {
             // A group holding one scriptless Ord character is that character
@@ -724,203 +830,27 @@ impl Engine {
             {
                 self.lay_node(&items[0], ctx)
             }
-            NodeKind::List(items) => Ok(Laid {
-                boxx: self.hlist(items, ctx)?,
-                italic: 0.0,
-                char_glyph: None,
-            }),
-            // Plain TeX's `\ldots` is `\mathinner{\ldotp\ldotp\ldotp}` and
-            // `\cdots` is `\mathinner{\cdotp\cdotp\cdotp}`: three punctuation
-            // dots, thin-spaced outside script styles, with the Inner atom's
-            // own spacing outside. One wide ellipsis glyph is 27-34%
-            // narrower and is one glyph where LaTeX sets three.
+            NodeKind::List(items) => self.lay_list(items, ctx),
             NodeKind::Symbol {
                 ch: ch @ ('…' | '⋯'),
                 class: AtomClass::Inner,
-            } => {
-                let dot = if *ch == '…' { '.' } else { '⋅' };
-                let dots = [0; 3].map(|_| {
-                    Node::new(
-                        NodeKind::Symbol {
-                            ch: dot,
-                            class: AtomClass::Punct,
-                        },
-                        node.span,
-                    )
-                });
-                Ok(Laid {
-                    boxx: self.hlist(&dots, ctx)?,
-                    italic: 0.0,
-                    char_glyph: None,
-                })
-            }
-            // LaTeX's `\vdots` is `\vbox{\baselineskip4\p@ \lineskiplimit\z@
-            // \kern6\p@\hbox{.}\hbox{.}\hbox{.}}`: three text periods on 4 pt
-            // baselines, the lowest on the baseline, under a 6 pt kern
-            // (1.51 em tall in all). Points and \hbox do not scale with the
-            // math style. The single ⋮ glyph is half that tall, its dots
-            // closer.
-            NodeKind::Symbol { ch: '⋮', .. } => {
-                let dot = self.text_period(node.span, ctx)?;
-                Ok(Laid {
-                    boxx: MBox {
-                        kind: BoxKind::Horizontal,
-                        width: dot.width,
-                        height: 0.6 + 0.8 + dot.height,
-                        depth: dot.depth,
-                        // Top to bottom, the vbox's emission order.
-                        children: [0.8, 0.4, 0.0]
-                            .map(|dy| Positioned {
-                                dx: 0.0,
-                                dy,
-                                node: MNode::Box(dot.clone()),
-                            })
-                            .into(),
-                    },
-                    italic: 0.0,
-                    char_glyph: None,
-                })
-            }
-            // LaTeX's `\ddots` is `\mathinner{\mkern1mu\raise7\p@\vbox{\kern7\p@
-            // \hbox{.}}\mkern2mu\raise4\p@\hbox{.}\mkern2mu\raise\p@\hbox{.}
-            // \mkern1mu}`: text periods raised 7, 4 and 1 pt, the highest
-            // under a 7 pt kern, so the box is as tall as `\vdots`.
-            NodeKind::Symbol { ch: '⋱', .. } => {
-                let dot = self.text_period(node.span, ctx)?;
-                let mu = self.consts_at(&ctx).quad * ctx.size() / 18.0;
-                let children: Vec<Positioned<MNode>> = [(0.0, 0.7), (1.0, 0.4), (2.0, 0.1)]
-                    .map(|(i, dy)| Positioned {
-                        dx: mu + i * (dot.width + 2.0 * mu),
-                        dy,
-                        node: MNode::Box(dot.clone()),
-                    })
-                    .into();
-                Ok(Laid {
-                    boxx: MBox {
-                        kind: BoxKind::Horizontal,
-                        width: 3.0 * dot.width + 6.0 * mu,
-                        height: 0.7 + 0.7 + dot.height,
-                        depth: (dot.depth - 0.1).max(0.0),
-                        children,
-                    },
-                    italic: 0.0,
-                    char_glyph: None,
-                })
-            }
-            NodeKind::Symbol { ch: '′', .. } => Ok(Laid {
-                boxx: self.tex_prime(node.span, ctx)?,
-                italic: 0.0,
-                char_glyph: None,
-            }),
+            } => self.inner_dots(*ch, node.span, ctx),
+            NodeKind::Symbol { ch: '⋮', .. } => self.vdots(node.span, ctx),
+            NodeKind::Symbol { ch: '⋱', .. } => self.ddots(node.span, ctx),
+            NodeKind::Symbol { ch: '′', .. } => self.prime_atom(node.span, ctx),
             NodeKind::Symbol { ch, .. } => self.char_atom(*ch, node.span, ctx),
             NodeKind::AmsSymbol {
                 ch, family, code, ..
             } => self.ams_atom(*ch, *family, *code, node.span, ctx),
-            NodeKind::BigOp { ch, .. } if multi_integral_count(*ch).is_some() => {
-                let count = multi_integral_count(*ch).unwrap_or(2);
-                self.multi_integral(count, self.limits_active(node, ctx), node.span, ctx)
-            }
-            NodeKind::BigOp { ch, integral, .. } => {
-                let scale = match (ctx.style.style == Style::Display, *integral) {
-                    (true, true) => self.consts.display_integral_scale,
-                    (true, false) => self.consts.display_op_scale,
-                    (false, _) => 1.0,
-                };
-                self.op_glyph(*ch, node.span, ctx, scale)
-            }
-            // LaTeX's `\log` is `\mathop{\operator@font log}`: the word is a
-            // sub-list, whose last character keeps its italic correction
-            // inside the operator's box (tex.web §752), and a sub-list
-            // nucleus gives make_op no δ of its own (§749).
-            NodeKind::OpName { name, .. } => {
-                let mut laid = self.word_box(name, node.span, None, ctx, FACE_REGULAR, false)?;
-                laid.boxx.width += laid.italic;
-                laid.italic = 0.0;
-                Ok(laid)
-            }
+            NodeKind::BigOp { ch, integral, .. } => self.big_op(node, *ch, *integral, ctx),
+            NodeKind::OpName { name, .. } => self.op_name(name, node.span, ctx),
             NodeKind::TextRun { text, char_spans } => {
                 self.word_box(text, node.span, Some(char_spans), ctx, text_face(ctx), true)
             }
-            NodeKind::Text { body } => Ok(Laid {
-                boxx: self.hlist(
-                    body,
-                    LayCtx {
-                        text_mode: true,
-                        ..ctx
-                    },
-                )?,
-                italic: 0.0,
-                char_glyph: None,
-            }),
-            NodeKind::TextStyled { style, body } => {
-                let styled = LayCtx {
-                    text_mode: true,
-                    alphabet: Some(match style {
-                        TextStyle::Bold => MathFont::Bold,
-                        TextStyle::Emph | TextStyle::Italic => MathFont::Italic,
-                        TextStyle::Underline | TextStyle::Roman => MathFont::Roman,
-                        TextStyle::Typewriter => MathFont::Typewriter,
-                        TextStyle::SansSerif => MathFont::SansSerif,
-                    }),
-                    ..ctx
-                };
-                let inner = self.hlist(body, styled)?;
-                if matches!(style, TextStyle::Underline) {
-                    Ok(Laid {
-                        boxx: self.underline_box(inner, ctx, node.span),
-                        italic: 0.0,
-                        char_glyph: None,
-                    })
-                } else {
-                    Ok(Laid {
-                        boxx: inner,
-                        italic: 0.0,
-                        char_glyph: None,
-                    })
-                }
-            }
-            NodeKind::MathIsland { body, display } => {
-                // amsmath's `\text` property: an inner math island resumes
-                // the SURROUNDING mathematics — script-size text (a
-                // `\substack` line, a script position) gets script-size
-                // islands. The nominal island style (`$…$` text,
-                // `$$…$$` display) applies only when the surroundings are
-                // not already smaller: an island never enlarges its text.
-                let nominal = if *display {
-                    Style::Display
-                } else {
-                    Style::Text
-                };
-                let style = if ctx.style.style.size_factor() < nominal.size_factor() {
-                    ctx.style.style
-                } else {
-                    nominal
-                };
-                Ok(Laid {
-                    boxx: self.hlist(
-                        body,
-                        LayCtx {
-                            style: StyleCtx {
-                                style,
-                                cramped: ctx.style.cramped,
-                            },
-                            alphabet: None,
-                            text_mode: false,
-                            in_display: ctx.in_display || *display,
-                            ..ctx
-                        },
-                    )?,
-                    italic: 0.0,
-                    char_glyph: None,
-                })
-            }
-            NodeKind::MathFont { font, body } => self.lay_node(
-                body,
-                LayCtx {
-                    alphabet: Some(*font),
-                    ..ctx
-                },
-            ),
+            NodeKind::Text { body } => self.text_body(body, ctx),
+            NodeKind::TextStyled { style, body } => self.text_styled(*style, body, node.span, ctx),
+            NodeKind::MathIsland { body, display } => self.math_island(body, *display, ctx),
+            NodeKind::MathFont { font, body } => self.math_font(*font, body, ctx),
             NodeKind::Scripts {
                 base,
                 sub,
@@ -933,36 +863,8 @@ impl Engine {
             }
             NodeKind::Accent { accent, base } => self.accent(*accent, base, ctx, node.span),
             NodeKind::LeftRight { left, right, body } => self.left_right(left, right, body, ctx),
-            NodeKind::SizedDelim { size, delim, .. } => {
-                let target = fixed_delim_target(*size) * ctx.size();
-                let boxx = self.delimiter_box(delim, target, ctx, DelimSearch::Fixed)?;
-                Ok(Laid {
-                    boxx,
-                    italic: 0.0,
-                    char_glyph: None,
-                })
-            }
-            NodeKind::Phantom { kind, body } => {
-                let inner = self.formula_box(body, ctx)?;
-                let (w, h, d) = match kind {
-                    PhantomKind::Full => (inner.width, inner.height, inner.depth),
-                    PhantomKind::Horizontal => (inner.width, 0.0, 0.0),
-                    PhantomKind::Vertical => (0.0, inner.height, inner.depth),
-                };
-                Ok(Laid {
-                    boxx: MBox {
-                        kind: BoxKind::Horizontal,
-                        width: w,
-                        height: h,
-                        depth: d,
-                        children: Vec::new(),
-                    },
-                    italic: 0.0,
-                    char_glyph: None,
-                })
-            }
-            // In its own function so this recursive frame does not grow
-            // (the nesting bound's stack margin).
+            NodeKind::SizedDelim { size, delim, .. } => self.sized_delim(*size, delim, ctx),
+            NodeKind::Phantom { kind, body } => self.phantom(*kind, body, ctx),
             NodeKind::Boxed { body } => self.boxed(body, node.span, ctx),
             // The class only spaces the atom; the nucleus lays out as itself.
             NodeKind::Classed { body, .. } => self.lay_node(body, ctx),
@@ -975,118 +877,17 @@ impl Engine {
                 kind,
                 annotation,
                 base,
-            } => {
-                let base_laid = self.lay_node(base, ctx)?;
-                let ann_ctx = match kind {
-                    StackKind::Underset => ctx.map(StyleCtx::sub),
-                    StackKind::Stackrel | StackKind::Overset => ctx.map(StyleCtx::sup),
-                };
-                let ann = self.clean_box(annotation, ann_ctx)?;
-                let (upper, lower) = match kind {
-                    StackKind::Underset => (None, Some(ann.boxx)),
-                    StackKind::Stackrel | StackKind::Overset => (Some(ann.boxx), None),
-                };
-                Ok(Laid {
-                    boxx: self.with_limits(base_laid.boxx, upper, lower, ctx, base_laid.italic),
-                    italic: 0.0,
-                    char_glyph: None,
-                })
-            }
+            } => self.stack(*kind, annotation, base, ctx),
             NodeKind::XArrow {
                 mapsto,
                 above,
                 below,
-            } => {
-                // amsmath's labeled extensible arrows: the drawn band
-                // stretches to its widest script-style label plus padding
-                // (a bare label still gets a healthy minimum arrow), sits
-                // on the math axis, and takes the labels as limits.
-                let size = ctx.size();
-                // amsmath pads the labels with \mkern, so clean_box keeps a
-                // lone character's italic correction: they are formula boxes.
-                let above_box = self.formula_box(above, ctx.map(StyleCtx::sup))?;
-                let below_box = below
-                    .as_deref()
-                    .map(|b| self.formula_box(b, ctx.map(StyleCtx::sub)))
-                    .transpose()?;
-                let label_w = above_box
-                    .width
-                    .max(below_box.as_ref().map_or(0.0, |b| b.width));
-                let width = (label_w + 0.8 * size).max(1.2 * size);
-                let stretch_kind = if *mapsto {
-                    crate::drawn::Stretch::MapstoArrow
-                } else {
-                    crate::drawn::Stretch::RightArrow
-                };
-                let band = crate::drawn::stretch(stretch_kind, width, size);
-                let axis = self.consts_at(&ctx).axis_height * size;
-                let band_dy = axis - band.height / 2.0;
-                let band_box = MBox {
-                    kind: BoxKind::Horizontal,
-                    width,
-                    height: axis + band.height / 2.0,
-                    depth: (band.height / 2.0 - axis).max(0.0),
-                    children: vec![Positioned {
-                        dx: 0.0,
-                        dy: band_dy,
-                        node: MNode::Path {
-                            contours: band.contours,
-                            span: node.span,
-                        },
-                    }],
-                };
-                Ok(Laid {
-                    boxx: self.with_limits(band_box, Some(above_box), below_box, ctx, 0.0),
-                    italic: 0.0,
-                    char_glyph: None,
-                })
-            }
-            NodeKind::Fragment(FragmentKind::StrayRight(delim)) => {
-                if let Some(ch) = delim.ch {
-                    self.char_atom(ch, delim.span, ctx)
-                } else {
-                    Ok(Laid {
-                        boxx: kern_box(self.consts.null_delimiter_space),
-                        italic: 0.0,
-                        char_glyph: None,
-                    })
-                }
-            }
+            } => self.xarrow(*mapsto, above, below.as_deref(), node.span, ctx),
+            NodeKind::Fragment(FragmentKind::StrayRight(delim)) => self.stray_right(delim, ctx),
             NodeKind::Environment { name, spec, rows } => {
                 self.environment(name, spec.as_deref(), rows, ctx, node.span)
             }
-            NodeKind::AlignBlock { align, lines } => {
-                // `flushleft` / `center` / `flushright`: paragraph lines in
-                // the block's alignment. Their `\\` is LaTeX's \par, so
-                // declarations carry from line to line, and under a line
-                // width a line wider than it breaks as TeX breaks it. The
-                // block keeps its first line's baseline, as a paragraph does.
-                let paragraph = ctx.line_width.map(|width| Paragraph {
-                    width,
-                    align: *align,
-                });
-                let mut laid = Vec::new();
-                let mut line_ctx = ctx;
-                for line in lines {
-                    let items = match &line.kind {
-                        NodeKind::List(items) => items.as_slice(),
-                        _ => std::slice::from_ref(line),
-                    };
-                    let (boxx, after) = self.line(items, line_ctx)?;
-                    line_ctx = after;
-                    paragraph_lines(boxx, after, paragraph, &mut laid);
-                }
-                let boxx = if laid.is_empty() {
-                    MBox::empty(BoxKind::Vertical)
-                } else {
-                    self.stack_lines(laid, *align, 0.0)?
-                };
-                Ok(Laid {
-                    boxx,
-                    italic: 0.0,
-                    char_glyph: None,
-                })
-            }
+            NodeKind::AlignBlock { align, lines } => self.align_block(*align, lines, ctx),
             // A declaration outside a list colours nothing, but a colour
             // xcolor does not define is still refused, never dropped.
             NodeKind::ColorChange(crate::node::ColorSpec {
@@ -1109,6 +910,387 @@ impl Engine {
                 char_glyph: None,
             }),
         }
+    }
+
+    // ── lay_node's arms ─────────────────────────────────────────────────
+
+    /// A list as one box.
+    fn lay_list(&self, items: &[Node], ctx: LayCtx) -> Result<Laid, MathError> {
+        Ok(Laid {
+            boxx: self.hlist(items, ctx)?,
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// Plain TeX's `\ldots` is `\mathinner{\ldotp\ldotp\ldotp}` and
+    /// `\cdots` is `\mathinner{\cdotp\cdotp\cdotp}`: three punctuation
+    /// dots, thin-spaced outside script styles, with the Inner atom's
+    /// own spacing outside. One wide ellipsis glyph is 27-34%
+    /// narrower and is one glyph where LaTeX sets three.
+    fn inner_dots(&self, ch: char, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        let dot = if ch == '…' { '.' } else { '⋅' };
+        let dots = [0; 3].map(|_| {
+            Node::new(
+                NodeKind::Symbol {
+                    ch: dot,
+                    class: AtomClass::Punct,
+                },
+                span,
+            )
+        });
+        Ok(Laid {
+            boxx: self.hlist(&dots, ctx)?,
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// LaTeX's `\vdots` is `\vbox{\baselineskip4\p@ \lineskiplimit\z@
+    /// \kern6\p@\hbox{.}\hbox{.}\hbox{.}}`: three text periods on 4 pt
+    /// baselines, the lowest on the baseline, under a 6 pt kern
+    /// (1.51 em tall in all). Points and \hbox do not scale with the
+    /// math style. The single ⋮ glyph is half that tall, its dots
+    /// closer.
+    fn vdots(&self, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        let dot = self.text_period(span, ctx)?;
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width: dot.width,
+                height: 0.6 + 0.8 + dot.height,
+                depth: dot.depth,
+                // Top to bottom, the vbox's emission order.
+                children: [0.8, 0.4, 0.0]
+                    .map(|dy| Positioned {
+                        dx: 0.0,
+                        dy,
+                        node: MNode::Box(dot.clone()),
+                    })
+                    .into(),
+            },
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// LaTeX's `\ddots` is `\mathinner{\mkern1mu\raise7\p@\vbox{\kern7\p@
+    /// \hbox{.}}\mkern2mu\raise4\p@\hbox{.}\mkern2mu\raise\p@\hbox{.}
+    /// \mkern1mu}`: text periods raised 7, 4 and 1 pt, the highest
+    /// under a 7 pt kern, so the box is as tall as `\vdots`.
+    fn ddots(&self, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        let dot = self.text_period(span, ctx)?;
+        let mu = self.consts_at(&ctx).quad * ctx.size() / 18.0;
+        let children: Vec<Positioned<MNode>> = [(0.0, 0.7), (1.0, 0.4), (2.0, 0.1)]
+            .map(|(i, dy)| Positioned {
+                dx: mu + i * (dot.width + 2.0 * mu),
+                dy,
+                node: MNode::Box(dot.clone()),
+            })
+            .into();
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width: 3.0 * dot.width + 6.0 * mu,
+                height: 0.7 + 0.7 + dot.height,
+                depth: (dot.depth - 0.1).max(0.0),
+                children,
+            },
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// A prime as cmsy's prime character.
+    fn prime_atom(&self, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        Ok(Laid {
+            boxx: self.tex_prime(span, ctx)?,
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// A big operator: amsmath's multiple integrals as one atom, the rest
+    /// at the display sizes of their class.
+    fn big_op(
+        &self,
+        node: &Node,
+        ch: char,
+        integral: bool,
+        ctx: LayCtx,
+    ) -> Result<Laid, MathError> {
+        if let Some(count) = multi_integral_count(ch) {
+            return self.multi_integral(count, self.limits_active(node, ctx), node.span, ctx);
+        }
+        let scale = match (ctx.style.style == Style::Display, integral) {
+            (true, true) => self.consts.display_integral_scale,
+            (true, false) => self.consts.display_op_scale,
+            (false, _) => 1.0,
+        };
+        self.op_glyph(ch, node.span, ctx, scale)
+    }
+
+    /// LaTeX's `\log` is `\mathop{\operator@font log}`: the word is a
+    /// sub-list, whose last character keeps its italic correction
+    /// inside the operator's box (tex.web §752), and a sub-list
+    /// nucleus gives make_op no δ of its own (§749).
+    fn op_name(&self, name: &str, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        let mut laid = self.word_box(name, span, None, ctx, FACE_REGULAR, false)?;
+        laid.boxx.width += laid.italic;
+        laid.italic = 0.0;
+        Ok(laid)
+    }
+
+    /// A `\text` body, in text mode.
+    fn text_body(&self, body: &[Node], ctx: LayCtx) -> Result<Laid, MathError> {
+        Ok(Laid {
+            boxx: self.hlist(
+                body,
+                LayCtx {
+                    text_mode: true,
+                    ..ctx
+                },
+            )?,
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// A `\textbf`/`\emph`/`\underline`-style island, in text mode.
+    fn text_styled(
+        &self,
+        style: TextStyle,
+        body: &[Node],
+        span: Span,
+        ctx: LayCtx,
+    ) -> Result<Laid, MathError> {
+        let styled = LayCtx {
+            text_mode: true,
+            alphabet: Some(match style {
+                TextStyle::Bold => MathFont::Bold,
+                TextStyle::Emph | TextStyle::Italic => MathFont::Italic,
+                TextStyle::Underline | TextStyle::Roman => MathFont::Roman,
+                TextStyle::Typewriter => MathFont::Typewriter,
+                TextStyle::SansSerif => MathFont::SansSerif,
+            }),
+            ..ctx
+        };
+        let inner = self.hlist(body, styled)?;
+        if matches!(style, TextStyle::Underline) {
+            Ok(Laid {
+                boxx: self.underline_box(inner, ctx, span),
+                italic: 0.0,
+                char_glyph: None,
+            })
+        } else {
+            Ok(Laid {
+                boxx: inner,
+                italic: 0.0,
+                char_glyph: None,
+            })
+        }
+    }
+
+    /// A `$…$` or `$$…$$` island in text mode.
+    fn math_island(&self, body: &[Node], display: bool, ctx: LayCtx) -> Result<Laid, MathError> {
+        // amsmath's `\text` property: an inner math island resumes
+        // the SURROUNDING mathematics — script-size text (a
+        // `\substack` line, a script position) gets script-size
+        // islands. The nominal island style (`$…$` text,
+        // `$$…$$` display) applies only when the surroundings are
+        // not already smaller: an island never enlarges its text.
+        let nominal = if display { Style::Display } else { Style::Text };
+        let style = if ctx.style.style.size_factor() < nominal.size_factor() {
+            ctx.style.style
+        } else {
+            nominal
+        };
+        Ok(Laid {
+            boxx: self.hlist(
+                body,
+                LayCtx {
+                    style: StyleCtx {
+                        style,
+                        cramped: ctx.style.cramped,
+                    },
+                    alphabet: None,
+                    text_mode: false,
+                    in_display: ctx.in_display || display,
+                    ..ctx
+                },
+            )?,
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// A math alphabet (`\mathbf`, `\mathcal`, …) over its body.
+    fn math_font(&self, font: MathFont, body: &Node, ctx: LayCtx) -> Result<Laid, MathError> {
+        self.lay_node(
+            body,
+            LayCtx {
+                alphabet: Some(font),
+                ..ctx
+            },
+        )
+    }
+
+    /// A `\big`-family delimiter at its fixed size.
+    fn sized_delim(&self, size: DelimSize, delim: &Delim, ctx: LayCtx) -> Result<Laid, MathError> {
+        let target = fixed_delim_target(size) * ctx.size();
+        let boxx = self.delimiter_box(delim, target, ctx, DelimSearch::Fixed)?;
+        Ok(Laid {
+            boxx,
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// `\phantom` and its one-dimensional kin: the body's dimensions, no ink.
+    fn phantom(&self, kind: PhantomKind, body: &Node, ctx: LayCtx) -> Result<Laid, MathError> {
+        let inner = self.formula_box(body, ctx)?;
+        let (w, h, d) = match kind {
+            PhantomKind::Full => (inner.width, inner.height, inner.depth),
+            PhantomKind::Horizontal => (inner.width, 0.0, 0.0),
+            PhantomKind::Vertical => (0.0, inner.height, inner.depth),
+        };
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width: w,
+                height: h,
+                depth: d,
+                children: Vec::new(),
+            },
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// `\stackrel`, `\overset` and `\underset`: the annotation as a limit.
+    fn stack(
+        &self,
+        kind: StackKind,
+        annotation: &Node,
+        base: &Node,
+        ctx: LayCtx,
+    ) -> Result<Laid, MathError> {
+        let base_laid = self.lay_node(base, ctx)?;
+        let ann_ctx = match kind {
+            StackKind::Underset => ctx.map(StyleCtx::sub),
+            StackKind::Stackrel | StackKind::Overset => ctx.map(StyleCtx::sup),
+        };
+        let ann = self.clean_box(annotation, ann_ctx)?;
+        let (upper, lower) = match kind {
+            StackKind::Underset => (None, Some(ann.boxx)),
+            StackKind::Stackrel | StackKind::Overset => (Some(ann.boxx), None),
+        };
+        Ok(Laid {
+            boxx: self.with_limits(base_laid.boxx, upper, lower, ctx, base_laid.italic),
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// amsmath's labeled extensible arrows: the drawn band
+    /// stretches to its widest script-style label plus padding
+    /// (a bare label still gets a healthy minimum arrow), sits
+    /// on the math axis, and takes the labels as limits.
+    fn xarrow(
+        &self,
+        mapsto: bool,
+        above: &Node,
+        below: Option<&Node>,
+        span: Span,
+        ctx: LayCtx,
+    ) -> Result<Laid, MathError> {
+        let size = ctx.size();
+        // amsmath pads the labels with \mkern, so clean_box keeps a
+        // lone character's italic correction: they are formula boxes.
+        let above_box = self.formula_box(above, ctx.map(StyleCtx::sup))?;
+        let below_box = below
+            .map(|b| self.formula_box(b, ctx.map(StyleCtx::sub)))
+            .transpose()?;
+        let label_w = above_box
+            .width
+            .max(below_box.as_ref().map_or(0.0, |b| b.width));
+        let width = (label_w + 0.8 * size).max(1.2 * size);
+        let stretch_kind = if mapsto {
+            crate::drawn::Stretch::MapstoArrow
+        } else {
+            crate::drawn::Stretch::RightArrow
+        };
+        let band = crate::drawn::stretch(stretch_kind, width, size);
+        let axis = self.consts_at(&ctx).axis_height * size;
+        let band_dy = axis - band.height / 2.0;
+        let band_box = MBox {
+            kind: BoxKind::Horizontal,
+            width,
+            height: axis + band.height / 2.0,
+            depth: (band.height / 2.0 - axis).max(0.0),
+            children: vec![Positioned {
+                dx: 0.0,
+                dy: band_dy,
+                node: MNode::Path {
+                    contours: band.contours,
+                    span,
+                },
+            }],
+        };
+        Ok(Laid {
+            boxx: self.with_limits(band_box, Some(above_box), below_box, ctx, 0.0),
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// A stray `\right` fragment: its delimiter as a character, or the
+    /// null delimiter's space.
+    fn stray_right(&self, delim: &Delim, ctx: LayCtx) -> Result<Laid, MathError> {
+        if let Some(ch) = delim.ch {
+            self.char_atom(ch, delim.span, ctx)
+        } else {
+            Ok(Laid {
+                boxx: kern_box(self.consts.null_delimiter_space),
+                italic: 0.0,
+                char_glyph: None,
+            })
+        }
+    }
+
+    /// `flushleft` / `center` / `flushright`: paragraph lines in
+    /// the block's alignment. Their `\\` is LaTeX's \par, so
+    /// declarations carry from line to line, and under a line
+    /// width a line wider than it breaks as TeX breaks it. The
+    /// block keeps its first line's baseline, as a paragraph does.
+    fn align_block(
+        &self,
+        align: LineAlign,
+        lines: &[Node],
+        ctx: LayCtx,
+    ) -> Result<Laid, MathError> {
+        let paragraph = ctx.line_width.map(|width| Paragraph { width, align });
+        let mut laid = Vec::new();
+        let mut line_ctx = ctx;
+        for line in lines {
+            let items = match &line.kind {
+                NodeKind::List(items) => items.as_slice(),
+                _ => std::slice::from_ref(line),
+            };
+            let (boxx, after) = self.line(items, line_ctx)?;
+            line_ctx = after;
+            paragraph_lines(boxx, after, paragraph, &mut laid);
+        }
+        let boxx = if laid.is_empty() {
+            MBox::empty(BoxKind::Vertical)
+        } else {
+            self.stack_lines(laid, align, 0.0)?
+        };
+        Ok(Laid {
+            boxx,
+            italic: 0.0,
+            char_glyph: None,
+        })
     }
 
     // ── Glyph-level constructors ────────────────────────────────────────
@@ -2953,6 +3135,29 @@ impl Engine {
         ctx: LayCtx,
         span: Span,
     ) -> Result<Laid, MathError> {
+        // The cells recurse through `grid`, so this frame holds only the
+        // plan, one grid and one delimiter wrap (see [`Self::lay_node`]).
+        let plan = self.environment_plan(name, spec, ctx, span)?;
+        let mut boxx = self.grid(rows, plan.cells, &plan.grid, span)?;
+        if let Some((left, right)) = plan.delims {
+            boxx = self.wrap_delims(boxx, left, right, plan.ctx, span)?;
+        }
+        Ok(Laid {
+            boxx,
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
+
+    /// How an environment lays out: its cells' context, the grid rules, and
+    /// the delimiters around the grid.
+    fn environment_plan(
+        &self,
+        name: &str,
+        spec: Option<&str>,
+        ctx: LayCtx,
+        span: Span,
+    ) -> Result<EnvPlan, MathError> {
         // align*, gather* and equation* are displays, so `\everydisplay` sets
         // amsmath's \if@display in their cells, a TexText one's included.
         let ctx = if matches!(name, "align*" | "gather*" | "equation*") {
@@ -2973,125 +3178,114 @@ impl Engine {
             },
             cramped: s.cramped,
         });
-        let boxx = match name {
+        let plan = |cells, grid, delims| EnvPlan {
+            ctx,
+            cells,
+            grid,
+            delims,
+        };
+        Ok(match name {
             "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" => {
                 // amsmath's \env@matrix is an `array` of centered columns
                 // (its outer \arraycolsep cancelled).
-                let grid = self.grid(
-                    rows,
+                let delims = match name {
+                    // A bare matrix has no delimiters at all (not even the
+                    // null-delimiter kerns a `\left.` would add).
+                    "matrix" => None,
+                    "pmatrix" => Some((Some('('), Some(')'))),
+                    "bmatrix" => Some((Some('['), Some(']'))),
+                    "Bmatrix" => Some((Some('{'), Some('}'))),
+                    "vmatrix" => Some((Some('|'), Some('|'))),
+                    _ => Some((Some('‖'), Some('‖'))),
+                };
+                plan(
                     text_cells,
-                    &Grid {
+                    Grid {
                         array_stretch: Some(1.0),
                         ..Grid::centered(1.0)
                     },
-                    span,
-                )?;
-                match name {
-                    // A bare matrix has no delimiters at all (not even the
-                    // null-delimiter kerns a `\left.` would add).
-                    "matrix" => grid,
-                    "pmatrix" => self.wrap_delims(grid, Some('('), Some(')'), ctx, span)?,
-                    "bmatrix" => self.wrap_delims(grid, Some('['), Some(']'), ctx, span)?,
-                    "Bmatrix" => self.wrap_delims(grid, Some('{'), Some('}'), ctx, span)?,
-                    "vmatrix" => self.wrap_delims(grid, Some('|'), Some('|'), ctx, span)?,
-                    _ => self.wrap_delims(grid, Some('‖'), Some('‖'), ctx, span)?,
-                }
+                    delims,
+                )
             }
-            "smallmatrix" => {
-                // The inline matrix: script-size cells, tightened columns
-                // and rows (amsmath's 0.7-factor feel).
-                let cells = ctx.map(StyleCtx::sup);
-                self.grid(
-                    rows,
-                    cells,
-                    &Grid {
-                        col_sep: 0.35,
-                        row_factor: 0.7,
-                        ..Grid::centered(1.0)
-                    },
-                    span,
-                )?
-            }
-            "cases" => {
-                // Text-style cells, left-aligned value and condition
-                // columns a quad apart, behind a stretched `{`: amsmath's
-                // `array{@{}l@{\quad}l@{}}` with \arraystretch 1.2.
-                let grid = self.grid(
-                    rows,
-                    text_cells,
-                    &Grid {
-                        align: AlignRule::AllLeft,
-                        array_stretch: Some(1.2),
-                        ..Grid::centered(1.0)
-                    },
-                    span,
-                )?;
-                self.wrap_delims(grid, Some('{'), None, ctx, span)?
-            }
+            // The inline matrix: script-size cells, tightened columns
+            // and rows (amsmath's 0.7-factor feel).
+            "smallmatrix" => plan(
+                ctx.map(StyleCtx::sup),
+                Grid {
+                    col_sep: 0.35,
+                    row_factor: 0.7,
+                    ..Grid::centered(1.0)
+                },
+                None,
+            ),
+            // Text-style cells, left-aligned value and condition
+            // columns a quad apart, behind a stretched `{`: amsmath's
+            // `array{@{}l@{\quad}l@{}}` with \arraystretch 1.2.
+            "cases" => plan(
+                text_cells,
+                Grid {
+                    align: AlignRule::AllLeft,
+                    array_stretch: Some(1.2),
+                    ..Grid::centered(1.0)
+                },
+                Some((Some('{'), None)),
+            ),
             "array" => {
-                let plan = parse_array_spec(spec.unwrap_or(""), span)?;
-                self.grid(
-                    rows,
+                let spec_plan = parse_array_spec(spec.unwrap_or(""), span)?;
+                plan(
                     text_cells,
-                    &Grid {
-                        align: AlignRule::Columns(plan.aligns),
-                        vrules: plan.vrules,
+                    Grid {
+                        align: AlignRule::Columns(spec_plan.aligns),
+                        vrules: spec_plan.vrules,
                         outer_pad: 0.5,
                         array_stretch: Some(1.0),
                         ..Grid::centered(1.0)
                     },
-                    span,
-                )?
+                    None,
+                )
             }
-            "align*" | "aligned" => {
-                // Display-style cells; r,l alternation with the alignment
-                // point closed up; \jot opens the rows. `aligned` sets
-                // \minalignsep between pairs; `align*`, a display, spreads
-                // them across the line.
-                let cells = ctx.map(|s| StyleCtx {
+            // Display-style cells; r,l alternation with the alignment
+            // point closed up; \jot opens the rows. `aligned` sets
+            // \minalignsep between pairs; `align*`, a display, spreads
+            // them across the line.
+            "align*" | "aligned" => plan(
+                ctx.map(|s| StyleCtx {
                     style: Style::Display,
                     cramped: s.cramped,
-                });
-                self.grid(
-                    rows,
-                    cells,
-                    &Grid {
-                        align: AlignRule::AlignPairs,
-                        col_sep: 1.0,
-                        jot: self.consts.jot,
-                        display_width: (name == "align*").then_some(LINE_WIDTH),
-                        ..Grid::centered(1.0)
-                    },
-                    span,
-                )?
-            }
-            "gather*" | "gathered" | "equation*" => {
-                // amsmath's gather: display-style rows, each centred in
-                // the widest, opened by \jot; equation* is one such row.
-                let cells = ctx.map(|s| StyleCtx {
+                }),
+                Grid {
+                    align: AlignRule::AlignPairs,
+                    col_sep: 1.0,
+                    jot: self.consts.jot,
+                    display_width: (name == "align*").then_some(LINE_WIDTH),
+                    ..Grid::centered(1.0)
+                },
+                None,
+            ),
+            // amsmath's gather: display-style rows, each centred in
+            // the widest, opened by \jot; equation* is one such row.
+            "gather*" | "gathered" | "equation*" => plan(
+                ctx.map(|s| StyleCtx {
                     style: Style::Display,
                     cramped: s.cramped,
-                });
-                self.grid(
-                    rows,
-                    cells,
-                    &Grid {
-                        jot: self.consts.jot,
-                        ..Grid::centered(1.0)
-                    },
-                    span,
-                )?
-            }
-            "substack" => {
-                // amsmath's \subarray{c}: every line set in \scriptstyle
-                // (forced, whatever the ambient style — that is what makes
-                // \substack usable in base position too), centered in one
-                // column, \vcenter'd on the axis: the grid engine's
-                // single-column case, rows on the shared
-                // \baselineskip/\lineskip rule at script size.
-                let cells = ctx.map(|_| StyleCtx::new(Style::Script));
-                self.grid(rows, cells, &Grid::centered(1.0), span)?
-            }
+                }),
+                Grid {
+                    jot: self.consts.jot,
+                    ..Grid::centered(1.0)
+                },
+                None,
+            ),
+            // amsmath's \subarray{c}: every line set in \scriptstyle
+            // (forced, whatever the ambient style — that is what makes
+            // \substack usable in base position too), centered in one
+            // column, \vcenter'd on the axis: the grid engine's
+            // single-column case, rows on the shared
+            // \baselineskip/\lineskip rule at script size.
+            "substack" => plan(
+                ctx.map(|_| StyleCtx::new(Style::Script)),
+                Grid::centered(1.0),
+                None,
+            ),
             other => {
                 // Parse admits only known environments; a new name landing
                 // here is a construct the layout tier does not cover yet.
@@ -3100,11 +3294,6 @@ impl Engine {
                     span,
                 });
             }
-        };
-        Ok(Laid {
-            boxx,
-            italic: 0.0,
-            char_glyph: None,
         })
     }
 
@@ -4534,6 +4723,20 @@ struct Grid {
     /// A display-level `align`'s line width (ems): its column pairs spread
     /// across the line. `None` keeps `col_sep` between pairs (`aligned`).
     display_width: Option<f64>,
+}
+
+/// An environment's layout plan ([`Engine::environment`]).
+struct EnvPlan {
+    /// The environment's own context (a display sets amsmath's
+    /// `\if@display`); its delimiters are sized in it.
+    ctx: LayCtx,
+    /// The cells' context.
+    cells: LayCtx,
+    /// The grid rules.
+    grid: Grid,
+    /// The delimiters around the grid, if any (`None` inside is TeX's
+    /// null delimiter).
+    delims: Option<(Option<char>, Option<char>)>,
 }
 
 /// The Reference page's `\linewidth`, 345 pt (the standalone class's

@@ -891,8 +891,14 @@ fn comments_are_stripped() {
 fn deep_nesting_errors_cleanly() {
     let deep = format!("{}x{}", "{".repeat(200), "}".repeat(200));
     let err = parse(&deep).unwrap_err();
-    assert!(
-        matches!(&err, MathError::Malformed { what, .. } if what.contains("depth limit")),
+    // The 65th opener (byte 64) is one level past the bound.
+    assert_eq!(
+        err,
+        MathError::Budget {
+            kind: fmd_math::BudgetKind::Nesting,
+            limit: 64,
+            at: 64,
+        },
         "{err}"
     );
 }

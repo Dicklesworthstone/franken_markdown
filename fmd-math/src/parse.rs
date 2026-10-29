@@ -15,7 +15,7 @@
 
 use crate::atom::{char_class, intrinsic_class};
 use crate::commands::{self, Cmd, Dots};
-use crate::error::MathError;
+use crate::error::{BudgetKind, Budgets, MathError};
 use crate::node::{
     AccentKind, CancelKind, ColorSpec, Delim, FracSpec, FragmentKind, Length, Limits, LineAlign,
     Node, NodeKind, SpaceKind, Span, TextStyle,
@@ -23,8 +23,8 @@ use crate::node::{
 use crate::style::Style;
 use crate::token::{Tok, TokKind, lex};
 
-/// Nesting depth bound: groups, arguments, `\left…\right`, environments,
-/// and islands all descend one level. Real formulas in the G0-4 corpus stay
+/// Nesting depth bound ([`BudgetKind::Nesting`]): groups, arguments,
+/// `\left…\right`, environments, and islands all descend one level. Real formulas in the G0-4 corpus stay
 /// in single digits; the bound exists so hostile input errors cleanly
 /// instead of exhausting the stack. Measured 2026-10-26 in an unoptimized
 /// build, where the parser's frames are largest: the chaos suite's
@@ -34,18 +34,45 @@ use crate::token::{Tok, TokKind, lex};
 /// `math_control_word`, `command_node`) belongs in a function of its own;
 /// before `command_node`'s largest arms moved out, the same inputs needed
 /// more than 2.06 MB.
+///
+/// Layout recurses at the same depth and follows the same rule
+/// (`Engine::lay_node`, `line`, `environment`). Measured 2026-10-29 per
+/// construct at this bound (`\left(`, `matrix`, `\sqrt`, `\frac`,
+/// `\overbrace`, nested `\text{$…$}`): parse plus layout needs at most
+/// 1.5 MiB unoptimized. Before `lay_node`'s arms moved out, 64 nested
+/// `matrix` environments needed 3.5 MiB unoptimized (0.65 MiB optimized)
+/// and aborted a 2 MiB thread (franken_manim fm-fmd-math-fuzz-budgets-k8fe).
+/// `tests/chaos.rs` lays out every construct at the bound on a test thread.
 pub(crate) const MAX_DEPTH: usize = 64;
 
 /// The shared empty macro set (the plain entry points still run the
 /// expansion pass, so inline `\newcommand` definitions work everywhere).
-fn empty_macros() -> &'static crate::macros::MacroSet {
+pub(crate) fn empty_macros() -> &'static crate::macros::MacroSet {
     static EMPTY: std::sync::OnceLock<crate::macros::MacroSet> = std::sync::OnceLock::new();
     EMPTY.get_or_init(crate::macros::MacroSet::new)
 }
 
+/// The input budget ([`BudgetKind::InputBytes`]): a string longer than
+/// `max_input_bytes` is refused before it is lexed, pointing at the last
+/// character boundary inside the budget.
+fn check_input_budget(source: &str, max_input_bytes: usize) -> Result<(), MathError> {
+    if source.len() <= max_input_bytes {
+        return Ok(());
+    }
+    let mut at = max_input_bytes;
+    while !source.is_char_boundary(at) {
+        at -= 1;
+    }
+    Err(MathError::Budget {
+        kind: BudgetKind::InputBytes,
+        limit: max_input_bytes,
+        at,
+    })
+}
+
 /// Parse a whole source string as mathematics.
 pub(crate) fn parse_math(source: &str) -> Result<Node, MathError> {
-    parse_math_with(source, empty_macros())
+    parse_math_with(source, empty_macros(), Budgets::DEFAULT.max_input_bytes)
 }
 
 /// Parse mathematics against a macro set (a preamble pack and/or caller
@@ -53,7 +80,9 @@ pub(crate) fn parse_math(source: &str) -> Result<Node, MathError> {
 pub(crate) fn parse_math_with<'s>(
     source: &'s str,
     macros: &'s crate::macros::MacroSet,
+    max_input_bytes: usize,
 ) -> Result<Node, MathError> {
+    check_input_budget(source, max_input_bytes)?;
     let toks = crate::macros::expand(lex(source), macros, source.len())?;
     let mut parser = Parser::with_tokens(source, toks);
     parser.ligatures = macros.ligatures();
@@ -92,14 +121,16 @@ pub(crate) fn parse_math_with<'s>(
 
 /// Parse a whole source string under the TexText contract.
 pub(crate) fn parse_text_mode(source: &str) -> Result<Node, MathError> {
-    parse_text_mode_with(source, empty_macros())
+    parse_text_mode_with(source, empty_macros(), Budgets::DEFAULT.max_input_bytes)
 }
 
 /// Parse a TexText-contract string against a macro set.
 pub(crate) fn parse_text_mode_with<'s>(
     source: &'s str,
     macros: &'s crate::macros::MacroSet,
+    max_input_bytes: usize,
 ) -> Result<Node, MathError> {
+    check_input_budget(source, max_input_bytes)?;
     let toks = crate::macros::expand(lex(source), macros, source.len())?;
     let mut parser = Parser::with_tokens(source, toks);
     parser.ligatures = macros.ligatures();
@@ -252,8 +283,9 @@ impl<'s> Parser<'s> {
         f: impl FnOnce(&mut Self) -> Result<T, MathError>,
     ) -> Result<T, MathError> {
         if self.depth >= MAX_DEPTH {
-            return Err(MathError::Malformed {
-                what: format!("nesting exceeds the depth limit ({MAX_DEPTH})"),
+            return Err(MathError::Budget {
+                kind: BudgetKind::Nesting,
+                limit: MAX_DEPTH,
                 at,
             });
         }

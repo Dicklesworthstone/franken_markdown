@@ -410,3 +410,51 @@ mod budgets {
         );
     }
 }
+
+/// physics' delimited arguments that never close, nested: each was parsed,
+/// found unclosed, and re-parsed as plain material by every enclosing
+/// argument, so time doubled per level (franken_manim
+/// fm-fmd-math-fuzz-budgets-k8fe: the `tex_layout` campaign's 564-byte input
+/// took 0.48 s; sixteen `\ln(` took 19 ms, so sixty-four would never end).
+#[test]
+fn nested_unclosed_physics_arguments_parse_in_bounded_time() {
+    let pack = fmd_math::MacroSet::pack("fmd-math/pack/default").unwrap();
+    assert!(pack.physics());
+    for opener in [r"\ln(", r"\cos[2](", r"\cos[", r"\exp["] {
+        let source = format!("{}x", opener.repeat(64));
+        let start = std::time::Instant::now();
+        let _ = fmd_math::parse_with_macros(&source, &pack);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "{opener} x64: {elapsed:?}"
+        );
+    }
+    // An argument that closes is still one (an auto-sized `\left(…\right)`
+    // pair), however many failed openers enclose it; one that does not is
+    // plain material.
+    let pairs = |source: &str| {
+        let node = fmd_math::parse_with_macros(source, &pack).unwrap();
+        format!("{node:?}").matches("LeftRight").count()
+    };
+    assert_eq!(pairs(r"\ln(\ln(x))"), 2);
+    assert_eq!(pairs(r"\ln(\ln(x)"), 1);
+    assert_eq!(pairs(&format!("{}\\ln(x)", r"\ln(".repeat(30))), 1);
+    assert_eq!(pairs(&format!("{}x", r"\ln(".repeat(30))), 0);
+    // Each attempted argument nests a level, so 64 unclosed openers fill the
+    // nesting bound and a 65th passes it: the named budget error, not a
+    // depth-dependent fallback.
+    assert!(fmd_math::parse_with_macros(&format!("{}x", r"\ln(".repeat(64)), &pack).is_ok());
+    let err = fmd_math::parse_with_macros(&format!("{}x", r"\ln(".repeat(65)), &pack).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            fmd_math::MathError::Budget {
+                kind: fmd_math::BudgetKind::Nesting,
+                limit: 64,
+                ..
+            }
+        ),
+        "{err}"
+    );
+}

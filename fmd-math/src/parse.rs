@@ -231,11 +231,21 @@ struct Parser<'s> {
     /// parsed. xparse consumes them, so `\argclose` follows the argument
     /// instead and amsmath's dots see no closing delimiter.
     argument_closes: Vec<usize>,
+    /// Per token: a physics argument opening there was parsed and did not
+    /// close. A retry reads the same tokens and fails the same way, so it is
+    /// not repeated: without this, each unclosed `\ln(` re-parsed every
+    /// argument nested in it, and parse time doubled per level (franken_manim
+    /// fm-fmd-math-fuzz-budgets-k8fe: sixteen of them took 19 ms, a 564-byte
+    /// fuzz input 0.48 s).
+    unclosed_arguments: Vec<bool>,
+    /// [`Self::matching_close`]'s answers, built on first use.
+    close_table: std::cell::OnceCell<Vec<Option<usize>>>,
 }
 
 impl<'s> Parser<'s> {
     /// A parser over an already-lexed (and macro-expanded) token stream.
     fn with_tokens(src: &'s str, toks: Vec<Tok<'s>>) -> Self {
+        let unclosed_arguments = vec![false; toks.len()];
         Self {
             src,
             toks,
@@ -244,6 +254,8 @@ impl<'s> Parser<'s> {
             ligatures: true,
             physics: false,
             argument_closes: Vec::new(),
+            unclosed_arguments,
+            close_table: std::cell::OnceCell::new(),
         }
     }
 
@@ -877,12 +889,13 @@ impl<'s> Parser<'s> {
             self.pos = start;
             return Ok(None);
         };
-        if c != open {
+        let open_index = self.pos;
+        if c != open || self.unclosed_arguments[open_index] {
             self.pos = start;
             return Ok(None);
         }
         self.pos += 1;
-        let close = self.matching_close(open);
+        let close = self.matching_close();
         self.argument_closes.extend(close);
         let parsed = self.descend(open_span.start, |p| {
             p.math_list(Stops {
@@ -894,13 +907,19 @@ impl<'s> Parser<'s> {
         if close.is_some() {
             self.argument_closes.pop();
         }
-        // Anything else, a refusal included, is plain material that the
-        // ordinary list will parse (and refuse) itself.
+        // The nesting budget is the input's refusal, not this argument's: a
+        // retry one level shallower could fit, so falling back would make
+        // the outcome depend on depth. Anything else, a refusal included, is
+        // plain material that the ordinary list will parse (and refuse)
+        // itself; that outcome depends only on the tokens from here on, so
+        // it is remembered.
         match parsed {
             Ok((body, Reason::BracketClose(close) | Reason::ParenClose(close))) => {
                 Ok(Some((body, open_span.union(close))))
             }
+            Err(error @ MathError::Budget { .. }) => Err(error),
             Ok(_) | Err(_) => {
+                self.unclosed_arguments[open_index] = true;
                 self.pos = start;
                 Ok(None)
             }
@@ -908,25 +927,15 @@ impl<'s> Parser<'s> {
     }
 
     /// The token index of the delimiter closing a physics argument whose
-    /// `open` was just consumed, counted as xparse counts: outside braces, a
+    /// opener was just consumed, counted as xparse counts: outside braces, a
     /// `(` nests a `(`-argument and the first `]` closes a `[`-argument.
-    fn matching_close(&self, open: char) -> Option<usize> {
-        let close = if open == '(' { ')' } else { ']' };
-        let (mut braces, mut nested) = (0_usize, 0_usize);
-        for (index, tok) in self.toks.iter().enumerate().skip(self.pos) {
-            match tok.kind {
-                TokKind::BeginGroup => braces += 1,
-                TokKind::EndGroup if braces == 0 => return None,
-                TokKind::EndGroup => braces -= 1,
-                TokKind::Char(c) if braces == 0 && c == close && nested == 0 => {
-                    return Some(index);
-                }
-                TokKind::Char(c) if braces == 0 && c == close => nested -= 1,
-                TokKind::Char('(') if braces == 0 && open == '(' => nested += 1,
-                _ => {}
-            }
-        }
-        None
+    /// [`argument_close_table`] answers it for every opener in one pass, so
+    /// a list of n openers costs O(n) rather than a scan to the end each.
+    fn matching_close(&self) -> Option<usize> {
+        let table = self
+            .close_table
+            .get_or_init(|| argument_close_table(&self.toks));
+        table.get(self.pos.checked_sub(1)?).copied().flatten()
     }
 
     /// A control symbol in math mode. `Ok(None)` never occurs today; the
@@ -2766,6 +2775,54 @@ fn text_ligatures(run: &str, spans: &[Span], ligatures: bool) -> (String, Vec<Sp
     (text, out_spans)
 }
 
+/// For every `(` and `[` token, the index of the delimiter that would close a
+/// physics argument opening there, as xparse counts: within one brace group,
+/// `(` and `)` nest and the first `]` closes every `[` before it. A group's
+/// end leaves its openers unclosed, as does the end of input.
+fn argument_close_table(toks: &[Tok<'_>]) -> Vec<Option<usize>> {
+    #[derive(Default)]
+    struct Group {
+        parens: Vec<usize>,
+        brackets: Vec<usize>,
+    }
+    let mut table = vec![None; toks.len()];
+    let mut groups = vec![Group::default()];
+    for (index, tok) in toks.iter().enumerate() {
+        match tok.kind {
+            TokKind::BeginGroup => groups.push(Group::default()),
+            TokKind::EndGroup => {
+                groups.pop();
+                if groups.is_empty() {
+                    // An unmatched `}` ends the outermost list's openers too.
+                    groups.push(Group::default());
+                }
+            }
+            TokKind::Char(c) => {
+                let Some(group) = groups.last_mut() else {
+                    continue;
+                };
+                match c {
+                    '(' => group.parens.push(index),
+                    '[' => group.brackets.push(index),
+                    ')' => {
+                        if let Some(open) = group.parens.pop() {
+                            table[open] = Some(index);
+                        }
+                    }
+                    ']' => {
+                        for open in group.brackets.drain(..) {
+                            table[open] = Some(index);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    table
+}
+
 /// The current list was closed by the wrong closer.
 fn unexpected_close(reason: &Reason, opener: char, open: Span) -> MathError {
     MathError::Malformed {
@@ -2781,4 +2838,64 @@ fn unexpected_close(reason: &Reason, opener: char, open: Span) -> MathError {
 enum ControlFlow {
     Continue,
     Stop(Reason),
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    /// The per-opener scan [`argument_close_table`] replaced (franken_manim
+    /// fm-fmd-math-fuzz-budgets-k8fe), kept as the table's reference.
+    fn close_by_scan(toks: &[Tok<'_>], after: usize, open: char) -> Option<usize> {
+        let close = if open == '(' { ')' } else { ']' };
+        let (mut braces, mut nested) = (0_usize, 0_usize);
+        for (index, tok) in toks.iter().enumerate().skip(after) {
+            match tok.kind {
+                TokKind::BeginGroup => braces += 1,
+                TokKind::EndGroup if braces == 0 => return None,
+                TokKind::EndGroup => braces -= 1,
+                TokKind::Char(c) if braces == 0 && c == close && nested == 0 => {
+                    return Some(index);
+                }
+                TokKind::Char(c) if braces == 0 && c == close => nested -= 1,
+                TokKind::Char('(') if braces == 0 && open == '(' => nested += 1,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_close_table_agrees_with_the_scan() {
+        let alphabet = ['(', ')', '[', ']', '{', '}', 'x', ' '];
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut openers = 0;
+        for _ in 0..4_000 {
+            let len = usize::try_from(next() % 40).unwrap();
+            let source: String = (0..len)
+                .map(|_| alphabet[usize::try_from(next() % 8).unwrap()])
+                .collect();
+            let toks = lex(&source);
+            let table = argument_close_table(&toks);
+            for (index, tok) in toks.iter().enumerate() {
+                if let TokKind::Char(open @ ('(' | '[')) = tok.kind {
+                    openers += 1;
+                    assert_eq!(
+                        table[index],
+                        close_by_scan(&toks, index + 1, open),
+                        "{source:?}, opener at token {index}"
+                    );
+                }
+            }
+        }
+        assert!(openers > 10_000, "{openers} openers checked");
+    }
 }

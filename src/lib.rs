@@ -100,6 +100,7 @@ pub mod search_index;
 pub mod svg;
 mod table_format;
 pub mod theme;
+mod toc;
 pub mod transclude;
 pub mod wasm;
 pub mod woff1;

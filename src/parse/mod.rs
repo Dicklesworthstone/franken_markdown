@@ -8027,9 +8027,10 @@ mod inline_helper_branch_tests {
     use super::{
         INLINE_PARSE_CACHE_MAX_ENTRIES, INLINE_PARSE_CACHE_MAX_KEY_BYTES,
         INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES, INLINE_PARSE_CACHE_MAX_TRACKED_HASHES,
-        INLINE_PARSE_CACHE_MIN_BYTES, InlineParseCache, collect_inline_chars_from_text,
-        inline_cache_size_allows, inline_cache_text_hash, inline_http_scheme_before_colon,
-        is_email_autolink, parse_angle_link_destination, parse_bare_url_autolink, parse_inlines,
+        INLINE_PARSE_CACHE_MIN_BYTES, INLINE_PARSE_WORK_MULTIPLIER, InlineParseCache,
+        InlineWorkBudget, collect_inline_chars_from_text, inline_cache_size_allows,
+        inline_cache_text_hash, inline_http_scheme_before_colon, is_email_autolink,
+        parse_angle_link_destination, parse_bare_url_autolink, parse_inlines,
         reference_collector_ordered_marker_candidate,
     };
     use crate::ast::Inline;
@@ -8071,7 +8072,8 @@ mod inline_helper_branch_tests {
             remaining: url_chars.len() * INLINE_PARSE_WORK_MULTIPLIER,
             ..InlineWorkBudget::default()
         };
-        let found = parse_bare_url_autolink(&url_chars, 4, &mut work).expect("bare url before angle");
+        let found =
+            parse_bare_url_autolink(&url_chars, 4, &mut work).expect("bare url before angle");
         assert_eq!(found.0, "http://example.test");
         assert_eq!(found.2, "http://example.test".len() + 4);
     }

@@ -33,6 +33,7 @@ use crate::layout::{
 };
 use crate::text::{Font, Kerning, Ligatures};
 use crate::theme::{Theme, ThemeColors};
+use crate::toc::marker_depth as toc_marker_depth;
 use crate::{FontAssetSlot, FontAssets, PdfOptions, RenderError};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -3233,33 +3234,6 @@ struct PdfTocEntry {
     id: String,
 }
 
-fn toc_marker_depth(inlines: &[Inline]) -> Option<Option<u8>> {
-    let [Inline::Text(text)] = inlines else {
-        return None;
-    };
-    let trimmed = text.trim();
-    let inner = trimmed
-        .strip_prefix("[[")
-        .and_then(|s| s.strip_suffix("]]"))
-        .or_else(|| trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')))?
-        .trim_start_matches('_')
-        .trim_end_matches('_')
-        .to_ascii_lowercase();
-    let inner = inner.strip_prefix("toc")?;
-    if inner.is_empty() {
-        return Some(None);
-    }
-    let depth = inner.strip_prefix(':')?.trim().parse::<u8>().ok()?;
-    (depth >= 1).then_some(Some(depth))
-}
-
-fn has_toc_marker(blocks: &[Block]) -> bool {
-    blocks.iter().any(|b| match b {
-        Block::Paragraph(inlines) => toc_marker_depth(inlines).is_some(),
-        _ => false,
-    })
-}
-
 fn push_inlines_to_plain_text(inlines: &[Inline], out: &mut String) {
     for inl in inlines {
         match inl {
@@ -3489,7 +3463,8 @@ fn layout_with_pagination_report(
     page: PageGeom,
 ) -> (Vec<Line>, PdfParagraphVariantReport) {
     inline_image::prepare(blocks, &opts.image_assets, faces);
-    let has_toc = opts.toc || has_toc_marker(blocks);
+    let markers = crate::toc::markers(blocks);
+    let has_toc = opts.toc || markers.any();
     if !has_toc {
         let type_scale = opts.type_scale();
         let mut cx = LayoutCx {
@@ -3514,6 +3489,7 @@ fn layout_with_pagination_report(
             code_highlight_spans: Vec::new(),
             links: LinkIntern::default(),
             toc_entries: Vec::new(),
+            automatic_toc: false,
             toc_page_map: BTreeMap::new(),
         };
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
@@ -3579,9 +3555,11 @@ fn layout_with_pagination_report(
         code_highlight_spans: Vec::new(),
         links: LinkIntern::default(),
         toc_entries,
+        automatic_toc: false,
         toc_page_map: page_map.clone(),
     };
     for _iter in 0..5 {
+        cx.automatic_toc = opts.toc && !markers.body;
         cx.pending_page_break = false;
         cx.paragraph_candidates.clear();
         cx.list_stack.clear();
@@ -3664,6 +3642,9 @@ fn seg_page_note(seg: &Seg) -> Option<u32> {
 /// Footnote notes: page-bottom placement for documents prepared by
 /// `footnotes::for_pdf_paged`, the trailing notes section otherwise.
 fn layout_pdf_notes(blocks: &[Block], out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    // Note headings and the generated Notes heading are outside the body
+    // outline; they cannot introduce an automatic document TOC.
+    cx.automatic_toc = false;
     let defs = collect_pdf_footnote_defs(blocks);
     if !defs.is_empty() && defs.iter().all(|(id, _)| page_note_number(id).is_some()) {
         layout_pdf_page_notes(&defs, out, cx);
@@ -4530,6 +4511,9 @@ struct LayoutCx<'a> {
     /// so every index outlives every consumer that resolves it.
     links: LinkIntern,
     toc_entries: Vec<PdfTocEntry>,
+    /// Consumed by the first body heading, including headings inside lists or
+    /// quotes. Reset once per document layout pass, never per container.
+    automatic_toc: bool,
     toc_page_map: BTreeMap<String, usize>,
 }
 
@@ -4578,18 +4562,7 @@ struct FlowSpec {
 }
 
 fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
-    let mut injected_toc = false;
     for block in blocks {
-        if cx.opts.toc
-            && !injected_toc
-            && matches!(block, Block::Heading { .. })
-            && !has_toc_marker(blocks)
-        {
-            injected_toc = true;
-            let before_toc = out.len();
-            layout_pdf_toc(cx.opts.toc_depth, indent, out, cx);
-            text_positioning::stamp_lines(&mut out[before_toc..], cx.faces);
-        }
         let before = out.len();
         layout_block(block, indent, out, cx);
         text_positioning::stamp_lines(&mut out[before..], cx.faces);
@@ -4606,6 +4579,9 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
     match block {
         Block::FootnoteDefinition { .. } => {}
         Block::Heading { level, inlines } => {
+            if std::mem::take(&mut cx.automatic_toc) {
+                layout_pdf_toc(cx.opts.toc_depth, indent, out, cx);
+            }
             let idx = (*level as usize).saturating_sub(1).min(5);
             let size = cx.type_scale.h[idx];
             gap(out, heading_gap_before(*level));
@@ -18642,7 +18618,34 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
         if let Some(top) = cx.list_stack.last_mut() {
             top.item = group;
         }
-        if let [Block::Paragraph(inlines)] = leading
+        let leading_toc = match leading {
+            [Block::Paragraph(inlines)] => toc_marker_depth(inlines),
+            _ => None,
+        };
+        if let Some(max_depth) = leading_toc {
+            layout_pdf_toc(max_depth.or(cx.opts.toc_depth), content_indent, out, cx);
+            if let Some(first) = out.get_mut(item_start_line) {
+                first.segs.insert(0, marker_seg);
+            } else {
+                // A depth filter can leave an empty TOC; keep the source list
+                // marker just as for an ordinary empty item.
+                layout_prefixed_inlines(
+                    Vec::new(),
+                    marker_seg,
+                    PrefixSpec {
+                        content_indent,
+                        size,
+                        gap_after: 2.0,
+                        flow: FlowSpec {
+                            group,
+                            kind: FlowKind::Paragraph,
+                        },
+                    },
+                    out,
+                    cx,
+                );
+            }
+        } else if let [Block::Paragraph(inlines)] = leading
             && layout_standalone_image(inlines, content_indent, out, cx)
         {
             // Keep the marker and leading figure on one indivisible row. The
@@ -34366,6 +34369,7 @@ mod pdf_writer_tests {
             code_highlight_spans: Vec::new(),
             links: LinkIntern::default(),
             toc_entries: Vec::new(),
+            automatic_toc: false,
             toc_page_map: std::collections::BTreeMap::new(),
         }
     }
@@ -41068,6 +41072,7 @@ mod table_wrap_tests {
             code_highlight_spans: Vec::new(),
             links: LinkIntern::default(),
             toc_entries: Vec::new(),
+            automatic_toc: false,
             toc_page_map: std::collections::BTreeMap::new(),
         };
         let empty_item = || ListItem {
@@ -43085,6 +43090,7 @@ mod coverage_gap_tests {
             code_highlight_spans: Vec::new(),
             links: LinkIntern::default(),
             toc_entries: Vec::new(),
+            automatic_toc: false,
             toc_page_map: BTreeMap::new(),
         }
     }

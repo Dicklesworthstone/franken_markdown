@@ -52,6 +52,7 @@ fn unselected(
         code_highlight_spans: Vec::new(),
         links: LinkIntern::default(),
         toc_entries: Vec::new(),
+        automatic_toc: false,
         toc_page_map: BTreeMap::new(),
     };
     let mut lines = Vec::new();

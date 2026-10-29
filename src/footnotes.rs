@@ -77,7 +77,7 @@ fn endnotes_for_pdf(doc: &Document, paged: bool) -> Cow<'_, Document> {
             let mut body = rewrite_blocks(notes.definitions[index], &notes, &numbering);
             let label = superscript(numbering.numbers[index]);
             match body.first_mut() {
-                Some(Block::Paragraph(inlines)) => {
+                Some(Block::Paragraph(inlines)) if crate::toc::marker_depth(inlines).is_none() => {
                     inlines.insert(0, Inline::Text(format!("{label} ")));
                 }
                 _ => {
@@ -96,7 +96,7 @@ fn endnotes_for_pdf(doc: &Document, paged: bool) -> Cow<'_, Document> {
             let mut body = rewrite_blocks(notes.definitions[index], &notes, &numbering);
             let label = superscript(number);
             match body.first_mut() {
-                Some(Block::Paragraph(inlines)) => {
+                Some(Block::Paragraph(inlines)) if crate::toc::marker_depth(inlines).is_none() => {
                     inlines.insert(0, Inline::Text(format!("{label} ")));
                 }
                 _ => body.insert(0, Block::Paragraph(vec![Inline::Text(label)])),

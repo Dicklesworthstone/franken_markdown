@@ -371,6 +371,165 @@ fn painted_runs(objects: &Objects<'_>) -> Vec<PaintedRun> {
     runs
 }
 
+/// Match painted titles to actual clickable rectangles, then independently
+/// resolve their page numbers through the PDF's page tree and destinations.
+fn assert_one_toc_row_per_heading(objects: &Objects<'_>, titles: &[&str]) {
+    let (_, headings) = outline(objects);
+    let runs = painted_runs(objects);
+    let pages = objects.pages();
+    for title in titles {
+        let heading = headings
+            .iter()
+            .find(|heading| heading.title == *title)
+            .unwrap();
+        let toc: Vec<_> = runs
+            .iter()
+            .filter(|run| {
+                run.text == *title
+                    && references(objects.dictionary(run.page), "/Annots [")
+                        .into_iter()
+                        .any(|id| {
+                            let dict = objects.dictionary(id);
+                            if destination(dict) != Some(heading.destination) {
+                                return false;
+                            }
+                            let rect: Vec<f64> = dict
+                                .split_once("/Rect [")
+                                .unwrap()
+                                .1
+                                .split_once(']')
+                                .unwrap()
+                                .0
+                                .split_whitespace()
+                                .map(|value| value.parse().unwrap())
+                                .collect();
+                            run.x >= rect[0] - 0.02
+                                && run.x <= rect[2] + 0.02
+                                && run.y >= rect[1]
+                                && run.y <= rect[3]
+                        })
+            })
+            .collect();
+        assert_eq!(toc.len(), 1, "one document TOC entry for {title}");
+        let printed_page = runs
+            .iter()
+            .filter(|run| run.page == toc[0].page && (run.y - toc[0].y).abs() < 0.01)
+            .max_by(|a, b| a.x.total_cmp(&b.x))
+            .unwrap();
+        let actual_page = pages
+            .iter()
+            .position(|&page| page == heading.destination.page)
+            .unwrap()
+            + 1;
+        assert_eq!(
+            printed_page.text,
+            actual_page.to_string(),
+            "TOC page for {title}"
+        );
+    }
+}
+
+#[test]
+fn automatic_toc_is_owned_once_across_quotes_lists_and_page_notes() {
+    let source = "# Main\n\n> ## Quoted\n> Quoted text.\n\n- ### Listed\n\n## End\n\nCitation.[^n]\n\n[^n]: ### Notehead\n\n    Note body.\n";
+    for optimal_pagination in [false, true] {
+        let options = PdfOptions {
+            toc: true,
+            optimal_pagination,
+            ..PdfOptions::default()
+        };
+        let pdf = render_pdf(source, &options).unwrap();
+        let objects = Objects::new(&pdf);
+        assert_one_toc_row_per_heading(&objects, &["Main", "Quoted", "Listed", "End"]);
+        let runs = painted_runs(&objects);
+        assert_eq!(runs.iter().filter(|run| run.text == "Notehead").count(), 1);
+        assert_eq!(
+            pdf,
+            render_pdf_emitted(
+                source,
+                &options,
+                PdfEmitOptions {
+                    emission: PdfPageEmission::Monolithic,
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        );
+    }
+}
+
+#[test]
+fn nested_toc_markers_render_at_their_requested_location_with_both_flag_states() {
+    for marker in [
+        "> [[TOC:2]]\n",
+        "- [[TOC:2]]\n",
+        "- Intro.\n\n  [[TOC:2]]\n",
+        "> - [[TOC:2]]\n",
+    ] {
+        let source = format!("# Main\n\n{marker}\n## End\n\n### Hidden\n");
+        for toc in [false, true] {
+            let pdf = render_pdf(
+                &source,
+                &PdfOptions {
+                    toc,
+                    ..PdfOptions::default()
+                },
+            )
+            .unwrap();
+            let objects = Objects::new(&pdf);
+            assert_one_toc_row_per_heading(&objects, &["Main", "End"]);
+            let runs = painted_runs(&objects);
+            assert_eq!(runs.iter().filter(|run| run.text == "Hidden").count(), 1);
+            assert!(!runs.iter().any(|run| run.text.contains("TOC")));
+        }
+    }
+}
+
+#[test]
+fn automatic_toc_starts_at_a_nested_first_heading_and_keeps_default_placement_bytes() {
+    for first in ["> ## First\n> Body.\n", "- ## First\n\n  Body.\n"] {
+        let source = format!("{first}\n# Last\n");
+        let pdf = render_pdf(
+            &source,
+            &PdfOptions {
+                toc: true,
+                ..PdfOptions::default()
+            },
+        )
+        .unwrap();
+        assert_one_toc_row_per_heading(&Objects::new(&pdf), &["First", "Last"]);
+    }
+    let ordinary = "# Main\n\nBody.\n\n## End\n";
+    let automatic = render_pdf(
+        ordinary,
+        &PdfOptions {
+            toc: true,
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    let explicit = render_pdf(&format!("[[TOC]]\n\n{ordinary}"), &PdfOptions::default()).unwrap();
+    assert_eq!(
+        automatic, explicit,
+        "ordinary automatic placement remains the explicit front TOC"
+    );
+}
+
+#[test]
+fn a_leading_note_marker_survives_numbering_and_uses_body_destinations() {
+    let source = "# Main\n\nCitation.[^n]\n\n[^n]: [[TOC:1]]\n\n    Note body.\n";
+    let pdf = render_pdf(source, &PdfOptions::default()).unwrap();
+    let objects = Objects::new(&pdf);
+    assert_one_toc_row_per_heading(&objects, &["Main"]);
+    let runs = painted_runs(&objects);
+    let painted: String = runs.iter().map(|run| run.text.as_str()).collect();
+    assert!(painted.contains('¹'), "the note label remains visible");
+    assert!(
+        !painted.contains("TOC"),
+        "numbering must not destroy marker recognition"
+    );
+}
+
 #[test]
 fn bookmarks_preserve_real_heading_hierarchy_and_skipped_levels() {
     let source = "#### Preface\n\n# Alpha\n\n### Deep\n\n###### Leaf\n\n## Middle\n\n#### Detail\n\n# Beta\n\n## Child\n";

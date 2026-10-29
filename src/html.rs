@@ -12,6 +12,7 @@ use crate::fonts::{self, FontStyle};
 use crate::highlight::{Span, highlight_supported_into};
 use crate::text::Font;
 use crate::theme::{DarkModePolicy, Theme, ThemeColors};
+use crate::toc::marker_depth as toc_marker_depth;
 use crate::{FontAssetSlot, FontAssets, HtmlOptions, instance_host_font};
 
 mod financial_tables;
@@ -45,9 +46,11 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     html.push_str("</title>\n<style>\n");
     html.push_str(&css);
     html.push_str("</style>\n</head>\n<body>\n<main class=\"fmd\">\n");
-    let needs_toc = opts.toc || has_toc_marker(&doc.blocks);
+    let markers = crate::toc::markers(&doc.blocks);
+    let needs_toc = opts.toc || markers.any();
     let mut state = RenderState {
         root_blocks: &doc.blocks,
+        automatic_toc: opts.toc && !markers.body,
         toc_entries: if needs_toc {
             collect_toc_entries(&doc.blocks)
         } else {
@@ -65,9 +68,11 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
 #[must_use]
 pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
     let mut html = String::with_capacity(initial_body_capacity(blocks.len()));
-    let needs_toc = opts.toc || has_toc_marker(blocks);
+    let markers = crate::toc::markers(blocks);
+    let needs_toc = opts.toc || markers.any();
     let mut state = RenderState {
         root_blocks: blocks,
+        automatic_toc: opts.toc && !markers.body,
         toc_entries: if needs_toc {
             collect_toc_entries(blocks)
         } else {
@@ -87,13 +92,12 @@ pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
 pub(crate) struct FragmentRenderer<'a> {
     opts: &'a HtmlOptions,
     state: RenderState<'a>,
-    automatic_toc: bool,
 }
 
 impl<'a> FragmentRenderer<'a> {
     pub(crate) fn new(blocks: &'a [Block], opts: &'a HtmlOptions, prefix: &'a str) -> Self {
-        let marker = has_toc_marker(blocks);
-        let mut entries = if opts.toc || marker {
+        let markers = crate::toc::markers(blocks);
+        let mut entries = if opts.toc || markers.any() {
             collect_toc_entries(blocks)
         } else {
             Vec::new()
@@ -107,27 +111,19 @@ impl<'a> FragmentRenderer<'a> {
                 root_blocks: blocks,
                 id_prefix: prefix,
                 toc_entries: entries,
+                automatic_toc: opts.toc && !markers.body,
                 ..RenderState::default()
             },
-            automatic_toc: opts.toc && !marker,
-        }
-    }
-
-    fn before_block(&mut self, block: &Block, out: &mut String) {
-        if self.automatic_toc && matches!(block, Block::Heading { .. }) {
-            self.automatic_toc = false;
-            push_toc_nav(&self.state.toc_entries, self.opts.toc_depth, out);
         }
     }
 
     pub(crate) fn block(&mut self, block: &Block, out: &mut String) {
-        self.before_block(block, out);
         render_block(block, out, self.opts, &mut self.state);
     }
 
     pub(crate) fn start_inline_block(&mut self, block: &Block, out: &mut String) {
-        self.before_block(block, out);
         if let Block::Heading { level, inlines } = block {
+            self.state.before_heading(self.opts, out);
             out.push_str("<h");
             push_u64(out, u64::from(*level));
             out.push_str(" id=\"");
@@ -323,6 +319,9 @@ struct RenderState<'a> {
     /// document order — used by the TOC marker. Ids are produced by the same
     /// fresh-state walk the heading renderer performs, so they match exactly.
     toc_entries: Vec<TocEntry>,
+    /// The automatic TOC is consumed once for the whole body, including
+    /// recursive containers and separately rendered diff fragments.
+    automatic_toc: bool,
     /// Reused by code block highlighting to avoid one Vec allocation per fence.
     highlight_spans: Vec<Span>,
     /// Bounded per-render cache for repeated non-consecutive code blocks.
@@ -373,6 +372,12 @@ struct UrlCacheEntry {
 }
 
 impl<'a> RenderState<'a> {
+    fn before_heading(&mut self, opts: &HtmlOptions, out: &mut String) {
+        if std::mem::take(&mut self.automatic_toc) {
+            push_toc_nav(&self.toc_entries, opts.toc_depth, out);
+        }
+    }
+
     /// Collect footnote definitions on first need. The collection is read
     /// only for ids a footnote reference mentions (the `has_def` check) or
     /// by the trailing notes section, which requires a reference — so
@@ -551,31 +556,15 @@ impl<'a> RenderState<'a> {
     }
 }
 
-fn has_toc_marker(blocks: &[Block]) -> bool {
-    blocks.iter().any(|b| match b {
-        Block::Paragraph(inlines) => toc_marker_depth(inlines).is_some(),
-        _ => false,
-    })
-}
-
 fn render_blocks<'a, 'b>(
     blocks: &'b [Block],
     out: &mut String,
     opts: &HtmlOptions,
     state: &mut RenderState<'a>,
 ) {
-    let mut injected_toc = false;
     let saved_base = state.raw_html_base;
     state.raw_html_base = state.raw_html.depth();
     for block in blocks {
-        if opts.toc
-            && !injected_toc
-            && matches!(block, Block::Heading { .. })
-            && !has_toc_marker(blocks)
-        {
-            injected_toc = true;
-            push_toc_nav(&state.toc_entries, opts.toc_depth, out);
-        }
         render_block(block, out, opts, state);
     }
     // Raw HTML may span blocks of one container (a centered `<div>` around
@@ -668,6 +657,7 @@ fn render_block<'a, 'b>(
             out.push_str("<div class=\"fmd-pagebreak\" style=\"break-after: page;\"></div>\n");
         }
         Block::Heading { level, inlines } => {
+            state.before_heading(opts, out);
             out.push_str("<h");
             push_u64(out, u64::from(*level));
             out.push_str(" id=\"");
@@ -834,7 +824,7 @@ fn render_list<'a, 'b>(
         // separated by a newline so the following block opens on its own line.
         for (idx, block) in item.blocks.iter().enumerate() {
             match block {
-                Block::Paragraph(inlines) if list.tight => {
+                Block::Paragraph(inlines) if list.tight && toc_marker_depth(inlines).is_none() => {
                     render_inlines(inlines, out, opts, state);
                     if idx + 1 < item.blocks.len() {
                         out.push('\n');
@@ -1514,33 +1504,6 @@ fn collect_toc_entries(blocks: &[Block]) -> Vec<TocEntry> {
     entries
 }
 
-/// Detect a TOC marker paragraph: a single text inline matching
-/// `[[TOC]]` / `[TOC]` / `[[_TOC_]]` (case-insensitive), with an optional
-/// `:N` max-depth suffix on the bracketed form (`[[TOC:2]]` = depth 2+).
-/// Returns the maximum heading level to include, counting relative to the
-/// shallowest heading present (None = not a marker).
-fn toc_marker_depth(inlines: &[Inline]) -> Option<Option<u8>> {
-    let [Inline::Text(text)] = inlines else {
-        return None;
-    };
-    let trimmed = text.trim();
-    // Try `[[…]]` first, then `[…]`. A `?` on `strip_prefix("[[")` would
-    // return None for `[TOC]` and never reach the single-bracket arm.
-    let inner = trimmed
-        .strip_prefix("[[")
-        .and_then(|s| s.strip_suffix("]]"))
-        .or_else(|| trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')))?
-        .trim_start_matches('_')
-        .trim_end_matches('_')
-        .to_ascii_lowercase();
-    let inner = inner.strip_prefix("toc")?;
-    if inner.is_empty() {
-        return Some(None);
-    }
-    let depth = inner.strip_prefix(':')?.trim().parse::<u8>().ok()?;
-    (depth >= 1).then_some(Some(depth))
-}
-
 /// Nested-list TOC emission from pre-computed entries.
 fn push_toc_nav(entries: &[TocEntry], max_depth: Option<u8>, out: &mut String) {
     let filtered: Vec<&TocEntry> = entries
@@ -1634,6 +1597,9 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
     if state.footnote_order.is_empty() {
         return;
     }
+    // Definitions are outside the document body outline. A note heading must
+    // not consume an automatic TOC when the body has no heading of its own.
+    state.automatic_toc = false;
     // The refs are 'a (borrowed from the document), so cloning the pair list
     // is cheap and independent of the later &mut state borrows.
     let defs = state.footnote_defs.clone();

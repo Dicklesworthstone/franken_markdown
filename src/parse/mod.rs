@@ -2220,7 +2220,7 @@ fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkRe
         i += 1;
         let start = i;
         while i < bytes.len() && bytes[i] != close_ch {
-            if bytes[i] == b'\\' {
+            if bytes[i] == b'\\' || (close_ch == b')' && bytes[i] == b'(') {
                 return None;
             }
             i += 1;
@@ -2241,7 +2241,7 @@ fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkRe
 }
 
 fn parse_simple_ascii_reference_title_line(line: &str) -> Option<String> {
-    if !line.is_ascii() {
+    if !line.is_ascii() || line.contains('&') {
         return None;
     }
     let t = trim_start_space_tab(line);
@@ -2258,7 +2258,7 @@ fn parse_simple_ascii_reference_title_line(line: &str) -> Option<String> {
     let mut i = 1usize;
     let start = i;
     while i < bytes.len() && bytes[i] != close_ch {
-        if bytes[i] == b'\\' {
+        if bytes[i] == b'\\' || (close_ch == b')' && bytes[i] == b'(') {
             return None;
         }
         i += 1;
@@ -2273,6 +2273,9 @@ fn parse_simple_ascii_reference_title_line(line: &str) -> Option<String> {
 }
 
 fn normalize_simple_ascii_reference_label(label: &str) -> Option<String> {
+    if label.len() > MAX_REFERENCE_LABEL_LEN {
+        return None;
+    }
     if label.as_bytes().iter().any(|&byte| {
         matches!(byte, b'[' | b']' | b'\\')
             || !byte.is_ascii()
@@ -5318,6 +5321,7 @@ fn parse_link_title(chars: &[char], i: &mut usize) -> Option<String> {
                 *i += 1;
                 return Some(title);
             }
+            '(' if open == '(' => return None,
             '\n' => {
                 if saw_newline {
                     return None;
@@ -6379,6 +6383,11 @@ fn unicode_case_fold_char(ch: char) -> Option<&'static str> {
 }
 
 fn normalize_reference_label_chars(label: &[char]) -> Option<String> {
+    // Definitions and uses share the source-character limit, before trimming
+    // whitespace or case folding. Invalid definitions must stay visible.
+    if label.len() > MAX_REFERENCE_LABEL_LEN {
+        return None;
+    }
     let mut escaped = false;
     for &ch in label {
         if escaped {

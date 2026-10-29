@@ -4535,13 +4535,13 @@ fn parse_inlines_chars_with_refs_profiled(
             _ => {
                 let mut bare_autolink = None;
                 if context == InlineContext::Prose && inline_chars_maybe_bare_url_start(bytes, i) {
-                    bare_autolink = parse_bare_url_autolink(bytes, i);
+                    bare_autolink = parse_bare_url_autolink(bytes, i, &mut profiler.inline_work);
                 }
                 if bare_autolink.is_none()
                     && maybe_bare_email
                     && inline_char_maybe_bare_email_start(c)
                 {
-                    bare_autolink = parse_bare_email_autolink(bytes, i);
+                    bare_autolink = parse_bare_email_autolink(bytes, i, &mut profiler.inline_work);
                 }
                 if let Some((label, dest, next)) = bare_autolink {
                     flush(&mut buf, &mut els);
@@ -5627,8 +5627,12 @@ fn parse_character_reference(chars: &[char], i: usize) -> Option<(String, usize)
     Some((decoded, i + 1 + semi_offset + 1))
 }
 
-fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, usize)> {
-    if !bare_url_left_boundary(chars, i) {
+fn parse_bare_url_autolink(
+    chars: &[char],
+    i: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<(String, String, usize)> {
+    if work.exhausted || !bare_url_left_boundary(chars, i) {
         return None;
     }
 
@@ -5648,28 +5652,18 @@ fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, 
     {
         end += 1;
     }
+    // Include the forward scan and the suffix's parenthesis/trim passes. Failed
+    // angle-autolink attempts must share the same bound as accepted candidates.
+    if !work.charge(end.saturating_sub(i).saturating_mul(3).saturating_add(1)) {
+        return None;
+    }
     end = trim_bare_url_suffix(chars, i, end);
     if end == i || (is_www && end <= i + 4) {
         return None;
     }
 
-    // A URL inside unescaped `< ... >` is an attempted angle autolink, not an extended bare URL.
-    let mut prev_non_ws = i;
-    while prev_non_ws > 0 && chars[prev_non_ws - 1].is_whitespace() {
-        prev_non_ws -= 1;
-    }
-    if prev_non_ws > 0 && chars[prev_non_ws - 1] == '<' && !is_char_escaped(chars, prev_non_ws - 1)
-    {
-        let mut next_non_ws = end;
-        while next_non_ws < chars.len() && chars[next_non_ws].is_whitespace() {
-            next_non_ws += 1;
-        }
-        if next_non_ws < chars.len()
-            && chars[next_non_ws] == '>'
-            && !is_char_escaped(chars, next_non_ws)
-        {
-            return None;
-        }
+    if bare_autolink_is_angle_attempt(chars, i, end, work)? {
+        return None;
     }
 
     let label = chars[i..end].iter().collect::<String>();
@@ -5688,8 +5682,12 @@ fn parse_bare_url_autolink(chars: &[char], i: usize) -> Option<(String, String, 
 /// `. - _ +`, the domain is dot-separated alphanumeric/`-`/`_` labels with at
 /// least one dot, trailing sentence dots are trimmed, and the domain may not end
 /// in `-`/`_` — so ordinary `@`-containing prose is not falsely linked.
-fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String, usize)> {
-    if !bare_url_left_boundary(chars, i) {
+fn parse_bare_email_autolink(
+    chars: &[char],
+    i: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<(String, String, usize)> {
+    if work.exhausted || !bare_url_left_boundary(chars, i) {
         return None;
     }
     let mut j = i;
@@ -5698,6 +5696,11 @@ fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String
         .is_some_and(|&c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
     {
         j += 1;
+    }
+    // A rejected local part can be retried after every underscore. Charge it
+    // before any early return, even when the paragraph's only '@' is elsewhere.
+    if !work.charge(j.saturating_sub(i).saturating_add(1)) {
+        return None;
     }
     // Need a non-empty local part immediately followed by `@`.
     if j == i || chars.get(j) != Some(&'@') {
@@ -5710,6 +5713,14 @@ fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String
         .is_some_and(|&c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
     {
         j += 1;
+    }
+    // Cover the domain scan, trailing-dot trim and dotted-domain validation.
+    if !work.charge(
+        j.saturating_sub(domain_start)
+            .saturating_mul(3)
+            .saturating_add(1),
+    ) {
+        return None;
     }
     // Trim trailing dots (sentence punctuation), then require a real dotted domain
     // that does not end in `-`/`_`.
@@ -5724,28 +5735,50 @@ fn parse_bare_email_autolink(chars: &[char], i: usize) -> Option<(String, String
         return None;
     }
 
-    // An email inside unescaped `< ... >` is an attempted angle autolink, not an extended bare email.
-    let mut prev_non_ws = i;
-    while prev_non_ws > 0 && chars[prev_non_ws - 1].is_whitespace() {
-        prev_non_ws -= 1;
-    }
-    if prev_non_ws > 0 && chars[prev_non_ws - 1] == '<' && !is_char_escaped(chars, prev_non_ws - 1)
-    {
-        let mut next_non_ws = end;
-        while next_non_ws < chars.len() && chars[next_non_ws].is_whitespace() {
-            next_non_ws += 1;
-        }
-        if next_non_ws < chars.len()
-            && chars[next_non_ws] == '>'
-            && !is_char_escaped(chars, next_non_ws)
-        {
-            return None;
-        }
+    if bare_autolink_is_angle_attempt(chars, i, end, work)? {
+        return None;
     }
 
     let label: String = chars[i..end].iter().collect();
     let dest = format!("mailto:{label}");
     Some((label, dest, end))
+}
+
+/// Unescaped `< ... >` belongs to the angle-autolink grammar, even when that
+/// grammar rejects its whitespace. Keep the URL and email rules identical and
+/// account for whitespace/escape lookaround in the shared speculative budget.
+fn bare_autolink_is_angle_attempt(
+    chars: &[char],
+    start: usize,
+    end: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<bool> {
+    let mut prev_non_ws = start;
+    while prev_non_ws > 0 && chars[prev_non_ws - 1].is_whitespace() {
+        prev_non_ws -= 1;
+    }
+    if !work.charge(start.saturating_sub(prev_non_ws).saturating_add(1)) {
+        return None;
+    }
+    if prev_non_ws > 0
+        && chars[prev_non_ws - 1] == '<'
+        && !is_char_escaped(chars, prev_non_ws - 1, work)?
+    {
+        let mut next_non_ws = end;
+        while next_non_ws < chars.len() && chars[next_non_ws].is_whitespace() {
+            next_non_ws += 1;
+        }
+        if !work.charge(next_non_ws.saturating_sub(end).saturating_add(1)) {
+            return None;
+        }
+        if next_non_ws < chars.len()
+            && chars[next_non_ws] == '>'
+            && !is_char_escaped(chars, next_non_ws, work)?
+        {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 #[inline(always)]
@@ -5765,14 +5798,14 @@ fn starts_with_ascii_chars_ignore_case(chars: &[char], i: usize, needle: &[u8]) 
     true
 }
 
-fn is_char_escaped(chars: &[char], idx: usize) -> bool {
+fn is_char_escaped(chars: &[char], idx: usize, work: &mut InlineWorkBudget) -> Option<bool> {
     let mut bs = 0;
     let mut p = idx;
     while p > 0 && chars[p - 1] == '\\' {
         bs += 1;
         p -= 1;
     }
-    bs % 2 == 1
+    work.charge(bs + 1).then_some(bs % 2 == 1)
 }
 
 fn bare_url_left_boundary(chars: &[char], i: usize) -> bool {
@@ -6676,7 +6709,17 @@ fn is_ascii_punct(c: char) -> bool {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod inline_autolink_candidate_tests {
-    use super::{inline_char_maybe_bare_email_start, inline_chars_maybe_bare_url_start};
+    use super::{
+        INLINE_PARSE_WORK_MULTIPLIER, InlineWorkBudget, inline_char_maybe_bare_email_start,
+        inline_chars_maybe_bare_url_start, parse_bare_email_autolink, parse_bare_url_autolink,
+    };
+
+    fn work(remaining: usize) -> InlineWorkBudget {
+        InlineWorkBudget {
+            remaining,
+            ..InlineWorkBudget::default()
+        }
+    }
 
     fn maybe_bare_url_start(text: &str, idx: usize) -> bool {
         let chars = text.chars().collect::<Vec<_>>();
@@ -6757,11 +6800,20 @@ mod inline_autolink_candidate_tests {
         use crate::ast::Inline;
 
         let chars_escaped: Vec<char> = "\\< https://foo.bar >".chars().collect();
-        assert!(is_char_escaped(&chars_escaped, 1));
+        assert_eq!(
+            is_char_escaped(&chars_escaped, 1, &mut work(100)),
+            Some(true)
+        );
         let chars_unescaped: Vec<char> = "< https://foo.bar >".chars().collect();
-        assert!(!is_char_escaped(&chars_unescaped, 0));
+        assert_eq!(
+            is_char_escaped(&chars_unescaped, 0, &mut work(100)),
+            Some(false)
+        );
         let chars_double_bs: Vec<char> = "\\\\< https://foo.bar >".chars().collect();
-        assert!(!is_char_escaped(&chars_double_bs, 2));
+        assert_eq!(
+            is_char_escaped(&chars_double_bs, 2, &mut work(100)),
+            Some(false)
+        );
 
         let inlines = parse_inlines("< https://foo.bar >");
         assert!(
@@ -6776,6 +6828,76 @@ mod inline_autolink_candidate_tests {
                 .any(|i| matches!(i, Inline::Link { .. })),
             "Email in unescaped < ... > must not be bare autolinked"
         );
+    }
+
+    #[test]
+    fn rejected_email_candidates_consume_the_shared_work_budget() {
+        for tail in ["@invalid", "@example.test_", " other@example.test"] {
+            let source = format!("{}{tail}", "a_".repeat(4096));
+            let chars: Vec<_> = source.chars().collect();
+            let initial = chars.len() * INLINE_PARSE_WORK_MULTIPLIER;
+            let mut budget = work(initial);
+            let mut attempts = 0;
+            for index in (0..8192).step_by(2) {
+                attempts += 1;
+                assert!(parse_bare_email_autolink(&chars, index, &mut budget).is_none());
+                if budget.exhausted {
+                    break;
+                }
+            }
+            assert!(budget.exhausted, "unbounded failed scans: {tail:?}");
+            // Each of the first ~64 attempts traverses nearly the whole run.
+            // The cap is independent of wall-clock speed and the total number
+            // of potential underscore boundaries in the paragraph.
+            assert!(attempts <= INLINE_PARSE_WORK_MULTIPLIER + 2, "{attempts}");
+            assert!(budget.remaining < initial);
+        }
+    }
+
+    #[test]
+    fn bare_autolink_scans_refuse_insufficient_budget_before_returning_a_link() {
+        for source in [
+            "alice@example.test",
+            "alice@invalid",
+            "alice without-at-sign",
+        ] {
+            let chars: Vec<_> = source.chars().collect();
+            let mut budget = work(1);
+            assert!(parse_bare_email_autolink(&chars, 0, &mut budget).is_none());
+            assert!(budget.exhausted, "{source}");
+        }
+        for source in ["https://example.test/a(b)))", "www.example.test"] {
+            let chars: Vec<_> = source.chars().collect();
+            let mut budget = work(1);
+            assert!(parse_bare_url_autolink(&chars, 0, &mut budget).is_none());
+            assert!(budget.exhausted, "{source}");
+        }
+    }
+
+    #[test]
+    fn bare_autolink_angle_lookaround_and_escape_checks_are_charged() {
+        use super::{bare_autolink_is_angle_attempt, is_char_escaped};
+
+        let chars: Vec<_> = format!("<{}address >", " ".repeat(256)).chars().collect();
+        let mut budget = work(16);
+        assert_eq!(
+            bare_autolink_is_angle_attempt(&chars, 257, 264, &mut budget),
+            None
+        );
+        assert!(budget.exhausted);
+
+        let chars: Vec<_> = format!("{}< address >", "\\".repeat(256)).chars().collect();
+        let mut budget = work(16);
+        assert_eq!(is_char_escaped(&chars, 256, &mut budget), None);
+        assert!(budget.exhausted);
+
+        let chars: Vec<_> = format!("< address{}>", " ".repeat(256)).chars().collect();
+        let mut budget = work(16);
+        assert_eq!(
+            bare_autolink_is_angle_attempt(&chars, 2, 9, &mut budget),
+            None
+        );
+        assert!(budget.exhausted);
     }
 
     #[test]
@@ -7945,7 +8067,11 @@ mod inline_helper_branch_tests {
         assert_eq!(decoded, "http://e.test?a=1&b=2");
 
         let url_chars = "see http://example.test<x".chars().collect::<Vec<_>>();
-        let found = parse_bare_url_autolink(&url_chars, 4).expect("bare url before angle");
+        let mut work = InlineWorkBudget {
+            remaining: url_chars.len() * INLINE_PARSE_WORK_MULTIPLIER,
+            ..InlineWorkBudget::default()
+        };
+        let found = parse_bare_url_autolink(&url_chars, 4, &mut work).expect("bare url before angle");
         assert_eq!(found.0, "http://example.test");
         assert_eq!(found.2, "http://example.test".len() + 4);
     }

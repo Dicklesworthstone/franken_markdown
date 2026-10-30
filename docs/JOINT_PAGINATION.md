@@ -26,14 +26,23 @@ that same result.
 
 ### Current admission limits
 
-The integration offers alternatives for ordinary and blockquoted paragraphs,
+The integration offers alternatives for ordinary, blockquoted and list paragraphs,
 with at least four physical lines in both the baseline and every offered shape.
-This preserves the existing context-sensitive rules for short captions, heading
-followers, and final list items. Other blocks still participate in page planning
-at their existing measured shape.
+List alternatives also retain at least three visible rows, so a replacement cannot
+change the final-short-item penalty. This preserves the existing context-sensitive
+rules for short captions, heading followers, and final list items. Other blocks
+still participate in page planning at their existing measured shape.
 
-Paragraphs inside lists and paragraphs containing inline images or typeset math
-retain their baseline shapes. Prepared numbered page notes participate with
+Leading list paragraphs retain exactly one bullet, ordered number or task checkbox
+in their original hanging gutter. Loose continuation paragraphs do not acquire a
+second label. Every replacement retains the complete nested list and blockquote
+ancestry for tagged PDF, the first-line list-start flag, finalized spacing and
+forced chapter boundaries. Ordered markers continue beyond `u64::MAX` for
+caller-constructed ASTs instead of wrapping or panicking. Paragraphs with
+inconsistent container ownership are not replaced.
+
+Paragraphs containing inline images or typeset math retain their baseline shapes.
+Prepared numbered page notes participate with
 their unchanged measured bodies reserved at each alternative's first citation;
 a candidate cannot lose or reorder citations. Legacy unprepared footnote
 definitions retain baseline shapes. The same applies when gradual-demerit, river, or Pareto line
@@ -186,6 +195,14 @@ chapter boundaries, repeated paragraphs, and TOC numbers matching emitted
 heading destinations. Default and unsupported-mode cases compare emitted bytes
 with the original measured layout. Run these regressions with
 `cargo test --lib joint_pagination`.
+
+The corresponding list fixture adds its 19 pt hanging gutter to the same 440 pt
+text measure and uses a 197 pt body height. The list's final spacing is 8 pt;
+13 lines fit while the original 14-line paragraph needs two pages. The source
+text, 11 pt font, marker and hanging indent remain unchanged. Integration tests
+in `tests/pdf_list_joint_pagination_test.rs` inspect emitted page streams and
+font maps, nested tagged ancestry, links, loose-item labels, grid baselines and
+numbered notes. Run them with `cargo test --test pdf_list_joint_pagination_test`.
 
 Blockquote regressions retain ancestor bars, spacing, tagged content and forced
 chapter boundaries. `src/pdf/joint_pagination_note_tests.rs` checks numbered-note

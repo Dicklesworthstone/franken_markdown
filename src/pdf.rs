@@ -336,7 +336,7 @@ fn resolve_seg_link(links: &[LinkTarget], link: Option<u32>) -> Option<LinkTarge
 /// list wins: a deeper `layout_list` stamps its lines first, and the enclosing
 /// list only stamps still-unmarked lines, so `depth` is always the line's true
 /// nesting level.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct ListMark {
     /// Unique id of the enclosing list (its first line's out-vec index). Nesting
     /// depth is encoded by this mark's position in [`Line::list_path`].
@@ -18559,7 +18559,7 @@ fn list_marker_layouts(
         let text = match item.task {
             Some(true) => "[x]".to_string(),
             Some(false) => "[ ]".to_string(),
-            None if list.ordered => format!("{}.", list.start + i as u64),
+            None if list.ordered => format!("{}.", u128::from(list.start) + i as u128),
             None => "•".to_string(),
         };
         let width = text_width_cached(&text, size, F_BODY, faces, width_cache);
@@ -20106,7 +20106,6 @@ fn layout_inlines(
     let baseline_count = breaks.len();
     let variants = if cx.paragraph_candidates.enabled()
         && flow.kind == FlowKind::Paragraph
-        && cx.list_stack.is_empty()
         && toks.iter().all(|tok| !is_inline_object(tok.slot))
         && cx
             .paragraph_candidates
@@ -20363,17 +20362,105 @@ fn layout_prefixed_inlines(
         return;
     }
 
-    let n = cx.line_breaks.len();
+    let breaks = std::mem::take(&mut cx.line_breaks);
+    let baseline_count = breaks.len();
+    let variants = if cx.paragraph_candidates.enabled()
+        && spec.flow.kind == FlowKind::Paragraph
+        && toks.iter().all(|tok| !is_inline_object(tok.slot))
+        && cx
+            .paragraph_candidates
+            .begin_measure(built.items.len(), baseline_count)
+    {
+        let (variants, state_limit) = crate::layout::break_paragraph_candidates_reported(
+            &built.items,
+            content_w,
+            &mut cx.paragraph_scratch,
+        );
+        if state_limit {
+            cx.paragraph_candidates.candidate_state_limit();
+        }
+        Some(variants)
+    } else {
+        None
+    };
+    // The label is not a paragraph token and must never enter the line breaker.
+    // Both measured shapes paint it once, in the original hanging gutter.
+    let candidate_marker = variants.as_ref().map(|_| marker.clone());
+    let paint = ParagraphPaintSpec {
+        left,
+        size: spec.size,
+        gap_after: spec.gap_after,
+        content_w,
+        policy,
+        flow: spec.flow,
+    };
+    emit_broken_prefixed_paragraph(&built, &breaks, marker, paint, out, cx);
+    if let Some(variants) = variants.filter(|_| out.len() - start == baseline_count) {
+        let baseline_demerits = breaks.last().map_or(0, |line| line.demerits);
+        let mut alternatives = Vec::new();
+        for variant in variants.variants {
+            if variant.line_count < 4 || variant.line_count == baseline_count {
+                continue;
+            }
+            let Some(marker) = candidate_marker.as_ref() else {
+                continue;
+            };
+            let mut lines = Vec::with_capacity(variant.line_count);
+            emit_broken_prefixed_paragraph(
+                &built,
+                &variant.lines,
+                marker.clone(),
+                paint,
+                &mut lines,
+                cx,
+            );
+            if lines.len() != variant.line_count {
+                continue;
+            }
+            // Candidates do not pass through the containing layout_blocks
+            // stamp. Measure positioned marks before their leading/grid ink.
+            text_positioning::stamp_lines(&mut lines, cx.faces);
+            baseline_grid::apply(&mut lines, cx.opts.theme.page.baseline_grid, cx.faces);
+            alternatives.push(joint_pagination::Alternative {
+                lines,
+                extra_demerits: variant.demerits.saturating_sub(baseline_demerits),
+            });
+        }
+        cx.paragraph_candidates
+            .insert(spec.flow.group, baseline_count, alternatives);
+    }
+    cx.line_breaks = breaks;
+}
+
+/// Keep the historical list painter shared by the baseline and every measured
+/// alternative. Container identities and final spacing are installed later.
+fn emit_broken_prefixed_paragraph(
+    built: &BuiltParagraph,
+    breaks: &[LineBreak],
+    marker: Seg,
+    spec: ParagraphPaintSpec,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+) {
+    let ParagraphPaintSpec {
+        left,
+        size,
+        gap_after,
+        content_w,
+        policy,
+        flow,
+    } = spec;
+    let start = out.len();
+    let n = breaks.len();
     let mut marker = Some(marker);
-    for i in 0..n {
-        let lb = cx.line_breaks[i];
+    for (i, lb) in breaks.iter().enumerate() {
         // Justify to measure + the left hang the segment builder applies (see
         // `layout_inlines`), so a line opening with a quote/bracket/dash still
         // ends flush.
-        let hang = lu_from_points_f32(line_left_hang(&built, &lb, spec.size));
+        let hang = lu_from_points_f32(line_left_hang(built, lb, size));
         line_tokens_for_break_into(
-            &built,
-            &lb,
+            built,
+            lb,
             content_w + hang,
             policy.justify && i + 1 < n,
             policy.expansion_permilli(),
@@ -20383,7 +20470,7 @@ fn layout_prefixed_inlines(
         let mut segs = build_segs_adjusted(
             &cx.line_toks,
             left,
-            spec.size,
+            size,
             cx.faces,
             Some(&cx.width_cache),
             policy.microtype.max_expansion_per_mille,
@@ -20391,21 +20478,21 @@ fn layout_prefixed_inlines(
         );
         if policy.justify
             && i + 1 < n
-            && !chosen_forced_break(&built.items, &lb)
+            && !chosen_forced_break(&built.items, lb)
             && !cx.line_toks.iter().any(|tok| tok.tok.literal)
         {
             true_up_justified_line(
                 &mut segs,
                 left + content_w.to_points_f32(),
-                spec.size,
+                size,
                 cx.faces,
                 Some(&cx.width_cache),
             );
         }
         let first_physical = out.len();
         let line = Line {
-            size: spec.size,
-            gap_after: if i + 1 == n { spec.gap_after } else { 0.0 },
+            size,
+            gap_after: if i + 1 == n { gap_after } else { 0.0 },
             rule: false,
             rule_x: 0.0,
             quote_bars: Vec::new(),
@@ -20419,7 +20506,7 @@ fn layout_prefixed_inlines(
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
-            hyphenated: chosen_hyphenated_break(&built.items, &lb, &cx.line_toks),
+            hyphenated: chosen_hyphenated_break(&built.items, lb, &cx.line_toks),
             segs,
             page_break_before: false,
             image: None,
@@ -20432,7 +20519,7 @@ fn layout_prefixed_inlines(
             first.segs.insert(0, marker);
         }
     }
-    mark_flow(out, start, spec.flow.group, spec.flow.kind);
+    mark_flow(out, start, flow.group, flow.kind);
 }
 
 /// The original greedy wrapper, kept as an emergency fallback (and as a

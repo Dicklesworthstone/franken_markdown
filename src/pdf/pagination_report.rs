@@ -127,7 +127,7 @@ pub enum PdfParagraphVariantStatus {
 ///
 /// Counts exclude fit-to-pages probes and earlier TOC passes. `Planned` means
 /// exact selection among offered variants, not all possible paragraph layouts.
-/// Unsupported flows (such as inline objects and list paragraphs) retain their
+/// Unsupported flows (such as paragraphs with inline objects) retain their
 /// ordinary measured shape by design.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PdfParagraphVariantReport {

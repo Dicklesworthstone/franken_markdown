@@ -2,9 +2,10 @@
 //!
 //! Shaping happens while the paragraph's tokens and fonts are available; the
 //! choice happens after block layout has finalized gaps and chapter boundaries.
-//! Ordinary and blockquoted paragraphs with at least four lines in every
-//! offered shape participate. That keeps the short-caption, list, and heading
-//! boundary costs independent of choices in preceding blocks. Prepared page
+//! Ordinary, blockquoted and list paragraphs with at least four lines in every
+//! offered shape participate. Full list ownership and first-line labels survive
+//! replacement. Those limits keep short-caption, list and heading boundary
+//! costs independent of choices in preceding blocks. Prepared page
 //! notes reserve their unchanged measured bodies at each alternative's first
 //! citation; selecting a shape never turns the note region into body content.
 
@@ -266,7 +267,7 @@ fn eligible(lines: &[Line], paragraph: &Paragraph) -> bool {
                 && line.flow.index == index
                 && line.flow.count == lines.len()
                 && line.flow.note == 0
-                && !line.flow.list_start
+                && (index == 0 || !line.flow.list_start)
                 && !line.rule
                 && line.bg == 0
                 && !line.shade
@@ -275,7 +276,8 @@ fn eligible(lines: &[Line], paragraph: &Paragraph) -> bool {
                 // must belong to the same complete ancestry, including nested
                 // quote IDs and gutter coordinates, before transferring it.
                 && line.quote_bars == lines[0].quote_bars
-                && line.list_path.is_empty()
+                && line.list_path == lines[0].list_path
+                && (!line.flow.list_start || !line.list_path.is_empty())
                 && line.table_cols.is_empty()
                 && line.image.is_none()
                 && (index == 0 || !line.page_break_before)
@@ -298,6 +300,7 @@ fn finalized_shape(baseline: &[Line], alternative: &Alternative) -> Vec<Line> {
         line.flow = FlowMark {
             index,
             count,
+            list_start: index == 0 && first.flow.list_start,
             ..first.flow
         };
         // Quotes stamp their ancestor bars after paragraph shaping. Carry
@@ -306,6 +309,10 @@ fn finalized_shape(baseline: &[Line], alternative: &Alternative) -> Vec<Line> {
         // alternative was measured at this quote's inset, so never translate
         // or reshape its segments when installing the decoration.
         line.quote_bars.clone_from(&first.quote_bars);
+        // List paragraphs keep their complete /L -> /LI ancestry. The prefix
+        // painter already retained the label on the first physical line; a
+        // loose continuation paragraph must not synthesize another label.
+        line.list_path.clone_from(&first.list_path);
         line.page_break_before = index == 0 && first.page_break_before;
         line.gap_after = if index + 1 == count { gap_after } else { 0.0 };
     }
@@ -333,7 +340,7 @@ fn cost_context(line: &Line) -> Line {
         shade: line.shade,
         flow: line.flow,
         page_break_before: line.page_break_before,
-        list_path: Vec::new(),
+        list_path: line.list_path.clone(),
         table_cols: Vec::new(),
         table_source_row: None,
         table_footing: Vec::new(),
@@ -471,6 +478,18 @@ fn select_reported(
                     continue;
                 }
                 let shape = finalized_shape(&body[start..end], alternative);
+                // The final-short-list-item penalty counts visible rows, not
+                // physical rows. Forced blank lines cannot change that context
+                // from a long item to a one/two-row item during substitution.
+                if !shape[0].list_path.is_empty()
+                    && shape
+                        .iter()
+                        .filter(|line| line_has_visible_content(line))
+                        .count()
+                        < 3
+                {
+                    continue;
+                }
                 let reservations = if let Some(notes) = &notes {
                     let Some(reservations) =
                         shape_note_reservations(lines, notes, start, end, &shape)

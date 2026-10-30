@@ -11,7 +11,7 @@ use crate::ast::{Align, Block, Document, Inline, List};
 use crate::fonts::{self, FontStyle};
 use crate::highlight::{Span, highlight_supported_into};
 use crate::text::Font;
-use crate::theme::{DarkModePolicy, Theme, ThemeColors};
+use crate::theme::{CodeColors, Theme, ThemeColors};
 use crate::toc::marker_depth as toc_marker_depth;
 use crate::{FontAssetSlot, FontAssets, HtmlOptions, instance_host_font};
 
@@ -1940,13 +1940,15 @@ fn default_css_with_fonts(opts: &HtmlOptions, embedded: EmbeddedFontCss) -> Stri
     } else {
         theme.mono_font_stack().to_string()
     };
-    let colors = &theme.colors;
+    let colors = theme.effective_colors(false, false);
     let spacing = &theme.spacing;
 
-    let emit_dark = matches!(theme.dark_mode, DarkModePolicy::Auto);
-    let token_dark = match theme.dark_mode {
-        DarkModePolicy::Auto => TOKEN_DARK_CSS,
-        DarkModePolicy::Disabled => "",
+    let emit_dark = theme.automatic_dark_mode();
+    let tokens = token_css(theme.code_colors(colors), false);
+    let token_dark = if emit_dark {
+        token_css(theme.code_colors(&theme.dark_colors), true)
+    } else {
+        String::new()
     };
 
     let color_vars_capacity = color_vars_capacity(colors);
@@ -1964,7 +1966,7 @@ fn default_css_with_fonts(opts: &HtmlOptions, embedded: EmbeddedFontCss) -> Stri
             + body_font.len()
             + mono_font.len()
             + BASE_CSS.len()
-            + TOKEN_CSS.len()
+            + tokens.len()
             + dark_capacity
             + token_dark.len()
             + 256,
@@ -1990,12 +1992,15 @@ fn default_css_with_fonts(opts: &HtmlOptions, embedded: EmbeddedFontCss) -> Stri
     css.push_str("; }\n");
     css.push_str(BASE_CSS);
     css.push('\n');
-    css.push_str(TOKEN_CSS);
+    css.push_str(&tokens);
+    if theme.appearance.is_high_contrast() {
+        css.push_str(".tok-kw { font-weight: bold; }\n");
+    }
     css.push('\n');
     if emit_dark {
         push_dark_mode_css(&mut css, &theme.dark_colors);
     }
-    css.push_str(token_dark);
+    css.push_str(&token_dark);
     css
 }
 
@@ -2741,28 +2746,41 @@ fn push_base64_encoded(out: &mut String, bytes: &[u8]) {
 
 const HTML_FONT_SEED: &str = " \t\n0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,;:!?()[]{}<>/\\'\"+-_=*#%&@|`~^•–—“”‘’";
 
-const TOKEN_CSS: &str = r#"
-.tok-kw { color: #cf222e; }
-.tok-ty { color: #953800; }
-.tok-fn { color: #6639ba; }
-.tok-st { color: #0a3069; }
-.tok-nu { color: #0550ae; }
-.tok-cm { color: #6e7781; font-style: italic; }
-.tok-op { color: #0550ae; }
-.tok-pn { color: inherit; }
-"#;
-
-const TOKEN_DARK_CSS: &str = r#"
-@media (prefers-color-scheme: dark) {
-  .tok-kw { color: #ff7b72; }
-  .tok-ty { color: #ffa657; }
-  .tok-fn { color: #d2a8ff; }
-  .tok-st { color: #a5d6ff; }
-  .tok-nu { color: #79c0ff; }
-  .tok-cm { color: #8b949e; }
-  .tok-op { color: #79c0ff; }
+fn token_css(colors: CodeColors<'_>, dark_media: bool) -> String {
+    let mut css = String::with_capacity(400);
+    css.push('\n');
+    if dark_media {
+        css.push_str("@media (prefers-color-scheme: dark) {\n");
+    }
+    for (class, value) in [
+        ("kw", colors.keyword),
+        ("ty", colors.type_name),
+        ("fn", colors.function),
+        ("st", colors.string),
+        ("nu", colors.number),
+        ("cm", colors.comment),
+        ("op", colors.number),
+    ] {
+        if dark_media {
+            css.push_str("  ");
+        }
+        css.push_str(".tok-");
+        css.push_str(class);
+        css.push_str(" { color: ");
+        push_css_token(&mut css, value);
+        css.push(';');
+        if class == "cm" && !dark_media {
+            css.push_str(" font-style: italic;");
+        }
+        css.push_str(" }\n");
+    }
+    if dark_media {
+        css.push_str("}\n");
+    } else {
+        css.push_str(".tok-pn { color: inherit; }\n");
+    }
+    css
 }
-"#;
 
 const BASE_CSS: &str = r#"
 *, *::before, *::after { box-sizing: border-box; }

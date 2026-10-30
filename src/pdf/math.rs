@@ -422,7 +422,7 @@ pub(super) fn layout_block(
     let width = ink_width.max(1.0);
     let height = ink_height.max(1.0);
     let mut elements = Vec::with_capacity(formula.paths.len());
-    let color = Palette::from_colors(&cx.opts.theme.colors).fg;
+    let color = Palette::from_theme(&cx.opts.theme).fg;
     let point = |(x, y): (f64, f64)| {
         (
             ((x - formula.bounds.left) * size) as f32 + (width - ink_width) * 0.5,

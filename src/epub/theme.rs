@@ -7,8 +7,8 @@
 use std::borrow::Cow;
 
 use franken_markdown::{
-    CodeLigatures, DarkModePolicy, FontFamily, HtmlOptions, MonoFontFamily, SystemAppearance,
-    Theme, ThemeColors, ThemeSpacing, TypeScale,
+    CodeLigatures, FontFamily, HtmlOptions, MonoFontFamily, Theme, ThemeColors, ThemeSpacing,
+    TypeScale,
 };
 
 pub(super) fn stylesheet(opts: &HtmlOptions) -> Cow<'_, str> {
@@ -94,8 +94,7 @@ fn default_css(theme: &Theme) -> String {
     // A fixed appearance takes precedence over the host media query. Auto
     // follows the reader only when automatic dark mode is enabled; a disabled
     // policy keeps the configured base palette even in a dark reading system.
-    let automatic =
-        theme.appearance == SystemAppearance::Auto && theme.dark_mode == DarkModePolicy::Auto;
+    let automatic = theme.automatic_dark_mode();
     let dark = theme.appearance.is_dark();
     css.push_str(if automatic {
         ":root{color-scheme:light dark;}\n"
@@ -106,19 +105,20 @@ fn default_css(theme: &Theme) -> String {
     });
     palette(
         &mut css,
+        theme,
         theme.effective_colors(false, false),
         dark,
         theme.appearance.is_high_contrast(),
     );
     if automatic {
         css.push_str("@media (prefers-color-scheme: dark){\n");
-        palette(&mut css, &theme.dark_colors, true, false);
+        palette(&mut css, theme, &theme.dark_colors, true, false);
         css.push_str("}\n");
     }
     css
 }
 
-fn palette(css: &mut String, colors: &ThemeColors, dark: bool, high_contrast: bool) {
+fn palette(css: &mut String, theme: &Theme, colors: &ThemeColors, dark: bool, high_contrast: bool) {
     let fallback = if dark {
         ThemeColors::dark()
     } else {
@@ -157,15 +157,14 @@ fn palette(css: &mut String, colors: &ThemeColors, dark: bool, high_contrast: bo
     if high_contrast {
         css.push_str(".tok-kw,.tok-ty,.tok-fn,.tok-st,.tok-nu,.tok-cm,.tok-op,.tok-pn{color:inherit;}\n.tok-kw{font-weight:bold;}\n.tok-cm{font-style:italic;}\n");
     } else {
-        let (kw, ty, fun, string, number, comment) = if dark {
-            (
-                "#ff7b72", "#ffa657", "#d2a8ff", "#a5d6ff", "#79c0ff", "#8b949e",
-            )
-        } else {
-            (
-                "#cf222e", "#953800", "#6639ba", "#0a3069", "#0550ae", "#6e7781",
-            )
-        };
+        let crate::theme::CodeColors {
+            keyword: kw,
+            type_name: ty,
+            function: fun,
+            string,
+            number,
+            comment,
+        } = theme.code_colors(colors);
         css.push_str(&format!(
             ".tok-kw{{color:{kw};}}\n.tok-ty{{color:{ty};}}\n.tok-fn{{color:{fun};}}\n\
              .tok-st{{color:{string};}}\n.tok-nu,.tok-op{{color:{number};}}\n\

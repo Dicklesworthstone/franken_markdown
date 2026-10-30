@@ -32,7 +32,7 @@ use crate::layout::{
     is_cjk_char,
 };
 use crate::text::{Font, Kerning, Ligatures};
-use crate::theme::{Theme, ThemeColors};
+use crate::theme::Theme;
 use crate::toc::marker_depth as toc_marker_depth;
 use crate::{FontAssetSlot, FontAssets, PdfOptions, RenderError};
 use std::borrow::Cow;
@@ -21968,7 +21968,7 @@ fn fill_for_highlight(kind: HighlightTok) -> Fill {
 }
 
 /// PDF device-RGB colors resolved once per render from the shared theme tokens
-/// ([`ThemeColors`]), so the PDF and HTML surfaces stay visually coherent — the
+/// ([`crate::ThemeColors`]), so the PDF and HTML surfaces stay visually coherent — the
 /// "one theme model" doctrine. Each field mirrors the element-to-token mapping
 /// the HTML stylesheet uses, so changing a theme color moves both surfaces
 /// together. Code syntax-token colors are a separate code-theme palette and are
@@ -21977,6 +21977,14 @@ fn fill_for_highlight(kind: HighlightTok) -> Fill {
 struct Palette {
     /// Body text and plain/inline code glyphs (theme `fg`).
     fg: (f32, f32, f32),
+    /// Physical page fill, including margins; white remains implicit.
+    bg: (f32, f32, f32),
+    syntax_keyword: (f32, f32, f32),
+    syntax_type: (f32, f32, f32),
+    syntax_function: (f32, f32, f32),
+    syntax_string: (f32, f32, f32),
+    syntax_number: (f32, f32, f32),
+    syntax_comment: (f32, f32, f32),
     /// Hyperlink text and underline (theme `accent`).
     link: (f32, f32, f32),
     /// Fenced-code panel background (theme `code_bg`).
@@ -21998,9 +22006,20 @@ struct Palette {
 }
 
 impl Palette {
-    fn from_colors(colors: &ThemeColors) -> Self {
+    fn from_theme(theme: &Theme) -> Self {
+        // Static outputs have no ambient host appearance. Auto uses the base
+        // palette; an explicit document appearance selects its matching colors.
+        let colors = theme.effective_colors(false, false);
+        let syntax = theme.code_colors(colors);
         Self {
             fg: hex_rgb(&colors.fg),
+            bg: page_background_rgb(&colors.bg),
+            syntax_keyword: hex_rgb(syntax.keyword),
+            syntax_type: hex_rgb(syntax.type_name),
+            syntax_function: hex_rgb(syntax.function),
+            syntax_string: hex_rgb(syntax.string),
+            syntax_number: hex_rgb(syntax.number),
+            syntax_comment: hex_rgb(syntax.comment),
             link: hex_rgb(&colors.accent),
             code_panel_bg: hex_rgb(&colors.code_bg),
             code_chip_bg: hex_rgb(&colors.code_bg),
@@ -22040,18 +22059,32 @@ fn hex_rgb(hex: &str) -> (f32, f32, f32) {
     }
 }
 
+/// CSS backgrounds may use named colors, functions or alpha channels. The
+/// PDF color writer currently understands only opaque three/six-digit RGB.
+/// Preserve the previous implicit white page for other spellings instead of
+/// applying the foreground parser's black fallback behind ordinary dark text.
+fn page_background_rgb(color: &str) -> (f32, f32, f32) {
+    let color = color.trim();
+    let hex = color.strip_prefix('#').unwrap_or(color);
+    if matches!(hex.len(), 3 | 6) && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        hex_rgb(color)
+    } else {
+        (1.0, 1.0, 1.0)
+    }
+}
+
 fn fill_rgb(fill: Fill, palette: &Palette) -> (f32, f32, f32) {
     match fill {
         Fill::Black => palette.fg,
         Fill::Link => palette.link,
-        Fill::Muted => (0.431, 0.467, 0.506),
-        Fill::Syntax(HighlightTok::Keyword) => (0.812, 0.133, 0.180),
-        Fill::Syntax(HighlightTok::Type) => (0.584, 0.220, 0.000),
-        Fill::Syntax(HighlightTok::Func) => (0.400, 0.224, 0.729),
-        Fill::Syntax(HighlightTok::Str) => (0.039, 0.188, 0.412),
-        Fill::Syntax(HighlightTok::Number) => (0.020, 0.314, 0.682),
-        Fill::Syntax(HighlightTok::Comment) => (0.431, 0.467, 0.506),
-        Fill::Syntax(HighlightTok::Operator) => (0.020, 0.314, 0.682),
+        Fill::Muted => palette.syntax_comment,
+        Fill::Syntax(HighlightTok::Keyword) => palette.syntax_keyword,
+        Fill::Syntax(HighlightTok::Type) => palette.syntax_type,
+        Fill::Syntax(HighlightTok::Func) => palette.syntax_function,
+        Fill::Syntax(HighlightTok::Str) => palette.syntax_string,
+        Fill::Syntax(HighlightTok::Number) => palette.syntax_number,
+        Fill::Syntax(HighlightTok::Comment) => palette.syntax_comment,
+        Fill::Syntax(HighlightTok::Operator) => palette.syntax_number,
         Fill::Syntax(HighlightTok::Plain | HighlightTok::Punct) => palette.fg,
     }
 }
@@ -22081,7 +22114,7 @@ fn serialize(
 ) -> Result<(Vec<u8>, PdfPageBreakReport)> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
     // visually coherent (the one-theme-model doctrine). See `Palette`.
-    let palette = Palette::from_colors(&opts.theme.colors);
+    let palette = Palette::from_theme(&opts.theme);
 
     // One break plan for the chrome page count and the emitter, so both see
     // the same pages (and optimal pagination runs once).
@@ -23108,7 +23141,9 @@ fn generate_page_content(
     scratch: &mut RenderScratch,
 ) -> (PageContent, usize) {
     let capacity = estimate_page_content_capacity(placed);
-    let bg_capacity = capacity.background_bytes;
+    let bg_capacity = capacity
+        .background_bytes
+        .saturating_add(if palette.bg == (1.0, 1.0, 1.0) { 0 } else { 96 });
     let body_capacity = capacity.body_bytes;
     let annot_capacity = capacity.link_annotations;
     let mark_capacity = capacity.marks;
@@ -23117,6 +23152,18 @@ fn generate_page_content(
         .saturating_add(annot_capacity.saturating_mul(std::mem::size_of::<LinkAnnotation>()))
         .saturating_add(mark_capacity.saturating_mul(std::mem::size_of::<StructMark>()));
     let mut bg = String::with_capacity(bg_capacity);
+    // The default white page needs no paint. Every other theme must provide
+    // the background its foreground and code palette were designed against.
+    // Keep the fill in the existing artifact layer, before any document ink.
+    if palette.bg != (1.0, 1.0, 1.0) {
+        bg.push_str("/Artifact BMC\nq ");
+        append_rgb_fill_space_operator(&mut bg, palette.bg);
+        bg.push_str("0.00 0.00 ");
+        append_pdf_fixed2(&mut bg, page.width);
+        bg.push(' ');
+        append_pdf_fixed2(&mut bg, page.height);
+        bg.push_str(" re f Q\n");
+    }
     let mut shadings = Vec::new();
     let mut alpha_states = BTreeSet::new();
     let mut page_resources = SvgPageResources {
@@ -30723,7 +30770,7 @@ fn render_tree_debug(markdown: &str, opts: &PdfOptions) -> String {
         return "FONT LOAD ERROR\n".to_string();
     };
     let (effective_opts, page) = effective_pdf_options(&doc, opts, &faces);
-    let palette = Palette::from_colors(&effective_opts.theme.colors);
+    let palette = Palette::from_theme(&effective_opts.theme);
     let lines = layout(&doc.blocks, &effective_opts, &faces, page);
     let pages = paginate_lines_for_options(&lines, page, &effective_opts);
     serialize_render_tree(&pages, page, &palette)
@@ -34205,7 +34252,7 @@ mod pdf_writer_tests {
         token_visible_text, tokenize, visit_svg_path_segments, wrap_cell_styled,
     };
     use crate::ast::{Align, Inline, Table};
-    use crate::{PdfOptions, ThemeColors};
+    use crate::{PdfOptions, Theme};
     use std::borrow::Cow;
     use std::collections::BTreeSet;
 
@@ -39189,7 +39236,7 @@ mod pdf_writer_tests {
             expansion_permille: 0,
         };
         let mut out = String::new();
-        let palette = Palette::from_colors(&ThemeColors::default());
+        let palette = Palette::from_theme(&Theme::default());
         append_task_checkbox_marker_operator(&mut out, &seg, 11.0, 100.0, true, &palette);
 
         assert!(
@@ -39907,7 +39954,7 @@ flowchart LR
         );
 
         let body_fill =
-            render_tree_fill_label(Fill::Black, &Palette::from_colors(&Theme::default().colors));
+            render_tree_fill_label(Fill::Black, &Palette::from_theme(&Theme::default()));
         let syntax_lines = tree
             .lines()
             .filter(|line| line.contains("Code "))

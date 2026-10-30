@@ -100,6 +100,54 @@ impl CodeTheme {
             Self::GitHub => "github",
         }
     }
+
+    pub(crate) const fn colors(self, dark: bool) -> CodeColors<'static> {
+        match (self, dark) {
+            (Self::GitHub, false) => CodeColors {
+                keyword: "#cf222e",
+                type_name: "#953800",
+                function: "#6639ba",
+                string: "#0a3069",
+                number: "#0550ae",
+                comment: "#6e7781",
+            },
+            (Self::GitHub, true) => CodeColors {
+                keyword: "#ff7b72",
+                type_name: "#ffa657",
+                function: "#d2a8ff",
+                string: "#a5d6ff",
+                number: "#79c0ff",
+                comment: "#8b949e",
+            },
+        }
+    }
+}
+
+/// One token palette shared by the HTML, PDF and EPUB emitters. High-contrast
+/// appearances borrow the actual foreground instead of adding low-contrast hue.
+#[derive(Clone, Copy)]
+pub(crate) struct CodeColors<'a> {
+    pub keyword: &'a str,
+    pub type_name: &'a str,
+    pub function: &'a str,
+    pub string: &'a str,
+    pub number: &'a str,
+    pub comment: &'a str,
+}
+
+fn dark_hex_background(color: &str) -> Option<bool> {
+    let hex = color.trim().strip_prefix('#')?;
+    let component = |start: usize, end: usize| u32::from_str_radix(hex.get(start..end)?, 16).ok();
+    let (r, g, b) = match hex.len() {
+        3 => (
+            component(0, 1)? * 17,
+            component(1, 2)? * 17,
+            component(2, 3)? * 17,
+        ),
+        6 => (component(0, 2)?, component(2, 4)?, component(4, 6)?),
+        _ => return None,
+    };
+    Some(r * 299 + g * 587 + b * 114 < 128_000)
 }
 
 /// Host and user appearance preferences for rendering (Plan §5.7).
@@ -537,6 +585,30 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// A fixed document appearance must not be overridden by host media state.
+    pub(crate) fn automatic_dark_mode(&self) -> bool {
+        self.appearance == SystemAppearance::Auto && self.dark_mode == DarkModePolicy::Auto
+    }
+
+    pub(crate) fn code_colors<'a>(&self, colors: &'a ThemeColors) -> CodeColors<'a> {
+        if self.appearance.is_high_contrast() {
+            let foreground = colors.fg.as_str();
+            CodeColors {
+                keyword: foreground,
+                type_name: foreground,
+                function: foreground,
+                string: foreground,
+                number: foreground,
+                comment: foreground,
+            }
+        } else {
+            let dark = dark_hex_background(&colors.code_bg)
+                .or_else(|| dark_hex_background(&colors.bg))
+                .unwrap_or_else(|| self.appearance.is_dark());
+            self.code_theme.colors(dark)
+        }
+    }
+
     /// The default sans theme.
     #[must_use]
     pub fn sans() -> Self {

@@ -387,3 +387,19 @@ fn cli_epub_font_and_font_scale_flags_change_the_actual_archive() {
     assert_ne!(identifier(&archives[0]), identifier(&archives[1]));
     assert_ne!(identifier(&archives[0]), identifier(&archives[2]));
 }
+
+#[test]
+fn syntax_palette_follows_a_custom_dark_code_panel_in_every_publication() {
+    let mut opts = HtmlOptions::default();
+    opts.theme.dark_mode = DarkModePolicy::Disabled;
+    opts.theme.colors.code_bg = "#123".to_string();
+    opts.theme.colors.bg = "#234".to_string();
+    opts.theme.colors.fg = "#fff".to_string();
+    for archive in publications(&opts) {
+        let css = entry_text(&archive, "OEBPS/style.css");
+        assert!(css.contains(".tok-kw{color:#ff7b72;}"));
+        assert!(css.contains(".tok-st{color:#a5d6ff;}"));
+        assert!(!css.contains(".tok-kw{color:#cf222e;}"));
+        assert!(!css.contains("@media"));
+    }
+}

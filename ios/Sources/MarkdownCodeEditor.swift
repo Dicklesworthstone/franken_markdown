@@ -28,8 +28,13 @@ struct MarkdownCodeEditor: UIViewRepresentable {
         view.tintColor = UIColor(Lab.emerald)
         view.accessibilityLabel = "Markdown source editor"
         view.accessibilityHint = "Edit Markdown with syntax highlighting. The Rust renderer supplies authoritative diagnostics."
+        context.coordinator.lastColorScheme = colorScheme
         context.coordinator.lastTextScale = Lab.clampedTextScale(uiTextScale)
-        context.coordinator.applyHighlight(to: view, replacingText: text)
+        view.viewportDidChange = { [weak coordinator = context.coordinator, weak view] in
+            guard let view else { return }
+            coordinator?.scheduleHighlight(in: view)
+        }
+        context.coordinator.updatePresentation(in: view, replacingText: text)
         return container
     }
 
@@ -37,12 +42,12 @@ struct MarkdownCodeEditor: UIViewRepresentable {
         let view = container.textView
         context.coordinator.parent = self
         let clampedTextScale = Lab.clampedTextScale(uiTextScale)
-        if view.text != text
+        if context.coordinator.displayedSource != text
             || context.coordinator.lastColorScheme != colorScheme
             || context.coordinator.lastTextScale != clampedTextScale {
             context.coordinator.lastColorScheme = colorScheme
             context.coordinator.lastTextScale = clampedTextScale
-            context.coordinator.applyHighlight(to: view, replacingText: text)
+            context.coordinator.updatePresentation(in: view, replacingText: text)
         } else {
             context.coordinator.refreshTypingAttributes(in: view)
         }
@@ -53,67 +58,198 @@ struct MarkdownCodeEditor: UIViewRepresentable {
         }
     }
 
+    static func dismantleUIView(_ container: MarkdownEditorContainer, coordinator: Coordinator) {
+        coordinator.cancelPendingWork()
+        container.textView.viewportDidChange = nil
+    }
+
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: MarkdownCodeEditor
         var lastColorScheme: ColorScheme?
         var lastTextScale: Double?
+        private(set) var displayedSource = ""
+        private var sourceGeneration = 0
         private var isApplyingHighlight = false
+        private var indexTask: Task<Void, Never>?
+        private var indexWorker: Task<MarkdownEditorLineIndex?, Never>?
+        private var highlightTask: Task<Void, Never>?
+        private var highlightedRange: NSRange?
 
         init(_ parent: MarkdownCodeEditor) { self.parent = parent }
+
+        deinit {
+            indexTask?.cancel()
+            indexWorker?.cancel()
+            highlightTask?.cancel()
+        }
+
+        func cancelPendingWork() {
+            sourceGeneration += 1
+            indexTask?.cancel()
+            indexWorker?.cancel()
+            highlightTask?.cancel()
+        }
 
         func textViewDidBeginEditing(_ textView: UITextView) { parent.isFocused = true }
         func textViewDidEndEditing(_ textView: UITextView) { parent.isFocused = false }
 
         func textViewDidChange(_ textView: UITextView) {
             guard !isApplyingHighlight, let view = textView as? MarkdownTextView else { return }
-            parent.text = view.text
-            applyHighlight(to: view, replacingText: nil)
+            let source = view.text ?? ""
+            displayedSource = source
+            parent.text = source
+            refreshTypingAttributes(in: view)
+            scheduleIndex(for: source, in: view, debounce: true)
         }
 
-        func textViewDidChangeSelection(_ textView: UITextView) { textView.setNeedsDisplay() }
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            textView.setNeedsDisplay()
+            if let view = textView as? MarkdownTextView { scheduleHighlight(in: view) }
+        }
+
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             scrollView.setNeedsDisplay()
-            (scrollView as? MarkdownTextView)?.gutterView?.setNeedsDisplay()
+            guard let view = scrollView as? MarkdownTextView else { return }
+            view.gutterView?.setNeedsDisplay()
+            scheduleHighlight(in: view)
         }
 
-        func applyHighlight(to view: MarkdownTextView, replacingText replacement: String?) {
-            isApplyingHighlight = true
-            let selectedRange = view.selectedRange
-            let contentOffset = view.contentOffset
-            if let replacement { view.text = replacement }
-            let source = view.text ?? ""
-            let baseFont = UIFont.monospacedSystemFont(ofSize: Lab.size(15), weight: .regular)
+        private var baseAttributes: [NSAttributedString.Key: Any] {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = 4
             paragraph.paragraphSpacing = 1
-            let storage = NSMutableAttributedString(
-                string: source,
-                attributes: [
-                    .font: baseFont,
-                    .foregroundColor: UIColor(Lab.text),
-                    .paragraphStyle: paragraph
-                ]
+            return [
+                .font: UIFont.monospacedSystemFont(ofSize: Lab.size(15), weight: .regular),
+                .foregroundColor: UIColor(Lab.text),
+                .paragraphStyle: paragraph
+            ]
+        }
+
+        /// Replace characters only for an external source change. Lexical
+        /// decoration never assigns attributedText, so typing/undo/IME ownership
+        /// stays with UITextView and cannot reset the entire document each key.
+        func updatePresentation(in view: MarkdownTextView, replacingText replacement: String) {
+            isApplyingHighlight = true
+            let selectedRange = view.selectedRange
+            let contentOffset = view.contentOffset
+            let sourceChanged = displayedSource != replacement || view.lineIndex == nil
+            if displayedSource != replacement || view.textStorage.length == 0 {
+                view.text = replacement
+                displayedSource = replacement
+            }
+            view.textStorage.setAttributes(
+                baseAttributes,
+                range: NSRange(location: 0, length: view.textStorage.length)
             )
-            MarkdownLexicalHighlighter.highlight(source, storage: storage)
-            view.attributedText = storage
-            let length = (source as NSString).length
-            let location = min(selectedRange.location, length)
+            highlightedRange = nil
+            let location = min(selectedRange.location, view.textStorage.length)
             view.selectedRange = NSRange(
                 location: location,
-                length: min(selectedRange.length, length - location)
+                length: min(selectedRange.length, view.textStorage.length - location)
             )
             refreshTypingAttributes(in: view)
             view.setContentOffset(contentOffset, animated: false)
+            isApplyingHighlight = false
+            if sourceChanged {
+                scheduleIndex(for: replacement, in: view, debounce: false)
+            } else {
+                scheduleHighlight(in: view)
+            }
             view.setNeedsDisplay()
             view.gutterView?.setNeedsDisplay()
+        }
+
+        private func scheduleIndex(for source: String, in view: MarkdownTextView, debounce: Bool) {
+            sourceGeneration += 1
+            let generation = sourceGeneration
+            indexTask?.cancel()
+            indexWorker?.cancel()
+            highlightTask?.cancel()
+            highlightedRange = nil
+            view.lineIndex = nil
+            view.gutterView?.setNeedsDisplay()
+            indexTask = Task { @MainActor [weak self, weak view] in
+                if debounce {
+                    do { try await Task.sleep(for: .milliseconds(40)) }
+                    catch { return }
+                }
+                guard !Task.isCancelled, let self, let view,
+                      self.sourceGeneration == generation else { return }
+                let worker = Task.detached(priority: .utility) {
+                    MarkdownEditorLineIndex(source: source, isCancelled: { Task.isCancelled })
+                }
+                self.indexWorker = worker
+                guard let index = await worker.value,
+                      !Task.isCancelled, self.sourceGeneration == generation else { return }
+                view.lineIndex = index
+                view.gutterView?.setNeedsDisplay()
+                self.scheduleHighlight(in: view)
+            }
+        }
+
+        func scheduleHighlight(in view: MarkdownTextView) {
+            guard !isApplyingHighlight else { return }
+            highlightTask?.cancel()
+            highlightTask = Task { @MainActor [weak self, weak view] in
+                await Task.yield()
+                guard !Task.isCancelled, let self, let view else { return }
+                self.highlightVisibleSource(in: view)
+            }
+        }
+
+        private func highlightVisibleSource(in view: MarkdownTextView) {
+            guard view.markedTextRange == nil,
+                  let index = view.lineIndex,
+                  index.utf16Count == view.textStorage.length,
+                  view.bounds.width > 0, view.bounds.height > 0 else { return }
+            let visibleRange = view.visibleCharacterRange()
+            var range = index.highlightWindow(around: visibleRange)
+            guard range.length > 0 else { return }
+            let source = view.textStorage.mutableString
+            // Keep UTF-16 surrogate pairs together at a capped window edge.
+            if range.location > 0, (0xDC00...0xDFFF).contains(source.character(at: range.location)) {
+                range.location += 1
+                range.length -= 1
+            }
+            let end = NSMaxRange(range)
+            if end < source.length, range.length > 0,
+               (0xDC00...0xDFFF).contains(source.character(at: end)) {
+                range.length -= 1
+            }
+            guard range.length > 0, range != highlightedRange else { return }
+            let firstLine = index.lines[index.lineIndex(containing: range.location)]
+            let lastLine = index.lines[index.lineIndex(containing: NSMaxRange(range) - 1)]
+            let windowSource = source.substring(with: range)
+            let window = NSMutableAttributedString(string: windowSource, attributes: baseAttributes)
+            MarkdownLexicalHighlighter.highlight(
+                windowSource,
+                storage: window,
+                initialFenceCharacter: firstLine.fenceCharacter,
+                skipFirstLine: range.location != firstLine.start,
+                skipLastLine: NSMaxRange(range) < lastLine.contentEnd
+            )
+
+            isApplyingHighlight = true
+            let undoManager = view.undoManager
+            let wasRegisteringUndo = undoManager?.isUndoRegistrationEnabled == true
+            if wasRegisteringUndo { undoManager?.disableUndoRegistration() }
+            view.textStorage.beginEditing()
+            window.enumerateAttributes(in: NSRange(location: 0, length: window.length)) { attributes, local, _ in
+                view.textStorage.setAttributes(
+                    attributes,
+                    range: NSRange(location: range.location + local.location, length: local.length)
+                )
+            }
+            view.textStorage.endEditing()
+            if wasRegisteringUndo { undoManager?.enableUndoRegistration() }
+            highlightedRange = range
+            refreshTypingAttributes(in: view)
             isApplyingHighlight = false
+            view.gutterView?.setNeedsDisplay()
         }
 
         func refreshTypingAttributes(in view: UITextView) {
-            view.typingAttributes = [
-                .font: UIFont.monospacedSystemFont(ofSize: Lab.size(15), weight: .regular),
-                .foregroundColor: UIColor(Lab.text)
-            ]
+            view.typingAttributes = baseAttributes
         }
     }
 }
@@ -128,11 +264,17 @@ private enum MarkdownLexicalHighlighter {
     private static let link = UIColor(Lab.cyan)
     private static let quote = UIColor(Lab.secondary)
 
-    static func highlight(_ source: String, storage: NSMutableAttributedString) {
+    static func highlight(
+        _ source: String,
+        storage: NSMutableAttributedString,
+        initialFenceCharacter: unichar? = nil,
+        skipFirstLine: Bool = false,
+        skipLastLine: Bool = false
+    ) {
         let nsSource = source as NSString
         guard nsSource.length > 0 else { return }
         var location = 0
-        var fenceCharacter: unichar?
+        var fenceCharacter = initialFenceCharacter
 
         while location < nsSource.length {
             let rawLineRange = nsSource.lineRange(for: NSRange(location: location, length: 0))
@@ -143,7 +285,9 @@ private enum MarkdownLexicalHighlighter {
 
             // Mirrors the website's adversarial-input bound: a pathological
             // 20k-character line stays plain rather than monopolizing typing.
-            if lineRange.length > 20_000 {
+            if lineRange.length > MarkdownEditorLineIndex.maximumLexicalLineLength
+                || (skipFirstLine && location == 0)
+                || (skipLastLine && NSMaxRange(rawLineRange) == nsSource.length) {
                 location = NSMaxRange(rawLineRange)
                 continue
             }
@@ -380,6 +524,8 @@ final class MarkdownEditorContainer: UIView {
 
 final class MarkdownTextView: UITextView {
     weak var gutterView: UIView?
+    var viewportDidChange: (() -> Void)?
+    var lineIndex: MarkdownEditorLineIndex?
 
     private var editorInsets: UIEdgeInsets {
         UIEdgeInsets(top: 14, left: 12, bottom: 18, right: 14)
@@ -389,6 +535,8 @@ final class MarkdownTextView: UITextView {
         super.init(frame: frame, textContainer: textContainer)
         textContainerInset = editorInsets
         self.textContainer.widthTracksTextView = true
+        // A far-away viewport must not force layout of every preceding line.
+        layoutManager.allowsNonContiguousLayout = true
         contentInsetAdjustmentBehavior = .never
     }
 
@@ -397,15 +545,34 @@ final class MarkdownTextView: UITextView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-
-        // Catalyst can restore UITextView defaults while swapping layout modes
-        // during a live window resize. Keep the text metrics deterministic.
         if textContainerInset != editorInsets {
             textContainerInset = editorInsets
         }
-        textContainer.widthTracksTextView = true
-        layoutManager.ensureLayout(for: textContainer)
+        if !textContainer.widthTracksTextView {
+            textContainer.widthTracksTextView = true
+        }
         gutterView?.setNeedsDisplay()
+        viewportDidChange?()
+    }
+
+    func visibleGlyphRange() -> NSRange {
+        guard textStorage.length > 0, bounds.width > 0, bounds.height > 0 else {
+            return NSRange(location: 0, length: 0)
+        }
+        let viewport = CGRect(
+            x: bounds.minX - textContainerInset.left,
+            y: bounds.minY - textContainerInset.top,
+            width: bounds.width,
+            height: bounds.height
+        )
+        layoutManager.ensureLayout(forBoundingRect: viewport, in: textContainer)
+        return layoutManager.glyphRange(forBoundingRect: viewport, in: textContainer)
+    }
+
+    func visibleCharacterRange() -> NSRange {
+        let glyphs = visibleGlyphRange()
+        guard glyphs.length > 0 else { return NSRange(location: 0, length: 0) }
+        return layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
     }
 
     override func draw(_ rect: CGRect) {
@@ -414,13 +581,18 @@ final class MarkdownTextView: UITextView {
     }
 
     private func drawCurrentLine() {
-        let length = (text as NSString).length
-        guard length > 0 else { return }
-        layoutManager.ensureLayout(for: textContainer)
-        let glyph = layoutManager.glyphIndexForCharacter(at: min(selectedRange.location, length - 1))
-        let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-        let y = fragment.minY + textContainerInset.top
-        let row = CGRect(x: bounds.minX, y: y, width: bounds.width, height: fragment.height)
+        guard textStorage.length > 0, let selection = selectedTextRange else { return }
+        let visible = visibleCharacterRange()
+        guard selectedRange.location >= visible.location,
+              selectedRange.location <= NSMaxRange(visible) else { return }
+        let caret = caretRect(for: selection.start)
+        guard caret.intersects(bounds) else { return }
+        let row = CGRect(
+            x: bounds.minX,
+            y: caret.minY,
+            width: bounds.width,
+            height: max(caret.height, font?.lineHeight ?? 0)
+        )
         UIColor(Lab.emerald).withAlphaComponent(0.055).setFill()
         UIBezierPath(rect: row).fill()
     }
@@ -451,21 +623,23 @@ private final class MarkdownLineNumberView: UIView {
         divider.lineWidth = 0.7
         divider.stroke()
 
-        let nsText = textView.text as NSString
         let numberFont = UIFont.monospacedDigitSystemFont(ofSize: Lab.size(10), weight: .medium)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: numberFont,
             .foregroundColor: UIColor(Lab.secondary).withAlphaComponent(0.58)
         ]
-        if nsText.length == 0 {
+        if textView.textStorage.length == 0 {
             drawLineNumber(1, y: textView.textContainerInset.top, attributes: attributes)
             context?.restoreGState()
             return
         }
+        guard let index = textView.lineIndex,
+              index.utf16Count == textView.textStorage.length else {
+            context?.restoreGState()
+            return
+        }
 
-        textView.layoutManager.ensureLayout(for: textView.textContainer)
-        let lineStarts = logicalLineStarts(in: nsText)
-        let glyphRange = textView.layoutManager.glyphRange(for: textView.textContainer)
+        let glyphRange = textView.visibleGlyphRange()
         textView.layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) {
             [weak self] _, usedRect, _, fragmentGlyphRange, _ in
             guard let self, let textView = self.textView else { return }
@@ -473,43 +647,30 @@ private final class MarkdownLineNumberView: UIView {
                 forGlyphRange: fragmentGlyphRange,
                 actualGlyphRange: nil
             )
-            guard let line = lineStarts[characterRange.location] else {
+            guard let line = index.lineNumber(startingAt: characterRange.location) else {
                 // A soft-wrapped continuation deliberately has no number.
                 return
             }
-            let y = usedRect.minY - textView.contentOffset.y
+            let y = usedRect.minY + textView.textContainerInset.top - textView.contentOffset.y
                 + max(0, (usedRect.height - numberFont.lineHeight) * 0.5)
             if y > -20, y < self.bounds.height + 20 {
                 self.drawLineNumber(line, y: y, attributes: attributes)
             }
         }
 
-        if nsText.character(at: nsText.length - 1) == 10,
-           let trailingLine = lineStarts[nsText.length] {
+        let visibleCharacters = textView.layoutManager.characterRange(
+            forGlyphRange: glyphRange,
+            actualGlyphRange: nil
+        )
+        if index.lines.last?.start == index.utf16Count,
+           NSMaxRange(visibleCharacters) >= index.utf16Count {
             let fragment = textView.layoutManager.extraLineFragmentRect
-            let y = fragment.minY - textView.contentOffset.y
+            let y = fragment.minY + textView.textContainerInset.top - textView.contentOffset.y
             if fragment != .zero, y > -20, y < bounds.height + 20 {
-                drawLineNumber(trailingLine, y: y, attributes: attributes)
+                drawLineNumber(index.lines.count, y: y, attributes: attributes)
             }
         }
         context?.restoreGState()
-    }
-
-    private func logicalLineStarts(in text: NSString) -> [Int: Int] {
-        var result = [0: 1]
-        var line = 1
-        var cursor = 0
-        while cursor < text.length {
-            let range = text.lineRange(for: NSRange(location: cursor, length: 0))
-            let next = NSMaxRange(range)
-            guard next > cursor else { break }
-            cursor = next
-            if cursor <= text.length {
-                line += 1
-                result[cursor] = line
-            }
-        }
-        return result
     }
 
     private func drawLineNumber(

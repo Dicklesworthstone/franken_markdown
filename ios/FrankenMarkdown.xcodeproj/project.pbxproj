@@ -23,6 +23,10 @@
 		C5D68BC001626E1526239D6C /* MarkdownDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F902899E70FF5E039467AB4 /* MarkdownDraftStore.swift */; };
 		C8B55CBEAEB2627B054A0626 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 19C79608149D8DC651F4E806 /* Assets.xcassets */; };
 		E5D7578DBDFD1A6111434BC7 /* DocumentControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF7E34BF5351E2476DB9D93 /* DocumentControls.swift */; };
+		099FCA6A67CB1C51E3ED093C /* MarkdownEditorLineIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFCC2D2F6E7C0B9BFB994E2 /* MarkdownEditorLineIndex.swift */; };
+		AF665EE7E9A751F15E7E64DC /* MarkdownSourceMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = E39064DB7475F679AE218069 /* MarkdownSourceMetrics.swift */; };
+		124DDA908F80177BD84761A9 /* MarkdownEditorLineIndexTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B3D6BCAB10E429BA9176D87 /* MarkdownEditorLineIndexTests.swift */; };
+		F85F80982391875D2E4A9BD0 /* MarkdownSourceMetricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56609B0A6FBBEB1AA059D291 /* MarkdownSourceMetricsTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -63,12 +67,18 @@
 		F24025622B57C8A027B6EE60 /* DocumentLabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentLabView.swift; sourceTree = "<group>"; };
 		F5364EFE11307299824181A8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		FAE74FB96D32EC603E949618 /* HTMLShareUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLShareUITests.swift; sourceTree = "<group>"; };
+		FFFCC2D2F6E7C0B9BFB994E2 /* MarkdownEditorLineIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownEditorLineIndex.swift; sourceTree = "<group>"; };
+		E39064DB7475F679AE218069 /* MarkdownSourceMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceMetrics.swift; sourceTree = "<group>"; };
+		3B3D6BCAB10E429BA9176D87 /* MarkdownEditorLineIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownEditorLineIndexTests.swift; sourceTree = "<group>"; };
+		56609B0A6FBBEB1AA059D291 /* MarkdownSourceMetricsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceMetricsTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
 		0DA6CDB953D908901DE1CE21 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				56609B0A6FBBEB1AA059D291 /* MarkdownSourceMetricsTests.swift */,
+				3B3D6BCAB10E429BA9176D87 /* MarkdownEditorLineIndexTests.swift */,
 				1E9849A35025835BE702F941 /* MarkdownDraftStoreTests.swift */,
 				5EDC64D4804AB6683E52CDA6 /* MarkdownSourceLoaderTests.swift */,
 			);
@@ -78,6 +88,8 @@
 		A3F92906F8DDD3CC75D2ACCE /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				E39064DB7475F679AE218069 /* MarkdownSourceMetrics.swift */,
+				FFFCC2D2F6E7C0B9BFB994E2 /* MarkdownEditorLineIndex.swift */,
 				3DF7E34BF5351E2476DB9D93 /* DocumentControls.swift */,
 				F24025622B57C8A027B6EE60 /* DocumentLabView.swift */,
 				450492AA363B17872450BAF4 /* ForgeView.swift */,
@@ -253,6 +265,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F85F80982391875D2E4A9BD0 /* MarkdownSourceMetricsTests.swift in Sources */,
+				124DDA908F80177BD84761A9 /* MarkdownEditorLineIndexTests.swift in Sources */,
 				63971C49396147EBF41B32FD /* MarkdownDraftStoreTests.swift in Sources */,
 				07E2F669D4601F7D3C8FE142 /* MarkdownSourceLoaderTests.swift in Sources */,
 			);
@@ -262,6 +276,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AF665EE7E9A751F15E7E64DC /* MarkdownSourceMetrics.swift in Sources */,
+				099FCA6A67CB1C51E3ED093C /* MarkdownEditorLineIndex.swift in Sources */,
 				E5D7578DBDFD1A6111434BC7 /* DocumentControls.swift in Sources */,
 				79AB0548B879EAC96926D540 /* DocumentLabView.swift in Sources */,
 				42AA8FBAEB45C36937DF447D /* ForgeView.swift in Sources */,

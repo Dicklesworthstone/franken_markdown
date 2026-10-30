@@ -61,6 +61,13 @@ struct ForgeView: View {
     @State private var attemptedDocumentRestoration = false
     @State private var showingRestorationConflict = false
     @State private var pendingDocumentAutosave: Task<Void, Never>?
+    @State private var sourceMetrics = MarkdownSourceMetrics.empty
+    @State private var sourceMetricsAreCurrent = false
+    @State private var sourceMetricsGeneration = UUID()
+    @State private var pendingSourceMetrics: Task<Void, Never>?
+#if DEBUG
+    @State private var installedUITestSource = false
+#endif
 
     init() {
         let requested = ProcessInfo.processInfo.environment["FMD_INITIAL_LANE"]
@@ -77,6 +84,10 @@ struct ForgeView: View {
         forgePresentation
             .onAppear {
                 uiTextScale = Lab.clampedTextScale(uiTextScale)
+                scheduleSourceMetrics(renderer.source)
+#if DEBUG
+                installUITestSourceIfRequested()
+#endif
             }
             .onChange(of: uiTextScale) { _, value in
                 let clamped = Lab.clampedTextScale(value)
@@ -134,6 +145,7 @@ struct ForgeView: View {
     private var forgeRenderObservers: some View {
         forgeLayout
         .onChange(of: renderer.source) { _, source in
+            scheduleSourceMetrics(source)
             renderer.scheduleRender()
             renderer.scheduleDraftSave()
             scheduleDocumentAutosave(source)
@@ -211,6 +223,9 @@ struct ForgeView: View {
         .onDisappear {
             pendingDocumentAutosave?.cancel()
             pendingDocumentAutosave = nil
+            pendingSourceMetrics?.cancel()
+            pendingSourceMetrics = nil
+            sourceMetricsGeneration = UUID()
         }
         .onOpenURL { url in
             if url.isFileURL {
@@ -635,9 +650,10 @@ struct ForgeView: View {
                     .font(.system(size: Lab.size(9), design: .monospaced))
                     .foregroundStyle(Lab.emerald)
                     .accessibilityHint("The active draft stays on this device")
-                Text("\(renderer.source.utf8.count) bytes · \(characterCount) chars · \(wordCount) words")
+                Text(sourceMetricsSummary)
                         .font(.system(size: Lab.size(9), design: .monospaced))
                         .foregroundStyle(Lab.secondary)
+                        .accessibilityIdentifier("markdown-source-metrics")
                 }
                 MarkdownCodeEditor(text: $renderer.source, isFocused: $editorFocused)
                     .background(Lab.panelStrong, in: RoundedRectangle(cornerRadius: 12))
@@ -697,15 +713,18 @@ struct ForgeView: View {
         LabPanel {
             VStack(alignment: .leading, spacing: 12) {
                 LabLabel(text: "Document Outline")
-                if renderer.headings.isEmpty {
+                if !sourceMetricsAreCurrent {
+                    ProgressView("Reading document outline…")
+                        .font(.system(size: Lab.size(12)))
+                } else if sourceMetrics.headings.isEmpty {
                     Text("No headings found in source Markdown (# Heading).")
                         .font(.system(size: Lab.size(12)))
                         .foregroundStyle(Lab.secondary)
                         .padding(.vertical, 16)
                 } else {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(renderer.headings) { heading in
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(sourceMetrics.headings) { heading in
                                 HStack(spacing: 8) {
                                     Text(String(repeating: "· ", count: heading.level - 1) + "H\(heading.level)")
                                         .font(.system(size: Lab.size(10), weight: .black, design: .monospaced))
@@ -838,13 +857,30 @@ struct ForgeView: View {
         TypeScalePresetStep.closest(to: value).scale
     }
 
-    private var characterCount: Int {
-        renderer.source.count
+    private var sourceMetricsSummary: String {
+        guard sourceMetricsAreCurrent else { return "Counting source…" }
+        return "\(sourceMetrics.byteCount) bytes · \(sourceMetrics.characterCount) chars · \(sourceMetrics.wordCount) words"
     }
 
-    private var wordCount: Int {
-        let components = renderer.source.components(separatedBy: .whitespacesAndNewlines)
-        return components.filter { !$0.isEmpty }.count
+    private func scheduleSourceMetrics(_ source: String) {
+        pendingSourceMetrics?.cancel()
+        let generation = UUID()
+        sourceMetricsGeneration = generation
+        sourceMetricsAreCurrent = false
+        pendingSourceMetrics = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                guard let metrics = await MarkdownSourceMetrics.collect(source),
+                      !Task.isCancelled,
+                      generation == sourceMetricsGeneration else { return }
+                sourceMetrics = metrics
+                sourceMetricsAreCurrent = true
+                pendingSourceMetrics = nil
+            } catch {
+                // A newer source revision owns the next statistics snapshot.
+            }
+        }
     }
 
     private var statusText: String {
@@ -969,6 +1005,40 @@ struct ForgeView: View {
         sourceImportError = nil
         documentError = nil
     }
+
+#if DEBUG
+    /// UI tests enter through the real coordinated file loader using an on-device
+    /// fixture. Release builds never accept this test-only launch parameter.
+    private func installUITestSourceIfRequested() {
+        guard !installedUITestSource,
+              let rawSize = ProcessInfo.processInfo.environment["FMD_UI_TEST_SOURCE_BYTES"],
+              let requestedBytes = Int(rawSize),
+              (750_000 ... 4 * 1_024 * 1_024).contains(requestedBytes) else { return }
+        installedUITestSource = true
+        let request = documentSession.beginDocumentRequest()
+        Task { @MainActor in
+            do {
+                let url = try await Task.detached(priority: .utility) {
+                    let header = "# Large Markdown document\n\n"
+                    let section = "## Section\n\nCafé 👩🏽‍💻: **bold**, \u{0060}code\u{0060}, and [a link](https://example.com).\n\n- First item\n- Second item\n\n"
+                    let tail = "\n# Final section\n\nFMD_LARGE_DOCUMENT_END\n"
+                    let copies = max(1, (requestedBytes - header.utf8.count - tail.utf8.count
+                        + section.utf8.count - 1) / section.utf8.count)
+                    let source = header + String(repeating: section, count: copies) + tail
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("large-markdown-\(UUID().uuidString).md")
+                    try Data(source.utf8).write(to: url, options: .atomic)
+                    return url
+                }.value
+                guard let document = try await documentSession.open(from: url, request: request) else { return }
+                adopt(document)
+            } catch {
+                guard documentSession.isCurrentDocumentRequest(request) else { return }
+                sourceImportError = error.localizedDescription
+            }
+        }
+    }
+#endif
 
     private func loadSourceDocument(from url: URL, request: UUID? = nil) {
         let request = request ?? documentSession.beginDocumentRequest()

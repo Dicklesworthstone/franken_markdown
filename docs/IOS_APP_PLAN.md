@@ -61,6 +61,34 @@ HTML preview remains inside the render process and does not cross the Swift brid
 
 Swift assembles chunks in order with a maximum document/export budget, writes to an application-temporary URL, validates byte length, and publishes the file only after completion. This avoids a single giant property-list message and gives export a real, measurable progress fraction.
 
+### 3.4 Large-document responsiveness
+
+The native editor keeps the complete source in its text storage. Syntax
+decoration is limited to a visible window of at most 32,768 UTF-16 units and
+160 logical lines; scrolling and current-line painting request visible layout
+only. A cancellable utility task builds the full line/fence index for each
+source revision, so line numbers and fence context do not require rescanning
+the document on every frame. Decoration changes attributes in place and keeps
+character edits, selection, undo, and marked-text composition owned by UIKit.
+
+Source statistics and the native outline are computed off the main actor,
+cached by revision, and discarded when superseded. Outline rows are created
+lazily. Preview requests have one active render and one newest pending
+revision. HTML stays inside WebKit until Swift acknowledges that its source
+and settings still belong to the current request. If iOS terminates the web
+content process, the source remains editable and Render can restart the
+renderer without an automatic retry loop.
+
+These are presentation-work bounds, not source truncation or export limits.
+The existing import, recovery, and export size policies remain separate.
+The ios_large_documents.test.mjs suite exercises complete 750 KiB and
+1.5 MiB documents against the actual tracked Apple WASM bundle; the companion
+preview tests exercise staging, stale results, and full export payloads.
+Native XCTest coverage includes UTF-16 indexing and cancellation, and a Debug
+UI-test fixture opens 750 KiB and 2 MiB files through the real source loader
+before scrolling and editing. Those UIKit/UI tests require an Apple runtime;
+Node results do not establish iPhone rendering or scrolling performance.
+
 ## 4. Native document model
 
 `MarkdownDocument` stores UTF-8 Markdown plus lightweight per-document presentation settings. The source file remains plain Markdown; app-only settings are stored in scene/document state, not injected into the user’s text.

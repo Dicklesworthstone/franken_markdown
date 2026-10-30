@@ -4,8 +4,9 @@
 //! The pure render core never touches the filesystem. A host resolver owns
 //! path sandboxing and bounded file reads. Expansion uses one output buffer,
 //! checks its budget before every append, and bounds depth and resolver calls.
-//! Top-level fenced and indented code remains literal: documentation examples
-//! cannot trigger include resolution merely by containing a directive.
+//! Fenced and indented code remains literal, including fences inside Markdown
+//! containers. Documentation examples cannot trigger include resolution merely
+//! by containing a directive, or hide a real include after their closing fence.
 //!
 //! Select one line (`file.md:3`), an inclusive range (`file.md:3:8`), an
 //! open-ended range (`file.md:3:` or `file.md::8`), or a named snippet
@@ -331,6 +332,17 @@ impl Expansion<'_> {
         if !strip_anchors && !has_includes(src) {
             return self.append(src, source_id, source_offset, false);
         }
+        // The normal parser owns container boundaries, including lazy list
+        // continuation, tabs, and unclosed fences ending with their container.
+        // Only include-bearing input needs this metadata pass; it builds no AST.
+        let container_fences = if has_includes(src) {
+            crate::parse::container_fence_ranges(src, |line| {
+                strip_anchors && anchor_marker(line).is_some()
+            })
+        } else {
+            Vec::new()
+        };
+        let mut container_fence_index = 0;
         let mut line_offset = source_offset;
         let mut fence: Option<(u8, usize)> = None;
         for line in src.split_inclusive('\n') {
@@ -348,6 +360,19 @@ impl Expansion<'_> {
                 }) {
                     fence = None;
                 }
+                self.append(line, source_id, original_start, false)?;
+                continue;
+            }
+            while container_fences
+                .get(container_fence_index)
+                .is_some_and(|range| range.end <= original_start - source_offset)
+            {
+                container_fence_index += 1;
+            }
+            if container_fences
+                .get(container_fence_index)
+                .is_some_and(|range| range.start < line_offset - source_offset)
+            {
                 self.append(line, source_id, original_start, false)?;
                 continue;
             }

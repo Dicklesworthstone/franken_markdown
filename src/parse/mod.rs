@@ -24,6 +24,7 @@ pub use frontmatter::{Frontmatter, split_frontmatter};
 
 mod destinations;
 pub use destinations::DestinationSpan;
+pub(crate) use destinations::container_fence_ranges;
 #[cfg(feature = "cli")]
 pub(crate) use destinations::{DestinationSyntax, resource_destination_spans};
 
@@ -890,11 +891,17 @@ fn collect_link_reference_metadata_at_depth(
         if scan.maybe_fence
             && let Some((fence_ch, fence_len, _info)) = open_fence(line)
         {
+            let start = i;
             i += 1;
             while i < lines.len() && !is_close_fence(lines[i], fence_ch, fence_len) {
                 i += 1;
             }
             i += 1; // step past the closing fence (or past end if unclosed)
+            if depth > 0
+                && let Some(tracker) = &mut tracker
+            {
+                tracker.container_fence(&lines[start..i.min(lines.len())]);
+            }
             in_paragraph = false; // a code block is not paragraph text
             continue;
         }

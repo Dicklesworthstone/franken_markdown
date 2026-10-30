@@ -140,6 +140,52 @@ fn tracked_destinations(source: &str, html: bool) -> Vec<SourceDestination> {
     spans
 }
 
+/// Source envelopes for fenced code owned by lists, quotes, or footnotes.
+/// Transclusion uses these to keep container examples literal without guessing
+/// a second container grammar. Reuse the block metadata walk: no inline AST,
+/// HTML rendering, or ordinary destination tokens are produced in this mode.
+/// Top-level include/fence recognition remains the expansion engine's contract.
+pub(crate) fn container_fence_ranges(
+    source: &str,
+    skip_line: impl Fn(&str) -> bool,
+) -> Vec<Range<usize>> {
+    if !source.contains(['`', '~']) {
+        return Vec::new();
+    }
+    let mut tracker = DestinationTracker::new(source);
+    tracker.container_fences = Some(Vec::new());
+    let body = document_body(source);
+    // Named snippets remove anchor-marker lines before expansion. Omit those
+    // same borrowed slices here, retaining their neighbors' original addresses.
+    let mut originals = split_logical_lines(body);
+    originals.retain(|line| !skip_line(line));
+    let tab_storage: Option<Vec<String>> = body.contains('\t').then(|| {
+        originals
+            .iter()
+            .map(|line| expand_leading_tabs(line).into_owned())
+            .collect()
+    });
+    if let Some(storage) = &tab_storage {
+        for (copied, original) in storage.iter().zip(&originals) {
+            tracker.map_suffix(copied, original);
+        }
+    }
+    let lines = if let Some(storage) = &tab_storage {
+        storage.iter().map(String::as_str).collect()
+    } else {
+        originals
+    };
+    collect_link_reference_metadata_into_tracked(
+        &lines,
+        None,
+        &mut ReferenceMap::new(),
+        Some(&mut tracker),
+    );
+    let mut ranges = tracker.container_fences.unwrap_or_default();
+    ranges.sort_unstable_by_key(|range| range.start);
+    ranges
+}
+
 #[derive(Clone)]
 struct TextRun {
     copied: Range<usize>,
@@ -237,6 +283,8 @@ pub(super) struct DestinationTracker {
     chars: Vec<CharMap>,
     spans: Vec<SourceDestination>,
     html: bool,
+    /// Present only for the metadata-only transclusion fence query.
+    container_fences: Option<Vec<Range<usize>>>,
 }
 
 impl DestinationTracker {
@@ -249,6 +297,30 @@ impl DestinationTracker {
             chars: Vec::new(),
             spans: Vec::new(),
             html: false,
+            container_fences: None,
+        }
+    }
+
+    /// Map the first and last literal characters while the container's copied
+    /// suffixes are still registered. The envelope includes original line
+    /// prefixes/newlines; callers use it to classify whole source lines, never
+    /// claim that stripped Markdown markers are rendered code characters.
+    pub(super) fn container_fence(&mut self, lines: &[&str]) {
+        if self.container_fences.is_none() {
+            return;
+        }
+        let first = lines.iter().find_map(|line| {
+            let text = line.trim();
+            let width = text.chars().next()?.len_utf8();
+            self.text_range(&text[..width])
+        });
+        let last = lines.iter().rev().find_map(|line| {
+            let text = line.trim();
+            let width = text.chars().next_back()?.len_utf8();
+            self.text_range(&text[text.len() - width..])
+        });
+        if let (Some(first), Some(last), Some(ranges)) = (first, last, &mut self.container_fences) {
+            ranges.push(first.start..last.end);
         }
     }
 
@@ -505,6 +577,9 @@ impl DestinationTracker {
 
     /// Invoked only after the real paragraph-aware collector accepts a def.
     pub(super) fn reference(&mut self, lines: &[&str], dest: &str) {
+        if self.container_fences.is_some() {
+            return;
+        }
         let joined = lines.join("\n");
         let mut offset = 0;
         let parts: Vec<_> = lines

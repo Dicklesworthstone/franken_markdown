@@ -419,35 +419,23 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     );
     let reference_started = profiler.checkpoint();
     let has_reference_candidate = src.contains("]:");
-    let (lines, refs, _, rebuilt_reference_lines) = if has_reference_candidate {
-        collect_link_references_tracked(
-            lines,
-            profiler.destinations.as_mut(),
-            profiler.block_spans.as_mut(),
-        )
+    let (lines, refs, _, consumed_references) = if has_reference_candidate {
+        collect_link_references_tracked(lines, profiler.destinations.as_mut())
     } else {
-        (lines, ReferenceMap::new(), false, false)
+        (lines, ReferenceMap::new(), false, Vec::new())
     };
-    let reference_allocations = if has_reference_candidate {
-        refs.len()
-            + if rebuilt_reference_lines {
-                lines.len()
-            } else {
-                0
-            }
-    } else {
-        0
-    };
+    let reference_allocations = refs.len() + usize::from(!consumed_references.is_empty());
     profiler.record_since(
         "reference_collection",
         refs.len(),
         src.len(),
         reference_allocations,
-        "collect link reference definitions and remove consumed definition lines",
+        "collect link reference definitions and preserve their source block boundaries",
         reference_started,
     );
     let block_started = profiler.checkpoint();
-    let blocks = parse_blocks_with_refs_profiled(&lines, &refs, profiler);
+    let blocks =
+        parse_blocks_with_reference_boundaries(&lines, &consumed_references, &refs, profiler);
     let block_count = blocks.len();
     profiler.record_since(
         "block_parse_total",
@@ -568,28 +556,14 @@ fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
 }
 
 struct BlockSpanTracker {
-    /// One original span per current top-level parser line. Expanded tabs do
-    /// not alter line count; removing references updates this vector with the
-    /// very same consumed ranges and synthetic separators as the parser.
+    /// One original span per top-level source line. Expanded tabs do not alter
+    /// line count. Reference boundaries retain these coordinates, so each parsed
+    /// segment records its original offset instead of joining unrelated blocks.
     lines: Vec<SourceSpan>,
     blocks: Vec<SourceSpan>,
 }
 
 impl BlockSpanTracker {
-    fn strip_references(&mut self, line_texts: &[&str], consumed: &[Range<usize>]) {
-        let mut kept = Vec::with_capacity(self.lines.len());
-        let mut cursor = 0;
-        for range in consumed {
-            kept.extend_from_slice(&self.lines[cursor..range.start]);
-            if consumed_reference_run_separates_tables(line_texts, range) {
-                kept.push(self.lines[range.start]);
-            }
-            cursor = range.end;
-        }
-        kept.extend_from_slice(&self.lines[cursor..]);
-        self.lines = kept;
-    }
-
     fn record(&mut self, start: usize, end: usize) {
         self.blocks.push(span_for_lines(&self.lines, start, end));
     }
@@ -656,14 +630,21 @@ fn looks_like_reference_definition(line: &str) -> bool {
 
 #[cfg(test)]
 fn collect_link_references(lines: Vec<&str>) -> (Vec<&str>, ReferenceMap, bool, bool) {
-    collect_link_references_tracked(lines, None, None)
+    let (lines, refs, kept_reference_candidate, consumed) =
+        collect_link_references_tracked(lines, None);
+    let rebuilt_lines = !consumed.is_empty();
+    let kept = if rebuilt_lines {
+        strip_consumed_references(&lines, &consumed)
+    } else {
+        lines
+    };
+    (kept, refs, kept_reference_candidate, rebuilt_lines)
 }
 
 fn collect_link_references_tracked<'a>(
     lines: Vec<&'a str>,
     tracker: Option<&mut destinations::DestinationTracker>,
-    block_spans: Option<&mut BlockSpanTracker>,
-) -> (Vec<&'a str>, ReferenceMap, bool, bool) {
+) -> (Vec<&'a str>, ReferenceMap, bool, ConsumedReferenceLines) {
     let mut consumed = ConsumedReferenceLines::new();
     let mut refs = ReferenceMap::new();
     let kept_reference_candidate = collect_link_reference_metadata_into_tracked(
@@ -672,16 +653,7 @@ fn collect_link_references_tracked<'a>(
         &mut refs,
         tracker,
     );
-    let rebuilt_lines = !consumed.is_empty();
-    if rebuilt_lines && let Some(spans) = block_spans {
-        spans.strip_references(&lines, &consumed);
-    }
-    let kept = if rebuilt_lines {
-        strip_consumed_references(&lines, &consumed)
-    } else {
-        lines
-    };
-    (kept, refs, kept_reference_candidate, rebuilt_lines)
+    (lines, refs, kept_reference_candidate, consumed)
 }
 
 fn strip_consumed_references<'a>(lines: &[&'a str], consumed: &[Range<usize>]) -> Vec<&'a str> {
@@ -1276,8 +1248,14 @@ fn parse_blocks_bounded(
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
 ) -> Vec<Block> {
+    let consumed = if lines.iter().any(|line| line.contains("]:")) {
+        collect_link_reference_metadata(lines).0
+    } else {
+        Vec::new()
+    };
     if profiler.block_depth >= MAX_BLOCK_NESTING_DEPTH {
-        let text = lines.join("\n");
+        let kept = strip_consumed_references(lines, &consumed);
+        let text = kept.join("\n");
         let trimmed = trim_unicode_ws(&text);
         if trimmed.is_empty() {
             return Vec::new();
@@ -1287,7 +1265,7 @@ fn parse_blocks_bounded(
         ))];
     }
     profiler.block_depth += 1;
-    let blocks = parse_blocks_with_refs_profiled(lines, refs, profiler);
+    let blocks = parse_blocks_with_reference_boundaries(lines, &consumed, refs, profiler);
     profiler.block_depth -= 1;
     blocks
 }
@@ -1393,10 +1371,43 @@ fn scanned_paragraph_interrupt(scan: BlockStartScan<'_>) -> bool {
         || scanned_list_marker_interrupts_paragraph(scan)
 }
 
+/// Definitions are invisible content, but still terminate their source blocks.
+/// Parsing the original slices on either side prevents distinct lists, code
+/// blocks or tables from being joined when their separating definition vanishes.
+fn parse_blocks_with_reference_boundaries(
+    lines: &[&str],
+    consumed: &[Range<usize>],
+    refs: &ReferenceMap,
+    profiler: &mut ParseProfiler,
+) -> Vec<Block> {
+    if consumed.is_empty() {
+        return parse_blocks_with_refs_profiled(lines, refs, profiler, 0);
+    }
+    let mut blocks = Vec::new();
+    let mut start = 0;
+    for range in consumed {
+        blocks.extend(parse_blocks_with_refs_profiled(
+            &lines[start..range.start],
+            refs,
+            profiler,
+            start,
+        ));
+        start = range.end;
+    }
+    blocks.extend(parse_blocks_with_refs_profiled(
+        &lines[start..],
+        refs,
+        profiler,
+        start,
+    ));
+    blocks
+}
+
 fn parse_blocks_with_refs_profiled(
     lines: &[&str],
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
+    source_line_offset: usize,
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut i = 0;
@@ -1410,7 +1421,7 @@ fn parse_blocks_with_refs_profiled(
         if let Some(start) = block_start.take()
             && let Some(spans) = &mut profiler.block_spans
         {
-            spans.record(start, i);
+            spans.record(start + source_line_offset, i + source_line_offset);
         }
         let line = lines[i];
         let trimmed = trim_space_tab(line);
@@ -1588,9 +1599,7 @@ fn parse_blocks_with_refs_profiled(
                     &text, refs, profiler,
                 ))]
             } else {
-                let (consumed, _) = collect_link_reference_metadata(&body);
-                let kept = strip_consumed_references(&body, &consumed);
-                parse_blocks_bounded(&kept, refs, profiler)
+                parse_blocks_bounded(&body, refs, profiler)
             };
             profiler.record_since(
                 "footnote_definition",
@@ -1621,16 +1630,7 @@ fn parse_blocks_with_refs_profiled(
                 0
             };
             let inner_str_refs: Vec<&str> = inner.iter().map(|s| s.as_ref()).collect();
-            // Remove reference-definition lines from the blockquote body so they
-            // are not rendered as literal text; they were already collected into
-            // the shared `refs` map by the source-ordered reference pass.
-            let inner_kept = if inner_str_refs.iter().any(|line| line.contains("]:")) {
-                let (consumed, _) = collect_link_reference_metadata(&inner_str_refs);
-                strip_consumed_references(&inner_str_refs, &consumed)
-            } else {
-                inner_str_refs
-            };
-            let inner_blocks = parse_blocks_bounded(&inner_kept, refs, profiler);
+            let inner_blocks = parse_blocks_bounded(&inner_str_refs, refs, profiler);
             profiler.record_since(
                 "blockquote_block",
                 inner_line_count,
@@ -1779,7 +1779,7 @@ fn parse_blocks_with_refs_profiled(
     if let Some(start) = block_start
         && let Some(spans) = &mut profiler.block_spans
     {
-        spans.record(start, i);
+        spans.record(start + source_line_offset, i + source_line_offset);
     }
     blocks
 }
@@ -3701,18 +3701,9 @@ fn parse_list_split(
     let mut items = Vec::with_capacity(split.items.len());
     for (task, body) in split.items {
         let str_refs: Vec<&str> = body.iter().map(|s| s.as_ref()).collect();
-        // Remove reference-definition lines from the item body so they are not
-        // rendered as literal text; they were already collected into the shared
-        // `refs` map by the source-ordered reference pass.
-        let kept = if str_refs.iter().any(|line| line.contains("]:")) {
-            let (consumed, _) = collect_link_reference_metadata(&str_refs);
-            strip_consumed_references(&str_refs, &consumed)
-        } else {
-            str_refs
-        };
         items.push(ListItem {
             task,
-            blocks: parse_blocks_bounded(&kept, refs, profiler),
+            blocks: parse_blocks_bounded(&str_refs, refs, profiler),
         });
     }
     (

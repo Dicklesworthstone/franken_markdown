@@ -896,6 +896,14 @@ fn collect_link_reference_metadata_at_depth(
             continue;
         }
 
+        // A display formula owns its entire literal body, including blank lines
+        // and reference-shaped TeX. It cannot interrupt an open paragraph, and
+        // its closing fence leaves the next line at a real block boundary.
+        if !in_paragraph && let Some(start) = math_block_start(line) {
+            i += math_block_extent(&lines[i..], start);
+            continue;
+        }
+
         if let Some(is_paragraph_text) = reference_collector_plain_nonblank_line_fast_path(line) {
             in_paragraph = is_paragraph_text;
             i += 1;
@@ -1195,10 +1203,6 @@ fn is_table_row_source(line: &str) -> bool {
         return false;
     }
     let scan = BlockStartScan::new(line, trim_space_tab(line));
-    let math = trim_unicode_ws(line);
-    let starts_math = scan.indent < 4
-        && math.starts_with("$$")
-        && (math.ends_with("$$") || !math[2..].contains("$$"));
     !scanned_thematic_break(scan)
         && scanned_atx_heading(scan).is_none()
         && scanned_open_fence(scan).is_none()
@@ -1207,7 +1211,7 @@ fn is_table_row_source(line: &str) -> bool {
         && scanned_html_block_kind(scan).is_none()
         && scanned_list_marker(scan).is_none()
         && !footnote_definition_marker(line)
-        && !starts_math
+        && math_block_start(line).is_none()
 }
 
 /// True when `line` is ordinary paragraph text: a non-blank line that does not
@@ -1489,62 +1493,50 @@ fn parse_blocks_with_refs_profiled(
             }
             continue;
         }
-        if leading_spaces(line) < 4 && trim_start_unicode_ws(line).starts_with("$$") {
+        if let Some(start) = math_block_start(line) {
             let started = profiler.checkpoint();
-            let trimmed = trim_unicode_ws(line);
-            if trimmed.len() >= 4 && trimmed.ends_with("$$") && trimmed != "$$" {
-                let code = trim_unicode_ws(&trimmed[2..trimmed.len() - 2]).to_string();
-                profiler.record_since(
-                    "math_block",
-                    1,
-                    code.len(),
-                    1,
-                    "parse one single-line math block",
-                    started,
-                );
-                blocks.push(Block::MathBlock(code));
-                i += 1;
-                continue;
-            } else if trimmed == "$$" || (trimmed.starts_with("$$") && !trimmed[2..].contains("$$"))
-            {
-                let mut code = String::new();
-                let initial = trim_unicode_ws(&trimmed[2..]);
-                if !initial.is_empty() {
-                    code.push_str(initial);
-                    code.push('\n');
-                }
-                let mut used = 1usize;
-                while i + used < lines.len() {
-                    let l = lines[i + used];
-                    let t = trim_unicode_ws(l);
-                    if t == "$$" {
-                        used += 1;
-                        break;
-                    } else if let Some(inner) = t.strip_suffix("$$") {
-                        let inner = trim_end_unicode_ws(inner);
-                        if !inner.is_empty() {
-                            code.push_str(inner);
+            let used = math_block_extent(&lines[i..], start);
+            let multiline = matches!(start, MathBlockStart::Multiline(_));
+            let mut code = match start {
+                MathBlockStart::SingleLine(content) => content.to_owned(),
+                MathBlockStart::Multiline(initial) => {
+                    let mut code = String::new();
+                    if !initial.is_empty() {
+                        code.push_str(initial);
+                        code.push('\n');
+                    }
+                    for line in &lines[i + 1..i + used] {
+                        if let Some(inner) = math_block_close(line) {
+                            if !inner.is_empty() {
+                                code.push_str(inner);
+                                code.push('\n');
+                            }
+                        } else {
+                            code.push_str(line);
                             code.push('\n');
                         }
-                        used += 1;
-                        break;
                     }
-                    code.push_str(l);
-                    code.push('\n');
-                    used += 1;
+                    code
                 }
-                profiler.record_since(
-                    "math_block",
-                    used,
-                    code.len(),
-                    1,
-                    "parse one multi-line math block",
-                    started,
-                );
-                blocks.push(Block::MathBlock(code.trim_end_matches('\n').to_string()));
-                i += used;
-                continue;
+            };
+            profiler.record_since(
+                "math_block",
+                used,
+                code.len(),
+                1,
+                if multiline {
+                    "parse one multi-line math block"
+                } else {
+                    "parse one single-line math block"
+                },
+                started,
+            );
+            if multiline {
+                code.truncate(code.trim_end_matches('\n').len());
             }
+            blocks.push(Block::MathBlock(code));
+            i += used;
+            continue;
         }
         if scanned_indented_code_start(scan) {
             let started = profiler.checkpoint();
@@ -2453,6 +2445,45 @@ fn is_close_fence(line: &str, ch: char, len: usize) -> bool {
     marker_len >= len && t[marker_len..].chars().all(is_space_or_tab)
 }
 
+#[derive(Clone, Copy)]
+enum MathBlockStart<'a> {
+    SingleLine(&'a str),
+    Multiline(&'a str),
+}
+
+/// Display-math delimiters are shared by AST assembly, reference collection,
+/// table admission, and container ownership. A marker in paragraph text is
+/// inline syntax; callers decide whether this line is at a block boundary.
+fn math_block_start(line: &str) -> Option<MathBlockStart<'_>> {
+    if leading_spaces(line) >= 4 {
+        return None;
+    }
+    let after = trim_unicode_ws(line).strip_prefix("$$")?;
+    if let Some(content) = after.strip_suffix("$$") {
+        Some(MathBlockStart::SingleLine(trim_unicode_ws(content)))
+    } else if !after.contains("$$") {
+        Some(MathBlockStart::Multiline(trim_unicode_ws(after)))
+    } else {
+        None
+    }
+}
+
+fn math_block_close(line: &str) -> Option<&str> {
+    trim_unicode_ws(line)
+        .strip_suffix("$$")
+        .map(trim_end_unicode_ws)
+}
+
+fn math_block_extent(lines: &[&str], start: MathBlockStart<'_>) -> usize {
+    if matches!(start, MathBlockStart::SingleLine(_)) {
+        return 1;
+    }
+    lines[1..]
+        .iter()
+        .position(|line| math_block_close(line).is_some())
+        .map_or(lines.len(), |index| index + 2)
+}
+
 fn indented_code_start(line: &str) -> bool {
     leading_spaces(line) >= 4
 }
@@ -3356,7 +3387,7 @@ impl ContainerTail {
                 return;
             }
             TailLeaf::Math => {
-                if trim_unicode_ws(line).ends_with("$$") {
+                if math_block_close(line).is_some() {
                     self.leaf = TailLeaf::Boundary;
                 }
                 return;
@@ -3393,12 +3424,8 @@ impl ContainerTail {
         }
         if let Some((ch, len, _)) = open_fence(line) {
             self.leaf = TailLeaf::Fence { ch, len };
-        } else if leading_spaces(line) < 4
-            && trim_start_unicode_ws(line).starts_with("$$")
-            && (trim_unicode_ws(line).ends_with("$$") || !trim_unicode_ws(line)[2..].contains("$$"))
-        {
-            let math = trim_unicode_ws(line);
-            if math.len() < 4 || !math.ends_with("$$") {
+        } else if let Some(start) = math_block_start(line) {
+            if matches!(start, MathBlockStart::Multiline(_)) {
                 self.leaf = TailLeaf::Math;
             }
         } else if indented_code_start(line) {

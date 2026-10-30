@@ -18,6 +18,7 @@
     const bridge = window.webkit.messageHandlers.frankenBridge;
     const preview = document.querySelector('#preview');
     let latestRequest = 0;
+    let stagedPreview = null;
 
     try {
       // wasm-bindgen's default initializer attempts instantiateStreaming on
@@ -30,24 +31,46 @@
       const renderer = await createRenderer(wasmBytes);
       window.frankenRender = async (command) => {
         const requestID = Number(command.requestID);
-        latestRequest = Math.max(latestRequest, requestID);
+        if (requestID < latestRequest) return false;
+        latestRequest = requestID;
+        stagedPreview = null;
         const started = performance.now();
         try {
           const output = await renderer.renderHtml(String(command.markdown), command.options || {});
           if (requestID !== latestRequest) return false;
-          preview.srcdoc = output.text();
-          bridge.postMessage({
-            type: 'result', requestID,
+          stagedPreview = {
+            requestID, html: output.text(),
             elapsedMS: performance.now() - started,
             outputBytes: output.bytes.byteLength,
             diagnosticCount: output.diagnostics.length
-          });
+          };
           return true;
         } catch (error) {
-          bridge.postMessage({type: 'failure', requestID, message: String(error)});
+          if (requestID === latestRequest) {
+            bridge.postMessage({type: 'failure', requestID, message: String(error)});
+          }
           return false;
         }
       };
+      // Keep large HTML inside WebKit, but let Swift confirm the source/settings
+      // owner after the synchronous Rust call has finished. Obsolete work must
+      // not replace the iframe while the user is already editing another draft.
+      window.frankenCommitPreview = (requestID) => {
+        requestID = Number(requestID);
+        if (requestID !== latestRequest || stagedPreview?.requestID !== requestID) return false;
+        const {html, ...result} = stagedPreview;
+        stagedPreview = null;
+        preview.srcdoc = html;
+        bridge.postMessage({type: 'result', ...result});
+        return true;
+      };
+      window.frankenDiscardPreview = (requestID) => {
+        requestID = Number(requestID);
+        latestRequest = Math.max(latestRequest, requestID + 1);
+        if (stagedPreview?.requestID === requestID) stagedPreview = null;
+        return true;
+      };
+
       window.frankenExportPdf = async (command) => {
         const requestID = Number(command.requestID);
         try {

@@ -184,28 +184,50 @@ struct RenderedArtifact: Decodable {
 
 @MainActor
 final class MarkdownRendererModel: NSObject, ObservableObject {
-    @Published var source = MarkdownRendererModel.sample
+    @Published var source = MarkdownRendererModel.sample {
+        didSet { if source != oldValue { invalidatePreview(sourceChanged: true) } }
+    }
     @Published var documentIdentity: UUID?
-    @Published var fontFamily = "sans"
-    @Published var darkMode = "auto"
-    @Published var allowRawHtml = false
-    @Published var toc = false
-    @Published var tocDepth = 3
+    @Published var fontFamily = "sans" {
+        didSet { if fontFamily != oldValue { invalidatePreview() } }
+    }
+    @Published var darkMode = "auto" {
+        didSet { if darkMode != oldValue { invalidatePreview() } }
+    }
+    @Published var allowRawHtml = false {
+        didSet { if allowRawHtml != oldValue { invalidatePreview() } }
+    }
+    @Published var toc = false {
+        didSet { if toc != oldValue { invalidatePreview() } }
+    }
+    @Published var tocDepth = 3 {
+        didSet { if tocDepth != oldValue { invalidatePreview() } }
+    }
     @Published var pageNumbers = false
     @Published var codeLineNumbers = false
-    @Published var documentTitle = ""
-    @Published var documentAuthor = ""
-    @Published var language = "en"
+    @Published var documentTitle = "" {
+        didSet { if documentTitle != oldValue { invalidatePreview() } }
+    }
+    @Published var documentAuthor = "" {
+        didSet { if documentAuthor != oldValue { invalidatePreview() } }
+    }
+    @Published var language = "en" {
+        didSet { if language != oldValue { invalidatePreview() } }
+    }
     @Published var microtypeProtrusion = false
     @Published var fitToPages = 0
     @Published var customizePDFTypography = false
     @Published var pdfBaseFontSize = 11.0
     @Published var pdfHeadingScale = 1.25
     @Published var pdfTableFontSize = 10.0
-    @Published var customCSS = ""
+    @Published var customCSS = "" {
+        didSet { if customCSS != oldValue { invalidatePreview() } }
+    }
     @Published private(set) var analysis: DocumentAnalysis?
     @Published private(set) var analysisIsStale = true
-    var renderFontScale = 1.0
+    var renderFontScale = 1.0 {
+        didSet { if renderFontScale != oldValue { invalidatePreview() } }
+    }
 
     @Published private(set) var phase: RenderPhase = .loading
     @Published private(set) var elapsedMS: Double?
@@ -221,6 +243,14 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private var activeRenderPhaseGeneration: Int?
     private var activeExportPhaseGeneration: Int?
     private var scheduledRender: Task<Void, Never>?
+    private var previewTask: Task<Void, Never>?
+    private var previewRevision = 0
+    private var previewInFlightRequestID: Int?
+    private var latestPreviewRequestID: Int?
+    private var latestPreviewRevision = 0
+    private var previewIsPending = false
+    private var bridgeIsReady = false
+    private var bridgeNeedsReload = false
     private var scheduledDraftSave: Task<Void, Never>?
     private let draftStore = MarkdownDraftStore()
 
@@ -267,6 +297,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
 
     deinit {
         scheduledRender?.cancel()
+        previewTask?.cancel()
         scheduledDraftSave?.cancel()
         pdfTimeouts.values.forEach { $0.cancel() }
         htmlTimeouts.values.forEach { $0.cancel() }
@@ -326,13 +357,22 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         return options
     }
 
+    /// Invalidate ownership when the model changes, before SwiftUI's debounce
+    /// callback. A large render may still be executing in WebKit, but it must
+    /// not publish a preview for a document/settings revision we have left.
+    private func invalidatePreview(sourceChanged: Bool = false) {
+        previewRevision &+= 1
+        previewIsPending = false
+        if sourceChanged { analysisIsStale = true }
+    }
+
     func scheduleRender() {
         scheduledRender?.cancel()
-        analysisIsStale = true
-        let expectedSource = source
+        let expectedRevision = previewRevision
         scheduledRender = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(180))
-            guard !Task.isCancelled, let self, self.source == expectedSource else { return }
+            guard !Task.isCancelled, let self,
+                  self.previewRevision == expectedRevision else { return }
             self.renderNow()
         }
     }
@@ -441,37 +481,78 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     }
 
     func renderNow() {
-        guard phase != .loading, !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        scheduledRender?.cancel()
+        scheduledRender = nil
+        previewIsPending = true
+        if bridgeNeedsReload {
+            bridgeNeedsReload = false
+            bridgeIsReady = false
+            beginPhase(.loading)
+            webView.load(URLRequest(url: URL(string: "frankenmd://bundle/bridge.html")!))
             return
         }
+        startPendingPreview()
+    }
+
+    /// There is at most one full Markdown payload in flight to WebKit. While
+    /// it runs, edits/settings only replace the pending model revision rather
+    /// than queueing another expensive parse and full-size IPC message.
+    private func startPendingPreview() {
+        guard bridgeIsReady, previewIsPending, previewInFlightRequestID == nil else { return }
+        previewIsPending = false
         requestID += 1
         let req = requestID
-        let options = sharedOptions
+        let revision = previewRevision
         let command: [String: Any] = [
             "requestID": req,
             "markdown": source,
-            "options": options
+            "options": sharedOptions
         ]
         let phaseOwner = beginPhase(.rendering)
         activeRenderPhaseGeneration = phaseOwner
-        Task { [weak self, weak webView] in
+        previewInFlightRequestID = req
+        latestPreviewRequestID = req
+        latestPreviewRevision = revision
+        previewTask = Task { [weak self, weak webView] in
             guard let self else { return }
+            defer {
+                if self.previewInFlightRequestID == req {
+                    self.previewInFlightRequestID = nil
+                    self.previewTask = nil
+                    self.startPendingPreview()
+                }
+            }
             guard let webView else {
-                self.settlePhase(
-                    phaseOwner,
-                    to: .failed("The private document renderer is no longer available.")
-                )
+                self.settlePhase(phaseOwner, to: .failed(Self.bridgeUnavailableError().localizedDescription))
                 return
             }
             do {
-                _ = try await webView.callAsyncJavaScript(
+                let prepared = try await webView.callAsyncJavaScript(
                     "return await window.frankenRender(command)",
                     arguments: ["command": command],
                     in: nil,
                     contentWorld: .page
                 )
+                guard !Task.isCancelled, self.previewInFlightRequestID == req else { return }
+                guard self.previewRevision == revision else {
+                    _ = try? await webView.callAsyncJavaScript(
+                        "return window.frankenDiscardPreview(requestID)",
+                        arguments: ["requestID": req], in: nil, contentWorld: .page
+                    )
+                    self.settlePhase(phaseOwner)
+                    return
+                }
+                guard prepared as? Bool == true else { return }
+                // The bridge keeps the HTML in its own process. Publication is
+                // acknowledged only after the native document owner is checked
+                // across the asynchronous Rust/WASM call above.
+                _ = try await webView.callAsyncJavaScript(
+                    "return window.frankenCommitPreview(requestID)",
+                    arguments: ["requestID": req], in: nil, contentWorld: .page
+                )
             } catch {
-                guard self.requestID == req else { return }
+                guard self.previewInFlightRequestID == req,
+                      self.previewRevision == revision else { return }
                 self.settlePhase(phaseOwner, to: .failed(error.localizedDescription))
             }
         }
@@ -574,7 +655,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
                 code: 9,
                 userInfo: [
                     NSLocalizedDescriptionKey:
-                        "The \(kind) export did not answer within three minutes. Try again or use a smaller document."
+                        "The \(kind) export did not answer within three minutes. Your source is unchanged; restart the local renderer and try again."
                 ]
             )
             if kind == "PDF" {
@@ -1200,10 +1281,13 @@ extension MarkdownRendererModel: WKScriptMessageHandler {
             guard let self else { return }
             switch type {
             case "ready":
+                guard !self.bridgeNeedsReload else { return }
+                self.bridgeIsReady = true
                 self.phase = .ready
                 self.renderNow()
             case "result":
-                guard (payload["requestID"] as? Int) == self.requestID,
+                guard (payload["requestID"] as? Int) == self.latestPreviewRequestID,
+                      self.latestPreviewRevision == self.previewRevision,
                       let owner = self.activeRenderPhaseGeneration else { return }
                 self.elapsedMS = payload["elapsedMS"] as? Double
                 self.outputBytes = payload["outputBytes"] as? Int ?? 0
@@ -1242,12 +1326,17 @@ extension MarkdownRendererModel: WKScriptMessageHandler {
                     self.failHtmlExport(req, error: err)
                 }
             case "failure":
-                guard (payload["requestID"] as? Int) == self.requestID,
+                let message = payload["message"] as? String ?? "Renderer failed"
+                guard let req = payload["requestID"] as? Int else {
+                    self.bridgeIsReady = false
+                    self.bridgeNeedsReload = true
+                    self.beginPhase(.failed(message))
+                    return
+                }
+                guard req == self.latestPreviewRequestID,
+                      self.latestPreviewRevision == self.previewRevision,
                       let owner = self.activeRenderPhaseGeneration else { return }
-                self.settlePhase(
-                    owner,
-                    to: .failed(payload["message"] as? String ?? "Renderer failed")
-                )
+                self.settlePhase(owner, to: .failed(message))
             default:
                 break
             }
@@ -1256,6 +1345,30 @@ extension MarkdownRendererModel: WKScriptMessageHandler {
 }
 
 extension MarkdownRendererModel: WKNavigationDelegate {
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // iOS may reclaim the renderer under memory pressure. Do not leave a
+        // permanent spinner or automatically retry the same expensive document
+        // in an unbounded crash loop. Source/recovery stay owned by Swift.
+        bridgeIsReady = false
+        bridgeNeedsReload = true
+        previewRevision &+= 1
+        previewIsPending = false
+        previewInFlightRequestID = nil
+        latestPreviewRequestID = nil
+        scheduledRender?.cancel()
+        scheduledRender = nil
+        previewTask?.cancel()
+        previewTask = nil
+        let error = NSError(
+            domain: "FrankenMarkdown.Renderer", code: 11,
+            userInfo: [NSLocalizedDescriptionKey:
+                "The preview process stopped. Your Markdown is safe. Tap Render to restart the local renderer."]
+        )
+        for request in Array(pdfContinuations.keys) { failPdfExport(request, error: error) }
+        for request in Array(htmlContinuations.keys) { failHtmlExport(request, error: error) }
+        beginPhase(.failed(error.localizedDescription))
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,

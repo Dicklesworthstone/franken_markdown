@@ -72,6 +72,14 @@ fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR]
 - **outputs**: written under `--out-dir` (default: alongside each input), names
   derived from the input stem (`doc.md` → `doc.html`/`doc.pdf`), matching the
   single-file derivation rules. `--out-dir -` is refused (batch can't stream).
+- **archival PDF**: `--to pdf` and `--to both` accept `--pdf-a 2b` and
+  `--pdf-a-strict`, using the same PDF/A emission and strict URI checks as
+  ordinary rendering. Per-file metadata and includes are retained. A strict
+  rejection is a render failure (exit 70 without `--continue-on-error`); neither
+  sibling of that file's combined HTML/PDF publication replaces prior output.
+  Other valid files can still complete and remain in the receipt. Invalid
+  profiles, strict mode without `2b`, and PDF/A flags on non-PDF targets are
+  usage errors before publication. `--pdf-a off` preserves ordinary PDF bytes.
 - **stdout is data**: with `--json`, the only thing on stdout is the
   machine-readable **batch receipt** (see below). Without `--json`, stdout stays
   empty and a human summary goes to stderr.
@@ -126,6 +134,15 @@ pub async fn render_batch(
     budget: WorkerBudget,
 ) -> Outcome<BatchReceipt, BatchError>;
 ```
+
+For archival output, `render_batch_pdfa(cx, plan, opts, budget, settings)` and
+`run_batch_blocking_pdfa(plan, opts, settings)` accept `PdfASettings` explicitly.
+Existing `BatchOptions` literals and the original entry points remain valid and
+keep PDF/A off. Invalid profile/format combinations return
+`BatchPdfAError::InvalidOptions` before workers start. The existing `BatchError`
+enum is unchanged; the new error type wraps it for orchestration failures.
+See [PDF/A support and its
+validation limits](PDF_A.md).
 
 ### Orchestration shape (for `zmd.1.3`)
 

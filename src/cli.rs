@@ -789,6 +789,9 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
         return code;
     }
+    if let Err(code) = parse_pdf_a_settings(&args.style, args.to, json) {
+        return code;
+    }
     if args.input.as_os_str() == "-" {
         return fail_json(
             64,
@@ -1552,6 +1555,10 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
         return code;
     }
+    let pdf_a = match parse_pdf_a_settings(&args.style, args.to, json) {
+        Ok(settings) => settings,
+        Err(code) => return code,
+    };
     if out_is_stdout(&args)
         && !matches!(
             args.to,
@@ -1947,7 +1954,7 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
                 .or(config.render.pdf_strict_pagination)
                 .unwrap_or(false),
         };
-        match render_pdf_with_pdfa(&doc, &opts, &args, json) {
+        match render_pdf_with_pdfa(&doc, &opts, pdf_a, json) {
             // Keep render errors typed with a distinct exit code (70 = render
             // failure/unavailable subsystem) as richer PDF validation lands.
             Ok(bytes) => Some((opts, bytes)),
@@ -2486,6 +2493,10 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
         return code;
     }
+    let pdf_a = match parse_pdf_a_settings(&args.style, args.to, json) {
+        Ok(settings) => settings,
+        Err(code) => return code,
+    };
 
     // `--workers 0` would otherwise collapse into "unset" (automatic sizing);
     // reject it explicitly so the flag never silently means the opposite.
@@ -2606,20 +2617,13 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     // Shared render style (the same flags as `fmd render`). Per-file images
     // are still auto-loaded next to each input by the batch engine.
     let style = &args.style;
-    for (set, flag) in [
-        (style.pdf_a.is_some() || style.pdf_a_strict, "--pdf-a"),
-        (style.svg_width_pt.is_some(), "--svg-width-pt"),
-    ] {
-        if set {
-            return fail_json(
-                64,
-                "usage_error",
-                &format!(
-                    "{flag} is not supported by fmd batch; render those files with fmd render"
-                ),
-                json,
-            );
-        }
+    if style.svg_width_pt.is_some() {
+        return fail_json(
+            64,
+            "usage_error",
+            "--svg-width-pt is not supported by fmd batch; render those files with fmd render",
+            json,
+        );
     }
     let font_scale = match parse_font_scale_arg(style, json) {
         Ok(scale) => scale,
@@ -2716,8 +2720,14 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
         max_pdf_image_bytes: args.style.max_pdf_image_bytes,
     };
 
-    match batch::run_batch_blocking_with_protected_inputs(plan, &opts, &input_paths, &config.render)
-    {
+    report_pdf_a(pdf_a, json);
+    match batch::run_batch_blocking_with_protected_inputs(
+        plan,
+        &opts,
+        &input_paths,
+        &config.render,
+        pdf_a,
+    ) {
         Ok(mut receipt) => {
             // Record any unexpandable paths as per-file failures. Strict mode
             // already returned above, so this only runs under --continue-on-error
@@ -3838,10 +3848,35 @@ fn fail_render(err: RenderError, json: bool) -> ExitCode {
 }
 
 fn parse_pdf_a_settings(
-    args: &RenderArgs,
+    style: &RenderStyleArgs,
+    target: Target,
     json: bool,
 ) -> std::result::Result<PdfASettings, ExitCode> {
-    if args.style.pdf_a_strict && args.style.pdf_a.is_none() {
+    if (style.pdf_a.is_some() || style.pdf_a_strict)
+        && !matches!(target, Target::Pdf | Target::Both)
+    {
+        return Err(fail_json(
+            64,
+            "usage_error",
+            "--pdf-a and --pdf-a-strict require --to pdf or --to both",
+            json,
+        ));
+    }
+    let mode = match style.pdf_a.as_deref() {
+        None => PdfAMode::Off,
+        Some(raw) => match PdfAMode::parse(raw) {
+            Some(mode) => mode,
+            None => {
+                return Err(fail_json(
+                    64,
+                    "usage_error",
+                    &format!("unknown --pdf-a {raw:?}; use 2b (PDF/A-2b) or off"),
+                    json,
+                ));
+            }
+        },
+    };
+    if style.pdf_a_strict && !mode.is_a2b() {
         return Err(fail_json(
             64,
             "usage_error",
@@ -3849,20 +3884,9 @@ fn parse_pdf_a_settings(
             json,
         ));
     }
-    let Some(raw) = args.style.pdf_a.as_deref() else {
-        return Ok(PdfASettings::OFF);
-    };
-    let Some(mode) = PdfAMode::parse(raw) else {
-        return Err(fail_json(
-            64,
-            "usage_error",
-            &format!("unknown --pdf-a {raw:?}; use 2b (PDF/A-2b) or off"),
-            json,
-        ));
-    };
     Ok(PdfASettings {
         mode,
-        strict: args.style.pdf_a_strict,
+        strict: style.pdf_a_strict,
     })
 }
 
@@ -4067,10 +4091,19 @@ fn validate_running_image_target(
 fn render_pdf_with_pdfa(
     doc: &Document,
     opts: &PdfOptions,
-    args: &RenderArgs,
+    settings: PdfASettings,
     json: bool,
 ) -> std::result::Result<Vec<u8>, ExitCode> {
-    let settings = parse_pdf_a_settings(args, json)?;
+    report_pdf_a(settings, json);
+    let rendered = if settings.mode.is_a2b() {
+        render_pdf_document_pdfa(doc, opts, settings)
+    } else {
+        render_pdf_document(doc, opts)
+    };
+    rendered.map_err(|e| fail_render(e, json))
+}
+
+fn report_pdf_a(settings: PdfASettings, json: bool) {
     if json && settings.mode.is_a2b() {
         eprintln!(
             "{{\"ok\":true,\"event\":\"pdf_a\",\"profile\":\"{}\",\"strict\":{}}}",
@@ -4078,12 +4111,6 @@ fn render_pdf_with_pdfa(
             settings.strict
         );
     }
-    let rendered = if settings.mode.is_a2b() {
-        render_pdf_document_pdfa(doc, opts, settings)
-    } else {
-        render_pdf_document(doc, opts)
-    };
-    rendered.map_err(|e| fail_render(e, json))
 }
 
 /// Print non-fatal PDF render warnings (degraded content that would otherwise be

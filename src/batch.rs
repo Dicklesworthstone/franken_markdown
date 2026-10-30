@@ -29,8 +29,8 @@ use crate::cli::protected_paths::{
 };
 use crate::file_write::{OutputFile, write_outputs_staged};
 use crate::{
-    Document, HtmlOptions, PdfImageAsset, PdfOptions, parse_markdown, render_html_document,
-    render_pdf_document,
+    Document, HtmlOptions, PdfASettings, PdfImageAsset, PdfOptions, parse_markdown,
+    render_html_document, render_pdf_document, render_pdf_document_pdfa,
 };
 
 /// Conservative default per-job peak RSS estimate (bytes) for the memory
@@ -940,6 +940,7 @@ fn source_overwrite_errors(
 struct BatchRenderOptions {
     html: HtmlOptions,
     pdf: PdfOptions,
+    pdf_a: PdfASettings,
     document_defaults: crate::config::RenderDefaults,
     max_input_bytes: u64,
     max_pdf_image_bytes: u64,
@@ -1059,7 +1060,12 @@ fn render_one(
         ) {
             return failed(input, FileErrorKind::Input, e);
         }
-        match render_pdf_document(&doc, &pdf_opts) {
+        let pdf_result = if options.pdf_a.mode.is_a2b() {
+            render_pdf_document_pdfa(&doc, &pdf_opts, options.pdf_a)
+        } else {
+            render_pdf_document(&doc, &pdf_opts)
+        };
+        match pdf_result {
             Ok(bytes) => {
                 let path = output_path(input, out_dir, "pdf");
                 rendered.push(PendingOutput {
@@ -1248,6 +1254,25 @@ impl std::fmt::Display for BatchError {
     }
 }
 
+/// Errors for the additive archival entry points. Keeping these separate from
+/// [`BatchError`] preserves exhaustive matches used by existing batch hosts.
+#[derive(Debug)]
+pub enum BatchPdfAError {
+    /// The publication policy does not apply to the requested output format.
+    InvalidOptions(&'static str),
+    /// Native orchestration failed before a receipt could be returned.
+    Batch(BatchError),
+}
+
+impl std::fmt::Display for BatchPdfAError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidOptions(message) => write!(f, "{message}"),
+            Self::Batch(error) => write!(f, "{error}"),
+        }
+    }
+}
+
 /// Render every input under the worker `budget`, returning a deterministic
 /// receipt. `&Cx` first; the `Outcome` is preserved for the CLI boundary.
 pub async fn render_batch(
@@ -1263,8 +1288,41 @@ pub async fn render_batch(
         budget,
         &[],
         &crate::config::RenderDefaults::default(),
+        PdfASettings::OFF,
     )
     .await
+}
+
+/// Render a batch with an explicit archival PDF policy. The existing
+/// [`BatchOptions`] struct and [`render_batch`] entry point retain their defaults.
+/// Strict failures are per-file render errors and never publish either sibling
+/// of a combined HTML/PDF output. Non-default settings require PDF output.
+pub async fn render_batch_pdfa(
+    cx: &Cx,
+    plan: BatchPlan,
+    opts: &BatchOptions,
+    budget: WorkerBudget,
+    pdf_a: PdfASettings,
+) -> Outcome<BatchReceipt, BatchPdfAError> {
+    if let Err(error) = validate_pdf_a_output(plan.format, pdf_a) {
+        return Outcome::Err(error);
+    }
+    match render_batch_with_protected_inputs(
+        cx,
+        plan,
+        opts,
+        budget,
+        &[],
+        &crate::config::RenderDefaults::default(),
+        pdf_a,
+    )
+    .await
+    {
+        Outcome::Ok(receipt) => Outcome::Ok(receipt),
+        Outcome::Err(error) => Outcome::Err(BatchPdfAError::Batch(error)),
+        Outcome::Cancelled(cancelled) => Outcome::Cancelled(cancelled),
+        Outcome::Panicked(panic) => Outcome::Panicked(panic),
+    }
 }
 
 async fn render_batch_with_protected_inputs(
@@ -1274,6 +1332,7 @@ async fn render_batch_with_protected_inputs(
     budget: WorkerBudget,
     host_inputs: &[PathBuf],
     document_defaults: &crate::config::RenderDefaults,
+    pdf_a: PdfASettings,
 ) -> Outcome<BatchReceipt, BatchError> {
     // Cooperative cancellation/budget observation at the batch boundary.
     if cx.checkpoint().is_err() {
@@ -1353,6 +1412,7 @@ async fn render_batch_with_protected_inputs(
         let options = BatchRenderOptions {
             html: opts.html.clone(),
             pdf: opts.pdf.clone(),
+            pdf_a,
             document_defaults: document_defaults.clone(),
             max_input_bytes: opts.max_input_bytes,
             max_pdf_image_bytes: opts.max_pdf_image_bytes,
@@ -1461,7 +1521,41 @@ pub fn run_batch_blocking(
         opts,
         &[],
         &crate::config::RenderDefaults::default(),
+        PdfASettings::OFF,
     )
+}
+
+/// Native blocking entry point with the same archival policy as
+/// [`render_batch_pdfa`]. Existing callers can continue using
+/// [`run_batch_blocking`] without changing their options or output bytes.
+pub fn run_batch_blocking_pdfa(
+    plan: BatchPlan,
+    opts: &BatchOptions,
+    pdf_a: PdfASettings,
+) -> Result<BatchReceipt, BatchPdfAError> {
+    validate_pdf_a_output(plan.format, pdf_a)?;
+    run_batch_blocking_with_protected_inputs(
+        plan,
+        opts,
+        &[],
+        &crate::config::RenderDefaults::default(),
+        pdf_a,
+    )
+    .map_err(BatchPdfAError::Batch)
+}
+
+fn validate_pdf_a_output(format: OutputFormat, pdf_a: PdfASettings) -> Result<(), BatchPdfAError> {
+    if pdf_a.strict && !pdf_a.mode.is_a2b() {
+        return Err(BatchPdfAError::InvalidOptions(
+            "strict archival PDF requires the PDF/A-2b profile",
+        ));
+    }
+    if pdf_a.mode.is_a2b() && !format.wants_pdf() {
+        return Err(BatchPdfAError::InvalidOptions(
+            "archival PDF settings require PDF or combined HTML/PDF output",
+        ));
+    }
+    Ok(())
 }
 
 /// Host-only resources (CSS, fonts, explicit images and configuration) arrive
@@ -1473,6 +1567,7 @@ pub(crate) fn run_batch_blocking_with_protected_inputs(
     opts: &BatchOptions,
     host_inputs: &[PathBuf],
     document_defaults: &crate::config::RenderDefaults,
+    pdf_a: PdfASettings,
 ) -> Result<BatchReceipt, BatchError> {
     let c_avail = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -1504,6 +1599,7 @@ pub(crate) fn run_batch_blocking_with_protected_inputs(
                     budget,
                     host_inputs,
                     document_defaults,
+                    pdf_a,
                 )
                 .await
             }

@@ -116,7 +116,7 @@ function sourceTree(value) {
 // Deliberately excludes assets, include policy, CSS and metadata/page controls.
 export const BOOK_PUBLICATION_FIELDS = Object.freeze([
   "typography", "baseFontSize", "headingScale", "tableFontSize", "tocDepth",
-  "fitToPages", "codeLineNumbers", "metadataEpochSeconds", "running", "htmlFontFormat",
+  "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds", "running", "htmlFontFormat",
   "pdfA", "pdfAStrict",
 ]);
 function settingRecord(value, keys) {
@@ -185,7 +185,7 @@ export function normalizeBookProject(project) {
     !project ||
     typeof project !== "object" ||
     Array.isArray(project) ||
-    ![1, 2, 3, 4, 5].includes(project.schemaVersion) ||
+    ![1, 2, 3, 4, 5, 6].includes(project.schemaVersion) ||
     Object.keys(project).some((key) => !["schemaVersion", "files", "options"].includes(key))
   ) {
     throw bookError("INVALID_PROJECT", "Unsupported source-project schema.");
@@ -199,6 +199,11 @@ export function normalizeBookProject(project) {
   ) {
     throw bookError("INVALID_PROJECT", "Source roles require project schema version 2.");
   }
+  // The saved grid participates in pagination and must survive recovery. A
+  // distinct version prevents older workbenches from accepting a weaker profile.
+  if (project.schemaVersion < 6 && project.options &&
+      Object.hasOwn(project.options, "baselineGridPt"))
+    throw bookError("INVALID_PROJECT", "PDF baseline grids require source-project schema version 6.");
   // Archival intent must never be silently dropped by an older workbench.
   // Keep it behind a source-project version even when an input spells OFF.
   if (project.schemaVersion < 5 && project.options &&
@@ -378,7 +383,7 @@ export function createBookCollection() {
       ...(role === "include" ? { role } : {}),
     }));
   const project = () => ({
-    schemaVersion: options.pdfA === "2b" ? 5
+    schemaVersion: options.baselineGridPt !== undefined ? 6 : options.pdfA === "2b" ? 5
       : BOOK_PUBLICATION_FIELDS.some(key => options[key] !== undefined) ? 4
       : options.page !== undefined ? 3 : files.some((file) => file.role === "include") ? 2 : 1,
     files: sources(),

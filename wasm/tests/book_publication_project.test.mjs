@@ -142,7 +142,7 @@ test("publishing schemas reject downgrade, unknown version and concealed new opt
     for (const options of [{ tocDepth: 2 }, { running: {} }, { codeLineNumbers: false }])
       assert.throws(() => normalizeBookProject({ schemaVersion, files: [], options }), { code: "INVALID_PROJECT" });
   }
-  assert.throws(() => normalizeBookProject({ schemaVersion: 6, files: [], options: {} }), { code: "INVALID_PROJECT" });
+  assert.throws(() => normalizeBookProject({ schemaVersion: 7, files: [], options: {} }), { code: "INVALID_PROJECT" });
   assert.equal(normalizeBookProject({ schemaVersion: 4, files: [], options: {} }).schemaVersion, 4);
 });
 

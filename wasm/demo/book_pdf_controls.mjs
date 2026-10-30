@@ -222,12 +222,14 @@ const PUBLICATION_NUMBERS = [
   ["headingScale", "PDF heading scale (1.05–2)"],
   ["tableFontSize", "PDF table size (5–24 pt)"],
   ["tocDepth", "Table of contents depth (integer 1–6; PDF and HTML)"],
+  ["baselineGridPt", "PDF body baseline spacing (1–144 pt; blank or 0 disables)"],
   ["fitToPages", "PDF page-count target (optional integer; not a guarantee)"],
   ["metadataEpochSeconds", "PDF metadata epoch (nonnegative seconds; 0 is valid)"],
 ];
 const PUBLICATION_FLAGS = [
   ["homogeneous", "Gradual adjacent-line demerits"], ["antiriver", "Reduce whitespace rivers"],
   ["pareto", "Pareto line breaking"], ["optimal-pagination", "Optimal pagination"],
+  ["strict-pagination", "Strict pagination (stop export if optimal layout cannot be completed)"],
   ["protrusion", "Margin protrusion"], ["expansion", "Glyph expansion"],
 ];
 const PUBLICATION_BANDS = ["header", "footer"];
@@ -281,6 +283,7 @@ export function createBookPublicationPanel(root) {
     input.type = "text"; input.inputMode = "decimal"; input.maxLength = 64;
     input.autocomplete = "off"; input.spellcheck = false; input.placeholder = "Native default";
   }
+  make("p", "grid-help", "A positive baseline spacing aligns PDF body text to a shared grid. Clear the page-count target before enabling a grid. Spacing is rounded once by the renderer to 0.001 pt; blank or 0 uses ordinary line spacing.", layout);
   check(layout, "codeLineNumbers", "PDF code line numbers");
   select(layout, "htmlFontFormat", "HTML-site embedded font format (EPUB stays TrueType)",
     [["", "Native default"], ["ttf", "TrueType"], ["woff1", "WOFF"], ["woff2", "WOFF2"]]);
@@ -292,7 +295,7 @@ export function createBookPublicationPanel(root) {
   policy.setAttribute("aria-describedby", `${publicationId("archival-help")} ${publicationId("status")}`);
   make("p", "archival-help", "PDF only: EPUB and HTML output are unchanged. These are native writer settings, not PDF/A validation or certification. Strict writer policy is separate from checking internal book links. Unsupported packages or rejected archival exports fail without falling back to ordinary PDF. Applied archival settings require source-project version 5; older workbenches must be upgraded to reopen those projects.", archival);
   const quality = make("fieldset"); make("legend", null, "Optional native typography", quality);
-  make("p", null, "These switches request the native layout algorithms; they do not guarantee a page count or faster rendering. Inspect the actual PDF proof.", quality);
+  make("p", null, "These switches request the native layout algorithms; they do not guarantee a page count or faster rendering. Strict pagination also enables optimal pagination and stops PDF export when that layout cannot be completed. Inspect the actual PDF proof.", quality);
   for (const [token, label] of PUBLICATION_FLAGS) check(quality, `type-${token}`, label);
   make("p", "running-help", "Running headers and footers affect PDF only. Templates accept {title}, {author}, {page} and {pages}; template validation and margin fitting belong to the renderer. Each slot permits 4096 UTF-8 bytes. Logos reference already imported book images, never URLs or implicit file access. Missing references survive source-only restores until reauthorized.");
   for (const band of PUBLICATION_BANDS) {

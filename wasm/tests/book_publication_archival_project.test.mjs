@@ -95,7 +95,7 @@ test("version 5 is admitted, future/invalid versions remain refused without chan
   const book = collection(t); book.setPublication(policy(), book.revision);
   const before = book.project(), revision = book.revision;
   assert.deepEqual(normalizeBookProject(before), before);
-  for (const schemaVersion of [0, 6, 999, "5", null])
+  for (const schemaVersion of [0, 7, 999, "5", null])
     assert.throws(() => book.replaceProject({...before, schemaVersion}), code("INVALID_PROJECT"));
   assert.equal(book.revision, revision); assert.deepEqual(book.project(), before);
   assert.throws(() => book.replaceProject({...before, options: {pdfAStrict: true}}), code("INVALID_OPTIONS"));

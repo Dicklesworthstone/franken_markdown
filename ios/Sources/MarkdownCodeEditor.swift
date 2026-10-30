@@ -224,7 +224,7 @@ struct MarkdownCodeEditor: UIViewRepresentable {
             MarkdownLexicalHighlighter.highlight(
                 windowSource,
                 storage: window,
-                initialFenceCharacter: firstLine.fenceCharacter,
+                initialFenceCharacter: index.initialFenceCharacter(forWindow: range),
                 skipFirstLine: range.location != firstLine.start,
                 skipLastLine: NSMaxRange(range) < lastLine.contentEnd
             )
@@ -368,29 +368,28 @@ private enum MarkdownLexicalHighlighter {
     }
 
     private static func highlightInline(_ source: String, storage: NSMutableAttributedString, range: NSRange) {
-        var protected: [NSRange] = []
+        var protected = MarkdownInlineProtection(range: range)
 
-        enumerate(inlineCodeRegex, source: source, range: range) { match in
-            guard match.range.length <= 2_200 else { return }
-            apply(color: amber, to: storage, range: match.range)
-            protected.append(match.range)
+        for codeRange in MarkdownInlineCodeRanges.find(in: source as NSString, range: range) {
+            apply(color: amber, to: storage, range: codeRange)
+            protected.insert(codeRange)
         }
-        enumerate(linkRegex, source: source, range: range) { match in
-            guard !intersects(match.range, protected) else { return }
-            apply(color: marker, to: storage, range: match.range(at: 1))
-            apply(color: link, underline: true, to: storage, range: match.range(at: 2))
-            apply(color: marker, to: storage, range: match.range(at: 3))
-            apply(color: marker, to: storage, range: match.range(at: 4))
-            apply(color: marker, to: storage, range: match.range(at: 5))
-            protected.append(match.range)
+        for match in MarkdownInlineLinkRanges.find(in: source as NSString, range: range) {
+            guard !protected.intersects(match.range) else { continue }
+            apply(color: marker, to: storage, range: match.opening)
+            apply(color: link, underline: true, to: storage, range: match.label)
+            apply(color: marker, to: storage, range: match.separator)
+            apply(color: marker, to: storage, range: match.destination)
+            apply(color: marker, to: storage, range: match.closing)
+            protected.insert(match.range)
         }
-        enumerate(autolinkRegex, source: source, range: range) { match in
-            guard !intersects(match.range, protected) else { return }
-            apply(color: link, underline: true, to: storage, range: match.range)
-            protected.append(match.range)
+        for autoRange in MarkdownInlineLinkRanges.findAutolinks(in: source as NSString, range: range) {
+            guard !protected.intersects(autoRange) else { continue }
+            apply(color: link, underline: true, to: storage, range: autoRange)
+            protected.insert(autoRange)
         }
         enumerate(boldRegex, source: source, range: range) { match in
-            guard match.range.length <= 220, !intersects(match.range, protected) else { return }
+            guard match.range.length <= 220, !protected.intersects(match.range) else { return }
             apply(color: marker, to: storage, range: match.range(at: 1))
             apply(color: bold, font: font(.bold), to: storage, range: match.range(at: 2))
             let closing = NSRange(
@@ -398,10 +397,10 @@ private enum MarkdownLexicalHighlighter {
                 length: match.range(at: 1).length
             )
             apply(color: marker, to: storage, range: closing)
-            protected.append(match.range)
+            protected.insert(match.range)
         }
         enumerate(emphasisRegex, source: source, range: range) { match in
-            guard match.range.length <= 160, !intersects(match.range, protected) else { return }
+            guard match.range.length <= 160, !protected.intersects(match.range) else { return }
             apply(color: marker, to: storage, range: match.range(at: 1))
             apply(color: emphasis, font: italicFont(), to: storage, range: match.range(at: 2))
             let closing = NSRange(
@@ -409,10 +408,10 @@ private enum MarkdownLexicalHighlighter {
                 length: match.range(at: 1).length
             )
             apply(color: marker, to: storage, range: closing)
-            protected.append(match.range)
+            protected.insert(match.range)
         }
         enumerate(strikeRegex, source: source, range: range) { match in
-            guard match.range.length <= 160, !intersects(match.range, protected) else { return }
+            guard match.range.length <= 160, !protected.intersects(match.range) else { return }
             apply(color: marker, to: storage, range: match.range(at: 1))
             storage.addAttributes([
                 .foregroundColor: emphasis,
@@ -446,15 +445,11 @@ private enum MarkdownLexicalHighlighter {
         return UIFont(descriptor: descriptor, size: size)
     }
 
-    private static func intersects(_ range: NSRange, _ protected: [NSRange]) -> Bool {
-        protected.contains { NSIntersectionRange(range, $0).length > 0 }
-    }
-
     private static func enumerate(
         _ regex: NSRegularExpression,
         source: String,
         range: NSRange,
-        body: (NSTextCheckingResult) -> Void
+        body: @escaping (NSTextCheckingResult) -> Void
     ) {
         regex.enumerateMatches(in: source, range: range) { match, _, _ in
             if let match { body(match) }
@@ -483,9 +478,6 @@ private enum MarkdownLexicalHighlighter {
     private static let blockquoteRegex = regex(#"^(\s{0,3}(?:>\s?)+)(.*)$"#)
     private static let listRegex = regex(#"^(\s*)([-+*]|\d{1,9}[.)])(\s+)(\[[ xX]\]\s+)?(.*)$"#)
     private static let referenceRegex = regex(#"^(\s{0,3}\[)([^\]]+)(\]:\s*)(\S+)(.*)$"#)
-    private static let inlineCodeRegex = regex(#"(`+)([^`\n]|[^`\n][\s\S]*?[^`\n])\1(?!`)"#)
-    private static let linkRegex = regex(#"(!?\[)([^\]\n]*)(\]\()([^)\n]*)(\))"#)
-    private static let autolinkRegex = regex(#"<https?://[^>\s]+>"#)
     private static let boldRegex = regex(#"(\*\*|__)(?!\s)([\s\S]*?\S)\1"#)
     private static let emphasisRegex = regex(#"(\*|_)(?![\s*_])([^*_\n]*?\S)\1"#)
     private static let strikeRegex = regex(#"(~~)(?!\s)([\s\S]*?\S)(~~)"#)

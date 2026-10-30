@@ -73,6 +73,35 @@ final class MarkdownEditorLineIndexTests: XCTestCase {
         XCTAssertLessThanOrEqual(window.length, MarkdownEditorLineIndex.maximumHighlightLength)
     }
 
+    func testClippedOpeningAndClosingFencesSeedFollowingCompleteLines() throws {
+        let marker = String(repeating: "\u{60}", count: 3)
+        let padding = String(repeating: " ", count: 10_000)
+        let openingSource = padding + marker + "swift\nlet value = 42\n"
+        let opening = try XCTUnwrap(MarkdownEditorLineIndex(source: openingSource))
+        let openingWindow = opening.highlightWindow(around: NSRange(location: 9_500, length: 100))
+        XCTAssertGreaterThan(openingWindow.location, opening.lines[0].start)
+        XCTAssertLessThan(openingWindow.location, opening.lines[0].contentEnd)
+        XCTAssertGreaterThan(NSMaxRange(openingWindow), opening.lines[1].start)
+        XCTAssertEqual(opening.initialFenceCharacter(forWindow: openingWindow), 96)
+        XCTAssertNil(opening.initialFenceCharacter(forWindow: NSRange(location: 0, length: 100)))
+
+        let prefix = marker + "swift\nlet value = 42\n"
+        let closingSource = prefix + padding + marker + "\nNormal **Markdown**\n"
+        let closing = try XCTUnwrap(MarkdownEditorLineIndex(source: closingSource))
+        let closingWindow = closing.highlightWindow(
+            around: NSRange(location: prefix.utf16.count + 9_500, length: 100)
+        )
+        let closingLine = closing.lines[2]
+        XCTAssertGreaterThan(closingWindow.location, closingLine.start)
+        XCTAssertLessThan(closingWindow.location, closingLine.contentEnd)
+        XCTAssertGreaterThan(NSMaxRange(closingWindow), closing.lines[3].start)
+        XCTAssertNil(closing.initialFenceCharacter(forWindow: closingWindow))
+        XCTAssertEqual(
+            closing.initialFenceCharacter(forWindow: NSRange(location: closingLine.start, length: 100)),
+            96
+        )
+    }
+
     func testEmptyTrailingAndCancelledIndexes() throws {
         let empty = try XCTUnwrap(MarkdownEditorLineIndex(source: ""))
         XCTAssertEqual(empty.lines.count, 1)

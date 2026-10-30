@@ -27,6 +27,10 @@
 		AF665EE7E9A751F15E7E64DC /* MarkdownSourceMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = E39064DB7475F679AE218069 /* MarkdownSourceMetrics.swift */; };
 		124DDA908F80177BD84761A9 /* MarkdownEditorLineIndexTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B3D6BCAB10E429BA9176D87 /* MarkdownEditorLineIndexTests.swift */; };
 		F85F80982391875D2E4A9BD0 /* MarkdownSourceMetricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56609B0A6FBBEB1AA059D291 /* MarkdownSourceMetricsTests.swift */; };
+		BD9CA169210FFB086B82A142 /* MarkdownInlineCodeRanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F25A7E6C559608F63E4322 /* MarkdownInlineCodeRanges.swift */; };
+		A3C483A39D62E4D7FE27EF15 /* MarkdownInlineLinkRanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12CCED477204AD7908924ED5 /* MarkdownInlineLinkRanges.swift */; };
+		E1A1044271A3D76D7B8F572E /* MarkdownInlineCodeRangesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AC59E063419F8E99A8DEA75 /* MarkdownInlineCodeRangesTests.swift */; };
+		E6FAACDDE00E2843C03C572E /* MarkdownInlineLinkRangesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBF6FB7408FBAA705AD424D3 /* MarkdownInlineLinkRangesTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -71,12 +75,18 @@
 		E39064DB7475F679AE218069 /* MarkdownSourceMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceMetrics.swift; sourceTree = "<group>"; };
 		3B3D6BCAB10E429BA9176D87 /* MarkdownEditorLineIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownEditorLineIndexTests.swift; sourceTree = "<group>"; };
 		56609B0A6FBBEB1AA059D291 /* MarkdownSourceMetricsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceMetricsTests.swift; sourceTree = "<group>"; };
+		D6F25A7E6C559608F63E4322 /* MarkdownInlineCodeRanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownInlineCodeRanges.swift; sourceTree = "<group>"; };
+		12CCED477204AD7908924ED5 /* MarkdownInlineLinkRanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownInlineLinkRanges.swift; sourceTree = "<group>"; };
+		2AC59E063419F8E99A8DEA75 /* MarkdownInlineCodeRangesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownInlineCodeRangesTests.swift; sourceTree = "<group>"; };
+		EBF6FB7408FBAA705AD424D3 /* MarkdownInlineLinkRangesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownInlineLinkRangesTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
 		0DA6CDB953D908901DE1CE21 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				EBF6FB7408FBAA705AD424D3 /* MarkdownInlineLinkRangesTests.swift */,
+				2AC59E063419F8E99A8DEA75 /* MarkdownInlineCodeRangesTests.swift */,
 				56609B0A6FBBEB1AA059D291 /* MarkdownSourceMetricsTests.swift */,
 				3B3D6BCAB10E429BA9176D87 /* MarkdownEditorLineIndexTests.swift */,
 				1E9849A35025835BE702F941 /* MarkdownDraftStoreTests.swift */,
@@ -88,6 +98,8 @@
 		A3F92906F8DDD3CC75D2ACCE /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				12CCED477204AD7908924ED5 /* MarkdownInlineLinkRanges.swift */,
+				D6F25A7E6C559608F63E4322 /* MarkdownInlineCodeRanges.swift */,
 				E39064DB7475F679AE218069 /* MarkdownSourceMetrics.swift */,
 				FFFCC2D2F6E7C0B9BFB994E2 /* MarkdownEditorLineIndex.swift */,
 				3DF7E34BF5351E2476DB9D93 /* DocumentControls.swift */,
@@ -265,6 +277,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E6FAACDDE00E2843C03C572E /* MarkdownInlineLinkRangesTests.swift in Sources */,
+				E1A1044271A3D76D7B8F572E /* MarkdownInlineCodeRangesTests.swift in Sources */,
 				F85F80982391875D2E4A9BD0 /* MarkdownSourceMetricsTests.swift in Sources */,
 				124DDA908F80177BD84761A9 /* MarkdownEditorLineIndexTests.swift in Sources */,
 				63971C49396147EBF41B32FD /* MarkdownDraftStoreTests.swift in Sources */,
@@ -276,6 +290,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A3C483A39D62E4D7FE27EF15 /* MarkdownInlineLinkRanges.swift in Sources */,
+				BD9CA169210FFB086B82A142 /* MarkdownInlineCodeRanges.swift in Sources */,
 				AF665EE7E9A751F15E7E64DC /* MarkdownSourceMetrics.swift in Sources */,
 				099FCA6A67CB1C51E3ED093C /* MarkdownEditorLineIndex.swift in Sources */,
 				E5D7578DBDFD1A6111434BC7 /* DocumentControls.swift in Sources */,

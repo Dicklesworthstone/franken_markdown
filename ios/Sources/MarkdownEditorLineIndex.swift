@@ -81,6 +81,17 @@ struct MarkdownEditorLineIndex: Sendable {
         return lines[index].start == offset ? index + 1 : nil
     }
 
+    /// A clipped first line is not lexed. Seed the window with that line's
+    /// after-state so the next complete line still knows whether a skipped
+    /// opening or closing fence changed the code-block context.
+    func initialFenceCharacter(forWindow range: NSRange) -> UInt16? {
+        let first = lineIndex(containing: range.location)
+        if range.location != lines[first].start, first + 1 < lines.count {
+            return lines[first + 1].fenceCharacter
+        }
+        return lines[first].fenceCharacter
+    }
+
     /// Include nearby logical lines, but never let an unusually long line or a
     /// tiny-font viewport turn a paint into a whole-document lexical scan.
     /// Partial boundary lines are deliberately left in the base editor style.

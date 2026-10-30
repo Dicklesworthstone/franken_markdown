@@ -70,6 +70,11 @@ only. A cancellable utility task builds the full line/fence index for each
 source revision, so line numbers and fence context do not require rescanning
 the document on every frame. Decoration changes attributes in place and keeps
 character edits, selection, undo, and marked-text composition owned by UIKit.
+Inline code, explicit links, and automatic links use linear UTF-16 scans
+rather than backtracking expressions, including unmatched delimiter runs.
+A protection bitmap tracks characters owned by earlier token classes, so
+thousands of small links do not cause all-pairs overlap checks. A clipped
+viewport boundary retains the following line's fence context.
 
 Source statistics and the native outline are computed off the main actor,
 cached by revision, and discarded when superseded. Outline rows are created
@@ -88,6 +93,22 @@ Native XCTest coverage includes UTF-16 indexing and cancellation, and a Debug
 UI-test fixture opens 750 KiB and 2 MiB files through the real source loader
 before scrolling and editing. Those UIKit/UI tests require an Apple runtime;
 Node results do not establish iPhone rendering or scrolling performance.
+
+The tracked native renderer now bundles the complete published v0.6.0 package,
+including its JavaScript module dependencies. RendererManifest.json records
+the release archive URL, its verified SHA-256, and the installed runtime hashes.
+This is the released engine, not a rebuild of later Rust changes on main.
+The native scheme serves both .js and .mjs as JavaScript, and book-site export
+filters PDF-only options while retaining the existing safe HTML policy.
+The package API tests exercise the real bridge, wrapper, glue, and WASM for
+every native export and analysis operation.
+
+A controlled host comparison of a roughly 750 KiB paragraph containing repeated
+unclosed angle links took 6.879 seconds with the former 0.4.2 bundle and
+43.8 milliseconds with the released 0.6.0 bundle; both retained the source tail.
+Ordinary prose in the same comparison took 47.4 and 58.0 milliseconds,
+respectively. These measurements isolate an engine regression case; they are
+not iPhone UI measurements or a universal throughput claim.
 
 ## 4. Native document model
 

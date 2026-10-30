@@ -3128,7 +3128,14 @@ struct Marker<'a> {
     rest: std::borrow::Cow<'a, str>,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static LIST_MARKER_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn list_marker(line: &str) -> Option<Marker<'_>> {
+    #[cfg(test)]
+    LIST_MARKER_PROBES.with(|count| count.set(count.get().saturating_add(1)));
     let indent = leading_spaces(line);
     if indent > 3 || is_thematic_break(line) {
         return None;
@@ -3496,6 +3503,8 @@ fn split_list_items_with_first_marker_tracked<'a>(
         };
         let item_origin = lines[i];
         let mut item_lines: Vec<std::borrow::Cow<'a, str>> = vec![m.rest.clone()];
+        let mut nested_marker_checked_lines = 0;
+        let mut has_open_nested_list = false;
         let mut tail = ContainerTail::default();
         tail.observe(split_task_marker(m.rest.as_ref()).1);
         i += 1;
@@ -3553,9 +3562,15 @@ fn split_list_items_with_first_marker_tracked<'a>(
                 // none of those loosen THIS list.
                 if j < lines.len() {
                     let next_indent = leading_spaces(lines[j]);
-                    let has_open_nested_list = item_lines
-                        .iter()
-                        .any(|line| list_marker(line.as_ref()).is_some());
+                    // The item only grows during collection. Check each stored
+                    // line at most once instead of rescanning its entire history
+                    // at every paragraph boundary in a long list item.
+                    if !has_open_nested_list {
+                        has_open_nested_list = item_lines[nested_marker_checked_lines..]
+                            .iter()
+                            .any(|line| list_marker(line.as_ref()).is_some());
+                        nested_marker_checked_lines = item_lines.len();
+                    }
                     if next_indent == m.content_indent
                         || (!has_open_nested_list && next_indent >= m.content_indent + 4)
                     {
@@ -9241,6 +9256,41 @@ mod trim_byte_class_tests {
         ];
         for shape in shapes {
             check_all(shape);
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod list_work_tests {
+    use super::{Block, LIST_MARKER_PROBES, parse_document};
+
+    #[test]
+    fn blank_rich_list_collection_has_linear_marker_work() {
+        for paragraphs in [256, 2_048] {
+            for with_reference_pass in [false, true] {
+                let mut source = if with_reference_pass {
+                    String::from("[target]: /destination\n\n- start\n")
+                } else {
+                    String::from("- start\n")
+                };
+                source.push_str(&"\n  paragraph\n".repeat(paragraphs));
+                LIST_MARKER_PROBES.with(|count| count.set(0));
+                let document = parse_document(&source);
+                let probes = LIST_MARKER_PROBES.with(std::cell::Cell::get);
+                assert!(
+                    probes <= 128 * (paragraphs + 1),
+                    "list marker work exceeded a linear envelope: {paragraphs} paragraphs, \
+                     {probes} probes, reference pass={with_reference_pass}"
+                );
+                assert_eq!(document.blocks.len(), 1);
+                let Block::List(list) = &document.blocks[0] else {
+                    unreachable!("expected one list");
+                };
+                assert!(!list.tight);
+                assert_eq!(list.items.len(), 1);
+                assert_eq!(list.items[0].blocks.len(), paragraphs + 1);
+            }
         }
     }
 }

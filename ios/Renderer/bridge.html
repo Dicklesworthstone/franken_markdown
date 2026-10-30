@@ -169,7 +169,14 @@
 
       window.frankenBook = async (command) => {
         const files = Array.isArray(command.files) ? command.files : [];
-        const options = command.options || {};
+        const options = {...(command.options || {})};
+        if (command.format !== 'pdf') {
+          // Book sites have always been safe-only. The current renderer checks
+          // its site contract strictly; PDF metadata must stay in the PDF lane.
+          delete options.author;
+          delete options.pageNumbers;
+          options.allowRawHtml = false;
+        }
         const output = command.format === 'pdf'
           ? await renderer.renderBookPdf(files, options)
           : await renderer.renderBookSite(files, options);

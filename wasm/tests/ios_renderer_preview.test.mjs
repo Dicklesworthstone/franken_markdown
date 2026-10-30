@@ -170,3 +170,43 @@ test("initialization failure is reported without a fabricated preview request", 
   assert.match(failures(h)[0].message, /initialization failed.*local WASM unavailable/);
   assert.equal(h.installs.length, 0);
 });
+
+test("book exports keep complete chapters and separate PDF metadata from safe site options", async () => {
+  const files = Object.freeze([
+    Object.freeze({path: "first.md", source: "# First\n\n" + "Complete chapter. ".repeat(50_000) + "FINAL_CHAPTER_MARKER"}),
+    Object.freeze({path: "second.md", source: "# Second\n\nLast chapter."}),
+  ]);
+  const options = Object.freeze({font: "serif", darkMode: "auto", fontScale: 1, lang: "en",
+    title: "Collected Notes", author: "Ada Lovelace", pageNumbers: false, allowRawHtml: true,
+    toc: true, tocDepth: 3, customCss: "body { color: #123456; }"});
+  const captures = [];
+  const artifact = {bytes: new Uint8Array([80, 75, 3, 4]), diagnostics: [],
+    extension: "zip", mimeType: "application/zip"};
+  const h = await harness({
+    renderBookPdf: async (chapters, received) => {
+      captures.push({kind: "pdf", chapters, received}); return artifact;
+    },
+    renderBookSite: async (chapters, received) => {
+      // The current package refuses these options rather than silently ignoring
+      // PDF metadata, and book sites have always used safe-only parsing.
+      assert.equal(Object.hasOwn(received, "author"), false);
+      assert.equal(Object.hasOwn(received, "pageNumbers"), false);
+      assert.equal(received.allowRawHtml, false);
+      captures.push({kind: "site", chapters, received}); return artifact;
+    },
+  });
+  await h.window.frankenBook({format: "pdf", files, options});
+  await h.window.frankenBook({format: "site", files, options});
+  await h.window.frankenBook({format: "site", files, options: {pageNumbers: false, allowRawHtml: false}});
+  assert.equal(captures[0].received.author, "Ada Lovelace");
+  assert.equal(captures[0].received.pageNumbers, false);
+  assert.equal(captures[0].received.allowRawHtml, true);
+  for (const capture of captures) assert.deepEqual(capture.chapters, files);
+  for (const key of ["font", "darkMode", "fontScale", "lang", "title", "toc", "tocDepth", "customCss"]) {
+    assert.equal(captures[1].received[key], options[key], key);
+  }
+  assert.equal(options.author, "Ada Lovelace");
+  assert.equal(options.pageNumbers, false);
+  assert.equal(options.allowRawHtml, true, "site policy must not mutate document trust or PDF options");
+  assert.equal(h.installs.length, 0);
+});

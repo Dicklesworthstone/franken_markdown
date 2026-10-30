@@ -1407,7 +1407,7 @@ final class FrankenResourceSchemeHandler: NSObject, WKURLSchemeHandler {
             url: url,
             mimeType: Self.mimeType(for: candidate.pathExtension),
             expectedContentLength: bytes.count,
-            textEncodingName: candidate.pathExtension == "html" || candidate.pathExtension == "js" ? "utf-8" : nil
+            textEncodingName: ["html", "js", "mjs", "json", "css"].contains(candidate.pathExtension.lowercased()) ? "utf-8" : nil
         )
         urlSchemeTask.didReceive(response)
         urlSchemeTask.didReceive(bytes)
@@ -1423,7 +1423,7 @@ final class FrankenResourceSchemeHandler: NSObject, WKURLSchemeHandler {
     private static func mimeType(for extensionName: String) -> String {
         switch extensionName.lowercased() {
         case "html": "text/html"
-        case "js": "text/javascript"
+        case "js", "mjs": "text/javascript"
         case "wasm": "application/wasm"
         case "json": "application/json"
         case "css": "text/css"

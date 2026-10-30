@@ -1,5 +1,17 @@
 {
   "schema": "frankenmarkdown-ios-renderer-v1",
-  "wrapperSha256": "d184ab09f78e6395a7d601414db48ce0c61732410705ccae99522b2b24efc1f0",
-  "wasmSha256": "e0d38ee9c8c5bac25cc240eddfd2355cb46540fe571ba05355452ce3b8040878"
+  "packageVersion": "0.6.0",
+  "source": {
+    "kind": "published-release",
+    "tag": "v0.6.0",
+    "archiveURL": "https://github.com/Dicklesworthstone/franken_markdown/releases/download/v0.6.0/franken-suite-franken-markdown-0.6.0.tgz",
+    "archiveSha256": "537113bda765e26247811bfde8c29483923de7b4bfbe8ace243585f9d4d12cc2"
+  },
+  "wrapperSha256": "5fede546bee39e8646d7436fd88ff5782879d5e9e2391be42879903959043e23",
+  "wasmSha256": "a4c3ec7a45600701ceb6838b7220c6b517e2ab2d283d0d9ff097c7183173c751",
+  "moduleSha256": {
+    "franken_markdown.js": "5fede546bee39e8646d7436fd88ff5782879d5e9e2391be42879903959043e23",
+    "pdf_page.mjs": "3d9f99c34b199e32cd288da9866137d22d882c23bb80ec587db7b316fb3da5f6",
+    "pkg/franken_markdown.js": "5d7d66bb05d69879aab384b3bb9806760ad65e64b2bb7a2f9f22e1c2000e8172"
+  }
 }

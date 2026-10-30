@@ -2,7 +2,7 @@
 # Synchronizes and verifies the bundled WASM renderer inside ios/Renderer/
 # Usage:
 #   ios/sync-renderer.sh          # build, sync, and update manifest
-#   ios/sync-renderer.sh --check  # verify existing manifest matches package without modifying
+#   ios/sync-renderer.sh --check  # verify the entire package without modifying
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,37 +43,104 @@ compute_sha256() {
   fi
 }
 
+# Preserve the verified package's complete module/resource closure, including
+# root .mjs helpers and nested demo/pkg modules. Do not follow package links or
+# let a package replace the native app's private bridge or generated manifest.
+# Globbing includes hidden files and works with the system Bash on macOS.
+shopt -s dotglob nullglob
+package_files=()
+package_dirs=(".")
+collect_package_tree() {
+  local directory="$1"
+  local entry relative reserved
+  if [[ ! -r "$directory" || ! -x "$directory" ]]; then
+    echo "ERROR: renderer package directory is not readable: $directory" >&2
+    exit 1
+  fi
+  for entry in "$directory"/*; do
+    relative="${entry#"$pkg_dir/"}"
+    reserved="$(printf '%s' "$relative" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    case "$reserved" in
+      bridge.html|renderermanifest.json)
+        echo "ERROR: renderer package collides with reserved app-owned file: $relative" >&2
+        exit 1
+        ;;
+    esac
+    if [[ -L "$entry" ]]; then
+      echo "ERROR: renderer package contains a symbolic link: $relative" >&2
+      exit 1
+    elif [[ -d "$entry" ]]; then
+      package_dirs+=("$relative")
+      collect_package_tree "$entry"
+    elif [[ -f "$entry" && -r "$entry" ]]; then
+      package_files+=("$relative")
+    else
+      echo "ERROR: unsupported or unreadable renderer package entry: $relative" >&2
+      exit 1
+    fi
+  done
+}
+collect_package_tree "$pkg_dir"
+
 pkg_wrapper_sha="$(compute_sha256 "$wrapper_src")"
 pkg_wasm_sha="$(compute_sha256 "$wasm_src")"
+
+# Preflight every destination before copying anything. In particular, a stale
+# symlink must not redirect a package write into an app-owned or external file.
+if [[ -L "$dest_dir" || ( -e "$dest_dir" && ! -d "$dest_dir" ) ]]; then
+  echo "ERROR: renderer destination is not a regular directory: $dest_dir" >&2
+  exit 1
+fi
+for relative in "${package_dirs[@]}"; do
+  destination="$dest_dir/$relative"
+  if [[ -L "$destination" || ( -e "$destination" && ! -d "$destination" ) ]]; then
+    echo "ERROR: renderer directory destination is a symbolic link or conflicting file: $destination" >&2
+    exit 1
+  fi
+done
+for relative in "${package_files[@]}" "RendererManifest.json"; do
+  destination="$dest_dir/$relative"
+  if [[ -L "$destination" || ( -e "$destination" && ! -f "$destination" ) ]]; then
+    echo "ERROR: renderer file destination is a symbolic link or conflicting entry: $destination" >&2
+    exit 1
+  fi
+done
+
+verify_package_copy() {
+  local relative expected actual
+  for relative in "${package_files[@]}"; do
+    if [[ ! -f "$dest_dir/$relative" ]]; then
+      echo "ERROR: bundled renderer package file is missing: $dest_dir/$relative" >&2
+      exit 1
+    fi
+    expected="$(compute_sha256 "$pkg_dir/$relative")"
+    actual="$(compute_sha256 "$dest_dir/$relative")"
+    if [[ "$actual" != "$expected" ]]; then
+      echo "ERROR: $dest_dir/$relative SHA ($actual) != package ($expected)" >&2
+      exit 1
+    fi
+  done
+}
 
 if [[ "$check_only" -eq 1 ]]; then
   if [[ ! -f "$manifest" ]]; then
     echo "ERROR: $manifest does not exist" >&2
     exit 1
   fi
-  cur_wrapper_sha="$(compute_sha256 "$dest_dir/franken_markdown.js")"
-  cur_wasm_sha="$(compute_sha256 "$dest_dir/pkg/franken_markdown_bg.wasm")"
-  
-  if [[ "$cur_wrapper_sha" != "$pkg_wrapper_sha" ]]; then
-    echo "ERROR: ios/Renderer/franken_markdown.js SHA ($cur_wrapper_sha) != package ($pkg_wrapper_sha)" >&2
-    exit 1
-  fi
-  if [[ "$cur_wasm_sha" != "$pkg_wasm_sha" ]]; then
-    echo "ERROR: ios/Renderer/pkg/franken_markdown_bg.wasm SHA ($cur_wasm_sha) != package ($pkg_wasm_sha)" >&2
-    exit 1
-  fi
-  echo "ios/sync-renderer.sh --check: OK — renderer bundle matches package (wasm sha: $cur_wasm_sha)"
+  verify_package_copy
+  echo "ios/sync-renderer.sh --check: OK — all ${#package_files[@]} packaged files match (wasm sha: $pkg_wasm_sha)"
   exit 0
 fi
 
-# Copy verified package files into ios/Renderer
-mkdir -p "$dest_dir/pkg" "$dest_dir/demo"
-cp -f "$pkg_dir/franken_markdown.js" "$dest_dir/"
-cp -f "$pkg_dir/franken_markdown.d.ts" "$dest_dir/"
-cp -f "$pkg_dir/package.json" "$dest_dir/"
-cp -f "$pkg_dir/README.md" "$dest_dir/"
-cp -f "$pkg_dir/demo/"* "$dest_dir/demo/"
-cp -f "$pkg_dir/pkg/"* "$dest_dir/pkg/"
+# Overlay the complete verified package. Native-only files and resources no
+# longer present in the package are retained; synchronization never deletes.
+for relative in "${package_dirs[@]}"; do
+  mkdir -p "$dest_dir/$relative"
+done
+for relative in "${package_files[@]}"; do
+  cp -f "$pkg_dir/$relative" "$dest_dir/$relative"
+done
+verify_package_copy
 
 cat << JSON > "$manifest"
 {
@@ -83,4 +150,4 @@ cat << JSON > "$manifest"
 }
 JSON
 
-echo "ios/sync-renderer.sh: OK — synced renderer bundle (wasm sha: $pkg_wasm_sha)"
+echo "ios/sync-renderer.sh: OK — synced ${#package_files[@]} packaged files (wasm sha: $pkg_wasm_sha)"

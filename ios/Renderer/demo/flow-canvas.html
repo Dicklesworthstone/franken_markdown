@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Franken Markdown — live measured Canvas preview</title>
+<style>
+:root { color-scheme: light; font-family: system-ui, sans-serif; color: #1f2328; background: #f6f8fa; }
+body { margin: 0 auto; max-width: 1400px; padding: 24px; }
+h1 { margin: 0 0 10px; font-size: 24px; }
+p { line-height: 1.5; }
+.panels { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(240px, 1fr); gap: 20px; }
+label, .label { display: block; font-weight: 600; margin-bottom: 8px; }
+textarea { box-sizing: border-box; width: 100%; height: 520px; padding: 14px; resize: vertical; font: 14px/1.5 ui-monospace, monospace; border: 1px solid #b8c0cc; border-radius: 6px; }
+#viewport { height: 520px; overflow: auto; position: relative; background: white; border: 1px solid #b8c0cc; border-radius: 6px; }
+#surface { position: sticky; top: 0; height: 0; }
+canvas { display: block; }
+#extent { pointer-events: none; }
+button { padding: 9px 15px; background: #0969da; color: white; border: 0; border-radius: 6px; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+#source-controls, #image-controls, #export-controls { margin-top: 18px; padding: 14px; border: 1px solid #b8c0cc; border-radius: 6px; }
+#source-find, #source-replacement { box-sizing: border-box; width: 100%; padding: 10px; margin-bottom: 10px; }
+#source-editing button { min-height: 44px; margin-bottom: 6px; }
+#source-filename { box-sizing: border-box; max-width: 100%; padding: 8px; }
+#source-status, #draft-status, #source-edit-status { overflow-wrap: anywhere; }
+#status, #hit { min-height: 24px; overflow-wrap: anywhere; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: white; border: 1px solid #d0d7de; }
+details { margin-top: 18px; }
+#reader-panel { padding: 14px; border: 1px solid #b8c0cc; border-radius: 6px; }
+#reader-panel input[type=search], #outline { box-sizing: border-box; max-width: 100%; padding: 8px; }
+#reading { max-height: 480px; overflow: auto; padding: 20px; background: white; line-height: 1.6; overflow-wrap: anywhere; }
+#reading table { border-collapse: collapse; margin: 12px 0; }
+#reading th, #reading td { padding: 8px 12px; border: 1px solid #b8c0cc; }
+#reading [role=list] { padding-left: 24px; }
+#reading [role=listitem] { display: list-item; }
+#reading :focus { outline: 2px solid #0969da; outline-offset: 3px; }
+@media (max-width: 700px) { .panels { grid-template-columns: 1fr; } textarea { height: 280px; } body { padding: 14px; } }
+</style>
+</head>
+<body>
+<h1>Live measured Markdown preview</h1>
+<p>The worker runs the Rust parser and shaper. Canvas draws the returned glyph outlines, not browser-shaped text. This example uses the bundled simple left-to-right profile; unsupported scripts produce an explicit error.</p>
+<div class="panels">
+<section><label for="source">Authoritative Markdown source</label>
+<textarea id="source" spellcheck="false"># A measured preview
+
+Edit this document. **Bold**, *italic*, `inline code`, and [links](#a-measured-preview) keep their real font metrics.
+
+## A table
+
+| Feature | Behavior |
+| --- | --- |
+| Fonts | Real glyph outlines |
+| Layout | Measured wrapping |
+| Work | Dedicated worker |
+
+> Scroll and resize the preview without changing its source.
+
+- [x] Keep source after errors
+- [x] Load only explicitly authorized local images
+
+```rust
+fn main() {
+    println!("Hello, measured world!");
+}
+```
+
+Authorize local images below, then insert their references to include them in preview and export.
+
+## Last section
+
+The selectable reading text below comes from the same session, not a second Markdown renderer.</textarea>
+<p><button id="source-undo" type="button" disabled aria-controls="source">Undo</button> <button id="source-redo" type="button" disabled aria-controls="source">Redo</button></p>
+<details id="source-editing"><summary>Find and replace Markdown source</summary>
+<p id="source-edit-help">Literal source text, including Markdown syntax; not rendered reading text. Ctrl/Cmd+F in the editor focuses Find. Enter finds the next match; Shift+Enter finds the previous one. Ctrl/Cmd+Z undoes; Shift+Ctrl/Cmd+Z redoes. History keeps up to 100 edits within a 20 MiB payload budget, only for this document. Opening, restoring, or leaving the page clears history.</p>
+<label for="source-find">Find source text</label><input id="source-find" type="search" maxlength="1024" autocomplete="off" spellcheck="false" aria-describedby="source-edit-help source-edit-status">
+<label><input id="source-find-insensitive" type="checkbox"> Ignore A–Z case (ASCII only)</label>
+<p><button id="source-find-previous" type="button" disabled>Previous source match</button> <button id="source-find-next" type="button" disabled>Next source match</button></p>
+<label for="source-replacement">Literal replacement text (empty deletes matches)</label><input id="source-replacement" type="text" autocomplete="off" spellcheck="false">
+<p><button id="source-replace" type="button" disabled>Replace selected match</button> <button id="source-replace-all" type="button" disabled>Replace all</button></p>
+</details>
+<p id="source-edit-status" role="status">Source editing does not require the renderer or draft storage.</p>
+</section>
+<section><div class="label" id="preview-label">Canvas preview</div>
+<div id="viewport" tabindex="0" aria-labelledby="preview-label" aria-describedby="preview-help"><div id="surface"><canvas id="preview" aria-hidden="true"></canvas></div><div id="extent"></div></div>
+<p id="preview-help">Click text or an image to inspect its original source block, then use the buttons below. Follow internal link scrolls only to a heading supplied by the same engine; external links never open. After scrolling or editing, select a fresh location. Canvas has no native text selection; the selectable reading surface below also supports keyboard navigation.</p>
+<p><button id="canvas-source" type="button" disabled aria-controls="source" aria-describedby="hit">Show Canvas source</button> <button id="canvas-follow" type="button" disabled aria-controls="viewport" aria-describedby="hit">Follow internal link</button></p>
+<p id="hit" role="status">Select a location in the Canvas to inspect its enclosing source or internal link.</p>
+</section></div>
+<section id="source-controls" aria-label="Original Markdown and draft recovery">
+<h2>Open, save, and recover Markdown</h2>
+<p>These source tools work independently of the preview. Open a local UTF-8 file up to 4 MiB, or prepare the original Markdown and click Download. Opening or restoring a document revokes previous image access. Files are never uploaded. Import and download do not overwrite files; optional direct file controls below save only after an explicit action.</p>
+<label for="open-markdown">Open a local Markdown file</label>
+<input id="open-markdown" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" aria-describedby="source-status">
+<label for="source-filename">Source filename</label>
+<input id="source-filename" type="text" value="document.md" maxlength="240" autocomplete="off" spellcheck="false">
+<p><button id="prepare-markdown" type="button">Prepare Markdown</button> <a id="source-download" hidden>Download Markdown</a></p>
+<p id="source-status" role="status">Source downloads do not require a successful render. Preparing a download does not save it automatically.</p>
+<h3>Local draft recovery</h3>
+<p id="draft-help">Opt in to save source and filename in this browser after edits. One draft is shared by tabs on this origin; conflicting changes pause autosave rather than overwrite another tab. Images and access grants are never stored. Drafts are unencrypted, may be evicted, and are not a backup. Changes are saved only after a transaction acknowledgment.</p>
+<label><input id="remember-draft" type="checkbox" disabled aria-describedby="draft-help draft-status"> Autosave the current source locally</label>
+<p><button id="save-draft" type="button" disabled>Save draft now</button> <button id="refresh-draft" type="button" disabled>Refresh recovery</button> <button id="restore-draft" type="button" disabled>Restore stored draft</button> <button id="forget-draft" type="button" disabled>Forget stored draft</button></p>
+<p id="draft-status" role="status">Inspecting local draft storage. Autosave is off until explicitly enabled.</p>
+</section>
+<section id="image-controls" aria-label="Local image authorization">
+<label for="images">Authorize local PNG/JPEG image files</label>
+<input id="images" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple aria-describedby="image-help image-status">
+<p id="image-help">Files stay in this browser. At most 128 files, 8 MiB each and 32 MiB total. Static PNG and baseline/progressive JPEG are supported; see ASSETS.md for the bounded decoder profile. Changing or clearing the grant restarts the preview and immediately clears old pixels and prepared downloads. Encoded bytes are retained in the native session for export until source changes or restart.</p>
+<p><button id="insert-images" type="button" disabled>Insert image references at cursor</button> <button id="clear-images" type="button" disabled>Revoke all image access</button></p>
+<p id="image-status" role="status">No local images authorized. Network image loading is disabled.</p>
+</section>
+<section id="export-controls" aria-label="Document export">
+<h2>Export the current document</h2>
+<p>Publishing multiple chapters? <a href="./book.html" target="_blank" rel="noopener">Open the book publisher in a new tab</a> for merged PDF, EPUB, and site ZIP exports. Download your current Markdown above to add it as a chapter; this editor stays open.</p>
+<p>Prepare a complete HTML or PDF document in the worker, then click Download. Exports use the document renderer, not a Canvas screenshot. Every image needs an authorized encoded payload; unresolved images stop export. Source edits and authorization changes invalidate prepared downloads.</p>
+<p><button id="export-html" type="button" disabled>Prepare HTML</button> <button id="export-pdf" type="button" disabled>Prepare PDF</button> <a id="export-download" hidden>Download</a></p>
+<p id="export-status" role="status">Waiting for the current preview. Files are not uploaded or saved automatically.</p>
+</section>
+<p><button id="restart" type="button">Restart preview from current source</button></p>
+<p id="status" role="status">Loading the matching WASM package. A build containing the flow and outline APIs is required.</p>
+<details id="reader-panel" open><summary>Search, outline, and selectable reading</summary>
+<p>The same engine supplies this semantic reading surface. Text can be selected and copied normally; its browser typography is independent of Canvas. Navigation selects enclosing Markdown blocks, not guessed inline offsets.</p>
+<label for="find-text">Find logical reading text</label>
+<input id="find-text" type="search" maxlength="1024" autocomplete="off" aria-describedby="reading-search-help reading-status">
+<label><input id="find-insensitive" type="checkbox"> Ignore case (Unicode)</label>
+<label><input id="find-whole-word" type="checkbox"> Whole words only</label>
+<p id="reading-search-help">Literal matches stay inside a paragraph or table cell. Unicode case folding matches Straße with STRASSE; it does not remove accents or normalize spelling. Whole words are bounded by non-letter, non-mark, non-number characters (connectors and joiners also remain inside a word).</p>
+<p><button id="find-previous" type="button" disabled>Previous match</button> <button id="find-next" type="button" disabled>Next match</button> <button id="reading-source" type="button" disabled>Show enclosing source</button></p>
+<label for="outline">Document headings</label><select id="outline" disabled></select>
+<p id="reading-status" role="status">Waiting for a semantic reading snapshot.</p>
+<article id="reading" aria-label="Selectable semantic Markdown reading"></article>
+</details>
+<script type="module" src="./flow-source.js"></script>
+<script type="module" src="./flow-canvas.js"></script>
+</body></html>

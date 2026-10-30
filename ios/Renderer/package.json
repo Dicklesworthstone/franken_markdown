@@ -1,10 +1,16 @@
 {
   "name": "@franken-suite/franken-markdown",
-  "version": "0.4.2",
+  "version": "0.6.0",
   "description": "Browser/WASM package for franken_markdown Markdown to HTML/PDF rendering.",
   "type": "module",
   "sideEffects": [
-    "./fmd-view.js"
+    "./fmd-view.js",
+    "./flow_worker.js",
+    "./demo/flow-source.js",
+    "./book_worker_entry.js",
+    "./demo/book.js",
+    "./document_worker_entry.js",
+    "./demo/demo.js"
   ],
   "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
   "author": "Jeffrey Emanuel",
@@ -31,21 +37,67 @@
   },
   "publishConfig": {
     "access": "public",
-    "provenance": true
+    "provenance": false
   },
   "exports": {
     ".": {
       "types": "./franken_markdown.d.ts",
       "import": "./franken_markdown.js"
     },
+    "./book": {
+      "types": "./book.d.ts",
+      "import": "./book.js"
+    },
     "./web-component": {
       "types": "./fmd-view.d.ts",
       "import": "./fmd-view.js"
+    },
+    "./flow": {
+      "types": "./flow.d.ts",
+      "import": "./flow.js"
+    },
+    "./flow-worker": {
+      "types": "./flow-worker.d.ts",
+      "import": "./flow-worker.js"
+    },
+    "./flow-worker/worker": "./flow_worker.js",
+    "./flow-canvas": {
+      "types": "./flow-canvas.d.ts",
+      "import": "./flow-canvas.js"
+    },
+    "./flow-assets": {
+      "types": "./flow-assets.d.ts",
+      "import": "./flow-assets.js"
+    },
+    "./flow-reader": {
+      "types": "./flow-reader.d.ts",
+      "import": "./flow-reader.js"
+    },
+    "./book-worker": {
+      "types": "./book-worker.d.ts",
+      "import": "./book-worker.js"
+    },
+    "./book-worker/worker": "./book_worker_entry.js",
+    "./document-worker": {
+      "types": "./document-worker.d.ts",
+      "import": "./document_worker.mjs"
+    },
+    "./document-worker/worker": "./document_worker_entry.js",
+    "./interactive": {
+      "types": "./interactive.d.ts",
+      "import": "./interactive.js"
+    },
+    "./interactive/exporter": {
+      "types": "./native_workspace.d.ts",
+      "import": "./native_workspace.js"
     }
   },
   "files": [
     "franken_markdown.js",
     "franken_markdown.d.ts",
+    "book.js",
+    "book.d.ts",
+    "book_session.mjs",
     "demo/index.html",
     "demo/demo.js",
     "pkg/franken_markdown.js",
@@ -53,6 +105,115 @@
     "pkg/franken_markdown_bg.wasm.d.ts",
     "pkg/franken_markdown.d.ts",
     "fmd-view.js",
-    "fmd-view.d.ts"
+    "fmd-view.d.ts",
+    "flow.js",
+    "flow.d.ts",
+    "flow_session.mjs",
+    "flow_asset_batch.mjs",
+    "ASSET_BATCHES.md",
+    "flow_export.mjs",
+    "EXPORT.md",
+    "FLOW.md",
+    "flow-worker.js",
+    "flow-worker.d.ts",
+    "flow_worker.js",
+    "flow_worker_session.mjs",
+    "flow_worker_protocol.mjs",
+    "worker_transport.mjs",
+    "WORKER.md",
+    "flow_outlines.mjs",
+    "flow-canvas.js",
+    "flow-canvas.d.ts",
+    "CANVAS.md",
+    "demo/flow-canvas.html",
+    "demo/flow-canvas.js",
+    "demo/flow_preview_controller.mjs",
+    "flow-assets.js",
+    "flow-assets.d.ts",
+    "flow_raster.mjs",
+    "ASSETS.md",
+    "demo/local_image_sources.mjs",
+    "flow-reader.js",
+    "flow-reader.d.ts",
+    "flow_reading.mjs",
+    "READER.md",
+    "demo/flow_reading_controls.mjs",
+    "demo/flow_preview_export.mjs",
+    "demo/flow_export_controls.mjs",
+    "SOURCE.md",
+    "demo/flow-source.js",
+    "demo/source_commands.mjs",
+    "demo/source_formatting.mjs",
+    "demo/SOURCE_FORMATTING.md",
+    "demo/flow_document.mjs",
+    "demo/flow_draft_store.mjs",
+    "demo/flow_draft_session.mjs",
+    "demo/flow_draft_controls.mjs",
+    "book-worker.js",
+    "book-worker.d.ts",
+    "book_worker.mjs",
+    "book_retained.mjs",
+    "book_publication.mjs",
+    "BOOK_PUBLICATION.md",
+    "book_worker_entry.js",
+    "BOOK.md",
+    "PORTABLE_BOOK.md",
+    "demo/book.html",
+    "demo/book.js",
+    "demo/book_collection.mjs",
+    "demo/book_image_controls.mjs",
+    "BOOK_IMAGES.md",
+    "demo/book_font_assets.mjs",
+    "demo/book_font_authoring.mjs",
+    "demo/book_font_controls.mjs",
+    "BOOK_FONTS.md",
+    "demo/book_controls.mjs",
+    "demo/book_library_store.mjs",
+    "demo/book_library_session.mjs",
+    "demo/book_library_controls.mjs",
+    "LIBRARY.md",
+    "book_site_preview.mjs",
+    "book_preview_frame.mjs",
+    "book_pdf_proof.mjs",
+    "demo/book_pdf_controls.mjs",
+    "BOOK_PDF_PROOF.md",
+    "demo/book_preview_controls.mjs",
+    "PREVIEW.md",
+    "demo/book_source_search.mjs",
+    "demo/book_source_history.mjs",
+    "demo/book_file_session.mjs",
+    "demo/book_file_controls.mjs",
+    "demo/book_search_controls.mjs",
+    "BOOK_EDITING.md",
+    "book_inspection.mjs",
+    "demo/book_inspection_controls.mjs",
+    "INSPECTION.md",
+    "demo/flow_file_session.mjs",
+    "demo/flow_file_controls.mjs",
+    "FILES.md",
+    "demo/flow_render_settings.mjs",
+    "SETTINGS.md",
+    "document_worker.mjs",
+    "document_worker_entry.js",
+    "document-worker.d.ts",
+    "DOCUMENT_WORKER.md",
+    "pdf_page.mjs",
+    "pdf_running.mjs",
+    "interactive.js",
+    "interactive.d.ts",
+    "interactive_runtime.mjs",
+    "interactive_preview.mjs",
+    "NATIVE_PREVIEW.md",
+    "INTERACTIVE.md",
+    "native_workspace.js",
+    "native_workspace.d.ts",
+    "interactive_export.mjs",
+    "native_pdf_proof.mjs",
+    "native_pdf_proof_ui.mjs",
+    "NATIVE_PDF_PROOF.md",
+    "NATIVE_WORKSPACE.md",
+    "demo/review.html",
+    "demo/revision_review.mjs",
+    "demo/REVISION_REVIEW.md"
   ]
 }

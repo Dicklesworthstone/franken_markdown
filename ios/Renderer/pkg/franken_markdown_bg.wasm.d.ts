@@ -1,345 +1,91 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const __wbg_fmdbook_free: (a: number, b: number) => void;
+export const __wbg_fmdflowsession_free: (a: number, b: number) => void;
 export const __wbg_fmdrenderresult_free: (a: number, b: number) => void;
 export const accessibilityAudit: (a: number, b: number, c: number) => void;
 export const capabilities: (a: number) => void;
 export const documentStats: (a: number, b: number, c: number) => void;
+export const fmdbook_chapterCount: (a: number) => number;
+export const fmdbook_fromSources: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+export const fmdbook_new: (a: number, b: number, c: number, d: number, e: number) => void;
+export const fmdbook_renderChapterPreview: (a: number, b: number, c: number) => void;
+export const fmdbook_renderEpub: (a: number, b: number) => void;
+export const fmdbook_renderPdf: (a: number, b: number) => void;
+export const fmdbook_renderPdfWithPage: (a: number, b: number, c: number, d: number) => void;
+export const fmdbook_renderSite: (a: number, b: number) => void;
+export const fmdbook_replaceSources: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
+export const fmdbook_setCustomCss: (a: number, b: number, c: number) => void;
+export const fmdbook_setFont: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const fmdbook_setFontScale: (a: number, b: number, c: number) => void;
+export const fmdbook_setFontWeight: (a: number, b: number, c: number, d: number, e: number) => void;
+export const fmdbook_setHtmlFontFormat: (a: number, b: number, c: number, d: number) => void;
+export const fmdbook_setImage: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const fmdbook_setMetadata: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+export const fmdbook_setNavigation: (a: number, b: number, c: number) => void;
+export const fmdbook_setPdfOptions: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number) => void;
+export const fmdbook_setPdfOptionsWithRunningImages: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number) => void;
+export const fmdbook_setTheme: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const fmdbook_sourceLength: (a: number) => number;
+export const fmdbook_sourceRevision: (a: number) => number;
+export const fmdbook_updateSources: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+export const fmdbook_validateLinks: (a: number, b: number) => void;
+export const fmdflowsession_assetBytes: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const fmdflowsession_codeHighlighting: (a: number) => number;
+export const fmdflowsession_copySource: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const fmdflowsession_editBytes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+export const fmdflowsession_editManyUtf16Packed: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
+export const fmdflowsession_editUtf16: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+export const fmdflowsession_fontBytes: (a: number, b: number, c: number, d: number) => void;
+export const fmdflowsession_glyphOutlinesJson: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const fmdflowsession_hitTestJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+export const fmdflowsession_layoutRevision: (a: number, b: number) => void;
+export const fmdflowsession_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+export const fmdflowsession_pendingAssetsJson: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const fmdflowsession_provideAsset: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
+export const fmdflowsession_provideAssetsPacked: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const fmdflowsession_readingJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+export const fmdflowsession_reflow: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
+export const fmdflowsession_reloadAssets: (a: number, b: number, c: number, d: number) => void;
+export const fmdflowsession_replaceSource: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+export const fmdflowsession_revision: (a: number, b: number) => void;
+export const fmdflowsession_selectItemJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+export const fmdflowsession_setCodeHighlighting: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+export const fmdflowsession_snapshotJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+export const fmdflowsession_source: (a: number, b: number) => void;
+export const fmdflowsession_viewportJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
 export const fmdrenderresult_bytes: (a: number, b: number) => void;
 export const fmdrenderresult_diagnosticsJson: (a: number, b: number) => void;
 export const fmdrenderresult_extension: (a: number, b: number) => void;
 export const fmdrenderresult_format: (a: number, b: number) => void;
 export const fmdrenderresult_mimeType: (a: number, b: number) => void;
 export const fmdrenderresult_sourceLength: (a: number) => number;
-export const renderBookPdf: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-  n: number,
-  o: number,
-  p: number,
-) => void;
-export const renderBookSite: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-) => void;
-export const renderEpubConfigured: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-) => void;
+export const renderBookPdf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => void;
+export const renderBookPdfConfiguredPage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number, g1: number, h1: number, i1: number, j1: number, k1: number, l1: number, m1: number, n1: number, o1: number, p1: number, q1: number, r1: number, s1: number, t1: number, u1: number, v1: number, w1: number, x1: number, y1: number, z1: number) => void;
+export const renderBookSite: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
+export const renderBookSitePublication: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number, g1: number, h1: number, i1: number, j1: number, k1: number, l1: number, m1: number, n1: number, o1: number, p1: number) => void;
+export const renderEpubConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
+export const renderEpubConfiguredAdvanced: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number, g1: number, h1: number, i1: number) => void;
 export const renderHtml: (a: number, b: number, c: number) => void;
-export const renderHtmlConfigured: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-) => void;
-export const renderHtmlConfiguredAdvanced: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-  n: number,
-  o: number,
-  p: number,
-  q: number,
-  r: number,
-  s: number,
-  t: number,
-  u: number,
-  v: number,
-  w: number,
-  x: number,
-  y: number,
-  z: number,
-  a1: number,
-  b1: number,
-  c1: number,
-  d1: number,
-  e1: number,
-  f1: number,
-  g1: number,
-  h1: number,
-  i1: number,
-  j1: number,
-) => void;
-export const renderHtmlConfiguredMulti: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-  n: number,
-  o: number,
-  p: number,
-  q: number,
-  r: number,
-  s: number,
-  t: number,
-  u: number,
-  v: number,
-  w: number,
-  x: number,
-  y: number,
-  z: number,
-  a1: number,
-  b1: number,
-  c1: number,
-  d1: number,
-) => void;
-export const renderHtmlConfiguredWithFonts: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-  n: number,
-  o: number,
-  p: number,
-  q: number,
-  r: number,
-  s: number,
-  t: number,
-  u: number,
-  v: number,
-  w: number,
-  x: number,
-) => void;
-export const renderInteractiveHtmlConfigured: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-) => void;
+export const renderHtmlConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => void;
+export const renderHtmlConfiguredAdvanced: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number, g1: number, h1: number, i1: number, j1: number, k1: number, l1: number) => void;
+export const renderHtmlConfiguredMulti: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number) => void;
+export const renderHtmlConfiguredWithFonts: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number) => void;
+export const renderInteractiveHtmlConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
 export const renderPdf: (a: number, b: number, c: number) => void;
-export const renderPdfConfigured: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-  n: number,
-  o: number,
-) => void;
-export const renderPdfConfiguredMulti: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-  n: number,
-  o: number,
-  p: number,
-  q: number,
-  r: number,
-  s: number,
-  t: number,
-  u: number,
-  v: number,
-  w: number,
-  x: number,
-  y: number,
-  z: number,
-  a1: number,
-  b1: number,
-  c1: number,
-  d1: number,
-  e1: number,
-  f1: number,
-  g1: number,
-  h1: number,
-  i1: number,
-  j1: number,
-  k1: number,
-  l1: number,
-  m1: number,
-  n1: number,
-  o1: number,
-  p1: number,
-  q1: number,
-  r1: number,
-  s1: number,
-  t1: number,
-  u1: number,
-  v1: number,
-) => void;
-export const renderPdfConfiguredWithAssets: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-  n: number,
-  o: number,
-  p: number,
-  q: number,
-  r: number,
-  s: number,
-  t: number,
-  u: number,
-  v: number,
-  w: number,
-  x: number,
-  y: number,
-  z: number,
-  a1: number,
-  b1: number,
-  c1: number,
-) => void;
-export const renderPdfConfiguredWithImage: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
-  m: number,
-  n: number,
-  o: number,
-  p: number,
-  q: number,
-  r: number,
-  s: number,
-) => void;
-export const renderSemanticDiffHtml: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-) => number;
-export const renderSvgConfigured: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-  j: number,
-  k: number,
-) => void;
+export const renderPdfConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => void;
+export const renderPdfConfiguredMulti: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number, g1: number, h1: number, i1: number, j1: number, k1: number, l1: number, m1: number, n1: number, o1: number, p1: number, q1: number, r1: number, s1: number, t1: number, u1: number, v1: number, w1: number, x1: number) => void;
+export const renderPdfConfiguredPage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number, g1: number, h1: number, i1: number, j1: number, k1: number, l1: number, m1: number, n1: number, o1: number, p1: number, q1: number, r1: number, s1: number, t1: number, u1: number, v1: number, w1: number, x1: number, y1: number, z1: number) => void;
+export const renderPdfConfiguredRunning: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number, g1: number, h1: number, i1: number, j1: number, k1: number, l1: number, m1: number, n1: number, o1: number, p1: number, q1: number, r1: number, s1: number, t1: number, u1: number, v1: number, w1: number, x1: number, y1: number, z1: number, a2: number, b2: number, c2: number, d2: number, e2: number) => void;
+export const renderPdfConfiguredRunningImages: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number, d1: number, e1: number, f1: number, g1: number, h1: number, i1: number, j1: number, k1: number, l1: number, m1: number, n1: number, o1: number, p1: number, q1: number, r1: number, s1: number, t1: number, u1: number, v1: number, w1: number, x1: number, y1: number, z1: number, a2: number, b2: number, c2: number, d2: number, e2: number, f2: number, g2: number, h2: number, i2: number, j2: number, k2: number) => void;
+export const renderPdfConfiguredWithAssets: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number) => void;
+export const renderPdfConfiguredWithImage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number) => void;
+export const renderSemanticDiffHtml: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
+export const renderSvgConfigured: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
+export const renderSvgConfiguredResources: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number, z: number, a1: number, b1: number, c1: number) => void;
 export const searchIndex: (a: number, b: number, c: number) => void;
-export const semanticDiff: (
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  e: number,
-  f: number,
-  g: number,
-  h: number,
-  i: number,
-) => void;
+export const semanticDiff: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
 export const __wbindgen_export: (a: number, b: number) => number;
 export const __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_add_to_stack_pointer: (a: number) => number;

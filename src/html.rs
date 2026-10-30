@@ -305,10 +305,10 @@ struct RenderState<'a> {
     /// Root blocks of this render call — the source of the lazy
     /// footnote-definition walk (see `ensure_footnote_defs`).
     root_blocks: &'a [Block],
-    /// GFM footnotes: definitions (source id -> content blocks), in document
-    /// order. Filled lazily at the first footnote reference; reference-free
-    /// documents — the common case — never pay the walk.
-    footnote_defs: Vec<(&'a str, &'a [Block])>,
+    /// GFM footnotes indexed by borrowed source id; the first definition wins.
+    /// Filled lazily at the first footnote reference; reference-free documents
+    /// never pay the walk. Numbering still follows first-reference order.
+    footnote_defs: BTreeMap<&'a str, &'a [Block]>,
     /// Whether the footnote-definition walk has run (`footnote_defs` valid).
     footnote_defs_scanned: bool,
     /// Footnote numbers by first-reference appearance (render-time assignment).
@@ -1564,17 +1564,20 @@ fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Block>
     crate::ast::alert_body(inner)
 }
 
-/// Collect GFM footnote definitions in document order (container-aware), for
-/// the trailing notes section. Run lazily by `ensure_footnote_defs` at the
-/// first footnote reference: references may precede their definitions, so
-/// whenever the walk runs it must still cover the whole tree.
-fn collect_footnote_defs(blocks: &[Block]) -> Vec<(&str, &[Block])> {
-    let mut defs = Vec::new();
-    fn walk<'a>(blocks: &'a [Block], defs: &mut Vec<(&'a str, &'a [Block])>) {
+/// Index GFM footnote definitions in document order (container-aware), keeping
+/// the first body for each id. Both references and emitted note bodies perform
+/// logarithmic lookups instead of repeatedly scanning every definition.
+/// Run lazily: references may precede definitions, so the first lookup indexes
+/// the whole tree, while reference-free documents never allocate the index.
+fn collect_footnote_defs(blocks: &[Block]) -> BTreeMap<&str, &[Block]> {
+    let mut defs = BTreeMap::new();
+    fn walk<'a>(blocks: &'a [Block], defs: &mut BTreeMap<&'a str, &'a [Block]>) {
         for block in blocks {
             match block {
                 Block::FootnoteDefinition { id, blocks: inner } => {
-                    defs.push((id.as_str(), inner.as_slice()));
+                    defs.entry(id.as_str()).or_insert(inner.as_slice());
+                    // Nested definitions remain discoverable even inside a
+                    // duplicate outer definition, matching the original walk.
                     walk(inner, defs);
                 }
                 Block::BlockQuote(inner) => walk(inner, defs),
@@ -1600,9 +1603,6 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
     // Definitions are outside the document body outline. A note heading must
     // not consume an automatic TOC when the body has no heading of its own.
     state.automatic_toc = false;
-    // The refs are 'a (borrowed from the document), so cloning the pair list
-    // is cheap and independent of the later &mut state borrows.
-    let defs = state.footnote_defs.clone();
     out.push_str("<section class=\"footnotes\">\n<ol>\n");
     // Walk by index so a reference discovered while rendering a note body
     // (GFM: notes can cite other notes) is appended and emitted too. Cloning
@@ -1613,7 +1613,8 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
         let id = state.footnote_order[idx].clone();
         let number = idx + 1;
         idx += 1;
-        let Some((_, blocks)) = defs.iter().find(|(def_id, _)| *def_id == id.as_str()) else {
+        // Copy only the document-owned slice before mutably rendering state.
+        let Some(blocks) = state.footnote_defs.get(id.as_str()).copied() else {
             continue;
         };
         out.push_str("<li id=\"");
@@ -1636,7 +1637,7 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
 /// anchor id. References without definitions stay literal text (GFM).
 fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) {
     state.ensure_footnote_defs();
-    let has_def = state.footnote_defs.iter().any(|(def_id, _)| *def_id == id);
+    let has_def = state.footnote_defs.contains_key(id);
     if !has_def {
         out.push_str("[^");
         out.push_str(&escape_text(id));

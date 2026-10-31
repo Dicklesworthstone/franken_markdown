@@ -43,6 +43,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 mod baseline_grid;
+mod fenced_code;
 mod figure_fit;
 mod financial_tables;
 mod inline_code;
@@ -134,8 +135,8 @@ const PAGE_STREAM_COMPRESSION_MIN: usize = 4096;
 
 // Fenced-code panel + inline-code chip backgrounds.
 const CODE_PAD_X: f32 = 8.0; // text inset inside a fenced-code line
+#[cfg(test)]
 const CODE_FONT_SIZE: f32 = 9.5;
-const CODE_DIAGRAM_MIN_FONT_SIZE: f32 = 6.0;
 const CODE_HANGING_INDENT: f32 = 12.0; // continuation inset for wrapped code rows
 const CODE_LINE_NUMBER_GAP: f32 = 6.0;
 const PANEL_PAD_V: f32 = 5.0; // vertical breathing room above/below the code
@@ -4761,25 +4762,35 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             let mut any = false;
             let line_count = code.lines().count().max(1);
             let digits = line_count.to_string().len().max(1);
-            let code_area_width = (cx.page.content_w - indent - CODE_PAD_X).max(12.0);
-            let preserve_lines = preserve_code_block_lines(lang.as_deref(), code);
-            let default_code_size = cx.type_scale.code;
-            let code_size = if preserve_lines {
-                fitted_code_font_size(
-                    code,
-                    CodeFontFitSpec {
-                        code_area_width,
-                        line_numbers: cx.opts.code_line_numbers,
-                        digits,
-                        default_size: default_code_size,
-                        min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
-                        faces: cx.faces,
-                        width_cache: &cx.width_cache,
-                    },
-                )
+            // Indentation and padding consume real body space. If extreme
+            // nesting exhausts it, bring the panel back inside the page rather
+            // than inventing a minimum text width beyond the right margin.
+            let minimum_area = if cx.opts.code_line_numbers {
+                CODE_LINE_NUMBER_GAP + 1.0
             } else {
-                default_code_size
+                1.0
             };
+            let code_x = (cx.page.left + indent + CODE_PAD_X)
+                .min(cx.page.right_x() - minimum_area)
+                .max(cx.page.left);
+            let code_area_width = cx.page.right_x() - code_x;
+            let fit = CodeFontFitSpec {
+                lang: lang.as_deref(),
+                code_area_width,
+                line_numbers: cx.opts.code_line_numbers,
+                digits,
+                default_size: cx.type_scale.code,
+                faces: cx.faces,
+                width_cache: &cx.width_cache,
+            };
+            let preserved_size = preserve_code_block_lines(lang.as_deref(), code)
+                .then(|| fitted_code_font_size(code, fit))
+                .flatten();
+            // A row too wide even at the smallest nonzero emitted font size
+            // cannot retain its geometry on this page. Preserve all its source
+            // through ordinary wrapping at a readable size instead of clipping.
+            let preserve_lines = preserved_size.is_some();
+            let code_size = preserved_size.unwrap_or_else(|| fenced_code::wrapped_size(code, &fit));
 
             let number_col = if cx.opts.code_line_numbers {
                 code_line_number_column_width(digits, code_size, cx.faces, &cx.width_cache)
@@ -4788,7 +4799,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             };
             for (idx, raw) in code.lines().enumerate() {
                 any = true;
-                let x = cx.page.left + indent + CODE_PAD_X;
+                let x = code_x;
                 let rows = wrapped_code_rows(
                     raw,
                     CodeWrapSpec {
@@ -4797,7 +4808,8 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         digits,
                         line_numbers: cx.opts.code_line_numbers,
                         x0: x,
-                        max_text_width: (code_area_width - number_col).max(12.0),
+                        max_text_width: (code_area_width - number_col)
+                            .max(fenced_code::MIN_EMITTED_SIZE),
                         number_col,
                         size: code_size,
                         preserve_lines,
@@ -4833,7 +4845,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             }
             if !any {
                 // An empty fence still gets a one-line-tall panel.
-                let x = cx.page.left + indent + CODE_PAD_X;
+                let x = code_x;
                 let mut segs = Vec::new();
                 if cx.opts.code_line_numbers {
                     segs.push(code_line_number_seg(
@@ -4841,7 +4853,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         digits,
                         x,
                         number_col,
-                        CODE_FONT_SIZE,
+                        code_size,
                         cx.faces,
                         &cx.width_cache,
                     ));
@@ -4859,7 +4871,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     expansion_permille: 0,
                 });
                 out.push(Line {
-                    size: CODE_FONT_SIZE,
+                    size: code_size,
                     gap_after: 1.5,
                     rule: false,
                     rule_x: 0.0,
@@ -21689,12 +21701,13 @@ struct CodeWrapSpec<'a> {
     width_cache: &'a RefCell<WidthCache>,
 }
 
+#[derive(Clone, Copy)]
 struct CodeFontFitSpec<'a> {
+    lang: Option<&'a str>,
     code_area_width: f32,
     line_numbers: bool,
     digits: usize,
     default_size: f32,
-    min_size: f32,
     faces: &'a Faces,
     width_cache: &'a RefCell<WidthCache>,
 }
@@ -21791,58 +21804,18 @@ const fn is_ascii_diagram_char(ch: char) -> bool {
     )
 }
 
-fn fitted_code_font_size(code: &str, spec: CodeFontFitSpec<'_>) -> f32 {
-    let longest = code
-        .lines()
-        .map(|line| {
-            if line.contains('\t') {
-                let expanded = expand_code_tabs(line);
-                code_text_width_cached(&expanded, spec.default_size, spec.faces, spec.width_cache)
-            } else {
-                code_text_width_cached(line, spec.default_size, spec.faces, spec.width_cache)
-            }
-        })
-        .fold(0.0f32, f32::max);
-    if longest <= 0.0 {
-        return spec.default_size;
-    }
-    let default_number_text_width = if spec.line_numbers {
-        text_width_cached(
-            &"9".repeat(spec.digits),
-            spec.default_size,
-            F_MONO,
-            spec.faces,
-            spec.width_cache,
-        )
-    } else {
-        0.0
-    };
-
-    let fits = |size: f32| {
-        let number_col = if spec.line_numbers {
-            default_number_text_width * (size / spec.default_size) + CODE_LINE_NUMBER_GAP
+fn fitted_code_font_size(code: &str, spec: CodeFontFitSpec<'_>) -> Option<f32> {
+    // Retain the shared width cache for the eventual segment construction.
+    // The final fit separately uses the writer's advances and font precision.
+    for line in code.lines() {
+        if line.contains('\t') {
+            let expanded = expand_code_tabs(line);
+            code_text_width_cached(&expanded, spec.default_size, spec.faces, spec.width_cache);
         } else {
-            0.0
-        };
-        let available = (spec.code_area_width - number_col).max(8.0);
-        longest * (size / spec.default_size) <= available
-    };
-
-    if fits(spec.default_size) {
-        return spec.default_size;
-    }
-
-    let mut low = spec.min_size.min(spec.default_size);
-    let mut high = spec.default_size;
-    for _ in 0..18 {
-        let mid = (low + high) * 0.5;
-        if fits(mid) {
-            low = mid;
-        } else {
-            high = mid;
+            code_text_width_cached(line, spec.default_size, spec.faces, spec.width_cache);
         }
     }
-    low
+    fenced_code::diagram_size(code, &spec)
 }
 
 fn wrapped_code_rows(
@@ -21877,12 +21850,14 @@ fn wrapped_code_rows(
         return vec![segs];
     }
 
-    let continuation_indent = CODE_HANGING_INDENT.min((spec.max_text_width * 0.35).max(0.0));
-    let continuation_width = (spec.max_text_width - continuation_indent).max(8.0);
     let frags = code_fragments(spec.lang, text, highlight_spans);
+    let continuation_indent =
+        fenced_code::continuation_indent(&frags, spec.max_text_width, spec.size, spec.faces);
+    let continuation_width =
+        (spec.max_text_width - continuation_indent).max(fenced_code::MIN_EMITTED_SIZE);
     let frag_lines = wrap_code_fragments(
         &frags,
-        spec.max_text_width.max(8.0),
+        spec.max_text_width.max(fenced_code::MIN_EMITTED_SIZE),
         continuation_width,
         spec.size,
         spec.faces,
@@ -22053,7 +22028,30 @@ fn wrap_code_fragments(
     if !current.is_empty() {
         lines.push(current);
     }
-    lines
+    // Scalar advances are a fast conservative estimate for ordinary mono
+    // fonts. A caller-provided face can have positive kerning, and font-size
+    // serialization can also widen a row. Repair only those actual overflows
+    // with complete measured source clusters, preserving the fast path.
+    let mut fitted = Vec::with_capacity(lines.len());
+    for line in lines {
+        let limit = if fitted.is_empty() {
+            first_width
+        } else {
+            continuation_width
+        };
+        if fenced_code::row_width(&line, size, faces) > limit {
+            fitted.extend(wrap_code_combining_fragments(
+                &line,
+                limit,
+                continuation_width,
+                size,
+                faces,
+            ));
+        } else {
+            fitted.push(line);
+        }
+    }
+    fitted
 }
 
 /// Combining code uses atomic source clusters and the same shaped run widths
@@ -22067,12 +22065,7 @@ fn wrap_code_combining_fragments(
     faces: &Faces,
 ) -> Vec<Vec<CodeFrag>> {
     let frags = coalesce_code_mark_clusters(frags.to_vec());
-    let measured = |text: &str| -> f32 {
-        split_code_slot_runs(text, faces)
-            .iter()
-            .map(|(slot, text)| faces.shaped_width_points(*slot, text, size))
-            .sum()
-    };
+    let measured = |text: &str| fenced_code::text_width(text, size, faces);
     let mut lines = Vec::new();
     let mut current: Vec<CodeFrag> = Vec::new();
     let mut width = 0.0;
@@ -41194,12 +41187,11 @@ mod svg_text_path_tests {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod table_wrap_tests {
     use super::{
-        CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_BODY, F_MONO,
-        Faces, Fill, LayoutCx, LinkIntern, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER,
-        TABLE_MIN_COL_WIDTH, TableColumnMetrics, allocate_table_column_widths, cell_tokens,
-        code_fragments, fitted_code_font_size, layout_list, list_marker_layouts,
-        preserve_code_block_lines, table_cell_measure, table_column_badness, text_width,
-        wrap_cell_styled, wrapped_code_rows,
+        CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_BODY, F_MONO, Faces, Fill, LayoutCx,
+        LinkIntern, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER, TABLE_MIN_COL_WIDTH,
+        TableColumnMetrics, allocate_table_column_widths, cell_tokens, code_fragments,
+        fitted_code_font_size, layout_list, list_marker_layouts, preserve_code_block_lines,
+        table_cell_measure, table_column_badness, text_width, wrap_cell_styled, wrapped_code_rows,
     };
     use crate::PdfOptions;
     use crate::ast::{Inline, List, ListItem};
@@ -41435,15 +41427,16 @@ mod table_wrap_tests {
         let size = fitted_code_font_size(
             &code,
             CodeFontFitSpec {
+                lang: None,
                 code_area_width: 800.0,
                 line_numbers: false,
                 digits: 1,
                 default_size: CODE_FONT_SIZE,
-                min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
                 faces: &faces,
                 width_cache: &width_cache,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(size, CODE_FONT_SIZE);
 
         let entries_after_fit = width_cache.borrow().entry_count();
@@ -41645,15 +41638,16 @@ mod table_wrap_tests {
         let size = fitted_code_font_size(
             diagram,
             CodeFontFitSpec {
+                lang: Some("text"),
                 code_area_width: 120.0,
                 line_numbers: false,
                 digits: 1,
                 default_size: CODE_FONT_SIZE,
-                min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
                 faces: &faces,
                 width_cache: &width_cache,
             },
-        );
+        )
+        .unwrap();
         assert!(
             size < CODE_FONT_SIZE,
             "diagram font should shrink to preserve geometry"
@@ -41712,15 +41706,16 @@ mod table_wrap_tests {
         let size = fitted_code_font_size(
             diagram,
             CodeFontFitSpec {
+                lang: Some("text"),
                 code_area_width,
                 line_numbers: true,
                 digits,
                 default_size: CODE_FONT_SIZE,
-                min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
                 faces: &faces,
                 width_cache: &width_cache,
             },
-        );
+        )
+        .unwrap();
         let number_col = super::code_line_number_column_width(digits, size, &faces, &width_cache);
         let mut highlight_spans = Vec::new();
         let rows = wrapped_code_rows(
@@ -41973,7 +41968,7 @@ mod table_wrap_tests {
         let faces = Faces::load(&PdfOptions::default()).unwrap();
         let line = "+----------------------------+";
         let default_width = text_width(line, CODE_FONT_SIZE, F_MONO, &faces);
-        let shrunken_width = text_width(line, CODE_DIAGRAM_MIN_FONT_SIZE, F_MONO, &faces);
+        let shrunken_width = text_width(line, 6.0, F_MONO, &faces);
         assert!(default_width > shrunken_width);
     }
 }

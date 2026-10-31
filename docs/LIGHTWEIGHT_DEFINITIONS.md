@@ -29,8 +29,9 @@ than collecting hidden definitions. Resource exhaustion still throws
 This remains a reduced renderer, not a claim of full CommonMark/GFM parity. The
 reference scope and paragraph/code boundaries follow CommonMark 0.31.2 section
 4.7 (https://spec.commonmark.org/0.31.2/#link-reference-definitions). Footnotes
-and callouts are extensions. Lazy blockquote continuation and full Unicode
-case-folding of labels remain outside this change.
+and callouts are extensions. Lazy blockquote continuation remains outside this
+renderer's supported subset. Reference labels use the complete pinned Unicode
+full fold described in [REFERENCE_LABELS.md](REFERENCE_LABELS.md).
 
 ## Multiline reference definitions
 

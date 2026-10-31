@@ -18,6 +18,7 @@ use crate::span::{ParseDiagnostic, SourceSpan, Spanned, SpannedDocument};
 
 pub(crate) mod entities;
 mod frontmatter;
+mod unicode_casefold;
 mod unicode_punct;
 
 pub use frontmatter::{Frontmatter, split_frontmatter};
@@ -6517,26 +6518,6 @@ fn compute_bracket_pairs(
     }
 }
 
-fn unicode_case_fold_char(ch: char) -> Option<&'static str> {
-    match ch {
-        'ß' | 'ẞ' => Some("ss"),
-        'İ' => Some("i\u{0307}"),
-        'ς' => Some("σ"),
-        'ϑ' => Some("θ"),
-        'ϕ' => Some("φ"),
-        'ϖ' => Some("π"),
-        'ϰ' => Some("κ"),
-        'ϱ' => Some("ρ"),
-        'ϵ' => Some("ε"),
-        'ẛ' => Some("s\u{0307}"),
-        'ι' => Some("ι"),
-        'Ω' => Some("ω"),
-        'K' => Some("k"),
-        'Å' => Some("å"),
-        _ => None,
-    }
-}
-
 fn normalize_reference_label_chars(label: &[char]) -> Option<String> {
     // Definitions and uses share the source-character limit, before trimming
     // whitespace or case folding. Invalid definitions must stay visible.
@@ -6572,13 +6553,7 @@ fn normalize_reference_label_chars(label: &[char]) -> Option<String> {
         if pending_space && !out.is_empty() {
             out.push(' ');
         }
-        if let Some(folded) = unicode_case_fold_char(ch) {
-            out.push_str(folded);
-        } else {
-            for lower in ch.to_lowercase() {
-                out.push(lower);
-            }
-        }
+        unicode_casefold::push(ch, &mut out);
         pending_space = false;
     }
     if out.is_empty() { None } else { Some(out) }

@@ -78,6 +78,51 @@ fn parser_owns_case_whitespace_forward_definitions_and_first_definition_preceden
 }
 
 #[test]
+fn unicode_full_fold_navigation_preserves_first_definition_and_original_positions() {
+    for (label, definition) in [
+        ("ﬃ", "FFI"),
+        ("ſ", "S"),
+        ("µ", "Μ"),
+        ("ǰ", "J\u{030c}"),
+        ("և", "ԵՒ"),
+        ("ᾲ", "ὰΙ"),
+        ("ᏸ", "Ᏸ"),
+    ] {
+        for body in [
+            format!("[go][{label}¦]"),
+            format!("[{label}¦][]"),
+            format!("[{label}¦]"),
+        ] {
+            let source = format!(
+                "😀 {body}\r\n\r\n[{definition}]: #first\r\n[{label}]: #second\r\n\r\n# First\r\n\r\n# Second\r\n"
+            );
+            let result = call("textDocument/definition", &source);
+            assert_eq!(result.get("uri").and_then(Json::as_str), Some(URI));
+            assert_eq!(
+                start(&result),
+                Some(&position(Position {
+                    line: 5,
+                    character: 0
+                })),
+                "{source:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unicode_reference_folding_does_not_turn_images_or_unmatched_labels_into_navigation() {
+    for body in ["![go][ﬃ¦]", "![ﬃ¦][]", "![ﬃ¦]", "`[go][ﬃ¦]`"] {
+        let source = format!("# Target\n\n{body}\n\n[FFI]: #target\n");
+        assert_eq!(call("textDocument/definition", &source), Json::Null);
+    }
+    for (label, definition) in [("ı", "I"), ("i", "İ"), ("e\u{0301}", "é")] {
+        let source = format!("# Target\n\n[go][{label}¦]\n\n[{definition}]: #target\n");
+        assert_eq!(call("textDocument/definition", &source), Json::Null);
+    }
+}
+
+#[test]
 fn reference_titles_and_formatted_text_are_preserved_during_probe_restoration() {
     for body in ["[**Te¦xt**][id]", "[**Text**][i¦d]", "[text [nest¦ed]][id]"] {
         let source = format!("# Target\n\n{body}\n\n[id]: <#target> \"Keep &amp; title\"\n");

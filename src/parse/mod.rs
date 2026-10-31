@@ -878,7 +878,11 @@ fn collect_link_reference_metadata_at_depth(
         }
 
         if let Some(is_paragraph_text) = reference_collector_plain_nonblank_line_fast_path(line) {
-            in_paragraph = is_paragraph_text;
+            // The nonblank fast path returns false for indented code at a
+            // block boundary. Indentation cannot close an already open
+            // paragraph: its hanging continuation still owns any following
+            // reference-shaped text, just as in the real block parser.
+            in_paragraph |= is_paragraph_text;
             i += 1;
             continue;
         }
@@ -903,19 +907,6 @@ fn collect_link_reference_metadata_at_depth(
                 tracker.container_fence(&lines[start..i.min(lines.len())]);
             }
             in_paragraph = false; // a code block is not paragraph text
-            continue;
-        }
-
-        // An indented (>=4 column) non-blank line is indented code, never a
-        // reference definition or an HTML block. The block parser checks indented
-        // code *before* HTML (and breaks an open paragraph on it), so we must too:
-        // otherwise `    <div>` matches the HTML-block check below and its
-        // blank-terminated skip swallows a following real definition (dropping it).
-        // A blank line — even one that is all spaces — is handled by the blank
-        // branch below, so it is excluded here.
-        if indented_code_start(line) {
-            in_paragraph = false;
-            i += 1;
             continue;
         }
 

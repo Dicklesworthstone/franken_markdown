@@ -1,7 +1,8 @@
 # Supplied fonts in the book publisher
 
 The rebuilt `demo/book.html` has a **Book fonts** section. Assign local TrueType
-`.ttf` files to body regular, bold, italic, bold italic and monospace roles. Pick
+`.ttf` or OpenType `.otf` files to body regular, bold, italic, bold italic and
+monospace roles. Pick
 one or several files, optionally enter integer weight pins from 1 through 1000,
 and choose **Validate and assign selected fonts**. Blank pins use the renderer's
 role defaults. Reselect a font file to change its pin; changing a draft without
@@ -20,8 +21,14 @@ This preflight checks the proposed faces, not the complete current book or every
 Unicode character. It does not certify embedding rights or absence of fallback.
 Rebuild the HTML-site preview or book PDF proof afterward to inspect the actual
 book. No browser FontFace, system font discovery, remote font URL or alternate
-rendering engine is involved. TrueType collections, WOFF/WOFF2 and CFF/OTF are
-not accepted by this workbench file picker.
+rendering engine is involved. The renderer accepts TrueType outlines and
+supported static, name-keyed CFF1 OpenType outlines. The filename admits a local
+file for validation; it does not establish that its font program is supported.
+CFF2, CID-keyed CFF and unsupported Type2 glyph programs are refused by the
+native renderer. Collections and WOFF/WOFF2 remain outside this file picker.
+
+Use a WASM engine rebuilt with CFF1 rendering support. Older engines may reject
+a selected OpenType font; that failure leaves the previous assignments intact.
 
 ## Replacement, fallback and removal
 

@@ -29,8 +29,8 @@ function selections(values, inventory) {
     if (weight !== undefined && (!Number.isInteger(weight) || weight < 1 || weight > 1000))
       throw failure("INVALID_FONT_WEIGHT", "Font weight must be blank or an integer from 1 through 1000.");
     if (Object.prototype.toString.call(file) !== "[object File]" || typeof file.arrayBuffer !== "function"
-        || typeof file.name !== "string" || !/\.ttf$/i.test(file.name))
-      throw failure("INVALID_FONT", "Choose a local TrueType (.ttf) file for each selected role.");
+        || typeof file.name !== "string" || !/\.(?:ttf|otf)$/i.test(file.name))
+      throw failure("INVALID_FONT", "Choose a local TrueType (.ttf) or OpenType (.otf) file for each selected role.");
     const size = file.size;
     if (!Number.isSafeInteger(size) || size < 1 || size > BOOK_FONT_LIMITS.faceBytes)
       throw failure("FONT_LIMIT", "Each font must contain 1 byte through 8 MiB.");

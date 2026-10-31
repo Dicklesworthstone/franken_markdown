@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { File } from "node:buffer";
+import { readFileSync } from "node:fs";
 import { createBookFontStore, readBookFont, BOOK_FONT_SLOTS as S, BOOK_FONT_LIMITS as L } from "../demo/book_font_assets.mjs";
 // Arbitrary payloads test byte ownership and admission only, not font parsing.
 const asset = (slot = S[0], bytes = new Uint8Array([1, 2, 3]), extra = {}) => ({ slot, name: "Selected.ttf", bytes, ...extra });
@@ -97,11 +98,24 @@ test("local font file reading captures role, name, weight and exact bytes", asyn
   assert.deepEqual(font, { slot: S[2], name: "Local.TTF", weight: 425, bytes: new Uint8Array([0, 255, 2, 3]) });
 });
 
+test("OpenType file reading retains the complete real CFF program for native validation", async () => {
+  const bytes = readFileSync(new URL("../../tests/fixtures/fonts/source-sans-3/SourceSans3-Regular.otf", import.meta.url));
+  assert.equal(bytes.subarray(0, 4).toString(), "OTTO");
+  for (const name of ["SourceSans3.otf", "SourceSans3.OTF"]) {
+    const selected = new File([bytes], name, { type: "font/otf" });
+    const font = await readBookFont(selected, S[0], 650);
+    assert.equal(font.name, name); assert.equal(font.slot, S[0]); assert.equal(font.weight, 650);
+    assert.deepEqual(Buffer.from(font.bytes), bytes);
+  }
+});
+
 test("bad extension, role, weight, and file-size admission precede reading", async () => {
   let reads = 0;
   class Counted extends File { async arrayBuffer() { reads++; return super.arrayBuffer(); } }
   class Large extends Counted { get size() { return L.faceBytes + 1; } }
   for (const [file, slot, weight] of [[new Counted(["x"], "x.woff2"), S[0]],
+    [new Counted(["x"], "x.otc"), S[0]], [new Counted(["x"], "x.otf.exe"), S[0]],
+    [new Large(["x"], "x.otf"), S[0]], [new Counted([], "x.otf"), S[0]],
     [new Large(["x"], "x.ttf"), S[0]], [new Counted([], "x.ttf"), S[0]],
     [new Counted(["x"], "x.ttf"), "bad"], [new Counted(["x"], "x.ttf"), S[0], 1001]]) {
     await assert.rejects(readBookFont(file, slot, weight));

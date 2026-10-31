@@ -20,7 +20,7 @@ export function createBookFontPanel(root) {
   const panel = make("section", undefined, null, "book-font-panel");
   panel.setAttribute("aria-labelledby", "book-font-title");
   make("h2", "Book fonts", panel, "book-font-title");
-  make("p", "Assign local TrueType (.ttf) files to any of the five publishing roles. Choose one or several files, then validate and assign the batch. Files are checked by the existing native PDF engine before replacing any font. This works before adding a chapter; it does not certify whole-book glyph coverage.", panel, "book-font-help");
+  make("p", "Assign local TrueType (.ttf) or OpenType (.otf) files to any of the five publishing roles. Choose one or several files, then validate and assign the batch. Files are checked by the existing native PDF engine before replacing any font. This works before adding a chapter; it does not certify whole-book glyph coverage.", panel, "book-font-help");
   make("p", "Blank weight uses the renderer's role default. A weight pin must be an integer from 1 through 1000 and is interpreted by the engine for variable fonts. Reselect a file to change its pin. Unassigned roles use the engine's normal bundled/inherited fallback; changing the Sans/Serif selector does not revoke supplied fonts.", panel, "book-font-weight-help");
   make("p", "Only assign fonts you have permission to embed. Fonts stay in this page session and are included in explicit portable backups, but not source-only projects or local-library saves. A source-only restore or page suspension revokes them. No font is uploaded or installed in your operating system. Limit: 8 MiB per role, 32 MiB total. Save a portable backup before removal; source undo does not restore fonts.", panel, "book-font-save-help");
   make("p", "No supplied fonts.", panel, "book-font-inventory");
@@ -33,7 +33,7 @@ export function createBookFontPanel(root) {
     const fileLabel = make("label", "Assign or replace font file", group);
     fileLabel.setAttribute("for", `book-font-file-${slot}`);
     const file = make("input", undefined, group, `book-font-file-${slot}`);
-    file.type = "file"; file.accept = ".ttf,font/ttf";
+    file.type = "file"; file.accept = ".ttf,.otf,font/ttf,font/otf";
     file.setAttribute("aria-describedby", `book-font-current-${slot} book-font-help book-font-save-help`);
     const weightLabel = make("label", "Optional weight pin", group);
     weightLabel.setAttribute("for", `book-font-weight-${slot}`);

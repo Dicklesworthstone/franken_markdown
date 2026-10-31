@@ -285,8 +285,8 @@ export function createBookPublicationPanel(root) {
   }
   make("p", "grid-help", "A positive baseline spacing aligns PDF body text to a shared grid. Clear the page-count target before enabling a grid. Spacing is rounded once by the renderer to 0.001 pt; blank or 0 uses ordinary line spacing.", layout);
   check(layout, "codeLineNumbers", "PDF code line numbers");
-  select(layout, "htmlFontFormat", "HTML-site embedded font format (EPUB stays TrueType)",
-    [["", "Native default"], ["ttf", "TrueType"], ["woff1", "WOFF"], ["woff2", "WOFF2"]]);
+  select(layout, "htmlFontFormat", "HTML-site font container (EPUB uses the source font format)",
+    [["", "Native default"], ["ttf", "Raw font (.ttf/.otf)"], ["woff1", "WOFF"], ["woff2", "WOFF2"]]);
   const archival = make("fieldset"); make("legend", null, "PDF archival emission", archival);
   const policy = select(archival, "pdfPolicy", "PDF output policy", [
     ["off", "Ordinary PDF (default)"], ["2b", "PDF/A-2b emission"],

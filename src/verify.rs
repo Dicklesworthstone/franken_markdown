@@ -83,6 +83,7 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
             }
             RenderWarning::MathFallback { .. }
             | RenderWarning::MathOverflow { .. }
+            | RenderWarning::MathHeightOverflow { .. }
             | RenderWarning::TextShapingUnsupported { .. }
             | RenderWarning::TextShapingLimit { .. }
             | RenderWarning::PaginationFallback { .. }

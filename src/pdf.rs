@@ -1953,6 +1953,34 @@ impl PageGeom {
     fn right_x(self) -> f32 {
         self.width - self.right
     }
+
+    /// Keep a preceding heading and its underline with a fitted first row.
+    /// Otherwise a near-page-sized formula can force the soft pager to strand
+    /// the underline above that row, consuming space its fit did not reserve.
+    fn preceding_heading_height(self, lines: &[Line]) -> f32 {
+        lines
+            .iter()
+            .rev()
+            .take_while(|line| line.flow.kind == FlowKind::Heading)
+            .map(|line| {
+                natural_line_leading(line)
+                    + line.gap_after
+                    + self.grid.map_or(0.0, |grid| 2.0 * grid.spacing())
+            })
+            .sum()
+    }
+
+    /// An inline formula shares its row with ordinary text, labels and quote
+    /// padding. Keep their leading/descender allowance in addition to the
+    /// formula's ink, including grid rounding when that mode is enabled.
+    fn inline_math_height(self, reserved: f32) -> f32 {
+        (self.top_y()
+            - self.bottom
+            - reserved
+            - 2.0 * QUOTE_BG_PAD_V
+            - self.grid.map_or(0.0, |grid| 2.0 * grid.spacing()))
+        .max(1.0)
+    }
 }
 
 fn positive_finite(value: f32, fallback: f32) -> f32 {
@@ -2448,6 +2476,13 @@ pub enum RenderWarning {
         width_pt: u32,
         measure_pt: u32,
     },
+    /// An inline formula exceeded the available page-height envelope and
+    /// was scaled uniformly, preserving its complete source and visible paths.
+    MathHeightOverflow {
+        source: String,
+        height_pt: u32,
+        measure_pt: u32,
+    },
     /// A combining sequence could not use strict Latin mark positioning;
     /// its complete source remains visible through the legacy glyph fallback.
     TextShapingUnsupported { source: String, reason: String },
@@ -2473,6 +2508,7 @@ impl RenderWarning {
             Self::FontWeightIgnoredStatic { .. } => "font_weight_ignored_static",
             Self::MathFallback { .. } => "math_fallback",
             Self::MathOverflow { .. } => "math_overflow",
+            Self::MathHeightOverflow { .. } => "math_height_overflow",
             Self::TextShapingUnsupported { .. } => "text_shaping_unsupported",
             Self::TextShapingLimit { .. } => "text_shaping_limit",
             Self::PaginationFallback { reason, .. } => reason.diagnostic_code(),
@@ -2524,6 +2560,16 @@ impl RenderWarning {
                 "inline formula {source:?} is naturally {width_pt} pt wide, more than its \
                  {measure_pt} pt containing measure; scaled down to fit without splitting \
                  (use a display equation or a wider measure for larger mathematics)"
+            ),
+            Self::MathHeightOverflow {
+                source,
+                height_pt,
+                measure_pt,
+            } => format!(
+                "inline formula {source:?} is naturally {height_pt} pt tall, more than its \
+                 {measure_pt} pt page-height allowance; scaled down to retain the complete \
+                 formula and adjoining text (use a display equation or a taller page for \
+                 larger mathematics)"
             ),
         }
     }
@@ -18315,11 +18361,36 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         .collect();
 
     let link_targets = &spec.links.targets;
+    let heading_keep_height = page.preceding_heading_height(out);
     let row_lines = |cells: &[Vec<Tok>],
                      gap_after: f32,
                      kind: FlowKind,
                      shade: bool,
-                     source_row: Option<usize>| {
+                     source_row: Option<usize>,
+                     reserved_height: f32| {
+        // Fit once before wrapping so column measurement, line extents and
+        // painted paths all retain the same local formula geometry. A body's
+        // row allowance also reserves the header repeated above it on a new
+        // page. Consider all cells together: ascenders in one cell and deep
+        // subscripts in another share the same physical baseline.
+        let mut prepared = Cow::Borrowed(cells);
+        if cells.iter().flatten().any(|tok| is_inline_math(tok.slot)) {
+            let cells = prepared.to_mut();
+            for (column, tokens) in cells.iter_mut().enumerate() {
+                inline_math_fit::fit_tokens(
+                    tokens,
+                    size,
+                    colw.get(column).copied().unwrap_or(TABLE_MIN_COL_WIDTH),
+                );
+            }
+            inline_math_fit::fit_heights(
+                cells.iter_mut().flatten(),
+                size,
+                page.inline_math_height(reserved_height + heading_keep_height),
+                faces,
+            );
+        }
+        let cells = prepared.as_ref();
         let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
             .map(|k| {
                 let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
@@ -18501,14 +18572,31 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         image: None,
     };
 
+    let header_start = out.len();
+    // A repeated header must leave room for its separator and at least one
+    // ordinary body row. Larger body formulas then fit the remaining space.
+    let minimum_body = size * 1.32
+        + 3.0
+        + natural_line_leading(&rule(3.0))
+        + 3.0
+        + page.grid.map_or(0.0, |grid| 4.0 * grid.spacing());
     out.extend(row_lines(
         &head_toks,
         3.0,
         FlowKind::TableHeader,
         false,
         None,
+        minimum_body,
     ));
     out.push(rule(3.0));
+    let header_height: f32 = out[header_start..]
+        .iter()
+        .map(|line| {
+            natural_line_leading(line)
+                + line.gap_after
+                + page.grid.map_or(0.0, |grid| 2.0 * grid.spacing())
+        })
+        .sum();
     let nrows = row_toks.len();
     for (i, row) in row_toks.iter().enumerate() {
         // Zebra striping: tint every other body row (0-based even rows) for a
@@ -18519,6 +18607,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             FlowKind::TableRow,
             i % 2 == 0,
             Some(i),
+            header_height,
         ));
         if let Some(rows) = financial_rows
             && let Some(last) = out.last_mut()
@@ -20047,6 +20136,15 @@ fn layout_inlines(
     let content_w = inline_paragraph_measure(&toks, cx.page, indent);
     inline_image::fit_tokens(&mut toks, size, content_w.to_points_f32());
     inline_math_fit::fit_tokens(&mut toks, size, content_w.to_points_f32());
+    if toks.iter().any(|tok| is_inline_math(tok.slot)) {
+        inline_math_fit::fit_heights(
+            &mut toks,
+            size,
+            cx.page
+                .inline_math_height(cx.page.preceding_heading_height(out)),
+            cx.faces,
+        );
+    }
     let mut policy = ParagraphPolicy::for_flow(flow.kind);
     // Microtypography is justified-paragraph-only (ragged flows get nothing,
     // mirroring the expansion-credit rule): the solver must never produce a
@@ -20300,6 +20398,15 @@ fn layout_prefixed_inlines(
     let content_w = inline_paragraph_measure(&toks, cx.page, spec.content_indent);
     inline_image::fit_tokens(&mut toks, spec.size, content_w.to_points_f32());
     inline_math_fit::fit_tokens(&mut toks, spec.size, content_w.to_points_f32());
+    if toks.iter().any(|tok| is_inline_math(tok.slot)) {
+        inline_math_fit::fit_heights(
+            &mut toks,
+            spec.size,
+            cx.page
+                .inline_math_height(cx.page.preceding_heading_height(out)),
+            cx.faces,
+        );
+    }
     let mut policy = ParagraphPolicy::for_flow(spec.flow.kind);
     policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
     policy.river_penalty = cx.opts.river_penalty;
@@ -20541,6 +20648,14 @@ fn layout_inlines_greedy(
     let max = inline_paragraph_measure(&toks, page, indent).to_points_f32();
     inline_image::fit_tokens(&mut toks, size, max);
     inline_math_fit::fit_tokens(&mut toks, size, max);
+    if toks.iter().any(|tok| is_inline_math(tok.slot)) {
+        inline_math_fit::fit_heights(
+            &mut toks,
+            size,
+            page.inline_math_height(page.preceding_heading_height(out)),
+            faces,
+        );
+    }
     let mut lines: Vec<Vec<Tok>> = Vec::new();
     let mut cur: Vec<Tok> = Vec::new();
     let mut cur_w = 0.0_f32;

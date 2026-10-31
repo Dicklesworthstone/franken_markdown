@@ -24,6 +24,10 @@ impl PageGrid {
             bottom: outward(bottom),
         }
     }
+
+    pub fn spacing(self) -> f32 {
+        points(self.pitch)
+    }
 }
 
 #[derive(Clone, Copy)]

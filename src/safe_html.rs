@@ -953,21 +953,7 @@ impl BlockBuilder {
             Some(Container::Root(blocks) | Container::Quote(blocks) | Container::Item(blocks)) => {
                 blocks.push(block);
             }
-            Some(Container::Cell(cell)) => {
-                // Cells are inline-only: separate block content with a break.
-                let inlines = match block {
-                    Block::Paragraph(inlines) | Block::Heading { inlines, .. } => inlines,
-                    other => {
-                        let mut text = String::new();
-                        block_text(&other, &mut text);
-                        vec![Inline::Text(text)]
-                    }
-                };
-                if !cell.is_empty() {
-                    cell.push(Inline::HardBreak);
-                }
-                cell.extend(inlines);
-            }
+            Some(Container::Cell(cell)) => append_cell_block(block, cell),
             Some(Container::Table { before, .. }) => before.push(block),
             Some(Container::List { items, .. }) => items.push(ListItem {
                 task: None,
@@ -983,13 +969,6 @@ impl BlockBuilder {
         let summary = std::mem::replace(&mut self.summary, false);
         let inlines = trim_inlines(lower_inlines(&raw));
         if !has_visible_content(&inlines) {
-            return;
-        }
-        if let Some(Container::Cell(cell)) = self.stack.last_mut() {
-            if !cell.is_empty() {
-                cell.push(Inline::Text(" ".to_string()));
-            }
-            cell.extend(inlines);
             return;
         }
         let block = match heading {
@@ -1253,23 +1232,91 @@ fn table_from_rows(mut rows: Vec<Vec<Vec<Inline>>>) -> Option<Table> {
     })
 }
 
-fn block_text(block: &Block, out: &mut String) {
+/// A table cell has an inline-only AST, but supported HTML may place complete
+/// blocks inside it. Retain their content and inline semantics in reading order:
+/// hard breaks separate blocks/list items/table rows, and visible separators
+/// distinguish nested cells. The HTML container limit bounds this recursion.
+fn append_cell_block(block: Block, out: &mut Vec<Inline>) {
     match block {
-        Block::Paragraph(inlines) | Block::Heading { inlines, .. } => plain_text(inlines, out),
-        Block::CodeBlock { code, .. } => out.push_str(code),
-        Block::BlockQuote(blocks) => {
+        Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
+            append_cell_inlines(inlines, out);
+        }
+        Block::CodeBlock { code, .. } => {
+            let mut inlines = Vec::new();
+            for line in code.lines() {
+                if !inlines.is_empty() {
+                    inlines.push(Inline::HardBreak);
+                }
+                // Inline code keeps spaces literal in the PDF/SVG text paths.
+                // An empty code node retains the position of an empty line.
+                inlines.push(Inline::Code(line.to_string()));
+            }
+            append_cell_inlines(inlines, out);
+        }
+        Block::BlockQuote(blocks) | Block::FootnoteDefinition { blocks, .. } => {
             for block in blocks {
-                block_text(block, out);
+                append_cell_block(block, out);
             }
         }
         Block::List(list) => {
-            for item in &list.items {
-                for block in &item.blocks {
-                    block_text(block, out);
+            for (index, item) in list.items.into_iter().enumerate() {
+                let mut inlines = Vec::new();
+                for block in item.blocks {
+                    append_cell_block(block, &mut inlines);
+                }
+                let marker = match item.task {
+                    Some(true) => "[x] ".to_string(),
+                    Some(false) => "[ ] ".to_string(),
+                    None if list.ordered => {
+                        format!("{}. ", list.start.saturating_add(index as u64))
+                    }
+                    None => "\u{2022} ".to_string(),
+                };
+                inlines.insert(0, Inline::Text(marker));
+                append_cell_inlines(inlines, out);
+            }
+        }
+        Block::Table(table) => {
+            for row in std::iter::once(table.head).chain(table.rows) {
+                let mut inlines = Vec::new();
+                for (index, cell) in row.into_iter().enumerate() {
+                    if index != 0 {
+                        inlines.push(Inline::Text(" | ".to_string()));
+                    }
+                    inlines.extend(cell);
+                }
+                append_cell_inlines(inlines, out);
+            }
+        }
+        Block::DefinitionList(items) => {
+            for item in items {
+                for term in item.terms {
+                    append_cell_inlines(vec![Inline::Strong(term)], out);
+                }
+                for definition in item.definitions {
+                    append_cell_inlines(definition, out);
                 }
             }
         }
-        _ => {}
+        Block::MathBlock(math) => append_cell_inlines(vec![Inline::DisplayMath(math)], out),
+        Block::HtmlBlock(html) => append_cell_inlines(vec![Inline::Text(html)], out),
+        Block::ThematicBreak => {
+            append_cell_inlines(vec![Inline::Text("\u{2014}".to_string())], out);
+        }
+        Block::PageBreak => cell_break(out),
+    }
+}
+
+fn append_cell_inlines(inlines: Vec<Inline>, out: &mut Vec<Inline>) {
+    if !inlines.is_empty() {
+        cell_break(out);
+        out.extend(inlines);
+    }
+}
+
+fn cell_break(out: &mut Vec<Inline>) {
+    if !out.is_empty() && !matches!(out.last(), Some(Inline::HardBreak)) {
+        out.push(Inline::HardBreak);
     }
 }
 

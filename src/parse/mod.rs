@@ -1961,131 +1961,261 @@ fn skip_spaces_or_newline(chars: &[char], i: &mut usize) {
     }
 }
 
-fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkReference, usize)> {
-    if lines.is_empty() || leading_spaces(lines[0]) > 3 {
-        return None;
-    }
-    let first_trimmed = trim_start_space_tab(lines[0]);
-    if !first_trimmed.starts_with('[') {
-        return None;
+#[derive(Clone, Copy)]
+enum ReferencePhase {
+    Label,
+    Colon,
+    DestinationStart,
+    AngleDestination,
+    BareDestination,
+    AfterDestination { separated: bool },
+    NextLineTitle { indented_code: bool },
+    Title { close: char },
+    AfterTitle,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReferenceProgress {
+    Pending,
+    Destination,
+    Title,
+}
+
+/// Locate a definition without repeatedly joining and parsing its prefixes.
+/// The same constant-size state follows reference candidates while containers
+/// are collected. Only a completed definition is allocated and decoded by the
+/// ordinary label/destination/title grammar.
+///
+/// Labels stop after 999 source characters, destinations cannot cross a line,
+/// and titles stop at their first unescaped closing delimiter (or an invalid
+/// open parenthesis). A later candidate's title opener therefore also ends an
+/// earlier scan using that delimiter; failed candidates cannot each rescan an
+/// arbitrarily long common suffix. Container observation visits each line once.
+struct ReferenceDefinitionScan {
+    phase: ReferencePhase,
+    lines: usize,
+    label_chars: usize,
+    label_has_text: bool,
+    escaped: bool,
+    paren_depth: usize,
+    title_saw_newline: bool,
+}
+
+impl ReferenceDefinitionScan {
+    fn new() -> Self {
+        Self {
+            phase: ReferencePhase::Label,
+            lines: 0,
+            label_chars: 0,
+            label_has_text: false,
+            escaped: false,
+            paren_depth: 0,
+            title_saw_newline: false,
+        }
     }
 
-    // Collect candidate lines up to 8 lines without blank lines
-    let max_lines = lines.len().min(8);
-    let mut candidate_lines = Vec::with_capacity(max_lines);
-    for line in &lines[..max_lines] {
+    fn line(&mut self, line: &str) -> Option<ReferenceProgress> {
         if is_blank_line(line) {
-            break;
+            return None;
         }
-        candidate_lines.push(*line);
+        let line = if self.lines == 0 {
+            if leading_spaces(line) > 3 {
+                return None;
+            }
+            trim_start_space_tab(line).strip_prefix('[')?
+        } else {
+            if matches!(
+                self.phase,
+                ReferencePhase::NextLineTitle {
+                    indented_code: true
+                }
+            ) && leading_spaces(line) >= 4
+            {
+                return None;
+            }
+            line
+        };
+        self.lines += 1;
+        for ch in line.chars() {
+            match self.phase {
+                ReferencePhase::Label => {
+                    if !self.escaped && ch == ']' {
+                        if !self.label_has_text {
+                            return None;
+                        }
+                        self.phase = ReferencePhase::Colon;
+                        continue;
+                    }
+                    if !self.escaped && ch == '[' {
+                        return None;
+                    }
+                    self.label_chars += 1;
+                    if self.label_chars > MAX_REFERENCE_LABEL_LEN {
+                        return None;
+                    }
+                    self.label_has_text |= !ch.is_whitespace();
+                    self.escaped = !self.escaped && ch == '\\';
+                }
+                ReferencePhase::Colon => {
+                    if ch != ':' {
+                        return None;
+                    }
+                    self.phase = ReferencePhase::DestinationStart;
+                }
+                ReferencePhase::DestinationStart => match ch {
+                    ' ' | '\t' => {}
+                    '<' => self.phase = ReferencePhase::AngleDestination,
+                    ')' => return None,
+                    ch if ch.is_ascii_control() => return None,
+                    _ => {
+                        self.phase = ReferencePhase::BareDestination;
+                        self.paren_depth = usize::from(ch == '(');
+                        self.escaped = ch == '\\';
+                    }
+                },
+                ReferencePhase::AngleDestination | ReferencePhase::BareDestination => {
+                    if self.escaped {
+                        self.escaped = false;
+                        if is_ascii_punct(ch) {
+                            continue;
+                        }
+                    }
+                    match (self.phase, ch) {
+                        (_, '\\') => self.escaped = true,
+                        (_, '<') => return None,
+                        (ReferencePhase::AngleDestination, '>') => {
+                            self.phase = ReferencePhase::AfterDestination { separated: false };
+                        }
+                        (ReferencePhase::AngleDestination, _) => {}
+                        (_, ' ' | '\t' | '\r') if self.paren_depth == 0 => {
+                            self.phase = ReferencePhase::AfterDestination { separated: true };
+                        }
+                        (_, '(') => self.paren_depth += 1,
+                        (_, ')') if self.paren_depth > 0 => self.paren_depth -= 1,
+                        (_, ')') => return None,
+                        (_, ch) if ch.is_ascii_control() || ch == ' ' => return None,
+                        _ => {}
+                    }
+                }
+                ReferencePhase::AfterDestination { .. } | ReferencePhase::NextLineTitle { .. } => {
+                    if matches!(ch, ' ' | '\t') {
+                        if matches!(self.phase, ReferencePhase::AfterDestination { .. }) {
+                            self.phase = ReferencePhase::AfterDestination { separated: true };
+                        }
+                        continue;
+                    }
+                    if matches!(
+                        self.phase,
+                        ReferencePhase::AfterDestination { separated: false }
+                    ) {
+                        return None;
+                    }
+                    let close = match ch {
+                        '"' | '\'' => ch,
+                        '(' => ')',
+                        _ => return None,
+                    };
+                    self.phase = ReferencePhase::Title { close };
+                    self.escaped = false;
+                    self.title_saw_newline = false;
+                }
+                ReferencePhase::Title { close } => {
+                    if self.escaped {
+                        self.escaped = false;
+                        if is_ascii_punct(ch) {
+                            self.title_saw_newline = false;
+                            continue;
+                        }
+                    }
+                    if ch == close {
+                        self.phase = ReferencePhase::AfterTitle;
+                    } else if ch == '(' && close == ')' {
+                        return None;
+                    } else {
+                        if !ch.is_whitespace() {
+                            self.title_saw_newline = false;
+                        }
+                        self.escaped = ch == '\\';
+                    }
+                }
+                ReferencePhase::AfterTitle => {
+                    if !matches!(ch, ' ' | '\t') {
+                        return None;
+                    }
+                }
+            }
+        }
+        self.escaped = false;
+        match self.phase {
+            ReferencePhase::Label => {
+                // A physical line ending is also one source label character.
+                self.label_chars += 1;
+                (self.label_chars <= MAX_REFERENCE_LABEL_LEN).then_some(ReferenceProgress::Pending)
+            }
+            ReferencePhase::DestinationStart => Some(ReferenceProgress::Pending),
+            ReferencePhase::BareDestination if self.paren_depth != 0 => None,
+            ReferencePhase::BareDestination | ReferencePhase::AfterDestination { .. } => {
+                self.phase = ReferencePhase::NextLineTitle {
+                    indented_code: self.lines == 1,
+                };
+                Some(ReferenceProgress::Destination)
+            }
+            ReferencePhase::Title { .. } if !self.title_saw_newline => {
+                self.title_saw_newline = true;
+                Some(ReferenceProgress::Pending)
+            }
+            ReferencePhase::AfterTitle => Some(ReferenceProgress::Title),
+            _ => None,
+        }
     }
+}
 
-    if candidate_lines.is_empty() {
+fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkReference, usize)> {
+    let first = *lines.first()?;
+    if leading_spaces(first) > 3 || !trim_start_space_tab(first).starts_with('[') {
         return None;
     }
 
-    let mut fallback_without_title: Option<(String, LinkReference, usize)> = None;
-
-    // Check single-line fast ascii path first
-    if let Some((label, ref_def)) = parse_simple_ascii_reference_definition(candidate_lines[0]) {
-        if ref_def.title.is_some() {
-            return Some((label, ref_def, 1));
+    // Keep the common one-line definition and next-line title fast paths.
+    if let Some((label, reference)) = parse_reference_definition(first) {
+        if reference.title.is_some() {
+            return Some((label, reference, 1));
         }
-        if let Some(line2) = candidate_lines.get(1) {
-            if leading_spaces(line2) >= 4 {
-                return Some((label, ref_def, 1));
-            }
-            if let Some(title) = parse_reference_title_line(line2) {
-                return Some((
-                    label,
-                    LinkReference {
-                        dest: ref_def.dest,
-                        title: Some(title),
-                    },
-                    2,
-                ));
-            }
+        let Some(next) = lines.get(1).filter(|line| leading_spaces(line) < 4) else {
+            return Some((label, reference, 1));
+        };
+        if let Some(title) = parse_reference_title_line(next) {
+            return Some((
+                label,
+                LinkReference {
+                    dest: reference.dest,
+                    title: Some(title),
+                },
+                2,
+            ));
         }
-        fallback_without_title = Some((label, ref_def, 1));
-    } else if let Some((label, ref_def)) = parse_reference_definition(candidate_lines[0]) {
-        if ref_def.title.is_some() {
-            return Some((label, ref_def, 1));
+        if !trim_start_space_tab(next).starts_with(['"', '\'', '(']) {
+            return Some((label, reference, 1));
         }
-        if let Some(line2) = candidate_lines.get(1) {
-            if leading_spaces(line2) >= 4 {
-                return Some((label, ref_def, 1));
-            }
-            if let Some(title) = parse_reference_title_line(line2) {
-                return Some((
-                    label,
-                    LinkReference {
-                        dest: ref_def.dest,
-                        title: Some(title),
-                    },
-                    2,
-                ));
-            }
-        }
-        fallback_without_title = Some((label, ref_def, 1));
     }
 
-    // Check multiline combinations
-    for k in 2..=candidate_lines.len() {
-        let joined = candidate_lines[..k].join("\n");
-        let chars: Vec<char> = joined.chars().collect();
-        let mut i = 0usize;
-        skip_spaces(&chars, &mut i);
-        if chars.get(i) != Some(&'[') {
-            continue;
-        }
-        let close = match find_closing_bracket(&chars, i) {
-            Some(c) => c,
-            None => continue,
-        };
-        if chars.get(close + 1) != Some(&':') {
-            continue;
-        }
-        let label = match normalize_reference_label_chars(&chars[i + 1..close]) {
-            Some(l) => l,
-            None => continue,
-        };
-        let mut j = close + 2;
-        skip_spaces_or_newline(&chars, &mut j);
-        if j >= chars.len() {
-            continue;
-        }
-        let dest = match parse_link_destination(&chars, &mut j) {
-            Some(d) => d,
-            None => continue,
-        };
-        let spaces_start = j;
-        skip_spaces_or_newline(&chars, &mut j);
-        let title = if j >= chars.len() {
-            None
-        } else {
-            if j == spaces_start {
-                continue;
+    let mut scan = ReferenceDefinitionScan::new();
+    let mut accepted = None;
+    for (index, line) in lines.iter().enumerate() {
+        match scan.line(line) {
+            Some(ReferenceProgress::Pending) => {}
+            Some(ReferenceProgress::Destination) => accepted = Some(index + 1),
+            Some(ReferenceProgress::Title) => {
+                accepted = Some(index + 1);
+                break;
             }
-            let title_str = match parse_link_title(&chars, &mut j) {
-                Some(t) => t,
-                None => continue,
-            };
-            skip_spaces(&chars, &mut j);
-            if j != chars.len() {
-                continue;
-            }
-            Some(title_str)
-        };
-        skip_spaces(&chars, &mut j);
-        if j == chars.len() {
-            if title.is_some() {
-                return Some((label, LinkReference { dest, title }, k));
-            } else if fallback_without_title.is_none() {
-                fallback_without_title = Some((label, LinkReference { dest, title }, k));
-            }
+            None => break,
         }
     }
-    fallback_without_title
+    let used = accepted?;
+    let joined = lines[..used].join("\n");
+    let (label, reference) = parse_reference_definition(&joined)?;
+    Some((label, reference, used))
 }
 
 fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
@@ -2107,7 +2237,7 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
     }
     let label = normalize_reference_label_chars(&chars[1..close])?;
     let mut i = close + 2;
-    skip_spaces(&chars, &mut i);
+    skip_spaces_or_newline(&chars, &mut i);
     if i >= chars.len() {
         return None;
     }
@@ -2115,7 +2245,7 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
     let dest = parse_link_destination(&chars, &mut i)?;
 
     let spaces_start = i;
-    skip_spaces(&chars, &mut i);
+    skip_spaces_or_newline(&chars, &mut i);
     let title = if i >= chars.len() {
         None
     } else {
@@ -3292,11 +3422,10 @@ enum TailLeaf {
 struct ContainerTail {
     containers: Vec<TailContainer>,
     leaf: TailLeaf,
-    // The existing definition grammar admits at most eight nonblank lines.
-    // Keep that bounded candidate so syntax inside a multiline title is not
-    // mistaken for a heading/fence. Definitions are removed from paragraphs
+    // Follow the definition grammar incrementally, without retaining and
+    // reparsing an ever-growing prefix of a long title. Definitions are removed
     // after collection; their remaining text can still continue lazily.
-    reference_lines: Vec<String>,
+    reference_scan: Option<ReferenceDefinitionScan>,
 }
 
 impl ContainerTail {
@@ -3357,27 +3486,22 @@ impl ContainerTail {
             }
             self.containers.truncate(depth);
             self.leaf = TailLeaf::Boundary;
-            self.reference_lines.clear();
+            self.reference_scan = None;
         }
 
-        if !self.reference_lines.is_empty() {
-            if is_blank_line(line) || self.reference_lines.len() >= 8 {
-                self.reference_lines.clear();
-            } else {
-                self.reference_lines.push(line.to_owned());
-                let candidate: Vec<&str> =
-                    self.reference_lines.iter().map(String::as_str).collect();
-                if let Some((_, reference, used)) = parse_multiline_reference_definition(&candidate)
-                    && used == candidate.len()
-                {
+        if let Some(scan) = &mut self.reference_scan {
+            match scan.line(line) {
+                Some(ReferenceProgress::Pending) => {}
+                Some(progress) => {
                     self.leaf = TailLeaf::Paragraph {
                         table_columns: None,
                     };
-                    if reference.title.is_some() {
-                        self.reference_lines.clear();
+                    if progress == ReferenceProgress::Title {
+                        self.reference_scan = None;
                     }
                     return;
                 }
+                None => self.reference_scan = None,
             }
         }
 
@@ -3448,7 +3572,7 @@ impl ContainerTail {
             self.leaf = TailLeaf::Footnote;
         } else if blockquote_marker_start(line) {
             if depth < MAX_BLOCK_NESTING_DEPTH {
-                self.reference_lines.clear();
+                self.reference_scan = None;
                 self.containers.push(TailContainer::Quote);
                 self.observe_at(strip_blockquote_marker(line).as_ref(), depth + 1);
             }
@@ -3460,7 +3584,7 @@ impl ContainerTail {
             }
         } else if let Some(marker) = list_marker(line) {
             if depth < MAX_BLOCK_NESTING_DEPTH {
-                self.reference_lines.clear();
+                self.reference_scan = None;
                 self.containers.push(TailContainer::List {
                     indent: marker.indent,
                     content_indent: marker.content_indent,
@@ -3469,15 +3593,15 @@ impl ContainerTail {
                 self.observe_at(split_task_marker(marker.rest.as_ref()).1, depth + 1);
             }
         } else {
-            if self.reference_lines.is_empty() && trim_start_space_tab(line).starts_with('[') {
-                self.reference_lines.push(line.to_owned());
-                if let Some((_, reference, _)) = parse_multiline_reference_definition(&[line]) {
+            if self.reference_scan.is_none() && trim_start_space_tab(line).starts_with('[') {
+                let mut scan = ReferenceDefinitionScan::new();
+                if let Some(progress) = scan.line(line) {
+                    if progress != ReferenceProgress::Title {
+                        self.reference_scan = Some(scan);
+                    }
                     self.leaf = TailLeaf::Paragraph {
                         table_columns: None,
                     };
-                    if reference.title.is_some() {
-                        self.reference_lines.clear();
-                    }
                     return;
                 }
             }

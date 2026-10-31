@@ -821,27 +821,32 @@ fn unpack_delta_run(d: &[u8], cursor: &mut usize, end: usize, n: usize) -> Optio
         let ctrl = *d.get(*cursor)?;
         *cursor = cursor.checked_add(1)?;
         let run = usize::from(ctrl & 0x3F) + 1;
-        let zeros = ctrl & 0xC0 == 0;
-        let bytes = ctrl & 0x40 != 0 && ctrl & 0x80 == 0;
-        let words = ctrl & 0x80 != 0;
-        for _ in 0..run {
-            if out.len() >= n {
-                break;
-            }
-            if zeros {
-                out.push(0);
-            } else if bytes {
-                let b = *d.get(*cursor)? as i8;
-                *cursor = cursor.checked_add(1)?;
-                out.push(i16::from(b));
-            } else if words {
-                let v = be_i16(d, *cursor)?;
-                *cursor = cursor.checked_add(2)?;
-                out.push(v);
-            } else {
-                out.push(0);
-            }
+        if run > n - out.len() {
+            return None;
         }
+        // OpenType packed deltas: bit 7 is a zero run (no payload);
+        // otherwise bit 6 selects signed words instead of signed bytes.
+        // https://learn.microsoft.com/en-us/typography/opentype/spec/otvarcommonformats#packed-deltas
+        let zeros = ctrl & 0x80 != 0;
+        let words = ctrl & 0x40 != 0;
+        if zeros {
+            out.resize(out.len() + run, 0);
+            continue;
+        }
+        let stride = if words { 2 } else { 1 };
+        let run_end = cursor.checked_add(run.checked_mul(stride)?)?;
+        if run_end > end {
+            return None;
+        }
+        let payload = d.get(*cursor..run_end)?;
+        if words {
+            for pair in payload.chunks_exact(2) {
+                out.push(i16::from_be_bytes([pair[0], pair[1]]));
+            }
+        } else {
+            out.extend(payload.iter().map(|&b| i16::from(b as i8)));
+        }
+        *cursor = run_end;
     }
     Some(out)
 }
@@ -1188,9 +1193,9 @@ pub(crate) fn variable_triangle_fixture() -> Vec<u8> {
     push32(&mut loca, 0);
     push32(&mut loca, glyph.len() as u32);
     // Identical gvar to the gk3v.2 unit-test builder (private p0 +50 x at peak).
-    let mut payload = vec![1, 0, 0, 0x80];
+    let mut payload = vec![1, 0, 0, 0x40];
     payload.extend_from_slice(&50i16.to_be_bytes());
-    payload.push(0x00);
+    payload.push(0x80);
     let mut gvd = Vec::new();
     push16(&mut gvd, 1);
     push16(&mut gvd, 0);
@@ -1432,9 +1437,9 @@ mod tests {
     /// point-0 delta of +50 x.
     fn gvar_move_p0() -> Vec<u8> {
         // One private point (p0). IUP copies that delta across the contour.
-        let mut payload = vec![1, 0, 0, 0x80];
+        let mut payload = vec![1, 0, 0, 0x40];
         payload.extend_from_slice(&50i16.to_be_bytes());
-        payload.push(0x00); // y: one zero
+        payload.push(0x80); // y: one zero
 
         let mut gvd = Vec::new();
         push16(&mut gvd, 1);
@@ -1452,9 +1457,9 @@ mod tests {
         // Same +50 x on p0, but the packed point numbers are SHARED at the
         // front of the serialized stream and excluded from variationDataSize.
         let shared = vec![1, 0, 0];
-        let mut deltas = vec![0x80];
+        let mut deltas = vec![0x40];
         deltas.extend_from_slice(&50i16.to_be_bytes());
-        deltas.push(0x00);
+        deltas.push(0x80);
         let mut gvd = Vec::new();
         push16(&mut gvd, SHARED_POINT_NUMBERS | 1);
         push16(&mut gvd, 0); // dataOffset patched below
@@ -1518,6 +1523,55 @@ mod tests {
             if ok { "PASS" } else { "FAIL" }
         );
         assert!(ok, "{id}: {subject}");
+    }
+
+    #[test]
+    fn packed_deltas_match_opentype_reference_vector() {
+        // The mixed byte/zero/word example from the OpenType specification,
+        // independent of the fixture builders and this decoder.
+        let packed = [
+            0x03, 0x0A, 0x97, 0x00, 0xC6, 0x87, 0x41, 0x10, 0x22, 0xFB, 0x34,
+        ];
+        let expected = [10, -105, 0, -58, 0, 0, 0, 0, 0, 0, 0, 0, 4130, -1228];
+        let mut cursor = 0;
+        assert_eq!(
+            unpack_delta_run(&packed, &mut cursor, packed.len(), expected.len()),
+            Some(expected.to_vec())
+        );
+        assert_eq!(cursor, packed.len());
+    }
+
+    #[test]
+    fn packed_deltas_match_fonttools_signed_boundary_encoding() {
+        // FontTools 4.61.1 TupleVariation.compileDeltaValues_(expected).
+        // Includes signed-byte endpoints, the adjacent signed-word values,
+        // and separate zero runs: none are encoded by our own test helpers.
+        let expected = [0, 0, 1, -1, 127, -128, 128, -129, 0, 0, 4130, -1228];
+        let packed = [
+            0x81, 0x03, 0x01, 0xFF, 0x7F, 0x80, 0x41, 0x00, 0x80, 0xFF, 0x7F, 0x81, 0x41, 0x10,
+            0x22, 0xFB, 0x34,
+        ];
+        let mut cursor = 0;
+        assert_eq!(
+            unpack_delta_run(&packed, &mut cursor, packed.len(), expected.len()),
+            Some(expected.to_vec())
+        );
+        assert_eq!(cursor, packed.len());
+    }
+
+    #[test]
+    fn packed_deltas_reject_truncated_and_oversized_runs() {
+        // Bytes after the tuple's end belong to a different tuple, even when
+        // they are present in the surrounding font byte slice.
+        for (packed, end, count) in [
+            (vec![0x40, 0x01, 0x02], 2, 1),
+            (vec![0x00, 0x07], 1, 1),
+            (vec![0x81], 1, 1),
+            (vec![0x01, 0x07, 0x08], 3, 1),
+            (vec![0x41, 0x00, 0x01, 0x00, 0x02], 5, 1),
+        ] {
+            assert!(unpack_delta_run(&packed, &mut 0, end, count).is_none());
+        }
     }
 
     #[test]
@@ -1639,10 +1693,10 @@ mod tests {
         push32(&mut loca, u32::try_from(glyph.len()).unwrap());
         // Private points 0 and 2: count=2, ctrl run of 2 byte deltas 0 then 2.
         let mut payload = vec![2, 1, 0, 2];
-        payload.push(0x81); // two x words
+        payload.push(0x41); // two x words
         payload.extend_from_slice(&0i16.to_be_bytes());
         payload.extend_from_slice(&100i16.to_be_bytes());
-        payload.push(1); // two y zeros
+        payload.push(0x81); // two y zeros
         let mut gvd = Vec::new();
         push16(&mut gvd, 1);
         push16(&mut gvd, 0);
@@ -1686,9 +1740,9 @@ mod tests {
         let mut loca = Vec::new();
         push32(&mut loca, 0);
         push32(&mut loca, u32::try_from(glyph.len()).unwrap());
-        let mut payload = vec![1, 0, 4, 0x80];
+        let mut payload = vec![1, 0, 4, 0x40];
         payload.extend_from_slice(&100i16.to_be_bytes());
-        payload.push(0x00);
+        payload.push(0x80);
         let mut gvd = Vec::new();
         push16(&mut gvd, 1);
         push16(&mut gvd, 0);
@@ -1790,9 +1844,9 @@ mod tests {
                 b"gvar",
                 build_gvar_table_with_data_offset(
                     &{
-                        let mut payload = vec![1, 0, 0, 0x80];
+                        let mut payload = vec![1, 0, 0, 0x40];
                         payload.extend_from_slice(&50i16.to_be_bytes());
-                        payload.push(0x00);
+                        payload.push(0x80);
                         let mut gvd = Vec::new();
                         push16(&mut gvd, 1);
                         push16(&mut gvd, 0);
@@ -1882,9 +1936,9 @@ mod tests {
 
         // gvar for gid 1: 5 variation points (4 phantoms + 1 component).
         // Move the component origin +30 x at peak.
-        let mut payload = vec![1, 0, 4, 0x80];
+        let mut payload = vec![1, 0, 4, 0x40];
         payload.extend_from_slice(&30i16.to_be_bytes());
-        payload.push(0x00); // y zeros
+        payload.push(0x80); // y zeros
 
         let mut gvd0 = Vec::new(); // empty for gid 0
         push16(&mut gvd0, 0);
@@ -1973,9 +2027,9 @@ mod tests {
         push32(&mut loca, u32::try_from(comp_off).unwrap());
         push32(&mut loca, u32::try_from(glyf.len()).unwrap());
 
-        let mut payload = vec![1, 0, 4, 0x80];
+        let mut payload = vec![1, 0, 4, 0x40];
         payload.extend_from_slice(&50i16.to_be_bytes());
-        payload.push(0x00);
+        payload.push(0x80);
 
         let mut gvd0 = Vec::new();
         push16(&mut gvd0, 0);
@@ -2057,10 +2111,10 @@ mod tests {
 
         // 5 x-deltas (4 phantom zeros + component +30), 5 y-zeros. No packed points.
         let mut payload = Vec::new();
-        payload.push(3); // 4 zeros
-        payload.push(0x80); // 1 word
+        payload.push(0x83); // 4 zeros
+        payload.push(0x40); // 1 word
         payload.extend_from_slice(&30i16.to_be_bytes());
-        payload.push(4); // 5 y zeros
+        payload.push(0x84); // 5 y zeros
 
         let mut gvd0 = Vec::new();
         push16(&mut gvd0, 0);

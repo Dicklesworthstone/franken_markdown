@@ -535,7 +535,7 @@ pub(crate) fn validate_render_font(slot: FontAssetSlot, font: &text::Font) -> Re
     if !font.has_glyf_outlines() {
         font.try_subset_glyphs(&[], &[]).map_err(|err| {
             RenderError::InvalidInput(format!(
-                "{} font bytes do not contain supported CFF1 OpenType outlines: {err}",
+                "{} font bytes must contain TrueType glyf outlines or supported CFF1 OpenType outlines for deterministic subsetting: {err}",
                 slot.as_str()
             ))
         })?;

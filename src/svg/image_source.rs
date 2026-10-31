@@ -7,7 +7,7 @@ mod data_uri;
 use super::SvgWarning;
 use std::collections::BTreeMap;
 
-pub(super) use data_uri::decode_data_uri;
+pub(crate) use data_uri::decode_data_uri;
 
 pub(super) const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SIDE: f64 = 16_384.0;

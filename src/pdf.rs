@@ -43,6 +43,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 mod baseline_grid;
+mod data_uri;
 mod fenced_code;
 mod figure_fit;
 mod financial_tables;
@@ -2483,11 +2484,12 @@ pub fn render_reported(
 /// WASM-safe — the caller (e.g. the `fmd` CLI) decides how to surface it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderWarning {
-    /// An image whose destination had no matching `PdfImageAsset`; rendered as
-    /// alt text instead of being embedded.
+    /// An image whose destination had no matching `PdfImageAsset` or embedded
+    /// data; rendered as alt text instead of being embedded.
     UnresolvedImage(String),
-    /// A supplied image asset could not be decoded (e.g. an unsupported image
-    /// format); rendered as alt text instead of being embedded.
+    /// Supplied or embedded image bytes could not be decoded (e.g. an
+    /// unsupported image format); rendered as alt text instead of being
+    /// embedded. Data-URI destinations use a bounded, payload-free label.
     UnsupportedImage(String),
     /// `count` characters had no glyph in the embedded fonts and were rendered
     /// as `.notdef` boxes (and are not selectable). `sample` shows a few.
@@ -2626,18 +2628,19 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
         if trimmed.is_empty() {
             continue;
         }
-        match opts
-            .image_assets
-            .iter()
-            .find(|asset| asset.destination.trim() == trimmed)
-        {
-            None => warnings.push(RenderWarning::UnresolvedImage(dest)),
-            Some(asset) => match parse_pdf_image_asset(trimmed, &asset.bytes) {
-                Some(image) => collect_svg_image_text(&image, &mut image_text),
-                None => {
-                    warnings.push(RenderWarning::UnsupportedImage(dest));
-                }
-            },
+        match resolve_pdf_image(&opts.image_assets, trimmed) {
+            Some(image) => collect_svg_image_text(&image, &mut image_text),
+            None if data_uri::is_data_uri(trimmed)
+                || opts
+                    .image_assets
+                    .iter()
+                    .any(|asset| asset.destination.trim() == trimmed) =>
+            {
+                warnings.push(RenderWarning::UnsupportedImage(
+                    data_uri::diagnostic_destination(dest),
+                ));
+            }
+            None => warnings.push(RenderWarning::UnresolvedImage(dest.to_owned())),
         }
     }
 
@@ -2755,7 +2758,7 @@ fn collect_svg_document_text(svg: &PdfSvgImage, out: &mut Vec<(u8, String)>) {
     }
 }
 
-fn collect_image_dests(blocks: &[Block], out: &mut Vec<String>) {
+fn collect_image_dests<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
     for block in blocks {
         match block {
             Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
@@ -2797,10 +2800,10 @@ fn collect_image_dests(blocks: &[Block], out: &mut Vec<String>) {
     }
 }
 
-fn collect_image_dests_inlines(inlines: &[Inline], out: &mut Vec<String>) {
+fn collect_image_dests_inlines<'a>(inlines: &'a [Inline], out: &mut Vec<&'a str>) {
     for inline in inlines {
         match inline {
-            Inline::Image { dest, .. } => out.push(dest.clone()),
+            Inline::Image { dest, .. } => out.push(dest),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 collect_image_dests_inlines(c, out);
             }
@@ -5318,10 +5321,12 @@ fn resolve_pdf_image(assets: &[crate::PdfImageAsset], dest: &str) -> Option<PdfI
     if key.is_empty() {
         return None;
     }
-    let asset = assets
-        .iter()
-        .find(|asset| asset.destination.trim() == key)?;
-    parse_pdf_image_asset(key, &asset.bytes)
+    if let Some(asset) = assets.iter().find(|asset| asset.destination.trim() == key) {
+        // An explicit first match always wins, including invalid bytes. A bad
+        // override must not quietly fall through to the source's data URI.
+        return parse_pdf_image_asset(key, &asset.bytes);
+    }
+    data_uri::resolve(key)
 }
 
 fn parse_pdf_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {

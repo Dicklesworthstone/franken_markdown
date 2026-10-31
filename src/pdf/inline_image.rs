@@ -222,9 +222,6 @@ pub(super) fn image_for(faces: &Faces, dest: &str) -> Option<Rc<PdfImageData>> {
 /// destination. Standalone figure paragraphs are skipped: they keep their
 /// own (separately decoded) figure lines.
 pub(super) fn prepare(blocks: &[Block], assets: &[crate::PdfImageAsset], faces: &Faces) {
-    if assets.is_empty() {
-        return;
-    }
     let mut table = faces.inline_images.borrow_mut();
     let mut pending: Vec<&[Block]> = vec![blocks];
     while let Some(blocks) = pending.pop() {

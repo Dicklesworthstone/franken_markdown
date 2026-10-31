@@ -1014,6 +1014,11 @@ Honest about what the renderer does not do yet.
   interlacing, frame offsets and transparency; malformed or oversized GIFs use
   the existing image diagnostics and fallback behavior. Browser document and
   book imports, image replacement and portable book backups retain GIF bytes.
+- **Embedded images survive PDF export.** PDF decodes bounded PNG, JPEG, GIF
+  and SVG `data:` image URLs in Markdown and supported HTML image elements,
+  including images in prose, headings and table cells. Images imported into
+  self-contained Markdown therefore need no separate asset files for PDF
+  export. Explicit `--pdf-image` or library image mappings take precedence.
 - **PDF footnotes.** Notes print at the foot of the page carrying their first
   reference, with linked superscript marks; unreferenced notes and notes taller
   than 40% of a page fall back to a trailing Notes section, and notes are never

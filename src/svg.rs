@@ -70,7 +70,7 @@ mod geometry;
 #[path = "svg/geometry_tests.rs"]
 mod geometry_tests;
 #[path = "svg/image_source.rs"]
-mod image_source;
+pub(crate) mod image_source;
 #[cfg(test)]
 #[path = "svg/image_tests.rs"]
 mod image_tests;

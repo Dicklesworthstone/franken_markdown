@@ -4311,6 +4311,31 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
         return emit_stdout(&diff.to_json());
     }
 
+    // A diff report is a publication, never an in-place edit of either
+    // revision. Match render/batch admission, including aliases and the
+    // active configuration that supplies this report's theme.
+    if let Some(output) = args.out.as_deref().filter(|path| !is_stdout_path(path)) {
+        let mut protected = protected_paths::ProtectedInputs::default();
+        for input in [&args.old_file, &args.new_file] {
+            if input.as_os_str() != "-" {
+                protected.insert(input);
+            }
+        }
+        if !no_config {
+            protected.insert(&config_path());
+        }
+        if let Some(source) = protected.source_for(output) {
+            return fail(
+                64,
+                &format!(
+                    "refusing to overwrite diff input {} with output {}; write to a different --out path",
+                    source.display(),
+                    output.display(),
+                ),
+            );
+        }
+    }
+
     let theme = if no_config {
         Theme::default()
     } else {
@@ -4325,14 +4350,21 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
         if out_path.as_os_str() == "-" {
             emit_stdout(&html_out)
         } else {
-            match std::fs::write(&out_path, &html_out) {
+            match crate::file_write::write_outputs_staged(&[crate::file_write::OutputFile {
+                path: &out_path,
+                bytes: html_out.as_bytes(),
+            }]) {
                 Ok(()) => {
                     eprintln!("fmd: wrote diff HTML -> {}", out_path.display());
                     ExitCode::SUCCESS
                 }
                 Err(e) => fail(
                     73,
-                    &format!("writing diff HTML to {}: {e}", out_path.display()),
+                    &format!(
+                        "writing diff HTML to {}: {}",
+                        e.path.display(),
+                        e.source
+                    ),
                 ),
             }
         }

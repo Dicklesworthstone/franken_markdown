@@ -1,14 +1,16 @@
 //! EPUB-local font resources shared by document and book export.
 //!
-//! Explicit host faces opt in; absent faces retain the historical font-free
-//! archive. Once enabled, missing slots use the shared bundled registry. The
-//! rendered repertoire is collected once for the publication, not per chapter.
+//! Explicit host faces or Full embedding opt in; default Subset without host
+//! faces retains the historical font-free archive. Missing slots use the shared
+//! bundled registry. The rendered repertoire is collected once per publication.
 
 use std::collections::BTreeSet;
 
 use franken_markdown::fonts::{self, FontStyle};
 use franken_markdown::text::{EmbeddingFormat, Font};
-use franken_markdown::{FontAssetSlot, FontFamily, HtmlOptions, RenderError, Result};
+use franken_markdown::{
+    FontAssetSlot, FontEmbedding, FontFamily, HtmlOptions, RenderError, Result,
+};
 
 use super::{ZipWriter, fnv1a64};
 
@@ -44,7 +46,7 @@ pub(super) fn enabled(opts: &HtmlOptions) -> Result<bool> {
         }
     }
     opts.font_assets.validate()?;
-    Ok(supplied)
+    Ok(supplied || opts.font_embedding == FontEmbedding::Full)
 }
 
 /// Collect emitted text, including MathML symbols and generated footnote
@@ -166,10 +168,24 @@ impl Repertoire {
             );
             // CSS describes semantic slots (normal/bold). Weight pins select
             // the outlines in that slot, as on the PDF path, not a new style.
-            package.face(font, &keep, family, slot.default_weight(), italic)?;
+            package.face(
+                font,
+                &keep,
+                family,
+                slot.default_weight(),
+                italic,
+                opts.font_embedding,
+            )?;
         }
         let symbols = Font::parse(fonts::symbol_bytes().to_vec()).map_err(invalid)?;
-        package.face(symbols, &keep, "FmdEpubSymbols", 400, false)?;
+        package.face(
+            symbols,
+            &keep,
+            "FmdEpubSymbols",
+            400,
+            false,
+            opts.font_embedding,
+        )?;
         let fallback = match opts.theme.font {
             FontFamily::Sans => "sans-serif",
             FontFamily::Serif => "serif",
@@ -203,11 +219,20 @@ impl Package {
         family: &str,
         weight: u16,
         italic: bool,
+        embedding: FontEmbedding,
     ) -> Result<()> {
-        // Retain the established TrueType subset bytes, including layout
-        // tables needed by reading systems. CFF must use the strict typed API
-        // so unsupported used outlines cannot become a successful blank font.
-        let (bytes, format) = if font.has_glyf_outlines() {
+        // Full embedding retains the complete cmap and layout program for
+        // the reading system. Compact embedding keeps the established bytes;
+        // CFF uses the strict API so unsupported used outlines cannot become
+        // a successful blank subset.
+        let (bytes, format) = if embedding == FontEmbedding::Full {
+            let format = if font.has_glyf_outlines() {
+                EmbeddingFormat::TrueType
+            } else {
+                EmbeddingFormat::OpenTypeCff
+            };
+            (font.as_sfnt().to_vec(), format)
+        } else if font.has_glyf_outlines() {
             (
                 font.subset(keep)
                     .ok_or_else(|| invalid("font subsetting failed"))?,
@@ -222,7 +247,11 @@ impl Package {
             EmbeddingFormat::OpenTypeCff => ("otf", "opentype"),
         };
         if bytes.is_empty() || bytes.len() > MAX_FONT_BYTES {
-            return Err(invalid("font subset is empty or exceeds 32 MiB"));
+            return Err(invalid(if embedding == FontEmbedding::Full {
+                "full font is empty or exceeds 32 MiB"
+            } else {
+                "font subset is empty or exceeds 32 MiB"
+            }));
         }
         let index = match self
             .resources
@@ -232,7 +261,11 @@ impl Package {
             Some(index) => index,
             None => {
                 if bytes.len() > MAX_TOTAL_FONT_BYTES.saturating_sub(self.payload_bytes) {
-                    return Err(invalid("font subsets exceed 128 MiB"));
+                    return Err(invalid(if embedding == FontEmbedding::Full {
+                        "full fonts exceed 128 MiB"
+                    } else {
+                        "font subsets exceed 128 MiB"
+                    }));
                 }
                 self.payload_bytes += bytes.len();
                 let index = self.resources.len();

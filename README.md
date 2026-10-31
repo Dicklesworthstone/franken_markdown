@@ -552,7 +552,8 @@ fmd --text '<markdown>' --out out.html
 | `--to html\|pdf\|both\|epub\|svg` | Output format(s). Default `html`. `epub` writes a single-file EPUB 3 e-book and `svg` a single-page vector poster (both require a real `--out` path like PDF) |
 | `--out, -o <path>` | Output path. HTML with no `--out` (or `--out -`) writes to stdout. PDF and `--to both` always write files |
 | `--font sans\|serif` | Override the body font for this render |
-| `--html-font-format woff1\|woff2\|ttf` | Font container for embedded HTML subsets (default `woff1`, ~18% smaller documents; `woff2` uses clean-room Brotli for ~22–30% savings; `ttf` keeps raw TrueType data URLs) |
+| `--html-font-format woff1\|woff2\|ttf` | Container for embedded HTML fonts: `woff1` (default), `woff2` (clean-room Brotli), or `ttf` (raw TrueType/CFF OpenType data URLs). Independent of the subset/full policy. |
+| `--font-embedding subset\|full` | HTML/EPUB font policy: compact subsets by default; `full` preserves the complete character map and OpenType shaping tables for ligatures, kerning and combining marks, with larger output. Also available for book publishing. |
 | `--microtype off\|protrusion\|expansion` | Microtypography for justified PDF body paragraphs: `protrusion` hangs punctuation into the margin and adds ±1.5% glyph expansion; `expansion` is glyph expansion alone. Default `off` keeps output byte-identical |
 | `--typography-homogeneous`, `--typography-antiriver`, `--typography-pareto` | Opt-in line-breaking refinements: gradual adjacent-line spacing demerits, whitespace-river penalties, and Pareto-front Knuth-Plass search |
 | `--pdf-optimal-pagination` | Choose page breaks with a document-wide dynamic program (Plass) instead of greedy page filling |
@@ -823,6 +824,7 @@ Resolution order for the config path:
 | `toc`, `toc_depth` | `true`/`false`; heading level `1`..`6` | `false`, `3` |
 | `font_scale` | as `--font-scale` (`lg`, `125%`, `1.2`, ...) | `md` |
 | `html_font_format` | `woff1`, `woff2`, `ttf` | `woff1` |
+| `font_embedding` | `subset`, `full` | `subset` |
 | `microtype` | `off`, `protrusion`, `expansion` | `off` |
 | `pdf_page_numbers`, `pdf_optimal_pagination` | `true`/`false` | `false` |
 | `pdf_strict_pagination` | `true`/`false`; applies to PDF render, watch, batch and book | `false` |
@@ -1007,6 +1009,15 @@ Honest about what the renderer does not do yet.
   smaller HTML on the showcase document). Clean-room WOFF2 (Brotli-based) is
   supported via `--html-font-format woff2` for an additional ~5–10% savings,
   while `--html-font-format ttf` opts back to raw TrueType data URLs.
+- **Complete fonts can preserve browser and EPUB reader shaping.** Use
+  `--font-embedding full` when ligatures, kerning, or combining-mark placement
+  depend on source OpenType tables. This retains the full character map and
+  layout tables instead of a compact glyph subset. It works with raw TrueType
+  and CFF1 OpenType fonts, WOFF1/WOFF2 HTML containers, and EPUB publication;
+  variable weight pins use the existing static-instance path. For example,
+  `fmd chapter.md --font-embedding full --out chapter.html` or
+  `fmd book chapters --to epub --font-embedding full --out-dir dist`.
+  The default remains `subset`; PDF keeps its own embedding policy.
 - **Browser visual/golden fixtures are still early.** The npm package
   (`@franken-suite/franken-markdown`) is published with proven native parity and
   gated manifest/size budgets, but browser-side visual fixtures remain thin.
@@ -1075,16 +1086,21 @@ through `FontAssets`; missing slots use the bundled fonts. The same host faces
 work in HTML, PDF, SVG and EPUB. Native commands accept
 `--pdf-font body-regular=./SourceSans3-Regular.otf` (repeat for other slots).
 
-CFF fonts are subset for HTML/PDF/EPUB and drawn as native cubic paths in SVG.
-Raw HTML and EPUB resources use the OpenType MIME type and format hint;
-HTML can also wrap the subsets in WOFF1 or WOFF2. PDF retains two-byte glyph
-IDs, Unicode extraction and ligatures, including subsets above 256 glyphs.
+CFF fonts are subset by default for HTML/PDF/EPUB and drawn as native cubic
+paths in SVG. Raw HTML and EPUB resources use the OpenType MIME type and format
+hint; HTML can also wrap font programs in WOFF1 or WOFF2. PDF retains two-byte
+glyph IDs, Unicode extraction and ligatures, including subsets above 256 glyphs.
 The supported input is static, name-keyed CFF1 with the standard font matrix;
-CFF2, CID-keyed CFF input, `seac`, and computational Type2 operators remain
-unsupported. The checked document HTML, PDF, SVG and EPUB subset paths report
-unsupported glyph programs explicitly. Infallible HTML helpers retain their
-existing full-font fallback, and interactive HTML retains complete fonts for
-browser rendering. The font fixture used to verify this integration is test-only.
+CFF2 and CID-keyed CFF input remain unsupported. The checked subset and native
+outline paths reject unsupported glyph programs, including `seac` and
+computational Type2 operators, with explicit diagnostics.
+
+Use `--font-embedding full` for HTML/EPUB to preserve the complete admitted font
+program and its shaping tables. That mode delegates glyph execution to the
+browser or reader, while retaining structural font validation. Infallible HTML
+helpers retain their existing full-font fallback, and interactive HTML retains
+complete fonts for browser rendering. The font fixture used to verify this
+integration is test-only.
 
 **Does the core really work in WASM?**
 Yes, by design. The core builds with `--no-default-features` for both native and

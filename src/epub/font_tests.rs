@@ -134,7 +134,9 @@ fn truetype_resources_keep_legacy_subset_bytes_and_metadata() {
     let keep = ['R', 'é', 's', 'u', 'm'];
     let expected = font.subset(&keep).unwrap();
     let mut package = Package::default();
-    package.face(font, &keep, "Legacy", 400, false).unwrap();
+    package
+        .face(font, &keep, "Legacy", 400, false, FontEmbedding::Subset)
+        .unwrap();
     assert_eq!(package.resources[0].bytes, expected);
     assert_eq!(package.resources[0].href, "fonts/font-1.ttf");
     assert_eq!(package.resources[0].format, EmbeddingFormat::TrueType);
@@ -262,6 +264,151 @@ fn cff_body_and_bundled_truetype_styles_keep_their_own_resource_formats() {
 }
 
 #[test]
+fn full_fonts_preserve_exact_programs_deduplication_and_archive_metadata() {
+    let doc =
+        parse_markdown("# Résumé\n\noffice AVATAR z\u{0301}\u{0307} **Ω** *é* ***Ж*** `A`.\n");
+    for (source, format, extension, media_type) in [
+        (SOURCE_SANS, EmbeddingFormat::OpenTypeCff, "otf", "font/otf"),
+        (
+            fonts::body_bytes(FontFamily::Sans, FontStyle::Regular),
+            EmbeddingFormat::TrueType,
+            "ttf",
+            "font/ttf",
+        ),
+    ] {
+        let mut opts = options();
+        opts.font_embedding = FontEmbedding::Full;
+        for slot in FontAssetSlot::ALL {
+            opts.font_assets.set_slot(slot, source.to_vec()).unwrap();
+        }
+        let assets = opts.font_assets.clone();
+        let package = for_document(&doc, &opts);
+        assert_eq!(package.resources.len(), 2, "five full faces deduplicate");
+        assert_eq!(package.resources[0].bytes, source);
+        assert_eq!(package.resources[0].format, format);
+        assert_eq!(
+            package.resources[0].href,
+            format!("fonts/font-1.{extension}")
+        );
+        assert_eq!(package.resources[1].bytes, fonts::symbol_bytes());
+        assert_eq!(package.resources[1].format, EmbeddingFormat::TrueType);
+        assert_eq!(
+            package.payload_bytes,
+            source.len() + fonts::symbol_bytes().len()
+        );
+        assert_eq!(
+            package
+                .css
+                .matches(&format!("url(\"fonts/font-1.{extension}\")"))
+                .count(),
+            5
+        );
+        let mut opf = "<manifest></manifest><spine/>".to_owned();
+        package.manifest(&mut opf).unwrap();
+        assert!(opf.contains(&format!(
+            "href=\"fonts/font-1.{extension}\" media-type=\"{media_type}\""
+        )));
+        assert!(opf.contains("href=\"fonts/font-2.ttf\" media-type=\"font/ttf\""));
+
+        let output = epub::render_epub(&doc, &opts).unwrap();
+        let entries = entries(&output);
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.name.starts_with("OEBPS/fonts/"))
+                .count(),
+            2
+        );
+        for resource in &package.resources {
+            assert_payload(
+                &entries,
+                &format!("OEBPS/{}", resource.href),
+                &resource.bytes,
+            );
+        }
+        assert_payload(&entries, "OEBPS/embedded-fonts.css", package.css.as_bytes());
+        assert_eq!(output, epub::render_epub(&doc, &opts).unwrap());
+        assert_eq!(opts.font_assets, assets);
+
+        // The policy changes the payload and its content-derived identity,
+        // while compact embedding remains available for the same options.
+        opts.font_embedding = FontEmbedding::Subset;
+        let compact = for_document(&doc, &opts);
+        assert!(compact.payload_bytes < package.payload_bytes);
+        assert_ne!(compact.fingerprint(), package.fingerprint());
+    }
+}
+
+#[test]
+fn full_missing_style_slots_keep_exact_bundled_programs() {
+    let mut opts = cff_options();
+    opts.font_embedding = FontEmbedding::Full;
+    opts.theme.font = FontFamily::Sans;
+    let result = package(&opts, "office AVATAR");
+    assert_eq!(result.resources.len(), 6);
+    let expected = [
+        SOURCE_SANS,
+        fonts::body_bytes(FontFamily::Sans, FontStyle::Bold),
+        fonts::body_bytes(FontFamily::Sans, FontStyle::Italic),
+        fonts::body_bytes(FontFamily::Sans, FontStyle::BoldItalic),
+        fonts::mono_bytes(FontStyle::Regular),
+        fonts::symbol_bytes(),
+    ];
+    for (resource, source) in result.resources.iter().zip(expected) {
+        assert_eq!(resource.bytes, source);
+    }
+    assert_eq!(result.resources[0].format, EmbeddingFormat::OpenTypeCff);
+    for resource in result.resources.iter().skip(1) {
+        assert_eq!(resource.format, EmbeddingFormat::TrueType);
+        assert!(resource.href.ends_with(".ttf"));
+    }
+}
+
+#[test]
+fn full_fonts_are_shared_once_across_the_entire_book_repertoire() {
+    let mut opts = cff_options();
+    opts.font_embedding = FontEmbedding::Full;
+    for slot in FontAssetSlot::ALL {
+        opts.font_assets
+            .set_slot(slot, SOURCE_SANS.to_vec())
+            .unwrap();
+    }
+    let inputs = [
+        franken_markdown::BookInput {
+            path: "first.md".into(),
+            source: "# First\n\noffice AVATAR z\u{0301}\u{0307}\n".into(),
+        },
+        franken_markdown::BookInput {
+            path: "second.md".into(),
+            source: "# Second\n\nΩ Ж é\n".into(),
+        },
+    ];
+    let book = franken_markdown::build_book(&inputs).unwrap();
+    let expected = package(&opts, "Unrelated ASCII repertoire");
+    let output = epub::render_book_epub(&book, &opts).unwrap();
+    let entries = entries(&output);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.name.starts_with("OEBPS/fonts/"))
+            .count(),
+        2
+    );
+    assert_payload(&entries, "OEBPS/fonts/font-1.otf", SOURCE_SANS);
+    assert_payload(&entries, "OEBPS/fonts/font-2.ttf", fonts::symbol_bytes());
+    assert_payload(
+        &entries,
+        "OEBPS/embedded-fonts.css",
+        expected.css.as_bytes(),
+    );
+    assert_eq!(output, epub::render_book_epub(&book, &opts).unwrap());
+    let source = Font::parse(SOURCE_SANS.to_vec()).unwrap();
+    for ch in ['Ω', 'Ж', 'é', 'ź'] {
+        assert_ne!(source.glyph_index(ch), 0);
+    }
+}
+
+#[test]
 fn cff_book_shares_one_subset_with_glyphs_from_every_chapter() {
     let mut opts = cff_options();
     for slot in FontAssetSlot::ALL {
@@ -318,7 +465,7 @@ fn a_used_unsupported_cff_glyph_refuses_epub_with_typed_context() {
     assert_eq!(&SOURCE_SANS[OMEGA..OMEGA + 4], &[0xf7, 0x34, 0x8b, 0xcf]);
     let mut bytes = SOURCE_SANS.to_vec();
     bytes[OMEGA..OMEGA + 2].copy_from_slice(&[12, 23]); // random is unsupported
-    let opts = HtmlOptions {
+    let mut opts = HtmlOptions {
         font_assets: FontAssets::default()
             .with_slot(FontAssetSlot::BodyRegular, bytes)
             .unwrap(),
@@ -332,6 +479,127 @@ fn a_used_unsupported_cff_glyph_refuses_epub_with_typed_context() {
     assert!(message.contains("epub_fonts:"), "{message}");
     assert!(message.contains("UnsupportedOperator"), "{message}");
     assert!(message.contains("glyph Some(818)"), "{message}");
+
+    // Full embedding delegates the complete admitted program to the reader;
+    // compact decoder restrictions must not accidentally reject that mode.
+    opts.font_embedding = FontEmbedding::Full;
+    let full = epub::render_epub(&parse_markdown("Ω"), &opts).unwrap();
+    assert_payload(
+        &entries(&full),
+        "OEBPS/fonts/font-1.otf",
+        opts.font_assets.body_regular.as_ref().unwrap(),
+    );
+}
+
+#[test]
+fn full_variable_faces_use_the_existing_instances_before_deduplication() {
+    let source = franken_markdown::text::variable_triangle_fixture();
+    let parsed = Font::parse(source.clone()).unwrap();
+    let mut opts = options();
+    opts.font_embedding = FontEmbedding::Full;
+    opts.font_assets = FontAssets::default()
+        .with_slot(FontAssetSlot::BodyRegular, source)
+        .unwrap()
+        .with_slot_weight(FontAssetSlot::BodyRegular, 300)
+        .unwrap()
+        .with_slot_weight(FontAssetSlot::BodyBold, 800)
+        .unwrap();
+    let assets = opts.font_assets.clone();
+    let result = package(&opts, "A");
+    assert_ne!(result.resources[0].bytes, result.resources[1].bytes);
+    for (resource, weight) in result.resources.iter().zip([300., 800.]) {
+        assert_eq!(resource.bytes, parsed.instance(weight).unwrap().as_sfnt());
+        assert!(
+            Font::parse(resource.bytes.clone())
+                .unwrap()
+                .instance_bounds(*b"wght")
+                .is_none()
+        );
+    }
+    assert_eq!(opts.font_assets, assets);
+    opts.font_assets
+        .set_slot_weight(FontAssetSlot::BodyBold, 300)
+        .unwrap();
+    let same = package(&opts, "A");
+    assert_eq!(same.css.matches("url(\"fonts/font-1.ttf\")").count(), 2);
+    assert_eq!(same.resources.len() + 1, result.resources.len());
+    assert_ne!(same.fingerprint(), result.fingerprint());
+}
+
+#[test]
+fn full_mode_embeds_bundled_faces_and_enforces_admission_and_output_limits() {
+    let doc = parse_markdown("# No supplied fonts\n\nContent.");
+    let mut opts = HtmlOptions::default();
+    let font_free = epub::render_epub(&doc, &opts).unwrap();
+    assert!(!enabled(&opts).unwrap());
+    opts.font_embedding = FontEmbedding::Full;
+    assert!(enabled(&opts).unwrap());
+    let full = epub::render_epub(&doc, &opts).unwrap();
+    assert_ne!(font_free, full);
+    let result = package(&opts, "Content.");
+    let expected = [
+        fonts::body_bytes(opts.theme.font, FontStyle::Regular),
+        fonts::body_bytes(opts.theme.font, FontStyle::Bold),
+        fonts::body_bytes(opts.theme.font, FontStyle::Italic),
+        fonts::body_bytes(opts.theme.font, FontStyle::BoldItalic),
+        fonts::mono_bytes(FontStyle::Regular),
+        fonts::symbol_bytes(),
+    ];
+    assert_eq!(result.resources.len(), expected.len());
+    let book = franken_markdown::build_book(&[
+        franken_markdown::BookInput {
+            path: "first.md".into(),
+            source: "# First\n\nContent.".into(),
+        },
+        franken_markdown::BookInput {
+            path: "second.md".into(),
+            source: "# Second\n\nLater chapter.".into(),
+        },
+    ])
+    .unwrap();
+    let full_book = epub::render_book_epub(&book, &opts).unwrap();
+    for archive in [&full, &full_book] {
+        let entries = entries(archive);
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.name.starts_with("OEBPS/fonts/"))
+                .count(),
+            expected.len()
+        );
+        for (resource, source) in result.resources.iter().zip(expected) {
+            assert_eq!(resource.bytes, source);
+            assert_payload(&entries, &format!("OEBPS/{}", resource.href), source);
+        }
+    }
+    assert_eq!(opts.font_assets, FontAssets::default());
+    assert_eq!(full, epub::render_epub(&doc, &opts).unwrap());
+    for bytes in [Vec::new(), b"not a font".to_vec()] {
+        opts.font_assets.body_regular = Some(bytes);
+        assert!(epub::render_epub(&doc, &opts).is_err());
+    }
+    opts = cff_options();
+    opts.font_embedding = FontEmbedding::Full;
+    let result = package(&opts, "Bounds");
+    assert!(result.check_output([256 * 1024 * 1024]).is_err());
+    assert!(result.check_output([usize::MAX]).is_err());
+    assert!(result.check_output([1024]).is_ok());
+    let mut saturated = Package {
+        payload_bytes: MAX_TOTAL_FONT_BYTES,
+        ..Package::default()
+    };
+    let error = saturated
+        .face(
+            Font::parse(SOURCE_SANS.to_vec()).unwrap(),
+            &['A'],
+            "Full",
+            400,
+            false,
+            FontEmbedding::Full,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("full fonts exceed 128 MiB"));
+    assert!(saturated.resources.is_empty());
 }
 
 #[test]

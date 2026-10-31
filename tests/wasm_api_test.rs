@@ -276,6 +276,7 @@ fn wasm_capabilities_json_exposes_browser_safe_contract() {
     assert!(json.contains("\"custom_css_utf8\":true"));
     assert!(json.contains("\"image_assets\":\"png_svg_v0_host_supplied_bytes\""));
     assert!(json.contains("\"font_assets\":\"ttf_v0_host_supplied_bytes\""));
+    assert!(json.contains("\"font_outline_formats\":[\"truetype_glyf\",\"opentype_cff1\"]"));
     assert!(json.contains("\"font_slot_weight\":\"css_1_to_1000_variable_wght\""));
 }
 
@@ -484,4 +485,67 @@ fn typography_tokens_match_native_pdf_options_byte_for_byte() {
     );
     let err = plain.apply_typography_tokens(Some("kerning")).unwrap_err();
     assert!(err.contains("kerning"), "{err}");
+}
+
+#[test]
+fn wasm_cff_host_fonts_match_native_html_and_pdf_for_every_slot() {
+    use franken_markdown::{FontEmbedding, HtmlFontFormat, HtmlOptions, PdfOptions};
+    let source = "Regular café Ω. **Bold café Ω.** *Italic café Ω.* \
+        ***Bold italic café Ω.*** `Mono café Ω.`";
+    let font = include_bytes!("fixtures/fonts/source-sans-3/SourceSans3-Regular.otf");
+    let mut options = WasmRenderOptions {
+        html_font_format: HtmlFontFormat::Ttf,
+        metadata_epoch_seconds: Some(1_700_000_000),
+        ..WasmRenderOptions::default()
+    };
+    for slot in [
+        FontAssetSlot::BodyRegular,
+        FontAssetSlot::BodyBold,
+        FontAssetSlot::BodyItalic,
+        FontAssetSlot::BodyBoldItalic,
+        FontAssetSlot::MonoRegular,
+    ] {
+        options = options.with_font_asset_bytes(slot, font.to_vec()).unwrap();
+    }
+    let doc = franken_markdown::parse_markdown(source);
+    for mode in [FontEmbedding::Subset, FontEmbedding::Full] {
+        options.font_embedding = mode;
+        let output = render_html(source, &options).unwrap();
+        assert_eq!(
+            output
+                .html()
+                .unwrap()
+                .matches("data:font/otf;base64,")
+                .count(),
+            5
+        );
+        let native = franken_markdown::render_html_document(
+            &doc,
+            &HtmlOptions {
+                font_assets: options.font_assets.clone(),
+                html_font_format: HtmlFontFormat::Ttf,
+                font_embedding: mode,
+                ..HtmlOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(output.bytes, native.into_bytes());
+    }
+    let output = render_pdf(source, &options).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&output.bytes)
+            .matches("/Subtype /CIDFontType0")
+            .count(),
+        5
+    );
+    let native = franken_markdown::render_pdf_document(
+        &doc,
+        &PdfOptions {
+            font_assets: options.font_assets.clone(),
+            metadata_epoch_seconds: options.metadata_epoch_seconds,
+            ..PdfOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(output.bytes, native);
 }

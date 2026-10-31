@@ -368,6 +368,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         toc: html_toc,
         toc_depth,
         html_font_format: publication.html_font_format,
+        font_embedding: publication.font_embedding,
         ..HtmlOptions::default()
     };
     let paths = output_paths(&args)?;

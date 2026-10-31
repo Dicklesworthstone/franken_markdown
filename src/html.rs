@@ -13,7 +13,7 @@ use crate::highlight::{Span, highlight_supported_into};
 use crate::text::Font;
 use crate::theme::{CodeColors, Theme, ThemeColors};
 use crate::toc::marker_depth as toc_marker_depth;
-use crate::{FontAssetSlot, FontAssets, HtmlOptions, instance_host_font};
+use crate::{FontAssetSlot, FontAssets, FontEmbedding, HtmlOptions, instance_host_font};
 
 mod financial_tables;
 
@@ -168,10 +168,12 @@ pub(crate) fn stylesheet(doc: &Document, opts: &HtmlOptions) -> String {
         .map_or_else(|| default_css(doc, opts), sanitize_custom_css)
 }
 
-/// The checked document API refuses a CFF program it cannot subset. The
-/// longstanding infallible HTML helpers retain their full-font fallback.
+/// The checked document API refuses a CFF program it cannot subset. Full
+/// embedding delegates complete glyph programs to the browser after the
+/// shared structural font admission. The longstanding infallible HTML helpers
+/// retain their full-font fallback.
 pub(crate) fn validate_cff_font_usage(doc: &Document, opts: &HtmlOptions) -> crate::Result<()> {
-    if opts.custom_css.is_some() {
+    if opts.custom_css.is_some() || opts.font_embedding == FontEmbedding::Full {
         return Ok(());
     }
     let mut usage = None;
@@ -1972,7 +1974,13 @@ fn allowed_url_scheme(scheme: &str, context: UrlContext) -> bool {
 
 /// The default, dependency-free, gorgeous stylesheet.
 fn default_css(doc: &Document, opts: &HtmlOptions) -> String {
-    let embedded = embedded_font_css(doc, &opts.theme, &opts.font_assets, opts.html_font_format);
+    let embedded = embedded_font_css(
+        doc,
+        &opts.theme,
+        &opts.font_assets,
+        opts.html_font_format,
+        opts.font_embedding,
+    );
     default_css_with_fonts(opts, embedded)
 }
 
@@ -2379,6 +2387,7 @@ fn embedded_font_css(
     theme: &Theme,
     font_assets: &FontAssets,
     format: crate::HtmlFontFormat,
+    embedding: FontEmbedding,
 ) -> EmbeddedFontCss {
     let mut usage = collect_font_usage(doc);
     usage.add_stability_seed();
@@ -2401,6 +2410,7 @@ fn embedded_font_css(
         body_font_face(font_assets, theme.font, FontStyle::Regular),
         &usage.body_regular,
         format,
+        embedding,
         &mut woff_scratch,
         &mut woff2_scratch,
     );
@@ -2414,6 +2424,7 @@ fn embedded_font_css(
         body_font_face(font_assets, theme.font, FontStyle::Bold),
         &usage.body_bold,
         format,
+        embedding,
         &mut woff_scratch,
         &mut woff2_scratch,
     );
@@ -2427,6 +2438,7 @@ fn embedded_font_css(
         body_font_face(font_assets, theme.font, FontStyle::Italic),
         &usage.body_italic,
         format,
+        embedding,
         &mut woff_scratch,
         &mut woff2_scratch,
     );
@@ -2440,6 +2452,7 @@ fn embedded_font_css(
         body_font_face(font_assets, theme.font, FontStyle::BoldItalic),
         &usage.body_bold_italic,
         format,
+        embedding,
         &mut woff_scratch,
         &mut woff2_scratch,
     );
@@ -2453,6 +2466,7 @@ fn embedded_font_css(
         mono_font_face(font_assets, FontStyle::Regular),
         &usage.mono,
         format,
+        embedding,
         &mut woff_scratch,
         &mut woff2_scratch,
     );
@@ -2649,6 +2663,7 @@ fn push_font_face(
     font_face: HtmlFontFace<'_>,
     chars: &FontCharSet,
     format: crate::HtmlFontFormat,
+    embedding: FontEmbedding,
     woff_scratch: &mut crate::compress::ZlibCompressScratch,
     woff2_scratch: &mut crate::brotli::BrotliCompressScratch,
 ) {
@@ -2656,27 +2671,40 @@ fn push_font_face(
         return;
     }
 
-    let keep = chars.to_chars();
-    let subset = font_face
-        .parsed
-        .and_then(|font| subset_html_font(font, &keep))
-        .or_else(|| {
-            let parsed = if let Some(weight) = font_face.instance_weight {
-                instance_host_font(font_face.slot, font_face.bytes, weight).ok()
-            } else {
-                Font::parse(font_face.bytes.to_vec()).ok()
-            };
-            parsed.and_then(|font| {
-                subset_html_font(&font, &keep).or_else(|| Some(font.as_sfnt().to_vec()))
+    let bytes = if embedding == FontEmbedding::Full {
+        // Preserve cmap and the complete layout program: the browser needs
+        // their original glyph identities for normalization, substitutions,
+        // kerning and mark positioning. Host weight pins still select the
+        // same static instance as the existing editable-document path.
+        if let Some(weight) = font_face.instance_weight {
+            instance_host_font(font_face.slot, font_face.bytes, weight)
+                .map_or_else(|_| font_face.bytes.to_vec(), |font| font.as_sfnt().to_vec())
+        } else {
+            font_face.bytes.to_vec()
+        }
+    } else {
+        let keep = chars.to_chars();
+        font_face
+            .parsed
+            .and_then(|font| subset_html_font(font, &keep))
+            .or_else(|| {
+                let parsed = if let Some(weight) = font_face.instance_weight {
+                    instance_host_font(font_face.slot, font_face.bytes, weight).ok()
+                } else {
+                    Font::parse(font_face.bytes.to_vec()).ok()
+                };
+                parsed.and_then(|font| {
+                    subset_html_font(&font, &keep).or_else(|| Some(font.as_sfnt().to_vec()))
+                })
             })
-        })
-        .unwrap_or_else(|| font_face.bytes.to_vec());
+            .unwrap_or_else(|| font_face.bytes.to_vec())
+    };
     push_font_payload(
         css,
         family,
         style,
         weight,
-        &subset,
+        &bytes,
         format,
         woff_scratch,
         woff2_scratch,

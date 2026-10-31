@@ -23,9 +23,12 @@ pub(super) struct PublishingArgs {
     /// Use --toc=false to override a configured or frontmatter default.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     toc: Option<bool>,
-    /// Embedded HTML font format. EPUB uses its own TrueType font container.
+    /// Embedded HTML font format. EPUB uses raw TrueType or CFF OpenType fonts.
     #[arg(long, value_parser = ["woff1", "woff2", "ttf"])]
     html_font_format: Option<String>,
+    /// HTML/EPUB font programs: subset (compact default) or full (retain shaping).
+    #[arg(long, value_parser = ["subset", "full"])]
+    font_embedding: Option<String>,
     /// PDF optical-margin alignment or glyph expansion.
     #[arg(long, value_parser = ["off", "protrusion", "expansion"])]
     microtype: Option<String>,
@@ -119,6 +122,7 @@ pub(super) struct PublishingArgs {
 
 pub(super) struct Publishing {
     pub html_font_format: HtmlFontFormat,
+    pub font_embedding: crate::FontEmbedding,
     pub pdf_a: PdfASettings,
     explicit_toc: Option<bool>,
     configured_toc: Option<bool>,
@@ -172,7 +176,19 @@ pub(super) fn prepare(
         return Err(error(
             64,
             "unsupported_target_option",
-            "--html-font-format requires --to html or --to both; EPUB uses TrueType subsets",
+            "--html-font-format requires --to html or --to both; EPUB uses raw TrueType or CFF OpenType fonts",
+        ));
+    }
+    if args.font_embedding.is_some()
+        && !matches!(
+            target,
+            BookTarget::Html | BookTarget::Both | BookTarget::Epub
+        )
+    {
+        return Err(error(
+            64,
+            "unsupported_target_option",
+            "--font-embedding requires --to html, --to both or --to epub",
         ));
     }
     if args.fit_to_pages == Some(0) {
@@ -297,6 +313,12 @@ pub(super) fn prepare(
             .as_deref()
             .or(defaults.html_font_format.as_deref())
             .and_then(HtmlFontFormat::parse)
+            .unwrap_or_default(),
+        font_embedding: args
+            .font_embedding
+            .as_deref()
+            .or(defaults.font_embedding.as_deref())
+            .and_then(crate::FontEmbedding::parse)
             .unwrap_or_default(),
         pdf_a,
         explicit_toc: args.toc,

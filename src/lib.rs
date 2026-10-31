@@ -218,7 +218,41 @@ pub use theme::{
 pub use transclude::expand_includes;
 pub use zip::{ZipWriter, crc32};
 
-/// Font container format for embedded `@font-face` subsets in HTML output.
+/// Font program policy for standalone HTML and EPUB output.
+///
+/// Compact subsets minimize document size. Complete fonts preserve the source
+/// character map and OpenType layout tables for browser and reader shaping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FontEmbedding {
+    /// Embed only the glyphs used in the document (the compact default).
+    #[default]
+    Subset,
+    /// Embed the complete font, preserving its shaping tables at a larger size.
+    Full,
+}
+
+impl FontEmbedding {
+    /// Stable CLI/config spelling.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "subset" => Some(Self::Subset),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    /// Stable CLI/config spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Subset => "subset",
+            Self::Full => "full",
+        }
+    }
+}
+
+/// Font container format for embedded `@font-face` programs in HTML output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HtmlFontFormat {
     /// Raw sfnt subset bytes: TrueType uses `data:font/ttf`, while CFF1
@@ -714,6 +748,10 @@ pub struct HtmlOptions {
     /// Font container format for embedded subsets. WOFF1 (the default) and
     /// WOFF2 are byte-deterministic and ~half to a third the bytes of raw TTF subsets.
     pub html_font_format: HtmlFontFormat,
+    /// Embed compact subsets by default, or complete fonts to preserve browser
+    /// and reader shaping. Complete fonts increase output size. This policy is
+    /// independent of PDF font embedding and the HTML font container format.
+    pub font_embedding: FontEmbedding,
 }
 
 /// Options for the PDF renderer.

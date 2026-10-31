@@ -43,6 +43,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 mod baseline_grid;
+mod figure_fit;
 mod financial_tables;
 mod inline_code;
 mod inline_image;
@@ -3575,6 +3576,7 @@ fn layout_with_pagination_report(
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         layout_pdf_notes(blocks, &mut out, &mut cx);
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
+        figure_fit::apply(&mut out, page, faces);
         let report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
         return (out, report);
     }
@@ -3649,6 +3651,7 @@ fn layout_with_pagination_report(
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         layout_pdf_notes(blocks, &mut out, &mut cx);
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
+        figure_fit::apply(&mut out, page, faces);
         final_report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
 
         // Run pagination to find the resulting page of each heading
@@ -5220,7 +5223,7 @@ fn push_figure_line(
     out: &mut Vec<Line>,
     cx: &mut LayoutCx<'_>,
 ) -> bool {
-    let max_w = (cx.page.content_w - indent).max(MIN_CONTENT_DIM);
+    let max_w = (cx.page.content_w - indent).max(1.0);
     let max_h = (cx.page.top_y() - cx.page.bottom).max(MIN_CONTENT_DIM);
     let (display_w, display_h) = image.display_dimensions();
     let natural_w = display_w as f32 * PDF_IMAGE_DPI_SCALE;

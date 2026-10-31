@@ -318,6 +318,20 @@ pub(super) fn apply(lines: &mut [Line], grid: Option<BaselineGrid>, faces: &Face
     );
 }
 
+/// A page-sized figure may need fitting after captions and the document's
+/// grid clearance are known. Re-measure its real box and fixed-size list label
+/// in that same grid context; shrinking artwork cannot relax other rows' ink
+/// guards or change the document's baseline phase.
+pub(super) fn remeasure_figure(line: &mut Line, faces: &Faces, context: LineGrid) {
+    line.grid = Some(measure(line, faces, &mut ShapeScratch::default()));
+    quantize(
+        std::slice::from_mut(line),
+        context.pitch,
+        context.clearance,
+        context.bottom_guard,
+    );
+}
+
 /// A paragraph alternative has already been measured in its real fonts. Its
 /// final gap, guard and clearance must match the finalized surrounding body.
 pub(super) fn finalize_alternative(lines: &mut [Line], baseline: &Line) {

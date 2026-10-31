@@ -793,10 +793,33 @@ impl Font {
         self.data.get(s..e)
     }
 
+    /// Declared font bounding box `[xMin, yMin, xMax, yMax]` (design units)
+    /// from the sfnt `head` table. This does not decode or validate outlines.
+    /// Strict CFF subsets regenerate it from the included glyphs' ink bounds.
+    #[must_use]
+    pub fn font_bbox(&self) -> Option<[i16; 4]> {
+        let (start, len) = find_table_full(&self.data, b"head")?;
+        let head = self.data.get(start..start.checked_add(len)?)?;
+        Some([
+            be_i16(head, 36)?,
+            be_i16(head, 38)?,
+            be_i16(head, 40)?,
+            be_i16(head, 42)?,
+        ])
+    }
+
     /// Glyph bounding box `[xMin, yMin, xMax, yMax]` (design units), or `None`
-    /// for an empty glyph / no outlines.
+    /// for an empty glyph / unreadable or unsupported outlines.
+    ///
+    /// TrueType uses the stored `glyf` bounding box. CFF1 bounds include cubic
+    /// curve extrema, rounded outward to integer design units. Use
+    /// [`Self::cff_glyph_bbox`] to distinguish an empty CFF glyph from a decode
+    /// error or bounds that cannot be represented as `i16`.
     #[must_use]
     pub fn glyph_bbox(&self, gid: u16) -> Option<[i16; 4]> {
+        if !self.has_glyf_outlines() {
+            return self.cff_glyph_bbox(gid).ok().flatten();
+        }
         let (s, e) = self.glyph_range(gid)?;
         if e <= s {
             return None; // empty glyph (no contours)

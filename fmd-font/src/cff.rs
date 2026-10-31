@@ -23,6 +23,102 @@ pub struct CffOutline {
     pub advance: u16,
     pub lsb: i16,
 }
+
+fn include_point(bounds: &mut Option<[f64; 4]>, p: Point) {
+    *bounds = Some(match *bounds {
+        None => [p.x, p.y, p.x, p.y],
+        Some([x0, y0, x1, y1]) => [x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)],
+    });
+}
+
+/// Interior extrema of one cubic coordinate, with the constant derivative
+/// factor removed. The stable quadratic formula avoids losing the smaller
+/// root when the linear coefficient and discriminant have similar magnitude.
+fn cubic_extrema(p0: f64, p1: f64, p2: f64, p3: f64) -> [Option<f64>; 2] {
+    let a = -p0 + 3.0 * p1 - 3.0 * p2 + p3;
+    let b = 2.0 * (p0 - 2.0 * p1 + p2);
+    let c = p1 - p0;
+    if a == 0.0 {
+        return [if b == 0.0 { None } else { Some(-c / b) }, None];
+    }
+    let discriminant = b * b - 4.0 * a * c;
+    if discriminant < 0.0 {
+        return [None, None];
+    }
+    let q = -0.5 * (b + discriminant.sqrt().copysign(b));
+    if q == 0.0 {
+        [Some(-b / (2.0 * a)), None]
+    } else {
+        [Some(q / a), Some(c / q)]
+    }
+}
+
+fn cubic_point(p0: Point, p1: Point, p2: Point, p3: Point, t: f64) -> Point {
+    let lerp = |a: Point, b: Point| Point {
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+    };
+    let a = lerp(p0, p1);
+    let b = lerp(p1, p2);
+    let c = lerp(p2, p3);
+    lerp(lerp(a, b), lerp(b, c))
+}
+
+/// Tight curve bounds, rather than the larger control-point envelope. Moves
+/// without a drawing segment have no ink; a closing edge cannot extend the
+/// bounds beyond its already included endpoints.
+fn outline_bbox(outline: &CffOutline) -> Result<Option<[i16; 4]>, SubsetError> {
+    let mut bounds = None;
+    let mut current = None;
+    for command in &outline.commands {
+        let points: &[Point] = match command {
+            Command::Move(p) | Command::Line(p) => std::slice::from_ref(p),
+            Command::Curve(a, b, c) => &[*a, *b, *c],
+            Command::Close => &[],
+        };
+        if points
+            .iter()
+            .any(|p| !p.x.is_finite() || !p.y.is_finite() || p.x.abs() > 1e9 || p.y.abs() > 1e9)
+        {
+            return Err(malformed(0));
+        }
+        match *command {
+            Command::Move(p) => current = Some(p),
+            Command::Line(p) => {
+                include_point(&mut bounds, current.ok_or(malformed(0))?);
+                include_point(&mut bounds, p);
+                current = Some(p);
+            }
+            Command::Curve(a, b, end) => {
+                let start = current.ok_or(malformed(0))?;
+                include_point(&mut bounds, start);
+                include_point(&mut bounds, end);
+                for t in cubic_extrema(start.x, a.x, b.x, end.x)
+                    .into_iter()
+                    .chain(cubic_extrema(start.y, a.y, b.y, end.y))
+                    .flatten()
+                    .filter(|&t| t > 0.0 && t < 1.0)
+                {
+                    include_point(&mut bounds, cubic_point(start, a, b, end, t));
+                }
+                current = Some(end);
+            }
+            Command::Close => current = None,
+        }
+    }
+    let Some([x0, y0, x1, y1]) = bounds else {
+        return Ok(None);
+    };
+    let rounded = [x0.floor(), y0.floor(), x1.ceil(), y1.ceil()];
+    if rounded
+        .iter()
+        .any(|&v| v < f64::from(i16::MIN) || v > f64::from(i16::MAX))
+    {
+        return Err(err(Kind::Capacity, 0));
+    }
+    Ok(Some(rounded.map(|v| v as i16)))
+}
+
 fn err(kind: Kind, offset: usize) -> SubsetError {
     SubsetError::new(kind, *b"CFF ", None, Some(offset))
 }
@@ -555,6 +651,18 @@ impl Font {
     pub fn cff_outline(&self, gid: u16) -> Result<CffOutline, SubsetError> {
         Cff::parse(self)?.outline(self, gid)
     }
+
+    /// Ink bounds `[xMin, yMin, xMax, yMax]` of a CFF1 glyph in design units,
+    /// including interior cubic extrema and rounded outward. Empty glyphs
+    /// return `Ok(None)`. Decode errors remain typed; bounds outside the `i16`
+    /// range return [`SubsetErrorKind::Capacity`](crate::SubsetErrorKind::Capacity)
+    /// instead of silently clamping away ink.
+    pub fn cff_glyph_bbox(&self, gid: u16) -> Result<Option<[i16; 4]>, SubsetError> {
+        outline_bbox(&self.cff_outline(gid)?).map_err(|mut e| {
+            e.glyph = Some(gid);
+            e
+        })
+    }
 }
 fn dict_int(out: &mut Vec<u8>, v: i32) {
     out.push(29);
@@ -620,7 +728,11 @@ fn encode_outline(o: &CffOutline) -> Result<Vec<u8>, SubsetError> {
     out.push(14);
     Ok(out)
 }
-fn cff_program(outlines: &[CffOutline], upem: u16) -> Result<Vec<u8>, SubsetError> {
+fn cff_program(
+    outlines: &[CffOutline],
+    upem: u16,
+    bounds: [i16; 4],
+) -> Result<Vec<u8>, SubsetError> {
     let names = encode_index(&[b"FmdSubset".to_vec()])?;
     let strings: Vec<_> = (1..outlines.len())
         .map(|i| format!("g{i}").into_bytes())
@@ -637,35 +749,11 @@ fn cff_program(outlines: &[CffOutline], upem: u16) -> Result<Vec<u8>, SubsetErro
         let sid = u16::try_from(390 + i).map_err(|_| err(Kind::Capacity, 0))?;
         charset.extend_from_slice(&sid.to_be_bytes());
     }
-    let mut bounds: Option<[f64; 4]> = None;
-    for outline in outlines {
-        for command in &outline.commands {
-            let points: &[Point] = match command {
-                Command::Move(p) | Command::Line(p) => std::slice::from_ref(p),
-                Command::Curve(a, b, c) => &[*a, *b, *c],
-                Command::Close => &[],
-            };
-            for p in points {
-                bounds = Some(match bounds {
-                    None => [p.x, p.y, p.x, p.y],
-                    Some([x0, y0, x1, y1]) => [x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)],
-                });
-            }
-        }
-    }
-    let bounds = bounds.unwrap_or([0.0; 4]);
     // Fixed-width DICT offsets make layout independent of offset magnitude.
     let make_top = |charset_off: i32, chars_off: i32| -> Vec<u8> {
         let mut d = Vec::new();
-        for (i, v) in bounds.iter().enumerate() {
-            dict_int(
-                &mut d,
-                if i < 2 {
-                    v.floor() as i32
-                } else {
-                    v.ceil() as i32
-                },
-            );
+        for &v in &bounds {
+            dict_int(&mut d, i32::from(v));
         }
         d.push(5);
         dict_int(&mut d, 0);
@@ -724,18 +812,29 @@ pub(crate) fn subset(font: &Font, glyphs: &[u16], chars: &[char]) -> Result<Subs
     }
     let mut map = vec![MISSING_GLYPH_REMAP; usize::from(font.num_glyphs)];
     let mut outlines = Vec::new();
+    let mut bounds: Option<[i16; 4]> = None;
     let mut command_count = 0usize;
     let mut instruction_budget = 5_000_000usize;
     for (i, &g) in keep.iter().enumerate() {
         map[usize::from(g)] = i as u16;
         let outline = cff.outline_budget(font, g, &mut instruction_budget)?;
+        if let Some([x0, y0, x1, y1]) = outline_bbox(&outline).map_err(|mut e| {
+            e.glyph = Some(g);
+            e
+        })? {
+            bounds = Some(match bounds {
+                None => [x0, y0, x1, y1],
+                Some([a, b, c, d]) => [a.min(x0), b.min(y0), c.max(x1), d.max(y1)],
+            });
+        }
         command_count += outline.commands.len();
         if command_count > 1_000_000 {
             return Err(err(Kind::BudgetExceeded, 0));
         }
         outlines.push(outline);
     }
-    let cff = cff_program(&outlines, font.units_per_em)?;
+    let bounds = bounds.unwrap_or([0; 4]);
+    let cff = cff_program(&outlines, font.units_per_em, bounds)?;
     let mut tables = BTreeMap::new();
     for tag in [*b"head", *b"hhea", *b"OS/2", *b"name"] {
         if let Some((o, n)) = find_table_full(&font.data, &tag) {
@@ -748,6 +847,9 @@ pub(crate) fn subset(font: &Font, glyphs: &[u16], chars: &[char]) -> Result<Subs
     let head = tables.get_mut(b"head").ok_or(malformed(0))?;
     crate::write_u32(head, 8, 0).ok_or(malformed(8))?;
     crate::write_u16(head, 50, 0).ok_or(malformed(50))?;
+    for (i, value) in bounds.into_iter().enumerate() {
+        crate::write_u16(head, 36 + i * 2, value as u16).ok_or(malformed(36 + i * 2))?;
+    }
     crate::write_u16(tables.get_mut(b"hhea").ok_or(malformed(0))?, 34, n).ok_or(malformed(34))?;
     let mut maxp = 0x0000_5000u32.to_be_bytes().to_vec();
     maxp.extend_from_slice(&n.to_be_bytes());
@@ -824,6 +926,149 @@ fn assemble(tables: &BTreeMap<[u8; 4], Vec<u8>>) -> Result<Vec<u8>, SubsetError>
 mod tests {
     use super::*;
     const FONT: &[u8] = include_bytes!("../fonts/test-cff/Bravura.otf");
+
+    fn outline(commands: Vec<Command>) -> CffOutline {
+        CffOutline {
+            commands,
+            advance: 500,
+            lsb: 0,
+        }
+    }
+
+    fn point(x: f64, y: f64) -> Point {
+        Point { x, y }
+    }
+
+    #[test]
+    fn cubic_bounds_include_extrema_without_including_control_points() {
+        let arch = outline(vec![
+            Command::Move(point(0.0, 0.0)),
+            Command::Curve(point(0.0, 100.0), point(100.0, 100.0), point(100.0, 0.0)),
+            Command::Close,
+        ]);
+        assert_eq!(outline_bbox(&arch).unwrap(), Some([0, 0, 100, 75]));
+
+        let two_extrema = outline(vec![
+            Command::Move(point(0.0, 0.0)),
+            Command::Curve(point(100.0, 100.0), point(-100.0, -100.0), point(0.0, 0.0)),
+            Command::Close,
+        ]);
+        // Interior extrema are +/- 100 * sqrt(3) / 6, about 28.868.
+        assert_eq!(
+            outline_bbox(&two_extrema).unwrap(),
+            Some([-29, -29, 29, 29])
+        );
+
+        let controls_outside_i16 = outline(vec![
+            Command::Move(point(0.0, 10_000.0)),
+            Command::Curve(
+                point(0.0, 40_000.0),
+                point(100.0, 40_000.0),
+                point(100.0, 10_000.0),
+            ),
+            Command::Close,
+        ]);
+        assert_eq!(
+            outline_bbox(&controls_outside_i16).unwrap(),
+            Some([0, 10_000, 100, 32_500])
+        );
+    }
+
+    #[test]
+    fn bounds_handle_degenerate_derivatives_and_outward_rounding() {
+        let linear = outline(vec![
+            Command::Move(point(0.0, 0.0)),
+            Command::Curve(point(10.0, 10.0), point(20.0, 20.0), point(30.0, 30.0)),
+        ]);
+        assert_eq!(outline_bbox(&linear).unwrap(), Some([0, 0, 30, 30]));
+
+        let repeated_root = outline(vec![
+            Command::Move(point(-0.125, -0.125)),
+            Command::Curve(
+                point(0.125, 0.125),
+                point(-0.125, -0.125),
+                point(0.125, 0.125),
+            ),
+        ]);
+        assert_eq!(outline_bbox(&repeated_root).unwrap(), Some([-1, -1, 1, 1]));
+
+        let fractional = outline(vec![
+            Command::Move(point(30_000.0, 30_000.0)),
+            Command::Close,
+            Command::Move(point(0.5, -1.25)),
+            Command::Line(point(0.75, -0.75)),
+            Command::Close,
+        ]);
+        assert_eq!(outline_bbox(&fractional).unwrap(), Some([0, -2, 1, 0]));
+        assert_eq!(outline_bbox(&outline(vec![])).unwrap(), None);
+        assert_eq!(
+            outline_bbox(&outline(vec![
+                Command::Move(point(1.0, 2.0)),
+                Command::Close
+            ]))
+            .unwrap(),
+            None
+        );
+    }
+
+    fn single_glyph_font(glyph: &CffOutline) -> Font {
+        let mut tables = BTreeMap::new();
+        for tag in [*b"head", *b"hhea", *b"cmap"] {
+            let (o, n) = find_table_full(FONT, &tag).unwrap();
+            tables.insert(tag, FONT[o..o + n].to_vec());
+        }
+        crate::write_u32(tables.get_mut(b"head").unwrap(), 8, 0).unwrap();
+        crate::write_u16(tables.get_mut(b"hhea").unwrap(), 34, 1).unwrap();
+        tables.insert(*b"maxp", vec![0, 0, 0x50, 0, 0, 1]);
+        let mut metrics = glyph.advance.to_be_bytes().to_vec();
+        metrics.extend_from_slice(&glyph.lsb.to_be_bytes());
+        tables.insert(*b"hmtx", metrics);
+        // Deliberately false declared bounds ensure callers measure the ink.
+        tables.insert(
+            *b"CFF ",
+            cff_program(std::slice::from_ref(glyph), 1000, [0; 4]).unwrap(),
+        );
+        Font::parse(assemble(&tables).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn unrepresentable_ink_is_a_typed_error_not_a_clamped_box() {
+        let glyph = outline(vec![
+            Command::Move(point(0.0, 0.0)),
+            Command::Line(point(20_000.0, 0.0)),
+            Command::Line(point(40_000.0, 0.0)),
+            Command::Close,
+        ]);
+        let font = single_glyph_font(&glyph);
+        for error in [
+            font.cff_glyph_bbox(0).unwrap_err(),
+            font.try_subset_glyphs(&[0], &[]).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, Kind::Capacity);
+            assert_eq!(error.table, *b"CFF ");
+            assert_eq!(error.glyph, Some(0));
+        }
+        assert_eq!(font.glyph_bbox(0), None);
+
+        let fractional_overflow = outline(vec![
+            Command::Move(point(0.0, 0.0)),
+            Command::Line(point(32767.25, -32768.25)),
+        ]);
+        assert_eq!(
+            outline_bbox(&fractional_overflow).unwrap_err().kind,
+            Kind::Capacity
+        );
+        for commands in [
+            vec![Command::Line(point(0.0, 0.0))],
+            vec![Command::Move(point(f64::NAN, 0.0))],
+        ] {
+            assert_eq!(
+                outline_bbox(&outline(commands)).unwrap_err().kind,
+                Kind::Malformed
+            );
+        }
+    }
+
     #[test]
     fn charstring_failures_keep_distinct_typed_causes() {
         let f = Font::parse(FONT.to_vec()).unwrap();
@@ -867,11 +1112,22 @@ mod tests {
         d[o] = 2;
         let f = Font::parse(d).unwrap();
         assert_eq!(f.cff_outline(0).unwrap_err().kind, Kind::UnsupportedFormat);
+        assert_eq!(
+            f.cff_glyph_bbox(0).unwrap_err().kind,
+            Kind::UnsupportedFormat
+        );
     }
     #[test]
     fn cff_subset_has_valid_sfnt_checksum() {
         let f = Font::parse(FONT.to_vec()).unwrap();
         let s = f.try_subset_glyphs(&[5, 1000], &[]).unwrap();
         assert_eq!(table_checksum(&s.bytes), 0xB1B0_AFBA);
+        let subset = Font::parse(s.bytes).unwrap();
+        let (start, len) = find_table_full(&subset.data, b"CFF ").unwrap();
+        let data = &subset.data[start..start + len];
+        let (_, pos) = index(data, usize::from(data[2])).unwrap();
+        let (top, _) = index(data, pos).unwrap();
+        let dict = dictionary(top[0]).unwrap();
+        assert_eq!(dict[&5], subset.font_bbox().unwrap().map(f64::from));
     }
 }

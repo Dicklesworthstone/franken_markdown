@@ -6,10 +6,10 @@ use crate::{Font, be_u16, find_table_full, outline::OutlineError};
 pub enum EmbeddingFormat {
     /// sfnt with glyf outlines: PDF FontFile2 / CIDFontType2.
     TrueType,
-    /// OTTO sfnt with CFF outlines: PDF FontFile3 / Subtype OpenType;
-    /// this is a name-keyed CFF program, not a CID-keyed program.
-    /// Consumers must choose a compatible simple-font encoding/dictionary;
-    /// do not emit FontFile2 or assume a CIDToGIDMap applies.
+    /// OTTO sfnt with name-keyed CFF outlines: PDF FontFile3 / Subtype
+    /// OpenType. A CIDFontType0 descendant with Identity-H may address its
+    /// CharStrings directly by subset glyph id (PDF 1.6, section 5.6.3).
+    /// CIDToGIDMap applies only to CIDFontType2, not this format.
     OpenTypeCff,
 }
 /// A compact font and its original-glyph to subset-glyph mapping.

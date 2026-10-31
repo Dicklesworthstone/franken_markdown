@@ -4,8 +4,10 @@ Run from repository root. No production dependency, network, or host fonts.
 """
 from pathlib import Path
 import struct
+from math import floor, ceil
 from fontTools.ttLib import TTFont
 from fontTools.pens.recordingPen import RecordingPen
+from fontTools.pens.boundsPen import BoundsPen
 import uharfbuzz as hb
 ROOT=Path('fmd-font/fonts')
 f=TTFont(ROOT/'test-cff/Bravura.otf'); gs=f.getGlyphSet()
@@ -20,8 +22,10 @@ def fingerprint(commands):
 rows=[]
 for gid,name in enumerate(f.getGlyphOrder()):
     pen=RecordingPen();gs[name].draw(pen)
+    bounds=BoundsPen(gs,ignoreSinglePoints=True);gs[name].draw(bounds)
+    bbox='none' if bounds.bounds is None else ' '.join(map(str,[floor(bounds.bounds[0]),floor(bounds.bounds[1]),ceil(bounds.bounds[2]),ceil(bounds.bounds[3])]))
     aw,lsb=f['hmtx'][name]
-    rows.append(f'{gid} {aw} {lsb} {fingerprint(pen.value):016x}')
+    rows.append(f'{gid} {aw} {lsb} {fingerprint(pen.value):016x} {bbox}')
 (ROOT/'test-cff/fonttools-reference.txt').write_text('\n'.join(rows)+'\n')
 f=hb.Font(hb.Face((ROOT/'test-shaping/FmdShaping.ttf').read_bytes()));f.scale=(1000,1000)
 cases=[('latn','ab'),('latn','bb'),('latn','ba'),('latn','fi'),('latn','a\u0301'),('latn','a\u0301\u0307'),('latn','a\u0301b'),('arab','بب'),('arab','ببب'),('arab','باب'),('arab','لا'),('arab','بَب'),('arab','بَبَب'),('arab','بََب')]

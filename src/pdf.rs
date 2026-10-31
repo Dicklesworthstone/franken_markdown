@@ -30270,8 +30270,7 @@ fn paginate_lines_with<'a>(
 
 fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
-    let capacity =
-        (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+    let capacity = (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
     let mut used = 0.0f32;
 
     // Forced boundaries (book chapter breaks, j0o4): a line flagged
@@ -30547,8 +30546,7 @@ fn legacy_optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
         if best[i] == inf {
             continue;
         }
-        let capacity =
-            (full_capacity - repeated_table_header_height(lines, i)).max(MIN_CONTENT_DIM);
+        let capacity = (full_capacity - repeated_table_header_height(lines, i, page)).max(0.0);
         let mut used = 0.0f32;
         // Walk the fit window exactly like the greedy loop: the first line
         // is unconditional; later lines require cumulative fit and no forced
@@ -30627,8 +30625,7 @@ fn choose_page_break_with_void_control(
     }
 
     let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
-    let capacity =
-        (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+    let capacity = (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
     let mut used = 0.0f32;
     for line in &lines[start..baseline_end] {
         used += line_leading(line) + line.gap_after;
@@ -31373,7 +31370,7 @@ fn place_lines_shrunk<'a>(
     page: PageGeom,
     shrink_from: Option<usize>,
 ) -> Vec<Placed<'a>> {
-    let repeated = repeated_table_header_lines(lines, start);
+    let repeated = repeated_table_header_lines(lines, start, page);
     let mut placed = Vec::with_capacity(repeated.len() + end.saturating_sub(start));
     if page.grid.is_some() {
         baseline_grid::place(
@@ -31413,15 +31410,36 @@ fn place_lines_shrunk<'a>(
     placed
 }
 
-fn repeated_table_header_height(lines: &[Line], start: usize) -> f32 {
-    repeated_table_header_lines(lines, start)
+fn repeated_table_header_height(lines: &[Line], start: usize, page: PageGeom) -> f32 {
+    repeated_table_header_lines(lines, start, page)
         .iter()
         .copied()
         .map(|line| line_leading(line) + line.gap_after)
         .sum()
 }
 
-fn repeated_table_header_lines(lines: &[Line], start: usize) -> Vec<&Line> {
+/// A continuation header is decoration in addition to the original source
+/// lines. Repeat it only when the effective page can also hold its first body
+/// line. The original header remains untouched, even when it spans pages.
+///
+/// Planning and painting must use this same admission with the same geometry:
+/// page-note reservations and baseline-grid guards can make an otherwise
+/// fitting header too tall. Never manufacture a minimum body capacity after
+/// reserving a header; that would place real rows below the page boundary.
+fn repeated_table_header_lines(lines: &[Line], start: usize, page: PageGeom) -> Vec<&Line> {
+    let mut repeated = table_header_prefix(lines, start);
+    let height: f32 = repeated
+        .iter()
+        .map(|line| line_leading(line) + line.gap_after)
+        .sum();
+    let first_leading = lines.get(start).map_or(0.0, line_leading);
+    if height + first_leading > page.top_y() - page.bottom {
+        repeated.clear();
+    }
+    repeated
+}
+
+fn table_header_prefix(lines: &[Line], start: usize) -> Vec<&Line> {
     let Some(first) = lines.get(start) else {
         return Vec::new();
     };
@@ -44122,7 +44140,7 @@ mod plass_pagination_tests {
         let mut start = 0usize;
         for &end in ends {
             let capacity =
-                (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+                (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
             if end != lines.len() {
                 let mut used = 0.0f32;
                 for l in &lines[start..end] {
@@ -44175,7 +44193,7 @@ mod plass_pagination_tests {
                 );
             }
             let capacity =
-                (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+                (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
             if end - start > 1 {
                 let mut used = 0.0f32;
                 for l in &lines[start..end - 1] {
@@ -44391,7 +44409,7 @@ mod plass_pagination_tests {
                 "page {start}..{end} exceeds capacity including its two repeated header lines"
             );
             if repeated_header_lines != 0 {
-                let repeated = repeated_table_header_lines(&lines, start);
+                let repeated = repeated_table_header_lines(&lines, start, pg);
                 assert_eq!(repeated.len(), 2);
                 assert_eq!(repeated[0].flow.kind, FlowKind::TableHeader);
                 assert_eq!(repeated[1].flow.kind, FlowKind::TableRule);

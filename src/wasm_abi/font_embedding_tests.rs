@@ -76,8 +76,10 @@ fn epub_binding_keeps_exact_host_font_and_full_can_embed_bundled_faces() {
     assert_eq!(epub(None, true).bytes(), epub(Some("subset"), true).bytes());
     for supplied in [false, true] {
         let full = epub(Some("full"), supplied).bytes();
-        let mut options = WasmRenderOptions::default();
-        options.font_embedding = crate::FontEmbedding::Full;
+        let mut options = WasmRenderOptions {
+            font_embedding: crate::FontEmbedding::Full,
+            ..WasmRenderOptions::default()
+        };
         if supplied {
             options
                 .font_assets

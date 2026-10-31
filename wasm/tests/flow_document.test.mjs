@@ -212,6 +212,101 @@ test("confirmation races and disposal cannot overwrite an editor", async (t) => 
     assert.equal(f.replacements.length, 0);
   }
 });
+for (const field of ["sourceEditor", "filename"]) {
+  test(`${field} composition blocks imports and replacements without reading the file`, async (t) => {
+    const f = controls();
+    t.after(() => f.api.dispose());
+    let reads = 0;
+    class ObservedFile extends File {
+      async arrayBuffer() {
+        reads++;
+        return super.arrayBuffer();
+      }
+    }
+    f[field].dispatchEvent(new Event("compositionstart"));
+    await assert.rejects(f.api.openFile(new ObservedFile(["new"], "new.md")), code("EDITOR_BUSY"));
+    assert.throws(() => f.api.replace({ source: "new", filename: "new.md" }), code("EDITOR_BUSY"));
+    assert.equal(reads, 0);
+    assert.equal(f.sourceEditor.value, "# Keep me");
+    assert.equal(f.filename.value, "old.md");
+    assert.equal(f.replacements.length, 0);
+    assert.equal(f.open.disabled, true);
+    f[field].dispatchEvent(new Event("compositionend"));
+    assert.equal(f.open.disabled, false);
+    assert.equal(await f.api.openFile(new File(["fresh"], "fresh.md")), true);
+    assert.equal(f.sourceEditor.value, "fresh");
+  });
+  test(`${field} composition retires an import even when it ends without an input event`, async (t) => {
+    const f = controls(), hold = gate();
+    t.after(() => f.api.dispose());
+    class SlowFile extends File {
+      async arrayBuffer() {
+        await hold.promise;
+        return super.arrayBuffer();
+      }
+    }
+    const pending = f.api.openFile(new SlowFile(["old import"], "old-import.md"));
+    f[field].dispatchEvent(new Event("compositionstart"));
+    f[field].dispatchEvent(new Event("compositionend"));
+    hold.resolve();
+    await assert.rejects(pending, code("STALE_SOURCE"));
+    assert.equal(f.sourceEditor.value, "# Keep me");
+    assert.equal(f.replacements.length, 0);
+    assert.equal(f.open.disabled, false);
+  });
+}
+test("composition begun during import confirmation preserves source and keeps imports disabled until it ends", async (t) => {
+  const f = controls(), entered = gate(), hold = gate();
+  t.after(() => f.api.dispose());
+  f.confirm(() => { entered.resolve(); return hold.promise; });
+  const pending = f.api.openFile(new File(["late"], "late.md"));
+  await entered.promise;
+  f.sourceEditor.dispatchEvent(new Event("compositionstart"));
+  hold.resolve(true);
+  await assert.rejects(pending, code("STALE_SOURCE"));
+  assert.equal(f.replacements.length, 0);
+  assert.equal(f.open.disabled, true);
+  f.sourceEditor.dispatchEvent(new Event("compositionend"));
+  assert.equal(f.open.disabled, false);
+});
+test("readonly source refuses replacement before and during import but retains source downloads", async (t) => {
+  const f = controls(), entered = gate(), hold = gate();
+  t.after(() => f.api.dispose());
+  f.sourceEditor.readOnly = true;
+  await assert.rejects(f.api.openFile(new File(["new"], "new.md")), code("EDITOR_BUSY"));
+  assert.throws(() => f.api.replace({ source: "new", filename: "new.md" }), code("EDITOR_BUSY"));
+  f.api.prepareDownload();
+  assert.equal(await f.urls.at(-1).text(), "# Keep me");
+  f.sourceEditor.readOnly = false;
+  f.confirm(() => { entered.resolve(); return hold.promise; });
+  const pending = f.api.openFile(new File(["late"], "late.md"));
+  await entered.promise;
+  f.sourceEditor.readOnly = true;
+  hold.resolve(true);
+  await assert.rejects(pending, code("STALE_SOURCE"));
+  assert.equal(f.replacements.length, 0);
+  assert.equal(f.sourceEditor.value, "# Keep me");
+});
+test("source and filename composition retire prepared downloads until both fields finish", async (t) => {
+  const f = controls();
+  t.after(() => f.api.dispose());
+  f.api.prepareDownload();
+  f.sourceEditor.dispatchEvent(new Event("compositionstart"));
+  assert.equal(f.download.hidden, true);
+  assert.deepEqual(f.revoked, ["blob:1"]);
+  assert.throws(() => f.api.prepareDownload(), code("EDITOR_BUSY"));
+  f.filename.dispatchEvent(new Event("compositionstart"));
+  f.sourceEditor.dispatchEvent(new Event("compositionend"));
+  assert.equal(f.prepare.disabled, true);
+  assert.throws(() => f.api.prepareDownload(), code("EDITOR_BUSY"));
+  const click = new Event("click", { cancelable: true });
+  f.download.dispatchEvent(click);
+  assert.equal(click.defaultPrevented, true);
+  f.filename.dispatchEvent(new Event("compositionend"));
+  assert.equal(f.prepare.disabled, false);
+  f.api.prepareDownload();
+  assert.equal(await f.urls.at(-1).text(), "# Keep me");
+});
 test("source downloads need no renderer and are invalidated on edit, rename or replacement", async (t) => {
   const f = controls();
   t.after(() => f.api.dispose());

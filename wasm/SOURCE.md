@@ -15,6 +15,13 @@ revoke the previous document's image authorization before notifying the preview.
 Markdown downloads work even when rendering fails and require a separate user
 click; preparing a Blob is not a claim that the user saved a file to disk.
 
+Composing text in either the source or filename pauses replacement and source
+download preparation. Starting a composition invalidates pending imports, draft
+recovery approvals, and prepared download links even if the composition is
+cancelled without an input event. Finish composing and start a fresh operation.
+Read-only or disabled editors refuse file imports and draft restoration; their
+current source can still be downloaded once composition has finished.
+
 UTF-8 BOMs and line endings round-trip through file reading and Blob generation.
 Since HTML textarea values normalize newlines to LF, source controls retain the
 original string while the imported view is unchanged. Edited text uses the
@@ -97,6 +104,9 @@ It uses a temporary browser profile, an owned debugging pipe and a loopback test
 server, without third-party testing dependencies. The browser checks exercise
 native IndexedDB transaction conflicts, aborted writes, tombstones, corrupt
 records, disposal/version changes, source round trips and an actual page reload.
+It also checks source preservation through delayed file reads and draft-recovery
+confirmation using real DOM, File/Blob URLs, and IndexedDB. Composition events
+in those race checks are synthetic; they do not establish native IME acceptance.
 They create and remove only uniquely named test databases, never the editor's
 real draft database. The temporary profile is retained for inspection. In an
 isolated test container without sandbox support, the explicit

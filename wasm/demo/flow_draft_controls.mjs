@@ -24,9 +24,18 @@ export function createDraftControls({
     owner = null,
     operation = null,
     failure = null;
+  const composing = new Set();
+  const replacementBlocked = () =>
+    !!(composing.size > 0 || sourceEditor.disabled || sourceEditor.readOnly
+      || filename.disabled || filename.readOnly);
   const alive = () => {
     if (disposed) throw new FlowError("SESSION_DISPOSED", "Draft controls are disposed.");
   };
+  function guardRestore() {
+    alive();
+    if (replacementBlocked())
+      throw new FlowError("EDITOR_BUSY", "Finish text composition or unlock the editor before restoring a draft.");
+  }
   function render() {
     // A resumed/remounted controller may already own these same elements.
     // Late operations of a disposed owner must not touch its successor's UI.
@@ -41,7 +50,7 @@ export function createDraftControls({
       value.available ||
       value.error?.code === "DRAFT_CONFLICT";
     refresh.disabled = disposed || busy;
-    restore.disabled = disposed || busy || !value?.available;
+    restore.disabled = disposed || busy || replacementBlocked() || !value?.available;
     forget.disabled = disposed || busy || !value?.ready || value.storedFilename === null;
     save.disabled = disposed || busy || !value?.enabled || !value.dirty;
     const error = failure ?? value?.error;
@@ -94,8 +103,16 @@ export function createDraftControls({
         owner = createDraftSession({
           store,
           readDocument,
-          restoreDocument,
-          confirmRestore,
+          restoreDocument(next) {
+            guardRestore();
+            return restoreDocument(next);
+          },
+          async confirmRestore(next) {
+            guardRestore();
+            const approved = confirmRestore ? await confirmRestore(next) : true;
+            guardRestore();
+            return approved;
+          },
           delayMs,
           onState: render,
         });
@@ -108,7 +125,7 @@ export function createDraftControls({
   }
   function restoreRecovery() {
     return perform(async () => {
-      alive();
+      guardRestore();
       if (!owner)
         throw new FlowError("STORAGE_UNAVAILABLE", "Refresh recovery to open draft storage.");
       await owner.restore();
@@ -159,6 +176,18 @@ export function createDraftControls({
   const onInput = () => {
     if (!disposed) owner?.changed();
   };
+  const onCompositionStart = (event) => {
+    composing.add(event.currentTarget);
+    // A start/end pair can leave source bytes unchanged. It still invalidates
+    // a prior recovery approval, including one awaiting the storage read.
+    onInput();
+    render();
+  };
+  const onCompositionEnd = (event) => {
+    composing.delete(event.currentTarget);
+    onInput();
+    render();
+  };
   remember.addEventListener("change", onRemember);
   refresh.addEventListener("click", onRefresh);
   restore.addEventListener("click", onRestore);
@@ -166,6 +195,10 @@ export function createDraftControls({
   save.addEventListener("click", onSave);
   sourceEditor.addEventListener("input", onInput);
   filename.addEventListener("input", onInput);
+  for (const field of [sourceEditor, filename]) {
+    field.addEventListener("compositionstart", onCompositionStart);
+    field.addEventListener("compositionend", onCompositionEnd);
+  }
   invoke(refreshRecovery);
   return Object.freeze({
     get state() {
@@ -183,6 +216,7 @@ export function createDraftControls({
       disposed = true;
       owner?.dispose();
       owner = null;
+      composing.clear();
       remember.checked = false;
       remember.disabled = refresh.disabled = restore.disabled = forget.disabled = save.disabled = true;
       remember.removeEventListener("change", onRemember);
@@ -192,6 +226,10 @@ export function createDraftControls({
       save.removeEventListener("click", onSave);
       sourceEditor.removeEventListener("input", onInput);
       filename.removeEventListener("input", onInput);
+      for (const field of [sourceEditor, filename]) {
+        field.removeEventListener("compositionstart", onCompositionStart);
+        field.removeEventListener("compositionend", onCompositionEnd);
+      }
     },
   });
 }

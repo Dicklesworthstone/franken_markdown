@@ -111,6 +111,7 @@ export function createSourceControls({
     epoch = 0,
     url = null,
     published = null;
+  const composing = new Set();
   // textarea.value normalizes CR/CRLF to LF. Preserve the imported bytes while
   // its displayed value is unchanged; edited text follows the textarea's LF
   // convention. Returning to the exact imported view also restores its bytes.
@@ -134,6 +135,21 @@ export function createSourceControls({
     });
   const matches = (value) =>
     value.source === sourceEditor.value && value.filename === filename.value;
+  const replacementBlocked = () =>
+    !!(composing.size > 0 || sourceEditor.disabled || sourceEditor.readOnly
+      || filename.disabled || filename.readOnly);
+  function refreshActions() {
+    if (disposed) return;
+    open.disabled = busy || replacementBlocked();
+    // A read-only source can still be backed up; an unfinished composition
+    // must not be presented as the user's completed Markdown or filename.
+    prepare.disabled = composing.size > 0;
+  }
+  function editable() {
+    alive();
+    if (replacementBlocked())
+      fail("EDITOR_BUSY", "Finish text composition or unlock the editor before replacing Markdown.");
+  }
   function revoke() {
     published = null;
     download.hidden = true;
@@ -153,7 +169,7 @@ export function createSourceControls({
     if (disposed) fail("SESSION_DISPOSED", "Source controls are disposed.");
   }
   function replace(value) {
-    alive();
+    editable();
     const next = documentSnapshot(value),
       previous = current();
     const previousSource = originalSource,
@@ -179,7 +195,7 @@ export function createSourceControls({
       status.textContent = `${error?.code ?? "DOCUMENT_ERROR"}: ${error instanceof Error ? error.message : "Document operation failed."}`;
   }
   async function openFile(file) {
-    alive();
+    editable();
     if (busy) fail("DOCUMENT_BUSY", "The previous file read has not settled.");
     const before = current(),
       ticket = epoch;
@@ -187,7 +203,7 @@ export function createSourceControls({
     open.disabled = true;
     const fence = () => {
       alive();
-      if (ticket !== epoch || !matches(before))
+      if (ticket !== epoch || !matches(before) || replacementBlocked())
         fail("STALE_SOURCE", "The editor changed during file loading; the file was not opened.");
     };
     try {
@@ -201,11 +217,13 @@ export function createSourceControls({
       return true;
     } finally {
       busy = false;
-      if (!disposed) open.disabled = false;
+      refreshActions();
     }
   }
   function prepareDownload() {
     alive();
+    if (composing.size > 0)
+      fail("EDITOR_BUSY", "Finish text composition before preparing Markdown for download.");
     const value = snapshot(),
       output = markdownDownload(value);
     revoke();
@@ -236,20 +254,35 @@ export function createSourceControls({
     }
   };
   const onDownload = (event) => {
-    if (disposed || !published || !matches(published)) {
+    if (disposed || composing.size > 0 || !published || !matches(published)) {
       event.preventDefault();
       changed();
       if (!disposed) status.textContent = "The prepared source is stale. Prepare Markdown again.";
     }
   };
+  const onCompositionStart = (event) => {
+    composing.add(event.currentTarget);
+    // IMEs can start and cancel a composition without an input event. Retire
+    // pending reads/confirmations and old download links at the intent boundary.
+    changed();
+    refreshActions();
+  };
+  const onCompositionEnd = (event) => {
+    composing.delete(event.currentTarget);
+    changed();
+    refreshActions();
+  };
   sourceEditor.addEventListener("input", changed);
   filename.addEventListener("input", changed);
+  for (const field of [sourceEditor, filename]) {
+    field.addEventListener("compositionstart", onCompositionStart);
+    field.addEventListener("compositionend", onCompositionEnd);
+  }
   open.addEventListener("change", onOpen);
   prepare.addEventListener("click", onPrepare);
   download.addEventListener("click", onDownload);
   revoke();
-  open.disabled = false;
-  prepare.disabled = false;
+  refreshActions();
   return Object.freeze({
     snapshot() {
       alive();
@@ -265,8 +298,13 @@ export function createSourceControls({
       open.disabled = true;
       prepare.disabled = true;
       originalSource = originalView = "";
+      composing.clear();
       sourceEditor.removeEventListener("input", changed);
       filename.removeEventListener("input", changed);
+      for (const field of [sourceEditor, filename]) {
+        field.removeEventListener("compositionstart", onCompositionStart);
+        field.removeEventListener("compositionend", onCompositionEnd);
+      }
       open.removeEventListener("change", onOpen);
       prepare.removeEventListener("click", onPrepare);
       download.removeEventListener("click", onDownload);

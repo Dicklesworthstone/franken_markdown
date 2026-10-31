@@ -7,6 +7,7 @@ import {
   readMarkdownFile,
 } from "../demo/flow_document.mjs";
 import { createDraftSession } from "../demo/flow_draft_session.mjs";
+import { createDraftControls } from "../demo/flow_draft_controls.mjs";
 import { openDraftStore } from "../demo/flow_draft_store.mjs";
 
 const assert = (value, message = "assertion failed") => {
@@ -295,6 +296,84 @@ export async function run() {
         }
       },
     );
+    await check("source composition retires delayed file imports and Blob downloads", async () => {
+      const sourceEditor = document.createElement("textarea"),
+        filename = document.createElement("input"),
+        input = document.createElement("input"),
+        prepare = document.createElement("button"),
+        download = document.createElement("a"),
+        status = document.createElement("p");
+      sourceEditor.value = "local source";
+      filename.value = "local.md";
+      let replacements = 0, release;
+      const held = new Promise(resolve => { release = resolve; });
+      class SlowFile extends File {
+        async arrayBuffer() { await held; return super.arrayBuffer(); }
+      }
+      const controls = createSourceControls({ sourceEditor, filename, open: input,
+        prepare, download, status, onReplace() { replacements++; } });
+      try {
+        controls.prepareDownload();
+        const previous = download.href;
+        const pending = controls.openFile(new SlowFile(["stale imported source"], "stale.md"));
+        // Synthetic composition with a controlled File read; this does not
+        // claim native IME input or platform file-picker acceptance.
+        sourceEditor.dispatchEvent(new CompositionEvent("compositionstart"));
+        assert(input.disabled && prepare.disabled && download.hidden);
+        let revoked = false;
+        try { await fetch(previous); } catch { revoked = true; }
+        assert(revoked, "composition must revoke the previous source URL");
+        sourceEditor.dispatchEvent(new CompositionEvent("compositionend"));
+        release();
+        await rejects(pending, "STALE_SOURCE");
+        assert(sourceEditor.value === "local source" && filename.value === "local.md" && !replacements);
+        sourceEditor.readOnly = true;
+        await rejects(controls.openFile(new File(["locked replacement"], "locked.md")), "EDITOR_BUSY");
+        controls.prepareDownload();
+        assert(await (await fetch(download.href)).text() === "local source", "read-only source remains recoverable");
+        sourceEditor.readOnly = false;
+        await controls.openFile(new File([source], "fresh.md"));
+        equal(controls.snapshot(), { filename: "fresh.md", source });
+        assert(replacements === 1, "a fresh approved import must still work");
+      } finally { release(); controls.dispose(); }
+    });
+    await check("native stored-draft recovery preserves composition through delayed confirmation", async () => {
+      const name = unique(), store = await open(name);
+      await store.save({ source, filename: "saved.md" }, 0);
+      const sourceEditor = document.createElement("textarea"), filename = document.createElement("input");
+      const nodes = Object.fromEntries(["remember", "refresh", "restore", "forget", "save", "status"]
+        .map(key => [key, document.createElement(key === "status" ? "p" : "button")]));
+      sourceEditor.value = "unsaved local source";
+      filename.value = "local.md";
+      let release, entered, defer = true, replacements = 0;
+      const held = new Promise(resolve => { release = resolve; }),
+        ready = new Promise(resolve => { entered = resolve; });
+      const controls = createDraftControls({ ...nodes, sourceEditor, filename,
+        openStore: () => open(name), delayMs: 60000,
+        readDocument: () => ({ source: sourceEditor.value, filename: filename.value }),
+        restoreDocument(next) {
+          replacements++;
+          sourceEditor.value = next.source;
+          filename.value = next.filename;
+          sourceEditor.dispatchEvent(new Event("input"));
+        },
+        confirmRestore() { entered(); return defer ? held : true; },
+      });
+      try {
+        await controls.whenIdle();
+        const pending = controls.restore();
+        await ready;
+        filename.dispatchEvent(new CompositionEvent("compositionstart"));
+        filename.dispatchEvent(new CompositionEvent("compositionend"));
+        release(true);
+        await rejects(pending, "STALE_SOURCE");
+        assert(!replacements && sourceEditor.value === "unsaved local source" && filename.value === "local.md");
+        assert((await store.read()).document.source === source, "refused recovery must preserve the stored copy too");
+        defer = false;
+        await controls.restore();
+        assert(replacements === 1 && filename.value === "saved.md" && sourceEditor.value === source.replace(/\r\n?/g, "\n"));
+      } finally { release(true); controls.dispose(); }
+    });
     await check("source draft is committed for an actual page reload", async () => {
       reloadName = `fmd-reload-check-${crypto.randomUUID()}`;
       const a = await open(reloadName);

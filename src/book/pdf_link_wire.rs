@@ -1,4 +1,4 @@
-//! Bind book links to destinations from our own PDF writer, without touching
+//! Bind book links to source destinations from our own PDF writer, without touching
 //! page streams, font subsets, annotation ownership, or cross-reference offsets.
 //!
 //! This is deliberately not a general PDF editor. Only the writer's complete
@@ -9,39 +9,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
+use crate::pdf::source_navigation::Destination;
 use crate::{RenderError, Result};
 
 fn invalid() -> RenderError {
     RenderError::InvalidInput("book_pdf_navigation: unexpected PDF writer structure".into())
 }
 
-/// `targets` maps temporary URI strings to emitted-heading ordinals. `None`
-/// removes the action of an unresolved chapter-local link instead of allowing
-/// an identically named heading in another chapter to capture it.
+/// `targets` contains actual source destinations from this exact render.
+/// `None` removes the action of an unresolved chapter-local link instead of
+/// allowing an identically named heading in another chapter to capture it.
+/// Bookmark order and generated TOC/Notes headings have no role in binding.
 pub(super) fn bind(
     mut bytes: Vec<u8>,
-    targets: &BTreeMap<String, Option<usize>>,
-    heading_count: usize,
-    toc: bool,
+    targets: &BTreeMap<String, Option<Destination>>,
 ) -> Result<Vec<u8>> {
     if targets.is_empty() {
         return Ok(bytes);
     }
     let pdf = Pdf::parse(&bytes).ok_or_else(invalid)?;
-    let outlines = pdf.outlines().ok_or_else(invalid)?;
-    let offset = if outlines.len() == heading_count {
-        0
-    } else if toc
-        && outlines.len() == heading_count.saturating_add(1)
-        && outlines.first().is_some_and(|item| item.contents_heading)
-    {
-        1
-    } else {
-        return Err(RenderError::InvalidInput(format!(
-            "book_pdf_navigation: expected {heading_count} heading destinations, found {}",
-            outlines.len(),
-        )));
-    };
+    let pages = pdf.pages().ok_or_else(invalid)?;
     let mut patches = Vec::new();
     for id in 1..pdf.objects.len() {
         let dict = pdf.dictionary(id).ok_or_else(invalid)?;
@@ -69,16 +56,16 @@ pub(super) fn bind(
             return Err(invalid());
         }
         let mut replacement = Vec::new();
-        if let Some(ordinal) = target {
-            let item = outlines
-                .get(ordinal.checked_add(offset).ok_or_else(invalid)?)
+        if let Some(destination) = target {
+            if !destination.y.is_finite() {
+                return Err(invalid());
+            }
+            let page_object = pages
+                .get(destination.page_index)
+                .copied()
                 .ok_or_else(invalid)?;
             replacement.extend_from_slice(b"/Dest ");
-            replacement.extend_from_slice(
-                pdf.bytes
-                    .get(item.destination.clone())
-                    .ok_or_else(invalid)?,
-            );
+            destination.append_pdf(&mut replacement, page_object);
         }
         if replacement.len() > action.range.len() {
             return Err(invalid());
@@ -137,11 +124,6 @@ fn digest(mut state: u64, bytes: &[u8]) -> u64 {
 struct Field {
     range: Range<usize>,
     value: Range<usize>,
-}
-
-struct Outline {
-    destination: Range<usize>,
-    contents_heading: bool,
 }
 
 struct Pdf<'a> {
@@ -267,54 +249,42 @@ impl<'a> Pdf<'a> {
         (reader.pos == reader.bytes.len() && id > 0 && id < self.objects.len()).then_some(id)
     }
 
-    fn outlines(&self) -> Option<Vec<Outline>> {
+    /// The writer emits one bounded, flat page tree. Read its actual object
+    /// references and validate ownership instead of assuming object numbers.
+    fn pages(&self) -> Option<Vec<usize>> {
         let catalog =
             self.dictionary(self.reference(self.field(&self.trailer, b"/Root")?.value)?)?;
-        let Some(root) = self.field(&catalog, b"/Outlines") else {
-            return Some(Vec::new());
-        };
-        let root = self.dictionary(self.reference(root.value)?)?;
-        if !self.named(&root, b"/Type", b"/Outlines") {
+        let root = self.reference(self.field(&catalog, b"/Pages")?.value)?;
+        let dictionary = self.dictionary(root)?;
+        if !self.named(&dictionary, b"/Type", b"/Pages") {
             return None;
         }
-        let Some(first) = self.field(&root, b"/First") else {
-            return Some(Vec::new());
-        };
-        let mut stack = vec![self.reference(first.value)?];
+        let count = self.field(&dictionary, b"/Count")?;
+        let count = Reader::new(self.bytes.get(count.value)?).integer()?;
+        if count == 0 || count >= self.objects.len() {
+            return None;
+        }
+        let kids = self.field(&dictionary, b"/Kids")?;
+        let array = self.bytes.get(kids.value)?;
+        let array = array.strip_prefix(b"[")?.strip_suffix(b"]")?;
+        let mut reader = Reader::new(array);
+        let mut pages = Vec::with_capacity(count);
         let mut seen = BTreeSet::new();
-        let mut out = Vec::new();
-        while let Some(id) = stack.pop() {
-            if !seen.insert(id) {
-                return None;
-            }
-            let dict = self.dictionary(id)?;
-            let destination = self.field(&dict, b"/Dest")?.value;
-            let array = self.bytes.get(destination.clone())?;
-            if !array.starts_with(b"[") || !array.ends_with(b"]") {
-                return None;
-            }
-            let mut reader = Reader::new(&array[1..array.len() - 1]);
+        for _ in 0..count {
             let page = reader.integer()?;
-            if reader.integer()? != 0
-                || reader.atom()? != b"R"
-                || !self.named(&self.dictionary(page)?, b"/Type", b"/Page")
+            if reader.integer()? != 0 || reader.atom()? != b"R" || !seen.insert(page) {
+                return None;
+            }
+            let dictionary = self.dictionary(page)?;
+            if !self.named(&dictionary, b"/Type", b"/Page")
+                || self.reference(self.field(&dictionary, b"/Parent")?.value)? != root
             {
                 return None;
             }
-            let title = self.field(&dict, b"/Title")?;
-            let title = self.bytes.get(title.value)?;
-            out.push(Outline {
-                destination,
-                contents_heading: matches!(title, b"(Contents)" | b"(Table of Contents)"),
-            });
-            if let Some(next) = self.field(&dict, b"/Next") {
-                stack.push(self.reference(next.value)?);
-            }
-            if let Some(first) = self.field(&dict, b"/First") {
-                stack.push(self.reference(first.value)?);
-            }
+            pages.push(page);
         }
-        Some(out)
+        reader.skip();
+        (reader.pos == reader.bytes.len()).then_some(pages)
     }
 
     fn identifier_ranges(&self) -> Option<Vec<Range<usize>>> {
@@ -514,8 +484,14 @@ mod tests {
     fn binding_preserves_offsets_streams_and_structure_ownership() {
         let uri = format!("fmd-book-link/{}", "0".repeat(128));
         let before = fixture(&uri);
-        let targets = BTreeMap::from([(uri.clone(), Some(0))]);
-        let after = bind(before.clone(), &targets, 1, false).unwrap();
+        let targets = BTreeMap::from([(
+            uri.clone(),
+            Some(Destination {
+                page_index: 0,
+                y: 712.5,
+            }),
+        )]);
+        let after = bind(before.clone(), &targets).unwrap();
         let original = Pdf::parse(&before).unwrap();
         let linked = Pdf::parse(&after).unwrap();
         assert_eq!(before.len(), after.len());
@@ -530,14 +506,14 @@ mod tests {
         assert_eq!(&after[dest.value], b"[3 0 R /XYZ null 712.5 null]");
         let owner = linked.field(&annot, b"/StructParent").unwrap();
         assert_eq!(&after[owner.value], b"9");
-        assert_eq!(after, bind(before, &targets, 1, false).unwrap());
-        assert_eq!(after, bind(after.clone(), &targets, 1, false).unwrap());
+        assert_eq!(after, bind(before, &targets).unwrap());
+        assert_eq!(after, bind(after.clone(), &targets).unwrap());
     }
 
     #[test]
     fn unresolved_links_are_inert_not_cross_chapter_fallbacks() {
         let uri = format!("fmd-book-link/{}", "x".repeat(128));
-        let bytes = bind(fixture(&uri), &BTreeMap::from([(uri, None)]), 1, false).unwrap();
+        let bytes = bind(fixture(&uri), &BTreeMap::from([(uri, None)])).unwrap();
         let pdf = Pdf::parse(&bytes).unwrap();
         let annot = pdf.dictionary(4).unwrap();
         assert!(pdf.field(&annot, b"/A").is_none());
@@ -549,25 +525,32 @@ mod tests {
         let before = fixture("https://example.org/manual");
         assert_eq!(
             before,
-            bind(
-                before.clone(),
-                &BTreeMap::from([("decoy".into(), None)]),
-                1,
-                false
-            )
-            .unwrap()
+            bind(before.clone(), &BTreeMap::from([("decoy".into(), None)])).unwrap()
         );
     }
 
     #[test]
-    fn malformed_xrefs_and_destination_count_drift_fail_closed() {
+    fn malformed_xrefs_and_out_of_bounds_source_destinations_fail_closed() {
         let uri = "placeholder".repeat(16);
         let mut bytes = fixture(&uri);
-        let targets = BTreeMap::from([(uri, Some(0))]);
-        assert!(bind(bytes.clone(), &targets, 2, false).is_err());
+        let targets = BTreeMap::from([(
+            uri,
+            Some(Destination {
+                page_index: 0,
+                y: 712.5,
+            }),
+        )]);
+        let invalid_target = BTreeMap::from([(
+            targets.keys().next().unwrap().clone(),
+            Some(Destination {
+                page_index: 1,
+                y: 712.5,
+            }),
+        )]);
+        assert!(bind(bytes.clone(), &invalid_target).is_err());
         let start = bytes.windows(4).position(|s| s == b"xref").unwrap();
         bytes[start] = b'!';
-        assert!(bind(bytes, &targets, 1, false).is_err());
+        assert!(bind(bytes, &targets).is_err());
     }
 
     #[cfg(feature = "cli")]

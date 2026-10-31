@@ -135,6 +135,17 @@ fn number_notes(doc: &Document, notes: &Notes<'_>) -> Numbering {
 /// different order. The same definition collection and numbering code drives
 /// both preparation and provenance. Nothing is embedded in the visible AST.
 pub(crate) fn heading_origins_for_pdf(doc: &Document) -> Vec<Option<usize>> {
+    heading_origins(doc, false)
+}
+
+/// Source-heading ordinals after page-note preparation. The layout engine may
+/// subsequently move note bodies or generate a fallback Notes heading; callers
+/// must use emitted source destinations, not assume physical bookmark order.
+pub(crate) fn heading_origins_for_pdf_paged(doc: &Document) -> Vec<Option<usize>> {
+    heading_origins(doc, true)
+}
+
+fn heading_origins(doc: &Document, paged: bool) -> Vec<Option<usize>> {
     let mut original = BTreeMap::new();
     visit_headings(&doc.blocks, true, &mut |block| {
         let ordinal = original.len();
@@ -150,7 +161,9 @@ pub(crate) fn heading_origins_for_pdf(doc: &Document) -> Vec<Option<usize>> {
         origins.push(original.get(&std::ptr::from_ref(block)).copied());
     });
     if !notes.definitions.is_empty() {
-        origins.push(None);
+        if !paged {
+            origins.push(None);
+        }
         for index in numbering.order {
             visit_headings(notes.definitions[index], false, &mut |block| {
                 origins.push(original.get(&std::ptr::from_ref(block)).copied());
@@ -688,6 +701,14 @@ mod tests {
             heading_origins_for_pdf(&doc),
             vec![Some(1), None, Some(2), Some(0)]
         );
+        assert_eq!(
+            heading_origins_for_pdf_paged(&doc),
+            vec![Some(1), Some(2), Some(0)]
+        );
+        let paged = for_pdf_paged(&doc);
+        let mut paged_count = 0;
+        visit_headings(&paged.blocks, true, &mut |_| paged_count += 1);
+        assert_eq!(paged_count, heading_origins_for_pdf_paged(&doc).len());
         let prepared = for_pdf(&doc);
         let mut count = 0;
         visit_headings(&prepared.blocks, true, &mut |_| count += 1);
@@ -702,6 +723,7 @@ mod tests {
             Block::BlockQuote(vec![heading("Body")]),
         ]);
         assert_eq!(heading_origins_for_pdf(&doc), vec![Some(2), None, Some(0)]);
+        assert_eq!(heading_origins_for_pdf_paged(&doc), vec![Some(2), Some(0)]);
     }
 
     #[test]

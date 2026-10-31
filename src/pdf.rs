@@ -59,6 +59,7 @@ pub use pagination_report::{
 mod math;
 mod navigation;
 mod running;
+pub(crate) mod source_navigation;
 mod table_panels;
 mod text_composition;
 mod text_positioning;
@@ -2403,7 +2404,7 @@ pub fn render_with_emit(
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
 ) -> Result<Vec<u8>> {
-    render_inner(doc, opts, pdf_a, false, emit).map(|profile| profile.bytes)
+    render_inner(doc, opts, pdf_a, false, emit, false).map(|profile| profile.bytes)
 }
 
 /// Render a document to PDF bytes while collecting stage-level attribution.
@@ -2421,6 +2422,7 @@ pub fn render_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> 
         crate::PdfASettings::OFF,
         true,
         PdfEmitOptions::default(),
+        false,
     )
     .map(|rendered| PdfProfile {
         bytes: rendered.bytes,
@@ -2441,7 +2443,7 @@ pub fn render_reported(
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
 ) -> Result<PdfRenderReport> {
-    render_inner(doc, opts, pdf_a, false, emit).map(|rendered| PdfRenderReport {
+    render_inner(doc, opts, pdf_a, false, emit, false).map(|rendered| PdfRenderReport {
         bytes: rendered.bytes,
         pagination: rendered.pagination,
     })
@@ -2963,6 +2965,7 @@ fn render_inner(
     pdf_a: crate::PdfASettings,
     profiled: bool,
     emit: PdfEmitOptions,
+    collect_navigation: bool,
 ) -> Result<RenderedPdf> {
     emit.compression.validate()?;
     baseline_grid::validate_options(opts)?;
@@ -2991,7 +2994,7 @@ fn render_inner(
     );
     let line_count = lines.len();
     let serialize_started = profiler.checkpoint();
-    let (bytes, page_breaks) = serialize(
+    let (bytes, page_breaks, outlines) = serialize(
         &lines,
         &effective_opts,
         &faces,
@@ -3008,8 +3011,14 @@ fn render_inner(
         "font subsetting, pagination, page streams, and PDF object writing",
         serialize_started,
     );
+    let navigation = if collect_navigation {
+        source_navigation::collect(doc, &outlines)
+    } else {
+        source_navigation::SourceNavigation::default()
+    };
     Ok(RenderedPdf {
         bytes,
+        navigation,
         stages: profiler.finish(),
         pagination: PdfPaginationReport {
             page_breaks,
@@ -3020,6 +3029,7 @@ fn render_inner(
 
 struct RenderedPdf {
     bytes: Vec<u8>,
+    navigation: source_navigation::SourceNavigation,
     stages: Vec<PdfStageSummary>,
     pagination: PdfPaginationReport,
 }
@@ -4656,7 +4666,9 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 line.flow.heading_level = (*level).clamp(1, 6);
             }
             if let Some(first) = out.get_mut(before) {
-                first.heading_source = Some(Box::new(HeadingSource::from_inlines(inlines)));
+                let mut source = HeadingSource::from_inlines(inlines);
+                source.source_identity = Some(std::ptr::from_ref(block) as usize);
+                first.heading_source = Some(Box::new(source));
             }
             if ruled && out.len() > before {
                 text_positioning::stamp_lines(&mut out[before..], cx.faces);
@@ -4848,12 +4860,12 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             // at the same line offset. Allocate before descending so identity
             // order also preserves the nesting order of lists and quotes.
             let quote_id = cx.alloc_flow() as usize;
-            if let Some((_tag, label, body)) = crate::ast::alert_body(inner) {
+            if let Some(parts) = crate::ast::alert_parts(inner) {
                 let start = out.len();
                 gap(out, 4.0);
                 let group = cx.alloc_flow();
                 let mut title_toks = Vec::new();
-                push_text_tokens(label, F_BOLD, false, None, &mut title_toks);
+                push_text_tokens(parts.label, F_BOLD, false, None, &mut title_toks);
                 apply_symbol_fallback(&mut title_toks, cx.faces);
                 layout_inlines(
                     title_toks,
@@ -4867,7 +4879,15 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         kind: FlowKind::Heading,
                     },
                 );
-                layout_blocks(&body, indent + 18.0, out, cx);
+                if !parts.leading.is_empty() {
+                    layout_blocks(
+                        &[Block::Paragraph(parts.leading.to_vec())],
+                        indent + 18.0,
+                        out,
+                        cx,
+                    );
+                }
+                layout_blocks(parts.rest, indent + 18.0, out, cx);
                 let bar_x = cx.page.left + indent + 6.0;
                 if let Some(lines) = out.get_mut(start..) {
                     for line in lines {
@@ -22315,7 +22335,7 @@ fn serialize(
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
-) -> Result<(Vec<u8>, PdfPageBreakReport)> {
+) -> Result<(Vec<u8>, PdfPageBreakReport, Vec<OutlineEntry>)> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
     // visually coherent (the one-theme-model doctrine). See `Palette`.
     let palette = Palette::from_theme(&opts.theme);
@@ -22697,7 +22717,7 @@ fn serialize(
         serialized.precompressed,
         emit,
     )?;
-    Ok((bytes, report))
+    Ok((bytes, report, serialized.outlines))
 }
 
 struct RenderScratch {
@@ -23510,6 +23530,7 @@ fn generate_page_content(
             && let Some(meta) = heading_meta.get(&line.flow.group)
         {
             scratch.outlines.push(OutlineEntry {
+                source_identity: meta.source_identity,
                 id: meta.id.clone(),
                 title: meta.title.clone(),
                 level: meta.level,
@@ -23529,6 +23550,7 @@ fn generate_page_content(
             let id = format!("{}{}", crate::footnotes::PAGE_NOTE_PREFIX, note_destination);
             if !scratch.outlines.iter().any(|entry| entry.id == id) {
                 scratch.outlines.push(OutlineEntry {
+                    source_identity: None,
                     id,
                     title: String::new(),
                     level: 0,
@@ -24643,6 +24665,7 @@ struct Rect {
 }
 
 struct OutlineEntry {
+    source_identity: Option<usize>,
     id: String,
     title: String,
     /// Actual heading level, or zero for a non-bookmark note destination.
@@ -24652,6 +24675,7 @@ struct OutlineEntry {
 }
 
 struct HeadingMeta {
+    source_identity: Option<usize>,
     id: String,
     title: String,
     level: u8,
@@ -24662,6 +24686,9 @@ struct HeadingMeta {
 /// precedes this boundary; pre-preparation provenance is not stored here.
 #[derive(Clone)]
 struct HeadingSource {
+    /// Immutable AST identity used only for navigation lookup within this render.
+    /// Addresses never enter document bytes or persistent metadata.
+    source_identity: Option<usize>,
     slug: String,
     title: String,
 }
@@ -24672,6 +24699,7 @@ impl HeadingSource {
         push_inlines_to_plain_text(inlines, &mut title);
         let title = title.trim();
         Self {
+            source_identity: None,
             slug: crate::anchors::heading_slug(inlines),
             title: if title.is_empty() { "Section" } else { title }.to_string(),
         }
@@ -24736,6 +24764,7 @@ fn heading_metadata(lines: &[Line]) -> BTreeMap<u32, HeadingMeta> {
         out.insert(
             line.flow.group,
             HeadingMeta {
+                source_identity: source.source_identity,
                 id,
                 title: source.title.clone(),
                 level: line.flow.heading_level.clamp(1, 6),

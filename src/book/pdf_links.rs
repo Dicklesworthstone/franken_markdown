@@ -10,8 +10,7 @@ use std::ops::Range;
 use crate::book::{Book, BookRenderer, paths};
 use crate::search_index::{EntryKind, build_search_index};
 use crate::{
-    Block, Document, Inline, PdfASettings, PdfOptions, RenderError, Result, render_pdf_document,
-    render_pdf_document_pdfa,
+    Block, Document, Inline, PdfASettings, PdfEmitOptions, PdfOptions, RenderError, Result,
 };
 
 #[path = "pdf_link_wire.rs"]
@@ -44,7 +43,10 @@ pub(super) fn render_report(
     settings: PdfASettings,
 ) -> Result<(Vec<u8>, Vec<crate::RenderWarning>)> {
     let plan = prepare_configured(book, document, options, settings)?;
-    let warnings = crate::render_warnings(&crate::footnotes::for_pdf(&plan.document), options);
+    let warnings = crate::render_warnings(
+        &crate::transform_footnotes_for_pdf(&plan.document, options),
+        options,
+    );
     let bytes = render_plan_configured(plan, options, settings)?;
     Ok((bytes, warnings))
 }
@@ -119,31 +121,35 @@ fn render_plan_configured(
     options: &PdfOptions,
     settings: PdfASettings,
 ) -> Result<Vec<u8>> {
-    if settings.mode.is_a2b() {
-        render_plan_with(plan, options, |document, options| {
-            render_pdf_document_pdfa(document, options, settings)
-        })
-    } else {
-        render_plan(plan, options)
-    }
+    render_plan_with(plan, options, settings, PdfEmitOptions::default())
 }
 
 fn render_plan(plan: Plan, options: &PdfOptions) -> Result<Vec<u8>> {
-    render_plan_with(plan, options, render_pdf_document)
+    render_plan_configured(plan, options, PdfASettings::OFF)
 }
 
-// Keep heading provenance and annotation binding identical for both writers.
-// The emitter runs exactly once, before binding into its reserved URI space.
+// The writer reports each source heading's actual destination after all note
+// placement, fitting and TOC passes. No bookmark count/order or title matching
+// can substitute for that identity: page notes interleave with body headings,
+// while oversized notes move and may introduce a generated Notes heading.
 fn render_plan_with(
     plan: Plan,
     options: &PdfOptions,
-    emit: impl FnOnce(&Document, &PdfOptions) -> Result<Vec<u8>>,
+    settings: PdfASettings,
+    emit: PdfEmitOptions,
 ) -> Result<Vec<u8>> {
-    if plan.targets.is_empty() {
-        return emit(&plan.document, options);
+    options.font_assets.validate()?;
+    if settings.strict {
+        // Match the ordinary archival entrypoint after chapter HTML lowering,
+        // while prepare_configured also checks the original unpublished notes.
+        crate::validate_doc_pdfa_strict(&plan.document)?;
     }
-    let origins = crate::footnotes::heading_origins_for_pdf(&plan.document);
-    let prepared = crate::footnotes::for_pdf(&plan.document);
+    let profiled = crate::apply_profile(&plan.document, options.profile);
+    let prepared = crate::footnotes::for_pdf_paged(&profiled);
+    if plan.targets.is_empty() {
+        return crate::pdf::render_with_emit(&prepared, options, settings, emit);
+    }
+    let origins = crate::footnotes::heading_origins_for_pdf_paged(&profiled);
     let mut headings = Vec::new();
     collect_headings(&prepared.blocks, &mut headings);
     if headings.len() != origins.len() {
@@ -151,20 +157,19 @@ fn render_plan_with(
             "footnote preparation and heading provenance disagree",
         ));
     }
-    let mut emitted = BTreeMap::new();
-    let mut heading_count = 0usize;
-    for (heading, origin) in headings.iter().zip(origins) {
-        let Block::Heading { inlines, .. } = heading else {
-            return Err(invalid("not a heading"));
-        };
-        if !has_text(inlines) {
-            continue;
-        }
-        if let Some(origin) = origin {
-            emitted.insert(origin, heading_count);
-        }
-        heading_count += 1;
-    }
+    let (bytes, navigation) =
+        crate::pdf::source_navigation::render(&prepared, options, settings, emit)?;
+    let emitted: BTreeMap<_, _> = navigation
+        .headings
+        .iter()
+        .filter_map(|(ordinal, destination)| {
+            origins
+                .get(*ordinal)
+                .copied()
+                .flatten()
+                .map(|source| (source, *destination))
+        })
+        .collect();
     let targets = plan
         .targets
         .iter()
@@ -175,8 +180,7 @@ fn render_plan_with(
             )
         })
         .collect();
-    let bytes = emit(&prepared, options)?;
-    wire::bind(bytes, &targets, heading_count, options.toc)
+    wire::bind(bytes, &targets)
 }
 
 struct Plan {
@@ -698,7 +702,7 @@ mod tests {
             ]);
             let options = PdfOptions::default();
             let document = book_pdf_document(&book);
-            let expected = render_pdf_document(&document, &options).unwrap();
+            let expected = crate::render_pdf_document(&document, &options).unwrap();
             let plan = prepare(&book, document, &options).unwrap();
             assert!(plan.targets.is_empty(), "dormant link in {source}");
             let mut headings = Vec::new();
@@ -804,7 +808,36 @@ mod tests {
             }
         });
         assert_eq!(asset_keys, ["image.svg"]);
-        assert_bound_links(&render_plan(plan, &options).unwrap(), 2);
+        assert_bound_links(&render_plan(plan, &options).unwrap(), 4);
+    }
+
+    #[test]
+    fn paged_book_links_are_identical_between_chunked_and_monolithic_writers() {
+        let book = book(&[
+            (
+                "one.md",
+                "# Same\n\nClaim[^n]. [Next](two.md#same)\n\n[^n]: ## Detail\n\n    Note [Back](#same).\n",
+            ),
+            ("two.md", "# Same\n\n[Note heading](one.md#detail)\n"),
+        ]);
+        for toc in [false, true] {
+            let options = PdfOptions {
+                toc,
+                ..PdfOptions::default()
+            };
+            for settings in [PdfASettings::OFF, PdfASettings::a2b_strict()] {
+                let render = |emit| {
+                    let plan =
+                        prepare_configured(&book, book_pdf_document(&book), &options, settings)
+                            .unwrap();
+                    render_plan_with(plan, &options, settings, emit).unwrap()
+                };
+                assert_eq!(
+                    render(PdfEmitOptions::default()),
+                    render(PdfEmitOptions::monolithic())
+                );
+            }
+        }
     }
 
     #[test]

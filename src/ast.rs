@@ -174,6 +174,25 @@ pub enum Inline {
 /// Returns `Some((tag, label, body_blocks))` on match, or `None` if plain quote.
 #[must_use]
 pub fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Block>)> {
+    let parts = alert_parts(inner)?;
+    let mut body = Vec::new();
+    if !parts.leading.is_empty() {
+        body.push(Block::Paragraph(parts.leading.to_vec()));
+    }
+    body.extend_from_slice(parts.rest);
+    Some((parts.tag, parts.label, body))
+}
+
+/// Borrow original child blocks so layout-owned source identities survive an
+/// alert marker's removal. Only its optional leading paragraph needs rebuilding.
+pub(crate) struct AlertParts<'a> {
+    pub tag: &'static str,
+    pub label: &'static str,
+    pub leading: &'a [Inline],
+    pub rest: &'a [Block],
+}
+
+pub(crate) fn alert_parts(inner: &[Block]) -> Option<AlertParts<'_>> {
     const TAGS: [(&str, &str); 5] = [
         ("note", "Note"),
         ("tip", "Tip"),
@@ -212,11 +231,10 @@ pub fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Bl
     } else {
         0
     };
-    let body_inlines = rest_inlines[start_idx..].to_vec();
-    let mut body: Vec<Block> = Vec::new();
-    if !body_inlines.is_empty() {
-        body.push(Block::Paragraph(body_inlines));
-    }
-    body.extend_from_slice(&inner[1..]);
-    Some((*tag, *label, body))
+    Some(AlertParts {
+        tag,
+        label,
+        leading: &rest_inlines[start_idx..],
+        rest: &inner[1..],
+    })
 }

@@ -301,6 +301,7 @@ struct PaintedRun {
     page: usize,
     x: f64,
     y: f64,
+    size: f64,
     text: String,
 }
 
@@ -331,12 +332,16 @@ fn painted_runs(objects: &Objects<'_>) -> Vec<PaintedRun> {
                 .replace('>', "> ");
             let words: Vec<_> = spaced.split_whitespace().collect();
             let mut font = None;
+            let mut size = 0.0;
             let (mut x, mut y) = (0.0, 0.0);
             let mut mode = 0;
             let mut text = String::new();
             for (index, word) in words.iter().enumerate() {
                 match *word {
-                    "Tf" => font = Some(&fonts[words[index - 2]]),
+                    "Tf" => {
+                        font = Some(&fonts[words[index - 2]]);
+                        size = words[index - 1].parse().unwrap();
+                    }
                     "Tr" => mode = words[index - 1].parse::<u8>().unwrap(),
                     "Tm" => {
                         x = words[index - 2].parse().unwrap();
@@ -348,6 +353,7 @@ fn painted_runs(objects: &Objects<'_>) -> Vec<PaintedRun> {
                                 page,
                                 x,
                                 y,
+                                size,
                                 text: std::mem::take(&mut text),
                             });
                         } else {
@@ -771,6 +777,319 @@ fn book_links_bind_across_alerts_duplicate_titles_and_nested_bookmarks() {
         assert_eq!(
             pdf,
             book.render_pdf_with_options(&options, settings).unwrap()
+        );
+    }
+}
+
+/// Select the actual annotation covering a visible source label, not a link's
+/// position in the output list. TOC rows and citation marks can add other links.
+fn link_at_run(objects: &Objects<'_>, run: &PaintedRun) -> Destination {
+    references(objects.dictionary(run.page), "/Annots [")
+        .into_iter()
+        .find_map(|id| {
+            let dictionary = objects.dictionary(id);
+            let rectangle: Vec<f64> = dictionary
+                .split_once("/Rect [")?
+                .1
+                .split_once(']')?
+                .0
+                .split_whitespace()
+                .map(|value| value.parse().unwrap())
+                .collect();
+            (run.x >= rectangle[0] - 0.02
+                && run.x <= rectangle[2] + 0.02
+                && run.y >= rectangle[1]
+                && run.y <= rectangle[3])
+                .then(|| destination(dictionary))
+                .flatten()
+        })
+        .unwrap_or_else(|| panic!("no resolved annotation for {}", run.text))
+}
+
+fn run_containing<'a>(runs: &'a [PaintedRun], text: &str) -> &'a PaintedRun {
+    runs.iter()
+        .find(|run| run.text.contains(text))
+        .unwrap_or_else(|| panic!("missing painted text {text}"))
+}
+
+#[test]
+fn book_navigation_preserves_page_bottom_notes_and_chapter_local_citations() {
+    let mut note_positions = Vec::new();
+    for with_navigation in [false, true] {
+        let navigation = if with_navigation {
+            "[Next](two.md#two)\n\n"
+        } else {
+            ""
+        };
+        let book = BookRenderer::new(&[
+            BookInput {
+                path: "one.md".into(),
+                source: format!("# One\n\nFIRSTCITE[^1].\n\n{navigation}[^1]: FIRSTNOTE.\n"),
+            },
+            BookInput {
+                path: "two.md".into(),
+                source: "# Two\n\nSECONDCITE[^1].\n\n[^1]: SECONDNOTE.\n".into(),
+            },
+        ])
+        .unwrap();
+        let options = PdfOptions::default();
+        let bytes = book
+            .render_pdf_with_options(&options, PdfASettings::OFF)
+            .unwrap();
+        let objects = Objects::new(&bytes);
+        let pages = objects.pages();
+        assert_eq!(pages.len(), 2);
+        let runs = painted_runs(&objects);
+        let (_, headings) = outline(&objects);
+        assert_eq!(
+            headings
+                .iter()
+                .map(|h| h.title.as_str())
+                .collect::<Vec<_>>(),
+            ["One", "Two"]
+        );
+        let destinations = annotation_destinations(&objects);
+        assert_eq!(destinations.len(), 2 + usize::from(with_navigation));
+        let mut positions = Vec::new();
+        for (index, (citation, note)) in [("FIRSTCITE", "FIRSTNOTE"), ("SECONDCITE", "SECONDNOTE")]
+            .into_iter()
+            .enumerate()
+        {
+            let citation = run_containing(&runs, citation);
+            let note = run_containing(&runs, note);
+            assert_eq!(note.page, pages[index], "chapter-local citation ownership");
+            assert_eq!(citation.page, note.page);
+            assert!(
+                note.y < 200.0 && note.y < citation.y,
+                "page-bottom placement"
+            );
+            assert!(note.size < citation.size, "footnote type size");
+            assert!(
+                destinations
+                    .iter()
+                    .any(|destination| destination.page == note.page
+                        && destination.y >= note.y
+                        && destination.y - note.y < 20.0),
+                "citation still links to its own note"
+            );
+            positions.push((note.page, note.y, note.size));
+        }
+        if with_navigation {
+            assert_eq!(
+                link_at_run(&objects, run_containing(&runs, "Next")),
+                headings[1].destination
+            );
+        }
+        note_positions.push(positions);
+        assert_eq!(
+            bytes,
+            book.render_pdf_with_options(&options, PdfASettings::OFF)
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        note_positions[0], note_positions[1],
+        "adding a navigation link cannot switch citation layout"
+    );
+}
+
+#[test]
+fn book_note_headings_bind_by_source_when_physical_outline_order_interleaves() {
+    let book = BookRenderer::new(&[
+        BookInput {
+            path: "one.md".into(),
+            source: "# Repeat\n\nFIRSTCITE[^n].\n\n[Other](two.md#repeat) [Details](#noteheading)\n\n[^n]: ## Noteheading\n\n    FIRSTNOTE.\n".into(),
+        },
+        BookInput {
+            path: "two.md".into(),
+            source: "# Repeat\n\nSECONDCITE[^n].\n\n[Back](one.md#repeat) [Ownnote](#noteheading)\n\n[^n]: ## Noteheading\n\n    SECONDNOTE.\n".into(),
+        },
+    ]).unwrap();
+    for toc in [false, true] {
+        let options = PdfOptions {
+            toc,
+            ..PdfOptions::default()
+        };
+        for settings in [PdfASettings::OFF, PdfASettings::a2b_strict()] {
+            let bytes = book.render_pdf_with_options(&options, settings).unwrap();
+            let objects = Objects::new(&bytes);
+            let pages = objects.pages();
+            assert_eq!(pages.len(), 2);
+            let (_, headings) = outline(&objects);
+            assert_eq!(
+                headings
+                    .iter()
+                    .map(|heading| heading.title.as_str())
+                    .collect::<Vec<_>>(),
+                ["Repeat", "Noteheading", "Repeat", "Noteheading"]
+            );
+            let runs = painted_runs(&objects);
+            for (label, index) in [("Other", 2), ("Details", 1), ("Back", 0), ("Ownnote", 3)] {
+                assert_eq!(
+                    link_at_run(&objects, run_containing(&runs, label)),
+                    headings[index].destination,
+                    "{label}, toc={toc}"
+                );
+            }
+            for (note, page) in [("FIRSTNOTE", pages[0]), ("SECONDNOTE", pages[1])] {
+                let note = run_containing(&runs, note);
+                assert_eq!(note.page, page);
+                assert!(note.y < 200.0);
+            }
+            assert!(
+                !bytes
+                    .windows(b"fmd-book-pdf-nav/".len())
+                    .any(|part| part == b"fmd-book-pdf-nav/")
+            );
+        }
+    }
+}
+
+#[test]
+fn book_heading_provenance_survives_alert_clones_in_body_and_page_notes() {
+    let book = BookRenderer::new(&[
+        BookInput {
+            path: "one.md".into(),
+            source: "# First\n\n> [!NOTE]\n> Context.\n>\n> ## Repeated\n>\n> Body section.\n\nFIRSTCITE[^n].\n\n[Bodylink](#repeated) [Notelink](#repeated-2) [Second](two.md#repeated)\n\n[^n]: > [!TIP]\n    > Foot context.\n    >\n    > ## Repeated\n    >\n    > FIRSTNOTE.\n".into(),
+        },
+        BookInput {
+            path: "two.md".into(),
+            source: "# Second\n\n- ## Repeated\n\n  List heading.\n\n[Firstbody](one.md#repeated) [Firstnote](one.md#repeated-2)\n".into(),
+        },
+    ]).unwrap();
+    let options = PdfOptions::default();
+    let bytes = book
+        .render_pdf_with_options(&options, PdfASettings::OFF)
+        .unwrap();
+    let objects = Objects::new(&bytes);
+    let (_, headings) = outline(&objects);
+    assert_eq!(
+        headings
+            .iter()
+            .map(|heading| heading.title.as_str())
+            .collect::<Vec<_>>(),
+        ["First", "Repeated", "Repeated", "Second", "Repeated"]
+    );
+    let runs = painted_runs(&objects);
+    for (label, index) in [
+        ("Bodylink", 1),
+        ("Notelink", 2),
+        ("Second", 4),
+        ("Firstbody", 1),
+        ("Firstnote", 2),
+    ] {
+        // A chapter heading also says Second; use the first chapter's link.
+        let run = runs
+            .iter()
+            .find(|run| {
+                run.text == label
+                    && run.page
+                        == if label.starts_with("First") {
+                            objects.pages()[1]
+                        } else {
+                            objects.pages()[0]
+                        }
+            })
+            .unwrap();
+        assert_eq!(
+            link_at_run(&objects, run),
+            headings[index].destination,
+            "{label}"
+        );
+    }
+    assert!(run_containing(&runs, "FIRSTNOTE").y < 200.0);
+}
+
+#[test]
+fn book_tall_note_fallback_keeps_heading_links_and_small_page_notes() {
+    let tall = "Tall evidence remains visible.\n\n    ".repeat(45);
+    let book = BookRenderer::new(&[
+        BookInput {
+            path: "one.md".into(),
+            source: format!("# First\n\nSHORTCITE[^short] and LONGCITE[^long].\n\n[Smalltarget](#smallsection) [Talltarget](#tallsection) [Next](two.md#second)\n\n[^short]: ## Smallsection\n\n    SHORTNOTE.\n\n[^long]: ## Tallsection\n\n    {tall}LASTEVIDENCE.\n"),
+        },
+        BookInput {
+            path: "two.md".into(),
+            source: "# Second\n\n[Returnsmall](one.md#smallsection) [Returntall](one.md#tallsection)\n".into(),
+        },
+    ]).unwrap();
+    let options = PdfOptions {
+        optimal_pagination: true,
+        ..PdfOptions::default()
+    };
+    let bytes = book
+        .render_pdf_with_options(&options, PdfASettings::OFF)
+        .unwrap();
+    let objects = Objects::new(&bytes);
+    let pages = objects.pages();
+    assert!(pages.len() > 2);
+    let (_, headings) = outline(&objects);
+    let lookup = |title: &str| {
+        headings
+            .iter()
+            .find(|heading| heading.title == title)
+            .unwrap()
+            .destination
+    };
+    assert!(headings.iter().any(|heading| heading.title == "Notes"));
+    let runs = painted_runs(&objects);
+    for (label, title) in [
+        ("Smalltarget", "Smallsection"),
+        ("Talltarget", "Tallsection"),
+        ("Next", "Second"),
+        ("Returnsmall", "Smallsection"),
+        ("Returntall", "Tallsection"),
+    ] {
+        assert_eq!(
+            link_at_run(&objects, run_containing(&runs, label)),
+            lookup(title),
+            "{label}"
+        );
+    }
+    let small = run_containing(&runs, "SHORTNOTE");
+    assert_eq!(small.page, pages[0]);
+    assert!(small.y < 200.0);
+    let last = run_containing(&runs, "LASTEVIDENCE");
+    assert_ne!(last.page, pages[0]);
+    let destinations = annotation_destinations(&objects);
+    assert!(
+        destinations
+            .iter()
+            .any(|target| target.page == small.page && target.y < 200.0)
+    );
+    assert!(
+        destinations
+            .iter()
+            .any(|target| target.page == lookup("Tallsection").page
+                && target.y >= lookup("Tallsection").y)
+    );
+}
+
+#[test]
+fn books_without_local_links_preserve_ordinary_document_bytes_and_note_policy() {
+    let book = BookRenderer::new(&[
+        BookInput {
+            path: "one.md".into(),
+            source: "# First\n\n> [!TIP]\n> Context.\n>\n> ## Nested\n>\n> Detail.\n\nSource[^n].\n\n[^n]: ## Evidence\n\n    Citation.\n".into(),
+        },
+        BookInput {
+            path: "two.md".into(),
+            source: "# Second\n\n[External](https://example.org) and claim[^n].\n\n[^n]: Other citation.\n".into(),
+        },
+    ]).unwrap();
+    let document = franken_markdown::book::book_pdf_document(book.book());
+    for toc in [false, true] {
+        let options = PdfOptions {
+            toc,
+            ..PdfOptions::default()
+        };
+        let bytes = book
+            .render_pdf_with_options(&options, PdfASettings::OFF)
+            .unwrap();
+        assert_eq!(bytes, render_pdf_document(&document, &options).unwrap());
+        assert_eq!(
+            bytes,
+            render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()).unwrap()
         );
     }
 }

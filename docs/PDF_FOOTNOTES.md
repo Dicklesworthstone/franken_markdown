@@ -32,7 +32,12 @@ link to its note.
 
 Hosts that want every note in a trailing Notes section prepare the document
 first: `render_pdf_document(&doc.with_endnotes(), &opts)`. The SVG renderer
-always uses endnotes, and the book pipeline keeps its endnote layout.
+always uses endnotes. PDF books use the same page-bottom rules as ordinary
+PDF documents, including when chapters contain local navigation links. Each
+chapter keeps its own footnote-ID scope; repeated labels in different chapters
+cannot replace one another. Chapter and heading links bind to actual emitted
+source destinations, so headings inside notes remain addressable after a note
+moves to a page foot or to the trailing Notes section.
 
 ## Limits
 
@@ -57,3 +62,9 @@ block is discarded on any PDF entrypoint.
 The page-footnote tests also cover several large notes cited on one line,
 fallback destinations in the emitted PDF, note-to-note cycles, nonparagraph
 endnotes, and byte parity with the ordinary-note PDF captured before these fixes.
+
+`tests/pdf_navigation_test.rs` also checks emitted PDF books with and without
+chapter links, repeated note labels, note headings interleaved with body
+headings, nested alerts/lists, PDF/A, TOC and tall-note fallback. It independently
+reads xref/page objects, annotation rectangles, font character maps and page
+streams to verify note placement and the destination of each visible link.

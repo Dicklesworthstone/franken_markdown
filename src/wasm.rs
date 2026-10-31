@@ -747,12 +747,13 @@ mod render_warning_tests {
 
     #[test]
     fn pdf_render_surfaces_dropped_image_and_missing_glyph_warnings() {
-        // An image with no host-supplied asset (dropped to alt text) and a CJK
-        // character with no glyph in the bundled Latin fonts must both surface as
-        // "warning" diagnostics, so a browser host is never blind to degraded
-        // output (parity with the native CLI's stderr warnings).
+        // An image with no host-supplied asset (dropped to alt text) and a
+        // hieroglyph unsupported by every bundled face must both surface as
+        // "warning" diagnostics. Keep this independent of the optional CJK
+        // fallback so every browser profile reports degraded output
+        // (parity with the native CLI's stderr warnings).
         let out = render_pdf(
-            "![chart](missing.png)\n\n中文 body",
+            "![chart](missing.png)\n\n\u{13000} body",
             &WasmRenderOptions::default(),
         )
         .unwrap();

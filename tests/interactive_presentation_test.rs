@@ -64,6 +64,31 @@ fn fonts(document: &str, mime: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
+fn assert_optional_cjk_fallback(document: &str) {
+    let enabled = cfg!(feature = "cjk-face");
+    assert_eq!(
+        document
+            .matches("font-family: \"FMD CJK\";\n  font-style: normal;\n  font-weight: 400;")
+            .count(),
+        usize::from(enabled),
+        "the optional editor fallback is the regular CJK face"
+    );
+    for property in ["--fmd-font-body: ", "--fmd-font-mono: "] {
+        let stack = document
+            .split_once(property)
+            .unwrap()
+            .1
+            .split(';')
+            .next()
+            .unwrap();
+        assert_eq!(
+            stack.contains("\"FMD CJK\", "),
+            enabled,
+            "{property} must follow the compiled fallback policy"
+        );
+    }
+}
+
 #[test]
 fn default_and_metadata_only_workspaces_keep_the_lightweight_shell() {
     let default = render("# Default", &HtmlOptions::default());
@@ -124,12 +149,14 @@ fn supplied_font_retains_glyphs_and_styles_absent_from_initial_text() {
         .font_assets
         .set_slot(FontAssetSlot::BodyRegular, bytes.to_vec())
         .unwrap();
-    let actual = fonts(&frame(&render("Just A", &options)), "font/ttf");
+    let document = frame(&render("Just A", &options));
+    let actual = fonts(&document, "font/ttf");
     assert_eq!(
         actual.len(),
-        5,
+        5 + usize::from(cfg!(feature = "cjk-face")),
         "later bold, italic and code need their faces too"
     );
+    assert_optional_cjk_fallback(&document);
     assert_eq!(
         actual[0], bytes,
         "editing retains the complete admitted face"
@@ -141,6 +168,16 @@ fn supplied_font_retains_glyphs_and_styles_absent_from_initial_text() {
             0,
             "later typed {ch} remains mapped"
         );
+    }
+    if let Some(bytes) = franken_markdown::fonts::cjk_bytes() {
+        assert!(
+            actual[5] == bytes,
+            "editing retains the complete bundled CJK fallback"
+        );
+        let cjk = Font::parse(actual[5].clone()).unwrap();
+        for ch in ['中', '日', 'あ', 'カ', '。'] {
+            assert_ne!(cjk.glyph_index(ch), 0, "later typed {ch} remains mapped");
+        }
     }
 }
 
@@ -215,8 +252,10 @@ fn configured_font_containers_use_the_requested_native_encoder() {
                 ..Default::default()
             },
         );
-        let actual = fonts(&frame(&html), mime);
-        assert_eq!(actual.len(), 5);
+        let document = frame(&html);
+        let actual = fonts(&document, mime);
+        assert_eq!(actual.len(), 5 + usize::from(cfg!(feature = "cjk-face")));
+        assert_optional_cjk_fallback(&document);
         assert!(actual.iter().all(|font| font.starts_with(signature)));
     }
 }

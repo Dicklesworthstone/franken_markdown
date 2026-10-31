@@ -322,8 +322,8 @@ pub(super) fn gallery_images<'a>(
 mod tests {
     use super::super::{
         F_BODY, FORCED_BREAK_PENALTY, LayoutUnit, PageGeom, ParagraphItem, ParagraphPolicy,
-        SvgImageTransform, Theme, WidthCache, append_svg_image_transform_prefix, build_paragraph,
-        font_size_of, inline_paragraph_measure, lu_from_points_f32,
+        SvgImageTransform, WidthCache, append_svg_image_transform_prefix, build_paragraph,
+        font_size_of, layout, lu_from_points_f32,
     };
     use super::*;
     use std::cell::RefCell;
@@ -489,18 +489,59 @@ mod tests {
     }
 
     #[test]
-    fn images_use_the_remaining_indented_measure_below_the_text_floor() {
-        let page = PageGeom::from_theme(&Theme::default());
-        let indent = page.content_w - 20.0;
-        let image = image_token(90, 20, "badge.png");
-        assert_eq!(
-            inline_paragraph_measure(&[image], page, indent).to_points_f32(),
-            20.0
-        );
-        assert_eq!(
-            inline_paragraph_measure(&[], page, indent).to_points_f32(),
-            40.0
-        );
+    fn nested_images_and_prose_share_the_remaining_body_width() -> crate::Result<()> {
+        let mut opts = crate::PdfOptions {
+            image_assets: vec![crate::PdfImageAsset::new(
+                "badge.svg",
+                br#"<svg xmlns="http://www.w3.org/2000/svg" width="90" height="20"><rect width="90" height="20"/></svg>"#.to_vec(),
+            )],
+            ..crate::PdfOptions::default()
+        };
+        opts.theme.page.margins.left_pt = 24.0;
+        opts.theme.page.margins.right_pt = 24.0;
+        let faces = Faces::load(&opts)?;
+
+        // Two quotes consume 36 pt; adding a list marker consumes another
+        // 19 pt. Each fixture leaves exactly 20 pt between the content start
+        // and the independently specified page edge. Exercise both ordinary
+        // and prefixed paragraph callers, with and without an inline image.
+        for (prefix, page_width, content_x) in [("> > ", 104.0, 60.0), ("> > - ", 123.0, 79.0)] {
+            opts.theme.page.size.width_pt = page_width;
+            let right = page_width - 24.0;
+            let page = PageGeom::from_theme(&opts.theme);
+            for has_image in [false, true] {
+                let image = if has_image {
+                    "![badge](badge.svg) "
+                } else {
+                    ""
+                };
+                let doc = crate::parse_markdown(&format!("{prefix}WWWW {image}WWWW"));
+                let lines = layout(&doc.blocks, &opts, &faces, page);
+                let mut prose = String::new();
+                let mut images = 0;
+                for seg in lines.iter().flat_map(|line| &line.segs) {
+                    assert!(seg.x >= 24.0 && seg.x + seg.width <= right + 0.01);
+                    if seg.slot == F_IMAGE {
+                        images += 1;
+                        let displayed = image_box(&seg.text, 11.0).unwrap();
+                        assert_eq!(seg.x, content_x);
+                        assert_eq!(displayed.width, 20.0);
+                        assert_eq!(seg.width, displayed.width);
+                        assert_eq!(seg.x + displayed.width, right);
+                        assert_eq!(parts(&seg.text).unwrap().max_width, Some(20.0));
+                    } else {
+                        prose.extend(
+                            seg.text
+                                .chars()
+                                .filter(|ch| !ch.is_whitespace() && *ch != '•'),
+                        );
+                    }
+                }
+                assert_eq!(images, usize::from(has_image));
+                assert_eq!(prose, "WWWWWWWW");
+            }
+        }
+        Ok(())
     }
 
     #[test]

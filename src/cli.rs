@@ -2249,10 +2249,14 @@ fn check_external_links(
                 "{{\"url\":\"{esc}\",\"status\":{status},\"ok\":{ok},\"checked\":{checked}}}\n"
             ));
         }
-        if let Err(e) = std::fs::write(path, text) {
+        if let Err(e) = crate::file_write::write_outputs_staged(&[crate::file_write::OutputFile {
+            path,
+            bytes: text.as_bytes(),
+        }]) {
             eprintln!(
-                "fmd: warning: could not write link cache {}: {e}",
-                path.display()
+                "fmd: warning: could not write link cache {}: {}",
+                e.path.display(),
+                e.source
             );
         }
     }
@@ -2455,6 +2459,29 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail_json(66, "input_error", &format!("reading input: {e}"), json),
     };
+    // Link checking may write a cache, but verification must preserve the
+    // document it just read. Admit the destination before rendering or making
+    // network requests, with the same alias-aware protection as publications.
+    // Without --links no cache is read or written; stdin has no file identity.
+    if args.links
+        && path_str != "-"
+        && let Some(cache) = args.links_cache.as_deref()
+    {
+        let mut protected = protected_paths::ProtectedInputs::default();
+        protected.insert(&args.input);
+        if let Some(source) = protected.source_for(cache) {
+            return fail_json(
+                64,
+                "usage_error",
+                &format!(
+                    "refusing to overwrite verify input {} with link cache {}; choose a different --links-cache path",
+                    source.display(),
+                    cache.display(),
+                ),
+                json,
+            );
+        }
+    }
     let doc = parse_markdown(&src);
     // Verification baseline: the default theme/options, deliberately
     // independent of config, so the same document verifies identically on

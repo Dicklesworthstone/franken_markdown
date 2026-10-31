@@ -260,3 +260,19 @@ cargo test
 These checks do not establish generated-WASM parity, EPUBCheck conformance, or
 visual acceptance in EPUB reading systems; those require their own executable
 checks.
+
+
+## Browser publishing policy
+
+The browser `renderEpub` API, document worker and Flow export API accept
+`fontEmbedding: "full"` to preserve complete host or bundled fonts. Reusable
+book sessions apply the same option to EPUB, HTML sites and chapter previews;
+the workbench saves the selection in its publishing profile. Omitting the
+option or choosing `"subset"` retains the prior compact policy. Full fonts
+preserve cmap/GSUB/GPOS tables for the EPUB reader's own shaping and increase
+publication size. Native PDF shaping/subsetting remains independent.
+
+Full requires matching rebuilt WASM bindings and, when used, matching book
+worker scripts. The adapters refuse older packages instead of silently dropping
+the selection. Existing font slots, weight pins and resource limits still apply.
+No font file or network resource is fetched implicitly.

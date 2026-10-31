@@ -251,3 +251,17 @@ test("worker admission limits still cover queued exports and retain no caller op
   assert.equal(session.pendingOperations, 0);
   assert.equal(session.disposed, false);
 });
+
+
+test("real Flow worker preserves full-font HTML EPUB policy and rejects old packages", async t => {
+  const session = await setup(t, { delayMs: 20 });
+  for (const format of ["html", "epub"]) {
+    const options = { fontEmbedding: "full" };
+    const pending = session.exportDocument(format, options, session.token);
+    options.fontEmbedding = "subset";
+    assert.equal(decode(await pending).fontEmbedding, "full");
+  }
+  const old = await setup(t, { fontEmbeddingSupport: false });
+  for (const format of ["html", "epub"])
+    await assert.rejects(old.exportDocument(format, { fontEmbedding: "full" }, old.token), code("UNSUPPORTED_WASM_PACKAGE"));
+});

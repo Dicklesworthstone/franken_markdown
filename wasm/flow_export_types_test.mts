@@ -53,3 +53,12 @@ worker.exportDocument("pdf", { htmlFontFormat: "woff2" }, worker.token);
 worker.exportDocument("pdf", { typography: { pareto: "true" } }, worker.token);
 // @ts-expect-error EPUB does not use HTML font-container selection.
 worker.exportDocument("epub", { htmlFontFormat: "woff2" }, worker.token);
+
+worker.exportDocument("html", { fontEmbedding: "full" }, worker.token);
+worker.exportDocument("epub", { fontEmbedding: "subset" }, worker.token);
+// @ts-expect-error Native PDF keeps its own font subsetting policy.
+worker.exportDocument("pdf", { fontEmbedding: "full" }, worker.token);
+// @ts-expect-error SVG outlines do not consume HTML/EPUB embedding policies.
+worker.exportDocument("svg", { fontEmbedding: "full" }, worker.token);
+// @ts-expect-error Unknown font policies cannot be silently ignored.
+worker.exportDocument("epub", { fontEmbedding: "guess" }, worker.token);

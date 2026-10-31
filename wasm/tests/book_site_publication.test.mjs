@@ -10,12 +10,14 @@ const pageModule = new URL("../pdf_page.mjs", import.meta.url).href;
 const asModule = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const files = () => [{ path: "guide/start.md", source: "# Start" }, { path: "end.md", source: "# End" }];
 let serial = 0;
-async function fixture(available = true) {
+async function fixture(available = true, fullFonts = true) {
   const url = asModule(`// Explicit generated-binding double ${++serial}
     export const state = { calls: [], loads: 0, freed: 0, wait: null, failure: null,
       badDiagnostics: false, output: new Uint8Array([80, 75, 3, 4, 1, 2]) };
     export default async function init() { state.loads++; await state.wait; }
     export const renderBookSitePublication = ${available ? "(...args) => { state.calls.push({kind:'site',args}); if(state.failure) throw state.failure; return state.output; }" : "undefined"};
+    if (typeof renderBookSitePublication === "function")
+      Object.defineProperty(renderBookSitePublication, "length", { value: ${fullFonts ? 23 : 22} });
     function result(kind,args) {
       state.calls.push({kind,args});
       if(state.failure) throw state.failure;
@@ -258,4 +260,28 @@ test("existing PDF, book PDF and EPUB argument delivery is unchanged", async () 
     ["renderPdfConfiguredMulti", 27], ["pdf-page", 28], ["legacy-pdf", 8], ["pdf-book", 29], ["epub", 18],
   ]);
   assert.equal(state.freed, 5);
+});
+
+
+test("full site fonts add one native argument while default and subset stay identical", async () => {
+  const { api, state } = await fixture();
+  const normal = await api.renderBookSite(files());
+  assert.equal(Object.hasOwn(normal, "fontEmbedding"), false);
+  const ordinary = state.calls.at(-1).args;
+  const subset = await api.renderBookSite(files(), { fontEmbedding: "subset" });
+  assert.equal(Object.hasOwn(subset, "fontEmbedding"), false);
+  assert.deepEqual(state.calls.at(-1).args, ordinary);
+  const full = await api.renderBookSite(files(), { fontEmbedding: "full" });
+  assert.equal(full.fontEmbedding, "full");
+  assert.equal(state.calls.at(-1).args.length, 23);
+  assert.equal(state.calls.at(-1).args[22], "full");
+});
+
+test("full site policy refuses old publishers before asset getters or initialization", async () => {
+  for (const available of [true, false]) {
+    const { api, state } = await fixture(available, false);
+    const options = { fontEmbedding: "full", get fontAssets() { assert.fail("asset getter reached"); } };
+    await assert.rejects(api.renderBookSite(files(), options), { code: "UNSUPPORTED_WASM_PACKAGE" });
+    assert.equal(state.loads, 0); assert.equal(state.calls.length, 0);
+  }
 });

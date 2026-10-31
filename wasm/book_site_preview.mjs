@@ -1,6 +1,6 @@
 // Read the Rust book engine's classic ZIP subset, not arbitrary user archives.
 // Markdown parsing, chapter addressing, transclusion and HTML remain Rust-owned.
-import { parseBookChapterPreview } from "./book_session.mjs";
+import { bookFontEmbeddingReceipt, parseBookChapterPreview } from "./book_session.mjs";
 
 export const BOOK_PREVIEW_LIMITS = Object.freeze({
   archiveBytes: 64 * 1024 * 1024,
@@ -11,8 +11,11 @@ export const BOOK_PREVIEW_LIMITS = Object.freeze({
 });
 const L = BOOK_PREVIEW_LIMITS;
 // Generated host pages are not chapters and must never become iframe targets.
-// Older engine archives omit the optional offline search page.
-const auxiliaryNames = new Set(["index.html", "search-index.json", "~fmd-search.html"]);
+// Older archives omit the offline search page and canonical publication receipt.
+const receiptName = "frankenmarkdown-receipt.json";
+// Match the canonical Rust publisher's receipt ceiling, before decompression.
+const receiptBytes = 4 * 1024 * 1024;
+const auxiliaryNames = new Set(["index.html", "search-index.json", "~fmd-search.html", receiptName]);
 const error = (code, message) => Object.assign(new Error(message), { code });
 const invalid = () =>
   error(
@@ -126,7 +129,8 @@ function directory(bytes) {
     const folded = name.toLowerCase();
     if (names.has(folded)) throw invalid();
     names.add(folded);
-    if (length > L.pageBytes || (total += length) > L.totalBytes) throw limit();
+    if (length > (name === receiptName ? receiptBytes : L.pageBytes)
+        || (total += length) > L.totalBytes) throw limit();
     if (
       u32(local) !== 0x04034b50 ||
       u16(local + 4) !== u16(at + 6) ||
@@ -230,7 +234,22 @@ export async function decodeBookSiteArchive(value) {
     title: chapter?.title,
     html: contents.get(chapter?.page),
   }));
-  return checkedPreview({ schema: "fmd-book-preview-v1", pages });
+  const preview = checkedPreview({ schema: "fmd-book-preview-v1", pages });
+  // The publication receipt is optional metadata, never a navigation source.
+  // When present, require its ordered mapping to agree with the search index
+  // and actual chapter entries already validated above.
+  if (contents.has(receiptName)) {
+    let receipt;
+    try { receipt = JSON.parse(contents.get(receiptName)); }
+    catch { throw invalid(); }
+    if (receipt?.schema !== "fmd-book-receipt-v1"
+        || receipt.chapter_count !== preview.pages.length
+        || !Array.isArray(receipt.chapters) || receipt.chapters.length !== preview.pages.length
+        || receipt.chapters.some((chapter, i) => !chapter
+          || chapter.path !== preview.pages[i].source || chapter.title !== preview.pages[i].title
+          || chapter.output !== preview.pages[i].path)) throw invalid();
+  }
+  return preview;
 }
 function checkedPreview(value) {
   if (
@@ -264,7 +283,9 @@ function checkedPreview(value) {
  * second JS renderer. Export PDFs/EPUBs/site ZIPs remain unchanged.
  */
 export async function renderBookPreview(engine, files, options) {
+  const embedding = options?.fontEmbedding === "full" ? "full" : "subset";
   const site = await engine.renderBookSite(files, options);
+  const receipt = bookFontEmbeddingReceipt(site, embedding);
   const preview = await decodeBookSiteArchive(site.bytes);
   const parts = ['{"schema":"fmd-book-preview-v1","pages":['];
   let total = parts[0].length;
@@ -274,7 +295,7 @@ export async function renderBookPreview(engine, files, options) {
     parts.push(part);
   }
   parts.push("]}");
-  return { bytes: encoder.encode(parts.join("")), sourceLength: site.sourceLength };
+  return { bytes: encoder.encode(parts.join("")), sourceLength: site.sourceLength, ...receipt };
 }
 export function parseBookPreview(value) {
   const bytes = ownedBytes(value, L.messageBytes);
@@ -322,10 +343,12 @@ export async function renderBookSessionChapterPreview(session, selected = 0) {
     throw error("INVALID_CHAPTER_INDEX", "Choose a chapter in the current book.");
   if (session.supportsChapterPreview === true) {
     const result = await session.renderChapterPreview(selected);
+    const receipt = bookFontEmbeddingReceipt(result);
     parseBookChapterPreview(result.bytes, selected, count);
-    return { bytes: result.bytes, sourceLength: result.sourceLength, previewMode: "native-chapter" };
+    return { bytes: result.bytes, sourceLength: result.sourceLength, previewMode: "native-chapter", ...receipt };
   }
   const site = await session.renderSite();
+  const receipt = bookFontEmbeddingReceipt(site);
   const preview = await decodeBookSiteArchive(site.bytes);
   if (preview.pages.length !== count) throw invalid();
   const value = { schema: "fmd-book-chapter-preview-v1", selected,
@@ -337,11 +360,16 @@ export async function renderBookSessionChapterPreview(session, selected = 0) {
   text(json, L.messageBytes);
   const bytes = encoder.encode(json);
   parseBookChapterPreview(bytes, selected, count);
-  return { bytes, sourceLength: site.sourceLength, previewMode: "site-fallback" };
+  return { bytes, sourceLength: site.sourceLength, previewMode: "site-fallback", ...receipt };
 }
 
 export async function renderBookSelectedPreview(engine, files, options, selected = 0) {
+  const embedding = options?.fontEmbedding === "full" ? "full" : "subset";
   const session = await engine.createBook(files, options);
-  try { return await renderBookSessionChapterPreview(session, selected); }
+  try {
+    const result = await renderBookSessionChapterPreview(session, selected);
+    bookFontEmbeddingReceipt(result, embedding);
+    return result;
+  }
   finally { session.dispose(); }
 }

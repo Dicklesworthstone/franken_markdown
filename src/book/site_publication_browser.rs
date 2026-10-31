@@ -44,6 +44,7 @@ pub fn render_book_site_publication(
     body_bold_italic: Vec<u8>,
     mono_regular: Vec<u8>,
     font_weights: Vec<u32>,
+    font_embedding: Option<String>,
 ) -> std::result::Result<Vec<u8>, JsValue> {
     let request = SiteRequest {
         paths,
@@ -70,6 +71,7 @@ pub fn render_book_site_publication(
             mono_regular,
         ],
         font_weights,
+        font_embedding,
     };
     build_renderer(request)
         .and_then(|renderer| renderer.render_site_publication())
@@ -96,6 +98,7 @@ struct SiteRequest {
     image_lengths: Vec<u32>,
     fonts: [Vec<u8>; 5],
     font_weights: Vec<u32>,
+    font_embedding: Option<String>,
 }
 
 fn invalid(message: &str) -> RenderError {
@@ -215,6 +218,7 @@ fn build_renderer(request: SiteRequest) -> Result<BookRenderer> {
         &request.dark_mode,
         &request.lang,
         &request.custom_css,
+        &request.font_embedding,
     ]
     .into_iter()
     .flatten()
@@ -226,7 +230,18 @@ fn build_renderer(request: SiteRequest) -> Result<BookRenderer> {
             return Err(invalid("metadata and CSS exceed 4 MiB combined"));
         }
     }
-    let mut options = WasmRenderOptions::default();
+    let mut options = WasmRenderOptions {
+        font_embedding: request
+            .font_embedding
+            .as_deref()
+            .map(|value| {
+                crate::FontEmbedding::parse(value)
+                    .ok_or_else(|| invalid("fontEmbedding must be subset or full"))
+            })
+            .transpose()?
+            .unwrap_or_default(),
+        ..WasmRenderOptions::default()
+    };
     if let Some(font) = request
         .font
         .as_deref()
@@ -321,6 +336,34 @@ mod tests {
             sources: vec!["# Start".into()],
             ..SiteRequest::default()
         }
+    }
+
+    #[test]
+    fn full_font_policy_reaches_site_publication_without_changing_default() {
+        let compact = build_renderer(request())
+            .unwrap()
+            .render_site_publication()
+            .unwrap();
+        let mut value = request();
+        value.font_embedding = Some("subset".into());
+        assert_eq!(
+            build_renderer(value)
+                .unwrap()
+                .render_site_publication()
+                .unwrap(),
+            compact
+        );
+        let mut value = request();
+        value.font_embedding = Some("full".into());
+        let renderer = build_renderer(value).unwrap();
+        assert_eq!(
+            renderer.options().font_embedding,
+            crate::FontEmbedding::Full
+        );
+        assert_ne!(renderer.render_site_publication().unwrap(), compact);
+        let mut value = request();
+        value.font_embedding = Some("guess".into());
+        assert!(build_renderer(value).is_err());
     }
 
     #[test]

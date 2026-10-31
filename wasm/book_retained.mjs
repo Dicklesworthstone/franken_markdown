@@ -1,7 +1,9 @@
 // Worker-private session reuse. Inputs are owned, normalized snapshots from the
 // transport; only the native BookSession parses Markdown or resolves includes.
+import { bookFontEmbeddingReceipt } from "./book_session.mjs";
 const error = (code, message) => Object.assign(new Error(message), { code });
 const methods = Object.freeze({ pdf: "renderPdf", epub: "renderEpub", site: "renderSite", links: "validateLinks" });
+const fontFormats = new Set(["epub", "site", "preview", "chapter-preview"]);
 
 function samePaths(left, right) {
   return left.length === right.length && left.every((file, i) => file.path === right[i].path);
@@ -11,7 +13,7 @@ function sameOptions(a, b) {
   for (const key of ["title", "author", "lang", "customCss", "toc", "pageNumbers", "font",
     "darkMode", "fontScale", "expandIncludes", "typography", "baseFontSize", "headingScale",
     "tableFontSize", "tocDepth", "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds",
-    "htmlFontFormat", "pdfA", "pdfAStrict"]) {
+    "htmlFontFormat", "fontEmbedding", "pdfA", "pdfAStrict"]) {
     if (a[key] !== b[key]) return false;
   }
   if (JSON.stringify(a.page) !== JSON.stringify(b.page)
@@ -118,6 +120,8 @@ export function createRetainedBook(engine, renderPreview, renderChapterPreview) 
       if (format === "pdf" && options.pdfA === "2b"
           && (result.pdfA !== "2b" || result.pdfAStrict !== options.pdfAStrict))
         throw error("UNSUPPORTED_BOOK_PDFA", "The book renderer did not acknowledge the requested PDF/A emission policy.");
+      bookFontEmbeddingReceipt(result,
+        fontFormats.has(format) && options.fontEmbedding === "full" ? "full" : "subset");
       cached.input = input;
       return result;
     } catch (cause) {
@@ -143,7 +147,7 @@ const optionKeys = new Set([
   "title", "author", "lang", "customCss", "toc", "pageNumbers", "font", "darkMode",
   "fontScale", "expandIncludes", "typography", "baseFontSize", "headingScale",
   "tableFontSize", "tocDepth", "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds",
-  "htmlFontFormat", "page", "running", "images", "fontAssets", "includeSources",
+  "htmlFontFormat", "fontEmbedding", "page", "running", "images", "fontAssets", "includeSources",
   "pdfA", "pdfAStrict",
 ]);
 const sameSources = (a, b) => samePaths(a, b) && a.every((file, i) => file.source === b[i].source);
@@ -167,7 +171,7 @@ function outputCacheLimits(value) {
   }
   return limits;
 }
-function workerOutput(result, format) {
+function workerOutput(result, format, embedding) {
   const bytes = result?.bytes, sourceLength = result?.sourceLength;
   if (!(bytes instanceof Uint8Array)
       || Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]"
@@ -186,7 +190,9 @@ function workerOutput(result, format) {
       throw error("WORKER_PROTOCOL_ERROR", "Invalid book PDF/A emission receipt.");
     archive.pdfA = result.pdfA; archive.pdfAStrict = result.pdfAStrict;
   }
-  return Object.freeze({ bytes, sourceLength, ...archive,
+  const fontReceipt = bookFontEmbeddingReceipt(result,
+    fontFormats.has(format) && embedding === "full" ? "full" : "subset");
+  return Object.freeze({ bytes, sourceLength, ...archive, ...fontReceipt,
     ...(previewMode === undefined ? {} : { previewMode }) });
 }
 
@@ -280,7 +286,7 @@ export function createCachedBookRenderer(renderer, renderPreview, requestedLimit
           }
         }
         misses++;
-        const output = workerOutput(await produce(), kind);
+        const output = workerOutput(await produce(), kind, options.fontEmbedding);
         fence();
         if (cacheable && output.bytes.byteLength <= limits.maxEntryBytes
             && output.bytes.byteLength <= limits.maxBytes) {

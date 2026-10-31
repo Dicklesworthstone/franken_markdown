@@ -40,7 +40,8 @@ for (const [script, destination] of [["check-wasm-package.sh", "package_dir"], [
     const packageDir = join(fixture, "package");
     mkdirSync(join(fixture, "wasm")); mkdirSync(packageDir);
     for (const name of names) writeFileSync(join(fixture, "wasm", name),
-      required.includes(name) ? readFileSync(join(root, "wasm", name)) : `fixture: ${name}\n`);
+      [...required, "book_session.mjs", "pdf_page.mjs", "render_typography.mjs"].includes(name)
+        ? readFileSync(join(root, "wasm", name)) : `fixture: ${name}\n`);
     execFileSync("bash", ["-c", `set -eu\n${match[0]}`], {
       cwd: fixture, env: { ...process.env, [destination]: packageDir },
     });

@@ -1,6 +1,6 @@
 import { pdfPageGeometry } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeBaselineGridPt, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeBaselineGridPt, normalizeFontEmbedding, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
 import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
@@ -58,6 +58,10 @@ export async function capabilities() {
 }
 
 export async function renderHtml(markdown, options = {}) {
+  const requestedEmbedding = options.fontEmbedding;
+  const fontEmbedding = requestedEmbedding === undefined ? undefined : normalizeFontEmbedding(requestedEmbedding);
+  if (fontEmbedding === "full")
+    requireBindingArguments(renderHtmlConfiguredAdvanced, 21, "Full HTML font embedding");
   const htmlFontFormat = stringOption(options.htmlFontFormat);
   if (htmlFontFormat !== undefined)
     requireBindingArguments(renderHtmlConfiguredAdvanced, 20, "HTML font format selection");
@@ -95,7 +99,8 @@ export async function renderHtml(markdown, options = {}) {
     stringOption(options.lang),
     Boolean(options.toc),
     integerOption(options.tocDepth, "tocDepth"),
-    ...(htmlFontFormat === undefined ? [] : [htmlFontFormat]),
+    ...(fontEmbedding === "full" ? [htmlFontFormat, fontEmbedding]
+      : htmlFontFormat === undefined ? [] : [htmlFontFormat]),
   ];
   // Own source, scalar settings and exact asset ranges before initialization
   // yields, including its already-resolved warm path, as PDF/SVG/EPUB do.
@@ -491,9 +496,15 @@ function svgTextBytes(text, maximum, label) {
 }
 
 export async function renderEpub(markdown, options = {}) {
+  const requestedEmbedding = options.fontEmbedding;
+  const fontEmbedding = requestedEmbedding === undefined ? undefined : normalizeFontEmbedding(requestedEmbedding);
+  if (fontEmbedding === "full") {
+    const binding = requireBrowserBinding("renderEpubConfiguredAdvanced", "full EPUB font embedding");
+    requireBindingArguments(binding, 19, "Full EPUB font embedding");
+  }
   // Capture source, settings and exact asset views before the initialization
   // await. Later host edits cannot silently change the publication being built.
-  const prepared = epubArguments(markdown, options);
+  const prepared = epubArguments(markdown, options, fontEmbedding);
   await init();
   if (typeof wasmBindings.renderEpubConfiguredAdvanced === "function") {
     return normalizeResult(wasmBindings.renderEpubConfiguredAdvanced(...prepared.args));
@@ -507,7 +518,7 @@ export async function renderEpub(markdown, options = {}) {
   return normalizeResult(renderEpubConfigured(...prepared.args.slice(0, 6)));
 }
 
-function epubArguments(markdown, options) {
+function epubArguments(markdown, options, fontEmbedding) {
   const {
     font, darkMode, title, lang, fontScale, typeSize, customCss,
     toc = false, tocDepth, pdfImages, fontAssets,
@@ -555,11 +566,12 @@ function epubArguments(markdown, options) {
   }
   const ownedFonts = fonts.map((asset) => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
   return {
-    requiresAdvanced: images.length > 0 || fonts.length > 0 || css !== undefined || toc || depth !== undefined,
+    requiresAdvanced: fontEmbedding === "full" || images.length > 0 || fonts.length > 0 || css !== undefined || toc || depth !== undefined,
     args: [...base, css, toc, depth, images.map((image) => image.destination), flat, lengths,
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
       fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
-      fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts)],
+      fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts),
+      ...(fontEmbedding === "full" ? [fontEmbedding] : [])],
   };
 }
 
@@ -747,11 +759,17 @@ export async function renderSemanticDiff(oldMarkdown, newMarkdown, options = {})
 }
 
 export async function renderBookSite(files, options = {}) {
+  const requestedEmbedding = options?.fontEmbedding;
+  const fontEmbedding = requestedEmbedding === undefined ? undefined : normalizeFontEmbedding(requestedEmbedding);
   const render = wasmBindings.renderBookSitePublication;
+  if (fontEmbedding === "full") {
+    requireBrowserBinding("renderBookSitePublication", "full book-site font embedding");
+    requireBindingArguments(render, 23, "Full book-site font embedding");
+  }
   const legacyRender = typeof render === "function" ? null
     : requireBrowserBinding("renderBookSite", "wasm-book");
   // Capture the complete publication before initialization can yield to edits.
-  const prepared = bookSiteArguments(files, options);
+  const prepared = bookSiteArguments(files, options, fontEmbedding);
   if (typeof render !== "function" && prepared.requiresPublication) {
     throw Object.assign(new Error(
       "Book site assets, includes, CSS, language and navigation require a WASM package rebuilt from matching source",
@@ -780,23 +798,24 @@ export async function renderBookSite(files, options = {}) {
     // A generated binding normally returns an owned array. Never retain an
     // unrelated backing allocation if an adapter instead returns a subview.
     if (bytes.byteOffset !== 0 || bytes.byteLength !== bytes.buffer.byteLength) bytes = bytes.slice();
-    return normalizeResult({
+    const output = normalizeResult({
       bytes, format: "book-site", mimeType: "application/zip", extension: "zip",
       sourceLength: prepared.sourceLength, diagnosticsJson: () => "[]",
     });
+    return fontEmbedding === "full" ? Object.freeze({ ...output, fontEmbedding: "full" }) : output;
   } catch (error) {
     if (typeof error === "string") throw new Error(error.slice(0, 2048));
     throw error;
   }
 }
 
-function bookSiteArguments(files, options) {
+function bookSiteArguments(files, options, fontEmbedding) {
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("book site options must be an object");
   }
   const allowed = ["font", "darkMode", "title", "customCss", "fontScale", "typeSize",
     "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "includeSources", "expandIncludes",
-    "allowRawHtml"];
+    "allowRawHtml", "fontEmbedding"];
   for (const key of Reflect.ownKeys(options)) {
     if (!allowed.includes(key)) {
       const field = Object.getOwnPropertyDescriptor(options, key);
@@ -876,7 +895,7 @@ function bookSiteArguments(files, options) {
   const paths = chapters.map(file => file.path), sources = chapters.map(file => file.source);
   return {
     sourceLength,
-    requiresPublication: resources.length > 0 || !expandIncludes || css !== undefined
+    requiresPublication: fontEmbedding === "full" || resources.length > 0 || !expandIncludes || css !== undefined
       || language !== undefined || toc || depth !== undefined || images.length > 0 || fonts.length > 0,
     legacyArgs: [paths, sources, heading, family, dark, scale],
     args: [paths, sources, resources.map(file => file.path), resources.map(file => file.source),
@@ -884,7 +903,8 @@ function bookSiteArguments(files, options) {
       images.map(image => image.destination), flat, lengths,
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
       fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
-      fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts)],
+      fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts),
+      ...(fontEmbedding === "full" ? [fontEmbedding] : [])],
   };
 }
 

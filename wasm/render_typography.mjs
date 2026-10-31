@@ -29,6 +29,13 @@ export function normalizeMicrotype(value) {
   return value;
 }
 
+/** HTML/EPUB font fidelity policy. PDF and outlined SVG use their own fonts. */
+export function normalizeFontEmbedding(value) {
+  if (!["subset", "full"].includes(value))
+    invalid("fontEmbedding must be subset or full");
+  return value;
+}
+
 export function normalizeHtmlFontFormat(value) {
   if (!["woff1", "woff2", "ttf"].includes(value))
     invalid("htmlFontFormat must be woff1, woff2 or ttf");

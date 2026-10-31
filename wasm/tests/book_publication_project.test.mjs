@@ -11,7 +11,7 @@ import { prepareBookInput } from "../book_session.mjs";
 // render. Resource bytes below are explicit byte-store fixtures, not fonts/PNG.
 const full = () => ({ typography: "homogeneous,antiriver,pareto,optimal-pagination,protrusion,expansion",
   baseFontSize: 12, headingScale: 1.25, tableFontSize: 9, tocDepth: 3,
-  fitToPages: 40, codeLineNumbers: true, metadataEpochSeconds: 0, htmlFontFormat: "woff2",
+  fitToPages: 40, codeLineNumbers: true, metadataEpochSeconds: 0, htmlFontFormat: "woff2", fontEmbedding: "full",
   running: { header: { left: "{title}", right: "{author}", rule: true,
     image: { dest: "assets/logo.png", position: "left", heightPt: 18 } },
     footer: { center: "{page} / {pages}" }, skipFirstPage: true } });

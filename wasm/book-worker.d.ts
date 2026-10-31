@@ -7,6 +7,8 @@ export interface BookWorkerCapture {
   readonly retainedInputRevision?: number;
 }
 export interface BookPreviewOutput extends BookWorkerCapture {
+  /** Successful complete-font preview receipt; omitted for subsets. */
+  readonly fontEmbedding?: "full";
   readonly format: "book-preview";
   readonly mimeType: "application/json";
   readonly extension: "json";

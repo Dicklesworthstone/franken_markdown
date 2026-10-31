@@ -77,6 +77,8 @@ installFlowWorker(endpoint, async (source, options) => {
     if (workerData?.delayMs)
       await new Promise((resolve) => setTimeout(resolve, workerData.delayMs));
     if (settings.title === "reject-render") throw new Error("explicit renderer rejection");
+    if (workerData?.fontEmbeddingSupport === false && settings.fontEmbedding === "full")
+      throw Object.assign(new Error("Full font embedding requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
     if (workerData?.typographySupport === false && (settings.optimalPagination || settings.strictPagination
         || settings.microtype === "expansion" || Object.values(settings.typography ?? {}).some(Boolean)
         || settings.htmlFontFormat !== undefined)) {
@@ -90,7 +92,7 @@ installFlowWorker(endpoint, async (source, options) => {
     }
     return {
       format,
-      mimeType: format === "html" ? "text/html; charset=utf-8" : "application/pdf",
+      mimeType: format === "html" ? "text/html; charset=utf-8" : format === "epub" ? "application/epub+zip" : "application/pdf",
       diagnostics: [],
       bytes: new TextEncoder().encode(
         JSON.stringify({
@@ -104,6 +106,7 @@ installFlowWorker(endpoint, async (source, options) => {
           strictPagination: settings.strictPagination,
           microtype: settings.microtype,
           htmlFontFormat: settings.htmlFontFormat,
+          fontEmbedding: settings.fontEmbedding,
           images: settings.pdfImages.map((image) => [image.destination, [...image.bytes]]),
         }),
       ),
@@ -111,7 +114,7 @@ installFlowWorker(endpoint, async (source, options) => {
   };
   return withFlowExports(
     createFlowAdapter(raw, layout),
-    { html: renderer("html"), pdf: renderer("pdf") },
+    { html: renderer("html"), pdf: renderer("pdf"), epub: renderer("epub") },
     font,
   );
 });

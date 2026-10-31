@@ -431,12 +431,16 @@ export interface FlowExportOptions {
   maxOutputBytes?: number;
 }
 export interface FlowHtmlExportOptions extends FlowExportOptions {
+  /** Retain complete OpenType fonts for browser shaping; default subset. */
+  fontEmbedding?: "subset" | "full";
   darkMode?: "auto" | "disabled";
   /** Native embedded font container; omitted keeps the WOFF1 default. */
   htmlFontFormat?: "woff1" | "woff2" | "ttf";
 }
 /** Reflowable native EPUB output, not a capture of editor geometry. */
 export interface FlowEpubExportOptions extends FlowExportOptions {
+  /** Retain complete supplied/bundled fonts for reader shaping; default subset. */
+  fontEmbedding?: "subset" | "full";
   darkMode?: "auto" | "disabled";
   /** Verbatim EPUB stylesheet, at most 4 MiB UTF-8. Empty explicitly disables defaults. */
   customCss?: string;

@@ -33,6 +33,7 @@ class RecordingBook {
     this.settings.runningImages = args.slice(12).map(value => [...value]);
   }
   setHtmlFontFormat(format) { this.settings.htmlFontFormat = format; }
+  setFontEmbedding(policy) { this.settings.fontEmbedding = policy; }
   renderPdf() {
     if (workerData?.paginationFailure && this.settings.pdf?.[0]?.includes("strict-pagination"))
       throw PAGINATION_REFUSAL;
@@ -447,6 +448,28 @@ if (!isMainThread) {
       assert.equal(old.busy, false);
       assert.equal(decoded(await old.render(FILES, "pdf", { baselineGridPt: 0 })).baselineGridPt, undefined);
     } finally { old.dispose(); }
+  });
+
+
+  test("book full-font selection reaches native exports while subset keeps legacy behavior", async () => {
+    const bindings = createBookBindings(async () => RecordingBook);
+    const session = await bindings.createBook(FILES, { fontEmbedding: "full" });
+    for (const output of [session.renderEpub(), session.renderSite()]) {
+      assert.equal(output.fontEmbedding, "full");
+      assert.equal(decoded(output).fontEmbedding, "full");
+    }
+    assert.equal(session.renderPdf().fontEmbedding, undefined);
+    session.dispose();
+    const subset = await bindings.createBook(FILES, { fontEmbedding: "subset" });
+    assert.equal(decoded(subset.renderEpub()).fontEmbedding, undefined);
+    assert.equal(subset.renderSite().fontEmbedding, undefined);
+    subset.dispose();
+    class OldBook extends RecordingBook {}
+    Object.defineProperty(OldBook.prototype, "setFontEmbedding", { value: undefined });
+    const before = state.created;
+    await assert.rejects(createBookBindings(async () => OldBook).createBook(FILES, { fontEmbedding: "full" }),
+      { code: "UNSUPPORTED_BOOK_FONT_EMBEDDING" });
+    assert.equal(state.created, before);
   });
 
 }

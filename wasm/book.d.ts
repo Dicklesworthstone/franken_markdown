@@ -106,7 +106,10 @@ export interface BookOptions {
   /** Nonnegative safe-integer epoch; no ambient clock is read. */
   metadataEpochSeconds?: number;
   running?: BookRunningContent;
-  /** HTML-site font container only; EPUB keeps its TrueType package. */
+  /** Complete OpenType fonts for HTML/EPUB and previews. Default subset.
+   * Requires FmdBook.setFontEmbedding; PDF/source revisions are unchanged. */
+  fontEmbedding?: "subset" | "full";
+  /** HTML-site font container only; EPUB keeps its source font package. */
   htmlFontFormat?: "ttf" | "woff1" | "woff2";
   /** Default paper/margins for PDF exports only; HTML/EPUB are unaffected.
    * Uses the single-document point-based geometry contract. Captured before
@@ -126,6 +129,8 @@ export interface BookOptions {
 }
 
 export interface BookOutput {
+  /** Successful complete-font export receipt; omitted on PDF and subsets. */
+  readonly fontEmbedding?: "full";
   readonly format: "book-pdf" | "book-epub" | "book-site";
   readonly mimeType: "application/pdf" | "application/epub+zip" | "application/zip";
   readonly extension: "pdf" | "epub" | "zip";
@@ -315,6 +320,8 @@ export interface BookChapterPreview {
   readonly html: string;
 }
 export interface BookChapterPreviewOutput {
+  /** Successful complete-font preview receipt; omitted for subsets. */
+  readonly fontEmbedding?: "full";
   readonly format: "book-chapter-preview";
   readonly mimeType: "application/json";
   readonly extension: "json";

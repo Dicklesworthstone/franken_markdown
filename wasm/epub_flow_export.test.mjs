@@ -184,3 +184,21 @@ test("EPUB acknowledgments require the captured token and exact MIME type", asyn
     assert.throws(() => validateFlowExportResult({ ...result, ...patch }, before), FlowError);
   }
 });
+
+
+test("Flow HTML and EPUB full-font policies capture before export and reject other targets", async () => {
+  const f = fixture();
+  const api = f.wrap();
+  for (const format of ["html", "epub"]) {
+    const options = { fontEmbedding: "full" };
+    const pending = api.exportDocument(format, options, token());
+    options.fontEmbedding = "subset";
+    await pending;
+    assert.equal(f.state.calls.at(-1).options.fontEmbedding, "full");
+    assert.equal(normalizeFlowExport(format, { fontEmbedding: "subset" }, token())[1].fontEmbedding, "subset");
+    for (const fontEmbedding of [null, "FULL", "guess", 1, true, {}])
+      assert.throws(() => normalizeFlowExport(format, { fontEmbedding }), code("INVALID_OPTIONS"));
+  }
+  for (const format of ["pdf", "svg"])
+    assert.throws(() => normalizeFlowExport(format, { fontEmbedding: "full" }), code("INVALID_OPTIONS"));
+});

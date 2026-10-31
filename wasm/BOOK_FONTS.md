@@ -101,3 +101,37 @@ File.arrayBuffer, Blob module loading and Workers with an explicit protocol-only
 font/PDF adapter, not the Rust font parser. It must not be reported as evidence
 of native font support, generated-PDF fidelity, glyph coverage or full-workbench
 acceptance. Run the generated-WASM and native rendering gates separately.
+
+
+## Complete fonts for browser and EPUB shaping
+
+Pass `fontEmbedding: "full"` to `createBook`, `renderBookSite`, document-worker
+HTML/EPUB exports, or Flow HTML/EPUB exports to preserve complete supplied or
+bundled OpenType fonts. Complete character maps and substitution/positioning
+tables remain available to the browser or EPUB reader. Publications are larger;
+this does not change native PDF shaping or PDF font subsetting.
+
+The default `"subset"` retains the existing compact output and ABI calls.
+For HTML, `htmlFontFormat` independently selects the raw sfnt, WOFF or WOFF2
+container. EPUB uses the source sfnt format, including supported CFF1 OpenType.
+Interactive HTML already keeps complete fonts for later edits and has no
+separate `fontEmbedding` switch.
+
+The book workbench's publishing profile includes this selection. Applied
+profiles survive source and portable project round trips, native book reuse,
+source deltas, site/EPUB exports and chapter previews. Selecting Full requires
+matching native bindings and worker scripts; older packages fail explicitly.
+Full book font-bearing outputs acknowledge `fontEmbedding: "full"`; the worker
+also checks its captured policy for PDF-first and source-update operations so
+an older worker cannot silently lose the later HTML/EPUB setting.
+
+```js
+const book = await createBook(chapters, { fontEmbedding: "full", fontAssets });
+try {
+  const epub = book.renderEpub();
+  const site = book.renderSite();
+  // epub.fontEmbedding and site.fontEmbedding are "full".
+} finally {
+  book.dispose();
+}
+```

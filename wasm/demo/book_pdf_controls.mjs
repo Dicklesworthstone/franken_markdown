@@ -287,6 +287,9 @@ export function createBookPublicationPanel(root) {
   check(layout, "codeLineNumbers", "PDF code line numbers");
   select(layout, "htmlFontFormat", "HTML-site font container (EPUB uses the source font format)",
     [["", "Native default"], ["ttf", "Raw font (.ttf/.otf)"], ["woff1", "WOFF"], ["woff2", "WOFF2"]]);
+  select(layout, "fontEmbedding", "HTML/EPUB font embedding",
+    [["", "Compact subsets (default)"], ["subset", "Compact subsets"], ["full", "Complete fonts for browser/reader shaping"]]);
+  make("p", "font-help", "Complete fonts retain character maps and OpenType layout tables, and increase publication size. PDF font subsetting is unchanged.", layout);
   const archival = make("fieldset"); make("legend", null, "PDF archival emission", archival);
   const policy = select(archival, "pdfPolicy", "PDF output policy", [
     ["off", "Ordinary PDF (default)"], ["2b", "PDF/A-2b emission"],
@@ -338,7 +341,7 @@ export function createBookPublicationControls({ root, controls, collection }) {
   const panel = createBookPublicationPanel(root);
   const checkIds = ["codeLineNumbers", "skipFirstPage", ...PUBLICATION_FLAGS.map(([token]) => `type-${token}`),
     ...PUBLICATION_BANDS.map(band => `${band}-rule`)];
-  const valueIds = [...PUBLICATION_NUMBERS.map(([id]) => id), "htmlFontFormat", "pdfPolicy",
+  const valueIds = [...PUBLICATION_NUMBERS.map(([id]) => id), "htmlFontFormat", "fontEmbedding", "pdfPolicy",
     ...PUBLICATION_BANDS.flatMap(band => [...PUBLICATION_SLOTS, "image", "position", "height"].map(slot => `${band}-${slot}`))];
   const ids = [...checkIds, ...valueIds, "apply", "discard", "defaults", "status", "resources", "current"];
   const el = Object.fromEntries(ids.map(id => [id, root.querySelector(`#${publicationId(id)}`)]));
@@ -369,6 +372,7 @@ export function createBookPublicationControls({ root, controls, collection }) {
     for (const [id] of PUBLICATION_NUMBERS) el[id].value = value[id] === undefined ? "" : String(value[id]);
     el.codeLineNumbers.checked = value.codeLineNumbers === true;
     el.htmlFontFormat.value = value.htmlFontFormat ?? "";
+    el.fontEmbedding.value = value.fontEmbedding ?? "";
     el.pdfPolicy.value = value.pdfA === "2b" ? (value.pdfAStrict ? "2b-strict" : "2b") : "off";
     const flags = new Set((value.typography ?? "").split(",").map(token => token.trim()));
     for (const [token] of PUBLICATION_FLAGS) el[`type-${token}`].checked = flags.has(token);
@@ -431,6 +435,7 @@ export function createBookPublicationControls({ root, controls, collection }) {
       : PUBLICATION_FLAGS.filter(([token]) => el[`type-${token}`].checked).map(([token]) => token).join(",");
     value.codeLineNumbers = el.codeLineNumbers.checked;
     value.htmlFontFormat = el.htmlFontFormat.value || undefined;
+    value.fontEmbedding = el.fontEmbedding.value || undefined;
     // One selection represents both native fields, so the UI cannot stage an
     // impossible OFF/strict combination. Missing/unknown values fail closed.
     const policy = el.pdfPolicy.value;

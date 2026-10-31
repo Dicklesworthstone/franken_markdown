@@ -116,7 +116,7 @@ function sourceTree(value) {
 // Deliberately excludes assets, include policy, CSS and metadata/page controls.
 export const BOOK_PUBLICATION_FIELDS = Object.freeze([
   "typography", "baseFontSize", "headingScale", "tableFontSize", "tocDepth",
-  "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds", "running", "htmlFontFormat",
+  "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds", "running", "htmlFontFormat", "fontEmbedding",
   "pdfA", "pdfAStrict",
 ]);
 function settingRecord(value, keys) {

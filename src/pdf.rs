@@ -5054,7 +5054,7 @@ fn layout_simple_text_paragraph(
     let left = cx.page.left + indent;
     let size = cx.type_scale.body;
     let gap_after = 7.0;
-    let content_w = lu_from_points_f32((cx.page.content_w - indent).max(MIN_CONTENT_DIM));
+    let content_w = inline_paragraph_measure(&[], cx.page, indent);
     let flow = FlowSpec {
         group,
         kind: FlowKind::Paragraph,
@@ -19422,12 +19422,12 @@ fn build_paragraph<'a>(
     built
 }
 
-/// Minimum word length (in chars) before synthetic (separator/emergency)
-/// break points are considered. Shorter words always fit some line.
+/// Minimum word length (in chars) before the ordinary synthetic separator/
+/// emergency policy is considered. Measured overflow is handled at any length.
 const FORCED_BREAK_MIN_WORD: usize = 12;
-/// Longest run allowed without ANY break opportunity. Runs beyond this get
-/// emergency break points so a single token (a bare URL, a long identifier)
-/// can never overflow the measure and run off the page.
+/// Ordinary maximum run between synthetic break opportunities. The measured
+/// fit pass adds closer opportunities for narrow measures, large type or wide
+/// glyphs; a character-count limit alone cannot prevent painted overflow.
 const FORCED_BREAK_CHUNK: usize = 14;
 /// Mild penalty for breaking after a URL/path/identifier separator; slightly
 /// worse than a dictionary hyphen (50) so prose breaks stay preferred.
@@ -19603,6 +19603,65 @@ fn fill_pdf_emergency_break_points(len: usize, points: Vec<PdfBreakPoint>) -> Ve
     filled
 }
 
+/// Refine only pieces that are wider than the real containing measure. The
+/// ordinary dictionary, separator and synthetic opportunities stay intact, so
+/// already-fitting text reaches Knuth-Plass with its historical item stream.
+/// New opportunities carry no visible hyphen and never divide a source cluster.
+fn fit_pdf_word_break_points(
+    word: &[Tok],
+    mut points: Vec<PdfBreakPoint>,
+    len: usize,
+    cx: PdfWordContext<'_>,
+) -> Vec<PdfBreakPoint> {
+    let Some(measure) = cx.image_measure else {
+        return points;
+    };
+    // Include the final interval in the same measured walk without adding an
+    // actual end-of-word penalty to the paragraph item stream.
+    points.push(PdfBreakPoint {
+        at: len,
+        penalty: 0,
+        hyphen: false,
+        cjk: false,
+    });
+    let mut fitted = Vec::with_capacity(points.len());
+    let mut splitter = PdfWordSplitter::new(word);
+    let mut start = 0;
+    for point in points {
+        let part = splitter.take_to(point.at);
+        if measure_word_cached(&part, cx.fs, cx.faces, cx.width_cache) > measure {
+            let bytes = part.iter().map(|tok| tok.text.len()).sum();
+            let source = pdf_word_plain_text(&part, bytes);
+            let mut clusters = PdfWordSplitter::new(&part);
+            let mut current: Vec<Tok> = Vec::new();
+            let mut cursor = 0;
+            for cluster in text_composition::source_clusters(&source) {
+                let end = cursor + cluster.chars().count();
+                let next = clusters.take_to(end);
+                let previous_len = current.len();
+                current.extend(next.iter().cloned());
+                if previous_len > 0
+                    && measure_word_cached(&current, cx.fs, cx.faces, cx.width_cache) > measure
+                {
+                    fitted.push(PdfBreakPoint {
+                        at: start + cursor,
+                        penalty: EMERGENCY_BREAK_PENALTY,
+                        hyphen: false,
+                        cjk: false,
+                    });
+                    current = next;
+                }
+                cursor = end;
+            }
+        }
+        start = point.at;
+        if point.at < len {
+            fitted.push(point);
+        }
+    }
+    fitted
+}
+
 fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordContext<'_>) {
     if word.is_empty() {
         return;
@@ -19670,10 +19729,17 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     let stats = pdf_word_stats(word);
     let needs_dictionary = cx.policy.hyphenate && !stats.cjk && stats.hyphenable;
     let needs_synthetic_breaks = stats.char_len >= FORCED_BREAK_MIN_WORD;
+    let needs_measured_breaks = cx.image_measure.is_some_and(|measure| {
+        // Long words already have bounded intervals. Do not shape one huge
+        // URL or identifier merely to decide whether to measure those pieces.
+        needs_synthetic_breaks
+            || stats.cjk
+            || measure_word_cached(word, cx.fs, cx.faces, cx.width_cache) > measure
+    });
     // A CJK run has to be examined at any length: five ideographs in a narrow
-    // table column still need somewhere to break, and the length-gated
-    // long-token machinery below would never look at them.
-    if !needs_dictionary && !needs_synthetic_breaks && !stats.cjk {
+    // table column still need somewhere to break. Ordinary short words can
+    // also exceed a small measure, particularly in headings or host fonts.
+    if !needs_dictionary && !needs_synthetic_breaks && !stats.cjk && !needs_measured_breaks {
         push_pdf_word_box(
             built,
             word,
@@ -19721,6 +19787,11 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     } else {
         let chars = pdf_word_chars(word, stats.char_len);
         pdf_word_break_points(&chars, &dict_points)
+    };
+    let points = if needs_measured_breaks {
+        fit_pdf_word_break_points(word, points, stats.char_len, cx)
+    } else {
+        points
     };
     if points.is_empty() {
         push_pdf_word_box(
@@ -20122,18 +20193,18 @@ impl<'a> PdfWordSplitter<'a> {
     }
 }
 
-/// Inline code and objects use the available width after indentation, even
-/// below the historical minimum retained for ordinary prose.
+/// Every paragraph uses its actual remaining body width after indentation.
+/// A nominal minimum would let a nested quote or list paint beyond its margin.
 fn inline_paragraph_measure(toks: &[Tok], page: PageGeom, indent: f32) -> LayoutUnit {
+    // Retain the existing arithmetic for each path: changing subtraction order
+    // can shift a fractional measure across a fixed-point rounding boundary.
     let width = if toks
         .iter()
         .any(|tok| tok.literal || is_inline_object(tok.slot))
     {
-        // Literal code and inline objects must fit the real remaining body,
-        // even below the historical prose-only paragraph minimum.
         (page.right_x() - page.left - indent).max(1.0)
     } else {
-        (page.content_w - indent).max(MIN_CONTENT_DIM)
+        (page.content_w - indent).max(1.0)
     };
     lu_from_points_f32(width)
 }

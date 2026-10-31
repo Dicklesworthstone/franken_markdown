@@ -98,7 +98,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Area | Current functionality |
 |---|---|
 | Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, GitHub-style sanitizing of raw HTML by default (an allowlisted subset stays markup in HTML and becomes native nodes in PDF/SVG/EPUB; unknown tags stay escaped), and a ratcheted CommonMark 0.31.2 conformance floor |
-| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, GitHub emoji shortcodes (`:rocket:` becomes 🚀), shared syntax highlighting, and optional stylesheet replacement |
+| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG/GIF images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, GitHub emoji shortcodes (`:rocket:` becomes 🚀), shared syntax highlighting, and optional stylesheet replacement |
 | PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, UAX #14 CJK line breaking, body justification, selectable text, hierarchical heading bookmarks, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
 | Financial tables | Opt-in `---.` decimal columns align mixed-precision amounts using measured fonts; plain `---` and `===` marker rows add single/double rules beneath totals across PDF, HTML and SVG. Values, styles and links remain intact; see [financial tables](docs/FINANCIAL_TABLES.md) |
@@ -108,8 +108,8 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Mermaid diagrams | `graph`/`flowchart`, `sequenceDiagram`, and `pie` fences compile with the clean-room diagram compiler into vector figures in HTML, PDF (tagged `/Figure`), SVG posters and EPUB. Pie charts support titles, exact decimal values, legends and `showData`; unsupported syntax stays highlighted source. See [diagram syntax](docs/DIAGRAMS.md) |
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
-| PNG, SVG, and JPEG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG/JPEG destinations, and PDF renders fetch remote http(s) images at render time (timeout + size cap, `--no-remote-images` to opt out, clean alt-text fallback offline). HTML embeds supported assets as data URIs; PDF draws PNG/SVG directly and embeds JPEG bytes losslessly via `/DCTDecode`. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
-| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, missing `url(...)` paint fallback alpha, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG/JPEG data URIs, and current frankenmermaid output |
+| PNG, SVG, JPEG and GIF assets | File-input HTML/PDF renders auto-load relative local PNG/SVG/JPEG/GIF destinations, and PDF renders fetch remote http(s) images at render time (timeout + size cap, `--no-remote-images` to opt out, clean alt-text fallback offline). HTML embeds supported assets as data URIs; PDF draws PNG/SVG directly, decodes the first GIF frame, and embeds JPEG bytes losslessly via `/DCTDecode`. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
+| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, missing `url(...)` paint fallback alpha, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG/JPEG/GIF data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
 | Native safety | HTML, PDF, config, and batch outputs are staged where applicable. `--to both` rolls back sibling outputs on later failure, and the CLI refuses to overwrite the input file |
@@ -163,7 +163,7 @@ reproduction command, and independent geometry check.
 | Table quality | The allocator measures content ranges and spends column width where it reduces wrapping. Very wide PDF tables split into readable column panels, repeating the first column when space permits and retaining every source column, links, financial footing rules, and accessible header associations |
 | Syntax highlighting | Rust, Python, JavaScript/TypeScript, JSON/JSONC, Bash/shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS/SCSS/Sass, Markdown, and Mermaid/MMD use the same clean-room highlighting model in HTML and PDF |
 | Diagram support | ASCII diagrams and frankenmermaid-generated SVGs are now first-class documentation assets in the PDF path instead of screenshots or browser-only fallbacks |
-| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `hwb()` colors, `color-mix()` alpha, missing paint-server fallback alpha, and embedded PNG/JPEG data URIs |
+| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `hwb()` colors, `color-mix()` alpha, missing paint-server fallback alpha, and embedded PNG/JPEG/GIF data URIs |
 | Agent and CI friendliness | JSON capabilities, JSON doctor output, robot docs, stable exit codes, `SOURCE_DATE_EPOCH`, staged writes, and no-default/WASM gates make the tool easy to script and verify |
 | Performance work | Parser, HTML, PDF layout/writing, font subsetting, compression, SVG drawing, and batch orchestration hot paths have been profiled and optimized in behavior-preserving passes with golden-output checks |
 
@@ -604,8 +604,8 @@ fmd --text '<markdown>' --out out.html
 | `--svg-width-pt <POINTS>` | SVG poster width (144..=14400 points; default 612). SVG output draws the same auto-loaded, `--pdf-image` and remote images and `--pdf-font` faces as PDF |
 | `--pdf-page-numbers` | Centered page number in the PDF bottom margin (sugar for `--pdf-footer-center '{page}'`) |
 | `--pdf-header-left\|center\|right <text>`, `--pdf-footer-left\|center\|right <text>` | Opt-in running header/footer text in the PDF margins. Tokens `{page}`, `{pages}`, `{title}`, `{author}`, `{date}` (from `SOURCE_DATE_EPOCH`, never the clock); overlong slots get an ellipsis; a band that does not fit its margin fails the render. Add `--pdf-header-rule`/`--pdf-footer-rule` for hairlines and `--pdf-running-skip-first` to leave page 1 bare |
-| `--pdf-header-image DEST`, `--pdf-footer-image DEST` | One decorative PNG/JPEG/SVG logo per PDF band, resolved from `--pdf-image DEST=PATH`; the destination need not appear in Markdown. Use `--pdf-header-image-position left\|right` or `--pdf-footer-image-position left\|right` (default left) and optional `--pdf-header-image-height-pt`/`--pdf-footer-image-height-pt` positive integer points. Images shrink proportionally to fit the existing margin and leave room for text. Missing or invalid images fail the render. Available in render, watch and batch; requires `--to pdf` or `--to both` |
-| `--pdf-image DEST=PATH` | Provide or override one image destination for HTML, PDF, SVG or EPUB, including stdin/`--text` input and PDF running logos; repeat for multiple images. `DEST` matches the source destination exactly and can be an extensionless key or URL. HTML identifies PNG/JPEG/SVG from the supplied bytes and embeds data URIs; unsupported bytes keep the original safe URL. Explicit mappings take precedence over auto-loaded files in both HTML and PDF. File-input renders also auto-load relative local PNG/SVG/JPEG destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). Watch rebuilds when a mapped file changes. The render core never reads files or fetches network resources itself |
+| `--pdf-header-image DEST`, `--pdf-footer-image DEST` | One decorative PNG/JPEG/GIF/SVG logo per PDF band, resolved from `--pdf-image DEST=PATH`; the destination need not appear in Markdown. Use `--pdf-header-image-position left\|right` or `--pdf-footer-image-position left\|right` (default left) and optional `--pdf-header-image-height-pt`/`--pdf-footer-image-height-pt` positive integer points. Images shrink proportionally to fit the existing margin and leave room for text. Missing or invalid images fail the render. Available in render, watch and batch; requires `--to pdf` or `--to both` |
+| `--pdf-image DEST=PATH` | Provide or override one image destination for HTML, PDF, SVG or EPUB, including stdin/`--text` input and PDF running logos; repeat for multiple images. `DEST` matches the source destination exactly and can be an extensionless key or URL. HTML identifies PNG/JPEG/GIF/SVG from the supplied bytes and embeds data URIs; unsupported bytes keep the original safe URL. Explicit mappings take precedence over auto-loaded files in both HTML and PDF. File-input renders also auto-load relative local PNG/SVG/JPEG/GIF destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). Watch rebuilds when a mapped file changes. The render core never reads files or fetches network resources itself |
 | `--max-pdf-image-bytes <n>` | Max bytes accepted per explicitly mapped or auto-loaded local image file before rendering; also caps each remote image fetch (default `33554432`, 32 MiB) |
 | `--no-remote-images` | Do not fetch remote http(s) image destinations for PDF output; they degrade to alt text with a warning |
 | `--remote-image-timeout-secs <n>` | Per-image timeout for remote PDF image fetches (default `20`) |
@@ -744,7 +744,7 @@ fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR] [--workers N]
 | `--batch-mode interactive\|throughput` | `interactive` reserves CPU headroom; `throughput` uses all cores. Default `interactive` |
 | `--mem-budget <bytes>` | Soft concurrency cap: workers ≈ `bytes / 64 MiB-per-job` (a static per-job estimate, not measured resident memory) |
 | `--timeout <secs>` | Wall-clock deadline; on expiry the run cancels at the next per-file checkpoint and the receipt is marked `cancelled` |
-| `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG/JPEG image asset for HTML and PDF batch renders |
+| `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG/JPEG/GIF image asset for HTML and PDF batch renders |
 | `--continue-on-error` | Record per-file failures in the receipt instead of failing the whole run |
 | `--font`, `--css`, and the render style flags | Shared theme and style overrides (`--toc`, `--font-scale`, `--microtype`, typography, PDF running headers/footers, `--pdf-font`, ...), as in `render`. `--pdf-a` and `--svg-width-pt` are render-only |
 | `--json` | Emit the deterministic batch receipt JSON to stdout |
@@ -996,8 +996,8 @@ Honest about what the renderer does not do yet.
   inside running prose and table cells (badges, icons) are drawn inline as
   unbreakable boxes up to 1.75 em tall and tagged `/Figure` with their alt
   text; a paragraph of several large pictures keeps one figure line per
-  picture. PDF images are PNG, JPEG or SVG assets supplied by the host; the native CLI
-  auto-loads relative local image destinations for file-input HTML/PDF renders,
+  picture. PDF images are PNG, JPEG, GIF or SVG assets supplied by the host;
+  the native CLI auto-loads relative local image destinations for file-input HTML/PDF renders,
   HTML embeds supported assets as data URIs, and `--pdf-image` can provide or
   override assets explicitly for HTML, PDF, SVG and EPUB, including stdin and
   raw-text input with extensionless destination keys. JPEG EXIF orientation is
@@ -1006,6 +1006,14 @@ Honest about what the renderer does not do yet.
   displayed dimensions while PDF embeds the original JPEG bytes without
   recompression. Missing or malformed orientation metadata retains ordinary
   unrotated placement.
+- **GIF images retain their animation in HTML, SVG and EPUB.** File renders,
+  batch jobs and books load local `.gif` assets, and explicit image mappings
+  also accept GIF87a/GIF89a bytes under extensionless destination keys. HTML,
+  SVG and EPUB embed the original animation bytes, including frame timing and
+  transparency. PDF paints the first frame, honoring global/local palettes,
+  interlacing, frame offsets and transparency; malformed or oversized GIFs use
+  the existing image diagnostics and fallback behavior. Browser document and
+  book imports, image replacement and portable book backups retain GIF bytes.
 - **PDF footnotes.** Notes print at the foot of the page carrying their first
   reference, with linked superscript marks; unreferenced notes and notes taller
   than 40% of a page fall back to a trailing Notes section, and notes are never
@@ -1021,7 +1029,7 @@ Honest about what the renderer does not do yet.
   stretching their internal spaces to justify the surrounding prose.
 - **SVG support is practical, not browser-complete.** The PDF renderer covers
   the shapes, gradients, masks, clips, markers, CSS variables/selectors,
-  embedded PNG/JPEGs, marker view boxes/orientation/units, and `paint-order` behavior
+  embedded PNG/JPEG/GIFs, marker view boxes/orientation/units, and `paint-order` behavior
   needed by the current showcase and frankenmermaid output. Unsupported SVG
   features are reported as structured render warnings rather than silently
   pretending to match a browser.

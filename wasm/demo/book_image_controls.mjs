@@ -2,7 +2,7 @@ import { BOOK_WORKBENCH_LIMITS, readBookFiles } from "./book_collection.mjs";
 import { bookError } from "../book_worker.mjs";
 
 const IDS = ["book-image-selection", "book-image-file", "book-image-replace", "book-image-remove", "book-image-cancel", "book-image-status"];
-const format = name => /\.png$/i.test(name) ? "png" : /\.jpe?g$/i.test(name) ? "jpeg" : /\.svg$/i.test(name) ? "svg" : null;
+const format = name => /\.png$/i.test(name) ? "png" : /\.jpe?g$/i.test(name) ? "jpeg" : /\.gif$/i.test(name) ? "gif" : /\.svg$/i.test(name) ? "svg" : null;
 
 /** Byte authorization uses the ordinary image-import policy. This controller
  * never parses Markdown, loads an image into the host DOM or claims that an
@@ -20,7 +20,7 @@ export function createBookImagePanel(root) {
   };
   const panel = make("div", "book-image-panel", "", section);
   make("h3", "book-image-title", "Replace or remove book images", panel);
-  make("p", "book-image-help", "Replace bytes at an existing book-relative image path without editing Markdown references or alt text. Select a PNG, JPEG or SVG of the same format. File admission uses the ordinary import limits; rebuild the book preview or PDF proof to check rendering. No file is uploaded or changed on disk.", panel);
+  make("p", "book-image-help", "Replace bytes at an existing book-relative image path without editing Markdown references or alt text. Select a PNG, JPEG, GIF or SVG of the same format. File admission uses the ordinary import limits; rebuild the book preview or PDF proof to check rendering. No file is uploaded or changed on disk.", panel);
   const label = make("label", "", "Authorized image path", panel);
   label.setAttribute("for", "book-image-selection");
   const select = make("select", IDS[0], "", panel);
@@ -30,7 +30,7 @@ export function createBookImagePanel(root) {
   fileLabel.setAttribute("for", "book-image-file");
   const file = make("input", IDS[1], "", panel);
   file.type = "file";
-  file.accept = ".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml";
+  file.accept = ".png,.jpg,.jpeg,.gif,.svg,image/png,image/jpeg,image/gif,image/svg+xml";
   file.setAttribute("aria-describedby", "book-image-help book-image-status");
   for (const [id, text] of [[IDS[2], "Replace selected image"], [IDS[3], "Remove selected image"], [IDS[4], "Cancel image operation"]]) {
     const button = make("button", id, text, panel);
@@ -131,7 +131,7 @@ export function createBookImageControls({ root, collection, controls, confirm, t
         change = { destination: op.destination, remove: true };
       } else {
         if (file.files?.length !== 1 || !op.file || !format(op.file.name) || format(op.file.name) !== format(op.destination))
-          throw bookError("INVALID_IMAGE", "Select one replacement PNG, JPEG or SVG of the same format as the image path.");
+          throw bookError("INVALID_IMAGE", "Select one replacement PNG, JPEG, GIF or SVG of the same format as the image path.");
         const size = op.file.size;
         if (!Number.isSafeInteger(size) || size < 1 || size > BOOK_WORKBENCH_LIMITS.imageBytes)
           throw bookError("FILE_LIMIT", "Choose a replacement containing 1 byte through 8 MiB.");

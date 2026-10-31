@@ -19,13 +19,13 @@ fn decode_with_limit(source: &str, limit: usize) -> Result<Vec<u8>, SvgWarning> 
     let comma = comma.ok_or_else(invalid)?;
     let mut fields = source[5..comma].split(';');
     let mime = fields.next().unwrap_or("");
-    if !["image/png", "image/jpeg", "image/svg+xml"]
+    if !["image/png", "image/jpeg", "image/gif", "image/svg+xml"]
         .iter()
         .any(|m| mime.eq_ignore_ascii_case(m))
     {
         return Err(failure(
             "svg_image_unsupported",
-            "data URI must name PNG, JPEG, or SVG",
+            "data URI must name PNG, JPEG, GIF, or SVG",
         ));
     }
     let mut base64 = false;

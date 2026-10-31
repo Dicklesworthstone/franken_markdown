@@ -2,7 +2,7 @@
 
 SVG is a standalone, single-page export. Renderer-generated text uses
 outlined fonts and deterministic glyph definitions, without `<text>`,
-`foreignObject`, JavaScript or a browser math dependency. Explicit PNG/JPEG/SVG
+`foreignObject`, JavaScript or a browser math dependency. Explicit PNG/JPEG/GIF/SVG
 image resources retain their own content; see `SVG_RESOURCES.md`.
 
 ## Mathematics

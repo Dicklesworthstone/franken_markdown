@@ -99,7 +99,7 @@ export function createDirectoryImageSources(files, { documentPath = "" } = {}) {
   return directoryImageSources(files, documentPath, false);
 }
 
-function directoryImageSources(files, documentPath, svg) {
+function directoryImageSources(files, documentPath, documentFormats) {
   let base = [];
   if (documentPath !== "") {
     const parts = pathParts(documentPath);
@@ -125,7 +125,7 @@ function directoryImageSources(files, documentPath, svg) {
     seen.add(relative);
     // Extensions restrict the grant, not the decoder. FlowImageAssets still
     // validates the actual container and pixel limits before allocating ink.
-    if (!(svg ? /\.(png|jpe?g|svg)$/i : /\.(png|jpe?g)$/i).test(parts.at(-1))) continue;
+    if (!(documentFormats ? /\.(png|jpe?g|gif|svg)$/i : /\.(png|jpe?g)$/i).test(parts.at(-1))) continue;
     if (++count > MAX_FILES) fail("Select a folder with at most 128 images");
     if (!file.size || file.size > MAX_FILE_BYTES || (total += file.size) > MAX_TOTAL_BYTES)
       fail("Selected images exceed the 8 MiB per-file or 32 MiB total limit");
@@ -195,7 +195,7 @@ function abortable(value, signal) {
 }
 
 /** Capture a bounded document-renderer grant using the same local/folder path
- * policy as Flow. SVG directory entries are enabled only here; the existing
+ * policy as Flow. GIF/SVG directory entries are enabled only here; the existing
  * Flow directory grant stays PNG/JPEG-only. No Markdown parsing, image decoding
  * or network loading occurs.
  * Native HTML/PDF validate the actual bytes and sanitize SVG when rendering. */
@@ -204,9 +204,9 @@ export function captureDocumentImageFiles(files, { folder = false, documentPath 
   const sources = folder
     ? directoryImageSources(files, documentPath, true) : createLocalImageSources(files);
   const { entries, lookup } = inventories.get(sources);
-  if (!entries.length) fail("Choose at least one PNG, JPEG or SVG image");
-  if (entries.some(entry => !/\.(png|jpe?g|svg)$/i.test(entry.name)))
-    fail("Choose PNG, JPEG or SVG image files");
+  if (!entries.length) fail("Choose at least one PNG, JPEG, GIF or SVG image");
+  if (entries.some(entry => !/\.(png|jpe?g|gif|svg)$/i.test(entry.name)))
+    fail("Choose PNG, JPEG, GIF or SVG image files");
   const bindings = [], seen = new Map();
   let expandedBytes = 0, keyUnits = 0, totalBytes = 0;
   for (const entry of entries) {

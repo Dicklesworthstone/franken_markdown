@@ -837,7 +837,7 @@ fn has_supported_pdf_image_extension(path: &Path) -> bool {
         .is_some_and(|ext| {
             matches!(
                 ext.to_ascii_lowercase().as_str(),
-                "png" | "svg" | "jpg" | "jpeg"
+                "png" | "svg" | "jpg" | "jpeg" | "gif"
             )
         })
 }
@@ -2941,13 +2941,15 @@ mod tests {
     }
 
     #[test]
-    fn supported_pdf_image_extensions_are_png_svg_jpeg_case_insensitive() {
+    fn supported_pdf_image_extensions_are_png_svg_jpeg_gif_case_insensitive() {
         assert!(has_supported_pdf_image_extension(Path::new("a.png")));
         assert!(has_supported_pdf_image_extension(Path::new("a.PNG")));
         assert!(has_supported_pdf_image_extension(Path::new("a.Svg")));
         assert!(has_supported_pdf_image_extension(Path::new("a.jpg")));
         assert!(has_supported_pdf_image_extension(Path::new("a.JPEG")));
-        assert!(!has_supported_pdf_image_extension(Path::new("a.gif")));
+        assert!(has_supported_pdf_image_extension(Path::new("a.gif")));
+        assert!(has_supported_pdf_image_extension(Path::new("a.GIF")));
+        assert!(!has_supported_pdf_image_extension(Path::new("a.bmp")));
         assert!(!has_supported_pdf_image_extension(Path::new("noext")));
     }
 

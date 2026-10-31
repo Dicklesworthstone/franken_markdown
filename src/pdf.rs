@@ -46,6 +46,7 @@ mod baseline_grid;
 mod fenced_code;
 mod figure_fit;
 mod financial_tables;
+mod gif;
 mod inline_code;
 mod inline_image;
 mod inline_math_fit;
@@ -5326,7 +5327,30 @@ fn resolve_pdf_image(assets: &[crate::PdfImageAsset], dest: &str) -> Option<PdfI
 fn parse_pdf_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
     parse_png_image_asset(key, bytes)
         .or_else(|| parse_jpeg_image_asset(key, bytes))
+        .or_else(|| parse_gif_image_asset(key, bytes))
         .or_else(|| parse_svg_image_asset(key, bytes))
+}
+
+/// Read bounded GIF intrinsic dimensions for the SVG image backend. Animation
+/// bytes remain unchanged there; static PDF output decodes the first frame.
+#[doc(hidden)]
+#[must_use]
+pub fn gif_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    gif::dimensions(bytes)
+}
+
+fn parse_gif_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
+    let frame = gif::decode_first_frame(bytes)?;
+    Some(PdfImageData {
+        key: key.to_owned(),
+        width_px: frame.width,
+        height_px: frame.height,
+        vector: None,
+        color: PdfImageColor::Rgb,
+        data: crate::compress::zlib_compress(&frame.rgb),
+        filter: PdfImageStreamFilter::Flate,
+        smask: frame.alpha.as_deref().map(crate::compress::zlib_compress),
+    })
 }
 
 /// Frame header of a JPEG the PDF `/DCTDecode` filter can carry unchanged.
@@ -7568,6 +7592,9 @@ fn parse_svg_embedded_image(
     } else if let Some(jpeg) = decode_svg_jpeg_data_uri(href) {
         let key = svg_inline_image_key("svg-inline-jpeg", &jpeg);
         parse_jpeg_image_asset(&key, &jpeg)?
+    } else if let Some(gif) = decode_svg_image_data_uri(href, "image/gif", false) {
+        let key = svg_inline_image_key("svg-inline-gif", &gif);
+        parse_gif_image_asset(&key, &gif)?
     } else {
         let svg = decode_svg_svg_data_uri(href)?;
         let key = svg_inline_svg_key(&svg);

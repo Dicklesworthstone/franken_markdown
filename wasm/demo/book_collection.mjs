@@ -143,8 +143,8 @@ export function normalizeBookPublication(value = {}) {
   for (const band of [normalized.running?.header, normalized.running?.footer]) {
     if (band?.image) {
       bookPath(band.image.dest);
-      if (!/\.(png|jpe?g|svg)$/i.test(band.image.dest))
-        throw bookError("INVALID_IMAGE", "Running images must reference a book PNG, JPEG or SVG path.");
+      if (!/\.(png|jpe?g|gif|svg)$/i.test(band.image.dest))
+        throw bookError("INVALID_IMAGE", "Running images must reference a book PNG, JPEG, GIF or SVG path.");
     }
   }
   // The facade owns/freezes nested bands and images. Primitive defaults remain
@@ -246,8 +246,8 @@ function imageList(value) {
   return value.map((image) => {
     const destination = bookPath(image?.destination),
       bytes = image.bytes;
-    if (!/\.(png|jpe?g|svg)$/i.test(destination))
-      throw bookError("INVALID_IMAGE", "Choose PNG, JPEG or SVG images.");
+    if (!/\.(png|jpe?g|gif|svg)$/i.test(destination))
+      throw bookError("INVALID_IMAGE", "Choose PNG, JPEG, GIF or SVG images.");
     if (paths.has(destination))
       throw bookError(
         "DUPLICATE_PATH",
@@ -809,7 +809,7 @@ export async function readBookFiles(selected, { folder = false, role = "chapter"
         ? "include"
         : /\.(md|markdown)$/i.test(path)
           ? "chapter"
-          : /\.(png|jpe?g|svg)$/i.test(path)
+          : /\.(png|jpe?g|gif|svg)$/i.test(path)
             ? "image"
             : null;
     if (!kind) {
@@ -1001,8 +1001,8 @@ export async function readPortableBookProject(file, { signal } = {}) {
   const images = raw.images.map(asset => {
     portableRecord(asset, ["destination", "encoding", "data"]);
     const destination = bookPath(asset.destination);
-    if (!/\.(png|jpe?g|svg)$/i.test(destination))
-      throw bookError("INVALID_IMAGE", "Portable images must be PNG, JPEG or SVG.");
+    if (!/\.(png|jpe?g|gif|svg)$/i.test(destination))
+      throw bookError("INVALID_IMAGE", "Portable images must be PNG, JPEG, GIF or SVG.");
     if (destinations.has(destination)) throw bookError("DUPLICATE_PATH", "Duplicate portable image path.");
     destinations.add(destination);
     const size = portableAssetSize(asset, L.imageBytes);

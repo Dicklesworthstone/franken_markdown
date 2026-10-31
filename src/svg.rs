@@ -28,7 +28,7 @@
 //! Safe links have keyboard-accessible hit regions; heading links use SVG views;
 //! mathematics uses the shared TeX layout engine and vector outlines. Raw HTML
 //! is preserved as inert vector text; complete numbered endnotes follow the body.
-//! PNG/JPEG/SVG images use embedded data or explicit
+//! PNG/JPEG/GIF/SVG images use embedded data or explicit
 //! caller assets; unresolved images retain their alt text with diagnostics.
 //!
 //! Appearance is host-independent: Auto chooses light, while explicit theme

@@ -1143,6 +1143,9 @@ fn html_image_asset_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return Some("image/jpeg");
     }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
     if looks_like_svg(bytes) {
         return Some("image/svg+xml");
     }
@@ -4057,6 +4060,9 @@ mod tests {
             html_image_asset_mime(b"\xff\xd8\xff\xe0"),
             Some("image/jpeg")
         );
+        for version in [b"GIF87a", b"GIF89a"] {
+            assert_eq!(html_image_asset_mime(version), Some("image/gif"));
+        }
         for svg in [
             "<svg xmlns='http://www.w3.org/2000/svg'/>",
             "\u{feff}  <?xml version='1.0'?>\n<!-- exported logo --><svg/>",
@@ -4071,6 +4077,8 @@ mod tests {
         }
         for unsupported in [
             "not an image",
+            "GIF88a",
+            "gif89a",
             "<html><body>not SVG</body></html>",
             "<?xml version='1.0'?><html><svg/></html>",
             "<?xml version='1.0'?><rect/>",

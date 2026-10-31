@@ -3,6 +3,8 @@
 //! tests may unwrap/panic for clarity.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "epub/gif.rs"]
+mod epub_gif;
 #[path = "epub/theme.rs"]
 mod epub_theme;
 #[path = "../src/zip.rs"]

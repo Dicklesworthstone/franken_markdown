@@ -411,6 +411,8 @@ fn read_regular(root: &Path, relative: &str, limit: u64) -> Result<(PathBuf, Vec
 fn supported_image(bytes: &[u8]) -> bool {
     bytes.starts_with(b"\x89PNG\r\n\x1a\n")
         || bytes.starts_with(b"\xff\xd8\xff")
+        || bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
         || std::str::from_utf8(bytes).is_ok_and(|text| {
             let start = text.trim_start_matches('\u{feff}').trim_start();
             start.starts_with("<svg") || (start.starts_with("<?xml") && start.contains("<svg"))

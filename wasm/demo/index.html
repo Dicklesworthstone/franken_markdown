@@ -422,9 +422,9 @@
             </div>
             <details class="image-controls">
               <summary>Local images for preview and exports</summary>
-              <p>Choose PNG, JPEG or SVG images for this document. Nothing is uploaded. Each selection replaces the previous image access after loading succeeds; Markdown is unchanged. Up to 128 images, 8 MiB each and 32 MiB combined. The complete image request, including path aliases, is also capped at 48 MiB.</p>
+              <p>Choose PNG, JPEG, GIF or SVG images for this document. Nothing is uploaded. Each selection replaces the previous image access after loading succeeds; Markdown is unchanged. Up to 128 images, 8 MiB each and 32 MiB combined. The complete image request, including path aliases, is also capped at 48 MiB.</p>
               <label class="field">Select individual images
-                <input id="image-files" type="file" multiple accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml" aria-describedby="image-status" />
+                <input id="image-files" type="file" multiple accept=".png,.jpg,.jpeg,.gif,.svg,image/png,image/jpeg,image/gif,image/svg+xml" aria-describedby="image-status" />
               </label>
               <label class="field">Or choose a folder containing the document and its images
                 <input id="image-folder" type="file" webkitdirectory multiple aria-describedby="image-folder-help image-status" />
@@ -432,7 +432,7 @@
               <label class="field">Markdown path within that folder
                 <input id="image-document-path" type="text" maxlength="4096" placeholder="docs/guide.md (blank uses the folder root)" autocomplete="off" spellcheck="false" aria-describedby="image-folder-help" />
               </label>
-              <p id="image-folder-help">The path excludes the selected folder's name. Only its PNG/JPEG/SVG files are read; source and other files are ignored. Choose a small document folder with at most 4096 entries. Nested and parent-relative image paths remain inside that selected folder.</p>
+              <p id="image-folder-help">The path excludes the selected folder's name. Only its PNG/JPEG/GIF/SVG files are read; source and other files are ignored. Choose a small document folder with at most 4096 entries. Nested and parent-relative image paths remain inside that selected folder.</p>
               <div class="actions">
                 <button id="apply-image-folder" class="button secondary" type="button" disabled>Use this image folder</button>
                 <button id="cancel-images" class="button secondary" type="button" disabled>Cancel image loading</button>

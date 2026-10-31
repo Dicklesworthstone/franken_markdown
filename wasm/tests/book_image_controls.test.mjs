@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { File } from "node:buffer";
+import { readFileSync } from "node:fs";
 import { createBookCollection } from "../demo/book_collection.mjs";
 import { createBookImageControls, createBookImagePanel } from "../demo/book_image_controls.mjs";
 
@@ -89,6 +90,24 @@ test("identical replacements retain configuration revision and do not notify sub
   assert.equal(f.book.renderConfigurationRevision, config);
   assert.match(f.el["book-image-status"].textContent, /identical/);
   off(); f.manager.dispose();
+});
+
+test("GIF replacements retain the bound path and the complete animation", async () => {
+  const bytes = new Uint8Array(Buffer.from(readFileSync(
+    new URL("../../tests/fixtures/gif/animated-colors.base64", import.meta.url), "utf8",
+  ).trim(), "base64"));
+  const f = fixture();
+  f.book.append({ chapters: [], images: [{ destination: "media/steps.gif", bytes: Uint8Array.of(1) }] });
+  f.select("media/steps.gif");
+  const source = f.book.files;
+  assert(f.el["book-image-file"].accept.includes(".gif"));
+  assert(f.el["book-image-file"].accept.includes("image/gif"));
+  f.choose("replacement.GIF", bytes);
+  await f.manager.replace();
+  const installed = f.book.snapshot().options.images.find(image => image.destination === "media/steps.gif");
+  assert.deepEqual(installed.bytes, bytes);
+  assert.deepEqual(f.book.files, source);
+  f.manager.dispose();
 });
 
 test("source capture preserves silently typed editor content before image mutation", async () => {

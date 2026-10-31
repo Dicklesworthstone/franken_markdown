@@ -38,7 +38,7 @@ test("failed imports are atomic across source and image ownership", () => {
   assert.equal(book.revision, before);
   assert.equal(book.images.length, 0);
   assert.throws(
-    () => append(book, [chapter("new.md")], [{ destination: "bad.gif", bytes }]),
+    () => append(book, [chapter("new.md")], [{ destination: "bad.bmp", bytes }]),
     code("INVALID_IMAGE"),
   );
   assert.equal(book.files.length, 1);

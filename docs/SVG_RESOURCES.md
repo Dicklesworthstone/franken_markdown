@@ -1,6 +1,6 @@
 # Resource-aware SVG export
 
-SVG poster export accepts PNG, JPEG and SVG image bytes, and the same five
+SVG poster export accepts PNG, JPEG, GIF and SVG image bytes, and the same five
 caller-supplied TrueType font slots used by HTML/PDF. The rendering core never
 opens a file or fetches a URL. The caller decides which resources to authorize.
 
@@ -22,7 +22,7 @@ let (bytes, report, warnings) = render_svg_with_resources(
 
 Existing `render_svg`, `render_svg_with_report` and
 `render_svg_with_diagnostics` signatures are unchanged. They now render inline
-PNG/JPEG/SVG data URIs too. The resource-aware API additionally accepts explicit
+PNG/JPEG/GIF/SVG data URIs too. The resource-aware API additionally accepts explicit
 image keys and font bytes. Keys are trimmed; the first matching supplied entry
 wins, even when malformed. An explicit entry takes precedence over a data URI.
 An image key is only an identifier: naming an HTTP URL does not fetch it.

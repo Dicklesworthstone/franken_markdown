@@ -921,9 +921,16 @@ fn iup_contour(delta: &mut [f32], touched: &[bool], orig: &[i32], start: usize, 
 }
 
 /// Coordinate-space IUP between touched endpoints `a` and `b`.
+#[allow(clippy::float_cmp)] // Equal-coordinate references require exactly equal deltas.
 fn iup_delta(oa: i32, oi: i32, ob: i32, da: f32, db: f32) -> f32 {
+    if oa == ob {
+        // Coincident reference coordinates cannot define an interpolation
+        // interval. OpenType retains a shared delta, or infers zero when
+        // the two explicit deltas differ, regardless of the target position.
+        return if da == db { da } else { 0.0 };
+    }
     let (lo, hi) = if oa <= ob { (oa, ob) } else { (ob, oa) };
-    if oa != ob && oi >= lo && oi <= hi {
+    if oi >= lo && oi <= hi {
         da + (db - da) * ((oi - oa) as f32 / (ob - oa) as f32)
     } else if (oi - oa).unsigned_abs() <= (oi - ob).unsigned_abs() {
         da
@@ -970,31 +977,57 @@ fn encode_simple(g: &SimpleGlyph) -> Option<Vec<u8>> {
         } else {
             0
         };
-        if dx == 0 {
-            f |= X_SAME_OR_POS;
-        }
-        if dy == 0 {
-            f |= Y_SAME_OR_POS;
-        }
+        f |= simple_delta_flags(dx, X_SHORT, X_SAME_OR_POS);
+        f |= simple_delta_flags(dy, Y_SHORT, Y_SAME_OR_POS);
         flags.push(f);
         prev = (x, y);
     }
-    out.extend_from_slice(&flags);
-    for (i, &dx) in dxs.iter().enumerate() {
-        let f = flags.get(i).copied().unwrap_or(0);
-        if f & X_SAME_OR_POS != 0 && dx == 0 {
-            continue;
+    // The repeat count is the number of *additional* flags, so each run
+    // contains at most 256 points. Runs may cross contour boundaries.
+    let mut i = 0;
+    while let Some(&flag) = flags.get(i) {
+        let run = flags
+            .get(i..)?
+            .iter()
+            .take(256)
+            .take_while(|&&next| next == flag)
+            .count();
+        if run > 1 {
+            out.push(flag | REPEAT);
+            out.push(u8::try_from(run - 1).ok()?);
+        } else {
+            out.push(flag);
         }
-        out.extend_from_slice(&i16::try_from(dx).ok()?.to_be_bytes());
+        i += run;
     }
-    for (i, &dy) in dys.iter().enumerate() {
-        let f = flags.get(i).copied().unwrap_or(0);
-        if f & Y_SAME_OR_POS != 0 && dy == 0 {
-            continue;
-        }
-        out.extend_from_slice(&i16::try_from(dy).ok()?.to_be_bytes());
+    for delta in dxs.into_iter().chain(dys) {
+        write_simple_delta(&mut out, delta)?;
     }
     Some(out)
+}
+
+/// TrueType stores zero without a coordinate byte, magnitudes 1..=255 in
+/// one unsigned byte (the flag carries the sign), and larger deltas as i16.
+fn simple_delta_flags(delta: i32, short: u8, same_or_positive: u8) -> u8 {
+    if delta == 0 {
+        same_or_positive
+    } else if delta.unsigned_abs() <= u32::from(u8::MAX) {
+        short | if delta > 0 { same_or_positive } else { 0 }
+    } else {
+        0
+    }
+}
+
+fn write_simple_delta(out: &mut Vec<u8>, delta: i32) -> Option<()> {
+    if delta == 0 {
+        return Some(());
+    }
+    if let Ok(short) = u8::try_from(delta.unsigned_abs()) {
+        out.push(short);
+    } else {
+        out.extend_from_slice(&i16::try_from(delta).ok()?.to_be_bytes());
+    }
+    Some(())
 }
 
 fn bbox(points: &[(i32, i32)]) -> (i16, i16, i16, i16) {
@@ -1733,6 +1766,56 @@ mod tests {
     }
 
     #[test]
+    fn iup_coincident_references_match_fonttools() {
+        // FontTools 4.61.1 iup_delta: default X coordinates (0, target, 0),
+        // deltas (10, None, 20) infer zero; (10, None, 10) infer ten. This
+        // applies on either side of, and exactly at, the shared coordinate.
+        for target in [-100, 0, 100] {
+            assert!(iup_delta(0, target, 0, 10.0, 20.0).abs() < f32::EPSILON);
+            assert!((iup_delta(0, target, 0, 10.0, 10.0) - 10.0).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn sparse_tuple_keeps_unreferenced_y_when_reference_coordinates_coincide() {
+        // Minimal contour reproducing Noto Sans SC U+3ABD: the Y references
+        // are both 371, with deltas 16 and 14. The omitted points must keep
+        // Y=598. Choosing either adjacent delta incorrectly moves them.
+        // Independently encoded with FontTools 4.61.1:
+        // compilePoints({0, 3}) + compileDeltaValues_([-37, 69])
+        //                     + compileDeltaValues_([16, 14]).
+        let packed = [0x02, 0x01, 0x00, 0x03, 0x01, 0xDB, 0x45, 0x01, 0x10, 0x0E];
+        for (scalar, expected) in [
+            (1.0, [(454, 387), (454, 598), (590, 598), (590, 385)]),
+            (
+                6390.0 / 16384.0, // Noto's avar-mapped Regular location.
+                [(477, 377), (477, 598), (548, 598), (548, 376)],
+            ),
+        ] {
+            let mut points = [(491, 371), (491, 598), (521, 598), (521, 371)];
+            let mut phantoms = [(0, 0); PHANTOMS];
+            let tuple = TupleWork {
+                scalar,
+                data_off: 0,
+                data_end: packed.len(),
+                private_points: true,
+                shared_points: false,
+            };
+            apply_tuples(
+                &packed,
+                &[tuple],
+                &mut points,
+                Some(&[3]),
+                8,
+                None,
+                Some(&mut phantoms),
+            );
+            assert_eq!(points, expected);
+            assert_eq!(phantoms, [(0, 0); PHANTOMS]);
+        }
+    }
+
+    #[test]
     fn instance_rewrites_hmtx_from_phantom_deltas() {
         // 3 outline points + 4 phantoms; private point 4 is the right phantom.
         // +100 x at peak must become advance 600 (default hmtx is 500).
@@ -1786,6 +1869,68 @@ mod tests {
             "NaN/inf weight does not instance",
             font.instance(f32::NAN).is_none() && font.instance(f32::INFINITY).is_none(),
         );
+    }
+
+    #[test]
+    fn compact_simple_glyph_matches_truetype_short_vector_encoding() {
+        let glyph = encode_simple(&SimpleGlyph {
+            points: vec![(0, 0), (100, 0), (50, 100)],
+            on_curve: vec![true; 3],
+            contour_ends: vec![2],
+        })
+        .expect("compact triangle");
+        // Header + contour end + instruction length occupy 14 bytes.
+        // Zero/positive-X/negative-X-positive-Y flags, then X and Y bytes.
+        assert_eq!(&glyph[14..], &[0x31, 0x33, 0x27, 100, 50, 100]);
+        assert_eq!(glyph.len(), 20);
+    }
+
+    #[test]
+    fn compact_simple_glyph_round_trips_signed_byte_and_word_boundaries() {
+        let deltas = [0, 1, -1, 255, -255, 256, -256];
+        let mut point = (0, 0);
+        let mut points = Vec::new();
+        for (&dx, &dy) in deltas.iter().zip(deltas.iter().rev()) {
+            point.0 += dx;
+            point.1 += dy;
+            points.push(point);
+        }
+        // Exercise both signed-i16 endpoints as well as every short/word
+        // transition, without permitting an unrepresentable coordinate hop.
+        for points in [
+            points,
+            vec![(0, 0), (-32768, 32767), (-1, 0), (32766, -32768)],
+        ] {
+            let source = SimpleGlyph {
+                on_curve: (0..points.len()).map(|i| i % 2 == 0).collect(),
+                contour_ends: vec![u16::try_from(points.len() - 1).unwrap()],
+                points,
+            };
+            let encoded = encode_simple(&source).expect("boundary coordinates encode");
+            let decoded = decode_simple(&encoded, 1).expect("compact glyph decodes");
+            assert_eq!(decoded.points, source.points);
+            assert_eq!(decoded.on_curve, source.on_curve);
+            assert_eq!(decoded.contour_ends, source.contour_ends);
+        }
+    }
+
+    #[test]
+    fn compact_simple_glyph_splits_flag_runs_after_256_points() {
+        for count in [1, 2, 255, 256, 257, 512, 513] {
+            let source = SimpleGlyph {
+                points: vec![(0, 0); count],
+                on_curve: vec![true; count],
+                contour_ends: vec![u16::try_from(count - 1).unwrap()],
+            };
+            let encoded = encode_simple(&source).expect("repeated flags encode");
+            let decoded = decode_simple(&encoded, 1).expect("repeated flags decode");
+            assert_eq!(decoded.points, source.points);
+            assert_eq!(decoded.on_curve, source.on_curve);
+            if count == 513 {
+                assert_eq!(&encoded[14..], &[0x39, 0xFF, 0x39, 0xFF, 0x31]);
+                assert_eq!(encoded.len(), 19);
+            }
+        }
     }
 
     #[test]

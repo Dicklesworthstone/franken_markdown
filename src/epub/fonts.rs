@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 
 use franken_markdown::fonts::{self, FontStyle};
-use franken_markdown::text::Font;
+use franken_markdown::text::{EmbeddingFormat, Font};
 use franken_markdown::{FontAssetSlot, FontFamily, HtmlOptions, RenderError, Result};
 
 use super::{ZipWriter, fnv1a64};
@@ -185,6 +185,7 @@ impl Repertoire {
 struct Resource {
     href: String,
     bytes: Vec<u8>,
+    format: EmbeddingFormat,
 }
 
 #[derive(Default)]
@@ -203,16 +204,30 @@ impl Package {
         weight: u16,
         italic: bool,
     ) -> Result<()> {
-        let bytes = font
-            .subset(keep)
-            .ok_or_else(|| invalid("font subsetting failed"))?;
+        // Retain the established TrueType subset bytes, including layout
+        // tables needed by reading systems. CFF must use the strict typed API
+        // so unsupported used outlines cannot become a successful blank font.
+        let (bytes, format) = if font.has_glyf_outlines() {
+            (
+                font.subset(keep)
+                    .ok_or_else(|| invalid("font subsetting failed"))?,
+                EmbeddingFormat::TrueType,
+            )
+        } else {
+            let subset = font.try_subset(keep).map_err(invalid)?;
+            (subset.bytes, subset.format)
+        };
+        let (extension, css_format) = match format {
+            EmbeddingFormat::TrueType => ("ttf", "truetype"),
+            EmbeddingFormat::OpenTypeCff => ("otf", "opentype"),
+        };
         if bytes.is_empty() || bytes.len() > MAX_FONT_BYTES {
             return Err(invalid("font subset is empty or exceeds 32 MiB"));
         }
         let index = match self
             .resources
             .iter()
-            .position(|resource| resource.bytes == bytes)
+            .position(|resource| resource.format == format && resource.bytes == bytes)
         {
             Some(index) => index,
             None => {
@@ -222,15 +237,16 @@ impl Package {
                 self.payload_bytes += bytes.len();
                 let index = self.resources.len();
                 self.resources.push(Resource {
-                    href: format!("fonts/font-{}.ttf", index + 1),
+                    href: format!("fonts/font-{}.{extension}", index + 1),
                     bytes,
+                    format,
                 });
                 index
             }
         };
         let style = if italic { "italic" } else { "normal" };
         self.css.push_str(&format!(
-            "@font-face{{font-family:\"{family}\";font-style:{style};font-weight:{weight};src:url(\"{}\") format(\"truetype\");}}\n",
+            "@font-face{{font-family:\"{family}\";font-style:{style};font-weight:{weight};src:url(\"{}\") format(\"{css_format}\");}}\n",
             self.resources[index].href,
         ));
         Ok(())
@@ -267,8 +283,12 @@ impl Package {
         let mut entries =
             format!("<item id=\"epub-font-css\" href=\"{CSS_PATH}\" media-type=\"text/css\"/>\n");
         for (index, resource) in self.resources.iter().enumerate() {
+            let media_type = match resource.format {
+                EmbeddingFormat::TrueType => "font/ttf",
+                EmbeddingFormat::OpenTypeCff => "font/otf",
+            };
             entries.push_str(&format!(
-                "<item id=\"epub-font-{}\" href=\"{}\" media-type=\"font/ttf\"/>\n",
+                "<item id=\"epub-font-{}\" href=\"{}\" media-type=\"{media_type}\"/>\n",
                 index + 1,
                 resource.href
             ));

@@ -4,9 +4,10 @@
 //! of the bundled IBM Plex / Computer Modern faces (see [`crate::fonts`] +
 //! [`crate::text::Font::subset`]). Text is laid out with the faces' real `hmtx`
 //! metrics, then written as a composite `Type0` font with `Identity-H` encoding
-//! (2-byte glyph ids) and a `CIDFontType2` descendant carrying the subset
-//! `FontFile2`. Each face also gets a `ToUnicode` CMap so the text stays
-//! selectable / copy-pasteable.
+//! (2-byte glyph ids). TrueType subsets use a `CIDFontType2` descendant and
+//! `FontFile2`; supported OpenType CFF subsets use `CIDFontType0` and
+//! `FontFile3` with subtype `OpenType`. Each face also gets a `ToUnicode`
+//! CMap so the text stays selectable / copy-pasteable.
 //!
 //! Knuth-Plass optimal line breaking (via [`crate::layout::break_paragraph`],
 //! with the original greedy wrapper kept as an emergency fallback) + automatic
@@ -31,7 +32,7 @@ use crate::layout::{
     cjk_break_prohibited, classify_script, default_interword_glue, is_breakable_whitespace,
     is_cjk_char,
 };
-use crate::text::{Font, Kerning, Ligatures};
+use crate::text::{EmbeddingFormat, Font, Kerning, Ligatures};
 use crate::theme::Theme;
 use crate::toc::marker_depth as toc_marker_depth;
 use crate::{FontAssetSlot, FontAssets, PdfOptions, RenderError};
@@ -2129,12 +2130,7 @@ fn load_pdf_face_parts(
     Cow<'static, Ligatures>,
 )> {
     if let Some(font) = face.parsed {
-        if !font.has_glyf_outlines() {
-            return Err(RenderError::InvalidInput(format!(
-                "{} font bytes must contain TrueType glyf outlines for deterministic subsetting",
-                slot.as_str()
-            )));
-        }
+        crate::validate_render_font(slot, font)?;
         if let Some(layout) = face.layout {
             return Ok((
                 Cow::Borrowed(font),
@@ -22362,12 +22358,31 @@ fn serialize(
         seed.extend(keep.iter().map(|&c| source.glyph_index(c)));
         seed.extend(shaped_glyphs);
         let subset_started = profiler.checkpoint();
-        let (bytes, mut gid_lookup) = if tail {
+        let (bytes, mut gid_lookup, format) = if !source.has_glyf_outlines() {
+            // ISO 32000-1 9.7.4.2: a name-keyed CFF program embedded as
+            // OpenType under CIDFontType0 selects CharStrings directly by
+            // GID. Preserve the same dense subset IDs used by Identity-H,
+            // the width array, shaped text and ToUnicode; CIDToGIDMap is
+            // only valid for the TrueType descendant below.
+            let t0 = tail.then(subset_tail_now);
+            let subset = source
+                .try_subset_glyphs_with_lookup(&seed, &keep)
+                .map_err(|err| {
+                    RenderError::InvalidInput(format!(
+                        "{} CFF font could not be subset: {err}",
+                        subset_tail_slot_name(slot)
+                    ))
+                })?;
+            if let Some(t0) = t0 {
+                subset_tail_since(t0, &mut tail_subset_ns);
+            }
+            (subset.bytes, subset.glyph_map, subset.format)
+        } else if tail {
             let t0 = subset_tail_now();
             let r = source.subset_glyphs_with_lookup(&seed, &keep);
             subset_tail_since(t0, &mut tail_subset_ns);
             match r {
-                Some(v) => v,
+                Some((bytes, map)) => (bytes, map, EmbeddingFormat::TrueType),
                 None => {
                     return Err(RenderError::PdfGeneration(
                         "an embedded font could not be subset",
@@ -22376,7 +22391,7 @@ fn serialize(
             }
         } else {
             match source.subset_glyphs_with_lookup(&seed, &keep) {
-                Some(v) => v,
+                Some((bytes, map)) => (bytes, map, EmbeddingFormat::TrueType),
                 None => {
                     return Err(RenderError::PdfGeneration(
                         "an embedded font could not be subset",
@@ -22465,12 +22480,13 @@ fn serialize(
             "font_subsetting",
             seed.len(),
             bytes.len(),
-            "subset one embedded TrueType face and parse the subset font",
+            "subset one embedded font face and parse the subset font",
             subset_started,
         );
         subsets.push(EmbeddedFace {
             slot,
             bytes,
+            format,
             font,
             kern: face.kern.as_ref(),
             map_lookup,
@@ -31519,6 +31535,7 @@ fn rounded_rect_fill(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: (f32, f32, f
 struct EmbeddedFace<'a> {
     slot: u8,
     bytes: Vec<u8>,
+    format: EmbeddingFormat,
     font: Font,
     /// GPOS pair kerning of the SOURCE face (the subset drops GPOS), keyed by
     /// original glyph ids — used to position glyphs in the content stream.
@@ -31801,14 +31818,17 @@ struct PdfCidFontObjectParts<'a> {
     psname: &'a str,
     descriptor_object_id: usize,
     widths: &'a str,
+    format: EmbeddingFormat,
 }
 
 struct PdfFontDescriptorObjectParts<'a> {
     object_id: usize,
     psname: &'a str,
     metrics: &'a FaceMetrics,
+    bbox: [i32; 4],
     italic_angle: i32,
     fontfile_object_id: usize,
+    format: EmbeddingFormat,
 }
 
 struct PdfParentTreeObjectParts<'a, F>
@@ -31913,14 +31933,20 @@ fn append_pdf_cid_font_object(
 ) {
     offsets[parts.object_id] = out.len();
     append_pdf_object_header(out, parts.object_id);
-    out.extend_from_slice(b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /");
+    out.extend_from_slice(match parts.format {
+        EmbeddingFormat::TrueType => b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /",
+        EmbeddingFormat::OpenTypeCff => b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /",
+    });
     out.extend_from_slice(parts.psname.as_bytes());
     out.extend_from_slice(
         b" /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
           /FontDescriptor ",
     );
     append_pdf_object_ref_bytes(out, parts.descriptor_object_id);
-    out.extend_from_slice(b" /CIDToGIDMap /Identity /DW 1000 /W [");
+    if parts.format == EmbeddingFormat::TrueType {
+        out.extend_from_slice(b" /CIDToGIDMap /Identity");
+    }
+    out.extend_from_slice(b" /DW 1000 /W [");
     out.extend_from_slice(parts.widths.as_bytes());
     out.extend_from_slice(b"] >>\nendobj\n");
 }
@@ -31934,10 +31960,13 @@ fn append_pdf_font_descriptor_object(
     append_pdf_object_header(out, parts.object_id);
     out.extend_from_slice(b"<< /Type /FontDescriptor /FontName /");
     out.extend_from_slice(parts.psname.as_bytes());
-    out.extend_from_slice(b" /Flags 4 /FontBBox [-200 ");
-    append_i32_bytes(out, parts.metrics.descent - 50);
-    out.extend_from_slice(b" 1100 ");
-    append_i32_bytes(out, parts.metrics.ascent + 50);
+    out.extend_from_slice(b" /Flags 4 /FontBBox [");
+    for (index, coordinate) in parts.bbox.into_iter().enumerate() {
+        if index != 0 {
+            out.push(b' ');
+        }
+        append_i32_bytes(out, coordinate);
+    }
     out.extend_from_slice(b"] /ItalicAngle ");
     append_i32_bytes(out, parts.italic_angle);
     out.extend_from_slice(b" /Ascent ");
@@ -31946,7 +31975,10 @@ fn append_pdf_font_descriptor_object(
     append_i32_bytes(out, parts.metrics.descent);
     out.extend_from_slice(b" /CapHeight ");
     append_i32_bytes(out, parts.metrics.cap_height);
-    out.extend_from_slice(b" /StemV 80 /FontFile2 ");
+    out.extend_from_slice(match parts.format {
+        EmbeddingFormat::TrueType => b" /StemV 80 /FontFile2 ",
+        EmbeddingFormat::OpenTypeCff => b" /StemV 80 /FontFile3 ",
+    });
     append_pdf_object_ref_bytes(out, parts.fontfile_object_id);
     out.extend_from_slice(b" >>\nendobj\n");
 }
@@ -31965,6 +31997,21 @@ fn append_pdf_fontfile2_stream_object(
     out.extend_from_slice(b" /Length1 ");
     append_decimal_usize(out, decoded_len);
     out.extend_from_slice(b" /Filter /FlateDecode >>\nstream\n");
+    out.extend_from_slice(compressed_font);
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+}
+
+fn append_pdf_opentype_stream_object(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    object_id: usize,
+    compressed_font: &[u8],
+) {
+    offsets[object_id] = out.len();
+    append_pdf_object_header(out, object_id);
+    out.extend_from_slice(b"<< /Length ");
+    append_decimal_usize(out, compressed_font.len());
+    out.extend_from_slice(b" /Subtype /OpenType /Filter /FlateDecode >>\nstream\n");
     out.extend_from_slice(compressed_font);
     out.extend_from_slice(b"\nendstream\nendobj\n");
 }
@@ -33046,6 +33093,26 @@ fn build_pdf(
     for (k, face) in faces.iter().enumerate() {
         let psname = subset_psname(k, face.slot);
         let m = FaceMetrics::of(&face.font);
+        let bbox = match face.format {
+            // Retain the historical TrueType descriptor bytes. CFF subsets
+            // regenerate head bounds from their actual cubic ink; round the
+            // scaled limits outward so the descriptor cannot clip glyphs.
+            EmbeddingFormat::TrueType => [-200, m.descent - 50, 1100, m.ascent + 50],
+            EmbeddingFormat::OpenTypeCff => {
+                let bounds = face.font.font_bbox().ok_or(RenderError::PdfGeneration(
+                    "a CFF subset font has no bounding box",
+                ))?;
+                let upm = i32::from(face.font.units_per_em.max(1));
+                let floor = |value: i16| (i32::from(value) * 1000).div_euclid(upm);
+                let ceil = |value: i16| (i32::from(value) * 1000 + upm - 1).div_euclid(upm);
+                [
+                    floor(bounds[0]),
+                    floor(bounds[1]),
+                    ceil(bounds[2]),
+                    ceil(bounds[3]),
+                ]
+            }
+        };
         let widths = profiler.measure(
             "widths_array_generation",
             face.font.num_glyphs as usize,
@@ -33072,6 +33139,7 @@ fn build_pdf(
                 psname: &psname,
                 descriptor_object_id: desc_obj(k),
                 widths: &widths,
+                format: face.format,
             },
         );
         let italic_angle = if matches!(face.slot, F_ITALIC | F_BOLDITALIC) {
@@ -33086,12 +33154,14 @@ fn build_pdf(
                 object_id: desc_obj(k),
                 psname: &psname,
                 metrics: &m,
+                bbox,
                 italic_angle,
                 fontfile_object_id: file_obj(k),
+                format: face.format,
             },
         );
-        // FontFile2: FlateDecode-compressed subset font program. /Length1 is the
-        // UNCOMPRESSED program length per the PDF spec.
+        // Keep the native program format. TrueType FontFile2 uses /Length1
+        // for the uncompressed size; CFF-flavored OpenType uses FontFile3.
         let font_comp = profiler.measure(
             "font_stream_compression",
             face.bytes.len(),
@@ -33099,13 +33169,18 @@ fn build_pdf(
             || crate::compress::zlib_compress_with_scratch(&face.bytes, &mut font_scratch),
             |bytes| bytes.len(),
         );
-        append_pdf_fontfile2_stream_object(
-            &mut buf,
-            &mut offsets,
-            file_obj(k),
-            &font_comp,
-            face.bytes.len(),
-        );
+        match face.format {
+            EmbeddingFormat::TrueType => append_pdf_fontfile2_stream_object(
+                &mut buf,
+                &mut offsets,
+                file_obj(k),
+                &font_comp,
+                face.bytes.len(),
+            ),
+            EmbeddingFormat::OpenTypeCff => {
+                append_pdf_opentype_stream_object(&mut buf, &mut offsets, file_obj(k), &font_comp)
+            }
+        }
         // ToUnicode CMap (left uncompressed so it stays greppable + tiny).
         let cmap = profiler.measure(
             "tounicode_generation",
@@ -38412,6 +38487,7 @@ mod pdf_writer_tests {
                 psname,
                 descriptor_object_id: 5,
                 widths,
+                format: super::EmbeddingFormat::TrueType,
             },
         );
         append_pdf_font_descriptor_object(
@@ -38421,8 +38497,10 @@ mod pdf_writer_tests {
                 object_id: 5,
                 psname,
                 metrics: &metrics,
+                bbox: [-200, metrics.descent - 50, 1100, metrics.ascent + 50],
                 italic_angle: -12,
                 fontfile_object_id: 6,
+                format: super::EmbeddingFormat::TrueType,
             },
         );
 

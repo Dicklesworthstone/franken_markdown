@@ -22,7 +22,9 @@ The existing `--max-pdf-image-bytes` limit applies before an export is written.
 With no supplied font face, the default EPUB remains free of embedded fonts.
 
 For Rust callers, populate `HtmlOptions.font_assets` before calling an EPUB
-renderer. The bytes must be supported TrueType/sfnt with `glyf` outlines:
+renderer. Supported inputs are TrueType/sfnt with `glyf` outlines and name-keyed
+CFF1 OpenType fonts with the bounded Type 2 outline support described below.
+The same slots can mix TrueType and CFF faces:
 
 ```rust
 use franken_markdown::{FontAssetSlot, FontAssets, HtmlOptions, parse_markdown};
@@ -86,11 +88,18 @@ Each face is subset once for that union of characters. Byte-identical subsets
 share one archive resource even when multiple font roles use them. The number
 of font files does not multiply with the number of chapters.
 
-The archive contains:
+The archive contains a resource matching each subset's actual outline format:
 
-- `OEBPS/fonts/font-N.ttf`: deterministic static TrueType subsets.
-- `OEBPS/embedded-fonts.css`: shared font-face and font-family rules.
-- Manifest entries for each font (`font/ttf`) and the added stylesheet.
+| Font program | Resource | Manifest media type | CSS format |
+| --- | --- | --- | --- |
+| TrueType | `OEBPS/fonts/font-N.ttf` | `font/ttf` | `truetype` |
+| CFF1 OpenType | `OEBPS/fonts/font-N.otf` | `font/otf` | `opentype` |
+
+`OEBPS/embedded-fonts.css` carries the shared font-face and font-family rules.
+The manifest declares each font and the stylesheet. Five semantic slots using
+identical CFF bytes share one `.otf` subset; a bundled TrueType symbol fallback
+remains a separate `.ttf` resource. Existing TrueType subset bytes, filenames,
+CSS descriptors and manifest entries retain their prior format.
 
 Every chapter and the navigation document link to the shared stylesheets.
 Fonts are resources, not extra chapters or spine items. Subset bytes and the
@@ -98,11 +107,11 @@ CSS mapping contribute to the existing content-derived publication identifier;
 this fingerprint is not an authenticity signature. The OCF mimetype entry
 remains first, stored, and byte-exact. Fonts and their CSS use the existing ZIP
 DEFLATE writer. `HtmlOptions.html_font_format` still governs HTML embedding;
-EPUB uses the fixed `.ttf` resource format for this implementation.
+EPUB uses raw `.ttf` or `.otf` resources according to the font program.
 
 ## Weight, style and stylesheet behavior
 
-A supplied `wght` variable font is instanced before subsetting, using the slot's
+A supplied TrueType `wght` variable font is instanced before subsetting, using the slot's
 existing weight pin. When bold has no own bytes, a variable regular face also
 supplies bold at the bold slot's weight. Instance or subset failure is an error,
 not permission to silently ship the uninstanced font. Static faces ignore weight
@@ -142,12 +151,27 @@ input/output/work limits, not a bound on all transient allocations. A retained
 session's source and font options are not mutated by rendering. An invalid font
 in a directly modified retained book is rejected at render time.
 
+CFF1 fonts use strict subsetting. Cubic curves, hints, flex operators and
+local/global subroutines are supported within the decoder's work limits;
+generated subsets contain deterministic unhinted cubic outlines. CID-keyed CFF,
+CFF2, `seac`, computational operators, unsupported transforms and ink outside
+the supported coordinate range are refused. A structurally admitted face can
+still fail when a requested glyph uses an unsupported operation. The EPUB error
+retains the typed font cause and glyph context under `epub_fonts:`; the renderer
+does not return an archive with that glyph silently removed. Invalid unused
+glyph programs do not block a subset that does not request them.
+
 ## Regression coverage and verification boundary
 
-`src/epub/font_tests.rs` adds 13 cases for real subset cmaps, static/variable
+`src/epub/font_tests.rs` contains 18 cases for real subset cmaps, static/variable
 weights, deduplication, Unicode entities, limits, stylesheet ordering, manifest
 membership, actual compressed archive payloads, repeatability, immutable input,
-and legacy single-document byte equality.
+and legacy single-document byte equality. The CFF cases use the pinned Adobe
+Source Sans 3 fixture to verify exact cubic outlines and metrics, shared
+all-slot subsets, mixed TrueType/CFF resource metadata, later-chapter glyphs,
+and explicit refusal of a used unsupported glyph. A separate compatibility
+case compares TrueType payloads directly with the legacy subset API and checks
+their unchanged resource metadata.
 
 `src/epub/book_font_tests.rs` adds eight cases for shared book resources,
 later-chapter/title-only Unicode, repeated-chapter resource stability,
@@ -167,8 +191,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-These new Rust tests were not executed in the authoring environment: it has no
-`cargo`, `rustc`, or DSR executable. Source/blob identity checks and lexical
-checks do not establish compilation, generated-WASM parity, rendering quality,
-or reading-system acceptance. No fonts or generated publications were exported
-from that environment.
+The CFF integration's focused `cargo test --lib epub::embedded_fonts` run passed
+all 18 cases, including the compressed document and book archives. This does
+not establish generated-WASM parity, EPUBCheck conformance, or visual acceptance
+in EPUB reading systems; those require their own executable checks.

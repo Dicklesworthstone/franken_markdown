@@ -168,6 +168,53 @@ pub(crate) fn stylesheet(doc: &Document, opts: &HtmlOptions) -> String {
         .map_or_else(|| default_css(doc, opts), sanitize_custom_css)
 }
 
+/// The checked document API refuses a CFF program it cannot subset. The
+/// longstanding infallible HTML helpers retain their full-font fallback.
+pub(crate) fn validate_cff_font_usage(doc: &Document, opts: &HtmlOptions) -> crate::Result<()> {
+    if opts.custom_css.is_some() {
+        return Ok(());
+    }
+    let mut usage = None;
+    for slot in FontAssetSlot::ALL {
+        let Some(bytes) = opts.font_assets.resolved_bytes(slot) else {
+            continue;
+        };
+        // CFF1 is static. Inspect the outline kind before any variable-font
+        // instancing so this extra preflight leaves TrueType work unchanged.
+        let font = Font::parse(bytes.to_vec()).map_err(|err| {
+            crate::RenderError::InvalidInput(format!(
+                "html_cff_font: {} font could not be parsed: {err}",
+                slot.as_str()
+            ))
+        })?;
+        if font.has_glyf_outlines() {
+            continue;
+        }
+        let usage = usage.get_or_insert_with(|| {
+            let profiled = crate::apply_profile(doc, opts.profile);
+            let mut usage = collect_font_usage(&profiled);
+            usage.add_stability_seed();
+            usage
+        });
+        let chars = match slot {
+            FontAssetSlot::BodyRegular => &usage.body_regular,
+            FontAssetSlot::BodyBold => &usage.body_bold,
+            FontAssetSlot::BodyItalic => &usage.body_italic,
+            FontAssetSlot::BodyBoldItalic => &usage.body_bold_italic,
+            FontAssetSlot::MonoRegular => &usage.mono,
+        };
+        if !chars.is_empty() {
+            font.try_subset(&chars.to_chars()).map_err(|err| {
+                crate::RenderError::InvalidInput(format!(
+                    "html_cff_font: {} font subsetting failed: {err}",
+                    slot.as_str()
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// An editor can introduce glyphs and styles absent from its initial source.
 /// Retain complete validated faces, using the same weight instancing and font
 /// container encoders as ordinary HTML instead of initial-document subsets.
@@ -2612,14 +2659,16 @@ fn push_font_face(
     let keep = chars.to_chars();
     let subset = font_face
         .parsed
-        .and_then(|font| font.subset(&keep))
+        .and_then(|font| subset_html_font(font, &keep))
         .or_else(|| {
             let parsed = if let Some(weight) = font_face.instance_weight {
                 instance_host_font(font_face.slot, font_face.bytes, weight).ok()
             } else {
                 Font::parse(font_face.bytes.to_vec()).ok()
             };
-            parsed.and_then(|font| font.subset(&keep).or_else(|| Some(font.as_sfnt().to_vec())))
+            parsed.and_then(|font| {
+                subset_html_font(&font, &keep).or_else(|| Some(font.as_sfnt().to_vec()))
+            })
         })
         .unwrap_or_else(|| font_face.bytes.to_vec());
     push_font_payload(
@@ -2634,6 +2683,14 @@ fn push_font_face(
     );
 }
 
+fn subset_html_font(font: &Font, keep: &[char]) -> Option<Vec<u8>> {
+    if font.has_glyf_outlines() {
+        font.subset(keep)
+    } else {
+        font.try_subset(keep).ok().map(|subset| subset.bytes)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn push_font_payload(
     css: &mut String,
@@ -2645,20 +2702,25 @@ fn push_font_payload(
     woff_scratch: &mut crate::compress::ZlibCompressScratch,
     woff2_scratch: &mut crate::brotli::BrotliCompressScratch,
 ) {
+    let (raw_mime, raw_hint) = if sfnt.starts_with(b"OTTO") {
+        ("font/otf", "opentype")
+    } else {
+        ("font/ttf", "truetype")
+    };
     let (payload, mime, format_hint) = match format {
         crate::HtmlFontFormat::Woff2 => {
             match crate::woff2::encode_woff2_with_scratch(sfnt, woff2_scratch) {
                 Ok(woff2) => (woff2, "font/woff2", "woff2"),
-                Err(_) => (sfnt.to_vec(), "font/ttf", "truetype"),
+                Err(_) => (sfnt.to_vec(), raw_mime, raw_hint),
             }
         }
         crate::HtmlFontFormat::Woff1 => {
             match crate::woff1::encode_woff1_with_scratch(sfnt, woff_scratch) {
                 Ok(woff) => (woff, "font/woff", "woff"),
-                Err(_) => (sfnt.to_vec(), "font/ttf", "truetype"),
+                Err(_) => (sfnt.to_vec(), raw_mime, raw_hint),
             }
         }
-        crate::HtmlFontFormat::Ttf => (sfnt.to_vec(), "font/ttf", "truetype"),
+        crate::HtmlFontFormat::Ttf => (sfnt.to_vec(), raw_mime, raw_hint),
     };
     let encoded_len = base64_encoded_len(payload.len());
     css.reserve(font_face_css_capacity(

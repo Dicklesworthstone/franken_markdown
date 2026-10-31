@@ -221,8 +221,8 @@ pub use zip::{ZipWriter, crc32};
 /// Font container format for embedded `@font-face` subsets in HTML output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HtmlFontFormat {
-    /// Raw TrueType subset bytes (`data:font/ttf`). Widest compatibility with
-    /// non-browser tools that sniff the payload.
+    /// Raw sfnt subset bytes: TrueType uses `data:font/ttf`, while CFF1
+    /// OpenType uses `data:font/otf`. No WOFF container is added.
     Ttf,
     /// WOFF1-wrapped subset (`data:font/woff`) compressed with the renderer's
     /// own deterministic DEFLATE. ~45–55% smaller on the bundled faces and
@@ -325,11 +325,13 @@ impl FontAssetSlot {
     }
 }
 
-/// Optional caller-supplied TrueType font bytes for renderer font slots.
+/// Optional caller-supplied OpenType font bytes for renderer font slots.
 ///
-/// Missing slots use the bundled deterministic fonts. Supplied slots must be
-/// parseable TrueType/sfnt fonts with `glyf` outlines so the HTML and PDF paths
-/// can subset them without filesystem, fontconfig, or global mutable state.
+/// Missing slots use the bundled deterministic fonts. Supplied slots may have
+/// TrueType `glyf` outlines or supported name-keyed CFF1 cubic outlines. HTML,
+/// PDF, SVG and EPUB use the same bytes without filesystem, fontconfig, or
+/// global mutable state. CFF2 and CID-keyed CFF input remain unsupported;
+/// unsupported CFF glyph programs are rejected when needed for a subset.
 ///
 /// Per-slot `*_weight` pins CSS `font-weight` for **variable** host faces
 /// (`wght` axis). The HTML/PDF loaders instance the face at that location and
@@ -371,7 +373,7 @@ impl FontAssets {
     ///
     /// # Errors
     /// Returns [`RenderError::InvalidInput`] when the bytes are empty,
-    /// malformed, or not subsettable by the clean-room TrueType subsetter.
+    /// malformed, or not supported by the clean-room TrueType/CFF1 subsetter.
     pub fn with_slot(mut self, slot: FontAssetSlot, bytes: impl Into<Vec<u8>>) -> Result<Self> {
         self.set_slot(slot, bytes)?;
         Ok(self)
@@ -499,7 +501,7 @@ impl FontAssets {
 /// Upper bound on host-supplied font bytes per slot. A font is cloned and
 /// subset, so an unbounded blob is an unmetered memory/CPU cost — the same
 /// host-supplied-bytes threat the PDF image path already caps. 32 MiB is far
-/// larger than any real subsettable TrueType face (even large CJK fonts) yet
+/// larger than any real subsettable OpenType face (even large CJK fonts) yet
 /// bounds the worst case.
 const MAX_FONT_ASSET_BYTES: usize = 32 * 1024 * 1024;
 
@@ -519,15 +521,24 @@ fn validate_font_asset(slot: FontAssetSlot, bytes: &[u8]) -> Result<()> {
     }
     let font = text::Font::parse(bytes.to_vec()).map_err(|err| {
         RenderError::InvalidInput(format!(
-            "{} font bytes are not a supported TrueType font: {err}",
+            "{} font bytes are not a supported TrueType font or CFF1 OpenType font: {err}",
             slot.as_str()
         ))
     })?;
+    validate_render_font(slot, &font)?;
+    Ok(())
+}
+
+/// Admit supported outline formats without decoding unrelated glyph programs.
+/// Each renderer validates its used CFF glyphs before emitting the document.
+pub(crate) fn validate_render_font(slot: FontAssetSlot, font: &text::Font) -> Result<()> {
     if !font.has_glyf_outlines() {
-        return Err(RenderError::InvalidInput(format!(
-            "{} font bytes must contain TrueType glyf outlines for deterministic subsetting",
-            slot.as_str()
-        )));
+        font.try_subset_glyphs(&[], &[]).map_err(|err| {
+            RenderError::InvalidInput(format!(
+                "{} font bytes do not contain supported CFF1 OpenType outlines: {err}",
+                slot.as_str()
+            ))
+        })?;
     }
     Ok(())
 }
@@ -557,16 +568,11 @@ pub(crate) fn instance_host_font(
 ) -> Result<text::Font> {
     let font = text::Font::parse(bytes.to_vec()).map_err(|err| {
         RenderError::InvalidInput(format!(
-            "{} font bytes are not a supported TrueType font: {err}",
+            "{} font bytes are not a supported TrueType font or CFF1 OpenType font: {err}",
             slot.as_str()
         ))
     })?;
-    if !font.has_glyf_outlines() {
-        return Err(RenderError::InvalidInput(format!(
-            "{} font bytes must contain TrueType glyf outlines for deterministic subsetting",
-            slot.as_str()
-        )));
-    }
+    validate_render_font(slot, &font)?;
     if font.instance_bounds(*b"wght").is_none() {
         return Ok(font);
     }
@@ -1002,10 +1008,11 @@ pub fn parse_markdown_spanned_profiled(src: &str) -> SpannedParseProfile {
 ///
 /// # Errors
 /// Returns [`RenderError::InvalidInput`] when a host-supplied font asset is
-/// invalid (empty, over the size limit, or not a subsettable TrueType face);
-/// the render itself is otherwise infallible.
+/// invalid (empty, over the size limit, or not a supported TrueType/CFF1
+/// OpenType face), or a used CFF glyph cannot be subset deterministically.
 pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String> {
     opts.font_assets.validate()?;
+    html::validate_cff_font_usage(doc, opts)?;
     Ok(html::render(doc, opts))
 }
 
@@ -1013,7 +1020,7 @@ pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String
 ///
 /// # Errors
 /// Returns [`RenderError::InvalidInput`] when a host-supplied font asset is
-/// invalid (empty, over the size limit, or not a subsettable TrueType face);
+/// invalid (empty, over the size limit, or not a subsettable TrueType/CFF1 face);
 /// otherwise propagates renderer errors. The HTML and PDF renderers share this
 /// one AST.
 pub fn render_pdf_document(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {

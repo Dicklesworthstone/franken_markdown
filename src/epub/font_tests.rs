@@ -7,6 +7,9 @@ use super::super::{self as epub, Document};
 use super::*;
 use franken_markdown::{FontAssets, crc32, parse_markdown, zlib_decompress};
 
+const SOURCE_SANS: &[u8] =
+    include_bytes!("../../tests/fixtures/fonts/source-sans-3/SourceSans3-Regular.otf");
+
 fn options() -> HtmlOptions {
     HtmlOptions {
         title: Some("Résumé".into()),
@@ -123,6 +126,212 @@ fn byte_identical_subsets_share_one_archive_resource_across_roles() {
     );
     assert_eq!(result.css.matches("url(\"fonts/font-1.ttf\")").count(), 5);
     assert_eq!(result.css.matches("url(\"fonts/font-2.ttf\")").count(), 1);
+}
+
+#[test]
+fn truetype_resources_keep_legacy_subset_bytes_and_metadata() {
+    let font = fonts::load_body(FontFamily::Sans, FontStyle::Regular).unwrap();
+    let keep = ['R', 'é', 's', 'u', 'm'];
+    let expected = font.subset(&keep).unwrap();
+    let mut package = Package::default();
+    package.face(font, &keep, "Legacy", 400, false).unwrap();
+    assert_eq!(package.resources[0].bytes, expected);
+    assert_eq!(package.resources[0].href, "fonts/font-1.ttf");
+    assert_eq!(package.resources[0].format, EmbeddingFormat::TrueType);
+    assert_eq!(
+        package.css,
+        "@font-face{font-family:\"Legacy\";font-style:normal;font-weight:400;src:url(\"fonts/font-1.ttf\") format(\"truetype\");}\n"
+    );
+    let mut opf = "<manifest></manifest>".to_owned();
+    package.manifest(&mut opf).unwrap();
+    assert_eq!(
+        opf,
+        "<manifest><item id=\"epub-font-css\" href=\"embedded-fonts.css\" media-type=\"text/css\"/>\n\
+         <item id=\"epub-font-1\" href=\"fonts/font-1.ttf\" media-type=\"font/ttf\"/>\n</manifest>"
+    );
+}
+
+fn cff_options() -> HtmlOptions {
+    HtmlOptions {
+        title: Some("Résumé".into()),
+        font_assets: FontAssets::default()
+            .with_slot(FontAssetSlot::BodyRegular, SOURCE_SANS.to_vec())
+            .unwrap(),
+        ..HtmlOptions::default()
+    }
+}
+
+fn assert_cff_glyphs(bytes: &[u8], text: &str) {
+    assert_eq!(&bytes[..4], b"OTTO");
+    let subset = Font::parse(bytes.to_vec()).unwrap();
+    let source = Font::parse(SOURCE_SANS.to_vec()).unwrap();
+    assert!(!subset.has_glyf_outlines());
+    assert!(subset.num_glyphs < source.num_glyphs);
+    for ch in text.chars() {
+        let old = source.glyph_index(ch);
+        let new = subset.glyph_index(ch);
+        assert_ne!(old, 0, "fixture must contain {ch}");
+        assert_ne!(new, 0, "subset must contain {ch}");
+        assert_eq!(
+            source.cff_outline(old).unwrap(),
+            subset.cff_outline(new).unwrap(),
+            "CFF glyph {ch} must retain its exact cubic outline and metrics"
+        );
+    }
+}
+
+#[test]
+fn cff_semantic_faces_share_an_opentype_resource_with_truetype_symbols() {
+    let mut opts = cff_options();
+    for slot in FontAssetSlot::ALL {
+        opts.font_assets
+            .set_slot(slot, SOURCE_SANS.to_vec())
+            .unwrap();
+    }
+    let doc = parse_markdown("# Résumé\n\nΩ **é** *Ж* ***O*** and `A`.\n");
+    let package = for_document(&doc, &opts);
+    assert_eq!(package.resources.len(), 2);
+    assert_eq!(package.resources[0].href, "fonts/font-1.otf");
+    assert_eq!(package.resources[0].format, EmbeddingFormat::OpenTypeCff);
+    assert_cff_glyphs(&package.resources[0].bytes, "RésuméΩéЖOA");
+    assert!(package.resources[0].bytes.len() < SOURCE_SANS.len());
+    assert_eq!(package.resources[1].href, "fonts/font-2.ttf");
+    assert_eq!(package.resources[1].format, EmbeddingFormat::TrueType);
+    assert!(
+        Font::parse(package.resources[1].bytes.clone())
+            .unwrap()
+            .has_glyf_outlines()
+    );
+    assert_eq!(package.css.matches("@font-face").count(), 6);
+    assert_eq!(
+        package
+            .css
+            .matches("url(\"fonts/font-1.otf\") format(\"opentype\")")
+            .count(),
+        5
+    );
+    assert_eq!(package.css.matches("format(\"truetype\")").count(), 1);
+    let mut opf = "<manifest></manifest><spine/>".to_owned();
+    package.manifest(&mut opf).unwrap();
+    assert!(opf.contains("href=\"fonts/font-1.otf\" media-type=\"font/otf\""));
+    assert!(opf.contains("href=\"fonts/font-2.ttf\" media-type=\"font/ttf\""));
+
+    let output = epub::render_epub(&doc, &opts).unwrap();
+    let entries = entries(&output);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.name.starts_with("OEBPS/fonts/"))
+            .count(),
+        2
+    );
+    assert_payload(&entries, "OEBPS/embedded-fonts.css", package.css.as_bytes());
+    for resource in &package.resources {
+        assert_payload(
+            &entries,
+            &format!("OEBPS/{}", resource.href),
+            &resource.bytes,
+        );
+    }
+    assert_eq!(output, epub::render_epub(&doc, &opts).unwrap());
+}
+
+#[test]
+fn cff_body_and_bundled_truetype_styles_keep_their_own_resource_formats() {
+    let package = package(&cff_options(), "Résumé Ω Ж bold italic code");
+    assert_eq!(package.resources[0].format, EmbeddingFormat::OpenTypeCff);
+    assert_cff_glyphs(&package.resources[0].bytes, "RésuméΩЖ");
+    for resource in package.resources.iter().skip(1) {
+        assert_eq!(resource.format, EmbeddingFormat::TrueType);
+        assert!(resource.href.ends_with(".ttf"));
+        assert!(
+            Font::parse(resource.bytes.clone())
+                .unwrap()
+                .has_glyf_outlines()
+        );
+    }
+    let mut opf = "<manifest></manifest>".to_owned();
+    package.manifest(&mut opf).unwrap();
+    assert_eq!(opf.matches("media-type=\"font/otf\"").count(), 1);
+    assert_eq!(
+        opf.matches("media-type=\"font/ttf\"").count(),
+        package.resources.len() - 1
+    );
+    assert_eq!(package.css.matches("format(\"opentype\")").count(), 1);
+    assert_eq!(package.css.matches("format(\"truetype\")").count(), 5);
+}
+
+#[test]
+fn cff_book_shares_one_subset_with_glyphs_from_every_chapter() {
+    let mut opts = cff_options();
+    for slot in FontAssetSlot::ALL {
+        opts.font_assets
+            .set_slot(slot, SOURCE_SANS.to_vec())
+            .unwrap();
+    }
+    let inputs = [
+        franken_markdown::BookInput {
+            path: "first.md".into(),
+            source: "# First\n\nΩ\n".into(),
+        },
+        franken_markdown::BookInput {
+            path: "second.md".into(),
+            source: "# Second\n\nЖ é\n".into(),
+        },
+    ];
+    let book = franken_markdown::build_book(&inputs).unwrap();
+    let mut repertoire = Repertoire::new(true);
+    repertoire.add(opts.title.as_deref().unwrap()).unwrap();
+    repertoire.add(&epub::theme::stylesheet(&opts)).unwrap();
+    for input in &inputs {
+        repertoire.add(&input.source).unwrap();
+    }
+    let package = repertoire.finish(&opts).unwrap();
+    assert_eq!(package.resources.len(), 2);
+    assert_cff_glyphs(&package.resources[0].bytes, "ΩЖé");
+    let output = epub::render_book_epub(&book, &opts).unwrap();
+    let entries = entries(&output);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.name.ends_with(".otf"))
+            .count(),
+        1
+    );
+    for resource in &package.resources {
+        assert_payload(
+            &entries,
+            &format!("OEBPS/{}", resource.href),
+            &resource.bytes,
+        );
+    }
+    assert_payload(&entries, "OEBPS/embedded-fonts.css", package.css.as_bytes());
+    assert_eq!(output, epub::render_book_epub(&book, &opts).unwrap());
+}
+
+#[test]
+fn a_used_unsupported_cff_glyph_refuses_epub_with_typed_context() {
+    // FontTools locates the pinned source's Omega (GID818) Type2 program at
+    // byte106951. Only that glyph is changed; structural font validation and
+    // unrelated ASCII glyphs still succeed.
+    const OMEGA: usize = 106_951;
+    assert_eq!(&SOURCE_SANS[OMEGA..OMEGA + 4], &[0xf7, 0x34, 0x8b, 0xcf]);
+    let mut bytes = SOURCE_SANS.to_vec();
+    bytes[OMEGA..OMEGA + 2].copy_from_slice(&[12, 23]); // random is unsupported
+    let opts = HtmlOptions {
+        font_assets: FontAssets::default()
+            .with_slot(FontAssetSlot::BodyRegular, bytes)
+            .unwrap(),
+        ..cff_options()
+    };
+    assert!(epub::render_epub(&parse_markdown("Unrelated text"), &opts).is_ok());
+    let error = epub::render_epub(&parse_markdown("Ω"), &opts).unwrap_err();
+    let RenderError::InvalidInput(message) = error else {
+        panic!("used CFF glyph failure must be an input error: {error}");
+    };
+    assert!(message.contains("epub_fonts:"), "{message}");
+    assert!(message.contains("UnsupportedOperator"), "{message}");
+    assert!(message.contains("glyph Some(818)"), "{message}");
 }
 
 #[test]

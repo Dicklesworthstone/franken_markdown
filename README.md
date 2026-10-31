@@ -562,7 +562,7 @@ fmd --text '<markdown>' --out out.html
 | `--font-scale <xs\|sm\|md\|lg\|xl\|2xl\|FLOAT\|PERCENT>` | Uniform typographic scale for HTML and PDF (alias `--type-size`) |
 | `--fit-to-pages <N>` | Shrink type and spacing until the PDF fits in `N` pages (alias `--target-pages`) |
 | `--pdf-base-font-size`, `--pdf-heading-scale`, `--pdf-table-font-size` | Fine-grained PDF type sizes |
-| `--pdf-font SLOT=PATH`, `--pdf-font-weight` | Host TrueType faces for PDF/HTML and variable-font weight pins |
+| `--pdf-font SLOT=PATH`, `--pdf-font-weight` | Host TrueType/CFF1 OpenType faces for HTML/PDF/SVG/EPUB and variable-font weight pins |
 | `--pdf-a 2b`, `--pdf-a-strict` | Emit PDF/A-2b identification (XMP + sRGB OutputIntent); `--pdf-a-strict` fails closed on constructs PDF/A-2b cannot carry |
 | `--lang <tag>` | Document language for hyphenation patterns and the HTML `lang` attribute (`en`, `de`, `fr`, `es`, `nl`, ...) |
 | `--profile gfm-plus\|commonmark-gfm` | Markdown dialect. Default `gfm-plus` adds definition lists and other extensions; `commonmark-gfm` renders the GitHub dialect only |
@@ -1070,8 +1070,21 @@ output; cross-platform determinism requires results from each platform.
 
 **Can I supply my own fonts or stylesheet?**
 Yes. `--css <file>` replaces the HTML stylesheet entirely. Library and WASM
-callers can supply TrueType font bytes per slot through `FontAssets`; missing
-slots use the bundled fonts.
+callers can supply TrueType or name-keyed CFF1 OpenType font bytes per slot
+through `FontAssets`; missing slots use the bundled fonts. The same host faces
+work in HTML, PDF, SVG and EPUB. Native commands accept
+`--pdf-font body-regular=./SourceSans3-Regular.otf` (repeat for other slots).
+
+CFF fonts are subset for HTML/PDF/EPUB and drawn as native cubic paths in SVG.
+Raw HTML and EPUB resources use the OpenType MIME type and format hint;
+HTML can also wrap the subsets in WOFF1 or WOFF2. PDF retains two-byte glyph
+IDs, Unicode extraction and ligatures, including subsets above 256 glyphs.
+The supported input is static, name-keyed CFF1 with the standard font matrix;
+CFF2, CID-keyed CFF input, `seac`, and computational Type2 operators remain
+unsupported. The checked document HTML, PDF, SVG and EPUB subset paths report
+unsupported glyph programs explicitly. Infallible HTML helpers retain their
+existing full-font fallback, and interactive HTML retains complete fonts for
+browser rendering. The font fixture used to verify this integration is test-only.
 
 **Does the core really work in WASM?**
 Yes, by design. The core builds with `--no-default-features` for both native and

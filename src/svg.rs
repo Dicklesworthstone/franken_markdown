@@ -19,7 +19,8 @@
 //! TrueType outlines are quadratic and [`outline`] already resolves implied
 //! on-curve midpoints into `Segment::Line` / `Segment::Quad` chains, so the
 //! path compiler is a direct 1:1 mapping: contour start → `M`, line → `L`,
-//! quad → `Q`, close → `Z`.
+//! quad → `Q`, close → `Z`. Caller-supplied CFF1 fonts retain their native
+//! cubic curves as `C` commands, with the same normalization and deduplication.
 //!
 //! Deliberate scope cuts (the poster is a display artifact, not a print
 //! engine): no pagination. Bounded paragraphs use the shared Knuth-Plass
@@ -37,7 +38,7 @@
 //! view behavior are documented in `docs/SVG_LINKS.md`.
 
 use std::cell::{OnceCell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use franken_markdown::ast::{Align, Block, Document, Inline, Table};
 use franken_markdown::fonts::{self, FontStyle};
@@ -159,7 +160,9 @@ pub fn render_svg_with_diagnostics(
 ///
 /// # Errors
 /// Invalid font data/instances or oversized resource collections fail before
-/// output. Per-image input is bounded to 32 MiB; input/encoded image budgets
+/// output. Unsupported or malformed used CFF1 glyphs also fail before output,
+/// rather than silently omitting their ink. Per-image input is bounded to
+/// 32 MiB; input/encoded image budgets
 /// and aggregate supplied fonts are bounded to 128 MiB each. At most 4096
 /// images are admitted. Existing option/report structures stay unchanged.
 pub fn render_svg_with_resources(
@@ -168,7 +171,10 @@ pub fn render_svg_with_resources(
     fonts: &franken_markdown::FontAssets,
     images: &[franken_markdown::PdfImageAsset],
 ) -> franken_markdown::Result<(Vec<u8>, SvgReport, Vec<SvgWarning>)> {
-    Ok(Poster::new(opts).with_resources(fonts, images)?.render(doc))
+    let mut poster = Poster::new(opts).with_resources(fonts, images)?;
+    let height = poster.layout(doc);
+    poster.validate_cff_glyphs()?;
+    Ok(poster.emit(height))
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +506,11 @@ impl Poster {
     }
 
     fn render(mut self, doc: &Document) -> (Vec<u8>, SvgReport, Vec<SvgWarning>) {
+        let height = self.layout(doc);
+        self.emit(height)
+    }
+
+    fn layout(&mut self, doc: &Document) -> f64 {
         let l = self.content_left();
         let r = self.content_right();
         // Share PDF's cycle-safe numbering and lossless rich-note preparation.
@@ -508,8 +519,36 @@ impl Poster {
         for block in &prepared.blocks {
             self.block(block, l, r, false);
         }
-        let height = (self.y + self.margin_bottom).max(1.0);
-        self.emit(height)
+        (self.y + self.margin_bottom).max(1.0)
+    }
+
+    /// Validate the shaped glyphs that will actually be painted, including
+    /// GSUB substitutions. Batching per face shares the CFF instruction and
+    /// output budgets; decoding each repeated occurrence independently would
+    /// bypass those aggregate limits. The strict subsetter also checks cubic
+    /// ink bounds and rejects unsupported charstring operators.
+    fn validate_cff_glyphs(&self) -> franken_markdown::Result<()> {
+        let mut used: BTreeMap<usize, BTreeSet<u16>> = BTreeMap::new();
+        for op in &self.ops {
+            if let Op::Glyph { slot, gid, .. } = op
+                && self
+                    .font_for_slot(*slot)
+                    .is_some_and(|font| !font.has_glyf_outlines())
+            {
+                used.entry(*slot).or_default().insert(*gid);
+            }
+        }
+        for (slot, glyphs) in used {
+            if let Some(font) = self.font_for_slot(slot) {
+                font.try_subset_glyphs(&glyphs.into_iter().collect::<Vec<_>>(), &[])
+                    .map_err(|error| {
+                        franken_markdown::RenderError::InvalidInput(format!(
+                            "svg_cff_font: font slot {slot}: {error}"
+                        ))
+                    })?;
+            }
+        }
+        Ok(())
     }
 
     // -- glyph resolution / measurement ------------------------------------
@@ -1121,6 +1160,9 @@ impl Poster {
     /// 100 pt em (y flipped). `None` for blank glyphs (space) or outlines
     /// that fail to decode.
     fn glyph_path(font: &Font, gid: u16) -> Option<String> {
+        if !font.has_glyf_outlines() {
+            return Self::cff_glyph_path(font, gid);
+        }
         let outline = font.glyph_outline(gid).ok()?;
         if outline.contours.is_empty() {
             return None;
@@ -1153,6 +1195,50 @@ impl Poster {
                 }
             }
             d.push('Z');
+        }
+        Some(d)
+    }
+
+    /// CFF decoding has already passed strict validation on the fallible
+    /// resource path. Bundled-only APIs never select a CFF face.
+    fn cff_glyph_path(font: &Font, gid: u16) -> Option<String> {
+        use franken_markdown::text::cff::Command;
+
+        let outline = font.cff_outline(gid).ok()?;
+        if !outline
+            .commands
+            .iter()
+            .any(|command| matches!(command, Command::Line(_) | Command::Curve(_, _, _)))
+        {
+            return None;
+        }
+        let k = DEF_EM_PT / f64::from(font.units_per_em);
+        let mut d = String::new();
+        for command in outline.commands {
+            match command {
+                Command::Move(point) | Command::Line(point) => {
+                    d.push(if matches!(command, Command::Move(_)) {
+                        'M'
+                    } else {
+                        'L'
+                    });
+                    push_q2(&mut d, point.x * k);
+                    d.push(' ');
+                    push_q2(&mut d, -point.y * k);
+                }
+                Command::Curve(first, second, end) => {
+                    d.push('C');
+                    for (index, point) in [first, second, end].into_iter().enumerate() {
+                        if index != 0 {
+                            d.push(' ');
+                        }
+                        push_q2(&mut d, point.x * k);
+                        d.push(' ');
+                        push_q2(&mut d, -point.y * k);
+                    }
+                }
+                Command::Close => d.push('Z'),
+            }
         }
         Some(d)
     }

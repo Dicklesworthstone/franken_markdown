@@ -494,9 +494,9 @@ struct RenderStyleArgs {
     /// Repeat for multiple images.
     #[arg(long = "pdf-image", value_name = "DEST=PATH")]
     pdf_images: Vec<String>,
-    /// Host TrueType face for a renderer slot as SLOT=PATH. Repeatable.
+    /// Host TrueType or CFF1 OpenType face for a renderer slot as SLOT=PATH. Repeatable.
     /// SLOT is body-regular, body-bold, body-italic, body-bold-italic, or
-    /// mono-regular. Applies to HTML, PDF and EPUB for consistent typography.
+    /// mono-regular. Applies to HTML, PDF, SVG and EPUB for consistent typography.
     /// Variable `wght` faces instance at the slot's pinned weight (see
     /// `--pdf-font-weight`); static faces ignore the pin. When body-bold is
     /// omitted and body-regular is a variable face, bold instances from that

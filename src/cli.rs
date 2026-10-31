@@ -803,6 +803,24 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
     }
 }
 
+/// Capture preview HTML from the same parsed source, resolved options and
+/// resources as the export. A failed render or publication never releases a
+/// new preview, so editors retain their last successful document.
+fn render_watched_file(
+    args: &WatchArgs,
+    json: bool,
+    no_config: bool,
+) -> (ExitCode, Option<String>) {
+    let mut html = None;
+    let status = run_render_with_preview(
+        watch_to_render(args),
+        json,
+        no_config,
+        args.serve.then_some(&mut html),
+    );
+    (status, html)
+}
+
 fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = global_json || args.json;
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
@@ -898,7 +916,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         interval
     };
     let mut watcher = PollWatcher::new(paths, debounce, SystemClock);
-    let rendered = run_render(watch_to_render(&args), json, no_config) == ExitCode::SUCCESS;
+    let (_, initial_html) = render_watched_file(&args, json, no_config);
     let preview = if args.serve {
         match start_watch_preview() {
             Ok(preview) => Some(preview),
@@ -914,8 +932,8 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     } else {
         None
     };
-    if rendered && let Some(preview) = preview.as_ref() {
-        refresh_watch_preview(preview, &args, no_config);
+    if let (Some(preview), Some(html)) = (preview.as_ref(), initial_html) {
+        refresh_watch_preview(preview, html);
     }
     report_watch_started(watcher.paths().len(), interval_ms, preview.as_ref(), json);
     if let Some(samples) = args.measure {
@@ -961,9 +979,9 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
                 events[0].path.display()
             );
         }
-        let rendered = run_render(watch_to_render(&args), json, no_config) == ExitCode::SUCCESS;
-        if rendered && let Some(preview) = preview.as_ref() {
-            refresh_watch_preview(preview, &args, no_config);
+        let (_, html) = render_watched_file(&args, json, no_config);
+        if let (Some(preview), Some(html)) = (preview.as_ref(), html) {
+            refresh_watch_preview(preview, html);
         }
     }
 }
@@ -1006,12 +1024,12 @@ fn run_watch_directory(
             return fail_json(64, "usage_error", &error, json);
         }
     }
-    let mut first_rendered = None;
+    let mut first_html = None;
     for input in &md_files {
-        if let Some(per_file) = render_watched_directory_file(&args, input, json, no_config)
-            && first_rendered.is_none()
+        if let Some((_, html)) = render_watched_directory_file(&args, input, json, no_config)
+            && first_html.is_none()
         {
-            first_rendered = Some(per_file);
+            first_html = html;
         }
     }
     let preview = if args.serve {
@@ -1029,8 +1047,8 @@ fn run_watch_directory(
     } else {
         None
     };
-    if let (Some(preview), Some(per_file)) = (preview.as_ref(), first_rendered.as_ref()) {
-        refresh_watch_preview(preview, per_file, no_config);
+    if let (Some(preview), Some(html)) = (preview.as_ref(), first_html) {
+        refresh_watch_preview(preview, html);
     }
     report_watch_started(
         watcher.paths().len(),
@@ -1103,9 +1121,11 @@ fn run_watch_directory(
                 continue;
             }
             blocked.remove(&input);
-            if let Some(per_file) = render_watched_directory_file(&args, &input, json, no_config) {
-                if let Some(preview) = preview.as_ref() {
-                    refresh_watch_preview(preview, &per_file, no_config);
+            if let Some((per_file, html)) =
+                render_watched_directory_file(&args, &input, json, no_config)
+            {
+                if let (Some(preview), Some(html)) = (preview.as_ref(), html) {
+                    refresh_watch_preview(preview, html);
                 }
                 if json {
                     eprintln!(
@@ -1218,7 +1238,7 @@ fn render_watched_directory_file(
     input: &Path,
     json: bool,
     no_config: bool,
-) -> Option<WatchArgs> {
+) -> Option<(WatchArgs, Option<String>)> {
     let per_file = match watch_directory_args(args, input) {
         Ok(args) => args,
         Err(error) => {
@@ -1237,8 +1257,8 @@ fn render_watched_directory_file(
         );
         return None;
     }
-    (run_render(watch_to_render(&per_file), json, no_config) == ExitCode::SUCCESS)
-        .then_some(per_file)
+    let (status, html) = render_watched_file(&per_file, json, no_config);
+    (status == ExitCode::SUCCESS).then_some((per_file, html))
 }
 
 fn report_watch_started(
@@ -1300,11 +1320,20 @@ fn run_watch_measure(
             }
         };
         let t_render = Instant::now();
-        let _ = run_render(watch_to_render_quiet(args), false, no_config);
+        let mut html = None;
+        let status = run_render_with_preview(
+            watch_to_render_quiet(args),
+            false,
+            no_config,
+            preview.map(|_| &mut html),
+        );
+        if status != ExitCode::SUCCESS {
+            return status;
+        }
         let render_ms = t_render.elapsed().as_secs_f64() * 1000.0;
         let t_serve = Instant::now();
-        if let Some(preview) = preview {
-            refresh_watch_preview(preview, args, no_config);
+        if let (Some(preview), Some(html)) = (preview, html) {
+            refresh_watch_preview(preview, html);
         }
         let serve_ms = t_serve.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -1411,19 +1440,17 @@ fn start_watch_preview() -> std::io::Result<WatchPreview> {
     })
 }
 
-fn refresh_watch_preview(preview: &WatchPreview, args: &WatchArgs, no_config: bool) {
-    if let Ok(html) = watch_preview_html(args, no_config) {
-        {
-            let mut slot = preview.html.lock().unwrap_or_else(|e| e.into_inner());
-            *slot = html;
-        }
-        retain_watch_clients(&preview.clients, |stream| {
-            stream
-                .write_all(sse_reload_event().as_bytes())
-                .and_then(|()| stream.flush())
-                .is_ok()
-        });
+fn refresh_watch_preview(preview: &WatchPreview, html: String) {
+    {
+        let mut slot = preview.html.lock().unwrap_or_else(|e| e.into_inner());
+        *slot = html;
     }
+    retain_watch_clients(&preview.clients, |stream| {
+        stream
+            .write_all(sse_reload_event().as_bytes())
+            .and_then(|()| stream.flush())
+            .is_ok()
+    });
 }
 
 fn retain_watch_clients<T>(clients: &Mutex<Vec<T>>, mut keep: impl FnMut(&mut T) -> bool) {
@@ -1439,73 +1466,6 @@ fn retain_watch_clients<T>(clients: &Mutex<Vec<T>>, mut keep: impl FnMut(&mut T)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .append(&mut detached);
-}
-
-fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, String> {
-    // For HTML exports, publish precisely the successful on-disk render. This
-    // carries includes, frontmatter, assets and every renderer option without
-    // parsing a second, possibly newer source snapshot during an atomic save.
-    if matches!(
-        args.to,
-        Target::Html | Target::Both | Target::InteractiveHtml
-    ) {
-        let path = if matches!(args.to, Target::Both) {
-            args.out.with_extension("html")
-        } else {
-            args.out.clone()
-        };
-        let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-        let bytes = read_limited(file, 256 * 1024 * 1024, "watch HTML output")
-            .map_err(|e| e.to_string())?;
-        return string_from_input_bytes(bytes).map_err(|e| e.to_string());
-    }
-    // PDF/SVG/EPUB watches still provide an HTML preview, using the same
-    // bounded source expansion, local images and metadata as ordinary HTML.
-    let input = args.input.to_string_lossy();
-    let src = read_input(Some(&input), None, DEFAULT_MAX_INPUT_BYTES).map_err(|e| e.to_string())?;
-    let src = expand_file_includes(&src, &input, DEFAULT_MAX_INPUT_BYTES)?;
-    let config = load_config(no_config).map_err(|e| e.to_string())?;
-    let mut theme = config.to_theme();
-    if let Some(font) = args.font {
-        theme = theme.with_font(font.into());
-    }
-    let custom_css = match args.css.as_deref().or(config.custom_css.as_deref()) {
-        Some(path) => Some(read_stylesheet(path).map_err(|e| e.to_string())?),
-        None => None,
-    };
-    let frontmatter = crate::parse::split_frontmatter(&src).0;
-    let doc = parse_markdown(&src);
-    let lowered_doc = crate::safe_html::lower(&doc);
-    let mut destinations = Vec::new();
-    collect_image_destinations(&lowered_doc.blocks, &mut destinations);
-    destinations.extend(running_image_destinations(&args.style));
-    let mut image_assets = read_pdf_image_assets(
-        &args.style.pdf_images,
-        args.style.max_pdf_image_bytes,
-        &destinations,
-    )
-    .map_err(|error| match error {
-        PdfImageError::Usage(message) | PdfImageError::Input(message) => message,
-    })?;
-    let base = args.input.parent().unwrap_or_else(|| Path::new("."));
-    append_auto_image_assets(
-        &doc,
-        base,
-        &mut image_assets,
-        args.style.max_pdf_image_bytes,
-        "HTML",
-    )?;
-    let opts = HtmlOptions {
-        theme,
-        title: frontmatter.as_ref().and_then(|fm| fm.title.clone()),
-        custom_css,
-        image_assets,
-        lang: frontmatter.as_ref().and_then(|fm| fm.lang.clone()),
-        toc: frontmatter.as_ref().and_then(|fm| fm.toc).unwrap_or(false),
-        toc_depth: frontmatter.as_ref().and_then(|fm| fm.toc_depth),
-        ..HtmlOptions::default()
-    };
-    render_html_document(&doc, &opts).map_err(|e| e.to_string())
 }
 
 fn preview_accept_loop(
@@ -1569,8 +1529,18 @@ fn read_http_head(stream: &mut TcpStream) -> Vec<u8> {
     buf
 }
 
-fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
+fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
+    run_render_with_preview(args, global_json, no_config, None)
+}
+
+fn run_render_with_preview(
+    mut args: RenderArgs,
+    global_json: bool,
+    no_config: bool,
+    preview_html: Option<&mut Option<String>>,
+) -> ExitCode {
     let json = global_json || args.json;
+    let want_preview = preview_html.is_some();
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
         return code;
     }
@@ -1817,7 +1787,7 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
         Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
         Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
     };
-    let html_image_assets = if want_html || want_epub {
+    let mut html_image_assets = if want_html || want_epub {
         let mut assets = if want_pdf || want_svg {
             explicit_image_assets.clone()
         } else {
@@ -1867,6 +1837,12 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     } else {
         Vec::new()
     };
+    if want_preview && !want_html && (want_pdf || want_svg) {
+        // Reuse the bytes already admitted for the paged export, including
+        // explicit overrides and fetched assets. Reopening local files here
+        // could pair one document revision with a newer image revision.
+        html_image_assets.clone_from(&pdf_image_assets);
+    }
 
     // Includes and presentation resources are source material too. Perform
     // this check after their successful reads, before any renderer or writer
@@ -1894,7 +1870,7 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     // `--to both` run whose PDF render fails never leaves a stale HTML file on
     // disk (previously HTML was written, then a PDF failure returned exit 70
     // with the HTML already committed).
-    let html_bytes = if want_html {
+    let html_render = if want_html || want_preview {
         let opts = HtmlOptions {
             theme: theme.clone(),
             title: args
@@ -1924,13 +1900,21 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
         let is_interactive = args.interactive_html || matches!(args.to, Target::InteractiveHtml);
         if is_interactive {
             let html = crate::interactive::render_interactive_html(&doc, &src, &opts);
-            Some(html.into_bytes())
+            Some(html)
         } else {
             match render_html_document(&doc, &opts) {
-                Ok(html) => Some(html.into_bytes()),
+                Ok(html) => Some(html),
                 Err(e) => return fail_render(e, json),
             }
         }
+    } else {
+        None
+    };
+
+    // Preview-only HTML is not an export or stdout payload. Keep it until
+    // every requested output has rendered and published successfully.
+    let html_bytes = if want_html {
+        html_render.as_deref().map(str::as_bytes)
     } else {
         None
     };
@@ -2071,7 +2055,7 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
             bytes: bytes.as_slice(),
         });
     }
-    if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes.as_deref()) {
+    if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes) {
         file_outputs.push(crate::file_write::OutputFile { path, bytes });
     }
     if let (Some(path), Some((_, bytes))) = (pdf_path.as_deref(), pdf_render.as_ref()) {
@@ -2102,9 +2086,9 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
         );
     }
 
-    if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes.as_deref()) {
+    if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes) {
         report_write("html", path, bytes.len(), json);
-    } else if let Some(bytes) = html_bytes.as_deref() {
+    } else if let Some(bytes) = html_bytes {
         let mut stdout = std::io::stdout().lock();
         match stdout.write_all(bytes) {
             Ok(()) => {}
@@ -2162,6 +2146,9 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
         report_font_pin_warnings(&font_assets, json);
     }
 
+    if let Some(preview_html) = preview_html {
+        *preview_html = html_render;
+    }
     ExitCode::SUCCESS
 }
 
@@ -3245,14 +3232,6 @@ fn report_font_assets(assets: &FontAssets) {
     eprintln!("{{\"ok\":true,\"event\":\"font_assets\",\"phase\":\"load\",\"slots\":{slots}}}");
 }
 
-fn read_pdf_image_assets(
-    specs: &[String],
-    max_bytes: u64,
-    destination_hints: &[&str],
-) -> std::result::Result<Vec<PdfImageAsset>, PdfImageError> {
-    read_pdf_image_assets_recording(specs, max_bytes, destination_hints, &mut Vec::new())
-}
-
 fn read_pdf_image_assets_recording(
     specs: &[String],
     max_bytes: u64,
@@ -3299,6 +3278,7 @@ fn auto_pdf_image_base_dir(input: Option<&str>, text: Option<&str>) -> Option<Pa
     )
 }
 
+#[cfg(test)]
 fn append_auto_image_assets(
     doc: &Document,
     base_dir: &Path,
@@ -3776,14 +3756,6 @@ fn source_date_epoch() -> std::result::Result<Option<u64>, String> {
     trimmed.parse::<u64>().map(Some).map_err(|_| {
         "SOURCE_DATE_EPOCH is too large; expected decimal seconds since the Unix epoch".to_string()
     })
-}
-
-fn expand_file_includes(
-    src: &str,
-    input_path: &str,
-    max_input_bytes: u64,
-) -> std::result::Result<String, String> {
-    crate::watch::expand_file_includes(src, Path::new(input_path), max_input_bytes).result
 }
 
 /// Compute the output path for a given extension, or `None` to mean stdout
@@ -4387,11 +4359,7 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
                 }
                 Err(e) => fail(
                     73,
-                    &format!(
-                        "writing diff HTML to {}: {}",
-                        e.path.display(),
-                        e.source
-                    ),
+                    &format!("writing diff HTML to {}: {}", e.path.display(), e.source),
                 ),
             }
         }
@@ -4711,7 +4679,10 @@ mod helper_tests {
             let Some(Command::Watch(mut args)) = cli.command else {
                 panic!("expected watch arguments");
             };
-            let html = watch_preview_html(&args, true).unwrap();
+            args.serve = true;
+            let (status, html) = render_watched_file(&args, false, true);
+            assert_eq!(status, ExitCode::SUCCESS);
+            let html = html.unwrap();
             assert!(
                 html.contains(&format!(
                     "src=\"data:image/svg+xml;base64,{}\"",
@@ -4719,12 +4690,55 @@ mod helper_tests {
                 )),
                 "{target} preview omitted its explicit asset"
             );
+            let previous = std::fs::read(&args.out).unwrap();
             args.style.max_pdf_image_bytes = 4;
+            let (status, html) = render_watched_file(&args, false, true);
+            assert_eq!(status, ExitCode::from(66));
             assert!(
-                watch_preview_html(&args, true)
-                    .unwrap_err()
-                    .contains("--max-pdf-image-bytes")
+                html.is_none(),
+                "failed asset admission cannot refresh a preview"
             );
+            assert_eq!(std::fs::read(&args.out).unwrap(), previous);
+        }
+    }
+
+    #[test]
+    fn watch_publication_keeps_the_exported_snapshot_after_inputs_change() {
+        let dir = fresh_dir("preview-snapshot");
+        let input = dir.join("report.md");
+        for target in ["html", "pdf", "svg", "epub"] {
+            let output = dir.join(format!("report.{target}"));
+            std::fs::write(&input, "# Captured document\n").unwrap();
+            let cli = Cli::try_parse_from([
+                "fmd",
+                "watch",
+                input.to_str().unwrap(),
+                "--to",
+                target,
+                "--out",
+                output.to_str().unwrap(),
+                "--serve",
+            ])
+            .unwrap();
+            let Some(Command::Watch(args)) = cli.command else {
+                panic!("expected watch arguments");
+            };
+            let (status, html) = render_watched_file(&args, false, true);
+            assert_eq!(status, ExitCode::SUCCESS);
+            let html = html.unwrap();
+            assert!(html.contains("Captured document"));
+            // Publication may run after an editor or another process changes
+            // the source/output. Neither file grants authority to replace the
+            // captured successful render in the live preview.
+            std::fs::write(&input, "# Newer unrendered document\n").unwrap();
+            std::fs::write(&output, "Externally replaced output\n").unwrap();
+            let preview = WatchPreview {
+                port: 0,
+                html: Arc::new(Mutex::new(String::new())),
+                clients: Arc::new(Mutex::new(Vec::new())),
+            };
+            refresh_watch_preview(&preview, html.clone());
+            assert_eq!(*preview.html.lock().unwrap(), html);
         }
     }
 

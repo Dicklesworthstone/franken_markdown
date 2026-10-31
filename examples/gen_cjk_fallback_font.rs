@@ -1,45 +1,41 @@
-//! Regenerate the curated CJK fallback face (`fonts/noto-sans-cjk/`).
+//! Regenerate the optional Noto Sans SC CJK fallback face.
 //!
-//! Produces a curated subset of Noto Sans CJK SC for Han, Kana, and Hangul
-//! frequency-ranked characters using `Font::subset`.
+//! Instances the pinned Google Fonts TrueType source at Regular (wght=400),
+//! then retains its BMP Han, kana, CJK punctuation, and fullwidth forms.
+//! This is a Unicode-range subset, not a frequency-ranked character list.
+//! Korean Hangul, supplementary-plane Han, and locale-specific Japanese glyph
+//! substitutions are outside this Simplified-Chinese face's profile.
 //!
-//! Usage:
+//! Source revision, SHA-256, license, coverage, and reproduction instructions:
+//! `fmd-font/fonts/noto-sans-cjk/README.md`.
+//!
 //! ```text
-//! cargo run --example gen_cjk_fallback_font -- \
-//!     /path/to/NotoSansCJKsc-Regular.otf fonts/noto-sans-cjk/NotoSansCJK-Subset.ttf
+//! cargo run --no-default-features --example gen_cjk_fallback_font -- \
+//!     /path/to/NotoSansSC-wght.ttf fmd-font/fonts/noto-sans-cjk/NotoSansSC-CJK.ttf
 //! ```
 
-use franken_markdown::text::Font;
+use fmd_font::Font;
 use std::process::ExitCode;
 
-/// Curated CJK ranges: Hiragana, Katakana, common CJK Unified Ideographs,
-/// Hangul Syllables core, and Fullwidth punctuation.
+/// Retain every mapped character in these Unicode ranges. Coverage is bounded
+/// by the pinned upstream face; unassigned/newer scalars remain unsupported.
 const CJK_CURATED_RANGES: &[(u32, u32)] = &[
-    // Fullwidth ASCII and punctuation
-    (0xFF01, 0xFF60),
-    // CJK Symbols and Punctuation (、。〈〉《》「」『』【】〔〕)
-    (0x3001, 0x301F),
-    // Hiragana (あ-ん)
-    (0x3041, 0x3096),
-    // Katakana (ア-ン)
-    (0x30A1, 0x30FA),
-    // Common Kanji / Hanzi core (most frequent ~2500 Joyo / Level 1 Simplified)
-    (0x4E00, 0x5500),
-    (0x5501, 0x6000),
-    (0x6001, 0x7000),
-    (0x7001, 0x8000),
-    (0x8001, 0x9000),
-    (0x9001, 0x9FA5),
-    // Hangul Syllables core
-    (0xAC00, 0xD7A3),
+    (0x3000, 0x303F), // CJK punctuation, iteration marks, ideographic space.
+    (0x3040, 0x30FF), // Hiragana and katakana, including combining voiced marks.
+    (0x31F0, 0x31FF), // Katakana phonetic extensions.
+    (0x3400, 0x4DBF), // CJK Unified Ideographs Extension A.
+    (0x4E00, 0x9FFF), // CJK Unified Ideographs.
+    (0xF900, 0xFAFF), // CJK compatibility ideographs mapped by the source.
+    (0xFE10, 0xFE1F), // Vertical punctuation presentation forms.
+    (0xFE30, 0xFE4F), // CJK compatibility punctuation forms.
+    (0xFF00, 0xFFEF), // Fullwidth and halfwidth forms mapped by the source.
 ];
 
-/// Non-negotiable required sample codepoints across Han, Kana, Hangul, Fullwidth.
 const REQUIRED_CJK: &[char] = &[
-    '中', '文', '排', '版', '测', '试', '字', '符', '串', '换', '行', '处', '理', 'あ', 'い', 'う',
-    'え', 'お', 'か', 'き', 'く', 'け', 'こ', 'ア', 'イ', 'ウ', 'エ', 'オ', 'カ', 'キ', 'ク', 'ケ',
-    'コ', '한', '글', '가', '나', '다', '라', '마', '바', '사', '아', '자', '차', '카', '타', '파',
-    '하', '。', '、', '「', '」', '【', '】', '！', '？', '：', '；',
+    '中', '文', '排', '版', '测', '试', '字', '符', '串', '换', '行', '处', '理', '日', '本', '語',
+    '漢', '字', 'あ', 'い', 'う', 'え', 'お', 'か', 'き', 'く', 'け', 'こ', 'ア', 'イ', 'ウ', 'エ',
+    'オ', 'カ', 'キ', 'ク', 'ケ', 'コ', '。', '、', '「', '」', '【', '】', '！', '？', '：', '；',
+    '々', 'ー', '　',
 ];
 
 fn run(source_path: &str, output_path: &str) -> Result<(), String> {
@@ -47,6 +43,12 @@ fn run(source_path: &str, output_path: &str) -> Result<(), String> {
         .map_err(|e| format!("reading source font {source_path}: {e}"))?;
     let font =
         Font::parse(source_bytes).map_err(|e| format!("parsing source font {source_path}: {e}"))?;
+    let font = if font.instance_bounds(*b"wght").is_some() {
+        font.instance(400.0)
+            .ok_or_else(|| format!("instancing {source_path} at wght 400 failed"))?
+    } else {
+        font
+    };
 
     let mut curated = Vec::new();
     for &(start, end) in CJK_CURATED_RANGES {
@@ -111,12 +113,12 @@ fn run(source_path: &str, output_path: &str) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    let (Some(source), Some(output)) = (args.next(), args.next()) else {
-        eprintln!("usage: gen_cjk_fallback_font <NotoSansCJK-Regular.ttf> <output.ttf>");
+    let args: Vec<String> = std::env::args().collect();
+    let [_, source, output] = args.as_slice() else {
+        eprintln!("usage: gen_cjk_fallback_font <NotoSansSC-wght.ttf> <output.ttf>");
         return ExitCode::from(64);
     };
-    match run(&source, &output) {
+    match run(source, output) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("gen_cjk_fallback_font: {message}");

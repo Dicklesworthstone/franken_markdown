@@ -18,6 +18,7 @@ The full TTFs live here; each rendered PDF embeds only the glyphs it actually us
 | Fraktur (fmd-math) | Euler Fraktur, `\mathfrak`'s face | `cm-math/FmdEulerFraktur{10,7,5}.ttf` |
 | Symbol fallback | Noto Sans Math (curated subset) | `noto-sans-math/NotoSansMathSymbols.ttf` |
 | Emoji fallback (native, `emoji-face`) | Noto Emoji, monochrome (curated subset) | `noto-emoji/NotoEmojiCurated.ttf` |
+| CJK fallback (`cjk-face`, enabled by the CLI) | Noto Sans SC, Regular (BMP Han/kana subset) | `noto-sans-cjk/NotoSansSC-CJK.ttf` |
 | Test-only VF | FmdTestVF (synthetic `wght` axis) | `test-variable/FmdTestVF.ttf` |
 
 `cmunrm` is the classic Computer Modern Roman — the canonical LaTeX body face.
@@ -81,6 +82,13 @@ are the single source of truth for the fallback repertoire.
   (© Google LLC / The Noto Project Authors), SIL OFL 1.1. License:
   `noto-emoji/OFL.txt`. Committed as the curated `NotoEmojiCurated.ttf` subset
   (Regular instance) produced by `examples/gen_emoji_fallback_font.rs`.
+- **Noto Sans SC** — <https://github.com/google/fonts/tree/main/ofl/notosanssc>
+  (© 2014–2021 Adobe, Reserved Font Name “Source”), SIL OFL 1.1. The optional
+  `cjk-face` feature supplies real PDF/SVG fallback glyphs for the source's BMP
+  Han, kana, CJK punctuation, and fullwidth forms. It uses SC glyph forms and
+  does not include Korean Hangul or supplementary-plane Han. The pinned source,
+  exact coverage, deterministic generation command, and hashes are in
+  [`noto-sans-cjk/README.md`](noto-sans-cjk/README.md); the license ships there too.
 - **FmdTestVF** — project-authored synthetic variable font for `fvar`/`avar`
   parser tests (`gk3v.1`). SIL OFL 1.1, no Reserved Font Name. License:
   `test-variable/OFL.txt`. See `test-variable/README.md`.

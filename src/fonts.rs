@@ -12,6 +12,8 @@
 //! * monospace / code → CM Typewriter
 //! * symbol fallback → Noto Sans Math (curated subset; backs characters the
 //!   primary faces cannot map, e.g. `⇒`, `≠`, `∑`)
+//! * CJK fallback → curated Noto Sans SC (Han, kana, and CJK punctuation;
+//!   simplified-Chinese glyph forms, without Korean Hangul coverage)
 
 use crate::text::{Font, FontError, Kerning, Ligatures};
 use crate::theme::FontFamily;
@@ -82,6 +84,8 @@ static CM_ITALIC_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static CM_BOLD_ITALIC_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static MONO_REGULAR_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 static SYMBOL_REGULAR_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
+#[cfg(feature = "cjk-face")]
+static CJK_REGULAR_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 #[cfg(feature = "emoji-face")]
 static EMOJI_FONT: OnceLock<Result<Font, FontError>> = OnceLock::new();
 #[cfg(feature = "emoji-face")]
@@ -96,6 +100,8 @@ static CM_ITALIC_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static CM_BOLD_ITALIC_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static MONO_REGULAR_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 static SYMBOL_REGULAR_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
+#[cfg(feature = "cjk-face")]
+static CJK_REGULAR_LAYOUT: OnceLock<OpenTypeLayoutTables> = OnceLock::new();
 
 /// Parsed OpenType layout tables for a bundled face.
 pub(crate) struct OpenTypeLayoutTables {
@@ -179,6 +185,44 @@ pub(crate) fn symbol_font() -> Result<&'static Font, FontError> {
 pub(crate) fn symbol_layout_tables() -> Result<&'static OpenTypeLayoutTables, FontError> {
     let font = symbol_font()?;
     Ok(cached_layout_tables(&SYMBOL_REGULAR_LAYOUT, font))
+}
+
+/// Raw TTF bytes for the bundled CJK fallback face, when `cjk-face` is enabled.
+///
+/// This face covers Han, kana, and CJK punctuation using simplified-Chinese
+/// glyph forms. It does not provide Korean Hangul. Native CLI builds enable
+/// it by default; a lean core or WASM host can opt into the same feature.
+#[inline(always)]
+#[must_use]
+pub fn cjk_bytes() -> Option<&'static [u8]> {
+    #[cfg(feature = "cjk-face")]
+    {
+        Some(fmd_font::bundled::noto_sans_cjk_sc())
+    }
+    #[cfg(not(feature = "cjk-face"))]
+    {
+        None
+    }
+}
+
+/// The bundled CJK fallback and its cached layout tables, when compiled in.
+///
+/// # Errors
+/// See [`body_layout_tables`].
+#[cfg(feature = "cjk-face")]
+pub(crate) fn cjk_font() -> Option<Result<(&'static Font, &'static OpenTypeLayoutTables), FontError>>
+{
+    Some(
+        cached_font(&CJK_REGULAR_FONT, fmd_font::bundled::noto_sans_cjk_sc())
+            .map(|font| (font, cached_layout_tables(&CJK_REGULAR_LAYOUT, font))),
+    )
+}
+
+/// Without `cjk-face`, lean core and WASM builds carry no bundled CJK bytes.
+#[cfg(not(feature = "cjk-face"))]
+pub(crate) fn cjk_font() -> Option<Result<(&'static Font, &'static OpenTypeLayoutTables), FontError>>
+{
+    None
 }
 
 /// The bundled emoji fallback face (curated monochrome Noto Emoji subset),
@@ -280,6 +324,12 @@ pub fn load_mono(style: FontStyle) -> Result<Font, FontError> {
 /// See [`load_body`].
 pub fn load_symbol() -> Result<Font, FontError> {
     symbol_font().cloned()
+}
+
+/// Owned copy of the bundled CJK fallback face, when `cjk-face` is enabled.
+#[must_use]
+pub fn load_cjk() -> Option<Font> {
+    cjk_font()?.ok().map(|(font, _)| font.clone())
 }
 
 /// Owned copy of the bundled emoji fallback face, when compiled in.

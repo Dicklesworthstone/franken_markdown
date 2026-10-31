@@ -138,9 +138,32 @@ fn latin_corpus_is_covered() {
 }
 
 #[test]
-fn han_fixture_reports_gaps_and_hints() {
+fn han_corpus_is_covered_by_the_enabled_fallback() {
     let dir = tmp("han");
     fs::write(dir.join("cjk.md"), "# 你好\n\n世界\n").unwrap();
+    let out = fmd(&[
+        "doctor",
+        "fonts",
+        "--corpus",
+        dir.to_str().unwrap(),
+        "--json",
+    ]);
+    let stdout = text(&out.stdout);
+    assert_ok("han-exit", "0", out.status.success(), &stdout);
+    assert_ok(
+        "han-gaps",
+        "false",
+        stdout.contains("\"gaps\":false"),
+        &stdout,
+    );
+    assert_ok("han-fallback", "4", stdout.contains("\"script\":\"han\",\"codepoints\":4,\"covered\":0,\"fallback_covered\":4,\"uncovered\":0"), &stdout);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hangul_fixture_reports_gaps_and_hints() {
+    let dir = tmp("hangul");
+    fs::write(dir.join("korean.md"), "# 한글\n\n한국어\n").unwrap();
     let out = fmd(&[
         "doctor",
         "fonts",
@@ -152,27 +175,32 @@ fn han_fixture_reports_gaps_and_hints() {
     let stdout = text(&out.stdout);
     let stderr = text(&out.stderr);
     assert_ok(
-        "han-exit",
+        "hangul-exit",
         "1",
         code == 1,
         &format!("code={code} stdout={stdout} stderr={stderr}"),
     );
     assert_ok(
-        "han-gaps",
+        "hangul-gaps",
         "true",
-        stdout.contains("\"gaps\":true") && stdout.contains("\"script\":\"han\""),
+        stdout.contains("\"gaps\":true") && stdout.contains("\"script\":\"hangul\""),
         &stdout,
     );
     assert_ok(
-        "han-hint",
+        "hangul-hint",
         "CURATED_RANGES",
         stdout.contains("CURATED_RANGES"),
         &stdout,
     );
-    assert_ok("han-sample", "cjk.md", stdout.contains("cjk.md:"), &stdout);
+    assert_ok(
+        "hangul-sample",
+        "korean.md",
+        stdout.contains("korean.md:"),
+        &stdout,
+    );
     let trimmed = stdout.trim_end();
     assert_ok(
-        "han-json-stdout-pure",
+        "hangul-json-stdout-pure",
         "stdout",
         trimmed.starts_with('{') && !trimmed.contains('\n'),
         &stdout,

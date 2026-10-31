@@ -2139,7 +2139,8 @@ fn render_warnings_reports_missing_assets_and_glyphs() {
         image_assets: vec![PdfImageAsset::new("bad.png", vec![0x00, 0x01, 0x02, 0x03])],
         ..PdfOptions::default()
     };
-    let doc = parse_markdown("![a](missing.png) ![b](bad.png)\n\nplain 文字 中\n");
+    let doc =
+        parse_markdown("![a](missing.png) ![b](bad.png)\n\nplain \u{13000}\u{13001} \u{13002}\n");
     let warnings = render_warnings(&doc, &opts);
     let codes: Vec<&str> = warnings.iter().map(|w| w.code()).collect();
     assert!(
@@ -2152,7 +2153,7 @@ fn render_warnings_reports_missing_assets_and_glyphs() {
     );
     assert!(
         codes.contains(&"missing_glyphs"),
-        "CJK text -> missing_glyphs: {codes:?}"
+        "uncovered hieroglyphs -> missing_glyphs: {codes:?}"
     );
     // The messages name the offending destinations / characters.
     let joined: String = warnings.iter().map(|w| w.message()).collect();

@@ -30,6 +30,9 @@ bundled-faces = []
 # The curated monochrome Noto Emoji subset (~230 KB) as `bundled::NOTO_EMOJI_CURATED`.
 # Native renderers enable it; the WASM package leaves it off for size.
 emoji-face = ["bundled-faces"]
+# Static Noto Sans SC subset: mapped BMP Han, kana, and CJK punctuation.
+# Optional because the broad repertoire is substantially larger than Latin fonts.
+cjk-face = ["bundled-faces"]
 
 [lints.rust]
 unsafe_code = "forbid"

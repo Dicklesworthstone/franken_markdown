@@ -88,7 +88,23 @@ pub const EULER_FRAKTUR_5: &[u8] = include_bytes!("../fonts/cm-math/FmdEulerFrak
 #[cfg(feature = "emoji-face")]
 pub const NOTO_EMOJI_CURATED: &[u8] = include_bytes!("../fonts/noto-emoji/NotoEmojiCurated.ttf");
 
-/// Every bundled face as `(stable name, bytes)`, in registry order.
+/// Noto Sans SC at Regular weight, subset to mapped BMP Han, kana, and CJK
+/// punctuation/fullwidth forms. Optional because broad ideograph coverage is
+/// much larger than the default Latin/math set. This face uses SC glyph forms;
+/// Korean Hangul and supplementary-plane Han are outside its repertoire.
+/// Source, exact ranges, and license: `fonts/noto-sans-cjk/`.
+#[cfg(feature = "cjk-face")]
+#[inline(never)]
+#[must_use]
+pub fn noto_sans_cjk_sc() -> &'static [u8] {
+    // A non-inline accessor keeps the broad asset out of downstream constant
+    // evaluation metadata while retaining one immutable allocation.
+    static BYTES: &[u8] = include_bytes!("../fonts/noto-sans-cjk/NotoSansSC-CJK.ttf");
+    BYTES
+}
+
+/// Every default bundled face as `(stable name, bytes)`, in registry order.
+/// The optional emoji and CJK faces are exposed separately behind feature flags.
 pub const ALL_FACES: [(&str, &[u8]); 29] = [
     ("cm-regular", CM_REGULAR),
     ("cm-bold", CM_BOLD),

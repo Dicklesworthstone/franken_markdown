@@ -82,11 +82,15 @@ required-features = ["lsp"]
 [features]
 default = ["cli"]
 # CLI surface only. The engine library never depends on these.
-cli = ["dep:clap", "emoji-face"]
+cli = ["dep:clap", "emoji-face", "cjk-face"]
 # Native emoji fallback face for PDF and SVG (curated Noto Emoji subset, ~230 KB).
 # Enabled by `cli`; the core and WASM builds leave it off, so their output is
 # unchanged and emoji there stay `.notdef` with a `missing_glyphs` warning.
 emoji-face = ["fmd-font/emoji-face"]
+# Real CJK fallback outlines for PDF and SVG. Enabled by the native CLI;
+# lean and browser builds can opt in without any platform dependencies.
+# The broad BMP Han/kana repertoire is kept out of the standard WASM size budget.
+cjk-face = ["fmd-font/cjk-face"]
 # Explicit native PDF compression adapter. This feature adds no dependencies
 # and never spawns workers by itself: each render must supply a bounded
 # PdfCompression::NativeWorkers policy. The default and WASM core stay sequential.

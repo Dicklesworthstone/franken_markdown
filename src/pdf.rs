@@ -116,6 +116,7 @@ fn subset_tail_slot_name(slot: u8) -> &'static str {
         F_MONO => "mono",
         F_BOLDITALIC => "bolditalic",
         F_SYMBOL => "symbol",
+        F_EMOJI => "emoji",
         F_CJK => "cjk",
         _ => "other",
     }
@@ -169,7 +170,7 @@ const MAX_SVG_ACCESSIBLE_TEXT_CHARS: usize = 512;
 /// still fits (~91.5 MiB); 16-bit RGBA above ~12 MP is refused (→ alt text).
 const MAX_PDF_IMAGE_DECODED_BYTES: u64 = 96 * 1024 * 1024;
 
-// Font slots referenced in page Resources as /F1../F7.
+// Font slots referenced in page Resources as /F1../F7 and /F11.
 const F_BODY: u8 = 1;
 const F_BOLD: u8 = 2;
 const F_ITALIC: u8 = 3;
@@ -180,11 +181,12 @@ const F_BOLDITALIC: u8 = 5;
 /// but the fallback does, so common math/arrow symbols render as real glyphs
 /// instead of `.notdef` boxes.
 const F_SYMBOL: u8 = 6;
-/// The optional extra fallback face: the bundled emoji face in native builds
-/// (`emoji-face` feature). Layout routes a character here when neither its
-/// style slot nor the symbol face maps it (CJK script characters come here
-/// first when the face maps them).
-const F_CJK: u8 = 7;
+/// The bundled emoji fallback face in native builds (`emoji-face` feature).
+/// Its existing resource identity stays /F7 when CJK fallback is also used.
+const F_EMOJI: u8 = 7;
+/// The bundled Han/kana/punctuation fallback, independent of emoji. Slots
+/// 8–10 identify inline objects, so the next font resource is /F11.
+const F_CJK: u8 = 11;
 /// An inline `$…$` formula typeset by fmd-math (fm-djcw), not a font: the
 /// token's text is its TeX source, it measures as the formula's advance, and
 /// the writer fills its outlines instead of showing text. Never in [`SLOTS`],
@@ -230,13 +232,14 @@ fn inline_object_advance(slot: u8, text: &str, size: f32) -> f32 {
         inline_math_advance(text, size, slot == F_DISPLAY_MATH)
     }
 }
-const SLOTS: [u8; 7] = [
+const SLOTS: [u8; 8] = [
     F_BODY,
     F_BOLD,
     F_ITALIC,
     F_MONO,
     F_BOLDITALIC,
     F_SYMBOL,
+    F_EMOJI,
     F_CJK,
 ];
 const PDF_FONT_SLOT_COUNT: usize = SLOTS.len();
@@ -1759,9 +1762,6 @@ impl Face {
         })
     }
 
-    /// Load the bundled symbol fallback face. It has no caller-override slot
-    /// (the fallback repertoire is a renderer guarantee, not a theme choice),
-    /// so it is built straight from the registry's cached parse.
     /// The bundled emoji fallback face, when the `emoji-face` feature compiled
     /// it in (native builds); `None` in core and WASM builds.
     fn load_bundled_emoji() -> Result<Option<Self>> {
@@ -1771,6 +1771,26 @@ impl Face {
         let (font, layout) = loaded.map_err(|err| {
             RenderError::InvalidInput(format!(
                 "bundled emoji fallback font is not a supported TrueType font: {err}"
+            ))
+        })?;
+        Ok(Some(Self {
+            font: Cow::Borrowed(font),
+            kern: Cow::Borrowed(&layout.kern),
+            lig: Cow::Borrowed(&layout.lig),
+            ascii: std::sync::OnceLock::new(),
+            positioned: RefCell::new(text_positioning::Cache::default()),
+        }))
+    }
+
+    /// Load the CJK fallback independently of emoji when `cjk-face` is
+    /// compiled in. Measurement and subsetting borrow the same cached source.
+    fn load_bundled_cjk() -> Result<Option<Self>> {
+        let Some(loaded) = fonts::cjk_font() else {
+            return Ok(None);
+        };
+        let (font, layout) = loaded.map_err(|err| {
+            RenderError::InvalidInput(format!(
+                "bundled CJK fallback font is not a supported TrueType font: {err}"
             ))
         })?;
         Ok(Some(Self {
@@ -1887,9 +1907,10 @@ struct Faces {
     /// Bundled symbol fallback face; never caller-overridable, always loaded so
     /// coverage checks are total. Embedded in the PDF only when actually used.
     symbol: Face,
-    /// Optional extra fallback face (see [`F_CJK`]): the bundled emoji face in
-    /// native builds.
+    /// Optional bundled Han/kana/punctuation fallback, embedded only when used.
     cjk: Option<Face>,
+    /// Optional bundled emoji fallback in native builds; independent of CJK.
+    emoji: Option<Face>,
     /// Images placed inside running text, decoded once per render by
     /// [`layout`] (see [`inline_image::prepare`]).
     inline_images: inline_image::InlineImageTable,
@@ -2031,7 +2052,8 @@ impl Faces {
                 assets.effective_weight(FontAssetSlot::MonoRegular),
             )?,
             symbol: Face::load_bundled_symbol()?,
-            cjk: Face::load_bundled_emoji()?,
+            cjk: Face::load_bundled_cjk()?,
+            emoji: Face::load_bundled_emoji()?,
             inline_images: Default::default(),
         })
     }
@@ -2043,31 +2065,35 @@ impl Faces {
             F_BOLDITALIC => &self.bolditalic,
             F_MONO => &self.mono,
             F_SYMBOL => &self.symbol,
+            F_EMOJI => self.emoji.as_ref().unwrap_or(&self.symbol),
             F_CJK => self.cjk.as_ref().unwrap_or(&self.symbol),
             _ => &self.body,
         }
     }
 
-    /// The slot that should carry `c` when the requested style slot renders it:
-    /// the style slot itself when its face maps the character, otherwise CJK
-    /// fallback (for Han/Kana/Hangul) or bundled symbol fallback face.
+    /// Resolve missing primary glyphs through the same deterministic faces
+    /// used for measurement, painting, and font subsetting. CJK scripts prefer
+    /// the CJK face; other symbols keep their existing symbol/emoji priority.
     fn fallback_slot(&self, slot: u8, c: char) -> u8 {
-        if slot == F_SYMBOL || slot == F_CJK || self.face(slot).glyph_index(c) != 0 {
-            slot
-        } else if let Some(ref extra) = self.cjk {
-            let in_extra = extra.glyph_index(c) != 0;
-            if in_extra && classify_script(c).wants_cjk_fallback() {
-                F_CJK
-            } else if self.symbol.glyph_index(c) != 0 {
-                F_SYMBOL
-            } else if in_extra {
-                // Last resort: emoji and anything else only the extra face maps.
-                F_CJK
-            } else {
-                slot
-            }
+        if matches!(slot, F_SYMBOL | F_EMOJI | F_CJK) || self.face(slot).glyph_index(c) != 0 {
+            return slot;
+        }
+        let in_cjk = self
+            .cjk
+            .as_ref()
+            .is_some_and(|font| font.glyph_index(c) != 0);
+        if in_cjk && classify_script(c).wants_cjk_fallback() {
+            F_CJK
         } else if self.symbol.glyph_index(c) != 0 {
             F_SYMBOL
+        } else if self
+            .emoji
+            .as_ref()
+            .is_some_and(|font| font.glyph_index(c) != 0)
+        {
+            F_EMOJI
+        } else if in_cjk {
+            F_CJK
         } else {
             slot
         }
@@ -24957,7 +24983,8 @@ fn pdf_font_slot_index(slot: u8) -> Option<usize> {
         F_MONO => Some(3),
         F_BOLDITALIC => Some(4),
         F_SYMBOL => Some(5),
-        F_CJK => Some(6),
+        F_EMOJI => Some(6),
+        F_CJK => Some(7),
         _ => None,
     }
 }

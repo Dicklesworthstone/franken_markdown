@@ -135,7 +135,7 @@ fn truetype_resources_keep_legacy_subset_bytes_and_metadata() {
     let expected = font.subset(&keep).unwrap();
     let mut package = Package::default();
     package
-        .face(font, &keep, "Legacy", 400, false, FontEmbedding::Subset)
+        .face(&font, &keep, "Legacy", 400, false, FontEmbedding::Subset)
         .unwrap();
     assert_eq!(package.resources[0].bytes, expected);
     assert_eq!(package.resources[0].href, "fonts/font-1.ttf");
@@ -590,7 +590,7 @@ fn full_mode_embeds_bundled_faces_and_enforces_admission_and_output_limits() {
     };
     let error = saturated
         .face(
-            Font::parse(SOURCE_SANS.to_vec()).unwrap(),
+            &Font::parse(SOURCE_SANS.to_vec()).unwrap(),
             &['A'],
             "Full",
             400,
@@ -876,4 +876,94 @@ fn different_embedded_faces_change_identity_and_never_mutate_input_assets() {
         first_package.fingerprint(),
         for_document(&doc, &opts).fingerprint()
     );
+}
+
+#[cfg(feature = "cjk-face")]
+#[test]
+fn default_cjk_publication_embeds_only_its_real_fallback_subset() {
+    let opts = HtmlOptions {
+        title: Some("中文日本語".into()),
+        ..HtmlOptions::default()
+    };
+    let doc = parse_markdown("# 中文日本語\n\nLatin **かな** and `カナ`.\n");
+    let result = for_document(&doc, &opts);
+    assert_eq!(
+        result.resources.len(),
+        1,
+        "do not force primary fonts into default EPUB"
+    );
+    assert_eq!(result.css.matches("@font-face").count(), 1);
+    assert!(
+        result
+            .css
+            .contains("body{font-family:\"FmdEpubCjk\",sans-serif;}")
+    );
+    let font = Font::parse(result.resources[0].bytes.clone()).unwrap();
+    for ch in "中文日本語かなカナ".chars() {
+        let gid = font.glyph_index(ch);
+        assert_ne!(gid, 0, "{ch:?} survives publication subsetting");
+        assert!(font.glyph_bbox(gid).is_some());
+    }
+    assert_eq!(font.glyph_index('A'), 0);
+    assert_eq!(font.glyph_index('龍'), 0);
+    assert!(result.resources[0].bytes.len() < fonts::cjk_bytes().unwrap().len() / 100);
+    let archive = epub::render_epub(&doc, &opts).unwrap();
+    assert_eq!(archive, epub::render_epub(&doc, &opts).unwrap());
+    let entries = entries(&archive);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.name.starts_with("OEBPS/fonts/"))
+            .count(),
+        1
+    );
+    assert_payload(&entries, "OEBPS/embedded-fonts.css", result.css.as_bytes());
+    assert_payload(
+        &entries,
+        &format!("OEBPS/{}", result.resources[0].href),
+        &result.resources[0].bytes,
+    );
+}
+
+#[cfg(feature = "cjk-face")]
+#[test]
+fn explicit_and_full_epub_fonts_add_cjk_only_when_the_publication_uses_it() {
+    let mut opts = options();
+    let compact = package(&opts, "Latin 中文");
+    assert_eq!(compact.css.matches("@font-face").count(), 7);
+    assert!(
+        compact
+            .css
+            .contains("\"FmdEpubBody\",\"FmdEpubSymbols\",\"FmdEpubCjk\",sans-serif")
+    );
+    opts.font_embedding = FontEmbedding::Full;
+    let full = package(&opts, "Latin 中文");
+    let source = fonts::cjk_bytes().unwrap();
+    assert_eq!(
+        full.resources
+            .iter()
+            .filter(|resource| resource.bytes == source)
+            .count(),
+        1
+    );
+    let latin = package(&opts, "Latin only");
+    assert!(!latin.css.contains("FmdEpubCjk"));
+    assert_eq!(latin.css.matches("@font-face").count(), 6);
+}
+
+#[cfg(feature = "cjk-face")]
+#[test]
+fn default_epub_cjk_entities_are_collected_and_custom_css_keeps_precedence() {
+    let opts = HtmlOptions {
+        custom_css: Some("body{font-family:serif;}".into()),
+        ..HtmlOptions::default()
+    };
+    let result = package(&opts, "<p>&#x4e2d;&#25991;</p>");
+    assert_eq!(result.resources.len(), 1);
+    let font = Font::parse(result.resources[0].bytes.clone()).unwrap();
+    assert_ne!(font.glyph_index('中'), 0);
+    assert_ne!(font.glyph_index('文'), 0);
+    let mut xhtml = epub::chapter_xhtml("Chinese", "zh", "<p>中文</p>");
+    result.link(&mut xhtml, true).unwrap();
+    assert!(xhtml.find(FONT_LINK).unwrap() < xhtml.find(STYLE_LINK).unwrap());
 }

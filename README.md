@@ -128,6 +128,33 @@ coverage, examples, and independent FontTools/HarfBuzz verification. These
 APIs are available to consumers without changing the existing Markdown/PDF
 layout path or adding runtime dependencies.
 
+### CJK text rendering
+
+The default native build includes a Noto Sans SC fallback with **28,215 mapped
+characters**: the pinned source's BMP Han ideographs, hiragana, katakana, CJK
+punctuation, and fullwidth forms. PDF and SVG draw real outlines while retaining
+the selected Latin body/code faces and the independent emoji fallback. PDF
+embeds only the used glyphs; HTML and EPUB include a document-specific CJK
+subset so these characters do not require an installed reading-system font.
+`--font-embedding full` retains the complete enabled fallback when the document
+uses CJK, and styled editable HTML retains it for text entered later.
+
+The optional `cjk-face` Cargo feature is enabled by `cli`. Lean libraries and
+browser distributions can opt in explicitly:
+
+```bash
+cargo build --no-default-features --features cjk-face
+cargo build --target wasm32-unknown-unknown --no-default-features --features wasm-full,cjk-face
+```
+
+The standard browser package leaves this broad font out of its size budget.
+The fallback uses Simplified-Chinese glyph forms and horizontal text layout;
+it does not supply Korean Hangul, supplementary-plane Han, vertical layout,
+or locale-specific Japanese glyph substitutions. Unsupported characters still
+produce `missing_glyphs` diagnostics in PDF/SVG. See the [font source and exact
+repertoire](fmd-font/fonts/noto-sans-cjk/README.md) for the pinned license,
+reproduction command, and independent geometry check.
+
 ### Mainline Highlights
 
 | Area | Result on `main` |

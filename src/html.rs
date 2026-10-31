@@ -273,6 +273,23 @@ pub(crate) fn editable_stylesheet(opts: &HtmlOptions) -> String {
             &mut woff2,
         );
     }
+    // Editors must accept CJK entered after their initial Latin-only source.
+    // Keep the complete optional face; snapshots below remain document-subset.
+    let has_cjk = if let Some(bytes) = fonts::cjk_bytes() {
+        push_font_payload(
+            &mut css,
+            "FMD CJK",
+            "normal",
+            "400",
+            bytes,
+            opts.html_font_format,
+            &mut woff,
+            &mut woff2,
+        );
+        true
+    } else {
+        false
+    };
     if let Some(custom) = &opts.custom_css {
         css.push_str(&sanitize_custom_css(custom));
         css
@@ -283,6 +300,7 @@ pub(crate) fn editable_stylesheet(opts: &HtmlOptions) -> String {
                 css,
                 has_body: true,
                 has_mono: true,
+                has_cjk,
             },
         )
     }
@@ -1986,15 +2004,20 @@ fn default_css(doc: &Document, opts: &HtmlOptions) -> String {
 
 fn default_css_with_fonts(opts: &HtmlOptions, embedded: EmbeddedFontCss) -> String {
     let theme = &opts.theme;
-    let body_font = if embedded.has_body {
-        format!("\"FMD Body\", {}", theme.body_font_stack())
+    let cjk_family = if embedded.has_cjk {
+        "\"FMD CJK\", "
     } else {
-        theme.body_font_stack().to_string()
+        ""
+    };
+    let body_font = if embedded.has_body {
+        format!("\"FMD Body\", {cjk_family}{}", theme.body_font_stack())
+    } else {
+        format!("{cjk_family}{}", theme.body_font_stack())
     };
     let mono_font = if embedded.has_mono {
-        format!("\"FMD Mono\", {}", theme.mono_font_stack())
+        format!("\"FMD Mono\", {cjk_family}{}", theme.mono_font_stack())
     } else {
-        theme.mono_font_stack().to_string()
+        format!("{cjk_family}{}", theme.mono_font_stack())
     };
     let colors = theme.effective_colors(false, false);
     let spacing = &theme.spacing;
@@ -2370,6 +2393,7 @@ struct EmbeddedFontCss {
     css: String,
     has_body: bool,
     has_mono: bool,
+    has_cjk: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -2472,10 +2496,52 @@ fn embedded_font_css(
     );
     has_mono |= !usage.mono.is_empty();
 
+    // Use one shared fallback for CJK text in every semantic style. Its cmap
+    // contains only this document's covered characters in compact snapshots,
+    // and its family stays after the user's primary faces in the CSS stack.
+    let mut has_cjk = false;
+    if let Some(Ok((font, _))) = fonts::cjk_font() {
+        let mut chars = FontCharSet::default();
+        for used in [
+            &usage.body_regular,
+            &usage.body_bold,
+            &usage.body_italic,
+            &usage.body_bold_italic,
+            &usage.mono,
+        ] {
+            for &ch in &used.non_ascii {
+                if font.glyph_index(ch) != 0 {
+                    chars.insert(ch);
+                }
+            }
+        }
+        if !chars.is_empty() {
+            push_font_face(
+                &mut css,
+                "FMD CJK",
+                "normal",
+                "400",
+                HtmlFontFace {
+                    bytes: font.as_sfnt(),
+                    parsed: Some(font),
+                    slot: FontAssetSlot::BodyRegular,
+                    instance_weight: None,
+                },
+                &chars,
+                format,
+                embedding,
+                &mut woff_scratch,
+                &mut woff2_scratch,
+            );
+            has_cjk = true;
+        }
+    }
+
     EmbeddedFontCss {
         css,
         has_body,
         has_mono,
+        has_cjk,
     }
 }
 
@@ -2552,6 +2618,20 @@ impl FontUsage {
         slot.extend_text(text, &mut self.word_memo);
     }
 
+    fn add_html_text(&mut self, html: &str, style: InlineStyle) {
+        // Preserve source coverage, including literal image descriptions and
+        // attributes, while also keeping the characters that entity references
+        // actually paint. The sanitizer uses the same entity decoder as the
+        // renderer; declining URLs exposes decoded image alt text as prose.
+        self.add_body_text(html, style);
+        if html.contains('&') {
+            let mut rendered = String::new();
+            crate::safe_html::Sanitizer::default()
+                .feed(html, 0, &mut rendered, &mut |_, _, _| false);
+            self.add_body_text(&crate::safe_html::visible_text(&rendered), style);
+        }
+    }
+
     fn add_mono_text(&mut self, text: &str) {
         self.mono.extend_text(text, &mut self.word_memo);
     }
@@ -2624,7 +2704,7 @@ fn collect_blocks_font_usage(blocks: &[Block], usage: &mut FontUsage) {
                 }
             }
             Block::ThematicBreak => {}
-            Block::HtmlBlock(html) => usage.add_body_text(html, InlineStyle::default()),
+            Block::HtmlBlock(html) => usage.add_html_text(html, InlineStyle::default()),
         }
     }
 }
@@ -2649,7 +2729,7 @@ fn collect_inlines_font_usage(inlines: &[Inline], usage: &mut FontUsage, style: 
             }
             Inline::Image { alt, .. } => usage.add_body_text(alt, style),
             Inline::SoftBreak | Inline::HardBreak => usage.add_soft_break(style),
-            Inline::Html(html) => usage.add_body_text(html, style),
+            Inline::Html(html) => usage.add_html_text(html, style),
         }
     }
 }

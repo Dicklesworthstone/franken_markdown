@@ -57,7 +57,9 @@ const SLOT_MONO: usize = 4;
 const SLOT_SYMBOL: usize = 5;
 /// The bundled emoji face (native `emoji-face` builds); last-resort fallback.
 const SLOT_EMOJI: usize = 6;
-const SLOT_COUNT: usize = 7;
+/// Bundled Han/kana/punctuation face; emoji keeps its original slot.
+const SLOT_CJK: usize = 7;
+const SLOT_COUNT: usize = 8;
 
 // Explicit paths also support the standalone #[path] SVG integration harness.
 #[path = "svg/financial_tables.rs"]
@@ -467,6 +469,7 @@ impl Poster {
                 fonts::load_mono(FontStyle::Regular).ok(),
                 fonts::load_symbol().ok(),
                 fonts::load_emoji(),
+                fonts::load_cjk(),
             ],
             math_engine: OnceCell::new(),
             images: images::ImageStore::default(),
@@ -554,7 +557,9 @@ impl Poster {
     // -- glyph resolution / measurement ------------------------------------
 
     /// Map `ch` to `(face slot, glyph id)`: the styled primary face first,
-    /// then the bundled symbol and emoji fallbacks. `(slot, 0)` means unmapped.
+    /// then the bundled CJK, symbol, and emoji fallbacks. The CJK face is
+    /// preferred for Han/kana; other symbols retain their existing priority.
+    /// `(slot, 0)` means unmapped.
     fn resolve(&self, ch: char, st: RStyle) -> (usize, u16) {
         let slot = if st.mono {
             SLOT_MONO
@@ -567,7 +572,12 @@ impl Poster {
                 return (slot, gid);
             }
         }
-        for fallback in [SLOT_SYMBOL, SLOT_EMOJI] {
+        let fallbacks = if franken_markdown::layout::classify_script(ch).wants_cjk_fallback() {
+            [SLOT_CJK, SLOT_SYMBOL, SLOT_EMOJI]
+        } else {
+            [SLOT_SYMBOL, SLOT_EMOJI, SLOT_CJK]
+        };
+        for fallback in fallbacks {
             if slot != fallback
                 && let Some(font) = &self.faces[fallback]
             {

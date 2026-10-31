@@ -209,10 +209,10 @@ fn wasm_pdf_accepts_browser_supplied_image_bytes() {
 fn wasm_pdf_surfaces_degraded_content_as_warning_diagnostics() {
     // A browser host must receive the same "content was degraded" signal the
     // native CLI prints: an image with no supplied asset (rendered as alt text)
-    // and a CJK character with no glyph in the bundled Latin fonts. Without this
+    // and a hieroglyph with no glyph in any bundled face. Without this
     // the drop would be silent — contrary to the no-silent-drop doctrine.
     let output = render_pdf(
-        "![chart](missing.png)\n\n中文 body text",
+        "![chart](missing.png)\n\n\u{13000} body text",
         &WasmRenderOptions::default(),
     )
     .unwrap();

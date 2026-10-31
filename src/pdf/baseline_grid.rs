@@ -242,6 +242,24 @@ fn lift(line: &Line) -> i64 {
     outward(inline_math_extents(line).1 + financial_tables::footing_depth(line))
 }
 
+/// Row-local requirements used to choose the document-wide grid context.
+/// Object descent already contributes to the row's non-discardable lift; only
+/// the remaining ink needs clearance from the next row or the body boundary.
+fn required_clearance(line: &Line, metrics: LineGrid) -> (i64, i64) {
+    let depth = lift(line);
+    let marker_below = metrics.marker_ink.map_or(0, |ink| ink.1);
+    let marker_bound = marker_below
+        + if metrics.marker_ink.is_some() && !line.quote_bars.is_empty() {
+            outward(QUOTE_BG_PAD_V)
+        } else {
+            0
+        };
+    (
+        (metrics.text_below.max(marker_below) - depth).max(0),
+        (metrics.ink_below.max(marker_bound) - depth).max(0),
+    )
+}
+
 fn quantize(lines: &mut [Line], pitch: i64, clearance: i64, bottom_guard: i64) {
     for line in lines {
         let Some(mut grid) = line.grid else { continue };
@@ -283,16 +301,9 @@ pub(super) fn apply(lines: &mut [Line], grid: Option<BaselineGrid>, faces: &Face
     let mut bottom_guard = 0;
     for line in &*lines {
         if let Some(metrics) = line.grid {
-            let depth = lift(line);
-            let marker_below = metrics.marker_ink.map_or(0, |ink| ink.1);
-            let marker_bound = marker_below
-                + if metrics.marker_ink.is_some() && !line.quote_bars.is_empty() {
-                    outward(QUOTE_BG_PAD_V)
-                } else {
-                    0
-                };
-            clearance = clearance.max((metrics.text_below.max(marker_below) - depth).max(0));
-            bottom_guard = bottom_guard.max((metrics.ink_below.max(marker_bound) - depth).max(0));
+            let (required, guard) = required_clearance(line, metrics);
+            clearance = clearance.max(required);
+            bottom_guard = bottom_guard.max(guard);
         }
     }
     quantize(
@@ -322,6 +333,26 @@ pub(super) fn finalize_alternative(lines: &mut [Line], baseline: &Line) {
         }
         quantize(lines, grid.pitch, grid.clearance, grid.bottom_guard);
     }
+}
+
+/// An optional shape cannot enlarge the finalized document's grid context.
+/// Moving an object to another row can change the residual descent after its
+/// lift, even though its own dimensions are unchanged. Reject that shape before
+/// page selection rather than invalidate otherwise valid surrounding rows.
+/// Call after final spacing and quote decoration have been transferred.
+pub(super) fn alternative_fits_clearance(lines: &[Line], baseline: &Line) -> bool {
+    let Some(context) = baseline.grid else {
+        return lines.iter().all(|line| line.grid.is_none());
+    };
+    context.pitch > 0
+        && lines.iter().all(|line| {
+            line.grid.is_some_and(|metrics| {
+                let (clearance, guard) = required_clearance(line, metrics);
+                metrics.pitch == context.pitch
+                    && clearance <= context.clearance
+                    && guard <= context.bottom_guard
+            })
+        })
 }
 
 /// The original bottom and origin live in PageGrid, so every caller may safely
@@ -462,4 +493,126 @@ pub(super) fn validate_layout(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod alternative_tests {
+    use super::*;
+
+    fn row() -> Line {
+        Line {
+            size: 10.0,
+            gap_after: 0.0,
+            rule: false,
+            rule_x: 0.0,
+            quote_bars: Vec::new(),
+            bg: 0,
+            shade: false,
+            flow: FlowMark::default(),
+            page_break_before: false,
+            list_path: Vec::new(),
+            table_cols: Vec::new(),
+            table_source_row: None,
+            table_footing: Vec::new(),
+            heading_source: None,
+            text_ink: (0.0, 0.0),
+            grid: Some(LineGrid {
+                pitch: 14_000,
+                advance: 14_000,
+                leading: 14_000,
+                gap: 0,
+                natural_gap: 0.0,
+                ink_above: 8_000,
+                ink_below: 5_000,
+                text_above: 8_000,
+                text_below: 3_000,
+                marker_ink: None,
+                clearance: 3_000,
+                bottom_guard: 5_000,
+            }),
+            hyphenated: false,
+            segs: Vec::new(),
+            image: None,
+        }
+    }
+
+    #[test]
+    fn alternatives_must_fit_both_existing_global_ink_limits() {
+        let baseline = row();
+        assert!(alternative_fits_clearance(
+            std::slice::from_ref(&baseline),
+            &baseline,
+        ));
+        let mut candidate = baseline.clone();
+        candidate.grid.as_mut().unwrap().text_below = 2_000;
+        candidate.grid.as_mut().unwrap().ink_below = 4_000;
+        assert!(alternative_fits_clearance(
+            std::slice::from_ref(&candidate),
+            &baseline,
+        ));
+        candidate.grid.as_mut().unwrap().text_below = 3_001;
+        assert!(!alternative_fits_clearance(
+            std::slice::from_ref(&candidate),
+            &baseline,
+        ));
+        candidate.grid.as_mut().unwrap().text_below = 2_000;
+        candidate.grid.as_mut().unwrap().ink_below = 5_001;
+        assert!(!alternative_fits_clearance(&[candidate], &baseline));
+    }
+
+    #[test]
+    fn regrouping_deep_ink_cannot_reuse_insufficient_global_clearance() {
+        let baseline = row();
+        let mut candidate = baseline.clone();
+        // This row's deep positioned ink contributes 5pt of non-discardable
+        // lift. Its 8pt text and 10pt painted descents therefore fit the
+        // document's existing 3pt clearance and 5pt bottom guard exactly.
+        candidate.text_ink.1 = 8.0;
+        candidate.grid.as_mut().unwrap().text_below = 8_000;
+        candidate.grid.as_mut().unwrap().ink_below = 10_000;
+        assert!(alternative_fits_clearance(
+            std::slice::from_ref(&candidate),
+            &baseline,
+        ));
+        // After reflow the deep run may be on another row, while this row
+        // still has the measured font-descent floor. Losing its lift cannot
+        // silently enlarge the already finalized surrounding document.
+        candidate.text_ink.1 = 0.0;
+        assert!(!alternative_fits_clearance(&[candidate], &baseline));
+    }
+
+    #[test]
+    fn alternatives_require_matching_finalized_grid_metrics() {
+        let baseline = row();
+        let mut candidate = baseline.clone();
+        candidate.grid = None;
+        assert!(!alternative_fits_clearance(
+            std::slice::from_ref(&candidate),
+            &baseline,
+        ));
+        candidate.grid = baseline.grid;
+        candidate.grid.as_mut().unwrap().pitch += 1;
+        assert!(!alternative_fits_clearance(
+            std::slice::from_ref(&candidate),
+            &baseline,
+        ));
+        candidate.grid.as_mut().unwrap().pitch = 0;
+        assert!(!alternative_fits_clearance(
+            std::slice::from_ref(&candidate),
+            &baseline,
+        ));
+        assert!(!alternative_fits_clearance(
+            std::slice::from_ref(&candidate),
+            &candidate,
+        ));
+        let mut nongrid = baseline.clone();
+        nongrid.grid = None;
+        assert!(alternative_fits_clearance(
+            std::slice::from_ref(&nongrid),
+            &nongrid,
+        ));
+        assert!(!alternative_fits_clearance(&[baseline], &nongrid));
+    }
 }

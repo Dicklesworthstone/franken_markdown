@@ -41,7 +41,28 @@ forced chapter boundaries. Ordered markers continue beyond `u64::MAX` for
 caller-constructed ASTs instead of wrapping or panicking. Paragraphs with
 inconsistent container ownership are not replaced.
 
-Paragraphs containing inline images or typeset math retain their baseline shapes.
+Inline images and text- or display-style inline formulas participate as complete,
+measured boxes. Each candidate must retain the exact ordered sequence of objects,
+including their source or image destination, containing-width cap, nominal font
+size, links and styling. Only placement and surrounding justification spacing may
+change. Object outlines and image dimensions keep their original scale; a shorter
+line count is never obtained by shrinking an object or the surrounding text.
+
+Every shape contributes its actual per-line heights, including tall or deep
+formulas and images. With a baseline grid, a candidate that would require more
+ink clearance or bottom protection than the finalized document already reserves
+is rejected. The original shape stays available, so optional optimization cannot
+turn a valid grid layout into an overlap or a margin error. Nested list and quote
+ownership, tagged Formula/Figure children and their annotations follow the
+selected measured segments.
+
+An object-bearing paragraph retains its baseline shape when its effective
+microtypography policy enables glyph expansion or contraction. Inline objects
+and neighboring words on those lines do not use text scaling, so shrinking a
+box's advance could otherwise overlap its unchanged painted content. Ordinary
+text paragraphs and protrusion-only policies remain eligible; the restriction
+uses the actual paragraph policy, including list-specific behavior.
+
 Prepared numbered page notes participate with
 their unchanged measured bodies reserved at each alternative's first citation;
 a candidate cannot lose or reorder citations. Legacy unprepared footnote
@@ -203,6 +224,13 @@ text, 11 pt font, marker and hanging indent remain unchanged. Integration tests
 in `tests/pdf_list_joint_pagination_test.rs` inspect emitted page streams and
 font maps, nested tagged ancestry, links, loose-item labels, grid baselines and
 numbered notes. Run them with `cargo test --test pdf_list_joint_pagination_test`.
+
+Inline-object regressions in `tests/pdf_inline_object_pagination_test.rs` inspect
+selected shapes through emitted formula paths, image drawing operations, tagged
+bounds, links and complete source text. They cover mixed-height paragraphs,
+nested containers and numbered notes, and compare object dimensions with the
+ordinary measured layout. Run them with
+`cargo test --test pdf_inline_object_pagination_test`.
 
 Blockquote regressions retain ancestor bars, spacing, tagged content and forced
 chapter boundaries. `src/pdf/joint_pagination_note_tests.rs` checks numbered-note

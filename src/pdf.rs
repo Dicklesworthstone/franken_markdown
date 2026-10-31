@@ -20106,7 +20106,10 @@ fn layout_inlines(
     let baseline_count = breaks.len();
     let variants = if cx.paragraph_candidates.enabled()
         && flow.kind == FlowKind::Paragraph
-        && toks.iter().all(|tok| !is_inline_object(tok.slot))
+        // Object-bearing lines paint their boxes without glyph expansion.
+        // Negative box advances cannot stand in for unpainted contraction.
+        && (policy.expansion_permilli() == 0
+            || !toks.iter().any(|tok| is_inline_object(tok.slot)))
         && cx
             .paragraph_candidates
             .begin_measure(built.items.len(), baseline_count)
@@ -20366,7 +20369,10 @@ fn layout_prefixed_inlines(
     let baseline_count = breaks.len();
     let variants = if cx.paragraph_candidates.enabled()
         && spec.flow.kind == FlowKind::Paragraph
-        && toks.iter().all(|tok| !is_inline_object(tok.slot))
+        // Object-bearing lines paint their boxes without glyph expansion.
+        // Negative box advances cannot stand in for unpainted contraction.
+        && (policy.expansion_permilli() == 0
+            || !toks.iter().any(|tok| is_inline_object(tok.slot)))
         && cx
             .paragraph_candidates
             .begin_measure(built.items.len(), baseline_count)

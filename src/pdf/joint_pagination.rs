@@ -3,8 +3,9 @@
 //! Shaping happens while the paragraph's tokens and fonts are available; the
 //! choice happens after block layout has finalized gaps and chapter boundaries.
 //! Ordinary, blockquoted and list paragraphs with at least four lines in every
-//! offered shape participate. Full list ownership and first-line labels survive
-//! replacement. Those limits keep short-caption, list and heading boundary
+//! offered shape participate, including measured inline images and formulas.
+//! Full list ownership and first-line labels survive replacement. Those limits
+//! keep short-caption, list and heading boundary
 //! costs independent of choices in preceding blocks. Prepared page
 //! notes reserve their unchanged measured bodies at each alternative's first
 //! citation; selecting a shape never turns the note region into body content.
@@ -281,8 +282,52 @@ fn eligible(lines: &[Line], paragraph: &Paragraph) -> bool {
                 && line.table_cols.is_empty()
                 && line.image.is_none()
                 && (index == 0 || !line.page_break_before)
-                && line.segs.iter().all(|seg| !is_inline_object(seg.slot))
         })
+}
+
+/// Everything that determines an inline object's source, resource, geometry
+/// and semantic styling. Position and segment width are deliberately absent:
+/// an alternative moves the complete object and may change surrounding glue.
+/// The opaque token retains its exact containing-width cap, and the font-size
+/// bits preserve its original image/math scale without a float tolerance.
+#[derive(PartialEq, Eq)]
+struct InlineObjectIdentity<'a> {
+    slot: u8,
+    text: &'a str,
+    size_bits: u32,
+    link: Option<&'a LinkTarget>,
+    fill: Fill,
+    strike: bool,
+}
+
+fn inline_objects(lines: &[Line]) -> impl Iterator<Item = InlineObjectIdentity<'_>> {
+    lines.iter().flat_map(|line| {
+        line.segs
+            .iter()
+            .filter(|seg| is_inline_object(seg.slot))
+            .map(move |seg| InlineObjectIdentity {
+                slot: seg.slot,
+                text: &seg.text,
+                size_bits: line.size.to_bits(),
+                link: seg.link.as_ref(),
+                fill: seg.fill,
+                strike: seg.strike,
+            })
+    })
+}
+
+/// A line-count improvement must not drop, duplicate, reorder, rescale or
+/// retarget a figure/formula. The painter takes justification around objects
+/// as spacing; applying text expansion to an object would desynchronize its
+/// measured advance from the outlines/XObject and is not admissible here.
+fn preserves_inline_objects(baseline: &[Line], alternative: &[Line]) -> bool {
+    baseline
+        .iter()
+        .chain(alternative)
+        .flat_map(|line| &line.segs)
+        .filter(|seg| is_inline_object(seg.slot))
+        .all(|seg| seg.expansion_permille == 0 && seg.task.is_none())
+        && inline_objects(baseline).eq(inline_objects(alternative))
 }
 
 /// Transfer metadata stamped by the containing block after paragraph shaping.
@@ -478,6 +523,11 @@ fn select_reported(
                     continue;
                 }
                 let shape = finalized_shape(&body[start..end], alternative);
+                if !preserves_inline_objects(&body[start..end], &shape)
+                    || !baseline_grid::alternative_fits_clearance(&shape, &body[start])
+                {
+                    continue;
+                }
                 // The final-short-list-item penalty counts visible rows, not
                 // physical rows. Forced blank lines cannot change that context
                 // from a long item to a one/two-row item during substitution.

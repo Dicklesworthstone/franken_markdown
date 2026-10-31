@@ -246,7 +246,10 @@ fn book_exports_apply_configured_policy_and_explicit_override() {
             "body-regular=body.otf",
         ],
     ));
-    assert_epub_font(&fs::read(root.join("publication/chapters.epub")).unwrap(), FONT);
+    assert_epub_font(
+        &fs::read(root.join("publication/chapters.epub")).unwrap(),
+        FONT,
+    );
     success(run(
         &root,
         &[

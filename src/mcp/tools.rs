@@ -9,8 +9,8 @@ use super::{
 };
 use crate::layout::MicrotypeOptions;
 use crate::{
-    DarkModePolicy, FontFamily, FontScale, HtmlFontFormat, HtmlOptions, PdfAMode, PdfASettings,
-    PdfOptions, Theme,
+    DarkModePolicy, FontEmbedding, FontFamily, FontScale, HtmlFontFormat, HtmlOptions, PdfAMode,
+    PdfASettings, PdfOptions, Theme,
 };
 
 #[path = "resources.rs"]
@@ -78,6 +78,11 @@ const HTML_FIELDS: &[Field] = &[
         "htmlFontFormat",
         "string",
         "Font format ('woff1', 'woff2', or 'ttf')",
+    ),
+    (
+        "fontEmbedding",
+        "string",
+        "HTML/EPUB font policy ('subset' by default, or 'full' to retain all OpenType shaping tables)",
     ),
     (
         "interactiveHtml",
@@ -521,6 +526,17 @@ fn html_options(args: &JsonValue) -> Result<HtmlOptions, ToolError> {
         })
         .transpose()?
         .unwrap_or_default();
+    let font_embedding = string(args, "fontEmbedding")
+        .map(|policy| {
+            FontEmbedding::parse(policy).ok_or_else(|| {
+                invalid_options(
+                    "fontEmbedding must be 'subset' or 'full'",
+                    "invalid_font_embedding",
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
     Ok(HtmlOptions {
         theme,
         title: string(args, "title").map(str::to_string),
@@ -530,6 +546,7 @@ fn html_options(args: &JsonValue) -> Result<HtmlOptions, ToolError> {
         toc: boolean(args, "toc"),
         toc_depth: toc_depth(args)?,
         html_font_format,
+        font_embedding,
         ..Default::default()
     })
 }

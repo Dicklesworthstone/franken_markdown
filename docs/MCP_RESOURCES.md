@@ -38,6 +38,25 @@ paired HTML/PDF file exports. Resource-free requests retain their existing
 response payloads. Binary file exports remain raw bytes on disk; inline PDF
 and EPUB remain base64. The paired inline response retains its outputs array.
 
+## Full font publishing
+
+Use `"fontEmbedding": "full"` to retain the complete supplied or bundled font
+programs, including their character maps and OpenType substitution/positioning
+tables. The default `"subset"` keeps compact document-specific fonts. Full
+embedding makes publications larger and is intended for browser/EPUB-reader
+shaping; it does not change native PDF shaping or PDF font subsetting.
+
+The shared option reaches `fmd.render_html`, HTML/EPUB and paired HTML/PDF
+`fmd.render_file` outputs, and site/EPUB/combined `fmd.render_book` outputs.
+For HTML, `htmlFontFormat` independently selects `ttf`, `woff1`, or `woff2`.
+EPUB keeps its native sfnt font resources. Both TrueType and supported CFF1
+OpenType host faces use the existing byte/resource limits. Interactive HTML
+already retains complete fonts for future edits.
+
+Invalid policies, wrong value types, and requests that select only PDF or SVG
+are rejected before source reads or output replacement. Combined exports apply
+the policy to their HTML/EPUB artifacts while retaining the PDF policy.
+
 ## Admission and failure behavior
 
 Resource limits are 32 MiB per decoded asset, 64 MiB combined encoded payloads

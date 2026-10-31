@@ -1280,16 +1280,17 @@ impl Font {
         write_u32(&mut head, 8, 0).ok_or(error)?;
         write_u16(&mut head, 50, 1).ok_or(error)?; // indexToLocFormat = 1 (long)
 
-        // cmap: fresh single-subtable table. Format 4 (`(3,1)`, BMP-only)
-        // remains the default so every existing BMP-only subset stays
-        // byte-identical; format 12 (`(3,10)`, full Unicode) is required as
-        // soon as any kept supplementary-plane glyph survives, because
-        // format 4's u16 segment arrays cannot address codepoints past 0xFFFF.
+        // Keep the existing format-4 bytes for small BMP subsets. Large BMP
+        // sets first compact their segments; if the u16 table length still
+        // cannot fit, Unicode `(0,4)` format 12 has a u32 length instead.
+        // Supplementary-plane subsets retain Windows `(3,10)` format 12.
         error = SubsetError::new(SubsetErrorKind::Capacity, *b"cmap", None, None);
         let cmap = if self.subset_reaches_supplementary_plane(cmap_chars, &new_of_lookup) {
             self.build_cmap12(cmap_chars, &new_of_lookup).ok_or(error)?
         } else {
-            self.build_cmap4(cmap_chars, &new_of_lookup).ok_or(error)?
+            self.build_cmap4(cmap_chars, &new_of_lookup)
+                .or_else(|| self.build_cmap12_with_encoding(cmap_chars, &new_of_lookup, (0, 4)))
+                .ok_or(error)?
         };
 
         // name: minimal valid table (format 0, count 0, stringOffset 6).
@@ -1500,8 +1501,9 @@ impl Font {
     }
 
     /// Build a complete `cmap` table holding a single format-4 `(3,1)` subtable
-    /// mapping every BMP char in `keep` to its NEW gid (one 1-char segment each,
-    /// plus the mandatory final `0xFFFF` segment).
+    /// mapping every BMP char in `keep` to its NEW gid. Preserve the historical
+    /// one-character segments while they fit; only coalesce adjacent equal-delta
+    /// mappings when that representation exceeds the format's u16 length.
     fn build_cmap4(&self, keep: &[char], new_of: &[u16]) -> Option<Vec<u8>> {
         // Unique, ascending code -> new gid (0xFFFF reserved for the final seg).
         let mut codes: std::collections::BTreeMap<u16, u16> = std::collections::BTreeMap::new();
@@ -1519,8 +1521,20 @@ impl Font {
             };
             codes.insert(cp as u16, ng);
         }
-        let entries: Vec<(u16, u16)> = codes.into_iter().collect();
-        let seg_count = entries.len().checked_add(1)?; // + final 0xFFFF segment
+        let legacy_len = 16usize.checked_add(codes.len().checked_add(1)?.checked_mul(8)?)?;
+        let compact = u16::try_from(legacy_len).is_err();
+        let mut segments: Vec<(u16, u16, u16)> = Vec::with_capacity(codes.len());
+        for (code, gid) in codes {
+            let delta = gid.wrapping_sub(code);
+            if let Some((_, end, _)) = segments.last_mut().filter(|(_, end, previous_delta)| {
+                compact && end.checked_add(1) == Some(code) && *previous_delta == delta
+            }) {
+                *end = code;
+            } else {
+                segments.push((code, code, delta));
+            }
+        }
+        let seg_count = segments.len().checked_add(1)?; // + final 0xFFFF segment
         let sub_len = 16usize.checked_add(seg_count.checked_mul(8)?)?;
         let sub_len_u16 = u16::try_from(sub_len).ok()?;
         let seg_count_x2 = u16::try_from(seg_count.checked_mul(2)?).ok()?;
@@ -1544,25 +1558,25 @@ impl Font {
         sub.extend_from_slice(&entry_selector.to_be_bytes());
         sub.extend_from_slice(&range_shift.to_be_bytes());
         // endCode[]
-        for &(code, _) in &entries {
-            sub.extend_from_slice(&code.to_be_bytes());
+        for &(_, end, _) in &segments {
+            sub.extend_from_slice(&end.to_be_bytes());
         }
         sub.extend_from_slice(&0xFFFFu16.to_be_bytes());
         // reservedPad
         sub.extend_from_slice(&0u16.to_be_bytes());
         // startCode[]
-        for &(code, _) in &entries {
-            sub.extend_from_slice(&code.to_be_bytes());
+        for &(start, _, _) in &segments {
+            sub.extend_from_slice(&start.to_be_bytes());
         }
         sub.extend_from_slice(&0xFFFFu16.to_be_bytes());
         // idDelta[]: (code + idDelta) & 0xFFFF == new gid.
-        for &(code, ng) in &entries {
-            sub.extend_from_slice(&ng.wrapping_sub(code).to_be_bytes());
+        for &(_, _, delta) in &segments {
+            sub.extend_from_slice(&delta.to_be_bytes());
         }
         // Final segment idDelta = 1.
         sub.extend_from_slice(&1u16.to_be_bytes());
         // idRangeOffset[] (all zero, glyphIdArray empty).
-        for _ in &entries {
+        for _ in &segments {
             sub.extend_from_slice(&0u16.to_be_bytes());
         }
         sub.extend_from_slice(&0u16.to_be_bytes());
@@ -1585,13 +1599,22 @@ impl Font {
         })
     }
 
-    /// Build a complete `cmap` table holding a single format-12 `(3,10)`
-    /// subtable mapping every kept char — supplementary-plane math
+    /// Build a complete `cmap` table holding a single format-12 subtable under
+    /// the supplied Unicode encoding record, mapping every kept char — math
     /// alphanumeric letters included — to its NEW gid. Entries merge into a
     /// group only where both the codepoints and their new gids are fully
     /// contiguous; otherwise one single-char group per entry, mirroring
     /// `build_cmap4`'s segment shape. Output stays deterministic.
     fn build_cmap12(&self, keep: &[char], new_of: &[u16]) -> Option<Vec<u8>> {
+        self.build_cmap12_with_encoding(keep, new_of, (3, 10))
+    }
+
+    fn build_cmap12_with_encoding(
+        &self,
+        keep: &[char],
+        new_of: &[u16],
+        encoding_record: (u16, u16),
+    ) -> Option<Vec<u8>> {
         // Unique, ascending codepoint -> new gid.
         let mut codes: std::collections::BTreeMap<u32, u16> = std::collections::BTreeMap::new();
         for &ch in keep {
@@ -1643,8 +1666,8 @@ impl Font {
         let mut cmap: Vec<u8> = Vec::with_capacity(12 + sub.len());
         cmap.extend_from_slice(&0u16.to_be_bytes()); // version
         cmap.extend_from_slice(&1u16.to_be_bytes()); // numTables
-        cmap.extend_from_slice(&3u16.to_be_bytes()); // platformID (Windows)
-        cmap.extend_from_slice(&10u16.to_be_bytes()); // encodingID (full Unicode)
+        cmap.extend_from_slice(&encoding_record.0.to_be_bytes()); // platformID
+        cmap.extend_from_slice(&encoding_record.1.to_be_bytes()); // encodingID
         cmap.extend_from_slice(&12u32.to_be_bytes()); // subtable offset
         cmap.extend_from_slice(&sub);
         Some(cmap)
@@ -3891,6 +3914,121 @@ mod synthetic_font_tests {
             0,
             "MORE and INSTRUCTIONS cleared"
         );
+    }
+
+    /// Empty outlines make large cmap fixtures cheap without weakening glyph
+    /// validation: every glyph has a valid, equal pair of loca offsets.
+    fn bmp_subset_fixture(num_glyphs: u16, groups: &[(u32, u32, u32)]) -> Font {
+        let metrics: Vec<_> = (0..num_glyphs).map(|gid| (500 + gid, 0)).collect();
+        let mut cmap = cmap12_table(groups);
+        cmap[4..6].copy_from_slice(&0u16.to_be_bytes());
+        cmap[6..8].copy_from_slice(&4u16.to_be_bytes());
+        let mut tables = base_tables(num_glyphs, num_glyphs, 1000, hmtx_long(&metrics), cmap);
+        tables.push((b"loca", vec![0; (usize::from(num_glyphs) + 1) * 2]));
+        tables.push((b"glyf", Vec::new()));
+        parse(&tables)
+    }
+
+    #[test]
+    fn small_bmp_subset_preserves_existing_format4_bytes() {
+        let font = bmp_subset_fixture(6, &[(0x41, 0x42, 4)]);
+        let subset = font.try_subset(&['A', 'B']).expect("small subset");
+        let (offset, len) = find_table_full(&subset.bytes, b"cmap").expect("cmap");
+        // The adjacent A/B mappings deliberately remain separate segments.
+        let expected_words: [u16; 26] = [
+            0, 1, 3, 1, 0, 12, 4, 40, 0, 6, 4, 1, 2, 0x41, 0x42, 0xffff, 0, 0x41, 0x42, 0xffff,
+            0xffc0, 0xffc0, 1, 0, 0, 0,
+        ];
+        let expected: Vec<_> = expected_words
+            .into_iter()
+            .flat_map(u16::to_be_bytes)
+            .collect();
+        assert_eq!(&subset.bytes[offset..offset + len], expected);
+    }
+
+    #[test]
+    fn large_bmp_subset_compacts_format4_and_preserves_sparse_aliases() {
+        const COUNT: u32 = 8_190;
+        let font = bmp_subset_fixture(
+            u16::try_from(COUNT + 4).unwrap(),
+            &[
+                (0x3400, 0x3400 + COUNT - 1, 4),
+                (0x6000, 0x6000, 10),
+                (0x7000, 0x7000, 2),
+            ],
+        );
+        let mut keep: Vec<_> = (0x3400..0x3400 + COUNT)
+            .filter_map(char::from_u32)
+            .collect();
+        keep.extend(['\u{6000}', '\u{7000}']);
+        let subset = font.try_subset(&keep).expect("large BMP subset");
+        let (offset, len) = find_table_full(&subset.bytes, b"cmap").expect("cmap");
+        assert_eq!(be_u16(&subset.bytes, offset + 4), Some(3));
+        assert_eq!(be_u16(&subset.bytes, offset + 6), Some(1));
+        assert_eq!(be_u16(&subset.bytes, offset + 12), Some(4));
+        assert_eq!(len, 60, "three mapping segments plus sentinel");
+        assert_eq!(subset.glyph_map[4], 2, "unused original glyphs are removed");
+        let reparsed = Font::parse(subset.bytes.clone()).expect("reparse compact cmap");
+        for &ch in &keep {
+            let original = font.glyph_index(ch);
+            let remapped = reparsed.glyph_index(ch);
+            assert_ne!(remapped, 0, "lost {ch:?}");
+            assert_eq!(remapped, subset.glyph_map[usize::from(original)]);
+            assert_eq!(
+                reparsed.advance_width(remapped),
+                font.advance_width(original)
+            );
+        }
+        assert_eq!(
+            reparsed.glyph_index('\u{6000}'),
+            reparsed.glyph_index('\u{3406}')
+        );
+        assert_eq!(reparsed.glyph_index('\u{6001}'), 0);
+        keep.reverse();
+        keep.push('\u{6000}');
+        assert_eq!(font.subset(&keep).expect("legacy API"), subset.bytes);
+    }
+
+    #[test]
+    fn large_sparse_bmp_subset_uses_unicode_format12_when_segments_cannot_fit() {
+        // Alternating aliases at nonadjacent codepoints cannot coalesce into
+        // format-4 segments, even though only two actual glyphs are retained.
+        let groups: Vec<_> = (0..8_190u32)
+            .map(|i| {
+                (
+                    0x3400 + i * 2,
+                    0x3400 + i * 2,
+                    if i % 2 == 0 { 4 } else { 8 },
+                )
+            })
+            .collect();
+        let font = bmp_subset_fixture(9, &groups);
+        let keep: Vec<_> = groups
+            .iter()
+            .filter_map(|&(cp, _, _)| char::from_u32(cp))
+            .collect();
+        let subset = font.try_subset(&keep).expect("large sparse BMP subset");
+        let (offset, _) = find_table_full(&subset.bytes, b"cmap").expect("cmap");
+        assert_eq!(be_u16(&subset.bytes, offset + 4), Some(0));
+        assert_eq!(be_u16(&subset.bytes, offset + 6), Some(4));
+        assert_eq!(be_u16(&subset.bytes, offset + 12), Some(12));
+        let reparsed = Font::parse(subset.bytes.clone()).expect("reparse Unicode cmap");
+        for &ch in &keep {
+            let original = font.glyph_index(ch);
+            let remapped = reparsed.glyph_index(ch);
+            assert_eq!(remapped, subset.glyph_map[usize::from(original)]);
+            assert_ne!(remapped, 0);
+            assert_eq!(
+                reparsed.advance_width(remapped),
+                font.advance_width(original)
+            );
+        }
+        assert_eq!(
+            reparsed.glyph_index('\u{3401}'),
+            0,
+            "sparse gaps stay unmapped"
+        );
+        assert_eq!(font.subset(&keep).expect("legacy API"), subset.bytes);
     }
 
     #[test]

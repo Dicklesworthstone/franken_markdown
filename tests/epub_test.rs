@@ -1053,3 +1053,27 @@ fn book_raw_html_resources_and_anchors_resolve_in_every_publication() {
 
 #[path = "epub/validity.rs"]
 mod epub_validity;
+
+#[test]
+fn pie_charts_reach_single_and_book_epubs_as_valid_declared_svg() {
+    use franken_markdown::BookInput;
+    use franken_markdown::book::BookRenderer;
+    let source = "# Allocations\n\n```mermaid\npie showData title Budget & usage\n\"Research\": 42.25\n\"Operations\": 57.75\n```\n";
+    let doc = parse_markdown(source);
+    let single = epub::render_epub(&doc, &HtmlOptions::default()).unwrap();
+    let renderer = BookRenderer::new(&[BookInput {
+        path: "budget.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for archive in [single, renderer.render_epub().unwrap()] {
+        let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+        assert_well_formed_xml(&chapter);
+        assert!(chapter.contains("class=\"fmd-diagram fmd-pie\""));
+        assert!(chapter.contains("Research [42.25]"));
+        assert!(chapter.contains("Budget &amp; usage"));
+        let opf = entry_text(&archive, "OEBPS/content.opf");
+        assert_well_formed_xml(&opf);
+        assert!(opf.contains("properties=\"svg\""));
+    }
+}

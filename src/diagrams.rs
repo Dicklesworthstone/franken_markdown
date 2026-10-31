@@ -1,10 +1,12 @@
 //! Zero-dependency pure-Rust diagram compiler.
 //!
-//! Compiles Mermaid flowcharts, sequence diagrams, and ASCII art diagrams
+//! Compiles Mermaid flowcharts, sequence diagrams, pie charts, and ASCII art diagrams
 //! into clean, standalone SVG vector graphics for HTML and PDF rendering.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
+
+mod pie;
 
 /// Supported diagram types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,7 +23,7 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
     let trimmed_lang = lang.trim().to_ascii_lowercase();
     if matches!(
         trimmed_lang.as_str(),
-        "mermaid" | "flowchart" | "sequence" | "ditaa"
+        "mermaid" | "flowchart" | "sequence" | "pie" | "ditaa"
     ) {
         return true;
     }
@@ -38,6 +40,7 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
         || first_directive.starts_with("flowchart\n")
         || first_directive == "flowchart"
         || first_directive.starts_with("sequenceDiagram")
+        || pie::is_header(first_directive)
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
 }
 
@@ -59,13 +62,16 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
     {
         render_ascii_diagram(trimmed)
+    } else if lower_lang == "flowchart" {
+        render_flowchart(trimmed)
+    } else if lower_lang == "pie" || pie::is_header(first_directive) {
+        pie::render(trimmed)
     } else if lower_lang == "mermaid" && !names_flowchart(first_directive) {
-        // pie, classDiagram, gantt, stateDiagram, erDiagram and other Mermaid
+        // classDiagram, gantt, stateDiagram, erDiagram and other Mermaid
         // types this compiler does not draw stay readable source code instead
         // of being misread as flowchart nodes.
         None
-    } else if lower_lang == "flowchart"
-        || lower_lang == "mermaid"
+    } else if lower_lang == "mermaid"
         || first_directive.starts_with("graph ")
         || first_directive == "graph"
         || first_directive.starts_with("flowchart ")
@@ -77,7 +83,7 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
     }
 }
 
-/// A Mermaid flowchart or sequence diagram as an SVG figure, with alt text,
+/// A Mermaid flowchart, sequence diagram or pie chart as an SVG figure, with alt text,
 /// for paged and poster outputs. ASCII box art returns `None`: those outputs
 /// keep it as a fitted monospace panel that preserves its row geometry.
 #[must_use]
@@ -86,7 +92,9 @@ pub fn figure_svg(code: &str, lang: &str) -> Option<(String, &'static str)> {
         return None;
     }
     let svg = render_diagram_svg(code, lang)?;
-    let alt = if svg.contains("fmd-sequence") {
+    let alt = if svg.contains("class=\"fmd-diagram fmd-pie\"") {
+        "Pie chart"
+    } else if svg.contains("fmd-sequence") {
         "Sequence diagram"
     } else if svg.contains("fmd-flowchart") {
         "Diagram"

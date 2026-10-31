@@ -759,15 +759,18 @@ export async function renderSemanticDiff(oldMarkdown, newMarkdown, options = {})
 }
 
 export async function renderBookSite(files, options = {}) {
+  // A render-only package must refuse this feature before inspecting caller
+  // source or options, including the font-policy getter. Either supported site
+  // ABI admits ordinary requests; full font embedding still requires the new one.
+  const render = wasmBindings.renderBookSitePublication;
+  const legacyRender = typeof render === "function" ? null
+    : requireBrowserBinding("renderBookSite", "wasm-book");
   const requestedEmbedding = options?.fontEmbedding;
   const fontEmbedding = requestedEmbedding === undefined ? undefined : normalizeFontEmbedding(requestedEmbedding);
-  const render = wasmBindings.renderBookSitePublication;
   if (fontEmbedding === "full") {
     requireBrowserBinding("renderBookSitePublication", "full book-site font embedding");
     requireBindingArguments(render, 23, "Full book-site font embedding");
   }
-  const legacyRender = typeof render === "function" ? null
-    : requireBrowserBinding("renderBookSite", "wasm-book");
   // Capture the complete publication before initialization can yield to edits.
   const prepared = bookSiteArguments(files, options, fontEmbedding);
   if (typeof render !== "function" && prepared.requiresPublication) {

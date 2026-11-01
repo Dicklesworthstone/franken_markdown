@@ -662,16 +662,53 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return out;
   }
-  const fence = line => line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+  const fence = line => {
+    const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    return match && !(match[1][0] === '`' && match[2].includes('`')) ? match : null;
+  };
+  const fenceEnd = marker => new RegExp('^ {0,3}' + marker[0] + '{' + marker.length + ',}[ \\t]*$');
   const rule = line => /^ {0,3}(?:(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,})$/.test(line);
+  const headingMarker = line => line.match(/^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)/);
+  const setextLevel = line => /^ {0,3}=+[ \t]*$/.test(line) ? 1 : /^ {0,3}-+[ \t]*$/.test(line) ? 2 : 0;
+  const footnoteMarker = line => line.match(/^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*)$/);
+  function indentation(line, startColumn = 0) {
+    let end = 0, column = startColumn;
+    while (line[end] === ' ' || line[end] === '\t') {
+      charge();
+      column += line[end++] === '\t' ? 4 - column % 4 : 1;
+    }
+    return {end, width: column - startColumn};
+  }
+  function stripIndent(line, columns, startColumn = 0) {
+    const indent = indentation(line, startColumn), remaining = Math.max(0, indent.width - columns);
+    charge(remaining + 1);
+    return ' '.repeat(remaining) + line.slice(indent.end);
+  }
+  function stripQuote(line) {
+    const marker = line.match(/^ {0,3}>/);
+    if (!marker) return null;
+    const rest = line.slice(marker[0].length);
+    if (rest[0] === '\t') return stripIndent(rest, 1, marker[0].length);
+    return rest[0] === ' ' ? rest.slice(1) : rest;
+  }
   const listMarker = line => {
     const m = line.match(/^( {0,3})([-+*]|\d{1,9}[.)])(?:([ \t]+)(.*)|$)/);
     if (!m) return null;
-    const gap = (m[3] || ' ').replace(/\t/g, '    ');
+    const column = m[1].length + m[2].length;
+    const gap = indentation(m[3] || ' ', column).width;
     return {indent: m[1].length, marker: m[2], ordered: /^\d/.test(m[2]),
-      start: parseInt(m[2], 10), width: m[1].length + m[2].length + (gap.length > 4 ? 1 : gap.length),
-      text: (gap.length > 4 ? gap.slice(1) : '') + (m[4] || '')};
+      start: parseInt(m[2], 10), width: column + (gap > 4 ? 1 : gap),
+      text: gap > 4 ? stripIndent(m[3] + (m[4] || ''), 1, column) : m[4] || ''};
   };
+  const markerInterrupts = marker => marker && marker.text.trim() && (!marker.ordered || marker.start === 1);
+  const startsBlock = line => !line.trim() || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || listMarker(line);
+  const interruptsParagraph = line => !line.trim() || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || markerInterrupts(listMarker(line));
+  function lazyLine(line) {
+    const trimmed = line.replace(/^[ \t]+/, '');
+    // Removing indentation must not promote a lazy line into a setext heading
+    // or nested list. The escape is consumed by normal inline parsing.
+    return setextLevel(trimmed) || (listMarker(trimmed) && !listMarker(line)) ? '\\' + trimmed : trimmed;
+  }
   function tableCells(line) {
     charge(line.length + 1);
     line = line.trim();
@@ -819,6 +856,154 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return {label, url, title: '', consumed: destinationLine - start + 1};
   }
+  // Constant-size recognition state for a reference candidate crossing physical
+  // lines. Container collection must not treat title text as a fence or heading,
+  // and must never repeatedly reparse an accumulated label/title prefix.
+  function referenceTail() {
+    let phase = 'label', lines = 0, characters = 0, hasText = false;
+    let escaped = false, nesting = 0, separated = false, close = '';
+    const punctuation = ch => /[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/.test(ch);
+    return line => {
+      if (!line.trim()) return null;
+      if (!lines++) {
+        const trimmed = line.replace(/^[ \t]+/, '');
+        if (indentation(line).width > 3 || !trimmed.startsWith('[')) return null;
+        line = trimmed.slice(1);
+      }
+      for (const ch of line) {
+        charge();
+        switch (phase) {
+          case 'label':
+            if (!escaped && ch === ']') {
+              if (!hasText) return null;
+              phase = 'colon'; break;
+            }
+            if (!escaped && ch === '[') return null;
+            if (++characters > 999) return null;
+            hasText ||= !/\s/.test(ch);
+            escaped = !escaped && ch === '\\'; break;
+          case 'colon':
+            if (ch !== ':') return null;
+            phase = 'start'; break;
+          case 'start':
+            if (ch === ' ' || ch === '\t') break;
+            if (ch === '<') { phase = 'angle'; break; }
+            if (ch === ')' || ch.charCodeAt(0) < 32 || ch === '\x7f') return null;
+            phase = 'bare'; nesting = ch === '(' ? 1 : 0; escaped = ch === '\\'; break;
+          case 'angle': case 'bare':
+            if (escaped) { escaped = false; if (punctuation(ch)) break; }
+            if (ch === '\\') { escaped = true; break; }
+            if (ch === '<') return null;
+            if (phase === 'angle') {
+              if (ch === '>') { phase = 'after'; separated = false; }
+              break;
+            }
+            if ((ch === ' ' || ch === '\t') && !nesting) { phase = 'after'; separated = true; break; }
+            if (ch === '(') nesting++;
+            else if (ch === ')') { if (!nesting) return null; nesting--; }
+            else if (ch.charCodeAt(0) < 32 || ch === '\x7f' || ch === ' ') return null;
+            break;
+          case 'after': case 'nextTitle':
+            if (ch === ' ' || ch === '\t') { separated = true; break; }
+            if (!separated || !['"', "'", '('].includes(ch)) return null;
+            close = ch === '(' ? ')' : ch; phase = 'title'; escaped = false; break;
+          case 'title':
+            if (escaped) { escaped = false; if (punctuation(ch)) break; }
+            if (ch === close) phase = 'done';
+            else if (ch === '(' && close === ')') return null;
+            else escaped = ch === '\\';
+            break;
+          case 'done':
+            if (ch !== ' ' && ch !== '\t') return null;
+        }
+      }
+      escaped = false;
+      if (phase === 'label') return ++characters <= 999 ? 'pending' : null;
+      if (phase === 'start' || phase === 'title') return 'pending';
+      if ((phase === 'bare' && !nesting) || phase === 'after') {
+        phase = 'nextTitle'; separated = true; return 'destination';
+      }
+      return phase === 'done' ? 'title' : null;
+    };
+  }
+  // A list or quote can lazily extend only its current paragraph leaf. Track
+  // nested containers and literal blocks in one pass, bounded by MAX_DEPTH;
+  // inspecting only the previous line loses both code and reference ownership.
+  function containerTail(depth) {
+    const containers = [];
+    let kind = 'boundary', header = null, closing = null, reference = null;
+    const canContinue = line => kind === 'paragraph' && !interruptsParagraph(line);
+    function observe(line, level = 0) {
+      charge(line.length + 1);
+      const container = containers[level];
+      if (container) {
+        let sibling = false;
+        if (container.kind === 'quote') {
+          const inner = stripQuote(line);
+          if (inner !== null) { observe(inner, level + 1); return; }
+        } else {
+          if (!line.trim() || indentation(line).width >= container.width) {
+            observe(stripIndent(line, container.width), level + 1); return;
+          }
+          const next = listMarker(line);
+          sibling = next && ((next.indent === container.indent && next.ordered === container.ordered) || markerInterrupts(next));
+        }
+        if (!sibling && canContinue(line)) return;
+        containers.length = level; kind = 'boundary'; reference = null;
+      }
+      if (reference) {
+        const progress = reference(line);
+        if (progress) {
+          kind = 'paragraph'; header = null;
+          if (progress === 'title') reference = null;
+          return;
+        }
+        reference = null;
+      }
+      if (kind === 'fence') {
+        if (closing.test(line)) kind = 'boundary';
+        return;
+      }
+      if ((kind === 'code' || kind === 'footnote') && (!line.trim() || indentation(line).width >= 4)) return;
+      if (kind === 'table' && line.includes('|') && !startsBlock(line)) return;
+      if (kind === 'paragraph' && line.trim()) {
+        if (header !== null && tableAlignments(header, line)) { kind = 'table'; header = null; return; }
+        if (setextLevel(line)) { kind = 'boundary'; return; }
+        if (!interruptsParagraph(line)) { header = null; return; }
+      }
+      kind = 'boundary'; header = null;
+      if (!line.trim() || rule(line) || headingMarker(line)) return;
+      const fm = fence(line);
+      if (fm) {
+        kind = 'fence'; closing = fenceEnd(fm[1]); return;
+      }
+      if (indentation(line).width >= 4) { kind = 'code'; return; }
+      if (footnoteMarker(line)) { kind = 'footnote'; return; }
+      const inner = stripQuote(line);
+      if (inner !== null) {
+        if (depth + level < MAX_DEPTH) {
+          allocate(); containers.push({kind: 'quote'}); observe(inner, level + 1);
+        }
+        return;
+      }
+      const marker = listMarker(line);
+      if (marker) {
+        if (depth + level < MAX_DEPTH) {
+          allocate(); containers.push({kind: 'list', indent: marker.indent, width: marker.width, ordered: marker.ordered});
+          observe(marker.text.replace(/^\[([ xX])\](?:\s+|$)/, ''), level + 1);
+        }
+        return;
+      }
+      kind = 'paragraph';
+      if (line.replace(/^[ \t]+/, '').startsWith('[')) {
+        const scan = referenceTail(), progress = scan(line);
+        if (progress) { if (progress !== 'title') reference = scan; return; }
+      }
+      header = line.includes('|') ? line : null;
+    }
+    return {observe, canContinue, literal: () => kind === 'fence' || kind === 'code',
+      literalBlank: () => kind === 'fence' && !containers.some(container => container.kind === 'quote')};
+  }
   // Parse container structure exactly once, before rendering any inline text.
   // A global line pre-pass cannot distinguish a definition at the start of a
   // list item from the same spelling inside its code fence or paragraph. Keep
@@ -833,13 +1018,12 @@ function parseMarkdownClient(source, imageAssets) {
       return out;
     }
     let i = 0;
-    const startsBlock = line => !line.trim() || fence(line) || /^ {0,3}(?:#{1,6}(?:\s|$)|>)/.test(line) || rule(line) || listMarker(line);
     while (i < lines.length) {
       const line = lines[i];
       if (!line.trim()) { i++; continue; }
       const fm = fence(line);
       if (fm && !(fm[1][0] === '`' && fm[2].includes('`'))) {
-        const code = [], end = new RegExp('^ {0,3}' + fm[1][0] + '{' + fm[1].length + ',} *$');
+        const code = [], end = fenceEnd(fm[1]);
         const indent = line.length - line.trimStart().length;
         i++;
         while (i < lines.length && !end.test(lines[i])) code.push(lines[i++].replace(new RegExp('^ {0,' + indent + '}'), ''));
@@ -855,7 +1039,7 @@ function parseMarkdownClient(source, imageAssets) {
       }
       // Only block starts can own definitions: these checks are deliberately
       // absent from paragraph continuation and table/code leaf parsing.
-      const foot = line.match(/^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*)$/);
+      const foot = footnoteMarker(line);
       if (foot) {
         const content = [foot[2]]; i++;
         while (i < lines.length) {
@@ -880,16 +1064,20 @@ function parseMarkdownClient(source, imageAssets) {
         if (!definitions.has(key)) { allocate(); definitions.set(key, {url: ref.url, title: ref.title}); }
         i += ref.consumed; continue;
       }
-      let heading = line.match(/^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)$/), title, level;
+      let heading = headingMarker(line), title, level;
       if (heading) { level = heading[1].length; title = headingTitle(heading[2] || ''); i++; }
-      else if (i + 1 < lines.length && /^ {0,3}(?:=+|-+) *$/.test(lines[i + 1]) && !listMarker(line)) {
-        level = lines[i + 1].trim()[0] === '=' ? 1 : 2; title = line.trim(); i += 2;
-      }
       if (level) { push({kind: 'heading', title, level}); continue; }
       if (rule(line)) { push({kind: 'rule'}); i++; continue; }
       if (/^ {0,3}>/.test(line)) {
-        const quote = [];
-        while (i < lines.length && /^ {0,3}>/.test(lines[i])) quote.push(lines[i++].replace(/^ {0,3}> ?/, ''));
+        const quote = [], tail = containerTail(depth);
+        while (i < lines.length) {
+          let inner = stripQuote(lines[i]);
+          if (inner === null) {
+            if (!tail.canContinue(lines[i])) break;
+            inner = lazyLine(lines[i]);
+          }
+          tail.observe(inner); quote.push(inner); i++;
+        }
         const callout = quote[0].match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(.*)$/i);
         if (callout) {
           const name = callout[1].toLowerCase(); quote.shift();
@@ -904,21 +1092,36 @@ function parseMarkdownClient(source, imageAssets) {
         while (i < lines.length) {
           const next = listMarker(lines[i]);
           if (!next || next.ordered !== marker.ordered || next.indent !== marker.indent || next.marker.at(-1) !== marker.marker.at(-1)) break;
-          const item = [next.text]; i++; let blank = false;
+          const item = [next.text], tail = containerTail(depth); i++; let blank = false;
+          tail.observe(next.text.replace(/^\[([ xX])\](?:\s+|$)/, ''));
           while (i < lines.length) {
             if (!lines[i].trim()) {
+              if (tail.literalBlank()) { tail.observe(''); item.push(''); i++; continue; }
               let j = i; while (j < lines.length) { charge(lines[j].length + 1); if (lines[j].trim()) break; j++; }
               const following = j < lines.length && listMarker(lines[j]);
-              const continued = j < lines.length && lines[j].startsWith(' '.repeat(next.width));
+              const continued = j < lines.length && indentation(lines[j]).width >= next.width;
               if (!continued && !(following && following.indent === marker.indent && following.ordered === marker.ordered && following.marker.at(-1) === marker.marker.at(-1))) break;
               blank = true;
               // Consume a blank run once; repeated suffix lookahead is quadratic.
-              while (i < j) { item.push(''); i++; }
+              while (i < j) { tail.observe(''); item.push(''); i++; }
               continue;
             }
-            if (lines[i].startsWith(' '.repeat(next.width))) { item.push(lines[i++].slice(next.width)); continue; }
-            if (listMarker(lines[i]) || startsBlock(lines[i]) || blank) break;
-            item.push(lines[i++]); // lazy paragraph continuation
+            if (indentation(lines[i]).width >= next.width) {
+              const inner = stripIndent(lines[i++], next.width);
+              const nested = listMarker(inner);
+              // Properly indented ordered children may start at any number.
+              // Keep later items of an existing ordered child list together.
+              if (!tail.literal() && nested && nested.ordered && nested.start !== 1
+                && item.at(-1).trim() && !listMarker(item.at(-1))) {
+                tail.observe(''); item.push('');
+              }
+              tail.observe(inner); item.push(inner); continue;
+            }
+            const sibling = listMarker(lines[i]);
+            if ((sibling && sibling.indent === marker.indent && sibling.ordered === marker.ordered)
+              || !tail.canContinue(lines[i])) break;
+            const lazy = lazyLine(lines[i++]);
+            tail.observe(lazy); item.push(lazy);
           }
           const task = item[0].match(/^\[([ xX])\](?:\s+|$)(.*)$/);
           if (task) item[0] = task[2];
@@ -938,8 +1141,15 @@ function parseMarkdownClient(source, imageAssets) {
         push({kind: 'table', aligns, head, rows}); continue;
       }
       const paragraph = [line]; i++;
-      while (i < lines.length && !startsBlock(lines[i]) && !(i + 1 < lines.length && tableAlignments(lines[i], lines[i + 1]))) paragraph.push(lines[i++]);
-      push({kind: 'paragraph', text: paragraph.join('\n')});
+      let underline = 0;
+      while (i < lines.length) {
+        underline = setextLevel(lines[i]);
+        if (underline) { i++; break; }
+        if (interruptsParagraph(lines[i]) || (i + 1 < lines.length && tableAlignments(lines[i], lines[i + 1]))) break;
+        paragraph.push(lines[i++]);
+      }
+      push(underline ? {kind: 'heading', title: paragraph.join('\n'), level: underline}
+        : {kind: 'paragraph', text: paragraph.join('\n')});
     }
     return out;
   }

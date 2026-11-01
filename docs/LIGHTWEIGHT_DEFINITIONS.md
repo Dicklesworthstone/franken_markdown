@@ -29,9 +29,32 @@ than collecting hidden definitions. Resource exhaustion still throws
 This remains a reduced renderer, not a claim of full CommonMark/GFM parity. The
 reference scope and paragraph/code boundaries follow CommonMark 0.31.2 section
 4.7 (https://spec.commonmark.org/0.31.2/#link-reference-definitions). Footnotes
-and callouts are extensions. Lazy blockquote continuation remains outside this
-renderer's supported subset. Reference labels use the complete pinned Unicode
+and callouts are extensions. Reference labels use the complete pinned Unicode
 full fold described in [REFERENCE_LABELS.md](REFERENCE_LABELS.md).
+
+## Paragraph continuation and container ownership
+
+Quotes and list items retain unmarked or dedented lines only while their current
+leaf is an open paragraph, including paragraphs inside nested quotes and lists.
+A definition-shaped lazy line remains visible paragraph text; it cannot become
+a global link definition. Completed headings, tables, footnotes, and literal
+code blocks leave following outside text and real definitions in their original
+scope. Explicitly indented or quoted paragraphs can resume lazy continuation
+after a closed block or a blank line.
+
+The collector tracks a bounded container stack and current leaf in one pass.
+It never reparses accumulated prefixes. Multiline reference candidates use
+constant-size recognition state, so a heading or fence marker inside a title
+does not change container ownership. Fences share closing rules with block
+parsing, and retain their literal blank lines. Tab indentation uses four-column
+stops when removing list and quote containers.
+
+Paragraph interruption follows the same rules inside and outside containers:
+empty list markers and ordered markers starting above one do not interrupt an
+open paragraph. Properly indented nested lists retain their own start numbers.
+Setext underlines apply to their complete paragraph; removing a container cannot
+promote an unmarked lazy line into a heading or nested list. Raw HTML and math
+retain the standalone renderer's existing escaped-text behavior.
 
 ## Multiline reference definitions
 
@@ -62,6 +85,7 @@ bundle's validation directory, not required by the dependency-free Node tests.
 ```sh
 node --test tests/interactive_renderer.test.mjs
 node --test tests/interactive_definitions.test.mjs
+node --test wasm/tests/interactive_container_boundaries.test.mjs
 node --check src/interactive_renderer.js
 ```
 

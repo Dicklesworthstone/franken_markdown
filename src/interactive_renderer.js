@@ -783,6 +783,98 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return out;
   }
+  // Only ASCII space and tab make a CommonMark blank line. In particular, a
+  // BOM or NBSP inside a literal block must not terminate or disappear from it.
+  const blankLine = line => /^[ \t]*$/.test(line);
+  const htmlBlockTags = new Set(('address article aside base basefont blockquote body caption center col colgroup dd details dialog dir div dl dt '
+    + 'fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu menuitem nav '
+    + 'noframes ol optgroup option p param search section summary table tbody td tfoot th thead title tr track ul').split(' '));
+  const asciiLetter = code => code >= 65 && code <= 90 || code >= 97 && code <= 122;
+  const asciiDigit = code => code >= 48 && code <= 57;
+  // Return CommonMark's HTML block type (1..7), or zero. This recognizes source
+  // grammar only: lightweight output keeps its existing inert-markup policy.
+  // Scan complete type-seven tags once; no accumulated-line regex or DOM parser
+  // may consume definitions, fetch resources, or gain authority over the source.
+  function htmlBlockKind(line) {
+    let pos = 0;
+    while (pos < 3 && line[pos] === ' ') pos++;
+    if (line[pos] !== '<') return 0;
+    charge();
+    if (line.startsWith('<!--', pos)) return 2;
+    if (line.startsWith('<?', pos)) return 3;
+    if (line.startsWith('<![CDATA[', pos)) return 5;
+    if (line.startsWith('<!', pos)) return asciiLetter(line.charCodeAt(pos + 2)) ? 4 : 0;
+    const closing = line[pos + 1] === '/';
+    pos += closing ? 2 : 1;
+    const nameStart = pos;
+    if (!asciiLetter(line.charCodeAt(pos))) return 0;
+    pos++;
+    while (asciiLetter(line.charCodeAt(pos)) || asciiDigit(line.charCodeAt(pos)) || line[pos] === '-') {
+      charge(); pos++;
+    }
+    charge(pos - nameStart);
+    const name = line.slice(nameStart, pos).toLowerCase();
+    const raw = name === 'pre' || name === 'script' || name === 'style' || name === 'textarea';
+    const boundary = pos === line.length || line[pos] === ' ' || line[pos] === '\t' || line[pos] === '>';
+    if (!closing && raw && boundary) return 1;
+    if (htmlBlockTags.has(name) && (boundary || line.startsWith('/>', pos))) return 6;
+    // Raw-text opening names cannot use type seven's self-closing spelling.
+    // Complete closing tags with those names can start a type-seven block.
+    if (!closing && raw) return 0;
+    const space = () => { while (line[pos] === ' ' || line[pos] === '\t') { charge(); pos++; } };
+    const end = () => {
+      if (line[pos] !== '>') return 0;
+      pos++; space();
+      return pos === line.length ? 7 : 0;
+    };
+    if (closing) { space(); return end(); }
+    while (pos < line.length) {
+      charge();
+      const beforeSpace = pos;
+      space();
+      if (line[pos] === '>') return end();
+      if (line[pos] === '/') { pos++; return end(); }
+      // Attributes need separating whitespace and ASCII names, even when their
+      // quoted values contain angle brackets or arbitrary non-ASCII text.
+      if (pos === beforeSpace || !(asciiLetter(line.charCodeAt(pos)) || line[pos] === '_' || line[pos] === ':')) return 0;
+      pos++;
+      while (asciiLetter(line.charCodeAt(pos)) || asciiDigit(line.charCodeAt(pos)) || '_.:-'.includes(line[pos] ?? '\0')) {
+        charge(); pos++;
+      }
+      const nameEnd = pos;
+      space();
+      if (line[pos] !== '=') { pos = nameEnd; continue; }
+      pos++; space();
+      const quote = line[pos];
+      if (quote === '"' || quote === "'") {
+        pos++;
+        while (pos < line.length && line[pos] !== quote) { charge(); pos++; }
+        if (line[pos] !== quote) return 0;
+        pos++;
+      } else {
+        const valueStart = pos;
+        while (pos < line.length && !' \t\r\n"\'=<>`'.includes(line[pos])) { charge(); pos++; }
+        if (pos === valueStart) return 0;
+      }
+    }
+    return 0;
+  }
+  function htmlBlockEnded(kind, line) {
+    if (kind >= 6) return blankLine(line);
+    charge(line.length + 1);
+    switch (kind) {
+      case 1: return /<\/(?:script|pre|style|textarea)>/i.test(line);
+      case 2: return line.includes('-->');
+      case 3: return line.includes('?>');
+      case 4: return line.includes('>');
+      case 5: return line.includes(']]>');
+    }
+    return false;
+  }
+  function htmlInterruptsParagraph(line) {
+    const kind = htmlBlockKind(line);
+    return kind !== 0 && kind !== 7;
+  }
   const fence = line => {
     const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
     return match && !(match[1][0] === '`' && match[2].includes('`')) ? match : null;
@@ -821,9 +913,9 @@ function parseMarkdownClient(source, imageAssets) {
       start: parseInt(m[2], 10), width: column + (gap > 4 ? 1 : gap),
       text: gap > 4 ? stripIndent(m[3] + (m[4] || ''), 1, column) : m[4] || ''};
   };
-  const markerInterrupts = marker => marker && marker.text.trim() && (!marker.ordered || marker.start === 1);
-  const startsBlock = line => !line.trim() || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || listMarker(line);
-  const interruptsParagraph = line => !line.trim() || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || markerInterrupts(listMarker(line));
+  const markerInterrupts = marker => marker && !blankLine(marker.text) && (!marker.ordered || marker.start === 1);
+  const startsBlock = line => blankLine(line) || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || listMarker(line) || htmlBlockKind(line);
+  const interruptsParagraph = line => blankLine(line) || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || markerInterrupts(listMarker(line)) || htmlInterruptsParagraph(line);
   // Table rows admit ordinary pipe-bearing source. A supported block opener
   // retains its own scope even when it also contains a pipe character.
   const tableRowSource = line => line.includes('|') && !startsBlock(line)
@@ -1086,7 +1178,7 @@ function parseMarkdownClient(source, imageAssets) {
   // inspecting only the previous line loses both code and reference ownership.
   function containerTail(depth) {
     const containers = [];
-    let kind = 'boundary', header = null, closing = null, reference = null;
+    let kind = 'boundary', header = null, closing = null, reference = null, htmlKind = 0;
     const canContinue = line => kind === 'paragraph' && !interruptsParagraph(line);
     function observe(line, level = 0) {
       charge(line.length + 1);
@@ -1097,7 +1189,7 @@ function parseMarkdownClient(source, imageAssets) {
           const inner = stripQuote(line);
           if (inner !== null) { observe(inner, level + 1); return; }
         } else {
-          if (!line.trim() || indentation(line).width >= container.width) {
+          if (blankLine(line) || indentation(line).width >= container.width) {
             observe(stripIndent(line, container.width), level + 1); return;
           }
           const next = listMarker(line);
@@ -1115,19 +1207,23 @@ function parseMarkdownClient(source, imageAssets) {
         }
         reference = null;
       }
+      if (kind === 'html') {
+        if (htmlBlockEnded(htmlKind, line)) kind = 'boundary';
+        return;
+      }
       if (kind === 'fence') {
         if (closing.test(line)) kind = 'boundary';
         return;
       }
-      if ((kind === 'code' || kind === 'footnote') && (!line.trim() || indentation(line).width >= 4)) return;
+      if ((kind === 'code' || kind === 'footnote') && (blankLine(line) || indentation(line).width >= 4)) return;
       if (kind === 'table' && tableRowSource(line)) return;
-      if (kind === 'paragraph' && line.trim()) {
+      if (kind === 'paragraph' && !blankLine(line)) {
         if (header !== null && tableAlignments(header, line)) { kind = 'table'; header = null; return; }
         if (setextLevel(line)) { kind = 'boundary'; return; }
         if (!interruptsParagraph(line)) { header = null; return; }
       }
       kind = 'boundary'; header = null;
-      if (!line.trim() || rule(line) || headingMarker(line)) return;
+      if (blankLine(line) || rule(line) || headingMarker(line)) return;
       const fm = fence(line);
       if (fm) {
         kind = 'fence'; closing = fenceEnd(fm[1]); return;
@@ -1139,6 +1235,11 @@ function parseMarkdownClient(source, imageAssets) {
         if (depth + level < MAX_DEPTH) {
           allocate(); containers.push({kind: 'quote'}); observe(inner, level + 1);
         }
+        return;
+      }
+      htmlKind = htmlBlockKind(line);
+      if (htmlKind) {
+        kind = htmlKind < 6 && htmlBlockEnded(htmlKind, line) ? 'boundary' : 'html';
         return;
       }
       const marker = listMarker(line);
@@ -1156,8 +1257,9 @@ function parseMarkdownClient(source, imageAssets) {
       }
       header = line.includes('|') ? line : null;
     }
-    return {observe, canContinue, literal: () => kind === 'fence' || kind === 'code',
-      literalBlank: () => kind === 'fence' && !containers.some(container => container.kind === 'quote')};
+    return {observe, canContinue, literal: () => kind === 'fence' || kind === 'code' || kind === 'html',
+      literalBlank: () => (kind === 'fence' || kind === 'html' && htmlKind < 6)
+        && !containers.some(container => container.kind === 'quote')};
   }
   // Parse container structure exactly once, before rendering any inline text.
   // A global line pre-pass cannot distinguish a definition at the start of a
@@ -1175,7 +1277,7 @@ function parseMarkdownClient(source, imageAssets) {
     let i = 0;
     while (i < lines.length) {
       const line = lines[i];
-      if (!line.trim()) { i++; continue; }
+      if (blankLine(line)) { i++; continue; }
       const fm = fence(line);
       if (fm && !(fm[1][0] === '`' && fm[2].includes('`'))) {
         const code = [], end = fenceEnd(fm[1]);
@@ -1188,9 +1290,20 @@ function parseMarkdownClient(source, imageAssets) {
       }
       if (/^( {4}|\t)/.test(line)) {
         const code = [];
-        while (i < lines.length && (/^( {4}|\t)/.test(lines[i]) || !lines[i].trim())) code.push(lines[i++].replace(/^( {4}|\t)/, ''));
-        while (code.length && !code.at(-1).trim()) code.pop();
+        while (i < lines.length && (/^( {4}|\t)/.test(lines[i]) || blankLine(lines[i]))) code.push(lines[i++].replace(/^( {4}|\t)/, ''));
+        while (code.length && blankLine(code.at(-1))) code.pop();
         push({kind: 'code', lang: '', text: code.join('\n') + '\n'}); continue;
+      }
+      const htmlKind = htmlBlockKind(line);
+      if (htmlKind) {
+        const start = i++;
+        if (htmlKind >= 6) {
+          while (i < lines.length && !blankLine(lines[i])) i++;
+        } else {
+          let ended = htmlBlockEnded(htmlKind, line);
+          while (i < lines.length && !ended) ended = htmlBlockEnded(htmlKind, lines[i++]);
+        }
+        push({kind: 'html', text: lines.slice(start, i).join('\n')}); continue;
       }
       // Only block starts can own definitions: these checks are deliberately
       // absent from paragraph continuation and table/code leaf parsing.
@@ -1198,9 +1311,9 @@ function parseMarkdownClient(source, imageAssets) {
       if (foot) {
         const content = [foot[2]]; i++;
         while (i < lines.length) {
-          if (!lines[i].trim()) {
+          if (blankLine(lines[i])) {
             let next = i;
-            while (next < lines.length && !lines[next].trim()) {
+            while (next < lines.length && blankLine(lines[next])) {
               charge(lines[next].length + 1); next++;
             }
             if (next === lines.length || indentation(lines[next]).width < 4) break;
@@ -1258,9 +1371,12 @@ function parseMarkdownClient(source, imageAssets) {
           const item = [next.text], tail = containerTail(depth); i++; let blank = false;
           tail.observe(next.text.replace(/^\[([ xX])\](?:\s+|$)/, ''));
           while (i < lines.length) {
-            if (!lines[i].trim()) {
-              if (tail.literalBlank()) { tail.observe(''); item.push(''); i++; continue; }
-              let j = i; while (j < lines.length) { charge(lines[j].length + 1); if (lines[j].trim()) break; j++; }
+            if (blankLine(lines[i])) {
+              if (tail.literalBlank()) {
+                const inner = stripIndent(lines[i++], next.width);
+                tail.observe(inner); item.push(inner); continue;
+              }
+              let j = i; while (j < lines.length) { charge(lines[j].length + 1); if (!blankLine(lines[j])) break; j++; }
               const following = j < lines.length && listMarker(lines[j]);
               const continued = j < lines.length && indentation(lines[j]).width >= next.width;
               if (!continued && !(following && following.indent === marker.indent && following.ordered === marker.ordered && following.marker.at(-1) === marker.marker.at(-1))) break;
@@ -1275,7 +1391,7 @@ function parseMarkdownClient(source, imageAssets) {
               // Properly indented ordered children may start at any number.
               // Keep later items of an existing ordered child list together.
               if (!tail.literal() && nested && nested.ordered && nested.start !== 1
-                && item.at(-1).trim() && !listMarker(item.at(-1))) {
+                && !blankLine(item.at(-1)) && !listMarker(item.at(-1))) {
                 tail.observe(''); item.push('');
               }
               tail.observe(inner); item.push(inner); continue;
@@ -1326,6 +1442,11 @@ function parseMarkdownClient(source, imageAssets) {
         case 'code':
           out = append(out, '<pre><code' + (node.lang ? ' class="language-' + escape(node.lang) + '"' : '')
             + '>' + escape(node.text) + '</code></pre>\n'); break;
+        case 'html':
+          // Preserve the existing lightweight policy: markup stays visible and
+          // inert. Its literal body must never pass through Markdown inlining,
+          // definition collection, image resolution, or heading-ID allocation.
+          out = append(out, '<p>' + escape(node.text) + '</p>\n'); break;
         case 'heading': {
           const content = inline(node.title, 0, true, footnotes);
           const slug = decode(content.replace(/<[^>]*>/g, '')).toLowerCase().replace(/[^\p{L}\p{N}_\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';

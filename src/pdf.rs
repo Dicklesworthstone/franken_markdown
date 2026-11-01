@@ -56,6 +56,7 @@ mod jpeg_orientation;
 mod list_geometry;
 #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
 mod native_compression;
+mod page_note_grid;
 mod pagination_report;
 pub use pagination_report::{
     PdfPageBreakReport, PdfPaginationFailure, PdfPaginationReport, PdfPaginationStrategy,
@@ -3808,6 +3809,11 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
         cx.opts.theme.page.baseline_grid,
         cx.faces,
     );
+    if cx.opts.theme.page.baseline_grid.is_some() {
+        page_note_grid::finish(&mut notes, out, separator, cx);
+        finish_page_note_marks(out);
+        return;
+    }
     let separator_height = line_leading(&separator) + separator.gap_after;
     admit_page_notes(&mut notes, out, capacity, separator_height, false);
     if notes.iter().any(|note| !note.at_foot) {
@@ -3839,7 +3845,11 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
             out.append(&mut note.lines);
         }
     }
-    // A note mark reads as part of the text, not as a blue link.
+    finish_page_note_marks(out);
+}
+
+/// A note mark reads as part of the text, not as a blue link.
+fn finish_page_note_marks(out: &mut [Line]) {
     for seg in out.iter_mut().flat_map(|line| &mut line.segs) {
         if seg_page_note(seg).is_some() {
             seg.fill = Fill::Black;

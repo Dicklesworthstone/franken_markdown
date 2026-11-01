@@ -291,31 +291,51 @@ fn quantize(lines: &mut [Line], pitch: i64, clearance: i64, bottom_guard: i64) {
     }
 }
 
+/// Add block spacing to the source gap, even when this row has already been
+/// snapped. Adding it to the snapped gap would round the same space twice.
+pub(super) fn add_natural_gap(line: &mut Line, amount: f32) {
+    if let Some(grid) = &mut line.grid {
+        grid.natural_gap += amount;
+        line.gap_after = grid.natural_gap;
+    } else {
+        line.gap_after += amount;
+    }
+}
+
 /// Called after block spacing is final, before either page planner. Reapplying
 /// it is idempotent, including notes measured early for foot-region admission.
 pub(super) fn apply(lines: &mut [Line], grid: Option<BaselineGrid>, faces: &Faces) {
     let Some(grid) = grid else { return };
+    apply_regions(&mut [lines], grid, faces);
+}
+
+/// Body and page-note regions are measured separately, but their final
+/// baselines share one clearance and bottom guard. Quantize all admitted
+/// regions together before using their heights to reserve page-foot space.
+pub(super) fn apply_regions(regions: &mut [&mut [Line]], grid: BaselineGrid, faces: &Faces) {
     let mut scratch = ShapeScratch::default();
-    for line in &mut *lines {
+    for line in regions.iter_mut().flat_map(|region| region.iter_mut()) {
         if line.grid.is_none() {
             line.grid = Some(measure(line, faces, &mut scratch));
         }
     }
     let mut clearance = 0;
     let mut bottom_guard = 0;
-    for line in &*lines {
+    for line in regions.iter().flat_map(|region| region.iter()) {
         if let Some(metrics) = line.grid {
             let (required, guard) = required_clearance(line, metrics);
             clearance = clearance.max(required);
             bottom_guard = bottom_guard.max(guard);
         }
     }
-    quantize(
-        lines,
-        i64::from(grid.spacing_milli_points()),
-        clearance,
-        bottom_guard,
-    );
+    for region in regions {
+        quantize(
+            region,
+            i64::from(grid.spacing_milli_points()),
+            clearance,
+            bottom_guard,
+        );
+    }
 }
 
 /// A page-sized figure may need fitting after captions and the document's

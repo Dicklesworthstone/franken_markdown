@@ -463,6 +463,26 @@ function fmdInstallImageManager(doc = document) {
   };
   const replace = button('btn-replace-document-image', 'Replace selected image');
   const remove = button('btn-remove-document-image', 'Remove selected image');
+  // Binding is an explicit opt-in API: older workspace runtimes retain their
+  // existing replace/remove controls without offering unsupported attachment.
+  let binding = null;
+  if (typeof native.beginImageBindings === 'function') {
+    const group = make('fieldset', undefined, dialog);
+    make('legend', 'Attach an image to existing Markdown', group);
+    make('p', 'Copy the image destination from your Markdown, then choose its local image. All references to that destination will use the attached file. Source stays unchanged; nothing is fetched or opened from that destination.', group);
+    const keyLabel = make('label', 'Markdown image destination', group);
+    const key = make('input', undefined, keyLabel);
+    key.type = 'text'; key.id = 'fmd-image-binding-destination'; key.placeholder = 'images/diagram.png';
+    key.autocomplete = 'off'; key.spellcheck = false;
+    key.style.cssText = 'display:block;width:100%;box-sizing:border-box;font:inherit;margin:8px 0';
+    const sourceLabel = make('label', 'Local image (PNG, JPEG or GIF, at most 8 MiB)', group);
+    const source = make('input', undefined, sourceLabel);
+    source.id = 'fmd-image-binding-file'; source.type = 'file'; source.accept = file.accept;
+    source.style.cssText = 'display:block;margin:8px 0;max-width:100%';
+    const attach = make('button', 'Attach image', group);
+    attach.id = 'btn-attach-document-image'; attach.type = 'button'; attach.className = 'fmd-btn';
+    binding = {key, file: source, button: attach};
+  }
   const cancel = button('btn-cancel-image-change', 'Cancel operation');
   const close = button('btn-close-document-images', 'Close');
   const status = make('p', 'Select an embedded image to manage.', dialog);
@@ -474,7 +494,7 @@ function fmdInstallImageManager(doc = document) {
     return {scale: Number.isFinite(scale) ? Math.min(2, Math.max(0.7, scale)) : 1,
       theme: doc.body.classList.contains('theme-dark') ? 'dark' : doc.body.classList.contains('theme-light') ? 'light' : undefined};
   };
-  const active = () => !suspended && !composing && !editor.disabled && !editor.readOnly;
+  const active = () => !suspended && !composing && !editor.disabled && !editor.readOnly && editor.isConnected !== false;
   function refresh() {
     const entries = native.imageAssets;
     if (entries !== inventoryIdentity) {
@@ -491,11 +511,21 @@ function fmdInstallImageManager(doc = document) {
     inventory.textContent = entries ? entries.length + ' embedded images · '
       + entries.reduce((total, entry) => total + entry.bytes, 0).toLocaleString() + ' bytes'
       : 'Native renderer is initializing…';
-    destination.textContent = selected ? selected.destination : 'No embedded image selected. Use Insert image to add one.';
+    destination.textContent = selected ? selected.destination : binding
+      ? 'No embedded image selected. Attach a local file below to an existing Markdown destination, or use Insert image to add new source.'
+      : 'No embedded image selected. Use Insert image to add one.';
     toggle.disabled = suspended || !entries;
     select.disabled = file.disabled = !active() || pending !== null;
     replace.disabled = !active() || pending !== null || !selected || file.files?.length !== 1;
     remove.disabled = !active() || pending !== null || !selected;
+    if (binding) {
+      // Keep the composing text field editable; disabling it would interrupt
+      // the user's IME. Only publication/file actions pause for composition.
+      binding.key.disabled = suspended || editor.disabled || editor.readOnly || editor.isConnected === false || pending !== null;
+      binding.file.disabled = !active() || pending !== null;
+      binding.button.disabled = !active() || pending !== null || !entries
+        || !binding.key.value.trim() || binding.file.files?.length !== 1;
+    }
     cancel.disabled = pending === null;
     dialog.setAttribute('aria-busy', String(pending !== null));
   }
@@ -509,16 +539,32 @@ function fmdInstallImageManager(doc = document) {
   function changed(message) { revision++; cancelPending(message); refresh(); }
   const current = operation => pending === operation && dialog.open && active()
     && revision === operation.revision && editor.value === operation.source
-    && native.documentRevision === operation.resources && select.value === operation.destination
-    && JSON.stringify(display()) === operation.display && file.files?.[0] === operation.file;
+    && native.documentRevision === operation.resources
+    && (operation.mode === 'attach' ? binding.key.value === operation.keyDraft : select.value === operation.destination)
+    && JSON.stringify(display()) === operation.display && operation.input.files?.[0] === operation.file;
+  function bindingDestination() {
+    const key = binding.key.value.trim();
+    if (!key || /[\u0000-\u001f\u007f-\u009f]/u.test(key)) throw Error('Enter a nonempty Markdown image destination without control characters');
+    let size = 0;
+    for (const character of key) {
+      const cp = character.codePointAt(0);
+      if (cp >= 0xd800 && cp <= 0xdfff) throw Error('Image destination contains invalid Unicode');
+      size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+      if (size > 8192) throw Error('Image destination exceeds 8 KiB');
+    }
+    if (native.imageAssets?.some(entry => entry.destination === key)) {
+      throw Error('That destination is already embedded; select it above and use Replace selected image');
+    }
+    return key;
+  }
   function readReplacement(operation) {
     const selected = operation.file;
     if (!selected || !Number.isSafeInteger(selected.size) || selected.size < 1 || selected.size > FMD_IMAGE_IMPORT_LIMITS.fileBytes) {
-      throw Error('Choose one replacement file containing 1 byte through 8 MiB');
+      throw Error('Choose one local image containing 1 byte through 8 MiB');
     }
     return new Promise((resolve, reject) => {
       const reader = new win.FileReader(), image = new win.Image(); let done = false, timer;
-      const check = () => { if (!current(operation)) throw Error('Document or image selection changed; choose the replacement again'); };
+      const check = () => { if (!current(operation)) throw Error('Document or image selection changed; choose the image again'); };
       function settle(error, bytes) {
         if (done) return;
         done = true; win.clearTimeout(timer); operation.cancelRead = null;
@@ -551,14 +597,19 @@ function fmdInstallImageManager(doc = document) {
       try { check(); reader.readAsArrayBuffer(selected); } catch (error) { settle(error); }
     });
   }
-  async function apply(removal) {
+  async function apply(mode) {
     if (pending || !active() || !dialog.open) return;
     let operation = null;
     try {
       if (native.settingsPending || native.exportPending) throw Error('Finish or cancel the current document operation first');
-      const entry = native.imageAssets?.find(entry => entry.destination === select.value);
-      if (!entry) throw Error('Select an existing embedded image');
-      operation = {destination: entry.destination, file: file.files?.[0], source: editor.value,
+      const removal = mode === 'remove', attaching = mode === 'attach';
+      const entry = attaching ? null : native.imageAssets?.find(entry => entry.destination === select.value);
+      if (!attaching && !entry) throw Error('Select an existing embedded image');
+      const key = attaching ? bindingDestination() : entry.destination;
+      const input = attaching ? binding.file : file;
+      if (!removal && input.files?.length !== 1) throw Error('Choose exactly one local image file');
+      operation = {mode, destination: key, keyDraft: attaching ? binding.key.value : null,
+        input, file: input.files?.[0], source: editor.value,
         revision, resources: native.documentRevision, display: JSON.stringify(display()), handle: null, cancelRead: null};
       pending = operation; refresh();
       if (removal) {
@@ -566,21 +617,25 @@ function fmdInstallImageManager(doc = document) {
         if (!current(operation)) throw Error('Document changed during confirmation; select the image again');
         if (!accepted) { status.textContent = 'Removal declined; image is unchanged.'; return; }
       }
-      const patch = {destination: entry.destination};
+      const patch = {destination: key};
       if (removal) patch.remove = true;
       else {
-        status.textContent = 'Reading and validating the local replacement image…';
+        status.textContent = 'Reading and validating the local image…';
         patch.bytes = await readReplacement(operation);
       }
       if (!current(operation)) throw Error('Document or image selection changed; try again');
       status.textContent = 'Validating document images in the native background worker…';
-      operation.handle = native.beginImageChanges([patch], operation.source, preview, JSON.parse(operation.display), () => current(operation));
+      operation.handle = attaching
+        ? native.beginImageBindings([patch], operation.source, preview, JSON.parse(operation.display), () => current(operation))
+        : native.beginImageChanges([patch], operation.source, preview, JSON.parse(operation.display), () => current(operation));
       await operation.handle.promise;
       // Committed resources now have a new revision; do not reject our own edit.
       if (pending !== operation) return;
-      file.value = '';
+      input.value = '';
+      if (attaching) { binding.key.value = ''; select.value = key; }
       status.textContent = native.documentRevision === operation.resources ? 'Replacement already matches; nothing changed.'
-        : (removal ? 'Image removed.' : 'Image replaced at the same Markdown destination.') + ' Source is unchanged; Save HTML to keep resources.';
+        : (attaching ? 'Image attached to the Markdown destination.' : removal ? 'Image removed.' : 'Image replaced at the same Markdown destination.')
+          + ' Source is unchanged; Save HTML to keep resources.';
     } catch (error) {
       if (!operation || pending === operation) status.textContent = 'Image not changed: ' + String(error?.message ?? error).slice(0, 2048);
     } finally {
@@ -588,19 +643,31 @@ function fmdInstallImageManager(doc = document) {
       refresh();
     }
   }
-  toggle.addEventListener('click', () => { if (!toggle.disabled && !dialog.open) { file.value = ''; refresh(); dialog.showModal(); select.focus(); } });
-  replace.addEventListener('click', () => { apply(false); });
-  remove.addEventListener('click', () => { apply(true); });
+  function clearFiles() {
+    file.value = '';
+    if (binding) { binding.file.value = ''; binding.key.value = ''; }
+  }
+  toggle.addEventListener('click', () => { if (!toggle.disabled && !dialog.open) { clearFiles(); refresh(); dialog.showModal(); select.focus(); } });
+  replace.addEventListener('click', () => { apply('replace'); });
+  remove.addEventListener('click', () => { apply('remove'); });
+  if (binding) {
+    binding.button.addEventListener('click', () => { apply('attach'); });
+    binding.key.addEventListener('input', () => changed('Image destination changed; attach the current selection again.'));
+    binding.key.addEventListener('change', () => changed('Image destination changed; attach the current selection again.'));
+    binding.file.addEventListener('change', () => changed('Local image selection changed; attach it again.'));
+  }
   cancel.addEventListener('click', () => cancelPending());
-  close.addEventListener('click', () => { cancelPending(); file.value = ''; dialog.close(); toggle.focus(); });
-  dialog.addEventListener('cancel', () => { cancelPending(); file.value = ''; });
-  dialog.addEventListener('close', () => { if (!dialog.open) { cancelPending(); file.value = ''; } });
+  close.addEventListener('click', () => { cancelPending(); clearFiles(); dialog.close(); toggle.focus(); });
+  dialog.addEventListener('cancel', () => { cancelPending(); clearFiles(); });
+  dialog.addEventListener('close', () => { if (!dialog.open) { cancelPending(); clearFiles(); } });
   select.addEventListener('change', () => { file.value = ''; changed('Image selection changed; retry with the selected resource.'); });
   file.addEventListener('change', () => changed('Replacement selection changed; apply it again.'));
   editor.addEventListener('input', () => changed('Source changed; apply the image change again.'));
-  editor.addEventListener('compositionstart', () => { composing = true; changed('Text composition started; image change cancelled.'); });
-  editor.addEventListener('compositionend', () => { composing = false; changed(); });
-  win.addEventListener('pagehide', () => { suspended = true; composing = false; changed('Workspace suspended; image change cancelled.'); file.value = ''; });
+  for (const node of [editor, dialog]) {
+    node.addEventListener('compositionstart', () => { composing = true; changed('Text composition started; image change cancelled.'); });
+    node.addEventListener('compositionend', () => { composing = false; changed(); });
+  }
+  win.addEventListener('pagehide', () => { suspended = true; composing = false; changed('Workspace suspended; image change cancelled.'); clearFiles(); });
   win.addEventListener('pageshow', () => { suspended = false; composing = false; refresh(); });
   win.addEventListener('fmd-native-images-changed', () => {
     modified = true;
@@ -610,8 +677,8 @@ function fmdInstallImageManager(doc = document) {
   });
   win.addEventListener('beforeunload', event => { if (modified) { event.preventDefault(); event.returnValue = ''; } });
   const viewObserver = new win.MutationObserver(() => {
-    if (pending && !current(pending)) cancelPending('Source, view or document state changed; retry the image change.');
-    refresh();
+    // An access/view change followed by a revert still retires an operation.
+    changed('Source, view or document state changed; retry the image change.');
   });
   viewObserver.observe(doc.documentElement, {attributes: true, attributeFilter: ['style']});
   viewObserver.observe(doc.body, {attributes: true, attributeFilter: ['class']});

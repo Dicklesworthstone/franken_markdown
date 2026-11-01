@@ -35,7 +35,7 @@ def inert(value):
     return json.dumps(value, ensure_ascii=True).replace('<', '\\u003c')
 
 
-def fixture(png):
+def fixture(png, background=False, markdown=SOURCE):
     # Only native ABI functions and the initial shell are doubles. Runtime,
     # controller, picker, image decoder, editing commands and downloads are real.
     bindings = r'''
@@ -71,11 +71,13 @@ export function renderPdfConfiguredPage(...a) { return pdf(a, Array.from(a.pop()
                'images': [{'destination': 'old.png', 'bytes': base64.b64encode(png).decode()}],
                'fonts': [{'slot': 'body-regular', 'weight': 555, 'bytes': 'AQID'}]}
     runtime = (ROOT / 'wasm/interactive_runtime.mjs').read_text().replace('export function ', 'function ')
+    worker = (ROOT / 'wasm/interactive_preview.mjs').read_text().replace('export function ', 'function ') if background else ''
+    boot = 'bootNativeWorkspace(createNativeWorkspaceRenderer' + (',createWorkspacePreviewWorker' if background else '') + ');'
     controller = (ROOT / 'src/interactive_controller.js').read_text()
     importer = (ROOT / 'src/interactive_import.js').read_text()
     buttons = ['toggle-view', 'zoom-out', 'zoom-reset', 'zoom-in', 'theme-toggle', 'stats-toggle',
                'insert-image', 'save-markdown', 'save-html', 'export-pdf']
-    policy = ("default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; "
+    policy = ("default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src blob:; "
               "style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; "
               "frame-src 'self' about:; base-uri 'none'; form-action 'none'")
     return ('<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="' + policy
@@ -86,13 +88,13 @@ export function renderPdfConfiguredPage(...a) { return pdf(a, Array.from(a.pop()
             + '<span id="view-mode-icon"></span><span id="view-mode-label"></span></header>'
             + '<div id="fmd-app-body" class="view-split"><section id="editor-pane"><div class="fmd-pane-header">'
             + '<span id="source-line-count"></span><span id="fmd-save-status"></span></div>'
-            + '<textarea id="fmd-editor">' + html.escape(SOURCE) + '</textarea></section>'
+            + '<textarea id="fmd-editor">' + html.escape(markdown) + '</textarea></section>'
             + '<main id="preview-pane"><div id="fmd-content">Initializing native renderer</div></main></div>'
             + '<div id="stats-drawer">' + ''.join('<span id="stat-' + s + '"></span>' for s in ['words', 'chars', 'read-time', 'readability'])
             + '<button id="btn-stats-close">Close</button></div>'
-            + '<script type="application/json" id="fmd-raw-source">' + inert(SOURCE) + '</script>'
+            + '<script type="application/json" id="fmd-raw-source">' + inert(markdown) + '</script>'
             + '<script type="application/json" id="fmd-native-runtime">' + inert(payload) + '</script>'
-            + '<script>' + runtime + '\nbootNativeWorkspace(createNativeWorkspaceRenderer);\n'
+            + '<script>' + runtime + '\n' + worker + '\n' + boot + '\n'
             + 'function parseMarkdownClient(){throw Error("Unexpected reduced parser");}\n'
             + controller + '\n' + importer + '\n</script></body></html>')
 
@@ -377,6 +379,67 @@ async def run(args):
         gif_receipt = await gif_reopened.evaluate('''() => JSON.parse(new TextDecoder().decode(
           window.__fmdNativeRuntime.pdf(document.getElementById('fmd-editor').value)).split(String.fromCharCode(10))[1])''')
         check(gif_receipt['images'][1] == [gif_assets[1]['destination'], gif_assets[1]['bytes']], 'PDF dispatch receives the complete original GIF for native first-frame rendering')
+
+        # Attach bytes to an existing destination without inserting or replacing
+        # source. This shell enables the real background worker path, then uses
+        # the complete controller for actual downloads and file:// reopening.
+        attached_key = 'figures/日本語.gif'
+        attached_source = '\ufeff# Existing document\r\n\r\n![Original](old.png)\r\n\r\n![One](' + attached_key + ')\r\n\r\n![Two](' + attached_key + ')\r'
+        attachment_initial = artifacts / 'attachment.initial.html'
+        attachment_initial.write_text(fixture(png, background=True, markdown=attached_source))
+        attachment = await open_page(attachment_initial)
+        attached_view = await attachment.locator('#fmd-editor').input_value()
+        attached_before = await manifest(attachment)
+        await attachment.locator('#btn-document-images').click()
+        await attachment.locator('#fmd-image-binding-destination').fill(attached_key)
+        await attachment.locator('#fmd-image-binding-file').set_input_files(
+            {'name':'chosen.png','mimeType':'image/png','buffer':gif})
+        await attachment.locator('#btn-attach-document-image').click()
+        await attachment.wait_for_function("() => document.querySelector('#fmd-document-images').getAttribute('aria-busy')==='false'")
+        attached_assets = (await manifest(attachment))['images']
+        check(len(attached_assets) == 2 and attached_assets[1]['destination'] == attached_key
+              and base64.b64decode(attached_assets[1]['bytes']) == gif,
+              'existing-source attachment retains the reviewed destination and complete selected GIF bytes')
+        check(attached_assets[0] == attached_before['images'][0],
+              'existing-source attachment preserves the earlier embedded image')
+        check(await attachment.locator('#fmd-editor').input_value() == attached_view
+              and json.loads(await attachment.locator('#fmd-raw-source').text_content()) == attached_source,
+              'existing-source attachment preserves both textarea and lossless source')
+        attached_payload = await manifest(attachment)
+        check(attached_payload['options'] == attached_before['options'] and attached_payload['fonts'] == attached_before['fonts'],
+              'existing-source attachment preserves settings and font pins')
+        await attachment.wait_for_function('''() => {
+          const images=document.querySelector('#fmd-content iframe')?.contentDocument?.images;
+          return images?.length===2 && images[1].naturalWidth===2 && images[1].naturalHeight===2;
+        }''')
+        check(True, 'existing-source attachment decodes in the worker-published preview')
+        await attachment.locator('#btn-close-document-images').click()
+        attached_markdown = await download(attachment, '#btn-save-markdown', 'attachment.md')
+        check(attached_markdown.read_bytes() == attached_source.encode('utf-8'),
+              'Save Markdown after attachment preserves BOM, CRLF, bare CR and every existing reference')
+        attached_saved = await download(attachment, '#btn-save-html', 'attachment.workspace.html')
+        attached_reopened = await open_page(attached_saved)
+        check(await attached_reopened.locator('#fmd-editor').input_value() == attached_view
+              and json.loads(await attached_reopened.locator('#fmd-raw-source').text_content()) == attached_source,
+              'attached workspace reopens with exact lossless source')
+        check((await manifest(attached_reopened))['images'] == attached_assets,
+              'attached workspace reopens with both original and newly attached resource bytes')
+        check(await attached_reopened.locator('#btn-document-images').count() == 1
+              and await attached_reopened.locator('#fmd-document-images').count() == 1,
+              'attached workspace rebuilds one image manager after actual Save HTML')
+        await attached_reopened.locator('#btn-document-images').click()
+        check(await attached_reopened.locator('#fmd-image-binding-destination').input_value() == ''
+              and await attached_reopened.locator('#fmd-image-binding-file').evaluate('e=>e.files.length') == 0,
+              'reopened attachment controls do not reuse local file selections or drafts')
+        await attached_reopened.locator('#btn-close-document-images').click()
+        attached_pdf = await download(attached_reopened, '#btn-export-pdf', 'attachment.pdf-adapter')
+        attached_receipt = json.loads(attached_pdf.read_bytes().split(b'\n', 1)[1])
+        check(attached_receipt['source'] == attached_source
+              and attached_receipt['images'] == [[image['destination'], image['bytes']] for image in attached_assets],
+              'reopened PDF worker dispatch receives exact source and all attached resource bytes')
+        check(attached_receipt['weights'] == [555, 0, 0, 0, 0]
+              and attached_receipt['page'] == [842, 595, 36, 40, 44, 48],
+              'reopened attachment publication retains original typography and geometry')
         check(not requests, 'zero HTTP(S) requests')
         check(not errors, 'zero uncaught browser errors')
         version = browser.version

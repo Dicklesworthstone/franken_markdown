@@ -83,10 +83,13 @@ animation; native PDF uses the first frame. Imported native resources use `.gif`
 destinations when their bytes identify a GIF, even when the selected filename or
 declared MIME type claims a different format.
 
-Newly imported images are written as base64 image data URIs **in the Markdown
-source itself**. Consequently both **Save Markdown** and **Save HTML** carry the
-new images without a sidecar folder. This differs from externally supplied
-`HtmlOptions.image_assets`, which remain separate bindings as described above.
+Lightweight workspaces write newly imported images as base64 image data URIs
+**in the Markdown source itself**. Consequently both **Save Markdown** and
+**Save HTML** carry those images without a sidecar folder. Workspaces with the
+embedded Rust/WASM runtime instead retain imported bytes as separate resources
+and insert short, unique `fmd-import/` destinations. **Save HTML** carries those
+resources; **Save Markdown** retains the references only. Externally supplied
+`HtmlOptions.image_assets` also remain separate bindings as described above.
 Filenames become escaped, bounded alt text. No filename becomes an ambient path,
 network destination, script or raw HTML element.
 
@@ -104,3 +107,45 @@ actual local file selection, PNG/JPEG/GIF decoding, selection replacement, batch
 refusals, retry, undo/redo, asynchronous races and both download formats. It also
 checks the fallback insertion path and saved read-mode state. Like the resource
 lifecycle gate, this browser gate is separate from Rust/WASM compilation.
+
+## Attach local images to existing Markdown
+
+An embedded Rust/WASM workspace with background rendering also offers
+**Document images → Attach an image to existing Markdown**. Use this after
+opening a Markdown document whose referenced image files are not embedded yet:
+
+1. Enter the image destination, such as `figures/diagram.png`, from the Markdown
+   image or reference definition.
+2. Choose the corresponding local PNG, JPEG or GIF file.
+3. Select **Attach image**. The browser checks the image and the native background
+   renderer validates the updated document before publishing the resource.
+
+Attachment keeps the Markdown, including alt text and repeated references,
+unchanged. Every reference to that destination uses the same attached bytes.
+It also works in documents that have no embedded images. The destination is an
+explicit lookup key: attachment neither opens that path nor fetches a URL, and
+it never scans neighboring files or guesses from filenames. Destinations are
+trimmed, must be valid Unicode without control characters, and are limited to
+8 KiB of UTF-8. A destination already embedded in the document must be changed
+through **Replace selected image**, so attachment cannot overwrite it silently.
+
+The file uses the same byte, dimension, format and decode checks as other image
+authoring. A failed read, decode or native preflight publishes nothing. Changes
+to source, destination, view or document resources invalidate pending work;
+composition, read-only/disabled state, cancellation and page suspension also
+prevent stale publication. Retry is explicit, and closing the dialog or leaving
+the page discards its selected files and destination draft.
+
+Choose **Save HTML** to keep the attached image bytes with the editable document.
+**Save Markdown** preserves the original source, including untouched BOM and
+line endings, and does not package the separate resources. Older native runtimes
+without the attachment API retain their existing replacement/removal controls.
+
+`wasm/native_workspace_image_manager.test.mjs` exercises the shipped manager
+against real resource transactions, with explicit DOM/read/worker adapters.
+`wasm/native_workspace_image_changes_browser.py` verifies real browser file
+reading, decoding, worker publication and refusal paths. The full controller
+gate `wasm/native_workspace_images_browser.py` checks actual Markdown/HTML
+downloads, file reopening and exact resource bytes passed to PDF publication.
+These browser fixtures use explicit native ABI adapters and do not substitute
+for compiled Rust/WASM rendering or PDF conformance tests.

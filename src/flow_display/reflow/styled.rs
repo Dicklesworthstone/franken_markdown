@@ -1,13 +1,13 @@
 //! Mixed-face wrapping and interaction geometry. The parent owns all shaper,
 //! line and output admission, so the rich path cannot bypass those budgets.
 
-use super::{Align, FlowInlineStyle, FlowLayoutError, FlowTextRole, Reflow};
+use super::{Align, FlowInlineStyle, FlowLayoutError, FlowTextRole, Reflow, breaks};
 use crate::display::{
     DisplayItem, DisplayRect, DisplaySemanticAnchor, DisplayTextRun, VectorShapeType,
 };
 use crate::flow_display::FlowInlineRun;
 use crate::span::SourceSpan;
-use crate::text::{Direction, OwnedTextRun};
+use crate::text::{Direction, OwnedTextRun, TextRunMetrics};
 use std::ops::Range;
 
 struct Cluster {
@@ -82,8 +82,7 @@ where
         let mut offset = 0;
         for physical in text.split_terminator('\n') {
             if physical.is_empty() {
-                self.line()?;
-                height += leading;
+                height += self.begin_line(y + height, leading, None)?.height;
                 offset += 1;
                 continue;
             }
@@ -115,7 +114,8 @@ where
                     for cluster in logical {
                         let bytes =
                             start + cluster.byte_range.start..start + cluster.byte_range.end;
-                        let word_break = text[bytes.clone()].chars().all(|c| c == ' ' || c == '\t');
+                        let word_break = text[bytes.clone()].chars().all(|c| c == ' ' || c == '\t')
+                            || breaks::cjk_boundary(text, bytes.end);
                         clusters.push(Cluster {
                             bytes,
                             run_index: index,
@@ -160,6 +160,31 @@ where
                     if end < clusters.len() && role != FlowTextRole::Code {
                         end = word_break.unwrap_or(end);
                     }
+                    let mut minimum_end = first + 1;
+                    while role != FlowTextRole::Code
+                        && minimum_end < clusters.len()
+                        && breaks::prohibited_boundary(text, clusters[minimum_end - 1].bytes.end)
+                    {
+                        minimum_end += 1;
+                    }
+                    end = end.max(minimum_end);
+                    while role != FlowTextRole::Code
+                        && end > minimum_end
+                        && breaks::prohibited_boundary(text, clusters[end - 1].bytes.end)
+                    {
+                        end -= 1;
+                    }
+                    // A protected CJK group can extend the initial candidate.
+                    // It must not make us publish the final contextual group
+                    // merely because the current measurement window ended.
+                    if end == clusters.len() && window_end < physical_end {
+                        if first == 0 {
+                            return Err(FlowLayoutError::BudgetExceeded(
+                                "shaping window cannot settle a line",
+                            ));
+                        }
+                        break;
+                    }
                     // Re-shape every final fragment. Kerning/ligatures may change
                     // at a line boundary; never trust only the full-run measurement.
                     let (fragments, final_width) = loop {
@@ -173,13 +198,19 @@ where
                         if final_width <= width {
                             break (fragments, final_width);
                         }
-                        if end == first + 1 {
+                        if end == minimum_end {
                             return Err(FlowLayoutError::ClusterTooWide {
                                 advance: final_width,
                                 available: width,
                             });
                         }
                         end -= 1;
+                        while role != FlowTextRole::Code
+                            && end > minimum_end
+                            && breaks::prohibited_boundary(text, clusters[end - 1].bytes.end)
+                        {
+                            end -= 1;
+                        }
                     };
                     let Some(initial) = fragments.first() else {
                         return Err(FlowLayoutError::InvalidShapedRun);
@@ -194,7 +225,20 @@ where
                                 .to_owned(),
                         ));
                     }
-                    self.line()?;
+                    let mut metrics = Some(TextRunMetrics {
+                        ascent: 0.0,
+                        descent: 0.0,
+                    });
+                    for fragment in &fragments {
+                        let Some(current) = &mut metrics else { break };
+                        if let Some(other) = fragment.run.vertical_metrics {
+                            current.ascent = current.ascent.max(other.ascent);
+                            current.descent = current.descent.max(other.descent);
+                        } else {
+                            metrics = None;
+                        }
+                    }
+                    let line = self.begin_line(y + height, leading, metrics)?;
                     let rtl = direction == Direction::RightToLeft;
                     // Align the complete final line before emitting any fragments,
                     // so glyphs, strike marks and link targets share one placement.
@@ -214,7 +258,7 @@ where
                         if rtl {
                             cursor -= advance;
                         }
-                        let bounds = DisplayRect::new(cursor, y + height, advance, leading);
+                        let bounds = DisplayRect::new(cursor, y + height, advance, line.height);
                         // Owned runs identify the actual face; color_role describes
                         // ink rather than pretending to encode the complete style.
                         let ink = if spec.active_link_target().is_some() {
@@ -231,12 +275,17 @@ where
                             color_role: ink.to_owned(),
                             source_span: span,
                             font_size: fragment.size,
-                            baseline_y: None,
+                            baseline_y: line.baseline_y,
                             math_fallback: None,
                         }))?;
                         if spec.style.strikethrough && advance > 0.0 {
                             self.vector(
-                                DisplayRect::new(cursor, y + height + leading * 0.5, advance, 1.0),
+                                DisplayRect::new(
+                                    cursor,
+                                    y + height + line.height * 0.5,
+                                    advance,
+                                    1.0,
+                                ),
                                 VectorShapeType::HorizontalRule,
                                 "strikethrough",
                                 span,
@@ -250,7 +299,7 @@ where
                         }
                     }
                     debug_assert!(final_width <= width);
-                    height += leading;
+                    height += line.height;
                     first = end;
                 }
                 window_start = clusters
@@ -260,8 +309,7 @@ where
             offset = physical_end + 1;
         }
         if height == 0.0 {
-            self.line()?;
-            height = leading;
+            height = self.begin_line(y, leading, None)?.height;
         }
         Ok(height)
     }
@@ -329,11 +377,9 @@ where
     }
 }
 
-// Cut BEFORE an ASCII separator, never through a UTF-8 scalar or a word.
-// The final tentative line is carried, not emitted at this boundary. Keeping
-// only one window's clusters bounds scratch space even for millions of tiny
-// style spans. Words/lines too large for the window still fail explicitly;
-// silently splitting unknown shaper clusters or inventing breaks is not safe.
+// A safe work boundary is not a published line break. Carry the final
+// tentative line and keep every final host-shaped cluster intact. Latin words
+// still require separators; CJK adds the existing permitted pair boundaries.
 pub(super) fn measurement_window_end(
     text: &str,
     start: usize,
@@ -343,14 +389,9 @@ pub(super) fn measurement_window_end(
     if end - start <= limit {
         return Ok(end);
     }
-    text.as_bytes()[start..start + limit]
-        .iter()
-        .rposition(|&byte| matches!(byte, b' ' | b'\t'))
-        .filter(|offset| *offset > 0)
-        .map(|offset| start + offset)
-        .ok_or(FlowLayoutError::BudgetExceeded(
-            "word exceeds shaping window",
-        ))
+    breaks::measurement_boundary(text, start, end, limit).ok_or(FlowLayoutError::BudgetExceeded(
+        "word exceeds shaping window",
+    ))
 }
 
 pub(super) fn validate_ranges(text: &str, runs: &[FlowInlineRun]) -> Result<(), FlowLayoutError> {

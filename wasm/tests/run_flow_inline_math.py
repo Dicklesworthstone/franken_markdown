@@ -28,16 +28,50 @@ generated_evidence = None
 if args.generated_package:
     names += ["flow.js", "flow_asset_batch.mjs", "flow_export.mjs", "franken_markdown.js", "pdf_page.mjs", "pdf_running.mjs", "render_typography.mjs"]
     binding_bytes = (args.generated_package / "franken_markdown.js").read_bytes()
-    wasm_bytes = (args.generated_package / "franken_markdown_bg.wasm").read_bytes()
-    if len(wasm_bytes) > 128 * 1024 * 1024:
+    wasm_path = args.generated_package / "franken_markdown_bg.wasm"
+    length = wasm_path.stat().st_size
+    if length > 128 * 1024 * 1024:
         parser.error("generated WASM exceeds the 128 MiB test ingress bound")
-    generated = {"bindings": binding_bytes.decode(), "wasmBase64": base64.b64encode(wasm_bytes).decode("ascii")}
+    with wasm_path.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    generated = {"bindings": binding_bytes.decode(), "wasmBytes": length, "wasmSha256": digest}
     generated_evidence = {"bindingsSha256": hashlib.sha256(binding_bytes).hexdigest(),
-        "wasmSha256": hashlib.sha256(wasm_bytes).hexdigest(), "wasmBytes": len(wasm_bytes)}
+        "wasmSha256": digest, "wasmBytes": length}
 modules = {name: (root / name).read_text() for name in names}
 fixture_bytes = args.fixture.read_bytes()
 fixture = json.loads(fixture_bytes)
 requests, errors = [], []
+
+
+def upload_wasm(page, path, generated):
+    # Keep each transport message bounded; the browser owns one exact-sized
+    # byte buffer instead of three processes retaining a whole base64 module.
+    length = generated["wasmBytes"]
+    page.evaluate("length => { globalThis.__fmdFlowGateWasm = {bytes: new Uint8Array(length), offset: 0}; }", length)
+    digest = hashlib.sha256()
+    offset = 0
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            if offset + len(chunk) > length:
+                raise ValueError("generated WASM changed length while streaming")
+            digest.update(chunk)
+            page.evaluate("""({offset, chunk}) => {
+                const owned = globalThis.__fmdFlowGateWasm, binary = atob(chunk);
+                if (owned.offset !== offset || offset + binary.length > owned.bytes.length)
+                    throw Error("nonsequential generated WASM ingress");
+                for (let i = 0; i < binary.length; i++) owned.bytes[offset + i] = binary.charCodeAt(i);
+                owned.offset += binary.length;
+            }""", {"offset": offset, "chunk": base64.b64encode(chunk).decode("ascii")})
+            offset += len(chunk)
+    if offset != length or digest.hexdigest() != generated["wasmSha256"]:
+        raise ValueError("generated WASM changed while streaming")
+    page.evaluate("""length => {
+        const owned = globalThis.__fmdFlowGateWasm;
+        if (owned.offset !== length || owned.bytes.length !== length)
+            throw Error("incomplete generated WASM ingress");
+    }""", length)
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=args.chromium, headless=True, timeout=10000,
         args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -47,6 +81,8 @@ with sync_playwright() as p:
     page.route("http://**/*", lambda route: route.abort())
     page.route("https://**/*", lambda route: route.abort())
     page.set_content("<!doctype html><title>Native Flow inline math proof</title>")
+    if generated:
+        upload_wasm(page, wasm_path, generated)
     result = page.evaluate("""async ({modules, fixture, generated}) => {
       const urls=[];
       const load=source=>{const url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));urls.push(url);return url;};
@@ -70,7 +106,11 @@ with sync_playwright() as p:
             .replaceAll('"./flow_export.mjs"',JSON.stringify(exports)).replaceAll('"./flow_asset_batch.mjs"',JSON.stringify(assets))
             .replaceAll('"./franken_markdown.js"',JSON.stringify(api)));
           runtime=await import(flow);
-          await runtime.init(Uint8Array.from(atob(generated.wasmBase64), character=>character.charCodeAt(0)));
+          const owned = globalThis.__fmdFlowGateWasm;
+          delete globalThis.__fmdFlowGateWasm;
+          if (!owned || owned.offset !== generated.wasmBytes || owned.bytes.length !== generated.wasmBytes)
+            throw Error("incomplete generated WASM ingress");
+          await runtime.init(owned.bytes);
         }
         return await (await import(suite)).run(fixture,runtime);
       } finally {for (const url of urls) URL.revokeObjectURL(url);}

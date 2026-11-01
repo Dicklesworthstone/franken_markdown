@@ -4,6 +4,8 @@
 //! and standalone symbols, real GSUB ligatures and GPOS pair kerning. Latin
 //! combining sequences use the strict OpenType mark-positioning engine, retain
 //! exact source clusters, and require a face covering the whole sequence.
+//! With `cjk-face`, mapped BMP Han, precomposed kana and horizontal CJK
+//! punctuation use the existing bundled Simplified Chinese fallback face.
 //! Unsupported marks, bidi/joining scripts and emoji sequences still require
 //! a host shaper and are refused, never emitted unpositioned or missing.
 //! Tabs retain their logical byte and occupy four space advances. Code disables
@@ -60,7 +62,7 @@ struct Face {
 /// ```
 #[derive(Clone)]
 pub struct BundledFlowFonts {
-    faces: [Face; 6],
+    faces: Vec<Face>,
 }
 
 impl BundledFlowFonts {
@@ -78,30 +80,40 @@ impl BundledFlowFonts {
         };
         let mono_bytes = super::mono_bytes(FontStyle::Regular);
         let symbol_bytes = super::symbol_bytes();
-        Ok(Self {
-            faces: [
-                body(FontStyle::Regular)?,
-                body(FontStyle::Bold)?,
-                body(FontStyle::Italic)?,
-                body(FontStyle::BoldItalic)?,
-                Face {
-                    font: super::mono_font(FontStyle::Regular)
-                        .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
-                    layout: super::mono_layout_tables(FontStyle::Regular)
-                        .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
-                    bytes: mono_bytes,
-                    id: FontId::from_font_data(mono_bytes),
-                },
-                Face {
-                    font: super::symbol_font()
-                        .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
-                    layout: super::symbol_layout_tables()
-                        .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
-                    bytes: symbol_bytes,
-                    id: FontId::from_font_data(symbol_bytes),
-                },
-            ],
-        })
+        let mut faces = vec![
+            body(FontStyle::Regular)?,
+            body(FontStyle::Bold)?,
+            body(FontStyle::Italic)?,
+            body(FontStyle::BoldItalic)?,
+            Face {
+                font: super::mono_font(FontStyle::Regular)
+                    .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
+                layout: super::mono_layout_tables(FontStyle::Regular)
+                    .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
+                bytes: mono_bytes,
+                id: FontId::from_font_data(mono_bytes),
+            },
+            Face {
+                font: super::symbol_font().map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
+                layout: super::symbol_layout_tables()
+                    .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
+                bytes: symbol_bytes,
+                id: FontId::from_font_data(symbol_bytes),
+            },
+        ];
+        if let Some(parsed) = super::cjk_font() {
+            let (font, layout) = parsed.map_err(|e| FlowLayoutError::Shaping(e.to_string()))?;
+            let bytes = super::cjk_bytes().ok_or_else(|| {
+                FlowLayoutError::Shaping("bundled CJK font bytes are unavailable".to_owned())
+            })?;
+            faces.push(Face {
+                font,
+                layout,
+                bytes,
+                id: FontId::from_font_data(bytes),
+            });
+        }
+        Ok(Self { faces })
     }
 
     /// Retrieve the immutable bytes for an actual glyph/cluster font identity.
@@ -174,8 +186,19 @@ impl BundledFlowFonts {
             let mut face = primary;
             let mut glyph = self.faces[face].font.glyph_index(mapped);
             if glyph == 0 {
-                face = SYMBOL;
-                glyph = self.faces[face].font.glyph_index(mapped);
+                // Existing body/mono and symbol identities keep their priority.
+                // The optional face only extends the declared CJK repertoire;
+                // it cannot silently broaden Latin or complex-script shaping.
+                for (index, fallback) in self.faces.iter().enumerate().skip(SYMBOL) {
+                    if index > SYMBOL && !cjk_ltr_scalar(ch) {
+                        break;
+                    }
+                    face = index;
+                    glyph = fallback.font.glyph_index(mapped);
+                    if glyph != 0 {
+                        break;
+                    }
+                }
             }
             if glyph == 0 || glyph >= self.faces[face].font.num_glyphs {
                 return Err(format!(
@@ -372,7 +395,22 @@ fn simple_ltr_scalar(ch: char) -> bool {
         0x20..=0x024f | 0x0370..=0x0482 | 0x048a..=0x052f |
         0x1e00..=0x1eff | 0x2000..=0x200a | 0x2010..=0x2027 |
         0x2030..=0x205e | 0x20a0..=0x20cf | 0x2100..=0x23ff
-    )
+    ) || cjk_ltr_scalar(ch)
+}
+
+// This admission profile is deliberately narrower than the font's cmap.
+// Decomposed kana, tone marks, variation selectors, halfwidth voicing marks,
+// supplementary Han, Hangul and vertical forms still need a host shaper.
+// Unmapped characters inside these ranges are refused by the cmap lookup.
+fn cjk_ltr_scalar(ch: char) -> bool {
+    cfg!(feature = "cjk-face")
+        && matches!(ch as u32,
+            0x2e80..=0x2eff | 0x2f00..=0x2fdf |
+            0x3000..=0x3029 | 0x3030 | 0x3036..=0x303a |
+            0x303c..=0x3098 | 0x309b..=0x30ff |
+            0x31f0..=0x31ff | 0x3400..=0x4dbf | 0x4e00..=0x9fff |
+            0xf900..=0xfaff | 0xff01..=0xff60 | 0xffe0..=0xffe6
+        )
 }
 
 #[cfg(test)]
@@ -566,7 +604,6 @@ mod tests {
             "\u{0301}a",
             "אב",
             "العربية",
-            "東京",
             "😀",
             "a\u{200d}b",
             "x\u{202e}y",
@@ -578,6 +615,13 @@ mod tests {
                 "{text:?}"
             );
         }
+        #[cfg(not(feature = "cjk-face"))]
+        assert!(
+            fonts
+                .shape("東京", 14.0, FlowTextRole::Body, FlowInlineStyle::default())
+                .is_err(),
+            "the lean profile must not acquire optional CJK coverage"
+        );
         for size in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             assert!(
                 fonts

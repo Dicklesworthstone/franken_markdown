@@ -303,6 +303,14 @@ export class FlowReaderView {
       else if (node.role === "code-block") {
         const code = make("code");
         yield* text(node, code);
+        // Keep the final empty line box: Chromium otherwise omits one terminal
+        // LF from native Selection/Copy, despite the exact text node and Range.
+        // The break carries no text and adds no character to whole-code Copy.
+        if (node.text.endsWith("\n")) {
+          const terminalLine = make("br");
+          terminalLine.setAttribute("aria-hidden", "true");
+          code.append(terminalLine);
+        }
         el.append(code);
       } else if (node.role === "image") {
         const caption = make("figcaption"),

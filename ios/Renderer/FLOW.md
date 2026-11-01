@@ -69,9 +69,10 @@ colors. Commands are absolute M/L/Q/C/Z contours with nonzero fill; `fill` is
 either null (use `colorRole`) or explicit RGBA in 0..1. The primitive carries
 the original enclosing source span. Each path is limited to 65,536 commands,
 and the display to 262,144 filled-path commands. Canvas details are in `CANVAS.md`.
-Mixed text/math lines carry measured `baselineY` on text items; Canvas validates
-and uses that native coordinate rather than inferring placement from the expanded
-line height. Absent/null baselines retain the older text presentation policy.
+Text lines with measured font metrics carry `baselineY` on text items, including
+mixed text/math and optional CJK lines. Canvas validates and uses that native
+coordinate rather than inferring placement from the expanded line height.
+Absent/null baselines retain the older text presentation policy.
 Inline fallback text exposes a bounded, nonempty `mathFallback` reason and keeps
 the complete literal source. The `math` reading leaf retains block TeX, while
 `inlineRuns[].math` identifies exact TeX ranges as `"inline"` or `"display"`
@@ -116,6 +117,35 @@ checked; `null` means a known dimension-only result. Bytes returned to JS are
 owned copies. Stop presenting old snapshots immediately when authorization is
 revoked, including when a refresh transaction fails.
 
+## Optional horizontal CJK text
+
+Build the native/WASM producer with `cjk-face` to include the existing bundled
+Simplified Chinese fallback font in Flow. For a dedicated browser Flow build,
+use `--no-default-features --features wasm-flow,cjk-face` when building the
+`wasm32-unknown-unknown` library, then generate matching wasm-bindgen bindings.
+This is a compile-time capability; there is no JavaScript option that downloads
+or activates a missing font. The default lean build keeps its smaller font set
+and returns `LAYOUT_ERROR` for CJK text it cannot shape. A failed edit retains
+the last successful source, revisions and display.
+
+The enabled profile admits mapped BMP Han, precomposed hiragana/katakana and
+horizontal CJK punctuation. Latin text keeps its selected body, emphasis or code
+face; each CJK cluster records the actual bundled fallback font ID and measured
+advance. Canvas requests that font's real outlines through `glyphOutlines`, with
+no browser font selection or network request. The shared layout uses real font
+extents for line heights, baselines, wrapping and list-marker placement. CJK
+text works in headings, paragraphs, emphasis, links, lists, quotes, table cells,
+code and beside inline mathematics. Source editing, fragment UTF-16 selections,
+reading search and native Copy retain the original characters; source-byte Copy
+also retains a BOM and original CRLF line endings.
+
+The fallback is one regular Simplified Chinese face, including when used inside
+bold, italic or code spans. It does not synthesize CJK weights, language-specific
+glyph variants or vertical text. Missing glyphs, supplementary Han, Hangul,
+decomposed kana/unsupported combining sequences, variation selectors, bidi and
+emoji still require a suitable host shaper and are refused rather than replaced
+with missing-glyph boxes or silently dropped characters.
+
 ## Limits and scope
 
 The JS facade checks a 4 MiB UTF-8 source limit and an 8 MiB individual asset
@@ -145,3 +175,12 @@ invoked by both `scripts/check-wasm-package.sh` and the DSR quality route
 `scripts/dsr-wasm-package.sh`.
 Type declarations are checked with `tsc --noEmit --strict --target ES2022
 --module NodeNext --moduleResolution NodeNext wasm/flow_types_test.mts`.
+
+`tests/flow_cjk.rs` checks the optional font's actual cmap, outlines, advances,
+metrics, source/caret ranges, wrapping and bounded-layout continuation, with a
+separate feature-off refusal test. Set `FMD_FLOW_CJK_FIXTURE` to emit unchanged
+native browser pages for `wasm/tests/run_flow_cjk.py`. That Chromium gate accepts
+actual enabled and lean-off generated packages and an actual pre-change package
+for ordinary Latin pixel comparison. It checks native/WASM geometry and text,
+real CJK ink, exact selection/source bytes, edits/reflow, safe links and refused
+unsupported sequences without a substitute renderer or browser shaping engine.

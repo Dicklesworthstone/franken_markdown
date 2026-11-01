@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
+use super::breaks::{cjk_boundary, measurement_boundary, prohibited_boundary};
 use super::math::{COMMAND_BYTES, Formula, InlineMetrics, MathFailure};
 use super::styled::validate_ranges;
 use super::{Align, FlowInlineStyle, FlowLayoutError, FlowTextRole, Reflow};
@@ -14,7 +15,7 @@ use crate::display::{
 };
 use crate::flow_display::{FlowInlineRun, FlowMathStyle};
 use crate::span::SourceSpan;
-use crate::text::{Direction, OwnedTextRun};
+use crate::text::{Direction, OwnedTextRun, TextRunMetrics};
 
 const MISSING_METRICS: &str =
     "inline math requires measured text ascent and descent; showing the complete formula source";
@@ -123,8 +124,7 @@ where
                 if !window.hard_break {
                     return Err(FlowLayoutError::InvalidShapedRun);
                 }
-                self.line()?;
-                height += leading;
+                height += self.begin_line(y + height, leading, None)?.height;
                 start += 1;
                 continue;
             }
@@ -162,6 +162,32 @@ where
                 if end < atoms.len() && role != FlowTextRole::Code {
                     end = word_break.unwrap_or(end);
                 }
+                let mut minimum_end = first + 1;
+                if role != FlowTextRole::Code {
+                    while minimum_end < atoms.len()
+                        && prohibited_boundary(text, atoms[minimum_end].bytes.start)
+                    {
+                        minimum_end += 1;
+                    }
+                    end = end.max(minimum_end);
+                    while end > minimum_end
+                        && end < atoms.len()
+                        && prohibited_boundary(text, atoms[end].bytes.start)
+                    {
+                        end -= 1;
+                    }
+                }
+                // A protected CJK group may extend the initial candidate.
+                // Keep its right-hand shaping context until a following
+                // window or the physical line end makes the decision final.
+                if end == atoms.len() && !window.hard_break && window.end < text.len() {
+                    if first == 0 {
+                        return Err(FlowLayoutError::BudgetExceeded(
+                            "shaping window cannot settle a line",
+                        ));
+                    }
+                    break;
+                }
                 let (fragments, final_width) = loop {
                     let fragments = self.math_fragments(
                         text,
@@ -178,13 +204,19 @@ where
                     if final_width <= width {
                         break (fragments, final_width);
                     }
-                    if end == first + 1 {
+                    if end == minimum_end {
                         return Err(FlowLayoutError::ClusterTooWide {
                             advance: final_width,
                             available: width,
                         });
                     }
                     end -= 1;
+                    if role != FlowTextRole::Code {
+                        while end > minimum_end && prohibited_boundary(text, atoms[end].bytes.start)
+                        {
+                            end -= 1;
+                        }
+                    }
                 };
                 let has_math = fragments
                     .iter()
@@ -241,14 +273,14 @@ where
                         descent = descent.max(below);
                     }
                 }
-                let line_height = leading.max(ascent + descent);
                 let line_y = y + height;
-                let baseline =
-                    measured.then_some(line_y + (line_height - ascent - descent) * 0.5 + ascent);
-                if !line_height.is_finite() || !line_y.is_finite() {
-                    return Err(FlowLayoutError::BudgetExceeded("layout height"));
-                }
-                self.line()?;
+                let placement = self.begin_line(
+                    line_y,
+                    leading,
+                    measured.then_some(TextRunMetrics { ascent, descent }),
+                )?;
+                let line_height = placement.height;
+                let baseline = placement.baseline_y;
                 let rtl = direction == Direction::RightToLeft;
                 let mut cursor = if rtl
                     && matches!(self.alignment, Align::None | Align::Right | Align::Decimal)
@@ -353,8 +385,7 @@ where
             }
         }
         if height == 0.0 {
-            self.line()?;
-            height = leading;
+            height = self.begin_line(y, leading, None)?.height;
         }
         Ok(height)
     }
@@ -375,6 +406,7 @@ where
         let mut minimum = 1.0f64;
         let mut preferred = 1.0f64;
         let mut physical_advance = 0.0f64;
+        let mut group_advance = 0.0f64;
         while start < text.len() {
             inventory.retire_before(runs, start);
             let window = self.math_window(
@@ -404,11 +436,13 @@ where
                     // to the next host-shaped text fragment.
                     atoms
                         .iter()
-                        .rposition(|atom| {
+                        .enumerate()
+                        .rposition(|(index, atom)| {
                             atom.math
                                 || text[atom.bytes.clone()]
                                     .chars()
                                     .all(|ch| ch == ' ' || ch == '\t')
+                                || (index + 1 < atoms.len() && cjk_boundary(text, atom.bytes.end))
                         })
                         .map(|index| index + 1)
                         .ok_or(FlowLayoutError::BudgetExceeded(
@@ -416,6 +450,9 @@ where
                         ))?
                 };
                 for atom in &atoms[..settled] {
+                    if !prohibited_boundary(text, atom.bytes.start) {
+                        group_advance = 0.0;
+                    }
                     if atom.math {
                         let Some(Prepared::Formula { formula, .. }) =
                             inventory.entries.get(&atom.run_index)
@@ -423,10 +460,14 @@ where
                             return Err(FlowLayoutError::InvalidShapedRun);
                         };
                         physical_advance += formula.natural_advance(self.options.body_size);
+                        // Formula minimums retain uniform fitting; adjoining
+                        // punctuation still consumes real text advance.
+                        group_advance += 1.0;
                     } else {
-                        minimum = minimum.max(f64::from(atom.advance));
+                        group_advance += f64::from(atom.advance);
                         physical_advance += f64::from(atom.advance);
                     }
+                    minimum = minimum.max(group_advance);
                 }
                 next = atoms
                     .get(settled)
@@ -440,6 +481,7 @@ where
             preferred = preferred.max(physical_advance);
             if window.hard_break {
                 physical_advance = 0.0;
+                group_advance = 0.0;
                 next += 1;
             }
             if next <= start {
@@ -557,14 +599,11 @@ where
             let end = newline.unwrap_or(spec.range.end);
             let available = self.options.max_shape_bytes.saturating_sub(used);
             let admitted = end.min(position.saturating_add(available));
-            if let Some(offset) = text.as_bytes()[position..admitted]
-                .iter()
-                .rposition(|byte| matches!(byte, b' ' | b'\t'))
-            {
-                let candidate = position + offset;
-                if candidate > start {
-                    safe = Some(candidate);
-                }
+            if position > start && cjk_boundary(text, position) {
+                safe = Some(position);
+            }
+            if let Some(candidate) = measurement_boundary(text, position, end, available) {
+                safe = Some(candidate);
             }
             if admitted < end {
                 let end =
@@ -616,7 +655,7 @@ where
                     bytes: start..end,
                     run_index: index,
                     advance: metrics.advance,
-                    word_break: false,
+                    word_break: cjk_boundary(text, end),
                     math: true,
                 });
                 continue;
@@ -636,9 +675,10 @@ where
             for cluster in clusters {
                 let bytes = start + cluster.byte_range.start..start + cluster.byte_range.end;
                 let word_break = spec.math.is_none()
-                    && text[bytes.clone()]
+                    && (text[bytes.clone()]
                         .chars()
-                        .all(|ch| ch == ' ' || ch == '\t');
+                        .all(|ch| ch == ' ' || ch == '\t')
+                        || cjk_boundary(text, bytes.end));
                 atoms.push(Atom {
                     bytes,
                     run_index: index,

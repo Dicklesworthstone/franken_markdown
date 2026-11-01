@@ -40,7 +40,7 @@ An equation participates in line wrapping using its actual width, ascent, and de
 
 The bundled font bridge supplies `OwnedTextRun::vertical_metrics: Some(TextRunMetrics { ascent, descent })` from the actual faces, glyph bounds, and positioning offsets. Custom shapers can supply the same nonnegative, finite layout-unit metrics. A mixed line requiring absent vertical metrics preserves its formulas as complete source with an explicit fallback reason; it does not estimate a font baseline. Invalid supplied metrics are rejected. Existing shaping callback signatures remain unchanged.
 
-Text in a composed line carries `DisplayTextRun::baseline_y`; browser wire data calls it `baselineY`. Canvas uses this native baseline. Text without the optional field keeps its established font-derived baseline policy, so ordinary prose does not change merely because this capability is available.
+Text in a measured line carries `DisplayTextRun::baseline_y`; browser wire data calls it `baselineY`. Canvas uses this native baseline for ordinary text and composed mathematics. Known list-marker metrics join the first body row, including its enlarged height for tall formulas. Text without the optional field keeps its established font-derived baseline policy. The same measured-row contract supports the optional [CJK font profile](FLOW_CJK_TEXT.md).
 
 ## Reading, navigation and fallback
 

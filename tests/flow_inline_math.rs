@@ -466,7 +466,14 @@ fn code_escaped_delimiters_and_ordinary_prose_remain_literal_without_math_metada
     assert!(
         texts(state.display())
             .iter()
-            .all(|text| text.math_fallback.is_none() && text.baseline_y.is_none())
+            .all(|text| text.math_fallback.is_none())
+    );
+    // A measured text baseline is now shared by ordinary and math-bearing
+    // lines. It does not turn literal code or escaped delimiters into math.
+    assert!(
+        texts(state.display())
+            .iter()
+            .all(|text| { text.baseline_y.is_some() && text.has_valid_placement() })
     );
     assert!(
         state.display().reading_order()[0]

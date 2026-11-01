@@ -7,6 +7,7 @@
 
 use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, ResumableFlowDisplay};
 
+mod breaks;
 mod financial;
 mod gutters;
 mod inline_math;
@@ -20,7 +21,7 @@ use crate::display::{
 };
 use crate::flow_display::FlowInlineRun;
 use crate::span::SourceSpan;
-use crate::text::{Direction, OwnedTextRun};
+use crate::text::{Direction, OwnedTextRun, TextRunMetrics};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -528,6 +529,23 @@ struct Reflow<'a, F: ?Sized> {
     math: math::MathRenderer,
     math_commands: usize,
     alignment: Align,
+    pending_marker: Option<PendingMarker>,
+}
+
+enum PendingMarker {
+    Text(DisplayTextRun),
+    Task {
+        bounds: DisplayRect,
+        checked: bool,
+        span: SourceSpan,
+    },
+}
+
+/// Placement of one complete, final-shaped row. Optional metrics preserve the
+/// established host contract: absence retains legacy leading and placement.
+pub(super) struct LinePlacement {
+    pub(super) height: f32,
+    pub(super) baseline_y: Option<f32>,
 }
 
 impl<'a, F: ?Sized> Reflow<'a, F>
@@ -557,6 +575,7 @@ where
             math: math::MathRenderer::default(),
             math_commands: 0,
             alignment: Align::None,
+            pending_marker: None,
         })
     }
 
@@ -714,6 +733,7 @@ where
                 ));
             }
             let mut advance = 0.0_f64;
+            let mut group_advance = 0.0_f64;
             if rich {
                 let physical_end = offset + physical.len();
                 let first = runs.partition_point(|run| run.range.end <= offset);
@@ -733,15 +753,27 @@ where
                     };
                     let run = self.shaped_with_style(&text[start..end], size, role, spec.style)?;
                     advance += f64::from(run.total_advance);
-                    for cluster in &run.clusters {
-                        minimum = minimum.max(f64::from(cluster.advance()));
+                    let mut logical: Vec<_> = run.clusters.iter().collect();
+                    logical.sort_by_key(|cluster| cluster.byte_range.start);
+                    for cluster in logical {
+                        if !breaks::prohibited_boundary(text, start + cluster.byte_range.start) {
+                            group_advance = 0.0;
+                        }
+                        group_advance += f64::from(cluster.advance());
+                        minimum = minimum.max(group_advance);
                     }
                 }
             } else if !physical.is_empty() {
                 let run = self.shaped(physical, self.options.body_size, role)?;
                 advance = f64::from(run.total_advance);
-                for cluster in &run.clusters {
-                    minimum = minimum.max(f64::from(cluster.advance()));
+                let mut logical: Vec<_> = run.clusters.iter().collect();
+                logical.sort_by_key(|cluster| cluster.byte_range.start);
+                for cluster in logical {
+                    if !breaks::prohibited_boundary(text, offset + cluster.byte_range.start) {
+                        group_advance = 0.0;
+                    }
+                    group_advance += f64::from(cluster.advance());
+                    minimum = minimum.max(group_advance);
                 }
             }
             if !advance.is_finite() {
@@ -759,6 +791,78 @@ where
         }
         self.lines += 1;
         Ok(())
+    }
+
+    /// Admit a final row, combining actual fragment metrics before anything is
+    /// painted. A queued list marker joins this first baseline, including an
+    /// inline formula's enlarged row, without changing the marker's font size.
+    /// An unknown marker's ink metrics are never guessed: it retains legacy
+    /// placement while a measured body still receives its truthful baseline.
+    fn begin_line(
+        &mut self,
+        y: f32,
+        leading: f32,
+        mut metrics: Option<TextRunMetrics>,
+    ) -> Result<LinePlacement, FlowLayoutError> {
+        if let Some(current) = &mut metrics {
+            if !current.is_valid() {
+                return Err(FlowLayoutError::InvalidShapedRun);
+            }
+            if let Some(PendingMarker::Text(marker)) = &self.pending_marker
+                && let Some(other) = marker
+                    .font_run
+                    .as_ref()
+                    .and_then(|run| run.vertical_metrics)
+            {
+                current.ascent = current.ascent.max(other.ascent);
+                current.descent = current.descent.max(other.descent);
+            }
+        }
+        let height = metrics.map_or(leading, |metrics| {
+            leading.max(metrics.ascent + metrics.descent)
+        });
+        let baseline_y = metrics
+            .map(|metrics| y + (height - metrics.ascent - metrics.descent) * 0.5 + metrics.ascent);
+        if !y.is_finite()
+            || !height.is_finite()
+            || height <= 0.0
+            || !(y + height).is_finite()
+            || baseline_y.is_some_and(|baseline| !baseline.is_finite())
+        {
+            return Err(FlowLayoutError::BudgetExceeded("layout height"));
+        }
+        self.line()?;
+        if let Some(marker) = self.pending_marker.take() {
+            match marker {
+                PendingMarker::Text(mut marker) => {
+                    if baseline_y.is_some()
+                        && marker
+                            .font_run
+                            .as_ref()
+                            .is_some_and(|run| run.vertical_metrics.is_some())
+                    {
+                        marker.bounds.y = y;
+                        marker.bounds.height = height;
+                        marker.baseline_y = baseline_y;
+                    }
+                    self.item(DisplayItem::Text(marker))?;
+                }
+                PendingMarker::Task {
+                    mut bounds,
+                    checked,
+                    span,
+                } => {
+                    // A checkbox is fixed geometry, not a stretched text glyph.
+                    // Center that geometry within the complete first row.
+                    bounds.y = y + (height - bounds.height) * 0.5;
+                    self.vector(bounds, VectorShapeType::CheckboxOutline, "border", span)?;
+                    if checked {
+                        self.vector(bounds, VectorShapeType::CheckboxCheck, "accent", span)?;
+                    }
+                }
+            }
+        }
+        Ok(LinePlacement { height, baseline_y })
     }
 
     fn item(&mut self, item: DisplayItem) -> Result<(), FlowLayoutError> {
@@ -825,8 +929,7 @@ where
         // an extra display line for the parser's terminal code newline.
         for physical in text.split_terminator('\n') {
             if physical.is_empty() {
-                self.line()?;
-                height += leading;
+                height += self.begin_line(y + height, leading, None)?.height;
                 continue;
             }
             let measured = self.shaped(physical, size, role)?;
@@ -846,7 +949,11 @@ where
                     }
                     advance = next;
                     let range = clusters[end].byte_range.clone();
-                    if physical[range].chars().all(|c| c == ' ' || c == '\t') {
+                    if physical[range.clone()]
+                        .chars()
+                        .all(|c| c == ' ' || c == '\t')
+                        || breaks::cjk_boundary(physical, range.end)
+                    {
                         space_break = Some(end + 1);
                     }
                     end += 1;
@@ -857,6 +964,28 @@ where
                 if end < clusters.len() && role != FlowTextRole::Code {
                     end = space_break.unwrap_or(end);
                 }
+                // Opening punctuation and following nonstarters form one
+                // unbreakable CJK group, even during emergency cluster wraps.
+                // If that whole group cannot fit, refuse it without publishing
+                // an orphaned closer or an over-wide partial line. Literal
+                // code retains its established shaped-cluster wrap policy.
+                let mut minimum_end = first + 1;
+                while role != FlowTextRole::Code
+                    && minimum_end < clusters.len()
+                    && breaks::prohibited_boundary(
+                        physical,
+                        clusters[minimum_end - 1].byte_range.end,
+                    )
+                {
+                    minimum_end += 1;
+                }
+                end = end.max(minimum_end);
+                while role != FlowTextRole::Code
+                    && end > minimum_end
+                    && breaks::prohibited_boundary(physical, clusters[end - 1].byte_range.end)
+                {
+                    end -= 1;
+                }
                 let start_byte = clusters[first].byte_range.start;
                 let run = loop {
                     let end_byte = clusters[end - 1].byte_range.end;
@@ -864,19 +993,25 @@ where
                     if run.total_advance <= width {
                         break run;
                     }
-                    if end == first + 1 {
+                    if end == minimum_end {
                         return Err(FlowLayoutError::ClusterTooWide {
                             advance: run.total_advance,
                             available: width,
                         });
                     }
                     end -= 1;
+                    while role != FlowTextRole::Code
+                        && end > minimum_end
+                        && breaks::prohibited_boundary(physical, clusters[end - 1].byte_range.end)
+                    {
+                        end -= 1;
+                    }
                 };
-                self.line()?;
+                let line = self.begin_line(y + height, leading, run.vertical_metrics)?;
                 let line_x = self.line_start(x, width, run.total_advance, run.context.direction);
-                let bounds = DisplayRect::new(line_x, y + height, run.total_advance, leading);
+                let bounds = DisplayRect::new(line_x, y + height, run.total_advance, line.height);
                 self.item(DisplayItem::Text(DisplayTextRun {
-                    baseline_y: None,
+                    baseline_y: line.baseline_y,
                     math_fallback: None,
                     bounds,
                     text: run.logical_text.clone(),
@@ -885,13 +1020,12 @@ where
                     source_span: span,
                     font_size: size,
                 }))?;
-                height += leading;
+                height += line.height;
                 first = end;
             }
         }
         if height == 0.0 {
-            self.line()?;
-            height = leading;
+            height = self.begin_line(y, leading, None)?.height;
         }
         Ok(height)
     }
@@ -903,20 +1037,19 @@ where
         y: f32,
         gutter: f32,
     ) -> Result<(), FlowLayoutError> {
+        if self.pending_marker.is_some() {
+            return Err(FlowLayoutError::InvalidShapedRun);
+        }
         let Some(marker) = &meta.marker else {
             return Ok(());
         };
         let bounds = DisplayRect::new((x - 20.0).max(0.0), y, 16.0, self.options.line_height);
         if let Some(checked) = meta.task {
-            self.vector(
+            self.pending_marker = Some(PendingMarker::Task {
                 bounds,
-                VectorShapeType::CheckboxOutline,
-                "border",
-                meta.span,
-            )?;
-            if checked {
-                self.vector(bounds, VectorShapeType::CheckboxCheck, "accent", meta.span)?;
-            }
+                checked,
+                span: meta.span,
+            });
         } else {
             let run = self.shaped(marker, self.options.body_size, FlowTextRole::Marker)?;
             if run.total_advance > gutter - 4.0 {
@@ -925,7 +1058,7 @@ where
                     available: (gutter - 4.0).max(0.0),
                 });
             }
-            self.item(DisplayItem::Text(DisplayTextRun {
+            self.pending_marker = Some(PendingMarker::Text(DisplayTextRun {
                 baseline_y: None,
                 math_fallback: None,
                 bounds: DisplayRect::new(
@@ -939,7 +1072,7 @@ where
                 color_role: "text".to_owned(),
                 source_span: meta.span,
                 font_size: self.options.body_size,
-            }))?;
+            }));
         }
         Ok(())
     }

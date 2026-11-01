@@ -33,9 +33,11 @@ change the final-short-item penalty. This preserves the existing context-sensiti
 rules for short captions, heading followers, and final list items. Other blocks
 still participate in page planning at their existing measured shape.
 
-Leading list paragraphs retain exactly one bullet, ordered number or task checkbox
-in their original hanging gutter. Loose continuation paragraphs do not acquire a
-second label. Every replacement retains the complete nested list and blockquote
+Leading list paragraphs retain exactly one bullet, ordered number or task checkbox.
+Fitting lists use their original hanging gutter; when the gutter would exhaust
+the body measure, the complete marker occupies its own row above the content
+([PDF list layout](PDF_LIST_LAYOUT.md)). Loose continuation paragraphs do not
+acquire a second label. Every replacement retains the complete nested list and blockquote
 ancestry for tagged PDF, the first-line list-start flag, finalized spacing and
 forced chapter boundaries. Ordered markers continue beyond `u64::MAX` for
 caller-constructed ASTs instead of wrapping or panicking. Paragraphs with

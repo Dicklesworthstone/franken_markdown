@@ -53,6 +53,7 @@ mod inline_image;
 mod inline_math_fit;
 mod joint_pagination;
 mod jpeg_orientation;
+mod list_geometry;
 #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
 mod native_compression;
 mod pagination_report;
@@ -4662,6 +4663,7 @@ fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut La
 }
 
 fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let indent = list_geometry::block_indent(block, indent, cx);
     match block {
         Block::FootnoteDefinition { .. } => {}
         Block::Heading { level, inlines } => {
@@ -5096,8 +5098,9 @@ fn layout_simple_text_paragraph(
     cx: &mut LayoutCx<'_>,
     group: u32,
 ) {
-    let left = cx.page.left + indent;
     let size = cx.type_scale.body;
+    let indent = list_geometry::contained_indent(indent, size, cx);
+    let left = cx.page.left + indent;
     let gap_after = 7.0;
     let content_w = inline_paragraph_measure(&[], cx.page, indent);
     let flow = FlowSpec {
@@ -18751,9 +18754,12 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
     let size = cx.type_scale.body;
     let scale = size / 11.0;
     let (marker_layouts, marker_col) = list_marker_layouts(list, cx.faces, size, &cx.width_cache);
-    // Labels and the hanging indent follow the same body scale as item text.
-    let marker_left = cx.page.left + indent + 2.0 * scale;
-    let content_indent = indent + marker_col + 11.0 * scale;
+    let geometry = list_geometry::geometry(cx.page.content_w, indent, marker_col, size);
+    // Preserve the exact ordinary gutter. A list with no usable hanging
+    // measure keeps its complete marker above the item at the same type size.
+    let marker_left =
+        cx.page.left + geometry.indent + if geometry.hanging { 2.0 * scale } else { 0.0 };
+    let content_indent = geometry.content_indent;
     let list_first_line = out.len();
     let list_id = cx.alloc_flow();
 
@@ -18767,7 +18773,12 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
 
     for (item, marker) in list.items.iter().zip(marker_layouts) {
         let marker_seg = Seg {
-            x: marker_left + (marker_col - marker.width).max(0.0),
+            x: marker_left
+                + if geometry.hanging {
+                    (marker_col - marker.width).max(0.0)
+                } else {
+                    0.0
+                },
             slot: F_BODY,
             text_hash: seg_text_hash(&marker.text),
             text: marker.text,
@@ -18778,37 +18789,76 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             width: marker.width,
             expansion_permille: 0,
         };
-        // Split the item's blocks: only the FIRST block, when it is a paragraph,
-        // shares the marker line; everything else — any further (loose)
-        // paragraphs, nested lists, code, blockquotes, tables — is laid out as a
-        // real child block at the item's content indent. This holds two
-        // invariants:
-        //   * non-paragraph children no longer silently vanish (they used to be
-        //     flattened to plain text or dropped entirely); and
-        //   * consecutive leading paragraphs no longer fuse — tokenizing them
-        //     back-to-back dropped the inter-paragraph break and the joining
-        //     space, giving "...para.Second para.".
-        let split = usize::from(matches!(item.blocks.first(), Some(Block::Paragraph(_))));
-        let (leading, rest) = item.blocks.split_at(split);
-
         let group = cx.alloc_flow();
         let item_start_line = out.len();
         if let Some(top) = cx.list_stack.last_mut() {
             top.item = group;
         }
-        let leading_toc = match leading {
-            [Block::Paragraph(inlines)] => toc_marker_depth(inlines),
-            _ => None,
-        };
-        if let Some(max_depth) = leading_toc {
-            layout_pdf_toc(max_depth.or(cx.opts.toc_depth), content_indent, out, cx);
-            if let Some(first) = out.get_mut(item_start_line) {
-                first.segs.insert(0, marker_seg);
+        if geometry.hanging {
+            // Split the item's blocks: only the FIRST block, when it is a paragraph,
+            // shares the marker line; everything else — any further (loose)
+            // paragraphs, nested lists, code, blockquotes, tables — is laid out as a
+            // real child block at the item's content indent. This holds two
+            // invariants:
+            //   * non-paragraph children no longer silently vanish (they used to be
+            //     flattened to plain text or dropped entirely); and
+            //   * consecutive leading paragraphs no longer fuse — tokenizing them
+            //     back-to-back dropped the inter-paragraph break and the joining
+            //     space, giving "...para.Second para.".
+            let split = usize::from(matches!(item.blocks.first(), Some(Block::Paragraph(_))));
+            let (leading, rest) = item.blocks.split_at(split);
+
+            let leading_toc = match leading {
+                [Block::Paragraph(inlines)] => toc_marker_depth(inlines),
+                _ => None,
+            };
+            if let Some(max_depth) = leading_toc {
+                layout_pdf_toc(max_depth.or(cx.opts.toc_depth), content_indent, out, cx);
+                if let Some(first) = out.get_mut(item_start_line) {
+                    first.segs.insert(0, marker_seg);
+                } else {
+                    // A depth filter can leave an empty TOC; keep the source list
+                    // marker just as for an ordinary empty item.
+                    layout_prefixed_inlines(
+                        Vec::new(),
+                        marker_seg,
+                        PrefixSpec {
+                            content_indent,
+                            size,
+                            gap_after: 2.0,
+                            flow: FlowSpec {
+                                group,
+                                kind: FlowKind::Paragraph,
+                            },
+                        },
+                        out,
+                        cx,
+                    );
+                }
+            } else if let [Block::Paragraph(inlines)] = leading
+                && layout_standalone_image(inlines, content_indent, out, cx)
+            {
+                // Keep the marker and leading figure on one indivisible row. The
+                // marker stays at the normal list size, aligned to the row's top;
+                // an image's height must never become the bullet's font size.
+                if let Some(line) = out.last_mut() {
+                    line.size = line.size.max(size);
+                    line.segs.push(marker_seg);
+                    if let Some(image) = &mut line.image {
+                        image.marker_size = Some(size);
+                    }
+                }
             } else {
-                // A depth filter can leave an empty TOC; keep the source list
-                // marker just as for an ordinary empty item.
+                let mut toks = Vec::new();
+                for b in leading {
+                    if let Block::Paragraph(inl) = b {
+                        tokenize(inl, false, false, false, None, &mut cx.links, &mut toks);
+                    }
+                }
+                apply_symbol_fallback(&mut toks, cx.faces);
+                // Even an empty leading run needs its bullet/number/task marker.
                 layout_prefixed_inlines(
-                    Vec::new(),
+                    toks,
                     marker_seg,
                     PrefixSpec {
                         content_indent,
@@ -18823,51 +18873,16 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
                     cx,
                 );
             }
-        } else if let [Block::Paragraph(inlines)] = leading
-            && layout_standalone_image(inlines, content_indent, out, cx)
-        {
-            // Keep the marker and leading figure on one indivisible row. The
-            // marker stays at the normal list size, aligned to the row's top;
-            // an image's height must never become the bullet's font size.
-            if let Some(line) = out.last_mut() {
-                line.size = line.size.max(size);
-                line.segs.push(marker_seg);
-                if let Some(image) = &mut line.image {
-                    image.marker_size = Some(size);
-                }
+
+            // Recurse into nested lists (deeper indent via `layout_block` ->
+            // `layout_list`) and render other child blocks at the content indent.
+            // Nested lists stamp their own lines first (deeper chain), so the loop
+            // below only fills in this item's still-unstamped lines.
+            for b in rest {
+                layout_block(b, content_indent, out, cx);
             }
         } else {
-            let mut toks = Vec::new();
-            for b in leading {
-                if let Block::Paragraph(inl) = b {
-                    tokenize(inl, false, false, false, None, &mut cx.links, &mut toks);
-                }
-            }
-            apply_symbol_fallback(&mut toks, cx.faces);
-            // Even an empty leading run needs its bullet/number/task marker.
-            layout_prefixed_inlines(
-                toks,
-                marker_seg,
-                PrefixSpec {
-                    content_indent,
-                    size,
-                    gap_after: 2.0,
-                    flow: FlowSpec {
-                        group,
-                        kind: FlowKind::Paragraph,
-                    },
-                },
-                out,
-                cx,
-            );
-        }
-
-        // Recurse into nested lists (deeper indent via `layout_block` ->
-        // `layout_list`) and render other child blocks at the content indent.
-        // Nested lists stamp their own lines first (deeper chain), so the loop
-        // below only fills in this item's still-unstamped lines.
-        for b in rest {
-            layout_block(b, content_indent, out, cx);
+            list_geometry::stacked_item(item, marker_seg, content_indent, group, out, cx);
         }
 
         // Stamp every line this item produced that a deeper list did not already
@@ -20294,6 +20309,7 @@ fn layout_inlines(
     cx: &mut LayoutCx<'_>,
     flow: FlowSpec,
 ) {
+    let indent = list_geometry::contained_indent(indent, size, cx);
     let start = out.len();
     let left = cx.page.left + indent;
     let fs = font_size_of(size);

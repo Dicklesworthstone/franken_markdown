@@ -645,3 +645,115 @@ fn footnote_and_endnote_quote_frames_use_their_final_type_sizes_in_every_emitter
         2
     );
 }
+
+#[test]
+fn inherited_list_clamps_do_not_move_headings_or_definitions_out_of_quotes() {
+    for (source, size, depth, heading_size) in [
+        ("- > > # [i](https://example.com/quote)\n", 18.0, 2, 39.27),
+        ("> - > # [i](https://example.com/quote)\n", 18.0, 2, 39.27),
+        ("- > > > # [i](https://example.com/quote)\n", 11.0, 3, 24.0),
+    ] {
+        let mut opts = options(80.0);
+        opts.base_font_size = Some(size);
+        let pdf = render_pdf(source, &opts).unwrap();
+        let runs = painted_runs(&pdf);
+        assert_eq!(text(&runs), "•i");
+        assert_inside(&runs, &opts);
+        assert_quote_artifacts(&pdf, &opts, true);
+        let heading = runs.iter().find(|run| run.text == "i").unwrap();
+        assert_eq!(heading.size, heading_size);
+        let content = contents(&pdf);
+        assert_eq!(content.len(), 1);
+        let panels: Vec<_> = content[0]
+            .lines()
+            .filter(|line| line.starts_with("q ") && line.ends_with(" f Q"))
+            .map(|line| {
+                // Every fill in this text-only fixture is a rounded quote
+                // panel. Its actual m/l/c operands are coordinate pairs.
+                let coordinates: Vec<f32> = line
+                    .split_once(" rg ")
+                    .unwrap()
+                    .1
+                    .split_whitespace()
+                    .filter_map(|token| token.parse().ok())
+                    .collect();
+                let left = coordinates
+                    .chunks_exact(2)
+                    .map(|point| point[0])
+                    .fold(f32::INFINITY, f32::min);
+                let right = coordinates
+                    .chunks_exact(2)
+                    .map(|point| point[0])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                (left, right)
+            })
+            .collect();
+        assert_eq!(panels.len(), depth);
+        assert_eq!(
+            content[0].matches("RG 2.50 w ").count(),
+            depth,
+            "a small glyph with ample containing space retains every border"
+        );
+        let raw = String::from_utf8_lossy(&pdf);
+        assert_eq!(raw.matches("/S /BlockQuote ").count(), depth);
+        assert_eq!(raw.matches("/S /LI ").count(), 1);
+        let links: Vec<_> = raw
+            .lines()
+            .filter(|line| line.contains("/Subtype /Link"))
+            .collect();
+        assert_eq!(links.len(), 1);
+        let link = rectangle(links[0], "/Rect [");
+        for &(left, right) in &panels {
+            assert!(
+                heading.x >= left - 0.03 && heading.x + heading.width <= right + 0.03,
+                "heading escaped its painted panel [{left},{right}]: {heading:?}"
+            );
+            assert!(
+                link[0] >= left - 0.03 && link[2] <= right + 0.03,
+                "link escaped its painted panel [{left},{right}]: {link:?}"
+            );
+        }
+        let mut rules = 0;
+        for line in content[0].lines().filter(|line| line.ends_with(" l S")) {
+            let Some((_, path)) = line.split_once(" w ") else {
+                continue;
+            };
+            let fields: Vec<_> = path.split_whitespace().collect();
+            let x0: f32 = fields[0].parse().unwrap();
+            let y0: f32 = fields[1].parse().unwrap();
+            let x1: f32 = fields[3].parse().unwrap();
+            let y1: f32 = fields[4].parse().unwrap();
+            if (y0 - y1).abs() < 0.01 && x0 != x1 {
+                for &(left, right) in &panels {
+                    assert!(
+                        x0 >= left - 0.03 && x1 <= right + 0.03,
+                        "heading rule or link underline escaped its panel: {line}"
+                    );
+                }
+                rules += 1;
+            }
+        }
+        assert_eq!(
+            rules, 2,
+            "the H1 rule and link underline are both inspected"
+        );
+    }
+
+    for source in ["- > > t\n  > > : d\n", "> - > t\n>   > : d\n"] {
+        let mut opts = options(92.0);
+        opts.base_font_size = Some(18.0);
+        let pdf = render_pdf(source, &opts).unwrap();
+        let runs = painted_runs(&pdf);
+        assert_eq!(text(&runs), "•td");
+        assert_inside(&runs, &opts);
+        assert_quote_artifacts(&pdf, &opts, true);
+        let term = runs.iter().find(|run| run.text == "t").unwrap();
+        let definition = runs.iter().find(|run| run.text == "d").unwrap();
+        assert_eq!(term.size, 18.0);
+        assert_eq!(definition.size, 18.0);
+        assert!(
+            (definition.x - term.x - 14.0).abs() < 0.025,
+            "the actual definition gutter survives the list's body-em clamp: {term:?}, {definition:?}"
+        );
+    }
+}

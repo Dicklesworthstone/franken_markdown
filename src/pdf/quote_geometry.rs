@@ -103,7 +103,7 @@ pub(super) fn layout(
             body_left: cx.page.left,
             ..State::default()
         };
-        let width = plan_block(block, cx, &mut state);
+        let width = plan_block(block, cx, &mut state, !cx.list_stack.is_empty());
         // Keep the historical global-indent arithmetic when every native
         // gutter fits. Besides avoiding needless layout changes, this retains
         // exact bytes at fractional margins where regrouping f32 additions
@@ -194,15 +194,15 @@ impl Width {
     }
 }
 
-fn plan_blocks(blocks: &[Block], cx: &LayoutCx<'_>, state: &mut State) -> Width {
+fn plan_blocks(blocks: &[Block], cx: &LayoutCx<'_>, state: &mut State, in_list: bool) -> Width {
     blocks.iter().fold(Width::new(1.0), |mut width, block| {
-        width.include(plan_block(block, cx, state));
+        width.include(plan_block(block, cx, state, in_list));
         width
     })
 }
 
-fn plan_block(block: &Block, cx: &LayoutCx<'_>, state: &mut State) -> Width {
-    let width = match block {
+fn plan_block(block: &Block, cx: &LayoutCx<'_>, state: &mut State, in_list: bool) -> Width {
+    let mut width = match block {
         Block::Paragraph(inlines) => {
             let minimum = inline_minimum(inlines, cx.type_scale.body, false, cx);
             Width::new(if toc_marker_depth(inlines).is_some() {
@@ -241,7 +241,7 @@ fn plan_block(block: &Block, cx: &LayoutCx<'_>, state: &mut State) -> Width {
             )
         }
         Block::BlockQuote(inner) => {
-            let mut width = plan_blocks(inner, cx, state);
+            let mut width = plan_blocks(inner, cx, state, in_list);
             if let Some(parts) = crate::ast::alert_parts(inner) {
                 width.include(Width::new(text_minimum(
                     parts.label,
@@ -257,7 +257,7 @@ fn plan_block(block: &Block, cx: &LayoutCx<'_>, state: &mut State) -> Width {
             let size = cx.type_scale.body;
             let mut width = Width::new(size);
             for item in &list.items {
-                width.include(plan_blocks(&item.blocks, cx, state));
+                width.include(plan_blocks(&item.blocks, cx, state, true));
                 if let Some(checked) = item.task {
                     width.include(Width::new(
                         text_width_cached(
@@ -306,6 +306,30 @@ fn plan_block(block: &Block, cx: &LayoutCx<'_>, state: &mut State) -> Width {
             Width::new(1.0)
         }
     };
+    if in_list {
+        // Natural indentation must survive the same em clamps as real list
+        // layout, including a list outside this quote's planned subtree. A
+        // narrow glyph alone can fit while its heading is moved back through
+        // the quote border. These admission reserves do not enlarge the
+        // measured minimum used by the compressed frame.
+        let reserve = match block {
+            Block::Heading { level, .. } => {
+                cx.type_scale.h[(*level as usize).saturating_sub(1).min(5)]
+            }
+            Block::DefinitionList(items)
+                if items.iter().any(|item| !item.definitions.is_empty()) =>
+            {
+                14.0 + cx.type_scale.body
+            }
+            // Raw-source fallbacks call layout_inlines at their fixed 11pt
+            // size; math also adds its own 12pt text inset.
+            Block::HtmlBlock(_) => cx.type_scale.body.max(11.0),
+            Block::MathBlock(_) => cx.type_scale.body.max(12.0 + 11.0),
+            Block::FootnoteDefinition { .. } | Block::PageBreak => 0.0,
+            _ => cx.type_scale.body,
+        };
+        width.natural = width.natural.max(reserve);
+    }
     state.blocks.insert(identity(block), width.minimum);
     width
 }

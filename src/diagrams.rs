@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
+mod flowchart;
 mod pie;
 
 /// Supported diagram types.
@@ -33,12 +34,7 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
         .map(str::trim)
         .find(|line| !line.is_empty() && !line.starts_with("%%"))
         .unwrap_or("");
-    first_directive.starts_with("graph ")
-        || first_directive.starts_with("graph\n")
-        || first_directive == "graph"
-        || first_directive.starts_with("flowchart ")
-        || first_directive.starts_with("flowchart\n")
-        || first_directive == "flowchart"
+    names_flowchart(first_directive)
         || first_directive.starts_with("sequenceDiagram")
         || pie::is_header(first_directive)
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
@@ -71,12 +67,7 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         // types this compiler does not draw stay readable source code instead
         // of being misread as flowchart nodes.
         None
-    } else if lower_lang == "mermaid"
-        || first_directive.starts_with("graph ")
-        || first_directive == "graph"
-        || first_directive.starts_with("flowchart ")
-        || first_directive == "flowchart"
-    {
+    } else if lower_lang == "mermaid" || names_flowchart(first_directive) {
         render_flowchart(trimmed)
     } else {
         None
@@ -107,7 +98,9 @@ pub fn figure_svg(code: &str, lang: &str) -> Option<(String, &'static str)> {
 /// A Mermaid flowchart header: `graph`/`flowchart`, optionally with a direction.
 fn names_flowchart(directive: &str) -> bool {
     matches!(
-        directive.split_whitespace().next(),
+        directive
+            .split(|c: char| c.is_whitespace() || c == ';')
+            .next(),
         Some("graph" | "flowchart")
     )
 }
@@ -280,46 +273,19 @@ struct FlowEdge {
     to: String,
     label: Option<String>,
     dashed: bool,
+    thick: bool,
+    arrow: bool,
 }
 
 fn render_flowchart(src: &str) -> Option<String> {
-    let mut dir = FlowDirection::TopToBottom;
-    let mut nodes: BTreeMap<String, FlowNode> = BTreeMap::new();
-    let mut node_order: Vec<String> = Vec::new();
-    let mut edges: Vec<FlowEdge> = Vec::new();
+    let flowchart::Graph {
+        dir,
+        mut nodes,
+        order: node_order,
+        edges,
+    } = flowchart::parse(src)?;
 
-    for line in src.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("%%") {
-            continue;
-        }
-
-        if line == "graph"
-            || line == "flowchart"
-            || line.starts_with("graph ")
-            || line.starts_with("flowchart ")
-        {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                dir = match parts[1].to_ascii_uppercase().as_str() {
-                    "LR" => FlowDirection::LeftToRight,
-                    "RL" => FlowDirection::RightToLeft,
-                    "BT" => FlowDirection::BottomToTop,
-                    _ => FlowDirection::TopToBottom,
-                };
-            }
-            continue;
-        }
-
-        // Parse edge line, e.g. "A[Start] -->|label| B{Choice}" or "A --> B"
-        parse_flowchart_line(line, &mut nodes, &mut node_order, &mut edges);
-    }
-
-    if nodes.is_empty() {
-        return None;
-    }
-
-    // Assign layers via topological sort / BFS
+    // Keep every dependency in an acyclic graph ahead of its destination.
     assign_flowchart_layers(&mut nodes, &node_order, &edges);
 
     // Compute geometry
@@ -365,6 +331,12 @@ fn render_flowchart(src: &str) -> Option<String> {
     for edge in &edges {
         if let (Some(from_node), Some(to_node)) = (nodes.get(&edge.from), nodes.get(&edge.to)) {
             let (x1, y1, x2, y2) = get_edge_endpoints(from_node, to_node, dir);
+            let edge_style = match (edge.arrow, edge.thick) {
+                (true, false) => "",
+                (false, false) => " style=\"marker-end:none\"",
+                (true, true) => " style=\"stroke-width:3\"",
+                (false, true) => " style=\"marker-end:none;stroke-width:3\"",
+            };
             let dash_attr = if edge.dashed {
                 " stroke-dasharray=\"4,4\""
             } else {
@@ -373,7 +345,7 @@ fn render_flowchart(src: &str) -> Option<String> {
 
             if (x1 - x2).abs() < 2.0 || (y1 - y2).abs() < 2.0 {
                 svg.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-edge-path\"{dash_attr} />\n",
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-edge-path\"{dash_attr}{edge_style} />\n",
                     SvgNum(x1),
                     SvgNum(y1),
                     SvgNum(x2),
@@ -391,7 +363,7 @@ fn render_flowchart(src: &str) -> Option<String> {
                     }
                 };
                 svg.push_str(&format!(
-                    "<path d=\"M {} {} C {} {}, {} {}, {} {}\" class=\"fmd-edge-path\"{dash_attr} />\n",
+                    "<path d=\"M {} {} C {} {}, {} {}, {} {}\" class=\"fmd-edge-path\"{dash_attr}{edge_style} />\n",
                     SvgNum(x1),
                     SvgNum(y1),
                     SvgNum(cx1),
@@ -490,147 +462,6 @@ fn render_flowchart(src: &str) -> Option<String> {
     Some(svg)
 }
 
-fn parse_flowchart_line(
-    line: &str,
-    nodes: &mut BTreeMap<String, FlowNode>,
-    node_order: &mut Vec<String>,
-    edges: &mut Vec<FlowEdge>,
-) {
-    // Check if line contains an arrow delimiter: -->, ---, -.->, ==>, etc.
-    let arrow_patterns = ["-->|", "-->", "-.->|", "-.->", "==>|", "==>", "---|", "---"];
-
-    for pat in arrow_patterns {
-        if let Some(pos) = line.find(pat) {
-            let left_part = &line[..pos];
-            let right_part = &line[pos + pat.len()..];
-
-            let mut left_trimmed = left_part.trim();
-            let mut edge_label = None;
-            if let Some((node_part, lbl_part)) = left_trimmed.split_once("--") {
-                let lbl = lbl_part.trim();
-                if !lbl.is_empty() {
-                    edge_label = Some(lbl.to_string());
-                    left_trimmed = node_part.trim();
-                }
-            }
-
-            let (from_id, _) = parse_or_insert_node(left_trimmed, nodes, node_order);
-
-            let (right_edge_label, mut dest_str) = if pat.ends_with('|') {
-                if let Some(pipe_pos) = right_part.find('|') {
-                    (
-                        Some(right_part[..pipe_pos].trim().to_string()),
-                        right_part[pipe_pos + 1..].trim(),
-                    )
-                } else {
-                    (None, right_part.trim())
-                }
-            } else {
-                (None, right_part.trim())
-            };
-
-            if right_edge_label.is_some() {
-                edge_label = right_edge_label;
-            } else if edge_label.is_none() && dest_str.starts_with('|') {
-                if let Some(second_pipe) = dest_str[1..].find('|') {
-                    let pipe_pos = 1 + second_pipe;
-                    edge_label = Some(dest_str[1..pipe_pos].trim().to_string());
-                    dest_str = dest_str[pipe_pos + 1..].trim();
-                }
-            }
-
-            let (to_id, _) = parse_or_insert_node(dest_str, nodes, node_order);
-            let dashed = pat.contains("-.-");
-
-            edges.push(FlowEdge {
-                from: from_id,
-                to: to_id,
-                label: edge_label,
-                dashed,
-            });
-            return;
-        }
-    }
-
-    // Standalone node declaration: A[Label]
-    parse_or_insert_node(line, nodes, node_order);
-}
-
-fn parse_or_insert_node(
-    s: &str,
-    nodes: &mut BTreeMap<String, FlowNode>,
-    node_order: &mut Vec<String>,
-) -> (String, bool) {
-    let s = s.trim();
-    if s.is_empty() {
-        return (String::new(), false);
-    }
-
-    let mut id = s.to_string();
-    let mut label = s.to_string();
-    let mut shape = NodeShape::Rectangle;
-
-    if let Some(open_idx) = s.find(['[', '(', '{']) {
-        id = s[..open_idx].trim().to_string();
-        let rest = &s[open_idx..];
-        if rest.starts_with("([") && rest.ends_with("])") {
-            shape = NodeShape::Stadium;
-            label = rest[2..rest.len() - 2].to_string();
-        } else if rest.starts_with("((") && rest.ends_with("))") {
-            shape = NodeShape::Circle;
-            label = rest[2..rest.len() - 2].to_string();
-        } else if rest.starts_with('[') && rest.ends_with(']') {
-            shape = NodeShape::Rectangle;
-            label = rest[1..rest.len() - 1].to_string();
-        } else if rest.starts_with('(') && rest.ends_with(')') {
-            shape = NodeShape::Rounded;
-            label = rest[1..rest.len() - 1].to_string();
-        } else if rest.starts_with('{') && rest.ends_with('}') {
-            shape = NodeShape::Diamond;
-            label = rest[1..rest.len() - 1].to_string();
-        }
-    }
-
-    if label.starts_with('"') && label.ends_with('"') && label.len() >= 2 {
-        label = label[1..label.len() - 1].to_string();
-    }
-
-    let is_new = !nodes.contains_key(&id);
-    if is_new {
-        let width = (label.len() as f32 * 8.5 + 32.0).max(80.0);
-        let height = if shape == NodeShape::Diamond {
-            54.0
-        } else {
-            38.0
-        };
-        nodes.insert(
-            id.clone(),
-            FlowNode {
-                label,
-                shape,
-                layer: 0,
-                x: 0.0,
-                y: 0.0,
-                width,
-                height,
-            },
-        );
-        node_order.push(id.clone());
-    } else if let Some(node) = nodes.get_mut(&id) {
-        if node.label == id && label != id {
-            node.width = (label.len() as f32 * 8.5 + 32.0).max(80.0);
-            node.height = if shape == NodeShape::Diamond {
-                54.0
-            } else {
-                38.0
-            };
-            node.label = label;
-            node.shape = shape;
-        }
-    }
-    (id, is_new)
-}
-
 fn assign_flowchart_layers(
     nodes: &mut BTreeMap<String, FlowNode>,
     node_order: &[String],
@@ -656,30 +487,37 @@ fn assign_flowchart_layers(
     let mut queue = VecDeque::new();
     for id in node_order {
         if in_degrees.get(id).copied().unwrap_or(0) == 0 {
-            queue.push_back((id.clone(), 0usize));
+            queue.push_back(id.clone());
         }
     }
 
     let mut visited = BTreeSet::new();
-    while let Some((id, layer)) = queue.pop_front() {
-        if visited.contains(&id) {
-            continue;
-        }
+    while let Some(id) = queue.pop_front() {
         visited.insert(id.clone());
-
-        if let Some(node) = nodes.get_mut(&id) {
-            node.layer = layer;
-        }
-
+        let next_layer = nodes.get(&id).map_or(1, |node| node.layer + 1);
         if let Some(neighbors) = adj.get(&id) {
             for neighbor in neighbors {
-                queue.push_back((neighbor.clone(), layer + 1));
+                if let Some(node) = nodes.get_mut(neighbor) {
+                    node.layer = node.layer.max(next_layer);
+                }
+                if let Some(remaining) = in_degrees.get_mut(neighbor) {
+                    *remaining = remaining.saturating_sub(1);
+                    if *remaining == 0 {
+                        queue.push_back(neighbor.clone());
+                    }
+                }
             }
         }
     }
 
-    // For any unvisited nodes (cycles/disconnected)
-    let mut fallback_layer = 0;
+    // Cyclic components retain deterministic source-order placement after the
+    // resolved part of the graph; they must not reuse a completed DAG layer.
+    let mut fallback_layer = visited
+        .iter()
+        .filter_map(|id| nodes.get(id))
+        .map(|node| node.layer + 1)
+        .max()
+        .unwrap_or(0);
     for id in node_order {
         if !visited.contains(id) {
             if let Some(node) = nodes.get_mut(id) {
@@ -809,7 +647,16 @@ fn layout_flowchart_nodes(
         }
     }
 
-    (max_w.max(160.0), max_h.max(80.0))
+    let width = max_w.max(160.0);
+    let height = max_h.max(80.0);
+    for node in nodes.values_mut() {
+        match dir {
+            FlowDirection::RightToLeft => node.x = width - node.x - node.width,
+            FlowDirection::BottomToTop => node.y = height - node.y - node.height,
+            _ => {}
+        }
+    }
+    (width, height)
 }
 
 fn get_edge_endpoints(from: &FlowNode, to: &FlowNode, dir: FlowDirection) -> (f32, f32, f32, f32) {

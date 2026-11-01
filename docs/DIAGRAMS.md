@@ -57,6 +57,68 @@ The supported grammar follows the [official Mermaid flowchart syntax](https://me
 See [the flowchart example](../examples/flowcharts.md) for chains, grouped links,
 quoted labels, and reverse directions.
 
+## Sequence diagrams
+
+````markdown
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant API as Application
+    User->>+API: Submit request
+    loop Until accepted
+        API->>API: Retry internally
+        alt accepted
+            API-->>User: Accepted
+        else overloaded
+            API-->>User: Retry later
+        end
+    end
+    API-->>-User: Complete
+    Note left of User: Keep the original request
+```
+````
+
+Sequence diagrams retain participant order and explicit aliases, including a
+declaration after a participant's first message. `actor` draws a person symbol.
+The header is `sequenceDiagram`; an explicitly named `sequence` fence may omit
+it. Newlines and semicolons separate statements, and `%%` introduces a comment
+at the start of a statement. Initialization/configuration directives are not
+treated as ordinary comments.
+
+Messages distinguish solid and dotted lines (`->`, `-->`), filled arrows
+(`->>`, `-->>`), open asynchronous arrows (`-)`, `--)`), crossed endpoints
+(`-x`, `--x`), and bidirectional arrows (`<<->>`, `<<-->>`). Self-messages have
+an outward and return path. `activate`/`deactivate` and the `+`/`-` message
+suffixes draw stacked activation bars; `+` activates the recipient and `-`
+deactivates the sender. An unmatched deactivation retains the whole source;
+an activation left open extends to the bottom of its lifeline.
+
+Nested `loop`, `alt`/`else`, `opt`, `par`/`and`, `critical`/`option`, and `break`
+fragments draw explicit frames and branch separators, with every condition
+visible. `Note left of`, `Note right of`, and `Note over` preserve their actual
+placement; `over` can name one or two participants. Titles, `accTitle:` and
+single-line `accDescr:` metadata are retained. `autonumber` starts at one, or
+accepts an unsigned integer start and a positive integer increment.
+
+Labels wrap within measured conservative boxes, participant columns make room
+for message text, and the canvas includes side notes and self-messages.
+`<br>`, `<br/>`, and `<br />` introduce label line breaks; other markup is
+escaped. Decimal character references such as `#59;` (a literal semicolon) and
+named references such as `#infin;` are decoded as text, never executable markup.
+
+Admission is bounded to 64 KiB of source, 64 participants, 1024 events,
+16 nested fragments, 32 stacked activations per participant, 128 UTF-8 bytes
+per identifier, and 1024 bytes per source label. Unknown statements, malformed
+branches, unsupported arrows, and exceeded bounds retain the **entire source
+block**. Background `rect` blocks, participant `box` groups, participant JSON
+configuration, creation/destruction, menus, central connections, half-arrows,
+fractional numbering, and Mermaid initialization remain outside this subset.
+
+The supported grammar follows the [official Mermaid sequence syntax](https://mermaid.js.org/syntax/sequenceDiagram.html).
+See [the sequence example](../examples/sequence-diagrams.md) for complete
+request/response, retry, and parallel-work examples.
+
 ## Pie charts
 
 ````markdown

@@ -215,6 +215,51 @@ async def run(args):
         check(await final.locator('#fmd-native-runtime').text_content() == before_data, 'failed batch preserves serialized resources')
         check('failed' in await final.locator('#fmd-save-status').text_content(), 'failed batch reports error')
 
+        # Real FileReader bytes with controlled callback delivery. Lifecycle
+        # and composition events are synthetic; this is not an OS IME proof.
+        for transition in ['composition', 'readOnly', 'disabled', 'suspension', 'cancel']:
+            race = await open_page(initial)
+            original_resources = await race.locator('#fmd-native-runtime').text_content()
+            await race.evaluate('''() => {
+              globalThis.delayedImageReads=[];
+              const read=FileReader.prototype.readAsArrayBuffer;
+              FileReader.prototype.readAsArrayBuffer=function(file){
+                const loaded=this.onload;
+                this.onload=event=>delayedImageReads.push(()=>loaded?.call(this,event));
+                return read.call(this,file);
+              };
+            }''')
+            await race.locator('#fmd-image-picker').set_input_files([{'name':'abandoned.png','mimeType':'image/png','buffer':png}])
+            await race.wait_for_function('() => delayedImageReads.length===1')
+            if transition == 'composition':
+                await race.locator('#fmd-editor').dispatch_event('compositionstart')
+            elif transition in ['readOnly', 'disabled']:
+                await race.locator('#fmd-editor').evaluate('(e,key)=>{e[key]=true;}', transition)
+            elif transition == 'suspension':
+                await race.evaluate("window.dispatchEvent(new Event('pagehide'))")
+            else:
+                await race.locator('#btn-cancel-image-import').click()
+            check(await race.locator('#fmd-editor').input_value() == SOURCE, transition + ' preserves native source')
+            check(await race.locator('#fmd-native-runtime').text_content() == original_resources, transition + ' preserves serialized resources')
+            if transition == 'composition':
+                await race.locator('#fmd-editor').dispatch_event('compositionend')
+            elif transition in ['readOnly', 'disabled']:
+                await race.locator('#fmd-editor').evaluate('(e,key)=>{e[key]=false;}', transition)
+            elif transition == 'suspension':
+                await race.evaluate("window.dispatchEvent(new Event('pageshow'))")
+            await idle(race)
+            await race.locator('#fmd-image-picker').set_input_files([{'name':'fresh.png','mimeType':'image/png','buffer':png}])
+            await race.wait_for_function('() => delayedImageReads.length===2')
+            await race.evaluate('delayedImageReads.shift()()')
+            check(await race.locator('#btn-insert-image').is_disabled(), transition + ' old completion leaves retry ownership intact')
+            check(await race.locator('#fmd-native-runtime').text_content() == original_resources, transition + ' old completion cannot publish resources')
+            await race.evaluate('delayedImageReads.shift()()')
+            await idle(race)
+            current_source = await race.locator('#fmd-editor').input_value()
+            check('![fresh.png]' in current_source and 'abandoned.png' not in current_source, transition + ' publishes only fresh source')
+            check(len((await manifest(race))['images']) == 2, transition + ' publishes exactly one fresh resource')
+            await race.close()
+
         # Exercise real publisher rollback after an injected editing failure.
         await final.evaluate('''() => {
           globalThis.savedCommand=document.execCommand;document.execCommand=()=>false;

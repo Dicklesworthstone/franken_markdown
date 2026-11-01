@@ -176,7 +176,7 @@ test('read/verify errors and stale revisions return no usable import batch', asy
 
 function target() {
   const listeners=new Map();
-  return {value:'',disabled:false,addEventListener(type,fn){if(!listeners.has(type)) listeners.set(type,[]);listeners.get(type).push(fn);},
+  return {value:'',disabled:false,style:{},addEventListener(type,fn){if(!listeners.has(type)) listeners.set(type,[]);listeners.get(type).push(fn);},
     dispatchEvent(event){for(const fn of listeners.get(event.type)||[]) fn(event);},
     async fire(type, event={}){await Promise.all((listeners.get(type)||[]).map(fn=>fn({type,...event})));},click(){this.dispatchEvent({type:'click'});}};
 }
@@ -190,7 +190,8 @@ function dom({native=true, mode='command', decode=async()=>{}, initial='# Before
     ['body > #fmd-app-body > #editor-pane > textarea#fmd-editor',editor],
     ['body > .fmd-app-header #btn-insert-image',button],['body > .fmd-app-header #fmd-image-picker',picker],
     ['#editor-pane > .fmd-pane-header > #fmd-save-status',status],['body > #fmd-app-body',app]]);
-  const document={querySelector:selector=>nodes.get(selector),execCommand(_,__,text){
+  button.parentNode={insertBefore(node){nodes.set('body > .fmd-app-header #'+node.id,node);}};
+  const document={querySelector:selector=>nodes.get(selector),createElement:()=>target(),execCommand(_,__,text){
     if(mode==='fallback' || mode==='failure') throw Error('command unavailable');
     editor.setRangeText(mode==='partial'?'partial '+text:text,editor.selectionStart,editor.selectionEnd);
     editor.dispatchEvent({type:'input'});return true;
@@ -198,6 +199,14 @@ function dom({native=true, mode='command', decode=async()=>{}, initial='# Before
   if(native) Object.defineProperty(window,'__fmdNativeRuntime',{value:{version:1,
     render:(...a)=>s.renderer.html(...a),pdf:(...a)=>s.renderer.pdf(...a),stageImages:(...a)=>s.renderer.stageImages(...a)}});
   const context=vm.createContext({document,window,Uint8Array,ArrayBuffer,TextEncoder,btoa,crypto:webcrypto,Event,setTimeout,clearTimeout,
+    MutationObserver:class {observe(){}},
+    FileReader:class {
+      readyState=0;result=null;
+      readAsArrayBuffer(file){this.readyState=1;file.arrayBuffer().then(bytes=>{
+        if(this.readyState!==1)return;this.readyState=2;this.result=bytes;this.onload?.();
+      },()=>{if(this.readyState!==1)return;this.readyState=2;this.onerror?.();});}
+      abort(){this.readyState=2;this.onabort?.();}
+    },
     Image:class {naturalWidth=2;naturalHeight=1;async decode(){await decode();}removeAttribute(){}}});
   vm.runInContext(source,context);
   return {...s,editor,button,picker,status,window,context,

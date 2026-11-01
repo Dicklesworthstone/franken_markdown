@@ -70,6 +70,20 @@ with sync_playwright() as p:
         page.wait_for_function("!document.querySelector('body > .fmd-app-header #btn-insert-image').disabled")
         return page.locator(status).text_content()
 
+    def delay_image_reads(page):
+        # Real FileReader bytes complete; only delivery to the importer is held.
+        # Capturing the callback deliberately exercises queued completion after
+        # cancellation has cleared the reader's current event handlers.
+        page.evaluate("""() => {
+          window.delayedImageReads = [];
+          const read = FileReader.prototype.readAsArrayBuffer;
+          FileReader.prototype.readAsArrayBuffer = function(file) {
+            const loaded = this.onload;
+            this.onload = event => delayedImageReads.push(() => loaded?.call(this, event));
+            return read.call(this, file);
+          };
+        }""")
+
     def save(page, button):
         with page.expect_download() as pending:
             page.locator('body > .fmd-app-header #' + button).click()
@@ -95,6 +109,8 @@ with sync_playwright() as p:
     workspace = save(page, 'btn-save-html')
     reopened = load(workspace.decode())
     check(text(reopened) == inserted, 'saved workspace lost imported source')
+    check(reopened.locator('#btn-cancel-image-import').count() == 1 and
+          reopened.locator('#btn-cancel-image-import').is_hidden(), 'reopened workspace retained a busy or duplicate cancellation control')
     edit(reopened, inserted + '\n\nEdited after reopening')
     reopened.evaluate("window.dispatchEvent(new Event('beforeprint'))")
     check(reopened.locator('main#preview-pane img').get_attribute('src').endswith(base64.b64encode(png()).decode()), 'image lost after reopening and editing')
@@ -132,24 +148,85 @@ with sync_playwright() as p:
     message = insert(page, [upload('retry.png',png())])
     check(message.startswith('Inserted 1 image') and text(page).count('![retry.png]') == 2, 'same file could not be reselected')
 
-    # Delay actual file reading, then change and undo source: revision, not
+    # Delay actual file read delivery, then change and undo source: revision, not
     # string equality alone, must reject stale asynchronous insertion.
     page = load()
     edit(page, 'Original')
-    page.evaluate("""() => {
-      const read = File.prototype.arrayBuffer;
-      File.prototype.arrayBuffer = function() {
-        return new Promise(resolve => { window.finishImageRead = () => read.call(this).then(resolve); });
-      };
-    }""")
+    delay_image_reads(page)
     page.locator(picker).set_input_files([upload('slow.png',png())])
-    page.wait_for_function('typeof window.finishImageRead === "function"')
+    page.wait_for_function('delayedImageReads.length === 1')
     check(page.locator('body > .fmd-app-header #btn-insert-image').is_disabled(), 'parallel import not disabled')
     edit(page, 'New work')
+    check('document changed' in page.locator(status).text_content() and
+          not page.locator('#btn-insert-image').is_disabled(), 'source editing did not cancel and release the importer immediately')
     edit(page, 'Original')
-    page.evaluate('window.finishImageRead()')
+    current_status = page.locator(status).text_content()
+    page.evaluate('delayedImageReads.shift()()')
     page.wait_for_function("!document.querySelector('body > .fmd-app-header #btn-insert-image').disabled")
-    check(text(page) == 'Original' and 'document changed' in page.locator(status).text_content(), 'stale import overwrote intervening edits/undo')
+    check(text(page) == 'Original' and page.locator(status).text_content() == current_status, 'stale import overwrote intervening edits/undo or their current status')
+
+    # A same-task synthetic composition event reaches a genuinely active
+    # FileReader, proving physical abort without delaying any native callback.
+    page = load()
+    edit(page, 'Original')
+    aborts = page.evaluate("""encoded => {
+      let aborts = 0;
+      const abort = FileReader.prototype.abort;
+      FileReader.prototype.abort = function() { aborts++; return abort.call(this); };
+      const files = new DataTransfer();
+      files.items.add(new File([Uint8Array.from(atob(encoded), c => c.charCodeAt(0))], 'active.png'));
+      const picker = document.querySelector('#fmd-image-picker');
+      picker.files = files.files; picker.dispatchEvent(new Event('change'));
+      document.querySelector('#fmd-editor').dispatchEvent(new CompositionEvent('compositionstart'));
+      return aborts;
+    }""", base64.b64encode(png()).decode())
+    check(aborts == 1 and text(page) == 'Original', 'composition did not physically abort the active FileReader')
+    page.close()
+
+    # These are synthetic lifecycle/composition events, not OS IME gestures.
+    # File selection, FileReader bytes, decoding and editor insertion are real.
+    for transition in ['composition', 'readOnly', 'disabled', 'suspension', 'cancel']:
+        page = load()
+        edit(page, 'Original')
+        delay_image_reads(page)
+        page.locator(picker).set_input_files([upload('abandoned.png', png())])
+        page.wait_for_function('delayedImageReads.length === 1')
+        if transition == 'composition':
+            page.locator(editor).dispatch_event('compositionstart')
+        elif transition in ['readOnly', 'disabled']:
+            page.locator(editor).evaluate('(e, key) => { e[key] = true; }', transition)
+        elif transition == 'suspension':
+            page.evaluate("window.dispatchEvent(new Event('pagehide'))")
+        else:
+            page.locator('#btn-cancel-image-import').click()
+        check(text(page) == 'Original' and 'cancelled' in page.locator(status).text_content(), transition + ' did not cancel the pending import')
+        if transition == 'composition':
+            page.locator(editor).dispatch_event('compositionend')
+        elif transition in ['readOnly', 'disabled']:
+            page.locator(editor).evaluate('(e, key) => { e[key] = false; }', transition)
+        elif transition == 'suspension':
+            page.evaluate("window.dispatchEvent(new Event('pageshow'))")
+        page.wait_for_function("!document.querySelector('#btn-insert-image').disabled")
+        page.locator(picker).set_input_files([upload('fresh.png', png())])
+        page.wait_for_function('delayedImageReads.length === 2')
+        page.evaluate('delayedImageReads.shift()()')
+        check(text(page) == 'Original' and page.locator('#btn-insert-image').is_disabled() and
+              page.locator(status).text_content() == 'Reading selected images…', transition + ' late completion interfered with the retry')
+        page.evaluate('delayedImageReads.shift()()')
+        page.wait_for_function("!document.querySelector('#btn-insert-image').disabled")
+        check('![fresh.png]' in text(page) and 'abandoned.png' not in text(page), transition + ' retry inserted stale source')
+        page.close()
+
+    page = load()
+    edit(page, 'Original')
+    delay_image_reads(page)
+    page.locator(picker).set_input_files([upload('timed-out.png', png())])
+    page.wait_for_function('delayedImageReads.length === 1')
+    page.wait_for_function("!document.querySelector('#btn-insert-image').disabled", timeout=12000)
+    check(text(page) == 'Original' and 'ten seconds' in page.locator(status).text_content(), 'real read deadline did not preserve source and release controls')
+    page.evaluate('delayedImageReads.shift()()')
+    check(text(page) == 'Original', 'timed-out read later inserted source')
+    page.close()
 
     # Saved read mode must switch through the controller, keeping its private
     # mode state and next toggle coherent. Also exercise the fallback inserter.

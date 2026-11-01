@@ -83,7 +83,7 @@ function fmdImportAlt(name) {
     .replace(/&/g, '&amp;').replace(/[\\[\]!*_`<>]/g, '\\$&');
 }
 
-async function fmdReadImageImport(files, verify, current) {
+async function fmdReadImageImport(files, verify, current, read = file => file.arrayBuffer()) {
   const limit = FMD_IMAGE_IMPORT_LIMITS;
   if (!files || !Number.isSafeInteger(files.length) || !files.length || files.length > limit.files) {
     throw Error('Choose between 1 and 8 images');
@@ -105,7 +105,7 @@ async function fmdReadImageImport(files, verify, current) {
   const images = [];
   for (const {file, size, alt} of selected) {
     checkCurrent();
-    const buffer = await file.arrayBuffer();
+    const buffer = await read(file);
     checkCurrent();
     const length = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(buffer);
     if (length !== size) throw Error('Image size changed while reading');
@@ -148,54 +148,141 @@ if (typeof document !== 'undefined') (function() {
   const picker = document.querySelector('body > .fmd-app-header #fmd-image-picker');
   const status = document.querySelector('#editor-pane > .fmd-pane-header > #fmd-save-status');
   if (!editor || !button || !picker || !status) return;
-  let revision = 0, busy = false, selection = null, active = true;
-  window.addEventListener('pagehide', () => { active = false; revision++; selection = null; });
-  window.addEventListener('pageshow', () => { active = true; revision++; selection = null; });
-  editor.addEventListener('input', () => { revision++; });
+  let revision = 0, pending = null, selection = null, active = true, composing = false;
+  let cancelButton = document.querySelector('body > .fmd-app-header #btn-cancel-image-import');
+  if (!cancelButton) {
+    cancelButton = document.createElement('button');
+    cancelButton.id = 'btn-cancel-image-import'; cancelButton.type = 'button';
+    cancelButton.className = 'fmd-btn';
+    button.parentNode.insertBefore(cancelButton, button.nextSibling);
+  }
+  cancelButton.textContent = 'Cancel image import';
+  cancelButton.title = 'Stop reading or decoding selected images; source and embedded resources are unchanged';
+  const editable = () => active && !composing && !editor.disabled && !editor.readOnly && editor.isConnected !== false;
+  function refresh() {
+    button.disabled = picker.disabled = !editable() || pending !== null;
+    cancelButton.hidden = pending === null;
+    // Toolbar display rules override the browser's default [hidden] style.
+    cancelButton.style.display = pending === null ? 'none' : '';
+    cancelButton.disabled = pending === null;
+  }
+  function cancel(message = 'Image import cancelled; source and embedded resources are unchanged') {
+    const operation = pending;
+    if (!operation) return;
+    // Retire before abort callbacks run. A late read/decode/finally from this
+    // operation cannot publish into, or release controls owned by, a retry.
+    pending = null;
+    operation.stop?.(Error(message));
+    status.textContent = message;
+    refresh();
+  }
+  function changed(message, sourceInput = false) {
+    revision++;
+    if (selection) selection.retired = true;
+    if (!sourceInput || !pending?.installing) cancel(message);
+    refresh();
+  }
+  window.addEventListener('pagehide', () => {
+    active = false; composing = false;
+    changed('Image import cancelled: the document changed or workspace suspended; select the files again after returning');
+    picker.value = '';
+  });
+  window.addEventListener('pageshow', () => { active = true; composing = false; changed('Image import cancelled: workspace restored'); });
+  editor.addEventListener('input', () => changed('Image import cancelled: the document changed; select the images again', true));
+  editor.addEventListener('compositionstart', () => {
+    composing = true; changed('Image import cancelled: text composition started');
+  });
+  editor.addEventListener('compositionend', () => { composing = false; changed('Image import cancelled: text composition ended'); });
+  // Even a read-only/disabled round trip revokes a pending insertion. Checks
+  // below also cover a property change before observer delivery.
+  new MutationObserver(() => changed('Image import cancelled: editor access changed')).observe(editor,
+    {attributes: true, attributeFilter: ['readonly', 'disabled']});
   const snapshot = () => ({source: editor.value, revision, start: editor.selectionStart, end: editor.selectionEnd});
   button.addEventListener('click', () => {
-    if (busy) return;
+    if (pending || !editable()) return;
     selection = snapshot();
     picker.click();
   });
-  picker.addEventListener('cancel', () => { selection = null; });
+  picker.addEventListener('cancel', () => { selection = null; cancel(); });
+  cancelButton.addEventListener('click', () => cancel());
 
-  async function verify(uri, info) {
-    const image = new Image();
-    let timer;
-    try {
-      image.src = uri;
-      await Promise.race([image.decode(), new Promise((_, reject) => {
-        timer = setTimeout(() => reject(Error('Image decoding timed out')), 10000);
-      })]);
-      const width = image.naturalWidth, height = image.naturalHeight;
-      fmdImportDimensions(width, height);
-      // JPEG EXIF orientation may exchange the two axes.
-      if (!(width === info.width && height === info.height) && !(width === info.height && height === info.width)) {
-        throw Error('Decoded image dimensions do not match its header');
-      }
-    } finally {
-      clearTimeout(timer);
-      image.removeAttribute('src');
-    }
+  function readFile(file, operation) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader(); let done = false, timer;
+      const settle = (error, buffer) => {
+        if (done) return;
+        done = true; clearTimeout(timer);
+        if (operation.stop === stop) operation.stop = null;
+        reader.onload = reader.onerror = reader.onabort = null;
+        if (reader.readyState === 1) reader.abort();
+        if (error) reject(error); else resolve(buffer);
+      };
+      const stop = error => settle(error);
+      operation.stop = stop;
+      reader.onload = () => settle(null, reader.result);
+      reader.onerror = () => settle(Error('Unable to read the selected image'));
+      reader.onabort = () => settle(Error('Image reading cancelled'));
+      timer = setTimeout(() => settle(Error('Image reading exceeded ten seconds; select the file again')), 10000);
+      try { reader.readAsArrayBuffer(file); } catch (error) { settle(error); }
+    });
+  }
+
+  function verify(uri, info, operation) {
+    return new Promise((resolve, reject) => {
+      const image = new Image(); let done = false, timer;
+      const settle = error => {
+        if (done) return;
+        done = true; clearTimeout(timer);
+        if (operation.stop === stop) operation.stop = null;
+        image.removeAttribute('src');
+        if (error) reject(error); else resolve();
+      };
+      const stop = error => settle(error);
+      operation.stop = stop;
+      timer = setTimeout(() => settle(Error('Image decoding exceeded ten seconds; select the file again')), 10000);
+      try {
+        image.src = uri;
+        Promise.resolve(image.decode()).then(() => {
+          if (done) return;
+          try {
+            const width = image.naturalWidth, height = image.naturalHeight;
+            fmdImportDimensions(width, height);
+            // JPEG EXIF orientation may exchange the two axes.
+            if (!(width === info.width && height === info.height) && !(width === info.height && height === info.width)) {
+              throw Error('Decoded image dimensions do not match its header');
+            }
+            settle();
+          } catch (error) { settle(error); }
+        }, settle);
+      } catch (error) { settle(error); }
+    });
   }
 
   async function importFiles(files, before) {
-    if (busy) { status.textContent = 'An image import is already in progress'; return; }
+    if (pending) { status.textContent = 'An image import is already in progress'; return; }
     if (!files.length) return;
-    busy = true; button.disabled = true; picker.disabled = true;
+    if (!editable() || before.retired || revision !== before.revision || editor.value !== before.source) {
+      status.textContent = 'Image import refused: the document changed or is not editable; select the files again';
+      refresh(); return;
+    }
+    const operation = {stop: null, installing: false};
+    pending = operation; refresh();
     status.textContent = 'Reading selected images…';
     let transaction = null, committed = false;
     try {
       if (before.source.length > FMD_IMAGE_IMPORT_LIMITS.sourceUnits) throw Error('Document exceeds the 32 Mi-character import limit');
-      const current = () => active && revision === before.revision && editor.value === before.source;
+      const current = () => pending === operation && editable() && revision === before.revision && editor.value === before.source;
       const candidate = Object.getOwnPropertyDescriptor(window, '__fmdNativeRuntime')?.value;
       const native = candidate?.version === 1 && typeof candidate.render === 'function'
         && typeof candidate.pdf === 'function' ? candidate : null;
       if (native && typeof native.stageImages !== 'function') {
         throw Error('Rebuild the matching workspace runtime to import native image resources');
       }
-      const images = await fmdReadImageImport(files, verify, current);
+      const images = await fmdReadImageImport(files, (uri, info) => verify(uri, info, operation), current,
+        file => readFile(file, operation));
+      // The helper's last check and this continuation are separate microtasks.
+      // A cancellation between them must not even stage native resources.
+      if (!current()) throw Error('The document changed; select the images again');
       let markdown;
       if (native) ({transaction, markdown} = fmdNativeImageImport(images, native));
       else markdown = images.map(image => '![' + image.alt + '](' + image.uri + ')').join('\n\n');
@@ -215,7 +302,9 @@ if (typeof document !== 'undefined') (function() {
       // Publish before insertText can emit a synchronous input event. On an
       // unchanged-source editing failure, roll back both ABI buffers and saved
       // JSON. If a host partially edits, keep resources so references stay valid.
+      operation.installing = true;
       if (transaction) { transaction.commit(); committed = true; }
+      if (!current()) throw Error('The document changed; select the images again');
       // On browsers supporting insertText, one insertion keeps native undo.
       // setRangeText is the non-undo-preserving fallback, never a full rewrite.
       if (typeof document.execCommand === 'function') {
@@ -225,7 +314,7 @@ if (typeof document !== 'undefined') (function() {
       if (editor.value === before.source) editor.setRangeText(insertion, before.start, before.end, 'end');
       if (editor.value !== expected) throw Error('The editor changed during insertion; inspect the document before retrying');
       if (revision === before.revision) editor.dispatchEvent(new Event('input', {bubbles: true}));
-      status.textContent = 'Inserted ' + files.length + (files.length === 1 ? ' image' : ' images')
+      if (pending === operation) status.textContent = 'Inserted ' + files.length + (files.length === 1 ? ' image' : ' images')
         + (native ? ' — Save HTML to keep image resources; Markdown alone contains references' : ' — download to keep changes');
     } catch (error) {
       let rollbackError = '';
@@ -233,9 +322,9 @@ if (typeof document !== 'undefined') (function() {
         try { transaction.rollback(); }
         catch (failure) { rollbackError = '; resource rollback failed: ' + String(failure?.message || failure); }
       }
-      status.textContent = 'Image insertion failed: ' + String(error?.message || error) + rollbackError;
+      if (pending === operation) status.textContent = 'Image insertion failed: ' + String(error?.message || error) + rollbackError;
     } finally {
-      busy = false; button.disabled = false; picker.disabled = false;
+      if (pending === operation) { pending = null; refresh(); }
     }
   }
 
@@ -266,6 +355,7 @@ if (typeof document !== 'undefined') (function() {
     event.dataTransfer.dropEffect = 'copy'; // Never request a move of the original file.
     return importFiles(files, snapshot());
   });
+  refresh();
 })();
 
 // The same bundled image-authoring asset also manages existing native bindings.

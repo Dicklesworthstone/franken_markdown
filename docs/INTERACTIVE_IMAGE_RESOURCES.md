@@ -59,6 +59,14 @@ a failed file leaves the source untouched. Typing (even followed by undo) while
 a read is pending rejects the stale insertion rather than overwriting that work.
 The same files can be selected again after a failed or successful import.
 
+**Cancel image import** stops a pending read or decode immediately. Starting
+text composition, making the editor read-only or disabled, or leaving the page
+also cancels the pending insertion. A new selection is required after returning
+to an editable document. Each file read and decode has a ten-second deadline;
+an abandoned operation cannot insert source, publish native image resources,
+or interfere with a later retry. Cancellation preserves edits made while the
+files were being read.
+
 The importer determines PNG/JPEG format and dimensions from bytes, not the
 extension or declared MIME type. Browser decoding must also succeed. Limits are
 eight files per batch, 8 MiB per file, 16 MiB per batch, 24 million pixels per
@@ -79,8 +87,9 @@ use `setRangeText`, which does not promise undo preservation. A saved read-mode
 workspace switches through its normal view controller before inserting. Source
 changes activate the existing leave-page warning and normal preview/save flow.
 
-`node --test tests/interactive_import.test.mjs` exercises the shipped metadata,
-limits, encoding, batch and stale-revision code. The optional real-browser gate
+`node --test tests/interactive_import.test.mjs tests/interactive_import_controller.test.mjs`
+exercises the shipped metadata, limits, encoding, batch and insertion ownership
+code. The optional real-browser gate
 `python tests/support/interactive_import_browser_check.py document.html` uses
 actual local file selection, PNG/JPEG decoding, selection replacement, batch
 refusals, retry, undo/redo, asynchronous races and both download formats. It also

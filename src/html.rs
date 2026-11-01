@@ -15,6 +15,7 @@ use crate::theme::{CodeColors, Theme, ThemeColors};
 use crate::toc::marker_depth as toc_marker_depth;
 use crate::{FontAssetSlot, FontAssets, FontEmbedding, HtmlOptions, instance_host_font};
 
+mod data_images;
 mod financial_tables;
 
 /// Render a document to a complete HTML5 document string.
@@ -582,6 +583,22 @@ impl<'a> RenderState<'a> {
         self.math_cache_next = (self.math_cache_next + 1) % MATH_CACHE_MAX_ENTRIES;
     }
 
+    fn push_image_source(&mut self, url: &str, opts: &HtmlOptions, out: &mut String) -> bool {
+        let trimmed = url.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+        if data_images::is_data_uri(trimmed) {
+            // An embedded payload is admitted only in image context. Keep it
+            // out of the ordinary URL cache, which would retain a full copy.
+            return data_images::push(trimmed, opts, out);
+        }
+        let Some(src) = self.safe_url_cached(url, UrlContext::Image) else {
+            return false;
+        };
+        if opts.image_assets.is_empty() || !push_html_image_asset_data_uri(src, opts, out) {
+            push_escaped_url(src, out);
+        }
+        true
+    }
+
     fn safe_url_cached<'u>(&mut self, url: &'u str, context: UrlContext) -> Option<&'u str> {
         if let Some(entry) = self
             .url_cache
@@ -695,15 +712,7 @@ fn push_sanitized_html(
             }
             None => false,
         },
-        crate::safe_html::UrlKind::Image => match state.safe_url_cached(url, UrlContext::Image) {
-            Some(src) => {
-                if opts.image_assets.is_empty() || !push_html_image_asset_data_uri(src, opts, out) {
-                    push_escaped_url(src, out);
-                }
-                true
-            }
-            None => false,
-        },
+        crate::safe_html::UrlKind::Image => state.push_image_source(url, opts, out),
     });
     state.raw_html = sanitizer;
 }
@@ -1054,13 +1063,9 @@ fn render_inlines_body(
                 }
             }
             Inline::Image { dest, title, alt } => {
-                if let Some(src) = state.safe_url_cached(dest, UrlContext::Image) {
-                    out.push_str("<img src=\"");
-                    if opts.image_assets.is_empty()
-                        || !push_html_image_asset_data_uri(src, opts, out)
-                    {
-                        push_escaped_url(src, out);
-                    }
+                let start = out.len();
+                out.push_str("<img src=\"");
+                if state.push_image_source(dest, opts, out) {
                     out.push_str("\" alt=\"");
                     push_escaped_attr(alt, out);
                     out.push('"');
@@ -1071,6 +1076,7 @@ fn render_inlines_body(
                     }
                     out.push('>');
                 } else {
+                    out.truncate(start);
                     push_escaped_text(alt, out);
                 }
             }
@@ -1109,6 +1115,11 @@ pub(crate) fn push_html_image_asset_data_uri(
     let Some((mime, bytes)) = html_image_asset(dest, opts) else {
         return false;
     };
+    push_html_image_data_uri(mime, bytes, out);
+    true
+}
+
+fn push_html_image_data_uri(mime: &str, bytes: &[u8], out: &mut String) {
     let bytes = if mime == "image/svg+xml" {
         svg_without_remote_style_imports(bytes)
     } else {
@@ -1118,7 +1129,6 @@ pub(crate) fn push_html_image_asset_data_uri(
     out.push_str(mime);
     out.push_str(";base64,");
     push_base64_encoded(out, bytes.as_ref());
-    true
 }
 
 fn html_image_asset<'a>(dest: &str, opts: &'a HtmlOptions) -> Option<(&'static str, &'a [u8])> {

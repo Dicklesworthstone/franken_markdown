@@ -378,15 +378,14 @@ fn data_images_are_deterministic_across_emitters_and_the_wasm_adapter() {
 }
 
 #[test]
-fn ordinary_url_diagnostics_and_the_core_html_data_url_policy_are_unchanged() {
+fn embedded_images_survive_html_and_ordinary_url_diagnostics_are_unchanged() {
     let destination = uri("image/png", &fixture_base64(PNG));
     let html = render_html(
         &format!("![Embedded alt]({destination})"),
         &HtmlOptions::default(),
     )
     .unwrap();
-    assert!(html.contains("<p>Embedded alt</p>"));
-    assert!(!html.contains("<img"));
+    assert!(html.contains(&format!("<img src=\"{destination}\" alt=\"Embedded alt\">")));
 
     let destination = format!("https://example.invalid/{}", "long-path/".repeat(64));
     let doc = parse_markdown(&format!("![Remote alt]({destination})"));

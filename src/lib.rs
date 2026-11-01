@@ -731,11 +731,14 @@ pub struct HtmlOptions {
     pub font_assets: FontAssets,
     /// Caller-provided image bytes keyed by the Markdown image destination.
     ///
-    /// The HTML renderer emits supported host-supplied PNG/SVG/JPEG/GIF assets as data
-    /// URIs after the source destination passes the normal safe-URL policy.
-    /// Native CLI and browser/WASM callers resolve image destinations into
-    /// explicit byte assets before rendering; the core never fetches network
-    /// resources or reads files.
+    /// The HTML renderer emits supported PNG/SVG/JPEG/GIF assets as data URIs
+    /// for safe destinations, including supported `data:` image destinations.
+    /// Bounded source-carried image data needs no separate asset. Its first
+    /// matching explicit binding takes precedence, even if that binding is
+    /// invalid; an invalid override does not fall back to the source payload.
+    /// Native CLI and browser/WASM callers resolve other image destinations
+    /// into explicit byte assets before rendering; the core never fetches
+    /// network resources or reads files.
     pub image_assets: Vec<PdfImageAsset>,
     /// Document language tag (e.g. "en", "de", "fr", "es", "nl").
     pub lang: Option<String>,

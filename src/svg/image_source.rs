@@ -20,7 +20,7 @@ pub(super) fn failure(code: &'static str, message: &str) -> SvgWarning {
     }
 }
 
-pub(super) fn inspect(bytes: &[u8]) -> Result<(&'static str, f64, f64), SvgWarning> {
+pub(crate) fn inspect(bytes: &[u8]) -> Result<(&'static str, f64, f64), SvgWarning> {
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(failure(
             "svg_image_limit",

@@ -30486,6 +30486,9 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     for candidate in (start + 1)..=last_fit {
         let line = &lines[candidate - 1];
         candidate_used += line_leading(line) + line.gap_after;
+        if splits_heading_group(lines, candidate) {
+            continue;
+        }
         let score = break_score_for_used_height(lines, candidate, capacity, candidate_used);
         if score < best_score {
             best_score = score;
@@ -30494,6 +30497,24 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     }
 
     best.max(start + 1).min(lines.len())
+}
+
+/// A wrapped heading and its H1/H2 underline share one semantic group. Do not
+/// let the greedy page score choose an interior line merely because it has
+/// fewer preceding heading penalties than a complete short section. Explicit
+/// breaks still win before scoring. If every fitting boundary is internal to
+/// an oversized heading, `choose_page_break` retains `last_fit` for progress.
+fn splits_heading_group(lines: &[Line], candidate: usize) -> bool {
+    if candidate == 0 || candidate >= lines.len() {
+        return false;
+    }
+    let before = &lines[candidate - 1];
+    let after = &lines[candidate];
+    before.flow.group != 0
+        && before.flow.group == after.flow.group
+        && before.flow.kind == FlowKind::Heading
+        && after.flow.kind == FlowKind::Heading
+        && !after.page_break_before
 }
 
 /// Precomputed page-break plan from the Plass-style pagination DP (opt-in
@@ -30862,6 +30883,9 @@ fn choose_page_break_with_void_control(
             line.gap_after
         };
         candidate_used += line_leading(line) + gap;
+        if splits_heading_group(lines, candidate) {
+            continue;
+        }
         let score = break_score_for_used_height(lines, candidate, capacity, candidate_used);
         if score < best_score {
             best_score = score;

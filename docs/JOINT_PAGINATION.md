@@ -2,6 +2,12 @@
 
 ## PDF rendering
 
+Default PDF pagination keeps a heading's wrapped text and H1/H2 underline on
+the same page whenever a fitting alternative exists. Short sections no longer
+make a break inside the title look preferable to a break after their content.
+Explicit page breaks take precedence. A heading taller than the page can still
+split so its complete text remains visible and pagination makes progress.
+
 `fmd input.md --to pdf --pdf-optimal-pagination` (or
 `PdfOptions::optimal_pagination = true`) now considers alternative paragraph
 shapes as well as page boundaries. The normal paragraph layout remains one

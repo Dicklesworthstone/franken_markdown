@@ -90,6 +90,66 @@ export function markdownDownload(document) {
   };
 }
 
+// Source/draft replacement shares this DOM access boundary. A temporary lock or
+// pane removal retires old approval even if the same fields become usable again.
+// Non-DOM hosts retain their current-state checks without requiring a browser.
+export function trackSourceAccess(fields, onChange) {
+  let revision = 0,
+    disposed = false;
+  const observers = [],
+    attached = new Set(fields.filter((field) => field.isConnected === true));
+  const sample = () => {
+    for (const field of fields) if (field.isConnected === true) attached.add(field);
+  };
+  const changed = (records) => {
+    if (disposed) return;
+    let affected = false;
+    for (const record of records) {
+      if (record.type === "attributes") affected = true;
+      else for (const node of [...record.removedNodes, ...record.addedNodes]) {
+        for (const field of fields) if (node === field || node.contains?.(field)) {
+          // Mount followed by removal can finish before observer delivery. The
+          // records still prove that this field acquired, then lost, DOM access.
+          attached.add(field);
+          affected = true;
+        }
+      }
+    }
+    if (!affected) return;
+    sample();
+    revision++;
+    onChange();
+  };
+  for (const doc of new Set(fields.map((field) => field.ownerDocument).filter(Boolean))) {
+    const Observer = doc.defaultView?.MutationObserver;
+    if (typeof Observer !== "function") continue;
+    const observer = new Observer(changed);
+    for (const field of fields) if (field.ownerDocument === doc)
+      observer.observe(field, { attributes: true, attributeFilter: ["readonly", "disabled"] });
+    observer.observe(doc, { childList: true, subtree: true });
+    observers.push(observer);
+  }
+  return Object.freeze({
+    synchronize() {
+      // Mutation callbacks are deferred. Drain at action and publication fences
+      // so same-task lock/unlock cannot revive an old operation or poison a new one.
+      for (const observer of observers) changed(observer.takeRecords());
+      sample();
+      return revision;
+    },
+    blocked() {
+      return fields.some((field) => field.disabled || field.readOnly
+        || (attached.has(field) && field.isConnected === false));
+    },
+    dispose() {
+      disposed = true;
+      for (const observer of observers) observer.disconnect();
+      observers.length = 0;
+      attached.clear();
+    },
+  });
+}
+
 /** The textarea is authoritative, even if the renderer has failed. The host's
  * onReplace revokes the previous document's image grants before input is emitted.
  * Confirmation may be async; both file-read and confirmation races are fenced.
@@ -135,9 +195,12 @@ export function createSourceControls({
     });
   const matches = (value) =>
     value.source === sourceEditor.value && value.filename === filename.value;
+  const access = trackSourceAccess([sourceEditor, filename], () => {
+    epoch++;
+    refreshActions();
+  });
   const replacementBlocked = () =>
-    !!(composing.size > 0 || sourceEditor.disabled || sourceEditor.readOnly
-      || filename.disabled || filename.readOnly);
+    composing.size > 0 || access.blocked();
   function refreshActions() {
     if (disposed) return;
     open.disabled = busy || replacementBlocked();
@@ -147,6 +210,7 @@ export function createSourceControls({
   }
   function editable() {
     alive();
+    access.synchronize();
     if (replacementBlocked())
       fail("EDITOR_BUSY", "Finish text composition or unlock the editor before replacing Markdown.");
   }
@@ -203,6 +267,7 @@ export function createSourceControls({
     open.disabled = true;
     const fence = () => {
       alive();
+      access.synchronize();
       if (ticket !== epoch || !matches(before) || replacementBlocked())
         fail("STALE_SOURCE", "The editor changed during file loading; the file was not opened.");
     };
@@ -294,6 +359,7 @@ export function createSourceControls({
     dispose() {
       if (disposed) return;
       disposed = true;
+      access.dispose();
       changed();
       open.disabled = true;
       prepare.disabled = true;

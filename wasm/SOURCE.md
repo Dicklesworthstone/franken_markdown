@@ -22,6 +22,13 @@ cancelled without an input event. Finish composing and start a fresh operation.
 Read-only or disabled editors refuse file imports and draft restoration; their
 current source can still be downloaded once composition has finished.
 
+For browser hosts, changing either field's read-only or disabled state retires
+pending imports and draft restores, even when the field is unlocked again in the
+same task. Removing a mounted field or its pane also ends the old operation's
+authority; reinserting it permits a fresh request. Access changes leave exact
+source bytes, existing source backups and acknowledged draft state intact. They
+do not manufacture an edit or schedule an otherwise unnecessary autosave.
+
 UTF-8 BOMs and line endings round-trip through file reading and Blob generation.
 Since HTML textarea values normalize newlines to LF, source controls retain the
 original string while the imported view is unchanged. Edited text uses the
@@ -105,7 +112,9 @@ server, without third-party testing dependencies. The browser checks exercise
 native IndexedDB transaction conflicts, aborted writes, tombstones, corrupt
 records, disposal/version changes, source round trips and an actual page reload.
 It also checks source preservation through delayed file reads and draft-recovery
-confirmation using real DOM, File/Blob URLs, and IndexedDB. Composition events
+confirmation using real DOM, File/Blob URLs, and IndexedDB. Same-task lock/unlock,
+pane removal/reinsertion and fresh retry checks use native MutationObserver
+records, and verify unchanged original-source backups. Composition events
 in those race checks are synthetic; they do not establish native IME acceptance.
 They create and remove only uniquely named test databases, never the editor's
 real draft database. The temporary profile is retained for inspection. In an

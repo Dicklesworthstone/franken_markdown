@@ -14,6 +14,11 @@ const assert = (value, message = "assertion failed") => {
   if (!value) throw new Error(message);
 };
 const equal = (a, b) => assert(JSON.stringify(a) === JSON.stringify(b), "values differ");
+const gate = () => {
+  let resolve;
+  const promise = new Promise((yes) => { resolve = yes; });
+  return { promise, resolve };
+};
 async function rejects(promise, code) {
   try {
     await promise;
@@ -65,6 +70,47 @@ export async function run() {
     }
   };
   const source = "\ufeff# Native browser source\r\n\r\n😀 e\u0301\r\n";
+  function sourceFixture(mounted = true) {
+    const pane = document.createElement("section"),
+      sourceEditor = document.createElement("textarea"), filename = document.createElement("input");
+    const input = document.createElement("input"), prepare = document.createElement("button"),
+      download = document.createElement("a"), status = document.createElement("p");
+    sourceEditor.value = source;
+    filename.value = "local.md";
+    pane.append(sourceEditor, filename, input, prepare, download, status);
+    if (mounted) document.body.append(pane);
+    const f = { pane, sourceEditor, filename, input, download, replacements: 0,
+      confirm: () => true, confirmRestore: () => true, readGate: null };
+    f.controls = createSourceControls({ sourceEditor, filename, open: input, prepare, download, status,
+      initialDocument: { source, filename: "local.md" },
+      confirmReplace: (next) => f.confirm(next), onReplace() { f.replacements++; } });
+    f.dispose = () => { f.controls.dispose(); pane.remove(); };
+    return f;
+  }
+  const stored = { filename: "recovered.md", source: "\ufeff# Recovered\r\n正しい\rEnd" };
+  async function draftFixture(f) {
+    const name = unique(), store = await open(name);
+    await store.save(stored, 0);
+    const nodes = Object.fromEntries(["remember", "refresh", "restore", "forget", "save", "status"]
+      .map((key) => [key, document.createElement(key === "status" ? "p" : "button")]));
+    f.pane.append(...Object.values(nodes));
+    const controls = createDraftControls({ ...nodes, sourceEditor: f.sourceEditor, filename: f.filename,
+      readDocument: () => f.controls.snapshot(), restoreDocument: (next) => f.controls.replace(next),
+      confirmRestore: (next) => f.confirmRestore(next), delayMs: 60000,
+      async openStore() {
+        const owner = await open(name);
+        return { ...owner, async read() {
+          // Read a real IndexedDB transaction; hold only its delivery to the
+          // production recovery controller, never manufacture stored contents.
+          const result = await owner.read();
+          if (f.readGate) { f.readGate.entered.resolve(); await f.readGate.promise; }
+          return result;
+        } };
+      },
+    });
+    await controls.whenIdle();
+    return { controls, store };
+  }
   let reloadName;
   try {
     await check(
@@ -374,6 +420,115 @@ export async function run() {
         assert(replacements === 1 && filename.value === "saved.md" && sourceEditor.value === source.replace(/\r\n?/g, "\n"));
       } finally { release(true); controls.dispose(); }
     });
+    for (const kind of ["file", "draft"]) {
+      for (const field of ["sourceEditor", "filename"]) {
+        for (const property of ["readOnly", "disabled"]) {
+          for (const phase of ["read", "confirmation"]) {
+            await check(`${kind} ${phase}: ${field} ${property} round trip retires old authority and permits a fresh same-task retry`, async () => {
+              const f = sourceFixture(), entered = gate(), hold = gate();
+              let draft;
+              try {
+                f.controls.prepareDownload();
+                const backup = f.download.href;
+                let pending;
+                if (kind === "file") {
+                  class SlowFile extends File {
+                    async arrayBuffer() {
+                      if (phase === "read") { entered.resolve(); await hold.promise; }
+                      return super.arrayBuffer();
+                    }
+                  }
+                  f.confirm = () => {
+                    if (phase === "confirmation") { entered.resolve(); return hold.promise; }
+                    return true;
+                  };
+                  pending = f.controls.openFile(new SlowFile([stored.source], stored.filename));
+                } else {
+                  draft = await draftFixture(f);
+                  if (phase === "read") f.readGate = { ...hold, entered };
+                  f.confirmRestore = () => {
+                    if (phase === "confirmation") { entered.resolve(); return hold.promise; }
+                    return true;
+                  };
+                  pending = draft.controls.restore();
+                }
+                await entered.promise;
+                // Real reflected DOM properties and native MutationObserver:
+                // both transitions occur in one task before callback delivery.
+                f[field][property] = true;
+                f[field][property] = false;
+                hold.resolve(true);
+                await rejects(pending, "STALE_SOURCE");
+                equal(f.controls.snapshot(), { filename: "local.md", source });
+                assert(f.replacements === 0, "old approval must not revoke grants or replace source");
+                assert(f.download.href === backup, "unchanged source backup remains valid");
+                equal([...new Uint8Array(await (await fetch(backup)).arrayBuffer())], [...new TextEncoder().encode(source)]);
+                if (draft) {
+                  equal((await draft.store.read()).document, stored);
+                  assert(draft.controls.state.available, "the stored recovery candidate remains offered");
+                }
+                f.confirm = f.confirmRestore = () => true;
+                f.readGate = null;
+                f[field][property] = true;
+                f[field][property] = false;
+                // Start immediately, before the observer callback can run. The
+                // new action must drain old records before acquiring ownership.
+                if (kind === "file") await f.controls.openFile(new File([stored.source], stored.filename));
+                else await draft.controls.restore();
+                equal(f.controls.snapshot(), stored);
+                assert(f.replacements === 1, "only the fresh request may replace the source");
+              } finally { hold.resolve(true); draft?.controls.dispose(); f.dispose(); }
+            });
+          }
+        }
+      }
+      await check(`${kind}: a first mount/remove in one task cannot grant replacement to detached fields`, async () => {
+        const f = sourceFixture(false);
+        let draft;
+        try {
+          if (kind === "draft") draft = await draftFixture(f);
+          document.body.append(f.pane);
+          f.pane.remove();
+          if (kind === "file") await rejects(f.controls.openFile(new File([stored.source], stored.filename)), "EDITOR_BUSY");
+          else await rejects(draft.controls.restore(), "EDITOR_BUSY");
+          equal(f.controls.snapshot(), { filename: "local.md", source });
+          assert(f.replacements === 0);
+          document.body.append(f.pane);
+          if (kind === "file") await f.controls.openFile(new File([stored.source], stored.filename));
+          else await draft.controls.restore();
+          equal(f.controls.snapshot(), stored);
+          assert(f.replacements === 1);
+        } finally { draft?.controls.dispose(); f.dispose(); }
+      });
+      await check(`${kind}: pane removal/reinsertion retires pending confirmation; preview mutations do not`, async () => {
+        const f = sourceFixture(), entered = gate(), hold = gate();
+        let draft;
+        try {
+          if (kind === "draft") draft = await draftFixture(f);
+          f.confirm = f.confirmRestore = () => { entered.resolve(); return hold.promise; };
+          const pending = kind === "file"
+            ? f.controls.openFile(new File([stored.source], stored.filename)) : draft.controls.restore();
+          await entered.promise;
+          f.pane.remove();
+          document.body.append(f.pane);
+          hold.resolve(true);
+          await rejects(pending, "STALE_SOURCE");
+          equal(f.controls.snapshot(), { filename: "local.md", source });
+          assert(f.replacements === 0);
+          f.confirm = f.confirmRestore = () => {
+            const preview = document.createElement("p");
+            preview.textContent = "Unrelated preview update";
+            f.pane.append(preview);
+            preview.remove();
+            return true;
+          };
+          if (kind === "file") await f.controls.openFile(new File([stored.source], stored.filename));
+          else await draft.controls.restore();
+          equal(f.controls.snapshot(), stored);
+          assert(f.replacements === 1);
+        } finally { hold.resolve(true); draft?.controls.dispose(); f.dispose(); }
+      });
+    }
     await check("source draft is committed for an actual page reload", async () => {
       reloadName = `fmd-reload-check-${crypto.randomUUID()}`;
       const a = await open(reloadName);

@@ -1,6 +1,7 @@
 // DOM wiring for opt-in source recovery. It imports no renderer/WASM entrypoint,
 // so a broken preview cannot take away the user's source or recovery controls.
 import { FlowError } from "../flow_session.mjs";
+import { trackSourceAccess } from "./flow_document.mjs";
 import { createDraftSession } from "./flow_draft_session.mjs";
 import { openDraftStore } from "./flow_draft_store.mjs";
 
@@ -23,11 +24,29 @@ export function createDraftControls({
   let disposed = false,
     owner = null,
     operation = null,
-    failure = null;
+    failure = null,
+    restoreRevision = null;
+  const composing = new Set();
+  // Access changes retire replacement authority without inventing a source edit
+  // or scheduling an autosave of otherwise unchanged, already acknowledged bytes.
+  const access = trackSourceAccess([sourceEditor, filename], () => render());
+  const replacementBlocked = () =>
+    composing.size > 0 || access.blocked();
   const alive = () => {
     if (disposed) throw new FlowError("SESSION_DISPOSED", "Draft controls are disposed.");
   };
+  function guardRestore(ticket = restoreRevision) {
+    alive();
+    const revision = access.synchronize();
+    if (replacementBlocked())
+      throw new FlowError("EDITOR_BUSY", "Finish text composition or unlock the editor before restoring a draft.");
+    if (ticket !== null && ticket !== revision)
+      throw new FlowError("STALE_SOURCE", "Editor access changed during recovery; start a fresh restore.");
+  }
   function render() {
+    // A resumed/remounted controller may already own these same elements.
+    // Late operations of a disposed owner must not touch its successor's UI.
+    if (disposed) return;
     const value = owner?.state,
       busy = operation !== null || value?.busy === true;
     remember.checked = value?.enabled === true;
@@ -38,10 +57,9 @@ export function createDraftControls({
       value.available ||
       value.error?.code === "DRAFT_CONFLICT";
     refresh.disabled = disposed || busy;
-    restore.disabled = disposed || busy || !value?.available;
+    restore.disabled = disposed || busy || replacementBlocked() || !value?.available;
     forget.disabled = disposed || busy || !value?.ready || value.storedFilename === null;
     save.disabled = disposed || busy || !value?.enabled || !value.dirty;
-    if (disposed) return;
     const error = failure ?? value?.error;
     if (error)
       status.textContent = `${error.code ?? "STORAGE_UNAVAILABLE"}: ${error.message ?? "Draft storage failed."} Download Markdown to keep an independent copy; Refresh recovery retries storage.`;
@@ -92,8 +110,16 @@ export function createDraftControls({
         owner = createDraftSession({
           store,
           readDocument,
-          restoreDocument,
-          confirmRestore,
+          restoreDocument(next) {
+            guardRestore();
+            return restoreDocument(next);
+          },
+          async confirmRestore(next) {
+            guardRestore();
+            const approved = confirmRestore ? await confirmRestore(next) : true;
+            guardRestore();
+            return approved;
+          },
           delayMs,
           onState: render,
         });
@@ -105,11 +131,17 @@ export function createDraftControls({
     });
   }
   function restoreRecovery() {
+    const ticket = access.synchronize();
     return perform(async () => {
-      alive();
+      guardRestore(ticket);
       if (!owner)
         throw new FlowError("STORAGE_UNAVAILABLE", "Refresh recovery to open draft storage.");
-      await owner.restore();
+      restoreRevision = ticket;
+      try {
+        await owner.restore();
+      } finally {
+        restoreRevision = null;
+      }
     });
   }
   function forgetRecovery() {
@@ -157,6 +189,18 @@ export function createDraftControls({
   const onInput = () => {
     if (!disposed) owner?.changed();
   };
+  const onCompositionStart = (event) => {
+    composing.add(event.currentTarget);
+    // A start/end pair can leave source bytes unchanged. It still invalidates
+    // a prior recovery approval, including one awaiting the storage read.
+    onInput();
+    render();
+  };
+  const onCompositionEnd = (event) => {
+    composing.delete(event.currentTarget);
+    onInput();
+    render();
+  };
   remember.addEventListener("change", onRemember);
   refresh.addEventListener("click", onRefresh);
   restore.addEventListener("click", onRestore);
@@ -164,6 +208,10 @@ export function createDraftControls({
   save.addEventListener("click", onSave);
   sourceEditor.addEventListener("input", onInput);
   filename.addEventListener("input", onInput);
+  for (const field of [sourceEditor, filename]) {
+    field.addEventListener("compositionstart", onCompositionStart);
+    field.addEventListener("compositionend", onCompositionEnd);
+  }
   invoke(refreshRecovery);
   return Object.freeze({
     get state() {
@@ -179,9 +227,12 @@ export function createDraftControls({
     dispose() {
       if (disposed) return;
       disposed = true;
+      access.dispose();
       owner?.dispose();
       owner = null;
-      render();
+      composing.clear();
+      remember.checked = false;
+      remember.disabled = refresh.disabled = restore.disabled = forget.disabled = save.disabled = true;
       remember.removeEventListener("change", onRemember);
       refresh.removeEventListener("click", onRefresh);
       restore.removeEventListener("click", onRestore);
@@ -189,6 +240,10 @@ export function createDraftControls({
       save.removeEventListener("click", onSave);
       sourceEditor.removeEventListener("input", onInput);
       filename.removeEventListener("input", onInput);
+      for (const field of [sourceEditor, filename]) {
+        field.removeEventListener("compositionstart", onCompositionStart);
+        field.removeEventListener("compositionend", onCompositionEnd);
+      }
     },
   });
 }

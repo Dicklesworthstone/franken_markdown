@@ -1,6 +1,7 @@
 // DOM wiring for opt-in source recovery. It imports no renderer/WASM entrypoint,
 // so a broken preview cannot take away the user's source or recovery controls.
 import { FlowError } from "../flow_session.mjs";
+import { trackSourceAccess } from "./flow_document.mjs";
 import { createDraftSession } from "./flow_draft_session.mjs";
 import { openDraftStore } from "./flow_draft_store.mjs";
 
@@ -23,18 +24,24 @@ export function createDraftControls({
   let disposed = false,
     owner = null,
     operation = null,
-    failure = null;
+    failure = null,
+    restoreRevision = null;
   const composing = new Set();
+  // Access changes retire replacement authority without inventing a source edit
+  // or scheduling an autosave of otherwise unchanged, already acknowledged bytes.
+  const access = trackSourceAccess([sourceEditor, filename], () => render());
   const replacementBlocked = () =>
-    !!(composing.size > 0 || sourceEditor.disabled || sourceEditor.readOnly
-      || filename.disabled || filename.readOnly);
+    composing.size > 0 || access.blocked();
   const alive = () => {
     if (disposed) throw new FlowError("SESSION_DISPOSED", "Draft controls are disposed.");
   };
-  function guardRestore() {
+  function guardRestore(ticket = restoreRevision) {
     alive();
+    const revision = access.synchronize();
     if (replacementBlocked())
       throw new FlowError("EDITOR_BUSY", "Finish text composition or unlock the editor before restoring a draft.");
+    if (ticket !== null && ticket !== revision)
+      throw new FlowError("STALE_SOURCE", "Editor access changed during recovery; start a fresh restore.");
   }
   function render() {
     // A resumed/remounted controller may already own these same elements.
@@ -124,11 +131,17 @@ export function createDraftControls({
     });
   }
   function restoreRecovery() {
+    const ticket = access.synchronize();
     return perform(async () => {
-      guardRestore();
+      guardRestore(ticket);
       if (!owner)
         throw new FlowError("STORAGE_UNAVAILABLE", "Refresh recovery to open draft storage.");
-      await owner.restore();
+      restoreRevision = ticket;
+      try {
+        await owner.restore();
+      } finally {
+        restoreRevision = null;
+      }
     });
   }
   function forgetRecovery() {
@@ -214,6 +227,7 @@ export function createDraftControls({
     dispose() {
       if (disposed) return;
       disposed = true;
+      access.dispose();
       owner?.dispose();
       owner = null;
       composing.clear();

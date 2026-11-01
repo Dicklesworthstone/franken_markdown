@@ -1,4 +1,4 @@
-// Explicit local PNG/JPEG authoring for standalone workspaces. No fetch,
+// Explicit local PNG/JPEG/GIF authoring for standalone workspaces. No fetch,
 // ambient path access, dependency or persistent browser storage is involved.
 const FMD_IMAGE_IMPORT_LIMITS = Object.freeze({
   files: 8, fileBytes: 8 * 1024 * 1024, batchBytes: 16 * 1024 * 1024,
@@ -13,6 +13,62 @@ function fmdImportDimensions(width, height) {
   }
 }
 
+// Validate GIF87a/89a framing and every frame's bounds before browser decoding.
+// Preserve the original stream, including palettes, interlacing, transparency
+// and animation; this is not a replacement LZW decoder.
+// Container reference: https://www.w3.org/Graphics/GIF/spec-gif89a.txt
+function fmdImportGifInfo(bytes) {
+  let offset = 6, frames = 0;
+  const invalid = () => { throw Error('Invalid or truncated GIF container'); };
+  const take = length => {
+    if (length > bytes.length - offset) invalid();
+    const start = offset; offset += length; return start;
+  };
+  const byte = () => bytes[take(1)];
+  const short = start => bytes[start] + bytes[start + 1] * 256;
+  const palette = packed => {
+    const colors = packed & 0x80 ? 2 << (packed & 7) : 0;
+    take(colors * 3); return colors;
+  };
+  const blocks = () => {
+    let total = 0, length;
+    while ((length = byte()) !== 0) { take(length); total += length; }
+    return total;
+  };
+  const screen = take(7), width = short(screen), height = short(screen + 2);
+  fmdImportDimensions(width, height);
+  const global = palette(bytes[screen + 4]);
+  if (global && bytes[screen + 5] >= global) invalid();
+  while (offset < bytes.length) {
+    const tag = byte();
+    if (tag === 0x21) {
+      const label = byte();
+      if (label === 0xf9) {
+        if (byte() !== 4) invalid();
+        take(4);
+        if (byte() !== 0) invalid();
+      } else if (label === 0x01) {
+        throw Error('GIF plain-text graphics are not supported; choose a raster image');
+      } else blocks();
+    } else if (tag === 0x2c) {
+      const descriptor = take(9), left = short(descriptor), top = short(descriptor + 2);
+      const frameWidth = short(descriptor + 4), frameHeight = short(descriptor + 6);
+      if (!frameWidth || !frameHeight || left + frameWidth > width || top + frameHeight > height) {
+        throw Error('GIF frame dimensions fall outside the image canvas');
+      }
+      const local = palette(bytes[descriptor + 8]);
+      if (!local && !global) invalid();
+      const codeSize = byte();
+      if (codeSize < 2 || codeSize > 8 || !blocks()) invalid();
+      frames++;
+    } else if (tag === 0x3b) {
+      if (!frames || offset !== bytes.length) invalid();
+      return {mime: 'image/gif', width, height};
+    } else invalid();
+  }
+  return invalid();
+}
+
 // Inspect dimensions before allowing browser decoding. The decoder still has
 // to validate the real image, not merely these container/frame headers.
 function fmdImportImageInfo(bytes) {
@@ -21,6 +77,9 @@ function fmdImportImageInfo(bytes) {
   }
   const u16 = n => bytes[n] * 256 + bytes[n + 1];
   const u32 = n => bytes[n] * 0x1000000 + bytes[n + 1] * 0x10000 + bytes[n + 2] * 256 + bytes[n + 3];
+  if (bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(String.fromCharCode(...bytes.subarray(0, 6)))) {
+    return fmdImportGifInfo(bytes);
+  }
   if (bytes.length >= 33 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, i) => bytes[i] === value)) {
     let offset = 8, width, height, data = false;
     while (offset + 12 <= bytes.length) {
@@ -33,7 +92,7 @@ function fmdImportImageInfo(bytes) {
         width = u32(offset + 8); height = u32(offset + 12);
         fmdImportDimensions(width, height);
       }
-      if (tag === 'acTL') throw Error('Animated PNG import is not supported; choose a static PNG or JPEG');
+      if (tag === 'acTL') throw Error('Animated PNG import is not supported; choose a static PNG, JPEG or GIF');
       if (tag === 'IDAT') data = true;
       offset += length + 12;
       if (tag === 'IEND') {
@@ -64,7 +123,7 @@ function fmdImportImageInfo(bytes) {
     }
     throw Error('Invalid or missing JPEG frame');
   }
-  throw Error('Choose a static PNG or JPEG image (file contents, not its extension, determine the format)');
+  throw Error('Choose a PNG, JPEG or GIF image (file contents, not its extension, determine the format)');
 }
 
 function fmdImportBase64(bytes) {
@@ -133,7 +192,7 @@ function fmdNativeImageImport(images, native) {
   // source references. The native store additionally rejects any duplicate key.
   const assets = images.map(image => {
     const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
-    return {destination: 'fmd-import/' + id + (image.mime === 'image/png' ? '.png' : '.jpg'), bytes: image.bytes};
+    return {destination: 'fmd-import/' + id + (image.mime === 'image/png' ? '.png' : image.mime === 'image/gif' ? '.gif' : '.jpg'), bytes: image.bytes};
   });
   const transaction = native.stageImages(assets);
   const markdown = images.map((image, i) => '![' + image.alt + '](' + assets[i].destination + ')').join('\n\n');
@@ -394,8 +453,8 @@ function fmdInstallImageManager(doc = document) {
   const select = make('select', undefined, label); select.id = 'fmd-image-selection'; select.size = 6;
   select.style.cssText = 'display:block;width:100%;box-sizing:border-box;font:inherit;margin:8px 0';
   const destination = make('p', '', dialog); destination.id = 'fmd-image-destination'; destination.style.overflowWrap = 'anywhere';
-  const fileLabel = make('label', 'Replacement file (static PNG or JPEG, at most 8 MiB)', dialog);
-  const file = make('input', undefined, fileLabel); file.type = 'file'; file.accept = 'image/png,image/jpeg,.png,.jpg,.jpeg';
+  const fileLabel = make('label', 'Replacement file (PNG, JPEG or GIF, at most 8 MiB)', dialog);
+  const file = make('input', undefined, fileLabel); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/gif,.png,.jpg,.jpeg,.gif';
   file.id = 'fmd-image-replacement'; file.style.cssText = 'display:block;margin:8px 0;max-width:100%';
   make('p', 'Removal does not rewrite source references or infer which images are unused. A remaining reference may produce a missing-image diagnostic. Save HTML before removing resources you may need later; source undo does not restore them.', dialog);
   const actions = make('div', undefined, dialog); actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:12px;margin:12px 0';

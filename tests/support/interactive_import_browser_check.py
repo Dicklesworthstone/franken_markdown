@@ -1,8 +1,8 @@
 """Real-browser image authoring checks over a generated interactive workspace.
 
 Usage: python tests/support/interactive_import_browser_check.py document.html
-Needs Playwright/Chromium on the verification host only. Fixtures are real PNG
-and progressive JPEG bytes; imports are driven through the actual file input.
+Needs Playwright/Chromium on the verification host only. Fixtures are real PNG,
+progressive JPEG and GIF bytes; imports use the actual file input.
 """
 import argparse
 import base64
@@ -33,6 +33,8 @@ def png(width=2, height=1):
     return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(b'\0\xff\0\0\xff\0\xff\0\xff')) + chunk(b'IEND', b'')
 
 JPEG = base64.b64decode('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wgARCAACAAMDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUAQEAAAAAAAAAAAAAAAAAAAAF/9oADAMBAAIQAxAAAAGOFD//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAEFAn//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/AX//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/AX//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAY/An//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/IX//2gAMAwEAAgADAAAAEAP/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/EH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EH//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/EH//2Q==')
+GIFS = [base64.b64decode((Path(__file__).resolve().parents[1] / 'fixtures/gif' / (name + '.base64')).read_text())
+        for name in ['animated-colors', 'interlaced-palette']]
 
 def upload(name, data, mime='application/octet-stream'):
     return {'name': name, 'mimeType': mime, 'buffer': data}
@@ -132,12 +134,31 @@ with sync_playwright() as p:
     check(page.locator('main#preview-pane img').count() == 2, 'batch preview lost an image')
 
     page = load()
+    edit(page, 'GIF images')
+    check('image/gif' in page.locator(picker).get_attribute('accept'), 'file chooser excludes supported GIF images')
+    message = insert(page, [upload('animated.png', GIFS[0], 'image/png'), upload('interlaced.gif', GIFS[1])], chooser=True)
+    check(message.startswith('Inserted 2 images'), 'GIF batch failed: ' + message)
+    for encoded in GIFS:
+        check('data:image/gif;base64,' + base64.b64encode(encoded).decode() in text(page), 'GIF import changed original frame bytes')
+    page.evaluate("window.dispatchEvent(new Event('beforeprint'))")
+    page.wait_for_function('''() => {
+      const images = document.querySelectorAll('main#preview-pane img');
+      return images.length === 2 && images[0].naturalWidth === 2 && images[1].naturalWidth === 96;
+    }''')
+    check(True, 'animated and interlaced GIFs decode in the real preview')
+    original = text(page)
+    check(save(page, 'btn-save-markdown') == original.encode(), 'GIF Markdown download loses original animation bytes')
+    reopened_gifs = load(save(page, 'btn-save-html').decode())
+    check(text(reopened_gifs) == original, 'GIF source changes through save/reopen')
+
+    page = load()
     edit(page, 'Keep unchanged')
     for files in [
         [upload('valid.png',png()),upload('fake.png',b'<svg onload="alert(1)"/>','image/png')],
         [upload('huge.png',png(5000,5000))],
         [upload('too-many.png',png())] * 9,
         [upload('empty.png',b'')],
+        [upload('truncated.gif',GIFS[0][:-1])],
         # A plausible frame passes metadata but must still fail real decoding.
         [upload('bad.jpg',bytes([255,216,255,192,0,11,8,0,1,0,1,1,1,17,0,255,217]))],
     ]:

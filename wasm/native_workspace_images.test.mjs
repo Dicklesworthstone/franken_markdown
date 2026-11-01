@@ -158,6 +158,22 @@ test('lightweight preparation keeps exact data-URI Markdown; native preparation 
   assert.notEqual(added[0].destination,added[1].destination);assert.deepEqual(added[0].bytes,[...png]);
 });
 
+test('GIF authoring preserves original animation and interlaced bytes in native HTML, PDF and saved resources', async () => {
+  for (const name of ['animated-colors', 'interlaced-palette']) {
+    const bytes=Buffer.from(readFileSync(new URL('../tests/fixtures/gif/'+name+'.base64',import.meta.url),'utf8'),'base64');
+    const images=await read([file('claimed.png',bytes)]), s=setup();
+    const insertion=pure.fmdNativeImageImport(images,s.renderer);
+    assert.equal(images[0].mime,'image/gif');
+    assert.match(insertion.markdown,/!\[claimed\.png\]\(fmd-import\/[a-f0-9]{32}\.gif\)/);
+    insertion.transaction.commit();
+    const expected={destination:s.payload.images[1].destination,bytes:[...bytes]};
+    assert.deepEqual(s.assets('html')[1],expected);assert.deepEqual(s.assets('pdf')[1],expected);
+    assert.deepEqual(Buffer.from(s.payload.images[1].bytes,'base64'),bytes);
+    const reopened=setup(JSON.parse(JSON.stringify(s.payload)));
+    assert.deepEqual(reopened.assets('pdf')[1],expected);
+  }
+});
+
 test('file bytes, size and alt are captured before asynchronous decoding and native publication', async () => {
   const bytes=Uint8Array.from(png);const f={name:'before.png',size:bytes.length,async arrayBuffer(){return bytes.buffer;}};
   const images=await pure.fmdReadImageImport([f],async()=>{bytes.fill(0);f.name='after';f.size=1;},()=>true);

@@ -52,7 +52,7 @@ errors. Browser fixture execution is distinct from Rust/WASM compilation.
 
 ## Importing images while editing
 
-**Insert image** opens a local file chooser for static PNG and JPEG files. Select
+**Insert image** opens a local file chooser for PNG, JPEG and GIF files. Select
 one or several images to insert at the editor selection in file-selection order.
 The entire batch is read, bounded, inspected and decoded before source changes;
 a failed file leaves the source untouched. Typing (even followed by undo) while
@@ -67,12 +67,21 @@ an abandoned operation cannot insert source, publish native image resources,
 or interfere with a later retry. Cancellation preserves edits made while the
 files were being read.
 
-The importer determines PNG/JPEG format and dimensions from bytes, not the
+The importer determines PNG/JPEG/GIF format and dimensions from bytes, not the
 extension or declared MIME type. Browser decoding must also succeed. Limits are
 eight files per batch, 8 MiB per file, 16 MiB per batch, 24 million pixels per
-image and 16,384 pixels per side. Animated PNG and other import formats are
-refused. The resulting editor document is limited to 32 Mi UTF-16 code units for
+image canvas and 16,384 pixels per side. GIF87a and GIF89a containers retain
+their original palettes, transparency, interlacing and animation bytes. Every
+frame must fit the admitted canvas, and all image/extension sub-blocks must be
+complete through the final trailer. GIF plain-text graphics and animated PNG
+remain unsupported. The resulting editor document is limited to 32 Mi UTF-16 code units for
 this import operation. These are import limits, not new global rendering limits.
+
+The native workspace's **Document images** replacement chooser accepts the same
+formats without changing the existing Markdown destination. HTML preserves GIF
+animation; native PDF uses the first frame. Imported native resources use `.gif`
+destinations when their bytes identify a GIF, even when the selected filename or
+declared MIME type claims a different format.
 
 Newly imported images are written as base64 image data URIs **in the Markdown
 source itself**. Consequently both **Save Markdown** and **Save HTML** carry the
@@ -91,7 +100,7 @@ changes activate the existing leave-page warning and normal preview/save flow.
 exercises the shipped metadata, limits, encoding, batch and insertion ownership
 code. The optional real-browser gate
 `python tests/support/interactive_import_browser_check.py document.html` uses
-actual local file selection, PNG/JPEG decoding, selection replacement, batch
+actual local file selection, PNG/JPEG/GIF decoding, selection replacement, batch
 refusals, retry, undo/redo, asynchronous races and both download formats. It also
 checks the fallback insertion path and saved read-mode state. Like the resource
 lifecycle gate, this browser gate is separate from Rust/WASM compilation.

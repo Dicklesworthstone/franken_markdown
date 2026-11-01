@@ -55,7 +55,8 @@ const escape = text => text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>
 export function renderHtmlConfiguredAdvanced(...a) {
   const resourceImages = images(a[13], a[14], a[15]).filter(([key]) => a[0].includes(key));
   return result('<html><head></head><body><pre id="source">' + escape(a[0]) + '</pre>'
-    + resourceImages.map(([key, data]) => '<img alt="' + escape(key) + '" src="data:image/png;base64,' + data + '">').join('')
+    + resourceImages.map(([key, data]) => '<img alt="' + escape(key) + '" src="data:'
+      + (atob(data).startsWith('GIF8') ? 'image/gif' : 'image/png') + ';base64,' + data + '">').join('')
     + '</body></html>', 'text/html');
 }
 function pdf(a, page) {
@@ -81,7 +82,7 @@ export function renderPdfConfiguredPage(...a) { return pdf(a, Array.from(a.pop()
             + '"><title>Image lifecycle adapter</title><style>textarea{width:90%;height:180px}button{padding:8px}'
             + '.view-read #editor-pane{display:none}</style></head><body>'
             + '<header class="fmd-app-header">' + ''.join('<button id="btn-' + b + '">' + b + '</button>' for b in buttons)
-            + '<input id="fmd-image-picker" type="file" accept="image/png,image/jpeg" multiple hidden>'
+            + '<input id="fmd-image-picker" type="file" accept="image/png,image/jpeg,image/gif" multiple hidden>'
             + '<span id="view-mode-icon"></span><span id="view-mode-label"></span></header>'
             + '<div id="fmd-app-body" class="view-split"><section id="editor-pane"><div class="fmd-pane-header">'
             + '<span id="source-line-count"></span><span id="fmd-save-status"></span></div>'
@@ -355,6 +356,27 @@ async def run(args):
           window.__fmdNativeRuntime.pdf(document.getElementById('fmd-editor').value)).split(String.fromCharCode(10))[1])''')
         check(receipt['images'] == [[image['destination'], image['bytes']] for image in after_drop['images']],
               'reopened PDF dispatch includes picker, clipboard and dropped resources together')
+
+        gif = base64.b64decode((ROOT / 'tests/fixtures/gif/animated-colors.base64').read_text())
+        gif_page = await open_page(initial)
+        await select(gif_page, [{'name':'animation.png','mimeType':'image/png','buffer':gif}])
+        gif_assets = (await manifest(gif_page))['images']
+        gif_source = await gif_page.locator('#fmd-editor').input_value()
+        check(len(gif_assets) == 2 and gif_assets[1]['destination'].endswith('.gif'), 'GIF contents determine the native resource extension')
+        check(base64.b64decode(gif_assets[1]['bytes']) == gif and gif_assets[1]['destination'] in gif_source,
+              'native GIF insertion preserves the complete animation stream')
+        await gif_page.wait_for_function('''() => {
+          const images=document.querySelector('#fmd-content iframe')?.contentDocument?.images;
+          return images?.length===2 && images[1].naturalWidth===2 && images[1].naturalHeight===2;
+        }''')
+        check(True, 'GIF decodes in the native preview adapter')
+        gif_saved = await download(gif_page, '#btn-save-html', 'animated.workspace.html')
+        gif_reopened = await open_page(gif_saved)
+        check(await gif_reopened.locator('#fmd-editor').input_value() == gif_source, 'GIF references survive native save/reopen')
+        check((await manifest(gif_reopened))['images'] == gif_assets, 'GIF animation bytes survive native save/reopen')
+        gif_receipt = await gif_reopened.evaluate('''() => JSON.parse(new TextDecoder().decode(
+          window.__fmdNativeRuntime.pdf(document.getElementById('fmd-editor').value)).split(String.fromCharCode(10))[1])''')
+        check(gif_receipt['images'][1] == [gif_assets[1]['destination'], gif_assets[1]['bytes']], 'PDF dispatch receives the complete original GIF for native first-frame rendering')
         check(not requests, 'zero HTTP(S) requests')
         check(not errors, 'zero uncaught browser errors')
         version = browser.version

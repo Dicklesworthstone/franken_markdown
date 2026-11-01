@@ -20,6 +20,17 @@ at rendering time, not during definition collection. Unused notes do not render
 visible content, although their valid block-level reference definitions remain
 document-global.
 
+Footnote IDs compare exactly, including case and Unicode spelling. `[^A]` and
+`[^a]` address separate notes, while a wrong-case reference with no exact
+definition remains literal text. Repeated uses of the same ID share one note
+and retain all backlinks.
+
+A note retains a complete run of blank lines when the next nonblank line has
+at least four columns of indentation. Removing those four columns preserves
+additional indentation, rich Markdown blocks, and literal blank lines inside
+code. Mixed tabs and spaces follow four-column tab stops. A blank run followed
+by outside content ends the note without consuming that content.
+
 Block-tree nodes, list items, and table rows share the structure budget described
 in `LIGHTWEIGHT_RENDER_LIMITS.md`; there is no unbounded secondary AST or parsing
 pass. Depth exhaustion preserves the existing escaped `<pre>` fallback rather
@@ -86,6 +97,7 @@ bundle's validation directory, not required by the dependency-free Node tests.
 node --test tests/interactive_renderer.test.mjs
 node --test tests/interactive_definitions.test.mjs
 node --test wasm/tests/interactive_container_boundaries.test.mjs
+node --test wasm/tests/interactive_footnote_identity.test.mjs
 node --check src/interactive_renderer.js
 ```
 

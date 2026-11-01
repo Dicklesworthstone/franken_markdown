@@ -444,7 +444,8 @@ function parseMarkdownClient(source, imageAssets) {
       return encoded;
     });
   };
-  const normalizeNote = label => { charge(label.length); return label.trim().replace(/\s+/g, ' ').toLowerCase(); };
+  // Exact source IDs keep case-distinct footnotes and their bodies separate.
+  const noteKey = label => { charge(label.length); return label; };
   function normalizeReference(label) {
     charge(label.length);
     // The 999-character cap applies to source scalars, before either whitespace
@@ -541,7 +542,7 @@ function parseMarkdownClient(source, imageAssets) {
     return id;
   }
   function noteReference(label) {
-    const key = normalizeNote(label), note = notes.get(key);
+    const key = noteKey(label), note = notes.get(key);
     if (!note) return null;
     if (!note.number) { note.number = usedNotes.length + 1; note.id = uniqueId('fn-' + note.number); note.referenceIds = []; usedNotes.push(note); }
     allocate(); charge();
@@ -1043,11 +1044,19 @@ function parseMarkdownClient(source, imageAssets) {
       if (foot) {
         const content = [foot[2]]; i++;
         while (i < lines.length) {
-          if (/^( {4}|\t)/.test(lines[i])) content.push(lines[i++].replace(/^( {4}|\t)/, ''));
-          else if (!lines[i].trim() && i + 1 < lines.length && /^( {4}|\t)/.test(lines[i + 1])) content.push(lines[i++]);
+          if (!lines[i].trim()) {
+            let next = i;
+            while (next < lines.length && !lines[next].trim()) {
+              charge(lines[next].length + 1); next++;
+            }
+            if (next === lines.length || indentation(lines[next]).width < 4) break;
+            // Consume the complete admitted blank run once, retaining literal
+            // blank content inside code instead of repeatedly scanning suffixes.
+            while (i < next) content.push(stripIndent(lines[i++], 4));
+          } else if (indentation(lines[i]).width >= 4) content.push(stripIndent(lines[i++], 4));
           else break;
         }
-        const key = normalizeNote(foot[1]);
+        const key = noteKey(foot[1]);
         if (!notes.has(key)) {
           allocate();
           // Reserve before descending: a nested duplicate cannot take the

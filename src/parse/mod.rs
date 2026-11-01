@@ -18,6 +18,7 @@ use crate::span::{ParseDiagnostic, SourceSpan, Spanned, SpannedDocument};
 
 pub(crate) mod entities;
 mod frontmatter;
+mod html_blocks;
 mod unicode_casefold;
 mod unicode_punct;
 
@@ -959,8 +960,9 @@ fn collect_link_reference_metadata_at_depth(
         // HTML block contents are literal text, never reference definitions.
         // Skip the whole block (matching the block parser) so a `[label]: dest`-
         // looking line inside raw HTML is not extracted and resolved.
-        if scan.maybe_html
-            && let Some(end_cond) = html_block_kind(line)
+        let html_kind = scan.maybe_html.then(|| html_block_kind(line)).flatten();
+        if let Some(end_cond) = html_kind
+            && (!in_paragraph || end_cond.interrupts_paragraph())
         {
             i = html_block_end(lines, i, end_cond, |l| *l);
             in_paragraph = false;
@@ -1076,7 +1078,8 @@ fn collect_link_reference_metadata_at_depth(
         // Any other non-blank line is paragraph text — so a following
         // `[label]: dest` line is a lazy continuation, not a definition — unless
         // it begins a different block, which closes/prevents a paragraph.
-        in_paragraph = line_is_paragraph_text_with_scan(line, scan);
+        in_paragraph = line_is_paragraph_text_with_scan(line, scan)
+            || (in_paragraph && html_kind.is_some_and(|end| !end.interrupts_paragraph()));
         i += 1;
     }
     kept_reference_candidate
@@ -1349,8 +1352,8 @@ fn scanned_html_block_kind(scan: BlockStartScan<'_>) -> Option<HtmlBlockEnd> {
         .and_then(html_block_kind_from_block_start)
 }
 
-fn scanned_html_block_start(scan: BlockStartScan<'_>) -> bool {
-    scanned_html_block_kind(scan).is_some()
+fn scanned_html_paragraph_interrupt(scan: BlockStartScan<'_>) -> bool {
+    scanned_html_block_kind(scan).is_some_and(HtmlBlockEnd::interrupts_paragraph)
 }
 
 fn scanned_list_marker(scan: BlockStartScan<'_>) -> Option<Marker<'_>> {
@@ -1382,7 +1385,7 @@ fn scanned_paragraph_interrupt(scan: BlockStartScan<'_>) -> bool {
         || scanned_atx_heading(scan).is_some()
         || scanned_open_fence(scan).is_some()
         || scanned_blockquote_start(scan)
-        || scanned_html_block_start(scan)
+        || scanned_html_paragraph_interrupt(scan)
         || scanned_list_marker_interrupts_paragraph(scan)
 }
 
@@ -2762,8 +2765,16 @@ enum HtmlBlockEnd {
     /// Types 1-5: continue until (and including) the first line that contains
     /// one of these end markers — even across blank lines.
     Marker(&'static [&'static str]),
-    /// Types 6-7: continue until the next blank line.
+    /// Type 6: continue until the next blank line; can interrupt a paragraph.
     Blank,
+    /// Type 7: the same end condition, but only starts at a block boundary.
+    BlankNonInterrupting,
+}
+
+impl HtmlBlockEnd {
+    fn interrupts_paragraph(self) -> bool {
+        !matches!(self, Self::BlankNonInterrupting)
+    }
 }
 
 /// Classify an HTML block start and return its end condition, or `None` when the
@@ -2800,17 +2811,27 @@ fn html_block_kind_from_block_start(t: &str) -> Option<HtmlBlockEnd> {
         return if t.as_bytes().get(2).is_some_and(u8::is_ascii_alphabetic) {
             Some(HtmlBlockEnd::Marker(&[">"]))
         } else {
-            // Preserve the historical bare-`<!` start (blank-terminated).
-            Some(HtmlBlockEnd::Blank)
+            None
         };
     }
     // Type 1: raw-text elements (`<script>`, `<pre>`, `<style>`, `<textarea>`).
     if let Some(markers) = html_raw_text_end_markers(t) {
         return Some(HtmlBlockEnd::Marker(markers));
     }
-    // Types 6-7: recognized block-level tags terminate at the next blank line.
+    // Type 6 requires a tag-name boundary, though not a complete tag. A prefix
+    // such as `<div.foo>` or `<div/invalid>` must remain ordinary Markdown.
     let name = html_tag_name(t)?;
-    is_html_block_tag(name).then_some(HtmlBlockEnd::Blank)
+    let prefix_len = if t.starts_with("</") { 2 } else { 1 };
+    let after = &t[prefix_len + name.len()..];
+    if is_html_block_tag(name)
+        && (matches!(after.as_bytes().first(), None | Some(b' ' | b'\t' | b'>'))
+            || after.starts_with("/>"))
+    {
+        return Some(HtmlBlockEnd::Blank);
+    }
+    // Type 7 accepts a complete open/closing tag on its own line, and cannot
+    // interrupt an existing paragraph. Consumers must preserve that distinction.
+    html_blocks::complete_tag_line(t).then_some(HtmlBlockEnd::BlankNonInterrupting)
 }
 
 fn html_block_start(line: &str) -> bool {
@@ -2818,22 +2839,17 @@ fn html_block_start(line: &str) -> bool {
 }
 
 /// End markers for CommonMark type-1 raw-text HTML blocks. A start matches
-/// `<name` (case-insensitive) followed by whitespace, `>`, `/`, or end of line.
+/// `<name` (case-insensitive) followed by space, tab, `>`, or end of line. Any of
+/// the four raw-text closing tags ends this block, regardless of its opener.
 fn html_raw_text_end_markers(t: &str) -> Option<&'static [&'static str]> {
-    const RAW: [(&str, &[&str]); 4] = [
-        ("script", &["</script>"]),
-        ("pre", &["</pre>"]),
-        ("style", &["</style>"]),
-        ("textarea", &["</textarea>"]),
-    ];
+    const RAW: [&str; 4] = ["script", "pre", "style", "textarea"];
+    const END: &[&str] = &["</script>", "</pre>", "</style>", "</textarea>"];
     let rest = t.strip_prefix('<')?;
-    for (name, markers) in RAW {
-        if let Some(after) = strip_ascii_prefix_ignore_case(rest, name) {
-            match after.chars().next() {
-                None => return Some(markers),
-                Some(c) if c.is_whitespace() || c == '>' || c == '/' => return Some(markers),
-                _ => {}
-            }
+    for name in RAW {
+        if let Some(after) = strip_ascii_prefix_ignore_case(rest, name)
+            && matches!(after.as_bytes().first(), None | Some(b' ' | b'\t' | b'>'))
+        {
+            return Some(END);
         }
     }
     None
@@ -2861,7 +2877,7 @@ fn html_block_end<T>(
             }
             k
         }
-        HtmlBlockEnd::Blank => {
+        HtmlBlockEnd::Blank | HtmlBlockEnd::BlankNonInterrupting => {
             let mut k = start + 1;
             while k < lines.len() && !is_blank_line(text(&lines[k])) {
                 k += 1;
@@ -2947,10 +2963,8 @@ fn is_html_block_tag_lowercase(name: &str) -> bool {
             | "option"
             | "p"
             | "param"
-            | "pre"
-            | "script"
+            | "search"
             | "section"
-            | "style"
             | "summary"
             | "table"
             | "tbody"
@@ -3173,15 +3187,17 @@ mod html_block_classifier_tests {
 
     #[test]
     fn raw_text_html_block_starts_match_ascii_case_insensitively() {
-        assert_eq!(
-            raw_marker("<SCRIPT type=\"module\">").map(|m| m[0]),
-            Some("</script>")
-        );
-        assert_eq!(raw_marker("<Pre>").map(|m| m[0]), Some("</pre>"));
-        assert_eq!(raw_marker("<STYLE>").map(|m| m[0]), Some("</style>"));
-        assert_eq!(raw_marker("<TextArea>").map(|m| m[0]), Some("</textarea>"));
+        for opener in ["<SCRIPT type=\"module\">", "<Pre>", "<STYLE>", "<TextArea>"] {
+            assert_eq!(
+                raw_marker(opener),
+                Some(["</script>", "</pre>", "</style>", "</textarea>"].as_slice()),
+                "every type-1 block accepts any raw-text end marker: {opener}"
+            );
+        }
         assert!(html_raw_text_end_markers("<scripture>").is_none());
         assert!(html_raw_text_end_markers("<prelude>").is_none());
+        assert!(html_raw_text_end_markers("<script/>").is_none());
+        assert!(html_raw_text_end_markers("<pre\u{a0}class=x>").is_none());
     }
 
     #[test]
@@ -3525,7 +3541,7 @@ impl ContainerTail {
                     HtmlBlockEnd::Marker(markers) => markers
                         .iter()
                         .any(|marker| contains_ascii_ignore_case(line, marker)),
-                    HtmlBlockEnd::Blank => is_blank_line(line),
+                    HtmlBlockEnd::Blank | HtmlBlockEnd::BlankNonInterrupting => is_blank_line(line),
                 };
                 if closed {
                     self.leaf = TailLeaf::Boundary;

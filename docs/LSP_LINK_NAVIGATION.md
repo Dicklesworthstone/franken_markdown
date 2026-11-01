@@ -68,8 +68,10 @@ references, highlights, and versioned rename through a separate document-local
 provider; see [LSP_FOOTNOTES.md](LSP_FOOTNOTES.md). This includes unresolved
 references and definitions in unreferenced note bodies.
 
-Escaped/multiline explicit URL tokens, multiline reference uses and
-reference-definition editing are not implemented.
+Escaped/multiline explicit URL navigation and multiline reference-use navigation
+are not implemented. Definitions and full/collapsed/shortcut references support
+separate [reference-label rename](LSP_REFERENCE_RENAME.md), preserving visible
+text, destinations and titles through parser-owned edits.
 
 ## Limits and verification
 

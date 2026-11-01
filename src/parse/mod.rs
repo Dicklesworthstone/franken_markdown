@@ -24,10 +24,12 @@ mod unicode_punct;
 pub use frontmatter::{Frontmatter, split_frontmatter};
 
 mod destinations;
+mod reference_labels;
 pub use destinations::DestinationSpan;
 pub(crate) use destinations::container_fence_ranges;
 #[cfg(feature = "cli")]
 pub(crate) use destinations::{DestinationSyntax, resource_destination_spans};
+pub use reference_labels::{ReferenceLabelForm, ReferenceLabelSpan};
 
 /// Exact source tokens for parsed inline link/image destinations and accepted
 /// reference definitions. Ranges are UTF-8 byte offsets in this exact source,
@@ -42,6 +44,20 @@ pub(crate) use destinations::{DestinationSyntax, resource_destination_spans};
 #[must_use]
 pub fn destination_spans(source: &str) -> Vec<DestinationSpan> {
     destinations::destination_spans(source)
+}
+
+/// Source labels for accepted reference definitions and resolved reference
+/// links/images, using the ordinary parser's grammar and Unicode identity.
+/// Unused and shadowed definitions are included. Literal text, inline URLs,
+/// code, HTML and abandoned speculative links are excluded.
+///
+/// Ranges address this exact UTF-8 source. An occurrence with no contiguous
+/// source mapping remains in the result with absent ranges, so source editors
+/// can refuse incomplete changes. See [`ReferenceLabelSpan`] for edit forms.
+/// Tracking is opt-in and does not change the AST or normal parser behavior.
+#[must_use]
+pub fn reference_label_spans(source: &str) -> Vec<ReferenceLabelSpan> {
+    destinations::reference_label_spans(source)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1030,7 +1046,7 @@ fn collect_link_reference_metadata_at_depth(
                     parse_multiline_reference_definition(&lines[i..])
             {
                 if let Some(tracker) = &mut tracker {
-                    tracker.reference(&lines[i..i + used], &reference.dest);
+                    tracker.reference(&lines[i..i + used], &label, &reference.dest);
                 }
                 refs.entry(label).or_insert(reference);
                 if let Some(consumed) = consumed.as_mut() {
@@ -5352,8 +5368,10 @@ fn parse_link_like(
         profiler,
     );
     let nested_link = !image && contains_link(&content);
-    if image || nested_link {
+    if nested_link {
         profiler.destination_rollback(mark);
+    } else if image {
+        profiler.destination_tokens_rollback(mark);
     }
     if nested_link {
         return None;
@@ -5602,11 +5620,16 @@ fn parse_reference_link_like(
         profiler,
     );
     let nested_link = !image && contains_link(&content);
-    if image || nested_link {
+    if nested_link {
         profiler.destination_rollback(mark);
+    } else if image {
+        profiler.destination_tokens_rollback(mark);
     }
     if nested_link {
         return None;
+    }
+    if let Some(tracker) = &mut profiler.destinations {
+        tracker.reference_use(chars, i, close, next);
     }
     Some((
         content,

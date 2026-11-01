@@ -65,6 +65,77 @@ fn array(value: &Json) -> &[Json] {
 }
 
 #[test]
+fn real_reference_rename_returns_versioned_edits_without_changing_the_open_buffer() -> TestResult {
+    let (status, replies) = session(&[
+        r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true}}}}}"###,
+        r###"{"jsonrpc":"2.0","method":"initialized","params":{}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:references","languageId":"markdown","version":7,"text":"[read][ref] [ref][] [ref]\n\n[ref]: /target \"Title\"\n"}}}"###,
+        r###"{"jsonrpc":"2.0","id":2,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"untitled:references"},"position":{"line":0,"character":8}}}"###,
+        r###"{"jsonrpc":"2.0","id":3,"method":"textDocument/rename","params":{"textDocument":{"uri":"untitled:references"},"position":{"line":0,"character":8},"newName":"manual"}}"###,
+        r###"{"jsonrpc":"2.0","id":4,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"untitled:references"},"position":{"line":0,"character":8}}}"###,
+        r###"{"jsonrpc":"2.0","id":5,"method":"shutdown"}"###,
+        r###"{"jsonrpc":"2.0","method":"exit"}"###,
+    ])?;
+    assert!(status.success());
+    let result = |id| {
+        replies
+            .iter()
+            .find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
+            .and_then(|reply| reply.get("result"))
+            .ok_or("missing result")
+    };
+    assert_eq!(
+        result(2)?.get("placeholder").and_then(Json::as_str),
+        Some("ref")
+    );
+    assert_eq!(
+        result(2)?,
+        result(4)?,
+        "rename must leave the live buffer unchanged"
+    );
+    let changes = array(
+        result(3)?
+            .get("documentChanges")
+            .ok_or("missing documentChanges")?,
+    );
+    assert_eq!(changes.len(), 1);
+    let document = changes[0].get("textDocument").ok_or("missing document")?;
+    assert_eq!(
+        document.get("uri").and_then(Json::as_str),
+        Some("untitled:references")
+    );
+    assert_eq!(document.get("version").and_then(Json::as_u64), Some(7));
+    let edits = array(changes[0].get("edits").ok_or("missing edits")?);
+    assert_eq!(edits.len(), 4);
+    assert_eq!(
+        edits
+            .iter()
+            .map(|edit| edit.get("newText").and_then(Json::as_str))
+            .collect::<Vec<_>>(),
+        [
+            Some("manual"),
+            Some("[manual]"),
+            Some("[manual]"),
+            Some("manual")
+        ]
+    );
+    for (edit, (line, start, end)) in
+        edits
+            .iter()
+            .zip([(0, 7, 10), (0, 17, 19), (0, 25, 25), (2, 1, 4)])
+    {
+        let range = edit.get("range").ok_or("missing edit range")?;
+        let a = range.get("start").ok_or("missing start")?;
+        let b = range.get("end").ok_or("missing end")?;
+        assert_eq!(a.get("line").and_then(Json::as_u64), Some(line));
+        assert_eq!(b.get("line").and_then(Json::as_u64), Some(line));
+        assert_eq!(a.get("character").and_then(Json::as_u64), Some(start));
+        assert_eq!(b.get("character").and_then(Json::as_u64), Some(end));
+    }
+    Ok(())
+}
+
+#[test]
 fn real_editor_session_repairs_diagnostics_and_navigates_current_unicode_text() -> TestResult {
     let (status, replies) = session(&[
         r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"foldingRange":{"rangeLimit":1}}}}}"###,

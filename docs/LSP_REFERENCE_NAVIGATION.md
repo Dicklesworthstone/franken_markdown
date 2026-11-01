@@ -31,8 +31,10 @@ request returns null rather than treating map order as source authority.
 
 No buffer or file is modified. Fragment completion still applies only to
 explicit URL destinations: it never overwrites a reference label with a heading
-ID. Multiline reference uses, reference-definition editing/completion and
-filesystem discovery remain outside this slice.
+ID. Multiline reference-use navigation, reference-label completion and
+filesystem discovery remain outside this slice. Parser-backed
+[reference-label rename](LSP_REFERENCE_RENAME.md) is available separately for
+definitions and full/collapsed/shortcut links and images.
 
 Direct footnote markers such as `[^note]` have their own exact-label definitions,
 references, highlights, and versioned rename support; see

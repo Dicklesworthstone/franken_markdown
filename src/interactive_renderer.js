@@ -922,10 +922,12 @@ function parseMarkdownClient(source, imageAssets) {
   const markerInterrupts = marker => marker && !blankLine(marker.text) && (!marker.ordered || marker.start === 1);
   const startsBlock = line => blankLine(line) || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || listMarker(line) || htmlBlockKind(line);
   const interruptsParagraph = line => blankLine(line) || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || markerInterrupts(listMarker(line)) || htmlInterruptsParagraph(line);
-  // Table rows admit ordinary pipe-bearing source. A supported block opener
-  // retains its own scope even when it also contains a pipe character.
-  const tableRowSource = line => line.includes('|') && !startsBlock(line)
-    && indentation(line).width < 4 && !footnoteMarker(line);
+  // Short GFM body rows need no pipe: missing cells are empty. Keep block
+  // openers and the established unpiped reference-definition boundary out of
+  // the table; a pipe-bearing reference-shaped row remains literal cell text.
+  const tableRowSource = line => !startsBlock(line)
+    && indentation(line).width < 4 && !footnoteMarker(line)
+    && (line.includes('|') || !line.replace(/^[ \t]+/, '').startsWith('[') || !referenceTail()(line));
   function lazyLine(line) {
     const trimmed = line.replace(/^[ \t]+/, '');
     // Removing indentation must not promote a lazy line into a setext heading
@@ -977,10 +979,24 @@ function parseMarkdownClient(source, imageAssets) {
   }
   function tableAlignments(header, delimiter) {
     charge(header.length + 1);
-    if (!tableRowSource(header)) return null;
+    // Either row can supply the explicit pipe, but `Title\n---` must retain its
+    // setext meaning when neither does.
+    if ((!header.includes('|') && !delimiter.includes('|')) || !tableRowSource(header)) return null;
     const cells = tableCells(delimiter);
     if (cells.length !== tableCells(header).length || !cells.every(c => /^:?-+:?$/.test(c))) return null;
     return cells.map(c => c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : c.startsWith(':') ? 'left' : '');
+  }
+  // Match the native parser's bound on synthesized empty cells. A wide header
+  // and many short rows must not multiply a tiny source into unbounded padding.
+  // Rows beyond the limit remain complete paragraph source, including any
+  // reference-looking text; other per-invocation work/output limits still apply.
+  function tablePadding(columns) {
+    let left = 512 * 1024;
+    return sourceColumns => {
+      const needed = Math.max(0, columns - sourceColumns);
+      if (needed > left) return false;
+      left -= needed; return true;
+    };
   }
   function headingTitle(text) {
     charge(text.length);
@@ -1184,7 +1200,7 @@ function parseMarkdownClient(source, imageAssets) {
   // inspecting only the previous line loses both code and reference ownership.
   function containerTail(depth) {
     const containers = [];
-    let kind = 'boundary', header = null, closing = null, reference = null, htmlKind = 0;
+    let kind = 'boundary', header = null, closing = null, reference = null, htmlKind = 0, padding = null;
     const canContinue = line => kind === 'paragraph' && !interruptsParagraph(line);
     function observe(line, level = 0) {
       charge(line.length + 1);
@@ -1222,9 +1238,13 @@ function parseMarkdownClient(source, imageAssets) {
         return;
       }
       if ((kind === 'code' || kind === 'footnote') && (blankLine(line) || indentation(line).width >= 4)) return;
-      if (kind === 'table' && tableRowSource(line)) return;
+      if (kind === 'table' && tableRowSource(line)) {
+        if (!padding(tableCells(line).length)) { kind = 'paragraph'; header = null; }
+        return;
+      }
       if (kind === 'paragraph' && !blankLine(line)) {
-        if (header !== null && tableAlignments(header, line)) { kind = 'table'; header = null; return; }
+        const aligns = header !== null && tableAlignments(header, line);
+        if (aligns) { kind = 'table'; padding = tablePadding(aligns.length); header = null; return; }
         if (setextLevel(line)) { kind = 'boundary'; return; }
         if (!interruptsParagraph(line)) { header = null; return; }
       }
@@ -1261,7 +1281,7 @@ function parseMarkdownClient(source, imageAssets) {
         const scan = referenceTail(), progress = scan(line);
         if (progress) { if (progress !== 'title') reference = scan; return; }
       }
-      header = line.includes('|') ? line : null;
+      header = tableRowSource(line) ? line : null;
     }
     return {observe, canContinue, literal: () => kind === 'fence' || kind === 'code' || kind === 'html',
       literalBlank: () => (kind === 'fence' || kind === 'html' && htmlKind < 6)
@@ -1280,9 +1300,10 @@ function parseMarkdownClient(source, imageAssets) {
       push({kind: 'fallback', text: lines.join('\n')});
       return out;
     }
-    let i = 0;
+    let i = 0, paddingFallback = false;
     while (i < lines.length) {
       const line = lines[i];
+      const paragraphOnly = paddingFallback; paddingFallback = false;
       if (blankLine(line)) { i++; continue; }
       const fm = fence(line);
       if (fm && !(fm[1][0] === '`' && fm[2].includes('`'))) {
@@ -1340,7 +1361,7 @@ function parseMarkdownClient(source, imageAssets) {
         }
         continue;
       }
-      const ref = referenceDefinition(lines, i);
+      const ref = !paragraphOnly && referenceDefinition(lines, i);
       if (ref) {
         const key = normalizeReference(ref.label);
         if (!definitions.has(key)) { allocate(); definitions.set(key, {url: ref.url, title: ref.title}); }
@@ -1416,12 +1437,14 @@ function parseMarkdownClient(source, imageAssets) {
         }
         push({kind: 'list', ordered: marker.ordered, start: marker.start, loose, items}); continue;
       }
-      const aligns = i + 1 < lines.length && tableAlignments(line, lines[i + 1]);
+      const aligns = !paragraphOnly && i + 1 < lines.length && tableAlignments(line, lines[i + 1]);
       if (aligns) {
-        const head = tableCells(line), rows = [];
+        const head = tableCells(line), rows = [], padding = tablePadding(aligns.length);
         i += 2;
         while (i < lines.length && tableRowSource(lines[i])) {
-          allocate(); rows.push(tableCells(lines[i++]));
+          const cells = tableCells(lines[i]);
+          if (!padding(cells.length)) { paddingFallback = true; break; }
+          allocate(); rows.push(cells); i++;
         }
         push({kind: 'table', aligns, head, rows}); continue;
       }
@@ -1430,7 +1453,7 @@ function parseMarkdownClient(source, imageAssets) {
       while (i < lines.length) {
         underline = setextLevel(lines[i]);
         if (underline) { i++; break; }
-        if (interruptsParagraph(lines[i]) || (i + 1 < lines.length && tableAlignments(lines[i], lines[i + 1]))) break;
+        if (interruptsParagraph(lines[i]) || (!paragraphOnly && i + 1 < lines.length && tableAlignments(lines[i], lines[i + 1]))) break;
         paragraph.push(lines[i++]);
       }
       push(underline ? {kind: 'heading', title: paragraph.join('\n'), level: underline}

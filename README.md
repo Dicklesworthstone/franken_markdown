@@ -984,6 +984,13 @@ Honest about what the renderer does not do yet.
   intros), basic widow handling, and repeatable table headers across page breaks
   work today; full widow/orphan control and finer block pagination remain
   roadmap.
+- **Sparse tables retain short rows.** After a valid header and delimiter,
+  ordinary body rows need no pipes; missing cells stay empty. A single-column
+  table requires a pipe in its header or delimiter, so `Title` followed by `---`
+  remains a setext heading. Native parsing, source spans and offline editing
+  apply these rules inside quotations and lists as well. Each table can generate
+  at most 512K empty padding cells; further sparse rows remain intact as prose.
+  Existing block-start and reference-definition boundaries still apply.
 - **Wide PDF tables use successive column panels.** Each panel can continue
   across pages with repeated headers. The first column repeats as row context
   when at least two columns fit; very narrow pages use single-column panels in

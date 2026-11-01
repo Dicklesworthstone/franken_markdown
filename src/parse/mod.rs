@@ -738,21 +738,26 @@ fn table_ends_at(lines: &[&str], end: usize) -> bool {
         return false;
     }
 
-    let mut first_pipe_row = end;
-    while first_pipe_row > 0 {
-        let previous = lines[first_pipe_row - 1];
-        if is_blank_line(previous) || !previous.contains('|') {
+    let mut first_row = end;
+    while first_row > 0 {
+        let previous = lines[first_row - 1];
+        if !is_table_row_source(previous)
+            && validated_table_delimiter_cell_count(previous).is_none()
+        {
             break;
         }
-        first_pipe_row -= 1;
+        first_row -= 1;
     }
 
-    for start in first_pipe_row..end.saturating_sub(1) {
-        if !lines[start].contains('|') {
-            continue;
-        }
-        if table_extent(&lines[start..]).is_some_and(|used| start + used == end) {
-            return true;
+    let mut start = first_row;
+    while start + 1 < end {
+        if let Some(used) = table_extent(&lines[start..end]) {
+            if start + used == end {
+                return true;
+            }
+            start += used;
+        } else {
+            start += 1;
         }
     }
     false
@@ -929,7 +934,16 @@ fn collect_link_reference_metadata_at_depth(
             continue;
         }
 
-        if let Some(is_paragraph_text) = reference_collector_plain_nonblank_line_fast_path(line) {
+        // One-column tables may omit the header's pipes when the delimiter
+        // supplies them. That ordinary-looking header needs the same lookahead
+        // as the block parser before the plain-line fast path opens a paragraph.
+        let possible_table = !in_paragraph
+            && lines
+                .get(i + 1)
+                .is_some_and(|delimiter| line.contains('|') || delimiter.contains('|'));
+        if !possible_table
+            && let Some(is_paragraph_text) = reference_collector_plain_nonblank_line_fast_path(line)
+        {
             // The nonblank fast path returns false for indented code at a
             // block boundary. Indentation cannot close an already open
             // paragraph: its hanging continuation still owns any following
@@ -1029,12 +1043,19 @@ fn collect_link_reference_metadata_at_depth(
         // boundary — skip the table's rows. A table cannot interrupt a paragraph,
         // so this only applies at a boundary (in_paragraph false); mid-paragraph
         // the rows are absorbed as ordinary continuation via line_is_paragraph_text.
-        if !in_paragraph
-            && i + 1 < lines.len()
-            && scan.contains_pipe
-            && let Some(used) = table_extent(&lines[i..])
-        {
-            i += used;
+        if possible_table && let Some(extent) = table_extent_with(&lines[i..], |line| *line) {
+            i += extent.lines;
+            // Padding exhaustion preserves the first unadmitted row as prose.
+            // It must not gain reference-definition authority merely because
+            // the preceding table reached its allocation bound.
+            in_paragraph = extent.padding_exhausted;
+            if extent.padding_exhausted {
+                // This is the paragraph's first line, not its continuation.
+                // Reprocessing a rejected `===` with in_paragraph=true would
+                // wrongly close a setext heading and expose the next definition.
+                kept_reference_candidate |= scan_markdown_line(lines[i]).maybe_reference;
+                i += 1;
+            }
             continue;
         }
 
@@ -1188,16 +1209,21 @@ fn reference_collector_ordered_marker_candidate(bytes: &[u8]) -> bool {
 /// distinct block, so a following definition is at a block boundary, not a
 /// paragraph continuation.
 fn table_extent(lines: &[&str]) -> Option<usize> {
-    table_extent_with(lines, |line| *line)
+    table_extent_with(lines, |line| *line).map(|extent| extent.lines)
 }
 
-fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize> {
+struct TableExtent {
+    lines: usize,
+    padding_exhausted: bool,
+}
+
+fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<TableExtent> {
     if lines.len() < 2 {
         return None;
     }
     let header = text(&lines[0]);
     let delimiter = text(&lines[1]);
-    if !is_table_row_source(header) {
+    if !is_table_header_source(header, delimiter) {
         return None;
     }
     let delimiter_cols = validated_table_delimiter_cell_count(delimiter)?;
@@ -1205,25 +1231,80 @@ fn table_extent_with<T>(lines: &[T], text: impl Fn(&T) -> &str) -> Option<usize>
     if cols == 0 || delimiter_cols != cols {
         return None;
     }
+    let mut body = TableBodyState::new(cols);
     let mut i = 2;
     while i < lines.len() {
         let line = text(&lines[i]);
         if !is_table_row_source(line) {
             break;
         }
+        if !body.admit_columns(split_table_row_cell_count(line)) {
+            return Some(TableExtent {
+                lines: i,
+                padding_exhausted: true,
+            });
+        }
         i += 1;
     }
-    Some(i)
+    Some(TableExtent {
+        lines: i,
+        padding_exhausted: false,
+    })
 }
 
-/// Only ordinary pipe-bearing text can become a table header or body row.
-/// Block markers keep their own priority: a list's first line must not become
-/// a top-level table header, and a following fence must not become a row whose
+// Only generated padding counts toward this limit; ordinary complete tables
+// remain proportional to their source. At most 512K empty cell vectors (12 MiB
+// on 64-bit targets) may be synthesized per table. The first row beyond this
+// budget and its ordinary continuations stay intact as a paragraph.
+const MAX_TABLE_PADDING_CELLS: usize = 512 * 1024;
+
+#[derive(Clone, Copy)]
+struct TableBodyState {
+    columns: usize,
+    padding_left: usize,
+}
+
+impl TableBodyState {
+    const fn new(columns: usize) -> Self {
+        Self {
+            columns,
+            padding_left: MAX_TABLE_PADDING_CELLS,
+        }
+    }
+
+    fn admit_columns(&mut self, source_columns: usize) -> bool {
+        let needed = self.columns.saturating_sub(source_columns);
+        if needed > self.padding_left {
+            return false;
+        }
+        self.padding_left -= needed;
+        true
+    }
+}
+
+/// A table needs an explicit pipe in its header or delimiter. Without either,
+/// a one-column `Title\n---` remains a setext heading rather than a table.
+fn is_table_header_source(header: &str, delimiter: &str) -> bool {
+    (header.contains('|') || delimiter.contains('|')) && is_table_row_source(header)
+}
+
+/// Ordinary text becomes a table body row even without a pipe: GFM pads a short
+/// row with empty cells. A table leaf must stay a table while containers decide
+/// whether a dedented line is lazy. Block markers keep their priority: a list's
+/// first line must not become a top-level table header, and a following fence
+/// must not become a row whose
 /// literal definitions gain scope. Share admission with reference collection
-/// and container laziness. Reference-looking rows are still cells; a link
-/// definition is not a block opener here. Keep the existing pipe requirement.
+/// and container laziness. Preserve the established boundary for unpiped link
+/// definition prefixes, including multiline labels/titles. Pipe-bearing
+/// reference-looking source remains cell content, as before.
 fn is_table_row_source(line: &str) -> bool {
-    if is_blank_line(line) || !line.contains('|') {
+    if is_blank_line(line) {
+        return false;
+    }
+    if !line.contains('|')
+        && trim_start_space_tab(line).starts_with('[')
+        && ReferenceDefinitionScan::new().line(line).is_some()
+    {
         return false;
     }
     let scan = BlockStartScan::new(line, trim_space_tab(line));
@@ -1463,6 +1544,7 @@ fn parse_blocks_with_refs_profiled(
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut i = 0;
+    let mut table_padding_fallback = false;
     // A nonblank iteration emits one block. Record its consumed lines at the
     // next iteration (or EOF), so every existing and future block branch uses
     // the same boundaries as its semantic parse. Nested container calls must
@@ -1476,6 +1558,7 @@ fn parse_blocks_with_refs_profiled(
             spans.record(start + source_line_offset, i + source_line_offset);
         }
         let line = lines[i];
+        let force_paragraph = std::mem::take(&mut table_padding_fallback);
         let trimmed = trim_space_tab(line);
         if trimmed.is_empty() {
             i += 1;
@@ -1714,12 +1797,15 @@ fn parse_blocks_with_refs_profiled(
             blocks.push(Block::HtmlBlock(html));
             continue;
         }
-        if i + 1 < lines.len()
-            && is_table_row_source(line)
+        if !force_paragraph
+            && i + 1 < lines.len()
+            && is_table_header_source(line, lines[i + 1])
             && let Some(align) = validated_table_delimiter_alignments(lines[i + 1])
         {
             let started = profiler.checkpoint();
-            if let Some((table, used)) = parse_table_profiled(&lines[i..], refs, profiler, align) {
+            if let Some((table, extent)) = parse_table_profiled(&lines[i..], refs, profiler, align)
+            {
+                let used = extent.lines;
                 profiler.record_since(
                     "table_block",
                     used,
@@ -1738,6 +1824,7 @@ fn parse_blocks_with_refs_profiled(
                 );
                 blocks.push(Block::Table(table));
                 i += used;
+                table_padding_fallback = extent.padding_exhausted;
                 continue;
             }
         }
@@ -1761,7 +1848,9 @@ fn parse_blocks_with_refs_profiled(
             i += used;
             continue;
         }
-        if let Some((dl, used)) = parse_definition_list_profiled(&lines[i..], refs, profiler) {
+        if !force_paragraph
+            && let Some((dl, used)) = parse_definition_list_profiled(&lines[i..], refs, profiler)
+        {
             let started = profiler.checkpoint();
             profiler.record_since(
                 "definition_list_block",
@@ -3468,6 +3557,7 @@ enum TailLeaf {
     Boundary,
     Paragraph {
         table_columns: Option<usize>,
+        table_has_pipe: bool,
     },
     Fence {
         ch: char,
@@ -3476,7 +3566,7 @@ enum TailLeaf {
     IndentedCode,
     Html(HtmlBlockEnd),
     Math,
-    Table,
+    Table(TableBodyState),
     Footnote,
 }
 
@@ -3563,6 +3653,7 @@ impl ContainerTail {
                 Some(progress) => {
                     self.leaf = TailLeaf::Paragraph {
                         table_columns: None,
+                        table_has_pipe: false,
                     };
                     if progress == ReferenceProgress::Title {
                         self.reference_scan = None;
@@ -3603,12 +3694,28 @@ impl ContainerTail {
             {
                 return;
             }
-            TailLeaf::Table if is_table_row_source(line) => return,
-            TailLeaf::Paragraph { table_columns } if !is_blank_line(line) => {
-                if table_columns.is_some()
-                    && table_columns == validated_table_delimiter_cell_count(line)
+            TailLeaf::Table(mut body) if is_table_row_source(line) => {
+                self.leaf = if body.admit_columns(split_table_row_cell_count(line)) {
+                    TailLeaf::Table(body)
+                } else {
+                    // Match the parser's lossless padding fallback, including
+                    // its refusal to promote this row into a definition/header.
+                    TailLeaf::Paragraph {
+                        table_columns: None,
+                        table_has_pipe: false,
+                    }
+                };
+                return;
+            }
+            TailLeaf::Paragraph {
+                table_columns,
+                table_has_pipe,
+            } if !is_blank_line(line) => {
+                if let Some(columns) = table_columns
+                    && (table_has_pipe || line.contains('|'))
+                    && Some(columns) == validated_table_delimiter_cell_count(line)
                 {
-                    self.leaf = TailLeaf::Table;
+                    self.leaf = TailLeaf::Table(TableBodyState::new(columns));
                     return;
                 }
                 if setext_underline(line).is_some() {
@@ -3618,6 +3725,7 @@ impl ContainerTail {
                 if !scanned_paragraph_interrupt(BlockStartScan::new(line, trim_space_tab(line))) {
                     self.leaf = TailLeaf::Paragraph {
                         table_columns: None,
+                        table_has_pipe: false,
                     };
                     return;
                 }
@@ -3669,12 +3777,14 @@ impl ContainerTail {
                     }
                     self.leaf = TailLeaf::Paragraph {
                         table_columns: None,
+                        table_has_pipe: false,
                     };
                     return;
                 }
             }
             self.leaf = TailLeaf::Paragraph {
                 table_columns: is_table_row_source(line).then(|| split_table_row_cell_count(line)),
+                table_has_pipe: line.contains('|'),
             };
         }
     }
@@ -4122,7 +4232,7 @@ fn parse_table_profiled(
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
     align: Vec<Align>,
-) -> Option<(Table, usize)> {
+) -> Option<(Table, TableExtent)> {
     let mut header = Vec::new();
     split_table_row_into(lines[0], &mut header);
     let cols = header.len();
@@ -4135,9 +4245,15 @@ fn parse_table_profiled(
         .collect();
     let mut rows = Vec::new();
     let mut row_cells = Vec::with_capacity(cols);
+    let mut body = TableBodyState::new(cols);
     let mut i = 2;
+    let mut padding_exhausted = false;
     while i < lines.len() && is_table_row_source(lines[i]) {
         split_table_row_into(lines[i], &mut row_cells);
+        if !body.admit_columns(row_cells.len()) {
+            padding_exhausted = true;
+            break;
+        }
         let mut cells: Vec<Vec<Inline>> = row_cells
             .iter()
             .take(cols)
@@ -4147,7 +4263,13 @@ fn parse_table_profiled(
         rows.push(cells);
         i += 1;
     }
-    Some((Table { align, head, rows }, i))
+    Some((
+        Table { align, head, rows },
+        TableExtent {
+            lines: i,
+            padding_exhausted,
+        },
+    ))
 }
 
 fn parse_table_cell_profiled(
@@ -7741,16 +7863,16 @@ mod refdef_paragraph_tests {
 
         assert!(!table_body_row_starts_at(&["| h |"], 1));
         assert!(!table_body_row_starts_at(&["| h |", ""], 1));
-        assert!(!table_body_row_starts_at(&["| h |", "plain"], 1));
+        assert!(table_body_row_starts_at(&["| h |", "plain"], 1));
         assert!(table_body_row_starts_at(&["| h |", "| c |"], 1));
 
         assert!(table_extent(&["| h |"]).is_none());
-        assert!(table_extent(&["plain", "| --- |"]).is_none());
+        assert_eq!(table_extent(&["plain", "| --- |"]), Some(2));
         assert!(table_extent(&["| h |", "not delimiter"]).is_none());
         assert!(table_extent(&["| h | h2 |", "| --- |"]).is_none());
         assert_eq!(
             table_extent(&["| h |", "| --- |", "| c |", "after"]),
-            Some(3)
+            Some(4)
         );
         assert!(table_ends_at(&["| h |", "| --- |", "| c |"], 3));
         assert!(!table_ends_at(&["| h |"], 2));
@@ -7879,14 +8001,15 @@ mod refdef_paragraph_tests {
     }
 
     #[test]
-    fn table_extent_requires_the_same_pipe_header_guard_as_the_block_parser() {
+    fn table_extent_requires_the_same_explicit_pipe_guard_as_the_block_parser() {
         // The extent-only helper feeds reference-stripping boundary preservation.
-        // It must mirror the actual parse entry guard, which only attempts GFM
-        // table parsing for headers containing a pipe. Otherwise setext shapes
+        // It must mirror the actual parse entry guard: the header or delimiter
+        // must contain an explicit pipe. Otherwise setext shapes
         // like `Title\n---` look like one-column tables to the helper alone.
         assert_eq!(table_extent(&["Title", "---"]), None);
         assert_eq!(table_extent(&["Title", "---", "| body |"]), None);
         assert_eq!(table_extent(&["| Title |", "| --- |"]), Some(2));
+        assert_eq!(table_extent(&["Title", "| --- |"]), Some(2));
     }
 
     #[test]

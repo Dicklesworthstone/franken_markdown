@@ -37,9 +37,20 @@ network access, browser storage, or alternate parser is introduced.
 
 ## Removed unbounded paths
 
-Bracket pairs are indexed once per inline buffer, with the original escaped-
-delimiter semantics. Missing pairs no longer trigger a new full-suffix scan
-for each opening bracket. Interior spaces and blank-line runs inside lists are
+Inline ownership is indexed once per buffer: code spans, accepted links and
+images, reference suffixes, angle autolinks and known footnote references retain
+their literal boundaries. Link labels and emphasis searches share that index,
+so a bracket or emphasis marker inside code cannot activate a different link or
+publish a footnote. Destinations and titles use their own grammar rather than
+generic parenthesis pairing; their brackets and backticks cannot consume later
+prose. Full reference suffixes retain raw source identity, including backticks.
+Rejected targets remain source, and nested links defeat an enclosing link while
+images flatten child markup into readable alt text. The fallback's existing
+escaped-HTML and URL policies still apply.
+
+Missing bracket pairs do not trigger a new full-suffix scan for each opener.
+All indexed entries debit the shared structure budget, and unsuccessful target
+and delimiter searches debit work. Interior spaces and blank-line runs inside lists are
 consumed once. Heading closing hashes and email-autolink validation use linear
 checks instead of ambiguous backtracking patterns. Quote collection no longer
 spreads all child lines into a function's argument list.
@@ -58,6 +69,7 @@ Run the established test entry point:
 
 ```sh
 node --test tests/interactive_renderer.test.mjs
+node --test wasm/tests/interactive_inline_ownership.test.mjs
 node --check src/interactive_renderer.js
 ```
 

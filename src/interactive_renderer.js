@@ -491,44 +491,98 @@ function parseMarkdownClient(source, imageAssets) {
     if (url.includes('\\')) return null;
     return url;
   }
-  function destination(text) {
-    charge(text.length + 1);
-    let i = 0, url = '', title = '';
-    while (/\s/.test(text[i] || '') && i < text.length) i++;
-    if (text[i] === '<') {
-      const end = find(text, '>', i + 1);
-      if (end < 0 || /[\n<]/.test(text.slice(i + 1, end))) return null;
-      url = text.slice(i + 1, end); i = end + 1;
-    } else {
-      let nesting = 0, start = i;
-      for (; i < text.length; i++) {
-        if (text[i] === '\\' && i + 1 < text.length) { i++; continue; }
-        if (/\s/.test(text[i]) && nesting === 0) break;
-        if (text[i] === '(') nesting++;
-        if (text[i] === ')' && --nesting < 0) return null;
+  const escapable = ch => /[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/.test(ch || '');
+  // Parse the complete suffix in its own grammar. Parentheses in angle URLs
+  // and quoted titles are literal, and none of an accepted target's brackets,
+  // backticks or emphasis markers belong to the surrounding inline content.
+  function inlineTarget(text, close) {
+    if (text[close + 1] !== '(') return null;
+    let i = close + 2, url = '', title = '';
+    const whitespace = () => {
+      let newline = false;
+      while (i < text.length) {
+        charge();
+        if (text[i] === '\n' && !newline) { newline = true; i++; }
+        else if (' \t\r'.includes(text[i])) i++;
+        else break;
       }
-      if (nesting) return null;
-      url = text.slice(start, i);
+    };
+    whitespace();
+    if (text[i] === ')') return {url, title, end: i + 1};
+    const angle = text[i] === '<', start = angle ? ++i : i;
+    let nesting = 0;
+    for (; i < text.length; i++) {
+      charge();
+      const ch = text[i];
+      if (ch === '\\' && escapable(text[i + 1])) { charge(); i++; continue; }
+      if (angle) {
+        if (ch === '>') break;
+        if (ch === '\n' || ch === '<') return null;
+      } else {
+        if (' \t\r\n'.includes(ch) || (ch === ')' && nesting === 0)) break;
+        if (ch === '<' || /[\u0000-\u001f\u007f]/.test(ch)) return null;
+        if (ch === '(') nesting++;
+        else if (ch === ')') nesting--;
+      }
     }
-    const rest = text.slice(i).trim();
-    if (rest) {
-      const quote = rest[0], close = quote === '(' ? ')' : quote;
-      if (!['"', "'", '('].includes(quote) || rest.at(-1) !== close) return null;
-      title = unescape(rest.slice(1, -1));
+    if (angle ? text[i] !== '>' : nesting || i === start) return null;
+    url = text.slice(start, i);
+    if (angle) i++;
+    const spaces = i;
+    whitespace();
+    if (text[i] !== ')') {
+      if (i === spaces || !['"', "'", '('].includes(text[i])) return null;
+      const quote = text[i++], endQuote = quote === '(' ? ')' : quote, titleStart = i;
+      let newline = false;
+      for (; i < text.length; i++) {
+        charge();
+        const ch = text[i];
+        if (ch === endQuote) break;
+        if (quote === '(' && ch === '(') return null;
+        if (ch === '\\' && escapable(text[i + 1])) { charge(); i++; newline = false; continue; }
+        if (ch === '\n') { if (newline) return null; newline = true; }
+        else if (!/\s/.test(ch)) newline = false;
+      }
+      if (text[i] !== endQuote) return null;
+      const titleEnd = i++;
+      whitespace();
+      if (text[i] !== ')') return null;
+      title = unescape(text.slice(titleStart, titleEnd));
     }
-    return {url, title};
+    return text[i] === ')' ? {url, title, end: i + 1} : null;
   }
-  // Match each delimiter pair once per inline buffer. Looking up every '[' in
-  // an unmatched run used to rescan the full tail, even after a known miss.
-  // Escaped delimiters retain the original bracketEnd semantics; code spans
-  // are handled by inline(), not by this lexical index.
-  function bracketIndex(text, open, close) {
+  // A full reference's suffix is raw source: even an unmatched backtick cannot
+  // hide its closing bracket. Malformed suffixes still permit shortcut links.
+  function referenceLabel(text, open) {
+    if (text[open] !== '[') return null;
+    let i = open + 1, characters = 0;
+    while (i < text.length && characters <= 999) {
+      charge();
+      if (text[i] === ']') return {label: text.slice(open + 1, i), end: i + 1};
+      if (text[i] === '[') return null;
+      if (text[i] === '\\' && i + 1 < text.length) { i++; characters++; charge(); }
+      i += text.codePointAt(i) > 0xffff ? 2 : 1;
+      characters++;
+    }
+    return null;
+  }
+  function targetAfter(text, open, close) {
+    const target = inlineTarget(text, close);
+    if (target) return target;
+    const suffix = referenceLabel(text, close + 1);
+    const label = suffix?.label || text.slice(open + 1, close);
+    const reference = definitions.get(normalizeReference(label));
+    return reference ? {...reference, end: suffix ? suffix.end : close + 1} : null;
+  }
+  // Raw footnote identifiers keep their existing exact-source semantics. Link
+  // labels use the contextual index below instead of this lexical pairing.
+  function rawBracketPairs(text) {
     charge(text.length);
     const stack = [], pairs = new Map();
     for (let i = 0; i < text.length; i++) {
       if (text[i] === '\\') { i++; continue; }
-      if (text[i] === open) { allocate(); stack.push(i); }
-      else if (text[i] === close && stack.length) {
+      if (text[i] === '[') { allocate(); stack.push(i); }
+      else if (text[i] === ']' && stack.length) {
         allocate(); pairs.set(stack.pop(), i);
       }
     }
@@ -561,21 +615,112 @@ function parseMarkdownClient(source, imageAssets) {
     const dot = label.indexOf('.', at + 2);
     return dot >= 0 && dot < label.length - 1;
   }
-  function inline(text, depth = 0, links = true, footnotes = true) {
+  function codeExtent(text, start) {
+    const content = runEnd(text, start, '`'), marker = text.slice(start, content);
+    let close = content;
+    while ((close = find(text, marker, close)) >= 0) {
+      if (text[close - 1] !== '`' && text[close + marker.length] !== '`') {
+        return {kind: 'code', content, close, end: close + marker.length};
+      }
+      close += marker.length;
+    }
+    return {end: content};
+  }
+  function autolinkAt(text, start) {
+    const close = find(text, '>', start + 1);
+    if (close < 0) return null;
+    const label = text.slice(start + 1, close), email = emailAddress(label);
+    const uri = /^[a-z][a-z0-9+.-]*:/i.test(label) && !/[\s<\u0000-\u001f\u007f-\u009f]/.test(label);
+    return email || uri
+      ? {kind: 'autolink', label, url: email ? 'mailto:' + label : label, end: close + 1} : null;
+  }
+  function inlineIndex(text) {
+    const atoms = new Map(), stack = [];
+    let rawBrackets;
+    const remember = (start, atom) => { allocate(); atoms.set(start, atom); };
+    for (let i = 0; i < text.length;) {
+      charge();
+      const ch = text[i];
+      if (ch === '\\' && (escapable(text[i + 1]) || text[i + 1] === '\n')) { i += 2; continue; }
+      if (ch === '`') {
+        const code = codeExtent(text, i);
+        if (code.kind) remember(i, code);
+        i = code.end; continue;
+      }
+      if (ch === '<') {
+        const link = autolinkAt(text, i);
+        if (link) {
+          remember(i, link);
+          if (stack.length) stack.at(-1).containsLink = true;
+          i = link.end; continue;
+        }
+      }
+      const image = ch === '!' && text[i + 1] === '[';
+      if (image || ch === '[') {
+        if (!image && text[i + 1] === '^' && notes.size) {
+          const close = (rawBrackets ??= rawBracketPairs(text)).get(i);
+          const label = close === undefined ? null : text.slice(i + 2, close);
+          if (label !== null && notes.has(noteKey(label))) {
+            remember(i, {kind: 'note', label, end: close + 1});
+            i = close + 1; continue;
+          }
+        }
+        allocate();
+        stack.push({start: i, open: i + (image ? 1 : 0), image, containsLink: false});
+        i += image ? 2 : 1; continue;
+      }
+      if (ch === ']' && stack.length) {
+        const open = stack.pop();
+        const target = open.image || !open.containsLink ? targetAfter(text, open.open, i) : null;
+        if (target) {
+          remember(open.start, {kind: open.image ? 'image' : 'link', labelStart: open.open + 1, labelEnd: i, ...target});
+          if (!open.image && stack.length) stack.at(-1).containsLink = true;
+          i = target.end; continue;
+        }
+        // An accepted image contains its child links as alt text. A rejected
+        // label propagates them, preventing an enclosing anchor from nesting.
+        if (open.containsLink && stack.length) stack.at(-1).containsLink = true;
+      }
+      i++;
+    }
+    return atoms;
+  }
+  function inline(text, depth = 0, links = true, footnotes = true, images = true) {
     charge(text.length + 1);
-    let brackets, parentheses;
-    const bracketEnd = (start, open) => {
-      const pairs = open === '[' ? (brackets ??= bracketIndex(text, '[', ']'))
-        : (parentheses ??= bracketIndex(text, '(', ')'));
-      return pairs.get(start) ?? -1;
-    };
     if (depth > MAX_DEPTH) return escape(text);
+    const atoms = inlineIndex(text);
     let out = '', i = 0;
     while (i < text.length) {
       charge();
+      const atom = atoms.get(i);
+      if (atom) {
+        if (atom.kind === 'code') {
+          let code = text.slice(atom.content, atom.close).replace(/\n/g, ' ');
+          if (code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) code = code.slice(1, -1);
+          out = append(out, '<code>' + escape(code) + '</code>');
+        } else if (atom.kind === 'note') {
+          out = append(out, footnotes ? noteReference(atom.label) : escape(text.slice(i, atom.end)));
+        } else if (atom.kind === 'autolink') {
+          const url = links ? safeUrl(atom.url, false) : null;
+          out = append(out, !links ? escape(atom.label) : url === null ? escape(text.slice(i, atom.end))
+            : '<a href="' + escape(url) + '">' + escape(atom.label) + '</a>');
+        } else {
+          const image = atom.kind === 'image';
+          const content = inline(text.slice(atom.labelStart, atom.labelEnd), depth + 1, false, false, images && !image);
+          // Only emitted images consult embedded assets. Nested images in alt
+          // text contribute their own readable labels without hidden expansion.
+          const url = (image ? images : links) ? safeUrl(atom.url, image) : null;
+          const title = atom.title ? ' title="' + escape(atom.title) + '"' : '';
+          if (image) {
+            const alt = content.replace(/<[^>]*>/g, '');
+            out = append(out, url === null ? alt : '<img src="' + escape(url) + '" alt="' + alt + '"' + title + '>');
+          } else out = append(out, url === null ? content : '<a href="' + escape(url) + '"' + title + '>' + content + '</a>');
+        }
+        i = atom.end; continue;
+      }
       const ch = text[i];
       if (ch === '\\' && text[i + 1] === '\n') { out = append(out, '<br>\n'); i += 2; continue; }
-      if (ch === '\\' && /[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/.test(text[i + 1] || '')) {
+      if (ch === '\\' && escapable(text[i + 1])) {
         out = append(out, escape(text[i + 1])); i += 2; continue;
       }
       if (ch === ' ') {
@@ -585,60 +730,7 @@ function parseMarkdownClient(source, imageAssets) {
       }
       if (ch === '`') {
         const marker = text.slice(i, runEnd(text, i, '`'));
-        let end = i + marker.length;
-        while ((end = find(text, marker, end)) >= 0) {
-          if (text[end - 1] !== '`' && text[end + marker.length] !== '`') break;
-          end += marker.length;
-        }
-        if (end >= 0) {
-          let code = text.slice(i + marker.length, end).replace(/\n/g, ' ');
-          if (code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) code = code.slice(1, -1);
-          out = append(out, '<code>' + escape(code) + '</code>'); i = end + marker.length; continue;
-        }
         out = append(out, marker); i += marker.length; continue;
-      }
-      const image = ch === '!' && text[i + 1] === '[';
-      if (ch === '[' || image) {
-        const start = i + (image ? 1 : 0), end = bracketEnd(start, '[');
-        if (end >= 0) {
-          const label = text.slice(start + 1, end);
-          if (!image && footnotes && label.startsWith('^')) {
-            const reference = noteReference(label.slice(1));
-            if (reference) { out = append(out, reference); i = end + 1; continue; }
-          }
-          let target = null, after = end + 1;
-          if (text[after] === '(') {
-            const close = bracketEnd(after, '(');
-            if (close >= 0) { target = destination(text.slice(after + 1, close)); if (target) after = close + 1; }
-          } else if (text[after] === '[') {
-            const close = bracketEnd(after, '[');
-            if (close >= 0) {
-              target = definitions.get(normalizeReference(text.slice(after + 1, close) || label));
-              if (target) after = close + 1;
-            }
-          } else target = definitions.get(normalizeReference(label));
-          if (target && (image || links)) {
-            const url = safeUrl(target.url, image), title = target.title ? ' title="' + escape(target.title) + '"' : '';
-            const content = inline(label, depth + 1, false, false);
-            if (image) {
-              // Alt text is text, not generated markup, even with emphasis/code.
-              const alt = content.replace(/<[^>]*>/g, '');
-              out = append(out, url === null ? alt : '<img src="' + escape(url) + '" alt="' + alt + '"' + title + '>');
-            } else out = append(out, url === null ? content : '<a href="' + escape(url) + '"' + title + '>' + content + '</a>');
-            i = after; continue;
-          }
-        }
-      }
-      if (ch === '<' && links) {
-        const end = find(text, '>', i + 1);
-        if (end >= 0) {
-          const label = text.slice(i + 1, end);
-          const email = emailAddress(label);
-          if (email || /^[a-z][a-z0-9+.-]*:/i.test(label)) {
-            const url = safeUrl(email ? 'mailto:' + label : label, false);
-            if (url !== null) { out = append(out, '<a href="' + escape(url) + '">' + escape(label) + '</a>'); i = end + 1; continue; }
-          }
-        }
       }
       if ('*_~'.includes(ch)) {
         // Never interpret intraword underscores or single tildes as delimiters.
@@ -646,11 +738,19 @@ function parseMarkdownClient(source, imageAssets) {
         const size = ch === '~' ? (run.length >= 2 ? 2 : 0) : Math.min(run.length, 3);
         const marker = ch.repeat(size);
         if (size && !/\s/.test(text[i + size] || ' ') && !(ch === '_' && /[\p{L}\p{N}]/u.test(text[i - 1] || ''))) {
-          let end = find(text, marker, i + size);
-          while (end >= 0 && (/\s/.test(text[end - 1]) || (ch === '_' && /[\p{L}\p{N}]/u.test(text[end + size] || '')) || text[end - 1] === '\\')) end = find(text, marker, end + size);
+          let end = i + size;
+          for (; end <= text.length - size; end++) {
+            charge(size);
+            const owned = atoms.get(end);
+            if (owned) { end = owned.end - 1; continue; }
+            if (text[end] === '\\' && escapable(text[end + 1])) { end++; continue; }
+            if (text.startsWith(marker, end) && !/\s/.test(text[end - 1])
+                && !(ch === '_' && /[\p{L}\p{N}]/u.test(text[end + size] || ''))) break;
+          }
+          if (end > text.length - size) end = -1;
           if (end > i + size) {
             const tags = ch === '~' ? ['del'] : size === 3 ? ['strong', 'em'] : [size === 2 ? 'strong' : 'em'];
-            out = append(out, tags.map(t => '<' + t + '>').join('') + inline(text.slice(i + size, end), depth + 1, links, footnotes) + tags.slice().reverse().map(t => '</' + t + '>').join(''));
+            out = append(out, tags.map(t => '<' + t + '>').join('') + inline(text.slice(i + size, end), depth + 1, links, footnotes, images) + tags.slice().reverse().map(t => '</' + t + '>').join(''));
             i = end + size; continue;
           }
         }

@@ -163,3 +163,70 @@ test('large literal and linked inputs use bounded local indexes and reset after 
   assert.throws(() => vm.runInContext('parseMarkdownClient(source)', small, {timeout: 4000}), error => error.code === 'FMD_RENDER_LIMIT');
   assert.equal(vm.runInContext('parseMarkdownClient("[x](/ok)")', small), '<p><a href="/ok">x</a></p>\n');
 });
+
+test('many incomplete links preserve literal source without repeated destination lookahead', () => {
+  const source = '[x](/'.repeat(10000), bounded = vm.createContext({source});
+  vm.runInContext(code, bounded);
+  assert.equal(vm.runInContext('parseMarkdownClient(source)', bounded, {timeout: 4000}), '<p>' + source + '</p>\n');
+});
+
+test('a few terminal closes preserve incomplete prefixes and only activate the complete target', () => {
+  for (const closes of [1, 2, 7]) {
+    const source = '[x](/'.repeat(10000) + ')'.repeat(closes);
+    const bounded = vm.createContext({source});
+    vm.runInContext(code, bounded);
+    const url = '/' + '[x](/'.repeat(closes - 1) + ')'.repeat(closes - 1);
+    assert.equal(vm.runInContext('parseMarkdownClient(source)', bounded, {timeout: 4000}),
+      '<p>' + '[x](/'.repeat(10000 - closes) + `<a href="${url}">x</a></p>\n`);
+  }
+});
+
+test('escaped parentheses cannot turn repeated incomplete targets into expensive suffix scans', () => {
+  for (const piece of ['[x](/\\(', '[x](/\\)', '[x](/\\(\\)', '[x](/\\\\(']) {
+    const source = piece.repeat(10000), bounded = vm.createContext({source});
+    vm.runInContext(code, bounded);
+    const literal = source.replace(/\\([()\\])/g, '$1');
+    assert.equal(vm.runInContext('parseMarkdownClient(source)', bounded, {timeout: 4000}), '<p>' + literal + '</p>\n');
+  }
+});
+
+test('bare-URL acceleration never requires globally balanced angle URLs or quoted titles', () => {
+  for (const [syntax, expected] of [
+    ['[x](/a "literal )")', '<a href="/a" title="literal )">x</a>'],
+    ['[x](/a "literal (")', '<a href="/a" title="literal (">x</a>'],
+    ['[x](<a(> "literal )")', '<a href="a(" title="literal )">x</a>'],
+    ['[x](<a)> "literal (")', '<a href="a)" title="literal (">x</a>'],
+    ['[x](/a(b) "literal )) (")', '<a href="/a(b)" title="literal )) (">x</a>'],
+    ['[x](/a(b) (literal \\) title))', '<a href="/a(b)" title="literal ) title">x</a>'],
+  ]) {
+    const source = Array(1000).fill(syntax).join(' '), bounded = vm.createContext({source});
+    vm.runInContext(code, bounded);
+    assert.equal(vm.runInContext('parseMarkdownClient(source)', bounded, {timeout: 4000}), '<p>' + Array(1000).fill(expected).join(' ') + '</p>\n', syntax);
+  }
+});
+
+test('nested bare destinations retain escape rules and cannot cross URL boundaries', () => {
+  for (const [syntax, expected] of [
+    ['[x](/a(b(c)d)e)', '<a href="/a(b(c)d)e">x</a>'],
+    ['[x](/a(b\\)c)d)', '<a href="/a(b)c)d">x</a>'],
+    ['[x](/a(b\\(c)d)', '<a href="/a(b(c)d">x</a>'],
+    ['[x](/a(\\<b))', '<a href="/a(&lt;b)">x</a>'],
+    ['[x](/a(<b))', '[x](/a(&lt;b))'],
+    ['[x](/a(b c))', '[x](/a(b c))'],
+    ['[x](/a(b\tc))', '[x](/a(b\tc))'],
+  ]) assert.equal(render(syntax), '<p>' + expected + '</p>\n', syntax);
+  const piece = '[x](/a(b(c)d)e "T ( )") ![alt](image(a\\)b).png)';
+  const source = Array(2000).fill(piece).join(' '), bounded = vm.createContext({source});
+  vm.runInContext(code, bounded);
+  const html = vm.runInContext('parseMarkdownClient(source)', bounded, {timeout: 4000});
+  assert.equal((html.match(/<a href="\/a\(b\(c\)d\)e" title="T \( \)">x<\/a>/g) || []).length, 2000);
+  assert.equal((html.match(/<img src="image\(a\)b\).png" alt="alt">/g) || []).length, 2000);
+});
+
+test('shared bare-destination lookahead obeys structure admission and resets after failure', () => {
+  const source = '[x](/' + '('.repeat(600) + ')'.repeat(601);
+  const small = vm.createContext({source});
+  vm.runInContext(code.replace('structures: 262144', 'structures: 1000'), small);
+  assert.throws(() => vm.runInContext('parseMarkdownClient(source)', small, {timeout: 4000}), error => error.code === 'FMD_RENDER_LIMIT' && error.limit === 'structure');
+  assert.equal(vm.runInContext('parseMarkdownClient("[x](/a(b))")', small), '<p><a href="/a(b)">x</a></p>\n');
+});

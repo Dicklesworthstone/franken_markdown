@@ -495,7 +495,7 @@ function parseMarkdownClient(source, imageAssets) {
   // Parse the complete suffix in its own grammar. Parentheses in angle URLs
   // and quoted titles are literal, and none of an accepted target's brackets,
   // backticks or emphasis markers belong to the surrounding inline content.
-  function inlineTarget(text, close) {
+  function inlineTarget(text, close, bareParenEnd) {
     if (text[close + 1] !== '(') return null;
     let i = close + 2, url = '', title = '';
     const whitespace = () => {
@@ -510,7 +510,6 @@ function parseMarkdownClient(source, imageAssets) {
     whitespace();
     if (text[i] === ')') return {url, title, end: i + 1};
     const angle = text[i] === '<', start = angle ? ++i : i;
-    let nesting = 0;
     for (; i < text.length; i++) {
       charge();
       const ch = text[i];
@@ -519,13 +518,16 @@ function parseMarkdownClient(source, imageAssets) {
         if (ch === '>') break;
         if (ch === '\n' || ch === '<') return null;
       } else {
-        if (' \t\r\n'.includes(ch) || (ch === ')' && nesting === 0)) break;
+        if (' \t\r\n'.includes(ch) || ch === ')') break;
         if (ch === '<' || /[\u0000-\u001f\u007f]/.test(ch)) return null;
-        if (ch === '(') nesting++;
-        else if (ch === ')') nesting--;
+        if (ch === '(') {
+          const end = bareParenEnd(i);
+          if (end === undefined) return null;
+          i = end;
+        }
       }
     }
-    if (angle ? text[i] !== '>' : nesting || i === start) return null;
+    if (angle ? text[i] !== '>' : i === start) return null;
     url = text.slice(start, i);
     if (angle) i++;
     const spaces = i;
@@ -566,13 +568,29 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return null;
   }
-  function targetAfter(text, open, close) {
-    const target = inlineTarget(text, close);
+  function targetAfter(text, open, close, bareParenEnd) {
+    const target = inlineTarget(text, close, bareParenEnd);
     if (target) return target;
     const suffix = referenceLabel(text, close + 1);
     const label = suffix?.label || text.slice(open + 1, close);
     const reference = definitions.get(normalizeReference(label));
     return reference ? {...reference, end: suffix ? suffix.end : close + 1} : null;
+  }
+  // Only nested bare-URL groups use these pairs. Whitespace, controls and raw
+  // '<' end a bare destination, so an opener cannot match across them. Sharing
+  // this lazy index prevents repeated incomplete links from rescanning the
+  // entire suffix; angle destinations and titles retain their own grammars.
+  function bareParenthesisPairs(text) {
+    const stack = [], pairs = new Map();
+    for (let i = 0; i < text.length; i++) {
+      charge();
+      const ch = text[i];
+      if (ch === '\\' && escapable(text[i + 1])) { charge(); i++; continue; }
+      if (ch === '(') { allocate(); stack.push(i); }
+      else if (ch === ')' && stack.length) { allocate(); pairs.set(stack.pop(), i); }
+      else if (ch === '<' || ch.charCodeAt(0) <= 32 || ch === '\x7f') stack.length = 0;
+    }
+    return pairs;
   }
   // Raw footnote identifiers keep their existing exact-source semantics. Link
   // labels use the contextual index below instead of this lexical pairing.
@@ -636,7 +654,8 @@ function parseMarkdownClient(source, imageAssets) {
   }
   function inlineIndex(text) {
     const atoms = new Map(), stack = [];
-    let rawBrackets;
+    let rawBrackets, bareParens;
+    const bareParenEnd = start => (bareParens ??= bareParenthesisPairs(text)).get(start);
     const remember = (start, atom) => { allocate(); atoms.set(start, atom); };
     for (let i = 0; i < text.length;) {
       charge();
@@ -671,7 +690,7 @@ function parseMarkdownClient(source, imageAssets) {
       }
       if (ch === ']' && stack.length) {
         const open = stack.pop();
-        const target = open.image || !open.containsLink ? targetAfter(text, open.open, i) : null;
+        const target = open.image || !open.containsLink ? targetAfter(text, open.open, i, bareParenEnd) : null;
         if (target) {
           remember(open.start, {kind: open.image ? 'image' : 'link', labelStart: open.open + 1, labelEnd: i, ...target});
           if (!open.image && stack.length) stack.at(-1).containsLink = true;

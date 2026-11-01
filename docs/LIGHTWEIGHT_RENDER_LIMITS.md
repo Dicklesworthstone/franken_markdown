@@ -50,7 +50,11 @@ escaped-HTML and URL policies still apply.
 
 Missing bracket pairs do not trigger a new full-suffix scan for each opener.
 All indexed entries debit the shared structure budget, and unsuccessful target
-and delimiter searches debit work. Interior spaces and blank-line runs inside lists are
+and delimiter searches debit work. Nested bare-URL parentheses share a lazy
+index bounded by that grammar's whitespace, control and raw-`<` boundaries;
+repeated incomplete links do not rescan the same tail. Angle destinations and
+titles retain their own grammar, including literal unmatched parentheses.
+Interior spaces and blank-line runs inside lists are
 consumed once. Heading closing hashes and email-autolink validation use linear
 checks instead of ambiguous backtracking patterns. Quote collection no longer
 spreads all child lines into a function's argument list.

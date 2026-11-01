@@ -156,10 +156,16 @@ empty file is a valid, confirmed replacement. Selecting identical source is a
 no-op, not a new history entry or implicit save.
 
 Only one picker/read is active. FileReader is aborted after ten seconds, on
-intervening source input or composition, or when the page is suspended. Exact
-source-view and revision checks before and after confirmation prevent late reads
+intervening source input or composition, when the page is suspended, or when
+editing access changes. **Open Markdown** and **Undo source replacement** are
+unavailable while the editor is read-only, disabled or detached. A temporary
+access lock or removal/reinsertion of the editor (including its containing pane)
+retires the old picker/read even if access is restored before its callback runs.
+Choose the file again after returning to an editable document. Exact source-view,
+revision and access checks before and after confirmation prevent late reads
 from replacing newer typing, including edits that did not dispatch an input
-event. Opening and source downloads do not require a working renderer. A failed
+event or access transitions made during confirmation. Opening and source
+downloads do not require a working renderer. A failed
 preview reports its error without discarding the imported source. The initial
 workspace is still the unsaved-work baseline until a saved HTML file is reopened.
 
@@ -167,7 +173,8 @@ workspace is still the unsaved-work baseline until a saved HTML file is reopened
 This is one session-only replacement snapshot, not the textarea's native typing
 history or a persistent backup. Each side is bounded to 32 MiB of UTF-8 source;
 these logical bounds are not physical browser heap guarantees. A subsequent
-source edit, composition, or page suspension retires it. A second successful
+source edit, composition, editing-access transition, editor detachment or page
+suspension retires it. A second successful
 Open replaces it with the immediately preceding source. Cancelled/failed reads,
 view changes and downloads leave it available. History and selected file objects
 are not serialized; saving HTML recreates clean controls on reopening. Important
@@ -264,7 +271,10 @@ python wasm/native_workspace_source_browser.py --mode content
 Node uses explicit DOM, clock, FileReader and renderer adapters with real File,
 Blob and UTF-8 codecs. The browser probe uses actual Chromium file selection,
 FileReader, textarea normalization, confirmation dialogs, downloads and repeated
-HTML reparsing. Its initial shell and render functions are adapters, not rebuilt
+HTML reparsing. It also holds real file-read callback delivery across access and
+mount transitions, checks confirmation-time and same-task round trips, and
+verifies that abandoned work cannot affect a later opening or its exact Undo.
+Its initial shell and render functions are adapters, not rebuilt
 Rust/WASM; adapter PDF bytes are not PDF-layout evidence. The default browser
 probe mode is `file`; use `--mode content` explicitly on hosts that block file
 navigation. Content mode and synthetic lifecycle events do not establish native

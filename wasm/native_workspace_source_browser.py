@@ -115,12 +115,15 @@ def main() -> None:
         def markdown(page):
             return download(page, lambda: page.locator('#btn-save-markdown').click())
 
-        def open_source(page, name, accept=True):
-            if name not in ['bad.md', 'wrong.html']:
-                decisions.append(accept)
+        def choose_source(page, name):
             with page.expect_file_chooser() as chooser:
                 page.locator('#btn-open-markdown').click()
             chooser.value.set_files(output / name)
+
+        def open_source(page, name, accept=True):
+            if name not in ['bad.md', 'wrong.html']:
+                decisions.append(accept)
+            choose_source(page, name)
             page.wait_for_function('() => !document.getElementById("btn-open-markdown").disabled')
 
         def dirty(page):
@@ -180,6 +183,79 @@ def main() -> None:
             again.evaluate("window.dispatchEvent(new Event('pagehide'));window.dispatchEvent(new Event('pageshow'))")
             check(again.locator('#btn-open-markdown').is_enabled() and again.locator('#btn-undo-source-open').is_disabled(), mode + ': simulated suspension clears history and re-enables new file selection')
             again.screenshot(path=str(output / (mode + '-source-controls.png')), full_page=True)
+
+            # Read actual selected file bytes, retaining only callback delivery
+            # to exercise ownership changes before publication. Access/DOM
+            # changes are real; lifecycle/IME coverage above is synthetic.
+            for transition in ['readOnly', 'disabled', 'editor', 'pane']:
+                race = open_page(fixture(native), mode + '-' + transition + '.html')
+                label = mode + '/' + transition
+                race.evaluate('''transition => {
+                  const editor=document.getElementById('fmd-editor');
+                  const node=transition==='pane'?editor.parentNode:editor, parent=node.parentNode;
+                  window.heldSourceReads=[];
+                  window.lockSource=()=>{if(['readOnly','disabled'].includes(transition))editor[transition]=true;else node.remove();};
+                  window.unlockSource=()=>{if(['readOnly','disabled'].includes(transition))editor[transition]=false;else parent.appendChild(node);};
+                  const read=FileReader.prototype.readAsArrayBuffer;
+                  FileReader.prototype.readAsArrayBuffer=function(file){
+                    const loaded=this.onload;
+                    this.onload=event=>heldSourceReads.push(()=>loaded.call(this,event));
+                    return read.call(this,file);
+                  };
+                }''', transition)
+                choose_source(race, 'import.md')
+                race.wait_for_function('() => heldSourceReads.length===1')
+                race.evaluate('lockSource()')
+                check(race.locator('#btn-open-markdown').is_disabled()
+                      and race.locator('#fmd-source-picker').is_disabled(),
+                      label + ': losing access disables source mutation controls')
+                check(markdown(race) == ORIGINAL.encode(), label + ': source stays exact while access is unavailable')
+                race.evaluate('unlockSource()')
+                race.wait_for_function('() => !document.getElementById("btn-open-markdown").disabled')
+                choose_source(race, 'second.markdown')
+                race.wait_for_function('() => heldSourceReads.length===2')
+                before_dialogs = len(dialogs)
+                race.evaluate('heldSourceReads.shift()()')
+                check(len(dialogs) == before_dialogs and markdown(race) == ORIGINAL.encode(),
+                      label + ': abandoned callback neither confirms nor replaces source')
+                check(race.locator('#btn-open-markdown').is_disabled(),
+                      label + ': abandoned completion cannot release a fresh read')
+                race.evaluate('heldSourceReads.shift()()')
+                race.wait_for_function('() => !document.getElementById("btn-open-markdown").disabled')
+                check(markdown(race) == cases['second.markdown'], label + ': fresh opening succeeds after access returns')
+                race.locator('#btn-undo-source-open').click()
+                check(markdown(race) == ORIGINAL.encode(), label + ': fresh opening retains normal exact Undo')
+
+                choose_source(race, 'import.md')
+                race.wait_for_function('() => heldSourceReads.length===1')
+                race.evaluate('heldSourceReads.shift()()')
+                race.wait_for_function('() => !document.getElementById("btn-open-markdown").disabled')
+                # All three actions run before MutationObserver delivery.
+                race.evaluate('lockSource();unlockSource();document.getElementById("btn-undo-source-open").click()')
+                check(markdown(race) == IMPORTED.encode() and race.locator('#btn-undo-source-open').is_disabled(),
+                      label + ': same-task access round trip retires Undo before it can discard source')
+
+                choose_source(race, 'second.markdown')
+                race.wait_for_function('() => heldSourceReads.length===1')
+                before_dialogs = len(dialogs)
+                race.evaluate('lockSource();unlockSource();heldSourceReads.shift()()')
+                race.wait_for_function('() => !document.getElementById("btn-open-markdown").disabled')
+                check(len(dialogs) == before_dialogs and markdown(race) == IMPORTED.encode(),
+                      label + ': same-task access round trip fences a pending file result')
+
+                # Change access immediately after a real confirmation returns,
+                # before the controller can install the selected source.
+                race.evaluate('''() => {
+                  const confirm=window.confirm;
+                  window.confirm=text=>{const accepted=confirm.call(window,text);lockSource();unlockSource();return accepted;};
+                }''')
+                choose_source(race, 'second.markdown')
+                race.wait_for_function('() => heldSourceReads.length===1')
+                race.evaluate('heldSourceReads.shift()()')
+                race.wait_for_function('() => !document.getElementById("btn-open-markdown").disabled')
+                check(markdown(race) == IMPORTED.encode() and race.locator('#btn-undo-source-open').is_disabled(),
+                      label + ': confirmation-time access changes cannot publish source or recovery history')
+                race.close()
         check(not decisions, 'all expected confirmation decisions were consumed')
         check(not requests, 'no HTTP(S) requests')
         check(not errors, 'no uncaught browser errors')

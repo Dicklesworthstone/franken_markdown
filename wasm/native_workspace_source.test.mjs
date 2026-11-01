@@ -10,14 +10,45 @@ const original = '\r\n# Original\r\n\r\n![retained](chart.png)\r\n';
 const imported = '\ufeff\r\n# Imported é中😀\rline\n\0</script><script>bad()</script>\r\n';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture({source = original, native = true, readerAvailable = true, publishing = null, ready} = {}) {
+function fixture({source = original, native = true, readerAvailable = true, publishing = null, ready, access} = {}) {
   const downloads = [], objects = new Map(), revoked = [], readers = [], timers = new Map(), confirmations = [], calls = [];
+  const observers = new Set();
   let timerId = 0, urlId = 0, autoRead = true, confirm = () => true, previewFailure = null, acceptWrite = null;
   const doc = new EventTarget(), win = new EventTarget();
+  function mutation(record) {
+    for (const observer of observers) {
+      if (!observer.targets.some(([target, options]) => (target === record.target
+          || (options.subtree && target.contains(record.target)))
+          && (record.type === 'childList' ? options.childList
+            : options.attributes && (!options.attributeFilter || options.attributeFilter.includes(record.attributeName))))) continue;
+      observer.records.push(record);
+      if (!observer.scheduled) {
+        observer.scheduled = true;
+        queueMicrotask(() => {
+          observer.scheduled = false;
+          const records = observer.takeRecords();
+          if (records.length) observer.callback(records);
+        });
+      }
+    }
+  }
+  class Observer {
+    constructor(callback) { this.callback = callback; this.targets = []; this.records = []; observers.add(this); }
+    observe(target, options) { this.targets.push([target, options]); }
+    takeRecords() { return this.records.splice(0); }
+  }
   class Element extends EventTarget {
     constructor(tag = 'span', id = '') {
       super(); this.tagName = tag.toUpperCase(); this.id = id; this.children = []; this.parentNode = null;
-      this.textContent = ''; this.innerHTML = ''; this._value = ''; this.disabled = false; this.hidden = false;
+      this.textContent = ''; this.innerHTML = ''; this._value = ''; this.hidden = false; this.isConnected = true;
+      for (const key of ['disabled', 'readOnly']) {
+        let value = false;
+        Object.defineProperty(this, key, {get: () => value, set: next => {
+          if (value === Boolean(next)) return;
+          value = Boolean(next);
+          mutation({type: 'attributes', target: this, attributeName: key.toLowerCase()});
+        }});
+      }
       this.style = {getPropertyValue: () => '16px', setProperty() {}};
       const classes = new Set();
       this.classList = {add: key => classes.add(key), remove: key => classes.delete(key), contains: key => classes.has(key),
@@ -30,10 +61,22 @@ function fixture({source = original, native = true, readerAvailable = true, publ
       if (this.id === 'fmd-editor' && acceptWrite) acceptWrite(value);
       this._value = this.tagName === 'TEXTAREA' ? String(value).replace(/\r\n?/g, '\n') : String(value);
     }
-    appendChild(child) { child.parentNode = this; this.children.push(child); return child; }
+    appendChild(child) {
+      if (child.parentNode) child.remove();
+      child.parentNode = this; this.children.push(child);
+      for (const node of [child, ...child.descendants()]) node.isConnected = this.isConnected;
+      mutation({type: 'childList', target: this, addedNodes: [child], removedNodes: []});
+      return child;
+    }
     insertBefore(child, ref) { child.parentNode = this; this.children.splice(this.children.indexOf(ref), 0, child); }
     replaceChildren(...children) { this.children = []; for (const child of children) this.appendChild(child); }
-    remove() { this.removed = true; this.parentNode?.children.splice(this.parentNode.children.indexOf(this), 1); }
+    remove() {
+      this.removed = true;
+      const parent = this.parentNode;
+      parent?.children.splice(parent.children.indexOf(this), 1); this.parentNode = null;
+      for (const node of [this, ...this.descendants()]) node.isConnected = false;
+      if (parent) mutation({type: 'childList', target: parent, addedNodes: [], removedNodes: [this]});
+    }
     setAttribute(key, value) { this.attributes[key] = value; }
     getAttribute(key) { return Object.hasOwn(this.attributes, key) ? this.attributes[key] : null; }
     removeAttribute(key) { delete this.attributes[key]; }
@@ -42,6 +85,7 @@ function fixture({source = original, native = true, readerAvailable = true, publ
       return this.children.flatMap(child => [child, ...child.descendants()]).find(child => child.id === id) ?? null;
     }
     *descendants() { for (const child of this.children) { yield child; yield* child.descendants(); } }
+    contains(node) { return this === node || [...this.descendants()].includes(node); }
     focus() { doc.activeElement = this; }
     setSelectionRange(start, end, direction = 'none') { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; }
     click() {
@@ -51,6 +95,7 @@ function fixture({source = original, native = true, readerAvailable = true, publ
     }
   }
   doc.body = new Element('body'); doc.documentElement = new Element('html'); doc.title = 'Document';
+  doc.contains = node => doc.body.contains(node) || doc.documentElement.contains(node);
   const header = doc.body.appendChild(new Element('header', 'header'));
   const toolbar = header.appendChild(new Element('div'));
   for (const id of ['toggle-view', 'zoom-in', 'zoom-out', 'zoom-reset', 'theme-toggle', 'stats-toggle', 'save-markdown', 'save-html', 'export-pdf']) {
@@ -58,6 +103,7 @@ function fixture({source = original, native = true, readerAvailable = true, publ
   }
   const body = doc.body.appendChild(new Element('div', 'fmd-app-body')); body.classList.add('view-split');
   const editor = body.appendChild(new Element('textarea', 'fmd-editor'));
+  if (access) editor[access] = true;
   const preview = body.appendChild(new Element('div', 'fmd-content')); preview.innerHTML = 'ORIGINAL RENDER';
   const stats = doc.body.appendChild(new Element('div', 'stats-drawer'));
   for (const id of ['stat-words', 'stat-chars', 'stat-read-time', 'stat-readability', 'btn-stats-close']) stats.appendChild(new Element('span', id));
@@ -93,7 +139,7 @@ function fixture({source = original, native = true, readerAvailable = true, publ
     complete(buffer) { this.result = buffer; this.readyState = 2; this.onload?.(); }
     abort() { this.readyState = 2; this.aborts++; this.onabort?.(); }
   }
-  const context = {document: doc, window: win, console, Event, TextDecoder, TextEncoder, ArrayBuffer, Blob,
+  const context = {document: doc, window: win, console, Event, TextDecoder, TextEncoder, ArrayBuffer, Blob, MutationObserver: Observer,
     FileReader: readerAvailable ? Reader : undefined,
     URL: {createObjectURL(blob) { const url = 'blob:adapter/' + ++urlId; objects.set(url, blob); return url; },
       revokeObjectURL(url) { revoked.push(url); objects.delete(url); }},
@@ -234,6 +280,112 @@ test('confirmation-time edits with and without input never get replaced', async 
     const f = fixture(); f.setConfirm(() => { f.type('during confirmation', notify); return true; });
     await f.open(file()); assert.equal(f.editor.value, 'during confirmation'); assert.equal(f.el('btn-undo-source-open').disabled, true);
   }
+});
+
+function revokeAccess(f, kind) {
+  if (kind === 'readOnly' || kind === 'disabled') {
+    f.editor[kind] = true;
+    return () => { f.editor[kind] = false; };
+  }
+  const node = kind === 'ancestor' ? f.editor.parentNode : f.editor;
+  const parent = node.parentNode;
+  node.remove();
+  return () => { parent.appendChild(node); };
+}
+
+for (const access of ['readOnly', 'disabled']) {
+  test(access + ' source cannot open a file, including before any observer callback', async () => {
+    const f = fixture({access});
+    assert.equal(f.el('btn-open-markdown').disabled, true);
+    assert.equal(f.el('fmd-source-picker').disabled, true);
+    f.el('btn-open-markdown').dispatchEvent(new Event('click'));
+    f.select([file()]); await tick();
+    assert.equal(f.readers.length, 0); assert.equal(f.confirmations.length, 0);
+    assert.deepEqual(await f.markdown(), Buffer.from(original));
+    f.editor[access] = false; await tick();
+    await f.open(file());
+    assert.deepEqual(await f.markdown(), Buffer.from(imported));
+  });
+
+  test(access + ' blocks Undo immediately and retires that history after access returns', async () => {
+    const f = fixture(); await f.open(file());
+    f.editor[access] = true;
+    f.el('btn-undo-source-open').dispatchEvent(new Event('click'));
+    assert.deepEqual(await f.markdown(), Buffer.from(imported));
+    assert.equal(f.el('btn-undo-source-open').disabled, true);
+    f.editor[access] = false; await tick();
+    assert.equal(f.el('btn-open-markdown').disabled, false);
+    assert.equal(f.el('btn-undo-source-open').disabled, true);
+    await f.open(file('new replacement'));
+    f.el('btn-undo-source-open').click();
+    assert.deepEqual(await f.markdown(), Buffer.from(imported));
+  });
+
+  test(access + ' round trip inside confirmation cannot publish the selected source', async () => {
+    const f = fixture();
+    f.setConfirm(() => { const restore = revokeAccess(f, access); restore(); return true; });
+    await f.open(file());
+    assert.equal(f.confirmations.length, 1);
+    assert.deepEqual(await f.markdown(), Buffer.from(original));
+    assert.equal(f.el('btn-undo-source-open').disabled, true);
+  });
+}
+
+for (const kind of ['readOnly', 'disabled', 'editor', 'ancestor']) {
+  test(kind + ' ownership loss aborts a read and an old callback cannot affect a fresh replacement', async () => {
+    const f = fixture(); f.setAutoRead(false); f.begin(); f.select([file()]);
+    const old = f.reader, late = old.onload;
+    const restore = revokeAccess(f, kind); await tick();
+    assert.equal(old.aborts, 1); assert.equal(f.el('btn-open-markdown').disabled, true);
+    assert.deepEqual(await f.markdown(), Buffer.from(original));
+    restore(); await tick();
+    f.begin(); f.select([file('fresh')]);
+    const current = f.reader;
+    old.result = await file().arrayBuffer(); late(); await tick();
+    assert.equal(f.confirmations.length, 0);
+    assert.equal(f.el('btn-open-markdown').disabled, true);
+    current.complete(await file('fresh').arrayBuffer()); await tick();
+    assert.deepEqual(await f.markdown(), Buffer.from('fresh'));
+    assert.equal(f.confirmations.length, 1);
+    f.el('btn-undo-source-open').click();
+    assert.deepEqual(await f.markdown(), Buffer.from(original));
+  });
+
+  test(kind + ' round trip in the same task is observed before a file callback or Undo can replace source', async () => {
+    const f = fixture(); f.setAutoRead(false); f.begin(); f.select([file()]);
+    const buffer = await file().arrayBuffer();
+    const restore = revokeAccess(f, kind); restore();
+    f.reader.complete(buffer); await tick();
+    assert.equal(f.confirmations.length, 0);
+    assert.deepEqual(await f.markdown(), Buffer.from(original));
+    f.setAutoRead(true); await f.open(file());
+    const undoRestore = revokeAccess(f, kind); undoRestore();
+    f.el('btn-undo-source-open').click();
+    assert.deepEqual(await f.markdown(), Buffer.from(imported));
+    assert.equal(f.el('btn-undo-source-open').disabled, true);
+  });
+}
+
+test('a picker chosen after an access round trip cannot reuse the retired opening gesture', async () => {
+  const f = fixture(); f.begin();
+  const restore = revokeAccess(f, 'readOnly'); restore();
+  f.select([file()]); await tick();
+  assert.equal(f.readers.length, 0);
+  assert.deepEqual(await f.markdown(), Buffer.from(original));
+  await f.open(file());
+  assert.deepEqual(await f.markdown(), Buffer.from(imported));
+});
+
+test('unrelated preview DOM changes preserve a valid pending source read and replacement undo', async () => {
+  const f = fixture(); f.setAutoRead(false); f.begin(); f.select([file()]);
+  const temporary = f.doc.createElement('span');
+  f.preview.appendChild(temporary); temporary.remove(); await tick();
+  assert.equal(f.reader.aborts, 0);
+  f.reader.complete(await file().arrayBuffer()); await tick();
+  f.preview.appendChild(temporary); temporary.remove(); await tick();
+  assert.equal(f.el('btn-undo-source-open').disabled, false);
+  f.el('btn-undo-source-open').click();
+  assert.deepEqual(await f.markdown(), Buffer.from(original));
 });
 
 test('composition and page suspension cancel reads, retire undo, and require a new picker gesture', async () => {

@@ -979,7 +979,26 @@
     controls.appendChild(picker);
     const maximum = 32 * 1024 * 1024;
     let revision = 0, composing = false, suspended = false, pending = null, previous = null, ownInput = null;
-    function updateButtons() { open.disabled = suspended || composing || pending !== null; undo.disabled = open.disabled || previous === null; }
+    let accessObserver = null;
+    const editable = () => !suspended && !composing && !editor.readOnly && !editor.disabled && editor.isConnected !== false;
+    function updateButtons() {
+      open.disabled = !editable() || pending !== null;
+      undo.disabled = open.disabled || previous === null;
+      // The pending operation still needs its picker to deliver a selection.
+      picker.disabled = !editable();
+    }
+    function accessChanged(records) {
+      const affected = records.some(record => record.type === 'attributes'
+        || [...record.removedNodes, ...record.addedNodes].some(node => node === editor || node.contains?.(editor)));
+      if (!affected) return;
+      revision++; previous = null; cancel(); updateButtons();
+    }
+    function observeAccess() {
+      // Mutation callbacks run later. Drain their records at action/publication
+      // boundaries too, so a lock or detach followed by a same-task restoration
+      // cannot revive a read or Undo belonging to the preceding editor state.
+      if (accessObserver) accessChanged(accessObserver.takeRecords());
+    }
     function finish(operation) {
       if (pending !== operation) return;
       pending = null; picker.value = ''; updateButtons();
@@ -995,9 +1014,10 @@
       saveStatus.textContent = modifiedNotice() || 'Source opening cancelled';
     }
     function check(operation) {
-      if (pending !== operation || suspended || composing || revision !== operation.revision
+      observeAccess();
+      if (pending !== operation || !editable() || revision !== operation.revision
           || editor.value !== operation.view || sourceAnchor !== operation.anchor) {
-        throw Error('Source changed while opening the file; select it again to replace the current source');
+        throw Error('Source changed or editing access ended while opening the file; select it again to replace the current source');
       }
     }
     function boundedSource(text) {
@@ -1071,7 +1091,8 @@
       updateButtons();
     }
     open.addEventListener('click', () => attempt(() => {
-      if (suspended || composing || pending) return;
+      observeAccess();
+      if (!editable() || pending) return;
       const operation = {revision, view: editor.value, anchor: sourceAnchor, cancelRead: null};
       pending = operation; updateButtons();
       try { picker.value = ''; picker.click(); }
@@ -1112,7 +1133,8 @@
       }).finally(() => finish(operation));
     });
     undo.addEventListener('click', () => attempt(() => {
-      if (!previous || pending || composing || suspended) return;
+      observeAccess();
+      if (!previous || pending || !editable()) return;
       const backup = previous;
       previous = null; updateButtons();
       if (revision !== backup.revision || editor.value !== backup.view || sourceAnchor !== backup.anchor) {
@@ -1130,6 +1152,14 @@
     editor.addEventListener('compositionend', () => { composing = false; revision++; updateButtons(); });
     window.addEventListener('pagehide', () => { suspended = true; revision++; previous = null; cancel(); updateButtons(); });
     window.addEventListener('pageshow', () => { suspended = false; composing = false; revision++; updateButtons(); });
+    if (typeof MutationObserver === 'function') {
+      accessObserver = new MutationObserver(accessChanged);
+      accessObserver.observe(editor, {attributes: true, attributeFilter: ['readonly', 'disabled']});
+      // Observe ancestors as well as the textarea: removing and reinserting
+      // its pane is an ownership transition even when the same node returns.
+      accessObserver.observe(document, {childList: true, subtree: true});
+    }
+    updateButtons();
   }
 
   // fmd-document-lab-v1: native, explicit authoring reports. No timer-driven

@@ -43,6 +43,32 @@ reference scope and paragraph/code boundaries follow CommonMark 0.31.2 section
 and callouts are extensions. Reference labels use the complete pinned Unicode
 full fold described in [REFERENCE_LABELS.md](REFERENCE_LABELS.md).
 
+## Document-prefix boundaries
+
+A leading Unicode BOM is ignored before classifying the first Markdown block,
+so it cannot turn a fence, heading or reference definition into ordinary text.
+BOM characters within document content remain literal. The edited source is
+not rewritten by rendering.
+
+Valid leading frontmatter is excluded before collecting blocks, references or
+footnotes. Admission follows the native parser's existing subset: exact `---`
+opening and closing lines, at least one nonempty assignment key using `=` or
+`:`, optional comments, ordinary/quoted values, and indented `|` or `>` block
+scalars with optional `+`/`-` chomping indicators. Unknown keys remain metadata.
+Scalar indentation is validated, including partial dedents and over-indented
+leading blank lines. This is the project's metadata grammar, not full YAML.
+
+The prefix must begin at the document start and use LF or CRLF lines. Empty,
+comment-only, malformed and unclosed candidates retain their entire ordinary
+Markdown content. Later metadata-looking blocks keep their normal Markdown
+meaning. Definitions and note-shaped lines inside valid metadata cannot leak
+into the body or defeat a body's real definitions.
+
+The fallback applies these content boundaries without adding metadata-based
+render configuration. The prefix cursor uses constant-size state and shares
+the existing source/work limits; it does not build a metadata AST or publish
+speculative definitions.
+
 ## Paragraph continuation and container ownership
 
 Quotes and list items retain unmarked or dedented lines only while their current
@@ -98,6 +124,7 @@ node --test tests/interactive_renderer.test.mjs
 node --test tests/interactive_definitions.test.mjs
 node --test wasm/tests/interactive_container_boundaries.test.mjs
 node --test wasm/tests/interactive_footnote_identity.test.mjs
+node --test wasm/tests/interactive_document_prefix.test.mjs
 node --check src/interactive_renderer.js
 ```
 

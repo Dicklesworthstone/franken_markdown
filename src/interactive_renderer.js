@@ -1319,7 +1319,64 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return out;
   }
-  const lines = source.replace(/\r\n?/g, '\n').replace(/\0/g, '\ufffd').split('\n');
+  function documentBody(text) {
+    // Match native document_body/split_frontmatter before newline conversion:
+    // only the document's initial BOM is ignorable content. Frontmatter has
+    // its own optional BOM admission; a later BOM in the body stays literal.
+    const body = text[0] === '\ufeff' ? text.slice(1) : text;
+    const candidate = body[0] === '\ufeff' ? body.slice(1) : body;
+    if (!candidate.startsWith('---')) return body;
+    let cursor = 0;
+    const nextLine = () => {
+      const start = cursor;
+      while (cursor < candidate.length && candidate[cursor] !== '\n') { charge(); cursor++; }
+      let end = cursor;
+      if (cursor < candidate.length) { charge(); cursor++; }
+      while (end > start && candidate[end - 1] === '\r') { charge(); end--; }
+      return candidate.slice(start, end);
+    };
+    if (nextLine() !== '---') return body;
+    // Rust's metadata trim uses Unicode White_Space, which does not include
+    // U+FEFF. JavaScript trim() would incorrectly reject that nonempty key.
+    const trim = value => {
+      let start = 0, end = value.length;
+      while (start < end && /\p{White_Space}/u.test(value[start])) { charge(); start++; }
+      while (end > start && /\p{White_Space}/u.test(value[end - 1])) { charge(); end--; }
+      return value.slice(start, end);
+    };
+    let sawAssignment = false, scalarParent = null, scalarIndent = null, leadingBlankIndent = 0;
+    while (cursor < candidate.length) {
+      const line = nextLine();
+      if (line === '---') return sawAssignment ? candidate.slice(cursor) : body;
+      charge(line.length * 3 + 1);
+      const blank = /^[ \t]*$/.test(line);
+      let indent = 0;
+      while (line[indent] === ' ') { charge(); indent++; }
+      if (scalarParent !== null && (blank || indent > scalarParent)) {
+        if (blank && scalarIndent === null) leadingBlankIndent = Math.max(leadingBlankIndent, indent);
+        else if (scalarIndent === null) {
+          scalarIndent = indent;
+          if (leadingBlankIndent > indent) return body;
+        } else if (!blank && indent < scalarIndent) return body;
+        continue;
+      }
+      scalarParent = null;
+      if (blank || /^[ \t]*#/.test(line)) continue;
+      const separator = line.search(/[=:]/);
+      if (separator < 0 || !trim(line.slice(0, separator))) return body;
+      sawAssignment = true;
+      const value = trim(line.slice(separator + 1));
+      const comment = value.search(/(?:^|\p{White_Space})#/u);
+      const header = trim(comment < 0 ? value : value.slice(0, comment));
+      if (/^[|>][+-]?$/.test(header)) {
+        scalarParent = indent; scalarIndent = null; leadingBlankIndent = 0;
+      }
+    }
+    // Empty/comment-only, unsupported, malformed and unclosed candidates are
+    // ordinary Markdown in full. No definition state was touched speculatively.
+    return body;
+  }
+  const lines = documentBody(source).replace(/\r\n?/g, '\n').replace(/\0/g, '\ufffd').split('\n');
   const body = renderBlocks(parseBlocks(lines));
   if (!usedNotes.length) return body;
   // Render the growing work queue once per note, then emit all backlinks.

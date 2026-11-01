@@ -140,6 +140,18 @@ Table padding is measured in ems of the effective table size. This intentionally
 changes the historical fixed 6/4-point padding: default theme values now control
 table density. Code panel padding and quote/definition spacing scale with the
 body. Nested containers stop consuming indentation when one body em remains.
+
+Wide tables continue in successive column panels down the poster. Each panel
+retains its source headers and rows; the first source column repeats as row
+context when at least two readable columns fit. A very narrow nested table uses
+single-column panels in source order. Column allocation accounts for table type
+size and padding, preserves a readable minimum before distributing extra width,
+and reduces padding when only one text em remains. Text size stays unchanged.
+Tables that already fit retain their ordinary placement. Links, inline styling,
+mathematics and embedded images remain attached to their source cells; decimal
+alignment and financial footing rules follow the corresponding source columns
+across panels.
+
 List items share a gutter measured from their actual font and largest marker;
 when a usable hanging layout cannot fit, the complete marker wraps above the
 item rather than overlapping it. Empty items still receive a line. Ordered

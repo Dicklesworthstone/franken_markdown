@@ -227,6 +227,20 @@ pub(crate) fn cjk_font() -> Option<Result<(&'static Font, &'static OpenTypeLayou
 
 /// The bundled emoji fallback face (curated monochrome Noto Emoji subset),
 /// when the `emoji-face` feature compiled it in.
+#[inline(always)]
+#[must_use]
+pub fn emoji_bytes() -> Option<&'static [u8]> {
+    #[cfg(feature = "emoji-face")]
+    {
+        Some(fmd_font::bundled::NOTO_EMOJI_CURATED)
+    }
+    #[cfg(not(feature = "emoji-face"))]
+    {
+        None
+    }
+}
+
+/// The bundled emoji fallback and cached layout tables, when compiled in.
 ///
 /// # Errors
 /// See [`body_layout_tables`].

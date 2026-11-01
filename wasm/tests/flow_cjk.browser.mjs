@@ -326,7 +326,7 @@ export async function run(fixture, runtime = null, baseline = null, mode = "enab
           const s = await create(fixture.updated.source);
           try {
             const before = snapshot(s), token = s.token, source = s.source;
-            for (const invalid of ["אב", "中\ufe00", "か\u3099", "😀"])
+            for (const invalid of ["אב", "中\ufe00", "か\u3099", "👩\u200d💻"])
               await rejects(Promise.resolve().then(() => s.replaceSource(invalid, { expectedRevision: token.revision })), "LAYOUT_ERROR");
             equal(s.token, token); equal(s.source, source); equal(geometry(snapshot(s)), geometry(before));
             s.replaceSource("中文 and 日本語", { expectedRevision: token.revision }); equal(s.source, "中文 and 日本語");

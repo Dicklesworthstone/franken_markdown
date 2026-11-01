@@ -26,13 +26,16 @@ mark-to-base/mark-to-mark offsets, and shared source clusters survive into the
 owned run and existing Canvas glyph painter. Missing glyphs, unsupported font
 lookups, unattached marks, and script/joining sequences outside the Latin
 profile still fail explicitly. Support depends on the selected face; this is
-not universal multilingual shaping. Arabic/Hebrew bidi, emoji sequences, and
+not universal multilingual shaping. Arabic/Hebrew bidi, joined emoji sequences, and
 cross-style combining clusters still need broader host shaping support.
 
 With the optional `cjk-face` feature, these Latin segments can also appear
 alongside mapped Han and precomposed kana while retaining their original
 clusters. CJK combining marks remain outside this Latin positioning profile;
 see [Chinese and Japanese text in Flow](FLOW_CJK_TEXT.md).
+The independent `emoji-face` capability admits mapped monochrome emoji and
+standardized presentation pairs alongside these Latin segments; their original
+source clusters remain intact. See [emoji in Flow](FLOW_EMOJI_TEXT.md).
 
 Run ingress remains bounded by 64 KiB and 16,384 scalars. Strict positioned
 segments additionally retain the font engine's 4,096-scalar and 64-consecutive-

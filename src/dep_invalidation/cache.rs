@@ -369,7 +369,7 @@ mod tests {
         for _ in 0..2 {
             assert!(
                 cache
-                    .shape("😀", 14.0, FlowTextRole::Body, FlowInlineStyle::default())
+                    .shape("👩\u{200d}💻", 14.0, FlowTextRole::Body, FlowInlineStyle::default())
                     .is_err()
             );
         }

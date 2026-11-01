@@ -494,7 +494,7 @@ mod tests {
             .unwrap();
         assert!(
             state
-                .replace_source(2, "😀", FlowAssetReuse::Invalidate)
+                .replace_source(2, "👩\u{200d}💻", FlowAssetReuse::Invalidate)
                 .is_err()
         );
         assert_eq!(state.source(), "cafe");

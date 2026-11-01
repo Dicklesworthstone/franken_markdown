@@ -270,7 +270,7 @@ mod tests {
                 .edit_many_utf16(
                     1,
                     &[
-                        edit(0, 6, "😀"),
+                        edit(0, 6, "👩\u{200d}💻"),
                         edit(source.len() - 5, source.len(), "last")
                     ],
                     FlowAssetReuse::Invalidate

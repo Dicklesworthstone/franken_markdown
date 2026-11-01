@@ -6,8 +6,11 @@
 //! exact source clusters, and require a face covering the whole sequence.
 //! With `cjk-face`, mapped BMP Han, precomposed kana and horizontal CJK
 //! punctuation use the existing bundled Simplified Chinese fallback face.
-//! Unsupported marks, bidi/joining scripts and emoji sequences still require
-//! a host shaper and are refused, never emitted unpositioned or missing.
+//! With `emoji-face`, mapped standalone emoji use the existing monochrome
+//! fallback. Standardized presentation sequences keep their complete source
+//! cluster and require an actual face for the requested presentation. ZWJ,
+//! modifiers, flags, keycaps and other unsupported sequences still require
+//! a host shaper and are refused, never emitted as misleading components.
 //! Tabs retain their logical byte and occupy four space advances. Code disables
 //! discretionary ligature/kerning substitutions but still positions marks.
 
@@ -23,6 +26,7 @@ use crate::text::{
 use crate::theme::FontFamily;
 use std::ops::Range;
 
+mod emoji;
 mod positioned;
 
 const MAX_RUN_BYTES: usize = 64 * 1024;
@@ -63,6 +67,8 @@ struct Face {
 #[derive(Clone)]
 pub struct BundledFlowFonts {
     faces: Vec<Face>,
+    cjk_face: Option<usize>,
+    emoji_face: Option<usize>,
 }
 
 impl BundledFlowFonts {
@@ -101,19 +107,43 @@ impl BundledFlowFonts {
                 id: FontId::from_font_data(symbol_bytes),
             },
         ];
-        if let Some(parsed) = super::cjk_font() {
+        let cjk_face = if let Some(parsed) = super::cjk_font() {
             let (font, layout) = parsed.map_err(|e| FlowLayoutError::Shaping(e.to_string()))?;
             let bytes = super::cjk_bytes().ok_or_else(|| {
                 FlowLayoutError::Shaping("bundled CJK font bytes are unavailable".to_owned())
             })?;
+            let index = faces.len();
             faces.push(Face {
                 font,
                 layout,
                 bytes,
                 id: FontId::from_font_data(bytes),
             });
-        }
-        Ok(Self { faces })
+            Some(index)
+        } else {
+            None
+        };
+        let emoji_face = if let Some(parsed) = super::emoji_font() {
+            let (font, layout) = parsed.map_err(|e| FlowLayoutError::Shaping(e.to_string()))?;
+            let bytes = super::emoji_bytes().ok_or_else(|| {
+                FlowLayoutError::Shaping("bundled emoji font bytes are unavailable".to_owned())
+            })?;
+            let index = faces.len();
+            faces.push(Face {
+                font,
+                layout,
+                bytes,
+                id: FontId::from_font_data(bytes),
+            });
+            Some(index)
+        } else {
+            None
+        };
+        Ok(Self {
+            faces,
+            cjk_face,
+            emoji_face,
+        })
     }
 
     /// Retrieve the immutable bytes for an actual glyph/cluster font identity.
@@ -156,6 +186,9 @@ impl BundledFlowFonts {
         if text.len() > MAX_RUN_BYTES {
             return Err("bundled flow shaping byte budget exceeded".to_owned());
         }
+        if text.chars().take(MAX_RUN_SCALARS + 1).count() > MAX_RUN_SCALARS {
+            return Err("bundled flow shaping scalar budget exceeded".to_owned());
+        }
         if text.chars().any(positioned::is_mark) {
             let mut run = self.shape_positioned(text, size, role, style)?;
             self.attach_vertical_metrics(&mut run)?;
@@ -171,11 +204,10 @@ impl BundledFlowFonts {
         };
         let mut source = Vec::new();
         let mut utf16 = 0;
-        for (start, ch) in text.char_indices() {
-            if source.len() >= MAX_RUN_SCALARS {
-                return Err("bundled flow shaping scalar budget exceeded".to_owned());
-            }
-            if !simple_ltr_scalar(ch) {
+        let mut chars = text.char_indices().peekable();
+        while let Some((start, ch)) = chars.next() {
+            let emoji = self.emoji_glyph(ch);
+            if !simple_ltr_scalar(ch) && emoji.is_none() {
                 return Err(format!(
                     "bundled flow needs a host shaper for U+{:04X} at byte {start}",
                     ch as u32
@@ -183,32 +215,53 @@ impl BundledFlowFonts {
             }
             let tab = ch == '\t';
             let mapped = if tab { ' ' } else { ch };
-            let mut face = primary;
-            let mut glyph = self.faces[face].font.glyph_index(mapped);
-            if glyph == 0 {
-                // Existing body/mono and symbol identities keep their priority.
-                // The optional face only extends the declared CJK repertoire;
-                // it cannot silently broaden Latin or complex-script shaping.
-                for (index, fallback) in self.faces.iter().enumerate().skip(SYMBOL) {
-                    if index > SYMBOL && !cjk_ltr_scalar(ch) {
-                        break;
-                    }
-                    face = index;
-                    glyph = fallback.font.glyph_index(mapped);
-                    if glyph != 0 {
-                        break;
-                    }
+            // Existing body/mono, symbol and CJK identities retain their
+            // precedence. A new optional face cannot broaden another face's
+            // admission profile or silently take over ordinary typography.
+            let mut selected = self
+                .text_glyph(primary, mapped)
+                .or_else(|| {
+                    cjk_ltr_scalar(ch)
+                        .then(|| self.cjk_face.and_then(|index| self.glyph(index, mapped)))
+                        .flatten()
+                })
+                .or(emoji);
+            let mut end = start + ch.len_utf8();
+            let mut units = ch.len_utf16();
+            if let Some(&(offset, selector @ ('\u{fe0e}' | '\u{fe0f}'))) = chars.peek() {
+                // The curated face has scalar outlines, not cmap14 or GSUB
+                // sequence substitution. VS16 selects its actual monochrome
+                // emoji; VS15 needs a real text-face glyph instead. Only
+                // standardized emoji variation bases can consume a selector.
+                if emoji.is_none() || !emoji::variation_base(ch) {
+                    return Err(format!(
+                        "bundled flow needs a host shaper for presentation selector U+{:04X} at byte {offset}",
+                        selector as u32
+                    ));
                 }
+                selected = if selector == '\u{fe0f}' {
+                    emoji
+                } else {
+                    self.text_glyph(primary, ch)
+                };
+                if selected.is_none() {
+                    return Err(format!(
+                        "no bundled flow text presentation for U+{:04X} at byte {start}; supply a host shaper",
+                        ch as u32
+                    ));
+                }
+                chars.next();
+                end = offset + selector.len_utf8();
+                units += selector.len_utf16();
             }
-            if glyph == 0 || glyph >= self.faces[face].font.num_glyphs {
-                return Err(format!(
+            let (face, glyph) = selected.ok_or_else(|| {
+                format!(
                     "no bundled flow glyph for U+{:04X} at byte {start}; supply a host shaper",
                     ch as u32
-                ));
-            }
-            let units = ch.len_utf16();
+                )
+            })?;
             source.push(Scalar {
-                bytes: start..start + ch.len_utf8(),
+                bytes: start..end,
                 utf16: utf16..utf16 + units,
                 face,
                 glyph,
@@ -291,6 +344,22 @@ impl BundledFlowFonts {
         }
         self.attach_vertical_metrics(&mut run)?;
         Ok(run)
+    }
+
+    fn glyph(&self, face: usize, ch: char) -> Option<(usize, u16)> {
+        let font = self.faces[face].font;
+        let glyph = font.glyph_index(ch);
+        (glyph != 0 && glyph < font.num_glyphs).then_some((face, glyph))
+    }
+
+    fn text_glyph(&self, primary: usize, ch: char) -> Option<(usize, u16)> {
+        self.glyph(primary, ch).or_else(|| self.glyph(SYMBOL, ch))
+    }
+
+    fn emoji_glyph(&self, ch: char) -> Option<(usize, u16)> {
+        emoji::scalar(ch)
+            .then(|| self.emoji_face.and_then(|index| self.glyph(index, ch)))
+            .flatten()
     }
 
     /// Resolve vertical metrics from the actual immutable faces and glyphs,
@@ -604,7 +673,7 @@ mod tests {
             "\u{0301}a",
             "אב",
             "العربية",
-            "😀",
+            "👩\u{200d}💻",
             "a\u{200d}b",
             "x\u{202e}y",
         ] {

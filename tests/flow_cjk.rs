@@ -15,7 +15,7 @@ fn unsupported_scripts_marks_variants_emoji_and_missing_glyphs_still_refuse() {
         "العربية",
         "한",
         "\u{20000}",
-        "😀",
+        "👩\u{200d}💻",
         "a\u{200d}b",
         "x\u{202e}y",
         "か\u{3099}",
@@ -371,7 +371,7 @@ mod enabled {
         );
         assert!(
             browser
-                .replace_source(1, "中文 😀", FlowAssetReuse::Invalidate)
+                .replace_source(1, "中文 👩\u{200d}💻", FlowAssetReuse::Invalidate)
                 .is_err()
         );
         assert_eq!(browser.source(), SOURCE);

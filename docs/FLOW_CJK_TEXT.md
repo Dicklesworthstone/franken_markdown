@@ -67,8 +67,10 @@ It does not provide complete Unicode line breaking, Japanese layout, vertical
 writing, or paragraph-level bidi shaping. Missing glyphs and unsupported
 sequences remain errors, including Hangul, supplementary Han, decomposed kana
 voicing marks, CJK tone marks, vertical repeat marks, halfwidth kana,
-variation selectors, ZWJ/emoji
-sequences, and joining or bidi scripts. Failed edits preserve the last
+CJK variation selectors, joined emoji sequences, and joining or bidi scripts.
+Mapped standalone emoji and standardized presentation pairs are available
+through the independent [`emoji-face` capability](FLOW_EMOJI_TEXT.md).
+Failed edits preserve the last
 successful source and display.
 
 Per-call shaping, total shaping-work, display-item, line, font, and outline

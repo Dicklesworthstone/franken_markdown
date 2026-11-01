@@ -155,6 +155,16 @@ produce `missing_glyphs` diagnostics in PDF/SVG. See the [font source and exact
 repertoire](fmd-font/fonts/noto-sans-cjk/README.md) for the pinned license,
 reproduction command, and independent geometry check.
 
+### Emoji in browser Flow
+
+Flow can now use the existing optional `emoji-face` font to draw real monochrome
+emoji outlines in headings, prose, lists, tables, code and beside mathematics.
+Build a browser package with `--features wasm-flow,emoji-face`; ordinary lean
+packages retain their smaller font set. Standardized presentation pairs such
+as `⚠️` retain both source characters in one measured cluster. ZWJ sequences,
+skin tones, flags and keycaps still require a broader host shaper. See
+[the supported emoji profile](docs/FLOW_EMOJI_TEXT.md).
+
 ### Mainline Highlights
 
 | Area | Result on `main` |

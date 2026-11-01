@@ -142,9 +142,30 @@ also retains a BOM and original CRLF line endings.
 The fallback is one regular Simplified Chinese face, including when used inside
 bold, italic or code spans. It does not synthesize CJK weights, language-specific
 glyph variants or vertical text. Missing glyphs, supplementary Han, Hangul,
-decomposed kana/unsupported combining sequences, variation selectors, bidi and
-emoji still require a suitable host shaper and are refused rather than replaced
+decomposed kana/unsupported combining sequences, CJK variation selectors, bidi and
+joined emoji still require a suitable host shaper and are refused rather than replaced
 with missing-glyph boxes or silently dropped characters.
+
+## Optional monochrome emoji
+
+Build with `--no-default-features --features wasm-flow,emoji-face` to draw mapped
+standalone emoji such as `🚀`, `✅`, `📦` and `🎉` with the existing bundled Noto
+Emoji outlines. The feature also admits standardized presentation sequences
+such as `⚠️` and `©️`: VS16 selects the emoji face, while VS15 requires an actual
+glyph in the chosen text/symbol face. A base and its selector share one complete
+UTF-8/UTF-16 cluster, so wrapping and hit testing cannot split them. The source
+and semantic reader retain both characters when copying or editing.
+
+Emoji works in ordinary styled text, headings, lists, quotes, tables, code and
+beside mathematics. Measured font extents determine line height and baseline.
+Canvas paints actual glyph paths without downloading images or using a system
+emoji font. Add `cjk-face` independently when both repertoires are needed.
+The regular monochrome face does not synthesize colored, bold or italic emoji.
+
+The lean profile still refuses uncovered emoji. ZWJ sequences, skin tones,
+flags, keycaps, tag sequences, arbitrary presentation selectors and missing
+glyphs remain `LAYOUT_ERROR` failures that preserve the previous document.
+See [the precise font and source contract](../docs/FLOW_EMOJI_TEXT.md).
 
 ## Limits and scope
 

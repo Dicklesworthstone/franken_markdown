@@ -93,6 +93,26 @@ Setext underlines apply to their complete paragraph; removing a container cannot
 promote an unmarked lazy line into a heading or nested list. Raw HTML and math
 retain the standalone renderer's existing escaped-text behavior.
 
+## Table cell and block ownership
+
+Matched code spans retain their internal pipes as part of the same cell,
+following the native renderer's established extension. Delimiters must have
+the same maximal backtick-run length; an unmatched opener cannot hide later
+columns. Escaped final pipes remain cell content, and actual final separators
+remain optional. Code delimiter positions are indexed once per row and their
+allocation shares the existing structure budget.
+
+Cell source stays intact until inline parsing, preserving escaped reference
+labels and normal destination/title decoding. The table-specific `\|` decoding
+inside code spans propagates through emphasis, links and image labels; ordinary
+prose code is unchanged. Existing alignments and ragged-row behavior remain.
+
+Headers, body rows and container tracking share admission rules. Supported
+block openers retain their priority, including pipe-bearing indented code and
+footnote definitions after a table. A reference-shaped pipe row remains literal
+cell content rather than defining a global link. Subsequent fences keep their
+definitions literal, and real definitions after those fences remain usable.
+
 ## Multiline reference definitions
 
 Reference definitions use their own bounded cursor, separate from the inline
@@ -125,6 +145,7 @@ node --test tests/interactive_definitions.test.mjs
 node --test wasm/tests/interactive_container_boundaries.test.mjs
 node --test wasm/tests/interactive_footnote_identity.test.mjs
 node --test wasm/tests/interactive_document_prefix.test.mjs
+node --test wasm/tests/interactive_table_ownership.test.mjs
 node --check src/interactive_renderer.js
 ```
 

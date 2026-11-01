@@ -685,7 +685,7 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return atoms;
   }
-  function inline(text, depth = 0, links = true, footnotes = true, images = true) {
+  function inline(text, depth = 0, links = true, footnotes = true, images = true, table = false) {
     charge(text.length + 1);
     if (depth > MAX_DEPTH) return escape(text);
     const atoms = inlineIndex(text);
@@ -697,6 +697,7 @@ function parseMarkdownClient(source, imageAssets) {
         if (atom.kind === 'code') {
           let code = text.slice(atom.content, atom.close).replace(/\n/g, ' ');
           if (code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) code = code.slice(1, -1);
+          if (table) code = code.replace(/\\\|/g, '|');
           out = append(out, '<code>' + escape(code) + '</code>');
         } else if (atom.kind === 'note') {
           out = append(out, footnotes ? noteReference(atom.label) : escape(text.slice(i, atom.end)));
@@ -706,7 +707,7 @@ function parseMarkdownClient(source, imageAssets) {
             : '<a href="' + escape(url) + '">' + escape(atom.label) + '</a>');
         } else {
           const image = atom.kind === 'image';
-          const content = inline(text.slice(atom.labelStart, atom.labelEnd), depth + 1, false, false, images && !image);
+          const content = inline(text.slice(atom.labelStart, atom.labelEnd), depth + 1, false, false, images && !image, table);
           // Only emitted images consult embedded assets. Nested images in alt
           // text contribute their own readable labels without hidden expansion.
           const url = (image ? images : links) ? safeUrl(atom.url, image) : null;
@@ -750,7 +751,7 @@ function parseMarkdownClient(source, imageAssets) {
           if (end > text.length - size) end = -1;
           if (end > i + size) {
             const tags = ch === '~' ? ['del'] : size === 3 ? ['strong', 'em'] : [size === 2 ? 'strong' : 'em'];
-            out = append(out, tags.map(t => '<' + t + '>').join('') + inline(text.slice(i + size, end), depth + 1, links, footnotes, images) + tags.slice().reverse().map(t => '</' + t + '>').join(''));
+            out = append(out, tags.map(t => '<' + t + '>').join('') + inline(text.slice(i + size, end), depth + 1, links, footnotes, images, table) + tags.slice().reverse().map(t => '</' + t + '>').join(''));
             i = end + size; continue;
           }
         }
@@ -804,6 +805,10 @@ function parseMarkdownClient(source, imageAssets) {
   const markerInterrupts = marker => marker && marker.text.trim() && (!marker.ordered || marker.start === 1);
   const startsBlock = line => !line.trim() || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || listMarker(line);
   const interruptsParagraph = line => !line.trim() || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || markerInterrupts(listMarker(line));
+  // Table rows admit ordinary pipe-bearing source. A supported block opener
+  // retains its own scope even when it also contains a pipe character.
+  const tableRowSource = line => line.includes('|') && !startsBlock(line)
+    && indentation(line).width < 4 && !footnoteMarker(line);
   function lazyLine(line) {
     const trimmed = line.replace(/^[ \t]+/, '');
     // Removing indentation must not promote a lazy line into a setext heading
@@ -814,18 +819,48 @@ function parseMarkdownClient(source, imageAssets) {
     charge(line.length + 1);
     line = line.trim();
     if (line.startsWith('|')) line = line.slice(1);
-    if (line.endsWith('|') && !/(?:^|[^\\])(?:\\\\)*\\\|$/.test(line)) line = line.slice(0, -1);
-    const cells = []; let buffer = '';
-    for (let i = 0; i < line.length; i++) {
-      if (line[i] === '\\' && i + 1 < line.length) { if (line[i + 1] !== '|') buffer += line[i]; buffer += line[++i]; continue; }
-      if (line[i] === '|') { allocate(); cells.push(buffer.trim()); buffer = ''; }
-      else buffer += line[i];
+    // Match maximal backtick runs by length once. Unmatched runs remain text,
+    // and escaped openers may leave a shorter run that closes at a later run.
+    // This protects the native extension for unescaped code pipes without
+    // repeatedly searching every remaining suffix of an adversarial row.
+    const codeRuns = new Map();
+    for (let i = 0; i < line.length;) {
+      charge();
+      if (line[i] === '`') {
+        const end = runEnd(line, i, '`'), size = end - i;
+        if (!codeRuns.has(size)) { allocate(); codeRuns.set(size, []); }
+        allocate(); codeRuns.get(size).push(i); i = end;
+      } else i++;
     }
-    allocate(); cells.push(buffer.trim()); return cells;
+    const cells = [];
+    let start = 0, i = 0;
+    while (i < line.length) {
+      charge();
+      if (line[i] === '\\') { i += i + 1 < line.length ? 2 : 1; continue; }
+      if (line[i] === '`') {
+        const end = runEnd(line, i, '`'), size = end - i, runs = codeRuns.get(size) || [];
+        let low = 0, high = runs.length;
+        while (low < high) {
+          charge();
+          const middle = low + Math.floor((high - low) / 2);
+          if (runs[middle] < end) low = middle + 1;
+          else high = middle;
+        }
+        i = low < runs.length ? runs[low] + size : end; continue;
+      }
+      if (line[i] === '|') {
+        allocate(); cells.push(line.slice(start, i).trim()); start = i + 1;
+      }
+      i++;
+    }
+    // An escaped final pipe belongs to its cell; only a real separator is
+    // optional. Preserve raw labels/destinations for their normal inline rules.
+    if (start < line.length || !line.length) { allocate(); cells.push(line.slice(start).trim()); }
+    return cells;
   }
   function tableAlignments(header, delimiter) {
     charge(header.length + 1);
-    if (!header.includes('|')) return null;
+    if (!tableRowSource(header)) return null;
     const cells = tableCells(delimiter);
     if (cells.length !== tableCells(header).length || !cells.every(c => /^:?-+:?$/.test(c))) return null;
     return cells.map(c => c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : c.startsWith(':') ? 'left' : '');
@@ -1066,7 +1101,7 @@ function parseMarkdownClient(source, imageAssets) {
         return;
       }
       if ((kind === 'code' || kind === 'footnote') && (!line.trim() || indentation(line).width >= 4)) return;
-      if (kind === 'table' && line.includes('|') && !startsBlock(line)) return;
+      if (kind === 'table' && tableRowSource(line)) return;
       if (kind === 'paragraph' && line.trim()) {
         if (header !== null && tableAlignments(header, line)) { kind = 'table'; header = null; return; }
         if (setextLevel(line)) { kind = 'boundary'; return; }
@@ -1244,7 +1279,7 @@ function parseMarkdownClient(source, imageAssets) {
       if (aligns) {
         const head = tableCells(line), rows = [];
         i += 2;
-        while (i < lines.length && lines[i].includes('|') && !startsBlock(lines[i])) {
+        while (i < lines.length && tableRowSource(lines[i])) {
           allocate(); rows.push(tableCells(lines[i++]));
         }
         push({kind: 'table', aligns, head, rows}); continue;
@@ -1302,7 +1337,7 @@ function parseMarkdownClient(source, imageAssets) {
             for (let index = 0; index < node.aligns.length; index++) {
               const align = node.aligns[index];
               html = append(html, '<' + tag + (align ? ' style="text-align:' + align + '"' : '') + '>'
-                + inline(cells[index] || '', 0, true, footnotes) + '</' + tag + '>');
+                + inline(cells[index] || '', 0, true, footnotes, true, true) + '</' + tag + '>');
             }
             return append(html, '</tr>\n');
           };

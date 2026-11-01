@@ -30,7 +30,10 @@ reader.dispose(); // session remains owned by the host
 
 Reading text is unsplit logical text from the native engine, so a search can cross
 a visual line wrap or an inline style boundary without joining guessed glyph
-fragments. Code whitespace is retained. Search is literal and non-overlapping,
+fragments. Owned prose, heading, list, quote and cell text use
+`white-space: pre-wrap`, retaining AST hard breaks and repeated spaces in native selection and
+Copy, including around inline math/style/link spans. Code keeps its existing
+pre/code whitespace policy. Search is literal and non-overlapping,
 within each semantic leaf; it does not span different paragraphs or table cells.
 An empty query yields no results. Case-sensitive matching is the default. Optional
 ASCII case-insensitivity folds only A-Z, preserving every UTF-16 offset; it is not
@@ -60,6 +63,16 @@ style/link ranges or image links, and consume the ordinary reading limits.
 The Canvas presents the actual typeset contours separately. This source-based
 math role is not a promise of spoken-math synthesis or symbolic navigation.
 
+Inline formulas retain their exact TeX inside the parent's continuous reading
+text. A supplied `inlineRuns[].math` value of `"inline"` or `"display"` identifies
+the engine style, not a new paragraph or a source-byte mapping. The DOM wraps that
+range in a whitespace-preserving `span[role="math"]`, inside its existing style
+and host-controlled link wrappers. A selection or search can cross prose, formula,
+emphasis and link boundaries without dropping TeX or inserting extra separators.
+Unsupported formulas keep the same source semantics as successfully drawn ones.
+Literal code receives no inferred math annotation. Missing/null math metadata
+keeps ordinary text; an unknown value rejects the complete reading snapshot.
+
 The semantic surface is intentionally separate from the Canvas ink. Browser DOM
 text is selectable and exposes real heading/table/list semantics; it is not a
 promise of font or wrapping parity with the bundled Canvas shaper, a complete
@@ -75,6 +88,8 @@ including the four-byte task-marker prefix. The JavaScript admission pass
 validates ordered nonempty scalar-boundary ranges and adds `startUtf16`/`endUtf16`
 in a single forward scan. Missing metadata in older schema-v1 pages stays plain.
 Malformed metadata rejects the complete snapshot rather than silently degrading.
+The optional `math` annotation uses these same validated ranges and budgets;
+neither its content nor a link target is parsed as HTML or TeX by the reader.
 
 A link retains `target` for diagnostics and `activeTarget` for conservative scheme
 filtering (fragment/relative references and HTTP(S)/mailto, with controls and

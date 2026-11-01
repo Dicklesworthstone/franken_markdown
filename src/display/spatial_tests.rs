@@ -6,6 +6,8 @@ use crate::span::SourceSpan;
 
 fn text(bounds: DisplayRect, value: &str) -> DisplayItem {
     DisplayItem::Text(DisplayTextRun {
+        baseline_y: None,
+        math_fallback: None,
         bounds,
         text: value.into(),
         font_run: None,

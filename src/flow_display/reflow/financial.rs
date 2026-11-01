@@ -37,6 +37,11 @@ where
         runs: &[FlowInlineRun],
         role: FlowTextRole,
     ) -> Result<Option<DecimalMeasure>, FlowLayoutError> {
+        // Decimal syntax inside TeX is not a prose numeric anchor. Formula
+        // cells retain their declared cell alignment and atomic math layout.
+        if runs.iter().any(|run| run.math.is_some()) {
+            return Ok(None);
+        }
         // Very long cells retain the bounded-window wrapping path. Decimal
         // positioning cannot justify an unbounded extra shaping call.
         if text.len() > self.options.max_shape_bytes {
@@ -50,6 +55,7 @@ where
                 .iter()
                 .all(|run| run.style == FlowInlineStyle::default() && run.link.is_none());
         let unstyled = [FlowInlineRun {
+            math: None,
             range: 0..text.len(),
             style: FlowInlineStyle::default(),
             link: None,

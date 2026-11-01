@@ -38,6 +38,7 @@ where
                 .iter()
                 .all(|run| run.style == FlowInlineStyle::default() && run.link.is_none());
         let unstyled = [FlowInlineRun {
+            math: None,
             range: 0..text.len(),
             style: FlowInlineStyle::default(),
             link: None,

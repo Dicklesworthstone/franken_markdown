@@ -9,6 +9,7 @@ use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, Resumabl
 
 mod financial;
 mod gutters;
+mod inline_math;
 mod long_content;
 pub(super) mod math;
 mod styled;
@@ -229,6 +230,7 @@ impl ResumableFlowDisplay {
                 table_edges.clear();
                 table_decimals.clear();
             }
+            let inline_runs = super::inline::render_runs(&meta.inline_runs, styled);
             match block {
                 DisplayBlock::Heading { level, text } => {
                     let factor = match level {
@@ -240,7 +242,7 @@ impl ResumableFlowDisplay {
                     let size = options.body_size * factor;
                     let height = layout.inline_text(
                         text,
-                        if styled { &meta.inline_runs } else { &[] },
+                        &inline_runs,
                         x,
                         y,
                         width,
@@ -274,7 +276,7 @@ impl ResumableFlowDisplay {
                     layout.marker(meta, x, y, gutters.width(meta))?;
                     let height = layout.inline_text(
                         text,
-                        if styled { &meta.inline_runs } else { &[] },
+                        &inline_runs,
                         x,
                         y,
                         width,
@@ -376,11 +378,10 @@ impl ResumableFlowDisplay {
                         let cx = x + edges[0];
                         let cell_width = (x + edges[1]) - cx;
                         let text = cells.get(column).map_or("", String::as_str);
-                        let runs = if styled {
-                            meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[])
-                        } else {
-                            &[]
-                        };
+                        let runs = super::inline::render_runs(
+                            meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]),
+                            styled,
+                        );
                         layout.alignment = meta
                             .table_alignments
                             .get(column)
@@ -398,7 +399,7 @@ impl ResumableFlowDisplay {
                             && let Some(shared) = table_decimals.get(column)
                             && shared.before + shared.after <= available
                             && let Some(measured) =
-                                layout.decimal_measure(text, runs, FlowTextRole::TableCell)?
+                                layout.decimal_measure(text, &runs, FlowTextRole::TableCell)?
                             && measured.before + measured.after <= available
                         {
                             let offset = (available - shared.after - measured.before).max(0.0);
@@ -408,7 +409,7 @@ impl ResumableFlowDisplay {
                         }
                         let used = layout.inline_text(
                             text,
-                            runs,
+                            &runs,
                             text_x,
                             y + 4.0,
                             text_width,
@@ -641,18 +642,19 @@ where
                 decimals.resize(cells.len(), financial::DecimalMeasure::default());
             }
             for (column, text) in cells.iter().enumerate() {
-                let runs = if styled {
-                    meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[])
-                } else {
-                    &[]
-                };
-                let (min, ideal) = if text
+                let runs = super::inline::render_runs(
+                    meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]),
+                    styled,
+                );
+                let (min, ideal) = if runs.iter().any(|run| run.math.is_some()) {
+                    self.inline_math_measures(text, &runs, role, width)?
+                } else if text
                     .split_terminator('\n')
                     .any(|line| line.len() > self.options.max_shape_bytes)
                 {
-                    self.windowed_cell_measures(text, runs, role, width)?
+                    self.windowed_cell_measures(text, &runs, role, width)?
                 } else {
-                    self.cell_measures(text, runs, role)?
+                    self.cell_measures(text, &runs, role)?
                 };
                 minimum[column] = minimum[column].max(min);
                 preferred[column] = preferred[column].max(ideal);
@@ -662,7 +664,7 @@ where
                         .get(column)
                         .copied()
                         .unwrap_or(false)
-                    && let Some(measured) = self.decimal_measure(text, runs, role)?
+                    && let Some(measured) = self.decimal_measure(text, &runs, role)?
                 {
                     decimals[column].before = decimals[column].before.max(measured.before);
                     decimals[column].after = decimals[column].after.max(measured.after);
@@ -763,6 +765,18 @@ where
         if self.list.items().len() >= self.options.max_items {
             return Err(FlowLayoutError::BudgetExceeded("display items"));
         }
+        if let DisplayItem::Text(text) = &item {
+            if !text.has_valid_placement() {
+                return Err(FlowLayoutError::InvalidShapedRun);
+            }
+            if let Some(reason) = &text.math_fallback {
+                self.shape_bytes = self
+                    .shape_bytes
+                    .checked_add(reason.len())
+                    .filter(|bytes| *bytes <= self.options.max_total_shape_bytes)
+                    .ok_or(FlowLayoutError::BudgetExceeded("total shaping bytes"))?;
+            }
+        }
         let bounds = item.bounds();
         if [
             bounds.x,
@@ -862,6 +876,8 @@ where
                 let line_x = self.line_start(x, width, run.total_advance, run.context.direction);
                 let bounds = DisplayRect::new(line_x, y + height, run.total_advance, leading);
                 self.item(DisplayItem::Text(DisplayTextRun {
+                    baseline_y: None,
+                    math_fallback: None,
                     bounds,
                     text: run.logical_text.clone(),
                     font_run: Some(run),
@@ -910,6 +926,8 @@ where
                 });
             }
             self.item(DisplayItem::Text(DisplayTextRun {
+                baseline_y: None,
+                math_fallback: None,
                 bounds: DisplayRect::new(
                     x - 4.0 - run.total_advance,
                     y,
@@ -1042,6 +1060,9 @@ fn validate_run(run: &OwnedTextRun, text: &str, size: f32) -> Result<(), FlowLay
         || run.clusters.len() > text.len()
         || !run.total_advance.is_finite()
         || run.total_advance < 0.0
+        || run
+            .vertical_metrics
+            .is_some_and(|metrics| !metrics.is_valid())
     {
         return Err(FlowLayoutError::InvalidShapedRun);
     }
@@ -1145,6 +1166,7 @@ mod tests {
             font_origin: FontOrigin::BundledFace,
         };
         let mut run = OwnedTextRun {
+            vertical_metrics: None,
             context,
             logical_text: text.to_owned(),
             clusters: Vec::new(),

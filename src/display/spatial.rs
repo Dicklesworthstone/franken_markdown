@@ -235,6 +235,11 @@ impl SpatialIndex {
             if !valid_rect(bounds) {
                 return Err(DisplayQueryError::InvalidItemBounds { index });
             }
+            if let DisplayItem::Text(text) = item
+                && !text.has_valid_placement()
+            {
+                return Err(DisplayQueryError::InvalidItemBounds { index });
+            }
             if let DisplayItem::Path(path) = item {
                 path_commands = path_commands.saturating_add(path.commands.len());
                 if path_commands > MAX_DISPLAY_TOTAL_PATH_COMMANDS {

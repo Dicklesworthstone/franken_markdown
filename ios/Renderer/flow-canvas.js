@@ -611,8 +611,8 @@ export class FlowCanvasRenderer {
       context.strokeStyle = color;
       if (plan.kind === "text") {
         const line = baselines.get(lineKey(plan));
-        const baseline =
-          plan.bounds.y + (plan.bounds.height - line.ascent - line.descent) / 2 + line.ascent;
+        const baseline = plan.baselineY ??
+          (plan.bounds.y + (plan.bounds.height - line.ascent - line.descent) / 2 + line.ascent);
         for (const glyph of plan.glyphs) {
           const entry = outlines.get(key(glyph.fontId, glyph.glyphId)),
             m = metrics.get(glyph.fontId);
@@ -737,6 +737,7 @@ function* textPlan(item, bounds, clip, glyphBudget) {
   if (size <= 0 || size !== run.fontSize) fail("INVALID_WASM_RESPONSE", "font sizes disagree");
   const primaryFontId = identity(run.fontId), fontIds = new Set([primaryFontId]);
   const color = item.colorRole;
+  const { baselineY, mathFallback } = textPlacement(item, bounds);
   const glyphs = new Array(run.glyphs.length);
   let count = 0;
   for (let index = 0; index < run.clusters.length; index++) {
@@ -789,7 +790,39 @@ function* textPlan(item, bounds, clip, glyphBudget) {
     fontIds,
     glyphs,
     color,
+    baselineY,
+    mathFallback,
   };
+}
+// A mixed text/math line owns its actual baseline in native layout. Retain the
+// old font-derived presentation policy only when that field is absent or null.
+// Capture scalar metadata before text planning can yield to a custom provider.
+function textPlacement(item, bounds) {
+  const { baselineY: rawBaseline, mathFallback } = item;
+  const baselineY = rawBaseline ?? null;
+  if (baselineY !== null) {
+    const bottom = bounds.y + bounds.height;
+    const epsilon = 0.00001 + 4 * 2 ** -23 * Math.max(1, Math.abs(bounds.y), Math.abs(bottom));
+    if (typeof baselineY !== "number" || !Number.isFinite(baselineY) || Math.abs(baselineY) > 1e12
+        || baselineY < bounds.y - epsilon || baselineY > bottom + epsilon)
+      fail("INVALID_WASM_RESPONSE", "text baseline is outside its line bounds");
+  }
+  if (mathFallback !== undefined) {
+    if (typeof mathFallback !== "string" || !mathFallback.length || mathFallback.length > 320)
+      fail("INVALID_WASM_RESPONSE", "invalid inline math fallback reason");
+    let scalars = 0;
+    for (let i = 0; i < mathFallback.length; i++) {
+      const unit = mathFallback.charCodeAt(i);
+      if (unit >= 0xd800 && unit <= 0xdbff) {
+        const low = mathFallback.charCodeAt(++i);
+        if (!(low >= 0xdc00 && low <= 0xdfff))
+          fail("INVALID_WASM_RESPONSE", "invalid inline math fallback reason");
+      } else if (unit >= 0xdc00 && unit <= 0xdfff)
+        fail("INVALID_WASM_RESPONSE", "invalid inline math fallback reason");
+      if (++scalars > 160) fail("INVALID_WASM_RESPONSE", "inline math fallback reason exceeds 160 characters");
+    }
+  }
+  return { baselineY, mathFallback };
 }
 // Native filled paths carry absolute coordinates and a conservative control
 // hull. Copy bounded tuples while validating, without retaining caller arrays

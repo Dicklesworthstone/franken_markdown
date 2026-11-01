@@ -7,7 +7,7 @@ ligatures, source clusters, inline styles, and fallback font identities come
 from the existing display list. Both `./flow` and `./flow-worker` expose the
 same `glyphOutlines(fontId, glyphIds)` contract; the worker form is asynchronous.
 
-Display mathematics also arrives as actual filled vector contours from the
+Display and inline mathematics arrive as actual filled vector contours from the
 shared `fmd_math` engine. Fractions, roots, large operators, matrices and explicit
 formula colors use that geometry directly. There is no browser math parser,
 font substitution, SVG image decoding or network dependency in this path.
@@ -58,14 +58,21 @@ advances and offsets, never an outline's nominal advance. Every actual glyph
 font ID is resolved independently, so a fallback face cannot be drawn with the
 primary face's metrics. No fonts are installed in the DOM.
 
-The current flow contract supplies line boxes but no explicit baseline. The
-Canvas backend therefore applies an explicit presentation policy: fragments
-sharing the same line top and height share a baseline derived from the largest
-actual-face ascent and descent, with remaining leading split above and below.
-Fragments across snapshot-page boundaries share that baseline. Changing the
-horizontal scroll offset does not change the baseline. Rasterization quality
-and pixel antialiasing remain browser/platform dependent; this is not a claim
-of identical pixels across all operating systems.
+Mixed text/math lines carry an explicit `baselineY` measured by native layout
+from the actual bundled font metrics and formula extents. Canvas uses that
+absolute logical coordinate, then applies each glyph's existing vertical offset.
+Tall fractions and radicals expand their line box; adjacent prose, formula paths,
+links and decorations retain the same native layout. A supplied baseline must
+be finite and lie within the line bounds, allowing only native f32 edge-rounding
+error. Invalid placement rejects the paint before publication.
+
+When `baselineY` is absent or null, Canvas preserves the existing presentation
+policy: fragments sharing the same line top and height share a baseline derived
+from the largest actual-face ascent and descent, with remaining leading split
+above and below. Fragments across snapshot-page boundaries share that baseline.
+Changing the horizontal scroll offset does not change either baseline policy.
+Rasterization quality and pixel antialiasing remain browser/platform dependent;
+this is not a claim of identical pixels across all operating systems.
 
 The target's backing store is the viewport only, not the entire document. The
 renderer reads 256-item pages under one captured source/layout token, retains
@@ -97,9 +104,9 @@ are interaction data, not ink. Diagram primitives with only classification and
 bounds are refused rather than rendered as invented path geometry. The backend
 currently accepts the bundled simple-LTR profile, not RTL or vertical text.
 
-## Display mathematics and filled paths
+## Mathematics and filled paths
 
-Matching native producers emit `kind: "path"` items for display math. Their
+Matching native producers emit `kind: "path"` items for display and inline math. Their
 `commands` are closed M/L/Q/C/Z contours in absolute logical display coordinates
 (downward-positive y), filled with nonzero winding. Endpoints and every Bézier
 control point must fit `bounds`, allowing only native f32 edge-rounding error.
@@ -114,17 +121,22 @@ They are copied and validated before a yield, then drawn cooperatively in the
 same private staging surface. They never enter the font cache or request a font,
 image, external resource or browser text measurement.
 
-Display math needs the matching native/WASM producer and this Canvas consumer.
+Math needs the matching native/WASM producer and this Canvas consumer.
 The new primitive extends schema 1; older consumers reject it as unsupported.
 Older generated packages that still emit literal formula text do not gain
-typesetting merely by updating the JavaScript. Inline mathematics remains on
-the existing inline-text path. Unsupported or bounded-out formulas retain
-their TeX fallback through the native producer rather than disappearing.
+typesetting merely by updating the JavaScript. Inline formulas are atomic line
+content, with real math-engine text/display styles and measured baselines; they
+may wrap between surrounding text and a formula, never through formula paths.
+Unsupported or bounded-out formulas retain their complete TeX through the native
+producer rather than disappearing. Inline fallback text items expose a nonempty
+`mathFallback` reason of at most 160 Unicode scalar values. The consumer validates
+that diagnostic before drawing; hosts can inspect it in the ordinary snapshot.
 
-The separate reading surface uses a `math` leaf containing the exact TeX source,
-so formulas remain searchable and selectable. A path's enclosing source span
-supports source navigation; it does not invent a glyph caret or TeX-to-symbol
-selection map. See `READER.md`.
+The separate reading surface uses a `math` leaf for block formulas and `math`
+annotations on inline reading ranges. Both retain exact TeX, so formulas remain
+searchable and selectable, including a range across surrounding styled prose.
+A path's enclosing source span supports source navigation; it does not invent
+a glyph caret or TeX-to-symbol selection map. See `READER.md`.
 
 ## Atomic preparation and cancellation
 

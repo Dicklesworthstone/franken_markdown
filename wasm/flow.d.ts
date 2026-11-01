@@ -130,6 +130,12 @@ export interface FlowTextItem extends FlowItemBase {
   readonly colorRole: string;
   readonly fontSize: number;
   readonly fontRun: FlowFontRun | null;
+  /** Absolute logical baseline supplied by native mixed-line layout. Finite
+   * within bounds; absent/null retains the legacy font-derived baseline. */
+  readonly baselineY?: number | null;
+  /** Source-preserving inline formula fallback; nonempty, at most 160 Unicode
+   * scalar values. The text remains the exact source, not a fabricated glyph. */
+  readonly mathFallback?: string;
 }
 export interface FlowImageItem extends FlowItemBase {
   readonly kind: "image";
@@ -222,6 +228,9 @@ export interface FlowReadingInlineRun {
   readonly endByte: number;
   readonly style: FlowReadingInlineStyle;
   readonly link: FlowReadingLink | null;
+  /** Exact TeX occupies this reading-text range. Absence/null means ordinary
+   * text; display selects the math engine's display style within this leaf. */
+  readonly math?: "inline" | "display" | null;
 }
 /** One parser-derived enclosing list item. IDs belong to this source snapshot,
  * not stable editor identities. The outermost ancestor comes first. */

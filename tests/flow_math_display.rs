@@ -426,7 +426,7 @@ fn a_first_math_list_child_keeps_exactly_one_marker_and_an_indented_body() {
 }
 
 #[test]
-fn ordinary_inline_math_table_cells_and_literal_code_keep_existing_reading_text() {
+fn inline_math_and_table_cells_gain_paths_without_changing_literal_code_or_reading_text() {
     let source = concat!(
         "Before **bold** and [link](/safe).\n\n",
         "Inline $x^2$ and $$y$$ remain inline.\n\n",
@@ -434,7 +434,7 @@ fn ordinary_inline_math_table_cells_and_literal_code_keep_existing_reading_text(
         "```text\n$$\\frac{1}{2}$$\n```\n\nAfter.\n"
     );
     let state = session(source, 600.0);
-    assert!(paths(state.display()).is_empty());
+    assert!(!paths(state.display()).is_empty());
     assert_eq!(state.source(), source);
     let reading = state.display().reading_order();
     assert!(
@@ -460,6 +460,26 @@ fn ordinary_inline_math_table_cells_and_literal_code_keep_existing_reading_text(
             .any(|cell| cell.text == "$$x$$")
     );
     assert!(reading.iter().any(|node| node.text == "$$\\frac{1}{2}$$\n"));
+    let literal = reading
+        .iter()
+        .find(|node| node.text == "$$\\frac{1}{2}$$\n")
+        .unwrap();
+    assert!(
+        paths(state.display())
+            .iter()
+            .all(|path| path.source_span != literal.source_span)
+    );
+    let literal_cell = reading
+        .iter()
+        .flat_map(|node| &node.children)
+        .find(|cell| cell.text == "$$x$$")
+        .unwrap();
+    assert!(paths(state.display()).iter().all(|path| {
+        path.bounds.right() <= literal_cell.bounds.x
+            || path.bounds.x >= literal_cell.bounds.right()
+            || path.bounds.bottom() <= literal_cell.bounds.y
+            || path.bounds.y >= literal_cell.bounds.bottom()
+    }));
     assert!(
         state
             .display()

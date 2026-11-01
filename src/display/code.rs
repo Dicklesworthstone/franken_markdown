@@ -154,6 +154,8 @@ impl Fence<'_> {
         for (first, end, kind, left, right) in groups {
             let fragment = fragment(run, &logical[first..end], left, right)?;
             let item = DisplayTextRun {
+                baseline_y: text.baseline_y,
+                math_fallback: text.math_fallback.clone(),
                 bounds: DisplayRect::new(
                     text.bounds.x + left,
                     text.bounds.y,
@@ -187,6 +189,7 @@ fn fragment(
         .get(byte..last.byte_range.end)
         .ok_or(FlowLayoutError::InvalidShapedRun)?;
     let mut run = OwnedTextRun {
+        vertical_metrics: original.vertical_metrics,
         context: original.context.clone(),
         logical_text: text.to_owned(),
         clusters: Vec::with_capacity(logical.len()),

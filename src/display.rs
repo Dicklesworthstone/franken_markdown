@@ -113,6 +113,25 @@ pub struct DisplayTextRun {
     pub source_span: SourceSpan,
     /// Font size in layout units/points.
     pub font_size: f32,
+    /// Absolute baseline supplied by native mixed-object line composition.
+    /// Absent for legacy text lines whose host derives a baseline from fonts.
+    pub baseline_y: Option<f32>,
+    /// Bounded explanation when this text preserves an unrenderable equation.
+    /// The complete TeX source remains in `text`; this is diagnostic metadata.
+    pub math_fallback: Option<String>,
+}
+
+impl DisplayTextRun {
+    /// Validate optional placement and formula diagnostics before publication.
+    #[must_use]
+    pub fn has_valid_placement(&self) -> bool {
+        self.baseline_y.is_none_or(|baseline| {
+            baseline.is_finite() && baseline >= self.bounds.y && baseline <= self.bounds.bottom()
+        }) && self
+            .math_fallback
+            .as_ref()
+            .is_none_or(|reason| !reason.is_empty() && reason.chars().take(161).count() <= 160)
+    }
 }
 
 /// Semantic vector shape types for rules, borders, and markers.

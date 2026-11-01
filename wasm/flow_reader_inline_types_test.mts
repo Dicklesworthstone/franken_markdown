@@ -27,7 +27,10 @@ const entry: FlowReadingInlineEntry | undefined = snapshot.nodes[0]?.inlineRuns[
 if (entry) {
   const raw: FlowReadingInlineRun = entry;
   const start: number = entry.startUtf16;
-  void [raw, start];
+  const math: "inline" | "display" | null | undefined = entry.math;
+  void [raw, start, math];
+  // @ts-expect-error Math style is immutable parser-owned metadata.
+  entry.math = "display";
   // @ts-expect-error reading styles are immutable
   entry.style.bold = false;
 }
@@ -39,6 +42,11 @@ const legacy: FlowReadingNode = {
   enclosingSourceSpan: { startByte: 0, endByte: 5 },
 };
 void legacy;
+const formula: FlowReadingInlineRun = { startByte: 0, endByte: 1, style: { bold: false, italic: false,
+  code: false, strikethrough: false }, link: null, math: "inline" };
+// @ts-expect-error Unsupported math styles cannot silently enter the reading contract.
+const invalidFormula: FlowReadingInlineRun = { ...formula, math: "tex" };
+void [formula, invalidFormula];
 // @ts-expect-error onLink must be a callback
 new FlowReaderView(element, { onLink: "javascript:bad" });
 // @ts-expect-error no ambient navigation option

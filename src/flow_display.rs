@@ -29,7 +29,7 @@ mod inline;
 mod limits;
 mod lists;
 use inline::emit_inlines;
-pub use inline::{FlowInlineRun, FlowInlineStyle, active_link_target};
+pub use inline::{FlowInlineRun, FlowInlineStyle, FlowMathStyle, active_link_target};
 pub use lists::FlowListItem;
 mod reflow;
 pub use limits::FlowDisplayLimits;
@@ -794,6 +794,8 @@ fn push_text(
     span: SourceSpan,
 ) {
     list.push_item(DisplayItem::Text(DisplayTextRun {
+        baseline_y: None,
+        math_fallback: None,
         bounds,
         text: text.to_owned(),
         font_run: None,

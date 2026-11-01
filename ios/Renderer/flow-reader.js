@@ -174,8 +174,12 @@ export class FlowReaderView {
       return el;
     };
     const text = function* (node, parent) {
+      // The admitted AST text owns hard breaks and repeated spaces. Native
+      // Selection/Copy must not collapse those characters around inline spans.
+      // Keep code's existing pre/code presentation policy unchanged.
+      if (node.role !== "code-block") parent.style.whiteSpace = "pre-wrap";
       const segments = [];
-      const part = function* (start, end, destination, style = null) {
+      const part = function* (start, end, destination, style = null, math = null) {
         if (start === end && node.text.length) return;
         let holder = destination;
         for (const [flag, tag] of [
@@ -189,6 +193,13 @@ export class FlowReaderView {
             holder.append(el);
             holder = el;
           }
+        }
+        if (math !== null && math !== undefined) {
+          const el = make("span");
+          el.setAttribute("role", "math");
+          el.style.whiteSpace = "pre-wrap";
+          holder.append(el);
+          holder = el;
         }
         const expected = node.text.slice(start, end),
           leaf = doc.createTextNode(expected);
@@ -221,7 +232,7 @@ export class FlowReaderView {
         if (link) parent.append(link);
         for (; i < next; i++) {
           const run = node.inlineRuns[i];
-          yield* part(run.startUtf16, run.endUtf16, holder, run.style);
+          yield* part(run.startUtf16, run.endUtf16, holder, run.style, run.math);
         }
         end = linkEnd;
       }

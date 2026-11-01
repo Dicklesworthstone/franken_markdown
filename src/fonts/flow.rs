@@ -16,6 +16,7 @@ use crate::flow_display::{
 };
 use crate::text::{
     Direction, Font, FontId, FontOrigin, OwnedTextRun, RunGlyph, TextCluster, TextRunContext,
+    TextRunMetrics,
 };
 use crate::theme::FontFamily;
 use std::ops::Range;
@@ -144,7 +145,9 @@ impl BundledFlowFonts {
             return Err("bundled flow shaping byte budget exceeded".to_owned());
         }
         if text.chars().any(positioned::is_mark) {
-            return self.shape_positioned(text, size, role, style);
+            let mut run = self.shape_positioned(text, size, role, style)?;
+            self.attach_vertical_metrics(&mut run)?;
+            return Ok(run);
         }
         let code = style.code || role == FlowTextRole::Code;
         let bold =
@@ -191,6 +194,7 @@ impl BundledFlowFonts {
             utf16 += units;
         }
         let mut run = OwnedTextRun {
+            vertical_metrics: None,
             context: TextRunContext {
                 font_id: self.faces[primary].id,
                 font_size: size,
@@ -262,7 +266,45 @@ impl BundledFlowFonts {
             }
             cursor = end;
         }
+        self.attach_vertical_metrics(&mut run)?;
         Ok(run)
+    }
+
+    /// Resolve vertical metrics from the actual immutable faces and glyphs,
+    /// including fallback faces and mark positioning. No em-ratio estimate is
+    /// used when the reader composes text with an equation on one baseline.
+    fn attach_vertical_metrics(&self, run: &mut OwnedTextRun) -> Result<(), String> {
+        let primary = self
+            .faces
+            .iter()
+            .find(|face| face.id == run.context.font_id)
+            .ok_or_else(|| "unknown bundled flow primary font".to_owned())?;
+        let size = run.context.font_size;
+        let scale = size / f32::from(primary.font.units_per_em);
+        let mut metrics = TextRunMetrics {
+            ascent: (f32::from(primary.font.ascent) * scale).max(0.0),
+            descent: (-f32::from(primary.font.descent) * scale).max(0.0),
+        };
+        for glyph in &run.glyphs {
+            let face = self
+                .faces
+                .iter()
+                .find(|face| face.id == glyph.font_id)
+                .ok_or_else(|| "unknown bundled flow glyph font".to_owned())?;
+            let scale = size / f32::from(face.font.units_per_em);
+            let bbox = face.font.glyph_bbox(glyph.glyph_id);
+            let top = bbox.map_or(face.font.ascent, |b| b[3].max(face.font.ascent));
+            let bottom = bbox.map_or(face.font.descent, |b| b[1].min(face.font.descent));
+            metrics.ascent = metrics.ascent.max(f32::from(top) * scale + glyph.y_offset);
+            metrics.descent = metrics
+                .descent
+                .max(-f32::from(bottom) * scale - glyph.y_offset);
+        }
+        if !metrics.is_valid() {
+            return Err("invalid bundled flow vertical metrics".to_owned());
+        }
+        run.vertical_metrics = Some(metrics);
+        Ok(())
     }
 }
 
@@ -338,6 +380,63 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::display::DisplayItem;
+
+    #[test]
+    fn vertical_metrics_contain_actual_bundled_outlines_and_positioned_marks() {
+        use crate::text::outline::Segment;
+        for family in [FontFamily::Sans, FontFamily::Serif] {
+            let fonts = BundledFlowFonts::new(family).unwrap();
+            // These canonical sequences are covered by the documented bundled
+            // profile. Arbitrary stacked marks still require supported native
+            // OpenType lookups; metrics must not expand that shaping claim.
+            for source in ["Ag ∑", "n\u{0303} e\u{0301}", "A\u{0301}"] {
+                let run = fonts
+                    .shape(source, 23.0, FlowTextRole::Body, FlowInlineStyle::default())
+                    .unwrap();
+                let metrics = run.vertical_metrics.unwrap();
+                assert!(metrics.is_valid());
+                for glyph in &run.glyphs {
+                    let font =
+                        Font::parse(fonts.font_bytes(glyph.font_id).unwrap().to_vec()).unwrap();
+                    let scale = run.context.font_size / f32::from(font.units_per_em);
+                    let check = |y: f64| {
+                        let placed = y * f64::from(scale) + f64::from(glyph.y_offset);
+                        assert!(
+                            placed <= f64::from(metrics.ascent) + 0.001,
+                            "{source:?}: ascent"
+                        );
+                        assert!(
+                            -placed <= f64::from(metrics.descent) + 0.001,
+                            "{source:?}: descent"
+                        );
+                    };
+                    for contour in font.glyph_outline(glyph.glyph_id).unwrap().contours {
+                        check(contour.start.y);
+                        for segment in contour.segments {
+                            match segment {
+                                Segment::Line { to } => check(to.y),
+                                Segment::Quad { ctrl, to } => {
+                                    check(ctrl.y);
+                                    check(to.y);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(
+                fonts
+                    .shape(
+                        "A\u{0301}\u{0308}",
+                        23.0,
+                        FlowTextRole::Body,
+                        FlowInlineStyle::default()
+                    )
+                    .is_err(),
+                "unsupported stacked marks must not gain guessed placement"
+            );
+        }
+    }
 
     fn style(bold: bool, italic: bool, code: bool) -> FlowInlineStyle {
         FlowInlineStyle {

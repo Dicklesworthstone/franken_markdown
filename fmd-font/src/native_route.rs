@@ -348,6 +348,7 @@ pub fn assemble_platform_run(
     };
 
     Ok(OwnedTextRun {
+        vertical_metrics: None,
         context,
         logical_text: output.logical_text,
         clusters,

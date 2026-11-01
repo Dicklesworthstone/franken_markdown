@@ -41,6 +41,10 @@ where
         color: &str,
         span: SourceSpan,
     ) -> Result<f32, FlowLayoutError> {
+        if runs.iter().any(|run| run.math.is_some()) {
+            return self
+                .inline_math_text(text, runs, x, y, width, size, leading, role, color, span);
+        }
         // Keep the short unstyled path unchanged. Long paragraphs need bounded
         // measurement windows, not a larger per-call budget. Coalesce default
         // spans just as the legacy path does, so they cannot split ligatures.
@@ -59,6 +63,7 @@ where
             range: 0..text.len(),
             style: FlowInlineStyle::default(),
             link: None,
+            math: None,
         }];
         let runs = if plain { &unstyled[..] } else { runs };
         validate_ranges(text, runs)?;
@@ -226,6 +231,8 @@ where
                             color_role: ink.to_owned(),
                             source_span: span,
                             font_size: fragment.size,
+                            baseline_y: None,
+                            math_fallback: None,
                         }))?;
                         if spec.style.strikethrough && advance > 0.0 {
                             self.vector(
@@ -259,7 +266,7 @@ where
         Ok(height)
     }
 
-    fn inline_size(&self, size: f32, style: FlowInlineStyle) -> f32 {
+    pub(super) fn inline_size(&self, size: f32, style: FlowInlineStyle) -> f32 {
         if style.code {
             self.options.code_size * (size / self.options.body_size)
         } else {

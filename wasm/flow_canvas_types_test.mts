@@ -1,4 +1,4 @@
-import { createFlowSession, type FlowGlyphOutlines, type FlowPathItem,
+import { createFlowSession, type FlowGlyphOutlines, type FlowPathItem, type FlowTextItem,
   type FlowDisplayPathCommand, type FlowPathCommand, type FlowReadingNode } from "@franken-suite/franken-markdown/flow";
 import {
   type CanvasFlowSession,
@@ -17,6 +17,13 @@ const mathPath: FlowPathItem = { kind: "path", index: 0, colorRole: "text", fill
   commands: [["M", 0, 0], cubic, ["Z"]] };
 const mathReading: FlowReadingNode = { role: "math", text: "\\frac{x}{y}", bounds: mathPath.bounds,
   enclosingSourceSpan: mathPath.enclosingSourceSpan, children: [] };
+declare const literalFormula: FlowTextItem;
+const baseline: number | null | undefined = literalFormula.baselineY;
+const fallbackReason: string | undefined = literalFormula.mathFallback;
+// @ts-expect-error The native baseline belongs to the immutable source/layout snapshot.
+literalFormula.baselineY = 12;
+// @ts-expect-error Fallback reasons are source metadata, never a boolean rendering switch.
+const invalidFallback: FlowTextItem = { ...literalFormula, mathFallback: true };
 // @ts-expect-error Display paths do not expand the narrower glyph outline protocol.
 const glyphCubic: FlowPathCommand = cubic;
 // @ts-expect-error Display commands cannot be mutated through the public type.
@@ -37,7 +44,7 @@ sync.glyphOutlines(123, [1]);
 new FlowCanvasRenderer(new OffscreenCanvas(1, 1), { fillText: true });
 // @ts-expect-error Complete immutable token required for explicit selection.
 await paint.render(b, { selection: { rectangles: [] } });
-void [path, remote, hit, mathReading, glyphCubic];
+void [path, remote, hit, mathReading, glyphCubic, baseline, fallbackReason, invalidFallback];
 paint.dispose();
 worker.dispose();
 sync.dispose();

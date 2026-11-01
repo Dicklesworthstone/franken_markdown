@@ -47,7 +47,7 @@ pub use shaping::Direction;
 pub use subset::{EmbeddingFormat, Subset, SubsetError, SubsetErrorKind};
 pub use text_run::{
     CaretAffinity, CaretPosition, FontId, FontOrigin, HitTestResult, OwnedTextRun, RunGlyph,
-    SelectionRect, TextCluster, TextRunContext, byte_to_utf16, utf16_to_byte,
+    SelectionRect, TextCluster, TextRunContext, TextRunMetrics, byte_to_utf16, utf16_to_byte,
 };
 
 /// Tiny OFL variable-font fixture (one glyph, `wght` 100..=900, gvar peak

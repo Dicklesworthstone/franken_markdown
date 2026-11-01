@@ -312,9 +312,11 @@ function* inlineMetadata(raw, budget, retained) {
   const inlineRuns = [];
   for (const run of runs) {
     if (!run) invalid("unordered or empty inline range");
-    const { startByte, endByte, style, link: linkInput } = run;
+    const { startByte, endByte, style, link: linkInput, math } = run;
     if (!integer(startByte) || !integer(endByte) || startByte < previousEnd || endByte <= startByte)
       invalid("unordered or empty inline range");
+    if (math !== undefined && math !== null && math !== "inline" && math !== "display")
+      invalid("invalid inline math style");
     previousEnd = endByte;
     const keys = ["bold", "italic", "code", "strikethrough"];
     if (!style || typeof style !== "object" || Array.isArray(style)
@@ -326,7 +328,8 @@ function* inlineMetadata(raw, budget, retained) {
     Object.freeze(copiedStyle);
     const copiedLink = yield* link(linkInput);
     const startUtf16 = yield* position(startByte), endUtf16 = yield* position(endByte);
-    inlineRuns.push(Object.freeze({ startByte, endByte, startUtf16, endUtf16, style: copiedStyle, link: copiedLink }));
+    inlineRuns.push(Object.freeze({ startByte, endByte, startUtf16, endUtf16, style: copiedStyle,
+      link: copiedLink, ...(math === undefined ? {} : { math }) }));
     yield 32;
   }
   const imageLink = imageInput === undefined ? null : yield* link(imageInput);

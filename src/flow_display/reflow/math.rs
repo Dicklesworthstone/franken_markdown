@@ -64,6 +64,15 @@ impl MathRenderer {
         source: &str,
         remaining_commands: usize,
     ) -> Result<Formula, MathFailure> {
+        self.typeset_style(source, Style::Display, remaining_commands)
+    }
+
+    pub(super) fn typeset_style(
+        &self,
+        source: &str,
+        style: Style,
+        remaining_commands: usize,
+    ) -> Result<Formula, MathFailure> {
         if source.len() > MAX_SOURCE_BYTES {
             return Err(MathFailure::Fallback(
                 "formula exceeds the 64 KiB source limit".to_owned(),
@@ -75,7 +84,7 @@ impl MathRenderer {
             .as_ref()
             .map_err(Clone::clone)?;
         let mut layout = engine
-            .typeset(source, Style::Display)
+            .typeset(source, style)
             .map_err(|error| error.to_string())?;
         let primitives = layout
             .glyphs
@@ -222,9 +231,65 @@ fn valid_color(color: Color) -> Result<[f32; 4], String> {
     Ok([color.r as f32, color.g as f32, color.b as f32, 1.0])
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct InlineMetrics {
+    pub(super) advance: f32,
+    pub(super) ascent: f32,
+    pub(super) descent: f32,
+    scale: f64,
+}
+
 impl Formula {
+    pub(super) fn command_count(&self) -> usize {
+        self.commands
+    }
+
+    pub(super) fn natural_advance(&self, font_size: f32) -> f64 {
+        (self.bounds.right - self.bounds.left) * f64::from(font_size)
+    }
+
+    pub(super) fn inline_metrics(
+        &self,
+        font_size: f32,
+        available_width: f32,
+    ) -> Result<InlineMetrics, String> {
+        let width = self.bounds.right - self.bounds.left;
+        let scale = f64::from(font_size).min(f64::from(available_width) / width);
+        let metrics = InlineMetrics {
+            advance: (width * scale) as f32,
+            ascent: (self.bounds.top * scale) as f32,
+            descent: (-self.bounds.bottom * scale) as f32,
+            scale,
+        };
+        if !scale.is_finite()
+            || scale <= 0.0
+            || ![metrics.advance, metrics.ascent, metrics.descent]
+                .into_iter()
+                .all(|value| value.is_finite() && value >= 0.0)
+            || metrics.advance == 0.0
+        {
+            return Err("formula cannot fit the available inline geometry".to_owned());
+        }
+        Ok(metrics)
+    }
+
+    pub(super) fn place_inline(
+        &self,
+        x: f32,
+        baseline_y: f32,
+        metrics: InlineMetrics,
+        span: SourceSpan,
+    ) -> Result<PlacedFormula, String> {
+        self.place_at(
+            f64::from(x),
+            f64::from(baseline_y) - self.bounds.top * metrics.scale,
+            metrics.scale,
+            span,
+        )
+    }
+
     pub(in crate::flow_display) fn place(
-        self,
+        &self,
         x: f32,
         y: f32,
         available_width: f32,
@@ -232,15 +297,24 @@ impl Formula {
         span: SourceSpan,
     ) -> Result<PlacedFormula, String> {
         let width = self.bounds.right - self.bounds.left;
-        let height = self.bounds.top - self.bounds.bottom;
         let scale = f64::from(font_size).min(f64::from(available_width) / width);
         let placed_width = width * scale;
         let origin_x = f64::from(x) + (f64::from(available_width) - placed_width) * 0.5;
+        self.place_at(origin_x, f64::from(y), scale, span)
+    }
+
+    fn place_at(
+        &self,
+        origin_x: f64,
+        origin_y: f64,
+        scale: f64,
+        span: SourceSpan,
+    ) -> Result<PlacedFormula, String> {
         let bounds = DisplayRect::new(
             origin_x as f32,
-            y,
-            placed_width as f32,
-            (height * scale) as f32,
+            origin_y as f32,
+            ((self.bounds.right - self.bounds.left) * scale) as f32,
+            ((self.bounds.top - self.bounds.bottom) * scale) as f32,
         );
         if !scale.is_finite()
             || scale <= 0.0
@@ -260,14 +334,14 @@ impl Formula {
             return Err("formula cannot fit the available display geometry".to_owned());
         }
         let mut paths = Vec::with_capacity(self.paths.len());
-        for path in self.paths {
+        for path in &self.paths {
             let mut left = f32::INFINITY;
             let mut right = f32::NEG_INFINITY;
             let mut top = f32::INFINITY;
             let mut bottom = f32::NEG_INFINITY;
             let mut point = |x: f64, y: f64| {
                 let x = (origin_x + (x - self.bounds.left) * scale) as f32;
-                let y = (f64::from(bounds.y) + (self.bounds.top - y) * scale) as f32;
+                let y = (origin_y + (self.bounds.top - y) * scale) as f32;
                 left = left.min(x);
                 right = right.max(x);
                 top = top.min(y);
@@ -275,11 +349,11 @@ impl Formula {
                 (x, y)
             };
             let mut commands = Vec::with_capacity(path.command_count);
-            for contour in path.contours {
+            for contour in &path.contours {
                 let (x, y) = point(contour.start.0, contour.start.1);
                 commands.push(DisplayPathCommand::MoveTo { x, y });
-                for segment in contour.segments {
-                    commands.push(match segment {
+                for segment in &contour.segments {
+                    commands.push(match *segment {
                         PathSeg::Line { to } => {
                             let (x, y) = point(to.0, to.1);
                             DisplayPathCommand::LineTo { x, y }

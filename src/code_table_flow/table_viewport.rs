@@ -531,6 +531,8 @@ impl ConstrainedTableFlow {
                 child_count: 1,
             }));
             items.push(DisplayItem::Text(DisplayTextRun {
+                baseline_y: None,
+                math_fallback: None,
                 bounds: DisplayRect::new(
                     bounds.x + offset,
                     bounds.y,

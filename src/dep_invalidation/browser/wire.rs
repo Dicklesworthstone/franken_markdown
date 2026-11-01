@@ -168,12 +168,23 @@ fn display_item(
     w.span(item.source_span())?;
     match item {
         DisplayItem::Text(text) => {
+            if !text.has_valid_placement() {
+                return Err(fmt::Error);
+            }
             w.write_str(",\"kind\":\"text\",\"text\":")?;
             w.string(&text.text)?;
             w.write_str(",\"colorRole\":")?;
             w.string(&text.color_role)?;
             w.write_str(",\"fontSize\":")?;
             w.number(text.font_size)?;
+            if let Some(baseline) = text.baseline_y {
+                w.write_str(",\"baselineY\":")?;
+                w.number(baseline)?;
+            }
+            if let Some(reason) = &text.math_fallback {
+                w.write_str(",\"mathFallback\":")?;
+                w.string(reason)?;
+            }
             w.write_str(",\"fontRun\":")?;
             if let Some(run) = &text.font_run {
                 font_run(w, run, glyphs)?;

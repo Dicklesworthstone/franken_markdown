@@ -122,6 +122,7 @@ pub(super) fn build(
         }
     }
     Ok(OwnedTextRun {
+        vertical_metrics: None,
         context,
         logical_text,
         clusters,

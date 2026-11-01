@@ -54,6 +54,7 @@ impl BundledFlowFonts {
             return Ok(run);
         }
         let mut output = OwnedTextRun {
+            vertical_metrics: None,
             context: TextRunContext {
                 font_id: self.faces[primary].id,
                 font_size: size,

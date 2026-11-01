@@ -13,7 +13,12 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind
 
 mod font_coverage;
 pub(crate) mod protected_paths;
+pub(crate) mod remote_images;
 pub(crate) mod source_origins;
+
+#[cfg(test)]
+use remote_images::{curl_remote_image_args, wget_remote_image_args};
+use remote_images::{fetch_remote_image, remote_image_url};
 
 use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
@@ -154,11 +159,10 @@ struct BatchArgs {
     /// (bytes / 64 MiB-per-job), NOT by measuring real resident memory.
     #[arg(long)]
     mem_budget: Option<u64>,
-    /// Wall-clock deadline in seconds (best-effort). It is only checked at per-file
-    /// boundaries — the render core never checkpoints mid-file — so a single large
-    /// file runs to completion before the deadline can stop the remaining files.
-    /// When it fires, not-yet-started files are skipped and the receipt is marked
-    /// `cancelled`.
+    /// Wall-clock deadline in seconds (best-effort). Stops pending remote-image
+    /// downloads and skips remaining files. The render core never checkpoints
+    /// mid-file, so an already-rendering file runs to completion. A cancelled
+    /// image-preparation job preserves its previous outputs and is skipped.
     #[arg(long)]
     timeout: Option<u64>,
     /// Refuse any single input larger than this many bytes (default 64 MiB),
@@ -427,6 +431,7 @@ struct RenderStyleArgs {
     #[arg(long)]
     pdf_line_numbers: bool,
     /// SVG poster width in points (144..=14400; default 612, US Letter).
+    /// Supported by both ordinary rendering and --to svg batch jobs.
     #[arg(long = "svg-width-pt", value_name = "POINTS")]
     svg_width_pt: Option<f32>,
     /// Render running page numbers in the bottom margin of PDF pages.
@@ -513,14 +518,15 @@ struct RenderStyleArgs {
     /// ignore the pin (stderr warning `font_weight_ignored_static`).
     #[arg(long = "pdf-font-weight", value_name = "WEIGHT|SLOT=WEIGHT")]
     pdf_font_weights: Vec<String>,
-    /// Maximum bytes accepted for each explicitly mapped or auto-loaded local
-    /// image file before rendering, regardless of output format.
+    /// Maximum bytes accepted for each mapped/local image and each remote PDF/SVG
+    /// image download. Applies to ordinary rendering and batch jobs.
     #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
     max_pdf_image_bytes: u64,
-    /// Do not fetch remote http(s) image destinations for PDF output. By
-    /// default the CLI downloads each hotlinked image (via the system `curl`
-    /// or `wget`) with a timeout and the `--max-pdf-image-bytes` size cap so
-    /// PDFs match the HTML preview; a failed or disabled fetch degrades to the
+    /// Do not fetch remote http(s) image destinations for PDF/SVG output. By
+    /// default render and batch download each hotlinked image (via system `curl`
+    /// or `wget`, without their personal config files) with a timeout and the
+    /// `--max-pdf-image-bytes` size cap so
+    /// exported documents retain their images; a failed or disabled fetch degrades to the
     /// image's alt text with a warning. The render core itself never touches
     /// the network.
     #[arg(long)]
@@ -534,7 +540,8 @@ struct RenderStyleArgs {
     /// `pdf_a_*` errors: `javascript:` / `file:` URI actions). Requires `--pdf-a 2b`.
     #[arg(long = "pdf-a-strict")]
     pdf_a_strict: bool,
-    /// Per-image timeout in seconds for remote PDF image fetches.
+    /// Per-image wall-clock timeout in seconds for remote PDF/SVG image fetches,
+    /// including batch jobs. Zero uses the minimum one-second timeout.
     #[arg(long, default_value_t = DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS)]
     remote_image_timeout_secs: u64,
 }
@@ -2661,11 +2668,11 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     // Shared render style (the same flags as `fmd render`). Per-file images
     // are still auto-loaded next to each input by the batch engine.
     let style = &args.style;
-    if style.svg_width_pt.is_some() {
+    if style.svg_width_pt.is_some() && !matches!(args.to, Target::Svg) {
         return fail_json(
             64,
             "usage_error",
-            "--svg-width-pt is not supported by fmd batch; render those files with fmd render",
+            "--svg-width-pt requires --to svg in fmd batch",
             json,
         );
     }
@@ -2769,14 +2776,35 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     };
 
     report_pdf_a(pdf_a, json);
+    let shell = batch::BatchShell::new(
+        (!args.style.no_remote_images).then_some(args.style.remote_image_timeout_secs),
+        args.style.svg_width_pt,
+    );
     match batch::run_batch_blocking_with_protected_inputs(
         plan,
         &opts,
         &input_paths,
         &config.render,
         pdf_a,
+        Some(&shell),
     ) {
         Ok(mut receipt) => {
+            for warning in shell.take_warnings() {
+                if json {
+                    eprintln!(
+                        "{{\"ok\":true,\"event\":\"warning\",\"input\":\"{}\",\"warning\":\"{}\",\"detail\":\"{}\"}}",
+                        json_escape(&warning.input.to_string_lossy()),
+                        warning.code,
+                        json_escape(&warning.message),
+                    );
+                } else {
+                    eprintln!(
+                        "fmd: warning: {}: {}",
+                        warning.input.display(),
+                        warning.message
+                    );
+                }
+            }
             // Record any unexpandable paths as per-file failures. Strict mode
             // already returned above, so this only runs under --continue-on-error
             // (or when there were no expansion errors at all).
@@ -3479,23 +3507,6 @@ fn has_supported_pdf_image_extension(path: &Path) -> bool {
         })
 }
 
-/// The trimmed destination when it is a remote image URL the CLI may fetch.
-/// Only literal `http://` / `https://` destinations qualify; every other
-/// scheme (or scheme-less path) is left to the local-asset machinery.
-fn remote_image_url(destination: &str) -> Option<&str> {
-    let dest = destination.trim();
-    for prefix in ["https://", "http://"] {
-        if dest.len() > prefix.len()
-            && dest
-                .get(..prefix.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-        {
-            return Some(dest);
-        }
-    }
-    None
-}
-
 /// Fetch remote http(s) image destinations that no explicit `--pdf-image`
 /// mapping or auto-loaded local file already resolved, so hotlinked images
 /// render in PDFs just like they do in the HTML preview (GH issue #2).
@@ -3528,156 +3539,8 @@ fn append_remote_image_assets(
     }
 }
 
-/// Download one remote image via the system `curl` (preferred) or `wget`,
-/// with a hard timeout, an HTTP(S)-only protocol allowlist, bounded
-/// redirects, and the caller's byte cap enforced while the body is read.
-fn fetch_remote_image(
-    url: &str,
-    max_bytes: u64,
-    timeout_secs: u64,
-) -> std::result::Result<Vec<u8>, String> {
-    let timeout = timeout_secs.max(1).to_string();
-    let user_agent = format!("fmd/{}", crate::VERSION);
-    let max_bytes_s = max_bytes.to_string();
-    let curl_args = [
-        "--silent",
-        "--show-error",
-        "--fail",
-        "--location",
-        "--max-redirs",
-        "5",
-        "--proto",
-        "=http,https",
-        "--proto-redir",
-        "=http,https",
-        "--max-time",
-        timeout.as_str(),
-        "--max-filesize",
-        max_bytes_s.as_str(),
-        "--user-agent",
-        user_agent.as_str(),
-        "--output",
-        "-",
-        "--",
-        url,
-    ];
-    match run_capped_fetch("curl", &curl_args, url, max_bytes) {
-        Ok(bytes) => return Ok(bytes),
-        Err(FetchSpawn::NotFound) => {}
-        Err(FetchSpawn::Failed(reason)) => return Err(reason),
-    }
-
-    let timeout_flag = format!("--timeout={timeout}");
-    let ua_flag = format!("--user-agent={user_agent}");
-    let wget_args = wget_remote_image_args(url, &timeout_flag, &ua_flag);
-    match run_capped_fetch("wget", &wget_args, url, max_bytes) {
-        Ok(bytes) => Ok(bytes),
-        Err(FetchSpawn::NotFound) => Err(
-            "neither curl nor wget is available; pass --pdf-image 'URL=PATH' or use \
-             --no-remote-images"
-                .to_string(),
-        ),
-        Err(FetchSpawn::Failed(reason)) => Err(reason),
-    }
-}
-
-enum FetchSpawn {
-    NotFound,
-    Failed(String),
-}
-
-/// GNU wget has no `--proto` jail. `--https-only` blocks `file://` (and
-/// `ftp://`) redirects when the requested URL is already HTTPS. HTTP URLs
-/// keep following redirects; the initial URL is still http(s)-only.
-fn wget_remote_image_args<'a>(
-    url: &'a str,
-    timeout_flag: &'a str,
-    user_agent_flag: &'a str,
-) -> Vec<&'a str> {
-    let mut args = vec![
-        "--quiet",
-        "--tries=1",
-        timeout_flag,
-        "--max-redirect=5",
-        user_agent_flag,
-        "--output-document=-",
-    ];
-    if url.len() >= 8 && url[..8].eq_ignore_ascii_case("https://") {
-        args.push("--https-only");
-    }
-    args.push("--");
-    args.push(url);
-    args
-}
-
-fn run_capped_fetch(
-    tool: &str,
-    args: &[&str],
-    url: &str,
-    max_bytes: u64,
-) -> std::result::Result<Vec<u8>, FetchSpawn> {
-    let mut child = match std::process::Command::new(tool)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(e) if e.kind() == IoErrorKind::NotFound => return Err(FetchSpawn::NotFound),
-        Err(e) => return Err(FetchSpawn::Failed(format!("running {tool}: {e}"))),
-    };
-    let stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(FetchSpawn::Failed(format!(
-                "{tool} produced no stdout pipe"
-            )));
-        }
-    };
-    let label = format!("remote image {url}");
-    let bytes = match read_limited_with_flag(stdout, max_bytes, &label, "--max-pdf-image-bytes") {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(FetchSpawn::Failed(e.to_string()));
-        }
-    };
-    let mut stderr = Vec::new();
-    if let Some(mut err) = child.stderr.take() {
-        let _ = err.read_to_end(&mut stderr);
-    }
-    let status = match child.wait() {
-        Ok(status) => status,
-        Err(e) => return Err(FetchSpawn::Failed(format!("waiting for {tool}: {e}"))),
-    };
-    if !status.success() {
-        let detail = String::from_utf8_lossy(&stderr)
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        return Err(FetchSpawn::Failed(if detail.is_empty() {
-            format!("{tool} exited with {status}")
-        } else {
-            format!("{tool}: {detail}")
-        }));
-    }
-    if bytes.is_empty() {
-        return Err(FetchSpawn::Failed(format!("{tool} returned an empty body")));
-    }
-    Ok(bytes)
-}
-
 fn report_remote_image_warning(url: &str, reason: &str, json: bool) {
-    let message = format!(
-        "fetching remote image '{url}': {reason}; rendered as alt text \
-         (map it with --pdf-image '{url}=PATH' or silence fetching with --no-remote-images)"
-    );
+    let message = remote_images::warning_message(url, reason);
     if json {
         eprintln!(
             "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"remote_image_fetch_failed\",\"detail\":\"{}\"}}",
@@ -4614,12 +4477,32 @@ mod helper_tests {
     }
 
     #[test]
+    fn curl_image_fetch_disables_config_before_other_arguments() {
+        let args = curl_remote_image_args("https://cdn.example/x.png", "20", "1024", "fmd/test");
+        assert_eq!(
+            args.first().copied(),
+            Some("--disable"),
+            "curl only ignores config when --disable is its first argument"
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--proto", "=http,https"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--proto-redir", "=http,https"])
+        );
+        assert_eq!(args.last().copied(), Some("https://cdn.example/x.png"));
+    }
+
+    #[test]
     fn wget_https_urls_enable_https_only_to_block_file_redirects() {
         let args = wget_remote_image_args(
             "https://cdn.example/x.png",
             "--timeout=20",
             "--user-agent=fmd/test",
         );
+        assert!(args.contains(&"--no-config"));
         assert!(
             args.contains(&"--https-only"),
             "https fetches must refuse file:// redirects: {args:?}"
@@ -4634,6 +4517,7 @@ mod helper_tests {
             "--timeout=20",
             "--user-agent=fmd/test",
         );
+        assert!(args.contains(&"--no-config"));
         assert!(
             !args.contains(&"--https-only"),
             "http images must still fetch: {args:?}"

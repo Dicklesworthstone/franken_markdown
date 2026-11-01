@@ -271,3 +271,259 @@ fn complete_graphs_reach_html_pdf_and_svg_and_fallback_remains_source() {
     assert!(runs.iter().all(|run| run.kind != "image"));
     assert!(runs.iter().any(|run| run.text.contains("KeepMe")));
 }
+
+#[derive(Clone, Copy, Debug)]
+struct Bounds {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+fn number(tag: &str, key: &str) -> f32 {
+    attribute(tag, key).parse().unwrap()
+}
+
+fn node_bounds(svg: &str) -> Vec<Bounds> {
+    svg.lines()
+        .filter(|line| {
+            ["fmd-node-rect", "fmd-node-rounded", "fmd-node-diamond"]
+                .iter()
+                .any(|class| line.contains(&format!("class=\"{class}\"")))
+        })
+        .map(|line| {
+            if line.starts_with("<circle ") {
+                let radius = number(line, "r");
+                Bounds {
+                    left: number(line, "cx") - radius,
+                    top: number(line, "cy") - radius,
+                    right: number(line, "cx") + radius,
+                    bottom: number(line, "cy") + radius,
+                }
+            } else if line.starts_with("<polygon ") {
+                let points: Vec<f32> = attribute(line, "points")
+                    .split([',', ' '])
+                    .map(|value| value.parse().unwrap())
+                    .collect();
+                Bounds {
+                    left: points
+                        .iter()
+                        .step_by(2)
+                        .copied()
+                        .fold(f32::INFINITY, f32::min),
+                    top: points
+                        .iter()
+                        .skip(1)
+                        .step_by(2)
+                        .copied()
+                        .fold(f32::INFINITY, f32::min),
+                    right: points
+                        .iter()
+                        .step_by(2)
+                        .copied()
+                        .fold(f32::NEG_INFINITY, f32::max),
+                    bottom: points
+                        .iter()
+                        .skip(1)
+                        .step_by(2)
+                        .copied()
+                        .fold(f32::NEG_INFINITY, f32::max),
+                }
+            } else {
+                Bounds {
+                    left: number(line, "x"),
+                    top: number(line, "y"),
+                    right: number(line, "x") + number(line, "width"),
+                    bottom: number(line, "y") + number(line, "height"),
+                }
+            }
+        })
+        .collect()
+}
+
+fn route_points(tag: &str) -> Vec<(f32, f32)> {
+    if tag.starts_with("<line ") {
+        return vec![
+            (number(tag, "x1"), number(tag, "y1")),
+            (number(tag, "x2"), number(tag, "y2")),
+        ];
+    }
+    let path = attribute(tag, "d");
+    assert!(
+        path.chars()
+            .all(|c| !c.is_ascii_alphabetic() || matches!(c, 'M' | 'L')),
+        "return-route probe expects straight segments: {path}"
+    );
+    let numbers: Vec<f32> = path
+        .split([' ', ','])
+        .filter(|value| !value.is_empty() && !matches!(*value, "M" | "L"))
+        .map(|value| value.parse().unwrap())
+        .collect();
+    assert_eq!(numbers.len() % 2, 0);
+    numbers
+        .chunks_exact(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
+}
+
+fn assert_return_route_clear(svg: &str, route: &str) {
+    let points = route_points(route);
+    let view: Vec<f32> = attribute(svg.lines().next().unwrap(), "viewBox")
+        .split_whitespace()
+        .map(|value| value.parse().unwrap())
+        .collect();
+    for &(x, y) in &points {
+        assert!(x.is_finite() && y.is_finite());
+        assert!(
+            x >= 0.0 && y >= 0.0 && x <= view[2] && y <= view[3],
+            "{route}"
+        );
+    }
+    // Test the actual emitted segments against all node interiors, not a
+    // renderer helper or a control-point approximation to a curved path.
+    for pair in points.windows(2) {
+        let ((x1, y1), (x2, y2)) = (pair[0], pair[1]);
+        assert!(x1 == x2 || y1 == y2, "{route}");
+        for node in node_bounds(svg) {
+            let crosses = if x1 == x2 {
+                x1 > node.left + 0.1
+                    && x1 < node.right - 0.1
+                    && y1.max(y2) > node.top + 0.1
+                    && y1.min(y2) < node.bottom - 0.1
+            } else {
+                y1 > node.top + 0.1
+                    && y1 < node.bottom - 0.1
+                    && x1.max(x2) > node.left + 0.1
+                    && x1.min(x2) < node.right - 0.1
+            };
+            assert!(!crosses, "connection crosses {node:?}: {route}");
+        }
+    }
+}
+
+#[test]
+fn self_loops_leave_and_return_to_every_shape_without_crossing_its_interior() {
+    for direction in ["TD", "BT", "LR", "RL"] {
+        for node in [
+            "A[Retry]",
+            "A(Retry)",
+            "A([Retry])",
+            "A{Retry}",
+            "A((Retry))",
+        ] {
+            let source = format!("flowchart {direction}\n{node}-->|Again|A");
+            let svg = render_diagram_svg(&source, "mermaid").unwrap();
+            let route = svg
+                .lines()
+                .find(|line| line.contains("class=\"fmd-edge-path\""))
+                .unwrap();
+            assert_return_route_clear(&svg, route);
+            let points = route_points(route);
+            assert!(
+                points.len() >= 4,
+                "a visible loop needs an external route: {svg}"
+            );
+            assert_ne!(points.first(), points.last());
+            let node = node_bounds(&svg)[0];
+            let start = *points.first().unwrap();
+            let end = *points.last().unwrap();
+            match direction {
+                "TD" => assert!(start.1 == node.bottom && end.1 == node.top),
+                "BT" => assert!(start.1 == node.top && end.1 == node.bottom),
+                "LR" => assert!(start.0 == node.right && end.0 == node.left),
+                "RL" => assert!(start.0 == node.left && end.0 == node.right),
+                _ => unreachable!(),
+            }
+            assert!(svg.contains(">Again</text>"));
+            assert_eq!(svg, render_diagram_svg(&source, "mermaid").unwrap());
+        }
+    }
+}
+
+#[test]
+fn feedback_connections_bypass_nodes_in_each_direction_and_keep_their_styles() {
+    for direction in ["TD", "BT", "LR", "RL"] {
+        let source = format!(
+            "flowchart {direction}\nA[Start]-->B{{Inspect}}-->C((Done)); C-. Retry .->A; C== Resume ===B; A-- Again -->A"
+        );
+        let svg = render_diagram_svg(&source, "mermaid").unwrap();
+        let routes: Vec<_> = svg
+            .lines()
+            .filter(|line| line.contains("class=\"fmd-edge-path\""))
+            .collect();
+        assert_eq!(routes.len(), 5);
+        let mut rails = Vec::new();
+        for route in &routes[2..] {
+            assert_return_route_clear(&svg, route);
+            let points = route_points(route);
+            rails.push(
+                points
+                    .iter()
+                    .map(|&(x, y)| {
+                        if matches!(direction, "TD" | "BT") {
+                            x
+                        } else {
+                            y
+                        }
+                    })
+                    .fold(0.0, f32::max),
+            );
+        }
+        assert_ne!(
+            rails[0], rails[1],
+            "parallel returns must remain distinguishable"
+        );
+        assert_ne!(rails[0], rails[2]);
+        assert_ne!(rails[1], rails[2]);
+        assert!(routes[2].contains("stroke-dasharray=\"4,4\""));
+        assert!(!routes[2].contains("marker-end:none"));
+        assert!(routes[3].contains("style=\"marker-end:none;stroke-width:3\""));
+        for label in ["Retry", "Resume", "Again"] {
+            assert!(svg.contains(&format!(">{label}</text>")));
+        }
+    }
+}
+
+#[test]
+fn long_return_labels_and_their_routes_remain_inside_the_actual_svg_canvas() {
+    let label = "W".repeat(512);
+    for direction in ["TD", "BT", "LR", "RL"] {
+        let source = format!("flowchart {direction}\nA[Retry]-->|{label}|A");
+        let svg = render_diagram_svg(&source, "mermaid").unwrap();
+        let view: Vec<f32> = attribute(svg.lines().next().unwrap(), "viewBox")
+            .split_whitespace()
+            .map(|value| value.parse().unwrap())
+            .collect();
+        assert!(
+            view[2] < 10000.0 && view[3] < 10000.0,
+            "bounded single-loop canvas"
+        );
+        let label_box = svg
+            .lines()
+            .find(|line| line.contains("class=\"fmd-edge-label-bg\""))
+            .unwrap();
+        let left = number(label_box, "x");
+        let top = number(label_box, "y");
+        let right = left + number(label_box, "width");
+        let bottom = top + number(label_box, "height");
+        assert!(
+            left >= 0.0 && top >= 0.0 && right <= view[2] && bottom <= view[3],
+            "{svg}"
+        );
+        for node in node_bounds(&svg) {
+            assert!(
+                right <= node.left
+                    || left >= node.right
+                    || bottom <= node.top
+                    || top >= node.bottom,
+                "label is hidden under its node"
+            );
+        }
+        let route = svg
+            .lines()
+            .find(|line| line.contains("class=\"fmd-edge-path\""))
+            .unwrap();
+        assert_return_route_clear(&svg, route);
+        assert!(svg.contains(&format!(">{label}</text>")));
+    }
+}

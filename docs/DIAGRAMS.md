@@ -38,6 +38,13 @@ Chains retain each intermediate node; `A & B --> C & D` creates all four
 connections. Acyclic joins are placed after every predecessor, and `RL`/`BT`
 reverse both node positions and edge direction.
 
+Self-loops (`A --> A`) and feedback connections to earlier nodes use separate
+return lanes outside the node area. Their arrows approach the destination from
+its normal incoming side, and dotted, thick, open, and labeled links keep their
+meaning. Return labels have their own space, and the SVG canvas expands to keep
+the routes and labels visible in every direction. Forward-only graphs retain
+their existing geometry.
+
 Admission is bounded to 64 KiB of source, 256 nodes, 1024 expanded edges,
 128 UTF-8 bytes per identifier, and 512 bytes per label. Malformed statements,
 exceeded limits, and unsupported constructs retain the **entire source block**.

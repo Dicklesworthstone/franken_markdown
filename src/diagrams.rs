@@ -289,7 +289,9 @@ fn render_flowchart(src: &str) -> Option<String> {
     assign_flowchart_layers(&mut nodes, &node_order, &edges);
 
     // Compute geometry
-    let (total_width, total_height) = layout_flowchart_nodes(&mut nodes, &node_order, dir);
+    let (mut total_width, mut total_height) = layout_flowchart_nodes(&mut nodes, &node_order, dir);
+    let return_routes =
+        layout_flowchart_returns(&mut nodes, &edges, dir, &mut total_width, &mut total_height);
 
     // Generate SVG
     let mut svg = String::with_capacity(4096);
@@ -328,7 +330,7 @@ fn render_flowchart(src: &str) -> Option<String> {
     svg.push_str("</defs>\n");
 
     // Draw Edges
-    for edge in &edges {
+    for (edge, return_route) in edges.iter().zip(&return_routes) {
         if let (Some(from_node), Some(to_node)) = (nodes.get(&edge.from), nodes.get(&edge.to)) {
             let (x1, y1, x2, y2) = get_edge_endpoints(from_node, to_node, dir);
             let edge_style = match (edge.arrow, edge.thick) {
@@ -343,7 +345,18 @@ fn render_flowchart(src: &str) -> Option<String> {
                 ""
             };
 
-            if (x1 - x2).abs() < 2.0 || (y1 - y2).abs() < 2.0 {
+            if let Some(route) = return_route {
+                let [a, b, c, d, e, f] = route.points;
+                svg.push_str(&format!(
+                    "<path d=\"M {} {} L {} {} L {} {} L {} {} L {} {} L {} {}\" class=\"fmd-edge-path\"{dash_attr}{edge_style} />\n",
+                    SvgNum(a.0), SvgNum(a.1),
+                    SvgNum(b.0), SvgNum(b.1),
+                    SvgNum(c.0), SvgNum(c.1),
+                    SvgNum(d.0), SvgNum(d.1),
+                    SvgNum(e.0), SvgNum(e.1),
+                    SvgNum(f.0), SvgNum(f.1),
+                ));
+            } else if (x1 - x2).abs() < 2.0 || (y1 - y2).abs() < 2.0 {
                 svg.push_str(&format!(
                     "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-edge-path\"{dash_attr}{edge_style} />\n",
                     SvgNum(x1),
@@ -377,9 +390,12 @@ fn render_flowchart(src: &str) -> Option<String> {
 
             // Edge label
             if let Some(lbl) = &edge.label {
-                let mid_x = (x1 + x2) / 2.0;
-                let mid_y = (y1 + y2) / 2.0;
-                let lbl_w = (lbl.len() as f32 * 7.0 + 8.0).max(24.0);
+                let (mid_x, mid_y) = return_route
+                    .as_ref()
+                    .map_or(((x1 + x2) / 2.0, (y1 + y2) / 2.0), |route| route.label);
+                let lbl_w = return_route
+                    .as_ref()
+                    .map_or_else(|| flowchart_label_width(lbl), |route| route.label_width);
                 svg.push_str(&format!(
                     "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"16\" class=\"fmd-edge-label-bg\" />\n",
                     SvgNum(mid_x - lbl_w / 2.0),
@@ -686,6 +702,146 @@ fn get_edge_endpoints(from: &FlowNode, to: &FlowNode, dir: FlowDirection) -> (f3
             to.y + to.height / 2.0,
         ),
     }
+}
+
+struct FlowReturnRoute {
+    points: [(f32, f32); 6],
+    label: (f32, f32),
+    label_width: f32,
+}
+
+fn flowchart_label_width(label: &str) -> f32 {
+    (label.len() as f32 * 7.0 + 8.0).max(24.0)
+}
+
+/// Leave the normal outgoing port, travel outside the entire graph, and
+/// approach the normal incoming port. Reversing an ordinary edge's endpoints
+/// would instead draw a self-loop or feedback connection through filled nodes.
+/// Only return edges allocate lanes; forward DAG geometry stays unchanged.
+fn layout_flowchart_returns(
+    nodes: &mut BTreeMap<String, FlowNode>,
+    edges: &[FlowEdge],
+    dir: FlowDirection,
+    width: &mut f32,
+    height: &mut f32,
+) -> Vec<Option<FlowReturnRoute>> {
+    let horizontal = matches!(dir, FlowDirection::LeftToRight | FlowDirection::RightToLeft);
+    let forward = matches!(dir, FlowDirection::TopToBottom | FlowDirection::LeftToRight);
+    let mut layers: BTreeMap<usize, (f32, f32)> = BTreeMap::new();
+    let mut outside: f32 = 0.0;
+    for node in nodes.values() {
+        let (start, end, cross_end) = if horizontal {
+            (node.x, node.x + node.width, node.y + node.height)
+        } else {
+            (node.y, node.y + node.height, node.x + node.width)
+        };
+        let layer = layers.entry(node.layer).or_insert((start, end));
+        layer.0 = layer.0.min(start);
+        layer.1 = layer.1.max(end);
+        outside = outside.max(cross_end);
+    }
+
+    let mut next_lane = outside + 16.0;
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (0.0f32, 0.0f32, *width, *height);
+    let mut routes = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let (Some(from), Some(to)) = (nodes.get(&edge.from), nodes.get(&edge.to)) else {
+            routes.push(None);
+            continue;
+        };
+        if from.layer < to.layer {
+            routes.push(None);
+            continue;
+        }
+
+        let (x1, y1, x2, y2) = get_edge_endpoints(from, to, dir);
+        let from_layer = layers[&from.layer];
+        let to_layer = layers[&to.layer];
+        // The whole layer must be cleared before crossing sideways, including
+        // taller circles or wider labels beside a smaller source/target node.
+        let (depart, arrive) = if forward {
+            (from_layer.1 + 12.0, to_layer.0 - 12.0)
+        } else {
+            (from_layer.0 - 12.0, to_layer.1 + 12.0)
+        };
+        // Reserve an em per UTF-8 byte for return labels, including wide ASCII
+        // capitals. The legacy seven-pixel average can clip long W/M labels.
+        // This conservative reservation does not change forward-edge output.
+        let label_width = edge
+            .label
+            .as_deref()
+            .map_or(0.0, |label| (label.len() as f32 * 11.0 + 8.0).max(24.0));
+        let half_lane = if horizontal {
+            8.0
+        } else {
+            (label_width / 2.0).max(8.0)
+        };
+        let rail = next_lane + half_lane;
+        next_lane = rail + half_lane + 16.0;
+        let (points, label) = if horizontal {
+            (
+                [
+                    (x1, y1),
+                    (depart, y1),
+                    (depart, rail),
+                    (arrive, rail),
+                    (arrive, y2),
+                    (x2, y2),
+                ],
+                ((depart + arrive) / 2.0, rail),
+            )
+        } else {
+            (
+                [
+                    (x1, y1),
+                    (x1, depart),
+                    (rail, depart),
+                    (rail, arrive),
+                    (x2, arrive),
+                    (x2, y2),
+                ],
+                (rail, (depart + arrive) / 2.0),
+            )
+        };
+        for &(x, y) in &points {
+            min_x = min_x.min(x - 12.0);
+            min_y = min_y.min(y - 12.0);
+            max_x = max_x.max(x + 12.0);
+            max_y = max_y.max(y + 12.0);
+        }
+        if edge.label.is_some() {
+            min_x = min_x.min(label.0 - label_width / 2.0 - 12.0);
+            min_y = min_y.min(label.1 - 8.0 - 12.0);
+            max_x = max_x.max(label.0 + label_width / 2.0 + 12.0);
+            max_y = max_y.max(label.1 + 8.0 + 12.0);
+        }
+        routes.push(Some(FlowReturnRoute {
+            points,
+            label,
+            label_width,
+        }));
+    }
+
+    // Long labels on horizontal return lanes can reach past either end of
+    // the original canvas. Translate the complete graph, keeping a zero-origin
+    // viewBox and every port aligned, rather than clipping or truncating text.
+    if min_x < 0.0 || min_y < 0.0 {
+        for node in nodes.values_mut() {
+            node.x -= min_x;
+            node.y -= min_y;
+        }
+        for route in routes.iter_mut().flatten() {
+            for point in &mut route.points {
+                point.0 -= min_x;
+                point.1 -= min_y;
+            }
+            route.label.0 -= min_x;
+            route.label.1 -= min_y;
+        }
+    }
+    *width = max_x - min_x;
+    *height = max_y - min_y;
+    routes
 }
 
 // ---------------------------------------------------------------------------

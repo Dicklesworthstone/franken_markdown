@@ -15,6 +15,8 @@
 //! or unsupported block structure leaves the ENTIRE source untouched, so a
 //! failed metadata parse never silently discards document content.
 
+use super::{logical_line_content, logical_lines_inclusive};
+
 /// Parsed frontmatter values. `None`/absent keys leave the render defaults
 /// (first-heading title, no author, language autodetect).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -35,11 +37,11 @@ pub struct Frontmatter {
 #[must_use]
 pub fn split_frontmatter(src: &str) -> (Option<Frontmatter>, &str) {
     let body = src.strip_prefix('\u{feff}').unwrap_or(src);
-    let mut lines = body.split_inclusive('\n');
+    let mut lines = logical_lines_inclusive(body);
     let Some(first) = lines.next() else {
         return (None, src);
     };
-    if first.trim_end_matches(['\n', '\r']) != "---" {
+    if logical_line_content(first) != "---" {
         return (None, src);
     }
     let mut offset = first.len();
@@ -47,7 +49,7 @@ pub fn split_frontmatter(src: &str) -> (Option<Frontmatter>, &str) {
     let mut closed_at = None;
     let mut block_indent = None;
     for line in lines.by_ref() {
-        let trimmed = line.trim_end_matches(['\n', '\r']);
+        let trimmed = logical_line_content(line);
         if trimmed == "---" {
             closed_at = Some(offset + line.len());
             break;

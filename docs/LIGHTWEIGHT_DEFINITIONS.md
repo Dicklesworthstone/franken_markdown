@@ -58,7 +58,8 @@ scalars with optional `+`/`-` chomping indicators. Unknown keys remain metadata.
 Scalar indentation is validated, including partial dedents and over-indented
 leading blank lines. This is the project's metadata grammar, not full YAML.
 
-The prefix must begin at the document start and use LF or CRLF lines. Empty,
+The prefix must begin at the document start. LF, CRLF and lone CR each end one
+logical line, including when they are mixed within a document. Empty,
 comment-only, malformed and unclosed candidates retain their entire ordinary
 Markdown content. Later metadata-looking blocks keep their normal Markdown
 meaning. Definitions and note-shaped lines inside valid metadata cannot leak

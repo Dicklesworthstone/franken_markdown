@@ -1383,10 +1383,12 @@ function parseMarkdownClient(source, imageAssets) {
     let cursor = 0;
     const nextLine = () => {
       const start = cursor;
-      while (cursor < candidate.length && candidate[cursor] !== '\n') { charge(); cursor++; }
-      let end = cursor;
-      if (cursor < candidate.length) { charge(); cursor++; }
-      while (end > start && candidate[end - 1] === '\r') { charge(); end--; }
+      while (cursor < candidate.length && candidate[cursor] !== '\r' && candidate[cursor] !== '\n') { charge(); cursor++; }
+      const end = cursor;
+      // LF, lone CR and CRLF each end one logical line, preserving the exact
+      // original suffix after metadata instead of normalizing source offsets.
+      if (candidate[cursor] === '\r') { charge(); cursor++; }
+      if (candidate[cursor] === '\n') { charge(); cursor++; }
       return candidate.slice(start, end);
     };
     if (nextLine() !== '---') return body;

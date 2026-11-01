@@ -9,6 +9,13 @@ const context = vm.createContext({});
 vm.runInContext(code, context);
 const render = source => context.parseMarkdownClient(source);
 const prefix = (metadata, body = '# Body\n\nVisible.') => `---\n${metadata}\n---\n${body}`;
+const endings = source => {
+  // Adjacent CR then LF would become one CRLF and erase a blank line. The
+  // mixed cycle keeps every original break distinct, including empty lines.
+  let index = 0;
+  return [source, source.replace(/\n/g, '\r\n'), source.replace(/\n/g, '\r'),
+    source.replace(/\n/g, () => ['\r\n', '\n', '\r'][index++ % 3])];
+};
 
 test('a leading BOM cannot turn code definitions into document definitions', () => {
   const source = '\ufeff```\n\n[secret]: /wrong\n[^n]: Hidden note\n```\n\n[secret] [^n]';
@@ -99,13 +106,48 @@ test('metadata requires the exact first-line delimiter at the document start', (
   }
 });
 
-test('BOM and CRLF metadata retain the exact following body semantics', () => {
-  const body = '# Body\r\n\r\n[ref] [^n]\r\n\r\n[ref]: /right\r\n[^n]: Visible';
-  const source = '\ufeff---\r\ntitle: >-\r\n  first\r\n  second\r\n---\r\n' + body;
-  assert.equal(render(source), render(body));
-  // Native frontmatter recognizes LF/CRLF source lines, not isolated CRs.
+test('BOM and every native line ending retain the exact following body semantics', () => {
+  const body = '# Body\n\n[ref] [^n]\n\n[ref]: /right\n[^n]: Visible';
+  const source = '\ufeff---\ntitle: >-\n  first\n  second\n---\n' + body;
+  for (const variant of endings(source)) assert.equal(render(variant), render(body));
   const crOnly = '---\rtitle: Visible\r---\rBody';
-  assert.equal(render(crOnly), render('\n' + crOnly));
+  assert.equal(render(crOnly), '<p>Body</p>\n');
+  for (const ending of ['\n', '\r\n', '\r']) {
+    assert.equal(render(`---${ending}title: Metadata${ending}---${ending}\ufeff# literal`), '<p>\ufeff# literal</p>\n');
+  }
+});
+
+test('mixed metadata endings retain scalar and definition ownership across body blocks', () => {
+  const bodies = [
+    '# Body\n\nVisible.', '> [ref] [^n]\n\n[ref]: /right\n[^n]: Visible note',
+    '- first\n- second\n\n[secret] [^private]',
+    '```text\n\n[secret]: /literal\n```\n\n[secret]',
+  ];
+  for (const style of ['|', '|-', '|+', '>', '>-', '>+']) {
+    const metadata = `title: ${style} # comment\n\n  [secret]: /wrong\n  [^private]: PRIVATE NOTE\n  ---\n\n  final\nauthor: Jane`;
+    for (const body of bodies) {
+      for (const source of endings('\ufeff' + prefix(metadata, body))) {
+        assert.equal(render(source), render(body), JSON.stringify(source));
+        assert.doesNotMatch(render(source), /PRIVATE NOTE|\/wrong/);
+      }
+    }
+  }
+});
+
+test('invalid metadata retains all content with CR and mixed source boundaries', () => {
+  for (const source of [
+    '---\n---\n# Body', '---\n# comment only\n---\n# Body',
+    '---\ntitle: unclosed\n# Body', '---\ntitle: |\n  unclosed scalar\n',
+    prefix('title: |\n    first\n  partial dedent'),
+    prefix('title: |\n    \n  text'), prefix('title: |\n\tunsupported indentation'),
+    prefix('title: Visible\nordinary prose'), prefix('=empty key'),
+    '---\ntitle: Text\n ---\n# Body',
+  ]) {
+    for (const variant of endings(source)) {
+      assert.equal(render(variant), render('\n' + variant), JSON.stringify(variant));
+      assert.equal(render(variant), render(source), JSON.stringify(variant));
+    }
+  }
 });
 
 test('a later metadata-looking block keeps its normal Markdown ownership', () => {
@@ -128,8 +170,15 @@ test('metadata scanning shares admission and work budgets and resets after failu
 });
 
 test('long metadata whitespace and interior carriage-return runs use bounded scans', () => {
-  const source = prefix('title: ' + ' '.repeat(100000) + 'literal' + '\r'.repeat(100000) + 'value', 'Body');
+  const source = prefix('title: ' + ' '.repeat(100000) + 'literal' + '\r'.repeat(100000) + 'author: value', 'Body');
   const bounded = vm.createContext({source});
   vm.runInContext(code, bounded);
   assert.equal(vm.runInContext('parseMarkdownClient(source)', bounded, {timeout: 4000}), '<p>Body</p>\n');
+  // Lone CR is a boundary, so ordinary prose after the run invalidates the
+  // whole candidate. Preserve that content instead of hiding it as a value.
+  bounded.source = source.replace('author: value', 'ordinary prose');
+  const retained = vm.runInContext('parseMarkdownClient(source)', bounded, {timeout: 4000});
+  assert.match(retained, /literal/);
+  assert.match(retained, /ordinary prose/);
+  assert.match(retained, /Body/);
 });

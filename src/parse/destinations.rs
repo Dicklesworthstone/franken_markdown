@@ -453,8 +453,15 @@ impl DestinationTracker {
     }
 
     fn append_chars(&self, map: &mut CharMap, text: &str) {
-        for (index, character) in text.char_indices() {
-            let width = character.len_utf8();
+        let mut source = text.char_indices().peekable();
+        while let Some((index, character)) = source.next() {
+            // The inline buffer normalizes a CRLF pair to one '\n'. Its one
+            // character still covers both original bytes in editable ranges.
+            let mut width = character.len_utf8();
+            if character == '\r' && source.peek().is_some_and(|(_, ch)| *ch == '\n') {
+                let _ = source.next();
+                width += 1;
+            }
             map.push(width, self.text_range(&text[index..index + width]));
         }
     }
@@ -778,6 +785,23 @@ impl ParseProfiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_inline_breaks_keep_exact_original_destination_tokens() -> Result<(), &'static str>
+    {
+        let source = "é\r\n[one](/a#part)\r[二](<b.png>)\n";
+        let mut profiler = ParseProfiler::disabled();
+        profiler.destinations = Some(DestinationTracker::new(source));
+        let _parsed = parse_inlines_with_refs_profiled(source, &ReferenceMap::new(), &mut profiler);
+        let tracker = profiler.destinations.ok_or("missing tracker")?;
+        let tokens: Vec<_> = tracker
+            .spans
+            .iter()
+            .map(|span| &source[span.token.range.clone()])
+            .collect();
+        assert_eq!(tokens, ["/a#part", "<b.png>"]);
+        Ok(())
+    }
 
     #[test]
     fn resource_spans_follow_real_html_nodes_and_preserve_markdown_only_api() {

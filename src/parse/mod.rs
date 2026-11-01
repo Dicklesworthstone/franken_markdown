@@ -405,14 +405,15 @@ fn expand_leading_tabs(line: &str) -> std::borrow::Cow<'_, str> {
 }
 
 fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
-    // Normalize: strip a UTF-8 BOM; `lines()` handles both `\n` and `\r\n`.
+    // Ignore a leading BOM and recognize LF, CRLF, and lone CR without rewriting
+    // the source buffer. Borrowed line slices retain original byte coordinates.
     // Frontmatter (key=value between --- fences at byte 0) is document
     // metadata, not content: split it off before line scanning so it never
     // renders as a thematic break or paragraph text.
     let src = document_body(src);
     let tab_storage: Option<Vec<String>> = if src.contains('\t') {
         Some(
-            src.lines()
+            logical_lines(src)
                 .map(|l| expand_leading_tabs(l).into_owned())
                 .collect(),
         )
@@ -420,7 +421,7 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
         None
     };
     if let Some(storage) = &tab_storage {
-        for (copied, original) in storage.iter().zip(src.lines()) {
+        for (copied, original) in storage.iter().zip(logical_lines(src)) {
             profiler.destination_suffix(copied, original);
         }
     }
@@ -472,9 +473,42 @@ fn document_body(src: &str) -> &str {
     split_frontmatter(src).1
 }
 
+/// CommonMark 0.31.2 section 2.1: LF, lone CR, and CRLF each end one line.
+/// Keep terminators in these borrowed slices so metadata can return an exact
+/// body suffix; normal parsing strips them and inserts normalized AST breaks.
+pub(crate) fn logical_lines_inclusive(mut source: &str) -> impl Iterator<Item = &str> {
+    std::iter::from_fn(move || {
+        if source.is_empty() {
+            return None;
+        }
+        let end = source.find(['\r', '\n']).map_or(source.len(), |index| {
+            index
+                + if source.as_bytes()[index] == b'\r'
+                    && source.as_bytes().get(index + 1) == Some(&b'\n')
+                {
+                    2
+                } else {
+                    1
+                }
+        });
+        let (line, remaining) = source.split_at(end);
+        source = remaining;
+        Some(line)
+    })
+}
+
+fn logical_line_content(line: &str) -> &str {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
+fn logical_lines(source: &str) -> impl Iterator<Item = &str> {
+    logical_lines_inclusive(source).map(logical_line_content)
+}
+
 fn split_logical_lines(src: &str) -> Vec<&str> {
     let mut lines = Vec::with_capacity(logical_line_capacity_hint(src.len()));
-    lines.extend(src.lines());
+    lines.extend(logical_lines(src));
     lines
 }
 
@@ -557,12 +591,12 @@ struct SourceLine<'a> {
 
 /// Original byte coordinates for the same logical lines the parser sees,
 /// before tab expansion or reference-definition removal. Metadata never owns a
-/// renderer block, and CRLF/lone-CR behavior follows `str::lines` exactly.
+/// renderer block. All three line-ending forms retain their original byte widths.
 fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
     let body = document_body(src);
     let offset = src.len() - body.len();
     let address = body.as_ptr() as usize;
-    body.lines()
+    logical_lines(body)
         .map(|text| {
             let start = offset + (text.as_ptr() as usize - address);
             SourceLine {
@@ -1962,7 +1996,17 @@ fn collect_inline_chars_from_lines(lines: &[&str], byte_len: usize) -> Vec<char>
 
 fn collect_inline_chars_from_text(text: &str) -> Vec<char> {
     let mut chars = Vec::with_capacity(text.len());
-    chars.extend(text.chars());
+    let mut source = text.chars().peekable();
+    while let Some(ch) = source.next() {
+        if ch == '\r' {
+            if source.peek() == Some(&'\n') {
+                let _ = source.next();
+            }
+            chars.push('\n');
+        } else {
+            chars.push(ch);
+        }
+    }
     chars
 }
 

@@ -7,6 +7,13 @@ the same page whenever a fitting alternative exists. Short sections no longer
 make a break inside the title look preferable to a break after their content.
 Explicit page breaks take precedence. A heading taller than the page can still
 split so its complete text remains visible and pagination makes progress.
+Finishing a complete figure also satisfies the nearby heading's keep, even
+though a diagram or image occupies only one layout row. A fitting heading and
+figure can therefore use the space below an introduction without shrinking the
+figure or reserving a sparse introduction page. This exception requires the end
+of a measured image group; definition terms, incomplete body paragraphs and
+decoration retain their existing protection. Page-note reservations and all
+independent caption, list, table and widow/orphan rules still apply.
 
 `fmd input.md --to pdf --pdf-optimal-pagination` (or
 `PdfOptions::optimal_pagination = true`) now considers alternative paragraph

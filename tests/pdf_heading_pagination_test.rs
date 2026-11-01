@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 
 struct PaintedPage {
     text: String,
-    rules: usize,
+    rules: Vec<[f32; 4]>,
+    figure_transforms: Vec<[f32; 6]>,
 }
 
 struct Objects<'a> {
@@ -229,7 +230,25 @@ fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
             rules: content
                 .lines()
                 .filter(|line| line.contains(" RG 0.7 w ") && line.ends_with(" l S"))
-                .count(),
+                .map(|line| {
+                    let words: Vec<_> = line.split_whitespace().collect();
+                    let from = words.iter().position(|word| *word == "m").unwrap();
+                    let to = words.iter().position(|word| *word == "l").unwrap();
+                    [from - 2, from - 1, to - 2, to - 1].map(|index| words[index].parse().unwrap())
+                })
+                .collect(),
+            figure_transforms: content
+                .split("/Figure <<")
+                .skip(1)
+                .map(|figure| {
+                    let figure = figure.split_once("BDC").unwrap().1;
+                    let figure = figure.split_once("EMC").unwrap().0;
+                    let words: Vec<_> = figure.split_whitespace().collect();
+                    let matrix = words.iter().position(|word| *word == "cm").unwrap();
+                    assert!(matrix >= 6, "a figure requires a complete transform");
+                    std::array::from_fn(|index| words[matrix - 6 + index].parse().unwrap())
+                })
+                .collect(),
         });
     }
     page_text
@@ -283,7 +302,8 @@ fn default_short_sections_keep_the_title_rule_and_first_content_together() {
             let headings = page.text.matches("SECTION").count()
                 + usize::from(page.text.contains("MAINHEADING"));
             assert_eq!(
-                page.rules, headings,
+                page.rules.len(),
+                headings,
                 "a heading and its painted underline belong on the same page: {}",
                 page.text
             );
@@ -298,6 +318,131 @@ fn default_short_sections_keep_the_title_rule_and_first_content_together() {
             render_pdf_document_emitted(&doc, &options, PdfEmitOptions::monolithic()).unwrap()
         );
     }
+}
+
+#[test]
+fn a_complete_heading_and_figure_uses_the_available_first_page_without_rescaling() {
+    let introduction = "INTRODUCTION explains the measured figure and its complete source content. \
+        This technical report keeps the section heading, diagram and annotations together.";
+    for with_note in [false, true] {
+        let mut options = PdfOptions::default();
+        for name in ["FIRST", "SECOND"] {
+            options.image_assets.push(PdfImageAsset::new(
+                format!("{name}.svg"),
+                format!(
+                    r##"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="500" viewBox="0 0 600 500"><rect width="600" height="500" fill="#eef3fa"/><text x="20" y="50" font-size="22">{name}FIGURE</text><text x="20" y="480" font-size="22">{name}BOTTOM</text></svg>"##
+                )
+                .into_bytes(),
+            ));
+        }
+        let source = format!(
+            "# TECHNICALREPORT\n\n{introduction}{}\n\n\
+             ## FIRSTSECTION\n\n![First figure](FIRST.svg)\n\n\
+             ## SECONDSECTION\n\n![Second figure](SECOND.svg)\n\nTAILMARKER\n{}",
+            if with_note { "[^n]" } else { "" },
+            if with_note {
+                "\n[^n]: FOOTNOTECONTENT remains on the introduction page.\n"
+            } else {
+                ""
+            }
+        );
+        let pdf = render_pdf(&source, &options).unwrap();
+        let pages = painted_pages(&pdf);
+        assert_eq!(
+            pages.len(),
+            2,
+            "a complete figure satisfies its heading's keep; a sparse introduction must not consume a third page"
+        );
+        for text in [
+            "TECHNICALREPORT",
+            "INTRODUCTION",
+            "FIRSTSECTION",
+            "FIRSTFIGURE",
+            "FIRSTBOTTOM",
+        ] {
+            assert_eq!(page_of(&pages, text), 0, "{text}");
+        }
+        for text in [
+            "SECONDSECTION",
+            "SECONDFIGURE",
+            "SECONDBOTTOM",
+            "TAILMARKER",
+        ] {
+            assert_eq!(page_of(&pages, text), 1, "{text}");
+        }
+        if with_note {
+            assert_eq!(page_of(&pages, "FOOTNOTECONTENT"), 0);
+        }
+        for (page, heading_rules) in [(&pages[0], 2), (&pages[1], 1)] {
+            assert_eq!(
+                page.rules
+                    .iter()
+                    .filter(|[left, _, right, _]| (left - 72.0).abs() < 0.001
+                        && (right - 540.0).abs() < 0.001)
+                    .count(),
+                heading_rules,
+                "each heading must retain its full-measure underline"
+            );
+        }
+        // The page-foot separator is a separate, short rule. It must not be
+        // mistaken for a third heading underline or mask a missing underline.
+        assert_eq!(pages[0].rules.len(), 2 + usize::from(with_note));
+        assert_eq!(pages[1].rules.len(), 1);
+        for page in &pages {
+            assert_eq!(page.figure_transforms.len(), 1);
+            let [a, b, c, d, x, top] = page.figure_transforms[0];
+            // Independent source geometry: 600 x 500 CSS pixels are 450 x
+            // 375 points at 96 dpi, smaller than the 468 x 648 point body.
+            // Pulling the figure onto page one must not shrink it or change
+            // the native figure transform to satisfy the page-count check.
+            for (actual, expected) in [(a, 0.75), (b, 0.0), (c, 0.0), (d, -0.75), (x, 72.0)] {
+                assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
+            }
+            assert!(top <= 720.001 && top - 375.0 >= 71.999, "{top}");
+        }
+        let doc = parse_markdown(&source);
+        assert_eq!(
+            pdf,
+            render_pdf_document_emitted(&doc, &options, PdfEmitOptions::monolithic()).unwrap()
+        );
+    }
+}
+
+#[test]
+fn a_definition_term_does_not_satisfy_its_heading_without_the_definition() {
+    let mut options = small_options();
+    options.theme.page.size.height_pt = 220.0;
+    let preceding = (0..7)
+        .map(|index| format!("PRE{index:02}"))
+        .collect::<Vec<_>>()
+        .join("  \n");
+    let source = format!(
+        "{preceding}\n\n## TERMINOLOGY\n\nTERMWORD\n: DEFINITIONBODY explains the complete term and retains its meaning.\n"
+    );
+    let doc = parse_markdown(&source);
+    let mut term_only = doc.clone();
+    let item = term_only
+        .blocks
+        .iter_mut()
+        .find_map(|block| match block {
+            Block::DefinitionList(items) => items.first_mut(),
+            _ => None,
+        })
+        .expect("the fixture must contain a real definition list");
+    item.definitions.clear();
+    let control = painted_pages(&render_pdf_document(&term_only, &options).unwrap());
+    assert_eq!(
+        control.len(),
+        1,
+        "the heading and term fit without a definition"
+    );
+    assert_eq!(page_of(&control, "TERMWORD"), 0);
+
+    let pages = painted_pages(&render_pdf_document(&doc, &options).unwrap());
+    assert_eq!(pages.len(), 2);
+    assert_eq!(page_of(&pages, "TERMINOLOGY"), 1);
+    assert_eq!(page_of(&pages, "TERMWORD"), 1);
+    assert_eq!(page_of(&pages, "DEFINITIONBODY"), 1);
 }
 
 #[test]
@@ -386,7 +531,7 @@ fn a_wrapped_heading_that_fits_moves_as_a_whole_with_its_first_body_line() {
         assert_eq!(page_of(&pages, word), heading_page);
     }
     assert_eq!(page_of(&pages, "BODYAFTER"), heading_page);
-    assert_eq!(pages[heading_page].rules, 1);
+    assert_eq!(pages[heading_page].rules.len(), 1);
 }
 
 #[test]
@@ -398,8 +543,8 @@ fn explicit_breaks_win_and_oversized_headings_still_make_progress() {
     assert_eq!(page_of(&pages, "BEFORE"), 0);
     assert_eq!(page_of(&pages, "AFTER"), 1);
     assert_eq!(page_of(&pages, "BODY"), 1);
-    assert_eq!(pages[0].rules, 1);
-    assert_eq!(pages[1].rules, 1);
+    assert_eq!(pages[0].rules.len(), 1);
+    assert_eq!(pages[1].rules.len(), 1);
 
     let words: Vec<_> = (0..60).map(|index| format!("H{index:03}")).collect();
     let source = format!("# {}\n\nBODYAFTER\n", words.join(" "));
@@ -416,5 +561,5 @@ fn explicit_breaks_win_and_oversized_headings_still_make_progress() {
             .collect::<String>(),
         words.join("") + "BODYAFTER"
     );
-    assert_eq!(pages.iter().map(|page| page.rules).sum::<usize>(), 1);
+    assert_eq!(pages.iter().map(|page| page.rules.len()).sum::<usize>(), 1);
 }

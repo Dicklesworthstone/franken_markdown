@@ -30919,13 +30919,26 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         penalty += 1_500_000.0;
     }
 
-    // Prevent orphan headings: if a heading occurred 1, 2, or 3 lines before this break
-    // candidate, penalize breaking so the page break happens before the heading.
-    if candidate >= 2 && lines[candidate - 2].flow.kind == FlowKind::Heading {
-        penalty += 1_200_000.0;
-    }
-    if candidate >= 3 && lines[candidate - 3].flow.kind == FlowKind::Heading {
-        penalty += 1_000_000.0;
+    // A whole figure is one layout row, even when it fills most of a page.
+    // Finishing that measured image satisfies its heading's keep; charging
+    // proximity penalties after it would favor a nearly empty preceding page.
+    // Other group boundaries retain their keeps: a definition term, list
+    // marker or decoration is not necessarily a complete following subject.
+    let completes_figure = before.flow.kind == FlowKind::Image
+        && before.image.is_some()
+        && before.flow.group != 0
+        && before.flow.group != after.flow.group
+        && before.flow.index < before.flow.count
+        && before.flow.index + 1 == before.flow.count;
+    if !completes_figure {
+        // Protect the first rows following a heading while its subject is
+        // incomplete. The direct after-heading keep above remains unchanged.
+        if candidate >= 2 && lines[candidate - 2].flow.kind == FlowKind::Heading {
+            penalty += 1_200_000.0;
+        }
+        if candidate >= 3 && lines[candidate - 3].flow.kind == FlowKind::Heading {
+            penalty += 1_000_000.0;
+        }
     }
 
     // Keep list items together with an immediately preceding heading: do not separate
@@ -31394,6 +31407,38 @@ mod keep_with_next_tests {
             break_penalty(&table, 1) >= 900_000.0,
             "table-header keep-with-first-row regression"
         );
+    }
+
+    #[test]
+    fn heading_proximity_still_protects_incomplete_subjects_and_decoration() {
+        for kind in [FlowKind::Paragraph, FlowKind::Code] {
+            let lines = [
+                line(FlowKind::Heading, 1, 0, 1),
+                line(FlowKind::Heading, 1, 0, 1),
+                line(kind, 2, 0, 4),
+                line(kind, 2, 1, 4),
+                line(kind, 2, 2, 4),
+                line(kind, 2, 3, 4),
+            ];
+            assert!(break_penalty(&lines, 3) >= 2_200_000.0, "{kind:?}");
+            assert!(break_penalty(&lines, 4) >= 1_000_000.0, "{kind:?}");
+        }
+
+        for kind in [
+            FlowKind::Paragraph,
+            FlowKind::Rule,
+            FlowKind::Other,
+            // An Image marker with no measured asset is not a whole figure.
+            FlowKind::Image,
+        ] {
+            let lines = [
+                line(FlowKind::Heading, 1, 0, 1),
+                line(FlowKind::Heading, 1, 0, 1),
+                line(kind, 2, 0, 1),
+                line(FlowKind::Paragraph, 3, 0, 1),
+            ];
+            assert_eq!(break_penalty(&lines, 3), 2_200_000.0, "{kind:?}");
+        }
     }
 
     #[test]

@@ -64,6 +64,7 @@ pub use pagination_report::{
 };
 mod math;
 mod navigation;
+mod quote_geometry;
 mod running;
 pub(crate) mod source_navigation;
 mod table_panels;
@@ -150,6 +151,7 @@ const PANEL_DESCENT_FRAC: f32 = 0.30; // glyph bottom below baseline
 const CODE_BLOCK_GAP_AFTER: f32 = 10.0; // clear adjacent rounded-panel padding
 const CHIP_PAD_X: f32 = 2.0;
 const CHIP_RADIUS: f32 = 2.5;
+const QUOTE_BAR_WIDTH: f32 = 2.5;
 const QUOTE_BG_PAD_X: f32 = 6.0;
 const QUOTE_BG_PAD_V: f32 = 3.0;
 const TABLE_COL_GUTTER: f32 = 14.0;
@@ -3562,6 +3564,7 @@ fn layout_with_pagination_report(
             next_bg: 0,
             next_flow: 0,
             list_stack: Vec::new(),
+            quote_geometry: Default::default(),
             hyphen_cache: RefCell::new(HashMap::new()),
             width_cache: RefCell::new(WidthCache::default()),
             simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
@@ -3629,6 +3632,7 @@ fn layout_with_pagination_report(
         next_bg: 0,
         next_flow: 0,
         list_stack: Vec::new(),
+        quote_geometry: Default::default(),
         hyphen_cache: RefCell::new(HashMap::new()),
         width_cache: RefCell::new(WidthCache::default()),
         simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
@@ -4561,6 +4565,7 @@ struct LayoutCx<'a> {
     type_scale: crate::theme::TypeScale,
     faces: &'a Faces,
     page: PageGeom,
+    quote_geometry: quote_geometry::State,
     list_stack: Vec<ListFrame>,
     next_bg: u32,
     next_flow: u32,
@@ -4674,6 +4679,7 @@ fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut La
 
 fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
     let indent = list_geometry::block_indent(block, indent, cx);
+    let indent = quote_geometry::block_indent(block, indent, cx);
     match block {
         Block::FootnoteDefinition { .. } => {}
         Block::Heading { level, inlines } => {
@@ -4911,60 +4917,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             mark_flow(out, start, group, FlowKind::Code);
             gap(out, CODE_BLOCK_GAP_AFTER);
         }
-        Block::BlockQuote(inner) => {
-            // Containers need document-wide identities: footnote bodies are
-            // laid out into separate vectors, and nested containers can open
-            // at the same line offset. Allocate before descending so identity
-            // order also preserves the nesting order of lists and quotes.
-            let quote_id = cx.alloc_flow() as usize;
-            if let Some(parts) = crate::ast::alert_parts(inner) {
-                let start = out.len();
-                gap(out, 4.0);
-                let group = cx.alloc_flow();
-                let mut title_toks = Vec::new();
-                push_text_tokens(parts.label, F_BOLD, false, None, &mut title_toks);
-                apply_symbol_fallback(&mut title_toks, cx.faces);
-                layout_inlines(
-                    title_toks,
-                    indent + 18.0,
-                    cx.type_scale.body,
-                    3.0,
-                    out,
-                    cx,
-                    FlowSpec {
-                        group,
-                        kind: FlowKind::Heading,
-                    },
-                );
-                if !parts.leading.is_empty() {
-                    layout_blocks(
-                        &[Block::Paragraph(parts.leading.to_vec())],
-                        indent + 18.0,
-                        out,
-                        cx,
-                    );
-                }
-                layout_blocks(parts.rest, indent + 18.0, out, cx);
-                let bar_x = cx.page.left + indent + 6.0;
-                if let Some(lines) = out.get_mut(start..) {
-                    for line in lines {
-                        line.quote_bars.push((quote_id, bar_x));
-                    }
-                }
-                gap(out, 3.0);
-            } else {
-                let start = out.len();
-                gap(out, 4.0);
-                layout_blocks(inner, indent + 18.0, out, cx);
-                let bar_x = cx.page.left + indent + 6.0; // sits in the reserved 18pt gutter
-                if let Some(lines) = out.get_mut(start..) {
-                    for line in lines {
-                        line.quote_bars.push((quote_id, bar_x));
-                    }
-                }
-                gap(out, 3.0);
-            }
-        }
+        Block::BlockQuote(inner) => quote_geometry::layout(block, inner, indent, out, cx),
         Block::List(list) => layout_list(list, indent, out, cx),
         Block::DefinitionList(items) => layout_definition_list(items, indent, out, cx),
         Block::Table(table) => {
@@ -18764,7 +18717,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
     let size = cx.type_scale.body;
     let scale = size / 11.0;
     let (marker_layouts, marker_col) = list_marker_layouts(list, cx.faces, size, &cx.width_cache);
-    let geometry = list_geometry::geometry(cx.page.content_w, indent, marker_col, size);
+    let geometry = quote_geometry::list_geometry(list, indent, marker_col, size, cx);
     // Preserve the exact ordinary gutter. A list with no usable hanging
     // measure keeps its complete marker above the item at the same type size.
     let marker_left =
@@ -23574,13 +23527,13 @@ fn generate_page_content(
     } else {
         quote_extents(placed)
     };
-    for (bar_x, top_y, bot_y) in quote_acc.values() {
+    for extent in quote_acc.values() {
         append_page_background_rounded_rect_fill(
             &mut bg,
-            bar_x - QUOTE_BG_PAD_X,
-            bot_y - QUOTE_BG_PAD_V,
+            extent.bar_x - QUOTE_BG_PAD_X,
+            extent.bottom - QUOTE_BG_PAD_V,
             page.right_x(),
-            top_y + QUOTE_BG_PAD_V,
+            extent.top + QUOTE_BG_PAD_V,
             3.0,
             palette.quote_bg,
         );
@@ -31728,9 +31681,37 @@ struct Placed<'a> {
     y: f32,
 }
 
-fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, (f32, f32, f32)> {
-    let mut acc: BTreeMap<usize, (f32, f32, f32)> = BTreeMap::new();
+struct QuoteExtent {
+    bar_x: f32,
+    top: f32,
+    bottom: f32,
+    stroke: bool,
+}
+
+fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, QuoteExtent> {
+    let mut acc: BTreeMap<usize, QuoteExtent> = BTreeMap::new();
     for p in placed {
+        if p.line.quote_bars.is_empty() {
+            continue;
+        }
+        let mut foreground_left = p
+            .line
+            .segs
+            .iter()
+            .map(|seg| {
+                let inset = if p.line.bg != 0 {
+                    CODE_PAD_X
+                } else if seg.slot == F_MONO && !seg.text.trim().is_empty() {
+                    CHIP_PAD_X
+                } else {
+                    0.0
+                };
+                seg.x - inset
+            })
+            .fold(f32::INFINITY, f32::min);
+        if p.line.rule || p.line.shade || p.line.image.is_some() {
+            foreground_left = foreground_left.min(p.line.rule_x);
+        }
         for &(id, bar_x) in &p.line.quote_bars {
             let (top_y, bot_y) = if let Some(image) = &p.line.image {
                 let mut top = p.y + image.height_pt;
@@ -31747,9 +31728,21 @@ fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, (f32, f32, f32)> {
                     p.y - (p.line.size * 0.20).max(p.line.text_ink.1),
                 )
             };
+            // A wide but fitting glyph can consume the entire body measure.
+            // Keep its source, quote tag and shaded panel; only the decorative
+            // stroke yields when its lane cannot remain clear of foreground.
+            let stroke = foreground_left >= bar_x + QUOTE_BAR_WIDTH * 0.5 + 0.025;
             acc.entry(id)
-                .and_modify(|e| e.2 = bot_y)
-                .or_insert((bar_x, top_y, bot_y));
+                .and_modify(|extent| {
+                    extent.bottom = bot_y;
+                    extent.stroke &= stroke;
+                })
+                .or_insert(QuoteExtent {
+                    bar_x,
+                    top: top_y,
+                    bottom: bot_y,
+                    stroke,
+                });
         }
     }
     acc
@@ -31758,11 +31751,19 @@ fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, (f32, f32, f32)> {
 /// Stroke one subtle vertical bar per accumulated blockquote, then clear.
 fn flush_quote_bars(
     content: &mut String,
-    acc: &mut BTreeMap<usize, (f32, f32, f32)>,
+    acc: &mut BTreeMap<usize, QuoteExtent>,
     bar: (f32, f32, f32),
 ) {
-    for (x, top, bot) in acc.values() {
-        append_rgb_stroke_segment_operator(content, bar, 2.5, *x, *top, *x, *bot);
+    for extent in acc.values().filter(|extent| extent.stroke) {
+        append_rgb_stroke_segment_operator(
+            content,
+            bar,
+            QUOTE_BAR_WIDTH,
+            extent.bar_x,
+            extent.top,
+            extent.bar_x,
+            extent.bottom,
+        );
     }
     acc.clear();
 }
@@ -34952,6 +34953,7 @@ mod pdf_writer_tests {
             faces,
             page,
             list_stack: Vec::new(),
+            quote_geometry: Default::default(),
             next_bg: 0,
             next_flow: 0,
             hyphen_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -41660,6 +41662,7 @@ mod table_wrap_tests {
             next_bg: 0,
             next_flow: 0,
             list_stack: Vec::new(),
+            quote_geometry: Default::default(),
             hyphen_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             width_cache: width_cache(),
             simple_paragraph_cache: super::SimpleParagraphLayoutCache::default(),
@@ -43680,6 +43683,7 @@ mod coverage_gap_tests {
             next_bg: 0,
             next_flow: 0,
             list_stack: Vec::new(),
+            quote_geometry: Default::default(),
             hyphen_cache: RefCell::new(HashMap::new()),
             width_cache: RefCell::new(WidthCache::default()),
             simple_paragraph_cache: SimpleParagraphLayoutCache::default(),

@@ -992,6 +992,13 @@ Honest about what the renderer does not do yet.
   formulas and images scale down uniformly when they exceed their actual cell
   width, keeping their content, link targets and accessibility bounds inside
   that cell.
+- **Nested PDF quotations stay inside the page.** Ordinary blockquotes keep
+  their existing gutters. When nesting exhausts the available width, deeper
+  quotes share border positions and reserve room for text at its requested
+  size, including lists, code, tables, figures and notes. The fallback keeps
+  at least four body ems of text width where the page permits it. Quote
+  structure and shading remain intact when a decorative border must yield
+  to a fitting large glyph.
 - **PDF vs HTML gaps.** The PDF path does not render arbitrary CSS. Images
   inside running prose and table cells (badges, icons) are drawn inline as
   unbreakable boxes up to 1.75 em tall and tagged `/Figure` with their alt

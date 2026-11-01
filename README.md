@@ -1036,6 +1036,11 @@ Honest about what the renderer does not do yet.
   sources need no separate asset files. Explicit `--pdf-image` or library image
   mappings take precedence. Malformed or mismatched payloads keep the existing
   image fallback behavior, and `data:` links remain blocked.
+  Offline interactive documents also retain supported percent-encoded,
+  UTF-8 and charset-qualified data images through editing, printing, Save HTML
+  and reopening. Save Markdown preserves the original source encoding. An
+  explicit image override that rejects a source remains rejected after edits
+  and saves, including when a later duplicate binding contains valid bytes.
 - **PDF footnotes.** Notes print at the foot of the page carrying their first
   reference, with linked superscript marks; unreferenced notes and notes taller
   than 40% of a page fall back to a trailing Notes section, and notes are never

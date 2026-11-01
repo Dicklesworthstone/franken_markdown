@@ -14,10 +14,29 @@ Resolved bytes are emitted only as escaped `img` data-URI attributes, never as
 injected SVG markup. Prototype-like destination names are ordinary map keys.
 Damaged saved bindings do not fall back to a remote resource.
 
-Canonical base64 `data:image/` source images (PNG, JPEG, GIF, WebP and SVG) also
-survive live editing. This does not enable data URLs in links or autolinks.
-The browser still determines whether the encoded bytes form a decodable image;
-the URL admission check is not an image integrity validator.
+For `data:` image destinations, the first explicit native binding owns both
+replacement and rejection. An invalid first binding stays rejected in the saved
+manifest; it does not reveal the original source image or a later duplicate
+after an edit, save or reopening. Unsupported non-image data destinations cannot
+gain image permission through a binding. Unused rejection bindings are retained
+alongside unused images.
+
+PNG, JPEG, GIF, WebP and SVG `data:image/` source images survive live editing.
+Alongside canonical base64, source URLs can carry percent-escaped image bytes,
+percent-escaped base64 symbols and an optional `charset=utf-8` before `base64`.
+Display normalizes these forms to base64 image attributes; **Save Markdown keeps
+the original source encoding**. This covers the portable PNG/JPEG/GIF/SVG source
+forms accepted by native HTML, while retaining the lightweight browser's existing
+WebP support. It does not enable data URLs in links or autolinks, inline SVG
+markup, or HTML execution.
+
+Data headers are bounded to 256 characters and decoded image payloads to 32 MiB.
+Percent escapes and base64 padding must be valid. Normalization also consumes
+the existing per-render work/output budgets before publishing a new preview;
+exhaustion preserves the last successful preview and leaves source downloadable.
+These are logical limits, not browser heap guarantees. The browser still decides
+whether encoded bytes form a decodable image; URL admission is not an image
+integrity validator.
 
 ## Saving and portability
 
@@ -41,7 +60,13 @@ contract. Supplied bindings themselves need no filesystem or network lookup.
 renderer with actual image bindings and data URLs. The normal Rust runtime test
 entrypoint includes this suite alongside the existing renderer/controller tests.
 `src/interactive/assets.rs` tests native resource-encoder parity, unused assets,
-duplicate keys, unsupported bytes and script-data escaping.
+duplicate keys, rejected data-image overrides, unsupported bytes and script-data
+escaping. `tests/interactive_controller.test.mjs` runs the actual lightweight
+renderer and production controller through printing, Markdown/HTML downloads and
+three save/reopen generations with explicit DOM adapters. The Rust
+`interactive_html_test` also feeds freshly generated workspaces into that flow,
+executing their bundled renderer and checking native manifest semantics. These
+adapter checks do not replace real-browser image decoding.
 
 For a native-generated interactive document containing at least one supplied
 image, run `python tests/support/interactive_images_browser_check.py document.html`

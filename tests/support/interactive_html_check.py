@@ -83,6 +83,24 @@ const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 // and id selectors resolve like a real document: static template elements,
 // then created nodes, otherwise null.
 const elements = new Map();
+// This proof checks observer setup; controller tests cover attribute changes
+// and cancellation. Keep the subscriptions explicit instead of a silent stub.
+const mutationObserverCalls = [];
+class MutationObserver {
+  constructor(callback) {
+    assert.equal(typeof callback, 'function', 'MutationObserver requires a callback');
+    this.callback = callback;
+  }
+  observe(target, options) {
+    assert.ok(target && typeof target.tagName === 'string', 'MutationObserver requires a DOM target');
+    assert.ok(options && typeof options === 'object', 'MutationObserver requires options');
+    mutationObserverCalls.push({observer: this, method: 'observe', target, options: {
+      ...options,
+      ...(options.attributeFilter ? {attributeFilter: [...options.attributeFilter]} : {})
+    }});
+  }
+  disconnect() { mutationObserverCalls.push({observer: this, method: 'disconnect'}); }
+}
 const idOf = selector => selector.match(/#([\w-]+)(?:\[[^\]]*\])?$/)?.[1];
 function find(root, id) {
   for (const child of root.children ?? []) {
@@ -162,6 +180,7 @@ let nextTimer = 0;
 let prints = 0;
 const documentEvents = element('#document'), windowEvents = element('#window');
 const window = {
+  MutationObserver,
   print() { prints++; },
   addEventListener(name, handler) { windowEvents.addEventListener(name, handler); },
   getComputedStyle() { return {}; },
@@ -185,11 +204,16 @@ const document = {
   documentElement: {...element('html'), style: {setProperty(key, value) { styles.set(key, value); }, getPropertyValue(key) { return styles.get(key) || ''; }}}
 };
 const context = vm.createContext({
-  document, window,
+  document, window, MutationObserver,
   setTimeout(fn, delay) { assert.equal(delay, 150); const id = ++nextTimer; timers.set(id, fn); return id; },
   clearTimeout(id) { timers.delete(id); }
 });
 vm.runInContext(input.app, context, {timeout: 2000});
+assert.ok(mutationObserverCalls.some(call => call.method === 'observe'
+  && call.target === elements.get('fmd-editor') && call.options.attributes === true
+  && call.options.attributeFilter?.includes('readonly')
+  && call.options.attributeFilter?.includes('disabled')),
+  'Bundled app must observe editor readonly/disabled attributes');
 assert.equal(context.fmdInjected, undefined, 'Markdown executed as JavaScript');
 assert.equal(elements.get('fmd-editor').value, input.source);
 assert.equal(elements.get('source-line-count').textContent, `Lines: ${input.source.split('\n').length}`);

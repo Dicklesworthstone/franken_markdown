@@ -470,6 +470,9 @@ function parseMarkdownClient(source, imageAssets) {
   const unescape = text => { charge(text.length); return decode(text.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/g, '$1')); };
   function safeUrl(raw, image) {
     const url = unescape(raw).trim();
+    // Bindings can replace image bytes, not turn a non-image data URL into an
+    // image source. Match native admission before consulting an exact binding.
+    if (image && /^data:/i.test(url) && !fmdDataImageMime(url)) return null;
     if (image && imageAssets.has(url)) {
       // An explicit binding replaces the destination, never grants permission
       // to fetch it. Revalidate saved data before emitting an attribute.
@@ -483,6 +486,9 @@ function parseMarkdownClient(source, imageAssets) {
       return fmdEmbeddedImageUrl(bound) ? bound : null;
     }
     if (image && fmdEmbeddedImageUrl(url)) return url;
+    if (image && /^data:/i.test(url)) {
+      return fmdNormalizeSourceImage(url, charge, exhausted, limits.outputUnits);
+    }
     if (/[\u0000-\u0020\u007f-\u009f]/.test(url)) return null;
     const scheme = url.match(/^([a-z][a-z0-9+.-]*):/i);
     if (scheme && !(image ? /^(https?)$/i : /^(https?|mailto|tel)$/i).test(scheme[1])) return null;
@@ -1578,5 +1584,103 @@ function parseMarkdownClient(source, imageAssets) {
 function fmdEmbeddedImageUrl(uri) {
   if (typeof uri !== 'string' || !/^data:image\/(?:png|jpeg|gif|webp|svg\+xml);base64,/i.test(uri)) return false;
   const data = uri.slice(uri.indexOf(',') + 1);
-  return data.length > 0 && data.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(data) && !/[\r\n]/.test(data);
+  if (!data.length || data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data) || /[\r\n]/.test(data)) return false;
+  // Canonical padding cannot hide additional nonzero bits. Keep saved bindings
+  // canonical; only source URLs use the normalization path below.
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  return data.length / 4 * 3 - padding <= 32 * 1024 * 1024
+    && (!padding || !(alphabet.indexOf(data[data.length - padding - 1]) & (padding === 2 ? 15 : 3)));
+}
+
+function fmdDataImageMime(uri) {
+  if (typeof uri !== 'string' || !/^data:/i.test(uri)) return null;
+  const header = uri.slice(0, 256), end = header.search(/[;,]/);
+  const mime = end < 0 ? '' : header.slice(5, end).toLowerCase();
+  return /^(?:image\/(?:png|jpeg|gif|webp)|image\/svg\+xml)$/.test(mime) ? mime : null;
+}
+
+// Source images may use UTF-8/percent-escaped bytes or percent-escaped base64,
+// just like native HTML. Normalize only the emitted img attribute: source and
+// saved Markdown stay exact. This is bounded URL decoding, not an image decoder
+// or an HTML sanitizer; the browser still validates image pixels. SVG remains
+// an inert image subresource and never becomes markup in the workspace.
+function fmdNormalizeSourceImage(uri, charge, exhausted, outputLimit) {
+  const mime = fmdDataImageMime(uri), comma = uri.slice(0, 256).indexOf(',');
+  if (!mime || comma < 0) return null;
+  let base64 = false, charset = false;
+  for (const field of uri.slice(5, comma).split(';').slice(1)) {
+    if (/^base64$/i.test(field) && !base64) base64 = true;
+    else if (/^charset=utf-8$/i.test(field) && !charset && !base64) charset = true;
+    else return null;
+  }
+  // Debit decoding before allocating an output buffer. Chunked emission bounds
+  // intermediate strings and avoids spreading a whole image into function args.
+  charge(uri.length - comma - 1);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const prefix = 'data:' + mime + ';base64,', parts = [prefix];
+  let chunk = '', size = prefix.length, decoded = 0;
+  const emit = value => {
+    if (value.length > outputLimit - size) exhausted('output');
+    charge(value.length); size += value.length; chunk += value;
+    if (chunk.length >= 8192) { parts.push(chunk); chunk = ''; }
+  };
+  const hex = code => code >= 48 && code <= 57 ? code - 48
+    : code >= 65 && code <= 70 ? code - 55 : code >= 97 && code <= 102 ? code - 87 : -1;
+  let value = 0, used = 0, padded = false;
+  const quartet = [];
+  const byte = number => {
+    if (base64) {
+      if (padded || number !== 61 && alphabet.indexOf(String.fromCharCode(number)) < 0) return false;
+      quartet.push(number);
+      if (quartet.length === 4) {
+        const [a, b, c, d] = quartet;
+        if (a === 61 || b === 61 || c === 61 && d !== 61) return false;
+        const padding = c === 61 ? 2 : d === 61 ? 1 : 0;
+        const last = alphabet.indexOf(String.fromCharCode(padding === 2 ? b : c));
+        if (padding && last & (padding === 2 ? 15 : 3)) return false;
+        decoded += 3 - padding;
+        if (decoded > 32 * 1024 * 1024) exhausted('image bytes');
+        emit(String.fromCharCode(a, b, c, d));
+        padded = padding > 0; quartet.length = 0;
+      }
+    } else {
+      if (++decoded > 32 * 1024 * 1024) exhausted('image bytes');
+      value = (value << 8) | number;
+      if (++used === 3) {
+        emit(alphabet[(value >>> 18) & 63] + alphabet[(value >>> 12) & 63]
+          + alphabet[(value >>> 6) & 63] + alphabet[value & 63]);
+        used = 0; value = 0;
+      }
+    }
+    return true;
+  };
+  for (let i = comma + 1; i < uri.length; i++) {
+    const code = uri.charCodeAt(i);
+    if (code === 37) {
+      const high = hex(uri.charCodeAt(i + 1)), low = hex(uri.charCodeAt(i + 2));
+      if (high < 0 || low < 0 || !byte(high * 16 + low)) return null;
+      i += 2;
+    } else if (code < 128) {
+      if (!byte(code)) return null;
+    } else {
+      if (base64) return null;
+      const scalar = uri.codePointAt(i);
+      if (scalar >= 0xd800 && scalar <= 0xdfff) return null;
+      if (scalar < 0x800) { byte(0xc0 | scalar >> 6); byte(0x80 | scalar & 63); }
+      else if (scalar < 0x10000) {
+        byte(0xe0 | scalar >> 12); byte(0x80 | scalar >> 6 & 63); byte(0x80 | scalar & 63);
+      } else {
+        byte(0xf0 | scalar >> 18); byte(0x80 | scalar >> 12 & 63);
+        byte(0x80 | scalar >> 6 & 63); byte(0x80 | scalar & 63); i++;
+      }
+    }
+  }
+  if (!decoded || quartet.length) return null;
+  if (!base64 && used) {
+    emit(used === 1 ? alphabet[value >> 2] + alphabet[(value & 3) << 4] + '=='
+      : alphabet[value >> 10] + alphabet[(value >> 4) & 63] + alphabet[(value & 15) << 2] + '=');
+  }
+  if (chunk) parts.push(chunk);
+  return parts.join('');
 }

@@ -588,7 +588,7 @@ impl<'a> RenderState<'a> {
         if data_images::is_data_uri(trimmed) {
             // An embedded payload is admitted only in image context. Keep it
             // out of the ordinary URL cache, which would retain a full copy.
-            return data_images::push(trimmed, opts, out);
+            return push_html_source_data_image(trimmed, opts, out);
         }
         let Some(src) = self.safe_url_cached(url, UrlContext::Image) else {
             return false;
@@ -1105,6 +1105,17 @@ fn render_inlines_body(
             }
         }
     }
+}
+
+/// Use the same image-only admission for rendering and saved workspace bindings.
+/// A rejected explicit data-image override must remain rejected after editing.
+pub(crate) fn push_html_source_data_image(
+    dest: &str,
+    opts: &HtmlOptions,
+    out: &mut String,
+) -> bool {
+    let dest = dest.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+    data_images::is_data_uri(dest) && data_images::push(dest, opts, out)
 }
 
 pub(crate) fn push_html_image_asset_data_uri(

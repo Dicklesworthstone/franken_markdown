@@ -4,8 +4,9 @@ use crate::HtmlOptions;
 use std::collections::BTreeSet;
 
 /// Encode with the actual HTML resource resolver (including SVG sanitization),
-/// preserving its destination trimming and duplicate-selection rules. Keep even
-/// unused assets: a later edit can add a reference without ambient file access.
+/// preserving its destination trimming and duplicate-selection rules. Explicit
+/// data-image rejection is a null binding: omitting it would resurrect source
+/// bytes after an edit. Keep unused assets for later references without I/O.
 pub(super) fn push_manifest(opts: &HtmlOptions, out: &mut String) {
     if opts.image_assets.is_empty() {
         return;
@@ -19,7 +20,15 @@ pub(super) fn push_manifest(opts: &HtmlOptions, out: &mut String) {
             continue;
         }
         let mut uri = String::new();
-        if !crate::html::push_html_image_asset_data_uri(key, opts, &mut uri) {
+        let data_source = key
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"));
+        let resolved = if data_source {
+            crate::html::push_html_source_data_image(key, opts, &mut uri)
+        } else {
+            crate::html::push_html_image_asset_data_uri(key, opts, &mut uri)
+        };
+        if !resolved && !data_source {
             continue;
         }
         if !first {
@@ -29,7 +38,11 @@ pub(super) fn push_manifest(opts: &HtmlOptions, out: &mut String) {
         out.push('[');
         super::push_source_json(key, out);
         out.push(',');
-        super::push_source_json(&uri, out);
+        if resolved {
+            super::push_source_json(&uri, out);
+        } else {
+            out.push_str("null");
+        }
         out.push(']');
     }
     out.push_str("]</script>\n");
@@ -112,5 +125,54 @@ mod tests {
         let mut manifest = String::new();
         push_manifest(&opts, &mut manifest);
         assert!(manifest.ends_with("[]</script>\n"));
+    }
+
+    #[test]
+    fn rejected_data_image_override_is_retained_even_with_a_later_valid_duplicate() {
+        let key = format!(
+            "data:image/svg+xml;base64,{}",
+            crate::html::base64_encode(&svg())
+        );
+        for later in [false, true] {
+            let mut image_assets = vec![PdfImageAsset::new(&key, Vec::new())];
+            if later {
+                image_assets.push(PdfImageAsset::new(&key, svg()));
+            }
+            let opts = HtmlOptions {
+                image_assets,
+                ..HtmlOptions::default()
+            };
+            let doc = crate::parse_markdown(&format!("![Kept alt]({key})"));
+            assert_eq!(
+                crate::html::render_fragment(&doc.blocks, &opts),
+                "<p>Kept alt</p>\n"
+            );
+            let mut manifest = String::new();
+            push_manifest(&opts, &mut manifest);
+            assert_eq!(
+                manifest,
+                format!(
+                    "<script type=\"application/json\" id=\"fmd-image-assets\">[[\"{key}\",null]]</script>\n"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn non_image_data_destinations_cannot_gain_permission_from_manifest_encoding() {
+        let key = "data:text/html;base64,PHN2Zy8+";
+        let opts = HtmlOptions {
+            image_assets: vec![PdfImageAsset::new(key, svg())],
+            ..HtmlOptions::default()
+        };
+        let doc = crate::parse_markdown(&format!("![Kept alt]({key})"));
+        assert_eq!(
+            crate::html::render_fragment(&doc.blocks, &opts),
+            "<p>Kept alt</p>\n"
+        );
+        let mut manifest = String::new();
+        push_manifest(&opts, &mut manifest);
+        assert!(manifest.contains(&format!("[\"{key}\",null]")));
+        assert!(!manifest.contains("data:image/svg+xml"));
     }
 }

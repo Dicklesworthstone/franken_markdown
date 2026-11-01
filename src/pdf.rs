@@ -52,6 +52,7 @@ mod inline_code;
 mod inline_image;
 mod inline_math_fit;
 mod joint_pagination;
+mod jpeg_color;
 mod jpeg_orientation;
 mod list_geometry;
 #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
@@ -455,7 +456,7 @@ struct PdfImageData {
 impl PdfImageData {
     fn orientation(&self) -> jpeg_orientation::Orientation {
         match self.filter {
-            PdfImageStreamFilter::Dct(orientation) => orientation,
+            PdfImageStreamFilter::Dct { orientation, .. } => orientation,
             _ => jpeg_orientation::Orientation::Normal,
         }
     }
@@ -1523,6 +1524,7 @@ enum SvgClipPathUnits {
 enum PdfImageColor {
     Gray,
     Rgb,
+    Cmyk,
 }
 
 impl PdfImageColor {
@@ -1530,6 +1532,7 @@ impl PdfImageColor {
         match self {
             Self::Gray => "/DeviceGray",
             Self::Rgb => "/DeviceRGB",
+            Self::Cmyk => "/DeviceCMYK",
         }
     }
 
@@ -1537,6 +1540,7 @@ impl PdfImageColor {
         match self {
             Self::Gray => 1,
             Self::Rgb => 3,
+            Self::Cmyk => 4,
         }
     }
 }
@@ -1552,7 +1556,10 @@ enum PdfImageStreamFilter {
     FlatePngPredictor,
     /// A raw baseline/extended/progressive JPEG stream (`/DCTDecode`); the PDF
     /// reader decodes the JPEG directly, so the bytes pass through untouched.
-    Dct(jpeg_orientation::Orientation),
+    Dct {
+        orientation: jpeg_orientation::Orientation,
+        cmyk: Option<jpeg_color::Encoding>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -5329,20 +5336,23 @@ struct JpegHeader {
     width: u32,
     height: u32,
     color: PdfImageColor,
+    cmyk: Option<jpeg_color::Encoding>,
 }
 
 /// Walk the JPEG marker segments up to start-of-scan and validate that the
 /// stream is a PDF-embeddable Huffman baseline/extended/progressive JPEG
-/// (SOF0/SOF1/SOF2) with 8-bit precision and 1 (gray) or 3 (YCbCr) components.
-/// Anything else — lossless, arithmetic-coded, hierarchical, or 4-component
-/// Adobe CMYK/YCCK with its inverted-polarity ambiguity — fails closed so the
-/// image degrades to alt text instead of embedding bytes readers mis-render.
+/// (SOF0/SOF1/SOF2) with 8-bit precision and grayscale, RGB/YCbCr, or explicit
+/// Adobe CMYK/YCCK components. Four-channel images require unambiguous APP14
+/// metadata; missing or conflicting conventions retain the alt-text fallback.
+/// Lossless, arithmetic-coded and hierarchical frames remain unsupported.
 fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
     if !bytes.starts_with(&[0xFF, 0xD8]) {
         return None;
     }
     let mut pos = 2usize;
     let mut header: Option<JpegHeader> = None;
+    let mut metadata = jpeg_color::Metadata::default();
+    let mut cmyk_frame: Option<jpeg_color::Frame> = None;
     loop {
         // Marker alignment: skip fill bytes (0xFF padding before a marker).
         if *bytes.get(pos)? != 0xFF {
@@ -5359,7 +5369,16 @@ fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
             // EOI before any scan: no image data.
             0xD9 => return None,
             // SOS: entropy-coded data follows; the frame header must exist.
-            0xDA => return header,
+            0xDA => {
+                let mut header = header?;
+                if let Some(frame) = cmyk_frame {
+                    if !frame.scan_is_valid(bytes, pos) {
+                        return None;
+                    }
+                    header.cmyk = Some(metadata.encoding()?);
+                }
+                return Some(header);
+            }
             _ => {}
         }
         let len = usize::from(u16::from_be_bytes([*bytes.get(pos)?, *bytes.get(pos + 1)?]));
@@ -5371,6 +5390,7 @@ fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
         if seg_end > bytes.len() {
             return None;
         }
+        metadata.observe(marker, &bytes[seg_start..seg_end]);
         match marker {
             // Huffman baseline / extended sequential / progressive frames.
             0xC0..=0xC2 => {
@@ -5389,12 +5409,17 @@ fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
                 let color = match ncomp {
                     1 => PdfImageColor::Gray,
                     3 => PdfImageColor::Rgb,
+                    4 => {
+                        cmyk_frame = Some(jpeg_color::Frame::parse(marker, seg)?);
+                        PdfImageColor::Cmyk
+                    }
                     _ => return None,
                 };
                 header = Some(JpegHeader {
                     width,
                     height,
                     color,
+                    cmyk: None,
                 });
             }
             // Any other SOF flavor (lossless, arithmetic, differential, JPEG-LS)
@@ -5433,7 +5458,10 @@ fn parse_jpeg_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
         vector: None,
         color: header.color,
         data: bytes.to_vec(),
-        filter: PdfImageStreamFilter::Dct(jpeg_orientation::Orientation::from_jpeg(bytes)),
+        filter: PdfImageStreamFilter::Dct {
+            orientation: jpeg_orientation::Orientation::from_jpeg(bytes),
+            cmyk: header.cmyk,
+        },
         smask: None,
     })
 }
@@ -22792,6 +22820,22 @@ fn serialize(
         .map(|(idx, image)| (image.key.as_str(), idx))
         .collect();
 
+    // The archival path currently qualifies device colours only with sRGB.
+    // A used CMYK image needs a matching source profile; neither dropping the
+    // figure nor identifying this uncalibrated result as PDF/A is acceptable.
+    // Check final resources so unused mappings and skipped chrome do not fail.
+    if pdf_a.mode.is_a2b()
+        && images
+            .iter()
+            .any(|image| image.color == PdfImageColor::Cmyk)
+    {
+        return Err(crate::pdfa::pdfa_reject(
+            "pdf_a_cmyk_image",
+            "PDF/A-2b currently uses an sRGB output profile and cannot include CMYK JPEG images; \
+             convert the image to RGB before export or omit --pdf-a",
+        ));
+    }
+
     let serialized = serialize_pages(
         lines,
         faces,
@@ -33583,7 +33627,7 @@ fn build_pdf(
         // unfiltered samples and needs no predictor.
         let filter_name = match image.filter {
             PdfImageStreamFilter::Flate | PdfImageStreamFilter::FlatePngPredictor => "/FlateDecode",
-            PdfImageStreamFilter::Dct(_) => "/DCTDecode",
+            PdfImageStreamFilter::Dct { .. } => "/DCTDecode",
         };
         append_pdf_object_header(&mut buf, image_obj(k));
         buf.extend_from_slice(b"<< /Type /XObject /Subtype /Image /Width ");
@@ -33600,6 +33644,13 @@ fn build_pdf(
             buf.extend_from_slice(b" /BitsPerComponent 8 /Columns ");
             append_decimal_usize(&mut buf, image.width_px as usize);
             buf.extend_from_slice(b" >>");
+        }
+        if let PdfImageStreamFilter::Dct {
+            cmyk: Some(encoding),
+            ..
+        } = image.filter
+        {
+            buf.extend_from_slice(encoding.pdf_parameters());
         }
         if let Some(smask_ref) = smask_for_image.get(k).copied().flatten() {
             buf.extend_from_slice(b" /SMask ");

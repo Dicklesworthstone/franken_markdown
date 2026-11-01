@@ -1013,6 +1013,13 @@ Honest about what the renderer does not do yet.
   displayed dimensions while PDF embeds the original JPEG bytes without
   recompression. Missing or malformed orientation metadata retains ordinary
   unrotated placement.
+- **Print-colour JPEGs render in PDF.** Baseline and progressive Adobe CMYK
+  and YCCK images retain their original JPEG bytes, correct colour polarity,
+  and EXIF orientation, including images inside SVGs and running page bands.
+  Four-channel JPEGs with missing or conflicting colour metadata retain the
+  existing image fallback. PDF/A-2b export currently uses an sRGB output profile
+  and rejects used CMYK images with `pdf_a_cmyk_image`; convert those images to
+  RGB before archival export. Unused image mappings do not cause rejection.
 - **GIF images retain their animation in HTML, SVG and EPUB.** File renders,
   batch jobs and books load local `.gif` assets, and explicit image mappings
   also accept GIF87a/GIF89a bytes under extensionless destination keys. HTML,

@@ -174,6 +174,21 @@ test('GIF authoring preserves original animation and interlaced bytes in native 
   }
 });
 
+test('admitted SVG imports keep vector bytes and .svg identities through native HTML, PDF and reopening', () => {
+  // XML admission and actual SVG decoding are covered by the Chromium gate;
+  // this test isolates the production resource transaction and ABI ownership.
+  const bytes = encoder.encode('\ufeff<svg xmlns="http://www.w3.org/2000/svg" width="160" height="80"><path d="M0 0L160 80" stroke="blue"/></svg>');
+  const s = setup(), insertion = pure.fmdNativeImageImport([{alt:'chart.png', mime:'image/svg+xml', bytes}], s.renderer);
+  assert.match(insertion.markdown, /!\[chart\.png\]\(fmd-import\/[a-f0-9]{32}\.svg\)/);
+  const original = [...bytes]; bytes.fill(0);
+  insertion.transaction.commit();
+  const expected = {destination:s.payload.images[1].destination, bytes:original};
+  assert.deepEqual(s.assets('html')[1], expected);
+  assert.deepEqual(s.assets('pdf')[1], expected);
+  assert.deepEqual([...Buffer.from(s.payload.images[1].bytes,'base64')], original);
+  assert.deepEqual(setup(JSON.parse(JSON.stringify(s.payload))).assets('pdf')[1], expected);
+});
+
 test('file bytes, size and alt are captured before asynchronous decoding and native publication', async () => {
   const bytes=Uint8Array.from(png);const f={name:'before.png',size:bytes.length,async arrayBuffer(){return bytes.buffer;}};
   const images=await pure.fmdReadImageImport([f],async()=>{bytes.fill(0);f.name='after';f.size=1;},()=>true);

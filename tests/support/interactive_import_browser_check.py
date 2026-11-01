@@ -2,7 +2,7 @@
 
 Usage: python tests/support/interactive_import_browser_check.py document.html
 Needs Playwright/Chromium on the verification host only. Fixtures are real PNG,
-progressive JPEG and GIF bytes; imports use the actual file input.
+progressive JPEG, GIF and SVG bytes; imports use the actual file input.
 """
 import argparse
 import base64
@@ -150,6 +150,28 @@ with sync_playwright() as p:
     check(save(page, 'btn-save-markdown') == original.encode(), 'GIF Markdown download loses original animation bytes')
     reopened_gifs = load(save(page, 'btn-save-html').decode())
     check(text(reopened_gifs) == original, 'GIF source changes through save/reopen')
+
+    page = load()
+    edit(page, 'Vector source')
+    vector = ('\ufeff<?xml version="1.0" encoding="UTF-8"?>\n'
+              '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="80">'
+              '<defs><linearGradient id="paint"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs>'
+              '<rect width="160" height="80" fill="url(#paint)"/></svg>').encode()
+    message = insert(page, [upload('vector.png', vector, 'image/png')], chooser=True)
+    check(message.startswith('Inserted 1 image'), 'valid SVG import failed: ' + message)
+    vector_source = text(page)
+    check('data:image/svg+xml;base64,' + base64.b64encode(vector).decode() in vector_source,
+          'lightweight SVG insertion changed or rasterized original bytes')
+    page.evaluate("window.dispatchEvent(new Event('beforeprint'))")
+    page.wait_for_function('document.querySelector("main#preview-pane img")?.naturalWidth === 160')
+    check(True, 'lightweight live preview decodes the imported SVG')
+    check(save(page, 'btn-save-markdown') == vector_source.encode(), 'SVG source download changed the portable vector payload')
+    reopened_vector = load(save(page, 'btn-save-html').decode())
+    check(text(reopened_vector) == vector_source, 'lightweight SVG source changes through save/reopen')
+    edit(reopened_vector, vector_source + '\n\nAfter SVG reopen')
+    reopened_vector.evaluate("window.dispatchEvent(new Event('beforeprint'))")
+    reopened_vector.wait_for_function('document.querySelector("main#preview-pane img")?.naturalWidth === 160')
+    check(True, 'SVG remains available after subsequent editing and print refresh')
 
     page = load()
     edit(page, 'Keep unchanged')

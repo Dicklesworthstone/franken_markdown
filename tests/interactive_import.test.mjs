@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 import vm from 'node:vm';
 import {deflateSync} from 'node:zlib';
-const context = vm.createContext({btoa, Uint8Array, Map});
+const context = vm.createContext({btoa, Uint8Array, Map, TextDecoder});
 for (const name of ['interactive_renderer.js', 'interactive_import.js']) {
   vm.runInContext(readFileSync(new URL('../src/' + name, import.meta.url), 'utf8'), context);
 }
@@ -122,10 +122,12 @@ test('malformed JPEG marker lengths, frame counts and absent frames are refused'
     Buffer.from([255,216,255,255,255,255])]) assert.throws(() => info(bytes));
   const bytes = jpeg(); bytes[17] = 2; assert.throws(() => info(bytes));
 });
-test('file type and extension cannot authorize HTML, SVG or unsupported formats', async () => {
+test('file type and extension cannot authorize HTML, active SVG or unsupported formats', async () => {
+  let decoded = 0;
   for (const bytes of [Buffer.from('<svg onload="alert(1)"/>'),Buffer.from('<html>bad</html>'),Buffer.from('RIFFxxxxWEBP')]) {
-    await assert.rejects(prepare([file('claimed.png',bytes,{type:'image/png'})],verify,current), /PNG, JPEG or GIF/);
+    await assert.rejects(prepare([file('claimed.png',bytes,{type:'image/png'})],async () => decoded++,current), /SVG/);
   }
+  assert.equal(decoded, 0);
 });
 test('one and many chunk base64 encodings round-trip exactly', () => {
   for (const length of [0,1,2,3,16383,16384,16385,65537]) {

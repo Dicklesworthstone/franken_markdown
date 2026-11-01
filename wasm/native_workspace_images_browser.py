@@ -56,7 +56,8 @@ export function renderHtmlConfiguredAdvanced(...a) {
   const resourceImages = images(a[13], a[14], a[15]).filter(([key]) => a[0].includes(key));
   return result('<html><head></head><body><pre id="source">' + escape(a[0]) + '</pre>'
     + resourceImages.map(([key, data]) => '<img alt="' + escape(key) + '" src="data:'
-      + (atob(data).startsWith('GIF8') ? 'image/gif' : 'image/png') + ';base64,' + data + '">').join('')
+      + (atob(data).startsWith('GIF8') ? 'image/gif' : atob(data).charCodeAt(0) === 137 ? 'image/png'
+        : atob(data).charCodeAt(0) === 255 ? 'image/jpeg' : 'image/svg+xml') + ';base64,' + data + '">').join('')
     + '</body></html>', 'text/html');
 }
 function pdf(a, page) {
@@ -84,7 +85,7 @@ export function renderPdfConfiguredPage(...a) { return pdf(a, Array.from(a.pop()
             + '"><title>Image lifecycle adapter</title><style>textarea{width:90%;height:180px}button{padding:8px}'
             + '.view-read #editor-pane{display:none}</style></head><body>'
             + '<header class="fmd-app-header">' + ''.join('<button id="btn-' + b + '">' + b + '</button>' for b in buttons)
-            + '<input id="fmd-image-picker" type="file" accept="image/png,image/jpeg,image/gif" multiple hidden>'
+            + '<input id="fmd-image-picker" type="file" accept="image/png,image/jpeg,image/gif,image/svg+xml" multiple hidden>'
             + '<span id="view-mode-icon"></span><span id="view-mode-label"></span></header>'
             + '<div id="fmd-app-body" class="view-split"><section id="editor-pane"><div class="fmd-pane-header">'
             + '<span id="source-line-count"></span><span id="fmd-save-status"></span></div>'
@@ -440,6 +441,94 @@ async def run(args):
         check(attached_receipt['weights'] == [555, 0, 0, 0, 0]
               and attached_receipt['page'] == [842, 595, 36, 40, 44, 48],
               'reopened attachment publication retains original typography and geometry')
+
+        # SVG takes the same source/resource transaction as raster imports.
+        # The adapter records exact bytes; Chromium does actual SVG decoding.
+        vector = ('\ufeff<?xml version="1.0" encoding="UTF-8"?>\n'
+                  '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="80" viewBox="0 0 160 80">'
+                  '<defs><linearGradient id="paint"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs>'
+                  '<rect width="160" height="80" fill="url(#paint)"/><path d="M10 60L50 20L150 10" fill="none" stroke="white"/></svg>').encode()
+        vector_file = artifacts / 'vector.initial.html'
+        vector_file.write_text(fixture(png, background=True, markdown='Original vector draft'))
+        vector_page = await open_page(vector_file)
+        await select(vector_page, [{'name':'chart.png','mimeType':'image/png','buffer':vector},
+                                   {'name':'photo.png','mimeType':'image/png','buffer':png}])
+        vector_assets = (await manifest(vector_page))['images']
+        vector_source = await vector_page.locator('#fmd-editor').input_value()
+        check(len(vector_assets) == 3 and vector_assets[1]['destination'].endswith('.svg')
+              and vector_assets[2]['destination'].endswith('.png'),
+              'mixed SVG/raster insertion uses byte-determined formats and independent destinations')
+        check(base64.b64decode(vector_assets[1]['bytes']) == vector and 'data:image/' not in vector_source,
+              'SVG insertion retains exact vector bytes behind a short native source reference')
+        await vector_page.wait_for_function('''() => {
+          const images=document.querySelector('#fmd-content iframe')?.contentDocument?.images;
+          return images?.length===2 && images[0].naturalWidth===160 && images[0].naturalHeight===80;
+        }''')
+        check(True, 'SVG vector image decodes in the native worker preview')
+        await vector_page.locator('#fmd-editor').focus()
+        await vector_page.keyboard.press('Control+z')
+        check(await vector_page.locator('#fmd-editor').input_value() == 'Original vector draft',
+              'one undo reverses the entire mixed SVG/raster insertion')
+        check((await manifest(vector_page))['images'] == vector_assets,
+              'source undo retains unused vector resources for redo')
+        await vector_page.keyboard.press('Control+Shift+z')
+        check(await vector_page.locator('#fmd-editor').input_value() == vector_source,
+              'redo restores short SVG references without rebinding resources')
+
+        vector_key = 'charts/日本語.svg'
+        vector_raw = '\ufeff# Existing chart\r\n\r\n![Chart](' + vector_key + ')\r\n![Again](' + vector_key + ')\r'
+        vector_attachment = artifacts / 'vector-attachment.initial.html'
+        vector_attachment.write_text(fixture(png, background=True, markdown=vector_raw))
+        vector_owner = await open_page(vector_attachment)
+        vector_baseline = await manifest(vector_owner)
+        await vector_owner.locator('#btn-document-images').click()
+        await vector_owner.locator('#fmd-image-binding-destination').fill(vector_key)
+        await vector_owner.locator('#fmd-image-binding-file').set_input_files(
+            {'name':'misleading.jpg','mimeType':'image/jpeg','buffer':vector})
+        await vector_owner.locator('#btn-attach-document-image').click()
+        await vector_owner.wait_for_function("() => document.querySelector('#fmd-document-images').getAttribute('aria-busy')==='false'")
+        bound = await manifest(vector_owner)
+        check(bound['images'][1]['destination'] == vector_key and base64.b64decode(bound['images'][1]['bytes']) == vector,
+              'SVG attachment preserves the explicit existing destination and original vector stream')
+        check(bound['options'] == vector_baseline['options'] and bound['fonts'] == vector_baseline['fonts']
+              and json.loads(await vector_owner.locator('#fmd-raw-source').text_content()) == vector_raw,
+              'SVG attachment leaves raw source, document settings and embedded font pins intact')
+        unsafe = b'<svg xmlns="http://www.w3.org/2000/svg" width="160" height="80"><image href="https://example.invalid/image.png"/></svg>'
+        await vector_owner.locator('#fmd-image-replacement').set_input_files(
+            {'name':'unsafe.svg','mimeType':'image/svg+xml','buffer':unsafe})
+        await vector_owner.locator('#btn-replace-document-image').click()
+        await vector_owner.wait_for_function("() => document.querySelector('#fmd-document-images').getAttribute('aria-busy')==='false'")
+        check(await manifest(vector_owner) == bound and 'not changed' in await vector_owner.locator('#fmd-images-status').text_content(),
+              'external-resource SVG replacement is rejected without changing committed source or resources')
+        updated_vector = vector.replace(b'width="160" height="80" viewBox=', b'width="192" height="96" viewBox=')
+        await vector_owner.locator('#fmd-image-replacement').set_input_files(
+            {'name':'replacement.svg','mimeType':'image/svg+xml','buffer':updated_vector})
+        await vector_owner.locator('#btn-replace-document-image').click()
+        await vector_owner.wait_for_function("() => document.querySelector('#fmd-document-images').getAttribute('aria-busy')==='false'")
+        replaced = await manifest(vector_owner)
+        check(replaced['images'][1]['destination'] == vector_key
+              and base64.b64decode(replaced['images'][1]['bytes']) == updated_vector,
+              'valid SVG replacement remains retryable after rejection and keeps its existing destination')
+        await vector_owner.wait_for_function('''() => {
+          const image=document.querySelector('#fmd-content iframe')?.contentDocument?.images?.[0];
+          return image?.naturalWidth===192 && image.naturalHeight===96;
+        }''')
+        check(True, 'replacement vector geometry appears in the actual image decoder')
+        await vector_owner.locator('#btn-close-document-images').click()
+        vector_markdown = await download(vector_owner, '#btn-save-markdown', 'vector-attachment.md')
+        check(vector_markdown.read_bytes() == vector_raw.encode(), 'SVG attachment/replacement preserves exact BOM and mixed line endings in Markdown download')
+        vector_saved = await download(vector_owner, '#btn-save-html', 'vector-attachment.workspace.html')
+        vector_reopened = await open_page(vector_saved)
+        check((await manifest(vector_reopened))['images'] == replaced['images']
+              and json.loads(await vector_reopened.locator('#fmd-raw-source').text_content()) == vector_raw,
+              'SVG resources and exact source survive actual Save HTML and file reopening')
+        vector_pdf = await download(vector_reopened, '#btn-export-pdf', 'vector-attachment.pdf-adapter')
+        vector_receipt = json.loads(vector_pdf.read_bytes().split(b'\n', 1)[1])
+        check(vector_receipt['source'] == vector_raw
+              and vector_receipt['images'] == [[image['destination'], image['bytes']] for image in replaced['images']],
+              'reopened native PDF dispatch receives unchanged vector bytes and exact source')
+        check(vector_receipt['weights'] == [555, 0, 0, 0, 0] and vector_receipt['page'] == [842, 595, 36, 40, 44, 48],
+              'SVG publication retains configured typography and page geometry')
         check(not requests, 'zero HTTP(S) requests')
         check(not errors, 'zero uncaught browser errors')
         version = browser.version

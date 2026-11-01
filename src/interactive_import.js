@@ -1,4 +1,4 @@
-// Explicit local PNG/JPEG/GIF authoring for standalone workspaces. No fetch,
+// Explicit local PNG/JPEG/GIF/SVG authoring for standalone workspaces. No fetch,
 // ambient path access, dependency or persistent browser storage is involved.
 const FMD_IMAGE_IMPORT_LIMITS = Object.freeze({
   files: 8, fileBytes: 8 * 1024 * 1024, batchBytes: 16 * 1024 * 1024,
@@ -11,6 +11,249 @@ function fmdImportDimensions(width, height) {
       width > limit.dimension || height > limit.dimension || width * height > limit.pixels) {
     throw Error('Image dimensions exceed 16,384 per side or 24 million pixels');
   }
+}
+
+// SVG admission is an offline resource policy, not another SVG renderer. The
+// browser's inert XML parser checks structure; existing native and browser
+// renderers still interpret geometry, paint and text. Never insert these nodes
+// into the editor DOM or rewrite/rasterize the original vector bytes.
+function fmdImportSvgLength(value) {
+  const match = /^\s*([+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\s*(px|in|cm|mm|q|pt|pc)?\s*$/i.exec(value);
+  if (!match) throw Error('SVG dimensions must use positive numbers or absolute CSS lengths');
+  // Match native svg_absolute_length_multiplier: CSS pixels are 96 per inch.
+  const units = {px: 1, in: 96, cm: 96 / 2.54, mm: 96 / 25.4, q: 96 / 101.6, pt: 96 / 72, pc: 16};
+  const size = Number(match[1]) * units[(match[2] || 'px').toLowerCase()];
+  if (!Number.isFinite(size) || size <= 0 || size > FMD_IMAGE_IMPORT_LIMITS.dimension) {
+    throw Error('SVG dimensions exceed 16,384 per side or are not positive');
+  }
+  return size;
+}
+
+const fmdImportSvgUrlTrim = value => value.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
+
+function fmdImportSvgStyle(value) {
+  // Decode CSS escapes before checking resource-bearing tokens. Checking raw
+  // "url"/"@import" strings misses legal CSS such as u\\72l and @\\69mport.
+  // https://www.w3.org/TR/css-syntax-3/#consume-escaped-code-point
+  const parts = [];
+  let position = 0, quote = null;
+  for (let i = 0; i < value.length; i++) {
+    const character = value[i];
+    if (character === '\\') { i++; continue; }
+    if (quote) {
+      if (character === quote || /[\n\r\f]/.test(character)) quote = null;
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === '/' && value[i + 1] === '*') {
+      const end = value.indexOf('*/', i + 2);
+      if (end < 0) throw Error('SVG contains an incomplete style comment');
+      // In an unquoted url(...) token, /*...*/ is URL data, not a CSS
+      // comment. Retain a marker until resource checks finish; stripping it
+      // could turn an external "/*path*/#id" into an apparent local "#id".
+      parts.push(value.slice(position, i), '/*fmd-comment*/'); position = end + 2; i = end + 1;
+    }
+  }
+  parts.push(value.slice(position));
+  const text = parts.join('').replace(/\\(?:([0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?|([\s\S]))/gi,
+    (all, hex, character) => {
+      // Escaped quotes are URL data, not string delimiters. Preserve that
+      // distinction so url(\\27#paint\\27) cannot masquerade as url('#paint').
+      if (!hex) return character === '"' || character === "'" ? all : /[\n\r\f]/.test(character) ? '' : character;
+      const cp = parseInt(hex, 16);
+      if (cp === 34 || cp === 39) return all;
+      return !cp || cp > 0x10ffff || cp >= 0xd800 && cp <= 0xdfff ? '\ufffd' : String.fromCodePoint(cp);
+    });
+  if (/@|(?:^|[^\w-])(?:image|image-set|-webkit-image-set|src)\s*\(/i.test(text)) {
+    throw Error('SVG styles must not import stylesheets, fonts or external images');
+  }
+  const references = /\burl\s*\(/gi;
+  while (references.exec(text)) {
+    const end = text.indexOf(')', references.lastIndex);
+    if (end < 0) throw Error('SVG contains an incomplete style URL');
+    const target = fmdImportSvgUrlTrim(fmdImportSvgUrlTrim(text.slice(references.lastIndex, end))
+      .replace(/^(?:"([^"]*)"|'([^']*)')$/, (_all, double, single) => double ?? single));
+    if (!/^#[^\s"'()<>\\]+$/u.test(target)) throw Error('SVG paint and filter references must stay inside this image');
+    references.lastIndex = end + 1;
+  }
+  // CSS can override an SVG root's intrinsic size. Bound every sizing
+  // declaration conservatively before Image.decode; do not evaluate var/calc
+  // expressions or rely on the selected file's untrusted root attributes alone.
+  const bounds = {width: 0, height: 0};
+  const sizing = text.replaceAll('/*fmd-comment*/', '');
+  if (/(?:^|[;{\s])(?:aspect-ratio|(?:min-|max-)?(?:inline|block)-size|contain-intrinsic[^:;{}]*)\s*:/i.test(sizing)) {
+    throw Error('SVG styles require explicit bounded width and height');
+  }
+  for (const match of sizing.matchAll(/(?:^|[;{\s])(?:min-|max-)?(width|height)\s*:\s*([^;{}]+)/gi)) {
+    const size = match[2].trim().replace(/\s*!important\s*$/i, '');
+    if (/^(?:auto|none|initial|inherit|unset)$/i.test(size)) continue;
+    if (/^(?:\d+(?:\.\d*)?|\.\d+)%$/.test(size) && parseFloat(size) <= 100) continue;
+    const length = fmdImportSvgLength(size);
+    bounds[match[1].toLowerCase()] = Math.max(bounds[match[1].toLowerCase()], length);
+  }
+  return bounds;
+}
+
+function fmdImportSvgResource(value, element) {
+  // URL parsing removes ASCII whitespace, not NBSP or other Unicode spaces.
+  // Treating "\u00a0#id" as a fragment would authorize an external relative URL.
+  const target = fmdImportSvgUrlTrim(value);
+  if (/^#[^\s"'<>\\]+$/u.test(target) && !['image', 'feimage'].includes(element)) return null;
+  // Hyperlinks are not fetched while decoding an image. Preserve ordinary
+  // native PDF links, but never admit active, local-file or embedded-page URLs.
+  if (element === 'a' && /^(?:https?:\/\/|mailto:)[^\s\u0000-\u001f\u007f]+$/iu.test(target)) return null;
+  const match = /^(data:image\/(?:png|jpeg|gif));base64,([A-Za-z0-9+/]+={0,2})$/.exec(target);
+  if (!['image', 'feimage'].includes(element) || !match || match[2].length % 4 !== 0) {
+    throw Error('SVG resources must be internal fragments or embedded PNG, JPEG or GIF images');
+  }
+  const binary = atob(match[2]), bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+  const info = fmdImportImageInfo(bytes);
+  if (fmdImportBase64(bytes) !== match[2] || 'data:' + info.mime !== match[1]) {
+    throw Error('SVG embedded image bytes do not match their declared format');
+  }
+  return {pixels: info.width * info.height, bytes: bytes.length};
+}
+
+function fmdImportSvgInfo(bytes) {
+  let source;
+  try { source = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes); }
+  catch { throw Error('SVG images must contain valid UTF-8'); }
+  // Refuse DTD/entity processing before parsing, including expansion attacks.
+  // Comments and CDATA are inert text and may legitimately describe a DTD.
+  let position = 0, open, tags = 0;
+  while ((open = source.indexOf('<', position)) !== -1) {
+    const comment = source.startsWith('<!--', open), cdata = source.startsWith('<![CDATA[', open);
+    if (comment || cdata) {
+      const end = source.indexOf(comment ? '-->' : ']]>', open + (comment ? 4 : 9));
+      if (end < 0) throw Error('SVG contains an incomplete XML comment or CDATA section');
+      position = end + 3;
+    } else {
+      if (/^<!(?:DOCTYPE|ENTITY)\b/i.test(source.slice(open, open + 12))) throw Error('SVG document types and entity declarations are not supported');
+      if (++tags > 32768) throw Error('SVG exceeds the 32,768-node import limit');
+      position = open + 1;
+    }
+  }
+  if (typeof DOMParser !== 'function') throw Error('SVG import requires the browser XML parser');
+  const parsed = new DOMParser().parseFromString(source, 'image/svg+xml'), root = parsed.documentElement;
+  const svgNamespace = 'http://www.w3.org/2000/svg';
+  if (!root || root.localName !== 'svg' || root.namespaceURI !== svgNamespace
+      || parsed.getElementsByTagName('parsererror').length || parsed.doctype) {
+    throw Error('Choose a well-formed SVG image with an SVG namespace');
+  }
+  const viewBox = root.getAttribute('viewBox');
+  let view = null;
+  if (viewBox !== null) {
+    const tokens = viewBox.trim().split(/[\s,]+/);
+    if (tokens.length !== 4 || tokens.some(value => !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value))) {
+      throw Error('SVG viewBox must contain four finite numbers');
+    }
+    view = tokens.map(Number);
+    if (view.some(value => !Number.isFinite(value)) || view[2] <= 0 || view[3] <= 0) throw Error('SVG viewBox dimensions must be positive');
+  }
+  const dimension = (name, index) => {
+    const value = root.getAttribute(name)?.trim();
+    if (!value || /^(?:\d+(?:\.\d*)?|\.\d+)%$/.test(value) && parseFloat(value) <= 100) {
+      if (!view) throw Error('SVG requires explicit width and height or a positive viewBox');
+      return fmdImportSvgLength(String(view[index]));
+    }
+    return fmdImportSvgLength(value);
+  };
+  const width = dimension('width', 2), height = dimension('height', 3);
+  fmdImportDimensions(Math.ceil(width), Math.ceil(height));
+  // Account for the default browser image viewport as well as native geometry.
+  let widest = Math.max(width, 300), tallest = Math.max(height, 150), count = 0;
+  let rasterPixels = 0, rasterBytes = 0;
+  const ids = new Map(), references = new Map(), pixels = new Map();
+  const stack = [{node: parsed, depth: 0, metadata: false}];
+  while (stack.length) {
+    const {node, depth, metadata} = stack.pop();
+    if (++count > 32768 || depth > 128) throw Error('SVG exceeds the 32,768-node or 128-level import limit');
+    if (node.nodeType === 7 || node.nodeType === 10) throw Error('SVG processing instructions and document types are not supported');
+    let insideMetadata = metadata;
+    if (node.nodeType === 1) {
+      const name = node.localName.toLowerCase();
+      insideMetadata ||= name === 'metadata' && node.namespaceURI === svgNamespace;
+      if (!insideMetadata && node.namespaceURI !== svgNamespace
+          || ['script', 'handler', 'listener', 'foreignobject', 'iframe', 'object', 'embed', 'audio', 'video', 'link',
+            'animate', 'animatemotion', 'animatetransform', 'set', 'discard'].includes(name)) {
+        throw Error('SVG import supports static vector images without scripts, animation or foreign content');
+      }
+      const id = node.getAttribute('id');
+      if (id && !ids.has(id)) ids.set(id, node); // Match first-in-document ID ownership.
+      const href = node.getAttribute('href') ?? node.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+      if (name !== 'a' && href !== null && fmdImportSvgUrlTrim(href).startsWith('#')) {
+        try { references.set(node, decodeURIComponent(fmdImportSvgUrlTrim(href).slice(1))); }
+        catch { throw Error('SVG contains an invalid local reference'); }
+      }
+      const checkStyle = value => {
+        const bounds = fmdImportSvgStyle(value);
+        widest = Math.max(widest, bounds.width); tallest = Math.max(tallest, bounds.height);
+      };
+      if (name === 'style') checkStyle(node.textContent);
+      for (const attribute of node.attributes) {
+        const key = attribute.localName.toLowerCase(), value = attribute.value;
+        if (/^on/i.test(key) || key === 'base' && attribute.namespaceURI === 'http://www.w3.org/XML/1998/namespace') {
+          throw Error('SVG event handlers and external base URLs are not supported');
+        }
+        if (key === 'href' || key === 'src') {
+          const raster = fmdImportSvgResource(value, name);
+          if (raster) {
+            rasterPixels += raster.pixels; rasterBytes += raster.bytes;
+            pixels.set(node, (pixels.get(node) || 0) + raster.pixels);
+            if (rasterPixels > FMD_IMAGE_IMPORT_LIMITS.pixels || rasterBytes > FMD_IMAGE_IMPORT_LIMITS.fileBytes) {
+              throw Error('SVG embedded images exceed 24 million pixels or 8 MiB in total');
+            }
+          }
+        }
+        if (key === 'style' || /(?:url|\\)\s*/i.test(value)) checkStyle(value);
+      }
+    }
+    for (let child = node.lastChild; child; child = child.previousSibling) {
+      stack.push({node: child, depth: depth + 1, metadata: insideMetadata});
+    }
+  }
+  // A small XML file can describe exponentially many <use> shadow nodes. Count
+  // local reference expansion without constructing it, including raster pixels
+  // and text/path payload repeated through a referenced group. Memoization keeps admission linear in
+  // the supplied tree/edges; cycles and deep reference chains fail closed.
+  const totals = new Map(), visiting = new Set();
+  const textBytes = value => {
+    let size = 0;
+    for (const character of value) {
+      const cp = character.codePointAt(0);
+      size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+    }
+    return size;
+  };
+  function expanded(node, depth) {
+    if (depth > 128) throw Error('SVG local references exceed the 128-level import limit');
+    if (visiting.has(node)) throw Error('SVG contains cyclic local references');
+    if (totals.has(node)) {
+      const saved = totals.get(node);
+      if (depth + saved.depth > 128) throw Error('SVG local references exceed the 128-level import limit');
+      return saved;
+    }
+    visiting.add(node);
+    let payload = textBytes(node.nodeValue || node.nodeName);
+    if (node.nodeType === 1) for (const attribute of node.attributes) {
+      payload += textBytes(attribute.name) + textBytes(attribute.value);
+    }
+    const result = {nodes: 1, pixels: pixels.get(node) || 0, payload, depth: 0};
+    const include = child => {
+      const size = expanded(child, depth + 1);
+      result.nodes += size.nodes; result.pixels += size.pixels; result.payload += size.payload;
+      result.depth = Math.max(result.depth, size.depth + 1);
+      if (result.nodes > 32768 || result.pixels > FMD_IMAGE_IMPORT_LIMITS.pixels) {
+        throw Error('SVG expanded references exceed 32,768 nodes or 24 million embedded pixels');
+      }
+      if (result.payload > FMD_IMAGE_IMPORT_LIMITS.fileBytes) throw Error('SVG expanded text and attributes exceed 8 MiB');
+    };
+    for (const child of node.childNodes) include(child);
+    const target = ids.get(references.get(node));
+    if (target) include(target);
+    visiting.delete(node); totals.set(node, result); return result;
+  }
+  expanded(root, 0);
+  fmdImportDimensions(Math.ceil(widest), Math.ceil(tallest));
+  return {mime: 'image/svg+xml', width: Math.ceil(width), height: Math.ceil(height)};
 }
 
 // Validate GIF87a/89a framing and every frame's bounds before browser decoding.
@@ -123,7 +366,12 @@ function fmdImportImageInfo(bytes) {
     }
     throw Error('Invalid or missing JPEG frame');
   }
-  throw Error('Choose a PNG, JPEG or GIF image (file contents, not its extension, determine the format)');
+  // SVG is UTF-8 XML, optionally preceded by a BOM or whitespace. Other bytes
+  // remain unsupported; file extensions and browser-provided MIME are not proof.
+  let start = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+  while (start < bytes.length && [9, 10, 13, 32].includes(bytes[start])) start++;
+  if (bytes[start] === 60) return fmdImportSvgInfo(bytes);
+  throw Error('Choose a PNG, JPEG, GIF or SVG image (file contents, not its extension, determine the format)');
 }
 
 function fmdImportBase64(bytes) {
@@ -192,7 +440,8 @@ function fmdNativeImageImport(images, native) {
   // source references. The native store additionally rejects any duplicate key.
   const assets = images.map(image => {
     const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
-    return {destination: 'fmd-import/' + id + (image.mime === 'image/png' ? '.png' : image.mime === 'image/gif' ? '.gif' : '.jpg'), bytes: image.bytes};
+    return {destination: 'fmd-import/' + id + (image.mime === 'image/png' ? '.png' : image.mime === 'image/gif' ? '.gif'
+      : image.mime === 'image/svg+xml' ? '.svg' : '.jpg'), bytes: image.bytes};
   });
   const transaction = native.stageImages(assets);
   const markdown = images.map((image, i) => '![' + image.alt + '](' + assets[i].destination + ')').join('\n\n');
@@ -307,7 +556,7 @@ if (typeof document !== 'undefined') (function() {
             const width = image.naturalWidth, height = image.naturalHeight;
             fmdImportDimensions(width, height);
             // JPEG EXIF orientation may exchange the two axes.
-            if (!(width === info.width && height === info.height) && !(width === info.height && height === info.width)) {
+            if (info.mime !== 'image/svg+xml' && !(width === info.width && height === info.height) && !(width === info.height && height === info.width)) {
               throw Error('Decoded image dimensions do not match its header');
             }
             settle();
@@ -453,8 +702,8 @@ function fmdInstallImageManager(doc = document) {
   const select = make('select', undefined, label); select.id = 'fmd-image-selection'; select.size = 6;
   select.style.cssText = 'display:block;width:100%;box-sizing:border-box;font:inherit;margin:8px 0';
   const destination = make('p', '', dialog); destination.id = 'fmd-image-destination'; destination.style.overflowWrap = 'anywhere';
-  const fileLabel = make('label', 'Replacement file (PNG, JPEG or GIF, at most 8 MiB)', dialog);
-  const file = make('input', undefined, fileLabel); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/gif,.png,.jpg,.jpeg,.gif';
+  const fileLabel = make('label', 'Replacement file (PNG, JPEG, GIF or SVG, at most 8 MiB)', dialog);
+  const file = make('input', undefined, fileLabel); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/gif,image/svg+xml,.png,.jpg,.jpeg,.gif,.svg';
   file.id = 'fmd-image-replacement'; file.style.cssText = 'display:block;margin:8px 0;max-width:100%';
   make('p', 'Removal does not rewrite source references or infer which images are unused. A remaining reference may produce a missing-image diagnostic. Save HTML before removing resources you may need later; source undo does not restore them.', dialog);
   const actions = make('div', undefined, dialog); actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:12px;margin:12px 0';
@@ -475,7 +724,7 @@ function fmdInstallImageManager(doc = document) {
     key.type = 'text'; key.id = 'fmd-image-binding-destination'; key.placeholder = 'images/diagram.png';
     key.autocomplete = 'off'; key.spellcheck = false;
     key.style.cssText = 'display:block;width:100%;box-sizing:border-box;font:inherit;margin:8px 0';
-    const sourceLabel = make('label', 'Local image (PNG, JPEG or GIF, at most 8 MiB)', group);
+    const sourceLabel = make('label', 'Local image (PNG, JPEG, GIF or SVG, at most 8 MiB)', group);
     const source = make('input', undefined, sourceLabel);
     source.id = 'fmd-image-binding-file'; source.type = 'file'; source.accept = file.accept;
     source.style.cssText = 'display:block;margin:8px 0;max-width:100%';
@@ -587,7 +836,7 @@ function fmdInstallImageManager(doc = document) {
           await image.decode(); check();
           const width = image.naturalWidth, height = image.naturalHeight;
           fmdImportDimensions(width, height);
-          if (!(width === info.width && height === info.height) && !(width === info.height && height === info.width)) {
+          if (info.mime !== 'image/svg+xml' && !(width === info.width && height === info.height) && !(width === info.height && height === info.width)) {
             throw Error('Decoded image dimensions do not match its header');
           }
           settle(null, bytes);

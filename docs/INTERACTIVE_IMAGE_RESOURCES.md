@@ -52,7 +52,7 @@ errors. Browser fixture execution is distinct from Rust/WASM compilation.
 
 ## Importing images while editing
 
-**Insert image** opens a local file chooser for PNG, JPEG and GIF files. Select
+**Insert image** opens a local file chooser for PNG, JPEG, GIF and SVG files. Select
 one or several images to insert at the editor selection in file-selection order.
 The entire batch is read, bounded, inspected and decoded before source changes;
 a failed file leaves the source untouched. Typing (even followed by undo) while
@@ -67,7 +67,7 @@ an abandoned operation cannot insert source, publish native image resources,
 or interfere with a later retry. Cancellation preserves edits made while the
 files were being read.
 
-The importer determines PNG/JPEG/GIF format and dimensions from bytes, not the
+The importer determines PNG/JPEG/GIF/SVG format and dimensions from bytes, not the
 extension or declared MIME type. Browser decoding must also succeed. Limits are
 eight files per batch, 8 MiB per file, 16 MiB per batch, 24 million pixels per
 image canvas and 16,384 pixels per side. GIF87a and GIF89a containers retain
@@ -79,9 +79,32 @@ this import operation. These are import limits, not new global rendering limits.
 
 The native workspace's **Document images** replacement chooser accepts the same
 formats without changing the existing Markdown destination. HTML preserves GIF
-animation; native PDF uses the first frame. Imported native resources use `.gif`
-destinations when their bytes identify a GIF, even when the selected filename or
-declared MIME type claims a different format.
+animation; native PDF uses the first frame. SVG retains its original vector
+bytes through import, replacement, HTML saving and native PDF dispatch. Imported
+native resources use `.gif` or `.svg` destinations when their bytes identify
+those formats, even when the selected filename or declared MIME type differs.
+
+SVG import accepts self-contained UTF-8 SVG with its SVG namespace, explicit
+positive dimensions or a positive `viewBox`. Absolute CSS units use the same
+96-pixel-per-inch conversion as the native renderer. Local gradients, patterns,
+clip paths, `<use>` references, static styles and embedded PNG/JPEG/GIF images
+remain available; ordinary HTTP(S)/mailto hyperlinks are retained for native
+PDF rendering. The browser parses XML without attaching its nodes to the host
+document. It never rewrites the SVG or converts it into a raster image.
+
+Before image decoding, admission rejects scripts and event handlers, foreign
+content, animation, XML processing instructions/DTDs/entities, external image
+or stylesheet/font references, and nested SVG images. Local reference cycles
+and excessive expansion are refused. Tree/reference admission is bounded to
+32,768 nodes/markup tokens and 128 levels. Embedded raster images, including
+their reference expansion, share a 24-million-pixel budget; their original
+bytes share an 8-MiB budget. Expanded text and attribute payload, including
+repeated paths and labels, is also limited to 8 MiB of UTF-8. The SVG viewport and conservative CSS size bounds
+must also fit the ordinary image limits. Styles may use local `url(#fragment)`
+paints and bounded absolute/percentage sizes; stylesheet at-rules and computed
+intrinsic sizes such as `width:calc(...)` are refused. These checks are an
+authoring admission policy, not a second SVG rendering engine: native output
+continues to use its established supported SVG subset.
 
 Lightweight workspaces write newly imported images as base64 image data URIs
 **in the Markdown source itself**. Consequently both **Save Markdown** and
@@ -99,14 +122,18 @@ use `setRangeText`, which does not promise undo preservation. A saved read-mode
 workspace switches through its normal view controller before inserting. Source
 changes activate the existing leave-page warning and normal preview/save flow.
 
-`node --test tests/interactive_import.test.mjs tests/interactive_import_controller.test.mjs`
+`node --test tests/interactive_import.test.mjs tests/interactive_svg_import.test.mjs tests/interactive_import_controller.test.mjs`
 exercises the shipped metadata, limits, encoding, batch and insertion ownership
 code. The optional real-browser gate
 `python tests/support/interactive_import_browser_check.py document.html` uses
-actual local file selection, PNG/JPEG/GIF decoding, selection replacement, batch
+actual local file selection, PNG/JPEG/GIF/SVG decoding, selection replacement, batch
 refusals, retry, undo/redo, asynchronous races and both download formats. It also
 checks the fallback insertion path and saved read-mode state. Like the resource
 lifecycle gate, this browser gate is separate from Rust/WASM compilation.
+`python tests/support/interactive_svg_import_browser_check.py --chromium PATH`
+also runs the real browser XML parser and SVG decoder against safe vector
+documents, aggregate raster/reference expansion limits, and unsafe-resource
+negative controls, asserting rejection before decoding and zero network requests.
 
 ## Attach local images to existing Markdown
 
@@ -116,7 +143,7 @@ opening a Markdown document whose referenced image files are not embedded yet:
 
 1. Enter the image destination, such as `figures/diagram.png`, from the Markdown
    image or reference definition.
-2. Choose the corresponding local PNG, JPEG or GIF file.
+2. Choose the corresponding local PNG, JPEG, GIF or SVG file.
 3. Select **Attach image**. The browser checks the image and the native background
    renderer validates the updated document before publishing the resource.
 

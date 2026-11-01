@@ -3,7 +3,7 @@
 //! Generates a standalone HTML file with a self-contained editing runtime:
 //! - An interactive split-view live editor + preview.
 //! - Offline live markdown parsing & rendering.
-//! - Explicit local PNG/JPEG/GIF insertion with portable image data in source.
+//! - Explicit local PNG/JPEG/GIF/SVG insertion with portable image data in source.
 //! - Document intelligence stats panel (words, reading time, readability score).
 //! - Clean typography & theme toggle (Light, Dark, Sans, Serif, Type Scales).
 //! - Client-side vector PDF / Print export with print-perfect page pagination.
@@ -124,8 +124,8 @@ fn render_workspace(
     </div>
     <button class="fmd-btn" id="btn-theme-toggle" title="Toggle Dark / Light Mode">🌓 Theme</button>
     <button class="fmd-btn" id="btn-stats-toggle" title="Toggle Document Statistics">📊 Stats</button>
-    <button class="fmd-btn" id="btn-insert-image" title="Insert local PNG/JPEG/GIF images into the Markdown source">Insert image</button>
-    <input type="file" id="fmd-image-picker" accept="image/png,image/jpeg,image/gif,.png,.jpg,.jpeg,.gif" multiple hidden>
+    <button class="fmd-btn" id="btn-insert-image" title="Insert local PNG/JPEG/GIF/SVG images into the Markdown source">Insert image</button>
+    <input type="file" id="fmd-image-picker" accept="image/png,image/jpeg,image/gif,image/svg+xml,.png,.jpg,.jpeg,.gif,.svg" multiple hidden>
     <button class="fmd-btn" id="btn-save-markdown" title="Download current Markdown (Ctrl/Cmd+S)">Save Markdown</button>
     <button class="fmd-btn" id="btn-save-html" title="Download editable HTML workspace (Ctrl/Cmd+Shift+S)">Save HTML</button>
     <button class="fmd-btn fmd-btn-primary" id="btn-export-pdf" title="Export Clean Vector PDF">📄 Export PDF</button>

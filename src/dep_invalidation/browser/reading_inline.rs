@@ -88,6 +88,11 @@ pub(super) fn fields(
                     return Err(fmt::Error);
                 }
             }
+            DisplayBlock::MathBlock { source } => {
+                if node.role != AccessibleReadingRole::Math || node.text != *source {
+                    return Err(fmt::Error);
+                }
+            }
             DisplayBlock::Rule => {
                 if node.role != AccessibleReadingRole::ThematicBreak || !node.text.is_empty() {
                     return Err(fmt::Error);

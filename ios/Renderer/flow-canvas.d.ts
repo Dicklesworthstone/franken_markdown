@@ -34,10 +34,10 @@ export interface FlowCanvasLimits {
   maxScannedItems?: number; // 500,000 candidate visits across indexed pages, or the full legacy inventory.
   maxVisibleItems?: number; // 10,000
   maxGlyphs?: number; // 50,000
-  maxDrawCommands?: number; // 2,000,000 including repeated glyph drawing.
+  maxDrawCommands?: number; // 2,000,000 including display paths and repeated glyph drawing.
   maxCachedGlyphs?: number; // 2,048
   maxCachedCommands?: number; // 262,144
-  maxFrameCommands?: number; // 1,048,576 distinct visible path commands.
+  maxFrameCommands?: number; // 1,048,576 across distinct glyph outlines and visible display paths.
 }
 export type FlowCanvasColor =
   | "background"
@@ -113,7 +113,7 @@ export interface FlowCanvasFrame extends FlowToken {
   readonly glyphs: number;
   readonly missingImages: number;
 }
-/** Draw exact bundled glyph paths, not browser-shaped text. The caller owns
+/** Draw exact bundled glyph outlines and native filled paths. The caller owns
  * the session, CSS dimensions, scrolling, accessibility DOM and navigation.
  * Async/preparation failures preserve the prior frame. A browser allocation or
  * final blit failure cannot be rolled back. Dispose/clear revoke shown pixels.

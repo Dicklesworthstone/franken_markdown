@@ -15,6 +15,9 @@ pub(super) fn query_error(error: DisplayQueryError) -> BrowserFlowError {
         DisplayQueryError::ItemBudgetExceeded => {
             FlowLayoutError::BudgetExceeded("display index items").into()
         }
+        DisplayQueryError::PathBudgetExceeded => {
+            FlowLayoutError::BudgetExceeded("display path commands").into()
+        }
         DisplayQueryError::ClipDepthExceeded { .. } => {
             FlowLayoutError::BudgetExceeded("active display clips").into()
         }

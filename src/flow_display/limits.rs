@@ -323,6 +323,7 @@ impl<'a> Projection<'a> {
             | DisplayBlock::Paragraph { text }
             | DisplayBlock::ListItem { text, .. }
             | DisplayBlock::Quote { text } => add(text.len())?,
+            DisplayBlock::MathBlock { source } => add(source.len())?,
             DisplayBlock::CodeBlock { language, source } => {
                 add(source.len())?;
                 add(language.as_ref().map_or(0, String::len))?;

@@ -10,6 +10,7 @@ use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, Resumabl
 mod financial;
 mod gutters;
 mod long_content;
+pub(super) mod math;
 mod styled;
 use crate::ast::Align;
 use crate::display::{
@@ -36,8 +37,9 @@ pub enum FlowTextRole {
 /// Explicit viewport and work limits for shaped reflow. `max_shape_bytes` bounds
 /// one call to the shaper; `max_total_shape_bytes` charges all calls, including
 /// table/list measurement, continuation windows and final-line reshaping.
-/// The same ceiling separately bounds retained link-target bytes in styled
-/// output. Hosts must bound their shaper's execution.
+/// Display math also charges its source bytes and retained path-command payload
+/// against this total. The same ceiling separately bounds retained link-target
+/// bytes in styled output. Hosts must bound their shaper's execution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlowLayoutOptions {
     pub viewport_width: f32,
@@ -324,6 +326,18 @@ impl ResumableFlowDisplay {
                     );
                     y += height + 12.0;
                 }
+                DisplayBlock::MathBlock { source } => {
+                    let height = layout.math_block(source, x, y, width, span)?;
+                    if meta.quote_depth > 0 {
+                        layout.vector(
+                            DisplayRect::new(x - 12.0, y, 4.0, height),
+                            VectorShapeType::CalloutAccentBar,
+                            "accent",
+                            span,
+                        )?;
+                    }
+                    y += height + 12.0;
+                }
                 DisplayBlock::Rule => {
                     let bounds = DisplayRect::new(x, y, width, 2.0);
                     layout.vector(bounds, VectorShapeType::HorizontalRule, "border", span)?;
@@ -510,6 +524,8 @@ struct Reflow<'a, F: ?Sized> {
     lines: usize,
     shape_bytes: usize,
     link_bytes: usize,
+    math: math::MathRenderer,
+    math_commands: usize,
     alignment: Align,
 }
 
@@ -537,6 +553,8 @@ where
             lines: 0,
             shape_bytes: 0,
             link_bytes: 0,
+            math: math::MathRenderer::default(),
+            math_commands: 0,
             alignment: Align::None,
         })
     }

@@ -60,8 +60,20 @@ and `selectText(...).text` are deliberately separate copy operations.
 
 `snapshot`, `readingOrder` and `pendingAssets` return schema-version-one pages
 with `offset`, `total`, `nextOffset`, `revision` and `layoutRevision`. Drawing
-items include text/glyph runs, image references, vector decorations and heading
-or link anchors. Reading nodes retain table row/cell roles and hierarchy.
+items include text/glyph runs, image references, vector decorations, filled paths
+and heading or link anchors. Reading nodes retain table row/cell roles and hierarchy.
+
+Display math is typeset by the shared `fmd_math` engine into bounded `path`
+primitives, including real font outlines, fraction bars, roots and formula
+colors. Commands are absolute M/L/Q/C/Z contours with nonzero fill; `fill` is
+either null (use `colorRole`) or explicit RGBA in 0..1. The primitive carries
+the original enclosing source span. Each path is limited to 65,536 commands,
+and the display to 262,144 filled-path commands. Canvas details are in `CANVAS.md`.
+The `math` reading leaf retains exact TeX for search and copying without
+pretending those source characters are selectable glyph clusters. Inline math
+retains the existing text behavior, and unsupported display formulas keep a
+literal TeX fallback. Rebuild the generated package and update the consumer
+together: schema 1's additive `path` and `math` capabilities require both sides.
 
 Pages default to 512 entries, accept at most 2048, and serialize at most 16 MiB.
 Use a smaller page or `glyphs: false` when the serializer reports

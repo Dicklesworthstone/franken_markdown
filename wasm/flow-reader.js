@@ -241,6 +241,11 @@ export class FlowReaderView {
         case "code-block":
           el = make("pre");
           break;
+        case "math":
+          el = make("div");
+          el.setAttribute("role", "math");
+          el.style.whiteSpace = "pre-wrap";
+          break;
         case "blockquote":
           el = make("blockquote");
           break;

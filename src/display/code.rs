@@ -307,7 +307,7 @@ fn paint(
     for mut fence in fences {
         fence.finish()?;
     }
-    list.total_bounds = output.iter().fold(DisplayRect::default(), |bounds, item| {
+    list.total_bounds = output.iter().fold(list.layout_bounds, |bounds, item| {
         bounds.union(item.bounds())
     });
     list.items = output;

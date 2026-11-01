@@ -158,6 +158,22 @@ export interface FlowVectorItem extends FlowItemBase {
   readonly strokeWidth: number;
   readonly colorRole: string;
 }
+/** Closed, nonzero-filled contours in absolute logical display coordinates
+ * (y increases downward). Bounds include all endpoints and control points. */
+export type FlowDisplayPathCommand =
+  | readonly ["M", number, number]
+  | readonly ["L", number, number]
+  | readonly ["Q", number, number, number, number]
+  | readonly ["C", number, number, number, number, number, number]
+  | readonly ["Z"];
+export interface FlowPathItem extends FlowItemBase {
+  readonly kind: "path";
+  readonly colorRole: string;
+  /** Explicit RGBA in 0..1 overrides the host's semantic palette role. */
+  readonly fill: readonly [number, number, number, number] | null;
+  /** At most 65,536 commands per item, 262,144 across a native display. */
+  readonly commands: readonly FlowDisplayPathCommand[];
+}
 export interface FlowClipItem extends FlowItemBase {
   readonly kind: "clip";
   readonly childCount: number;
@@ -167,6 +183,7 @@ export type FlowItem =
   | FlowImageItem
   | FlowAnchorItem
   | FlowVectorItem
+  | FlowPathItem
   | FlowClipItem;
 export interface FlowSnapshot extends FlowPage {
   readonly sourceLengthBytes: number;
@@ -225,6 +242,7 @@ export interface FlowReadingNode {
     | "heading"
     | "paragraph"
     | "code-block"
+    | "math"
     | "list"
     | "list-item"
     | "table"
@@ -375,6 +393,13 @@ export interface FlowSession {
     options: FlowExportOptionsByFormat[F] | undefined,
     token: FlowTokenInput,
   ): Promise<FlowExportResult>;
+  /** One revision-fenced publication transaction. All requests are admitted
+   * before work, retained source/assets are captured once, and no result array
+   * is returned unless every requested renderer succeeds. Formats are unique. */
+  exportDocuments(
+    requests: readonly FlowExportRequest[],
+    token: FlowTokenInput,
+  ): Promise<readonly FlowExportResult[]>;
   /** Idempotent; releases Rust-owned source, display and font-run cache. */
   dispose(): void;
 }
@@ -424,10 +449,16 @@ export interface FlowExportOptions {
   maxOutputBytes?: number;
 }
 export interface FlowHtmlExportOptions extends FlowExportOptions {
+  /** Retain complete OpenType fonts for browser shaping; default subset. */
+  fontEmbedding?: "subset" | "full";
   darkMode?: "auto" | "disabled";
+  /** Native embedded font container; omitted keeps the WOFF1 default. */
+  htmlFontFormat?: "woff1" | "woff2" | "ttf";
 }
 /** Reflowable native EPUB output, not a capture of editor geometry. */
 export interface FlowEpubExportOptions extends FlowExportOptions {
+  /** Retain complete supplied/bundled fonts for reader shaping; default subset. */
+  fontEmbedding?: "subset" | "full";
   darkMode?: "auto" | "disabled";
   /** Verbatim EPUB stylesheet, at most 4 MiB UTF-8. Empty explicitly disables defaults. */
   customCss?: string;
@@ -440,6 +471,14 @@ export interface FlowSvgExportOptions {
   maxOutputBytes?: number;
 }
 export interface FlowPdfExportOptions extends FlowExportOptions {
+  /** Native single-document archival emission. Omitted/off preserves ordinary
+   * PDF; requires matching bindings and does not certify PDF/A conformance. */
+  pdfA?: "off" | "2b";
+  /** Native archival policy; true requires pdfA: "2b". No ordinary fallback. */
+  pdfAStrict?: boolean;
+  /** Opt-in body baseline spacing: 1..144 pt, rounded to 0.001 pt; 0 disables.
+   * Incompatible with fitToPages. Captured before enqueue. */
+  baselineGridPt?: number;
   /** Shared native paper contract. Copied before enqueue; units are points. */
   page?: FmdPdfPage;
   /** At most 4096 UTF-8 bytes per slot and 16384 UTF-16 units combined. Unknown
@@ -458,7 +497,14 @@ export interface FlowPdfExportOptions extends FlowExportOptions {
   headingScale?: number;
   tableFontSize?: number;
   fitToPages?: number;
-  microtype?: "disabled" | "protrusion";
+  microtype?: "disabled" | "protrusion" | "expansion";
+  /** Optional native line-breaking refinements, captured before queueing. */
+  typography?: { homogeneous?: boolean; antiriver?: boolean; pareto?: boolean };
+  /** Opt into native global page breaking; omitted/false keeps the default. */
+  optimalPagination?: boolean;
+  /** Require exact final PDF page breaking; implies optimalPagination.
+   * Default false. Native refusals preserve their PAGINATION_* error code. */
+  strictPagination?: boolean;
 }
 export interface FlowExportOptionsByFormat {
   html: FlowHtmlExportOptions;
@@ -466,6 +512,12 @@ export interface FlowExportOptionsByFormat {
   epub: FlowEpubExportOptions;
   svg: FlowSvgExportOptions;
 }
+export type FlowExportRequest = {
+  [F in FlowExportFormat]: {
+    readonly format: F;
+    readonly options?: FlowExportOptionsByFormat[F];
+  };
+}[FlowExportFormat];
 export interface FlowExportDiagnostic {
   readonly severity: "warning" | "error";
   /** Original source UTF-8 byte offsets, not Canvas fragment coordinates. */
@@ -488,4 +540,7 @@ export interface FlowExportResult extends FlowToken {
   /** Owned output. No host, WASM, or worker buffer is detached from its owner. */
   readonly bytes: Uint8Array;
   readonly diagnostics: readonly FlowExportDiagnostic[];
+  /** Present only for successfully emitted archival PDF output. */
+  readonly pdfA?: "2b";
+  readonly pdfAStrict?: boolean;
 }

@@ -2,8 +2,8 @@
 use super::{BrowserFlowError, BrowserFlowSession, MAX_SNAPSHOT_BYTES};
 use crate::SourceSpan;
 use crate::display::{
-    AccessibleReadingNode, AccessibleReadingRole, DisplayItem, DisplayRect, DisplayTextRun,
-    VectorShapeType,
+    AccessibleReadingNode, AccessibleReadingRole, DisplayItem, DisplayPathCommand, DisplayRect,
+    DisplayTextRun, VectorShapeType,
 };
 use crate::text::{CaretAffinity, Direction, FontOrigin, OwnedTextRun};
 use std::fmt::{self, Write};
@@ -198,6 +198,54 @@ fn display_item(
             w.write_str(",\"colorRole\":")?;
             w.string(&path.color_role)?;
         }
+        DisplayItem::Path(path) => {
+            if !path.is_valid() {
+                return Err(fmt::Error);
+            }
+            w.write_str(",\"kind\":\"path\",\"colorRole\":")?;
+            w.string(&path.color_role)?;
+            w.write_str(",\"fill\":")?;
+            if let Some(fill) = path.fill {
+                w.write_char('[')?;
+                for (i, channel) in fill.into_iter().enumerate() {
+                    if i != 0 {
+                        w.write_char(',')?;
+                    }
+                    w.number(channel)?;
+                }
+                w.write_char(']')?;
+            } else {
+                w.write_str("null")?;
+            }
+            w.write_str(",\"commands\":[")?;
+            for (i, command) in path.commands.iter().enumerate() {
+                if i != 0 {
+                    w.write_char(',')?;
+                }
+                let (kind, coordinates): (&str, &[f32]) = match command {
+                    DisplayPathCommand::MoveTo { x, y } => ("M", &[*x, *y]),
+                    DisplayPathCommand::LineTo { x, y } => ("L", &[*x, *y]),
+                    DisplayPathCommand::QuadTo { cx, cy, x, y } => ("Q", &[*cx, *cy, *x, *y]),
+                    DisplayPathCommand::CubicTo {
+                        cx1,
+                        cy1,
+                        cx2,
+                        cy2,
+                        x,
+                        y,
+                    } => ("C", &[*cx1, *cy1, *cx2, *cy2, *x, *y]),
+                    DisplayPathCommand::Close => ("Z", &[]),
+                };
+                w.write_char('[')?;
+                w.string(kind)?;
+                for &coordinate in coordinates {
+                    w.write_char(',')?;
+                    w.number(coordinate)?;
+                }
+                w.write_char(']')?;
+            }
+            w.write_char(']')?;
+        }
         DisplayItem::Image(image) => {
             w.write_str(",\"kind\":\"image\",\"requestId\":")?;
             w.identity(image.request_id)?;
@@ -335,6 +383,7 @@ fn reading_node(
         AccessibleReadingRole::Heading { .. } => "heading",
         AccessibleReadingRole::Paragraph => "paragraph",
         AccessibleReadingRole::CodeBlock => "code-block",
+        AccessibleReadingRole::Math => "math",
         AccessibleReadingRole::List => "list",
         AccessibleReadingRole::ListItem => "list-item",
         AccessibleReadingRole::Table => "table",
@@ -410,7 +459,10 @@ pub(super) fn hit(state: &BrowserFlowSession, x: f32, y: f32) -> Result<String, 
         .map_err(viewport::query_error)?;
     let found = display
         .hit_test_filtered(x, y, |item| {
-            matches!(item, DisplayItem::Text(_) | DisplayItem::Image(_))
+            matches!(
+                item,
+                DisplayItem::Text(_) | DisplayItem::Image(_) | DisplayItem::Path(_)
+            )
         })
         .map_err(viewport::query_error)?;
     encode(|w| {

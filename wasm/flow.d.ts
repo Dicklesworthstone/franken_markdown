@@ -158,6 +158,22 @@ export interface FlowVectorItem extends FlowItemBase {
   readonly strokeWidth: number;
   readonly colorRole: string;
 }
+/** Closed, nonzero-filled contours in absolute logical display coordinates
+ * (y increases downward). Bounds include all endpoints and control points. */
+export type FlowDisplayPathCommand =
+  | readonly ["M", number, number]
+  | readonly ["L", number, number]
+  | readonly ["Q", number, number, number, number]
+  | readonly ["C", number, number, number, number, number, number]
+  | readonly ["Z"];
+export interface FlowPathItem extends FlowItemBase {
+  readonly kind: "path";
+  readonly colorRole: string;
+  /** Explicit RGBA in 0..1 overrides the host's semantic palette role. */
+  readonly fill: readonly [number, number, number, number] | null;
+  /** At most 65,536 commands per item, 262,144 across a native display. */
+  readonly commands: readonly FlowDisplayPathCommand[];
+}
 export interface FlowClipItem extends FlowItemBase {
   readonly kind: "clip";
   readonly childCount: number;
@@ -167,6 +183,7 @@ export type FlowItem =
   | FlowImageItem
   | FlowAnchorItem
   | FlowVectorItem
+  | FlowPathItem
   | FlowClipItem;
 export interface FlowSnapshot extends FlowPage {
   readonly sourceLengthBytes: number;
@@ -225,6 +242,7 @@ export interface FlowReadingNode {
     | "heading"
     | "paragraph"
     | "code-block"
+    | "math"
     | "list"
     | "list-item"
     | "table"

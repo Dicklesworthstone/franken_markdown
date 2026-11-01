@@ -218,7 +218,8 @@ function response(value, expected) {
   }
   return parsed;
 }
-function checkedPage(value, key, offset, limit) {
+// Direct and worker reads must expose exactly the requested dense inventory page.
+export function validateFlowPage(value, key, offset, limit) {
   if (
     !Number.isInteger(value.total) ||
     value.total < offset ||
@@ -296,7 +297,7 @@ export function validateViewportPage(value, options, expected) {
         !Number.isInteger(item.index) ||
         item.index <= previous ||
         item.index >= value.total ||
-        !["text", "vector", "image", "anchor"].includes(item.kind)
+        !["text", "vector", "path", "image", "anchor"].includes(item.kind)
       )
         throw new Error("invalid viewport item");
       viewportRect(item.bounds);
@@ -400,7 +401,7 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
           ? b.readingJson(expected.revision, expected.layoutRevision, offset, limit)
           : b.pendingAssetsJson(expected.revision, offset, limit),
     );
-    return checkedPage(
+    return validateFlowPage(
       response(data, expected),
       kind === "snapshot" ? "items" : kind === "reading" ? "nodes" : "requests",
       offset,

@@ -100,7 +100,8 @@ pub struct AssetResult {
 }
 
 /// An immutable semantic output block. Inline Markdown delimiters are already
-/// interpreted by the shared parser; code and math content remain literal text.
+/// interpreted by the shared parser. Code remains literal text; display math
+/// retains its exact source and uses the shared engine during layout.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DisplayBlock {
     Heading {
@@ -112,6 +113,9 @@ pub enum DisplayBlock {
     },
     CodeBlock {
         language: Option<String>,
+        source: String,
+    },
+    MathBlock {
         source: String,
     },
     ListItem {
@@ -480,10 +484,15 @@ impl ResumableFlowDisplay {
     }
 
     /// Produce an immutable, renderer-neutral display list at the default width.
-    /// Text uses logical estimates here, not PDF-quality glyph shaping.
+    /// Ordinary text uses logical estimates here, not PDF-quality glyph shaping.
+    /// Display mathematics uses the same real outlines as shaped Flow output.
     #[must_use]
     pub fn to_display_list(&self) -> DisplayList {
         let mut list = DisplayList::new();
+        let math = reflow::math::MathRenderer::default();
+        let mut math_commands = 0usize;
+        let mut math_bytes = 0usize;
+        let math_byte_limit = FlowLayoutOptions::default().max_total_shape_bytes;
         let mut y = 0.0;
         let resolved: HashMap<_, _> = self
             .resolved_assets
@@ -585,6 +594,73 @@ impl ResumableFlowDisplay {
                         bounds,
                         span,
                     );
+                    y += bounds.height + 12.0;
+                }
+                DisplayBlock::MathBlock { source } => {
+                    use reflow::math::{COMMAND_BYTES, MathFailure, fallback_explanation};
+                    // This compatibility API has no error return. Its fixed
+                    // math budget therefore uses the same visible source
+                    // fallback as an unsupported formula.
+                    math_bytes = math_bytes.saturating_add(source.len());
+                    let remaining_commands = crate::display::MAX_DISPLAY_TOTAL_PATH_COMMANDS
+                        .saturating_sub(math_commands);
+                    let command_limit = remaining_commands
+                        .min(math_byte_limit.saturating_sub(math_bytes) / COMMAND_BYTES);
+                    let result = if math_bytes > math_byte_limit {
+                        Err(MathFailure::Budget)
+                    } else {
+                        math.typeset(source, command_limit).and_then(|formula| {
+                            formula
+                                .place(x, y, width, 14.0, span)
+                                .map_err(MathFailure::Fallback)
+                        })
+                    };
+                    let bounds = match result {
+                        Ok(formula) => {
+                            math_commands += formula.commands;
+                            math_bytes += formula.commands * COMMAND_BYTES;
+                            list.include_layout_bounds(formula.bounds);
+                            for path in formula.paths {
+                                list.push_item(DisplayItem::Path(path));
+                            }
+                            formula.bounds
+                        }
+                        Err(failure) => {
+                            let reason = match failure {
+                                MathFailure::Fallback(reason) => reason,
+                                MathFailure::Budget => "math output budget exceeded".to_owned(),
+                            };
+                            let explanation = fallback_explanation(&reason);
+                            push_text(
+                                &mut list,
+                                &explanation,
+                                DisplayRect::new(x, y, width, 20.0),
+                                14.0,
+                                "muted",
+                                span,
+                            );
+                            let source_height = source.lines().count().max(1) as f32 * 20.0;
+                            push_text(
+                                &mut list,
+                                source,
+                                DisplayRect::new(x, y + 20.0, width, source_height),
+                                13.0,
+                                "code",
+                                span,
+                            );
+                            DisplayRect::new(x, y, width, 20.0 + source_height)
+                        }
+                    };
+                    if meta.quote_depth > 0 {
+                        push_vector(
+                            &mut list,
+                            DisplayRect::new(x - 12.0, y, 4.0, bounds.height),
+                            VectorShapeType::CalloutAccentBar,
+                            "accent",
+                            span,
+                        );
+                    }
+                    push_reading(&mut list, AccessibleReadingRole::Math, source, bounds, span);
                     y += bounds.height + 12.0;
                 }
                 DisplayBlock::Rule => {
@@ -904,9 +980,15 @@ fn prepare_document(
                     )?;
                 }
                 Block::CodeBlock { lang, code } => output.push_back(PreparedBlock {
-                    block: DisplayBlock::CodeBlock {
-                        language: lang.clone(),
-                        source: code.clone(),
+                    block: if lang.as_deref() == Some("math") {
+                        DisplayBlock::MathBlock {
+                            source: code.clone(),
+                        }
+                    } else {
+                        DisplayBlock::CodeBlock {
+                            language: lang.clone(),
+                            source: code.clone(),
+                        }
                     },
                     meta,
                 })?,
@@ -1032,7 +1114,13 @@ fn prepare_document(
                     block: DisplayBlock::Rule,
                     meta,
                 })?,
-                Block::HtmlBlock(text) | Block::MathBlock(text) => {
+                Block::MathBlock(source) => output.push_back(PreparedBlock {
+                    block: DisplayBlock::MathBlock {
+                        source: source.clone(),
+                    },
+                    meta,
+                })?,
+                Block::HtmlBlock(text) => {
                     emit_text(text.clone(), &mut meta, &mut output)?;
                 }
                 // Definitions are rendered once, in numbered note order.

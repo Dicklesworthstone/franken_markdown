@@ -1,7 +1,7 @@
 //! Cached paint-order interval index. Only geometry and item indices are retained;
 //! text, glyphs, assets and accessibility trees remain owned by the display list.
 
-use super::{DisplayItem, DisplayList, DisplayRect};
+use super::{DisplayItem, DisplayList, DisplayRect, MAX_DISPLAY_TOTAL_PATH_COMMANDS};
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -18,6 +18,8 @@ pub enum DisplayQueryError {
     InvalidLimit,
     ItemBudgetExceeded,
     InvalidItemBounds { index: usize },
+    InvalidPath { index: usize },
+    PathBudgetExceeded,
     InvalidClipRange { index: usize },
     ClipDepthExceeded { index: usize },
 }
@@ -31,6 +33,10 @@ impl fmt::Display for DisplayQueryError {
             Self::ItemBudgetExceeded => f.write_str("display index exceeds 1000000 items"),
             Self::InvalidItemBounds { index } => {
                 write!(f, "invalid display bounds at item {index}")
+            }
+            Self::InvalidPath { index } => write!(f, "invalid display path at item {index}"),
+            Self::PathBudgetExceeded => {
+                f.write_str("display paths exceed the total command budget")
             }
             Self::InvalidClipRange { index } => {
                 write!(f, "clip at item {index} extends beyond the inventory")
@@ -223,10 +229,20 @@ impl SpatialIndex {
         }
         let mut entries = Vec::with_capacity(items.len());
         let mut clips: Vec<(usize, DisplayRect)> = Vec::new();
+        let mut path_commands = 0usize;
         for (index, item) in items.iter().enumerate() {
             let bounds = item.bounds();
             if !valid_rect(bounds) {
                 return Err(DisplayQueryError::InvalidItemBounds { index });
+            }
+            if let DisplayItem::Path(path) = item {
+                path_commands = path_commands.saturating_add(path.commands.len());
+                if path_commands > MAX_DISPLAY_TOTAL_PATH_COMMANDS {
+                    return Err(DisplayQueryError::PathBudgetExceeded);
+                }
+                if !path.is_valid() {
+                    return Err(DisplayQueryError::InvalidPath { index });
+                }
             }
             clips.retain(|(end, _)| *end > index);
             if let DisplayItem::Clip(clip) = item {

@@ -17,6 +17,8 @@ const DEFAULT_LIMITS = Object.freeze({
   maxCachedCommands: 262144,
   maxFrameCommands: 1048576,
 });
+const MAX_DISPLAY_PATH_COMMANDS = 65536;
+const MAX_DISPLAY_TOTAL_PATH_COMMANDS = 262144;
 const DEFAULT_COLORS = Object.freeze({
   background: "#ffffff",
   text: "#1f2328",
@@ -330,7 +332,8 @@ export class FlowCanvasRenderer {
       total = null,
       totalBounds = null,
       glyphCount = 0,
-      frameCommands = 0;
+      frameCommands = 0,
+      displayCommands = 0;
     let clips = [], scannedItems = 0, receivedItems = 0;
     while (true) {
       let page, next;
@@ -410,6 +413,17 @@ export class FlowCanvasRenderer {
             if (pause) await pause;
           }
           plans.push(plan);
+        } else if (item.kind === "path") {
+          const plan = displayPathPlan(item, bounds, clip,
+            Math.min(this.#limits.maxFrameCommands - frameCommands,
+              MAX_DISPLAY_TOTAL_PATH_COMMANDS - displayCommands));
+          frameCommands += plan.commands.length;
+          displayCommands += plan.commands.length;
+          plans.push(plan);
+          // Match outline batches: validate and own the complete bounded item
+          // before yielding, so a custom provider cannot mutate admitted ink.
+          const pause = checkpoint(plan.commands.length);
+          if (pause) await pause;
         } else if (item.kind === "vector") {
           if (
             ![
@@ -466,7 +480,7 @@ export class FlowCanvasRenderer {
       if (outlines.has(k)) return;
       frameCommands += entry.commands.length;
       if (frameCommands > this.#limits.maxFrameCommands)
-        fail("BUDGET_EXCEEDED", "visible glyph paths exceed frame budget");
+        fail("BUDGET_EXCEEDED", "visible paths exceed frame budget");
       outlines.set(k, entry);
     };
     for (const [id, ids] of need) {
@@ -537,7 +551,9 @@ export class FlowCanvasRenderer {
     }
     check();
     const baselines = new Map();
-    let drawCommands = 0;
+    let drawCommands = displayCommands;
+    if (drawCommands > this.#limits.maxDrawCommands)
+      fail("BUDGET_EXCEEDED", "Canvas path execution budget exceeded");
     for (const plan of plans) {
       const pause = checkpoint();
       if (pause) await pause;
@@ -589,7 +605,9 @@ export class FlowCanvasRenderer {
       const color = Object.hasOwn(this.#colors, plan.color)
         ? this.#colors[plan.color]
         : this.#colors.text;
-      context.fillStyle = color;
+      context.fillStyle = plan.kind === "path" && plan.fill !== null
+        ? `rgba(${plan.fill[0] * 255},${plan.fill[1] * 255},${plan.fill[2] * 255},${plan.fill[3]})`
+        : color;
       context.strokeStyle = color;
       if (plan.kind === "text") {
         const line = baselines.get(lineKey(plan));
@@ -610,6 +628,12 @@ export class FlowCanvasRenderer {
           context.fill("nonzero");
           context.restore();
         }
+      } else if (plan.kind === "path") {
+        for (const cost of drawPath(context, plan.commands)) {
+          const pause = checkpoint(cost);
+          if (pause) await pause;
+        }
+        context.fill("nonzero");
       } else if (plan.kind === "vector") drawVector(context, plan);
       else if (plan.image != null)
         context.drawImage(
@@ -767,13 +791,68 @@ function* textPlan(item, bounds, clip, glyphBudget) {
     color,
   };
 }
+// Native filled paths carry absolute coordinates and a conservative control
+// hull. Copy bounded tuples while validating, without retaining caller arrays
+// across an event-loop turn. No SVG, CSS, font lookup or code is interpreted.
+function displayPathPlan(item, bounds, clip, remaining) {
+  const bad = () => fail("INVALID_WASM_RESPONSE", "invalid filled display path");
+  const { commands: input, fill: rawFill, colorRole: color } = item;
+  if (!Array.isArray(input) || !input.length || typeof color !== "string") bad();
+  const count = input.length;
+  if (count > MAX_DISPLAY_PATH_COMMANDS) bad();
+  if (count > remaining) fail("BUDGET_EXCEEDED", "visible paths exceed frame budget");
+  let fill = null;
+  if (rawFill !== null) {
+    if (!Array.isArray(rawFill) || rawFill.length !== 4) bad();
+    fill = [rawFill[0], rawFill[1], rawFill[2], rawFill[3]];
+    if (!fill.every(value => typeof value === "number" && Number.isFinite(value)
+        && value >= 0 && value <= 1)) bad();
+    Object.freeze(fill);
+  }
+  // Same tolerance as DisplayPath::is_valid: only f32 edge reconstruction,
+  // including absolute page offsets, may extend beyond the declared hull.
+  const right = bounds.x + bounds.width, bottom = bounds.y + bounds.height;
+  const epsilon = 0.00001 + 4 * 2 ** -23
+    * Math.max(1, Math.abs(bounds.x), Math.abs(bounds.y), Math.abs(right), Math.abs(bottom));
+  const commands = [];
+  let open = false, drawn = false;
+  for (let i = 0; i < count; i++) {
+    const raw = input[i];
+    if (!Array.isArray(raw)) bad();
+    const op = raw[0];
+    const size = op === "M" || op === "L" ? 3 : op === "Q" ? 5 : op === "C" ? 7 : op === "Z" ? 1 : 0;
+    if (!size || raw.length !== size) bad();
+    const command = [op];
+    for (let j = 1; j < size; j += 2) {
+      const x = raw[j], y = raw[j + 1];
+      if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)
+          || x < bounds.x - epsilon || x > right + epsilon
+          || y < bounds.y - epsilon || y > bottom + epsilon) bad();
+      command.push(x, y);
+    }
+    if (op === "M") {
+      if (open) bad();
+      open = true; drawn = false;
+    } else {
+      if (!open) bad();
+      if (op === "Z") {
+        if (!drawn) bad();
+        open = false;
+      } else drawn = true;
+    }
+    commands.push(Object.freeze(command));
+  }
+  if (open) bad();
+  return { kind: "path", bounds, clip, commands, color, fill };
+}
 function* drawPath(context, commands) {
   let work = 0;
   context.beginPath();
-  for (const [op, a, b, c, d] of commands) {
+  for (const [op, a, b, c, d, e, f] of commands) {
     if (op === "M") context.moveTo(a, b);
     else if (op === "L") context.lineTo(a, b);
     else if (op === "Q") context.quadraticCurveTo(a, b, c, d);
+    else if (op === "C") context.bezierCurveTo(a, b, c, d, e, f);
     else context.closePath();
     if (++work === 128) { work = 0; yield 128; }
   }

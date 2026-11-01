@@ -50,6 +50,16 @@ italic, code and strike compose as strong/em/code/s elements, including headings
 quotes, task items and table cells. Image descriptions remain text figures, not
 auto-loaded images; links enclosing images are retained even for empty alt text.
 
+Display formulas use a `math` leaf whose text is the exact TeX source retained by
+the native engine. The DOM exposes `role="math"` with selectable, whitespace-
+preserving plain text; it does not parse HTML, TeX or MathML. Search and ordinary
+Copy preserve the source characters, and navigation retains the enclosing
+Markdown byte span. Successful vector typesetting and literal native fallbacks
+use the same semantic source contract. Math nodes cannot carry children, inline
+style/link ranges or image links, and consume the ordinary reading limits.
+The Canvas presents the actual typeset contours separately. This source-based
+math role is not a promise of spoken-math synthesis or symbolic navigation.
+
 The semantic surface is intentionally separate from the Canvas ink. Browser DOM
 text is selectable and exposes real heading/table/list semantics; it is not a
 promise of font or wrapping parity with the bundled Canvas shaper, a complete

@@ -16,6 +16,12 @@ use crate::text::OwnedTextRun;
 #[path = "display/code.rs"]
 mod code;
 
+#[path = "display/path.rs"]
+mod path;
+pub use path::{
+    DisplayPath, DisplayPathCommand, MAX_DISPLAY_PATH_COMMANDS, MAX_DISPLAY_TOTAL_PATH_COMMANDS,
+};
+
 #[path = "display/spatial.rs"]
 mod spatial;
 pub use spatial::{
@@ -195,6 +201,8 @@ pub enum DisplayItem {
     Text(DisplayTextRun),
     /// Vector rule, border, or marker.
     Vector(DisplayVectorPath),
+    /// Closed, filled outline geometry in logical display coordinates.
+    Path(DisplayPath),
     /// Image reference or placeholder.
     Image(DisplayImage),
     /// Clipping rectangle.
@@ -210,6 +218,7 @@ impl DisplayItem {
         match self {
             Self::Text(t) => t.bounds,
             Self::Vector(v) => v.bounds,
+            Self::Path(p) => p.bounds,
             Self::Image(img) => img.bounds,
             Self::Clip(c) => c.bounds,
             Self::Anchor(a) => a.bounds,
@@ -222,6 +231,7 @@ impl DisplayItem {
         match self {
             Self::Text(t) => t.source_span,
             Self::Vector(v) => v.source_span,
+            Self::Path(p) => p.source_span,
             Self::Image(img) => img.source_span,
             Self::Clip(_) => SourceSpan::default(),
             Self::Anchor(a) => a.source_span,
@@ -240,6 +250,8 @@ pub enum AccessibleReadingRole {
     Paragraph,
     /// Preformatted code fence.
     CodeBlock,
+    /// A displayed formula with its literal TeX source as the transcript.
+    Math,
     /// Ordered or unordered list.
     List,
     /// List item.
@@ -283,6 +295,7 @@ pub struct DisplayList {
     items: Vec<DisplayItem>,
     reading_order: Vec<AccessibleReadingNode>,
     total_bounds: DisplayRect,
+    layout_bounds: DisplayRect,
     spatial: spatial::IndexCache,
 }
 
@@ -294,6 +307,7 @@ impl DisplayList {
             items: Vec::new(),
             reading_order: Vec::new(),
             total_bounds: DisplayRect::new(0.0, 0.0, 0.0, 0.0),
+            layout_bounds: DisplayRect::new(0.0, 0.0, 0.0, 0.0),
             spatial: spatial::IndexCache::new(),
         }
     }
@@ -329,6 +343,15 @@ impl DisplayList {
     /// Append an accessible reading structure node.
     pub fn push_reading_node(&mut self, node: AccessibleReadingNode) {
         self.reading_order.push(node);
+    }
+
+    /// Retain measured layout space that need not contain visible ink, such
+    /// as a formula's phantom or advance box. This does not create a drawing,
+    /// hit target or semantic anchor. Like item bounds, coordinates must be
+    /// finite and extents nonnegative.
+    pub fn include_layout_bounds(&mut self, bounds: DisplayRect) {
+        self.layout_bounds = self.layout_bounds.union(bounds);
+        self.total_bounds = self.total_bounds.union(bounds);
     }
 
     /// Hit-test visible primitives in reverse drawing order, respecting every

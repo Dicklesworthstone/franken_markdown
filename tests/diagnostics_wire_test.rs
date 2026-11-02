@@ -9,6 +9,7 @@
 use franken_markdown::caret::{
     render_byte_range, render_parse_diagnostics, span_of_line, style_for_stderr,
 };
+#[cfg(feature = "cli")]
 use franken_markdown::config::FmdConfig;
 use franken_markdown::verify::{VerifyFinding, VerifyReport, to_human, to_json, verify_pdf};
 use franken_markdown::{
@@ -58,6 +59,7 @@ fn parse_unclosed_fence_emits_a_caret_block() {
     assert_ok("parse-caret-gutter", "^", block.contains('^'), &block);
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn config_parse_error_caret_does_not_change_display() {
     let src = "font=sans\nfont=comic\n";
@@ -80,6 +82,7 @@ fn config_parse_error_caret_does_not_change_display() {
     );
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn config_unknown_key_caret_points_at_the_line() {
     let src = "nope=1\n";
@@ -93,6 +96,7 @@ fn config_unknown_key_caret_points_at_the_line() {
     );
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn config_caret_maps_crlf_line_numbers() {
     let src = "font=sans\r\nfont=comic\r\n";

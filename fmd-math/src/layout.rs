@@ -729,13 +729,12 @@ impl Engine {
                         // make_ord (tex.web §752): an Ord character kerns
                         // with the next atom's character from its font,
                         // whatever that atom's class (`V,` `d f` `f/`).
-                        if prev_class == AtomClass::Ord && class != AtomClass::Inner {
-                            if let (Some((pf, pg)), Some((cf, cg))) = (prev_glyph, laid.char_glyph)
-                            {
-                                if pf == cf {
-                                    x += self.pair_kern(pf, pg, cg, ctx.text_mode) * ctx.size();
-                                }
-                            }
+                        if prev_class == AtomClass::Ord
+                            && class != AtomClass::Inner
+                            && let (Some((pf, pg)), Some((cf, cg))) = (prev_glyph, laid.char_glyph)
+                            && pf == cf
+                        {
+                            x += self.pair_kern(pf, pg, cg, ctx.text_mode) * ctx.size();
                         }
                     }
                     height = height.max(laid.boxx.height);
@@ -1326,10 +1325,11 @@ impl Engine {
 
     /// A single-character atom.
     fn char_atom(&self, ch: char, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
-        if ch == crate::commands::NOT_SLASH && !ctx.text_mode {
-            if let Some(laid) = self.not_slash(span, ctx) {
-                return Ok(laid);
-            }
+        if ch == crate::commands::NOT_SLASH
+            && !ctx.text_mode
+            && let Some(laid) = self.not_slash(span, ctx)
+        {
+            return Ok(laid);
         }
         if ctx.alphabet.is_none() && !ctx.text_mode {
             if let Some(laid) = self.negated_relation(ch, span, ctx)? {
@@ -2082,10 +2082,10 @@ impl Engine {
                 .faces
                 .tex_face(face, mapped, ctx.style.style, ctx.text_mode || text_run)
                 .unwrap_or((face, gid));
-            if let Some((pf, pg)) = prev {
-                if pf == face {
-                    x += self.pair_kern(face, pg, gid, ctx.text_mode) * size;
-                }
+            if let Some((pf, pg)) = prev
+                && pf == face
+            {
+                x += self.pair_kern(face, pg, gid, ctx.text_mode) * size;
             }
             let m = self.char_metrics(face, gid, ctx.text_mode);
             children.push(Positioned {
@@ -2286,23 +2286,23 @@ impl Engine {
         ctx: LayCtx,
     ) -> Result<Laid, MathError> {
         // Big operators with active limits route to rule 13a instead.
-        if let Some(base_node) = base {
-            if self.limits_active(base_node, ctx) {
-                let base_laid = self.lay_node(base_node, ctx)?;
-                let upper = sup
-                    .map(|n| self.clean_box(n, ctx.map(StyleCtx::sup)))
-                    .transpose()?
-                    .map(|l| l.boxx);
-                let lower = sub
-                    .map(|n| self.clean_box(n, ctx.map(StyleCtx::sub)))
-                    .transpose()?
-                    .map(|l| l.boxx);
-                return Ok(Laid {
-                    boxx: self.with_limits(base_laid.boxx, upper, lower, ctx, base_laid.italic),
-                    italic: 0.0,
-                    char_glyph: None,
-                });
-            }
+        if let Some(base_node) = base
+            && self.limits_active(base_node, ctx)
+        {
+            let base_laid = self.lay_node(base_node, ctx)?;
+            let upper = sup
+                .map(|n| self.clean_box(n, ctx.map(StyleCtx::sup)))
+                .transpose()?
+                .map(|l| l.boxx);
+            let lower = sub
+                .map(|n| self.clean_box(n, ctx.map(StyleCtx::sub)))
+                .transpose()?
+                .map(|l| l.boxx);
+            return Ok(Laid {
+                boxx: self.with_limits(base_laid.boxx, upper, lower, ctx, base_laid.italic),
+                italic: 0.0,
+                char_glyph: None,
+            });
         }
         let size = ctx.size();
         let c = &self.consts_at(&ctx);
@@ -4795,7 +4795,7 @@ impl AlignRule {
                 Some(CellAlign::Center) | None => 0.5,
             },
             Self::AlignPairs => {
-                if j % 2 == 0 {
+                if j.is_multiple_of(2) {
                     1.0 // the left column of a pair sets right, toward the point
                 } else {
                     0.0 // the right column sets left, away from it

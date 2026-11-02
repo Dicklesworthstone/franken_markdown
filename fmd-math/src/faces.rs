@@ -269,10 +269,11 @@ impl FaceSet {
         let mut codes = vec![None; usize::from(sfnt.num_glyphs)];
         for &(ch, code) in chars {
             let gid = sfnt.glyph_index(ch);
-            if gid != 0 && font.char(code).is_some() {
-                if let Some(slot) = codes.get_mut(usize::from(gid)) {
-                    *slot = Some(code);
-                }
+            if gid != 0
+                && font.char(code).is_some()
+                && let Some(slot) = codes.get_mut(usize::from(gid))
+            {
+                *slot = Some(code);
             }
         }
         if let Some(slot) = self.tfm.get_mut(face.0) {

@@ -532,10 +532,8 @@ fn emit_scripts(
             w.close("mrow");
         }
     }
-    if has_sub {
-        if let Some(s) = sub {
-            emit_node(w, s, style);
-        }
+    if has_sub && let Some(s) = sub {
+        emit_node(w, s, style);
     }
     if has_sup {
         emit_superscript(w, sup, primes, style);

@@ -130,6 +130,8 @@ export interface FlowTextItem extends FlowItemBase {
   readonly colorRole: string;
   readonly fontSize: number;
   readonly fontRun: FlowFontRun | null;
+  /** Optional native RGBA label color in 0..1. Omission retains colorRole. */
+  readonly fill?: readonly [number, number, number, number];
   /** Absolute logical baseline supplied by native mixed-line layout. Finite
    * within bounds; absent/null retains the legacy font-derived baseline. */
   readonly baselineY?: number | null;
@@ -164,19 +166,36 @@ export interface FlowVectorItem extends FlowItemBase {
   readonly strokeWidth: number;
   readonly colorRole: string;
 }
-/** Closed, nonzero-filled contours in absolute logical display coordinates
- * (y increases downward). Bounds include all endpoints and control points. */
+/** Absolute logical display coordinates (y increases downward). Filled
+ * contours must close; stroke-only paths may have nonempty open subpaths.
+ * Bounds include endpoints, control points and the conservative stroke halo. */
 export type FlowDisplayPathCommand =
   | readonly ["M", number, number]
   | readonly ["L", number, number]
   | readonly ["Q", number, number, number, number]
   | readonly ["C", number, number, number, number, number, number]
   | readonly ["Z"];
+export interface FlowPathStroke {
+  readonly color: readonly [number, number, number, number];
+  /** Finite positive logical width, at most 1,000,000. */
+  readonly width: number;
+  /** At most 16 finite nonnegative lengths, each at most 1,000,000.
+   * A nonempty pattern must contain at least one positive length. */
+  readonly dash: readonly number[];
+  readonly dashOffset: number;
+  readonly cap: "butt" | "round" | "square";
+  readonly join: "miter" | "round" | "bevel";
+  /** Finite value from 1 through 1,000,000. */
+  readonly miterLimit: number;
+}
 export interface FlowPathItem extends FlowItemBase {
   readonly kind: "path";
   readonly colorRole: string;
-  /** Explicit RGBA in 0..1 overrides the host's semantic palette role. */
+  /** Explicit RGBA in 0..1. With stroke, null means no fill; without stroke,
+   * null preserves legacy filling with the semantic palette role. */
   readonly fill: readonly [number, number, number, number] | null;
+  /** Absent/null retains legacy closed, filled path behavior. */
+  readonly stroke?: FlowPathStroke | null;
   /** At most 65,536 commands per item, 262,144 across a native display. */
   readonly commands: readonly FlowDisplayPathCommand[];
 }
@@ -252,6 +271,7 @@ export interface FlowReadingNode {
     | "paragraph"
     | "code-block"
     | "math"
+    | "diagram"
     | "list"
     | "list-item"
     | "table"

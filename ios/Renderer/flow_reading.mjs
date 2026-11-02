@@ -25,6 +25,7 @@ const ROLES = new Set([
   "paragraph",
   "code-block",
   "math",
+  "diagram",
   "list",
   "list-item",
   "table",
@@ -38,7 +39,7 @@ const ROLES = new Set([
 ]);
 const ROWS = new Set(["table-header-row", "table-row"]);
 const CELLS = new Set(["table-header-cell", "table-cell"]);
-const LEAVES = new Set(["heading", "paragraph", "code-block", "math", "thematic-break", "image"]);
+const LEAVES = new Set(["heading", "paragraph", "code-block", "math", "diagram", "thematic-break", "image"]);
 const owned = new WeakSet(),
   sessions = new WeakMap();
 function record(value, keys) {
@@ -275,7 +276,7 @@ function* inlineMetadata(raw, budget, retained) {
   retained.runs += input.length;
   if (retained.runs > budget.maxInlineRuns)
     fail("READING_LIMIT", "reading inline-run limit exceeded");
-  if (input.length && (raw.children.length || ["image", "thematic-break", "code-block", "math"].includes(raw.role)))
+  if (input.length && (raw.children.length || ["image", "thematic-break", "code-block", "math", "diagram"].includes(raw.role)))
     invalid("inline ranges require a semantic text leaf");
   // Capture bounded array membership before suspending. Primitive fields are
   // captured, validated and privately copied before their objects are released;

@@ -605,8 +605,8 @@ export class FlowCanvasRenderer {
       const color = Object.hasOwn(this.#colors, plan.color)
         ? this.#colors[plan.color]
         : this.#colors.text;
-      context.fillStyle = plan.kind === "path" && plan.fill !== null
-        ? `rgba(${plan.fill[0] * 255},${plan.fill[1] * 255},${plan.fill[2] * 255},${plan.fill[3]})`
+      context.fillStyle = (plan.kind === "path" || plan.kind === "text") && plan.fill !== null
+        ? rgbaStyle(plan.fill)
         : color;
       context.strokeStyle = color;
       if (plan.kind === "text") {
@@ -633,7 +633,17 @@ export class FlowCanvasRenderer {
           const pause = checkpoint(cost);
           if (pause) await pause;
         }
-        context.fill("nonzero");
+        if (plan.fill !== null || plan.stroke === null) context.fill("nonzero");
+        if (plan.stroke !== null) {
+          context.strokeStyle = rgbaStyle(plan.stroke.color);
+          context.lineWidth = plan.stroke.width;
+          context.lineCap = plan.stroke.cap;
+          context.lineJoin = plan.stroke.join;
+          context.miterLimit = plan.stroke.miterLimit;
+          context.setLineDash(plan.stroke.dash);
+          context.lineDashOffset = plan.stroke.dashOffset;
+          context.stroke();
+        }
       } else if (plan.kind === "vector") drawVector(context, plan);
       else if (plan.image != null)
         context.drawImage(
@@ -737,6 +747,9 @@ function* textPlan(item, bounds, clip, glyphBudget) {
   if (size <= 0 || size !== run.fontSize) fail("INVALID_WASM_RESPONSE", "font sizes disagree");
   const primaryFontId = identity(run.fontId), fontIds = new Set([primaryFontId]);
   const color = item.colorRole;
+  const badFill = () => fail("INVALID_WASM_RESPONSE", "invalid text fill");
+  const rawFill = dataField(item, "fill", badFill);
+  const fill = rawFill === undefined ? null : rgba(rawFill, badFill);
   const { baselineY, mathFallback } = textPlacement(item, bounds);
   const glyphs = new Array(run.glyphs.length);
   let count = 0;
@@ -790,6 +803,7 @@ function* textPlan(item, bounds, clip, glyphBudget) {
     fontIds,
     glyphs,
     color,
+    fill,
     baselineY,
     mathFallback,
   };
@@ -824,34 +838,89 @@ function textPlacement(item, bounds) {
   }
   return { baselineY, mathFallback };
 }
-// Native filled paths carry absolute coordinates and a conservative control
-// hull. Copy bounded tuples while validating, without retaining caller arrays
-// across an event-loop turn. No SVG, CSS, font lookup or code is interpreted.
+// New paint metadata is data-only and owned before any cooperative yield.
+// Never invoke an accessor to learn a color, dash entry or stroke option.
+function dataField(value, key, bad) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (descriptor === undefined) {
+    if (key in value) bad();
+    return undefined;
+  }
+  if (!Object.hasOwn(descriptor, "value")) bad();
+  return descriptor.value;
+}
+function dataArray(value, maximum, bad, exact = null) {
+  if (!Array.isArray(value)) bad();
+  const length = dataField(value, "length", bad);
+  if (!Number.isSafeInteger(length) || length < 0 || length > maximum
+      || (exact !== null && length !== exact)) bad();
+  if (Reflect.ownKeys(value).length !== length + 1) bad();
+  const copied = new Array(length);
+  for (let i = 0; i < length; i++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+    if (!descriptor || !Object.hasOwn(descriptor, "value")) bad();
+    copied[i] = descriptor.value;
+  }
+  return copied;
+}
+function rgba(value, bad) {
+  const copied = dataArray(value, 4, bad, 4);
+  if (!copied.every(component => typeof component === "number" && Number.isFinite(component)
+      && component >= 0 && component <= 1)) bad();
+  return Object.freeze(copied);
+}
+function rgbaStyle(color) {
+  return `rgba(${color[0] * 255},${color[1] * 255},${color[2] * 255},${color[3]})`;
+}
+function pathStroke(value, bad) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) bad();
+  const names = ["color", "width", "dash", "dashOffset", "cap", "join", "miterLimit"];
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== names.length || keys.some(key => !names.includes(key))) bad();
+  const color = rgba(dataField(value, "color", bad), bad),
+    width = dataField(value, "width", bad),
+    dash = dataArray(dataField(value, "dash", bad), 16, bad),
+    dashOffset = dataField(value, "dashOffset", bad),
+    cap = dataField(value, "cap", bad),
+    join = dataField(value, "join", bad),
+    miterLimit = dataField(value, "miterLimit", bad);
+  const finite = (n, bound) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= bound;
+  if (!finite(width, 1e6) || width <= 0 || !finite(miterLimit, 1e6) || miterLimit < 1
+      || !finite(dashOffset, 1e12) || !["butt", "round", "square"].includes(cap)
+      || !["miter", "round", "bevel"].includes(join)
+      || !dash.every(value => finite(value, 1e6) && value >= 0)
+      || (dash.length && !dash.some(value => value > 0))) bad();
+  return Object.freeze({ color, width, dash: Object.freeze(dash), dashOffset, cap, join, miterLimit });
+}
+// Native paths carry absolute coordinates and a conservative control hull,
+// expanded by the same stroke halo as Rust. Filled contours stay closed;
+// stroke-only paths can contain several nonempty open or closed subpaths.
+// No SVG, CSS, font lookup or executable source is interpreted here.
 function displayPathPlan(item, bounds, clip, remaining) {
-  const bad = () => fail("INVALID_WASM_RESPONSE", "invalid filled display path");
-  const { commands: input, fill: rawFill, colorRole: color } = item;
+  const bad = () => fail("INVALID_WASM_RESPONSE", "invalid display path");
+  const input = dataField(item, "commands", bad),
+    rawFill = dataField(item, "fill", bad),
+    color = dataField(item, "colorRole", bad),
+    stroke = pathStroke(dataField(item, "stroke", bad), bad);
   if (!Array.isArray(input) || !input.length || typeof color !== "string") bad();
   const count = input.length;
   if (count > MAX_DISPLAY_PATH_COMMANDS) bad();
   if (count > remaining) fail("BUDGET_EXCEEDED", "visible paths exceed frame budget");
-  let fill = null;
-  if (rawFill !== null) {
-    if (!Array.isArray(rawFill) || rawFill.length !== 4) bad();
-    fill = [rawFill[0], rawFill[1], rawFill[2], rawFill[3]];
-    if (!fill.every(value => typeof value === "number" && Number.isFinite(value)
-        && value >= 0 && value <= 1)) bad();
-    Object.freeze(fill);
-  }
-  // Same tolerance as DisplayPath::is_valid: only f32 edge reconstruction,
-  // including absolute page offsets, may extend beyond the declared hull.
+  const fill = rawFill === null ? null : rgba(rawFill, bad);
+  const filled = fill !== null || stroke === null;
+  const halo = stroke === null ? 0 : stroke.width / 2
+    * Math.max(stroke.join === "miter" ? stroke.miterLimit : 1,
+      stroke.cap === "square" ? Math.SQRT2 : 1);
   const right = bounds.x + bounds.width, bottom = bounds.y + bounds.height;
   const epsilon = 0.00001 + 4 * 2 ** -23
     * Math.max(1, Math.abs(bounds.x), Math.abs(bounds.y), Math.abs(right), Math.abs(bottom));
   const commands = [];
   let open = false, drawn = false;
   for (let i = 0; i < count; i++) {
-    const raw = input[i];
-    if (!Array.isArray(raw)) bad();
+    const descriptor = Object.getOwnPropertyDescriptor(input, String(i));
+    if (!descriptor || !Object.hasOwn(descriptor, "value")) bad();
+    const raw = dataArray(descriptor.value, 7, bad);
     const op = raw[0];
     const size = op === "M" || op === "L" ? 3 : op === "Q" ? 5 : op === "C" ? 7 : op === "Z" ? 1 : 0;
     if (!size || raw.length !== size) bad();
@@ -859,12 +928,12 @@ function displayPathPlan(item, bounds, clip, remaining) {
     for (let j = 1; j < size; j += 2) {
       const x = raw[j], y = raw[j + 1];
       if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)
-          || x < bounds.x - epsilon || x > right + epsilon
-          || y < bounds.y - epsilon || y > bottom + epsilon) bad();
+          || x - halo < bounds.x - epsilon || x + halo > right + epsilon
+          || y - halo < bounds.y - epsilon || y + halo > bottom + epsilon) bad();
       command.push(x, y);
     }
     if (op === "M") {
-      if (open) bad();
+      if (open && (filled || !drawn)) bad();
       open = true; drawn = false;
     } else {
       if (!open) bad();
@@ -875,8 +944,8 @@ function displayPathPlan(item, bounds, clip, remaining) {
     }
     commands.push(Object.freeze(command));
   }
-  if (open) bad();
-  return { kind: "path", bounds, clip, commands, color, fill };
+  if (open && (filled || !drawn)) bad();
+  return { kind: "path", bounds, clip, commands, color, fill, stroke };
 }
 function* drawPath(context, commands) {
   let work = 0;

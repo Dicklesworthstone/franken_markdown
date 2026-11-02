@@ -177,7 +177,7 @@ export class FlowReaderView {
       // The admitted AST text owns hard breaks and repeated spaces. Native
       // Selection/Copy must not collapse those characters around inline spans.
       // Keep code's existing pre/code presentation policy unchanged.
-      if (node.role !== "code-block") parent.style.whiteSpace = "pre-wrap";
+      if (node.role !== "code-block" && node.role !== "diagram") parent.style.whiteSpace = "pre-wrap";
       const segments = [];
       const part = function* (start, end, destination, style = null, math = null) {
         if (start === end && node.text.length) return;
@@ -252,6 +252,11 @@ export class FlowReaderView {
         case "code-block":
           el = make("pre");
           break;
+        case "diagram":
+          el = make("section");
+          el.setAttribute("role", "region");
+          el.setAttribute("aria-label", "Diagram source");
+          break;
         case "math":
           el = make("div");
           el.setAttribute("role", "math");
@@ -300,7 +305,8 @@ export class FlowReaderView {
       el.setAttribute("data-flow-node", String(node.index));
       elements.set(node.index, el);
       if (node.children.length) yield* append(node.children, el, node.role);
-      else if (node.role === "code-block") {
+      else if (node.role === "code-block" || node.role === "diagram") {
+        const pre = node.role === "diagram" ? make("pre") : el;
         const code = make("code");
         yield* text(node, code);
         // Keep the final empty line box: Chromium otherwise omits one terminal
@@ -311,7 +317,8 @@ export class FlowReaderView {
           terminalLine.setAttribute("aria-hidden", "true");
           code.append(terminalLine);
         }
-        el.append(code);
+        pre.append(code);
+        if (pre !== el) el.append(pre);
       } else if (node.role === "image") {
         const caption = make("figcaption"),
           link = linkElement(node, node.imageLink, null, null);

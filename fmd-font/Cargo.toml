@@ -5,9 +5,9 @@
 # external consumer; see the franken_manim UPSTREAM_LEDGER).
 [package]
 name = "fmd-font"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license-file = "LICENSE"
 description = "Clean-room TrueType/OpenType font reader, TrueType/CFF subsetter and bounded text shaper (franken_markdown's font subsystem)"
 repository = "https://github.com/Dicklesworthstone/franken_markdown"

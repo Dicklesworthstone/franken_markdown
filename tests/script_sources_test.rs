@@ -296,7 +296,7 @@ fn ios_renderer_sync_rebuilds_before_copy_and_keeps_check_mode_read_only() -> Te
             )
         })?;
     let first_copy = script
-        .find("cp -f \"$pkg_dir/franken_markdown.js\"")
+        .find("cp -f \"$pkg_dir/$relative\" \"$dest_dir/$relative\"")
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "renderer copy is missing"))?;
 
     assert!(

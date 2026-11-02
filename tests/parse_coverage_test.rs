@@ -1368,20 +1368,26 @@ fn an_unclosed_inline_comment_stays_literal() {
 // ---- HTML block classifier edges --------------------------------------------
 
 #[test]
-fn a_bang_declaration_without_a_letter_is_a_blank_terminated_block() {
-    // `<!1>` is not a type-4 declaration (no ASCII letter after `<!`), so it falls
-    // to the historical bare-`<!` blank-terminated block form.
+fn a_bang_without_a_letter_is_paragraph_text_not_an_html_block() {
+    // CommonMark 0.31.2 §4.6 start condition 4 needs an ASCII letter after `<!`,
+    // and §6.6 only accepts `<!` + letter as a declaration, so `<!1>` is
+    // paragraph text with its `<` and `>` escaped (since 67edda4e dropped the
+    // historical bare-`<!` blank-terminated block form).
     let out = html_raw("<!1>\n\npara");
-    assert!(out.contains("<!1>"), "{out}");
+    assert!(out.contains("<p>&lt;!1&gt;</p>"), "{out}");
     assert!(out.contains("<p>para</p>"), "{out}");
 }
 
 #[test]
-fn a_hyphenated_unknown_tag_is_classified_but_is_not_a_block_tag() {
-    // `<my-tag>` exercises the hyphen branch of tag-name scanning; it is not a
-    // recognized block tag, so it stays inline-in-paragraph.
+fn a_hyphenated_unknown_tag_line_opens_a_type_7_html_block() {
+    // `<my-tag>` exercises the hyphen branch of tag-name scanning. It is a
+    // complete open tag (§6.6: a letter, then letters, digits or hyphens) alone
+    // on its line, so §4.6 start condition 7 opens an HTML block that runs to
+    // the next blank line, as in Examples 162 and 163 (since 67edda4e). A type 7
+    // block cannot interrupt a paragraph; here it starts the document.
     let out = html_raw("<my-tag>\ncontent");
-    assert!(out.contains("<p><my-tag>\ncontent</p>"), "{out}");
+    assert!(out.contains("<my-tag>\ncontent"), "{out}");
+    assert!(!out.contains("<p>"), "{out}");
 }
 
 #[test]

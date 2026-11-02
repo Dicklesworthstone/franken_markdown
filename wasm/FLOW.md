@@ -60,17 +60,17 @@ and `selectText(...).text` are deliberately separate copy operations.
 
 `snapshot`, `readingOrder` and `pendingAssets` return schema-version-one pages
 with `offset`, `total`, `nextOffset`, `revision` and `layoutRevision`. Drawing
-items include text/glyph runs, image references, vector decorations, filled paths
-and heading or link anchors. Reading nodes retain table row/cell roles and hierarchy.
+items include text/glyph runs, image references, vector decorations, filled or
+stroked paths and heading or link anchors. Reading nodes retain table row/cell roles and hierarchy.
 
 Display and inline math are typeset by the shared `fmd_math` engine into bounded `path`
 primitives, including real font outlines, fraction bars, roots and formula
 colors. Commands are absolute M/L/Q/C/Z contours with nonzero fill; `fill` is
 either null (use `colorRole`) or explicit RGBA in 0..1. The primitive carries
 the original enclosing source span. Each path is limited to 65,536 commands,
-and the display to 262,144 filled-path commands. Canvas details are in `CANVAS.md`.
+and the shared math/diagram display to 262,144 path commands. Canvas details are in `CANVAS.md`.
 Text lines with measured font metrics carry `baselineY` on text items, including
-mixed text/math and optional CJK lines. Canvas validates and uses that native
+mixed text/math, optional CJK lines and diagram labels. Canvas validates and uses that native
 coordinate rather than inferring placement from the expanded line height.
 Absent/null baselines retain the older text presentation policy.
 Inline fallback text exposes a bounded, nonempty `mathFallback` reason and keeps
@@ -116,6 +116,34 @@ bytes are unchanged. Retrieval through `assetBytes(id, revision)` is generation
 checked; `null` means a known dimension-only result. Bytes returned to JS are
 owned copies. Stop presenting old snapshots immediately when authorization is
 revoked, including when a refresh transaction fails.
+
+## Native Mermaid diagrams
+
+Every `wasm-flow` build renders supported flowcharts, sequence diagrams and pie
+charts as native paths with measured bundled-font labels. Dashed and thick
+strokes, arrowheads, curves, node shapes and label colors survive the shared
+compiler. The complete measured scene fits the available lane and refits after
+reflow. It keeps the compiler's light colors on an explicit white backdrop.
+Canvas consumes native paths and glyph outlines without browser text shaping,
+SVG execution, images or resource fetching.
+
+Path items may now carry an optional `stroke` record with RGBA color, width,
+dash lengths/offset, cap, join and miter limit. All seven fields are required
+when a stroke exists. With a stroke, `fill: null` means stroke-only and admits
+nonempty open subpaths; explicit RGBA fill paints both, with closed contours.
+Absent/null stroke retains the existing closed-fill contract. Optional text
+`fill` supplies actual native label RGBA; omit it for the semantic palette.
+Bounds include conservative stroke extents. Update the consumer alongside the
+producer to preserve these additive schema-one capabilities.
+
+The `diagram` reading leaf retains complete code source for supported and
+unsupported diagrams. The reader presents a labeled region with literal
+`pre`/`code` text, preserving indentation and final-newline selection/Copy.
+Unsupported syntax or scene features show a visible fallback reason and source;
+ASCII/ditaa keeps the ordinary code-block role. Source/scene limits and active
+font coverage still apply, and failed transactions retain the previous state.
+See [the complete Flow diagram contract](../docs/FLOW_DIAGRAMS.md) for examples,
+the supported syntax, limits and actual native/WASM browser checks.
 
 ## Optional horizontal CJK text
 
@@ -205,3 +233,12 @@ actual enabled and lean-off generated packages and an actual pre-change package
 for ordinary Latin pixel comparison. It checks native/WASM geometry and text,
 real CJK ink, exact selection/source bytes, edits/reflow, safe links and refused
 unsupported sequences without a substitute renderer or browser shaping engine.
+
+`tests/flow_diagram.rs` exports an actual native fixture when
+`FMD_FLOW_DIAGRAM_FIXTURE` is set. The
+`wasm/tests/flow_diagram.browser.mjs` suite runs through
+`wasm/tests/run_flow_generated.mjs` against matching generated bindings and real
+Chromium. It checks native/WASM scene and pixel parity, actual strokes and
+dashes, bundled label outlines, exact source Copy, fallback and edit/reflow
+transactions. It refuses browser text shaping and resource fetching; see
+[reproduction commands](../docs/FLOW_DIAGRAMS.md#executable-checks).

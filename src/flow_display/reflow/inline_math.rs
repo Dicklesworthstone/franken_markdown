@@ -312,6 +312,7 @@ where
                                 color
                             };
                             self.item(DisplayItem::Text(DisplayTextRun {
+                                fill: None,
                                 bounds,
                                 text: run.logical_text.clone(),
                                 font_run: Some(run),
@@ -334,8 +335,8 @@ where
                                 .map_err(FlowLayoutError::Shaping)?;
                             inventory.pending_commands -= placed.commands;
                             inventory.entries.remove(&run_index);
-                            self.math_commands = self
-                                .math_commands
+                            self.path_commands = self
+                                .path_commands
                                 .checked_add(placed.commands)
                                 .filter(|count| *count <= MAX_DISPLAY_TOTAL_PATH_COMMANDS)
                                 .ok_or(FlowLayoutError::BudgetExceeded("math path commands"))?;
@@ -517,7 +518,7 @@ where
             .ok_or(FlowLayoutError::BudgetExceeded("total shaping bytes"))?;
         let remaining_bytes = self.options.max_total_shape_bytes - self.shape_bytes;
         let remaining_commands = MAX_DISPLAY_TOTAL_PATH_COMMANDS
-            .checked_sub(self.math_commands)
+            .checked_sub(self.path_commands)
             .and_then(|count| count.checked_sub(inventory.pending_commands))
             .ok_or(FlowLayoutError::BudgetExceeded("math path commands"))?;
         let limit = remaining_commands.min(remaining_bytes / COMMAND_BYTES);

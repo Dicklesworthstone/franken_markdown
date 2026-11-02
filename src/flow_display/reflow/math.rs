@@ -368,6 +368,7 @@ impl Formula {
                 commands.push(DisplayPathCommand::Close);
             }
             let path = DisplayPath {
+                stroke: None,
                 bounds: DisplayRect::new(left, top, right - left, bottom - top),
                 commands,
                 color_role: "math".to_owned(),
@@ -434,7 +435,7 @@ where
             .filter(|bytes| *bytes <= self.options.max_total_shape_bytes)
             .ok_or(FlowLayoutError::BudgetExceeded("total shaping bytes"))?;
         let remaining_bytes = self.options.max_total_shape_bytes - self.shape_bytes;
-        let remaining_commands = MAX_DISPLAY_TOTAL_PATH_COMMANDS - self.math_commands;
+        let remaining_commands = MAX_DISPLAY_TOTAL_PATH_COMMANDS - self.path_commands;
         let command_limit = remaining_commands.min(remaining_bytes / COMMAND_BYTES);
         let result = self
             .math
@@ -447,7 +448,7 @@ where
         let (bounds, height) = match result {
             Ok(formula) => {
                 self.line()?;
-                self.math_commands += formula.commands;
+                self.path_commands += formula.commands;
                 self.shape_bytes += formula.commands * COMMAND_BYTES;
                 self.list.include_layout_bounds(formula.bounds);
                 for path in formula.paths {

@@ -129,6 +129,7 @@ pub fn layout_to_display(
 
         let span = source_offset_span(source_offset, glyph.span.start, glyph.span.end);
         let text_run = DisplayTextRun {
+            fill: None,
             baseline_y: None,
             math_fallback: None,
             bounds: glyph_bounds(dx, dy, glyph.ch, size),
@@ -461,6 +462,7 @@ pub fn diagram_fallback(
     let header_len = header_text.len();
     let header_w = (header_len as f32 * font_size * 0.55).round().max(120.0);
     items.push(DisplayItem::Text(DisplayTextRun {
+        fill: None,
         baseline_y: None,
         math_fallback: None,
         bounds: DisplayRect {
@@ -494,6 +496,7 @@ pub fn diagram_fallback(
             max_line_w = line_w;
         }
         items.push(DisplayItem::Text(DisplayTextRun {
+            fill: None,
             baseline_y: None,
             math_fallback: None,
             bounds: DisplayRect {
@@ -767,6 +770,7 @@ fn parse_flowchart_vector(
             let tx = nx + ((node_w - text_w) * 0.5).round().max(4.0);
             let ty = ny + ((node_h - text_h) * 0.5).round().max(4.0);
             items.push(DisplayItem::Text(DisplayTextRun {
+                fill: None,
                 baseline_y: None,
                 math_fallback: None,
                 bounds: DisplayRect {
@@ -905,6 +909,7 @@ fn parse_ascii_diagram_vector(
                     }));
                 } else if !text_seg.trim().is_empty() {
                     items.push(DisplayItem::Text(DisplayTextRun {
+                        fill: None,
                         baseline_y: None,
                         math_fallback: None,
                         bounds: DisplayRect {
@@ -951,6 +956,7 @@ fn parse_ascii_diagram_vector(
                 }));
             } else if !text_seg.trim().is_empty() {
                 items.push(DisplayItem::Text(DisplayTextRun {
+                    fill: None,
                     baseline_y: None,
                     math_fallback: None,
                     bounds: DisplayRect {

@@ -808,6 +808,7 @@ impl BlockFlowEngine {
                 let bounds = DisplayRect::new(origin_x, y, viewport_width, line_h);
 
                 dl.push_item(DisplayItem::Text(DisplayTextRun {
+                    fill: None,
                     baseline_y: None,
                     math_fallback: None,
                     bounds,
@@ -847,6 +848,7 @@ impl BlockFlowEngine {
                 for line in lines {
                     let bounds = DisplayRect::new(origin_x, cur_y, viewport_width, line_h);
                     dl.push_item(DisplayItem::Text(DisplayTextRun {
+                        fill: None,
                         baseline_y: None,
                         math_fallback: None,
                         bounds,
@@ -885,6 +887,7 @@ impl BlockFlowEngine {
                 match marker {
                     ListMarker::Bullet(ch) => {
                         dl.push_item(DisplayItem::Text(DisplayTextRun {
+                            fill: None,
                             baseline_y: None,
                             math_fallback: None,
                             bounds: DisplayRect::new(indent, y, marker_w, line_h),
@@ -898,6 +901,7 @@ impl BlockFlowEngine {
                     ListMarker::Ordered(num) => {
                         let marker_text = format!("{num}.");
                         dl.push_item(DisplayItem::Text(DisplayTextRun {
+                            fill: None,
                             baseline_y: None,
                             math_fallback: None,
                             bounds: DisplayRect::new(indent, y, marker_w, line_h),
@@ -945,6 +949,7 @@ impl BlockFlowEngine {
                 for line in lines {
                     let bounds = DisplayRect::new(text_x, cur_y, available, line_h);
                     dl.push_item(DisplayItem::Text(DisplayTextRun {
+                        fill: None,
                         baseline_y: None,
                         math_fallback: None,
                         bounds,
@@ -997,6 +1002,7 @@ impl BlockFlowEngine {
                 for line in lines {
                     let bounds = DisplayRect::new(text_x, cur_y, available, line_h);
                     dl.push_item(DisplayItem::Text(DisplayTextRun {
+                        fill: None,
                         baseline_y: None,
                         math_fallback: None,
                         bounds,

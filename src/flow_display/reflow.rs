@@ -8,6 +8,7 @@
 use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, ResumableFlowDisplay};
 
 mod breaks;
+mod diagram;
 mod financial;
 mod gutters;
 mod inline_math;
@@ -39,7 +40,7 @@ pub enum FlowTextRole {
 /// Explicit viewport and work limits for shaped reflow. `max_shape_bytes` bounds
 /// one call to the shaper; `max_total_shape_bytes` charges all calls, including
 /// table/list measurement, continuation windows and final-line reshaping.
-/// Display math also charges its source bytes and retained path-command payload
+/// Math and diagrams also charge source bytes and retained path-command payload
 /// against this total. The same ceiling separately bounds retained link-target
 /// bytes in styled output. Hosts must bound their shaper's execution.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -309,24 +310,38 @@ impl ResumableFlowDisplay {
                     layout.reading(role, &reading, bounds, span);
                     y += height + if meta.list_depth > 0 { 4.0 } else { 8.0 };
                 }
-                DisplayBlock::CodeBlock { source, .. } => {
-                    let height = layout.text(
-                        source,
-                        x,
-                        y,
-                        width,
-                        options.code_size,
-                        options.line_height,
-                        FlowTextRole::Code,
-                        "code",
-                        span,
-                    )?;
-                    layout.reading(
-                        AccessibleReadingRole::CodeBlock,
-                        source,
-                        DisplayRect::new(x, y, width, height),
-                        span,
-                    );
+                DisplayBlock::CodeBlock { source, language } => {
+                    let language = language.as_deref().unwrap_or("");
+                    let height = if diagram::is_figure(source, language) {
+                        layout.diagram_block(source, language, x, y, width, span)?
+                    } else {
+                        let height = layout.text(
+                            source,
+                            x,
+                            y,
+                            width,
+                            options.code_size,
+                            options.line_height,
+                            FlowTextRole::Code,
+                            "code",
+                            span,
+                        )?;
+                        layout.reading(
+                            AccessibleReadingRole::CodeBlock,
+                            source,
+                            DisplayRect::new(x, y, width, height),
+                            span,
+                        );
+                        height
+                    };
+                    if meta.quote_depth > 0 && diagram::is_figure(source, language) {
+                        layout.vector(
+                            DisplayRect::new(x - 12.0, y, 4.0, height),
+                            VectorShapeType::CalloutAccentBar,
+                            "accent",
+                            span,
+                        )?;
+                    }
                     y += height + 12.0;
                 }
                 DisplayBlock::MathBlock { source } => {
@@ -527,7 +542,7 @@ struct Reflow<'a, F: ?Sized> {
     shape_bytes: usize,
     link_bytes: usize,
     math: math::MathRenderer,
-    math_commands: usize,
+    path_commands: usize,
     alignment: Align,
     pending_marker: Option<PendingMarker>,
 }
@@ -573,7 +588,7 @@ where
             shape_bytes: 0,
             link_bytes: 0,
             math: math::MathRenderer::default(),
-            math_commands: 0,
+            path_commands: 0,
             alignment: Align::None,
             pending_marker: None,
         })
@@ -1011,6 +1026,7 @@ where
                 let line_x = self.line_start(x, width, run.total_advance, run.context.direction);
                 let bounds = DisplayRect::new(line_x, y + height, run.total_advance, line.height);
                 self.item(DisplayItem::Text(DisplayTextRun {
+                    fill: None,
                     baseline_y: line.baseline_y,
                     math_fallback: None,
                     bounds,
@@ -1059,6 +1075,7 @@ where
                 });
             }
             self.pending_marker = Some(PendingMarker::Text(DisplayTextRun {
+                fill: None,
                 baseline_y: None,
                 math_fallback: None,
                 bounds: DisplayRect::new(

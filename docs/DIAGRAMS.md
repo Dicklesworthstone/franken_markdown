@@ -149,8 +149,9 @@ after multiplication by 100. Invalid numbers, duplicate labels, extra directives
 or exceeded limits preserve the **entire source block** instead of drawing a
 partial or misleading chart. Frontmatter configuration and Mermaid initialization
 directives, including donut and legend-position customization, are not supported
-and likewise retain source. The renderer-neutral interactive Flow display bridge
-retains its existing, separate diagram capabilities.
+and likewise retain source. Browser Flow renders supported charts as native
+paths with bundled-font labels and preserves selectable diagram source; see
+[the Flow diagram contract](FLOW_DIAGRAMS.md).
 
 The supported pie grammar follows the [official Mermaid pie syntax](https://mermaid.js.org/syntax/pie.html).
 See [the example document](../examples/pie-charts.md) for ready-to-render input.

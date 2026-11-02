@@ -105,7 +105,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | PDF footnotes | Page-bottom notes under a short rule with linked superscript marks, never separated from the line that cites them; see [PDF footnotes](docs/PDF_FOOTNOTES.md) |
 | PDF display mathematics | The shared math engine draws native vector equations from dollar blocks and math fences, with measured fitting, theme colors, `/Formula` tags, extractable TeX source, and explicit fallback warnings; see [PDF mathematics](docs/PDF_MATHEMATICS.md) |
 | Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, Markdown, and Mermaid/MMD. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
-| Mermaid diagrams | `graph`/`flowchart`, `sequenceDiagram`, and `pie` fences compile with the clean-room diagram compiler into vector figures in HTML, PDF (tagged `/Figure`), SVG posters and EPUB. Pie charts support titles, exact decimal values, legends and `showData`; unsupported syntax stays highlighted source. See [diagram syntax](docs/DIAGRAMS.md) |
+| Mermaid diagrams | `graph`/`flowchart`, `sequenceDiagram`, and `pie` fences compile with the clean-room diagram compiler into vector figures in HTML, PDF (tagged `/Figure`), SVG posters and EPUB, plus native paths and bundled-font labels in browser Flow. Pie charts support titles, exact decimal values, legends and `showData`; unsupported syntax retains its complete source. See [diagram syntax](docs/DIAGRAMS.md) |
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
 | PNG, SVG, JPEG and GIF assets | File-input HTML/PDF renders auto-load relative local PNG/SVG/JPEG/GIF destinations, and PDF renders fetch remote http(s) images at render time (timeout + size cap, `--no-remote-images` to opt out, clean alt-text fallback offline). HTML embeds supported assets as data URIs; PDF draws PNG/SVG directly, decodes the first GIF frame, and embeds JPEG bytes losslessly via `/DCTDecode`. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
@@ -164,6 +164,17 @@ packages retain their smaller font set. Standardized presentation pairs such
 as `⚠️` retain both source characters in one measured cluster. ZWJ sequences,
 skin tones, flags and keycaps still require a broader host shaper. See
 [the supported emoji profile](docs/FLOW_EMOJI_TEXT.md).
+
+### Diagrams in browser Flow
+
+Flow now draws supported Mermaid flowcharts, sequence diagrams and pie charts
+with the same native compiler used by the publication outputs. Paths preserve
+arrows, curves, thick/dashed strokes and colors; labels use actual bundled-font
+outlines. Figures fit their measured lane after reflow, and the semantic reader
+retains exact selectable diagram source. Unsupported syntax shows a visible
+explanation and the complete source. This is included in every `wasm-flow`
+build; rebuild the generated package with its matching browser modules.
+See [Flow diagrams](docs/FLOW_DIAGRAMS.md) for the API, limits and browser checks.
 
 ### Mainline Highlights
 

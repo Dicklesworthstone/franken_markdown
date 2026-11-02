@@ -269,6 +269,7 @@ where
                             color
                         };
                         self.item(DisplayItem::Text(DisplayTextRun {
+                            fill: None,
                             bounds,
                             text: fragment.run.logical_text.clone(),
                             font_run: Some(fragment.run),

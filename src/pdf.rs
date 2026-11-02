@@ -47,6 +47,7 @@ mod data_uri;
 mod fenced_code;
 mod figure_fit;
 mod financial_tables;
+pub(crate) mod flow_diagram;
 mod gif;
 mod inline_code;
 mod inline_image;

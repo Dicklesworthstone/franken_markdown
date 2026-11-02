@@ -65,6 +65,16 @@ impl Json {
         self.number(rect.height)?;
         self.write_char('}')
     }
+    fn rgba(&mut self, color: [f32; 4]) -> fmt::Result {
+        self.write_char('[')?;
+        for (index, channel) in color.into_iter().enumerate() {
+            if index != 0 {
+                self.write_char(',')?;
+            }
+            self.number(channel)?;
+        }
+        self.write_char(']')
+    }
     fn span(&mut self, span: SourceSpan) -> fmt::Result {
         write!(
             self,
@@ -177,6 +187,10 @@ fn display_item(
             w.string(&text.color_role)?;
             w.write_str(",\"fontSize\":")?;
             w.number(text.font_size)?;
+            if let Some(fill) = text.fill {
+                w.write_str(",\"fill\":")?;
+                w.rgba(fill)?;
+            }
             if let Some(baseline) = text.baseline_y {
                 w.write_str(",\"baselineY\":")?;
                 w.number(baseline)?;
@@ -217,16 +231,39 @@ fn display_item(
             w.string(&path.color_role)?;
             w.write_str(",\"fill\":")?;
             if let Some(fill) = path.fill {
-                w.write_char('[')?;
-                for (i, channel) in fill.into_iter().enumerate() {
-                    if i != 0 {
-                        w.write_char(',')?;
-                    }
-                    w.number(channel)?;
-                }
-                w.write_char(']')?;
+                w.rgba(fill)?;
             } else {
                 w.write_str("null")?;
+            }
+            if let Some(stroke) = &path.stroke {
+                w.write_str(",\"stroke\":{\"color\":")?;
+                w.rgba(stroke.color)?;
+                w.write_str(",\"width\":")?;
+                w.number(stroke.width)?;
+                w.write_str(",\"dash\":[")?;
+                for (index, value) in stroke.dash.iter().enumerate() {
+                    if index != 0 {
+                        w.write_char(',')?;
+                    }
+                    w.number(*value)?;
+                }
+                w.write_str("],\"dashOffset\":")?;
+                w.number(stroke.dash_offset)?;
+                w.write_str(",\"cap\":")?;
+                w.string(match stroke.cap {
+                    crate::display::DisplayLineCap::Butt => "butt",
+                    crate::display::DisplayLineCap::Round => "round",
+                    crate::display::DisplayLineCap::Square => "square",
+                })?;
+                w.write_str(",\"join\":")?;
+                w.string(match stroke.join {
+                    crate::display::DisplayLineJoin::Miter => "miter",
+                    crate::display::DisplayLineJoin::Round => "round",
+                    crate::display::DisplayLineJoin::Bevel => "bevel",
+                })?;
+                w.write_str(",\"miterLimit\":")?;
+                w.number(stroke.miter_limit)?;
+                w.write_char('}')?;
             }
             w.write_str(",\"commands\":[")?;
             for (i, command) in path.commands.iter().enumerate() {
@@ -395,6 +432,7 @@ fn reading_node(
         AccessibleReadingRole::Paragraph => "paragraph",
         AccessibleReadingRole::CodeBlock => "code-block",
         AccessibleReadingRole::Math => "math",
+        AccessibleReadingRole::Diagram => "diagram",
         AccessibleReadingRole::List => "list",
         AccessibleReadingRole::ListItem => "list-item",
         AccessibleReadingRole::Table => "table",

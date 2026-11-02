@@ -1,7 +1,7 @@
 //! Syntax paint over the authoritative shaped flow. Lexing never chooses line
 //! breaks, reshapes a token, or changes the accessible source transcript.
 
-use super::{DisplayItem, DisplayList, DisplayRect, DisplayTextRun};
+use super::{AccessibleReadingRole, DisplayItem, DisplayList, DisplayRect, DisplayTextRun};
 use crate::flow_display::{
     DisplayBlock, FlowInlineStyle, FlowLayoutError, FlowLayoutOptions, FlowTextRole,
     ResumableFlowDisplay,
@@ -9,6 +9,7 @@ use crate::flow_display::{
 use crate::highlight::{self, Span, Tok};
 use crate::span::SourceSpan;
 use crate::text::{OwnedTextRun, RunGlyph, TextCluster};
+use std::collections::HashSet;
 
 #[path = "code_hosts.rs"]
 mod hosts;
@@ -154,6 +155,7 @@ impl Fence<'_> {
         for (first, end, kind, left, right) in groups {
             let fragment = fragment(run, &logical[first..end], left, right)?;
             let item = DisplayTextRun {
+                fill: text.fill,
                 baseline_y: text.baseline_y,
                 math_fallback: text.math_fallback.clone(),
                 bounds: DisplayRect::new(
@@ -250,6 +252,32 @@ fn paint(
     if blocks.len() != list.reading_order.len() {
         return Err(FlowLayoutError::InvalidShapedRun);
     }
+    // Successful figures have a native backdrop matching the reading bounds.
+    // A source fallback has no diagram paths and must still consume every code
+    // byte through the ordinary painter. Include geometry as well as the span:
+    // hosts projecting unspanned ASTs may reuse the same default source span.
+    let figure_key = |span: SourceSpan, bounds: DisplayRect| {
+        (
+            span.start,
+            span.end,
+            [
+                bounds.x.to_bits(),
+                bounds.y.to_bits(),
+                bounds.width.to_bits(),
+                bounds.height.to_bits(),
+            ],
+        )
+    };
+    let figures: HashSet<_> = list
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            DisplayItem::Path(path) if path.color_role == "diagram" => {
+                Some(figure_key(path.source_span, path.bounds))
+            }
+            _ => None,
+        })
+        .collect();
     let fences: Vec<_> = blocks
         .iter()
         .zip(&list.reading_order)
@@ -261,6 +289,11 @@ fn paint(
             else {
                 return None;
             };
+            if reading.role == AccessibleReadingRole::Diagram
+                && figures.contains(&figure_key(reading.source_span, reading.bounds))
+            {
+                return None;
+            }
             highlight::is_supported(language).then_some(Fence {
                 source,
                 language,

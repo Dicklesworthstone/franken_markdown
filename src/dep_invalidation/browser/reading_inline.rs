@@ -86,7 +86,13 @@ pub(super) fn fields(
                 image_link = engine.image_link_for_block(index);
             }
             DisplayBlock::CodeBlock { source, .. } => {
-                if node.role != AccessibleReadingRole::CodeBlock || node.text != *source {
+                // Shaped Flow may draw the compiler's diagram geometry while
+                // retaining the same literal fence body as its reading node.
+                if !matches!(
+                    node.role,
+                    AccessibleReadingRole::CodeBlock | AccessibleReadingRole::Diagram
+                ) || node.text != *source
+                {
                     return Err(fmt::Error);
                 }
             }

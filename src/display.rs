@@ -19,7 +19,8 @@ mod code;
 #[path = "display/path.rs"]
 mod path;
 pub use path::{
-    DisplayPath, DisplayPathCommand, MAX_DISPLAY_PATH_COMMANDS, MAX_DISPLAY_TOTAL_PATH_COMMANDS,
+    DisplayLineCap, DisplayLineJoin, DisplayPath, DisplayPathCommand, DisplayPathStroke,
+    MAX_DISPLAY_PATH_COMMANDS, MAX_DISPLAY_STROKE_DASHES, MAX_DISPLAY_TOTAL_PATH_COMMANDS,
 };
 
 #[path = "display/spatial.rs"]
@@ -109,6 +110,8 @@ pub struct DisplayTextRun {
     pub font_run: Option<OwnedTextRun>,
     /// Semantic color/palette role (e.g. "text", "heading", "code", "link", "strong").
     pub color_role: String,
+    /// Optional explicit RGBA ink, for colored diagram labels.
+    pub fill: Option<[f32; 4]>,
     /// Source byte span that produced this run.
     pub source_span: SourceSpan,
     /// Font size in layout units/points.
@@ -125,7 +128,10 @@ impl DisplayTextRun {
     /// Validate optional placement and formula diagnostics before publication.
     #[must_use]
     pub fn has_valid_placement(&self) -> bool {
-        self.baseline_y.is_none_or(|baseline| {
+        self.fill.is_none_or(|rgba| {
+            rgba.into_iter()
+                .all(|value| value.is_finite() && (0.0..=1.0).contains(&value))
+        }) && self.baseline_y.is_none_or(|baseline| {
             baseline.is_finite() && baseline >= self.bounds.y && baseline <= self.bounds.bottom()
         }) && self
             .math_fallback
@@ -271,6 +277,8 @@ pub enum AccessibleReadingRole {
     CodeBlock,
     /// A displayed formula with its literal TeX source as the transcript.
     Math,
+    /// A vector diagram with its complete original source as transcript.
+    Diagram,
     /// Ordered or unordered list.
     List,
     /// List item.
@@ -390,5 +398,40 @@ impl DisplayList {
             DisplayItem::Anchor(a) => Some(a),
             _ => None,
         })
+    }
+}
+
+#[cfg(test)]
+mod text_color_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_text_ink_is_bounded_without_changing_semantic_palette_runs() {
+        let mut run = DisplayTextRun {
+            bounds: DisplayRect::new(0.0, 0.0, 10.0, 20.0),
+            text: "A".to_owned(),
+            font_run: None,
+            color_role: "text".to_owned(),
+            fill: None,
+            source_span: SourceSpan::new(0, 1),
+            font_size: 14.0,
+            baseline_y: Some(14.0),
+            math_fallback: None,
+        };
+        assert!(run.has_valid_placement());
+        run.fill = Some([1.0, 1.0, 1.0, 1.0]);
+        assert!(
+            run.has_valid_placement(),
+            "pie percentages use explicit white ink"
+        );
+        for invalid in [
+            [-0.1, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.1, 1.0],
+            [0.0, f32::NAN, 0.0, 1.0],
+            [0.0, 0.0, 0.0, f32::INFINITY],
+        ] {
+            run.fill = Some(invalid);
+            assert!(!run.has_valid_placement());
+        }
     }
 }

@@ -100,8 +100,9 @@ pub struct AssetResult {
 }
 
 /// An immutable semantic output block. Inline Markdown delimiters are already
-/// interpreted by the shared parser. Code remains literal text; display math
-/// retains its exact source and uses the shared engine during layout.
+/// interpreted by the shared parser. Code and diagram fences retain literal
+/// source; supported diagrams and display math use their shared engines during
+/// shaped layout while keeping that source available for reading and Copy.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DisplayBlock {
     Heading {
@@ -794,6 +795,7 @@ fn push_text(
     span: SourceSpan,
 ) {
     list.push_item(DisplayItem::Text(DisplayTextRun {
+        fill: None,
         baseline_y: None,
         math_fallback: None,
         bounds,

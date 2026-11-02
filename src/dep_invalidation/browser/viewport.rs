@@ -91,6 +91,7 @@ mod tests {
     #[test]
     fn viewport_payload_keeps_the_exact_existing_item_encoding() {
         let item = DisplayItem::Text(DisplayTextRun {
+            fill: None,
             baseline_y: None,
             math_fallback: None,
             bounds: DisplayRect::new(0.0, 0.0, 10.0, 20.0),

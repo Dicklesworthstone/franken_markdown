@@ -473,6 +473,7 @@ impl CodeFenceFlow {
                 return Err(CodeTableError::ArithmeticOverflow);
             }
             dl.push_item(DisplayItem::Text(DisplayTextRun {
+                fill: None,
                 baseline_y: None,
                 math_fallback: None,
                 bounds: DisplayRect::new(x, y, width, LINE_HEIGHT),

@@ -163,7 +163,7 @@ fn wrap(text: &str, width: usize) -> Vec<&str> {
 
 fn percent(hundredths: u64, total: u128) -> String {
     let tenths = (u128::from(hundredths) * 1000 + total / 2) / total;
-    if tenths % 10 == 0 {
+    if tenths.is_multiple_of(10) {
         format!("{}%", tenths / 10)
     } else {
         format!("{}.{:01}%", tenths / 10, tenths % 10)

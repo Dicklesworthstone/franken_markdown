@@ -544,10 +544,10 @@ impl CapabilityMatrix {
             return self.plain.clone();
         }
 
-        if let Some(id) = LanguageId::from_query(trimmed) {
-            if let Some(row) = self.lookup_id(id) {
-                return row;
-            }
+        if let Some(id) = LanguageId::from_query(trimmed)
+            && let Some(row) = self.lookup_id(id)
+        {
+            return row;
         }
 
         self.plain.clone()

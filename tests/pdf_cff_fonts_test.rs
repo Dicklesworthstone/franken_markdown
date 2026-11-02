@@ -141,7 +141,9 @@ fn painted_cids(content: &str) -> BTreeSet<u16> {
                         .unwrap()
                         .0
                         .as_bytes()
-                        .chunks_exact(4)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
                         .map(|code| {
                             u16::from_str_radix(std::str::from_utf8(code).unwrap(), 16).unwrap()
                         })
@@ -160,7 +162,9 @@ fn unicode_map(cmap: &[u8]) -> BTreeMap<u16, String> {
             let units: Vec<_> = unicode
                 .trim_end_matches('>')
                 .as_bytes()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|unit| u16::from_str_radix(std::str::from_utf8(unit).unwrap(), 16).unwrap())
                 .collect();
             assert!(

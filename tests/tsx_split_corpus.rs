@@ -101,11 +101,12 @@ fn coalesce(spans: &[Span]) -> Vec<Span> {
         if span.start == span.end {
             continue;
         }
-        if let Some(last) = out.last_mut() {
-            if last.kind == span.kind && last.end == span.start {
-                last.end = span.end;
-                continue;
-            }
+        if let Some(last) = out.last_mut()
+            && last.kind == span.kind
+            && last.end == span.start
+        {
+            last.end = span.end;
+            continue;
         }
         out.push(*span);
     }

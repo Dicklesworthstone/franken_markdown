@@ -270,12 +270,12 @@ impl<'a> Shaper<'a> {
             if !glyph.visible || glyph.id == 0 {
                 continue;
             }
-            if let Some(font) = self.poster.faces[glyph.slot].as_ref() {
-                if let Some(bounds) = font.glyph_bbox(glyph.id) {
-                    let factor = size / f64::from(font.units_per_em.max(1));
-                    glyph.above = (glyph.offset_y + f64::from(bounds[3]) * factor).max(0.0);
-                    glyph.below = (-glyph.offset_y - f64::from(bounds[1]) * factor).max(0.0);
-                }
+            if let Some(font) = self.poster.faces[glyph.slot].as_ref()
+                && let Some(bounds) = font.glyph_bbox(glyph.id)
+            {
+                let factor = size / f64::from(font.units_per_em.max(1));
+                glyph.above = (glyph.offset_y + f64::from(bounds[3]) * factor).max(0.0);
+                glyph.below = (-glyph.offset_y - f64::from(bounds[1]) * factor).max(0.0);
             }
         }
         shaped
@@ -401,14 +401,12 @@ fn push_cluster(shaped: &mut ShapedText, bytes: Range<usize>, glyph: Glyph) {
     shaped.glyphs.push(glyph);
     // Zero-advance marks stay with their predecessor in emergency wrapping.
     // This is not a general mark-positioning or bidirectional shaping engine.
-    if zero {
-        if let Some(previous) = shaped.clusters.last_mut() {
-            previous.bytes.end = bytes.end;
-            previous.glyphs.end = shaped.glyphs.len();
-            previous.advance += advance;
-            previous.trailing_kern = trailing_kern;
-            return;
-        }
+    if zero && let Some(previous) = shaped.clusters.last_mut() {
+        previous.bytes.end = bytes.end;
+        previous.glyphs.end = shaped.glyphs.len();
+        previous.advance += advance;
+        previous.trailing_kern = trailing_kern;
+        return;
     }
     shaped.clusters.push(Cluster {
         bytes,

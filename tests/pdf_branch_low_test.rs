@@ -95,14 +95,14 @@ fn tiny_rgb_png(pixels: &[[u8; 3]]) -> Vec<u8> {
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    let mut chunks = bytes.chunks_exact(3);
-    for chunk in &mut chunks {
+    let (chunks, rem) = bytes.as_chunks::<3>();
+    for chunk in chunks {
         out.push(TABLE[(chunk[0] >> 2) as usize] as char);
         out.push(TABLE[(((chunk[0] & 0x03) << 4) | (chunk[1] >> 4)) as usize] as char);
         out.push(TABLE[(((chunk[1] & 0x0f) << 2) | (chunk[2] >> 6)) as usize] as char);
         out.push(TABLE[(chunk[2] & 0x3f) as usize] as char);
     }
-    match chunks.remainder() {
+    match rem {
         [a] => {
             out.push(TABLE[(a >> 2) as usize] as char);
             out.push(TABLE[((a & 0x03) << 4) as usize] as char);

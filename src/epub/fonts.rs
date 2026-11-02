@@ -107,13 +107,11 @@ impl Repertoire {
                         b.is_ascii_digit()
                     }
                 })
-            {
-                if let Some(ch) = u32::from_str_radix(digits, radix)
+                && let Some(ch) = u32::from_str_radix(digits, radix)
                     .ok()
                     .and_then(char::from_u32)
-                {
-                    relevant |= self.insert(ch)?;
-                }
+            {
+                relevant |= self.insert(ch)?;
             }
         }
         if relevant {

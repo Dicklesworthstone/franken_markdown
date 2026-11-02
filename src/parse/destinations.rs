@@ -366,10 +366,11 @@ impl DestinationTracker {
 
     fn text_range(&self, text: &str) -> Option<Range<usize>> {
         let address = text.as_ptr() as usize;
-        if let Some(offset) = address.checked_sub(self.source_address) {
-            if text.len() <= self.source_len.saturating_sub(offset) && offset <= self.source_len {
-                return Some(offset..offset + text.len());
-            }
+        if let Some(offset) = address.checked_sub(self.source_address)
+            && text.len() <= self.source_len.saturating_sub(offset)
+            && offset <= self.source_len
+        {
+            return Some(offset..offset + text.len());
         }
         let (&base, map) = self.text.range(..=address).next_back()?;
         let offset = address.checked_sub(base)?;
@@ -390,12 +391,13 @@ impl DestinationTracker {
         if copied.is_empty() {
             return;
         }
-        if let Some(last) = runs.last_mut() {
-            if last.copied.end == copied.start && last.original.end == original.start {
-                last.copied.end = copied.end;
-                last.original.end = original.end;
-                return;
-            }
+        if let Some(last) = runs.last_mut()
+            && last.copied.end == copied.start
+            && last.original.end == original.start
+        {
+            last.copied.end = copied.end;
+            last.original.end = original.end;
+            return;
         }
         runs.push(TextRun { copied, original });
     }

@@ -108,7 +108,9 @@ fn stream(object: &[u8]) -> Vec<u8> {
 fn hex_units(text: &str) -> Vec<u16> {
     assert_eq!(text.len() % 4, 0);
     text.as_bytes()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|unit| u16::from_str_radix(std::str::from_utf8(unit).unwrap(), 16).unwrap())
         .collect()
 }
@@ -142,7 +144,9 @@ fn font_refs(page: &str) -> BTreeMap<&str, usize> {
         .collect();
     assert_eq!(fields.len() % 4, 0);
     fields
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|part| {
             assert_eq!(&part[2..], &["0", "R"]);
             (part[0], part[1].parse().unwrap())

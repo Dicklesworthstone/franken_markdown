@@ -152,7 +152,9 @@ fn references(text: &str, key: &str) -> Vec<usize> {
         .collect();
     assert_eq!(fields.len() % 3, 0);
     fields
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|reference| {
             assert_eq!(&reference[1..], &["0", "R"]);
             reference[0].parse().unwrap()
@@ -191,7 +193,7 @@ fn path_bounds(body: &str) -> Rect {
             Some(&"c") if fields.len() == 7 => &fields[..6],
             _ => continue,
         };
-        for pair in coordinates.chunks_exact(2) {
+        for pair in coordinates.as_chunks::<2>().0 {
             let x: f64 = pair[0].parse().unwrap();
             let y: f64 = pair[1].parse().unwrap();
             bounds[0] = bounds[0].min(x);

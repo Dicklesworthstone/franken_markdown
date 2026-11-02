@@ -242,12 +242,12 @@ mod tests {
         );
         assert_eq!(blocks[5], original[5], "code is not rewritten");
         let mut expected_nested = original[1].clone();
-        if let Block::BlockQuote(inner) = &mut expected_nested {
-            if let Block::List(list) = &mut inner[0] {
-                list.items[0].blocks = vec![Block::Paragraph(vec![Inline::Strong(vec![
-                    Inline::Emphasis(vec![Inline::Strikethrough(vec![note_ref(&expected_id)])]),
-                ])])];
-            }
+        if let Block::BlockQuote(inner) = &mut expected_nested
+            && let Block::List(list) = &mut inner[0]
+        {
+            list.items[0].blocks = vec![Block::Paragraph(vec![Inline::Strong(vec![
+                Inline::Emphasis(vec![Inline::Strikethrough(vec![note_ref(&expected_id)])]),
+            ])])];
         }
         assert_eq!(blocks[1], expected_nested);
     }

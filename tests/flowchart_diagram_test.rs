@@ -361,7 +361,9 @@ fn route_points(tag: &str) -> Vec<(f32, f32)> {
         .collect();
     assert_eq!(numbers.len() % 2, 0);
     numbers
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0], pair[1]))
         .collect()
 }

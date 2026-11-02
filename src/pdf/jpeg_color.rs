@@ -75,8 +75,8 @@ impl Frame {
             return None;
         }
         let mut ids = [0; 4];
-        for (index, component) in payload[6..].chunks_exact(3).enumerate() {
-            let [id, sampling, table] = <[u8; 3]>::try_from(component).ok()?;
+        for (index, component) in payload[6..].as_chunks::<3>().0.iter().enumerate() {
+            let [id, sampling, table] = *component;
             if ids[..index].contains(&id)
                 || !(1..=4).contains(&(sampling >> 4))
                 || !(1..=4).contains(&(sampling & 15))
@@ -113,7 +113,7 @@ impl Frame {
             return None;
         }
         let mut seen = [false; 4];
-        for component in scan[1..1 + 2 * count].chunks_exact(2) {
+        for component in scan[1..1 + 2 * count].as_chunks::<2>().0 {
             let index = self.ids.iter().position(|&id| id == component[0])?;
             let tables = component[1];
             if seen[index] || tables >> 4 > 3 || tables & 15 > 3 {
@@ -156,7 +156,9 @@ mod tests {
             let hex: String = fixture.split_whitespace().collect();
             let bytes: Vec<_> = hex
                 .as_bytes()
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
                 .collect();
             assert!(parse_jpeg_header(&bytes).is_some());

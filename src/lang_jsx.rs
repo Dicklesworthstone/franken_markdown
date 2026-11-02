@@ -561,10 +561,10 @@ pub fn find_jsx_hold_from(text: &str, spans: &[Span]) -> usize {
             }
             if slice == ">" {
                 let before = text[..last.start].trim_end();
-                if let Some(lt) = before.rfind('<') {
-                    if before[lt..].starts_with("</") {
-                        return last.end;
-                    }
+                if let Some(lt) = before.rfind('<')
+                    && before[lt..].starts_with("</")
+                {
+                    return last.end;
                 }
             }
         }

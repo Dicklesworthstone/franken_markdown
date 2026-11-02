@@ -245,7 +245,7 @@ fn push_trim4(out: &mut String, v: f64) {
     }
     out.push('.');
     let mut width = 4;
-    while frac % 10 == 0 {
+    while frac.is_multiple_of(10) {
         frac /= 10;
         width -= 1;
     }

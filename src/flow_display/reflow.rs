@@ -509,14 +509,13 @@ impl ResumableFlowDisplay {
                         is_resolved: result.is_some(),
                         source_span: span,
                     }))?;
-                    if styled {
-                        if let Some(target) = meta
+                    if styled
+                        && let Some(target) = meta
                             .image_link
                             .as_deref()
                             .and_then(super::active_link_target)
-                        {
-                            layout.link_anchor(target, bounds, span)?;
-                        }
+                    {
+                        layout.link_anchor(target, bounds, span)?;
                     }
                     layout.reading(AccessibleReadingRole::Image, &asset.alt_text, bounds, span);
                     y += bounds.height + 10.0;
@@ -548,7 +547,7 @@ struct Reflow<'a, F: ?Sized> {
 }
 
 enum PendingMarker {
-    Text(DisplayTextRun),
+    Text(Box<DisplayTextRun>),
     Task {
         bounds: DisplayRect,
         checked: bool,
@@ -860,7 +859,7 @@ where
                         marker.bounds.height = height;
                         marker.baseline_y = baseline_y;
                     }
-                    self.item(DisplayItem::Text(marker))?;
+                    self.item(DisplayItem::Text(*marker))?;
                 }
                 PendingMarker::Task {
                     mut bounds,
@@ -1074,7 +1073,7 @@ where
                     available: (gutter - 4.0).max(0.0),
                 });
             }
-            self.pending_marker = Some(PendingMarker::Text(DisplayTextRun {
+            self.pending_marker = Some(PendingMarker::Text(Box::new(DisplayTextRun {
                 fill: None,
                 baseline_y: None,
                 math_fallback: None,
@@ -1089,7 +1088,7 @@ where
                 color_role: "text".to_owned(),
                 source_span: meta.span,
                 font_size: self.options.body_size,
-            }));
+            })));
         }
         Ok(())
     }

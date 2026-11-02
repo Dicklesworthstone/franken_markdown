@@ -381,7 +381,7 @@ fn fast_paths_match_reference_on_randomized_sweep() {
             "random advance #{i} a={a} m={m}"
         );
         let d_raw = (xorshift64(&mut state) >> 32) as i32;
-        let d = if pick % 2 == 0 {
+        let d = if pick.is_multiple_of(2) {
             d_raw
         } else {
             d_raw.wrapping_neg()

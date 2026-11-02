@@ -73,7 +73,9 @@ fn font_map(pdf: &[u8], id: usize) -> FontMap {
             let text = text.trim_matches(['<', '>']);
             let units: Vec<_> = text
                 .as_bytes()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|unit| u16::from_str_radix(std::str::from_utf8(unit).unwrap(), 16).unwrap())
                 .collect();
             unicode.insert(cid, String::from_utf16(&units).unwrap());
@@ -125,7 +127,9 @@ fn painted_runs(pdf: &[u8]) -> Vec<PaintedRun> {
             .split_whitespace()
             .collect();
         let fonts: BTreeMap<_, _> = entries
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|entry| (entry[0], font_map(pdf, entry[1].parse().unwrap())))
             .collect();
         let content = stream(pdf, number_after(page, "/Contents "));
@@ -152,7 +156,7 @@ fn painted_runs(pdf: &[u8]) -> Vec<PaintedRun> {
             let mut width = 0.0;
             for item in array.split_whitespace() {
                 if let Some(hex) = item.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
-                    for code in hex.as_bytes().chunks_exact(4) {
+                    for code in hex.as_bytes().as_chunks::<4>().0 {
                         let cid =
                             u16::from_str_radix(std::str::from_utf8(code).unwrap(), 16).unwrap();
                         text.push_str(
@@ -282,7 +286,7 @@ fn assert_quote_artifacts(pdf: &[u8], opts: &PdfOptions, expect_strokes: bool) {
                 if let Ok(value) = field.parse::<f32>() {
                     operands.push(value);
                 } else if matches!(field, "m" | "l" | "c") {
-                    for point in operands.chunks_exact(2) {
+                    for point in operands.as_chunks::<2>().0 {
                         assert!(
                             point[0] >= left - 0.03 && point[0] <= right + 0.03,
                             "background leaves [{left}, {right}]: {line}"
@@ -678,11 +682,15 @@ fn inherited_list_clamps_do_not_move_headings_or_definitions_out_of_quotes() {
                     .filter_map(|token| token.parse().ok())
                     .collect();
                 let left = coordinates
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|point| point[0])
                     .fold(f32::INFINITY, f32::min);
                 let right = coordinates
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|point| point[0])
                     .fold(f32::NEG_INFINITY, f32::max);
                 (left, right)

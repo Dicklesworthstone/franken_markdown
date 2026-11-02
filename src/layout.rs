@@ -388,11 +388,11 @@ impl StyledText {
         if text.is_empty() {
             return;
         }
-        if let Some(last) = self.runs.last_mut() {
-            if last.style == style {
-                last.text.push_str(text);
-                return;
-            }
+        if let Some(last) = self.runs.last_mut()
+            && last.style == style
+        {
+            last.text.push_str(text);
+            return;
         }
         self.runs.push(StyledRun {
             text: text.to_string(),
@@ -1041,7 +1041,7 @@ fn cjk_info(ch: char) -> CjkInfo {
         0x1160..=0x11A7 | 0xD7B0..=0xD7C6 => (CjkClass::JamoVowel, true),
         0x11A8..=0x11FF | 0xD7CB..=0xD7FB => (CjkClass::JamoTrailing, true),
         0xAC00..=0xD7A3 => {
-            if (cp - 0xAC00) % 28 == 0 {
+            if (cp - 0xAC00).is_multiple_of(28) {
                 (CjkClass::HangulLv, true)
             } else {
                 (CjkClass::HangulLvt, true)
@@ -1442,26 +1442,25 @@ impl Hyphenator {
     pub fn hyphenation_points(&self, word: &str, opts: HyphenationOptions) -> Vec<usize> {
         if self.lang == HyphenLang::English
             && word.len() > opts.min_left.saturating_add(opts.min_right)
+            && let Some(points) = english_exception_points(word)
         {
-            if let Some(points) = english_exception_points(word) {
-                #[cfg(debug_assertions)]
-                debug_assert!(english_exception_table_matches_direct_lookup(
-                    self.exceptions
-                ));
+            #[cfg(debug_assertions)]
+            debug_assert!(english_exception_table_matches_direct_lookup(
+                self.exceptions
+            ));
 
-                if opts == HyphenationOptions::default() {
-                    return points.to_vec();
-                }
-
-                let len = word.len();
-                let mut out = Vec::with_capacity(points.len());
-                for &point in points {
-                    if legal_hyphen_point(point, len, opts) {
-                        out.push(point);
-                    }
-                }
-                return out;
+            if opts == HyphenationOptions::default() {
+                return points.to_vec();
             }
+
+            let len = word.len();
+            let mut out = Vec::with_capacity(points.len());
+            for &point in points {
+                if legal_hyphen_point(point, len, opts) {
+                    out.push(point);
+                }
+            }
+            return out;
         }
 
         let mut out = Vec::new();
@@ -2647,30 +2646,30 @@ pub fn break_paragraph_into(
         return;
     }
     let candidates = &scratch.candidates;
-    if !candidate_stats.has_interior_forced_break && !candidate_stats.has_rewarded_break {
-        if let (Some(&candidate), Some(width)) =
+    if !candidate_stats.has_interior_forced_break
+        && !candidate_stats.has_rewarded_break
+        && let (Some(&candidate), Some(width)) =
             (candidates.last(), candidate_stats.trailing_forced_width)
+    {
+        // Microtype (opt-in): the whole-paragraph single-line fast path must
+        // honor the same optical-margin credit the DP loop uses, or a
+        // paragraph exactly at the margin would break differently depending on
+        // which path ran. Zero for zero-protrusion boxes (default identical).
+        let (pl, pr) = paragraph_edge_protrusion(items);
+        let effective_width = line_width + LayoutUnit::from_milli_points(pl.saturating_add(pr));
+        if let Some(line) =
+            trailing_forced_fit_break(candidate, items.len(), width, effective_width)
         {
-            // Microtype (opt-in): the whole-paragraph single-line fast path must
-            // honor the same optical-margin credit the DP loop uses, or a
-            // paragraph exactly at the margin would break differently depending on
-            // which path ran. Zero for zero-protrusion boxes (default identical).
-            let (pl, pr) = paragraph_edge_protrusion(items);
-            let effective_width = line_width + LayoutUnit::from_milli_points(pl.saturating_add(pr));
-            if let Some(line) =
-                trailing_forced_fit_break(candidate, items.len(), width, effective_width)
-            {
-                scratch.forced_prefix.clear();
-                scratch.metrics.width.clear();
-                scratch.metrics.stretch.clear();
-                scratch.metrics.shrink.clear();
-                scratch.metrics.box_elasticity.clear();
-                scratch.states.clear();
-                scratch.metrics.next_box_left.clear();
-                scratch.metrics.prev_box_right.clear();
-                out.push(line);
-                return;
-            }
+            scratch.forced_prefix.clear();
+            scratch.metrics.width.clear();
+            scratch.metrics.stretch.clear();
+            scratch.metrics.shrink.clear();
+            scratch.metrics.box_elasticity.clear();
+            scratch.states.clear();
+            scratch.metrics.next_box_left.clear();
+            scratch.metrics.prev_box_right.clear();
+            out.push(line);
+            return;
         }
     }
     scratch
@@ -3846,12 +3845,12 @@ fn greedy_break_paragraph_into(
     let mut last_candidate: Option<BreakCandidate> = None;
     for &candidate in candidates {
         let mut segment = measure(start, candidate);
-        if segment.width > line_width {
-            if let Some(prev) = last_candidate {
-                emit(out, start, prev, measure(start, prev));
-                start = prev.next;
-                segment = measure(start, candidate);
-            }
+        if segment.width > line_width
+            && let Some(prev) = last_candidate
+        {
+            emit(out, start, prev, measure(start, prev));
+            start = prev.next;
+            segment = measure(start, candidate);
         }
         if candidate.penalty == FORCED_BREAK_PENALTY {
             emit(out, start, candidate, segment);

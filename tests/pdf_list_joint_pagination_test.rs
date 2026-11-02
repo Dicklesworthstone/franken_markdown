@@ -166,7 +166,9 @@ fn unicode_map(objects: &Objects<'_>, font: usize) -> BTreeMap<u16, String> {
         let encoded = entries[1].trim_matches(['<', '>']);
         let units = encoded
             .as_bytes()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|part| u16::from_str_radix(std::str::from_utf8(part).unwrap(), 16).unwrap())
             .collect::<Vec<_>>();
         map.insert(id, String::from_utf16(&units).unwrap());
@@ -207,7 +209,7 @@ fn decode_pages(pdf: &[u8], dehyphenate_fixture: bool) -> Vec<String> {
         .collect::<Vec<_>>();
     assert_eq!(kids.len() % 3, 0);
     let mut page_text = Vec::new();
-    for kid in kids.chunks_exact(3) {
+    for kid in kids.as_chunks::<3>().0 {
         assert_eq!(&kid[1..], &["0", "R"]);
         let page = objects.dictionary(kid[0].parse().unwrap());
         let resources = page
@@ -221,7 +223,9 @@ fn decode_pages(pdf: &[u8], dehyphenate_fixture: bool) -> Vec<String> {
             .collect::<Vec<_>>();
         assert_eq!(resources.len() % 4, 0);
         let fonts = resources
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|entry| (entry[0], unicode_map(&objects, entry[1].parse().unwrap())))
             .collect::<BTreeMap<_, _>>();
         let content = objects.stream(integer_after(page, "/Contents "));
@@ -263,7 +267,7 @@ fn decode_pages(pdf: &[u8], dehyphenate_fixture: bool) -> Vec<String> {
                         let font = font.expect("painted glyph needs an active font");
                         let hex = hex.trim_matches(['<', '>']);
                         assert_eq!(hex.len() % 4, 0);
-                        for glyph in hex.as_bytes().chunks_exact(4) {
+                        for glyph in hex.as_bytes().as_chunks::<4>().0 {
                             let id = u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16)
                                 .unwrap();
                             text.push_str(
@@ -397,9 +401,9 @@ fn paragraph_list_depths(pdf: &[u8]) -> Vec<usize> {
             assert!(steps < objects.offsets.len(), "acyclic tagged ancestry");
         }
         assert_eq!(ancestry.len(), lists * 3, "complete list/container chain");
-        for triple in ancestry.chunks_exact(3) {
+        for triple in ancestry.as_chunks::<3>().0 {
             assert_eq!(
-                triple,
+                *triple,
                 ["LBody", "LI", "L"],
                 "each paragraph retains its actual item owner"
             );

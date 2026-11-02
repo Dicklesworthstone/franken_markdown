@@ -272,13 +272,13 @@ fn parse_template(template: &str, values: &TokenValues) -> Vec<Piece> {
         pieces.push(Piece::Text(text));
     }
     for piece in &mut pieces {
-        if let Piece::Text(text) = piece {
-            if text.chars().any(char::is_control) {
-                *text = text
-                    .chars()
-                    .map(|c| if c.is_control() { ' ' } else { c })
-                    .collect();
-            }
+        if let Piece::Text(text) = piece
+            && text.chars().any(char::is_control)
+        {
+            *text = text
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
         }
     }
     // A slot that expands to nothing but whitespace draws nothing.

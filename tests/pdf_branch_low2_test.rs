@@ -881,14 +881,14 @@ fn embedded_image_zero_width_or_height_is_dropped() {
 fn b64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
-    let mut chunks = bytes.chunks_exact(3);
-    for c in &mut chunks {
+    let (chunks, rem) = bytes.as_chunks::<3>();
+    for c in chunks {
         out.push(T[(c[0] >> 2) as usize] as char);
         out.push(T[(((c[0] & 3) << 4) | (c[1] >> 4)) as usize] as char);
         out.push(T[(((c[1] & 15) << 2) | (c[2] >> 6)) as usize] as char);
         out.push(T[(c[2] & 63) as usize] as char);
     }
-    match chunks.remainder() {
+    match rem {
         [a] => {
             out.push(T[(a >> 2) as usize] as char);
             out.push(T[((a & 3) << 4) as usize] as char);

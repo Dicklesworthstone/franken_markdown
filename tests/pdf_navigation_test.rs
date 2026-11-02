@@ -116,7 +116,9 @@ fn references(dictionary: &str, key: &str) -> Vec<usize> {
     let fields: Vec<_> = tail.split_once(']').unwrap().0.split_whitespace().collect();
     assert_eq!(fields.len() % 3, 0);
     fields
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|fields| {
             assert_eq!(&fields[1..], &["0", "R"]);
             fields[0].parse().unwrap()
@@ -288,7 +290,9 @@ fn unicode_map(objects: &Objects<'_>, font: usize) -> BTreeMap<u16, String> {
         let hex = fields[1].trim_matches(['<', '>']);
         let units: Vec<_> = hex
             .as_bytes()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|unit| u16::from_str_radix(std::str::from_utf8(unit).unwrap(), 16).unwrap())
             .collect();
         map.insert(glyph, String::from_utf16(&units).unwrap());
@@ -320,7 +324,9 @@ fn painted_runs(objects: &Objects<'_>) -> Vec<PaintedRun> {
             .collect();
         assert_eq!(resources.len() % 4, 0);
         let fonts: BTreeMap<_, _> = resources
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|entry| (entry[0], unicode_map(objects, entry[1].parse().unwrap())))
             .collect();
         let content = objects.stream(integer(dictionary, "/Contents ").unwrap());
@@ -363,7 +369,7 @@ fn painted_runs(objects: &Objects<'_>) -> Vec<PaintedRun> {
                     hex if hex.starts_with('<') && hex.ends_with('>') => {
                         let hex = hex.trim_matches(['<', '>']);
                         assert_eq!(hex.len() % 4, 0);
-                        for glyph in hex.as_bytes().chunks_exact(4) {
+                        for glyph in hex.as_bytes().as_chunks::<4>().0 {
                             let id = u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16)
                                 .unwrap();
                             text.push_str(&font.unwrap()[&id]);

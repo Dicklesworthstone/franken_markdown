@@ -96,7 +96,9 @@ impl<'a> Objects<'a> {
             .collect();
         assert_eq!(fields.len() % 3, 0);
         fields
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|part| {
                 assert_eq!(&part[1..], &["0", "R"]);
                 part[0].parse().unwrap()
@@ -117,7 +119,9 @@ impl<'a> Objects<'a> {
             .collect();
         assert_eq!(fields.len() % 4, 0);
         fields
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|part| {
                 assert_eq!(&part[2..], &["0", "R"]);
                 let font = self.dictionary(part[1].parse().unwrap());

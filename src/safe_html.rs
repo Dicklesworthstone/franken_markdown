@@ -674,10 +674,10 @@ impl InlineBuilder {
                 return;
             }
             "img" => {
-                if !tag.closing {
-                    if let Some(image) = image_from_tag(tag) {
-                        self.push(image);
-                    }
+                if !tag.closing
+                    && let Some(image) = image_from_tag(tag)
+                {
+                    self.push(image);
                 }
                 return;
             }

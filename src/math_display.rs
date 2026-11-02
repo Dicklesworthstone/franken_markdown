@@ -209,30 +209,31 @@ pub fn extract_math_spans(source: &str) -> Vec<(String, usize)> {
     while pos < len {
         if let Some(&b'$') = bytes.get(pos) {
             // Display math: $$...$$
-            if pos + 1 < len && bytes.get(pos + 1) == Some(&b'$') {
-                if let Some(rest) = source.get(pos + 2..) {
-                    if let Some(end) = rest.find("$$") {
-                        if let Some(inner) = rest.get(..end) {
-                            if !inner.is_empty() {
-                                out.push((inner.to_owned(), pos + 2));
-                            }
-                        }
-                        pos = pos + 2 + end + 2;
-                        continue;
-                    }
+            if pos + 1 < len
+                && bytes.get(pos + 1) == Some(&b'$')
+                && let Some(rest) = source.get(pos + 2..)
+                && let Some(end) = rest.find("$$")
+            {
+                if let Some(inner) = rest.get(..end)
+                    && !inner.is_empty()
+                {
+                    out.push((inner.to_owned(), pos + 2));
                 }
+                pos = pos + 2 + end + 2;
+                continue;
             }
             // Inline math: $...$ (not $$)
-            if let Some(rest) = source.get(pos + 1..) {
-                if let Some(end) = rest.find('$') {
-                    if let Some(inner) = rest.get(..end) {
-                        if !inner.is_empty() && !inner.contains('$') {
-                            out.push((inner.to_owned(), pos + 1));
-                        }
-                    }
-                    pos = pos + 1 + end + 1;
-                    continue;
+            if let Some(rest) = source.get(pos + 1..)
+                && let Some(end) = rest.find('$')
+            {
+                if let Some(inner) = rest.get(..end)
+                    && !inner.is_empty()
+                    && !inner.contains('$')
+                {
+                    out.push((inner.to_owned(), pos + 1));
                 }
+                pos = pos + 1 + end + 1;
+                continue;
             }
         }
         pos += 1;
@@ -997,20 +998,19 @@ fn parse_node_token(token: &str, line_offset: usize) -> Option<ParsedNode> {
         end: line_offset + trimmed.len(),
     };
 
-    if let Some(open) = trimmed.find('[') {
-        if let Some(close) = trimmed.find(']') {
-            if close > open {
-                let id = trimmed.get(..open)?.trim().to_string();
-                let label = trimmed.get(open + 1..close)?.trim().to_string();
-                if !id.is_empty() {
-                    return Some(ParsedNode {
-                        id,
-                        label,
-                        span,
-                        rank: 0,
-                    });
-                }
-            }
+    if let Some(open) = trimmed.find('[')
+        && let Some(close) = trimmed.find(']')
+        && close > open
+    {
+        let id = trimmed.get(..open)?.trim().to_string();
+        let label = trimmed.get(open + 1..close)?.trim().to_string();
+        if !id.is_empty() {
+            return Some(ParsedNode {
+                id,
+                label,
+                span,
+                rank: 0,
+            });
         }
     }
 
@@ -1061,11 +1061,11 @@ fn assign_node_ranks(nodes: &mut [ParsedNode], edges: &[ParsedEdge]) {
                 .find(|n| n.id == edge.from_id)
                 .map(|n| n.rank)
                 .unwrap_or(0);
-            if let Some(to_node) = nodes.iter_mut().find(|n| n.id == edge.to_id) {
-                if to_node.rank <= from_rank {
-                    to_node.rank = from_rank + 1;
-                    changed = true;
-                }
+            if let Some(to_node) = nodes.iter_mut().find(|n| n.id == edge.to_id)
+                && to_node.rank <= from_rank
+            {
+                to_node.rank = from_rank + 1;
+                changed = true;
             }
         }
         if !changed {

@@ -218,7 +218,9 @@ fn emitted_destinations(pdf: &[u8]) -> Vec<(usize, f32)> {
     let pages: Vec<usize> = kids
         .split_whitespace()
         .collect::<Vec<_>>()
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|reference| reference[0].parse().unwrap())
         .collect();
     text.split("/Subtype /Link")

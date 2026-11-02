@@ -321,10 +321,8 @@ impl BundledFlowFonts {
                     .filter(|&n| count > 0 && n <= end)
                     .ok_or_else(|| "invalid bundled ligature source coverage".to_owned())?;
                 let mut advance = f32::from(face.font.advance_width(gid));
-                if !code {
-                    if let Some(&(following, _)) = shaped.get(index + 1) {
-                        advance += face.layout.kern.pair(gid, following) as f32;
-                    }
+                if !code && let Some(&(following, _)) = shaped.get(index + 1) {
+                    advance += face.layout.kern.pair(gid, following) as f32;
                 }
                 push_glyph(
                     &mut run,

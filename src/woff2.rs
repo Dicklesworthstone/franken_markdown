@@ -150,11 +150,10 @@ fn decode_base128(data: &[u8], pos: &mut usize) -> Result<u32> {
 
 fn calc_checksum(data: &[u8]) -> u32 {
     let mut sum = 0u32;
-    let mut chunks = data.chunks_exact(4);
-    for c in &mut chunks {
+    let (chunks, rem) = data.as_chunks::<4>();
+    for c in chunks {
         sum = sum.wrapping_add(u32::from_be_bytes([c[0], c[1], c[2], c[3]]));
     }
-    let rem = chunks.remainder();
     if !rem.is_empty() {
         let mut padded = [0u8; 4];
         padded[..rem.len()].copy_from_slice(rem);
@@ -375,14 +374,14 @@ pub fn decode_woff2(woff2: &[u8]) -> Result<Vec<u8>> {
     }
 
     // Fix head.checkSumAdjustment if head exists
-    if let Some(head_off) = head_offset_in_sfnt {
-        if sfnt_out.len() >= head_off + 12 {
-            // Clear checkSumAdjustment before checksumming
-            sfnt_out[head_off + 8..head_off + 12].copy_from_slice(&0u32.to_be_bytes());
-            let full_sum = calc_checksum(&sfnt_out);
-            let adjustment = 0xB1B0_AFBAu32.wrapping_sub(full_sum);
-            sfnt_out[head_off + 8..head_off + 12].copy_from_slice(&adjustment.to_be_bytes());
-        }
+    if let Some(head_off) = head_offset_in_sfnt
+        && sfnt_out.len() >= head_off + 12
+    {
+        // Clear checkSumAdjustment before checksumming
+        sfnt_out[head_off + 8..head_off + 12].copy_from_slice(&0u32.to_be_bytes());
+        let full_sum = calc_checksum(&sfnt_out);
+        let adjustment = 0xB1B0_AFBAu32.wrapping_sub(full_sum);
+        sfnt_out[head_off + 8..head_off + 12].copy_from_slice(&adjustment.to_be_bytes());
     }
 
     Ok(sfnt_out)

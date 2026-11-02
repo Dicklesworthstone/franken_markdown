@@ -2077,13 +2077,13 @@ fn run_render_with_preview(
     }
     // SVG streams to stdout like HTML when no path derived (stdout case), or
     // rides the staged write when a file path exists.
-    if let (Some(path), Some(bytes)) = (svg_path.as_deref(), svg_render.as_ref()) {
-        if !is_stdout_path(path) {
-            file_outputs.push(crate::file_write::OutputFile {
-                path,
-                bytes: bytes.as_slice(),
-            });
-        }
+    if let (Some(path), Some(bytes)) = (svg_path.as_deref(), svg_render.as_ref())
+        && !is_stdout_path(path)
+    {
+        file_outputs.push(crate::file_write::OutputFile {
+            path,
+            bytes: bytes.as_slice(),
+        });
     }
     if let Err(err) = crate::file_write::write_outputs_staged(&file_outputs) {
         return fail_json(
@@ -2354,10 +2354,10 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
         Some((code, (200..300).contains(&code)))
     };
     for program in ["curl", "wget"] {
-        if let Some((status, ok)) = head(program) {
-            if ok || !(status == 405 || status == 501) {
-                return (status, ok);
-            }
+        if let Some((status, ok)) = head(program)
+            && (ok || !(status == 405 || status == 501))
+        {
+            return (status, ok);
         }
     }
     // GET fallback (range-limited so we never download bodies).

@@ -278,10 +278,10 @@ fn deterministic_unordered_rectangles_match_exhaustive_clipped_reference() {
                 }
                 let mut clip = view;
                 for (j, previous) in source[..i].iter().enumerate() {
-                    if let DisplayItem::Clip(scope) = previous {
-                        if i - j <= scope.child_count {
-                            clip = intersection(clip, scope.bounds);
-                        }
+                    if let DisplayItem::Clip(scope) = previous
+                        && i - j <= scope.child_count
+                    {
+                        clip = intersection(clip, scope.bounds);
                     }
                 }
                 let bounds = item.bounds();

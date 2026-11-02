@@ -96,7 +96,9 @@ fn emitted_pages(pdf: &[u8]) -> Vec<usize> {
         .unwrap();
     kids.split_whitespace()
         .collect::<Vec<_>>()
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|reference| {
             assert_eq!(&reference[1..], &["0", "R"]);
             reference[0].parse().unwrap()

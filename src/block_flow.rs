@@ -352,11 +352,11 @@ impl BlockHeightIndex {
             let next = idx + bit;
             if next <= self.len() {
                 let candidate = *self.tree.get(next).unwrap_or(&0);
-                if let Some(new_sum) = accumulated.checked_add(candidate) {
-                    if new_sum <= target {
-                        idx = next;
-                        accumulated = new_sum;
-                    }
+                if let Some(new_sum) = accumulated.checked_add(candidate)
+                    && new_sum <= target
+                {
+                    idx = next;
+                    accumulated = new_sum;
                 }
             }
             bit >>= 1;

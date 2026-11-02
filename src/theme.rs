@@ -1180,45 +1180,46 @@ impl FontScale {
         if let Some(preset) = TypeScalePreset::parse(trimmed) {
             return Some(Self::Preset(preset));
         }
-        if let Some(pct) = trimmed.strip_suffix('%') {
-            if let Ok(val) = pct.trim().parse::<f32>() {
-                if val.is_finite() && val > 0.0 {
-                    return Some(Self::from_factor(val / 100.0));
-                }
-            }
+        if let Some(pct) = trimmed.strip_suffix('%')
+            && let Ok(val) = pct.trim().parse::<f32>()
+            && val.is_finite()
+            && val > 0.0
+        {
+            return Some(Self::from_factor(val / 100.0));
         }
-        if let Some(rem) = trimmed.strip_suffix("rem") {
-            if let Ok(val) = rem.trim().parse::<f32>() {
-                if val.is_finite() && val > 0.0 {
-                    return Some(Self::from_factor(val));
-                }
-            }
+        if let Some(rem) = trimmed.strip_suffix("rem")
+            && let Ok(val) = rem.trim().parse::<f32>()
+            && val.is_finite()
+            && val > 0.0
+        {
+            return Some(Self::from_factor(val));
         }
-        if let Some(em) = trimmed.strip_suffix("em") {
-            if let Ok(val) = em.trim().parse::<f32>() {
-                if val.is_finite() && val > 0.0 {
-                    return Some(Self::from_factor(val));
-                }
-            }
+        if let Some(em) = trimmed.strip_suffix("em")
+            && let Ok(val) = em.trim().parse::<f32>()
+            && val.is_finite()
+            && val > 0.0
+        {
+            return Some(Self::from_factor(val));
         }
-        if let Some(px) = trimmed.strip_suffix("px") {
-            if let Ok(val) = px.trim().parse::<f32>() {
-                if val.is_finite() && val > 0.0 {
-                    return Some(Self::from_factor(val / 16.0));
-                }
-            }
+        if let Some(px) = trimmed.strip_suffix("px")
+            && let Ok(val) = px.trim().parse::<f32>()
+            && val.is_finite()
+            && val > 0.0
+        {
+            return Some(Self::from_factor(val / 16.0));
         }
-        if let Some(pt) = trimmed.strip_suffix("pt") {
-            if let Ok(val) = pt.trim().parse::<f32>() {
-                if val.is_finite() && val > 0.0 {
-                    return Some(Self::from_factor(val / 11.0));
-                }
-            }
+        if let Some(pt) = trimmed.strip_suffix("pt")
+            && let Ok(val) = pt.trim().parse::<f32>()
+            && val.is_finite()
+            && val > 0.0
+        {
+            return Some(Self::from_factor(val / 11.0));
         }
-        if let Ok(val) = trimmed.parse::<f32>() {
-            if val.is_finite() && val > 0.0 {
-                return Some(Self::from_factor(val));
-            }
+        if let Ok(val) = trimmed.parse::<f32>()
+            && val.is_finite()
+            && val > 0.0
+        {
+            return Some(Self::from_factor(val));
         }
         None
     }

@@ -64,7 +64,9 @@ fn children<'a>(nodes: &'a [Node], parent: &Node) -> Vec<&'a Node> {
     let tokens: Vec<_> = kids.split_whitespace().collect();
     assert_eq!(tokens.len() % 3, 0);
     tokens
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|reference| {
             assert_eq!(&reference[1..], ["0", "R"]);
             let id: usize = reference[0].parse().unwrap();

@@ -389,14 +389,14 @@ fn load_committed_seeds() -> Vec<(String, String)> {
     let mut current: Option<(String, String)> = None;
     for line in raw.split('\n') {
         let header = line.strip_suffix('\r').unwrap_or(line);
-        if let Some(rest) = header.strip_prefix("=== ") {
-            if let Some(label) = rest.strip_suffix(" ===") {
-                if let Some(prev) = current.take() {
-                    out.push(prev);
-                }
-                current = Some((label.trim().to_owned(), String::new()));
-                continue;
+        if let Some(rest) = header.strip_prefix("=== ")
+            && let Some(label) = rest.strip_suffix(" ===")
+        {
+            if let Some(prev) = current.take() {
+                out.push(prev);
             }
+            current = Some((label.trim().to_owned(), String::new()));
+            continue;
         }
         if let Some((_, buf)) = current.as_mut() {
             if !buf.is_empty() {

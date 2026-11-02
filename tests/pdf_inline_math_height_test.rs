@@ -155,7 +155,9 @@ fn references(text: &str, key: &str) -> Vec<usize> {
         .collect();
     assert_eq!(fields.len() % 3, 0);
     fields
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|reference| {
             assert_eq!(&reference[1..], &["0", "R"]);
             reference[0].parse().unwrap()
@@ -194,7 +196,7 @@ fn path_bounds(body: &str) -> Rect {
             Some(&"c") if fields.len() == 7 => &fields[..6],
             _ => continue,
         };
-        for pair in coordinates.chunks_exact(2) {
+        for pair in coordinates.as_chunks::<2>().0 {
             let x: f64 = pair[0].parse().unwrap();
             let y: f64 = pair[1].parse().unwrap();
             bounds[0] = bounds[0].min(x);
@@ -256,7 +258,9 @@ fn unicode_map(objects: &Objects<'_>, font: usize) -> BTreeMap<u16, String> {
             let units: Vec<_> = entries[1]
                 .trim_matches(['<', '>'])
                 .as_bytes()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|unit| u16::from_str_radix(std::str::from_utf8(unit).unwrap(), 16).unwrap())
                 .collect();
             map.insert(id, String::from_utf16(&units).unwrap());
@@ -281,7 +285,9 @@ fn visible_prose(objects: &Objects<'_>, frame: Rect) -> String {
             .collect();
         assert_eq!(entries.len() % 4, 0);
         let fonts: BTreeMap<_, _> = entries
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|entry| (entry[0], unicode_map(objects, entry[1].parse().unwrap())))
             .collect();
         let content = objects.stream(number(page, "/Contents "));
@@ -319,7 +325,7 @@ fn visible_prose(objects: &Objects<'_>, frame: Rect) -> String {
                         let font = font.expect("painted text needs a font");
                         let hex = hex.trim_matches(['<', '>']);
                         assert_eq!(hex.len() % 4, 0);
-                        for glyph in hex.as_bytes().chunks_exact(4) {
+                        for glyph in hex.as_bytes().as_chunks::<4>().0 {
                             let id = u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16)
                                 .unwrap();
                             text.push_str(

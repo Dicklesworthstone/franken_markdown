@@ -125,7 +125,7 @@ impl BrowserFlowSession {
         }
         let mut edits = Vec::with_capacity(lengths.len());
         let mut cursor = 0usize;
-        for (range, &length) in ranges.chunks_exact(2).zip(lengths) {
+        for (range, &length) in ranges.as_chunks::<2>().0.iter().zip(lengths) {
             let end = cursor
                 .checked_add(length as usize)
                 .ok_or(BrowserFlowError::InvalidEditBatch)?;

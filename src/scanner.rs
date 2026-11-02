@@ -448,8 +448,8 @@ fn find_by_chunk32(
     word_matches: &impl Fn(u64) -> bool,
     byte_matches: &impl Fn(u8) -> bool,
 ) -> Option<usize> {
-    let mut chunks = bytes.chunks_exact(32);
-    for (chunk_idx, chunk) in chunks.by_ref().enumerate() {
+    let (chunks, rem) = bytes.as_chunks::<32>();
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
         if chunk32_hot(chunk, word_matches) {
             let base = chunk_idx * 32;
             // SWAR can theoretically false-positive; do not abort the scan
@@ -459,8 +459,8 @@ fn find_by_chunk32(
             }
         }
     }
-    let base = bytes.len() - chunks.remainder().len();
-    find_by_chunk16(chunks.remainder(), word_matches, byte_matches).map(|rel| base + rel)
+    let base = bytes.len() - rem.len();
+    find_by_chunk16(rem, word_matches, byte_matches).map(|rel| base + rel)
 }
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -469,8 +469,8 @@ fn find_by_chunk16(
     word_matches: &impl Fn(u64) -> bool,
     byte_matches: &impl Fn(u8) -> bool,
 ) -> Option<usize> {
-    let mut chunks = bytes.chunks_exact(16);
-    for (chunk_idx, chunk) in chunks.by_ref().enumerate() {
+    let (chunks, rem) = bytes.as_chunks::<16>();
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
         if chunk16_hot(chunk, word_matches) {
             let base = chunk_idx * 16;
             if let Some(rel) = chunk.iter().position(|&byte| byte_matches(byte)) {
@@ -478,8 +478,8 @@ fn find_by_chunk16(
             }
         }
     }
-    let base = bytes.len() - chunks.remainder().len();
-    find_by_word_scan(chunks.remainder(), word_matches, byte_matches).map(|rel| base + rel)
+    let base = bytes.len() - rem.len();
+    find_by_word_scan(rem, word_matches, byte_matches).map(|rel| base + rel)
 }
 
 fn find_by_word_scan(
@@ -487,8 +487,8 @@ fn find_by_word_scan(
     word_matches: impl Fn(u64) -> bool,
     byte_matches: impl Fn(u8) -> bool,
 ) -> Option<usize> {
-    let mut chunks = bytes.chunks_exact(8);
-    for (chunk_idx, chunk) in chunks.by_ref().enumerate() {
+    let (chunks, rem) = bytes.as_chunks::<8>();
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
         let mut lane = [0u8; 8];
         lane.copy_from_slice(chunk);
         if word_matches(u64::from_ne_bytes(lane)) {
@@ -498,10 +498,8 @@ fn find_by_word_scan(
             }
         }
     }
-    let base = bytes.len() - chunks.remainder().len();
-    chunks
-        .remainder()
-        .iter()
+    let base = bytes.len() - rem.len();
+    rem.iter()
         .position(|&byte| byte_matches(byte))
         .map(|rel| base + rel)
 }

@@ -91,21 +91,21 @@ fn document_paths(document: &Document, base_dir: &Path) -> DocumentPaths {
             // Code, math and raw HTML are never rescanned as Markdown.
             _ => None,
         };
-        if let Some((dest, image)) = destination {
-            if let Some(path) = local_path(dest, base_dir) {
-                // Do not open directories, devices, sockets or pipes. A missing
-                // image is retained so a later save can recover the preview.
-                let watch = match std::fs::metadata(&path) {
-                    Ok(metadata) => metadata.is_file(),
-                    Err(error) => image && error.kind() == std::io::ErrorKind::NotFound,
-                };
-                if watch {
-                    if image {
-                        out.images.insert(path.clone());
-                    }
-                    if seen.insert(path.clone()) {
-                        out.watched.push(path);
-                    }
+        if let Some((dest, image)) = destination
+            && let Some(path) = local_path(dest, base_dir)
+        {
+            // Do not open directories, devices, sockets or pipes. A missing
+            // image is retained so a later save can recover the preview.
+            let watch = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata.is_file(),
+                Err(error) => image && error.kind() == std::io::ErrorKind::NotFound,
+            };
+            if watch {
+                if image {
+                    out.images.insert(path.clone());
+                }
+                if seen.insert(path.clone()) {
+                    out.watched.push(path);
                 }
             }
         }

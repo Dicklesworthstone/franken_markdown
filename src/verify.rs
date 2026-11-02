@@ -358,16 +358,16 @@ pub fn to_human(
 fn finding_span(source: &str, finding: &VerifyFinding) -> Option<SourceSpan> {
     // Overflow details are `… by {n:.3}pt: {run.text}`. Split on the first
     // `pt: ` so a colon inside the run text is kept as part of the needle.
-    if finding.code == "overflow" {
-        if let Some((_, text)) = finding.detail.split_once("pt: ") {
-            return find_source_span(source, text).or_else(|| {
-                // Dictionary hyphenation appends a synthetic `-` that is not in
-                // the Markdown; strip it so the caret can still find the run.
-                text.strip_suffix('-')
-                    .filter(|stem| !stem.is_empty())
-                    .and_then(|stem| find_source_span(source, stem))
-            });
-        }
+    if finding.code == "overflow"
+        && let Some((_, text)) = finding.detail.split_once("pt: ")
+    {
+        return find_source_span(source, text).or_else(|| {
+            // Dictionary hyphenation appends a synthetic `-` that is not in
+            // the Markdown; strip it so the caret can still find the run.
+            text.strip_suffix('-')
+                .filter(|stem| !stem.is_empty())
+                .and_then(|stem| find_source_span(source, stem))
+        });
     }
     if finding.code == "unresolved_anchor" {
         // Detail is `internal link target #{id} matches no heading`. Do not
@@ -383,24 +383,23 @@ fn finding_span(source: &str, finding: &VerifyFinding) -> Option<SourceSpan> {
         }
         return find_source_span(source, &format!("](#{id})"));
     }
-    if finding.code == "heading_level_skip" {
-        if let Some((_, text)) = finding.detail.split_once(": ") {
-            return find_source_span(source, text);
-        }
+    if finding.code == "heading_level_skip"
+        && let Some((_, text)) = finding.detail.split_once(": ")
+    {
+        return find_source_span(source, text);
     }
-    if finding.code == "missing_alt_text" {
-        if let Some(rest) = finding.detail.strip_prefix("image ") {
-            let dest = rest.strip_suffix(" has empty alt text").unwrap_or(rest);
-            return find_source_span(source, &format!("![]({dest})"))
-                .or_else(|| find_source_span(source, dest));
-        }
+    if finding.code == "missing_alt_text"
+        && let Some(rest) = finding.detail.strip_prefix("image ")
+    {
+        let dest = rest.strip_suffix(" has empty alt text").unwrap_or(rest);
+        return find_source_span(source, &format!("![]({dest})"))
+            .or_else(|| find_source_span(source, dest));
     }
-    if finding.code == "generic_link_text" {
-        if let Some(rest) = finding.detail.strip_prefix("link text \"") {
-            if let Some((text, _)) = rest.split_once("\" is meaningless") {
-                return find_source_span(source, text);
-            }
-        }
+    if finding.code == "generic_link_text"
+        && let Some(rest) = finding.detail.strip_prefix("link text \"")
+        && let Some((text, _)) = rest.split_once("\" is meaningless")
+    {
+        return find_source_span(source, text);
     }
     None
 }

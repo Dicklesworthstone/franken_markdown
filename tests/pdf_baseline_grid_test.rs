@@ -152,7 +152,9 @@ fn font_map(objects: &Objects<'_>, id: usize) -> FontMap {
         let encoded = entries[1].trim_matches(['<', '>']);
         let units: Vec<u16> = encoded
             .as_bytes()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|unit| u16::from_str_radix(std::str::from_utf8(unit).unwrap(), 16).unwrap())
             .collect();
         unicode.insert(id, String::from_utf16(&units).unwrap());
@@ -205,7 +207,9 @@ fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
         .split_whitespace()
         .collect::<Vec<_>>();
     assert_eq!(kids.len() % 3, 0);
-    kids.chunks_exact(3)
+    kids.as_chunks::<3>()
+        .0
+        .iter()
         .map(|reference| {
             let dictionary = objects.dictionary(reference[0].parse().unwrap());
             let media: Vec<f64> = dictionary
@@ -229,7 +233,9 @@ fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
             let resources: Vec<_> = resources.split_whitespace().collect();
             assert_eq!(resources.len() % 4, 0);
             let fonts: BTreeMap<&str, FontMap> = resources
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|entry| (entry[0], font_map(&objects, entry[1].parse().unwrap())))
                 .collect();
             let content = objects.stream(reference_after(dictionary, "/Contents "));
@@ -307,7 +313,7 @@ fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
                             let face = font.expect("glyph painting needs an active font");
                             let hex = hex.trim_matches(['<', '>']);
                             assert_eq!(hex.len() % 4, 0);
-                            for glyph in hex.as_bytes().chunks_exact(4) {
+                            for glyph in hex.as_bytes().as_chunks::<4>().0 {
                                 let id =
                                     u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16)
                                         .unwrap();
@@ -454,7 +460,9 @@ fn note_destinations(pdf: &[u8]) -> Vec<(usize, f64)> {
         .split_whitespace()
         .collect();
     let pages: BTreeMap<usize, usize> = children
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .enumerate()
         .map(|(index, child)| (child[0].parse().unwrap(), index))
         .collect();

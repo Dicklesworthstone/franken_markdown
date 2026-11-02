@@ -536,11 +536,11 @@ fn assign_flowchart_layers(
         .max()
         .unwrap_or(0);
     for id in node_order {
-        if !visited.contains(id) {
-            if let Some(node) = nodes.get_mut(id) {
-                node.layer = fallback_layer;
-                fallback_layer += 1;
-            }
+        if !visited.contains(id)
+            && let Some(node) = nodes.get_mut(id)
+        {
+            node.layer = fallback_layer;
+            fallback_layer += 1;
         }
     }
 }

@@ -50,18 +50,17 @@ impl ResumableFlowDisplay {
                 language: Some(language),
                 source,
             } = block
+                && highlight::is_supported(language)
             {
-                if highlight::is_supported(language) {
-                    if source.len() > options.max_items {
-                        return Err(FlowLayoutError::BudgetExceeded(
-                            "syntax source bytes per fence",
-                        ));
-                    }
-                    bytes = bytes
-                        .checked_add(source.len())
-                        .filter(|bytes| *bytes <= options.max_total_shape_bytes)
-                        .ok_or(FlowLayoutError::BudgetExceeded("total syntax source bytes"))?;
+                if source.len() > options.max_items {
+                    return Err(FlowLayoutError::BudgetExceeded(
+                        "syntax source bytes per fence",
+                    ));
                 }
+                bytes = bytes
+                    .checked_add(source.len())
+                    .filter(|bytes| *bytes <= options.max_total_shape_bytes)
+                    .ok_or(FlowLayoutError::BudgetExceeded("total syntax source bytes"))?;
             }
         }
         let list = self.to_styled_display_list(options, shape)?;

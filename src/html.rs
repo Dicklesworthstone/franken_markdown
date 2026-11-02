@@ -680,14 +680,16 @@ fn push_text_with_shortcodes(text: &str, out: &mut String) {
             })
             .count();
         let close = name_start + name_len;
-        if name_len > 0 && name_len <= 40 && bytes.get(close) == Some(&b':') {
-            if let Some(emoji) = crate::emoji_shortcodes::lookup(&text[name_start..close]) {
-                push_escaped_text(&text[written..open], out);
-                out.push_str(emoji);
-                written = close + 1;
-                i = close + 1;
-                continue;
-            }
+        if name_len > 0
+            && name_len <= 40
+            && bytes.get(close) == Some(&b':')
+            && let Some(emoji) = crate::emoji_shortcodes::lookup(&text[name_start..close])
+        {
+            push_escaped_text(&text[written..open], out);
+            out.push_str(emoji);
+            written = close + 1;
+            i = close + 1;
+            continue;
         }
         i = name_start;
     }
@@ -756,13 +758,13 @@ fn render_block<'a, 'b>(
         }
         Block::CodeBlock { lang, code } => {
             let l_str = lang.as_deref().unwrap_or("");
-            if crate::diagrams::is_diagram_code(code, l_str) {
-                if let Some(svg) = crate::diagrams::render_diagram_svg(code, l_str) {
-                    out.push_str("<div class=\"fmd-diagram-wrapper\">\n");
-                    out.push_str(&svg);
-                    out.push_str("</div>\n");
-                    return;
-                }
+            if crate::diagrams::is_diagram_code(code, l_str)
+                && let Some(svg) = crate::diagrams::render_diagram_svg(code, l_str)
+            {
+                out.push_str("<div class=\"fmd-diagram-wrapper\">\n");
+                out.push_str(&svg);
+                out.push_str("</div>\n");
+                return;
             }
 
             out.push_str("<pre><code");
@@ -2271,7 +2273,7 @@ impl FontCharSet {
             let bytes = rest.as_bytes();
             let mut mask = 0u128;
             let mut words = 0usize;
-            for chunk in bytes.chunks_exact(8) {
+            for chunk in bytes.as_chunks::<8>().0 {
                 let mut buf = [0u8; 8];
                 buf.copy_from_slice(chunk);
                 let word = u64::from_le_bytes(buf);

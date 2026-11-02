@@ -376,12 +376,12 @@ impl Expansion<'_> {
                 self.append(line, source_id, original_start, false)?;
                 continue;
             }
-            if let Some((marker, length, tail)) = candidate {
-                if marker == b'~' || !tail.contains('`') {
-                    fence = Some((marker, length));
-                    self.append(line, source_id, original_start, false)?;
-                    continue;
-                }
+            if let Some((marker, length, tail)) = candidate
+                && (marker == b'~' || !tail.contains('`'))
+            {
+                fence = Some((marker, length));
+                self.append(line, source_id, original_start, false)?;
+                continue;
             }
             if indented_code(line) {
                 self.append(line, source_id, original_start, false)?;
@@ -604,23 +604,23 @@ impl Selection {
                 let mut first = None;
                 let mut last = None;
                 for line in content.split_inclusive('\n') {
-                    if let Some((closing, marker)) = anchor_marker(line) {
-                        if marker == name.as_str() {
-                            if closing {
-                                if first.is_none() || last.is_some() {
-                                    return Err(anchor_error(
-                                        origin,
-                                        name,
-                                        "unmatched or duplicate end",
-                                    ));
-                                }
-                                last = Some(offset);
-                            } else {
-                                if first.is_some() {
-                                    return Err(anchor_error(origin, name, "duplicate start"));
-                                }
-                                first = Some(offset + line.len());
+                    if let Some((closing, marker)) = anchor_marker(line)
+                        && marker == name.as_str()
+                    {
+                        if closing {
+                            if first.is_none() || last.is_some() {
+                                return Err(anchor_error(
+                                    origin,
+                                    name,
+                                    "unmatched or duplicate end",
+                                ));
                             }
+                            last = Some(offset);
+                        } else {
+                            if first.is_some() {
+                                return Err(anchor_error(origin, name, "duplicate start"));
+                            }
+                            first = Some(offset + line.len());
                         }
                     }
                     offset += line.len();

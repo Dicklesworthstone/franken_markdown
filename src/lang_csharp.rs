@@ -127,16 +127,16 @@ pub fn lex_csharp_into(code: &str, spans: &mut Vec<Span>) {
         // 5. Verbatim / interpolated / raw / regular strings. Prefixes:
         //    @ (verbatim), $ (interpolated), combinations, and C# 11
         //    raw triple-quoted strings.
-        if c == '@' || c == '$' || c == '"' {
-            if let Some(end) = scan_prefixed_string_end(code, pos) {
-                spans.push(Span {
-                    kind: Tok::Str,
-                    start: pos,
-                    end,
-                });
-                pos = end;
-                continue;
-            }
+        if (c == '@' || c == '$' || c == '"')
+            && let Some(end) = scan_prefixed_string_end(code, pos)
+        {
+            spans.push(Span {
+                kind: Tok::Str,
+                start: pos,
+                end,
+            });
+            pos = end;
+            continue;
         }
 
         // 6. Character literal: 'c', '\n', '\u0041'. Unterminated at chunk

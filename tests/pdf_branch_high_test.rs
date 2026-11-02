@@ -167,7 +167,7 @@ fn text_streams(bytes: &[u8]) -> Vec<String> {
         .collect();
     assert_eq!(kids.len() % 3, 0);
     let mut streams = Vec::new();
-    for kid in kids.chunks_exact(3) {
+    for kid in kids.as_chunks::<3>().0 {
         assert_eq!(&kid[1..], &["0", "R"]);
         let page = dictionary(kid[0].parse().unwrap());
         let content_id = number_after(page, "/Contents ");
@@ -889,14 +889,13 @@ fn pdf_svg_shape_with_drop_shadow_and_opacity_paints_layers() {
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    let mut chunks = bytes.chunks_exact(3);
-    for chunk in &mut chunks {
+    let (chunks, rem) = bytes.as_chunks::<3>();
+    for chunk in chunks {
         out.push(TABLE[(chunk[0] >> 2) as usize] as char);
         out.push(TABLE[(((chunk[0] & 0x03) << 4) | (chunk[1] >> 4)) as usize] as char);
         out.push(TABLE[(((chunk[1] & 0x0f) << 2) | (chunk[2] >> 6)) as usize] as char);
         out.push(TABLE[(chunk[2] & 0x3f) as usize] as char);
     }
-    let rem = chunks.remainder();
     match rem.len() {
         1 => {
             out.push(TABLE[(rem[0] >> 2) as usize] as char);

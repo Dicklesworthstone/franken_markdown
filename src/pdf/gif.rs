@@ -301,7 +301,7 @@ pub(super) fn decode_first_frame(bytes: &[u8]) -> Option<Frame> {
     // background, so uncovered pixels stay transparent.
     let background = image.background.filter(|_| image.transparent.is_none());
     if let Some(background) = background {
-        for pixel in rgb.chunks_exact_mut(3) {
+        for pixel in rgb.as_chunks_mut::<3>().0 {
             pixel.copy_from_slice(background);
         }
     }

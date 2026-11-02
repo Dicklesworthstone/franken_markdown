@@ -1689,10 +1689,10 @@ fn ascii_tables_for_parts(
             kern: std::ptr::from_ref(*kern).addr(),
             lig: std::ptr::from_ref(*lig).addr(),
         };
-        if let Ok(cache) = ASCII_TABLE_CACHE.lock() {
-            if let Some((_, tables)) = cache.iter().find(|&&(k, _)| k == key) {
-                return std::sync::Arc::clone(tables);
-            }
+        if let Ok(cache) = ASCII_TABLE_CACHE.lock()
+            && let Some((_, tables)) = cache.iter().find(|&&(k, _)| k == key)
+        {
+            return std::sync::Arc::clone(tables);
         }
         let tables = std::sync::Arc::new(build_ascii_tables(font, kern, lig));
         if let Ok(mut cache) = ASCII_TABLE_CACHE.lock() {
@@ -6132,10 +6132,10 @@ fn svg_background_top_level_tokens(value: &str) -> Vec<&str> {
 
         let delimiter = depth == 0 && (ch == ',' || ch.is_ascii_whitespace());
         if delimiter {
-            if let Some(token_start) = start.take() {
-                if token_start < idx {
-                    tokens.push(value[token_start..idx].trim());
-                }
+            if let Some(token_start) = start.take()
+                && token_start < idx
+            {
+                tokens.push(value[token_start..idx].trim());
             }
             continue;
         }
@@ -6837,27 +6837,29 @@ fn parse_svg_root_accessible_texts(src: &str) -> (Option<String>, Option<String>
             continue;
         }
 
-        if depth == 1 && matches!(local, "title" | "desc") && !self_closing {
-            if let Some(end_open) = find_svg_matching_end_tag(src, pos, local) {
-                if let Some(text) =
-                    normalize_svg_accessible_text(src.get(pos..end_open).unwrap_or_default())
-                {
-                    if local == "title" && title.is_none() {
-                        title = Some(text);
-                    } else if local == "desc" && desc.is_none() {
-                        desc = Some(text);
-                    }
+        if depth == 1
+            && matches!(local, "title" | "desc")
+            && !self_closing
+            && let Some(end_open) = find_svg_matching_end_tag(src, pos, local)
+        {
+            if let Some(text) =
+                normalize_svg_accessible_text(src.get(pos..end_open).unwrap_or_default())
+            {
+                if local == "title" && title.is_none() {
+                    title = Some(text);
+                } else if local == "desc" && desc.is_none() {
+                    desc = Some(text);
                 }
-                if let Some(tag_end) = src.get(end_open..).and_then(|s| s.find('>')) {
-                    pos = end_open + tag_end + 1;
-                } else {
-                    break;
-                }
-                if title.is_some() && desc.is_some() {
-                    break;
-                }
-                continue;
             }
+            if let Some(tag_end) = src.get(end_open..).and_then(|s| s.find('>')) {
+                pos = end_open + tag_end + 1;
+            } else {
+                break;
+            }
+            if title.is_some() && desc.is_some() {
+                break;
+            }
+            continue;
         }
 
         if !self_closing {
@@ -10487,13 +10489,11 @@ fn parse_svg_markers(
             clip_paths,
             css_rules,
             filter_shadows,
-        ) {
-            if !markers
-                .iter()
-                .any(|existing: &SvgMarker| existing.id == marker.id)
-            {
-                markers.push(marker);
-            }
+        ) && !markers
+            .iter()
+            .any(|existing: &SvgMarker| existing.id == marker.id)
+        {
+            markers.push(marker);
         }
         if markers.len() >= 128 {
             break;
@@ -10738,13 +10738,12 @@ fn parse_svg_clip_paths(src: &str) -> Vec<SvgClipPath> {
             continue;
         };
         let body = src.get(pos..pos + end_rel).unwrap_or_default();
-        if let Some(clip_path) = parse_svg_clip_path_body(id, &attrs, body) {
-            if !clip_paths
+        if let Some(clip_path) = parse_svg_clip_path_body(id, &attrs, body)
+            && !clip_paths
                 .iter()
                 .any(|existing: &SvgClipPath| existing.id == clip_path.id)
-            {
-                clip_paths.push(clip_path);
-            }
+        {
+            clip_paths.push(clip_path);
         }
         if clip_paths.len() >= 128 {
             break;
@@ -10870,13 +10869,12 @@ fn parse_svg_masks(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgClipPath> {
             continue;
         };
         let body = src.get(pos..pos + end_rel).unwrap_or_default();
-        if let Some(mask) = parse_svg_mask_body(id, &attrs, body, css_vars) {
-            if !masks
+        if let Some(mask) = parse_svg_mask_body(id, &attrs, body, css_vars)
+            && !masks
                 .iter()
                 .any(|existing: &SvgClipPath| existing.id == mask.id)
-            {
-                masks.push(mask);
-            }
+        {
+            masks.push(mask);
         }
         if masks.len() >= 128 {
             break;
@@ -15984,7 +15982,9 @@ fn skip_svg_transform_separators(value: &str, pos: &mut usize) {
 
 fn parse_svg_points(value: &str) -> Vec<(f32, f32)> {
     parse_svg_number_list(value)
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0], pair[1]))
         .collect()
 }
@@ -16640,7 +16640,7 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
                 if seen_plte
                     || seen_idat
                     || len == 0
-                    || len % 3 != 0
+                    || !len.is_multiple_of(3)
                     || len / 3 > 256
                     || matches!(color_type, 0 | 4)
                 {
@@ -16650,7 +16650,12 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
                 if color_type == 3 && entry_count > (1usize << bit_depth) {
                     return None;
                 }
-                palette = data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+                palette = data
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|c| [c[0], c[1], c[2]])
+                    .collect();
                 seen_plte = true;
             }
             b"tRNS" => {
@@ -16837,7 +16842,7 @@ fn decode_png_full(png: &PngChunks) -> Option<DecodedPng> {
     } else {
         None
     };
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         if out_gray {
             samples.push(px[0]);
         } else {
@@ -18431,12 +18436,12 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             let mut numeric_count = 0usize;
             let mut total_count = 0usize;
             for row in &row_toks {
-                if let Some(toks) = row.get(k) {
-                    if !toks.is_empty() {
-                        total_count += 1;
-                        if is_numeric_toks(toks) {
-                            numeric_count += 1;
-                        }
+                if let Some(toks) = row.get(k)
+                    && !toks.is_empty()
+                {
+                    total_count += 1;
+                    if is_numeric_toks(toks) {
+                        numeric_count += 1;
                     }
                 }
             }
@@ -19259,13 +19264,11 @@ fn fallback_slot_runs(faces: &Faces, slot: u8, text: &str) -> Vec<(u8, String)> 
             if target == slot
                 && faces.face(slot).glyph_index(c) == 0
                 && faces.symbol.glyph_index(c) == 0
+                && let Some(fb) = subscript_phonetic_fallback(c)
+                && (faces.face(slot).glyph_index(fb) != 0 || faces.symbol.glyph_index(fb) != 0)
             {
-                if let Some(fb) = subscript_phonetic_fallback(c) {
-                    if faces.face(slot).glyph_index(fb) != 0 || faces.symbol.glyph_index(fb) != 0 {
-                        c = fb;
-                        target = faces.fallback_slot(slot, c);
-                    }
-                }
+                c = fb;
+                target = faces.fallback_slot(slot, c);
             }
             match runs.last_mut() {
                 Some((run_slot, buf)) if *run_slot == target => buf.push(c),
@@ -20973,10 +20976,8 @@ fn push_tok_group_line_toks(
     // A word box's glyph-expansion share belongs to the whole box, not to each
     // of its tokens: book it exactly once (on the last visible token) so the
     // segment builder, which accumulates word extras, counts it once.
-    if applies_to_words {
-        if let Some(last) = line[start..].iter_mut().rev().find(|t| !t.tok.space) {
-            last.extra_advance = extra;
-        }
+    if applies_to_words && let Some(last) = line[start..].iter_mut().rev().find(|t| !t.tok.space) {
+        last.extra_advance = extra;
     }
 }
 fn glue_adjustments_into(
@@ -22693,10 +22694,10 @@ fn serialize(
         // Re-key ligature ToUnicode entries by the new (subset) glyph id.
         let mut lig_uni: BTreeMap<u16, String> = BTreeMap::new();
         for (src, s) in lig_src_uni {
-            if let Some(&new) = gid_lookup.get(usize::from(src)) {
-                if new != crate::text::MISSING_GLYPH_REMAP {
-                    lig_uni.insert(new, s);
-                }
+            if let Some(&new) = gid_lookup.get(usize::from(src))
+                && new != crate::text::MISSING_GLYPH_REMAP
+            {
+                lig_uni.insert(new, s);
             }
         }
         // The subsetter's dense old->new table doubles as `map_lookup`
@@ -27769,29 +27770,29 @@ fn append_svg_painted_shape<F>(
         return;
     }
 
-    if let Some(shadings) = svg_fill_shadings(style, gradients, bbox) {
-        if pdf_shadings_fit(page_resources.shadings, &shadings) {
-            let names = shadings
-                .into_iter()
-                .filter_map(|shading| register_pdf_shading(page_resources.shadings, shading))
-                .collect::<Vec<_>>();
-            body.push_str("q ");
-            append_path(body);
-            match style.fill_rule {
-                SvgFillRule::NonZero => body.push_str("W n "),
-                SvgFillRule::EvenOdd => body.push_str("W* n "),
-            }
-            for name in names {
-                body.push_str(&format!("/{name} sh\n"));
-            }
-            body.push_str("Q\n");
-            if style.stroke.is_some() && svg_effective_stroke_opacity(style) > 0.001 {
-                append_svg_stroke_style(body, style);
-                append_path(body);
-                body.push_str("S\n");
-            }
-            return;
+    if let Some(shadings) = svg_fill_shadings(style, gradients, bbox)
+        && pdf_shadings_fit(page_resources.shadings, &shadings)
+    {
+        let names = shadings
+            .into_iter()
+            .filter_map(|shading| register_pdf_shading(page_resources.shadings, shading))
+            .collect::<Vec<_>>();
+        body.push_str("q ");
+        append_path(body);
+        match style.fill_rule {
+            SvgFillRule::NonZero => body.push_str("W n "),
+            SvgFillRule::EvenOdd => body.push_str("W* n "),
         }
+        for name in names {
+            body.push_str(&format!("/{name} sh\n"));
+        }
+        body.push_str("Q\n");
+        if style.stroke.is_some() && svg_effective_stroke_opacity(style) > 0.001 {
+            append_svg_stroke_style(body, style);
+            append_path(body);
+            body.push_str("S\n");
+        }
+        return;
     }
 
     append_svg_style(body, style);
@@ -29373,20 +29374,20 @@ fn draw_svg_text(
     if run.requires_actual_text {
         body.push_str("EMC\n");
     }
-    if !text.decoration.is_empty() && width > 0.001 {
-        if let Some((decoration_color, decoration_alpha)) = text
+    if !text.decoration.is_empty()
+        && width > 0.001
+        && let Some((decoration_color, decoration_alpha)) = text
             .fill
             .map(|color| (color, fill_alpha))
             .or_else(|| stroke.map(|color| (color, stroke_alpha)))
-        {
-            append_svg_text_alpha_state_if_changed(
-                body,
-                alpha_states,
-                &mut current_alpha,
-                (1000, decoration_alpha),
-            );
-            append_svg_text_decoration(body, text.decoration, matrix, width, decoration_color);
-        }
+    {
+        append_svg_text_alpha_state_if_changed(
+            body,
+            alpha_states,
+            &mut current_alpha,
+            (1000, decoration_alpha),
+        );
+        append_svg_text_decoration(body, text.decoration, matrix, width, decoration_color);
     }
     body.push_str("Q\n");
 }
@@ -29408,10 +29409,11 @@ fn svg_text_pdf_stroke_width(
         1.0
     };
     let width = stroke_width * scale.max(0.001);
-    if non_scaling_stroke && svg_transform_preserves_stroke_scale(transform) {
-        if let Some(viewport_scale) = svg_uniform_stroke_scale(image_transform) {
-            return (width / viewport_scale).clamp(0.01, 96.0);
-        }
+    if non_scaling_stroke
+        && svg_transform_preserves_stroke_scale(transform)
+        && let Some(viewport_scale) = svg_uniform_stroke_scale(image_transform)
+    {
+        return (width / viewport_scale).clamp(0.01, 96.0);
     }
     width.clamp(0.01, 96.0)
 }
@@ -32650,7 +32652,7 @@ fn append_pdf_num_bytes(out: &mut Vec<u8>, value: f32) {
     if frac < 10 {
         out.push(b'0');
         out.push(b'0' + frac as u8);
-    } else if frac % 10 == 0 {
+    } else if frac.is_multiple_of(10) {
         out.push(b'0' + (frac / 10) as u8);
     } else {
         let pair = frac * 2;
@@ -32849,7 +32851,7 @@ fn append_pdf_num(out: &mut String, value: f32) {
     if frac < 10 {
         out.push('0');
         append_decimal_u64_string(out, frac);
-    } else if frac % 10 == 0 {
+    } else if frac.is_multiple_of(10) {
         append_decimal_u64_string(out, frac / 10);
     } else {
         append_decimal_u64_string(out, frac);
@@ -33933,8 +33935,8 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 fn fnv1a64_update(hash: &mut u64, bytes: &[u8]) {
-    let mut chunks = bytes.chunks_exact(8);
-    for chunk in chunks.by_ref() {
+    let (chunks, rem) = bytes.as_chunks::<8>();
+    for chunk in chunks {
         fnv1a64_update_byte(hash, chunk[0]);
         fnv1a64_update_byte(hash, chunk[1]);
         fnv1a64_update_byte(hash, chunk[2]);
@@ -33944,7 +33946,7 @@ fn fnv1a64_update(hash: &mut u64, bytes: &[u8]) {
         fnv1a64_update_byte(hash, chunk[6]);
         fnv1a64_update_byte(hash, chunk[7]);
     }
-    for &byte in chunks.remainder() {
+    for &byte in rem {
         fnv1a64_update_byte(hash, byte);
     }
 }

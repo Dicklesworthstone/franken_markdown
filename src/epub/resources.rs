@@ -62,44 +62,44 @@ pub(super) fn prepare_with_prefix(html: &str, prefix: &str) -> Result<Chapter, &
         chapter.mathml |= opens(tag, "math");
         chapter.svg |= opens(tag, "svg");
         let mut replacement = None;
-        if opens(tag, "img") {
-            if let Some(range) = attribute(tag, "src") {
-                let src = &tag[range.clone()];
-                if let Some((media_type, extension, payload)) = data_image(src) {
-                    chapter.svg |= media_type == "image/svg+xml";
-                    let index = if let Some(&index) = seen.get(src) {
-                        Some(index)
-                    } else {
-                        if payload.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        if opens(tag, "img")
+            && let Some(range) = attribute(tag, "src")
+        {
+            let src = &tag[range.clone()];
+            if let Some((media_type, extension, payload)) = data_image(src) {
+                chapter.svg |= media_type == "image/svg+xml";
+                let index = if let Some(&index) = seen.get(src) {
+                    Some(index)
+                } else {
+                    if payload.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+                        return Err("epub: embedded image exceeds the 32 MiB limit");
+                    }
+                    if let Some(bytes) = decode_base64(payload) {
+                        if bytes.len() > MAX_IMAGE_BYTES {
                             return Err("epub: embedded image exceeds the 32 MiB limit");
                         }
-                        if let Some(bytes) = decode_base64(payload) {
-                            if bytes.len() > MAX_IMAGE_BYTES {
-                                return Err("epub: embedded image exceeds the 32 MiB limit");
-                            }
-                            total_bytes += bytes.len();
-                            if total_bytes > MAX_TOTAL_IMAGE_BYTES {
-                                return Err("epub: embedded images exceed the 128 MiB limit");
-                            }
-                            if chapter.resources.len() >= MAX_IMAGES {
-                                return Err("epub: embedded images exceed the 4096-resource limit");
-                            }
-                            let index = chapter.resources.len();
-                            chapter.resources.push(Resource {
-                                href: format!("assets/{prefix}image-{}.{}", index + 1, extension),
-                                media_type,
-                                bytes,
-                            });
-                            seen.insert(src, index);
-                            Some(index)
-                        } else {
-                            // Do not reinterpret malformed or unsupported user data.
-                            None
+                        total_bytes += bytes.len();
+                        if total_bytes > MAX_TOTAL_IMAGE_BYTES {
+                            return Err("epub: embedded images exceed the 128 MiB limit");
                         }
-                    };
-                    if let Some(index) = index {
-                        replacement = Some((range, index));
+                        if chapter.resources.len() >= MAX_IMAGES {
+                            return Err("epub: embedded images exceed the 4096-resource limit");
+                        }
+                        let index = chapter.resources.len();
+                        chapter.resources.push(Resource {
+                            href: format!("assets/{prefix}image-{}.{}", index + 1, extension),
+                            media_type,
+                            bytes,
+                        });
+                        seen.insert(src, index);
+                        Some(index)
+                    } else {
+                        // Do not reinterpret malformed or unsupported user data.
+                        None
                     }
+                };
+                if let Some(index) = index {
+                    replacement = Some((range, index));
                 }
             }
         }
@@ -269,7 +269,7 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
         }
     }
     let mut out = Vec::with_capacity(input.len() / 4 * 3);
-    for (index, chunk) in input.as_bytes().chunks_exact(4).enumerate() {
+    for (index, chunk) in input.as_bytes().as_chunks::<4>().0.iter().enumerate() {
         let a = digit(chunk[0])?;
         let b = digit(chunk[1])?;
         let last = (index + 1) * 4 == input.len();

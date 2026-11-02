@@ -526,25 +526,22 @@ pub(super) fn hit(state: &BrowserFlowSession, x: f32, y: f32) -> Result<String, 
         if let Some((index, item)) = found {
             write!(w, "{{\"itemIndex\":{index},\"enclosingSourceSpan\":")?;
             w.span(item.source_span())?;
-            if let DisplayItem::Text(text) = item {
-                if let Some(run) = &text.font_run {
-                    let hit = run.hit_test(x - text.bounds.x);
-                    w.write_str(",\"coordinateSpace\":\"fragment-utf16\"")?;
-                    write!(
-                        w,
-                        ",\"byteOffset\":{},\"utf16Offset\":{},\"clusterIndex\":{},\"isExact\":{},\"visualX\":",
-                        hit.caret.byte_offset,
-                        hit.caret.utf16_offset,
-                        hit.cluster_index,
-                        hit.is_exact
-                    )?;
-                    w.number(text.bounds.x + hit.caret.visual_x)?;
-                    w.write_str(",\"affinity\":")?;
-                    w.string(match hit.caret.affinity {
-                        CaretAffinity::Leading => "leading",
-                        CaretAffinity::Trailing => "trailing",
-                    })?;
-                }
+            if let DisplayItem::Text(text) = item
+                && let Some(run) = &text.font_run
+            {
+                let hit = run.hit_test(x - text.bounds.x);
+                w.write_str(",\"coordinateSpace\":\"fragment-utf16\"")?;
+                write!(
+                    w,
+                    ",\"byteOffset\":{},\"utf16Offset\":{},\"clusterIndex\":{},\"isExact\":{},\"visualX\":",
+                    hit.caret.byte_offset, hit.caret.utf16_offset, hit.cluster_index, hit.is_exact
+                )?;
+                w.number(text.bounds.x + hit.caret.visual_x)?;
+                w.write_str(",\"affinity\":")?;
+                w.string(match hit.caret.affinity {
+                    CaretAffinity::Leading => "leading",
+                    CaretAffinity::Trailing => "trailing",
+                })?;
             }
             w.write_char('}')?;
         } else {

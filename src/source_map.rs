@@ -289,15 +289,15 @@ impl DocumentSourceMap {
         let overlapping = self.elements_overlapping(range);
         if overlapping.is_empty() {
             // Check if selection is zero-width at an element boundary
-            if let Some(e) = self.element_at_rendered_offset(range.start) {
-                if let Some(enclosing) = e.source_ranges.enclosing_span() {
-                    return enclosing
-                        .slice(source)
-                        .ok_or(SourceMapError::SourceOutOfBounds {
-                            offset: enclosing.end,
-                            source_len: source.len(),
-                        });
-                }
+            if let Some(e) = self.element_at_rendered_offset(range.start)
+                && let Some(enclosing) = e.source_ranges.enclosing_span()
+            {
+                return enclosing
+                    .slice(source)
+                    .ok_or(SourceMapError::SourceOutOfBounds {
+                        offset: enclosing.end,
+                        source_len: source.len(),
+                    });
             }
             return Err(SourceMapError::InvalidSelectionRange {
                 start: range.start,
@@ -460,12 +460,12 @@ impl DocumentSourceMap {
     #[must_use]
     pub fn sync_rendered_to_source(&self, rendered_offset: usize) -> Option<usize> {
         let elem = self.element_at_rendered_offset(rendered_offset)?;
-        if elem.source_ranges.origin() == SourceOrigin::Primary {
-            if let Some(span) = elem.source_ranges.spans().first() {
-                let local = rendered_offset.saturating_sub(elem.rendered_range.start);
-                let mapped = span.start.saturating_add(local.min(span.len()));
-                return Some(mapped);
-            }
+        if elem.source_ranges.origin() == SourceOrigin::Primary
+            && let Some(span) = elem.source_ranges.spans().first()
+        {
+            let local = rendered_offset.saturating_sub(elem.rendered_range.start);
+            let mapped = span.start.saturating_add(local.min(span.len()));
+            return Some(mapped);
         }
         None
     }
@@ -1345,35 +1345,34 @@ impl SourceMapBuilder {
                         search_cursor,
                     )?;
                     let _ = (dest, title);
-                    if *search_cursor < block_span.end {
-                        if let Some(rest) = source.get(*search_cursor..block_span.end) {
-                            if let Some(bracket_pos) = rest.find(']') {
-                                let after_bracket = *search_cursor + bracket_pos + 1;
-                                if after_bracket < block_span.end {
-                                    let next_byte = source.as_bytes()[after_bracket];
-                                    if next_byte == b'(' {
-                                        if let Some(close_paren) =
-                                            source[after_bracket..block_span.end].find(')')
-                                        {
-                                            *search_cursor = after_bracket + close_paren + 1;
-                                        } else {
-                                            *search_cursor = after_bracket;
-                                        }
-                                    } else if next_byte == b'[' {
-                                        if let Some(close_bracket) =
-                                            source[after_bracket..block_span.end].find(']')
-                                        {
-                                            *search_cursor = after_bracket + close_bracket + 1;
-                                        } else {
-                                            *search_cursor = after_bracket;
-                                        }
-                                    } else {
-                                        *search_cursor = after_bracket;
-                                    }
+                    if *search_cursor < block_span.end
+                        && let Some(rest) = source.get(*search_cursor..block_span.end)
+                        && let Some(bracket_pos) = rest.find(']')
+                    {
+                        let after_bracket = *search_cursor + bracket_pos + 1;
+                        if after_bracket < block_span.end {
+                            let next_byte = source.as_bytes()[after_bracket];
+                            if next_byte == b'(' {
+                                if let Some(close_paren) =
+                                    source[after_bracket..block_span.end].find(')')
+                                {
+                                    *search_cursor = after_bracket + close_paren + 1;
                                 } else {
                                     *search_cursor = after_bracket;
                                 }
+                            } else if next_byte == b'[' {
+                                if let Some(close_bracket) =
+                                    source[after_bracket..block_span.end].find(']')
+                                {
+                                    *search_cursor = after_bracket + close_bracket + 1;
+                                } else {
+                                    *search_cursor = after_bracket;
+                                }
+                            } else {
+                                *search_cursor = after_bracket;
                             }
+                        } else {
+                            *search_cursor = after_bracket;
                         }
                     }
                 }

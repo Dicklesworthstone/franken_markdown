@@ -4823,25 +4823,23 @@ fn parse_inlines_chars_with_refs_profiled(
                 let Some(n) = run_len(bytes, i, '$', &mut profiler.inline_work) else {
                     break;
                 };
-                if n >= 2 {
-                    if let Some((inner, next)) =
+                if n >= 2
+                    && let Some((inner, next)) =
                         parse_math_delim(bytes, i, 2, &mut profiler.inline_work)
-                    {
-                        flush(&mut buf, &mut els);
-                        els.push(InlineEl::Node(Inline::DisplayMath(inner)));
-                        i = next;
-                        continue;
-                    }
+                {
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::DisplayMath(inner)));
+                    i = next;
+                    continue;
                 }
-                if n == 1 {
-                    if let Some((inner, next)) =
+                if n == 1
+                    && let Some((inner, next)) =
                         parse_math_delim(bytes, i, 1, &mut profiler.inline_work)
-                    {
-                        flush(&mut buf, &mut els);
-                        els.push(InlineEl::Node(Inline::Math(inner)));
-                        i = next;
-                        continue;
-                    }
+                {
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::Math(inner)));
+                    i = next;
+                    continue;
                 }
                 buf.push(c);
                 i += 1;

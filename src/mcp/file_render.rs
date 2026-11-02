@@ -111,10 +111,10 @@ fn aliases_source(source: &Source, destination: &Path) -> bool {
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    if let (Ok(parent), Some(name)) = (fs::canonicalize(parent), destination.file_name()) {
-        if parent.join(name) == source.canonical_path {
-            return true;
-        }
+    if let (Ok(parent), Some(name)) = (fs::canonicalize(parent), destination.file_name())
+        && parent.join(name) == source.canonical_path
+    {
+        return true;
     }
     #[cfg(unix)]
     {

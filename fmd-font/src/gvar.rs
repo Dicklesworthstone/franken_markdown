@@ -337,10 +337,10 @@ fn instance_composite(
     loop {
         let flags = be_u16(&out, p)?;
         let rec_len = component_record_len(flags);
-        if flags & ARGS_ARE_XY != 0 {
-            if let Some(&(x, y)) = pts.get(PHANTOMS + ci) {
-                write_component_xy(&mut out, p, flags, x, y)?;
-            }
+        if flags & ARGS_ARE_XY != 0
+            && let Some(&(x, y)) = pts.get(PHANTOMS + ci)
+        {
+            write_component_xy(&mut out, p, flags, x, y)?;
         }
         ci += 1;
         if flags & MORE_COMPONENTS == 0 {
@@ -840,7 +840,7 @@ fn unpack_delta_run(d: &[u8], cursor: &mut usize, end: usize, n: usize) -> Optio
         }
         let payload = d.get(*cursor..run_end)?;
         if words {
-            for pair in payload.chunks_exact(2) {
+            for pair in payload.as_chunks::<2>().0 {
                 out.push(i16::from_be_bytes([pair[0], pair[1]]));
             }
         } else {
@@ -885,10 +885,10 @@ fn iup_contour(delta: &mut [f32], touched: &[bool], orig: &[i32], start: usize, 
             .and_then(|&i| delta.get(i).copied())
             .unwrap_or(0.0);
         for i in start..=end {
-            if !touched.get(i).copied().unwrap_or(false) {
-                if let Some(slot) = delta.get_mut(i) {
-                    *slot = v;
-                }
+            if !touched.get(i).copied().unwrap_or(false)
+                && let Some(slot) = delta.get_mut(i)
+            {
+                *slot = v;
             }
         }
         return;
@@ -1103,11 +1103,11 @@ fn rebuild_static(
             tables.push((tag, loca.clone()));
             continue;
         }
-        if &tag == b"hmtx" {
-            if let Some(metrics) = hmtx_metrics {
-                tables.push((tag, encode_hmtx(metrics)));
-                continue;
-            }
+        if &tag == b"hmtx"
+            && let Some(metrics) = hmtx_metrics
+        {
+            tables.push((tag, encode_hmtx(metrics)));
+            continue;
         }
         if &tag == b"hhea" {
             let (o, l) = find_table_full(src, b"hhea")?;
@@ -1161,7 +1161,7 @@ fn assemble_sfnt(tables: &[([u8; 4], Vec<u8>)]) -> Option<Vec<u8>> {
     let mut records: Vec<([u8; 4], u32, u32, u32)> = Vec::new();
     let mut head_offset = 0usize;
     for (tag, bytes) in tables {
-        while (dir_size + body.len()) % 4 != 0 {
+        while !(dir_size + body.len()).is_multiple_of(4) {
             body.push(0);
         }
         let table_offset = dir_size + body.len();

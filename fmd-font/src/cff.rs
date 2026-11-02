@@ -481,7 +481,7 @@ impl Vm<'_, '_> {
                         s.remove(0);
                     }
                     self.width = true;
-                    if s.len() % 2 != 0 {
+                    if !s.len().is_multiple_of(2) {
                         return Err(malformed(at));
                     }
                     self.stems += s.len() / 2;
@@ -514,10 +514,10 @@ impl Vm<'_, '_> {
                     self.open = true;
                 }
                 5 => {
-                    if s.is_empty() || s.len() % 2 != 0 {
+                    if s.is_empty() || !s.len().is_multiple_of(2) {
                         return Err(malformed(at));
                     }
-                    for v in s.chunks_exact(2) {
+                    for v in s.as_chunks::<2>().0 {
                         self.line(v[0], v[1])?;
                     }
                 }
@@ -535,29 +535,29 @@ impl Vm<'_, '_> {
                     }
                 }
                 8 => {
-                    if s.is_empty() || s.len() % 6 != 0 {
+                    if s.is_empty() || !s.len().is_multiple_of(6) {
                         return Err(malformed(at));
                     }
-                    for v in s.chunks_exact(6) {
+                    for v in s.as_chunks::<6>().0 {
                         self.curve(v)?;
                     }
                 }
                 24 => {
-                    if s.len() < 8 || (s.len() - 2) % 6 != 0 {
+                    if s.len() < 8 || !(s.len() - 2).is_multiple_of(6) {
                         return Err(malformed(at));
                     }
                     let n = s.len() - 2;
-                    for v in s[..n].chunks_exact(6) {
+                    for v in s[..n].as_chunks::<6>().0 {
                         self.curve(v)?;
                     }
                     self.line(s[n], s[n + 1])?;
                 }
                 25 => {
-                    if s.len() < 8 || (s.len() - 6) % 2 != 0 {
+                    if s.len() < 8 || !(s.len() - 6).is_multiple_of(2) {
                         return Err(malformed(at));
                     }
                     let n = s.len() - 6;
-                    for v in s[..n].chunks_exact(2) {
+                    for v in s[..n].as_chunks::<2>().0 {
                         self.line(v[0], v[1])?;
                     }
                     self.curve(&s[n..])?;
@@ -567,7 +567,7 @@ impl Vm<'_, '_> {
                         return Err(malformed(at));
                     }
                     let mut extra = if s.len() % 4 == 1 { s.remove(0) } else { 0.0 };
-                    for v in s.chunks_exact(4) {
+                    for v in s.as_chunks::<4>().0 {
                         if op == 26 {
                             self.curve(&[extra, v[0], v[1], v[2], 0.0, v[3]])?;
                         } else {
@@ -582,7 +582,7 @@ impl Vm<'_, '_> {
                     }
                     let count = s.len() / 4;
                     let mut horizontal = op == 31;
-                    for (i, v) in s[..count * 4].chunks_exact(4).enumerate() {
+                    for (i, v) in s[..count * 4].as_chunks::<4>().0.iter().enumerate() {
                         let extra = if i + 1 == count && s.len() % 4 == 1 {
                             s[s.len() - 1]
                         } else {
@@ -772,10 +772,10 @@ fn cff_program(
                 .map(|b| if b == b'.' { 10 } else { b - b'0' })
                 .collect();
             digits.push(15);
-            if digits.len() % 2 != 0 {
+            if !digits.len().is_multiple_of(2) {
                 digits.push(15);
             }
-            for pair in digits.chunks_exact(2) {
+            for pair in digits.as_chunks::<2>().0 {
                 d.push(pair[0] * 16 + pair[1]);
             }
         }
@@ -892,7 +892,7 @@ fn assemble(tables: &BTreeMap<[u8; 4], Vec<u8>>) -> Result<Vec<u8>, SubsetError>
     }
     let mut head = 0;
     for (i, (tag, data)) in tables.iter().enumerate() {
-        while out.len() % 4 != 0 {
+        while !out.len().is_multiple_of(4) {
             out.push(0);
         }
         let offset = out.len();
@@ -913,7 +913,7 @@ fn assemble(tables: &BTreeMap<[u8; 4], Vec<u8>>) -> Result<Vec<u8>, SubsetError>
         }
         out.extend_from_slice(data);
     }
-    while out.len() % 4 != 0 {
+    while !out.len().is_multiple_of(4) {
         out.push(0);
     }
     let sum = 0xB1B0_AFBAu32.wrapping_sub(table_checksum(&out));

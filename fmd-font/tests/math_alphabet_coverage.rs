@@ -95,18 +95,17 @@ fn letterlike_exceptions_still_map_in_the_2100_block() {
     for cp in letterlike_exception_cps() {
         // Every Letterlike codepoint carried by the curated range must keep
         // mapping; this is what makes the plane-1 holes harmless.
-        if let Some(c) = char::from_u32(cp) {
-            if CALLIGRAPHIC_UPPER_EXCEPTIONS
+        if let Some(c) = char::from_u32(cp)
+            && CALLIGRAPHIC_UPPER_EXCEPTIONS
                 .iter()
                 .chain(BLACKBOARD_UPPER_EXCEPTIONS.iter())
                 .any(|&e| e == c)
-            {
-                assert_ne!(
-                    font.glyph_index(c),
-                    0,
-                    "exception letter {c:?} (U+{cp:04X}) lost"
-                );
-            }
+        {
+            assert_ne!(
+                font.glyph_index(c),
+                0,
+                "exception letter {c:?} (U+{cp:04X}) lost"
+            );
         }
     }
 }

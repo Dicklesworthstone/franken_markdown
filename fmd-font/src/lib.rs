@@ -280,8 +280,8 @@ pub(crate) fn write_u32(d: &mut [u8], off: usize, v: u32) -> Option<()> {
 
 pub(crate) fn table_checksum(d: &[u8]) -> u32 {
     let mut sum: u32 = 0;
-    let mut chunks16 = d.chunks_exact(16);
-    for c in &mut chunks16 {
+    let (chunks16, rest16) = d.as_chunks::<16>();
+    for c in chunks16 {
         let w0 = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
         let w1 = u32::from_be_bytes([c[4], c[5], c[6], c[7]]);
         let w2 = u32::from_be_bytes([c[8], c[9], c[10], c[11]]);
@@ -292,11 +292,10 @@ pub(crate) fn table_checksum(d: &[u8]) -> u32 {
             .wrapping_add(w2)
             .wrapping_add(w3);
     }
-    let mut chunks4 = chunks16.remainder().chunks_exact(4);
-    for c in &mut chunks4 {
+    let (chunks4, rem) = rest16.as_chunks::<4>();
+    for c in chunks4 {
         sum = sum.wrapping_add(u32::from_be_bytes([c[0], c[1], c[2], c[3]]));
     }
-    let rem = chunks4.remainder();
     if !rem.is_empty() {
         let mut buf = [0u8; 4];
         buf[..rem.len()].copy_from_slice(rem);
@@ -637,12 +636,11 @@ impl Font {
         let kern0 = find_kern0(d);
         let mut variation =
             find_table_full(d, b"fvar").and_then(|(off, len)| parse_fvar(d, off, len));
-        if let Some(var) = variation.as_mut() {
-            if let Some(avar) = find_table_full(d, b"avar")
+        if let Some(var) = variation.as_mut()
+            && let Some(avar) = find_table_full(d, b"avar")
                 .and_then(|(off, len)| parse_avar(d, off, len, var.axes.len()))
-            {
-                var.avar = avar;
-            }
+        {
+            var.avar = avar;
         }
 
         let mut font = Self {
@@ -1364,7 +1362,7 @@ impl Font {
         let mut head_offset: usize = 0;
         for (tag, bytes) in &tables {
             // Align each table's file start to a 4-byte boundary.
-            while (dir_size + body.len()) % 4 != 0 {
+            while !(dir_size + body.len()).is_multiple_of(4) {
                 body.push(0);
             }
             let table_offset = dir_size + body.len();
@@ -1380,7 +1378,7 @@ impl Font {
             ));
             body.extend_from_slice(bytes);
         }
-        while body.len() % 4 != 0 {
+        while !body.len().is_multiple_of(4) {
             body.push(0);
         }
 
@@ -2367,10 +2365,10 @@ impl Font {
                 continue;
             };
             for j in 0..lookup_index_count as usize {
-                if let Some(idx) = off_mul(off(feat, 4)?, j, 2).and_then(|slot| be_u16(d, slot)) {
-                    if !lookup_indices.contains(&idx) {
-                        lookup_indices.push(idx);
-                    }
+                if let Some(idx) = off_mul(off(feat, 4)?, j, 2).and_then(|slot| be_u16(d, slot))
+                    && !lookup_indices.contains(&idx)
+                {
+                    lookup_indices.push(idx);
                 }
             }
         }
@@ -2417,12 +2415,11 @@ impl Font {
                     }
                     9 => {
                         // Extension: resolve, then handle a real type-2 subtable.
-                        if let Some((ext_type, real_sub)) = resolve_extension(d, sub) {
-                            if ext_type == 2 {
-                                if let Some(st) = parse_pair_subtable(d, real_sub) {
-                                    subtables.push(st);
-                                }
-                            }
+                        if let Some((ext_type, real_sub)) = resolve_extension(d, sub)
+                            && ext_type == 2
+                            && let Some(st) = parse_pair_subtable(d, real_sub)
+                        {
+                            subtables.push(st);
                         }
                     }
                     _ => {}
@@ -2571,10 +2568,10 @@ impl Font {
                 continue;
             };
             for j in 0..n as usize {
-                if let Some(idx) = off_mul(off(feat, 4)?, j, 2).and_then(|slot| be_u16(d, slot)) {
-                    if !lookup_indices.contains(&idx) {
-                        lookup_indices.push(idx);
-                    }
+                if let Some(idx) = off_mul(off(feat, 4)?, j, 2).and_then(|slot| be_u16(d, slot))
+                    && !lookup_indices.contains(&idx)
+                {
+                    lookup_indices.push(idx);
                 }
             }
         }
@@ -2613,10 +2610,10 @@ impl Font {
                     4 => parse_ligature_subst(d, sub, &mut rules),
                     // Extension Substitution -> a real type-4 subtable.
                     7 => {
-                        if let Some((ext_type, real)) = resolve_extension(d, sub) {
-                            if ext_type == 4 {
-                                parse_ligature_subst(d, real, &mut rules);
-                            }
+                        if let Some((ext_type, real)) = resolve_extension(d, sub)
+                            && ext_type == 4
+                        {
+                            parse_ligature_subst(d, real, &mut rules);
                         }
                     }
                     _ => {}

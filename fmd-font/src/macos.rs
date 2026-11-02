@@ -344,7 +344,7 @@ impl<D: MacBridgeDriver> MacFontAdapter<D> {
 
         // Swizzle BGRA -> RGBA in place if needed
         if raw.is_bgra {
-            for chunk in raw.pixels.chunks_exact_mut(4) {
+            for chunk in raw.pixels.as_chunks_mut::<4>().0 {
                 chunk.swap(0, 2); // B and R swapped
             }
             raw.is_bgra = false;
@@ -590,7 +590,7 @@ impl MacBridgeDriver for SimulatedMacBridge {
             let len = (size as usize) * (size as usize) * 4;
             let mut pixels = vec![0u8; len];
             // Simulate BGRA pattern
-            for chunk in pixels.chunks_exact_mut(4) {
+            for chunk in pixels.as_chunks_mut::<4>().0 {
                 chunk[0] = 255; // B
                 chunk[1] = 200; // G
                 chunk[2] = 50; // R

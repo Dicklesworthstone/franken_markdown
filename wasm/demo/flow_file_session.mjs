@@ -170,7 +170,9 @@ export function createFileDocumentSession({
     return !disposed && job.identity === identity;
   }
   function unchanged(job) {
-    if (!currentJob(job) || job.revision !== revision || isBlocked()) return false;
+    // The host may synchronously drain pending DOM access changes here. Check
+    // the captured identity/revision AFTER that callback can retire this job.
+    if (isBlocked() || !currentJob(job) || job.revision !== revision) return false;
     try {
       return same(job.document, read());
     } catch {

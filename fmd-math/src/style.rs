@@ -182,7 +182,7 @@ impl StyleCtx {
 /// - accents: base cramped;
 /// - `\stackrel`/`\overset` annotations at `sup`, `\underset` at `sub`;
 /// - `\displaystyle`-class markers restyle the remainder of their enclosing
-///   list, preserving cramping;
+///   list, starting the declared style's uncramped variant;
 /// - `$…$` islands inside text are inline mathematics: they enter at text
 ///   style, uncramped;
 /// - environment cells enter at text style (`array`/`matrix`-class and
@@ -211,10 +211,7 @@ where
         }
         NodeKind::Frac { num, den, spec } => {
             let eff = match spec.forced_style {
-                Some(forced) => StyleCtx {
-                    style: forced,
-                    cramped: ctx.cramped,
-                },
+                Some(forced) => StyleCtx::new(forced),
                 None => ctx,
             };
             style_walk(num, eff.num(), visit);
@@ -329,8 +326,8 @@ where
 }
 
 /// Walk a horizontal list, honoring `\displaystyle`-class markers: a
-/// [`NodeKind::StyleChange`] restyles the remainder of the list (cramping
-/// preserved), exactly like TeX's style primitives.
+/// [`NodeKind::StyleChange`] restyles the remainder of the list in the
+/// declared style's uncramped variant, like TeX's style primitives.
 fn walk_list<'a, F>(items: &'a [Node], mut ctx: StyleCtx, visit: &mut F)
 where
     F: FnMut(&'a Node, StyleCtx),
@@ -338,10 +335,7 @@ where
     for item in items {
         if let NodeKind::StyleChange(style) = &item.kind {
             visit(item, ctx);
-            ctx = StyleCtx {
-                style: *style,
-                cramped: ctx.cramped,
-            };
+            ctx = StyleCtx::new(*style);
             continue;
         }
         style_walk(item, ctx, visit);

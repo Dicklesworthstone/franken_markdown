@@ -507,10 +507,7 @@ impl Engine {
             space_factor = space_factor_through(std::slice::from_ref(node), space_factor);
             match &node.kind {
                 NodeKind::StyleChange(style) => {
-                    ctx = ctx.map(|s| StyleCtx {
-                        style: *style,
-                        cramped: s.cramped,
-                    });
+                    ctx = ctx.map(|_| StyleCtx::new(*style));
                 }
                 NodeKind::SizeChange(factor) => {
                     ctx.decl_size = *factor;
@@ -2699,14 +2696,15 @@ impl Engine {
         ctx: LayCtx,
         span: Span,
     ) -> Result<Laid, MathError> {
-        let c = &self.consts_at(&ctx);
         let eff = match spec.forced_style {
-            Some(forced) => ctx.map(|s| StyleCtx {
-                style: forced,
-                cramped: s.cramped,
-            }),
+            // amsmath's style argument is a style primitive, which starts
+            // its uncramped variant even in a subscript or radicand.
+            Some(forced) => ctx.map(|_| StyleCtx::new(forced)),
             None => ctx,
         };
+        // A forced fraction style also selects that style's math fontdimens
+        // (including the delimiter target), not the surrounding script cut.
+        let c = &self.consts_at(&eff);
         let display = eff.style.style == Style::Display;
         let size = eff.size();
         let mut num_box = self.clean_box(num, eff.map(StyleCtx::num))?.boxx;

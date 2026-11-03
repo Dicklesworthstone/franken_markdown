@@ -1874,6 +1874,109 @@ fn tbinom_and_dbinom_force_their_styles() {
     assert!(text < display, "text {text} vs display {display}");
     assert!((height(r"\tbinom{N}{4}", Style::Display) - text).abs() < EPS);
     assert!((height(r"\dbinom{N}{4}", Style::Text) - display).abs() < EPS);
+    for (forced, plain, target) in [
+        (r"\dbinom{N}{4}", r"\binom{N}{4}", Style::Display),
+        (r"\tbinom{N}{4}", r"\binom{N}{4}", Style::Text),
+        (r"\dfrac{N}{4}", r"\frac{N}{4}", Style::Display),
+        (r"\tfrac{N}{4}", r"\frac{N}{4}", Style::Text),
+    ] {
+        let expected = e.typeset(plain, target).unwrap();
+        for surrounding in [
+            Style::Display,
+            Style::Text,
+            Style::Script,
+            Style::ScriptScript,
+        ] {
+            let actual = e.typeset(forced, surrounding).unwrap();
+            for (dimension, value, want) in [
+                ("width", actual.width, expected.width),
+                ("height", actual.height, expected.height),
+                ("depth", actual.depth, expected.depth),
+            ] {
+                assert!(
+                    (value - want).abs() < EPS,
+                    "{forced} in {surrounding:?}: {dimension} {value} vs {want}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn forced_fraction_script_boxes_match_tex() {
+    // The grammar differential's three reported boxes plus fresh isolated
+    // LaTeX/T1/amsmath showbox observations, including subscripts/radicands
+    // with a superscript in the numerator (uncramped forced styles).
+    // All values are ems at the Reference's 10 pt text size.
+    let e = engine();
+    let mut mismatches = Vec::new();
+    for (source, expected) in [
+        (
+            r"{\scriptstyle \dbinom{B}{A \sim 6 = \Omega}}",
+            [6.1111, 1.45001, 0.950012],
+        ),
+        (r"{1^{3}}^{\dbinom{m}{b}}", [3.348857, 2.507661, 0.0]),
+        (r"C_{\dbinom{7}{m = P}}", [5.22919, 0.683331, 2.05558]),
+        (
+            r"{\scriptstyle \dbinom{B}{A \sim 6 = Z}}",
+            [6.143044, 1.45001, 0.950012],
+        ),
+        (
+            r"{\scriptscriptstyle \dbinom{B}{A \sim 6 = Z}}",
+            [6.143044, 1.45001, 0.950012],
+        ),
+        (r"x_{\dbinom{a^2}{b}}", [3.070958, 0.430554, 2.09608]),
+        (r"\sqrt{\dbinom{a^2}{b}}", [3.449432, 1.904079, 1.135948]),
+        (r"x_{\dfrac{a^2}{b}}", [1.838728, 0.430554, 1.832019]),
+        (r"\sqrt{\dfrac{a^2}{b}}", [2.217203, 1.736107, 0.703914]),
+        (r"x_{\tbinom{a^2}{b}}", [2.362247, 0.430554, 1.073294]),
+        (r"\sqrt{\tbinom{a^2}{b}}", [2.740721, 1.392686, 0.447328]),
+        (r"x_{\tfrac{a^2}{b}}", [1.685574, 0.430554, 1.01813]),
+        (r"\sqrt{\tfrac{a^2}{b}}", [2.064049, 1.37027, 0.469745]),
+        (
+            r"x_{{\displaystyle\binom{a^2}{b}}}",
+            [3.070958, 0.430554, 2.09608],
+        ),
+        (
+            r"\sqrt{{\displaystyle\binom{a^2}{b}}}",
+            [3.449432, 1.904079, 1.135948],
+        ),
+        (
+            r"x_{{\displaystyle\frac{a^2}{b}}}",
+            [1.838728, 0.430554, 1.832019],
+        ),
+        (
+            r"\sqrt{{\displaystyle\frac{a^2}{b}}}",
+            [2.217203, 1.736107, 0.703914],
+        ),
+        (
+            r"x_{{\textstyle\binom{a^2}{b}}}",
+            [2.362247, 0.430554, 1.073294],
+        ),
+        (
+            r"\sqrt{{\textstyle\binom{a^2}{b}}}",
+            [2.740721, 1.392686, 0.447328],
+        ),
+        (
+            r"x_{{\textstyle\frac{a^2}{b}}}",
+            [1.685574, 0.430554, 1.01813],
+        ),
+        (
+            r"\sqrt{{\textstyle\frac{a^2}{b}}}",
+            [2.064049, 1.37027, 0.469745],
+        ),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        if actual
+            .iter()
+            .zip(expected)
+            .any(|(value, want)| (value - want).abs() >= 1e-4)
+        {
+            mismatches.push(format!("{source}: actual {actual:?}, TeX {expected:?}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
 
 #[test]

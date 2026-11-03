@@ -140,7 +140,7 @@ impl Engine {
             crate::parse::empty_macros(),
             self.budgets.max_input_bytes,
         )?;
-        self.finish(&root, StyleCtx::new(style), true, None)
+        self.finish(&root, StyleCtx::new(style), true, None, true)
     }
 
     /// Typeset a TexText-contract string (text mainland + math islands).
@@ -154,7 +154,7 @@ impl Engine {
             crate::parse::empty_macros(),
             self.budgets.max_input_bytes,
         )?;
-        self.finish(&root, StyleCtx::new(Style::Text), false, None)
+        self.finish(&root, StyleCtx::new(Style::Text), false, None, true)
     }
 
     /// [`Engine::typeset`], against a macro set (a preamble pack and/or
@@ -170,7 +170,7 @@ impl Engine {
         macros: &crate::macros::MacroSet,
     ) -> Result<Layout, MathError> {
         let root = crate::parse::parse_math_with(source, macros, self.budgets.max_input_bytes)?;
-        self.finish(&root, StyleCtx::new(style), true, None)
+        self.finish(&root, StyleCtx::new(style), true, None, macros.ligatures())
     }
 
     /// [`Engine::typeset_text`], against a macro set.
@@ -190,6 +190,7 @@ impl Engine {
             StyleCtx::new(Style::Text),
             false,
             macros.line_width(),
+            macros.ligatures(),
         )
     }
 
@@ -203,6 +204,7 @@ impl Engine {
         ctx: StyleCtx,
         align_rows: bool,
         line_width: Option<f64>,
+        text_kerns: bool,
     ) -> Result<Layout, MathError> {
         let items = match &root.kind {
             NodeKind::List(items) => items.as_slice(),
@@ -212,6 +214,7 @@ impl Engine {
             style: ctx,
             alphabet: None,
             text_mode: !align_rows,
+            text_kerns,
             decl_size: 1.0,
             line_stretch: 1.0,
             align_rows,
@@ -289,6 +292,9 @@ struct LayCtx {
     alphabet: Option<MathFont>,
     /// Laying text (islands, `\text` bodies): letters stay upright.
     text_mode: bool,
+    /// The active font control permits text pair kerns. Math kerns are
+    /// independent of the text ligature-disable policy.
+    text_kerns: bool,
     /// The size-declaration factor (`\small` …), group-scoped: multiplies
     /// the style's own factor, exactly like LaTeX's current size setting
     /// the design size every fontdimen is read from.
@@ -729,7 +735,7 @@ impl Engine {
                             if let (Some((pf, pg)), Some((cf, cg))) = (prev_glyph, laid.char_glyph)
                             {
                                 if pf == cf {
-                                    x += self.pair_kern(pf, pg, cg, ctx.text_points()) * ctx.size();
+                                    x += self.pair_kern(pf, pg, cg, ctx) * ctx.size();
                                 }
                             }
                         }
@@ -2084,7 +2090,7 @@ impl Engine {
                 .unwrap_or((face, gid));
             if let Some((pf, pg)) = prev {
                 if pf == face {
-                    x += self.pair_kern(face, pg, gid, ctx.text_points()) * size;
+                    x += self.pair_kern(face, pg, gid, ctx) * size;
                 }
             }
             let m = self.char_metrics(face, gid, ctx.text_points());
@@ -2182,7 +2188,13 @@ impl Engine {
 
     /// A pair kern from the active text or math TFM; other faces keep
     /// their own kerning. Ligature instructions never become substitutions.
-    fn pair_kern(&self, face: FaceId, left: u16, right: u16, text_points: Option<f64>) -> f64 {
+    fn pair_kern(&self, face: FaceId, left: u16, right: u16, ctx: LayCtx) -> f64 {
+        let text_points = ctx.text_points();
+        // The font control covers every text family, including custom
+        // faces without a bundled TFM. Math-family kerns stay active.
+        if text_points.is_some() && !ctx.text_kerns {
+            return 0.0;
+        }
         let (left_tfm, right_tfm) = match text_points {
             Some(points) => (
                 self.faces.text_tfm(face, left, points),
@@ -2191,14 +2203,7 @@ impl Engine {
             None => (self.faces.tfm(face, left), self.faces.tfm(face, right)),
         };
         if let (Some((font, l)), Some((_, r))) = (left_tfm, right_tfm) {
-            // The default text template disables ligatures through
-            // pdfTeX's font controls, which also disable text pair kerns.
-            // Math-family kern programs remain active.
-            return if text_points.is_some() {
-                0.0
-            } else {
-                font.kern(l, r).unwrap_or(0.0)
-            };
+            return font.kern(l, r).unwrap_or(0.0);
         }
         self.faces
             .font(face)

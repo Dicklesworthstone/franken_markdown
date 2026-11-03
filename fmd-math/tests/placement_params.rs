@@ -37,12 +37,52 @@ fn glyph_size(layout: &Layout, ch: char) -> f64 {
 const EPS: f64 = 1e-9;
 
 #[test]
+fn text_pair_kerns_follow_the_active_font_control() {
+    // Independent T1 showbox captures without the Reference's font
+    // control, and with it. Basic/bare callers keep natural text kerns.
+    let e = engine();
+    let basic = fmd_math::MacroSet::pack("basic").unwrap();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    for (source, natural, disabled) in [
+        ("AV", 1.388_550, 1.499_634),
+        ("Wave", 2.360_535, 2.499_390),
+        ("Yes", 1.505_188, 1.588_501),
+    ] {
+        let bare = e.typeset_text(source).unwrap();
+        let ordinary = e.typeset_text_with_macros(source, &basic).unwrap();
+        let controlled = e.typeset_text_with_macros(source, &reference).unwrap();
+        assert!(
+            (bare.width - natural).abs() < 1e-5
+                && (ordinary.width - natural).abs() < 1e-5
+                && (controlled.width - disabled).abs() < 1e-5,
+            "{source}: bare {}, basic {}, default {}, real TeX {natural}/{disabled}",
+            bare.width,
+            ordinary.width,
+            controlled.width
+        );
+        let math = format!(r"\text{{{source}}}");
+        assert!(
+            (e.typeset(&math, Style::Text).unwrap().width - natural).abs() < 1e-5
+                && (e
+                    .typeset_with_macros(&math, Style::Text, &reference)
+                    .unwrap()
+                    .width
+                    - disabled)
+                    .abs()
+                    < 1e-5,
+            "{source}: math text island lost its caller's font control"
+        );
+    }
+}
+
+#[test]
 fn bundled_upright_text_uses_t1_ec_boxes_and_kerns() {
     // Independent pdfTeX 1.40.28 showbox: article[10pt], fontenc[T1],
     // amsmath, with the default template's ligature-disable font control
     // applied to text. That control disables text kerns too. The operator
     // control stays in OT1 math roman.
     let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
     let mut mismatches = Vec::new();
     for (source, width, height, depth) in [
         (r"\text{Wave}", 2.499_390, 0.688_720, 0.0),
@@ -54,7 +94,9 @@ fn bundled_upright_text_uses_t1_ec_boxes_and_kerns() {
         (r"y\quad0", 2.025_917, 0.644_444, 0.194_444),
         (r"x^{y\quad0}", 2.450_570, 0.814_003, 0.0),
     ] {
-        let l = e.typeset(source, Style::Text).expect(source);
+        let l = e
+            .typeset_with_macros(source, Style::Text, &reference)
+            .expect(source);
         if (l.width - width).abs() >= 1e-5
             || (l.height - height).abs() >= 1e-5
             || (l.depth - depth).abs() >= 1e-5
@@ -74,6 +116,7 @@ fn text_mainland_uses_ec_at_declared_sizes_and_preserves_math_islands() {
     // font control. Declared sizes select their own EC design, not scaled
     // ecrm1000. These measurements also exercise interword fontdimens.
     let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
     for (source, width, height) in [
         (r"{\tiny AV}", 0.980_316, 0.344_360),
         (r"{\scriptsize AV}", 1.180_267, 0.482_104),
@@ -93,7 +136,9 @@ fn text_mainland_uses_ec_at_declared_sizes_and_preserves_math_islands() {
         ("A V", 1.832_886, 0.688_720),
         (r"$\operatorname{AV}$", 1.402_777, 0.683_331),
     ] {
-        let l = e.typeset_text(source).expect(source);
+        let l = e
+            .typeset_text_with_macros(source, &reference)
+            .expect(source);
         assert!(
             (l.width - width).abs() < 1e-5
                 && (l.height - height).abs() < 1e-5
@@ -109,7 +154,10 @@ fn text_mainland_uses_ec_at_declared_sizes_and_preserves_math_islands() {
 #[test]
 fn ec_metrics_preserve_explicit_glyphs_and_custom_face_metrics() {
     let e = engine();
-    let l = e.typeset_text("ffi fl éßÆ").unwrap();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    let l = e
+        .typeset_text_with_macros("ffi fl éßÆ", &reference)
+        .unwrap();
     assert_eq!(
         l.glyphs.iter().map(|g| g.ch).collect::<String>(),
         "ffifléßÆ"
@@ -121,6 +169,74 @@ fn ec_metrics_preserve_explicit_glyphs_and_custom_face_metrics() {
     ]));
     let l = custom.typeset_text("AV").unwrap();
     assert!((l.width - 1.5).abs() < EPS, "{}", l.width);
+}
+
+#[test]
+fn custom_text_kerns_honor_the_active_font_control() {
+    // A real bundled face with a known legacy kern table replaces its
+    // GPOS table in memory. This exercises the custom-font parser and
+    // layout route; no modified font is added to the shipped roster.
+    let mut data = fmd_font::bundled::CM_REGULAR.to_vec();
+    let original = fmd_font::Font::parse(data.clone()).unwrap();
+    let left = original.glyph_index('A');
+    let right = original.glyph_index('V');
+    let count = usize::from(u16::from_be_bytes(data[4..6].try_into().unwrap()));
+    let record = (0..count)
+        .map(|i| 12 + 16 * i)
+        .find(|&at| &data[at..at + 4] == b"GPOS")
+        .expect("the bundled face has a GPOS table to replace");
+    while data.len() & 3 != 0 {
+        data.push(0);
+    }
+    let offset = u32::try_from(data.len()).unwrap();
+    let mut table = Vec::new();
+    for word in [0_u16, 1, 0, 20, 1, 1, 6, 0, 0, left, right] {
+        table.extend_from_slice(&word.to_be_bytes());
+    }
+    table.extend_from_slice(&(-100_i16).to_be_bytes());
+    let checksum = table.chunks_exact(4).fold(0_u32, |sum, word| {
+        sum.wrapping_add(u32::from_be_bytes(word.try_into().unwrap()))
+    });
+    data[record..record + 4].copy_from_slice(b"kern");
+    data[record + 4..record + 8].copy_from_slice(&checksum.to_be_bytes());
+    data[record + 8..record + 12].copy_from_slice(&offset.to_be_bytes());
+    data[record + 12..record + 16].copy_from_slice(&24_u32.to_be_bytes());
+    data.extend_from_slice(&table);
+    let mut records: Vec<_> = data[12..12 + 16 * count]
+        .chunks_exact(16)
+        .map(|record| <[u8; 16]>::try_from(record).unwrap())
+        .collect();
+    records.sort_by_key(|record| <[u8; 4]>::try_from(&record[..4]).unwrap());
+    for (slot, record) in data[12..12 + 16 * count].chunks_exact_mut(16).zip(records) {
+        slot.copy_from_slice(&record);
+    }
+    let head = (0..count)
+        .map(|i| 12 + 16 * i)
+        .find(|&at| &data[at..at + 4] == b"head")
+        .unwrap();
+    let head_offset = usize::try_from(u32::from_be_bytes(
+        data[head + 8..head + 12].try_into().unwrap(),
+    ))
+    .unwrap();
+    data[head_offset + 8..head_offset + 12].fill(0);
+    let checksum = data.chunks_exact(4).fold(0_u32, |sum, word| {
+        sum.wrapping_add(u32::from_be_bytes(word.try_into().unwrap()))
+    });
+    data[head_offset + 8..head_offset + 12]
+        .copy_from_slice(&0xB1B0_AFBA_u32.wrapping_sub(checksum).to_be_bytes());
+    let font = fmd_font::Font::parse(data).unwrap();
+    assert_eq!(font.kerning('A', 'V'), -100, "the actual custom font kern");
+    let delta = 100.0 / f64::from(font.units_per_em);
+    let custom = Engine::new(fmd_math::faces::FaceSet::from_fonts(vec![font]));
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    let natural = custom.typeset_text("AV").unwrap();
+    let controlled = custom.typeset_text_with_macros("AV", &reference).unwrap();
+    assert!(
+        (controlled.width - natural.width - delta).abs() < EPS,
+        "default font control must remove the custom kern: {} vs {}, delta {delta}",
+        controlled.width,
+        natural.width
+    );
 }
 
 #[test]
@@ -2999,6 +3115,7 @@ fn interword_glue_follows_texs_space_factor() {
     // font control. Sentence space factors still widen interword glue;
     // capitals retain factor 1000 and closing punctuation passes it on.
     let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
     for (text, tex_pt) in [
         ("Yes. No", 35.60242),
         ("Yes No", 31.71448),
@@ -3008,7 +3125,7 @@ fn interword_glue_follows_texs_space_factor() {
         ("Why? Because! So", 82.95197),
         ("$x$. Next", 34.04169),
     ] {
-        let width = e.typeset_text(text).unwrap().width;
+        let width = e.typeset_text_with_macros(text, &reference).unwrap().width;
         assert!(
             (width - tex_pt / 10.0).abs() < 1e-4,
             "{text}: {width} vs TeX {}",

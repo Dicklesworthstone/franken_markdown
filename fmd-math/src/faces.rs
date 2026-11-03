@@ -24,7 +24,6 @@
 
 use crate::mbox::FaceId;
 use crate::node::MathFont;
-use crate::style::Style;
 use crate::tfm::TfmFont;
 
 /// The engine's face roster, in [`FaceId`] order. The set mirrors the
@@ -147,6 +146,37 @@ pub const FACE_FRAKTUR_7: FaceId = FaceId(24);
 /// Euler Fraktur's second-order script cut (eufm5).
 pub const FACE_FRAKTUR_5: FaceId = FaceId(25);
 
+/// Additional optical cuts; existing face ids remain stable.
+pub const FACE_MATH_ITALIC_6: FaceId = FaceId(26);
+/// Math italic at 8 pt.
+pub const FACE_MATH_ITALIC_8: FaceId = FaceId(27);
+/// Math italic at 9 pt.
+pub const FACE_MATH_ITALIC_9: FaceId = FaceId(28);
+/// Math italic at 12 pt and larger.
+pub const FACE_MATH_ITALIC_12: FaceId = FaceId(29);
+/// Math symbols at 6 pt.
+pub const FACE_MATH_SYMBOLS_6: FaceId = FaceId(30);
+/// Math symbols at 8 pt.
+pub const FACE_MATH_SYMBOLS_8: FaceId = FaceId(31);
+/// Math symbols at 9 pt.
+pub const FACE_MATH_SYMBOLS_9: FaceId = FaceId(32);
+/// Roman at 6 pt.
+pub const FACE_ROMAN_6: FaceId = FaceId(33);
+/// Roman at 8 pt.
+pub const FACE_ROMAN_8: FaceId = FaceId(34);
+/// Roman at 9 pt.
+pub const FACE_ROMAN_9: FaceId = FaceId(35);
+/// Roman at 12 and 14.4 pt.
+pub const FACE_ROMAN_12: FaceId = FaceId(36);
+/// Roman at 17.28 pt and larger.
+pub const FACE_ROMAN_17: FaceId = FaceId(37);
+/// Math extension below 7.5 pt.
+pub const FACE_MATH_EXTENSION_7: FaceId = FaceId(38);
+/// Math extension at 8 pt.
+pub const FACE_MATH_EXTENSION_8: FaceId = FaceId(39);
+/// Math extension at 9 pt.
+pub const FACE_MATH_EXTENSION_9: FaceId = FaceId(40);
+
 /// The private-use page the CM and AMS faces map their TFM code positions
 /// into: code `c` is `U+F000 + c` in that face (ADR-0028).
 pub const TEX_CODE_PAGE: u32 = 0xF000;
@@ -215,6 +245,21 @@ impl FaceSet {
             fmd_font::Font::parse(fmd_font::bundled::EULER_FRAKTUR_10.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::EULER_FRAKTUR_7.to_vec())?,
             fmd_font::Font::parse(fmd_font::bundled::EULER_FRAKTUR_5.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_ITALIC_6.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_ITALIC_8.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_ITALIC_9.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_ITALIC_12.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_SYMBOLS_6.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_SYMBOLS_8.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_SYMBOLS_9.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_6.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_8.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_9.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_12.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_ROMAN_17.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_EXTENSION_7.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_EXTENSION_8.to_vec())?,
+            fmd_font::Font::parse(fmd_font::bundled::CM_MATH_EXTENSION_9.to_vec())?,
         ];
         let mut faces = Self::from_fonts(fonts);
         faces.tfm = (0..faces.fonts.len()).map(|_| None).collect();
@@ -253,6 +298,21 @@ impl FaceSet {
             (FACE_FRAKTUR_10, &crate::tfm::EUFM10),
             (FACE_FRAKTUR_7, &crate::tfm::EUFM7),
             (FACE_FRAKTUR_5, &crate::tfm::EUFM5),
+            (FACE_MATH_ITALIC_6, &crate::tfm::CMMI6),
+            (FACE_MATH_ITALIC_8, &crate::tfm::CMMI8),
+            (FACE_MATH_ITALIC_9, &crate::tfm::CMMI9),
+            (FACE_MATH_ITALIC_12, &crate::tfm::CMMI12),
+            (FACE_MATH_SYMBOLS_6, &crate::tfm::CMSY6),
+            (FACE_MATH_SYMBOLS_8, &crate::tfm::CMSY8),
+            (FACE_MATH_SYMBOLS_9, &crate::tfm::CMSY9),
+            (FACE_ROMAN_6, &crate::tfm::CMR6),
+            (FACE_ROMAN_8, &crate::tfm::CMR8),
+            (FACE_ROMAN_9, &crate::tfm::CMR9),
+            (FACE_ROMAN_12, &crate::tfm::CMR12),
+            (FACE_ROMAN_17, &crate::tfm::CMR17),
+            (FACE_MATH_EXTENSION_7, &crate::tfm::CMEX7),
+            (FACE_MATH_EXTENSION_8, &crate::tfm::CMEX8),
+            (FACE_MATH_EXTENSION_9, &crate::tfm::CMEX9),
         ] {
             faces.attach_tfm(face, font, &tex_coded);
         }
@@ -297,35 +357,66 @@ impl FaceSet {
         self.tfm.get(face.0)?.as_ref().map(|entry| entry.font)
     }
 
-    /// The optically sized cut TeX sets a script in: cmmi7, cmsy7 and cmr7
-    /// in script style, the 5-point cuts in scriptscript, for a glyph
-    /// resolved from the 10-point math italic, math symbols or roman face.
-    /// `None` outside the script styles, for faces without sized cuts (bold,
-    /// typewriter, cmex — plain TeX scales cmex10 at every size), or when
-    /// the cut lacks the character.
+    /// The optical cut TeX loads at the actual point size, including the
+    /// cuts selected by declarations and their script sizes. `None` when
+    /// the base cut is already right, the family has no optical cut, or
+    /// the selected cut lacks the character.
     #[must_use]
-    pub fn optical(&self, face: FaceId, ch: char, style: Style) -> Option<(FaceId, u16)> {
-        let cut = match (style, face) {
-            (Style::Script, FACE_MATH_ITALIC) => FACE_MATH_ITALIC_7,
-            (Style::Script, FACE_MATH_SYMBOLS) => FACE_MATH_SYMBOLS_7,
-            (Style::Script, FACE_REGULAR) => FACE_ROMAN_7,
-            (Style::Script, FACE_AMS_A_10) => FACE_AMS_A_7,
-            (Style::Script, FACE_AMS_B_10) => FACE_AMS_B_7,
-            (Style::Script, FACE_FRAKTUR_10) => FACE_FRAKTUR_7,
-            (Style::ScriptScript, FACE_MATH_ITALIC) => FACE_MATH_ITALIC_5,
-            (Style::ScriptScript, FACE_MATH_SYMBOLS) => FACE_MATH_SYMBOLS_5,
-            (Style::ScriptScript, FACE_REGULAR) => FACE_ROMAN_5,
-            (Style::ScriptScript, FACE_AMS_A_10) => FACE_AMS_A_5,
-            (Style::ScriptScript, FACE_AMS_B_10) => FACE_AMS_B_5,
-            (Style::ScriptScript, FACE_FRAKTUR_10) => FACE_FRAKTUR_5,
+    pub fn optical(&self, face: FaceId, ch: char, points: f64) -> Option<(FaceId, u16)> {
+        let cut = match face {
+            FACE_MATH_ITALIC => match points {
+                p if p < 5.5 => FACE_MATH_ITALIC_5,
+                p if p < 6.5 => FACE_MATH_ITALIC_6,
+                p if p < 7.5 => FACE_MATH_ITALIC_7,
+                p if p < 8.5 => FACE_MATH_ITALIC_8,
+                p if p < 9.5 => FACE_MATH_ITALIC_9,
+                p if p >= 11.5 => FACE_MATH_ITALIC_12,
+                _ => return None,
+            },
+            FACE_MATH_SYMBOLS => match points {
+                p if p < 5.5 => FACE_MATH_SYMBOLS_5,
+                p if p < 6.5 => FACE_MATH_SYMBOLS_6,
+                p if p < 7.5 => FACE_MATH_SYMBOLS_7,
+                p if p < 8.5 => FACE_MATH_SYMBOLS_8,
+                p if p < 9.5 => FACE_MATH_SYMBOLS_9,
+                _ => return None,
+            },
+            FACE_REGULAR | FACE_ROMAN_10 => match points {
+                p if p < 5.5 => FACE_ROMAN_5,
+                p if p < 6.5 => FACE_ROMAN_6,
+                p if p < 7.5 => FACE_ROMAN_7,
+                p if p < 8.5 => FACE_ROMAN_8,
+                p if p < 9.5 => FACE_ROMAN_9,
+                p if p >= 16.0 => FACE_ROMAN_17,
+                p if p >= 11.5 => FACE_ROMAN_12,
+                _ => return None,
+            },
+            FACE_MATH_EXTENSION => Self::extension_face(points),
+            FACE_AMS_A_10 if points < 6.0 => FACE_AMS_A_5,
+            FACE_AMS_A_10 if points < 8.0 => FACE_AMS_A_7,
+            FACE_AMS_B_10 if points < 6.0 => FACE_AMS_B_5,
+            FACE_AMS_B_10 if points < 8.0 => FACE_AMS_B_7,
+            FACE_FRAKTUR_10 if points < 6.0 => FACE_FRAKTUR_5,
+            FACE_FRAKTUR_10 if points < 8.0 => FACE_FRAKTUR_7,
             _ => return None,
         };
         let gid = self.font(cut)?.glyph_index(ch);
         (gid != 0).then_some((cut, gid))
     }
 
-    /// The face TeX itself sets `ch` in at `style`, for a glyph resolved
-    /// from `face`: the optically sized cut in the script styles
+    /// LaTeX/amsfonts' OMX optical cut at the actual point size.
+    #[must_use]
+    pub fn extension_face(points: f64) -> FaceId {
+        match points {
+            p if p < 7.5 => FACE_MATH_EXTENSION_7,
+            p if p < 8.5 => FACE_MATH_EXTENSION_8,
+            p if p < 9.5 => FACE_MATH_EXTENSION_9,
+            _ => FACE_MATH_EXTENSION,
+        }
+    }
+
+    /// The face TeX sets `ch` in at `points`, for a glyph resolved
+    /// from `face`: the optical cut at the actual point size
     /// ([`FaceSet::optical`]), and cmr10 at display and text size
     /// ([`FaceSet::math_roman`]). `None` when neither applies or the cut
     /// lacks the character.
@@ -334,30 +425,30 @@ impl FaceSet {
         &self,
         face: FaceId,
         ch: char,
-        style: Style,
+        points: f64,
         text_mode: bool,
     ) -> Option<(FaceId, u16)> {
-        if let Some(cut) = self.optical(face, ch, style) {
+        if text_mode && points >= 9.5 {
+            return None;
+        }
+        if let Some(cut) = self.optical(face, ch, points) {
             return Some(cut);
         }
         // The converted cuts address a character by its TFM code (U+F000 +
         // code, ADR-0028); only ASCII also sits at its own code point. So
         // cmr's Greek capitals (codes 0-10), dotless i and the ligatures reach
         // cmr7 and cmr5 through the code the base face's TFM gives them.
-        if let Some(cut) = self.optical_by_code(face, ch, style) {
+        if let Some(cut) = self.optical_by_code(face, ch, points) {
             return Some(cut);
-        }
-        if !matches!(style, Style::Display | Style::Text) {
-            return None;
         }
         self.math_roman(face, ch, text_mode)
     }
 
     /// [`FaceSet::optical`] for `ch` addressed by its TFM code in `face`.
-    fn optical_by_code(&self, face: FaceId, ch: char, style: Style) -> Option<(FaceId, u16)> {
+    fn optical_by_code(&self, face: FaceId, ch: char, points: f64) -> Option<(FaceId, u16)> {
         let gid = self.font(face)?.glyph_index(ch);
         let (_, code) = self.tfm(face, gid)?;
-        self.optical(face, tex_code(code), style)
+        self.optical(face, tex_code(code), points)
     }
 
     /// cmr10's glyph for `ch`, TeX's family 0 in math mode, where CM Regular
@@ -661,7 +752,7 @@ mod tests {
             Ok(f) => f,
             Err(e) => panic!("bundled faces: {e}"),
         };
-        assert_eq!(faces.len(), 26);
+        assert_eq!(faces.len(), 41);
         // Letters come from the math italic; digits stay upright.
         let Some((face, gid)) = faces.resolve('x', default_math_chain('x')) else {
             panic!("x must resolve");
@@ -712,23 +803,19 @@ mod tests {
     fn scripts_take_the_optical_cuts() {
         let faces = FaceSet::bundled().expect("bundled faces");
         assert_eq!(
-            faces
-                .optical(FACE_MATH_ITALIC, 'x', Style::Script)
-                .map(|h| h.0),
+            faces.optical(FACE_MATH_ITALIC, 'x', 7.0).map(|h| h.0),
             Some(FACE_MATH_ITALIC_7)
         );
         assert_eq!(
-            faces
-                .optical(FACE_MATH_SYMBOLS, '−', Style::ScriptScript)
-                .map(|h| h.0),
+            faces.optical(FACE_MATH_SYMBOLS, '−', 5.0).map(|h| h.0),
             Some(FACE_MATH_SYMBOLS_5)
         );
         assert_eq!(
-            faces.optical(FACE_REGULAR, '2', Style::Script).map(|h| h.0),
+            faces.optical(FACE_REGULAR, '2', 7.0).map(|h| h.0),
             Some(FACE_ROMAN_7)
         );
-        assert_eq!(faces.optical(FACE_REGULAR, '2', Style::Text), None);
-        assert_eq!(faces.optical(FACE_BOLD, 'x', Style::Script), None);
+        assert_eq!(faces.optical(FACE_REGULAR, '2', 10.0), None);
+        assert_eq!(faces.optical(FACE_BOLD, 'x', 7.0), None);
         assert!(
             faces.tex_glyph(FACE_MATH_EXTENSION, 0x5A).is_some(),
             "display integral"

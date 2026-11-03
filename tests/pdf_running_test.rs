@@ -259,12 +259,22 @@ fn snapshot(pdf: &[u8]) -> String {
 
 #[test]
 fn running_chrome_matches_committed_golden() {
+    // Canonical run advances move ten body runs by 0.01 pt, without changing
+    // chrome, glyphs, line breaks or the other 86 decoded PDF objects. The
+    // reviewed snapshot keeps the whole-document byte lock and exact chrome.
     let mut opts = base();
     opts.title = Some("Widget Spec".into());
     opts.author = Some("Acme".into());
     opts.running = full_chrome();
     opts.running.skip_first_page = true;
-    let snap = snapshot(&render_pdf(&long_doc(), &opts).unwrap());
+    let pdf = render_pdf(&long_doc(), &opts).unwrap();
+    // Keep the actual bytes for object and independent raster comparisons;
+    // the whole-document fingerprint also covers content outside the chrome.
+    let artifacts =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/golden-output-artifacts");
+    std::fs::create_dir_all(&artifacts).unwrap();
+    std::fs::write(artifacts.join("running-chrome.pdf"), &pdf).unwrap();
+    let snap = snapshot(&pdf);
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/golden/output/running-chrome.pdf.snapshot");
     if std::env::var_os("UPDATE_GOLDEN").is_some() {

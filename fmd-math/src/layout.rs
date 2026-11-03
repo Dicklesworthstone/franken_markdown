@@ -34,10 +34,9 @@ use std::sync::{PoisonError, RwLock};
 use crate::atom::{AtomClass, classify_list, spacing_in_style};
 use crate::error::{BudgetKind, Budgets, MathError};
 use crate::faces::{
-    FACE_BOLD, FACE_ITALIC, FACE_MATH_EXTENSION, FACE_MATH_ITALIC, FACE_MATH_ITALIC_5,
-    FACE_MATH_ITALIC_7, FACE_MATH_SYMBOLS, FACE_REGULAR, FACE_ROMAN_7, FACE_ROMAN_10, FACE_SANS,
-    FACE_SYMBOLS, FACE_TYPEWRITER, FaceSet, GlyphMetrics, accent_spacing_fallback, alphabet_map,
-    default_math_chain, glyph_metrics, kern_em,
+    FACE_BOLD, FACE_ITALIC, FACE_MATH_EXTENSION, FACE_MATH_ITALIC, FACE_MATH_SYMBOLS, FACE_REGULAR,
+    FACE_ROMAN_7, FACE_ROMAN_10, FACE_SANS, FACE_SYMBOLS, FACE_TYPEWRITER, FaceSet, GlyphMetrics,
+    accent_spacing_fallback, alphabet_map, default_math_chain, glyph_metrics, kern_em,
 };
 use crate::mbox::{
     BoxKind, Color, FaceId, GlueSpec, Layout, MBox, MNode, PathContour, PathSeg, Positioned,
@@ -120,16 +119,10 @@ impl Engine {
     /// The Appendix-G parameters TeX reads in `ctx`'s style (franken_manim
     /// fm-giir).
     ///
-    /// At the default declared size they come from the fonts TeX loads at
-    /// that style's size ([`MathConstants::at`]). A size declaration such as
-    /// `\large` loads other optical sizes (cmsy8, cmsy6) that fmd-math does
-    /// not carry, so there the text-size fonts are scaled, as before.
+    /// Read from the optical fonts loaded at the actual point size,
+    /// including the script sizes selected by a size declaration.
     fn consts_at(&self, ctx: &LayCtx) -> MathConstants {
-        if (ctx.decl_size - 1.0).abs() < f64::EPSILON {
-            self.consts.at(ctx.style.style)
-        } else {
-            self.consts.at(Style::Text)
-        }
+        self.consts.at(10.0 * ctx.size())
     }
 
     /// Typeset a math-mode string at the given outer style.
@@ -329,7 +322,7 @@ struct Paragraph {
 
 impl LayCtx {
     fn size(&self) -> f64 {
-        self.style.size_factor() * self.decl_size
+        crate::metrics::math_size(self.style.style, self.decl_size)
     }
     fn map(self, f: impl FnOnce(StyleCtx) -> StyleCtx) -> Self {
         Self {
@@ -1382,7 +1375,7 @@ impl Engine {
         // scripts, at the same scaled size, and cmr10 for family 0.
         let (face, gid) = self
             .faces
-            .tex_face(face, mapped, ctx.style.style, ctx.text_mode)
+            .tex_face(face, mapped, 10.0 * ctx.size(), ctx.text_mode)
             .unwrap_or((face, gid));
         Ok(self.glyph_atom(face, gid, mapped, span, ctx))
     }
@@ -1411,7 +1404,7 @@ impl Engine {
             .ok_or(MathError::UnmappedChar { ch, span })?;
         let (face, gid) = self
             .faces
-            .optical(base, crate::faces::tex_code(code), ctx.style.style)
+            .optical(base, crate::faces::tex_code(code), 10.0 * ctx.size())
             .unwrap_or((base, gid));
         Ok(self.glyph_atom(
             face,
@@ -1640,7 +1633,7 @@ impl Engine {
             .optical(
                 FACE_MATH_SYMBOLS,
                 crate::faces::tex_code(0x36),
-                ctx.style.style,
+                10.0 * ctx.size(),
             )
             .unwrap_or((FACE_MATH_SYMBOLS, gid));
         let metrics = self.char_metrics(face, gid, ctx.text_mode);
@@ -1685,7 +1678,7 @@ impl Engine {
             .optical(
                 FACE_MATH_SYMBOLS,
                 crate::faces::tex_code(0x36),
-                ctx.style.style,
+                10.0 * ctx.size(),
             )
             .unwrap_or((FACE_MATH_SYMBOLS, gid));
         let relation = self.char_atom(base, span, ctx)?;
@@ -1838,7 +1831,7 @@ impl Engine {
                     };
                     let (face, gid) = self
                         .faces
-                        .optical(face, crate::faces::tex_code(code), ctx.style.style)
+                        .optical(face, crate::faces::tex_code(code), 10.0 * ctx.size())
                         .unwrap_or((face, gid));
                     let metrics = self.char_metrics(face, gid, ctx.text_mode);
                     glyph_box(face, gid, ch, span, size, metrics)
@@ -1860,12 +1853,13 @@ impl Engine {
     /// on cmex's frame where one exists.
     fn op_glyph(&self, ch: char, span: Span, ctx: LayCtx, scale: f64) -> Result<Laid, MathError> {
         let display = ctx.style.style == Style::Display;
+        let extension = FaceSet::extension_face(10.0 * ctx.size());
         let cmex = big_op_codes(ch).and_then(|(text, shown)| {
             self.faces
-                .tex_glyph(FACE_MATH_EXTENSION, if display { shown } else { text })
+                .tex_glyph(extension, if display { shown } else { text })
         });
         let (face, gid, mapped, scale) = match cmex {
-            Some(gid) => (FACE_MATH_EXTENSION, gid, ch, 1.0),
+            Some(gid) => (extension, gid, ch, 1.0),
             None => {
                 let (face, gid, mapped) = self.resolve_math_char(ch, span, ctx)?;
                 (face, gid, mapped, scale)
@@ -1889,6 +1883,9 @@ impl Engine {
         });
         let em = ctx.size();
         let (width, italic, dx) = match (tex_op_frame(ch, display), ink) {
+            _ if face == extension && extension != FACE_MATH_EXTENSION => {
+                (metrics.advance * em, metrics.italic * em, 0.0)
+            }
             (Some((width, italic, x0, x1)), Some((g0, g1))) => (
                 width * em,
                 italic * em,
@@ -2080,7 +2077,7 @@ impl Engine {
             // text face.
             let (face, gid) = self
                 .faces
-                .tex_face(face, mapped, ctx.style.style, ctx.text_mode || text_run)
+                .tex_face(face, mapped, 10.0 * size, ctx.text_mode || text_run)
                 .unwrap_or((face, gid));
             if let Some((pf, pg)) = prev
                 && pf == face
@@ -2323,8 +2320,8 @@ impl Engine {
             (0.0, 0.0)
         } else {
             let t = ctx.style.style.sup();
-            let (sup_drop, sub_drop) = c.script_drops(t);
-            let t_size = t.size_factor() * ctx.decl_size;
+            let t_size = crate::metrics::math_size(t, ctx.decl_size);
+            let (sup_drop, sub_drop) = c.script_drops(10.0 * t_size);
             (
                 base_laid.boxx.height - sup_drop * t_size,
                 base_laid.boxx.depth + sub_drop * t_size,
@@ -2494,7 +2491,7 @@ impl Engine {
             .resolve('′', &[FACE_MATH_SYMBOLS, FACE_REGULAR, FACE_SYMBOLS])
             .map(|(face, gid)| {
                 self.faces
-                    .optical(face, '′', ctx.style.style)
+                    .optical(face, '′', 10.0 * ctx.size())
                     .unwrap_or((face, gid))
             })
         else {
@@ -2503,6 +2500,22 @@ impl Engine {
         let Some(font) = self.faces.font(face) else {
             return Err(unmapped);
         };
+        if self
+            .faces
+            .tfm_font(face)
+            .is_some_and(|tfm| matches!(tfm.name, "cmsy6" | "cmsy8" | "cmsy9"))
+        {
+            // The added optical cuts have their own authored outline and
+            // TFM box. The existing 10/7/5 ink-frame calibration stays fixed.
+            return Ok(glyph_box(
+                face,
+                gid,
+                '′',
+                span,
+                ctx.size(),
+                self.char_metrics(face, gid, false),
+            ));
+        }
         let upm = f64::from(font.units_per_em.max(1));
         let bbox = font.glyph_bbox(gid).unwrap_or([0, 0, 0, 0]);
         let [gl, _, gr, gt] = bbox.map(|v| f64::from(v) / upm);
@@ -3002,8 +3015,11 @@ impl Engine {
                 // The vector is cmmi's own accent character at the style's
                 // optical size, TeX's glyph as it is.
                 let cmmi = if math_italic {
-                    let face = math_italic_face(ctx.style.style);
-                    self.faces.tex_glyph(face, code).map(|gid| (face, gid))
+                    self.faces.tex_glyph(FACE_MATH_ITALIC, code).map(|gid| {
+                        self.faces
+                            .optical(FACE_MATH_ITALIC, crate::faces::tex_code(code), 10.0 * size)
+                            .unwrap_or((FACE_MATH_ITALIC, gid))
+                    })
                 } else {
                     None
                 };
@@ -3061,7 +3077,7 @@ impl Engine {
                 // x-height). TeX's own character sits at its box; a glyph
                 // from another face is scaled to that character's ink width
                 // and its ink set where that character's ink sits.
-                let (advance, accent_height) = tex_accent_box(math_italic, code, ctx.style.style);
+                let (advance, accent_height) = tex_accent_box(math_italic, code, 10.0 * size);
                 let scale = if cmmi.is_none() && gr > gl {
                     (tr - tl) / (gr - gl)
                 } else {
@@ -3779,27 +3795,26 @@ impl Engine {
     /// font it comes from, or an extensible's top piece's. `None` in a
     /// zero-size style.
     fn radical_bar(&self, target: f64, ctx: LayCtx) -> Option<f64> {
-        use crate::tfm::{CMEX7, CMEX10, CMSY5, CMSY7, CMSY10};
         if ctx.size() <= 0.0 {
             return None;
         }
-        let choice = var_delimiter('√', target / ctx.decl_size, ctx.style.style)?;
+        let choice = var_delimiter('√', target, ctx.style.style, ctx.decl_size)?;
         let height = match choice.variant {
             DelimVariant::Small { style } => {
-                match style {
-                    Style::Script => &CMSY7,
-                    Style::ScriptScript => &CMSY5,
-                    Style::Display | Style::Text => &CMSY10,
-                }
-                .char(0x70)?
-                .height
+                crate::metrics::size_fonts(10.0 * crate::metrics::math_size(style, ctx.decl_size))
+                    .0
+                    .char(0x70)?
+                    .height
             }
-            DelimVariant::Cmex { cmex7 } => {
+            DelimVariant::Cmex => {
                 let code = cmex_successor('√', choice.total).unwrap_or(0x76);
-                if cmex7 { &CMEX7 } else { &CMEX10 }.char(code)?.height
+                crate::metrics::size_fonts(10.0 * choice.scale)
+                    .1
+                    .char(code)?
+                    .height
             }
         };
-        Some(height * choice.scale * ctx.decl_size)
+        Some(height * choice.scale)
     }
 
     /// The ADR-0005 delimiter mechanism, complete, at the size TeX's
@@ -3827,28 +3842,21 @@ impl Engine {
         // TeX sets the variant it finds for the target, not the target:
         // every mechanism below draws at that total. The small variant may
         // come from a larger size's font than the style's own.
-        let mut small_style = ctx.style.style;
         let mut small_size = ctx.size();
         let target_total = match search {
             _ if ctx.size() <= 0.0 => target_total,
             DelimSearch::SizeChain => {
-                match var_delimiter(ch, target_total / ctx.decl_size, ctx.style.style) {
+                match var_delimiter(ch, target_total, ctx.style.style, ctx.decl_size) {
                     Some(choice) => {
-                        let scale = choice.scale * ctx.decl_size;
+                        let scale = choice.scale;
                         match choice.variant {
-                            DelimVariant::Small { style } => {
-                                small_style = style;
+                            DelimVariant::Small { .. } => {
                                 small_size = scale;
                             }
-                            DelimVariant::Cmex { cmex7 } => {
-                                if let Some(boxx) = self.cmex_delimiter(
-                                    ch,
-                                    choice.total,
-                                    scale,
-                                    cmex7,
-                                    ctx,
-                                    delim.span,
-                                ) {
+                            DelimVariant::Cmex => {
+                                if let Some(boxx) =
+                                    self.cmex_delimiter(ch, choice.total, scale, ctx, delim.span)
+                                {
                                     return Ok(boxx);
                                 }
                             }
@@ -3860,9 +3868,7 @@ impl Engine {
             }
             DelimSearch::Fixed => {
                 let total = tex_delimiter_total(ch, target_total / ctx.size());
-                if let Some(boxx) =
-                    self.cmex_delimiter(ch, total, ctx.size(), false, ctx, delim.span)
-                {
+                if let Some(boxx) = self.cmex_delimiter(ch, total, ctx.size(), ctx, delim.span) {
                     return Ok(boxx);
                 }
                 total * ctx.size()
@@ -3887,7 +3893,7 @@ impl Engine {
             )
             .map(|(face, gid)| {
                 self.faces
-                    .tex_face(face, ch, small_style, ctx.text_mode)
+                    .tex_face(face, ch, 10.0 * small_size, ctx.text_mode)
                     .unwrap_or((face, gid))
             })
         else {
@@ -4005,9 +4011,8 @@ impl Engine {
     /// cmex's pieces as tex.web §713 stacks them — top, repeaters, middle,
     /// repeaters, bottom, each piece's char box filling its slot. Centred on
     /// the style's axis; the box width is the glyph's TFM width. Below text
-    /// size the font is cmex7 (`cmex7`), whose delimiters have cmex10's
-    /// heights but wider boxes; the roster carries cmex10's outlines only,
-    /// so they are drawn centred in cmex7's box. `None` at the small
+    /// size the font is the actual cmex7/8/9 optical cut, with its own
+    /// TFM box and outline. `None` at the small
     /// variant, when the roster lacks cmex10, or when `ch` has no cmex form
     /// at `total` (characters TeX does not chain), which leaves the drawn
     /// construction to serve.
@@ -4016,7 +4021,6 @@ impl Engine {
         ch: char,
         total: f64,
         size: f64,
-        cmex7: bool,
         ctx: LayCtx,
         span: Span,
     ) -> Option<MBox> {
@@ -4024,12 +4028,13 @@ impl Engine {
             return None;
         }
         let top = self.consts_at(&ctx).axis_height * ctx.size() + total * size / 2.0;
-        let piece = |code: u8| self.faces.tex_glyph(FACE_MATH_EXTENSION, code);
+        let face = FaceSet::extension_face(10.0 * size);
+        let piece = |code: u8| self.faces.tex_glyph(face, code);
         let glyph = |gid: u16, dy: f64| Positioned {
             dx: 0.0,
             dy,
             node: MNode::Glyph {
-                face: FACE_MATH_EXTENSION,
+                face,
                 gid,
                 ch,
                 size,
@@ -4038,13 +4043,11 @@ impl Engine {
         };
         let mut children = Vec::new();
         let width_gid;
-        let width_code;
         if let Some(code) = cmex_successor(ch, total) {
-            width_code = code;
             let gid = piece(code)?;
             // The successor's TFM height is its ink top (0.04 em); its box,
             // height plus depth `total`, centers on the axis.
-            let m = self.char_metrics(FACE_MATH_EXTENSION, gid, false);
+            let m = self.char_metrics(face, gid, false);
             children.push(glyph(gid, top - m.height * size));
             width_gid = gid;
         } else {
@@ -4053,7 +4056,6 @@ impl Engine {
                 + recipe.mid.map_or(0.0, |(_, h)| h)
                 + recipe.bot.map_or(0.0, |(_, h)| h);
             let (rep, rep_size) = recipe.rep;
-            width_code = rep;
             let sides = if recipe.mid.is_some() { 2.0 } else { 1.0 };
             let per_side = ((total - fixed) / (rep_size * sides)).round().max(0.0);
             // A recipe of at most 3.6 em of fixed pieces plus whole
@@ -4079,7 +4081,7 @@ impl Engine {
             // top); the designed overlaps then join every piece.
             let mut y = top;
             for (gid, h) in slots {
-                let height = self.char_metrics(FACE_MATH_EXTENSION, gid, false).height;
+                let height = self.char_metrics(face, gid, false).height;
                 children.push(glyph(gid, y - height * size));
                 y -= h * size;
             }
@@ -4087,24 +4089,14 @@ impl Engine {
         }
         // TeX's box is the TFM width; the Type 1 advance is that width
         // rounded to 1/1000 em, which would drift every delimited array.
-        let cmex10_width = tex_delimiter_frame(ch, total).map_or_else(
-            || {
-                self.char_metrics(FACE_MATH_EXTENSION, width_gid, false)
-                    .advance
-            },
-            |(advance, _, _)| advance,
-        ) * size;
-        let width = match crate::tfm::CMEX7.char(width_code) {
-            Some(metrics) if cmex7 => {
-                let width = metrics.width * size;
-                let dx = (width - cmex10_width) / 2.0;
-                for child in &mut children {
-                    child.dx += dx;
-                }
-                width
-            }
-            _ => cmex10_width,
-        };
+        let advance = self.char_metrics(face, width_gid, false).advance;
+        let width = if face == FACE_MATH_EXTENSION {
+            // Keep the established text-cut rounding (and its bit-locked
+            // layouts); the optical cuts use their own exact TFM width.
+            tex_delimiter_frame(ch, total).map_or(advance, |(width, _, _)| width)
+        } else {
+            advance
+        } * size;
         Some(MBox {
             kind: BoxKind::Horizontal,
             width,
@@ -4259,7 +4251,7 @@ enum DelimVariant {
     Small { style: Style },
     /// cmex: a successor or an extensible, from cmex7 below text size, as
     /// amsfonts declares the OMX family, or cmex10.
-    Cmex { cmex7: bool },
+    Cmex,
 }
 
 /// The variant TeX's `var_delimiter` sets.
@@ -4282,10 +4274,7 @@ struct DelimChoice {
 /// `\left(` that needs more than cmr7's paren takes cmr10's, and past that
 /// skips cmex7's 1.2 em paren (smaller than cmr10's) for its 1.8 em one.
 /// `None` for a character TeX does not chain.
-fn var_delimiter(ch: char, target: f64, style: Style) -> Option<DelimChoice> {
-    use crate::tfm::{
-        CMEX7, CMEX10, CMMI5, CMMI7, CMMI10, CMR5, CMR7, CMR10, CMSY5, CMSY7, CMSY10,
-    };
+fn var_delimiter(ch: char, target: f64, style: Style, declared: f64) -> Option<DelimChoice> {
     // The small variant: plain TeX's \delcode and \delimiter family and
     // code (0 cmr, 1 cmmi, 2 cmsy).
     let small: Option<(u8, u8)> = match ch {
@@ -4329,21 +4318,13 @@ fn var_delimiter(ch: char, target: f64, style: Style) -> Option<DelimChoice> {
         false
     };
     for &size in sizes {
-        let font = match (family, size) {
-            (0, Style::Script) => &CMR7,
-            (0, Style::ScriptScript) => &CMR5,
-            (0, _) => &CMR10,
-            (1, Style::Script) => &CMMI7,
-            (1, Style::ScriptScript) => &CMMI5,
-            (1, _) => &CMMI10,
-            (_, Style::Script) => &CMSY7,
-            (_, Style::ScriptScript) => &CMSY5,
-            _ => &CMSY10,
-        };
+        let scale = crate::metrics::math_size(size, declared);
+        let points = 10.0 * scale;
+        let font = tex_small_font(family, points);
         if let Some(c) = font.char(code)
             && try_variant(DelimChoice {
                 variant: DelimVariant::Small { style: size },
-                scale: size.size_factor(),
+                scale,
                 total: c.height + c.depth,
             })
         {
@@ -4358,13 +4339,12 @@ fn var_delimiter(ch: char, target: f64, style: Style) -> Option<DelimChoice> {
         .filter_map(|&total| cmex_successor(ch, total).map(|code| (total, code)))
         .collect();
     for &size in sizes {
-        let cmex7 = size != Style::Text;
-        let font = if cmex7 { &CMEX7 } else { &CMEX10 };
-        let scale = size.size_factor();
+        let scale = crate::metrics::math_size(size, declared);
+        let font = crate::metrics::size_fonts(10.0 * scale).1;
         for &(total, code) in &successors {
             if font.char(code).is_some()
                 && try_variant(DelimChoice {
-                    variant: DelimVariant::Cmex { cmex7 },
+                    variant: DelimVariant::Cmex,
                     scale,
                     total,
                 })
@@ -4377,7 +4357,7 @@ fn var_delimiter(ch: char, target: f64, style: Style) -> Option<DelimChoice> {
             // same heights in cmex7 and cmex10. A bar has no successors, so
             // its extensible covers modest targets too.
             return Some(DelimChoice {
-                variant: DelimVariant::Cmex { cmex7 },
+                variant: DelimVariant::Cmex,
                 scale,
                 total: tex_delimiter_total(ch, target / scale),
             });
@@ -4640,29 +4620,43 @@ const fn tex_accent(kind: AccentKind) -> (bool, u8, [f64; 4]) {
     }
 }
 
-/// The cmmi cut TeX sets `style` in: cmmi10, cmmi7 in script style and
-/// cmmi5 in scriptscript style.
-const fn math_italic_face(style: Style) -> FaceId {
-    match style {
-        Style::Display | Style::Text => FACE_MATH_ITALIC,
-        Style::Script => FACE_MATH_ITALIC_7,
-        Style::ScriptScript => FACE_MATH_ITALIC_5,
+/// The small math-family fonts at the actual point size: 0 roman,
+/// 1 math italic, 2 symbols, as in TeX's delimiter codes.
+fn tex_small_font(family: u8, points: f64) -> &'static crate::tfm::TfmFont {
+    use crate::tfm::{
+        CMMI5, CMMI6, CMMI7, CMMI8, CMMI9, CMMI10, CMMI12, CMR5, CMR6, CMR7, CMR8, CMR9, CMR10,
+        CMR12, CMR17,
+    };
+    match family {
+        0 => match points {
+            p if p < 5.5 => &CMR5,
+            p if p < 6.5 => &CMR6,
+            p if p < 7.5 => &CMR7,
+            p if p < 8.5 => &CMR8,
+            p if p < 9.5 => &CMR9,
+            p if p >= 16.0 => &CMR17,
+            p if p >= 11.5 => &CMR12,
+            _ => &CMR10,
+        },
+        1 => match points {
+            p if p < 5.5 => &CMMI5,
+            p if p < 6.5 => &CMMI6,
+            p if p < 7.5 => &CMMI7,
+            p if p < 8.5 => &CMMI8,
+            p if p < 9.5 => &CMMI9,
+            p if p >= 11.5 => &CMMI12,
+            _ => &CMMI10,
+        },
+        _ => crate::metrics::size_fonts(points).0,
     }
 }
 
-/// The accent's TFM box in the size `style` sets it at (cmr or cmmi at 10,
-/// 7 or 5 pt): TeX's char_box, whose width is the character's width plus
+/// The accent's TFM box at the actual point size: TeX's char_box,
+/// whose width is the character's width plus
 /// its italic correction (tex.web §709, 0.5 + 0.1538 em for cmmi10's
 /// vector), and the character's height.
-fn tex_accent_box(math_italic: bool, code: u8, style: Style) -> (f64, f64) {
-    let font = match (math_italic, style) {
-        (false, Style::Display | Style::Text) => &crate::tfm::CMR10,
-        (false, Style::Script) => &crate::tfm::CMR7,
-        (false, Style::ScriptScript) => &crate::tfm::CMR5,
-        (true, Style::Display | Style::Text) => &crate::tfm::CMMI10,
-        (true, Style::Script) => &crate::tfm::CMMI7,
-        (true, Style::ScriptScript) => &crate::tfm::CMMI5,
-    };
+fn tex_accent_box(math_italic: bool, code: u8, points: f64) -> (f64, f64) {
+    let font = tex_small_font(u8::from(math_italic), points);
     font.char(code)
         .map_or((0.5, 0.694_445), |c| (c.width + c.italic, c.height))
 }

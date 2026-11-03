@@ -4,9 +4,8 @@
 //! Semantics (LaTeX2e, `classes.dtx` §6.1 / `size10.clo`): the commands
 //! are *declarations* — they set the current size factor for the rest of
 //! the enclosing group, absolutely (not cumulatively), exiting at group
-//! end. The factor multiplies the math style's own size factor, so the
-//! script styles compose multiplicatively with declarations, exactly as
-//! TeX's script/scriptscript sizes track the current size. `\\` does not
+//! end. Math styles use the declared text/script/scriptscript family:
+//! 9-point text has 6/5-point scripts, not scaled 7/5-point scripts. `\\` does not
 //! end a group, so a declaration persists across line breaks; a `$…$`
 //! island inside a declaration's scope inherits it (math in a `\small`
 //! scope is small).
@@ -119,15 +118,16 @@ fn scope_inside_fraction() {
 }
 
 #[test]
-fn scripts_compose_multiplicatively() {
-    // The script style's 0.7 composes with the declaration's 0.9.
+fn scripts_use_the_declared_math_size_family() {
+    // Native math-mode declarations use the same 9/6/5 family as a valid
+    // outside-math LaTeX declaration (placement_params' real showbox).
     let l = sizes(r"x^{\small y}");
-    assert!((glyph_size(&l, 'y') - 0.7 * 0.9).abs() < EPS);
+    assert!((glyph_size(&l, 'y') - 0.6).abs() < EPS);
     let l = sizes(r"{\small x^y}");
-    assert!((glyph_size(&l, 'y') - 0.7 * 0.9).abs() < EPS);
-    // Second-order scripts: scriptscript's 0.5 with the declaration.
+    assert!((glyph_size(&l, 'y') - 0.6).abs() < EPS);
+    // The second-order script stays at 5 pt under \small.
     let l = sizes(r"x^{y^{\small z}}");
-    assert!((glyph_size(&l, 'z') - 0.5 * 0.9).abs() < EPS);
+    assert!((glyph_size(&l, 'z') - 0.5).abs() < EPS);
 }
 
 #[test]
@@ -179,9 +179,10 @@ fn math_island_inherits_the_declaration() {
         .typeset_text(r"\text{\small $\frac{1}{24}$}")
         .unwrap();
     // Inline island at text style; the fraction's numerator drops to
-    // script style: 0.9 × 0.7.
+    // script style: 6 pt in the 9/6/5 family. Actual showbox of this
+    // exact string names OT1/cmr/m/n/6 for numerator and denominator.
     assert!(
-        (glyph_size(&l, '1') - 0.9 * 0.7).abs() < EPS,
+        (glyph_size(&l, '1') - 0.6).abs() < EPS,
         "{}",
         glyph_size(&l, '1')
     );

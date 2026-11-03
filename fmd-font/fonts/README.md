@@ -49,10 +49,12 @@ are the single source of truth for the fallback repertoire.
   (<https://checkmyworking.com/cm-web-fonts/>), SIL OFL 1.1. License:
   `computer-modern/OFL.txt`.
 - **CM math** — the American Mathematical Society's Type 1 release of Knuth's
-  Computer Modern math fonts (cmmi10/7/5, cmsy10/7/5, cmex10, cmr7/5; © 1997, 2009
+  Computer Modern math fonts (cmmi5/6/7/8/9/10/12, cmsy5/6/7/8/9/10,
+  cmex7/8/9/10, cmr5/6/7/8/9/10/12/17; © 1997, 2009
   AMS), SIL OFL 1.1 with Reserved Font Names. License: `cm-math/OFL.txt`. These
   are the faces TeX sets mathematics in, converted offline to TrueType `glyf`
-  outlines by `scripts/font-oracles/convert-cm-math.py` (fonttools 4.65, cu2qu at
+  outlines by `scripts/font-oracles/convert-cm-math.py` (fonttools version
+  recorded in provenance, cu2qu at
   most 1/1000 em) and renamed "FMD CM Math …" to honour the Reserved Font
   Names. `cm-math/PROVENANCE.json` records each input and output SHA-256. Every
   glyph is addressable at U+F000 + its TFM code position; the characters TeX

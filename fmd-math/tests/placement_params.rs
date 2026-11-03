@@ -37,6 +37,134 @@ fn glyph_size(layout: &Layout, ch: char) -> f64 {
 const EPS: f64 = 1e-9;
 
 #[test]
+fn size_declarations_use_latex_math_sizes_for_nested_scripts() {
+    // Measured with article[10pt] + amsmath/amssymb, declaring the size
+    // outside math: {\large $x^{a^b}$} and {\small $x^{a^b}$}.
+    // LaTeX ignores a size command inside already-open math. TexText's
+    // surrounding size declaration is the valid oracle for these cases.
+    let e = engine();
+    for (source, sizes, width, height, shifts) in [
+        (
+            r"{\large $x^{a^b}$}",
+            [1.2, 0.8, 0.6],
+            1.547_803,
+            1.134_471,
+            [0.435_47, 0.717_803],
+        ),
+        (
+            r"{\small $x^{a^b}$}",
+            [0.9, 0.6, 0.5],
+            1.345_901,
+            0.981_331,
+            [0.382_329, 0.634_109],
+        ),
+    ] {
+        let layout = e.typeset_text(source).expect(source);
+        for (ch, expected) in ['x', 'a', 'b'].into_iter().zip(sizes) {
+            assert!(
+                (glyph_size(&layout, ch) - expected).abs() < EPS,
+                "{source}, {ch}: size {} vs {expected}",
+                glyph_size(&layout, ch)
+            );
+        }
+        assert!(
+            (layout.width - width).abs() < 1e-5,
+            "{source}: width {} vs {width}",
+            layout.width
+        );
+        assert!(
+            (layout.height - height).abs() < 1e-5,
+            "{source}: height {} vs {height}",
+            layout.height
+        );
+        for (ch, expected) in ['a', 'b'].into_iter().zip(shifts) {
+            assert!(
+                (glyph_y(&layout, ch) - expected).abs() < 1e-5,
+                "{source}: {ch}"
+            );
+        }
+    }
+}
+
+#[test]
+fn declared_sizes_keep_texs_script_delimiter_and_group_drops() {
+    // Real showbox, article[10pt] + amsmath/amssymb. The large script
+    // delimiter walks up to cmr12's small variant; normal uses cmr10.
+    let e = engine();
+    for (source, width, height, depth) in [
+        (r"$x^{\left(\frac{1}{3}\right)}$", 1.979_59, 1.107_639, 0.0),
+        (
+            r"{\small $x^{\left(\frac{1}{3}\right)}$}",
+            1.874_026,
+            0.996_873,
+            0.0,
+        ),
+        (
+            r"{\large $x^{\left(\frac{1}{3}\right)}$}",
+            2.238_243,
+            1.329_166,
+            0.0,
+        ),
+        (r"{\large ${ (a) }^2_3$}", 2.005_684, 1.098_889, 0.35),
+    ] {
+        let l = e.typeset_text(source).expect(source);
+        assert!(
+            (l.width - width).abs() < 1e-5
+                && (l.height - height).abs() < 1e-5
+                && (l.depth - depth).abs() < 1e-5,
+            "{source}: ({}, {}, {}) vs ({width}, {height}, {depth})",
+            l.width,
+            l.height,
+            l.depth
+        );
+    }
+}
+
+#[test]
+fn normal_math_keeps_the_measured_ten_seven_five_box() {
+    // The same real TeX probe at normalsize. Optical-size corrections
+    // under declarations must preserve the default 10/7/5 family.
+    let layout = engine().typeset("x^{a^b}", Style::Text).unwrap();
+    assert!(
+        (layout.width - 1.421_959).abs() < 1e-5,
+        "width {}",
+        layout.width
+    );
+    assert!(
+        (layout.height - 1.011_893).abs() < 1e-5,
+        "height {}",
+        layout.height
+    );
+    for (ch, expected) in [('x', 1.0), ('a', 0.7), ('b', 0.5)] {
+        assert!((glyph_size(&layout, ch) - expected).abs() < EPS);
+    }
+}
+
+#[test]
+fn declarations_use_optical_metrics_for_accents_and_primes() {
+    // Real TeX showbox, valid declarations outside the math island.
+    let e = engine();
+    let mut mismatches = Vec::new();
+    for (source, width, height) in [
+        (r"{\small $x^{\vec{a}}$}", 0.979_234, 0.814_496),
+        (r"{\small $x'$}", 0.793_748, 0.715_663),
+        (r"{\small $x^{\hat{a}}$}", 0.979_234, 0.798_996),
+        (r"{\large $x^{\vec{a}}$}", 1.169_191, 1.009_027),
+        (r"{\large $x'$}", 0.948_259, 0.879_916),
+        (r"{\large $x^{\hat{a}}$}", 1.169_191, 0.991_026),
+    ] {
+        let l = e.typeset_text(source).expect(source);
+        if (l.width - width).abs() >= 1e-5 || (l.height - height).abs() >= 1e-5 {
+            mismatches.push(format!(
+                "{source}: ({}, {}) vs ({width}, {height})",
+                l.width, l.height
+            ));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+#[test]
 fn display_fraction_shifts_are_num1_denom1() {
     // 'a' and 'x' are short enough that rule 15d's clearances do not bind:
     // the shifts are exactly σ8 and σ11.

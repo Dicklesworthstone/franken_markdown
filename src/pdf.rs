@@ -16573,6 +16573,7 @@ fn png_predictor_payload_is_valid(png: &PngChunks, components: usize) -> bool {
 /// sizes that would exceed the decoder's bounded memory budget.
 fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
     const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1A\n";
+    // ubs:ignore[rust.security.constant-time-compare] - public PNG format magic, not secret data.
     if bytes.len() > MAX_PDF_IMAGE_COMPRESSED_BYTES || bytes.get(..8)? != PNG_SIG {
         return None;
     }
@@ -21593,7 +21594,9 @@ fn build_segs_adjusted(
         let mut shaper = SegRunShaper::new(faces.face(slot), fs);
         // Width is the running max over the run of (natural prefix width +
         // the run's accumulated word extras + this token's space extra); the
-        // per-token advance `(new - old).max(0.0)` feeds `x`. A space extra
+        // final width advances `x` once per painted run. Rounding the absolute
+        // pen position at every token prefix makes adjacent Text fragments
+        // change the PDF even though the shaped run is identical. A space extra
         // closes its run (see the run-extent scan above), so at most one is
         // live per run. Word extras (a box's glyph-expansion share, booked
         // once per box by `push_tok_group_line_toks`) must ACCUMULATE: a run
@@ -21627,10 +21630,9 @@ fn build_segs_adjusted(
             };
             natural_max = natural_max.max(natural);
             let new_width = width.max(natural + run_word_extra + space_extra);
-            let advance = (new_width - width).max(0.0);
-            x += advance;
             width = new_width;
         }
+        x = seg_x + width;
         if let Some(cache) = width_cache {
             ensure_width_cached(cache, slot, &text, fs, shaper.current_width());
         }
@@ -38190,7 +38192,9 @@ mod pdf_writer_tests {
 
     /// The per-token emitter this replaced: re-shapes the whole merged text
     /// at every token (`shaped_width_points_for_layout` per growing prefix).
-    /// Kept as the reference for the incremental shaper's differential test.
+    /// Independent width oracle for the incremental shaper's differential
+    /// test. Positions use the final painted-run widths: the historical
+    /// prefix-by-prefix pen fold violates plain-text fragment invariance.
     #[allow(clippy::too_many_arguments)]
     fn build_segs_adjusted_reference(
         toks: &[LineTok],
@@ -38294,6 +38298,13 @@ mod pdf_writer_tests {
         if let Some(s) = cur {
             segs.push(s);
             glue_extras.push(run_glue_extra);
+        }
+        if !use_expansion {
+            let mut pen = left - hang;
+            for seg in &mut segs {
+                seg.x = pen;
+                pen += seg.width;
+            }
         }
         if use_expansion && box_width_milli > 0.0 {
             let factor = word_extra_milli / box_width_milli;

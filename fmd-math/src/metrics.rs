@@ -29,7 +29,7 @@
 //! [`MathConstants::script_drops`]. (franken_manim fm-giir.)
 
 use crate::style::Style;
-use crate::tfm::{CMEX7, CMEX10, CMSY5, CMSY7, CMSY10, TfmFont};
+use crate::tfm::{CMEX7, CMEX8, CMEX9, CMEX10, CMSY5, CMSY6, CMSY7, CMSY8, CMSY9, CMSY10, TfmFont};
 
 /// The Appendix-G parameter family, in ems of the text-size em.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -159,28 +159,61 @@ pub const CM: MathConstants = MathConstants {
     fallback_space: 1.0 / 3.0,
 };
 
-/// The symbol (family 2) and extension (family 3) fonts TeX loads at
-/// `style`'s size under LaTeX's article and amsmath, as `\fontname` reports
-/// them: cmex7 also serves scriptscript size, at 5 pt.
+/// The size in 10-point ems selected by LaTeX's `size10.clo` math-size
+/// declarations. A declaration chooses three sizes; it does not multiply
+/// the default 10/7/5 ratios (12-point text uses 8/6-point scripts).
 #[must_use]
-pub fn size_fonts(style: Style) -> (&'static TfmFont, &'static TfmFont) {
+pub fn math_size(style: Style, declared: f64) -> f64 {
+    let (script, scriptscript) = match declared {
+        s if (s - 0.5).abs() < 1e-9 => (0.5, 0.5),
+        s if (s - 0.7).abs() < 1e-9 => (0.5, 0.5),
+        s if (s - 0.8).abs() < 1e-9 => (0.6, 0.5),
+        s if (s - 0.9).abs() < 1e-9 => (0.6, 0.5),
+        s if (s - 1.2).abs() < 1e-9 => (0.8, 0.6),
+        s if (s - 1.44).abs() < 1e-9 => (1.0, 0.7),
+        s if (s - 1.728).abs() < 1e-9 => (1.2, 1.0),
+        s if (s - 2.074).abs() < 1e-9 => (1.44, 1.2),
+        s if (s - 2.488).abs() < 1e-9 => (2.074, 1.728),
+        _ => (0.7 * declared, 0.5 * declared),
+    };
     match style {
-        Style::Display | Style::Text => (&CMSY10, &CMEX10),
-        Style::Script => (&CMSY7, &CMEX7),
-        Style::ScriptScript => (&CMSY5, &CMEX7),
+        Style::Display | Style::Text => declared,
+        Style::Script => script,
+        Style::ScriptScript => scriptscript,
     }
 }
 
+/// The symbol and extension fonts loaded at an actual point size by
+/// LaTeX with amsfonts. The small extension cuts also serve smaller sizes.
+#[must_use]
+pub fn size_fonts(points: f64) -> (&'static TfmFont, &'static TfmFont) {
+    let sy = match points {
+        p if p < 5.5 => &CMSY5,
+        p if p < 6.5 => &CMSY6,
+        p if p < 7.5 => &CMSY7,
+        p if p < 8.5 => &CMSY8,
+        p if p < 9.5 => &CMSY9,
+        _ => &CMSY10,
+    };
+    let ex = match points {
+        p if p < 7.5 => &CMEX7,
+        p if p < 8.5 => &CMEX8,
+        p if p < 9.5 => &CMEX9,
+        _ => &CMEX10,
+    };
+    (sy, ex)
+}
+
 impl MathConstants {
-    /// The parameters TeX reads in `style`, in ems of that style's own
-    /// fonts. The layout multiplies them by the style's size.
+    /// The parameters TeX reads at `points`, in ems of the loaded fonts.
+    /// The layout multiplies them by the actual size.
     ///
     /// σ₅…σ₂₂ come from [`size_fonts`]' symbol font and ξ₈…ξ₁₃ from its
     /// extension font. Everything else is not a fontdimen (spacing
     /// registers, scales, ceilings) and is kept from `self`.
     #[must_use]
-    pub fn at(&self, style: Style) -> Self {
-        let (sy, ex) = size_fonts(style);
+    pub fn at(&self, points: f64) -> Self {
+        let (sy, ex) = size_fonts(points);
         Self {
             x_height: sy.param(5),
             quad: sy.param(6),
@@ -207,16 +240,11 @@ impl MathConstants {
         }
     }
 
-    /// Rule 18a's `(sup_drop, sub_drop)` for scripts set in style `t`, in
-    /// ems of `t`'s symbol font. TeX reads them at the script size: from
-    /// the script font below script style, else from the scriptscript
-    /// font (tex.web §756), never from the base's own size.
+    /// Rule 18a's `(sup_drop, sub_drop)` in ems of the symbol font at the
+    /// scripts' actual `points` (tex.web §756), never the base's size.
     #[must_use]
-    pub fn script_drops(&self, t: Style) -> (f64, f64) {
-        let (sy, _) = size_fonts(match t {
-            Style::Display | Style::Text | Style::Script => Style::Script,
-            Style::ScriptScript => Style::ScriptScript,
-        });
+    pub fn script_drops(&self, points: f64) -> (f64, f64) {
+        let (sy, _) = size_fonts(points);
         (sy.param(18), sy.param(19))
     }
 }
@@ -241,8 +269,8 @@ mod tests {
         assert!(c.x_height < 0.5 && c.x_height > 0.4);
         // cmsy7's and cmsy5's drops are the same lengths at 10 pt:
         // 2.4722 pt and 0.5 pt.
-        let (sup7, sub7) = c.script_drops(Style::Script);
-        let (sup5, sub5) = c.script_drops(Style::ScriptScript);
+        let (sup7, sub7) = c.script_drops(7.0);
+        let (sup5, sub5) = c.script_drops(5.0);
         assert!((sup7 * 0.7 - sup5 * 0.5).abs() < 1e-5);
         assert!((sub7 * 0.7 - sub5 * 0.5).abs() < 1e-5);
     }
@@ -279,7 +307,7 @@ mod tests {
                 "{name}: {published} vs {exact}"
             );
         }
-        assert_eq!(CM.at(Style::Text), CM);
+        assert_eq!(CM.at(10.0), CM);
     }
 
     #[test]
@@ -292,8 +320,8 @@ mod tests {
         // digits, so the exact products agree within two sp.
         let sp2 = 2.0 / 65536.0;
         let pt = |v: f64, size: f64| v * size;
-        let s = CM.at(Style::Script);
-        let ss = CM.at(Style::ScriptScript);
+        let s = CM.at(7.0);
+        let ss = CM.at(5.0);
         for (name, ours, tex) in [
             ("script sup2", pt(s.sup2, 7.0), 3.01779),
             ("script quad", pt(s.quad, 7.0), 8.19447),
@@ -307,6 +335,6 @@ mod tests {
         }
         assert!((pt(ss.quad, 5.0) - 7.3612).abs() < 1e-4);
         // Text and display read cmsy10 and cmex10.
-        assert_eq!(CM.at(Style::Display), CM.at(Style::Text));
+        assert_eq!(CM.at(10.0), CM);
     }
 }

@@ -190,6 +190,21 @@ FACES = [
     ("FmdEulerFraktur10", "../euler/eufm10", "FMD Euler Fraktur 10", FRAKTUR),
     ("FmdEulerFraktur7", "../euler/eufm7", "FMD Euler Fraktur 7", FRAKTUR),
     ("FmdEulerFraktur5", "../euler/eufm5", "FMD Euler Fraktur 5", FRAKTUR),
+    ("FmdCmMathItalic6", "cmmi6", "FMD CM Math Italic 6", CMMI),
+    ("FmdCmMathItalic8", "cmmi8", "FMD CM Math Italic 8", CMMI),
+    ("FmdCmMathItalic9", "cmmi9", "FMD CM Math Italic 9", CMMI),
+    ("FmdCmMathItalic12", "cmmi12", "FMD CM Math Italic 12", CMMI),
+    ("FmdCmMathSymbols6", "cmsy6", "FMD CM Math Symbols 6", CMSY),
+    ("FmdCmMathSymbols8", "cmsy8", "FMD CM Math Symbols 8", CMSY),
+    ("FmdCmMathSymbols9", "cmsy9", "FMD CM Math Symbols 9", CMSY),
+    ("FmdCmRoman6", "cmr6", "FMD CM Roman 6", "cmr"),
+    ("FmdCmRoman8", "cmr8", "FMD CM Roman 8", "cmr"),
+    ("FmdCmRoman9", "cmr9", "FMD CM Roman 9", "cmr"),
+    ("FmdCmRoman12", "cmr12", "FMD CM Roman 12", "cmr"),
+    ("FmdCmRoman17", "cmr17", "FMD CM Roman 17", "cmr"),
+    ("FmdCmMathExtension7", "../cmextra/cmex7", "FMD CM Math Extension 7", CMEX),
+    ("FmdCmMathExtension8", "../cmextra/cmex8", "FMD CM Math Extension 8", CMEX),
+    ("FmdCmMathExtension9", "../cmextra/cmex9", "FMD CM Math Extension 9", CMEX),
 ]
 
 

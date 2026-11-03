@@ -83,13 +83,44 @@ pub const EULER_FRAKTUR_7: &[u8] = include_bytes!("../fonts/cm-math/FmdEulerFrak
 /// Euler Fraktur at 5 pt (eufm5): second-order scripts.
 pub const EULER_FRAKTUR_5: &[u8] = include_bytes!("../fonts/cm-math/FmdEulerFraktur5.ttf");
 
+/// Computer Modern optical cuts selected by LaTeX size declarations.
+pub const CM_MATH_ITALIC_6: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic6.ttf");
+/// Math italic at 8 pt.
+pub const CM_MATH_ITALIC_8: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic8.ttf");
+/// Math italic at 9 pt.
+pub const CM_MATH_ITALIC_9: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic9.ttf");
+/// Math italic at 12 pt, also scaled for larger declarations.
+pub const CM_MATH_ITALIC_12: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic12.ttf");
+/// Math symbols at 6 pt.
+pub const CM_MATH_SYMBOLS_6: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathSymbols6.ttf");
+/// Math symbols at 8 pt.
+pub const CM_MATH_SYMBOLS_8: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathSymbols8.ttf");
+/// Math symbols at 9 pt.
+pub const CM_MATH_SYMBOLS_9: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathSymbols9.ttf");
+/// Roman at 6 pt.
+pub const CM_ROMAN_6: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman6.ttf");
+/// Roman at 8 pt.
+pub const CM_ROMAN_8: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman8.ttf");
+/// Roman at 9 pt.
+pub const CM_ROMAN_9: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman9.ttf");
+/// Roman at 12 pt, also scaled for 14.4 pt.
+pub const CM_ROMAN_12: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman12.ttf");
+/// Roman at 17 pt, scaled for the largest declarations.
+pub const CM_ROMAN_17: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman17.ttf");
+/// Math extension at 7 pt, also scaled for smaller scripts.
+pub const CM_MATH_EXTENSION_7: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathExtension7.ttf");
+/// Math extension at 8 pt.
+pub const CM_MATH_EXTENSION_8: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathExtension8.ttf");
+/// Math extension at 9 pt.
+pub const CM_MATH_EXTENSION_9: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathExtension9.ttf");
+
 /// The curated monochrome Noto Emoji subset (emoji fallback face). Regenerated
 /// via `cargo run --example gen_emoji_fallback_font`.
 #[cfg(feature = "emoji-face")]
 pub const NOTO_EMOJI_CURATED: &[u8] = include_bytes!("../fonts/noto-emoji/NotoEmojiCurated.ttf");
 
 /// Every bundled face as `(stable name, bytes)`, in registry order.
-pub const ALL_FACES: [(&str, &[u8]); 29] = [
+pub const ALL_FACES: [(&str, &[u8]); 44] = [
     ("cm-regular", CM_REGULAR),
     ("cm-bold", CM_BOLD),
     ("cm-italic", CM_ITALIC),
@@ -119,6 +150,21 @@ pub const ALL_FACES: [(&str, &[u8]); 29] = [
     ("euler-fraktur-10", EULER_FRAKTUR_10),
     ("euler-fraktur-7", EULER_FRAKTUR_7),
     ("euler-fraktur-5", EULER_FRAKTUR_5),
+    ("cm-math-italic-6", CM_MATH_ITALIC_6),
+    ("cm-math-italic-8", CM_MATH_ITALIC_8),
+    ("cm-math-italic-9", CM_MATH_ITALIC_9),
+    ("cm-math-italic-12", CM_MATH_ITALIC_12),
+    ("cm-math-symbols-6", CM_MATH_SYMBOLS_6),
+    ("cm-math-symbols-8", CM_MATH_SYMBOLS_8),
+    ("cm-math-symbols-9", CM_MATH_SYMBOLS_9),
+    ("cm-roman-6", CM_ROMAN_6),
+    ("cm-roman-8", CM_ROMAN_8),
+    ("cm-roman-9", CM_ROMAN_9),
+    ("cm-roman-12", CM_ROMAN_12),
+    ("cm-roman-17", CM_ROMAN_17),
+    ("cm-math-extension-7", CM_MATH_EXTENSION_7),
+    ("cm-math-extension-8", CM_MATH_EXTENSION_8),
+    ("cm-math-extension-9", CM_MATH_EXTENSION_9),
 ];
 
 #[cfg(test)]

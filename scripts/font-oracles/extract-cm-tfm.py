@@ -15,8 +15,9 @@ and amsfonts for cmex7):
 
 Each font's fontdimens are transcribed too. TeX reads Appendix G's parameters
 from the symbol and extension fonts loaded at the current size. Under LaTeX's
-article and amsmath those are cmsy10/cmsy7/cmsy5 and cmex10/cmex7/cmex7 at 5 pt,
-per `\\fontname\\scriptfont3` and `\\scriptscriptfont3` (franken_manim fm-giir).
+article and amsmath the default is cmsy10/cmsy7/cmsy5 and
+cmex10/cmex7/cmex7 at 5 pt. Declarations also select the 6/8/9-point
+symbol cuts and cmex8/9 (franken_manim fm-giir, fm-jefi).
 
 The Computer Modern TFM files are distributed with TeX under the Knuth licence
 (free use; changed files must be renamed). The AMS symbol and Euler Fraktur
@@ -44,14 +45,28 @@ FONTS = [
     ("cmmi10", "CMMI10", 0o177, "cm"),
     ("cmmi7", "CMMI7", 0o177, "cm"),
     ("cmmi5", "CMMI5", 0o177, "cm"),
+    ("cmmi6", "CMMI6", 0o177, "cm"),
+    ("cmmi8", "CMMI8", 0o177, "cm"),
+    ("cmmi9", "CMMI9", 0o177, "cm"),
+    ("cmmi12", "CMMI12", 0o177, "cm"),
     ("cmsy10", "CMSY10", 0o60, "cm"),
     ("cmsy7", "CMSY7", 0o60, "cm"),
     ("cmsy5", "CMSY5", 0o60, "cm"),
+    ("cmsy6", "CMSY6", 0o60, "cm"),
+    ("cmsy8", "CMSY8", 0o60, "cm"),
+    ("cmsy9", "CMSY9", 0o60, "cm"),
     ("cmex10", "CMEX10", None, "cm"),
     ("cmex7", "CMEX7", None, "amsfonts/cmextra"),
+    ("cmex8", "CMEX8", None, "amsfonts/cmextra"),
+    ("cmex9", "CMEX9", None, "amsfonts/cmextra"),
     ("cmr10", "CMR10", None, "cm"),
     ("cmr7", "CMR7", None, "cm"),
     ("cmr5", "CMR5", None, "cm"),
+    ("cmr6", "CMR6", None, "cm"),
+    ("cmr8", "CMR8", None, "cm"),
+    ("cmr9", "CMR9", None, "cm"),
+    ("cmr12", "CMR12", None, "cm"),
+    ("cmr17", "CMR17", None, "cm"),
     ("msam10", "MSAM10", None, "amsfonts/symbols"),
     ("msam7", "MSAM7", None, "amsfonts/symbols"),
     ("msam5", "MSAM5", None, "amsfonts/symbols"),

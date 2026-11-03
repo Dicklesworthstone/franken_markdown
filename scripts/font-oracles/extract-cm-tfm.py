@@ -9,7 +9,8 @@ the lig/kern program. This script reads those TFM files and writes them as
 
 Dev-only, standard library only; never run at build or render time. Run from
 the repository root, pointing at TeX Live's `fonts/tfm/public` directory (cm,
-and amsfonts for cmex7):
+and amsfonts for cmex7; upright EC text metrics are read from the sibling
+`tfm/jknappen/ec`, with Cork/T1 Unicode mappings from `enc/dvips/base/ec.enc`):
 
     python3 scripts/font-oracles/extract-cm-tfm.py /usr/share/texlive/texmf-dist/fonts/tfm/public
 
@@ -31,6 +32,7 @@ first matching instruction is a ligature gets no kern, as in TeX.
 """
 
 import hashlib
+import re
 import struct
 import sys
 from pathlib import Path
@@ -83,6 +85,14 @@ FONTS = [
     ("eufm7", "EUFM7", None, "amsfonts/euler"),
     ("eufm5", "EUFM5", None, "amsfonts/euler"),
 ]
+# LaTeX's t1cmr.fd declares these optical sizes for upright T1 text.
+FONTS += [
+    (f"ecrm{size:04}", f"ECRM{size:04}", None, "../jknappen/ec")
+    for size in (
+        500, 600, 700, 800, 900, 1000, 1095,
+        1200, 1440, 1728, 2074, 2488, 2986, 3583,
+    )
+]
 
 STOP_FLAG = 128
 KERN_FLAG = 128
@@ -95,8 +105,15 @@ def fix(word: bytes) -> float:
 
 def parse_tfm(data: bytes):
     lf, lh, bc, ec, nw, nh, nd, ni, nl, nk, ne, np_ = struct.unpack(">12H", data[:24])
-    if lf * 4 != len(data):
+    # EC TFMs in TeX Live are padded to a 512-byte sector. Accept only
+    # that exact padding convention, never truncation or nonzero tails.
+    declared = lf * 4
+    if len(data) != declared and not (
+        len(data) == ((declared + 511) // 512) * 512
+        and not any(data[declared:])
+    ):
         raise SystemExit(f"TFM length {len(data)} does not match lf={lf}")
+    data = data[:declared]
     words = [data[i : i + 4] for i in range(24, len(data), 4)]
     at = lh
     char_info = words[at : at + ec - bc + 1]
@@ -157,7 +174,7 @@ def main() -> None:
     root = Path(sys.argv[1])
     out = [
         "//! TeX's font metrics for the Computer Modern and AMS faces fmd-math sets",
-        "//! mathematics in (generated; do not edit by hand).",
+        "//! mathematics in, and EC upright text metrics (generated; do not edit by hand).",
         "//!",
         "//! Written by `scripts/font-oracles/extract-cm-tfm.py` from TeX Live's",
         "//! `fonts/tfm/public`: Knuth's Computer Modern metrics from `cm`, cmex7",
@@ -188,7 +205,7 @@ def main() -> None:
             f"    params: &[{', '.join(lit(p) for p in params)}],",
             "    chars: &[",
         ]
-        for code in range(128):
+        for code in range(256 if name.startswith("ecrm") else 128):
             c = chars.get(code)
             if c is None:
                 body.append(f"        None, // 0x{code:02X}")
@@ -205,6 +222,36 @@ def main() -> None:
         body.append("    ],")
         body.append("};")
         bodies.extend(body)
+    encoding = root.parent.parent / "enc/dvips/base/ec.enc"
+    data = encoding.read_bytes()
+    out.append(f"//! - `ec.enc` {hashlib.sha256(data).hexdigest()}")
+    codes = {}
+    slots = []
+    for line in data.decode("ascii").splitlines():
+        match = re.fullmatch(r"/\w+\s+%\s+0x([0-9A-Fa-f]{2})(.*)", line)
+        if match is None:
+            continue
+        code = int(match[1], 16)
+        slots.append(code)
+        unicode = re.search(r"U\+([0-9A-Fa-f]{4,6})", match[2])
+        if unicode:
+            point = int(unicode[1], 16)
+        elif 0x21 <= code <= 0x7E or 0xC0 <= code <= 0xFF:
+            point = code
+        else:
+            continue  # An explicitly unnamed or non-Unicode EC slot.
+        codes.setdefault(point, code)  # Prefer the ordinary hyphen, not 0x7F.
+    if slots != list(range(256)):
+        raise SystemExit("EC encoding is not the expected ordered 256-slot vector")
+    bodies += [
+        "",
+        "/// Cork/T1 Unicode characters and their EC metric codes, sorted by Unicode.",
+        "/// Unnamed EC slots have no Unicode mapping. Ligatures are not substituted.",
+        "#[rustfmt::skip]",
+        "pub static T1_UNICODE: &[(char, u8)] = &[",
+        *(f"    ('\\u{{{point:X}}}', 0x{code:02X})," for point, code in sorted(codes.items())),
+        "];",
+    ]
     out += [
         "",
         "/// One character's TFM box, in ems of the font's design size.",
@@ -234,8 +281,8 @@ def main() -> None:
         "    /// The fontdimens: `params[n - 1]` is fontdimen n, in ems of the",
         "    /// design size (fontdimen 1, the slant, is a plain ratio).",
         "    pub params: &'static [f64],",
-        "    /// Codes 0-127.",
-        "    pub chars: &'static [Option<TfmChar>; 128],",
+        "    /// Character codes (128 for CM/AMS; 256 for EC).",
+        "    pub chars: &'static [Option<TfmChar>],",
         "    /// The lig/kern program's kerns, as `(left, right, kern)` sorted by pair.",
         "    pub kerns: &'static [(u8, u8, f64)],",
         "}",

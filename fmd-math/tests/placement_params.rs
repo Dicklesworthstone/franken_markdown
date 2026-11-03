@@ -37,6 +37,93 @@ fn glyph_size(layout: &Layout, ch: char) -> f64 {
 const EPS: f64 = 1e-9;
 
 #[test]
+fn bundled_upright_text_uses_t1_ec_boxes_and_kerns() {
+    // Independent pdfTeX 1.40.28 showbox: article[10pt], fontenc[T1],
+    // amsmath, with the default template's ligature-disable font control
+    // applied to text. That control disables text kerns too. The operator
+    // control stays in OT1 math roman.
+    let e = engine();
+    let mut mismatches = Vec::new();
+    for (source, width, height, depth) in [
+        (r"\text{Wave}", 2.499_390, 0.688_720, 0.0),
+        (r"\text{AV}", 1.499_634, 0.688_720, 0.0),
+        (r"\operatorname{AV}", 1.402_777, 0.683_331, 0.0),
+        (r"x^{\text{AV}}", 1.801_794, 0.844_997, 0.0),
+        (r"x^{y^{\text{AV}}}", 2.082_518, 1.009_032, 0.0),
+        (r"\text{`}", 0.277_710, 0.688_720, 0.0),
+        (r"y\quad0", 2.025_917, 0.644_444, 0.194_444),
+        (r"x^{y\quad0}", 2.450_570, 0.814_003, 0.0),
+    ] {
+        let l = e.typeset(source, Style::Text).expect(source);
+        if (l.width - width).abs() >= 1e-5
+            || (l.height - height).abs() >= 1e-5
+            || (l.depth - depth).abs() >= 1e-5
+        {
+            mismatches.push(format!(
+                "{source}: ({}, {}, {}) vs ({width}, {height}, {depth})",
+                l.width, l.height, l.depth
+            ));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+#[test]
+fn text_mainland_uses_ec_at_declared_sizes_and_preserves_math_islands() {
+    // The same independent showbox capture with the default template's
+    // font control. Declared sizes select their own EC design, not scaled
+    // ecrm1000. These measurements also exercise interword fontdimens.
+    let e = engine();
+    for (source, width, height) in [
+        (r"{\tiny AV}", 0.980_316, 0.344_360),
+        (r"{\scriptsize AV}", 1.180_267, 0.482_104),
+        (r"{\footnotesize AV}", 1.273_022, 0.550_977),
+        (r"{\small AV}", 1.386_880, 0.619_849),
+        ("AV", 1.499_634, 0.688_720),
+        (r"{\huge AV\normalsize AV}", 4.376_737, 1.428_217),
+        (r"{\large AV}", 1.761_237, 0.826_465),
+        (r"{\Large AV}", 2.056_192, 0.991_672),
+        (r"{\LARGE AV}", 2.434_406, 1.189_987),
+        (r"{\huge AV}", 2.877_103, 1.428_217),
+        (r"{\Huge AV}", 3.406_796, 1.713_264),
+        ("éßÆ", 1.846_771, 0.688_720),
+        ("Yes", 1.588_501, 0.688_720),
+        ("Wave", 2.499_390, 0.688_720),
+        ("ffi fl", 1.805_115, 0.688_720),
+        ("A V", 1.832_886, 0.688_720),
+        (r"$\operatorname{AV}$", 1.402_777, 0.683_331),
+    ] {
+        let l = e.typeset_text(source).expect(source);
+        assert!(
+            (l.width - width).abs() < 1e-5
+                && (l.height - height).abs() < 1e-5
+                && l.depth.abs() < 1e-5,
+            "{source}: ({}, {}, {}) vs ({width}, {height}, 0)",
+            l.width,
+            l.height,
+            l.depth
+        );
+    }
+}
+
+#[test]
+fn ec_metrics_preserve_explicit_glyphs_and_custom_face_metrics() {
+    let e = engine();
+    let l = e.typeset_text("ffi fl éßÆ").unwrap();
+    assert_eq!(
+        l.glyphs.iter().map(|g| g.ch).collect::<String>(),
+        "ffifléßÆ"
+    );
+    // Reusing the same font bytes through the custom-roster API must not
+    // silently opt the caller into bundled EC calibration.
+    let custom = Engine::new(fmd_math::faces::FaceSet::from_fonts(vec![
+        fmd_font::Font::parse(fmd_font::bundled::CM_REGULAR.to_vec()).unwrap(),
+    ]));
+    let l = custom.typeset_text("AV").unwrap();
+    assert!((l.width - 1.5).abs() < EPS, "{}", l.width);
+}
+
+#[test]
 fn size_declarations_use_latex_math_sizes_for_nested_scripts() {
     // Measured with article[10pt] + amsmath/amssymb, declaring the size
     // outside math: {\large $x^{a^b}$} and {\small $x^{a^b}$}.
@@ -475,10 +562,10 @@ fn script_styles_read_their_own_sizes_fontdimens() {
     // \quad and `\ ` are text-font glue, not mu: cmr10's quad and interword
     // space at 10 pt even in a script.
     let quad = width(r"x^{a\quad b}") - width("x^{ab}");
-    assert!(close(quad, 24.0696 - 14.06958), "script quad {quad}");
+    assert!(close(quad, 24.06714 - 14.06958), "script quad {quad}");
     let space = width(r"x^{a\ b}") - width("x^{ab}");
     assert!(
-        close(space, 17.40291 - 14.06958),
+        close(space, 17.40210 - 14.06958),
         "script control space {space}"
     );
     // x^{\frac12}: the bar is ξ8 of cmex7, 0.33998 pt, on cmsy7's axis;
@@ -1899,7 +1986,7 @@ fn explicit_spaces_keep_inter_atom_spacing() {
     let width = |s: &str| e.typeset(s, Style::Text).unwrap().width;
     let mu = CM.quad / 18.0;
     assert!((width(r"a\,=b") - width("a=b") - 3.0 * mu).abs() < EPS);
-    let quad = fmd_math::tfm::CMR10.param(6);
+    let quad = fmd_math::tfm::ECRM1000.param(6);
     assert!(
         (width(r"a\quad\Rightarrow\quad b") - width(r"a\Rightarrow b") - 2.0 * quad).abs() < EPS
     );
@@ -2621,16 +2708,18 @@ fn hspace_reads_ems_and_exes_from_the_text_font() {
     let qquad = e.typeset(r"a\qquad b", Style::Text).unwrap().width;
     let two_em = e.typeset(r"a\hspace{2em}b", Style::Text).unwrap().width;
     assert!((two_em - qquad).abs() < 1e-12, "2em is a \\qquad");
-    // cmr10's x-height, 0.430555 em, in every math style.
+    // T1 ecrm1000's x-height, confirmed by the real TeX hspace capture,
+    // in every math style.
     for style in [Style::Display, Style::Script] {
         let ab = e.typeset("ab", style).unwrap().width;
         let two_ex = e.typeset(r"a\hspace{2ex}b", style).unwrap().width;
-        assert!((two_ex - ab - 2.0 * 0.430_555).abs() < 1e-5, "{style:?}");
+        assert!((two_ex - ab - 2.0 * 0.430_450).abs() < 1e-5, "{style:?}");
     }
     // A declared size scales font-relative units, not fixed ones.
     let large_em = e.typeset(r"\large a\hspace{1em}b", Style::Text).unwrap();
     let large_ab = e.typeset(r"\large ab", Style::Text).unwrap().width;
-    assert!((large_em.width - large_ab - 1.2 * 1.000_003).abs() < 1e-5);
+    // Independently measured T1 EC12 hboxes: 22.91087 - 11.16374 pt.
+    assert!((large_em.width - large_ab - 1.174_713).abs() < 1e-5);
     let large_cm = e.typeset(r"\large a\hspace{1cm}b", Style::Text).unwrap();
     assert!((large_cm.width - large_ab - 2.845_274).abs() < 1e-5);
 }
@@ -2769,12 +2858,14 @@ fn the_logos_are_the_kernels_constructions_in_computer_modern() {
 /// The lines of a laid plain-text paragraph, top to bottom: each line's
 /// baseline, left edge, right edge (its last glyph's advance) and the
 /// characters it sets. Every glyph of a plain-text line sits on its
-/// baseline, and text glyphs take cmr10's widths.
+/// baseline. Query each glyph's active EC metric; expected widths and
+/// line contents below come from independent TeX, not this query.
 fn text_lines(layout: &Layout) -> Vec<(f64, f64, f64, String)> {
+    let faces = fmd_math::faces::FaceSet::bundled().unwrap();
     let mut lines: Vec<(f64, f64, f64, String)> = Vec::new();
     for g in &layout.glyphs {
-        let code = u8::try_from(g.ch).unwrap();
-        let advance = fmd_math::tfm::CMR10.char(code).unwrap().width * g.size;
+        let (font, code) = faces.text_tfm(g.face, g.gid, 10.0 * g.size).unwrap();
+        let advance = font.char(code).unwrap().width * g.size;
         match lines.iter_mut().find(|line| (line.0 - g.y).abs() < EPS) {
             Some(line) => {
                 line.2 = g.x + advance;
@@ -2789,7 +2880,7 @@ fn text_lines(layout: &Layout) -> Vec<(f64, f64, f64, String)> {
 
 /// TeX's lines of a `\centering` paragraph at 345 pt, as `(natural width
 /// in pt, characters)` from `\showbox` and each line's `\unhcopy` (OT1
-/// cmr10, fmd-math's text metrics, in `article`), against fmd-math's
+/// T1 EC with the template's font control in `article`), against fmd-math's
 /// `center` block under the default pack.
 fn assert_breaks_like_tex(text: &str, tex: &[(f64, &str)]) {
     use fmd_math::MacroSet;
@@ -2835,11 +2926,11 @@ fn a_paragraph_wider_than_its_line_breaks_where_tex_breaks_it() {
         "Every paragraph that is wider than its line breaks where the line breaker of TeX would break it. The lines are centred, and they stack twelve points apart.",
         &[
             (
-                331.9172,
+                332.39105,
                 "Every paragraph that is wider than its line breaks where the line breaker of",
             ),
             (
-                344.7227,
+                347.13745,
                 "TeX would break it. The lines are centred, and they stack twelve points apart.",
             ),
         ],
@@ -2848,19 +2939,18 @@ fn a_paragraph_wider_than_its_line_breaks_where_tex_breaks_it() {
 
 #[test]
 fn a_line_shrinks_rather_than_breaking_when_tex_shrinks_it() {
-    // One letter shorter, the first line takes "TeX" by shrinking its
-    // interword glue (glue set -0.09111, badness 1): demerits 121 beat
-    // the 100 a further break would add to the next line's.
+    // With T1 metrics and disabled text kerns, the first line ends at
+    // "of"; the second takes "TeX" and shrinks to the declared width.
     assert_breaks_like_tex(
         "Every paragraph that is wider than its line breaks where is line breaker of TeX would break it. The lines are centred, and they stack twelve points apart.",
         &[
             (
-                346.4172,
-                "Every paragraph that is wider than its line breaks where is line breaker of TeX",
+                325.22614,
+                "Every paragraph that is wider than its line breaks where is line breaker of",
             ),
             (
-                323.0561,
-                "would break it. The lines are centred, and they stack twelve points apart.",
+                347.13745,
+                "TeX would break it. The lines are centred, and they stack twelve points apart.",
             ),
         ],
     );
@@ -2872,20 +2962,20 @@ fn a_tie_is_not_a_line_break() {
         "Words joined by a tie stay together on one line, even near the end of a long line of words that would otherwise break.",
         &[
             (
-                331.3061,
+                332.89093,
                 "Words joined by a tie stay together on one line, even near the end of a long",
             ),
-            (181.3059, "line of words that would otherwise break."),
+            (181.81671, "line of words that would otherwise break."),
         ],
     );
     assert_breaks_like_tex(
         "Words joined by a tie stay together on one line, even near the end of a long~line of words that would otherwise break.",
         &[
             (
-                309.6394,
+                311.22955,
                 "Words joined by a tie stay together on one line, even near the end of a",
             ),
-            (202.9726, "long~line of words that would otherwise break."),
+            (203.47809, "long~line of words that would otherwise break."),
         ],
     );
 }
@@ -2905,18 +2995,18 @@ fn packs_without_a_line_width_never_break() {
 
 #[test]
 fn interword_glue_follows_texs_space_factor() {
-    // TeX's \hbox widths (OT1 cmr10, `article`, \nonfrenchspacing): from a
-    // space factor of 2000 the space gains cmr10's extra space; a capital
-    // before the period keeps the factor at 1000, and `)` passes it on.
+    // Independent T1 EC article hboxes with the template's ligature-disable
+    // font control. Sentence space factors still widen interword glue;
+    // capitals retain factor 1000 and closing punctuation passes it on.
     let e = engine();
     for (text, tex_pt) in [
-        ("Yes. No", 34.77782),
-        ("Yes No", 30.88892),
-        ("U.S. Army", 46.69455),
-        ("end.) Next", 47.77788),
-        ("a, b; c: d", 40.00006),
-        ("Why? Because! So", 82.69460),
-        ("$x$. Next", 34.04866),
+        ("Yes. No", 35.60242),
+        ("Yes No", 31.71448),
+        ("U.S. Army", 46.96075),
+        ("end.) Next", 47.76611),
+        ("a, b; c: d", 39.99023),
+        ("Why? Because! So", 82.95197),
+        ("$x$. Next", 34.04169),
     ] {
         let width = e.typeset_text(text).unwrap().width;
         assert!(
@@ -2929,7 +3019,7 @@ fn interword_glue_follows_texs_space_factor() {
     // period's, so the space after it is the widened one.
     let spaced = e.typeset_text(r"\emph{end.} Next").unwrap().width;
     let joined = e.typeset_text(r"\emph{end.}Next").unwrap().width;
-    let font = &fmd_math::tfm::CMR10;
+    let font = &fmd_math::tfm::ECRM1000;
     assert!((spaced - joined - (font.space + font.param(7))).abs() < 1e-6);
 }
 
@@ -2956,11 +3046,9 @@ fn size_declarations_set_latexs_baselineskip() {
 
 #[test]
 fn a_blank_line_ends_the_paragraph() {
-    // TeX reads a blank line as \par, which under the Reference's
-    // \centering ends the line as `\\` does. Repeated blank lines, a blank
-    // line after `\\` and a final one set no empty line: every variant is
-    // TeX's two-line box (6.94444 pt above the first baseline, 12 pt to the
-    // second, 1.94444 pt below it) with "Special" (3.08334 em) on line one.
+    // Blank lines and paragraph breaks create the same two centred lines.
+    // Independent T1 boxes measure Special at 3.05481 em, first-line
+    // height 0.688720 em, 1.2 em baseline pitch, last depth 0.194397 em.
     use fmd_math::MacroSet;
     let pack = MacroSet::pack("fmd-math/pack/default").unwrap();
     for body in [
@@ -2975,7 +3063,7 @@ fn a_blank_line_ends_the_paragraph() {
         assert_eq!(lines.len(), 2, "{body:?}: {lines:?}");
         assert_eq!(lines[0].3, "Special", "{body:?}");
         assert!(
-            (lines[0].2 - lines[0].1 - 3.08334).abs() < 1e-4,
+            (lines[0].2 - lines[0].1 - 3.05481).abs() < 1e-4,
             "{body:?}: {lines:?}"
         );
         assert!(
@@ -2984,12 +3072,12 @@ fn a_blank_line_ends_the_paragraph() {
         );
         // The block keeps its first line's baseline.
         assert!(
-            (layout.height - 0.694444).abs() < 1e-4,
+            (layout.height - 0.688720).abs() < 1e-4,
             "{body:?}: {}",
             layout.height
         );
         assert!(
-            (layout.depth - 1.394444).abs() < 1e-4,
+            (layout.depth - 1.394397).abs() < 1e-4,
             "{body:?}: {}",
             layout.depth
         );
@@ -3003,10 +3091,8 @@ fn a_blank_line_ends_the_paragraph() {
 
 #[test]
 fn a_line_break_drops_the_glue_before_it() {
-    // `\\` in the alignment environments is LaTeX's \@centercr: \unskip
-    // drops the `\quad`, and \par the space before it, so the first line is
-    // "Weigh how likely the clue is" (TeX: 12.227795 em) and stays centred on
-    // the second (11.405576 em).
+    // The line break drops trailing glue before starting the next paragraph.
+    // Independent T1 widths: 12.363647 and 11.430542 em. Both stay centred.
     use fmd_math::MacroSet;
     let pack = MacroSet::pack("fmd-math/pack/default").unwrap();
     let layout = engine()
@@ -3020,8 +3106,8 @@ fn a_line_break_drops_the_glue_before_it() {
     assert!(((lines[0].1 + lines[0].2) - (lines[1].1 + lines[1].2)).abs() < 1e-4);
     assert_eq!(lines[0].3, "Weighhowlikelytheclueis");
     let (first, second) = (lines[0].2 - lines[0].1, lines[1].2 - lines[1].1);
-    assert!((first - 12.227795).abs() < 1e-4, "{first}");
-    assert!((second - 11.405576).abs() < 1e-4, "{second}");
+    assert!((first - 12.363647).abs() < 1e-4, "{first}");
+    assert!((second - 11.430542).abs() < 1e-4, "{second}");
 }
 
 #[test]

@@ -34,6 +34,9 @@ pub struct FaceSet {
     /// Per face, the TFM file TeX reads for it in math mode, with each
     /// glyph's code there. Only the bundled roster carries any.
     tfm: Vec<Option<FaceTfm>>,
+    /// Bundled upright text glyphs mapped to T1, independently of the
+    /// math-family encoding and of the optical EC size selected at layout.
+    text_codes: Vec<Option<Vec<Option<u8>>>>,
 }
 
 /// A face's TFM file and its glyph-to-code map.
@@ -205,6 +208,7 @@ impl FaceSet {
         Self {
             fonts,
             tfm: Vec::new(),
+            text_codes: Vec::new(),
         }
     }
 
@@ -316,7 +320,87 @@ impl FaceSet {
         ] {
             faces.attach_tfm(face, font, &tex_coded);
         }
+        faces.text_codes = (0..faces.fonts.len()).map(|_| None).collect();
+        faces.attach_text_codes(FACE_REGULAR, crate::tfm::T1_UNICODE);
+        // Script roman outlines use OT1 code points. Map their existing
+        // glyphs to T1 metrics by character, never by equal numeric code.
+        let text_coded = regular
+            .iter()
+            .filter_map(|&(ch, ot1)| {
+                crate::tfm::T1_UNICODE
+                    .binary_search_by_key(&ch, |&(ch, _)| ch)
+                    .ok()
+                    .map(|i| (tex_code(ot1), crate::tfm::T1_UNICODE[i].1))
+            })
+            .collect::<Vec<_>>();
+        for face in [
+            FACE_ROMAN_5,
+            FACE_ROMAN_6,
+            FACE_ROMAN_7,
+            FACE_ROMAN_8,
+            FACE_ROMAN_9,
+            FACE_ROMAN_10,
+            FACE_ROMAN_12,
+            FACE_ROMAN_17,
+        ] {
+            faces.attach_text_codes(face, &text_coded);
+        }
         Ok(faces)
+    }
+
+    #[cfg(feature = "bundled-faces")]
+    fn attach_text_codes(&mut self, face: FaceId, chars: &[(char, u8)]) {
+        let Some(sfnt) = self.fonts.get(face.0) else {
+            return;
+        };
+        let mut codes = vec![None; usize::from(sfnt.num_glyphs)];
+        for &(ch, code) in chars {
+            let gid = sfnt.glyph_index(ch);
+            if gid != 0 {
+                if let Some(slot) = codes.get_mut(usize::from(gid)) {
+                    *slot = Some(code);
+                }
+            }
+        }
+        if let Some(slot) = self.text_codes.get_mut(face.0) {
+            *slot = Some(codes);
+        }
+    }
+
+    /// EC metrics for a bundled upright text glyph at its actual point
+    /// size. Custom rosters and glyphs without a T1 counterpart keep
+    /// their own metrics.
+    #[must_use]
+    pub fn text_tfm(&self, face: FaceId, gid: u16, points: f64) -> Option<(&'static TfmFont, u8)> {
+        let codes = self.text_codes.get(face.0)?.as_ref()?;
+        let code = (*codes.get(usize::from(gid))?)?;
+        Some((self.text_font(face, points)?, code))
+    }
+
+    /// t1cmr.fd's declared EC optical sizes. LaTeX selects the nearest
+    /// declared size when substituting a requested size.
+    #[must_use]
+    pub(crate) fn text_font(&self, face: FaceId, points: f64) -> Option<&'static TfmFont> {
+        self.text_codes.get(face.0)?.as_ref()?;
+        [
+            (5.0, &crate::tfm::ECRM0500),
+            (6.0, &crate::tfm::ECRM0600),
+            (7.0, &crate::tfm::ECRM0700),
+            (8.0, &crate::tfm::ECRM0800),
+            (9.0, &crate::tfm::ECRM0900),
+            (10.0, &crate::tfm::ECRM1000),
+            (10.95, &crate::tfm::ECRM1095),
+            (12.0, &crate::tfm::ECRM1200),
+            (14.4, &crate::tfm::ECRM1440),
+            (17.28, &crate::tfm::ECRM1728),
+            (20.74, &crate::tfm::ECRM2074),
+            (24.88, &crate::tfm::ECRM2488),
+            (29.86, &crate::tfm::ECRM2986),
+            (35.83, &crate::tfm::ECRM3583),
+        ]
+        .into_iter()
+        .min_by(|(a, _), (b, _)| (points - a).abs().total_cmp(&(points - b).abs()))
+        .map(|(_, font)| font)
     }
 
     /// Record `font` as `face`'s TFM, reading each code's glyph through the

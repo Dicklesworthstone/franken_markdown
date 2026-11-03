@@ -211,7 +211,7 @@ impl Engine {
         let ctx = LayCtx {
             style: ctx,
             alphabet: None,
-            text_mode: false,
+            text_mode: !align_rows,
             decl_size: 1.0,
             line_stretch: 1.0,
             align_rows,
@@ -323,6 +323,16 @@ struct Paragraph {
 impl LayCtx {
     fn size(&self) -> f64 {
         crate::metrics::math_size(self.style.style, self.decl_size)
+    }
+    fn text_points(self) -> Option<f64> {
+        self.text_mode.then(|| 10.0 * self.size())
+    }
+    fn text_size(self) -> f64 {
+        if self.text_mode {
+            self.size()
+        } else {
+            self.decl_size
+        }
     }
     fn map(self, f: impl FnOnce(StyleCtx) -> StyleCtx) -> Self {
         Self {
@@ -524,7 +534,7 @@ impl Engine {
                 // `\hspace` is \hskip glue, a legal break.
                 NodeKind::Skip(length) => {
                     laid_items.push(LineItem::Glue(GlueSpec {
-                        natural: skip_width(*length, ctx),
+                        natural: skip_width(*length, ctx, self.interword_font(ctx)),
                         stretch: 0.0,
                         shrink: 0.0,
                         breakable: true,
@@ -568,26 +578,19 @@ impl Engine {
     /// An explicit space's glue.
     fn space_glue(&self, kind: SpaceKind, ctx: LayCtx) -> GlueSpec {
         let eighteenths = f64::from(kind.mu()) / 18.0;
-        let em = if ctx.text_mode {
-            // Text spaces are ems of the text face at its size.
-            eighteenths * ctx.size()
-        } else if kind.is_mu_glue() {
-            // 18 mu is family 2's quad at the current size (§716).
+        let font = self.interword_font(ctx);
+        let text_size = ctx.text_size();
+        let em = if matches!(kind, SpaceKind::ControlSpace) {
+            font.space * text_size
+        } else if !ctx.text_mode && kind.is_mu_glue() {
+            // 18 mu is the math-symbol family's quad at the current style.
             eighteenths * self.consts_at(&ctx).quad * ctx.size()
-        } else if matches!(kind, SpaceKind::ControlSpace) {
-            // `\ ` is the text font's interword space.
-            crate::tfm::CMR10.space * ctx.decl_size
         } else {
-            // \quad and \qquad are \hskip ems of the text font,
-            // cmr10 at the declared size, in every math style.
-            eighteenths * crate::tfm::CMR10.param(6) * ctx.decl_size
+            // Text-font ems use the declared text size even in math scripts.
+            eighteenths * font.param(6) * text_size
         };
-        // `\ ` is the interword glue, stretch and shrink too;
-        // it and the \hskip quads are legal breaks, the mu
-        // kerns are not.
         let (stretch, shrink) = if matches!(kind, SpaceKind::ControlSpace) {
-            let font = &crate::tfm::CMR10;
-            (font.param(3) * ctx.size(), font.param(4) * ctx.size())
+            (font.param(3) * text_size, font.param(4) * text_size)
         } else {
             (0.0, 0.0)
         };
@@ -726,7 +729,7 @@ impl Engine {
                             if let (Some((pf, pg)), Some((cf, cg))) = (prev_glyph, laid.char_glyph)
                             {
                                 if pf == cf {
-                                    x += self.pair_kern(pf, pg, cg, ctx.text_mode) * ctx.size();
+                                    x += self.pair_kern(pf, pg, cg, ctx.text_points()) * ctx.size();
                                 }
                             }
                         }
@@ -1420,7 +1423,7 @@ impl Engine {
     }
 
     fn glyph_atom(&self, face: FaceId, gid: u16, ch: char, span: Span, ctx: LayCtx) -> Laid {
-        let metrics = self.char_metrics(face, gid, ctx.text_mode);
+        let metrics = self.char_metrics(face, gid, ctx.text_points());
         let size = ctx.size();
         Laid {
             boxx: glyph_box(face, gid, ch, span, size, metrics),
@@ -1582,7 +1585,7 @@ impl Engine {
                 .ok()
                 .and_then(|code| self.faces.tex_glyph(face, code))
                 .ok_or(MathError::UnmappedChar { ch, span })?;
-            let metrics = self.char_metrics(face, gid, false);
+            let metrics = self.char_metrics(face, gid, None);
             Ok(glyph_box(face, gid, ch, span, scale, metrics))
         };
         let tee = glyph(FACE_ROMAN_10, 'T', size)?;
@@ -1636,7 +1639,7 @@ impl Engine {
                 10.0 * ctx.size(),
             )
             .unwrap_or((FACE_MATH_SYMBOLS, gid));
-        let metrics = self.char_metrics(face, gid, ctx.text_mode);
+        let metrics = self.char_metrics(face, gid, ctx.text_points());
         Some(Laid {
             boxx: glyph_box(
                 face,
@@ -1683,7 +1686,7 @@ impl Engine {
             .unwrap_or((FACE_MATH_SYMBOLS, gid));
         let relation = self.char_atom(base, span, ctx)?;
         let size = ctx.size();
-        let slash = self.char_metrics(face, gid, ctx.text_mode);
+        let slash = self.char_metrics(face, gid, ctx.text_points());
         let dx = match (
             centred,
             self.faces.font(face).and_then(|f| f.glyph_bbox(gid)),
@@ -1833,7 +1836,7 @@ impl Engine {
                         .faces
                         .optical(face, crate::faces::tex_code(code), 10.0 * ctx.size())
                         .unwrap_or((face, gid));
-                    let metrics = self.char_metrics(face, gid, ctx.text_mode);
+                    let metrics = self.char_metrics(face, gid, ctx.text_points());
                     glyph_box(face, gid, ch, span, size, metrics)
                 }
             });
@@ -1865,7 +1868,7 @@ impl Engine {
                 (face, gid, mapped, scale)
             }
         };
-        let metrics = self.char_metrics(face, gid, ctx.text_mode);
+        let metrics = self.char_metrics(face, gid, ctx.text_points());
         let size = ctx.size() * scale;
         let gh = metrics.height * size;
         let gd = metrics.depth * size;
@@ -2081,10 +2084,10 @@ impl Engine {
                 .unwrap_or((face, gid));
             if let Some((pf, pg)) = prev {
                 if pf == face {
-                    x += self.pair_kern(face, pg, gid, ctx.text_mode) * size;
+                    x += self.pair_kern(face, pg, gid, ctx.text_points()) * size;
                 }
             }
-            let m = self.char_metrics(face, gid, ctx.text_mode);
+            let m = self.char_metrics(face, gid, ctx.text_points());
             children.push(Positioned {
                 dx: x,
                 dy: 0.0,
@@ -2157,17 +2160,16 @@ impl Engine {
         m
     }
 
-    /// A glyph's box in ems of its size. In math mode a character of a face
-    /// that stands for one of TeX's fonts takes that font's TFM box, its
-    /// height and depth floored at zero as the character's box is
-    /// (tex.web §653); anything else is measured from its outline.
-    fn char_metrics(&self, face: FaceId, gid: u16, text_mode: bool) -> GlyphMetrics {
-        if !text_mode
-            && let Some(tex) = self
-                .faces
-                .tfm(face, gid)
-                .and_then(|(font, code)| font.char(code))
-        {
+    /// A glyph's box in ems of its size. Bundled upright text takes EC
+    /// metrics at its actual point size; math keeps its own TFM. Heights
+    /// and depths are floored at zero (tex.web §653). Other glyphs retain
+    /// their outline metrics.
+    fn char_metrics(&self, face: FaceId, gid: u16, text_points: Option<f64>) -> GlyphMetrics {
+        let tfm = match text_points {
+            Some(points) => self.faces.text_tfm(face, gid, points),
+            None => self.faces.tfm(face, gid),
+        };
+        if let Some(tex) = tfm.and_then(|(font, code)| font.char(code)) {
             return GlyphMetrics {
                 advance: tex.width,
                 height: tex.height.max(0.0),
@@ -2178,15 +2180,25 @@ impl Engine {
         self.metrics_of(face, gid)
     }
 
-    /// The kern between two adjacent glyphs of one face, in ems: in math
-    /// mode the TFM's lig/kern program for two of its characters, else the
-    /// face's own kerning.
-    fn pair_kern(&self, face: FaceId, left: u16, right: u16, text_mode: bool) -> f64 {
-        if !text_mode
-            && let (Some((font, l)), Some((_, r))) =
-                (self.faces.tfm(face, left), self.faces.tfm(face, right))
-        {
-            return font.kern(l, r).unwrap_or(0.0);
+    /// A pair kern from the active text or math TFM; other faces keep
+    /// their own kerning. Ligature instructions never become substitutions.
+    fn pair_kern(&self, face: FaceId, left: u16, right: u16, text_points: Option<f64>) -> f64 {
+        let (left_tfm, right_tfm) = match text_points {
+            Some(points) => (
+                self.faces.text_tfm(face, left, points),
+                self.faces.text_tfm(face, right, points),
+            ),
+            None => (self.faces.tfm(face, left), self.faces.tfm(face, right)),
+        };
+        if let (Some((font, l)), Some((_, r))) = (left_tfm, right_tfm) {
+            // The default text template disables ligatures through
+            // pdfTeX's font controls, which also disable text pair kerns.
+            // Math-family kern programs remain active.
+            return if text_points.is_some() {
+                0.0
+            } else {
+                font.kern(l, r).unwrap_or(0.0)
+            };
         }
         self.faces
             .font(face)
@@ -2243,9 +2255,9 @@ impl Engine {
     /// TeX's interword glue after a space factor (tex.web §1044): from 2000
     /// the font's extra space widens it (after a sentence's end, `.` `?`
     /// `!`, and after `:`); the stretch grows and the shrink falls with the
-    /// factor. The text font's parameters are cmr10's at the size.
+    /// factor. Bundled upright text uses its EC optical cut's fontdimens.
     fn interword_glue(&self, ctx: LayCtx, space_factor: u16) -> GlueSpec {
-        let font = &crate::tfm::CMR10;
+        let font = self.interword_font(ctx);
         let size = ctx.size();
         let factor = f64::from(space_factor) / 1000.0;
         let extra = if space_factor >= 2000 {
@@ -2261,11 +2273,20 @@ impl Engine {
         }
     }
 
-    /// The text font's interword space: cmr10's fontdimen 2 at the size,
-    /// the space TeX's interword glue and `\ ` take (the outline face's
-    /// own space advance is 0.0008 em narrower).
+    /// The active text font's fontdimen 2, scaled to the current size.
     fn space_width(&self, ctx: LayCtx) -> f64 {
-        crate::tfm::CMR10.space * ctx.size()
+        self.interword_font(ctx).space * ctx.text_size()
+    }
+
+    fn interword_font(&self, ctx: LayCtx) -> &'static crate::tfm::TfmFont {
+        let face = if ctx.text_mode {
+            text_face(ctx)
+        } else {
+            FACE_REGULAR
+        };
+        self.faces
+            .text_font(face, 10.0 * ctx.text_size())
+            .unwrap_or(&crate::tfm::CMR10)
     }
 
     // ── The Appendix-G constructions ────────────────────────────────────
@@ -2513,7 +2534,7 @@ impl Engine {
                 '′',
                 span,
                 ctx.size(),
-                self.char_metrics(face, gid, false),
+                self.char_metrics(face, gid, None),
             ));
         }
         let upm = f64::from(font.units_per_em.max(1));
@@ -2695,9 +2716,9 @@ impl Engine {
         let den_box = self.clean_box(den, eff.map(StyleCtx::den))?.boxx;
         // `\genfrac`'s explicit thickness is TeX's `\above`: a length, which
         // the math style does not scale.
-        let theta = spec
-            .thickness
-            .map_or(c.rule_thickness * size, |length| skip_width(length, eff));
+        let theta = spec.thickness.map_or(c.rule_thickness * size, |length| {
+            skip_width(length, eff, self.interword_font(eff))
+        });
         let axis = c.axis_height * size;
         // Rule 15b: initial shifts.
         let mut u = if display {
@@ -3174,6 +3195,13 @@ impl Engine {
         ctx: LayCtx,
         span: Span,
     ) -> Result<EnvPlan, MathError> {
+        // These grids are mathematics even when their enclosing document
+        // is TexText. A surrounding text face must not leak into cells.
+        let ctx = LayCtx {
+            text_mode: false,
+            alphabet: if ctx.text_mode { None } else { ctx.alphabet },
+            ..ctx
+        };
         // align*, gather* and equation* are displays, so `\everydisplay` sets
         // amsmath's \if@display in their cells, a TexText one's included.
         let ctx = if matches!(name, "align*" | "gather*" | "equation*") {
@@ -3628,13 +3656,10 @@ impl Engine {
         for (gid, code) in gids.iter_mut().zip(codes) {
             *gid = self.faces.tex_glyph(FACE_MATH_EXTENSION, code)?;
         }
-        let metrics = gids.map(|gid| self.char_metrics(FACE_MATH_EXTENSION, gid, false));
+        let metrics = gids.map(|gid| self.char_metrics(FACE_MATH_EXTENSION, gid, None));
         // \ht of \hbox{$\braceld$}: braceld is 0x7A.
         let braceld = self.faces.tex_glyph(FACE_MATH_EXTENSION, 0x7A)?;
-        let row = self
-            .char_metrics(FACE_MATH_EXTENSION, braceld, false)
-            .height
-            * em;
+        let row = self.char_metrics(FACE_MATH_EXTENSION, braceld, None).height * em;
         let pieces = metrics.iter().map(|m| m.advance).sum::<f64>() * em;
         let rule = ((width - pieces) / 2.0).max(0.0);
         let ch = if under { '⏟' } else { '⏞' };
@@ -3933,7 +3958,7 @@ impl Engine {
                 span: delim.span,
             });
         };
-        let m = self.char_metrics(face, gid, ctx.text_mode);
+        let m = self.char_metrics(face, gid, ctx.text_points());
         let natural_total = (m.height + m.depth) * small_size;
         let scale = if natural_total >= target_total || natural_total <= 0.0 {
             1.0
@@ -4047,7 +4072,7 @@ impl Engine {
             let gid = piece(code)?;
             // The successor's TFM height is its ink top (0.04 em); its box,
             // height plus depth `total`, centers on the axis.
-            let m = self.char_metrics(face, gid, false);
+            let m = self.char_metrics(face, gid, None);
             children.push(glyph(gid, top - m.height * size));
             width_gid = gid;
         } else {
@@ -4081,7 +4106,7 @@ impl Engine {
             // top); the designed overlaps then join every piece.
             let mut y = top;
             for (gid, h) in slots {
-                let height = self.char_metrics(face, gid, false).height;
+                let height = self.char_metrics(face, gid, None).height;
                 children.push(glyph(gid, y - height * size));
                 y -= h * size;
             }
@@ -4089,7 +4114,7 @@ impl Engine {
         }
         // TeX's box is the TFM width; the Type 1 advance is that width
         // rounded to 1/1000 em, which would drift every delimited array.
-        let advance = self.char_metrics(face, width_gid, false).advance;
+        let advance = self.char_metrics(face, width_gid, None).advance;
         let width = if face == FACE_MATH_EXTENSION {
             // Keep the established text-cut rounding (and its bit-locked
             // layouts); the optical cuts use their own exact TFM width.
@@ -5262,15 +5287,15 @@ fn amsmath_ex(decl_size: f64) -> f64 {
     }
 }
 
-fn skip_width(length: Length, ctx: LayCtx) -> f64 {
+fn skip_width(length: Length, ctx: LayCtx, font: &crate::tfm::TfmFont) -> f64 {
     /// A point is a tenth of the 10 pt design size's em.
     const POINT: f64 = 0.1;
     #[allow(clippy::cast_precision_loss)]
     let value = length.sp as f64 / 65536.0;
     match length.unit {
         LengthUnit::Fixed => value * POINT,
-        LengthUnit::Em => value * crate::tfm::CMR10.param(6) * ctx.decl_size,
-        LengthUnit::Ex => value * crate::tfm::CMR10.param(5) * ctx.decl_size,
+        LengthUnit::Em => value * font.param(6) * ctx.text_size(),
+        LengthUnit::Ex => value * font.param(5) * ctx.text_size(),
     }
 }
 

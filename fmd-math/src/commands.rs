@@ -777,11 +777,15 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         // LaTeX's 10 pt ladder (`size10.clo`: tiny 5, footnotesize 8,
         // small 9, large 12, Large 14.4, huge 20.74 pt).
         "tiny" => Cmd::SizeChange(0.5),
+        "scriptsize" => Cmd::SizeChange(0.7),
         "footnotesize" => Cmd::SizeChange(0.8),
         "small" => Cmd::SizeChange(0.9),
+        "normalsize" => Cmd::SizeChange(1.0),
         "large" => Cmd::SizeChange(1.2),
         "Large" => Cmd::SizeChange(1.44),
+        "LARGE" => Cmd::SizeChange(1.728),
         "huge" => Cmd::SizeChange(2.074),
+        "Huge" => Cmd::SizeChange(2.488),
         "hspace" => Cmd::Hspace,
         "TeX" => Cmd::Logo(LogoKind::TeX),
         "LaTeX" => Cmd::Logo(LogoKind::LaTeX),
@@ -1379,11 +1383,15 @@ mod tests {
     fn size_declarations_are_supported() {
         for c in [
             r"\tiny",
+            r"\scriptsize",
             r"\footnotesize",
             r"\small",
+            r"\normalsize",
             r"\large",
             r"\Large",
+            r"\LARGE",
             r"\huge",
+            r"\Huge",
         ] {
             assert_eq!(
                 construct_status(c),

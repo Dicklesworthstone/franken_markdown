@@ -81,6 +81,30 @@ fn dfrac_and_tfrac_force_their_style() {
 }
 
 #[test]
+fn forced_fraction_and_explicit_styles_restart_uncramped() {
+    // TeX's style primitive restarts uncramped even within a subscript or
+    // radicand. The independent 21-case box capture measures the resulting
+    // numerator-superscript height for both macro and explicit spellings.
+    for (command, style) in [
+        (r"\dbinom{a^k}{b}", Style::Text),
+        (r"\dfrac{a^k}{b}", Style::Text),
+        (r"\tbinom{a^k}{b}", Style::Script),
+        (r"\tfrac{a^k}{b}", Style::Script),
+        (r"{\displaystyle\binom{a^k}{b}}", Style::Text),
+        (r"{\displaystyle\frac{a^k}{b}}", Style::Text),
+        (r"{\textstyle\binom{a^k}{b}}", Style::Script),
+        (r"{\textstyle\frac{a^k}{b}}", Style::Script),
+    ] {
+        for source in [format!("x_{{{command}}}"), format!(r"\sqrt{{{command}}}")] {
+            let styles = styles_of(&source);
+            assert_eq!(find(&styles, "a"), (style, false), "{source}");
+            assert_eq!(find(&styles, "k"), (style.sup(), false), "{source}");
+            assert_eq!(find(&styles, "b"), (style, true), "{source}");
+        }
+    }
+}
+
+#[test]
 fn over_interiors_follow_the_ambient_style() {
     let styles = styles_of(r"{a \over b}");
     assert_eq!(find(&styles, "a"), (Style::Text, false));

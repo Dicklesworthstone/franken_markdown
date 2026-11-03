@@ -141,6 +141,12 @@ fn rendered_html_and_pdf_match_committed_goldens() {
                 panic!("missing PDF snapshot {snap_path:?}; run UPDATE_GOLDEN=1 to create it")
             });
             if want != snap {
+                // Retain the actual bytes: the short fingerprint alone cannot
+                // distinguish a layout regression from an annotation change.
+                let artifacts = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("target/golden-output-mismatches");
+                std::fs::create_dir_all(&artifacts).unwrap();
+                std::fs::write(artifacts.join(format!("{name}.pdf")), &pdf).unwrap();
                 mismatches.push(format!(
                     "PDF snapshot mismatch for {name} ({snap_path:?}):\n  want:\n{want}  got:\n{snap}"
                 ));
@@ -153,4 +159,44 @@ fn rendered_html_and_pdf_match_committed_goldens() {
         "rendered-output goldens drifted (run UPDATE_GOLDEN=1 after reviewing):\n{}",
         mismatches.join("\n"),
     );
+}
+
+#[test]
+fn adjacent_plain_text_fragments_preserve_rendered_pdf_bytes() {
+    // fff29cd made code spaces literal, replacing three tokens in the prose
+    // case with one identical painted run. The old prefix-by-prefix pen fold
+    // moved the following text by 0.01 pt. The prose snapshot records the
+    // literal-code result; this independent AST law rejects the old fold even
+    // though merely accepting that new fingerprint would let it pass.
+    use franken_markdown::{Block, Inline, parse, render_pdf_document};
+
+    let original = parse(CASES[0].1);
+    let opts = PdfOptions {
+        metadata_epoch_seconds: Some(1_700_000_000),
+        ..PdfOptions::default()
+    };
+    let expected = render_pdf_document(&original, &opts).unwrap();
+    for chunk_size in [1, 2, 3, 7] {
+        let mut fragmented = original.clone();
+        for block in &mut fragmented.blocks {
+            if let Block::Paragraph(inlines) = block {
+                *inlines = inlines
+                    .iter()
+                    .flat_map(|inline| match inline {
+                        Inline::Text(text) => text
+                            .chars()
+                            .collect::<Vec<_>>()
+                            .chunks(chunk_size)
+                            .map(|chunk| Inline::Text(chunk.iter().collect()))
+                            .collect::<Vec<_>>(),
+                        other => vec![other.clone()],
+                    })
+                    .collect();
+            }
+        }
+        assert!(
+            render_pdf_document(&fragmented, &opts).unwrap() == expected,
+            "splitting adjacent plain text into {chunk_size}-character fragments changed the PDF"
+        );
+    }
 }

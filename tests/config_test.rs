@@ -1,5 +1,6 @@
 //! Native config contract tests. These use `FMD_CONFIG` temp paths so the real
 //! user config is never read or modified.
+#![cfg(feature = "cli")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::fs;

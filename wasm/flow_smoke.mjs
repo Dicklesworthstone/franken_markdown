@@ -102,7 +102,7 @@ try {
   const goodSource = session.source;
   check("failed-shaping-is-atomic", () => {
     assert.throws(
-      () => session.replaceSource("😀", { expectedRevision: session.revision }),
+      () => session.replaceSource("👩\u200d💻", { expectedRevision: session.revision }),
       (error) => error.code === "LAYOUT_ERROR",
     );
     assert.equal(session.source, goodSource);

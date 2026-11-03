@@ -4,6 +4,7 @@
 //! Like prose continuation, this requires enough word-boundary context in a
 //! window; it never guesses a split inside an unknown shaper cluster.
 
+use super::breaks::{cjk_boundary, prohibited_boundary};
 use super::styled::{measurement_window_end, validate_ranges};
 use super::{FlowInlineRun, FlowInlineStyle, FlowLayoutError, FlowTextRole, Reflow};
 use crate::text::OwnedTextRun;
@@ -38,6 +39,7 @@ where
                 .iter()
                 .all(|run| run.style == FlowInlineStyle::default() && run.link.is_none());
         let unstyled = [FlowInlineRun {
+            math: None,
             range: 0..text.len(),
             style: FlowInlineStyle::default(),
             link: None,
@@ -52,6 +54,7 @@ where
             let physical_end = offset + physical.len();
             let mut start = offset;
             let mut advance = 0.0_f64;
+            let mut group_advance = 0.0_f64;
             while start < physical_end {
                 let end = measurement_window_end(
                     text,
@@ -69,14 +72,26 @@ where
                     // never inside an indivisible host-provided cluster.
                     clusters
                         .iter()
-                        .rposition(|cluster| cluster.separator)
+                        .enumerate()
+                        .rposition(|(index, cluster)| {
+                            cluster.separator
+                                || (index + 1 < clusters.len()
+                                    && cjk_boundary(text, cluster.bytes.end))
+                        })
                         .map(|index| index + 1)
                         .ok_or(FlowLayoutError::BudgetExceeded(
                             "table shaping window cannot settle a word",
                         ))?
                 };
                 for cluster in &clusters[..settled] {
-                    minimum = minimum.max(f64::from(cluster.advance));
+                    // A CJK opener/closer belongs to its neighboring cluster.
+                    // Water filling must leave room for that complete group,
+                    // including groups spanning inline face/style changes.
+                    if !prohibited_boundary(text, cluster.bytes.start) {
+                        group_advance = 0.0;
+                    }
+                    group_advance += f64::from(cluster.advance);
+                    minimum = minimum.max(group_advance);
                     advance = (advance + f64::from(cluster.advance)).min(cap);
                 }
                 let next = clusters

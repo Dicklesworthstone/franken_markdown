@@ -42,10 +42,10 @@ pub(super) fn reusable_indices(
         if new_unique.get(text).copied().flatten() != Some(b) {
             continue;
         }
-        if let Some(a) = old_unique.get(text).copied().flatten() {
-            if equal(a, b) {
-                candidates.push((a, b));
-            }
+        if let Some(a) = old_unique.get(text).copied().flatten()
+            && equal(a, b)
+        {
+            candidates.push((a, b));
         }
     }
 

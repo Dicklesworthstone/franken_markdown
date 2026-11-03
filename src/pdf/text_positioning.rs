@@ -418,9 +418,9 @@ pub(super) fn stamp_lines(lines: &mut [Line], faces: &super::Faces) {
 /// them can change strict-shaper admission (for example a later unsupported
 /// mark makes the complete word fall back to nonzero hmtx mark advances).
 /// Final lines must fit their actual joined glyph run before pagination.
-/// Fixed-width inline code can also make a visibly overfull line cheaper than
-/// several underfull no-glue lines in the optimizer. Recover those literal
-/// lines without changing their source spacing or shrinking their glyphs.
+/// Long prose words and fixed-width inline code can also make a visibly
+/// overfull line cheaper than several underfull no-glue lines in the optimizer.
+/// Recover those lines without changing source spacing or shrinking glyphs.
 /// Ordinary fitting KP output is retained exactly. Existing cluster-aware cell
 /// wrapping keeps styles, links, and every source cluster together.
 pub(super) fn append_fitted_line(
@@ -434,14 +434,7 @@ pub(super) fn append_fitted_line(
         .segs
         .last()
         .is_some_and(|seg| seg.x + seg.width > right + 0.01);
-    let literal = cx.line_toks.iter().any(|token| token.tok.literal);
-    if !overfull
-        || (!literal
-            && !line
-                .segs
-                .iter()
-                .any(|seg| seg.text.chars().any(text_composition::is_mark)))
-    {
+    if !overfull {
         out.push(line);
         return;
     }

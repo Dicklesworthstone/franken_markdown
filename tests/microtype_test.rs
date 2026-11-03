@@ -27,13 +27,13 @@ impl franken_markdown::layout::PairMetrics for FlatMetrics {}
 
 fn protrude_last_box_right(items: &mut [ParagraphItem], per_mille_pts: i32, size: FontSize) {
     for item in items.iter_mut() {
-        if let ParagraphItem::Box(b) = item {
-            if b.text.ends_with(['.', ',', ':', ';', '!', '?']) {
-                b.protrusion = Protrusion {
-                    left: LayoutUnit::ZERO,
-                    right: LayoutUnit::from_milli_points(per_mille_pts),
-                };
-            }
+        if let ParagraphItem::Box(b) = item
+            && b.text.ends_with(['.', ',', ':', ';', '!', '?'])
+        {
+            b.protrusion = Protrusion {
+                left: LayoutUnit::ZERO,
+                right: LayoutUnit::from_milli_points(per_mille_pts),
+            };
         }
     }
     let _ = size;

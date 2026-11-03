@@ -295,10 +295,10 @@ impl Notes<'_> {
                         collect_definitions(root, &mut definitions);
                         definitions
                     });
-                    if let Some((&id, _)) = definitions.get_key_value(id.as_str()) {
-                        if self.seen.insert(id) {
-                            self.order.push(id);
-                        }
+                    if let Some((&id, _)) = definitions.get_key_value(id.as_str())
+                        && self.seen.insert(id)
+                    {
+                        self.order.push(id);
                     }
                 }
                 Inline::Emphasis(inner)

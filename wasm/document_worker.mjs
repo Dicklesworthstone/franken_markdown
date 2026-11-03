@@ -4,7 +4,7 @@ import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker, workerLimits } from 
 
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { isPdfPaginationError, normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
+import { isPdfPaginationError, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
 
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const DOCUMENT_SOURCE_LIMIT = 4 * 1024 * 1024;
@@ -19,10 +19,10 @@ const FORMATS = Object.freeze({
 });
 const SHARED = ["font", "darkMode", "fontScale", "typeSize"];
 const SETTINGS = {
-  html: [...SHARED, "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
+  html: [...SHARED, "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat", "fontEmbedding"],
   pdf: [...SHARED, "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "strictPagination", "pdfImages", "fontAssets", "page", "running", "baselineGridPt", "pdfA", "pdfAStrict"],
   svg: [...SHARED, "maxWidthPt", "pdfImages", "fontAssets"],
-  epub: [...SHARED, "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets"],
+  epub: [...SHARED, "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets", "fontEmbedding"],
   "interactive-html": [...SHARED, "title", "lang", "customCss", "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
 };
 const SLOTS = ["body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"];
@@ -113,6 +113,10 @@ function normalize(format, source, options, knownSourceLength) {
     fail("INVALID_OPTIONS", "unsupported document format");
   const sourceLength = knownSourceLength ?? text(source, DOCUMENT_SOURCE_LIMIT, "Markdown");
   const out = record(options, SETTINGS[format], "render option");
+  if (out.fontEmbedding !== undefined) {
+    try { out.fontEmbedding = normalizeFontEmbedding(out.fontEmbedding); }
+    catch (error) { fail(error.code, error.message); }
+  }
   if (format === "pdf") {
     let archival;
     try { archival = normalizePdfArchival(out.pdfA, out.pdfAStrict); }

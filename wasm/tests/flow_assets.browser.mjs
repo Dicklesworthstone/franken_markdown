@@ -10,7 +10,9 @@ const assert = (condition, label) => {
 const delay = () => new Promise((resolve) => setTimeout(resolve, 0));
 const descriptor = { requestId: "1", destination: "1.png", isResolved: true };
 
-export async function run() {
+export async function run(colourJpegs) {
+  assert(Array.isArray(colourJpegs) && colourJpegs.length === 4,
+    "all four real CMYK/YCCK fixtures are required");
   const results = [];
   const test = async (name, fn) => {
     await fn();
@@ -30,6 +32,35 @@ export async function run() {
     throw new Error("image loading must not fetch");
   };
   try {
+    for (const { name, hex } of colourJpegs)
+      await test(`${name}: real colour decoding, six Canvas patches and exact retained bytes`, async () => {
+        const bytes = Uint8Array.from(hex.replace(/\s/g, "").match(/../g), byte => parseInt(byte, 16));
+        const session = new Session();
+        const assets = new FlowImageAssets(session, { load: () => bytes, retainSourceBytes: true });
+        try {
+          const report = await assets.loadPending();
+          assert(report.loaded === 1 && report.failed === 0, JSON.stringify(report));
+          const bitmap = assets.resolveImage(descriptor, session.token);
+          assert(bitmap instanceof ImageBitmap && bitmap.width === 96 && bitmap.height === 32,
+            "real colour bitmap dimensions");
+          const canvas = new OffscreenCanvas(96, 32), context = canvas.getContext("2d");
+          context.drawImage(bitmap, 0, 0);
+          const swatches = [[255, 0, 0], [0, 255, 0], [0, 0, 255],
+            [255, 255, 255], [0, 0, 0], [127, 127, 127]];
+          for (const [index, expected] of swatches.entries()) {
+            const pixel = context.getImageData(index * 16 + 8, 16, 1, 1).data;
+            assert(pixel[3] === 255 && expected.every((value, channel) => Math.abs(pixel[channel] - value) <= 6),
+              `${name} swatch ${index}: ${pixel}`);
+          }
+          const retained = session.writes[0].bytes;
+          assert(retained.length === bytes.length && retained.every((byte, index) => byte === bytes[index]),
+            "original JPEG preserved for publication");
+          assets.dispose();
+          assert(bitmap.width === 0 && bitmap.height === 0, "colour bitmap released");
+        } finally {
+          assets.dispose();
+        }
+      });
     for (const mime of ["image/png", "image/jpeg"])
       await test(`${mime}: real decoder, bitmap, native dimensions, Canvas pixels and close`, async () => {
         const bytes = await encoded(mime),

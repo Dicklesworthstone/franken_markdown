@@ -190,7 +190,7 @@ fn render_warnings_flags_unresolved_and_unsupported_images() {
 fn render_warnings_flags_glyphless_characters_and_stays_quiet_on_ascii() {
     use franken_markdown::{PdfOptions, RenderWarning, parse_markdown, render_warnings};
 
-    let doc = parse_markdown("Hello 中文 \u{13000} world");
+    let doc = parse_markdown("Hello \u{13000}\u{13001} \u{13002} world");
     let warns = render_warnings(&doc, &PdfOptions::default());
     let missing = warns
         .iter()
@@ -198,7 +198,7 @@ fn render_warnings_flags_glyphless_characters_and_stays_quiet_on_ascii() {
             RenderWarning::MissingGlyphs { count, .. } => Some(*count),
             _ => None,
         })
-        .expect("non-Latin characters must warn");
+        .expect("uncovered characters must warn");
     assert!(missing >= 3, "expected >=3 glyphless chars, got {missing}");
 
     // Pure ASCII renders cleanly with no warnings.
@@ -219,7 +219,7 @@ fn render_warnings_include_raw_html_preserved_as_pdf_text() {
     // any diagnostic. (Safe-subset tags such as `<div>` are lowered and their
     // attributes dropped, so they are not visible source.)
     let doc = parse_markdown(
-        "<marquee title=\"中文\">ok</marquee>\n\nParagraph <blink title=\"日本語\">ok</blink>",
+        "<marquee title=\"\u{13000}\u{13001}\">ok</marquee>\n\nParagraph <blink title=\"\u{13002}\u{13003}\u{13004}\">ok</blink>",
     );
     let missing = render_warnings(&doc, &PdfOptions::default())
         .into_iter()
@@ -231,7 +231,7 @@ fn render_warnings_include_raw_html_preserved_as_pdf_text() {
 
     assert!(
         missing.0 >= 5,
-        "expected glyphless CJK from block and inline raw HTML, got {missing:?}"
+        "expected uncovered glyphs from block and inline raw HTML, got {missing:?}"
     );
 }
 
@@ -241,7 +241,7 @@ fn render_warnings_walks_images_and_text_in_nested_blocks() {
 
     // Images nested in a list item and a table cell; glyphless text in a
     // blockquote and a code block — every block/inline walker arm is exercised.
-    let md = "- ![inlist](a.png)\n\n> 中文 quote\n\n```\n日本語\n```\n\n\
+    let md = "- ![inlist](a.png)\n\n> \u{13000}\u{13001} quote\n\n```\n\u{13002}\u{13003}\u{13004}\n```\n\n\
               | ![incell](b.png) | x |\n|---|---|\n| *em* | `c` |";
     let warns = render_warnings(&parse_markdown(md), &PdfOptions::default());
     let images = warns
@@ -256,7 +256,7 @@ fn render_warnings_walks_images_and_text_in_nested_blocks() {
         warns
             .iter()
             .any(|w| matches!(w, RenderWarning::MissingGlyphs { .. })),
-        "CJK in a blockquote/code block must warn: {warns:?}"
+        "uncovered hieroglyphs in a blockquote/code block must warn: {warns:?}"
     );
 }
 

@@ -36,6 +36,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "toc_depth",
     "font_scale",
     "html_font_format",
+    "font_embedding",
     "microtype",
     "pdf_page_numbers",
     "typography_homogeneous",
@@ -57,6 +58,8 @@ pub struct RenderDefaults {
     pub font_scale: Option<String>,
     /// `woff1`, `woff2` or `ttf`.
     pub html_font_format: Option<String>,
+    /// `subset` (compact) or `full` (preserve browser/reader shaping tables).
+    pub font_embedding: Option<String>,
     /// `off`, `protrusion` or `expansion`.
     pub microtype: Option<String>,
     pub pdf_page_numbers: Option<bool>,
@@ -93,6 +96,7 @@ impl RenderDefaults {
             ("toc_depth", self.toc_depth.map(|depth| depth.to_string())),
             ("font_scale", self.font_scale.clone()),
             ("html_font_format", self.html_font_format.clone()),
+            ("font_embedding", self.font_embedding.clone()),
             ("microtype", self.microtype.clone()),
             ("pdf_page_numbers", flag(self.pdf_page_numbers)),
             ("typography_homogeneous", flag(self.typography_homogeneous)),
@@ -156,6 +160,7 @@ impl RenderDefaults {
             "html_font_format" => {
                 choice(&["woff1", "woff2", "ttf"]).map(|v| self.html_font_format = v)
             }
+            "font_embedding" => choice(&["subset", "full"]).map(|v| self.font_embedding = v),
             "microtype" => choice(&["off", "protrusion", "expansion"]).map(|v| self.microtype = v),
             "pdf_baseline_grid_pt" => page::parse_baseline_grid(value)
                 .map(|grid| {
@@ -181,6 +186,7 @@ impl RenderDefaults {
                 "toc_depth" => "3",
                 "font_scale" => "md",
                 "html_font_format" => "woff1",
+                "font_embedding" => "subset",
                 "microtype" => "off",
                 "pdf_baseline_grid_pt" => "0",
                 "toc"

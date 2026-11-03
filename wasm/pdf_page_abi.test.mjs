@@ -8,7 +8,7 @@ import test from "node:test";
 // Execute the exact public wrapper with only the generated WASM binding doubled.
 // This tests ABI selection, argument order and ownership, not native PDF output.
 async function fixture({ pageBinding = true, blocked = false, runningBinding = true, imageBinding = true,
-  typographyBindings = true, gridBinding = true, strictTokens = true } = {}) {
+  typographyBindings = true, gridBinding = true, strictTokens = true, fullFonts = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-pdf-page-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
@@ -48,7 +48,7 @@ async function fixture({ pageBinding = true, blocked = false, runningBinding = t
     ${gridBinding ? 'Object.defineProperty(renderPdfConfiguredGrid, "length", { value: 37 });' : ""}
     // Model the explicit parameter counts in generated wasm-bindgen glue.
     Object.defineProperty(renderPdfConfiguredMulti, "length", { value: ${typographyBindings ? 28 : 27} });
-    Object.defineProperty(renderHtmlConfiguredAdvanced, "length", { value: ${typographyBindings ? 20 : 19} });
+    Object.defineProperty(renderHtmlConfiguredAdvanced, "length", { value: ${typographyBindings ? (fullFonts ? 21 : 20) : 19} });
     ${pageBinding ? `Object.defineProperty(renderPdfConfiguredPage, "length", { value: ${typographyBindings ? 29 : 28} });` : ""}
     ${runningBinding ? `Object.defineProperty(renderPdfConfiguredRunning, "length", { value: ${typographyBindings ? 33 : 32} });` : ""}
     ${imageBinding ? `Object.defineProperty(renderPdfConfiguredRunningImages, "length", { value: ${typographyBindings ? 36 : 35} });` : ""}
@@ -424,4 +424,35 @@ test("invalid grids and missing grid bindings reject before asset access or WASM
   await old.api.renderPdf("default", { baselineGridPt: 0 });
   assert.equal(old.bindings.calls[0].kind, "legacy");
   assert.equal(old.bindings.calls[0].args.length, 27);
+});
+
+
+test("complete HTML fonts occupy an additive slot without changing subset calls", async () => {
+  const { api, bindings } = await fixture({ blocked: true });
+  const font = new Uint8Array([9, 1, 2, 8]);
+  const options = { fontEmbedding: "full", fontAssets: [{ slot: "body-regular", bytes: font.subarray(1, 3) }] };
+  const pending = api.renderHtml("Typography", options);
+  options.fontEmbedding = "subset"; font.fill(7);
+  bindings.finishInit(); await pending;
+  assert.equal(bindings.calls[0].args.length, 21);
+  assert.equal(bindings.calls[0].args[19], undefined);
+  assert.equal(bindings.calls[0].args[20], "full");
+  assert.deepEqual([...bindings.calls[0].args[7]], [1, 2]);
+  await api.renderHtml("Typography");
+  const omitted = bindings.calls.at(-1).args;
+  await api.renderHtml("Typography", { fontEmbedding: "subset" });
+  assert.deepEqual(bindings.calls.at(-1).args, omitted);
+  await api.renderHtml("Typography", { fontEmbedding: "full", htmlFontFormat: "woff2" });
+  assert.deepEqual(bindings.calls.at(-1).args.slice(19), ["woff2", "full"]);
+});
+
+test("unsupported full HTML fonts and invalid policies reject before assets or init", async () => {
+  const { api, bindings } = await fixture({ fullFonts: false });
+  const options = { fontEmbedding: "full", get fontAssets() { assert.fail("asset getter reached"); } };
+  await assert.rejects(api.renderHtml("Typography", options), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  for (const fontEmbedding of [null, "FULL", "guess", 1, true, {}])
+    await assert.rejects(api.renderHtml("Typography", { fontEmbedding, get fontAssets() { assert.fail("asset getter reached"); } }), { code: "INVALID_OPTIONS" });
+  assert.equal(bindings.initCount, 0); assert.equal(bindings.calls.length, 0);
+  await api.renderHtml("Typography", { fontEmbedding: "subset" });
+  assert.equal(bindings.calls[0].args.length, 19);
 });

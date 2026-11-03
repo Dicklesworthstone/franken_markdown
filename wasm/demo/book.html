@@ -44,8 +44,8 @@ a { color: #0550ae; } :focus-visible { outline: 3px solid #bf8700; outline-offse
 <p id="library-status" role="status">Inspecting local recovery. No source has been saved automatically.</p>
 </section>
 <section aria-labelledby="import-title"><h2 id="import-title">1. Add chapters, shared sources and images</h2>
-<p>Use .md or .markdown chapters and PNG/JPEG/SVG images. Folder import retains paths beneath the selected root; other extensions are ignored and counted. Import appends atomically and refuses duplicate paths. File-picker order is not guaranteed to match reading order: arrange the list below.</p>
-<div class="grid"><div><label for="import-files">Add local Markdown or image files</label><input id="import-files" type="file" multiple accept=".md,.markdown,.png,.jpg,.jpeg,.svg"></div>
+<p>Use .md or .markdown chapters and PNG/JPEG/GIF/SVG images. Folder import retains paths beneath the selected root; other extensions are ignored and counted. Import appends atomically and refuses duplicate paths. File-picker order is not guaranteed to match reading order: arrange the list below.</p>
+<div class="grid"><div><label for="import-files">Add local Markdown or image files</label><input id="import-files" type="file" multiple accept=".md,.markdown,.png,.jpg,.jpeg,.gif,.svg"></div>
 <div><label for="import-folder">Add a folder (supported browsers)</label><input id="import-folder" type="file" webkitdirectory multiple></div></div>
 <div class="grid"><div><label for="import-includes">Add include-only UTF-8 files</label><input id="import-includes" type="file" multiple aria-describedby="include-help"></div>
 <div><label for="import-include-folder">Add an include-only source folder</label><input id="import-include-folder" type="file" webkitdirectory multiple aria-describedby="include-help"></div></div>

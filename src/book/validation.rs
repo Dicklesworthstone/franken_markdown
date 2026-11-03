@@ -592,11 +592,11 @@ fn visit_inlines<'a>(inlines: &'a [Inline], owner: usize, nav: &mut Navigation<'
             Inline::Html(html) => visit_html(html, owner, nav),
             Inline::FootnoteRef { id } => {
                 nav.references.push(Reference::Note(id, owner));
-                if let Some((&id, _)) = nav.definitions.get_key_value(id.as_str()) {
-                    if nav.seen.insert(id) {
-                        nav.order.push(id);
-                        nav.order_blocks.push(owner);
-                    }
+                if let Some((&id, _)) = nav.definitions.get_key_value(id.as_str())
+                    && nav.seen.insert(id)
+                {
+                    nav.order.push(id);
+                    nav.order_blocks.push(owner);
                 }
             }
             Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {

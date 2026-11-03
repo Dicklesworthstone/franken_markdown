@@ -5,8 +5,8 @@ const FmdFontFiles = (() => {
   const limits = Object.freeze({fileBytes: 32 * 1024 * 1024, batchBytes: 64 * 1024 * 1024});
   function capture(file) {
     if (!file || typeof file.name !== 'string' || file.name.length > 1024
-        || /[\u0000-\u001f\u007f]/u.test(file.name) || !/\.ttf$/i.test(file.name)) {
-      throw Error('Choose a local .ttf file; collections, WOFF and remote URLs are not supported');
+        || /[\u0000-\u001f\u007f]/u.test(file.name) || !/\.(?:ttf|otf)$/i.test(file.name)) {
+      throw Error('Choose a local .ttf or .otf file; collections, WOFF and remote URLs are not supported');
     }
     if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > limits.fileBytes) {
       throw Error('Each font file must contain 1 byte through 32 MiB');
@@ -75,7 +75,7 @@ function fmdInstallDocumentFonts(doc = document) {
   dialog.style.cssText = 'width:min(92vw,48rem);max-height:85vh;overflow:auto;box-sizing:border-box;margin:auto;padding:24px;border:1px solid var(--border-color,#aaa);border-radius:8px;background:var(--bg-primary,#fff);color:var(--fg-primary,#222)';
   const form = make('form', undefined, dialog); form.noValidate = true;
   make('h2', 'Document fonts', form).id = 'fmd-fonts-title';
-  make('p', 'Choose local TrueType (.ttf) files for the five native font slots. Apply validates the entire batch in a background worker before changing the preview or saved fonts. Source and document settings stay unchanged.', form).id = 'fmd-fonts-help';
+  make('p', 'Choose local TrueType (.ttf) or OpenType (.otf) files for the five native font slots. Apply validates the entire batch in a background worker before changing the preview or saved fonts. Source and document settings stay unchanged.', form).id = 'fmd-fonts-help';
   make('p', '32 MiB per file; 64 MiB per selected batch. Save HTML retains embedded fonts; Save Markdown does not. Use only fonts you have permission to embed. Blank weight uses the native default; pins are integers from 1 to 1000.', form);
   const slots = [['body-regular', 'Body regular'], ['body-bold', 'Body bold'], ['body-italic', 'Body italic'],
     ['body-bold-italic', 'Body bold italic'], ['mono-regular', 'Code / monospace']];
@@ -91,11 +91,11 @@ function fmdInstallDocumentFonts(doc = document) {
       return input;
     };
     const action = label('Action', 'select', 'action');
-    for (const [value, text] of [['keep', 'Keep current font'], ['file', 'Replace with local .ttf'],
+    for (const [value, text] of [['keep', 'Keep current font'], ['file', 'Replace with local font'],
       ['weight', 'Change embedded font weight pin'], ['clear', 'Use native default']]) {
       const option = make('option', text, action); option.value = value;
     }
-    const file = label('Local font file', 'input', 'file'); file.type = 'file'; file.accept = '.ttf,font/ttf';
+    const file = label('Local font file', 'input', 'file'); file.type = 'file'; file.accept = '.ttf,.otf,font/ttf,font/otf';
     const weight = label('Weight pin (blank = native default)', 'input', 'weight');
     weight.type = 'number'; weight.min = '1'; weight.max = '1000'; weight.step = '1'; weight.autocomplete = 'off';
     return {slot, action, file, weight, info};
@@ -172,7 +172,7 @@ function fmdInstallDocumentFonts(doc = document) {
       if (value && (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 1000)) throw Error('Weight pins must be integers from 1 through 1000, or blank');
       const patch = {slot: entry.slot, weight: value ? Number(value) : undefined};
       if (entry.action === 'file') {
-        if (entry.count !== 1) throw Error('Choose exactly one local .ttf file for each replacement slot');
+        if (entry.count !== 1) throw Error('Choose exactly one local .ttf or .otf file for each replacement slot');
         patch.input = FmdFontFiles.capture(entry.file); total += patch.input.size;
         if (total > FmdFontFiles.limits.batchBytes) throw Error('Selected font files exceed the 64 MiB batch limit');
       } else if (!operation.fonts.find(font => font.slot === entry.slot)?.bytes) {

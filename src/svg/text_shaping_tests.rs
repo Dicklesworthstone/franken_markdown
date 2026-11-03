@@ -226,6 +226,22 @@ fn actual_fallback_faces_and_missing_character_reporting_are_preserved() {
 }
 
 #[test]
+fn bundled_cjk_face_is_parsed_only_when_a_cjk_character_resolves() {
+    let poster = poster();
+    let _ = words(&poster, "fi∑ – plain \u{10ffff}", 100.0);
+    assert!(
+        poster.cjk.get().is_none(),
+        "a poster without CJK text parsed the CJK face"
+    );
+    let _ = words(&poster, "中文", 100.0);
+    let face_compiled_in = cfg!(feature = "cjk-face");
+    assert_eq!(
+        poster.cjk.get().is_some_and(Option::is_some),
+        face_compiled_in
+    );
+}
+
+#[test]
 fn zero_advance_marks_stay_with_their_base_during_emergency_wrapping() {
     let poster = poster();
     let source = "a\u{0301}b";

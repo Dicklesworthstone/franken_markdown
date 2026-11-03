@@ -255,12 +255,11 @@ fn request_resolving<'a>(
         owner,
     };
     let Some(token) = token else {
-        if !completing {
-            if let Some(destination) =
+        if !completing
+            && let Some(destination) =
                 references::destination(source, span, offset, &original, owner)?
-            {
-                return definition_source.resolve(&destination, &resolve);
-            }
+        {
+            return definition_source.resolve(&destination, &resolve);
         }
         return Ok(empty(completing));
     };

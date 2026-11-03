@@ -1873,11 +1873,11 @@ impl<'s> Parser<'s> {
             }
         };
         // LaTeX ignores the empty row a trailing \\ would create.
-        if let Some(last) = rows.last() {
-            if last.len() == 1 && matches!(&last[0].kind, NodeKind::List(items) if items.is_empty())
-            {
-                rows.pop();
-            }
+        if let Some(last) = rows.last()
+            && last.len() == 1
+            && matches!(&last[0].kind, NodeKind::List(items) if items.is_empty())
+        {
+            rows.pop();
         }
         // The end token's span is the \end control word; extend to cover the
         // trailing name group if the source has one.
@@ -1939,10 +1939,10 @@ impl<'s> Parser<'s> {
             }
         };
         // LaTeX ignores the empty line a trailing \\ would create.
-        if let Some(last) = lines.last() {
-            if matches!(&last.kind, NodeKind::List(items) if items.is_empty()) {
-                lines.pop();
-            }
+        if let Some(last) = lines.last()
+            && matches!(&last.kind, NodeKind::List(items) if items.is_empty())
+        {
+            lines.pop();
         }
         let full_end = self
             .toks
@@ -2006,12 +2006,11 @@ impl<'s> Parser<'s> {
                 };
                 arg_span = open.union(close);
                 // LaTeX ignores the empty row a trailing \\ would create.
-                if let Some(last) = rows.last() {
-                    if last.len() == 1
-                        && matches!(&last[0].kind, NodeKind::List(items) if items.is_empty())
-                    {
-                        rows.pop();
-                    }
+                if let Some(last) = rows.last()
+                    && last.len() == 1
+                    && matches!(&last[0].kind, NodeKind::List(items) if items.is_empty())
+                {
+                    rows.pop();
                 }
             }
             // End of input: the argument lives in a later piece (fragment

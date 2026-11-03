@@ -139,13 +139,13 @@ fn prepare_edits(
     let mut changed = false;
     for &index in &order {
         let edit = edits[index];
-        if let Some(before) = previous {
-            if edit.span.start < edits[before].span.end {
-                return Err(FlowEditBatchError::OverlappingEdits {
-                    first: before,
-                    second: index,
-                });
-            }
+        if let Some(before) = previous
+            && edit.span.start < edits[before].span.end
+        {
+            return Err(FlowEditBatchError::OverlappingEdits {
+                first: before,
+                second: index,
+            });
         }
         removed = removed.checked_add(edit.span.len()).ok_or_else(budget)?;
         added = added

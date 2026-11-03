@@ -129,6 +129,9 @@ pub fn layout_to_display(
 
         let span = source_offset_span(source_offset, glyph.span.start, glyph.span.end);
         let text_run = DisplayTextRun {
+            fill: None,
+            baseline_y: None,
+            math_fallback: None,
             bounds: glyph_bounds(dx, dy, glyph.ch, size),
             text: glyph.ch.to_string(),
             font_run: None, // host supplies resolved font runs
@@ -206,30 +209,31 @@ pub fn extract_math_spans(source: &str) -> Vec<(String, usize)> {
     while pos < len {
         if let Some(&b'$') = bytes.get(pos) {
             // Display math: $$...$$
-            if pos + 1 < len && bytes.get(pos + 1) == Some(&b'$') {
-                if let Some(rest) = source.get(pos + 2..) {
-                    if let Some(end) = rest.find("$$") {
-                        if let Some(inner) = rest.get(..end) {
-                            if !inner.is_empty() {
-                                out.push((inner.to_owned(), pos + 2));
-                            }
-                        }
-                        pos = pos + 2 + end + 2;
-                        continue;
-                    }
+            if pos + 1 < len
+                && bytes.get(pos + 1) == Some(&b'$')
+                && let Some(rest) = source.get(pos + 2..)
+                && let Some(end) = rest.find("$$")
+            {
+                if let Some(inner) = rest.get(..end)
+                    && !inner.is_empty()
+                {
+                    out.push((inner.to_owned(), pos + 2));
                 }
+                pos = pos + 2 + end + 2;
+                continue;
             }
             // Inline math: $...$ (not $$)
-            if let Some(rest) = source.get(pos + 1..) {
-                if let Some(end) = rest.find('$') {
-                    if let Some(inner) = rest.get(..end) {
-                        if !inner.is_empty() && !inner.contains('$') {
-                            out.push((inner.to_owned(), pos + 1));
-                        }
-                    }
-                    pos = pos + 1 + end + 1;
-                    continue;
+            if let Some(rest) = source.get(pos + 1..)
+                && let Some(end) = rest.find('$')
+            {
+                if let Some(inner) = rest.get(..end)
+                    && !inner.is_empty()
+                    && !inner.contains('$')
+                {
+                    out.push((inner.to_owned(), pos + 1));
                 }
+                pos = pos + 1 + end + 1;
+                continue;
             }
         }
         pos += 1;
@@ -459,6 +463,9 @@ pub fn diagram_fallback(
     let header_len = header_text.len();
     let header_w = (header_len as f32 * font_size * 0.55).round().max(120.0);
     items.push(DisplayItem::Text(DisplayTextRun {
+        fill: None,
+        baseline_y: None,
+        math_fallback: None,
         bounds: DisplayRect {
             x: origin_x + 10.0,
             y: current_y,
@@ -490,6 +497,9 @@ pub fn diagram_fallback(
             max_line_w = line_w;
         }
         items.push(DisplayItem::Text(DisplayTextRun {
+            fill: None,
+            baseline_y: None,
+            math_fallback: None,
             bounds: DisplayRect {
                 x: origin_x + 10.0,
                 y: current_y,
@@ -761,6 +771,9 @@ fn parse_flowchart_vector(
             let tx = nx + ((node_w - text_w) * 0.5).round().max(4.0);
             let ty = ny + ((node_h - text_h) * 0.5).round().max(4.0);
             items.push(DisplayItem::Text(DisplayTextRun {
+                fill: None,
+                baseline_y: None,
+                math_fallback: None,
                 bounds: DisplayRect {
                     x: tx,
                     y: ty,
@@ -897,6 +910,9 @@ fn parse_ascii_diagram_vector(
                     }));
                 } else if !text_seg.trim().is_empty() {
                     items.push(DisplayItem::Text(DisplayTextRun {
+                        fill: None,
+                        baseline_y: None,
+                        math_fallback: None,
                         bounds: DisplayRect {
                             x,
                             y,
@@ -941,6 +957,9 @@ fn parse_ascii_diagram_vector(
                 }));
             } else if !text_seg.trim().is_empty() {
                 items.push(DisplayItem::Text(DisplayTextRun {
+                    fill: None,
+                    baseline_y: None,
+                    math_fallback: None,
                     bounds: DisplayRect {
                         x,
                         y,
@@ -979,20 +998,19 @@ fn parse_node_token(token: &str, line_offset: usize) -> Option<ParsedNode> {
         end: line_offset + trimmed.len(),
     };
 
-    if let Some(open) = trimmed.find('[') {
-        if let Some(close) = trimmed.find(']') {
-            if close > open {
-                let id = trimmed.get(..open)?.trim().to_string();
-                let label = trimmed.get(open + 1..close)?.trim().to_string();
-                if !id.is_empty() {
-                    return Some(ParsedNode {
-                        id,
-                        label,
-                        span,
-                        rank: 0,
-                    });
-                }
-            }
+    if let Some(open) = trimmed.find('[')
+        && let Some(close) = trimmed.find(']')
+        && close > open
+    {
+        let id = trimmed.get(..open)?.trim().to_string();
+        let label = trimmed.get(open + 1..close)?.trim().to_string();
+        if !id.is_empty() {
+            return Some(ParsedNode {
+                id,
+                label,
+                span,
+                rank: 0,
+            });
         }
     }
 
@@ -1043,11 +1061,11 @@ fn assign_node_ranks(nodes: &mut [ParsedNode], edges: &[ParsedEdge]) {
                 .find(|n| n.id == edge.from_id)
                 .map(|n| n.rank)
                 .unwrap_or(0);
-            if let Some(to_node) = nodes.iter_mut().find(|n| n.id == edge.to_id) {
-                if to_node.rank <= from_rank {
-                    to_node.rank = from_rank + 1;
-                    changed = true;
-                }
+            if let Some(to_node) = nodes.iter_mut().find(|n| n.id == edge.to_id)
+                && to_node.rank <= from_rank
+            {
+                to_node.rank = from_rank + 1;
+                changed = true;
             }
         }
         if !changed {

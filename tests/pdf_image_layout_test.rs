@@ -95,6 +95,60 @@ fn object_containing<'a>(text: &'a str, needle: &str) -> (usize, &'a str) {
     (number, body)
 }
 
+/// The new figure fixtures begin with a filled SVG rectangle. Inspect its
+/// actual drawing matrix and path, independently of the structure/links.
+fn painted_figure_rectangle(pdf: &[u8]) -> [f32; 4] {
+    let content = page_content(pdf);
+    let body = content.split_once("/Figure <</MCID ").unwrap().1;
+    let fields: Vec<_> = body
+        .split_once("EMC")
+        .unwrap()
+        .0
+        .split_whitespace()
+        .collect();
+    let cm = fields.iter().position(|&field| field == "cm").unwrap();
+    let re = fields.iter().position(|&field| field == "re").unwrap();
+    assert_eq!(fields[re + 1], "f", "a painted rectangle");
+    assert_eq!(
+        fields[..re].iter().filter(|&&field| field == "cm").count(),
+        1
+    );
+    let matrix: [f32; 6] = std::array::from_fn(|index| fields[cm - 6 + index].parse().unwrap());
+    let rect: [f32; 4] = std::array::from_fn(|index| fields[re - 4 + index].parse().unwrap());
+    let [a, b, c, d, e, f] = matrix;
+    let [x, y, w, h] = rect;
+    let corners = [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
+        .map(|(x, y)| (a * x + c * y + e, b * x + d * y + f));
+    [
+        corners
+            .iter()
+            .map(|point| point.0)
+            .fold(f32::INFINITY, f32::min),
+        corners
+            .iter()
+            .map(|point| point.1)
+            .fold(f32::INFINITY, f32::min),
+        corners
+            .iter()
+            .map(|point| point.0)
+            .fold(f32::NEG_INFINITY, f32::max),
+        corners
+            .iter()
+            .map(|point| point.1)
+            .fold(f32::NEG_INFINITY, f32::max),
+    ]
+}
+
+fn assert_paint_matches_box(pdf: &[u8], bbox: [f32; 4]) {
+    let painted = painted_figure_rectangle(pdf);
+    for (actual, expected) in painted.into_iter().zip(bbox) {
+        assert!(
+            (actual - expected).abs() < 0.02,
+            "actual paint {painted:?}, box {bbox:?}"
+        );
+    }
+}
+
 #[test]
 fn linked_svg_draws_a_figure_with_an_image_sized_click_target_and_tagged_owner() {
     let opts = options();
@@ -383,6 +437,165 @@ fn blockquote_bars_cover_the_complete_figure_and_its_list_marker() {
             "bar covers figure bottom: {source}"
         );
     }
+}
+
+#[test]
+fn nested_figures_fit_the_remaining_container_width() {
+    let mut opts = options();
+    opts.theme.page.size = PageSize {
+        name: "narrow-figure",
+        width_pt: 108.0,
+        height_pt: 300.0,
+    };
+    opts.theme.page.margins = PageMargins {
+        top_pt: 24.0,
+        right_pt: 24.0,
+        bottom_pt: 24.0,
+        left_pt: 24.0,
+    };
+    let source = "> > [![Architecture](figure.svg)](https://example.com/details)";
+    let pdf = render_pdf(source, &opts).unwrap();
+    let text = pdf_text(&pdf);
+    let bbox = array_after(&text, "/BBox [");
+    assert_eq!(bbox[0], 60.0, "two quote gutters remain intact");
+    assert!(bbox[2] <= 84.02, "figure overflows its measure: {bbox:?}");
+    assert_eq!(bbox, array_after(&text, "/Rect ["));
+    assert!(((bbox[2] - bbox[0]) / (bbox[3] - bbox[1]) - 4.0 / 3.0).abs() < 0.01);
+    assert_paint_matches_box(&pdf, bbox);
+    assert!(page_content(&pdf).contains("0.035 0.412 0.855 rg"));
+}
+
+#[test]
+fn tall_figures_reserve_their_caption_heading_and_grid_clearance() {
+    use franken_markdown::{BaselineGrid, PdfPaginationStrategy, render_pdf_reported};
+
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="1000"><rect width="100" height="1000" fill="blue"/></svg>"#;
+    for grid in [None, Some(BaselineGrid::from_points(12.0).unwrap())] {
+        for prefix in [
+            "",
+            "# Figure\n\n",
+            "Figure caption.\n\n",
+            "# Figure\n\nFigure caption.\n\n",
+        ] {
+            let mut opts = PdfOptions {
+                strict_pagination: true,
+                page_numbers: false,
+                image_assets: vec![PdfImageAsset::new("tall.svg", svg.to_vec())],
+                ..PdfOptions::default()
+            };
+            opts.theme.page.size = PageSize {
+                name: "short-figure",
+                width_pt: 240.0,
+                height_pt: 240.0,
+            };
+            opts.theme.page.margins = PageMargins {
+                top_pt: 24.0,
+                right_pt: 24.0,
+                bottom_pt: 24.0,
+                left_pt: 24.0,
+            };
+            opts.theme.page.baseline_grid = grid;
+            let source = format!("{prefix}[![Tall figure](tall.svg)](https://example.com/details)");
+            let report = render_pdf_reported(&source, &opts)
+                .unwrap_or_else(|error| panic!("grid={grid:?}, prefix={prefix:?}: {error}"));
+            assert_eq!(
+                report.pagination.page_breaks.strategy,
+                PdfPaginationStrategy::ExactHeight
+            );
+            let text = pdf_text(&report.bytes);
+            assert_eq!(
+                text.matches("/Type /Page ").count(),
+                1,
+                "kept content shares a page"
+            );
+            let bbox = array_after(&text, "/BBox [");
+            assert!(
+                bbox[1] >= 23.98 && bbox[3] <= 216.02,
+                "figure escapes page: {bbox:?}"
+            );
+            assert_eq!(bbox, array_after(&text, "/Rect ["));
+            assert_paint_matches_box(&report.bytes, bbox);
+            assert!(((bbox[2] - bbox[0]) / (bbox[3] - bbox[1]) - 0.1).abs() < 0.001);
+            assert!(page_content(&report.bytes).contains("0.000 0.000 1.000 rg"));
+            assert_eq!(
+                report.bytes,
+                render_pdf_document_emitted(
+                    &parse_markdown(&source),
+                    &opts,
+                    PdfEmitOptions::monolithic()
+                )
+                .unwrap(),
+            );
+        }
+    }
+}
+
+#[test]
+fn tall_display_math_fits_the_same_caption_and_grid_budget() {
+    use franken_markdown::{BaselineGrid, render_pdf_reported};
+
+    let equation = format!(
+        r"\begin{{matrix}}{}\end{{matrix}}",
+        vec!["x"; 30].join(r"\\")
+    );
+    let source = format!("# Matrix\n\nMatrix caption.\n\n$$\n{equation}\n$$");
+    let mut opts = PdfOptions {
+        strict_pagination: true,
+        page_numbers: false,
+        ..PdfOptions::default()
+    };
+    opts.theme.page.size = PageSize {
+        name: "short-formula",
+        width_pt: 240.0,
+        height_pt: 240.0,
+    };
+    opts.theme.page.margins = PageMargins {
+        top_pt: 24.0,
+        right_pt: 24.0,
+        bottom_pt: 24.0,
+        left_pt: 24.0,
+    };
+    opts.theme.page.baseline_grid = Some(BaselineGrid::from_points(12.0).unwrap());
+    let report = render_pdf_reported(&source, &opts).unwrap();
+    assert!(report.pagination.page_breaks.is_exact());
+    let text = pdf_text(&report.bytes);
+    assert_eq!(text.matches("/Type /Page ").count(), 1);
+    let bbox = array_after(&text, "/BBox [");
+    assert!(
+        bbox[1] >= 23.98 && bbox[3] <= 216.02,
+        "formula escapes page: {bbox:?}"
+    );
+    assert!(
+        ((bbox[0] + bbox[2]) * 0.5 - 120.0).abs() < 0.02,
+        "formula remains centered"
+    );
+    assert_eq!(text.matches("/S /Formula ").count(), 1);
+    assert!(text.contains(&format!("/Alt ({})", equation.replace('\\', "\\\\"))));
+    let content = page_content(&report.bytes);
+    let drawing = content
+        .split_once("/Formula <</MCID ")
+        .unwrap()
+        .1
+        .split_once("/Span <</ActualText ")
+        .unwrap()
+        .0;
+    assert_eq!(
+        drawing
+            .split_whitespace()
+            .filter(|&token| token == "f")
+            .count(),
+        30,
+        "all thirty glyph outlines survive, independent of curve/line format"
+    );
+    assert_eq!(
+        report.bytes,
+        render_pdf_document_emitted(
+            &parse_markdown(&source),
+            &opts,
+            PdfEmitOptions::monolithic()
+        )
+        .unwrap(),
+    );
 }
 
 fn png_chunk(kind: &[u8; 4], data: &[u8], png: &mut Vec<u8>) {

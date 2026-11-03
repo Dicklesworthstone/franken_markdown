@@ -118,17 +118,25 @@ closeable Canvas image. Immutable Blob snapshots prevent later writes to loader
 buffers from changing a pending decode. Shared and detached buffers are refused.
 
 Before calling a decoder, a bounded container walk accepts static PNG and 8-bit
-baseline/progressive grayscale/RGB JPEG. Dimensions, encoded bytes and aggregate
+baseline/progressive grayscale, RGB, and Adobe CMYK/YCCK JPEG. Four-component
+JPEGs require an unambiguous Adobe APP14 transform (`0` for CMYK or `2` for YCCK)
+before the first scan. Component identities, sampling, coding tables and every
+scan are checked; missing, truncated or contradictory color metadata is refused.
+Encoded bytes are retained unchanged when requested for publication.
+
+Dimensions, encoded bytes and aggregate
 reserved pixels are checked before allocation; actual decoder dimensions must
 match, allowing EXIF JPEG orientation to exchange width and height. SVG, GIF,
-WebP, animation, CMYK/lossless/arithmetic JPEG, delayed JPEG dimensions, and PNG
+WebP, animation, unmarked four-component/lossless/arithmetic JPEG, delayed JPEG dimensions, and PNG
 compressed ancillary metadata (`iCCP`, `zTXt`, `iTXt`) are explicitly refused.
 The conservative PNG metadata restriction avoids decompression independent of
 image pixel bounds. Re-encode such input as plain PNG or supported JPEG before
 loading; extensions and a caller-supplied MIME label never override admission.
 PNG chunk rules follow the W3C PNG specification; this walker is admission, not
 CRC/entropy validation. Final compressed-data validation is the browser codec's
-responsibility. Codec vulnerabilities are not sandboxed by JavaScript limits.
+responsibility. A browser decode failure reports `INVALID_IMAGE` and leaves the
+image request unresolved; it does not discard source or consume a request.
+Codec vulnerabilities are not sandboxed by JavaScript limits.
 
 Defaults (only lower values are accepted): 256 assets/attempts per generation,
 4 concurrent loads, 8 MiB encoded bytes per image, 16 MiB in-flight immutable
@@ -140,14 +148,17 @@ scratch buffers. The host must limit its own I/O *before* returning bytes.
 
 ## Verification
 
-`node --test wasm/flow_assets.test.mjs wasm/flow_assets_batching.test.mjs wasm/flow_assets_reflow.test.mjs wasm/flow_raster.test.mjs` exercises the
+`node --test wasm/flow_assets.test.mjs wasm/flow_assets_batching.test.mjs wasm/flow_assets_reflow.test.mjs wasm/flow_raster.test.mjs wasm/flow_raster_cmyk.test.mjs` exercises the
 production admission/ownership code with explicitly synthetic containers,
-bitmaps, and session doubles, including an asynchronous session. It does not
+bitmaps, and session doubles, including an asynchronous session. The CMYK/YCCK
+suite also uses the real baseline/progressive JPEG fixtures shared with PDF
+tests and checks every truncated prefix and malformed color metadata. It does not
 claim real Rust/WASM or browser decoding.
 
 `python wasm/tests/run_flow_assets.py --chromium /usr/bin/chromium` runs actual
 PNG/JPEG decoding, oriented dimensions, drawing and pixel assertions in Chromium,
-without network or a server. Its session is explicitly synthetic; Rust layout
+including all six color patches in the four CMYK/YCCK fixtures, without network
+or a server. Its session is explicitly synthetic; Rust layout
 and generated-WASM integration still require the package gates on a build host.
 
 ## Local-image live preview

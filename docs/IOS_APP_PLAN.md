@@ -61,6 +61,55 @@ HTML preview remains inside the render process and does not cross the Swift brid
 
 Swift assembles chunks in order with a maximum document/export budget, writes to an application-temporary URL, validates byte length, and publishes the file only after completion. This avoids a single giant property-list message and gives export a real, measurable progress fraction.
 
+### 3.4 Large-document responsiveness
+
+The native editor keeps the complete source in its text storage. Syntax
+decoration is limited to a visible window of at most 32,768 UTF-16 units and
+160 logical lines; scrolling and current-line painting request visible layout
+only. A cancellable utility task builds the full line/fence index for each
+source revision, so line numbers and fence context do not require rescanning
+the document on every frame. Decoration changes attributes in place and keeps
+character edits, selection, undo, and marked-text composition owned by UIKit.
+Inline code, explicit links, and automatic links use linear UTF-16 scans
+rather than backtracking expressions, including unmatched delimiter runs.
+A protection bitmap tracks characters owned by earlier token classes, so
+thousands of small links do not cause all-pairs overlap checks. A clipped
+viewport boundary retains the following line's fence context.
+
+Source statistics and the native outline are computed off the main actor,
+cached by revision, and discarded when superseded. Outline rows are created
+lazily. Preview requests have one active render and one newest pending
+revision. HTML stays inside WebKit until Swift acknowledges that its source
+and settings still belong to the current request. If iOS terminates the web
+content process, the source remains editable and Render can restart the
+renderer without an automatic retry loop.
+
+These are presentation-work bounds, not source truncation or export limits.
+The existing import, recovery, and export size policies remain separate.
+The ios_large_documents.test.mjs suite exercises complete 750 KiB and
+1.5 MiB documents against the actual tracked Apple WASM bundle; the companion
+preview tests exercise staging, stale results, and full export payloads.
+Native XCTest coverage includes UTF-16 indexing and cancellation, and a Debug
+UI-test fixture opens 750 KiB and 2 MiB files through the real source loader
+before scrolling and editing. Those UIKit/UI tests require an Apple runtime;
+Node results do not establish iPhone rendering or scrolling performance.
+
+The tracked native renderer now bundles the complete published v0.6.0 package,
+including its JavaScript module dependencies. RendererManifest.json records
+the release archive URL, its verified SHA-256, and the installed runtime hashes.
+This is the released engine, not a rebuild of later Rust changes on main.
+The native scheme serves both .js and .mjs as JavaScript, and book-site export
+filters PDF-only options while retaining the existing safe HTML policy.
+The package API tests exercise the real bridge, wrapper, glue, and WASM for
+every native export and analysis operation.
+
+A controlled host comparison of a roughly 750 KiB paragraph containing repeated
+unclosed angle links took 6.879 seconds with the former 0.4.2 bundle and
+43.8 milliseconds with the released 0.6.0 bundle; both retained the source tail.
+Ordinary prose in the same comparison took 47.4 and 58.0 milliseconds,
+respectively. These measurements isolate an engine regression case; they are
+not iPhone UI measurements or a universal throughput claim.
+
 ## 4. Native document model
 
 `MarkdownDocument` stores UTF-8 Markdown plus lightweight per-document presentation settings. The source file remains plain Markdown; app-only settings are stored in scene/document state, not injected into the user’s text.

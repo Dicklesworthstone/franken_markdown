@@ -16,21 +16,21 @@ auditable core.**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
-# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.6.0 franken_markdown
+# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.7.0 franken_markdown
 ```
 
 </div>
 
-> **Release channels.** As checked on **2026-10-24**:
+> **Release channels** at the 0.7.0 release (npm checked against the registry on **2026-11-02**):
 >
 > | Channel | Surface | Version | Where to verify |
 > |---|---|---|---|
-> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.6.0`** | `Cargo.toml` `version` field |
-> | **GitHub Release** | `fmd` CLI archives (5 platforms, `.sha256` sidecars) | **`v0.6.0`** (2026-10-14) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.6.0 |
-> | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.3.4, `fmd-math` 0.2.0) | **`0.6.0`** | https://crates.io/crates/franken_markdown |
+> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.7.0`** | `Cargo.toml` `version` field |
+> | **GitHub Release** | `fmd` CLI archives (5 platforms, `.sha256` sidecars) | **`v0.7.0`** (2026-11-03) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.7.0 |
+> | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.4.0, `fmd-math` 0.3.0) | **`0.7.0`** | https://crates.io/crates/franken_markdown |
 > | **npm** | `@franken-suite/franken-markdown` browser/WASM package | **`0.5.0`** | https://www.npmjs.com/package/@franken-suite/franken-markdown |
 >
-> The latest tagged release is **v0.6.0**, available on GitHub Releases and crates.io. It adds book editions published in one pass (PDF, EPUB, site), retained book sessions and publishing profiles, page-bottom PDF footnotes, inline math and images in PDF, Mermaid figures, emoji, and much closer TeX spacing in fmd-math; see CHANGELOG.md for breaking changes. npm currently serves **0.5.0**; a **0.6.0 npm tarball** is attached to the GitHub release. Build the in-tree source with `cargo install --path .` or `cargo build --release --bin fmd`. Changes on `main` require their own qualification; release artifacts do not prove the current checkout. See the [current assessment and remaining work](docs/planning/REALITY_CHECK_BRIDGE_PLAN.md).
+> The latest tagged release is **v0.7.0**, available on GitHub Releases and crates.io. It needs Rust 1.88 or newer to build, and it changes the public Rust API of all three crates and some default output; see CHANGELOG.md for what changed, including the breaking changes. npm still serves **0.5.0**, and no browser (WASM) tarball is attached to the 0.7.0 GitHub release. Build the in-tree source with `cargo install --path .` or `cargo build --release --bin fmd`. Changes on `main` require their own qualification; release artifacts do not prove the current checkout. See the [current assessment and remaining work](docs/planning/REALITY_CHECK_BRIDGE_PLAN.md).
 > The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
@@ -98,18 +98,18 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Area | Current functionality |
 |---|---|
 | Parser and AST | Clean-room block and inline parser with GFM tables, task lists, fenced code, links, images, source spans, recoverable diagnostics, GitHub-style sanitizing of raw HTML by default (an allowlisted subset stays markup in HTML and becomes native nodes in PDF/SVG/EPUB; unknown tags stay escaped), and a ratcheted CommonMark 0.31.2 conformance floor |
-| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, GitHub emoji shortcodes (`:rocket:` becomes 🚀), shared syntax highlighting, and optional stylesheet replacement |
+| HTML output | Self-contained preview document with inlined CSS, deterministic embedded TTF font subsets, local PNG/SVG/JPEG/GIF images embedded as data URIs for file-input renders, dark-mode support, responsive tables, polished blockquotes/code blocks, safe escaping, GitHub emoji shortcodes (`:rocket:` becomes 🚀), shared syntax highlighting, and optional stylesheet replacement |
 | PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, UAX #14 CJK line breaking, body justification, selectable text, hierarchical heading bookmarks, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
 | Financial tables | Opt-in `---.` decimal columns align mixed-precision amounts using measured fonts; plain `---` and `===` marker rows add single/double rules beneath totals across PDF, HTML and SVG. Values, styles and links remain intact; see [financial tables](docs/FINANCIAL_TABLES.md) |
 | PDF footnotes | Page-bottom notes under a short rule with linked superscript marks, never separated from the line that cites them; see [PDF footnotes](docs/PDF_FOOTNOTES.md) |
 | PDF display mathematics | The shared math engine draws native vector equations from dollar blocks and math fences, with measured fitting, theme colors, `/Formula` tags, extractable TeX source, and explicit fallback warnings; see [PDF mathematics](docs/PDF_MATHEMATICS.md) |
 | Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, Markdown, and Mermaid/MMD. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
-| Mermaid diagrams | `graph`/`flowchart` and `sequenceDiagram` fences compile with the clean-room diagram compiler into vector figures in HTML, PDF (tagged `/Figure`) and SVG posters; other Mermaid types (pie, class, gantt, ...) stay highlighted source |
+| Mermaid diagrams | `graph`/`flowchart`, `sequenceDiagram`, and `pie` fences compile with the clean-room diagram compiler into vector figures in HTML, PDF (tagged `/Figure`), SVG posters and EPUB, plus native paths and bundled-font labels in browser Flow. Pie charts support titles, exact decimal values, legends and `showData`; unsupported syntax retains its complete source. See [diagram syntax](docs/DIAGRAMS.md) |
 | ASCII diagrams | Diagram-shaped fences retain row geometry in PDF and scale long rows down when needed, so flow diagrams do not collapse into wrapped prose |
 | Mermaid diagrams | `examples/showcase.md` includes highlighted Mermaid source plus a checked-in SVG generated from `examples/showcase-mermaid.mmd` by frankenmermaid. HTML and PDF can include the same diagram without Mermaid.js during render |
-| PNG, SVG, and JPEG assets | File-input HTML/PDF renders auto-load relative local PNG/SVG/JPEG destinations, and PDF renders fetch remote http(s) images at render time (timeout + size cap, `--no-remote-images` to opt out, clean alt-text fallback offline). HTML embeds supported assets as data URIs; PDF draws PNG/SVG directly and embeds JPEG bytes losslessly via `/DCTDecode`. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
-| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, missing `url(...)` paint fallback alpha, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG/JPEG data URIs, and current frankenmermaid output |
+| PNG, SVG, JPEG and GIF assets | File-input HTML/PDF renders auto-load relative local PNG/SVG/JPEG/GIF destinations, and PDF renders fetch remote http(s) images at render time (timeout + size cap, `--no-remote-images` to opt out, clean alt-text fallback offline). HTML embeds supported assets as data URIs; PDF draws PNG/SVG directly, decodes the first GIF frame, and embeds JPEG bytes losslessly via `/DCTDecode`. Hosts can also provide explicit image bytes through `--pdf-image` or the library API |
+| Vector SVG PDF drawing | Supported SVGs become native PDF drawing operators: paths, shapes, text with baseline-shift/textPath handling, transforms, gradients, spread modes, patterns and pattern strokes, masks, clips, marker view boxes/orientation/units, marker-child `paint-order`, object-bounding-box clip/mask units, opacity, `hwb()` colors, `color-mix()` transparency, missing `url(...)` paint fallback alpha, drop shadows, CSS variables/selectors, `use`/symbol reuse, embedded PNG/JPEG/GIF data URIs, and current frankenmermaid output |
 | Library API | `parse_markdown`, `parse_markdown_spanned`, `render_html_document`, and `render_pdf_document` share one AST. Hosts supply fonts and image assets as bytes; the core never reads files or fetches URLs |
 | CLI contract | `fmd README.md` works as the first guessed command. `capabilities --json`, `doctor --json`, `robot-docs guide`, `--robot-triage`, stable exit codes, input/image byte limits, JSON render status, and structured render warnings are built for humans and agents |
 | Native safety | HTML, PDF, config, and batch outputs are staged where applicable. `--to both` rolls back sibling outputs on later failure, and the CLI refuses to overwrite the input file |
@@ -117,7 +117,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Config | Dependency-free `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults. `--no-config` gives reproducible config-free runs |
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, source-aware recursive includes, and protection of shared sources and assets; see the [batch contract](docs/BATCH_ORCHESTRATION.md) |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
-| Releases | GitHub v0.6.0 archives for Linux (x86_64 + ARM64), macOS (Intel + Apple Silicon), and Windows x86_64 with checksum sidecars; npm latest is `0.5.0`; crates.io lists `franken_markdown` 0.6.0 with `fmd-font` 0.3.4 and `fmd-math` 0.2.0. Each artifact and platform needs its own execution evidence |
+| Releases | GitHub v0.7.0 archives for Linux (x86_64 + ARM64), macOS (Intel + Apple Silicon), and Windows x86_64 with checksum sidecars; npm latest is `0.5.0`; crates.io lists `franken_markdown` 0.7.0 with `fmd-font` 0.4.0 and `fmd-math` 0.3.0. Each artifact and platform needs its own execution evidence |
 
 ### Reusable font mechanics
 
@@ -128,6 +128,54 @@ coverage, examples, and independent FontTools/HarfBuzz verification. These
 APIs are available to consumers without changing the existing Markdown/PDF
 layout path or adding runtime dependencies.
 
+### CJK text rendering
+
+The default native build includes a Noto Sans SC fallback with **28,215 mapped
+characters**: the pinned source's BMP Han ideographs, hiragana, katakana, CJK
+punctuation, and fullwidth forms. PDF and SVG draw real outlines while retaining
+the selected Latin body/code faces and the independent emoji fallback. PDF
+embeds only the used glyphs; HTML and EPUB include a document-specific CJK
+subset so these characters do not require an installed reading-system font.
+`--font-embedding full` retains the complete enabled fallback when the document
+uses CJK, and styled editable HTML retains it for text entered later.
+
+The optional `cjk-face` Cargo feature is enabled by `cli`. Lean libraries and
+browser distributions can opt in explicitly:
+
+```bash
+cargo build --no-default-features --features cjk-face
+cargo build --target wasm32-unknown-unknown --no-default-features --features wasm-full,cjk-face
+```
+
+The standard browser package leaves this broad font out of its size budget.
+The fallback uses Simplified-Chinese glyph forms and horizontal text layout;
+it does not supply Korean Hangul, supplementary-plane Han, vertical layout,
+or locale-specific Japanese glyph substitutions. Unsupported characters still
+produce `missing_glyphs` diagnostics in PDF/SVG. See the [font source and exact
+repertoire](fmd-font/fonts/noto-sans-cjk/README.md) for the pinned license,
+reproduction command, and independent geometry check.
+
+### Emoji in browser Flow
+
+Flow can now use the existing optional `emoji-face` font to draw real monochrome
+emoji outlines in headings, prose, lists, tables, code and beside mathematics.
+Build a browser package with `--features wasm-flow,emoji-face`; ordinary lean
+packages retain their smaller font set. Standardized presentation pairs such
+as `⚠️` retain both source characters in one measured cluster. ZWJ sequences,
+skin tones, flags and keycaps still require a broader host shaper. See
+[the supported emoji profile](docs/FLOW_EMOJI_TEXT.md).
+
+### Diagrams in browser Flow
+
+Flow now draws supported Mermaid flowcharts, sequence diagrams and pie charts
+with the same native compiler used by the publication outputs. Paths preserve
+arrows, curves, thick/dashed strokes and colors; labels use actual bundled-font
+outlines. Figures fit their measured lane after reflow, and the semantic reader
+retains exact selectable diagram source. Unsupported syntax shows a visible
+explanation and the complete source. This is included in every `wasm-flow`
+build; rebuild the generated package with its matching browser modules.
+See [Flow diagrams](docs/FLOW_DIAGRAMS.md) for the API, limits and browser checks.
+
 ### Mainline Highlights
 
 | Area | Result on `main` |
@@ -136,7 +184,7 @@ layout path or adding runtime dependencies.
 | Table quality | The allocator measures content ranges and spends column width where it reduces wrapping. Very wide PDF tables split into readable column panels, repeating the first column when space permits and retaining every source column, links, financial footing rules, and accessible header associations |
 | Syntax highlighting | Rust, Python, JavaScript/TypeScript, JSON/JSONC, Bash/shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS/SCSS/Sass, Markdown, and Mermaid/MMD use the same clean-room highlighting model in HTML and PDF |
 | Diagram support | ASCII diagrams and frankenmermaid-generated SVGs are now first-class documentation assets in the PDF path instead of screenshots or browser-only fallbacks |
-| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `hwb()` colors, `color-mix()` alpha, missing paint-server fallback alpha, and embedded PNG/JPEG data URIs |
+| Vector SVG coverage | The PDF path draws current frankenmermaid showcase output as vector content, including markers, CSS variables, masks, clips, gradients, pattern strokes, drop shadows, baseline-shift/textPath text, `paint-order`, `hwb()` colors, `color-mix()` alpha, missing paint-server fallback alpha, and embedded PNG/JPEG/GIF data URIs |
 | Agent and CI friendliness | JSON capabilities, JSON doctor output, robot docs, stable exit codes, `SOURCE_DATE_EPOCH`, staged writes, and no-default/WASM gates make the tool easy to script and verify |
 | Performance work | Parser, HTML, PDF layout/writing, font subsetting, compression, SVG drawing, and batch orchestration hot paths have been profiled and optimized in behavior-preserving passes with golden-output checks |
 
@@ -436,8 +484,8 @@ cargo build --release --bin fmd
 cargo install --path .
 fmd --help
 
-# Or install the published crates.io package. As checked on October 14, 2026, this
-# installs 0.6.0 (fmd-font 0.3.4 and fmd-math 0.2.0 are on crates.io too).
+# Or install the published crates.io package (Rust 1.88 or newer). Since the 0.7.0
+# release this installs 0.7.0 (fmd-font 0.4.0 and fmd-math 0.3.0 are on crates.io too).
 cargo install franken_markdown
 ```
 
@@ -446,7 +494,7 @@ shared entrypoint; type whichever you like.
 
 ### Prebuilt binaries and browser package sources
 
-The v0.6.0 release includes archives for Linux x86_64 and ARM64,
+The v0.7.0 release includes archives for Linux x86_64 and ARM64,
 macOS Intel and Apple Silicon, and Windows x86_64. Release builds and
 publication orchestration use DSR exclusively; GitHub Actions is prohibited.
 Native archives are built and smoke-tested per platform before they are
@@ -462,8 +510,9 @@ tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 The browser/WASM package is available on npm as
 `@franken-suite/franken-markdown`
 (`npm install @franken-suite/franken-markdown`). As checked against the registry on
-October 24, 2026, version `0.5.0` is published. The `0.6.0` package tarball
-is attached to the [GitHub release](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.6.0).
+November 2, 2026, version `0.5.0` is published. No browser package tarball is attached
+to the v0.7.0 release; the `0.6.0` package tarball is attached to the
+[v0.6.0 GitHub release](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.6.0).
 Size budgets, generated-WASM smoke tests and native/WASM parity must be checked
 against the specific package being shipped; passing JavaScript adapter tests
 alone does not establish those results for the current source.
@@ -552,7 +601,8 @@ fmd --text '<markdown>' --out out.html
 | `--to html\|pdf\|both\|epub\|svg` | Output format(s). Default `html`. `epub` writes a single-file EPUB 3 e-book and `svg` a single-page vector poster (both require a real `--out` path like PDF) |
 | `--out, -o <path>` | Output path. HTML with no `--out` (or `--out -`) writes to stdout. PDF and `--to both` always write files |
 | `--font sans\|serif` | Override the body font for this render |
-| `--html-font-format woff1\|woff2\|ttf` | Font container for embedded HTML subsets (default `woff1`, ~18% smaller documents; `woff2` uses clean-room Brotli for ~22–30% savings; `ttf` keeps raw TrueType data URLs) |
+| `--html-font-format woff1\|woff2\|ttf` | Container for embedded HTML fonts: `woff1` (default), `woff2` (clean-room Brotli), or `ttf` (raw TrueType/CFF OpenType data URLs). Independent of the subset/full policy. |
+| `--font-embedding subset\|full` | HTML/EPUB font policy: compact subsets by default; `full` preserves the complete character map and OpenType shaping tables for ligatures, kerning and combining marks, with larger output. Also available for book publishing. |
 | `--microtype off\|protrusion\|expansion` | Microtypography for justified PDF body paragraphs: `protrusion` hangs punctuation into the margin and adds ±1.5% glyph expansion; `expansion` is glyph expansion alone. Default `off` keeps output byte-identical |
 | `--typography-homogeneous`, `--typography-antiriver`, `--typography-pareto` | Opt-in line-breaking refinements: gradual adjacent-line spacing demerits, whitespace-river penalties, and Pareto-front Knuth-Plass search |
 | `--pdf-optimal-pagination` | Choose page breaks with a document-wide dynamic program (Plass) instead of greedy page filling |
@@ -562,7 +612,7 @@ fmd --text '<markdown>' --out out.html
 | `--font-scale <xs\|sm\|md\|lg\|xl\|2xl\|FLOAT\|PERCENT>` | Uniform typographic scale for HTML and PDF (alias `--type-size`) |
 | `--fit-to-pages <N>` | Shrink type and spacing until the PDF fits in `N` pages (alias `--target-pages`) |
 | `--pdf-base-font-size`, `--pdf-heading-scale`, `--pdf-table-font-size` | Fine-grained PDF type sizes |
-| `--pdf-font SLOT=PATH`, `--pdf-font-weight` | Host TrueType faces for PDF/HTML and variable-font weight pins |
+| `--pdf-font SLOT=PATH`, `--pdf-font-weight` | Host TrueType/CFF1 OpenType faces for HTML/PDF/SVG/EPUB and variable-font weight pins |
 | `--pdf-a 2b`, `--pdf-a-strict` | Emit PDF/A-2b identification (XMP + sRGB OutputIntent); `--pdf-a-strict` fails closed on constructs PDF/A-2b cannot carry |
 | `--lang <tag>` | Document language for hyphenation patterns and the HTML `lang` attribute (`en`, `de`, `fr`, `es`, `nl`, ...) |
 | `--profile gfm-plus\|commonmark-gfm` | Markdown dialect. Default `gfm-plus` adds definition lists and other extensions; `commonmark-gfm` renders the GitHub dialect only |
@@ -576,8 +626,8 @@ fmd --text '<markdown>' --out out.html
 | `--svg-width-pt <POINTS>` | SVG poster width (144..=14400 points; default 612). SVG output draws the same auto-loaded, `--pdf-image` and remote images and `--pdf-font` faces as PDF |
 | `--pdf-page-numbers` | Centered page number in the PDF bottom margin (sugar for `--pdf-footer-center '{page}'`) |
 | `--pdf-header-left\|center\|right <text>`, `--pdf-footer-left\|center\|right <text>` | Opt-in running header/footer text in the PDF margins. Tokens `{page}`, `{pages}`, `{title}`, `{author}`, `{date}` (from `SOURCE_DATE_EPOCH`, never the clock); overlong slots get an ellipsis; a band that does not fit its margin fails the render. Add `--pdf-header-rule`/`--pdf-footer-rule` for hairlines and `--pdf-running-skip-first` to leave page 1 bare |
-| `--pdf-header-image DEST`, `--pdf-footer-image DEST` | One decorative PNG/JPEG/SVG logo per PDF band, resolved from `--pdf-image DEST=PATH`; the destination need not appear in Markdown. Use `--pdf-header-image-position left\|right` or `--pdf-footer-image-position left\|right` (default left) and optional `--pdf-header-image-height-pt`/`--pdf-footer-image-height-pt` positive integer points. Images shrink proportionally to fit the existing margin and leave room for text. Missing or invalid images fail the render. Available in render, watch and batch; requires `--to pdf` or `--to both` |
-| `--pdf-image DEST=PATH` | Provide or override one image destination for HTML, PDF, SVG or EPUB, including stdin/`--text` input and PDF running logos; repeat for multiple images. `DEST` matches the source destination exactly and can be an extensionless key or URL. HTML identifies PNG/JPEG/SVG from the supplied bytes and embeds data URIs; unsupported bytes keep the original safe URL. Explicit mappings take precedence over auto-loaded files in both HTML and PDF. File-input renders also auto-load relative local PNG/SVG/JPEG destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). Watch rebuilds when a mapped file changes. The render core never reads files or fetches network resources itself |
+| `--pdf-header-image DEST`, `--pdf-footer-image DEST` | One decorative PNG/JPEG/GIF/SVG logo per PDF band, resolved from `--pdf-image DEST=PATH`; the destination need not appear in Markdown. Use `--pdf-header-image-position left\|right` or `--pdf-footer-image-position left\|right` (default left) and optional `--pdf-header-image-height-pt`/`--pdf-footer-image-height-pt` positive integer points. Images shrink proportionally to fit the existing margin and leave room for text. Missing or invalid images fail the render. Available in render, watch and batch; requires `--to pdf` or `--to both` |
+| `--pdf-image DEST=PATH` | Provide or override one image destination for HTML, PDF, SVG or EPUB, including stdin/`--text` input and PDF running logos; repeat for multiple images. `DEST` matches the source destination exactly and can be an extensionless key or URL. HTML identifies PNG/JPEG/GIF/SVG from the supplied bytes and embeds data URIs; unsupported bytes keep the original safe URL. Explicit mappings take precedence over auto-loaded files in both HTML and PDF. File-input renders also auto-load relative local PNG/SVG/JPEG/GIF destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). Watch rebuilds when a mapped file changes. The render core never reads files or fetches network resources itself |
 | `--max-pdf-image-bytes <n>` | Max bytes accepted per explicitly mapped or auto-loaded local image file before rendering; also caps each remote image fetch (default `33554432`, 32 MiB) |
 | `--no-remote-images` | Do not fetch remote http(s) image destinations for PDF output; they degrade to alt text with a warning |
 | `--remote-image-timeout-secs <n>` | Per-image timeout for remote PDF image fetches (default `20`) |
@@ -716,7 +766,7 @@ fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR] [--workers N]
 | `--batch-mode interactive\|throughput` | `interactive` reserves CPU headroom; `throughput` uses all cores. Default `interactive` |
 | `--mem-budget <bytes>` | Soft concurrency cap: workers ≈ `bytes / 64 MiB-per-job` (a static per-job estimate, not measured resident memory) |
 | `--timeout <secs>` | Wall-clock deadline; on expiry the run cancels at the next per-file checkpoint and the receipt is marked `cancelled` |
-| `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG/JPEG image asset for HTML and PDF batch renders |
+| `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG/JPEG/GIF image asset for HTML and PDF batch renders |
 | `--continue-on-error` | Record per-file failures in the receipt instead of failing the whole run |
 | `--font`, `--css`, and the render style flags | Shared theme and style overrides (`--toc`, `--font-scale`, `--microtype`, typography, PDF running headers/footers, `--pdf-font`, ...), as in `render`. `--pdf-a` and `--svg-width-pt` are render-only |
 | `--json` | Emit the deterministic batch receipt JSON to stdout |
@@ -823,6 +873,7 @@ Resolution order for the config path:
 | `toc`, `toc_depth` | `true`/`false`; heading level `1`..`6` | `false`, `3` |
 | `font_scale` | as `--font-scale` (`lg`, `125%`, `1.2`, ...) | `md` |
 | `html_font_format` | `woff1`, `woff2`, `ttf` | `woff1` |
+| `font_embedding` | `subset`, `full` | `subset` |
 | `microtype` | `off`, `protrusion`, `expansion` | `off` |
 | `pdf_page_numbers`, `pdf_optimal_pagination` | `true`/`false` | `false` |
 | `pdf_strict_pagination` | `true`/`false`; applies to PDF render, watch, batch and book | `false` |
@@ -955,6 +1006,13 @@ Honest about what the renderer does not do yet.
   intros), basic widow handling, and repeatable table headers across page breaks
   work today; full widow/orphan control and finer block pagination remain
   roadmap.
+- **Sparse tables retain short rows.** After a valid header and delimiter,
+  ordinary body rows need no pipes; missing cells stay empty. A single-column
+  table requires a pipe in its header or delimiter, so `Title` followed by `---`
+  remains a setext heading. Native parsing, source spans and offline editing
+  apply these rules inside quotations and lists as well. Each table can generate
+  at most 512K empty padding cells; further sparse rows remain intact as prose.
+  Existing block-start and reference-definition boundaries still apply.
 - **Wide PDF tables use successive column panels.** Each panel can continue
   across pages with repeated headers. The first column repeats as row context
   when at least two columns fit; very narrow pages use single-column panels in
@@ -963,12 +1021,19 @@ Honest about what the renderer does not do yet.
   formulas and images scale down uniformly when they exceed their actual cell
   width, keeping their content, link targets and accessibility bounds inside
   that cell.
+- **Nested PDF quotations stay inside the page.** Ordinary blockquotes keep
+  their existing gutters. When nesting exhausts the available width, deeper
+  quotes share border positions and reserve room for text at its requested
+  size, including lists, code, tables, figures and notes. The fallback keeps
+  at least four body ems of text width where the page permits it. Quote
+  structure and shading remain intact when a decorative border must yield
+  to a fitting large glyph.
 - **PDF vs HTML gaps.** The PDF path does not render arbitrary CSS. Images
   inside running prose and table cells (badges, icons) are drawn inline as
   unbreakable boxes up to 1.75 em tall and tagged `/Figure` with their alt
   text; a paragraph of several large pictures keeps one figure line per
-  picture. PDF images are PNG, JPEG or SVG assets supplied by the host; the native CLI
-  auto-loads relative local image destinations for file-input HTML/PDF renders,
+  picture. PDF images are PNG, JPEG, GIF or SVG assets supplied by the host;
+  the native CLI auto-loads relative local image destinations for file-input HTML/PDF renders,
   HTML embeds supported assets as data URIs, and `--pdf-image` can provide or
   override assets explicitly for HTML, PDF, SVG and EPUB, including stdin and
   raw-text input with extensionless destination keys. JPEG EXIF orientation is
@@ -977,6 +1042,34 @@ Honest about what the renderer does not do yet.
   displayed dimensions while PDF embeds the original JPEG bytes without
   recompression. Missing or malformed orientation metadata retains ordinary
   unrotated placement.
+- **Print-colour JPEGs render in PDF.** Baseline and progressive Adobe CMYK
+  and YCCK images retain their original JPEG bytes, correct colour polarity,
+  and EXIF orientation, including images inside SVGs and running page bands.
+  Four-channel JPEGs with missing or conflicting colour metadata retain the
+  existing image fallback. PDF/A-2b export currently uses an sRGB output profile
+  and rejects used CMYK images with `pdf_a_cmyk_image`; convert those images to
+  RGB before archival export. Unused image mappings do not cause rejection.
+- **GIF images retain their animation in HTML, SVG and EPUB.** File renders,
+  batch jobs and books load local `.gif` assets, and explicit image mappings
+  also accept GIF87a/GIF89a bytes under extensionless destination keys. HTML,
+  SVG and EPUB embed the original animation bytes, including frame timing and
+  transparency. PDF paints the first frame, honoring global/local palettes,
+  interlacing, frame offsets and transparency; malformed or oversized GIFs use
+  the existing image diagnostics and fallback behavior. Browser document and
+  book imports, image replacement and portable book backups retain GIF bytes.
+- **Embedded images survive portable exports.** HTML, SVG, EPUB and PDF accept
+  bounded PNG, JPEG, GIF and SVG `data:` image URLs in Markdown and supported
+  HTML image elements, including prose, headings and table cells. HTML and SVG
+  retain them as image subresources; EPUB packages and deduplicates their image
+  bytes, including across book chapters; PDF decodes them for the page. These
+  sources need no separate asset files. Explicit `--pdf-image` or library image
+  mappings take precedence. Malformed or mismatched payloads keep the existing
+  image fallback behavior, and `data:` links remain blocked.
+  Offline interactive documents also retain supported percent-encoded,
+  UTF-8 and charset-qualified data images through editing, printing, Save HTML
+  and reopening. Save Markdown preserves the original source encoding. An
+  explicit image override that rejects a source remains rejected after edits
+  and saves, including when a later duplicate binding contains valid bytes.
 - **PDF footnotes.** Notes print at the foot of the page carrying their first
   reference, with linked superscript marks; unreferenced notes and notes taller
   than 40% of a page fall back to a trailing Notes section, and notes are never
@@ -992,7 +1085,7 @@ Honest about what the renderer does not do yet.
   stretching their internal spaces to justify the surrounding prose.
 - **SVG support is practical, not browser-complete.** The PDF renderer covers
   the shapes, gradients, masks, clips, markers, CSS variables/selectors,
-  embedded PNG/JPEGs, marker view boxes/orientation/units, and `paint-order` behavior
+  embedded PNG/JPEG/GIFs, marker view boxes/orientation/units, and `paint-order` behavior
   needed by the current showcase and frankenmermaid output. Unsupported SVG
   features are reported as structured render warnings rather than silently
   pretending to match a browser.
@@ -1007,6 +1100,15 @@ Honest about what the renderer does not do yet.
   smaller HTML on the showcase document). Clean-room WOFF2 (Brotli-based) is
   supported via `--html-font-format woff2` for an additional ~5–10% savings,
   while `--html-font-format ttf` opts back to raw TrueType data URLs.
+- **Complete fonts can preserve browser and EPUB reader shaping.** Use
+  `--font-embedding full` when ligatures, kerning, or combining-mark placement
+  depend on source OpenType tables. This retains the full character map and
+  layout tables instead of a compact glyph subset. It works with raw TrueType
+  and CFF1 OpenType fonts, WOFF1/WOFF2 HTML containers, and EPUB publication;
+  variable weight pins use the existing static-instance path. For example,
+  `fmd chapter.md --font-embedding full --out chapter.html` or
+  `fmd book chapters --to epub --font-embedding full --out-dir dist`.
+  The default remains `subset`; PDF keeps its own embedding policy.
 - **Browser visual/golden fixtures are still early.** The npm package
   (`@franken-suite/franken-markdown`) is published with proven native parity and
   gated manifest/size budgets, but browser-side visual fixtures remain thin.
@@ -1070,8 +1172,26 @@ output; cross-platform determinism requires results from each platform.
 
 **Can I supply my own fonts or stylesheet?**
 Yes. `--css <file>` replaces the HTML stylesheet entirely. Library and WASM
-callers can supply TrueType font bytes per slot through `FontAssets`; missing
-slots use the bundled fonts.
+callers can supply TrueType or name-keyed CFF1 OpenType font bytes per slot
+through `FontAssets`; missing slots use the bundled fonts. The same host faces
+work in HTML, PDF, SVG and EPUB. Native commands accept
+`--pdf-font body-regular=./SourceSans3-Regular.otf` (repeat for other slots).
+
+CFF fonts are subset by default for HTML/PDF/EPUB and drawn as native cubic
+paths in SVG. Raw HTML and EPUB resources use the OpenType MIME type and format
+hint; HTML can also wrap font programs in WOFF1 or WOFF2. PDF retains two-byte
+glyph IDs, Unicode extraction and ligatures, including subsets above 256 glyphs.
+The supported input is static, name-keyed CFF1 with the standard font matrix;
+CFF2 and CID-keyed CFF input remain unsupported. The checked subset and native
+outline paths reject unsupported glyph programs, including `seac` and
+computational Type2 operators, with explicit diagnostics.
+
+Use `--font-embedding full` for HTML/EPUB to preserve the complete admitted font
+program and its shaping tables. That mode delegates glyph execution to the
+browser or reader, while retaining structural font validation. Infallible HTML
+helpers retain their existing full-font fallback, and interactive HTML retains
+complete fonts for browser rendering. The font fixture used to verify this
+integration is test-only.
 
 **Does the core really work in WASM?**
 Yes, by design. The core builds with `--no-default-features` for both native and

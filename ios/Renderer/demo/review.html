@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compare Markdown revisions · franken_markdown</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0 auto; max-width: 1500px; padding: 24px; background: Canvas; color: CanvasText; }
+    header, .actions, .file { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header { justify-content: space-between; }
+    h1 { margin: 12px 0; font-size: 1.65rem; }
+    h2 { font-size: 1.1rem; margin: 0; }
+    .intro { max-width: 85ch; }
+    .sources { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0; }
+    .source { min-width: 0; display: grid; gap: 10px; border: 1px solid GrayText; border-radius: 8px; padding: 16px; }
+    label { display: grid; gap: 4px; }
+    input, button, textarea { font: inherit; }
+    input[type=text], textarea { width: 100%; padding: 8px; border: 1px solid GrayText; border-radius: 4px; }
+    textarea { min-height: 260px; resize: vertical; font: 14px/1.6 ui-monospace, monospace; tab-size: 2; }
+    button, .download { min-height: 42px; padding: 8px 14px; }
+    button { cursor: pointer; }
+    button:disabled { cursor: default; }
+    .primary { font-weight: 700; }
+    .file input { max-width: 100%; }
+    #review-status { min-height: 1.5em; }
+    #review-summary { display: flex; flex-wrap: wrap; gap: 12px 30px; margin: 20px 0; }
+    #review-summary div { min-width: 110px; }
+    #review-summary dt { font-size: .8rem; }
+    #review-summary dd { margin: 0; font-size: 1.3rem; font-weight: 700; }
+    #review-preview { width: 100%; height: 620px; border: 1px solid GrayText; border-radius: 6px; background: white; }
+    .notice { border-left: 3px solid GrayText; padding-left: 12px; }
+    :focus-visible { outline: 3px solid Highlight; outline-offset: 3px; }
+    @media (max-width: 760px) { body { padding: 12px; } .sources { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Compare Markdown revisions</h1>
+  <a href="./index.html">Markdown renderer</a>
+</header>
+<p class="intro">Review structural and wording changes with the Rust semantic differ. Paste two revisions or open local UTF-8 files, then compare. Files stay in this page; no upload, autosave, merge, or disk overwrite occurs.</p>
+<p class="notice">This is a semantic comparison, not a byte-for-byte patch or a PDF comparison. Formatting-only changes may compare as unchanged. The native default comparison theme is used; image and font files are not imported or fetched.</p>
+<section class="sources" aria-label="Revisions to compare">
+  <section class="source" aria-labelledby="before-heading">
+    <h2 id="before-heading">Before</h2>
+    <label>Revision label<input id="before-name" type="text" value="Before" maxlength="4096"></label>
+    <label class="file">Open before revision<input id="before-file" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain"></label>
+    <label>Before Markdown<textarea id="before-source" spellcheck="false" placeholder="# Before revision"></textarea></label>
+    <button id="save-before" type="button">Download before source</button>
+  </section>
+  <section class="source" aria-labelledby="after-heading">
+    <h2 id="after-heading">After</h2>
+    <label>Revision label<input id="after-name" type="text" value="After" maxlength="4096"></label>
+    <label class="file">Open after revision<input id="after-file" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain"></label>
+    <label>After Markdown<textarea id="after-source" spellcheck="false" placeholder="# After revision"></textarea></label>
+    <button id="save-after" type="button">Download after source</button>
+  </section>
+</section>
+<div class="actions">
+  <button id="compare" class="primary" type="button">Compare revisions</button>
+  <button id="cancel-review" type="button" hidden>Cancel</button>
+  <button id="swap-revisions" type="button">Swap revisions</button>
+  <button id="download-review-html" type="button" disabled>Download comparison HTML</button>
+  <button id="download-review-json" type="button" disabled>Download comparison JSON</button>
+</div>
+<p id="review-status" role="status" aria-live="polite">Ready. Source downloads work even when the WASM renderer is unavailable.</p>
+<section id="review-results" aria-label="Comparison result" hidden>
+  <h2>Native comparison</h2>
+  <dl id="review-summary"></dl>
+  <p id="review-findings"></p>
+  <iframe id="review-preview" title="Semantic comparison preview" sandbox="" referrerpolicy="no-referrer"></iframe>
+</section>
+<noscript>This local review workbench requires JavaScript and WebAssembly. The original files are never modified.</noscript>
+<script type="module">
+  import { installRevisionReview } from './revision_review.mjs';
+  installRevisionReview(document);
+</script>
+</body>
+</html>

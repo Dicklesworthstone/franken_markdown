@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createDraftControls } from "../demo/flow_draft_controls.mjs";
+import { sourceAccessFixture } from "./flow_access_fixture.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const gate = () => {
@@ -22,7 +23,7 @@ class Element extends EventTarget {
     this.dispatchEvent(new Event("click"));
   }
 }
-function fixture(document = null) {
+function fixture(document = null, observeAccess = false) {
   const sourceEditor = new Element(),
     filename = new Element(),
     remember = new Element(),
@@ -35,7 +36,8 @@ function fixture(document = null) {
   filename.value = "local.md";
   let record = { schemaVersion: 1, version: document ? 1 : 0, document },
     unavailable = false,
-    openGate = null;
+    openGate = null,
+    readGate = null;
   let allowRestore = true,
     allowForget = true,
     confirms = 0,
@@ -43,6 +45,7 @@ function fixture(document = null) {
     writes = 0,
     opens = 0,
     closes = 0;
+  const access = observeAccess ? sourceAccessFixture([sourceEditor, filename]) : null;
   const controls = createDraftControls({
     sourceEditor,
     filename,
@@ -80,6 +83,7 @@ function fixture(document = null) {
       return {
         async read() {
           check();
+          if (readGate) await readGate.promise;
           return structuredClone(record);
         },
         async save(document, version) {
@@ -116,6 +120,7 @@ function fixture(document = null) {
     forget,
     save,
     status,
+    access,
     get record() {
       return record;
     },
@@ -139,6 +144,9 @@ function fixture(document = null) {
     },
     gate(value) {
       openGate = value;
+    },
+    holdRead(value) {
+      readGate = value;
     },
     approveRestore(value) {
       allowRestore = value;
@@ -286,6 +294,159 @@ test("disposing during recovery confirmation cannot replace the document", async
   await assert.rejects(pending, (error) => error.code === "SESSION_DISPOSED");
   assert.equal(f.replacements, 0);
   assert.equal(f.sourceEditor.value, "local");
+});
+for (const field of ["sourceEditor", "filename"]) {
+  test(`${field} composition refuses draft restoration and allows a fresh restore afterward`, async (t) => {
+    const f = fixture({ source: "saved", filename: "saved.md" });
+    t.after(() => f.controls.dispose());
+    await f.controls.whenIdle();
+    f[field].dispatchEvent(new Event("compositionstart"));
+    assert.equal(f.restore.disabled, true);
+    await assert.rejects(f.controls.restore(), (error) => error.code === "EDITOR_BUSY");
+    assert.equal(f.replacements, 0);
+    assert.equal(f.confirms, 0);
+    assert.equal(f.sourceEditor.value, "local");
+    f[field].dispatchEvent(new Event("compositionend"));
+    assert.equal(f.restore.disabled, false);
+    await f.controls.restore();
+    assert.equal(f.replacements, 1);
+    assert.equal(f.sourceEditor.value, "saved");
+  });
+  test(`${field} composition invalidates recovery before a delayed storage read returns`, async (t) => {
+    const f = fixture({ source: "saved", filename: "saved.md" }), hold = gate();
+    t.after(() => f.controls.dispose());
+    await f.controls.whenIdle();
+    f.holdRead(hold);
+    const pending = f.controls.restore();
+    await tick();
+    f[field].dispatchEvent(new Event("compositionstart"));
+    f[field].dispatchEvent(new Event("compositionend"));
+    hold.resolve();
+    await assert.rejects(pending, (error) => error.code === "STALE_SOURCE");
+    assert.equal(f.replacements, 0);
+    assert.equal(f.confirms, 0);
+    assert.equal(f.sourceEditor.value, "local");
+    assert.equal(f.filename.value, "local.md");
+  });
+  for (const finishComposition of [false, true]) {
+    test(`${field} composition during recovery confirmation preserves source (${finishComposition ? "finished" : "active"})`, async (t) => {
+      const f = fixture({ source: "saved", filename: "saved.md" }), hold = gate();
+      t.after(() => f.controls.dispose());
+      await f.controls.whenIdle();
+      f.approveRestore(hold.promise);
+      const pending = f.controls.restore();
+      await tick();
+      f[field].dispatchEvent(new Event("compositionstart"));
+      if (finishComposition) f[field].dispatchEvent(new Event("compositionend"));
+      hold.resolve(true);
+      await assert.rejects(pending, (error) => ["STALE_SOURCE", "EDITOR_BUSY"].includes(error.code));
+      assert.equal(f.replacements, 0);
+      assert.equal(f.sourceEditor.value, "local");
+      assert.equal(f.controls.state.available, true);
+      if (!finishComposition) f[field].dispatchEvent(new Event("compositionend"));
+      f.approveRestore(true);
+      await f.controls.restore();
+      assert.equal(f.sourceEditor.value, "saved");
+    });
+  }
+}
+test("readonly draft recovery refuses source replacement before and after confirmation", async (t) => {
+  const f = fixture({ source: "saved", filename: "saved.md" }), hold = gate();
+  t.after(() => f.controls.dispose());
+  await f.controls.whenIdle();
+  f.sourceEditor.readOnly = true;
+  await assert.rejects(f.controls.restore(), (error) => error.code === "EDITOR_BUSY");
+  assert.equal(f.confirms, 0);
+  f.sourceEditor.readOnly = false;
+  f.approveRestore(hold.promise);
+  const pending = f.controls.restore();
+  await tick();
+  f.sourceEditor.readOnly = true;
+  hold.resolve(true);
+  await assert.rejects(pending, (error) => error.code === "EDITOR_BUSY");
+  assert.equal(f.replacements, 0);
+  assert.equal(f.sourceEditor.value, "local");
+  assert.equal(f.record.document.source, "saved");
+});
+for (const field of ["sourceEditor", "filename"]) {
+  for (const property of ["readOnly", "disabled"]) {
+    for (const phase of ["storage read", "confirmation"]) {
+      test(`${field} ${property} round trip during ${phase} retires draft replacement`, async (t) => {
+        const stored = { source: "\ufeff# Saved\r\n😀\rTail", filename: "saved.md" },
+          f = fixture(stored, true), hold = gate();
+        t.after(() => f.controls.dispose());
+        await f.controls.whenIdle();
+        const original = "\ufeff# Unsaved\r\n正しい\rEnd";
+        f.sourceEditor.value = original;
+        if (phase === "storage read") f.holdRead(hold);
+        else f.approveRestore(hold.promise);
+        const pending = f.controls.restore();
+        await tick();
+        f[field][property] = true;
+        f[field][property] = false;
+        assert(f.access.pendingRecords > 0, "same-task records have not delivered a callback");
+        hold.resolve(true);
+        await assert.rejects(pending, (error) => error.code === "STALE_SOURCE");
+        assert.equal(f.sourceEditor.value, original);
+        assert.equal(f.filename.value, "local.md");
+        assert.equal(f.replacements, 0);
+        assert.deepEqual(f.record.document, stored);
+        assert.equal(f.controls.state.available, true);
+        f.holdRead(null);
+        f.approveRestore(true);
+        await f.controls.restore();
+        assert.equal(f.sourceEditor.value, stored.source);
+        assert.equal(f.filename.value, stored.filename);
+        assert.equal(f.replacements, 1);
+      });
+    }
+  }
+  test(`${field} removal retires pending recovery; same-task unlock permits a fresh restore`, async (t) => {
+    const f = fixture({ source: "saved", filename: "saved.md" }, true), hold = gate();
+    t.after(() => f.controls.dispose());
+    await f.controls.whenIdle();
+    f.approveRestore(hold.promise);
+    const pending = f.controls.restore();
+    await tick();
+    f.access.mount(f[field], false);
+    f.access.deliver();
+    f.access.mount(f[field], true);
+    hold.resolve(true);
+    await assert.rejects(pending, (error) => error.code === "STALE_SOURCE");
+    assert.equal(f.sourceEditor.value, "local");
+    assert.equal(f.replacements, 0);
+    f.approveRestore(true);
+    f[field].disabled = true;
+    f[field].disabled = false;
+    assert(f.access.pendingRecords > 0);
+    await f.controls.restore();
+    assert.equal(f.replacements, 1);
+    assert.equal(f.sourceEditor.value, "saved");
+  });
+}
+test("access changes do not dirty or resave acknowledged source, and disposal releases observation", async () => {
+  const f = fixture(null, true);
+  await f.controls.whenIdle();
+  f.enable();
+  await f.controls.flush();
+  assert.equal(f.controls.state.dirty, false);
+  const writes = f.writes;
+  f.sourceEditor.readOnly = true;
+  f.access.deliver();
+  assert.equal(f.controls.state.dirty, false);
+  f.sourceEditor.readOnly = false;
+  f.access.unrelated();
+  f.access.deliver();
+  await f.controls.flush();
+  assert.equal(f.writes, writes);
+  assert.equal(f.controls.state.dirty, false);
+  assert.equal(f.controls.state.enabled, true);
+  f.controls.dispose();
+  assert.equal(f.access.observerCount, 0);
+  f.restore.disabled = false;
+  f.filename.disabled = true;
+  f.access.deliver();
+  assert.equal(f.restore.disabled, false);
 });
 test("disposal removes input and command listeners and leaves buttons disabled", async () => {
   const f = fixture();

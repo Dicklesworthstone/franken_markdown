@@ -258,6 +258,7 @@ fn negative_controls_empty_run_and_out_of_bounds_queries() {
     };
 
     let empty_run = OwnedTextRun {
+        vertical_metrics: None,
         context,
         logical_text: String::new(),
         clusters: Vec::new(),

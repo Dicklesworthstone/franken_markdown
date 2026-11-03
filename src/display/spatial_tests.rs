@@ -6,6 +6,9 @@ use crate::span::SourceSpan;
 
 fn text(bounds: DisplayRect, value: &str) -> DisplayItem {
     DisplayItem::Text(DisplayTextRun {
+        fill: None,
+        baseline_y: None,
+        math_fallback: None,
         bounds,
         text: value.into(),
         font_run: None,
@@ -275,10 +278,10 @@ fn deterministic_unordered_rectangles_match_exhaustive_clipped_reference() {
                 }
                 let mut clip = view;
                 for (j, previous) in source[..i].iter().enumerate() {
-                    if let DisplayItem::Clip(scope) = previous {
-                        if i - j <= scope.child_count {
-                            clip = intersection(clip, scope.bounds);
-                        }
+                    if let DisplayItem::Clip(scope) = previous
+                        && i - j <= scope.child_count
+                    {
+                        clip = intersection(clip, scope.bounds);
                     }
                 }
                 let bounds = item.bounds();

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { File } from "node:buffer";
+import { readFileSync } from "node:fs";
 import { createBookFontAuthoring } from "../demo/book_font_authoring.mjs";
 import { BOOK_FONT_SLOTS } from "../demo/book_font_assets.mjs";
 import { host, worker, deferred, result, tick } from "./book_font_test_support.mjs";
@@ -32,6 +33,26 @@ test("one native preflight admits five named roles and installs one complete rev
   assert.equal(observed.length, 1); assert.equal(observed[0].length, 5);
   assert.equal(f.collection.images, images); assert.equal(f.collection.files[0].source, "\ufeff# Book\r\n\nOriginal source");
   assert.deepEqual(f.store.snapshot().map(x => [...x.bytes]), [[0,255,0],[1,255,0],[2,255,0],[3,255,0],[4,255,0]]);
+  f.author.dispose();
+});
+
+test("one real CFF file reaches native preflight and all five slots without transcoding", async () => {
+  const bytes = readFileSync(new URL("../../tests/fixtures/fonts/source-sans-3/SourceSans3-Regular.otf", import.meta.url));
+  const chosen = new File([bytes], "SourceSans3.OTF", { type: "font/otf" });
+  const read = chosen.arrayBuffer.bind(chosen); let reads = 0;
+  chosen.arrayBuffer = () => { reads++; return read(); };
+  const f = fixture({ delay: true }), source = f.collection.files[0].source;
+  const pending = f.author.assign(BOOK_FONT_SLOTS.map(slot => selected(slot, chosen)));
+  await waiting(f.engine);
+  assert.equal(reads, 1); assert.equal(f.collection.fonts.length, 0);
+  for (const asset of f.engine.jobs[0].options.fontAssets) {
+    assert.deepEqual(Buffer.from(asset.bytes), bytes);
+  }
+  // The adapter proves the transaction; Rust's CFF tests validate font parsing.
+  f.engine.jobs[0].resolve(result()); await pending;
+  assert.equal(f.collection.revision, 1); assert.equal(f.collection.fonts.length, 5);
+  assert.equal(f.collection.files[0].source, source);
+  for (const asset of f.store.snapshot()) assert.deepEqual(Buffer.from(asset.bytes), bytes);
   f.author.dispose();
 });
 
@@ -83,12 +104,12 @@ test("replacement at the 32 MiB store limit needs no extra retained capacity", a
 });
 
 test("one bad file or native rejection leaves the whole previous font set unchanged", async () => {
-  for (const nativeFailure of [false, true]) {
+  for (const extension of ["ttf", "otf"]) for (const nativeFailure of [false, true]) {
     const f = fixture({ reject: nativeFailure ? Object.assign(Error("bad native font"), { code: "INVALID_FONT" }) : null });
     f.collection.setFonts([{ slot: "body-regular", name: "old.ttf", bytes: new Uint8Array([9]) }], 0);
     const before = f.store.snapshot(), revision = f.collection.revision;
-    const broken = file(); broken.arrayBuffer = async () => { throw Error("I/O"); };
-    await assert.rejects(f.author.assign([selected(), selected("body-bold", nativeFailure ? file() : broken)]));
+    const broken = file(`broken.${extension}`); broken.arrayBuffer = async () => { throw Error("I/O"); };
+    await assert.rejects(f.author.assign([selected(), selected("body-bold", nativeFailure ? file(`invalid.${extension}`) : broken)]));
     assert.deepEqual(f.store.snapshot(), before); assert.equal(f.collection.revision, revision);
     f.author.dispose();
   }

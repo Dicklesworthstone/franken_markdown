@@ -732,15 +732,14 @@ impl DisjointSourceRanges {
         &self,
         purported_span: SourceSpan,
     ) -> Result<(), ProvenanceError> {
-        if self.spans.len() > 1 {
-            if let Some(enclosing) = self.enclosing_span() {
-                if purported_span == enclosing {
-                    return Err(ProvenanceError::InventedContiguousSpan {
-                        enclosing,
-                        disjoint_count: self.spans.len(),
-                    });
-                }
-            }
+        if self.spans.len() > 1
+            && let Some(enclosing) = self.enclosing_span()
+            && purported_span == enclosing
+        {
+            return Err(ProvenanceError::InventedContiguousSpan {
+                enclosing,
+                disjoint_count: self.spans.len(),
+            });
         }
         Ok(())
     }
@@ -855,21 +854,19 @@ impl NestedProvenanceNode {
         }
 
         // If this node has primary enclosing bounds, child primary ranges must stay within them
-        if let Some(parent_enclosing) = self.source_ranges.enclosing_span() {
-            if self.source_ranges.origin().is_primary() {
-                for child in &self.children {
-                    if child.source_ranges.origin().is_primary() {
-                        if let Some(child_enclosing) = child.source_ranges.enclosing_span() {
-                            if child_enclosing.start < parent_enclosing.start
-                                || child_enclosing.end > parent_enclosing.end
-                            {
-                                return Err(ProvenanceError::ChildOutsideParent {
-                                    parent: parent_enclosing,
-                                    child: child_enclosing,
-                                });
-                            }
-                        }
-                    }
+        if let Some(parent_enclosing) = self.source_ranges.enclosing_span()
+            && self.source_ranges.origin().is_primary()
+        {
+            for child in &self.children {
+                if child.source_ranges.origin().is_primary()
+                    && let Some(child_enclosing) = child.source_ranges.enclosing_span()
+                    && (child_enclosing.start < parent_enclosing.start
+                        || child_enclosing.end > parent_enclosing.end)
+                {
+                    return Err(ProvenanceError::ChildOutsideParent {
+                        parent: parent_enclosing,
+                        child: child_enclosing,
+                    });
                 }
             }
         }
@@ -877,24 +874,25 @@ impl NestedProvenanceNode {
         // Sibling ordering checks across primary children
         let mut prev_span: Option<SourceSpan> = None;
         for child in &self.children {
-            if child.source_ranges.origin().is_primary() && !child.source_ranges.is_empty() {
-                if let Some(curr_enclosing) = child.source_ranges.enclosing_span() {
-                    if let Some(prev) = prev_span {
-                        if curr_enclosing.start < prev.start {
-                            return Err(ProvenanceError::OutOfOrderChildren {
-                                previous: prev,
-                                next: curr_enclosing,
-                            });
-                        }
-                        if curr_enclosing.start < prev.end {
-                            return Err(ProvenanceError::OverlappingChildren {
-                                previous: prev,
-                                next: curr_enclosing,
-                            });
-                        }
+            if child.source_ranges.origin().is_primary()
+                && !child.source_ranges.is_empty()
+                && let Some(curr_enclosing) = child.source_ranges.enclosing_span()
+            {
+                if let Some(prev) = prev_span {
+                    if curr_enclosing.start < prev.start {
+                        return Err(ProvenanceError::OutOfOrderChildren {
+                            previous: prev,
+                            next: curr_enclosing,
+                        });
                     }
-                    prev_span = Some(curr_enclosing);
+                    if curr_enclosing.start < prev.end {
+                        return Err(ProvenanceError::OverlappingChildren {
+                            previous: prev,
+                            next: curr_enclosing,
+                        });
+                    }
                 }
+                prev_span = Some(curr_enclosing);
             }
         }
 
@@ -1061,13 +1059,13 @@ impl ProvenanceOracle {
                 report.escape_nodes += 1;
                 if let Some(src) = source_text {
                     for span in node.source_ranges.spans() {
-                        if let Some(slice) = span.slice(src) {
-                            if !slice.starts_with('\\') || !slice.ends_with(*escaped_char) {
-                                return Err(ProvenanceError::InvalidRelationSyntax {
-                                    expected: format!("\\{escaped_char}"),
-                                    actual: slice.to_string(),
-                                });
-                            }
+                        if let Some(slice) = span.slice(src)
+                            && (!slice.starts_with('\\') || !slice.ends_with(*escaped_char))
+                        {
+                            return Err(ProvenanceError::InvalidRelationSyntax {
+                                expected: format!("\\{escaped_char}"),
+                                actual: slice.to_string(),
+                            });
                         }
                     }
                 }
@@ -1076,13 +1074,13 @@ impl ProvenanceOracle {
                 report.entity_nodes += 1;
                 if let Some(src) = source_text {
                     for span in node.source_ranges.spans() {
-                        if let Some(slice) = span.slice(src) {
-                            if slice != raw_entity {
-                                return Err(ProvenanceError::InvalidRelationSyntax {
-                                    expected: raw_entity.clone(),
-                                    actual: slice.to_string(),
-                                });
-                            }
+                        if let Some(slice) = span.slice(src)
+                            && slice != raw_entity
+                        {
+                            return Err(ProvenanceError::InvalidRelationSyntax {
+                                expected: raw_entity.clone(),
+                                actual: slice.to_string(),
+                            });
                         }
                     }
                 }
@@ -1100,13 +1098,13 @@ impl ProvenanceOracle {
                 definition_span, ..
             } => {
                 report.reference_nodes += 1;
-                if let Some(src) = source_text {
-                    if definition_span.slice(src).is_none() {
-                        return Err(ProvenanceError::SourceOffsetOutOfBounds {
-                            offset: definition_span.end,
-                            source_len: src.len(),
-                        });
-                    }
+                if let Some(src) = source_text
+                    && definition_span.slice(src).is_none()
+                {
+                    return Err(ProvenanceError::SourceOffsetOutOfBounds {
+                        offset: definition_span.end,
+                        source_len: src.len(),
+                    });
                 }
             }
             ProvenanceRelation::Transclusion { capture_id, .. } => {

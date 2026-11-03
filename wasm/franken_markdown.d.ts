@@ -90,6 +90,10 @@ export interface FmdRenderOptions {
   maxWidthPt?: number;
   /** HTML font subset container: "woff1" (default), "woff2" (smallest) or "ttf". */
   htmlFontFormat?: "woff1" | "woff2" | "ttf";
+  /** HTML/EPUB font policy. Full retains complete cmap and OpenType layout tables,
+   * including bundled fonts. Default subset keeps compact document-specific fonts.
+   * Requires matching WASM bindings; PDF/SVG font policies are independent. */
+  fontEmbedding?: "subset" | "full";
   /** Opt-in PDF line-breaking refinements (all off by default). */
   typography?: {
     /** Gradual adjacent-line demerits for more homogeneous spacing. */
@@ -209,7 +213,7 @@ export interface FmdSvgRenderOutput extends FmdRenderOutput {
  */
 export interface FmdBookSiteOptions extends Pick<FmdRenderOptions,
   "font" | "darkMode" | "title" | "customCss" | "fontScale" | "typeSize" |
-  "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets"> {
+  "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "fontEmbedding"> {
   /** Expand selected sources in Rust (default true); never read external files. */
   expandIncludes?: boolean;
   /** Additional UTF-8 include resources. These never become chapter pages.
@@ -219,6 +223,8 @@ export interface FmdBookSiteOptions extends Pick<FmdRenderOptions,
   allowRawHtml?: false;
 }
 export interface FmdBookSiteOutput extends Omit<FmdRenderOutput, "format" | "mimeType" | "extension"> {
+  /** Present after the matching native exporter successfully retained full fonts. */
+  readonly fontEmbedding?: "full";
   format: "book-site";
   mimeType: "application/zip";
   extension: "zip";

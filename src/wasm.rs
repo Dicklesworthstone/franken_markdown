@@ -116,6 +116,8 @@ pub struct WasmRenderOptions {
     pub strict_pagination: bool,
     /// Container for HTML font subsets (WOFF1 by default).
     pub html_font_format: HtmlFontFormat,
+    /// HTML font programs: compact subsets (default) or complete source fonts.
+    pub font_embedding: crate::FontEmbedding,
 }
 
 impl WasmRenderOptions {
@@ -227,7 +229,7 @@ impl WasmRenderOptions {
     ///
     /// # Errors
     /// Returns [`RenderError::InvalidInput`] for malformed slot names or font
-    /// bytes that the clean-room TrueType reader/subsetter cannot validate.
+    /// bytes that the clean-room TrueType/CFF1 OpenType reader cannot validate.
     pub fn with_font_asset_bytes(
         mut self,
         slot: FontAssetSlot,
@@ -403,6 +405,7 @@ impl WasmRenderOptions {
             toc: self.toc,
             toc_depth: self.toc_depth,
             html_font_format: self.html_font_format,
+            font_embedding: self.font_embedding,
         }
     }
 
@@ -661,8 +664,8 @@ pub fn capabilities_json() -> String {
     "{\"schema\":\"fmd-wasm-capabilities-v1\",\
      \"outputs\":[\"html\",\"pdf\",\"svg\",\"epub\",\"interactive-html\",\"diff-html\",\"book-site\",\"book-pdf\"],\
      \"input\":\"markdown_utf8\",\
-     \"html\":{\"mime_type\":\"text/html; charset=utf-8\",\"self_contained\":true,\"custom_css_utf8\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\"},\
-     \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_slot_weight\":\"css_1_to_1000_variable_wght\",\"running_content\":{\"binding\":\"renderPdfConfiguredRunning\",\"slots\":[\"header.left\",\"header.center\",\"header.right\",\"footer.left\",\"footer.center\",\"footer.right\"],\"tokens\":[\"page\",\"pages\",\"title\",\"author\",\"date\"],\"rules\":true,\"skip_first_page\":true,\"images\":true,\"image_binding\":\"renderPdfConfiguredRunningImages\",\"image_positions\":[\"left\",\"right\"],\"image_height\":\"optional_positive_integer_points\"}},\
+     \"html\":{\"mime_type\":\"text/html; charset=utf-8\",\"self_contained\":true,\"custom_css_utf8\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_outline_formats\":[\"truetype_glyf\",\"opentype_cff1\"],\"font_slot_weight\":\"css_1_to_1000_variable_wght\"},\
+     \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_outline_formats\":[\"truetype_glyf\",\"opentype_cff1\"],\"font_slot_weight\":\"css_1_to_1000_variable_wght\",\"running_content\":{\"binding\":\"renderPdfConfiguredRunning\",\"slots\":[\"header.left\",\"header.center\",\"header.right\",\"footer.left\",\"footer.center\",\"footer.right\"],\"tokens\":[\"page\",\"pages\",\"title\",\"author\",\"date\"],\"rules\":true,\"skip_first_page\":true,\"images\":true,\"image_binding\":\"renderPdfConfiguredRunningImages\",\"image_positions\":[\"left\",\"right\"],\"image_height\":\"optional_positive_integer_points\"}},\
      \"diagnostics\":{\"source_spans\":\"byte_offsets\",\"json\":true},\
      \"document_intelligence\":{\"stats\":true,\"readability\":true,\"structural_lint\":true,\"accessibility_audit\":true,\"search_index\":true},\
      \"workflows\":{\"semantic_ast_diff\":true,\"in_memory_book_builder\":true,\"recursive_transclusion\":true,\"mermaid_to_svg\":true},\
@@ -744,12 +747,13 @@ mod render_warning_tests {
 
     #[test]
     fn pdf_render_surfaces_dropped_image_and_missing_glyph_warnings() {
-        // An image with no host-supplied asset (dropped to alt text) and a CJK
-        // character with no glyph in the bundled Latin fonts must both surface as
-        // "warning" diagnostics, so a browser host is never blind to degraded
-        // output (parity with the native CLI's stderr warnings).
+        // An image with no host-supplied asset (dropped to alt text) and a
+        // hieroglyph unsupported by every bundled face must both surface as
+        // "warning" diagnostics. Keep this independent of the optional CJK
+        // fallback so every browser profile reports degraded output
+        // (parity with the native CLI's stderr warnings).
         let out = render_pdf(
-            "![chart](missing.png)\n\n中文 body",
+            "![chart](missing.png)\n\n\u{13000} body",
             &WasmRenderOptions::default(),
         )
         .unwrap();

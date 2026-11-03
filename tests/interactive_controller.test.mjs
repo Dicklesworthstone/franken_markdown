@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 import vm from 'node:vm';
 const controller = readFileSync(new URL('../src/interactive_controller.js', import.meta.url), 'utf8');
+const renderer = readFileSync(new URL('../src/interactive_renderer.js', import.meta.url), 'utf8');
 const template = readFileSync(new URL('../src/interactive.rs', import.meta.url), 'utf8');
 const ids = [...template.matchAll(/id="([^"]+)"/g)].map(match => match[1]);
 // Ids inside the static <header class="fmd-app-header">, for header-scoped queries.
@@ -27,7 +28,8 @@ function element() {
     }
   };
 }
-function setup({source = '# Original', title = 'Document', scale = '', read = false, fail = '', normalizeTextarea = false, native = null} = {}) {
+function setup({source = '# Original', title = 'Document', scale = '', read = false, fail = '', normalizeTextarea = false, native = null,
+  imageAssets = null, initialPreview = null, actualRenderer = null} = {}) {
   const elements = new Map(ids.map(id => [id, element()]));
   // The JSON script's id is in an escaped Rust string, rather than a raw literal.
   elements.set('fmd-raw-source', {...element(), textContent: JSON.stringify(source)});
@@ -39,7 +41,9 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
   }
   const get = id => { assert.ok(elements.has(id), id); return elements.get(id); };
   get('stats-drawer').querySelector = selector => get(selector.slice(1));
-  get('fmd-content').innerHTML = '<svg id="native-diagram"></svg><p>Native render</p>';
+  get('fmd-content').innerHTML = initialPreview ?? '<svg id="native-diagram"></svg><p>Native render</p>';
+  const assetData = imageAssets === null ? null : {...element(), textContent: JSON.stringify(imageAssets)
+    .replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};
   get('fmd-app-body').classList.add(read ? 'view-read' : 'view-split');
   const timers = new Map(), blobs = new Map(), downloads = [], revoked = [], anchors = [], renders = [], printed = [], copies = [];
   const styles = new Map([['--fmd-base', scale]]);
@@ -65,6 +69,7 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
       if (selector === 'body > script#fmd-raw-source[type="application/json"]') return get('fmd-raw-source');
       if (selector === 'body > #stats-drawer') return get('stats-drawer');
       if (selector === 'body > .fmd-app-header') return header;
+      if (selector === 'body > script#fmd-image-assets[type="application/json"]') return assetData;
       assert.ok(absent.has(selector), selector);
       return null;
     },
@@ -85,13 +90,15 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
         const status = {...element(), textContent: get('fmd-save-status').textContent};
         const drawer = element(); drawer.classList.add('open');
         const preview = get('fmd-content').innerHTML;
+        const assets = assetData ? {...element(), textContent: assetData.textContent} : null;
         const nodes = new Map([
           ['body > script#fmd-raw-source[type="application/json"]', data],
           ['body > #fmd-app-body > #editor-pane > textarea#fmd-editor', textarea],
           ['body > #stats-drawer', drawer],
           ['#editor-pane > .fmd-pane-header > #fmd-save-status', status]
         ]);
-        const copy = {...element(), data, textarea, status, drawer, preview,
+        if (assets) nodes.set('body > script#fmd-image-assets[type="application/json"]', assets);
+        const copy = {...element(), data, textarea, status, drawer, preview, assets,
           // The clone holds only the template's static elements. Controls the
           // controller adds at runtime are absent from it and resolve to null;
           // a static element this adapter does not model is a harness error.
@@ -101,7 +108,9 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
             assert.ok(id && !ids.includes(id), selector);
             return null;
           },
-          get outerHTML() { return '<html><body><textarea>' + escape(textarea.textContent) + '</textarea><main>' + preview + '</main><script type="application/json">' + data.textContent + '</script></body></html>'; }
+          get outerHTML() { return '<html><body><textarea>' + escape(textarea.textContent) + '</textarea><main>' + preview
+            + '</main><script type="application/json" id="fmd-raw-source">' + data.textContent + '</script>'
+            + (assets ? '<script type="application/json" id="fmd-image-assets">' + assets.textContent + '</script>' : '') + '</body></html>'; }
         };
         copies.push(copy); return copy;
       }
@@ -114,9 +123,9 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
       createObjectURL(blob) { if (failure === 'url') throw Error('URL failed'); const url = 'blob:test-' + ++next; blobs.set(url, blob); return url; },
       revokeObjectURL(url) { revoked.push(url); }
     },
-    parseMarkdownClient(text) {
+    parseMarkdownClient(text, bindings) {
       if (failure === 'render') throw Error('render failed');
-      renders.push(text); return '<p>' + escape(text) + '</p>';
+      renders.push(text); return actualRenderer ? actualRenderer(text, bindings) : '<p>' + escape(text) + '</p>';
     },
     setTimeout(fn, delay) { const id = ++next; timers.set(id, {fn, delay}); return id; },
     clearTimeout(id) { timers.delete(id); }
@@ -360,3 +369,114 @@ test('readiness already settled before controller registration still renders edi
   s.edit('newest startup source');await native.ready;await Promise.resolve();
   assert.equal(calls[0].source,'newest startup source');assert.deepEqual(s.renders,[]);
 });
+
+function actualImageRenderer(code = renderer) {
+  const context = vm.createContext({Map});
+  vm.runInContext(code, context);
+  return (source, bindings) => context.parseMarkdownClient(source, bindings);
+}
+
+// Read the fixed application-owned slots emitted by our native fixture and the
+// detached DOM adapter. Source data is JSON, not textarea text or rendered HTML.
+function readImageWorkspace(html) {
+  const data = id => {
+    const match = html.match(new RegExp('<script[^>]*\\bid="' + id + '"[^>]*>([\\s\\S]*?)</script>'));
+    return match ? JSON.parse(match[1]) : null;
+  };
+  const source = data('fmd-raw-source');
+  assert.equal(typeof source, 'string');
+  const preview = html.match(/<div class="fmd-content" id="fmd-content">([\s\S]*?)<\/div>\n  <\/main>/)?.[1]
+    ?? html.match(/<main>([\s\S]*?)<\/main>/)?.[1];
+  assert.equal(typeof preview, 'string');
+  return {source, imageAssets: data('fmd-image-assets'), initialPreview: preview};
+}
+
+function displayedImages(html) {
+  return [...html.matchAll(/<img\b[^>]*>/g)].map(([tag]) => {
+    const source = tag.match(/\bsrc="([^"]*)"/)?.[1];
+    const data = source?.match(/^data:(image\/[^;]+);base64,([A-Za-z0-9+/]+={0,2})$/i);
+    assert.ok(data, 'workspace fixture must display a self-contained image');
+    return {mime: data[1].toLowerCase(), bytes: Buffer.from(data[2], 'base64').toString('hex'),
+      alt: tag.match(/\balt="([^"]*)"/)?.[1]};
+  });
+}
+
+async function verifyImageSaveCycles(fixture, parser) {
+  const expected = displayedImages(fixture.initialPreview);
+  const originalAssets = fixture.imageAssets;
+  for (let generation = 1; generation <= 3; generation++) {
+    const page = setup({...fixture, actualRenderer: parser});
+    assert.deepEqual(displayedImages(page.get('fmd-content').innerHTML), expected);
+    const source = fixture.source + '\n\nUnrelated paragraph ' + generation + '.\n';
+    page.edit(source);
+    page.click('btn-export-pdf'); // Lightweight printing flushes real rendering.
+    assert.deepEqual(displayedImages(page.printed[0]), expected, 'images changed during an unrelated edit');
+    page.click('btn-save-html');
+    const saved = await page.downloads[0].blob.text();
+    page.click('btn-save-markdown');
+    assert.equal(await page.downloads[1].blob.text(), source, 'source encoding changed during display normalization');
+    assert.equal(JSON.parse(page.get('fmd-raw-source').textContent), fixture.source, 'saving changed the live baseline');
+    fixture = readImageWorkspace(saved);
+    assert.equal(fixture.source, source);
+    assert.deepEqual(fixture.imageAssets, originalAssets, 'saved bindings changed');
+    assert.deepEqual(displayedImages(fixture.initialPreview), expected, 'saved preview changed images');
+  }
+}
+
+test('encoded source images survive production edit, print, save and three reopen generations', async () => {
+  const bytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="8"><text>é中😀</text></svg>');
+  const canonical = 'data:image/svg+xml;base64,' + bytes.toString('base64');
+  const parser = actualImageRenderer();
+  for (const destination of [
+    'data:image/svg+xml,' + encodeURIComponent(bytes.toString()),
+    'DATA:IMAGE/SVG+XML;CHARSET=UTF-8;BASE64,' + bytes.toString('base64'),
+    'data:image/svg+xml;base64,' + encodeURIComponent(bytes.toString('base64')),
+  ]) {
+    await verifyImageSaveCycles({source: '# Portable\n\n![Plot](' + destination + ')', imageAssets: null,
+      initialPreview: '<h1>Portable</h1><p><img src="' + canonical + '" alt="Plot"></p>'}, parser);
+  }
+});
+
+test('explicit rejection and first binding precedence survive production saves and reopening', async () => {
+  const destination = 'data:image/svg+xml;base64,' + Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString('base64');
+  const replacement = 'data:image/svg+xml;base64,' + Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><text>Replacement</text></svg>').toString('base64');
+  const parser = actualImageRenderer();
+  for (const [assets, expected] of [
+    [[[destination, null]], '<p>Plot</p>'],
+    [[[destination, null], [destination, replacement]], '<p>Plot</p>'],
+    [[[destination, replacement], [destination, null]], '<p><img src="' + replacement + '" alt="Plot"></p>'],
+  ]) {
+    await verifyImageSaveCycles({source: '![Plot](' + destination + ')', imageAssets: assets,
+      initialPreview: expected}, parser);
+  }
+});
+
+test('an unused rejected binding remains rejected after saving, reopening and reinserting its source', async () => {
+  const destination = 'data:image/svg+xml;base64,' + Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString('base64');
+  const parser = actualImageRenderer(), assets = [[destination, null]];
+  const page = setup({source: '![Plot](' + destination + ')', imageAssets: assets,
+    initialPreview: '<p>Plot</p>', actualRenderer: parser});
+  page.edit('Images temporarily removed.'); page.click('btn-save-html');
+  const reopened = readImageWorkspace(await page.downloads[0].blob.text());
+  assert.deepEqual(reopened.imageAssets, assets);
+  const next = setup({...reopened, actualRenderer: parser});
+  next.edit('![Plot](' + destination + ')\n\nRestored reference.'); next.click('btn-save-html');
+  assert.deepEqual(displayedImages(next.get('fmd-content').innerHTML), []);
+  assert.deepEqual(readImageWorkspace(await next.downloads[0].blob.text()).imageAssets, assets);
+});
+
+// The Rust integration test supplies a freshly generated workspace on stdin.
+// Execute its actual bundled renderer, not whichever JS happens to be in the
+// checkout, then run the unchanged production controller through save/reopen.
+if (process.argv.includes('--native-image-workspace')) {
+  const html = readFileSync(0, 'utf8');
+  test('native-generated image bindings and the bundled renderer retain their initial meaning through editing', async () => {
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    assert.equal(typeof script, 'string');
+    const end = script.indexOf('\n(function() {');
+    assert.ok(end > 0, 'native workspace must contain renderer followed by controller');
+    const embeddedController = script.slice(end + 1, end + 1 + controller.length);
+    assert.equal(embeddedController, controller, 'fixture must use the same controller being executed');
+    await verifyImageSaveCycles(readImageWorkspace(html), actualImageRenderer(script.slice(0, end)));
+  });
+}

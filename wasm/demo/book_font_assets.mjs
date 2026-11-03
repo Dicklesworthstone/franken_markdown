@@ -91,16 +91,16 @@ export function createBookFontStore() {
   });
 }
 
-/** Read only a user-selected .ttf file. This admits bytes, not font validity or
+/** Read only a user-selected .ttf or .otf file. This admits bytes, not font validity or
  * embedding rights. The publishing engine remains responsible for parsing. */
 export async function readBookFont(file, slot, weight) {
   slotName(slot); weightValue(weight);
   if (!file || Object.prototype.toString.call(file) !== "[object File]") {
-    throw error("INVALID_FONT", "Choose a local TrueType (.ttf) font file.");
+    throw error("INVALID_FONT", "Choose a local TrueType (.ttf) or OpenType (.otf) font file.");
   }
   const name = fontName(file.name), size = file.size, read = file.arrayBuffer;
-  if (!/\.ttf$/i.test(name) || typeof read !== "function") {
-    throw error("INVALID_FONT", "Choose a TrueType .ttf file; WOFF, collections and CFF fonts are not supported here.");
+  if (!/\.(?:ttf|otf)$/i.test(name) || typeof read !== "function") {
+    throw error("INVALID_FONT", "Choose a local .ttf or .otf file; WOFF and font collections are not supported here.");
   }
   if (!Number.isSafeInteger(size) || size < 1 || size > BOOK_FONT_LIMITS.faceBytes) {
     throw error("FONT_LIMIT", "A selected font must contain 1 byte through 8 MiB.");

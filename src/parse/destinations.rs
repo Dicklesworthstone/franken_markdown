@@ -104,6 +104,30 @@ pub(crate) fn destination_spans(source: &str) -> Vec<DestinationSpan> {
         .collect()
 }
 
+pub(crate) fn reference_label_spans(source: &str) -> Vec<ReferenceLabelSpan> {
+    if !source.contains('[') {
+        return Vec::new();
+    }
+    let mut profiler = ParseProfiler::disabled();
+    let mut tracker = DestinationTracker::new(source);
+    tracker.labels = Some(Vec::new());
+    profiler.destinations = Some(tracker);
+    let _document = parse_document_inner(source, &mut profiler);
+    let mut labels = profiler
+        .destinations
+        .and_then(|tracker| tracker.labels)
+        .unwrap_or_default();
+    labels.sort_by(|left, right| {
+        let location =
+            |span: &ReferenceLabelSpan| span.label.as_ref().map(|range| (range.start, range.end));
+        (location(left), left.form, &left.key).cmp(&(location(right), right.form, &right.key))
+    });
+    // Metadata walks can revisit the same accepted definition. Unknown ranges
+    // remain represented: even one is enough to prevent an incomplete edit.
+    labels.dedup();
+    labels
+}
+
 /// Internal source edits need the token's syntax, while the public Markdown
 /// destination API deliberately retains its existing recognition contract.
 pub(crate) struct SourceDestination {
@@ -138,6 +162,52 @@ fn tracked_destinations(source: &str, html: bool) -> Vec<SourceDestination> {
     spans.sort_by_key(|span| (span.token.range.start, span.token.range.end));
     spans.dedup_by(|right, left| right.token.range == left.token.range);
     spans
+}
+
+/// Source envelopes for fenced code owned by lists, quotes, or footnotes.
+/// Transclusion uses these to keep container examples literal without guessing
+/// a second container grammar. Reuse the block metadata walk: no inline AST,
+/// HTML rendering, or ordinary destination tokens are produced in this mode.
+/// Top-level include/fence recognition remains the expansion engine's contract.
+pub(crate) fn container_fence_ranges(
+    source: &str,
+    skip_line: impl Fn(&str) -> bool,
+) -> Vec<Range<usize>> {
+    if !source.contains(['`', '~']) {
+        return Vec::new();
+    }
+    let mut tracker = DestinationTracker::new(source);
+    tracker.container_fences = Some(Vec::new());
+    let body = document_body(source);
+    // Named snippets remove anchor-marker lines before expansion. Omit those
+    // same borrowed slices here, retaining their neighbors' original addresses.
+    let mut originals = split_logical_lines(body);
+    originals.retain(|line| !skip_line(line));
+    let tab_storage: Option<Vec<String>> = body.contains('\t').then(|| {
+        originals
+            .iter()
+            .map(|line| expand_leading_tabs(line).into_owned())
+            .collect()
+    });
+    if let Some(storage) = &tab_storage {
+        for (copied, original) in storage.iter().zip(&originals) {
+            tracker.map_suffix(copied, original);
+        }
+    }
+    let lines = if let Some(storage) = &tab_storage {
+        storage.iter().map(String::as_str).collect()
+    } else {
+        originals
+    };
+    collect_link_reference_metadata_into_tracked(
+        &lines,
+        None,
+        &mut ReferenceMap::new(),
+        Some(&mut tracker),
+    );
+    let mut ranges = tracker.container_fences.unwrap_or_default();
+    ranges.sort_unstable_by_key(|range| range.start);
+    ranges
 }
 
 #[derive(Clone)]
@@ -236,7 +306,10 @@ pub(super) struct DestinationTracker {
     text_order: Vec<(usize, Option<TextMap>)>,
     chars: Vec<CharMap>,
     spans: Vec<SourceDestination>,
+    labels: Option<Vec<ReferenceLabelSpan>>,
     html: bool,
+    /// Present only for the metadata-only transclusion fence query.
+    container_fences: Option<Vec<Range<usize>>>,
 }
 
 impl DestinationTracker {
@@ -248,7 +321,32 @@ impl DestinationTracker {
             text_order: Vec::new(),
             chars: Vec::new(),
             spans: Vec::new(),
+            labels: None,
             html: false,
+            container_fences: None,
+        }
+    }
+
+    /// Map the first and last literal characters while the container's copied
+    /// suffixes are still registered. The envelope includes original line
+    /// prefixes/newlines; callers use it to classify whole source lines, never
+    /// claim that stripped Markdown markers are rendered code characters.
+    pub(super) fn container_fence(&mut self, lines: &[&str]) {
+        if self.container_fences.is_none() {
+            return;
+        }
+        let first = lines.iter().find_map(|line| {
+            let text = line.trim();
+            let width = text.chars().next()?.len_utf8();
+            self.text_range(&text[..width])
+        });
+        let last = lines.iter().rev().find_map(|line| {
+            let text = line.trim();
+            let width = text.chars().next_back()?.len_utf8();
+            self.text_range(&text[text.len() - width..])
+        });
+        if let (Some(first), Some(last), Some(ranges)) = (first, last, &mut self.container_fences) {
+            ranges.push(first.start..last.end);
         }
     }
 
@@ -268,10 +366,11 @@ impl DestinationTracker {
 
     fn text_range(&self, text: &str) -> Option<Range<usize>> {
         let address = text.as_ptr() as usize;
-        if let Some(offset) = address.checked_sub(self.source_address) {
-            if text.len() <= self.source_len.saturating_sub(offset) && offset <= self.source_len {
-                return Some(offset..offset + text.len());
-            }
+        if let Some(offset) = address.checked_sub(self.source_address)
+            && text.len() <= self.source_len.saturating_sub(offset)
+            && offset <= self.source_len
+        {
+            return Some(offset..offset + text.len());
         }
         let (&base, map) = self.text.range(..=address).next_back()?;
         let offset = address.checked_sub(base)?;
@@ -292,12 +391,13 @@ impl DestinationTracker {
         if copied.is_empty() {
             return;
         }
-        if let Some(last) = runs.last_mut() {
-            if last.copied.end == copied.start && last.original.end == original.start {
-                last.copied.end = copied.end;
-                last.original.end = original.end;
-                return;
-            }
+        if let Some(last) = runs.last_mut()
+            && last.copied.end == copied.start
+            && last.original.end == original.start
+        {
+            last.copied.end = copied.end;
+            last.original.end = original.end;
+            return;
         }
         runs.push(TextRun { copied, original });
     }
@@ -355,8 +455,15 @@ impl DestinationTracker {
     }
 
     fn append_chars(&self, map: &mut CharMap, text: &str) {
-        for (index, character) in text.char_indices() {
-            let width = character.len_utf8();
+        let mut source = text.char_indices().peekable();
+        while let Some((index, character)) = source.next() {
+            // The inline buffer normalizes a CRLF pair to one '\n'. Its one
+            // character still covers both original bytes in editable ranges.
+            let mut width = character.len_utf8();
+            if character == '\r' && source.peek().is_some_and(|(_, ch)| *ch == '\n') {
+                let _ = source.next();
+                width += 1;
+            }
             map.push(width, self.text_range(&text[index..index + width]));
         }
     }
@@ -410,20 +517,7 @@ impl DestinationTracker {
         if token.is_empty() || dest.is_empty() {
             return false;
         }
-        let address = chars.as_ptr() as usize;
-        let char_size = std::mem::size_of::<char>();
-        let Some((map, offset)) = self.chars.iter().rev().find_map(|map| {
-            let bytes = address.checked_sub(map.address)?;
-            if bytes % char_size != 0 {
-                return None;
-            }
-            let offset = bytes / char_size;
-            (offset <= map.widths.len() && chars.len() <= map.widths.len() - offset)
-                .then_some((map, offset))
-        }) else {
-            return false;
-        };
-        let Some(range) = map.source_range(offset + token.start..offset + token.end) else {
+        let Some(range) = self.char_range(chars, token) else {
             return false;
         };
         self.spans.push(SourceDestination {
@@ -434,6 +528,58 @@ impl DestinationTracker {
             syntax,
         });
         true
+    }
+
+    fn char_range(&self, chars: &[char], token: Range<usize>) -> Option<Range<usize>> {
+        if token.start > token.end || token.end > chars.len() {
+            return None;
+        }
+        let address = chars.as_ptr() as usize;
+        let char_size = std::mem::size_of::<char>();
+        let (map, offset) = self.chars.iter().rev().find_map(|map| {
+            let bytes = address.checked_sub(map.address)?;
+            if bytes % char_size != 0 {
+                return None;
+            }
+            let offset = bytes / char_size;
+            (offset <= map.widths.len() && chars.len() <= map.widths.len() - offset)
+                .then_some((map, offset))
+        })?;
+        map.source_range(offset + token.start..offset + token.end)
+    }
+
+    /// Called only after a reference use survives speculative link parsing.
+    pub(super) fn reference_use(&mut self, chars: &[char], open: usize, close: usize, next: usize) {
+        if self.labels.is_none() {
+            return;
+        }
+        let (form, token) = if next == close + 1 {
+            (ReferenceLabelForm::Shortcut, open + 1..close)
+        } else if next == close + 3 {
+            (ReferenceLabelForm::Collapsed, open + 1..close)
+        } else {
+            (ReferenceLabelForm::Full, close + 2..next - 1)
+        };
+        let Some(key) = normalize_reference_label_chars(&chars[token.clone()]) else {
+            return;
+        };
+        let label = self.char_range(chars, token);
+        let replacement = match form {
+            ReferenceLabelForm::Full => label.clone(),
+            ReferenceLabelForm::Collapsed => self.char_range(chars, close + 1..next),
+            ReferenceLabelForm::Shortcut => self
+                .char_range(chars, close..close + 1)
+                .map(|range| range.end..range.end),
+            ReferenceLabelForm::Definition => None,
+        };
+        if let Some(labels) = &mut self.labels {
+            labels.push(ReferenceLabelSpan {
+                key,
+                form,
+                label,
+                replacement,
+            });
+        }
     }
 
     /// Invoked only after the Markdown parser accepts a real HTML node. Code,
@@ -504,7 +650,10 @@ impl DestinationTracker {
     }
 
     /// Invoked only after the real paragraph-aware collector accepts a def.
-    pub(super) fn reference(&mut self, lines: &[&str], dest: &str) {
+    pub(super) fn reference(&mut self, lines: &[&str], key: &str, dest: &str) {
+        if self.container_fences.is_some() {
+            return;
+        }
         let joined = lines.join("\n");
         let mut offset = 0;
         let parts: Vec<_> = lines
@@ -519,6 +668,20 @@ impl DestinationTracker {
         self.map_parts(&joined, &parts);
         let chars: Vec<_> = joined.chars().collect();
         self.push_chars_text(&chars, &joined);
+        if self.labels.is_some() {
+            let mut open = 0;
+            skip_spaces(&chars, &mut open);
+            let label = find_closing_bracket(&chars, open)
+                .and_then(|close| self.char_range(&chars, open + 1..close));
+            if let Some(labels) = &mut self.labels {
+                labels.push(ReferenceLabelSpan {
+                    key: key.to_string(),
+                    form: ReferenceLabelForm::Definition,
+                    replacement: label.clone(),
+                    label,
+                });
+            }
+        }
         let token = (|| {
             let mut index = 0;
             skip_spaces(&chars, &mut index);
@@ -593,15 +756,30 @@ impl ParseProfiler {
         }
     }
 
-    pub(super) fn destination_mark(&self) -> usize {
-        self.destinations
-            .as_ref()
-            .map_or(0, |tracker| tracker.spans.len())
+    pub(super) fn destination_mark(&self) -> (usize, usize) {
+        self.destinations.as_ref().map_or((0, 0), |tracker| {
+            (
+                tracker.spans.len(),
+                tracker.labels.as_ref().map_or(0, Vec::len),
+            )
+        })
     }
 
-    pub(super) fn destination_rollback(&mut self, mark: usize) {
+    pub(super) fn destination_rollback(&mut self, mark: (usize, usize)) {
         if let Some(tracker) = &mut self.destinations {
-            tracker.spans.truncate(mark);
+            tracker.spans.truncate(mark.0);
+            if let Some(labels) = &mut tracker.labels {
+                labels.truncate(mark.1);
+            }
+        }
+    }
+
+    /// Image alt text flattens its inline nodes, so their URLs are not emitted
+    /// destinations. Accepted reference labels still determine that text and
+    /// need coordinated source edits when their definitions are renamed.
+    pub(super) fn destination_tokens_rollback(&mut self, mark: (usize, usize)) {
+        if let Some(tracker) = &mut self.destinations {
+            tracker.spans.truncate(mark.0);
         }
     }
 }
@@ -609,6 +787,23 @@ impl ParseProfiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_inline_breaks_keep_exact_original_destination_tokens() -> Result<(), &'static str>
+    {
+        let source = "é\r\n[one](/a#part)\r[二](<b.png>)\n";
+        let mut profiler = ParseProfiler::disabled();
+        profiler.destinations = Some(DestinationTracker::new(source));
+        let _parsed = parse_inlines_with_refs_profiled(source, &ReferenceMap::new(), &mut profiler);
+        let tracker = profiler.destinations.ok_or("missing tracker")?;
+        let tokens: Vec<_> = tracker
+            .spans
+            .iter()
+            .map(|span| &source[span.token.range.clone()])
+            .collect();
+        assert_eq!(tokens, ["/a#part", "<b.png>"]);
+        Ok(())
+    }
 
     #[test]
     fn resource_spans_follow_real_html_nodes_and_preserve_markdown_only_api() {

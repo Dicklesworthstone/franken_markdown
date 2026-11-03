@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "fonttools_version": "4.61.1",
+  "source_sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+  "artifact_sha256": "c3c5b027d8d286d2eb6b6fd305c66d255b1ce2df680837b0584e98909cfa3ab3",
+  "mapped_characters": 28215,
+  "glyphs": 28101,
+  "geometry_checks": 28215,
+  "max_coordinate_or_advance_error_units": 0.4998318654186278,
+  "failure_count": 0,
+  "failure_examples": []
+}

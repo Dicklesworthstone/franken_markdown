@@ -14,10 +14,29 @@ Resolved bytes are emitted only as escaped `img` data-URI attributes, never as
 injected SVG markup. Prototype-like destination names are ordinary map keys.
 Damaged saved bindings do not fall back to a remote resource.
 
-Canonical base64 `data:image/` source images (PNG, JPEG, GIF, WebP and SVG) also
-survive live editing. This does not enable data URLs in links or autolinks.
-The browser still determines whether the encoded bytes form a decodable image;
-the URL admission check is not an image integrity validator.
+For `data:` image destinations, the first explicit native binding owns both
+replacement and rejection. An invalid first binding stays rejected in the saved
+manifest; it does not reveal the original source image or a later duplicate
+after an edit, save or reopening. Unsupported non-image data destinations cannot
+gain image permission through a binding. Unused rejection bindings are retained
+alongside unused images.
+
+PNG, JPEG, GIF, WebP and SVG `data:image/` source images survive live editing.
+Alongside canonical base64, source URLs can carry percent-escaped image bytes,
+percent-escaped base64 symbols and an optional `charset=utf-8` before `base64`.
+Display normalizes these forms to base64 image attributes; **Save Markdown keeps
+the original source encoding**. This covers the portable PNG/JPEG/GIF/SVG source
+forms accepted by native HTML, while retaining the lightweight browser's existing
+WebP support. It does not enable data URLs in links or autolinks, inline SVG
+markup, or HTML execution.
+
+Data headers are bounded to 256 characters and decoded image payloads to 32 MiB.
+Percent escapes and base64 padding must be valid. Normalization also consumes
+the existing per-render work/output budgets before publishing a new preview;
+exhaustion preserves the last successful preview and leaves source downloadable.
+These are logical limits, not browser heap guarantees. The browser still decides
+whether encoded bytes form a decodable image; URL admission is not an image
+integrity validator.
 
 ## Saving and portability
 
@@ -41,7 +60,13 @@ contract. Supplied bindings themselves need no filesystem or network lookup.
 renderer with actual image bindings and data URLs. The normal Rust runtime test
 entrypoint includes this suite alongside the existing renderer/controller tests.
 `src/interactive/assets.rs` tests native resource-encoder parity, unused assets,
-duplicate keys, unsupported bytes and script-data escaping.
+duplicate keys, rejected data-image overrides, unsupported bytes and script-data
+escaping. `tests/interactive_controller.test.mjs` runs the actual lightweight
+renderer and production controller through printing, Markdown/HTML downloads and
+three save/reopen generations with explicit DOM adapters. The Rust
+`interactive_html_test` also feeds freshly generated workspaces into that flow,
+executing their bundled renderer and checking native manifest semantics. These
+adapter checks do not replace real-browser image decoding.
 
 For a native-generated interactive document containing at least one supplied
 image, run `python tests/support/interactive_images_browser_check.py document.html`
@@ -52,24 +77,67 @@ errors. Browser fixture execution is distinct from Rust/WASM compilation.
 
 ## Importing images while editing
 
-**Insert image** opens a local file chooser for static PNG and JPEG files. Select
+**Insert image** opens a local file chooser for PNG, JPEG, GIF and SVG files. Select
 one or several images to insert at the editor selection in file-selection order.
 The entire batch is read, bounded, inspected and decoded before source changes;
 a failed file leaves the source untouched. Typing (even followed by undo) while
 a read is pending rejects the stale insertion rather than overwriting that work.
 The same files can be selected again after a failed or successful import.
 
-The importer determines PNG/JPEG format and dimensions from bytes, not the
+**Cancel image import** stops a pending read or decode immediately. Starting
+text composition, making the editor read-only or disabled, or leaving the page
+also cancels the pending insertion. A new selection is required after returning
+to an editable document. Each file read and decode has a ten-second deadline;
+an abandoned operation cannot insert source, publish native image resources,
+or interfere with a later retry. Cancellation preserves edits made while the
+files were being read.
+
+The importer determines PNG/JPEG/GIF/SVG format and dimensions from bytes, not the
 extension or declared MIME type. Browser decoding must also succeed. Limits are
 eight files per batch, 8 MiB per file, 16 MiB per batch, 24 million pixels per
-image and 16,384 pixels per side. Animated PNG and other import formats are
-refused. The resulting editor document is limited to 32 Mi UTF-16 code units for
+image canvas and 16,384 pixels per side. GIF87a and GIF89a containers retain
+their original palettes, transparency, interlacing and animation bytes. Every
+frame must fit the admitted canvas, and all image/extension sub-blocks must be
+complete through the final trailer. GIF plain-text graphics and animated PNG
+remain unsupported. The resulting editor document is limited to 32 Mi UTF-16 code units for
 this import operation. These are import limits, not new global rendering limits.
 
-Newly imported images are written as base64 image data URIs **in the Markdown
-source itself**. Consequently both **Save Markdown** and **Save HTML** carry the
-new images without a sidecar folder. This differs from externally supplied
-`HtmlOptions.image_assets`, which remain separate bindings as described above.
+The native workspace's **Document images** replacement chooser accepts the same
+formats without changing the existing Markdown destination. HTML preserves GIF
+animation; native PDF uses the first frame. SVG retains its original vector
+bytes through import, replacement, HTML saving and native PDF dispatch. Imported
+native resources use `.gif` or `.svg` destinations when their bytes identify
+those formats, even when the selected filename or declared MIME type differs.
+
+SVG import accepts self-contained UTF-8 SVG with its SVG namespace, explicit
+positive dimensions or a positive `viewBox`. Absolute CSS units use the same
+96-pixel-per-inch conversion as the native renderer. Local gradients, patterns,
+clip paths, `<use>` references, static styles and embedded PNG/JPEG/GIF images
+remain available; ordinary HTTP(S)/mailto hyperlinks are retained for native
+PDF rendering. The browser parses XML without attaching its nodes to the host
+document. It never rewrites the SVG or converts it into a raster image.
+
+Before image decoding, admission rejects scripts and event handlers, foreign
+content, animation, XML processing instructions/DTDs/entities, external image
+or stylesheet/font references, and nested SVG images. Local reference cycles
+and excessive expansion are refused. Tree/reference admission is bounded to
+32,768 nodes/markup tokens and 128 levels. Embedded raster images, including
+their reference expansion, share a 24-million-pixel budget; their original
+bytes share an 8-MiB budget. Expanded text and attribute payload, including
+repeated paths and labels, is also limited to 8 MiB of UTF-8. The SVG viewport and conservative CSS size bounds
+must also fit the ordinary image limits. Styles may use local `url(#fragment)`
+paints and bounded absolute/percentage sizes; stylesheet at-rules and computed
+intrinsic sizes such as `width:calc(...)` are refused. These checks are an
+authoring admission policy, not a second SVG rendering engine: native output
+continues to use its established supported SVG subset.
+
+Lightweight workspaces write newly imported images as base64 image data URIs
+**in the Markdown source itself**. Consequently both **Save Markdown** and
+**Save HTML** carry those images without a sidecar folder. Workspaces with the
+embedded Rust/WASM runtime instead retain imported bytes as separate resources
+and insert short, unique `fmd-import/` destinations. **Save HTML** carries those
+resources; **Save Markdown** retains the references only. Externally supplied
+`HtmlOptions.image_assets` also remain separate bindings as described above.
 Filenames become escaped, bounded alt text. No filename becomes an ambient path,
 network destination, script or raw HTML element.
 
@@ -79,10 +147,57 @@ use `setRangeText`, which does not promise undo preservation. A saved read-mode
 workspace switches through its normal view controller before inserting. Source
 changes activate the existing leave-page warning and normal preview/save flow.
 
-`node --test tests/interactive_import.test.mjs` exercises the shipped metadata,
-limits, encoding, batch and stale-revision code. The optional real-browser gate
+`node --test tests/interactive_import.test.mjs tests/interactive_svg_import.test.mjs tests/interactive_import_controller.test.mjs`
+exercises the shipped metadata, limits, encoding, batch and insertion ownership
+code. The optional real-browser gate
 `python tests/support/interactive_import_browser_check.py document.html` uses
-actual local file selection, PNG/JPEG decoding, selection replacement, batch
+actual local file selection, PNG/JPEG/GIF/SVG decoding, selection replacement, batch
 refusals, retry, undo/redo, asynchronous races and both download formats. It also
 checks the fallback insertion path and saved read-mode state. Like the resource
 lifecycle gate, this browser gate is separate from Rust/WASM compilation.
+`python tests/support/interactive_svg_import_browser_check.py --chromium PATH`
+also runs the real browser XML parser and SVG decoder against safe vector
+documents, aggregate raster/reference expansion limits, and unsafe-resource
+negative controls, asserting rejection before decoding and zero network requests.
+
+## Attach local images to existing Markdown
+
+An embedded Rust/WASM workspace with background rendering also offers
+**Document images → Attach an image to existing Markdown**. Use this after
+opening a Markdown document whose referenced image files are not embedded yet:
+
+1. Enter the image destination, such as `figures/diagram.png`, from the Markdown
+   image or reference definition.
+2. Choose the corresponding local PNG, JPEG, GIF or SVG file.
+3. Select **Attach image**. The browser checks the image and the native background
+   renderer validates the updated document before publishing the resource.
+
+Attachment keeps the Markdown, including alt text and repeated references,
+unchanged. Every reference to that destination uses the same attached bytes.
+It also works in documents that have no embedded images. The destination is an
+explicit lookup key: attachment neither opens that path nor fetches a URL, and
+it never scans neighboring files or guesses from filenames. Destinations are
+trimmed, must be valid Unicode without control characters, and are limited to
+8 KiB of UTF-8. A destination already embedded in the document must be changed
+through **Replace selected image**, so attachment cannot overwrite it silently.
+
+The file uses the same byte, dimension, format and decode checks as other image
+authoring. A failed read, decode or native preflight publishes nothing. Changes
+to source, destination, view or document resources invalidate pending work;
+composition, read-only/disabled state, cancellation and page suspension also
+prevent stale publication. Retry is explicit, and closing the dialog or leaving
+the page discards its selected files and destination draft.
+
+Choose **Save HTML** to keep the attached image bytes with the editable document.
+**Save Markdown** preserves the original source, including untouched BOM and
+line endings, and does not package the separate resources. Older native runtimes
+without the attachment API retain their existing replacement/removal controls.
+
+`wasm/native_workspace_image_manager.test.mjs` exercises the shipped manager
+against real resource transactions, with explicit DOM/read/worker adapters.
+`wasm/native_workspace_image_changes_browser.py` verifies real browser file
+reading, decoding, worker publication and refusal paths. The full controller
+gate `wasm/native_workspace_images_browser.py` checks actual Markdown/HTML
+downloads, file reopening and exact resource bytes passed to PDF publication.
+These browser fixtures use explicit native ABI adapters and do not substitute
+for compiled Rust/WASM rendering or PDF conformance tests.

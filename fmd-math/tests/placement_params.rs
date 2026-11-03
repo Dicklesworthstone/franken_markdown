@@ -559,8 +559,8 @@ fn script_styles_read_their_own_sizes_fontdimens() {
     let width = |s: &str| e.typeset(s, Style::Text).unwrap().width;
     let thin = width(r"x^{a\,b}") - width("x^{ab}");
     assert!(close(thin, 15.43532 - 14.06958), "thin space {thin}");
-    // \quad and `\ ` are text-font glue, not mu: cmr10's quad and interword
-    // space at 10 pt even in a script.
+    // \quad and `\ ` are text-font glue, not mu: EC's quad and interword
+    // space at the declared 10 pt even in a math script.
     let quad = width(r"x^{a\quad b}") - width("x^{ab}");
     assert!(close(quad, 24.06714 - 14.06958), "script quad {quad}");
     let space = width(r"x^{a\ b}") - width("x^{ab}");
@@ -2879,8 +2879,8 @@ fn text_lines(layout: &Layout) -> Vec<(f64, f64, f64, String)> {
 }
 
 /// TeX's lines of a `\centering` paragraph at 345 pt, as `(natural width
-/// in pt, characters)` from `\showbox` and each line's `\unhcopy` (OT1
-/// T1 EC with the template's font control in `article`), against fmd-math's
+/// in pt, characters)` from `\showbox` and each line's `\unhcopy` (T1 EC
+/// with the template's font control in `article`), against fmd-math's
 /// `center` block under the default pack.
 fn assert_breaks_like_tex(text: &str, tex: &[(f64, &str)]) {
     use fmd_math::MacroSet;

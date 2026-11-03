@@ -1,14 +1,16 @@
 //! EPUB-local font resources shared by document and book export.
 //!
-//! Explicit host faces opt in; absent faces retain the historical font-free
-//! archive. Once enabled, missing slots use the shared bundled registry. The
-//! rendered repertoire is collected once for the publication, not per chapter.
+//! Explicit host faces or Full embedding opt into primary faces. Default
+//! Subset keeps Latin archives font-free; covered CJK text adds only its enabled
+//! fallback face. The rendered repertoire is collected once per publication.
 
 use std::collections::BTreeSet;
 
 use franken_markdown::fonts::{self, FontStyle};
-use franken_markdown::text::Font;
-use franken_markdown::{FontAssetSlot, FontFamily, HtmlOptions, RenderError, Result};
+use franken_markdown::text::{EmbeddingFormat, Font};
+use franken_markdown::{
+    FontAssetSlot, FontEmbedding, FontFamily, HtmlOptions, RenderError, Result,
+};
 
 use super::{ZipWriter, fnv1a64};
 
@@ -44,7 +46,7 @@ pub(super) fn enabled(opts: &HtmlOptions) -> Result<bool> {
         }
     }
     opts.font_assets.validate()?;
-    Ok(supplied)
+    Ok(supplied || opts.font_embedding == FontEmbedding::Full)
 }
 
 /// Collect emitted text, including MathML symbols and generated footnote
@@ -53,6 +55,7 @@ pub(super) fn enabled(opts: &HtmlOptions) -> Result<bool> {
 #[derive(Default)]
 pub(super) struct Repertoire {
     enabled: bool,
+    cjk: Option<&'static Font>,
     bytes: usize,
     characters: BTreeSet<char>,
 }
@@ -61,6 +64,10 @@ impl Repertoire {
     pub(super) fn new(enabled: bool) -> Self {
         let mut result = Self {
             enabled,
+            // The broad fallback is cached once; publications borrow it.
+            cjk: fonts::cjk_font()
+                .and_then(|loaded| loaded.ok())
+                .map(|(font, _)| font),
             ..Self::default()
         };
         if enabled {
@@ -73,15 +80,15 @@ impl Repertoire {
     }
 
     pub(super) fn add(&mut self, text: &str) -> Result<()> {
-        if !self.enabled {
+        if !self.enabled && self.cjk.is_none() {
             return Ok(());
         }
-        if text.len() > MAX_TEXT_BYTES.saturating_sub(self.bytes) {
+        if self.enabled && text.len() > MAX_TEXT_BYTES.saturating_sub(self.bytes) {
             return Err(invalid("font repertoire text exceeds 64 MiB"));
         }
-        self.bytes += text.len();
+        let mut relevant = self.enabled;
         for ch in text.chars() {
-            self.insert(ch)?;
+            relevant |= self.insert(ch)?;
         }
         // Numeric XML entities otherwise contribute only their ASCII spelling.
         // Names are not decoded as arbitrary HTML entities: emitted XHTML uses
@@ -100,21 +107,35 @@ impl Repertoire {
                         b.is_ascii_digit()
                     }
                 })
-            {
-                if let Some(ch) = u32::from_str_radix(digits, radix)
+                && let Some(ch) = u32::from_str_radix(digits, radix)
                     .ok()
                     .and_then(char::from_u32)
-                {
-                    self.insert(ch)?;
-                }
+            {
+                relevant |= self.insert(ch)?;
             }
+        }
+        if relevant {
+            if text.len() > MAX_TEXT_BYTES.saturating_sub(self.bytes) {
+                return Err(invalid("font repertoire text exceeds 64 MiB"));
+            }
+            self.bytes += text.len();
         }
         Ok(())
     }
 
-    fn insert(&mut self, ch: char) -> Result<()> {
+    fn insert(&mut self, ch: char) -> Result<bool> {
+        // A default publication needs only actual CJK glyphs, not the ASCII
+        // markup/Latin seed that would force primary font resources into it.
+        if !self.enabled
+            && self
+                .cjk
+                .as_ref()
+                .is_none_or(|font| ch.is_ascii() || font.glyph_index(ch) == 0)
+        {
+            return Ok(false);
+        }
         if self.characters.contains(&ch) {
-            return Ok(());
+            return Ok(true);
         }
         if self.characters.len() == MAX_CHARACTERS {
             return Err(invalid(
@@ -122,62 +143,109 @@ impl Repertoire {
             ));
         }
         self.characters.insert(ch);
-        Ok(())
+        Ok(true)
     }
 
     pub(super) fn finish(self, opts: &HtmlOptions) -> Result<Package> {
-        if !self.enabled {
+        let cjk = self.cjk.filter(|font| {
+            self.characters
+                .iter()
+                .any(|&ch| !ch.is_ascii() && font.glyph_index(ch) != 0)
+        });
+        if !self.enabled && cjk.is_none() {
             return Ok(Package::default());
         }
         let keep: Vec<char> = self.characters.into_iter().collect();
         let mut package = Package::default();
-        for slot in FontAssetSlot::ALL {
-            let style = match slot {
-                FontAssetSlot::BodyRegular | FontAssetSlot::MonoRegular => FontStyle::Regular,
-                FontAssetSlot::BodyBold => FontStyle::Bold,
-                FontAssetSlot::BodyItalic => FontStyle::Italic,
-                FontAssetSlot::BodyBoldItalic => FontStyle::BoldItalic,
-            };
-            let font = match opts.font_assets.resolved_bytes(slot) {
-                Some(bytes) => {
-                    let font = Font::parse(bytes.to_vec()).map_err(invalid)?;
-                    if font.instance_bounds(*b"wght").is_some() {
-                        font.instance(f32::from(opts.font_assets.effective_weight(slot)))
-                            .ok_or_else(|| {
-                                invalid(format!(
-                                    "cannot instance {} at the requested weight",
-                                    slot.as_str()
-                                ))
-                            })?
-                    } else {
-                        font
+        if self.enabled {
+            for slot in FontAssetSlot::ALL {
+                let style = match slot {
+                    FontAssetSlot::BodyRegular | FontAssetSlot::MonoRegular => FontStyle::Regular,
+                    FontAssetSlot::BodyBold => FontStyle::Bold,
+                    FontAssetSlot::BodyItalic => FontStyle::Italic,
+                    FontAssetSlot::BodyBoldItalic => FontStyle::BoldItalic,
+                };
+                let font = match opts.font_assets.resolved_bytes(slot) {
+                    Some(bytes) => {
+                        let font = Font::parse(bytes.to_vec()).map_err(invalid)?;
+                        if font.instance_bounds(*b"wght").is_some() {
+                            font.instance(f32::from(opts.font_assets.effective_weight(slot)))
+                                .ok_or_else(|| {
+                                    invalid(format!(
+                                        "cannot instance {} at the requested weight",
+                                        slot.as_str()
+                                    ))
+                                })?
+                        } else {
+                            font
+                        }
                     }
-                }
-                None if slot == FontAssetSlot::MonoRegular => {
-                    fonts::load_mono(style).map_err(invalid)?
-                }
-                None => fonts::load_body(opts.theme.font, style).map_err(invalid)?,
-            };
-            let mono = slot == FontAssetSlot::MonoRegular;
-            let family = if mono { "FmdEpubMono" } else { "FmdEpubBody" };
-            let italic = matches!(
-                slot,
-                FontAssetSlot::BodyItalic | FontAssetSlot::BodyBoldItalic
-            );
-            // CSS describes semantic slots (normal/bold). Weight pins select
-            // the outlines in that slot, as on the PDF path, not a new style.
-            package.face(font, &keep, family, slot.default_weight(), italic)?;
+                    None if slot == FontAssetSlot::MonoRegular => {
+                        fonts::load_mono(style).map_err(invalid)?
+                    }
+                    None => fonts::load_body(opts.theme.font, style).map_err(invalid)?,
+                };
+                let mono = slot == FontAssetSlot::MonoRegular;
+                let family = if mono { "FmdEpubMono" } else { "FmdEpubBody" };
+                let italic = matches!(
+                    slot,
+                    FontAssetSlot::BodyItalic | FontAssetSlot::BodyBoldItalic
+                );
+                // CSS describes semantic slots (normal/bold). Weight pins select
+                // the outlines in that slot, as on the PDF path, not a new style.
+                package.face(
+                    &font,
+                    &keep,
+                    family,
+                    slot.default_weight(),
+                    italic,
+                    opts.font_embedding,
+                )?;
+            }
+            let symbols = Font::parse(fonts::symbol_bytes().to_vec()).map_err(invalid)?;
+            package.face(
+                &symbols,
+                &keep,
+                "FmdEpubSymbols",
+                400,
+                false,
+                opts.font_embedding,
+            )?;
         }
-        let symbols = Font::parse(fonts::symbol_bytes().to_vec()).map_err(invalid)?;
-        package.face(symbols, &keep, "FmdEpubSymbols", 400, false)?;
+        let has_cjk = cjk.is_some();
+        if let Some(font) = cjk {
+            let cjk_keep: Vec<char> = keep
+                .iter()
+                .copied()
+                .filter(|&ch| !ch.is_ascii() && font.glyph_index(ch) != 0)
+                .collect();
+            package.face(
+                font,
+                &cjk_keep,
+                "FmdEpubCjk",
+                400,
+                false,
+                opts.font_embedding,
+            )?;
+        }
         let fallback = match opts.theme.font {
             FontFamily::Sans => "sans-serif",
             FontFamily::Serif => "serif",
         };
-        package.css.push_str(&format!(
-            "body{{font-family:\"FmdEpubBody\",\"FmdEpubSymbols\",{fallback};}}\n\
-             pre,code,kbd,samp{{font-family:\"FmdEpubMono\",\"FmdEpubSymbols\",monospace;}}\n"
-        ));
+        if self.enabled {
+            let cjk_family = if has_cjk { "\"FmdEpubCjk\"," } else { "" };
+            package.css.push_str(&format!(
+                "body{{font-family:\"FmdEpubBody\",\"FmdEpubSymbols\",{cjk_family}{fallback};}}\n\
+                 pre,code,kbd,samp{{font-family:\"FmdEpubMono\",\"FmdEpubSymbols\",{cjk_family}monospace;}}\n"
+            ));
+        } else {
+            // This subset has no ASCII/Latin cmap entries: reading-system
+            // families still paint those characters in default publications.
+            package.css.push_str(&format!(
+                "body{{font-family:\"FmdEpubCjk\",{fallback};}}\n\
+                 pre,code,kbd,samp{{font-family:\"FmdEpubCjk\",monospace;}}\n"
+            ));
+        }
         Ok(package)
     }
 }
@@ -185,6 +253,7 @@ impl Repertoire {
 struct Resource {
     href: String,
     bytes: Vec<u8>,
+    format: EmbeddingFormat,
 }
 
 #[derive(Default)]
@@ -197,40 +266,72 @@ pub(super) struct Package {
 impl Package {
     fn face(
         &mut self,
-        font: Font,
+        font: &Font,
         keep: &[char],
         family: &str,
         weight: u16,
         italic: bool,
+        embedding: FontEmbedding,
     ) -> Result<()> {
-        let bytes = font
-            .subset(keep)
-            .ok_or_else(|| invalid("font subsetting failed"))?;
+        // Full embedding retains the complete cmap and layout program for
+        // the reading system. Compact embedding keeps the established bytes;
+        // CFF uses the strict API so unsupported used outlines cannot become
+        // a successful blank subset.
+        let (bytes, format) = if embedding == FontEmbedding::Full {
+            let format = if font.has_glyf_outlines() {
+                EmbeddingFormat::TrueType
+            } else {
+                EmbeddingFormat::OpenTypeCff
+            };
+            (font.as_sfnt().to_vec(), format)
+        } else if font.has_glyf_outlines() {
+            (
+                font.subset(keep)
+                    .ok_or_else(|| invalid("font subsetting failed"))?,
+                EmbeddingFormat::TrueType,
+            )
+        } else {
+            let subset = font.try_subset(keep).map_err(invalid)?;
+            (subset.bytes, subset.format)
+        };
+        let (extension, css_format) = match format {
+            EmbeddingFormat::TrueType => ("ttf", "truetype"),
+            EmbeddingFormat::OpenTypeCff => ("otf", "opentype"),
+        };
         if bytes.is_empty() || bytes.len() > MAX_FONT_BYTES {
-            return Err(invalid("font subset is empty or exceeds 32 MiB"));
+            return Err(invalid(if embedding == FontEmbedding::Full {
+                "full font is empty or exceeds 32 MiB"
+            } else {
+                "font subset is empty or exceeds 32 MiB"
+            }));
         }
         let index = match self
             .resources
             .iter()
-            .position(|resource| resource.bytes == bytes)
+            .position(|resource| resource.format == format && resource.bytes == bytes)
         {
             Some(index) => index,
             None => {
                 if bytes.len() > MAX_TOTAL_FONT_BYTES.saturating_sub(self.payload_bytes) {
-                    return Err(invalid("font subsets exceed 128 MiB"));
+                    return Err(invalid(if embedding == FontEmbedding::Full {
+                        "full fonts exceed 128 MiB"
+                    } else {
+                        "font subsets exceed 128 MiB"
+                    }));
                 }
                 self.payload_bytes += bytes.len();
                 let index = self.resources.len();
                 self.resources.push(Resource {
-                    href: format!("fonts/font-{}.ttf", index + 1),
+                    href: format!("fonts/font-{}.{extension}", index + 1),
                     bytes,
+                    format,
                 });
                 index
             }
         };
         let style = if italic { "italic" } else { "normal" };
         self.css.push_str(&format!(
-            "@font-face{{font-family:\"{family}\";font-style:{style};font-weight:{weight};src:url(\"{}\") format(\"truetype\");}}\n",
+            "@font-face{{font-family:\"{family}\";font-style:{style};font-weight:{weight};src:url(\"{}\") format(\"{css_format}\");}}\n",
             self.resources[index].href,
         ));
         Ok(())
@@ -267,8 +368,12 @@ impl Package {
         let mut entries =
             format!("<item id=\"epub-font-css\" href=\"{CSS_PATH}\" media-type=\"text/css\"/>\n");
         for (index, resource) in self.resources.iter().enumerate() {
+            let media_type = match resource.format {
+                EmbeddingFormat::TrueType => "font/ttf",
+                EmbeddingFormat::OpenTypeCff => "font/otf",
+            };
             entries.push_str(&format!(
-                "<item id=\"epub-font-{}\" href=\"{}\" media-type=\"font/ttf\"/>\n",
+                "<item id=\"epub-font-{}\" href=\"{}\" media-type=\"{media_type}\"/>\n",
                 index + 1,
                 resource.href
             ));

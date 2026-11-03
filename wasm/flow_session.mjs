@@ -297,7 +297,7 @@ export function validateViewportPage(value, options, expected) {
         !Number.isInteger(item.index) ||
         item.index <= previous ||
         item.index >= value.total ||
-        !["text", "vector", "image", "anchor"].includes(item.kind)
+        !["text", "vector", "path", "image", "anchor"].includes(item.kind)
       )
         throw new Error("invalid viewport item");
       viewportRect(item.bounds);

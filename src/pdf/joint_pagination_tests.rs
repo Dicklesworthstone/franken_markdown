@@ -39,6 +39,7 @@ fn unselected(
         next_bg: 0,
         next_flow: 0,
         list_stack: Vec::new(),
+        quote_geometry: Default::default(),
         hyphen_cache: RefCell::new(HashMap::new()),
         width_cache: RefCell::new(WidthCache::default()),
         simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
@@ -95,7 +96,9 @@ fn emitted_pages(pdf: &[u8]) -> Vec<usize> {
         .unwrap();
     kids.split_whitespace()
         .collect::<Vec<_>>()
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|reference| {
             assert_eq!(&reference[1..], &["0", "R"]);
             reference[0].parse().unwrap()

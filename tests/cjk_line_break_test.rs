@@ -17,7 +17,7 @@
 //! can pass while the real layout path still overflows the measure.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::fonts::{FontStyle, load_body};
+use franken_markdown::fonts::{FontStyle, load_body, load_cjk};
 use franken_markdown::layout::{
     AdvanceMetrics, FORCED_BREAK_PENALTY, FontSize, INF_PENALTY, LayoutUnit, PairMetrics,
     ParagraphItem, ScriptKind, break_paragraph, classify_script, paragraph_items_from_text,
@@ -363,14 +363,18 @@ fn pdf_text_runs(pdf: &[u8]) -> Vec<PdfTextRun> {
     runs
 }
 
-/// The advance the PDF actually draws for one CJK character. The bundled OFL
-/// faces carry no CJK glyphs, so every ideograph resolves to `.notdef` and the
-/// renderer both measures and paints that glyph's advance — which is exactly
-/// what the test must compare the line geometry against.
+/// Use the advance of the face the PDF actually paints. Native CLI and
+/// explicit `cjk-face` builds draw real CJK glyphs; lean builds without that
+/// feature retain the primary face's reported missing-glyph advance.
 fn cjk_advance_1000() -> u32 {
-    load_body(FontFamily::Sans, FontStyle::Regular)
-        .unwrap()
-        .advance_1000('中')
+    if let Some(font) = load_cjk() {
+        assert_ne!(font.glyph_index('中'), 0, "CJK geometry must use real ink");
+        font.advance_1000('中')
+    } else {
+        load_body(FontFamily::Sans, FontStyle::Regular)
+            .unwrap()
+            .advance_1000('中')
+    }
 }
 
 fn narrow_page_options(width_pt: f32, margin_pt: f32) -> PdfOptions {

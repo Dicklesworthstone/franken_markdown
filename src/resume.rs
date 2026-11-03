@@ -516,10 +516,10 @@ fn find_unclosed_html_tag(text: &str, spans: &[Span]) -> Option<usize> {
                     } else if tag_name.eq_ignore_ascii_case("style") {
                         in_script_or_style = Some(("style", span.start));
                     }
-                } else if let Some((active_name, _)) = in_script_or_style {
-                    if tag_name.eq_ignore_ascii_case(active_name) {
-                        in_script_or_style = None;
-                    }
+                } else if let Some((active_name, _)) = in_script_or_style
+                    && tag_name.eq_ignore_ascii_case(active_name)
+                {
+                    in_script_or_style = None;
                 }
                 unclosed_start = Some(span.start);
             }
@@ -607,10 +607,10 @@ pub(crate) fn find_javascript_hold_from(text: &str, spans: &[Span]) -> usize {
         let prev = spans.iter().rev().find(|span| {
             span.end <= lt && !text[span.start..span.end].chars().all(char::is_whitespace)
         });
-        if let Some(prev) = prev {
-            if is_javascript_value_token(text, prev) {
-                hold_from = hold_from.min(prev.start);
-            }
+        if let Some(prev) = prev
+            && is_javascript_value_token(text, prev)
+        {
+            hold_from = hold_from.min(prev.start);
         }
     }
     hold_from

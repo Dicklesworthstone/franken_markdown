@@ -7,9 +7,13 @@
 
 use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, ResumableFlowDisplay};
 
+mod breaks;
+mod diagram;
 mod financial;
 mod gutters;
+mod inline_math;
 mod long_content;
+pub(super) mod math;
 mod styled;
 use crate::ast::Align;
 use crate::display::{
@@ -18,7 +22,7 @@ use crate::display::{
 };
 use crate::flow_display::FlowInlineRun;
 use crate::span::SourceSpan;
-use crate::text::{Direction, OwnedTextRun};
+use crate::text::{Direction, OwnedTextRun, TextRunMetrics};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -36,8 +40,9 @@ pub enum FlowTextRole {
 /// Explicit viewport and work limits for shaped reflow. `max_shape_bytes` bounds
 /// one call to the shaper; `max_total_shape_bytes` charges all calls, including
 /// table/list measurement, continuation windows and final-line reshaping.
-/// The same ceiling separately bounds retained link-target bytes in styled
-/// output. Hosts must bound their shaper's execution.
+/// Math and diagrams also charge source bytes and retained path-command payload
+/// against this total. The same ceiling separately bounds retained link-target
+/// bytes in styled output. Hosts must bound their shaper's execution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlowLayoutOptions {
     pub viewport_width: f32,
@@ -227,6 +232,7 @@ impl ResumableFlowDisplay {
                 table_edges.clear();
                 table_decimals.clear();
             }
+            let inline_runs = super::inline::render_runs(&meta.inline_runs, styled);
             match block {
                 DisplayBlock::Heading { level, text } => {
                     let factor = match level {
@@ -238,7 +244,7 @@ impl ResumableFlowDisplay {
                     let size = options.body_size * factor;
                     let height = layout.inline_text(
                         text,
-                        if styled { &meta.inline_runs } else { &[] },
+                        &inline_runs,
                         x,
                         y,
                         width,
@@ -272,7 +278,7 @@ impl ResumableFlowDisplay {
                     layout.marker(meta, x, y, gutters.width(meta))?;
                     let height = layout.inline_text(
                         text,
-                        if styled { &meta.inline_runs } else { &[] },
+                        &inline_runs,
                         x,
                         y,
                         width,
@@ -304,24 +310,50 @@ impl ResumableFlowDisplay {
                     layout.reading(role, &reading, bounds, span);
                     y += height + if meta.list_depth > 0 { 4.0 } else { 8.0 };
                 }
-                DisplayBlock::CodeBlock { source, .. } => {
-                    let height = layout.text(
-                        source,
-                        x,
-                        y,
-                        width,
-                        options.code_size,
-                        options.line_height,
-                        FlowTextRole::Code,
-                        "code",
-                        span,
-                    )?;
-                    layout.reading(
-                        AccessibleReadingRole::CodeBlock,
-                        source,
-                        DisplayRect::new(x, y, width, height),
-                        span,
-                    );
+                DisplayBlock::CodeBlock { source, language } => {
+                    let language = language.as_deref().unwrap_or("");
+                    let height = if diagram::is_figure(source, language) {
+                        layout.diagram_block(source, language, x, y, width, span)?
+                    } else {
+                        let height = layout.text(
+                            source,
+                            x,
+                            y,
+                            width,
+                            options.code_size,
+                            options.line_height,
+                            FlowTextRole::Code,
+                            "code",
+                            span,
+                        )?;
+                        layout.reading(
+                            AccessibleReadingRole::CodeBlock,
+                            source,
+                            DisplayRect::new(x, y, width, height),
+                            span,
+                        );
+                        height
+                    };
+                    if meta.quote_depth > 0 && diagram::is_figure(source, language) {
+                        layout.vector(
+                            DisplayRect::new(x - 12.0, y, 4.0, height),
+                            VectorShapeType::CalloutAccentBar,
+                            "accent",
+                            span,
+                        )?;
+                    }
+                    y += height + 12.0;
+                }
+                DisplayBlock::MathBlock { source } => {
+                    let height = layout.math_block(source, x, y, width, span)?;
+                    if meta.quote_depth > 0 {
+                        layout.vector(
+                            DisplayRect::new(x - 12.0, y, 4.0, height),
+                            VectorShapeType::CalloutAccentBar,
+                            "accent",
+                            span,
+                        )?;
+                    }
                     y += height + 12.0;
                 }
                 DisplayBlock::Rule => {
@@ -362,11 +394,10 @@ impl ResumableFlowDisplay {
                         let cx = x + edges[0];
                         let cell_width = (x + edges[1]) - cx;
                         let text = cells.get(column).map_or("", String::as_str);
-                        let runs = if styled {
-                            meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[])
-                        } else {
-                            &[]
-                        };
+                        let runs = super::inline::render_runs(
+                            meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]),
+                            styled,
+                        );
                         layout.alignment = meta
                             .table_alignments
                             .get(column)
@@ -384,7 +415,7 @@ impl ResumableFlowDisplay {
                             && let Some(shared) = table_decimals.get(column)
                             && shared.before + shared.after <= available
                             && let Some(measured) =
-                                layout.decimal_measure(text, runs, FlowTextRole::TableCell)?
+                                layout.decimal_measure(text, &runs, FlowTextRole::TableCell)?
                             && measured.before + measured.after <= available
                         {
                             let offset = (available - shared.after - measured.before).max(0.0);
@@ -394,7 +425,7 @@ impl ResumableFlowDisplay {
                         }
                         let used = layout.inline_text(
                             text,
-                            runs,
+                            &runs,
                             text_x,
                             y + 4.0,
                             text_width,
@@ -478,14 +509,13 @@ impl ResumableFlowDisplay {
                         is_resolved: result.is_some(),
                         source_span: span,
                     }))?;
-                    if styled {
-                        if let Some(target) = meta
+                    if styled
+                        && let Some(target) = meta
                             .image_link
                             .as_deref()
                             .and_then(super::active_link_target)
-                        {
-                            layout.link_anchor(target, bounds, span)?;
-                        }
+                    {
+                        layout.link_anchor(target, bounds, span)?;
                     }
                     layout.reading(AccessibleReadingRole::Image, &asset.alt_text, bounds, span);
                     y += bounds.height + 10.0;
@@ -510,7 +540,26 @@ struct Reflow<'a, F: ?Sized> {
     lines: usize,
     shape_bytes: usize,
     link_bytes: usize,
+    math: math::MathRenderer,
+    path_commands: usize,
     alignment: Align,
+    pending_marker: Option<PendingMarker>,
+}
+
+enum PendingMarker {
+    Text(Box<DisplayTextRun>),
+    Task {
+        bounds: DisplayRect,
+        checked: bool,
+        span: SourceSpan,
+    },
+}
+
+/// Placement of one complete, final-shaped row. Optional metrics preserve the
+/// established host contract: absence retains legacy leading and placement.
+pub(super) struct LinePlacement {
+    pub(super) height: f32,
+    pub(super) baseline_y: Option<f32>,
 }
 
 impl<'a, F: ?Sized> Reflow<'a, F>
@@ -537,7 +586,10 @@ where
             lines: 0,
             shape_bytes: 0,
             link_bytes: 0,
+            math: math::MathRenderer::default(),
+            path_commands: 0,
             alignment: Align::None,
+            pending_marker: None,
         })
     }
 
@@ -623,18 +675,19 @@ where
                 decimals.resize(cells.len(), financial::DecimalMeasure::default());
             }
             for (column, text) in cells.iter().enumerate() {
-                let runs = if styled {
-                    meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[])
-                } else {
-                    &[]
-                };
-                let (min, ideal) = if text
+                let runs = super::inline::render_runs(
+                    meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]),
+                    styled,
+                );
+                let (min, ideal) = if runs.iter().any(|run| run.math.is_some()) {
+                    self.inline_math_measures(text, &runs, role, width)?
+                } else if text
                     .split_terminator('\n')
                     .any(|line| line.len() > self.options.max_shape_bytes)
                 {
-                    self.windowed_cell_measures(text, runs, role, width)?
+                    self.windowed_cell_measures(text, &runs, role, width)?
                 } else {
-                    self.cell_measures(text, runs, role)?
+                    self.cell_measures(text, &runs, role)?
                 };
                 minimum[column] = minimum[column].max(min);
                 preferred[column] = preferred[column].max(ideal);
@@ -644,7 +697,7 @@ where
                         .get(column)
                         .copied()
                         .unwrap_or(false)
-                    && let Some(measured) = self.decimal_measure(text, runs, role)?
+                    && let Some(measured) = self.decimal_measure(text, &runs, role)?
                 {
                     decimals[column].before = decimals[column].before.max(measured.before);
                     decimals[column].after = decimals[column].after.max(measured.after);
@@ -694,6 +747,7 @@ where
                 ));
             }
             let mut advance = 0.0_f64;
+            let mut group_advance = 0.0_f64;
             if rich {
                 let physical_end = offset + physical.len();
                 let first = runs.partition_point(|run| run.range.end <= offset);
@@ -713,15 +767,27 @@ where
                     };
                     let run = self.shaped_with_style(&text[start..end], size, role, spec.style)?;
                     advance += f64::from(run.total_advance);
-                    for cluster in &run.clusters {
-                        minimum = minimum.max(f64::from(cluster.advance()));
+                    let mut logical: Vec<_> = run.clusters.iter().collect();
+                    logical.sort_by_key(|cluster| cluster.byte_range.start);
+                    for cluster in logical {
+                        if !breaks::prohibited_boundary(text, start + cluster.byte_range.start) {
+                            group_advance = 0.0;
+                        }
+                        group_advance += f64::from(cluster.advance());
+                        minimum = minimum.max(group_advance);
                     }
                 }
             } else if !physical.is_empty() {
                 let run = self.shaped(physical, self.options.body_size, role)?;
                 advance = f64::from(run.total_advance);
-                for cluster in &run.clusters {
-                    minimum = minimum.max(f64::from(cluster.advance()));
+                let mut logical: Vec<_> = run.clusters.iter().collect();
+                logical.sort_by_key(|cluster| cluster.byte_range.start);
+                for cluster in logical {
+                    if !breaks::prohibited_boundary(text, offset + cluster.byte_range.start) {
+                        group_advance = 0.0;
+                    }
+                    group_advance += f64::from(cluster.advance());
+                    minimum = minimum.max(group_advance);
                 }
             }
             if !advance.is_finite() {
@@ -741,9 +807,93 @@ where
         Ok(())
     }
 
+    /// Admit a final row, combining actual fragment metrics before anything is
+    /// painted. A queued list marker joins this first baseline, including an
+    /// inline formula's enlarged row, without changing the marker's font size.
+    /// An unknown marker's ink metrics are never guessed: it retains legacy
+    /// placement while a measured body still receives its truthful baseline.
+    fn begin_line(
+        &mut self,
+        y: f32,
+        leading: f32,
+        mut metrics: Option<TextRunMetrics>,
+    ) -> Result<LinePlacement, FlowLayoutError> {
+        if let Some(current) = &mut metrics {
+            if !current.is_valid() {
+                return Err(FlowLayoutError::InvalidShapedRun);
+            }
+            if let Some(PendingMarker::Text(marker)) = &self.pending_marker
+                && let Some(other) = marker
+                    .font_run
+                    .as_ref()
+                    .and_then(|run| run.vertical_metrics)
+            {
+                current.ascent = current.ascent.max(other.ascent);
+                current.descent = current.descent.max(other.descent);
+            }
+        }
+        let height = metrics.map_or(leading, |metrics| {
+            leading.max(metrics.ascent + metrics.descent)
+        });
+        let baseline_y = metrics
+            .map(|metrics| y + (height - metrics.ascent - metrics.descent) * 0.5 + metrics.ascent);
+        if !y.is_finite()
+            || !height.is_finite()
+            || height <= 0.0
+            || !(y + height).is_finite()
+            || baseline_y.is_some_and(|baseline| !baseline.is_finite())
+        {
+            return Err(FlowLayoutError::BudgetExceeded("layout height"));
+        }
+        self.line()?;
+        if let Some(marker) = self.pending_marker.take() {
+            match marker {
+                PendingMarker::Text(mut marker) => {
+                    if baseline_y.is_some()
+                        && marker
+                            .font_run
+                            .as_ref()
+                            .is_some_and(|run| run.vertical_metrics.is_some())
+                    {
+                        marker.bounds.y = y;
+                        marker.bounds.height = height;
+                        marker.baseline_y = baseline_y;
+                    }
+                    self.item(DisplayItem::Text(*marker))?;
+                }
+                PendingMarker::Task {
+                    mut bounds,
+                    checked,
+                    span,
+                } => {
+                    // A checkbox is fixed geometry, not a stretched text glyph.
+                    // Center that geometry within the complete first row.
+                    bounds.y = y + (height - bounds.height) * 0.5;
+                    self.vector(bounds, VectorShapeType::CheckboxOutline, "border", span)?;
+                    if checked {
+                        self.vector(bounds, VectorShapeType::CheckboxCheck, "accent", span)?;
+                    }
+                }
+            }
+        }
+        Ok(LinePlacement { height, baseline_y })
+    }
+
     fn item(&mut self, item: DisplayItem) -> Result<(), FlowLayoutError> {
         if self.list.items().len() >= self.options.max_items {
             return Err(FlowLayoutError::BudgetExceeded("display items"));
+        }
+        if let DisplayItem::Text(text) = &item {
+            if !text.has_valid_placement() {
+                return Err(FlowLayoutError::InvalidShapedRun);
+            }
+            if let Some(reason) = &text.math_fallback {
+                self.shape_bytes = self
+                    .shape_bytes
+                    .checked_add(reason.len())
+                    .filter(|bytes| *bytes <= self.options.max_total_shape_bytes)
+                    .ok_or(FlowLayoutError::BudgetExceeded("total shaping bytes"))?;
+            }
         }
         let bounds = item.bounds();
         if [
@@ -793,8 +943,7 @@ where
         // an extra display line for the parser's terminal code newline.
         for physical in text.split_terminator('\n') {
             if physical.is_empty() {
-                self.line()?;
-                height += leading;
+                height += self.begin_line(y + height, leading, None)?.height;
                 continue;
             }
             let measured = self.shaped(physical, size, role)?;
@@ -814,7 +963,11 @@ where
                     }
                     advance = next;
                     let range = clusters[end].byte_range.clone();
-                    if physical[range].chars().all(|c| c == ' ' || c == '\t') {
+                    if physical[range.clone()]
+                        .chars()
+                        .all(|c| c == ' ' || c == '\t')
+                        || breaks::cjk_boundary(physical, range.end)
+                    {
                         space_break = Some(end + 1);
                     }
                     end += 1;
@@ -825,6 +978,28 @@ where
                 if end < clusters.len() && role != FlowTextRole::Code {
                     end = space_break.unwrap_or(end);
                 }
+                // Opening punctuation and following nonstarters form one
+                // unbreakable CJK group, even during emergency cluster wraps.
+                // If that whole group cannot fit, refuse it without publishing
+                // an orphaned closer or an over-wide partial line. Literal
+                // code retains its established shaped-cluster wrap policy.
+                let mut minimum_end = first + 1;
+                while role != FlowTextRole::Code
+                    && minimum_end < clusters.len()
+                    && breaks::prohibited_boundary(
+                        physical,
+                        clusters[minimum_end - 1].byte_range.end,
+                    )
+                {
+                    minimum_end += 1;
+                }
+                end = end.max(minimum_end);
+                while role != FlowTextRole::Code
+                    && end > minimum_end
+                    && breaks::prohibited_boundary(physical, clusters[end - 1].byte_range.end)
+                {
+                    end -= 1;
+                }
                 let start_byte = clusters[first].byte_range.start;
                 let run = loop {
                     let end_byte = clusters[end - 1].byte_range.end;
@@ -832,18 +1007,27 @@ where
                     if run.total_advance <= width {
                         break run;
                     }
-                    if end == first + 1 {
+                    if end == minimum_end {
                         return Err(FlowLayoutError::ClusterTooWide {
                             advance: run.total_advance,
                             available: width,
                         });
                     }
                     end -= 1;
+                    while role != FlowTextRole::Code
+                        && end > minimum_end
+                        && breaks::prohibited_boundary(physical, clusters[end - 1].byte_range.end)
+                    {
+                        end -= 1;
+                    }
                 };
-                self.line()?;
+                let line = self.begin_line(y + height, leading, run.vertical_metrics)?;
                 let line_x = self.line_start(x, width, run.total_advance, run.context.direction);
-                let bounds = DisplayRect::new(line_x, y + height, run.total_advance, leading);
+                let bounds = DisplayRect::new(line_x, y + height, run.total_advance, line.height);
                 self.item(DisplayItem::Text(DisplayTextRun {
+                    fill: None,
+                    baseline_y: line.baseline_y,
+                    math_fallback: None,
                     bounds,
                     text: run.logical_text.clone(),
                     font_run: Some(run),
@@ -851,13 +1035,12 @@ where
                     source_span: span,
                     font_size: size,
                 }))?;
-                height += leading;
+                height += line.height;
                 first = end;
             }
         }
         if height == 0.0 {
-            self.line()?;
-            height = leading;
+            height = self.begin_line(y, leading, None)?.height;
         }
         Ok(height)
     }
@@ -869,20 +1052,19 @@ where
         y: f32,
         gutter: f32,
     ) -> Result<(), FlowLayoutError> {
+        if self.pending_marker.is_some() {
+            return Err(FlowLayoutError::InvalidShapedRun);
+        }
         let Some(marker) = &meta.marker else {
             return Ok(());
         };
         let bounds = DisplayRect::new((x - 20.0).max(0.0), y, 16.0, self.options.line_height);
         if let Some(checked) = meta.task {
-            self.vector(
+            self.pending_marker = Some(PendingMarker::Task {
                 bounds,
-                VectorShapeType::CheckboxOutline,
-                "border",
-                meta.span,
-            )?;
-            if checked {
-                self.vector(bounds, VectorShapeType::CheckboxCheck, "accent", meta.span)?;
-            }
+                checked,
+                span: meta.span,
+            });
         } else {
             let run = self.shaped(marker, self.options.body_size, FlowTextRole::Marker)?;
             if run.total_advance > gutter - 4.0 {
@@ -891,7 +1073,10 @@ where
                     available: (gutter - 4.0).max(0.0),
                 });
             }
-            self.item(DisplayItem::Text(DisplayTextRun {
+            self.pending_marker = Some(PendingMarker::Text(Box::new(DisplayTextRun {
+                fill: None,
+                baseline_y: None,
+                math_fallback: None,
                 bounds: DisplayRect::new(
                     x - 4.0 - run.total_advance,
                     y,
@@ -903,7 +1088,7 @@ where
                 color_role: "text".to_owned(),
                 source_span: meta.span,
                 font_size: self.options.body_size,
-            }))?;
+            })));
         }
         Ok(())
     }
@@ -1024,6 +1209,9 @@ fn validate_run(run: &OwnedTextRun, text: &str, size: f32) -> Result<(), FlowLay
         || run.clusters.len() > text.len()
         || !run.total_advance.is_finite()
         || run.total_advance < 0.0
+        || run
+            .vertical_metrics
+            .is_some_and(|metrics| !metrics.is_valid())
     {
         return Err(FlowLayoutError::InvalidShapedRun);
     }
@@ -1127,6 +1315,7 @@ mod tests {
             font_origin: FontOrigin::BundledFace,
         };
         let mut run = OwnedTextRun {
+            vertical_metrics: None,
             context,
             logical_text: text.to_owned(),
             clusters: Vec::new(),

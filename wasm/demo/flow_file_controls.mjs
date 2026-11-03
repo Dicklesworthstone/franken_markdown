@@ -1,5 +1,5 @@
 import { FlowError } from "../flow_session.mjs";
-import { documentName } from "./flow_document.mjs";
+import { documentName, trackSourceAccess } from "./flow_document.mjs";
 import { createFileDocumentSession } from "./flow_file_session.mjs";
 
 const buttons = Object.freeze({
@@ -77,11 +77,16 @@ export function createFileControls({
   const canChoose =
     window.isSecureContext === true && typeof window.showSaveFilePicker === "function";
   const ordinaryOpen = root.querySelector("#open-markdown");
+  const composing = new Set();
   let disposed = false,
-    composing = false,
     touched = false,
     unloadListening = false,
     session;
+  // A pending picker, permission or staged write belongs to the editor access
+  // that admitted it. Lock/unlock and detach/reattach must retire that operation,
+  // even when no input event occurs and both fields look unchanged afterward.
+  const access = trackSourceAccess([sourceEditor, filename], () => session?.changed());
+  const blocked = () => composing.size > 0 || access.blocked();
   const types = [
     { description: "UTF-8 Markdown", accept: { "text/plain": [".md", ".markdown", ".txt"] } },
   ];
@@ -94,14 +99,14 @@ export function createFileControls({
   };
   function refresh(state = session.state) {
     if (disposed) return;
-    const busy = !!state.busy || composing || sourceEditor.disabled || sourceEditor.readOnly;
+    const busy = !!state.busy || blocked();
     el["file-open"].disabled = busy || !canOpen;
     el["file-save"].disabled = busy || !state.canSave;
     el["file-save-as"].disabled = busy || !canChoose || !state.valid;
     el["file-reload"].disabled = busy || !state.filename;
     el["file-disconnect"].disabled = !state.filename && !state.busy;
-    el["file-backup"].disabled = composing || !state.valid;
-    el["file-keep"].disabled = composing;
+    el["file-backup"].disabled = composing.size > 0 || !state.valid;
+    el["file-keep"].disabled = composing.size > 0;
     const phases = {
       unlinked: "No connected file; source has not been saved through these controls.",
       saved:
@@ -137,8 +142,11 @@ export function createFileControls({
       filename.value = name;
       filename.dispatchEvent(new Event("input", { bubbles: true }));
     },
-    isBlocked: () =>
-      composing || sourceEditor.disabled || sourceEditor.readOnly || !!ordinaryOpen?.disabled,
+    isBlocked: () => {
+      // Drain deferred DOM records at every asynchronous transaction fence.
+      access.synchronize();
+      return blocked() || !!ordinaryOpen?.disabled;
+    },
     onState: refresh,
   });
   const confirmation = ({ filename: name }) =>
@@ -212,14 +220,16 @@ export function createFileControls({
   listen(sourceEditor, "input", changed);
   listen(filename, "input", changed);
   listen(sourceEditor, "fmd-document-replaced", () => session.detach());
-  listen(sourceEditor, "compositionstart", () => {
-    composing = true;
-    changed();
-  });
-  listen(sourceEditor, "compositionend", () => {
-    composing = false;
-    changed();
-  });
+  for (const field of [sourceEditor, filename]) {
+    listen(field, "compositionstart", () => {
+      composing.add(field);
+      changed();
+    });
+    listen(field, "compositionend", () => {
+      composing.delete(field);
+      changed();
+    });
+  }
   if (ordinaryOpen) listen(ordinaryOpen, "change", () => session.changed());
   listen(el["file-open"], "click", run(open));
   listen(el["file-save"], "click", run(save));
@@ -249,7 +259,7 @@ export function createFileControls({
       event.key?.toLowerCase() !== "s" ||
       event.isComposing ||
       event.keyCode === 229 ||
-      composing
+      composing.size > 0
     )
       return;
     event.preventDefault();
@@ -271,6 +281,8 @@ export function createFileControls({
     dispose() {
       if (disposed) return;
       disposed = true;
+      access.dispose();
+      composing.clear();
       session.dispose();
       for (const remove of listeners) remove();
       listeners.length = 0;

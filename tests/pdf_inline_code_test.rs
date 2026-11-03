@@ -71,7 +71,9 @@ fn font_map(pdf: &[u8], id: usize) -> FontMap {
             let text = text.trim_matches(['<', '>']);
             let units: Vec<_> = text
                 .as_bytes()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|unit| u16::from_str_radix(std::str::from_utf8(unit).unwrap(), 16).unwrap())
                 .collect();
             unicode.insert(cid, String::from_utf16(&units).unwrap());
@@ -117,7 +119,9 @@ fn painted_runs(pdf: &[u8]) -> Vec<PaintedRun> {
             .split_whitespace()
             .collect();
         let fonts: BTreeMap<_, _> = entries
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|entry| (entry[0], font_map(pdf, entry[1].parse().unwrap())))
             .collect();
         let content = stream(pdf, number_after(page, "/Contents "));
@@ -144,7 +148,7 @@ fn painted_runs(pdf: &[u8]) -> Vec<PaintedRun> {
             let mut width = 0.0;
             for item in array.split_whitespace() {
                 if let Some(hex) = item.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
-                    for code in hex.as_bytes().chunks_exact(4) {
+                    for code in hex.as_bytes().as_chunks::<4>().0 {
                         let cid =
                             u16::from_str_radix(std::str::from_utf8(code).unwrap(), 16).unwrap();
                         text.push_str(

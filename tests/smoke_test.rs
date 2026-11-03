@@ -137,12 +137,12 @@ fn host_supplied_svg_image_assets_render_as_self_contained_data_uris() {
 fn host_supplied_image_assets_do_not_bypass_unsafe_image_destinations() {
     let opts = HtmlOptions {
         image_assets: vec![PdfImageAsset::new(
-            "data:image/svg+xml;base64,PHN2Zy8+",
+            "data:text/html;base64,PHN2Zy8+",
             b"<svg/>".to_vec(),
         )],
         ..HtmlOptions::default()
     };
-    let html = render_html("![Unsafe](data:image/svg+xml;base64,PHN2Zy8+)", &opts).unwrap();
+    let html = render_html("![Unsafe](data:text/html;base64,PHN2Zy8+)", &opts).unwrap();
 
     assert!(html.contains("<p>Unsafe</p>"));
     assert!(!html.contains("<img"));
@@ -186,7 +186,7 @@ fn unsafe_markdown_url_schemes_are_neutralized() {
         "[bad](javascript:alert(1)) \
          [bad_case](JaVaScRiPt:alert(3)) \
          [obfuscated](<java\tscript:alert(2)>) \
-         ![image alt](data:image/svg+xml;base64,PHN2Zy8+) \
+         ![image alt](data:text/html;base64,PHN2Zy8+) \
          ![bad mail image](mailto:pic@example.com) \
          [web](https://example.com?q=1) \
          [web_upper](HTTPS://EXAMPLE.com/Path) \

@@ -152,7 +152,9 @@ fn font_map(objects: &Objects<'_>, id: usize) -> FontMap {
         let encoded = entries[1].trim_matches(['<', '>']);
         let units: Vec<u16> = encoded
             .as_bytes()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|unit| u16::from_str_radix(std::str::from_utf8(unit).unwrap(), 16).unwrap())
             .collect();
         unicode.insert(id, String::from_utf16(&units).unwrap());
@@ -205,7 +207,9 @@ fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
         .split_whitespace()
         .collect::<Vec<_>>();
     assert_eq!(kids.len() % 3, 0);
-    kids.chunks_exact(3)
+    kids.as_chunks::<3>()
+        .0
+        .iter()
         .map(|reference| {
             let dictionary = objects.dictionary(reference[0].parse().unwrap());
             let media: Vec<f64> = dictionary
@@ -229,7 +233,9 @@ fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
             let resources: Vec<_> = resources.split_whitespace().collect();
             assert_eq!(resources.len() % 4, 0);
             let fonts: BTreeMap<&str, FontMap> = resources
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|entry| (entry[0], font_map(&objects, entry[1].parse().unwrap())))
                 .collect();
             let content = objects.stream(reference_after(dictionary, "/Contents "));
@@ -307,7 +313,7 @@ fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
                             let face = font.expect("glyph painting needs an active font");
                             let hex = hex.trim_matches(['<', '>']);
                             assert_eq!(hex.len() % 4, 0);
-                            for glyph in hex.as_bytes().chunks_exact(4) {
+                            for glyph in hex.as_bytes().as_chunks::<4>().0 {
                                 let id =
                                     u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16)
                                         .unwrap();
@@ -416,6 +422,318 @@ fn body_text(pages: &[PaintedPage]) -> String {
         .flat_map(|run| run.text.chars())
         .filter(|c| !c.is_whitespace())
         .collect()
+}
+
+fn crowded_grid_notes(count: usize, rows: usize) -> String {
+    let mut source = String::from("# Heading\n\nPreface.\n\nCLAIM");
+    for note in 0..count {
+        source.push_str(&format!("[^n{note}]"));
+    }
+    source.push_str("\n\n");
+    for note in 0..count {
+        source.push_str(&format!("[^n{note}]: NOTE{note}LINE0  \n"));
+        for row in 1..rows {
+            source.push_str(&format!("    NOTE{note}LINE{row}"));
+            source.push_str(if row + 1 == rows { "\n" } else { "  \n" });
+        }
+        source.push('\n');
+    }
+    source
+}
+
+/// Resolve real annotation destinations through the emitted page tree. This
+/// checks that changing a page note into an endnote moves its citation target
+/// with the painted numbered paragraph instead of leaving a stale location.
+fn note_destinations(pdf: &[u8]) -> Vec<(usize, f64)> {
+    let objects = Objects::new(pdf);
+    let pages_id = (1..objects.offsets.len())
+        .find(|&id| objects.dictionary(id).contains("/Type /Pages "))
+        .unwrap();
+    let children: Vec<_> = objects
+        .dictionary(pages_id)
+        .split_once("/Kids [")
+        .unwrap()
+        .1
+        .split_once(']')
+        .unwrap()
+        .0
+        .split_whitespace()
+        .collect();
+    let pages: BTreeMap<usize, usize> = children
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .enumerate()
+        .map(|(index, child)| (child[0].parse().unwrap(), index))
+        .collect();
+    (1..objects.offsets.len())
+        .filter_map(|id| {
+            let object = objects.dictionary(id);
+            if !object.contains("/Subtype /Link") {
+                return None;
+            }
+            let destination: Vec<_> = object
+                .split_once("/Dest [")?
+                .1
+                .split_once(']')?
+                .0
+                .split_whitespace()
+                .collect();
+            assert_eq!(destination[3], "/XYZ");
+            Some((
+                pages[&destination[0].parse().unwrap()],
+                destination[5].parse().unwrap(),
+            ))
+        })
+        .collect()
+}
+
+#[test]
+fn final_grid_context_admits_only_page_notes_that_really_fit() {
+    for strict in [false, true] {
+        for pitch in [13.0, 13.125] {
+            for small_page in [false, true] {
+                let (notes, rows) = if small_page { (3, 2) } else { (4, 6) };
+                let source = crowded_grid_notes(notes, rows);
+                let mut opts = PdfOptions {
+                    strict_pagination: strict,
+                    metadata_epoch_seconds: Some(1_700_000_000),
+                    ..PdfOptions::default()
+                };
+                opts.theme.page.baseline_grid = Some(BaselineGrid::from_points(pitch).unwrap());
+                if small_page {
+                    opts.theme.page.size.width_pt = 300.0;
+                    opts.theme.page.size.height_pt = 240.0;
+                    opts.theme.page.margins = PageMargins {
+                        top_pt: 24.0,
+                        right_pt: 24.0,
+                        bottom_pt: 24.0,
+                        left_pt: 24.0,
+                    };
+                }
+                let rendered = franken_markdown::render_pdf_reported(&source, &opts).unwrap();
+                if strict {
+                    assert!(rendered.pagination.page_breaks.is_exact());
+                }
+                let pages = painted_pages(&rendered.bytes);
+                check_grid(&pages, &opts, pitch).unwrap();
+                check_separate_rows(&pages).unwrap();
+                let text = body_text(&pages);
+                assert_eq!(text.matches("Notes").count(), 1);
+                let destinations = note_destinations(&rendered.bytes);
+                assert_eq!(destinations.len(), notes);
+                for note in 0..notes {
+                    let mut previous = 0;
+                    for row in 0..rows {
+                        let token = format!("NOTE{note}LINE{row}");
+                        assert_eq!(text.matches(&token).count(), 1, "{token}");
+                        let position = text.find(&token).unwrap();
+                        assert!(position >= previous);
+                        previous = position;
+                    }
+                    let token = format!("NOTE{note}LINE0");
+                    let (page_index, run) = pages
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, page)| {
+                            page.runs
+                                .iter()
+                                .find(|run| run.text.contains(&token))
+                                .map(|run| (index, run))
+                        })
+                        .unwrap();
+                    assert!(
+                        destinations.iter().any(|&(page, y)| {
+                            page == page_index && (y - (run.y + run.size * 0.9)).abs() < 0.025
+                        }),
+                        "citation must target the painted {token}"
+                    );
+                    if note == 0 {
+                        assert_eq!(run.size, 9.35, "eligible notes retain footnote type");
+                    }
+                    if note + 1 == notes {
+                        assert_eq!(run.size, 11.0, "excess notes use complete endnote layout");
+                    }
+                }
+                // The generated Notes heading is an ordinary outline entry,
+                // as in preexisting endnote output. Individual numbered note
+                // destinations must not introduce additional bookmarks.
+                let objects = Objects::new(&rendered.bytes);
+                let titles: Vec<_> = (1..objects.offsets.len())
+                    .filter_map(|id| {
+                        let object = objects.dictionary(id);
+                        if !object.contains("/Parent ") {
+                            return None;
+                        }
+                        object
+                            .split_once("/Title (")
+                            .map(|(_, rest)| rest.split_once(')').unwrap().0.to_string())
+                    })
+                    .collect();
+                assert_eq!(titles, ["Heading", "Notes"]);
+            }
+        }
+    }
+}
+
+#[test]
+fn grid_note_admission_includes_full_size_rich_endnotes_in_its_context() {
+    let source = r"CLAIM[^a][^b][^c]
+
+[^a]: NOTEAONE\
+    NOTEATWO
+
+[^b]: NOTEBONE\
+    NOTEBTWO
+
+[^c]: # RichHeading
+
+    RICHPARA
+
+    - LISTONE
+    - LISTTWO
+
+    ```text
+    CODEONE
+    CODETWO
+    ```
+
+    | HEADCOL |
+    | --- |
+    | CELLONE |
+
+    TAILEND
+";
+    let mut opts = options(13.0);
+    opts.theme.page.size.width_pt = 300.0;
+    opts.theme.page.size.height_pt = 240.0;
+    opts.theme.page.margins = PageMargins {
+        top_pt: 24.0,
+        right_pt: 24.0,
+        bottom_pt: 24.0,
+        left_pt: 24.0,
+    };
+    for strict in [false, true] {
+        opts.strict_pagination = strict;
+        let rendered = franken_markdown::render_pdf_reported(source, &opts).unwrap();
+        if strict {
+            assert!(rendered.pagination.page_breaks.is_exact());
+        }
+        let pages = painted_pages(&rendered.bytes);
+        check_grid(&pages, &opts, 13.0).unwrap();
+        check_separate_rows(&pages).unwrap();
+        let text = body_text(&pages);
+        let mut previous = 0;
+        for token in [
+            "RichHeading",
+            "RICHPARA",
+            "LISTONE",
+            "LISTTWO",
+            "CODEONE",
+            "CODETWO",
+            "HEADCOL",
+            "CELLONE",
+            "TAILEND",
+        ] {
+            assert_eq!(text.matches(token).count(), 1, "{token}");
+            let position = text.find(token).unwrap();
+            assert!(position >= previous, "rich note content order: {token}");
+            previous = position;
+        }
+        for token in ["NOTEAONE", "NOTEATWO", "NOTEBONE", "NOTEBTWO"] {
+            assert_eq!(text.matches(token).count(), 1, "{token}");
+        }
+        let raw = String::from_utf8_lossy(&rendered.bytes);
+        for tag in ["/S /Table", "/S /Code", "/S /L "] {
+            assert!(raw.contains(tag), "rich note retains {tag}");
+        }
+        assert_eq!(note_destinations(&rendered.bytes).len(), 3);
+    }
+}
+
+#[test]
+fn endnote_heading_spacing_is_rounded_once_from_the_natural_body_gap() {
+    let mut opts = PdfOptions {
+        metadata_epoch_seconds: Some(1_700_000_000),
+        ..PdfOptions::default()
+    };
+    opts.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.0).unwrap());
+    let bytes = render_pdf("CLAIM\n\n[^orphan]: ENDNOTE", &opts).unwrap();
+    let pages = painted_pages(&bytes);
+    check_grid(&pages, &opts, 13.0).unwrap();
+    check_separate_rows(&pages).unwrap();
+    let claim = pages[0]
+        .runs
+        .iter()
+        .find(|run| run.text == "CLAIM")
+        .unwrap();
+    let heading = pages[0]
+        .runs
+        .iter()
+        .find(|run| run.text == "Notes")
+        .unwrap();
+    // The natural paragraph gap (7pt) and Notes spacing (19pt) total two
+    // 13pt pitches, followed by the heading's two-pitch leading. Rounding
+    // the paragraph gap before adding Notes spacing would add a fifth pitch.
+    assert!((claim.y - heading.y - 52.0).abs() < 0.025);
+    assert_eq!(body_text(&pages).matches("ENDNOTE").count(), 1);
+}
+
+#[test]
+fn shared_grid_note_admission_preserves_emitter_and_browser_parity() {
+    let source = crowded_grid_notes(4, 6);
+    let mut opts = PdfOptions {
+        strict_pagination: true,
+        metadata_epoch_seconds: Some(1_700_000_000),
+        ..PdfOptions::default()
+    };
+    opts.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.0).unwrap());
+    let doc = parse_markdown(&source);
+    let expected = render_pdf(&source, &opts).unwrap();
+    for emission in [
+        franken_markdown::PdfPageEmission::Monolithic,
+        franken_markdown::PdfPageEmission::Chunked,
+    ] {
+        assert_eq!(
+            expected,
+            render_pdf_document_emitted(
+                &doc,
+                &opts,
+                PdfEmitOptions {
+                    emission,
+                    ..PdfEmitOptions::default()
+                }
+            )
+            .unwrap()
+        );
+    }
+    let browser = franken_markdown::wasm::render_pdf(
+        &source,
+        &franken_markdown::wasm::WasmRenderOptions {
+            theme: opts.theme.clone(),
+            strict_pagination: true,
+            metadata_epoch_seconds: opts.metadata_epoch_seconds,
+            ..franken_markdown::wasm::WasmRenderOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(expected, browser.bytes);
+    assert!(browser.diagnostics.is_empty(), "{:?}", browser.diagnostics);
+}
+
+#[test]
+fn crowded_notes_without_a_grid_keep_their_pre_fix_pdf_bytes() {
+    // Captured from the preserved 8b0d88d executable before this fix, using
+    // the exact source above and SOURCE_DATE_EPOCH=1700000000.
+    let opts = PdfOptions {
+        metadata_epoch_seconds: Some(1_700_000_000),
+        ..PdfOptions::default()
+    };
+    let bytes = render_pdf(&crowded_grid_notes(4, 6), &opts).unwrap();
+    let fingerprint = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
+    });
+    assert_eq!((bytes.len(), fingerprint), (14_465, 0x6568_0eff_bcd4_0abb));
 }
 
 fn options(pitch: f32) -> PdfOptions {

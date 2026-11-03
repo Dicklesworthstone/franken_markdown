@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "fonttools_version": "4.61.1",
+  "baseline_sha256": "c3c5b027d8d286d2eb6b6fd305c66d255b1ce2df680837b0584e98909cfa3ab3",
+  "artifact_sha256": "f9c43414181d221c55ea1bf66ccd1fb345a8f0c895687abecf01f9a02a5dea72",
+  "baseline_full_source_oracle": "fonttools-reference.json",
+  "mapped_characters": 28215,
+  "glyphs_compared": 28101,
+  "points_compared": 3065603,
+  "contours_compared": 358605,
+  "coordinate_difference_units": 0,
+  "unchanged_tables": [
+    "OS/2",
+    "cmap",
+    "hhea",
+    "hmtx",
+    "maxp",
+    "name",
+    "post"
+  ],
+  "head_difference": "checkSumAdjustment only",
+  "baseline_size_bytes": 14786192,
+  "compact_size_bytes": 9867212,
+  "max_rss_kib": 157120,
+  "address_space_limit_mib": 192,
+  "failure_count": 0,
+  "failure_examples": []
+}

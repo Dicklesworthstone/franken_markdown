@@ -375,3 +375,81 @@ test("auxiliary pages cannot masquerade as indexed chapters or bypass integrity 
     { code: "INVALID_BOOK_PREVIEW" },
   );
 });
+
+const receiptName = "frankenmarkdown-receipt.json";
+const receiptFor = chapters => ({ schema: "fmd-book-receipt-v1", chapter_count: chapters.length,
+  chapters: chapters.map(chapter => ({ path: chapter.source, title: chapter.title, output: chapter.page })) });
+for (const method of [0, 8])
+  test(`canonical publication receipt, method ${method}: validate the ordered mapping and retain Full preview HTML`, async () => {
+    const chapters = [other, chapter], source = entries(chapters);
+    source.push([receiptName, JSON.stringify(receiptFor(chapters))]);
+    const bytes = archive(source, method), preview = await decodeBookSiteArchive(bytes);
+    assert.deepEqual(preview.pages.map(page => page.source), chapters.map(chapter => chapter.source));
+    assert.equal(preview.pages[1].html, source[0][1]);
+    assert.equal(resolveBookPreviewLink(preview, other.page, receiptName), null);
+    const output = await renderBookPreview({ renderBookSite: () => ({ bytes, sourceLength: 73, fontEmbedding: "full" }) },
+      [], { fontEmbedding: "full" });
+    assert.equal(output.fontEmbedding, "full");
+    assert.deepEqual(parseBookPreview(output.bytes), preview);
+  });
+
+test("canonical receipts reject malformed JSON, schema drift and every mismatched chapter field", async () => {
+  const good = receiptFor([chapter, other]);
+  for (const receipt of [
+    "{", "null", JSON.stringify({ ...good, schema: "future" }),
+    JSON.stringify({ ...good, chapter_count: 1 }),
+    JSON.stringify({ ...good, chapter_count: "2" }),
+    JSON.stringify({ ...good, chapters: good.chapters.slice(0, 1) }),
+    JSON.stringify({ ...good, chapters: [...good.chapters].reverse() }),
+    JSON.stringify({ ...good, chapters: [good.chapters[0], good.chapters[0]] }),
+    ...["path", "title", "output"].map(key => JSON.stringify({ ...good,
+      chapters: [{ ...good.chapters[0], [key]: "different" }, good.chapters[1]] })),
+  ]) {
+    await rejects(archive([...entries(), [receiptName, receipt]]));
+  }
+});
+
+test("the fixed receipt entry remains auxiliary and cannot authorize other files", async () => {
+  const receipt = JSON.stringify(receiptFor([chapter, other]));
+  const indexed = entries();
+  indexed[2][1] = JSON.stringify({ schema: "fmd-book-search-index-v1",
+    chapters: [chapter, { ...other, page: receiptName }] });
+  await rejects(archive([...indexed, [receiptName, receipt]]));
+  await rejects(archive([...entries(), [receiptName, receipt], [receiptName, receipt]]));
+  await rejects(archive([...entries(), [receiptName, receipt], ["unknown.json", "{}"]]));
+  await rejects(archive([...entries(), [receiptName, receipt], ["unindexed.html", "Hidden page"]]));
+});
+
+test("canonical receipt bytes still require valid UTF-8 and a matching ZIP checksum", async () => {
+  await rejects(archive([...entries(), [receiptName, Uint8Array.of(0xc0, 0x80)]]));
+  const bytes = archive([...entries(), [receiptName, JSON.stringify(receiptFor([chapter, other]))]], 0);
+  const start = bytes.indexOf(Buffer.from(receiptName)) + Buffer.byteLength(receiptName);
+  bytes[start] ^= 1;
+  await rejects(bytes);
+});
+
+test("the native receipt's 4 MiB limit is enforced from ZIP headers before inflation", async () => {
+  const bytes = archive([...entries(), [receiptName, JSON.stringify(receiptFor([chapter, other]))]], 8);
+  const name = Buffer.from(receiptName);
+  const local = bytes.indexOf(name) - 30;
+  const directory = bytes.indexOf(name, central(bytes)) - 46;
+  // Preserve agreeing local/central length declarations while making the
+  // compressed fixture claim an output forbidden by the native receipt cap.
+  bytes.writeUInt32LE(4 * 1024 * 1024 + 1, local + 22);
+  bytes.writeUInt32LE(4 * 1024 * 1024 + 1, directory + 24);
+  await rejects(bytes, "PREVIEW_LIMIT");
+});
+
+test("128 chapters with every canonical auxiliary file fit; an extra chapter remains refused", async () => {
+  const make = count => {
+    const chapters = Array.from({ length: count }, (_, i) => ({
+      source: `${i}.md`, page: `${i}.html`, title: `Chapter ${i}`,
+    }));
+    return archive([...chapters.map(chapter => [chapter.page, `<h1>${chapter.title}</h1>`]),
+      ["index.html", "Landing"], ["~fmd-search.html", "Search"],
+      ["search-index.json", JSON.stringify({ schema: "fmd-book-search-index-v1", chapters })],
+      [receiptName, JSON.stringify(receiptFor(chapters))]], 0);
+  };
+  assert.equal((await decodeBookSiteArchive(make(128))).pages.length, 128);
+  await rejects(make(129), "PREVIEW_LIMIT");
+});

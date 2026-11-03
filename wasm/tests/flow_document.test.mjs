@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { File } from "node:buffer";
 import test from "node:test";
+import { sourceAccessFixture } from "./flow_access_fixture.mjs";
 import {
   createSourceControls,
   documentName,
@@ -26,7 +27,7 @@ class Element extends EventTarget {
     delete this[name];
   }
 }
-function controls(normalizeNewlines = false) {
+function controls(normalizeNewlines = false, observeAccess = false) {
   const sourceEditor = new Element(),
     filename = new Element(),
     open = new Element(),
@@ -48,6 +49,7 @@ function controls(normalizeNewlines = false) {
     revoked = [],
     replacements = [];
   let confirmation = () => true;
+  const access = observeAccess ? sourceAccessFixture([sourceEditor, filename]) : null;
   const api = createSourceControls({
     sourceEditor,
     filename,
@@ -78,6 +80,7 @@ function controls(normalizeNewlines = false) {
     urls,
     revoked,
     replacements,
+    access,
     confirm(fn) {
       confirmation = fn;
     },
@@ -211,6 +214,177 @@ test("confirmation races and disposal cannot overwrite an editor", async (t) => 
     await assert.rejects(pending);
     assert.equal(f.replacements.length, 0);
   }
+});
+for (const field of ["sourceEditor", "filename"]) {
+  test(`${field} composition blocks imports and replacements without reading the file`, async (t) => {
+    const f = controls();
+    t.after(() => f.api.dispose());
+    let reads = 0;
+    class ObservedFile extends File {
+      async arrayBuffer() {
+        reads++;
+        return super.arrayBuffer();
+      }
+    }
+    f[field].dispatchEvent(new Event("compositionstart"));
+    await assert.rejects(f.api.openFile(new ObservedFile(["new"], "new.md")), code("EDITOR_BUSY"));
+    assert.throws(() => f.api.replace({ source: "new", filename: "new.md" }), code("EDITOR_BUSY"));
+    assert.equal(reads, 0);
+    assert.equal(f.sourceEditor.value, "# Keep me");
+    assert.equal(f.filename.value, "old.md");
+    assert.equal(f.replacements.length, 0);
+    assert.equal(f.open.disabled, true);
+    f[field].dispatchEvent(new Event("compositionend"));
+    assert.equal(f.open.disabled, false);
+    assert.equal(await f.api.openFile(new File(["fresh"], "fresh.md")), true);
+    assert.equal(f.sourceEditor.value, "fresh");
+  });
+  test(`${field} composition retires an import even when it ends without an input event`, async (t) => {
+    const f = controls(), hold = gate();
+    t.after(() => f.api.dispose());
+    class SlowFile extends File {
+      async arrayBuffer() {
+        await hold.promise;
+        return super.arrayBuffer();
+      }
+    }
+    const pending = f.api.openFile(new SlowFile(["old import"], "old-import.md"));
+    f[field].dispatchEvent(new Event("compositionstart"));
+    f[field].dispatchEvent(new Event("compositionend"));
+    hold.resolve();
+    await assert.rejects(pending, code("STALE_SOURCE"));
+    assert.equal(f.sourceEditor.value, "# Keep me");
+    assert.equal(f.replacements.length, 0);
+    assert.equal(f.open.disabled, false);
+  });
+}
+test("composition begun during import confirmation preserves source and keeps imports disabled until it ends", async (t) => {
+  const f = controls(), entered = gate(), hold = gate();
+  t.after(() => f.api.dispose());
+  f.confirm(() => { entered.resolve(); return hold.promise; });
+  const pending = f.api.openFile(new File(["late"], "late.md"));
+  await entered.promise;
+  f.sourceEditor.dispatchEvent(new Event("compositionstart"));
+  hold.resolve(true);
+  await assert.rejects(pending, code("STALE_SOURCE"));
+  assert.equal(f.replacements.length, 0);
+  assert.equal(f.open.disabled, true);
+  f.sourceEditor.dispatchEvent(new Event("compositionend"));
+  assert.equal(f.open.disabled, false);
+});
+test("readonly source refuses replacement before and during import but retains source downloads", async (t) => {
+  const f = controls(), entered = gate(), hold = gate();
+  t.after(() => f.api.dispose());
+  f.sourceEditor.readOnly = true;
+  await assert.rejects(f.api.openFile(new File(["new"], "new.md")), code("EDITOR_BUSY"));
+  assert.throws(() => f.api.replace({ source: "new", filename: "new.md" }), code("EDITOR_BUSY"));
+  f.api.prepareDownload();
+  assert.equal(await f.urls.at(-1).text(), "# Keep me");
+  f.sourceEditor.readOnly = false;
+  f.confirm(() => { entered.resolve(); return hold.promise; });
+  const pending = f.api.openFile(new File(["late"], "late.md"));
+  await entered.promise;
+  f.sourceEditor.readOnly = true;
+  hold.resolve(true);
+  await assert.rejects(pending, code("STALE_SOURCE"));
+  assert.equal(f.replacements.length, 0);
+  assert.equal(f.sourceEditor.value, "# Keep me");
+});
+for (const field of ["sourceEditor", "filename"]) {
+  for (const property of ["readOnly", "disabled"]) {
+    for (const phase of ["file read", "confirmation"]) {
+      test(`${field} ${property} round trip during ${phase} retires source replacement`, async (t) => {
+        const f = controls(true, true), entered = gate(), hold = gate();
+        t.after(() => f.api.dispose());
+        const original = { filename: "original.md", source: "\ufeff# Keep\r\n😀 draft\rTail" };
+        f.api.replace(original);
+        f.api.prepareDownload();
+        const backup = f.download.href;
+        class SlowFile extends File {
+          async arrayBuffer() {
+            if (phase === "file read") { entered.resolve(); await hold.promise; }
+            return super.arrayBuffer();
+          }
+        }
+        f.confirm(() => {
+          if (phase === "confirmation") { entered.resolve(); return hold.promise; }
+          return true;
+        });
+        const pending = f.api.openFile(new SlowFile(["obsolete"], "obsolete.md"));
+        await entered.promise;
+        f[field][property] = true;
+        f[field][property] = false;
+        assert(f.access.pendingRecords > 0, "same-task records have not delivered a callback");
+        hold.resolve(true);
+        await assert.rejects(pending, code("STALE_SOURCE"));
+        assert.deepEqual(f.api.snapshot(), original);
+        assert.equal(f.replacements.length, 1);
+        assert.equal(f.download.href, backup, "unchanged source backup stays usable across access changes");
+        assert.deepEqual(new Uint8Array(await f.urls.at(-1).arrayBuffer()), new TextEncoder().encode(original.source));
+        assert.equal(f.open.disabled, false);
+        f.confirm(() => true);
+        const next = "\ufeff# Fresh\r\n正しい\rEnd";
+        assert.equal(await f.api.openFile(new File([next], "fresh.md")), true);
+        assert.deepEqual(f.api.snapshot(), { source: next, filename: "fresh.md" });
+        assert.equal(f.replacements.length, 2);
+      });
+    }
+  }
+  test(`${field} detach/reinsert retires an import and cannot poison a fresh same-task open`, async (t) => {
+    const f = controls(true, true), hold = gate();
+    t.after(() => f.api.dispose());
+    class SlowFile extends File { async arrayBuffer() { await hold.promise; return super.arrayBuffer(); } }
+    const pending = f.api.openFile(new SlowFile(["obsolete"], "old.md"));
+    f.access.mount(f[field], false);
+    f.access.deliver();
+    assert.equal(f.open.disabled, true);
+    assert.throws(() => f.api.replace({ source: "detached", filename: "detached.md" }), code("EDITOR_BUSY"));
+    f.access.mount(f[field], true);
+    hold.resolve();
+    await assert.rejects(pending, code("STALE_SOURCE"));
+    assert.equal(f.sourceEditor.value, "# Keep me");
+    f[field].readOnly = true;
+    f[field].readOnly = false;
+    assert(f.access.pendingRecords > 0);
+    assert.equal(await f.api.openFile(new File(["fresh"], "fresh.md")), true);
+    assert.equal(f.sourceEditor.value, "fresh");
+  });
+}
+test("access observation ignores unrelated preview mutations and disconnects without late UI writes", async () => {
+  const f = controls(false, true), entered = gate(), hold = gate();
+  f.confirm(() => { entered.resolve(); return hold.promise; });
+  const pending = f.api.openFile(new File(["new"], "new.md"));
+  await entered.promise;
+  f.access.unrelated();
+  f.access.deliver();
+  hold.resolve(true);
+  assert.equal(await pending, true);
+  f.api.dispose();
+  assert.equal(f.access.observerCount, 0);
+  f.open.disabled = false;
+  f.sourceEditor.readOnly = true;
+  f.access.deliver();
+  assert.equal(f.open.disabled, false, "disposed observation cannot write a successor's controls");
+});
+test("source and filename composition retire prepared downloads until both fields finish", async (t) => {
+  const f = controls();
+  t.after(() => f.api.dispose());
+  f.api.prepareDownload();
+  f.sourceEditor.dispatchEvent(new Event("compositionstart"));
+  assert.equal(f.download.hidden, true);
+  assert.deepEqual(f.revoked, ["blob:1"]);
+  assert.throws(() => f.api.prepareDownload(), code("EDITOR_BUSY"));
+  f.filename.dispatchEvent(new Event("compositionstart"));
+  f.sourceEditor.dispatchEvent(new Event("compositionend"));
+  assert.equal(f.prepare.disabled, true);
+  assert.throws(() => f.api.prepareDownload(), code("EDITOR_BUSY"));
+  const click = new Event("click", { cancelable: true });
+  f.download.dispatchEvent(click);
+  assert.equal(click.defaultPrevented, true);
+  f.filename.dispatchEvent(new Event("compositionend"));
+  assert.equal(f.prepare.disabled, false);
+  f.api.prepareDownload();
+  assert.equal(await f.urls.at(-1).text(), "# Keep me");
 });
 test("source downloads need no renderer and are invalidated on edit, rename or replacement", async (t) => {
   const f = controls();

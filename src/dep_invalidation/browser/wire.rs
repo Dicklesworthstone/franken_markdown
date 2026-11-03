@@ -2,8 +2,8 @@
 use super::{BrowserFlowError, BrowserFlowSession, MAX_SNAPSHOT_BYTES};
 use crate::SourceSpan;
 use crate::display::{
-    AccessibleReadingNode, AccessibleReadingRole, DisplayItem, DisplayRect, DisplayTextRun,
-    VectorShapeType,
+    AccessibleReadingNode, AccessibleReadingRole, DisplayItem, DisplayPathCommand, DisplayRect,
+    DisplayTextRun, VectorShapeType,
 };
 use crate::text::{CaretAffinity, Direction, FontOrigin, OwnedTextRun};
 use std::fmt::{self, Write};
@@ -64,6 +64,16 @@ impl Json {
         self.write_str(",\"height\":")?;
         self.number(rect.height)?;
         self.write_char('}')
+    }
+    fn rgba(&mut self, color: [f32; 4]) -> fmt::Result {
+        self.write_char('[')?;
+        for (index, channel) in color.into_iter().enumerate() {
+            if index != 0 {
+                self.write_char(',')?;
+            }
+            self.number(channel)?;
+        }
+        self.write_char(']')
     }
     fn span(&mut self, span: SourceSpan) -> fmt::Result {
         write!(
@@ -168,12 +178,27 @@ fn display_item(
     w.span(item.source_span())?;
     match item {
         DisplayItem::Text(text) => {
+            if !text.has_valid_placement() {
+                return Err(fmt::Error);
+            }
             w.write_str(",\"kind\":\"text\",\"text\":")?;
             w.string(&text.text)?;
             w.write_str(",\"colorRole\":")?;
             w.string(&text.color_role)?;
             w.write_str(",\"fontSize\":")?;
             w.number(text.font_size)?;
+            if let Some(fill) = text.fill {
+                w.write_str(",\"fill\":")?;
+                w.rgba(fill)?;
+            }
+            if let Some(baseline) = text.baseline_y {
+                w.write_str(",\"baselineY\":")?;
+                w.number(baseline)?;
+            }
+            if let Some(reason) = &text.math_fallback {
+                w.write_str(",\"mathFallback\":")?;
+                w.string(reason)?;
+            }
             w.write_str(",\"fontRun\":")?;
             if let Some(run) = &text.font_run {
                 font_run(w, run, glyphs)?;
@@ -197,6 +222,77 @@ fn display_item(
             w.number(path.stroke_width)?;
             w.write_str(",\"colorRole\":")?;
             w.string(&path.color_role)?;
+        }
+        DisplayItem::Path(path) => {
+            if !path.is_valid() {
+                return Err(fmt::Error);
+            }
+            w.write_str(",\"kind\":\"path\",\"colorRole\":")?;
+            w.string(&path.color_role)?;
+            w.write_str(",\"fill\":")?;
+            if let Some(fill) = path.fill {
+                w.rgba(fill)?;
+            } else {
+                w.write_str("null")?;
+            }
+            if let Some(stroke) = &path.stroke {
+                w.write_str(",\"stroke\":{\"color\":")?;
+                w.rgba(stroke.color)?;
+                w.write_str(",\"width\":")?;
+                w.number(stroke.width)?;
+                w.write_str(",\"dash\":[")?;
+                for (index, value) in stroke.dash.iter().enumerate() {
+                    if index != 0 {
+                        w.write_char(',')?;
+                    }
+                    w.number(*value)?;
+                }
+                w.write_str("],\"dashOffset\":")?;
+                w.number(stroke.dash_offset)?;
+                w.write_str(",\"cap\":")?;
+                w.string(match stroke.cap {
+                    crate::display::DisplayLineCap::Butt => "butt",
+                    crate::display::DisplayLineCap::Round => "round",
+                    crate::display::DisplayLineCap::Square => "square",
+                })?;
+                w.write_str(",\"join\":")?;
+                w.string(match stroke.join {
+                    crate::display::DisplayLineJoin::Miter => "miter",
+                    crate::display::DisplayLineJoin::Round => "round",
+                    crate::display::DisplayLineJoin::Bevel => "bevel",
+                })?;
+                w.write_str(",\"miterLimit\":")?;
+                w.number(stroke.miter_limit)?;
+                w.write_char('}')?;
+            }
+            w.write_str(",\"commands\":[")?;
+            for (i, command) in path.commands.iter().enumerate() {
+                if i != 0 {
+                    w.write_char(',')?;
+                }
+                let (kind, coordinates): (&str, &[f32]) = match command {
+                    DisplayPathCommand::MoveTo { x, y } => ("M", &[*x, *y]),
+                    DisplayPathCommand::LineTo { x, y } => ("L", &[*x, *y]),
+                    DisplayPathCommand::QuadTo { cx, cy, x, y } => ("Q", &[*cx, *cy, *x, *y]),
+                    DisplayPathCommand::CubicTo {
+                        cx1,
+                        cy1,
+                        cx2,
+                        cy2,
+                        x,
+                        y,
+                    } => ("C", &[*cx1, *cy1, *cx2, *cy2, *x, *y]),
+                    DisplayPathCommand::Close => ("Z", &[]),
+                };
+                w.write_char('[')?;
+                w.string(kind)?;
+                for &coordinate in coordinates {
+                    w.write_char(',')?;
+                    w.number(coordinate)?;
+                }
+                w.write_char(']')?;
+            }
+            w.write_char(']')?;
         }
         DisplayItem::Image(image) => {
             w.write_str(",\"kind\":\"image\",\"requestId\":")?;
@@ -335,6 +431,8 @@ fn reading_node(
         AccessibleReadingRole::Heading { .. } => "heading",
         AccessibleReadingRole::Paragraph => "paragraph",
         AccessibleReadingRole::CodeBlock => "code-block",
+        AccessibleReadingRole::Math => "math",
+        AccessibleReadingRole::Diagram => "diagram",
         AccessibleReadingRole::List => "list",
         AccessibleReadingRole::ListItem => "list-item",
         AccessibleReadingRole::Table => "table",
@@ -410,7 +508,10 @@ pub(super) fn hit(state: &BrowserFlowSession, x: f32, y: f32) -> Result<String, 
         .map_err(viewport::query_error)?;
     let found = display
         .hit_test_filtered(x, y, |item| {
-            matches!(item, DisplayItem::Text(_) | DisplayItem::Image(_))
+            matches!(
+                item,
+                DisplayItem::Text(_) | DisplayItem::Image(_) | DisplayItem::Path(_)
+            )
         })
         .map_err(viewport::query_error)?;
     encode(|w| {
@@ -425,25 +526,22 @@ pub(super) fn hit(state: &BrowserFlowSession, x: f32, y: f32) -> Result<String, 
         if let Some((index, item)) = found {
             write!(w, "{{\"itemIndex\":{index},\"enclosingSourceSpan\":")?;
             w.span(item.source_span())?;
-            if let DisplayItem::Text(text) = item {
-                if let Some(run) = &text.font_run {
-                    let hit = run.hit_test(x - text.bounds.x);
-                    w.write_str(",\"coordinateSpace\":\"fragment-utf16\"")?;
-                    write!(
-                        w,
-                        ",\"byteOffset\":{},\"utf16Offset\":{},\"clusterIndex\":{},\"isExact\":{},\"visualX\":",
-                        hit.caret.byte_offset,
-                        hit.caret.utf16_offset,
-                        hit.cluster_index,
-                        hit.is_exact
-                    )?;
-                    w.number(text.bounds.x + hit.caret.visual_x)?;
-                    w.write_str(",\"affinity\":")?;
-                    w.string(match hit.caret.affinity {
-                        CaretAffinity::Leading => "leading",
-                        CaretAffinity::Trailing => "trailing",
-                    })?;
-                }
+            if let DisplayItem::Text(text) = item
+                && let Some(run) = &text.font_run
+            {
+                let hit = run.hit_test(x - text.bounds.x);
+                w.write_str(",\"coordinateSpace\":\"fragment-utf16\"")?;
+                write!(
+                    w,
+                    ",\"byteOffset\":{},\"utf16Offset\":{},\"clusterIndex\":{},\"isExact\":{},\"visualX\":",
+                    hit.caret.byte_offset, hit.caret.utf16_offset, hit.cluster_index, hit.is_exact
+                )?;
+                w.number(text.bounds.x + hit.caret.visual_x)?;
+                w.write_str(",\"affinity\":")?;
+                w.string(match hit.caret.affinity {
+                    CaretAffinity::Leading => "leading",
+                    CaretAffinity::Trailing => "trailing",
+                })?;
             }
             w.write_char('}')?;
         } else {

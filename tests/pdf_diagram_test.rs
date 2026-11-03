@@ -1,4 +1,4 @@
-//! Mermaid flowchart/sequence fences render as vector figures in PDF, the
+//! Mermaid flowchart/sequence/pie fences render as vector figures in PDF, the
 //! same diagrams HTML draws; Mermaid types the compiler does not support stay
 //! readable code in both outputs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -9,6 +9,7 @@ use franken_markdown::{HtmlOptions, PdfOptions, parse_markdown, render_html, ren
 const FLOW: &str = "```mermaid\ngraph TD\n  A[Start] --> B{Decide}\n  B -->|yes| C[Done]\n```\n";
 const SEQUENCE: &str = "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hi\n```\n";
 const PIE: &str = "```mermaid\npie title Pets\n  \"Dogs\" : 386\n```\n";
+const UNSUPPORTED: &str = "```mermaid\nclassDiagram\n  Animal <|-- Dog\n```\n";
 
 fn runs(markdown: &str) -> Vec<VerifyTextRun> {
     verification_text_layer(&parse_markdown(markdown), &PdfOptions::default())
@@ -20,36 +21,41 @@ fn runs(markdown: &str) -> Vec<VerifyTextRun> {
 }
 
 #[test]
-fn flowchart_and_sequence_fences_are_pdf_figures_not_source() {
-    for fence in [FLOW, SEQUENCE] {
+fn supported_mermaid_fences_are_pdf_figures_not_source() {
+    for fence in [FLOW, SEQUENCE, PIE] {
         let runs = runs(fence);
         assert!(
             runs.iter().any(|run| run.kind == "image"),
             "diagram is a figure: {runs:?}"
         );
         assert!(
-            !runs
-                .iter()
-                .any(|run| run.text.contains("graph TD") || run.text.contains("->>")),
+            !runs.iter().any(|run| run.text.contains("graph TD")
+                || run.text.contains("->>")
+                || run.text.contains("pie title")),
             "diagram source is not printed: {runs:?}"
         );
     }
-    let pdf = render_pdf(&format!("{FLOW}\n{SEQUENCE}"), &PdfOptions::default()).unwrap();
+    let pdf = render_pdf(
+        &format!("{FLOW}\n{SEQUENCE}\n{PIE}"),
+        &PdfOptions::default(),
+    )
+    .unwrap();
     let raw = String::from_utf8_lossy(&pdf);
     assert_eq!(
         raw.matches("/S /Figure").count(),
-        2,
-        "both tagged as figures"
+        3,
+        "all tagged as figures"
     );
     assert!(raw.contains("/Alt (Sequence diagram)"));
+    assert!(raw.contains("/Alt (Pie chart)"));
 }
 
 #[test]
 fn unsupported_mermaid_types_stay_code_in_pdf_and_html() {
-    let runs = runs(PIE);
+    let runs = runs(UNSUPPORTED);
     assert!(runs.iter().all(|run| run.kind != "image"), "{runs:?}");
-    assert!(runs.iter().any(|run| run.text.contains("pie title Pets")));
-    let html = render_html(PIE, &HtmlOptions::default()).unwrap();
+    assert!(runs.iter().any(|run| run.text.contains("classDiagram")));
+    let html = render_html(UNSUPPORTED, &HtmlOptions::default()).unwrap();
     assert!(!html.contains("<div class=\"fmd-diagram-wrapper\">"));
     assert!(html.contains("language-mermaid"));
     let html = render_html(FLOW, &HtmlOptions::default()).unwrap();
@@ -71,7 +77,8 @@ fn svg_posters_embed_the_same_diagram_figures() {
     let doc = parse_markdown(&format!("{FLOW}\n{SEQUENCE}\n{PIE}"));
     let (bytes, _, warnings) = render_svg_with_diagnostics(&doc, &SvgOptions::default());
     let xml = String::from_utf8(bytes).unwrap();
-    assert_eq!(xml.matches("data:image/svg+xml;base64,").count(), 2);
+    assert_eq!(xml.matches("data:image/svg+xml;base64,").count(), 3);
     assert!(xml.contains("aria-label=\"Sequence diagram\""));
+    assert!(xml.contains("aria-label=\"Pie chart\""));
     assert!(warnings.is_empty(), "{warnings:?}");
 }

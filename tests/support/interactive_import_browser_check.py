@@ -1,8 +1,8 @@
 """Real-browser image authoring checks over a generated interactive workspace.
 
 Usage: python tests/support/interactive_import_browser_check.py document.html
-Needs Playwright/Chromium on the verification host only. Fixtures are real PNG
-and progressive JPEG bytes; imports are driven through the actual file input.
+Needs Playwright/Chromium on the verification host only. Fixtures are real PNG,
+progressive JPEG, GIF and SVG bytes; imports use the actual file input.
 """
 import argparse
 import base64
@@ -33,6 +33,8 @@ def png(width=2, height=1):
     return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(b'\0\xff\0\0\xff\0\xff\0\xff')) + chunk(b'IEND', b'')
 
 JPEG = base64.b64decode('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wgARCAACAAMDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUAQEAAAAAAAAAAAAAAAAAAAAF/9oADAMBAAIQAxAAAAGOFD//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAEFAn//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/AX//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/AX//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAY/An//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/IX//2gAMAwEAAgADAAAAEAP/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/EH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EH//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/EH//2Q==')
+GIFS = [base64.b64decode((Path(__file__).resolve().parents[1] / 'fixtures/gif' / (name + '.base64')).read_text())
+        for name in ['animated-colors', 'interlaced-palette']]
 
 def upload(name, data, mime='application/octet-stream'):
     return {'name': name, 'mimeType': mime, 'buffer': data}
@@ -70,6 +72,20 @@ with sync_playwright() as p:
         page.wait_for_function("!document.querySelector('body > .fmd-app-header #btn-insert-image').disabled")
         return page.locator(status).text_content()
 
+    def delay_image_reads(page):
+        # Real FileReader bytes complete; only delivery to the importer is held.
+        # Capturing the callback deliberately exercises queued completion after
+        # cancellation has cleared the reader's current event handlers.
+        page.evaluate("""() => {
+          window.delayedImageReads = [];
+          const read = FileReader.prototype.readAsArrayBuffer;
+          FileReader.prototype.readAsArrayBuffer = function(file) {
+            const loaded = this.onload;
+            this.onload = event => delayedImageReads.push(() => loaded?.call(this, event));
+            return read.call(this, file);
+          };
+        }""")
+
     def save(page, button):
         with page.expect_download() as pending:
             page.locator('body > .fmd-app-header #' + button).click()
@@ -95,6 +111,8 @@ with sync_playwright() as p:
     workspace = save(page, 'btn-save-html')
     reopened = load(workspace.decode())
     check(text(reopened) == inserted, 'saved workspace lost imported source')
+    check(reopened.locator('#btn-cancel-image-import').count() == 1 and
+          reopened.locator('#btn-cancel-image-import').is_hidden(), 'reopened workspace retained a busy or duplicate cancellation control')
     edit(reopened, inserted + '\n\nEdited after reopening')
     reopened.evaluate("window.dispatchEvent(new Event('beforeprint'))")
     check(reopened.locator('main#preview-pane img').get_attribute('src').endswith(base64.b64encode(png()).decode()), 'image lost after reopening and editing')
@@ -116,12 +134,53 @@ with sync_playwright() as p:
     check(page.locator('main#preview-pane img').count() == 2, 'batch preview lost an image')
 
     page = load()
+    edit(page, 'GIF images')
+    check('image/gif' in page.locator(picker).get_attribute('accept'), 'file chooser excludes supported GIF images')
+    message = insert(page, [upload('animated.png', GIFS[0], 'image/png'), upload('interlaced.gif', GIFS[1])], chooser=True)
+    check(message.startswith('Inserted 2 images'), 'GIF batch failed: ' + message)
+    for encoded in GIFS:
+        check('data:image/gif;base64,' + base64.b64encode(encoded).decode() in text(page), 'GIF import changed original frame bytes')
+    page.evaluate("window.dispatchEvent(new Event('beforeprint'))")
+    page.wait_for_function('''() => {
+      const images = document.querySelectorAll('main#preview-pane img');
+      return images.length === 2 && images[0].naturalWidth === 2 && images[1].naturalWidth === 96;
+    }''')
+    check(True, 'animated and interlaced GIFs decode in the real preview')
+    original = text(page)
+    check(save(page, 'btn-save-markdown') == original.encode(), 'GIF Markdown download loses original animation bytes')
+    reopened_gifs = load(save(page, 'btn-save-html').decode())
+    check(text(reopened_gifs) == original, 'GIF source changes through save/reopen')
+
+    page = load()
+    edit(page, 'Vector source')
+    vector = ('\ufeff<?xml version="1.0" encoding="UTF-8"?>\n'
+              '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="80">'
+              '<defs><linearGradient id="paint"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs>'
+              '<rect width="160" height="80" fill="url(#paint)"/></svg>').encode()
+    message = insert(page, [upload('vector.png', vector, 'image/png')], chooser=True)
+    check(message.startswith('Inserted 1 image'), 'valid SVG import failed: ' + message)
+    vector_source = text(page)
+    check('data:image/svg+xml;base64,' + base64.b64encode(vector).decode() in vector_source,
+          'lightweight SVG insertion changed or rasterized original bytes')
+    page.evaluate("window.dispatchEvent(new Event('beforeprint'))")
+    page.wait_for_function('document.querySelector("main#preview-pane img")?.naturalWidth === 160')
+    check(True, 'lightweight live preview decodes the imported SVG')
+    check(save(page, 'btn-save-markdown') == vector_source.encode(), 'SVG source download changed the portable vector payload')
+    reopened_vector = load(save(page, 'btn-save-html').decode())
+    check(text(reopened_vector) == vector_source, 'lightweight SVG source changes through save/reopen')
+    edit(reopened_vector, vector_source + '\n\nAfter SVG reopen')
+    reopened_vector.evaluate("window.dispatchEvent(new Event('beforeprint'))")
+    reopened_vector.wait_for_function('document.querySelector("main#preview-pane img")?.naturalWidth === 160')
+    check(True, 'SVG remains available after subsequent editing and print refresh')
+
+    page = load()
     edit(page, 'Keep unchanged')
     for files in [
         [upload('valid.png',png()),upload('fake.png',b'<svg onload="alert(1)"/>','image/png')],
         [upload('huge.png',png(5000,5000))],
         [upload('too-many.png',png())] * 9,
         [upload('empty.png',b'')],
+        [upload('truncated.gif',GIFS[0][:-1])],
         # A plausible frame passes metadata but must still fail real decoding.
         [upload('bad.jpg',bytes([255,216,255,192,0,11,8,0,1,0,1,1,1,17,0,255,217]))],
     ]:
@@ -132,24 +191,85 @@ with sync_playwright() as p:
     message = insert(page, [upload('retry.png',png())])
     check(message.startswith('Inserted 1 image') and text(page).count('![retry.png]') == 2, 'same file could not be reselected')
 
-    # Delay actual file reading, then change and undo source: revision, not
+    # Delay actual file read delivery, then change and undo source: revision, not
     # string equality alone, must reject stale asynchronous insertion.
     page = load()
     edit(page, 'Original')
-    page.evaluate("""() => {
-      const read = File.prototype.arrayBuffer;
-      File.prototype.arrayBuffer = function() {
-        return new Promise(resolve => { window.finishImageRead = () => read.call(this).then(resolve); });
-      };
-    }""")
+    delay_image_reads(page)
     page.locator(picker).set_input_files([upload('slow.png',png())])
-    page.wait_for_function('typeof window.finishImageRead === "function"')
+    page.wait_for_function('delayedImageReads.length === 1')
     check(page.locator('body > .fmd-app-header #btn-insert-image').is_disabled(), 'parallel import not disabled')
     edit(page, 'New work')
+    check('document changed' in page.locator(status).text_content() and
+          not page.locator('#btn-insert-image').is_disabled(), 'source editing did not cancel and release the importer immediately')
     edit(page, 'Original')
-    page.evaluate('window.finishImageRead()')
+    current_status = page.locator(status).text_content()
+    page.evaluate('delayedImageReads.shift()()')
     page.wait_for_function("!document.querySelector('body > .fmd-app-header #btn-insert-image').disabled")
-    check(text(page) == 'Original' and 'document changed' in page.locator(status).text_content(), 'stale import overwrote intervening edits/undo')
+    check(text(page) == 'Original' and page.locator(status).text_content() == current_status, 'stale import overwrote intervening edits/undo or their current status')
+
+    # A same-task synthetic composition event reaches a genuinely active
+    # FileReader, proving physical abort without delaying any native callback.
+    page = load()
+    edit(page, 'Original')
+    aborts = page.evaluate("""encoded => {
+      let aborts = 0;
+      const abort = FileReader.prototype.abort;
+      FileReader.prototype.abort = function() { aborts++; return abort.call(this); };
+      const files = new DataTransfer();
+      files.items.add(new File([Uint8Array.from(atob(encoded), c => c.charCodeAt(0))], 'active.png'));
+      const picker = document.querySelector('#fmd-image-picker');
+      picker.files = files.files; picker.dispatchEvent(new Event('change'));
+      document.querySelector('#fmd-editor').dispatchEvent(new CompositionEvent('compositionstart'));
+      return aborts;
+    }""", base64.b64encode(png()).decode())
+    check(aborts == 1 and text(page) == 'Original', 'composition did not physically abort the active FileReader')
+    page.close()
+
+    # These are synthetic lifecycle/composition events, not OS IME gestures.
+    # File selection, FileReader bytes, decoding and editor insertion are real.
+    for transition in ['composition', 'readOnly', 'disabled', 'suspension', 'cancel']:
+        page = load()
+        edit(page, 'Original')
+        delay_image_reads(page)
+        page.locator(picker).set_input_files([upload('abandoned.png', png())])
+        page.wait_for_function('delayedImageReads.length === 1')
+        if transition == 'composition':
+            page.locator(editor).dispatch_event('compositionstart')
+        elif transition in ['readOnly', 'disabled']:
+            page.locator(editor).evaluate('(e, key) => { e[key] = true; }', transition)
+        elif transition == 'suspension':
+            page.evaluate("window.dispatchEvent(new Event('pagehide'))")
+        else:
+            page.locator('#btn-cancel-image-import').click()
+        check(text(page) == 'Original' and 'cancelled' in page.locator(status).text_content(), transition + ' did not cancel the pending import')
+        if transition == 'composition':
+            page.locator(editor).dispatch_event('compositionend')
+        elif transition in ['readOnly', 'disabled']:
+            page.locator(editor).evaluate('(e, key) => { e[key] = false; }', transition)
+        elif transition == 'suspension':
+            page.evaluate("window.dispatchEvent(new Event('pageshow'))")
+        page.wait_for_function("!document.querySelector('#btn-insert-image').disabled")
+        page.locator(picker).set_input_files([upload('fresh.png', png())])
+        page.wait_for_function('delayedImageReads.length === 2')
+        page.evaluate('delayedImageReads.shift()()')
+        check(text(page) == 'Original' and page.locator('#btn-insert-image').is_disabled() and
+              page.locator(status).text_content() == 'Reading selected images…', transition + ' late completion interfered with the retry')
+        page.evaluate('delayedImageReads.shift()()')
+        page.wait_for_function("!document.querySelector('#btn-insert-image').disabled")
+        check('![fresh.png]' in text(page) and 'abandoned.png' not in text(page), transition + ' retry inserted stale source')
+        page.close()
+
+    page = load()
+    edit(page, 'Original')
+    delay_image_reads(page)
+    page.locator(picker).set_input_files([upload('timed-out.png', png())])
+    page.wait_for_function('delayedImageReads.length === 1')
+    page.wait_for_function("!document.querySelector('#btn-insert-image').disabled", timeout=12000)
+    check(text(page) == 'Original' and 'ten seconds' in page.locator(status).text_content(), 'real read deadline did not preserve source and release controls')
+    page.evaluate('delayedImageReads.shift()()')
+    check(text(page) == 'Original', 'timed-out read later inserted source')
+    page.close()
 
     # Saved read mode must switch through the controller, keeping its private
     # mode state and next toggle coherent. Also exercise the fallback inserter.

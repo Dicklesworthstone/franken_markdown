@@ -251,7 +251,7 @@ fn repeated_quote_boundaries_keep_alternating_code_and_prose() {
     let source = "> ```\n> literal\noutside\n".repeat(1024);
     let document = parse_markdown(&source);
     assert_eq!(document.blocks.len(), 2048);
-    for pair in document.blocks.chunks_exact(2) {
+    for pair in document.blocks.as_chunks::<2>().0 {
         assert_eq!(
             pair[0],
             Block::BlockQuote(vec![Block::CodeBlock {

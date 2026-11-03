@@ -150,12 +150,12 @@ fn pdf_applies_gpos_kerning_via_tj() {
             while j < bytes.len() && bytes[j] != b'<' && bytes[j] != b'>' {
                 j += 1;
             }
-            if j < bytes.len() && bytes[j] == b'<' {
-                if let Ok(n) = s[i + 1..j].trim().parse::<i32>() {
-                    if n != 0 {
-                        nonzero += 1;
-                    }
-                }
+            if j < bytes.len()
+                && bytes[j] == b'<'
+                && let Ok(n) = s[i + 1..j].trim().parse::<i32>()
+                && n != 0
+            {
+                nonzero += 1;
             }
             i = j;
         } else {

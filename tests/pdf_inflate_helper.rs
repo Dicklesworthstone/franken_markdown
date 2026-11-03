@@ -39,10 +39,10 @@ pub fn decompressed_content(pdf: &[u8]) -> Vec<u8> {
         };
         // Content streams are zlib-wrapped (start 0x78); unfiltered payloads
         // (font subsets) are skipped.
-        if raw.first() == Some(&0x78) {
-            if let Some(dec) = franken_markdown::zlib_decompress(raw, 1 << 24) {
-                out.extend_from_slice(&dec);
-            }
+        if raw.first() == Some(&0x78)
+            && let Some(dec) = franken_markdown::zlib_decompress(raw, 1 << 24)
+        {
+            out.extend_from_slice(&dec);
         }
         i = start + len;
     }

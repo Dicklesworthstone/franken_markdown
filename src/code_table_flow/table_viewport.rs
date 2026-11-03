@@ -531,6 +531,9 @@ impl ConstrainedTableFlow {
                 child_count: 1,
             }));
             items.push(DisplayItem::Text(DisplayTextRun {
+                fill: None,
+                baseline_y: None,
+                math_fallback: None,
                 bounds: DisplayRect::new(
                     bounds.x + offset,
                     bounds.y,
@@ -865,10 +868,10 @@ mod tests {
                 assert_eq!(row.children[0].bounds.width, width);
             }
             for item in page.items() {
-                if let DisplayItem::Text(run) = item {
-                    if run.color_role == "table-cell" {
-                        seen.push(run.text.clone());
-                    }
+                if let DisplayItem::Text(run) = item
+                    && run.color_role == "table-cell"
+                {
+                    seen.push(run.text.clone());
                 }
             }
             let DisplayItem::Clip(clip) = &page.items()[0] else {

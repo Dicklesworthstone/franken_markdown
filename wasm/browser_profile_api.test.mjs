@@ -95,6 +95,25 @@ for (const [method, feature] of [["renderBookPdf", "wasm-book"], ["renderBookSit
   });
 }
 
+test("missing or malformed site exporters reject before font-policy and source getters", async () => {
+  for (const bindings of [{}, { renderBookSite: null },
+    { renderBookSitePublication: {}, renderBookSite: 1 }]) {
+    const f = await fixture(bindings);
+    let fontReads = 0, sourceReads = 0;
+    const options = {
+      get fontEmbedding() { fontReads++; throw new Error("font policy was read before capability admission"); },
+    };
+    const sources = new Proxy([], {
+      get() { sourceReads++; throw new Error("source was read before capability admission"); },
+    });
+    await assert.rejects(f.api.renderBookSite(sources, options), unsupported("wasm-book"));
+    assert.equal(fontReads, 0);
+    assert.equal(sourceReads, 0);
+    assert.equal(f.inits, 0);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
 test("createRenderer keeps optional methods callable with actionable refusal", async () => {
   const f = await fixture();
   const renderer = await f.api.createRenderer();
@@ -166,6 +185,23 @@ test("legacy site rejects publication-only features before initialization", asyn
   const f = await fixture({ renderBookSite: true });
   await assert.rejects(f.api.renderBookSite(files, { toc: true }), error => error.code === "UNSUPPORTED_WASM_PACKAGE");
   assert.equal(f.inits, 0); assert.equal(f.calls.length, 0);
+});
+
+test("legacy site admits subset policy but refuses full fonts before opening assets", async () => {
+  const f = await fixture({ renderBookSite: true });
+  let assetReads = 0;
+  await assert.rejects(f.api.renderBookSite(files, {
+    fontEmbedding: "full",
+    get fontAssets() { assetReads++; throw new Error("assets must not be opened"); },
+  }), unsupported("full book-site font embedding"));
+  assert.equal(assetReads, 0);
+  assert.equal(f.inits, 0);
+  assert.equal(f.calls.length, 0);
+  const result = await f.api.renderBookSite(files, { fontEmbedding: "subset" });
+  assert.equal(result.format, "book-site");
+  assert.match(result.diagnostics[0].message, /Legacy book site renderer/);
+  assert.equal(f.inits, 1);
+  assert.equal(f.calls.length, 1);
 });
 
 test("workspace-only build captures source and metadata before initialization yields", async () => {

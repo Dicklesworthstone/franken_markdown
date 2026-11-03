@@ -2,6 +2,7 @@
 // The ABI adapter records arguments; it is not a font parser or real WASM build.
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
+import {readFileSync} from 'node:fs';
 import {createNativeWorkspaceRenderer} from './interactive_runtime.mjs';
 
 const b64 = bytes => Buffer.from(bytes).toString('base64');
@@ -64,6 +65,22 @@ test('one font commit reaches HTML/PDF/EPUB/SVG and retains untouched slots', ()
   assert.equal(f.payload.fonts, stage.fonts);
   assert.ok(Object.isFrozen(f.renderer.fontSlots)); assert.ok(Object.isFrozen(f.renderer.fontSlots[0]));
   assert.equal(f.freed, 4);
+});
+
+test('real CFF bytes survive every native format projection and saved-workspace reopen', () => {
+  const bytes = readFileSync(new URL('../tests/fixtures/fonts/source-sans-3/SourceSans3-Regular.otf', import.meta.url));
+  const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
+  const f = fixture();
+  f.renderer.stageFonts(slots.map(slot => ({slot, bytes}))).commit();
+  for (const format of ['html', 'pdf', 'epub', 'svg']) f.renderer[format]('CFF source');
+  for (const {format, args} of f.calls) {
+    const index = ({html: 7, pdf: 11, epub: 12, svg: 8})[format];
+    for (const font of args.slice(index, index + 5)) assert.deepEqual(Buffer.from(font), bytes, format);
+  }
+  const reopened = fixture(JSON.parse(JSON.stringify(f.payload)));
+  reopened.renderer.svg('CFF source');
+  for (const font of reopened.calls[0].args.slice(8, 13)) assert.deepEqual(Buffer.from(font), bytes);
+  assert.deepEqual(reopened.renderer.fontSlots, f.renderer.fontSlots);
 });
 
 test('PDF custom geometry ABI retains new fonts and prior paper settings', () => {

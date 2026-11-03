@@ -4,7 +4,9 @@
 
 use super::Json;
 use crate::display::{AccessibleReadingNode, AccessibleReadingRole};
-use crate::flow_display::{DisplayBlock, FlowInlineRun, ResumableFlowDisplay, active_link_target};
+use crate::flow_display::{
+    DisplayBlock, FlowInlineRun, FlowMathStyle, ResumableFlowDisplay, active_link_target,
+};
 use std::fmt::{self, Write};
 
 pub(super) fn fields(
@@ -84,7 +86,18 @@ pub(super) fn fields(
                 image_link = engine.image_link_for_block(index);
             }
             DisplayBlock::CodeBlock { source, .. } => {
-                if node.role != AccessibleReadingRole::CodeBlock || node.text != *source {
+                // Shaped Flow may draw the compiler's diagram geometry while
+                // retaining the same literal fence body as its reading node.
+                if !matches!(
+                    node.role,
+                    AccessibleReadingRole::CodeBlock | AccessibleReadingRole::Diagram
+                ) || node.text != *source
+                {
+                    return Err(fmt::Error);
+                }
+            }
+            DisplayBlock::MathBlock { source } => {
+                if node.role != AccessibleReadingRole::Math || node.text != *source {
                     return Err(fmt::Error);
                 }
             }
@@ -128,6 +141,13 @@ pub(super) fn fields(
             run.style.bold, run.style.italic, run.style.code, run.style.strikethrough
         )?;
         link(w, run.link.as_deref())?;
+        if let Some(math) = run.math {
+            w.write_str(",\"math\":")?;
+            w.string(match math {
+                FlowMathStyle::Text => "inline",
+                FlowMathStyle::Display => "display",
+            })?;
+        }
         w.write_char('}')?;
     }
     w.write_str("],\"imageLink\":")?;

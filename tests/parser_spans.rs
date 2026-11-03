@@ -361,8 +361,20 @@ fn empty_and_metadata_only_documents_do_not_invent_blocks() {
 fn unclosed_final_blocks_keep_their_actual_source_extent() {
     let source = "# Before\n\n$$\nmath\n\n# still math";
     assert_spans(source, &["# Before", "$$\nmath\n\n# still math"]);
-    let source = "# Before\n\n```rust\nlet x = 1;\r";
-    let document = assert_spans(source, &["# Before", "```rust\nlet x = 1;\r"]);
-    assert_eq!(document.diagnostics.len(), 1);
-    assert_eq!(document.diagnostics[0].span, document.blocks[1].span);
+    for ending in ["\n", "\r\n", "\r"] {
+        let source = format!("# Before{ending}{ending}```rust{ending}let x = 1;{ending}");
+        let code_source = format!("```rust{ending}let x = 1;");
+        let document = assert_spans(&source, &["# Before", &code_source]);
+        assert_eq!(document.diagnostics.len(), 1);
+        // A block ends at its last line's content, as it does for LF. The
+        // unclosed-fence diagnostic still covers the entire source through EOF.
+        assert_eq!(
+            document.diagnostics[0].span,
+            SourceSpan::new(document.blocks[1].span.start, source.len())
+        );
+        assert_eq!(
+            document.diagnostics[0].span.slice(&source),
+            Some(format!("{code_source}{ending}").as_str())
+        );
+    }
 }

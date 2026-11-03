@@ -264,19 +264,19 @@ impl StatsCollector {
                     self.structure.headings_total += 1;
                     self.structure.headings_by_level[lvl - 1] += 1;
 
-                    if let Some(prev) = self.last_heading_level {
-                        if *level > prev + 1 {
-                            self.findings.push(DocFinding {
-                                severity: "warning",
-                                code: "heading_hierarchy_skip",
-                                message: format!(
-                                    "heading level H{} follows H{} (skipped H{})",
-                                    level,
-                                    prev,
-                                    prev + 1
-                                ),
-                            });
-                        }
+                    if let Some(prev) = self.last_heading_level
+                        && *level > prev + 1
+                    {
+                        self.findings.push(DocFinding {
+                            severity: "warning",
+                            code: "heading_hierarchy_skip",
+                            message: format!(
+                                "heading level H{} follows H{} (skipped H{})",
+                                level,
+                                prev,
+                                prev + 1
+                            ),
+                        });
                     }
                     self.last_heading_level = Some(*level);
 

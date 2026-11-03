@@ -51,3 +51,10 @@ await renderer.renderEpub("# EPUB", { htmlFontFormat: "woff2" });
 const wrongExtension: "pdf" = svg.extension;
 void [pdfExtension, svgExtension, wrongExtension];
 renderer.dispose();
+
+await renderer.renderHtml("# Full", { fontEmbedding: "full" });
+await renderer.renderEpub("# Full", { fontEmbedding: "subset" });
+// @ts-expect-error Native PDF keeps its own font subsetting policy.
+await renderer.renderPdf("# PDF", { fontEmbedding: "full" });
+// @ts-expect-error Font policies are explicit.
+await renderer.renderEpub("# Full", { fontEmbedding: "guess" });

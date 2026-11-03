@@ -20,15 +20,53 @@ pub struct FlowInlineStyle {
     pub strikethrough: bool,
 }
 
+/// Typesetting style of an atomic formula in a block's reading text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlowMathStyle {
+    Text,
+    Display,
+}
+
 /// One styled reading-text range. Ranges are ordered, non-overlapping UTF-8
 /// boundaries into the corresponding block text (or table cell), NOT Markdown
-/// source offsets. Adjacent equal styles/targets are coalesced. Link targets are
+/// source offsets. Adjacent equal text styles/targets are coalesced; equations
+/// retain distinct atomic ranges even when their styles agree. Link targets are
 /// retained even when activation is blocked, so hosts can expose diagnostics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FlowInlineRun {
     pub range: Range<usize>,
     pub style: FlowInlineStyle,
     pub link: Option<Arc<str>>,
+    /// The range contains exact TeX source, not ordinary prose. Delimiters are
+    /// already owned by the enclosing AST span and are not fabricated here.
+    pub math: Option<FlowMathStyle>,
+}
+
+/// Preserve formula identity even through the three-argument shaping API while
+/// retaining its established omission of inline face and link styling.
+pub(super) fn render_runs(runs: &[FlowInlineRun], styled: bool) -> Cow<'_, [FlowInlineRun]> {
+    if styled {
+        return Cow::Borrowed(runs);
+    }
+    if !runs.iter().any(|run| run.math.is_some()) {
+        return Cow::Borrowed(&[]);
+    }
+    let mut plain: Vec<FlowInlineRun> = Vec::new();
+    for run in runs {
+        if run.math.is_none()
+            && let Some(previous) = plain.last_mut().filter(|previous| previous.math.is_none())
+        {
+            previous.range.end = run.range.end;
+        } else {
+            plain.push(FlowInlineRun {
+                range: run.range.clone(),
+                style: FlowInlineStyle::default(),
+                link: None,
+                math: run.math,
+            });
+        }
+    }
+    Cow::Owned(plain)
 }
 
 impl FlowInlineRun {
@@ -202,7 +240,14 @@ struct Context<'a> {
 
 enum Leaf<'a> {
     Text(Cow<'a, str>),
-    Image { alt: &'a str, dest: &'a str },
+    Math {
+        source: &'a str,
+        style: FlowMathStyle,
+    },
+    Image {
+        alt: &'a str,
+        dest: &'a str,
+    },
 }
 
 struct Walker<'a> {
@@ -264,10 +309,15 @@ impl<'a> Iterator for Walker<'a> {
                 continue;
             }
             let leaf = match inline {
-                Inline::Text(text)
-                | Inline::Math(text)
-                | Inline::DisplayMath(text)
-                | Inline::Html(text) => Leaf::Text(Cow::Borrowed(text)),
+                Inline::Text(text) | Inline::Html(text) => Leaf::Text(Cow::Borrowed(text)),
+                Inline::Math(source) => Leaf::Math {
+                    source,
+                    style: FlowMathStyle::Text,
+                },
+                Inline::DisplayMath(source) => Leaf::Math {
+                    source,
+                    style: FlowMathStyle::Display,
+                },
                 Inline::Code(text) => {
                     style.code = true;
                     Leaf::Text(Cow::Borrowed(text))
@@ -301,15 +351,17 @@ impl Builder {
         text: &str,
         style: FlowInlineStyle,
         link: Option<Arc<str>>,
+        math: Option<FlowMathStyle>,
         limit: usize,
     ) -> Result<(), FlowDisplayError> {
         if text.is_empty() {
             return Ok(());
         }
-        let merge = self
-            .runs
-            .last()
-            .is_some_and(|run| run.style == style && run.link == link);
+        let merge = math.is_none()
+            && self
+                .runs
+                .last()
+                .is_some_and(|run| run.math.is_none() && run.style == style && run.link == link);
         // Conservative: count a target per retained run even when Arc shares
         // its allocation. This also bounds repeated target comparisons/hashing.
         let link_bytes = if merge {
@@ -334,6 +386,7 @@ impl Builder {
                 range: start..self.text.len(),
                 style,
                 link,
+                math,
             });
         }
         self.bytes = next;
@@ -360,8 +413,12 @@ pub(super) fn collect(
     let mut builder = Builder::default();
     for (leaf, style, link) in Walker::new(inlines) {
         match leaf {
-            Leaf::Text(text) => builder.append(&text, style, link, limit)?,
-            Leaf::Image { alt, .. } => builder.append(alt, style, link, limit)?,
+            Leaf::Text(text) => builder.append(&text, style, link, None, limit)?,
+            Leaf::Math {
+                source,
+                style: math,
+            } => builder.append(source, style, link, Some(math), limit)?,
+            Leaf::Image { alt, .. } => builder.append(alt, style, link, None, limit)?,
         }
     }
     Ok((builder.text, builder.runs))
@@ -376,7 +433,13 @@ pub(super) fn emit_inlines(
     let mut builder = Builder::default();
     for (leaf, style, link) in Walker::new(inlines) {
         match leaf {
-            Leaf::Text(text) => builder.append(&text, style, link, output.remaining_bytes())?,
+            Leaf::Text(text) => {
+                builder.append(&text, style, link, None, output.remaining_bytes())?
+            }
+            Leaf::Math {
+                source,
+                style: math,
+            } => builder.append(source, style, link, Some(math), output.remaining_bytes())?,
             Leaf::Image { alt, dest } => {
                 builder.emit(meta, output)?;
                 let asset = UnresolvedAsset {
@@ -407,6 +470,39 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::flow_display::FlowDisplayLimits;
+
+    #[test]
+    fn formulas_keep_atomic_identity_inside_reading_text_and_plain_adapters() {
+        let input = [
+            Inline::Text("before ".to_owned()),
+            Inline::Strong(vec![Inline::Link {
+                content: vec![Inline::Math("a".to_owned()), Inline::Math("b".to_owned())],
+                dest: "#result".to_owned(),
+                title: None,
+            }]),
+            Inline::DisplayMath("\\frac{1}{\n2}".to_owned()),
+            Inline::Code("$literal$".to_owned()),
+        ];
+        let (text, runs) = collect(&input, 4096).unwrap();
+        assert_eq!(text, "before ab\\frac{1}{\n2}$literal$");
+        let formulas: Vec<_> = runs.iter().filter(|run| run.math.is_some()).collect();
+        assert_eq!(formulas.len(), 3);
+        assert_eq!(&text[formulas[0].range.clone()], "a");
+        assert_eq!(&text[formulas[1].range.clone()], "b");
+        assert_eq!(formulas[0].math, Some(FlowMathStyle::Text));
+        assert!(formulas[0].style.bold);
+        assert_eq!(formulas[0].active_link_target(), Some("#result"));
+        assert_eq!(formulas[2].math, Some(FlowMathStyle::Display));
+        let plain = render_runs(&runs, false);
+        assert_eq!(plain.iter().filter(|run| run.math.is_some()).count(), 3);
+        assert!(
+            plain
+                .iter()
+                .all(|run| run.style == FlowInlineStyle::default() && run.link.is_none())
+        );
+        assert!(runs.last().unwrap().style.code);
+        assert_eq!(runs.last().unwrap().math, None);
+    }
 
     #[test]
     fn nesting_links_unicode_and_code_retain_exact_reading_ranges() {
@@ -558,6 +654,7 @@ mod tests {
         }
         assert_eq!(active_link_target(&target), None);
         let run = FlowInlineRun {
+            math: None,
             range: 0..5,
             style: FlowInlineStyle::default(),
             link: Some(Arc::from(target.as_str())),

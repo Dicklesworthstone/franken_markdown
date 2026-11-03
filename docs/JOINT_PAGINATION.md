@@ -2,6 +2,19 @@
 
 ## PDF rendering
 
+Default PDF pagination keeps a heading's wrapped text and H1/H2 underline on
+the same page whenever a fitting alternative exists. Short sections no longer
+make a break inside the title look preferable to a break after their content.
+Explicit page breaks take precedence. A heading taller than the page can still
+split so its complete text remains visible and pagination makes progress.
+Finishing a complete figure also satisfies the nearby heading's keep, even
+though a diagram or image occupies only one layout row. A fitting heading and
+figure can therefore use the space below an introduction without shrinking the
+figure or reserving a sparse introduction page. This exception requires the end
+of a measured image group; definition terms, incomplete body paragraphs and
+decoration retain their existing protection. Page-note reservations and all
+independent caption, list, table and widow/orphan rules still apply.
+
 `fmd input.md --to pdf --pdf-optimal-pagination` (or
 `PdfOptions::optimal_pagination = true`) now considers alternative paragraph
 shapes as well as page boundaries. The normal paragraph layout remains one
@@ -26,14 +39,46 @@ that same result.
 
 ### Current admission limits
 
-The integration offers alternatives for ordinary and blockquoted paragraphs,
+The integration offers alternatives for ordinary, blockquoted and list paragraphs,
 with at least four physical lines in both the baseline and every offered shape.
-This preserves the existing context-sensitive rules for short captions, heading
-followers, and final list items. Other blocks still participate in page planning
-at their existing measured shape.
+List alternatives also retain at least three visible rows, so a replacement cannot
+change the final-short-item penalty. This preserves the existing context-sensitive
+rules for short captions, heading followers, and final list items. Other blocks
+still participate in page planning at their existing measured shape.
 
-Paragraphs inside lists and paragraphs containing inline images or typeset math
-retain their baseline shapes. Prepared numbered page notes participate with
+Leading list paragraphs retain exactly one bullet, ordered number or task checkbox.
+Fitting lists use their original hanging gutter; when the gutter would exhaust
+the body measure, the complete marker occupies its own row above the content
+([PDF list layout](PDF_LIST_LAYOUT.md)). Loose continuation paragraphs do not
+acquire a second label. Every replacement retains the complete nested list and blockquote
+ancestry for tagged PDF, the first-line list-start flag, finalized spacing and
+forced chapter boundaries. Ordered markers continue beyond `u64::MAX` for
+caller-constructed ASTs instead of wrapping or panicking. Paragraphs with
+inconsistent container ownership are not replaced.
+
+Inline images and text- or display-style inline formulas participate as complete,
+measured boxes. Each candidate must retain the exact ordered sequence of objects,
+including their source or image destination, containing-width cap, nominal font
+size, links and styling. Only placement and surrounding justification spacing may
+change. Object outlines and image dimensions keep their original scale; a shorter
+line count is never obtained by shrinking an object or the surrounding text.
+
+Every shape contributes its actual per-line heights, including tall or deep
+formulas and images. With a baseline grid, a candidate that would require more
+ink clearance or bottom protection than the finalized document already reserves
+is rejected. The original shape stays available, so optional optimization cannot
+turn a valid grid layout into an overlap or a margin error. Nested list and quote
+ownership, tagged Formula/Figure children and their annotations follow the
+selected measured segments.
+
+An object-bearing paragraph retains its baseline shape when its effective
+microtypography policy enables glyph expansion or contraction. Inline objects
+and neighboring words on those lines do not use text scaling, so shrinking a
+box's advance could otherwise overlap its unchanged painted content. Ordinary
+text paragraphs and protrusion-only policies remain eligible; the restriction
+uses the actual paragraph policy, including list-specific behavior.
+
+Prepared numbered page notes participate with
 their unchanged measured bodies reserved at each alternative's first citation;
 a candidate cannot lose or reorder citations. Legacy unprepared footnote
 definitions retain baseline shapes. The same applies when gradual-demerit, river, or Pareto line
@@ -186,6 +231,21 @@ chapter boundaries, repeated paragraphs, and TOC numbers matching emitted
 heading destinations. Default and unsupported-mode cases compare emitted bytes
 with the original measured layout. Run these regressions with
 `cargo test --lib joint_pagination`.
+
+The corresponding list fixture adds its 19 pt hanging gutter to the same 440 pt
+text measure and uses a 197 pt body height. The list's final spacing is 8 pt;
+13 lines fit while the original 14-line paragraph needs two pages. The source
+text, 11 pt font, marker and hanging indent remain unchanged. Integration tests
+in `tests/pdf_list_joint_pagination_test.rs` inspect emitted page streams and
+font maps, nested tagged ancestry, links, loose-item labels, grid baselines and
+numbered notes. Run them with `cargo test --test pdf_list_joint_pagination_test`.
+
+Inline-object regressions in `tests/pdf_inline_object_pagination_test.rs` inspect
+selected shapes through emitted formula paths, image drawing operations, tagged
+bounds, links and complete source text. They cover mixed-height paragraphs,
+nested containers and numbered notes, and compare object dimensions with the
+ordinary measured layout. Run them with
+`cargo test --test pdf_inline_object_pagination_test`.
 
 Blockquote regressions retain ancestor bars, spacing, tagged content and forced
 chapter boundaries. `src/pdf/joint_pagination_note_tests.rs` checks numbered-note

@@ -7,7 +7,7 @@ import test from "node:test";
 
 // Execute the real public wrapper with a generated-binding double. This proves
 // ABI marshalling/ownership, not native font subsetting or EPUB rendering.
-async function fixture({ advanced = true, blocked = false } = {}) {
+async function fixture({ advanced = true, blocked = false, fullFonts = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-epub-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
@@ -31,6 +31,7 @@ async function fixture({ advanced = true, blocked = false } = {}) {
     }
     export const renderEpubConfigured = (...args) => result("legacy", args);
     ${advanced ? 'export const renderEpubConfiguredAdvanced = (...args) => result("advanced", args);' : ""}
+    ${advanced ? `Object.defineProperty(renderEpubConfiguredAdvanced, "length", { value: ${fullFonts ? 19 : 18} });` : ""}
     ${unused.map((name) => `export const ${name} = () => { throw new Error("unexpected ${name}"); };`).join("\n")}
   `);
   const bindings = await import(pathToFileURL(join(dir, "pkg/franken_markdown.js")));
@@ -140,4 +141,34 @@ test("empty CSS is preserved, Unicode is not silently repaired, and depth is bou
   await api.renderEpub("é😀", { customCss: "" });
   assert.equal(bindings.calls[0].args[6], "");
   assert.equal(bindings.calls[0].args[0], "é😀");
+});
+
+
+test("EPUB complete fonts preserve owned views and add only the full-policy ABI slot", async () => {
+  const { api, bindings } = await fixture({ blocked: true });
+  const font = Uint8Array.of(9, 1, 2, 8);
+  const options = { fontEmbedding: "full", fontAssets: [{ slot: "body-regular", bytes: font.subarray(1, 3) }] };
+  const pending = api.renderEpub("Typography", options);
+  options.fontEmbedding = "subset"; font.fill(6);
+  bindings.finishInit(); await pending;
+  assert.equal(bindings.calls[0].args.length, 19);
+  assert.equal(bindings.calls[0].args[18], "full");
+  assert.deepEqual([...bindings.calls[0].args[12]], [1, 2]);
+  await api.renderEpub("Typography");
+  const omitted = bindings.calls.at(-1).args;
+  await api.renderEpub("Typography", { fontEmbedding: "subset" });
+  assert.deepEqual(bindings.calls.at(-1).args, omitted);
+});
+
+test("old EPUB ABIs and invalid full-font requests fail before assets or initialization", async () => {
+  for (const settings of [{ fullFonts: false }, { advanced: false }]) {
+    const { api, bindings } = await fixture(settings);
+    const options = { fontEmbedding: "full", get fontAssets() { assert.fail("asset getter reached"); } };
+    await assert.rejects(api.renderEpub("Typography", options), { code: "UNSUPPORTED_WASM_PACKAGE" });
+    for (const fontEmbedding of [null, "FULL", "guess", 1, true, {}])
+      await assert.rejects(api.renderEpub("Typography", { fontEmbedding, get fontAssets() { assert.fail("asset getter reached"); } }), { code: "INVALID_OPTIONS" });
+    assert.equal(bindings.initCount, 0); assert.equal(bindings.calls.length, 0);
+    await api.renderEpub("Typography", { fontEmbedding: "subset" });
+    assert.equal(bindings.calls[0].args.length, settings.advanced === false ? 6 : 18);
+  }
 });

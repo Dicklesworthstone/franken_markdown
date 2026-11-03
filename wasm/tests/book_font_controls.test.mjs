@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { File } from "node:buffer";
+import { readFileSync } from "node:fs";
 import { createBookFontPanel, createBookFontControls } from "../demo/book_font_controls.mjs";
 import { BOOK_FONT_SLOTS } from "../demo/book_font_assets.mjs";
 import { host, worker, deferred, result, tick } from "./book_font_test_support.mjs";
@@ -45,7 +46,7 @@ test("panel is idempotent, labels every role and keeps resource ownership explic
   assert.equal(f.get("book-font-status").getAttribute("role"), "status");
   assert.match(f.get("book-font-save-help").textContent, /not source-only projects/);
   for (const slot of BOOK_FONT_SLOTS) {
-    assert.equal(f.get(`book-font-file-${slot}`).accept, ".ttf,font/ttf");
+    assert.equal(f.get(`book-font-file-${slot}`).accept, ".ttf,.otf,font/ttf,font/otf");
     assert.equal(f.get(`book-font-weight-${slot}`).getAttribute("aria-describedby"), "book-font-weight-help");
     assert.equal(f.get(`book-font-remove-${slot}`).disabled, true);
   }
@@ -61,6 +62,20 @@ test("real assign button batches roles, pins weights and renders names only as t
   assert.equal(f.get("book-font-file-body-regular").files.length, 0);
   assert.equal(f.get("book-font-weight-body-regular").value, "450");
   assert.equal(f.get("book-font-remove-body-bold").disabled, false); f.ui.dispose();
+});
+
+test("OTF and TTF selections share the same atomic assign and file-reset controls", async () => {
+  const bytes = readFileSync(new URL("../../tests/fixtures/fonts/source-sans-3/SourceSans3-Regular.otf", import.meta.url));
+  const f = fixture(); f.choose("body-bold", "Bold.ttf", "700");
+  const input = f.get("book-font-file-body-regular");
+  input.files = [new File([bytes], "SourceSans3.otf", { type: "font/otf" })]; input.emit("change");
+  f.get("book-font-assign").click(); await until(() => f.collection.fonts.length === 2);
+  assert.equal(f.engine.jobs.length, 1);
+  assert.deepEqual(Buffer.from(f.engine.jobs[0].options.fontAssets[0].bytes), bytes);
+  assert.deepEqual(Buffer.from(f.store.snapshot()[0].bytes), bytes);
+  assert.match(f.get("book-font-current-body-regular").textContent, /SourceSans3\.otf/);
+  for (const slot of ["body-regular", "body-bold"]) assert.equal(f.get(`book-font-file-${slot}`).files.length, 0);
+  f.ui.dispose();
 });
 
 test("invalid pins reject before preflight and keep the selected local file for correction", async () => {
@@ -136,7 +151,7 @@ test("composition/import state prevents changes and retires work already validat
 test("native failure leaves old fonts and selected replacement available for explicit retry", async () => {
   const f = fixture({ delay: true });
   f.collection.setFonts([{ slot: "body-regular", name: "old.ttf", bytes: new Uint8Array([1]) }], 0);
-  f.choose(); const pending = f.ui.assign(); await until(() => f.engine.jobs.length === 1);
+  f.choose("body-regular", "invalid.otf"); const pending = f.ui.assign(); await until(() => f.engine.jobs.length === 1);
   f.engine.jobs[0].reject(Object.assign(Error("<invalid font>"), { code: "INVALID_FONT" }));
   await assert.rejects(pending); assert.equal(f.collection.fonts[0].name, "old.ttf");
   assert.match(f.get("book-font-status").textContent, /<invalid font>/);

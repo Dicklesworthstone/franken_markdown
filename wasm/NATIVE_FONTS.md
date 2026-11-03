@@ -12,7 +12,7 @@ Newly generated workspace shells include **Document fonts** next to Save HTML
 when the embedded runtime supports background font updates. The dialog lists
 body regular, bold, italic, bold italic, and code/monospace slots with their
 current byte counts and optional weight pins. Each slot can keep its font,
-replace it from an explicitly selected local `.ttf` file, change an embedded
+replace it from an explicitly selected local `.ttf` or `.otf` file, change an embedded
 font's weight pin, or return to the native default. Select the actions and choose
 **Apply fonts**: all changes are one transaction, never a partially applied batch.
 
@@ -20,7 +20,10 @@ Local selection allows 32 MiB per file and 64 MiB across a batch; the runtime's
 128 MiB resulting image+font budget still applies. All selected metadata and
 weights are checked before the first read. Reads are abortable and have a
 10-second deadline. The native worker, not the filename or a JavaScript parser,
-decides whether the supplied TrueType font is actually supported. Collections,
+decides whether the supplied font is actually supported. Supported programs
+include TrueType outlines and static, name-keyed CFF1 OpenType outlines; CFF2,
+CID-keyed CFF and unsupported used Type2 glyph programs are refused by the
+renderer. A file extension alone never establishes font validity. Collections,
 WOFF, font discovery, and remote-font fetching are not offered by this dialog.
 
 **Cancel operation** aborts file reading or worker validation without altering

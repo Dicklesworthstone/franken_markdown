@@ -15,12 +15,16 @@ export interface FmdDiagnostic {
   start: number;
   end: number;
   message: string;
+  /** Stable renderer reason code when supplied (for example svg_image_missing). */
+  code?: string;
+  /** Document-level findings use start=end=0, not an inferred source position. */
+  scope?: "document";
 }
 
 export interface FmdPdfImageAsset {
   /** Markdown image destination, for example `images/chart.png` from `![Chart](images/chart.png)`. */
   destination: string;
-  /** Browser-supplied image bytes. PNG and SVG are supported in HTML and PDF output. */
+  /** Host-owned bytes; SVG supports PNG/JPEG/SVG, HTML/PDF support depends on their decoder. */
   bytes: Uint8Array | ArrayBuffer | ArrayBufferView;
 }
 
@@ -74,28 +78,120 @@ export interface FmdRenderOptions {
   tocDepth?: number;
   /** Adaptive PDF page-count target. */
   fitToPages?: number;
-  /** Enable optical-margin punctuation protrusion for justified PDF text. */
-  microtype?: "disabled" | "protrusion";
+  /**
+   * Microtypography for justified PDF text: "protrusion" (optical-margin
+   * protrusion with a small glyph-expansion budget) or "expansion" (glyph
+   * expansion only).
+   */
+  microtype?: "disabled" | "protrusion" | "expansion";
   /** Boolean alias for microtype: "protrusion". */
   microtypeProtrusion?: boolean;
-  /** Standalone SVG poster width in points. */
+  /** Standalone SVG poster width in points (144..14400; default 612). */
   maxWidthPt?: number;
-  /** Host-supplied image bytes (HTML data URIs and PDF embedding); any number per render. */
+  /** HTML font subset container: "woff1" (default), "woff2" (smallest) or "ttf". */
+  htmlFontFormat?: "woff1" | "woff2" | "ttf";
+  /** Opt-in PDF line-breaking refinements (all off by default). */
+  typography?: {
+    /** Gradual adjacent-line demerits for more homogeneous spacing. */
+    homogeneous?: boolean;
+    /** Penalize white "rivers" through justified paragraphs. */
+    antiriver?: boolean;
+    /** Pareto-front line breaking safety net. */
+    pareto?: boolean;
+  };
+  /** Globally optimal (Plass) PDF page breaking instead of greedy. */
+  optimalPagination?: boolean;
+  /** Host-supplied image bytes for HTML, PDF, EPUB and SVG; each export enforces resource limits. */
   pdfImages?: FmdPdfImageAsset[];
   /** Host-supplied TrueType font bytes by renderer slot. */
   fontAssets?: FmdFontAsset[];
 }
 
+/** PDF paper dimensions/margins are points, never CSS pixels. */
+export interface FmdPdfPage {
+  /** Omitted size is Letter. Custom dimensions must each be 144..14400 points. */
+  size?: "letter" | "a4" | { widthPt: number; heightPt: number };
+  /** Rotate only paper; omitted orientation preserves custom width/height order. */
+  orientation?: "portrait" | "landscape";
+  /** Uniform points or independent sides, each defaulting to 72 points. */
+  margins?: number | { topPt?: number; rightPt?: number; bottomPt?: number; leftPt?: number };
+}
+/** Optional repeated image from explicit host assets. */
+export interface FmdPdfRunningImage {
+  /** Exact key in the explicitly supplied pdfImages. No URL or file is loaded. */
+  dest: string;
+  /** Image occupies the left or right edge of the band; default left. */
+  position?: "left" | "right";
+  /** Positive integer points, at most 65535. Omitted height fits the margin. */
+  heightPt?: number;
+}
+/** One running band. Slot templates accept {page}, {pages}, {title}, {author}
+ * and {date} (from metadataEpochSeconds, never the clock); unknown tokens stay literal. */
+export interface FmdPdfRunningBand {
+  left?: string;
+  center?: string;
+  right?: string;
+  /** Hairline under the header / over the footer. */
+  rule?: boolean;
+  /** Repeated logo from host image bytes. Text is fitted beside its reserved area. */
+  image?: FmdPdfRunningImage;
+}
+/** Opt-in PDF running header/footer drawn in the page margins. */
+export interface FmdPdfRunning {
+  header?: FmdPdfRunningBand;
+  footer?: FmdPdfRunningBand;
+  /** Leave page 1 bare (also suppresses pageNumbers there). */
+  skipFirstPage?: boolean;
+}
+export interface FmdPdfRenderOptions extends FmdRenderOptions {
+  /** PDF layout for single documents and books; margins must leave a 72-point content rectangle. */
+  page?: FmdPdfPage;
+  /** Running header/footer for single-document PDF renders. A band that does not fit its margin fails the render. */
+  running?: FmdPdfRunning;
+}
+
 export interface FmdRenderOutput {
   format: FmdOutputFormat;
   mimeType: string;
-  extension: "html" | "pdf";
+  extension: "html" | "pdf" | "svg" | "epub" | "zip";
   sourceLength: number;
   bytes: Uint8Array;
   diagnostics: FmdDiagnostic[];
   text(): string;
   blob(): Blob;
   filename(baseName?: string): string;
+}
+
+/** Single-page SVG options. Assets are snapshotted before asynchronous init;
+ * a matching resource-capable WASM binary is required when assets are supplied.
+ * SVG remains light-only; darkMode is retained for shared option compatibility.
+ */
+export interface FmdSvgRenderOptions extends Pick<FmdRenderOptions,
+  "font" | "darkMode" | "fontScale" | "typeSize" | "maxWidthPt" | "pdfImages" | "fontAssets"> {}
+export interface FmdSvgRenderOutput extends FmdRenderOutput {
+  format: "svg";
+  mimeType: "image/svg+xml";
+  extension: "svg";
+}
+
+/** Canonical offline HTML-site options. PDF-only settings are rejected rather
+ * than silently discarded. Parsing remains safe; raw HTML is not passed through.
+ */
+export interface FmdBookSiteOptions extends Pick<FmdRenderOptions,
+  "font" | "darkMode" | "title" | "customCss" | "fontScale" | "typeSize" |
+  "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets"> {
+  /** Expand selected sources in Rust (default true); never read external files. */
+  expandIncludes?: boolean;
+  /** Additional UTF-8 include resources. These never become chapter pages.
+   * Chapters/resources share the 4096-source and 64 MiB text/path budget.
+   */
+  includeSources?: readonly FmdBookFile[];
+  allowRawHtml?: false;
+}
+export interface FmdBookSiteOutput extends Omit<FmdRenderOutput, "format" | "mimeType" | "extension"> {
+  format: "book-site";
+  mimeType: "application/zip";
+  extension: "zip";
 }
 
 export interface FmdCapabilities {
@@ -134,18 +230,18 @@ export interface FmdRenderer {
   capabilities(): Promise<FmdCapabilities>;
   accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
   documentStats(markdown: string): Promise<FmdDocumentStats>;
-  renderBookPdf(files: FmdBookFile[], options?: FmdRenderOptions): Promise<FmdRenderOutput>;
-  renderBookSite(files: FmdBookFile[], options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+  renderBookPdf(files: FmdBookFile[], options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
+  renderBookSite(files: readonly FmdBookFile[], options?: FmdBookSiteOptions): Promise<FmdBookSiteOutput>;
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderInteractiveHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
-  renderPdf(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+  renderPdf(markdown: string, options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
   renderSemanticDiff(
     oldMarkdown: string,
     newMarkdown: string,
     options?: FmdDiffOptions,
   ): Promise<FmdRenderOutput>;
-  renderSvg(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+  renderSvg(markdown: string, options?: FmdSvgRenderOptions): Promise<FmdSvgRenderOutput>;
   searchIndex(markdown: string): Promise<FmdSearchIndex>;
   semanticDiff(
     oldMarkdown: string,
@@ -219,25 +315,25 @@ export function accessibilityAudit(markdown: string): Promise<FmdAccessibilityRe
 export function documentStats(markdown: string): Promise<FmdDocumentStats>;
 export function renderBookPdf(
   files: FmdBookFile[],
-  options?: FmdRenderOptions,
+  options?: FmdPdfRenderOptions,
 ): Promise<FmdRenderOutput>;
 export function renderBookSite(
-  files: FmdBookFile[],
-  options?: FmdRenderOptions,
-): Promise<FmdRenderOutput>;
+  files: readonly FmdBookFile[],
+  options?: FmdBookSiteOptions,
+): Promise<FmdBookSiteOutput>;
 export function renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
 export function renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
 export function renderInteractiveHtml(
   markdown: string,
   options?: FmdRenderOptions,
 ): Promise<FmdRenderOutput>;
-export function renderPdf(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+export function renderPdf(markdown: string, options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
 export function renderSemanticDiff(
   oldMarkdown: string,
   newMarkdown: string,
   options?: FmdDiffOptions,
 ): Promise<FmdRenderOutput>;
-export function renderSvg(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
+export function renderSvg(markdown: string, options?: FmdSvgRenderOptions): Promise<FmdSvgRenderOutput>;
 export function searchIndex(markdown: string): Promise<FmdSearchIndex>;
 export function semanticDiff(
   oldMarkdown: string,

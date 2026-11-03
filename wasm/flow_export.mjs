@@ -3,7 +3,7 @@
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { isPdfPaginationError, normalizeBaselineGridPt, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
+import { isPdfPaginationError, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
 import {
   FLOW_ASSET_LIMIT,
   FLOW_SOURCE_LIMIT,
@@ -127,7 +127,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
     fail("INVALID_OPTIONS", "export options must be an object");
   const allowed = format === "svg" ? ["maxWidthPt", "maxOutputBytes"] : [
     ...COMMON,
-    ...(format === "pdf" ? PDF : ["darkMode"]),
+    ...(format === "pdf" ? PDF : ["darkMode", "fontEmbedding"]),
     ...(format === "epub" ? ["customCss"] : []),
     ...(format === "html" ? ["htmlFontFormat"] : []),
   ];
@@ -165,6 +165,10 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
   }
   if (options.tocDepth !== undefined) result.tocDepth = uint(options.tocDepth, "tocDepth", 1, 6);
   if (format !== "pdf") {
+    if (options.fontEmbedding !== undefined) {
+      try { result.fontEmbedding = normalizeFontEmbedding(options.fontEmbedding); }
+      catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
+    }
     if (format === "html" && options.htmlFontFormat !== undefined) {
       try { result.htmlFontFormat = normalizeHtmlFontFormat(options.htmlFontFormat); }
       catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }

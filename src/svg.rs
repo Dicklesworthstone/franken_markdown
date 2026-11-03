@@ -19,7 +19,8 @@
 //! TrueType outlines are quadratic and [`outline`] already resolves implied
 //! on-curve midpoints into `Segment::Line` / `Segment::Quad` chains, so the
 //! path compiler is a direct 1:1 mapping: contour start → `M`, line → `L`,
-//! quad → `Q`, close → `Z`.
+//! quad → `Q`, close → `Z`. Caller-supplied CFF1 fonts retain their native
+//! cubic curves as `C` commands, with the same normalization and deduplication.
 //!
 //! Deliberate scope cuts (the poster is a display artifact, not a print
 //! engine): no pagination. Bounded paragraphs use the shared Knuth-Plass
@@ -27,7 +28,7 @@
 //! Safe links have keyboard-accessible hit regions; heading links use SVG views;
 //! mathematics uses the shared TeX layout engine and vector outlines. Raw HTML
 //! is preserved as inert vector text; complete numbered endnotes follow the body.
-//! PNG/JPEG/SVG images use embedded data or explicit
+//! PNG/JPEG/GIF/SVG images use embedded data or explicit
 //! caller assets; unresolved images retain their alt text with diagnostics.
 //!
 //! Appearance is host-independent: Auto chooses light, while explicit theme
@@ -37,7 +38,7 @@
 //! view behavior are documented in `docs/SVG_LINKS.md`.
 
 use std::cell::{OnceCell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use franken_markdown::ast::{Align, Block, Document, Inline, Table};
 use franken_markdown::fonts::{self, FontStyle};
@@ -56,7 +57,9 @@ const SLOT_MONO: usize = 4;
 const SLOT_SYMBOL: usize = 5;
 /// The bundled emoji face (native `emoji-face` builds); last-resort fallback.
 const SLOT_EMOJI: usize = 6;
-const SLOT_COUNT: usize = 7;
+/// Bundled Han/kana/punctuation face; emoji keeps its original slot.
+const SLOT_CJK: usize = 7;
+const SLOT_COUNT: usize = 8;
 
 // Explicit paths also support the standalone #[path] SVG integration harness.
 #[path = "svg/financial_tables.rs"]
@@ -67,7 +70,7 @@ mod geometry;
 #[path = "svg/geometry_tests.rs"]
 mod geometry_tests;
 #[path = "svg/image_source.rs"]
-mod image_source;
+pub(crate) mod image_source;
 #[cfg(test)]
 #[path = "svg/image_tests.rs"]
 mod image_tests;
@@ -82,6 +85,8 @@ mod math;
 #[cfg(test)]
 #[path = "svg/math_tests.rs"]
 mod math_tests;
+#[path = "svg/table.rs"]
+mod table;
 #[path = "svg/text.rs"]
 mod text;
 #[cfg(test)]
@@ -159,7 +164,9 @@ pub fn render_svg_with_diagnostics(
 ///
 /// # Errors
 /// Invalid font data/instances or oversized resource collections fail before
-/// output. Per-image input is bounded to 32 MiB; input/encoded image budgets
+/// output. Unsupported or malformed used CFF1 glyphs also fail before output,
+/// rather than silently omitting their ink. Per-image input is bounded to
+/// 32 MiB; input/encoded image budgets
 /// and aggregate supplied fonts are bounded to 128 MiB each. At most 4096
 /// images are admitted. Existing option/report structures stay unchanged.
 pub fn render_svg_with_resources(
@@ -168,7 +175,10 @@ pub fn render_svg_with_resources(
     fonts: &franken_markdown::FontAssets,
     images: &[franken_markdown::PdfImageAsset],
 ) -> franken_markdown::Result<(Vec<u8>, SvgReport, Vec<SvgWarning>)> {
-    Ok(Poster::new(opts).with_resources(fonts, images)?.render(doc))
+    let mut poster = Poster::new(opts).with_resources(fonts, images)?;
+    let height = poster.layout(doc);
+    poster.validate_cff_glyphs()?;
+    Ok(poster.emit(height))
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +245,7 @@ fn push_trim4(out: &mut String, v: f64) {
     }
     out.push('.');
     let mut width = 4;
-    while frac % 10 == 0 {
+    while frac.is_multiple_of(10) {
         frac /= 10;
         width -= 1;
     }
@@ -425,7 +435,12 @@ struct Poster {
     /// Body regular/bold/italic/bold-italic, mono, symbol fallback. `None`
     /// only if a bundled face failed to parse (the registry tests make that
     /// unreachable in practice); unresolvable glyphs count as missing.
+    /// `faces[SLOT_CJK]` stays `None`: read that slot through [`Poster::face`].
     faces: [Option<Font>; SLOT_COUNT],
+    /// The shared bundled CJK fallback, parsed on first use by
+    /// [`Poster::face`]. `resolve` reaches it only for characters inside the
+    /// face's static ranges, so posters without CJK text never parse it.
+    cjk: OnceCell<Option<&'static Font>>,
     math_engine: OnceCell<Option<franken_markdown::math::Engine>>,
     images: images::ImageStore,
     navigation: RefCell<links::Navigation>,
@@ -461,7 +476,9 @@ impl Poster {
                 fonts::load_mono(FontStyle::Regular).ok(),
                 fonts::load_symbol().ok(),
                 fonts::load_emoji(),
+                None,
             ],
+            cjk: OnceCell::new(),
             math_engine: OnceCell::new(),
             images: images::ImageStore::default(),
             navigation: RefCell::new(links::Navigation::default()),
@@ -500,6 +517,11 @@ impl Poster {
     }
 
     fn render(mut self, doc: &Document) -> (Vec<u8>, SvgReport, Vec<SvgWarning>) {
+        let height = self.layout(doc);
+        self.emit(height)
+    }
+
+    fn layout(&mut self, doc: &Document) -> f64 {
         let l = self.content_left();
         let r = self.content_right();
         // Share PDF's cycle-safe numbering and lossless rich-note preparation.
@@ -508,14 +530,44 @@ impl Poster {
         for block in &prepared.blocks {
             self.block(block, l, r, false);
         }
-        let height = (self.y + self.margin_bottom).max(1.0);
-        self.emit(height)
+        (self.y + self.margin_bottom).max(1.0)
+    }
+
+    /// Validate the shaped glyphs that will actually be painted, including
+    /// GSUB substitutions. Batching per face shares the CFF instruction and
+    /// output budgets; decoding each repeated occurrence independently would
+    /// bypass those aggregate limits. The strict subsetter also checks cubic
+    /// ink bounds and rejects unsupported charstring operators.
+    fn validate_cff_glyphs(&self) -> franken_markdown::Result<()> {
+        let mut used: BTreeMap<usize, BTreeSet<u16>> = BTreeMap::new();
+        for op in &self.ops {
+            if let Op::Glyph { slot, gid, .. } = op
+                && self
+                    .font_for_slot(*slot)
+                    .is_some_and(|font| !font.has_glyf_outlines())
+            {
+                used.entry(*slot).or_default().insert(*gid);
+            }
+        }
+        for (slot, glyphs) in used {
+            if let Some(font) = self.font_for_slot(slot) {
+                font.try_subset_glyphs(&glyphs.into_iter().collect::<Vec<_>>(), &[])
+                    .map_err(|error| {
+                        franken_markdown::RenderError::InvalidInput(format!(
+                            "svg_cff_font: font slot {slot}: {error}"
+                        ))
+                    })?;
+            }
+        }
+        Ok(())
     }
 
     // -- glyph resolution / measurement ------------------------------------
 
     /// Map `ch` to `(face slot, glyph id)`: the styled primary face first,
-    /// then the bundled symbol and emoji fallbacks. `(slot, 0)` means unmapped.
+    /// then the bundled CJK, symbol, and emoji fallbacks. The CJK face is
+    /// preferred for Han/kana; other symbols retain their existing priority.
+    /// `(slot, 0)` means unmapped.
     fn resolve(&self, ch: char, st: RStyle) -> (usize, u16) {
         let slot = if st.mono {
             SLOT_MONO
@@ -528,9 +580,15 @@ impl Poster {
                 return (slot, gid);
             }
         }
-        for fallback in [SLOT_SYMBOL, SLOT_EMOJI] {
+        let fallbacks = if franken_markdown::layout::classify_script(ch).wants_cjk_fallback() {
+            [SLOT_CJK, SLOT_SYMBOL, SLOT_EMOJI]
+        } else {
+            [SLOT_SYMBOL, SLOT_EMOJI, SLOT_CJK]
+        };
+        for fallback in fallbacks {
             if slot != fallback
-                && let Some(font) = &self.faces[fallback]
+                && (fallback != SLOT_CJK || fonts::cjk_face_may_map(ch))
+                && let Some(font) = self.face(fallback)
             {
                 let gid = font.glyph_index(ch);
                 if gid != 0 {
@@ -541,9 +599,17 @@ impl Poster {
         (slot, 0)
     }
 
+    /// The face in `slot`. The bundled CJK fallback is parsed once on first
+    /// use and borrowed (`&'static`), never copied per poster.
+    fn face(&self, slot: usize) -> Option<&Font> {
+        if slot == SLOT_CJK {
+            return *self.cjk.get_or_init(fonts::cjk_face);
+        }
+        self.faces[slot].as_ref()
+    }
+
     fn advance(&self, slot: usize, ch: char, size: f64) -> f64 {
-        self.faces[slot]
-            .as_ref()
+        self.face(slot)
             .map_or(0.0, |font| f64::from(font.advance_1000(ch)) * size / 1000.0)
     }
 
@@ -870,257 +936,15 @@ impl Poster {
         self.y += f64::from(self.scale.body) * 0.3;
     }
 
-    fn table(&mut self, table: &Table, l: f64, r: f64) {
-        let ncols = table
-            .align
-            .len()
-            .max(table.head.len())
-            .max(table.rows.iter().map(Vec::len).max().unwrap_or(0));
-        if ncols == 0 {
-            return;
-        }
-        let size = f64::from(self.scale.table);
-        let leading = size * 1.35;
-        let pad_x = self.table_pad_x;
-        let pad_y = self.table_pad_y;
-        let avail = r - l;
-        let financial = crate::table_format::financial_rows(table);
-        let rows: Vec<&[Vec<Inline>]> = match &financial {
-            Some(rows) => rows.iter().map(|row| row.cells).collect(),
-            None => table.rows.iter().map(Vec::as_slice).collect(),
-        };
-        let aligns: Vec<Align> = (0..ncols)
-            .map(|c| table.align.get(c).copied().unwrap_or(Align::None))
-            .collect();
-        let mut decimal = vec![financial_tables::DecimalMeasure::default(); ncols];
-        let measured: Vec<Vec<Option<financial_tables::DecimalMeasure>>> = if financial.is_some() {
-            rows.iter()
-                .map(|row| {
-                    (0..ncols)
-                        .map(|c| {
-                            let value = if aligns[c] == Align::Decimal {
-                                row.get(c).and_then(|cell| {
-                                    financial_tables::cell_measure(self, cell, size)
-                                })
-                            } else {
-                                None
-                            };
-                            if let Some(value) = value {
-                                decimal[c].before = decimal[c].before.max(value.before);
-                                decimal[c].after = decimal[c].after.max(value.after);
-                            }
-                            value
-                        })
-                        .collect()
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        // Column widths: natural single-line width (capped), scaled down
-        // proportionally when the table would overflow the measure.
-        let mut natural = vec![size; ncols];
-        let consider = |col: usize, cells: &[Inline], bold: bool, natural: &mut Vec<f64>| {
-            let mut pieces = Vec::new();
-            self.flatten(
-                cells,
-                RStyle {
-                    bold,
-                    ..RStyle::BODY
-                },
-                &mut pieces,
-            );
-            let w = self
-                .wrap(&pieces, size, f64::MAX)
-                .iter()
-                .map(|line| self.words_width(line, size))
-                .fold(0.0_f64, f64::max)
-                + 2.0 * pad_x;
-            natural[col] = natural[col].max(w.min(avail * 0.6));
-        };
-        for (c, cell) in table.head.iter().enumerate().take(ncols) {
-            consider(c, cell, true, &mut natural);
-        }
-        for row in &rows {
-            for (c, cell) in row.iter().enumerate().take(ncols) {
-                consider(c, cell, false, &mut natural);
-            }
-        }
-        if financial.is_some() {
-            // Different rows can supply the longest integer and fractional
-            // portions. Reserve their combined width before scaling a narrow
-            // table, so each fitting numeric cell shares the same anchor.
-            for (c, value) in decimal.iter().enumerate() {
-                if aligns[c] == Align::Decimal {
-                    natural[c] = natural[c].max(value.before + value.after + 2.0 * pad_x);
-                }
-            }
-        }
-        let total: f64 = natural.iter().sum();
-        let widths: Vec<f64> = if total > avail {
-            natural.iter().map(|w| w * avail / total).collect()
-        } else {
-            natural
-        };
-
-        let draw_row = |poster: &mut Self,
-                        cells: &[Vec<Inline>],
-                        bold: bool,
-                        top: f64,
-                        row_index: Option<usize>|
-         -> f64 {
-            let st = RStyle {
-                bold,
-                ..RStyle::BODY
-            };
-            let wrapped: Vec<Vec<Vec<Word>>> = (0..ncols)
-                .map(|c| {
-                    let mut pieces = Vec::new();
-                    if let Some(cell) = cells.get(c) {
-                        poster.flatten(cell, st, &mut pieces);
-                    }
-                    let padding = pad_x.min(widths[c] * 0.25);
-                    poster.wrap(&pieces, size, (widths[c] - 2.0 * padding).max(1.0))
-                })
-                .collect();
-            let row_h = wrapped
-                .iter()
-                .map(|lines| {
-                    lines
-                        .iter()
-                        .map(|line| poster.line_metrics(line, size * 0.8, leading).1)
-                        .sum::<f64>()
-                })
-                .fold(leading, f64::max)
-                + 2.0 * pad_y;
-            let mut cx = l;
-            for (c, cell_lines) in wrapped.iter().enumerate() {
-                let padding = pad_x.min(widths[c] * 0.25);
-                let cell_w = widths[c] - 2.0 * padding;
-                let mut line_top = top + pad_y;
-                for line in cell_lines {
-                    let line_w = poster.words_width(line, size);
-                    let x = match aligns[c] {
-                        Align::Center => cx + padding + (cell_w - line_w) / 2.0,
-                        Align::Decimal => {
-                            let anchor = row_index
-                                .and_then(|index| measured.get(index))
-                                .and_then(|row| row[c])
-                                .filter(|_| {
-                                    // Compare outer widths in the same order
-                                    // used by the allocator. Subtracting the
-                                    // padding first can lose one rounding unit
-                                    // and reject an exactly fitting column.
-                                    cell_lines.len() == 1
-                                        && decimal[c].before + decimal[c].after + 2.0 * padding
-                                            <= widths[c]
-                                        && line_w + 2.0 * padding <= widths[c]
-                                })
-                                .and_then(|_| financial_tables::line_measure(line));
-                            match anchor {
-                                Some(value) => {
-                                    cx + padding + cell_w - decimal[c].after - value.before
-                                }
-                                None => cx + padding + (cell_w - line_w),
-                            }
-                        }
-                        Align::Right => cx + padding + (cell_w - line_w),
-                        Align::None | Align::Left => cx + padding,
-                    };
-                    let (ascent, height) = poster.line_metrics(line, size * 0.8, leading);
-                    poster.draw_words(line, x, line_top + ascent, size);
-                    line_top += height;
-                }
-                cx += widths[c];
-            }
-            row_h
-        };
-
-        let table_top = self.y;
-        // Header row on a subtle stripe: record the insertion point so the
-        // background rectangle precedes the header glyphs in painter's order
-        // without calling draw_row twice.
-        let ops_start = self.ops.len();
-        let header_h = draw_row(self, &table.head, true, table_top, None);
-        self.ops.insert(
-            ops_start,
-            Op::Rect {
-                x: l,
-                y: table_top,
-                w: avail,
-                h: header_h,
-                fill: Ink::BgSubtle,
-                stroke: None,
-            },
-        );
-        let mut row_top = table_top + header_h;
-        let mut bottoms = vec![row_top];
-        for (index, row) in rows.iter().enumerate() {
-            let h = draw_row(self, row, false, row_top, Some(index));
-            row_top += h;
-            if let Some(rows) = &financial {
-                row_top += financial_tables::draw_footings(
-                    self,
-                    &rows[index].rules,
-                    &widths,
-                    l,
-                    row_top,
-                    pad_x,
-                );
-            }
-            bottoms.push(row_top);
-        }
-        let table_bottom = row_top;
-
-        // Grid: horizontal separators, column separators, outer border.
-        for &by in &bottoms {
-            self.ops.push(Op::Rule {
-                x1: l,
-                y1: by,
-                x2: r,
-                y2: by,
-                ink: Ink::BorderMuted,
-                w: 0.5,
-            });
-        }
-        let mut cx = l;
-        for w in widths.iter().take(ncols.saturating_sub(1)) {
-            cx += w;
-            self.ops.push(Op::Rule {
-                x1: cx,
-                y1: table_top,
-                x2: cx,
-                y2: table_bottom,
-                ink: Ink::BorderMuted,
-                w: 0.5,
-            });
-        }
-        self.ops.push(Op::Rule {
-            x1: l,
-            y1: table_top,
-            x2: r,
-            y2: table_top,
-            ink: Ink::Border,
-            w: 0.75,
-        });
-        self.ops.push(Op::Rule {
-            x1: l,
-            y1: table_bottom,
-            x2: r,
-            y2: table_bottom,
-            ink: Ink::Border,
-            w: 0.75,
-        });
-        self.y = table_bottom + f64::from(self.scale.body) * 0.7;
-    }
-
     // -- emission ------------------------------------------------------------
 
     /// Compile one glyph's contours to SVG path data in the normalized
     /// 100 pt em (y flipped). `None` for blank glyphs (space) or outlines
     /// that fail to decode.
     fn glyph_path(font: &Font, gid: u16) -> Option<String> {
+        if !font.has_glyf_outlines() {
+            return Self::cff_glyph_path(font, gid);
+        }
         let outline = font.glyph_outline(gid).ok()?;
         if outline.contours.is_empty() {
             return None;
@@ -1153,6 +977,50 @@ impl Poster {
                 }
             }
             d.push('Z');
+        }
+        Some(d)
+    }
+
+    /// CFF decoding has already passed strict validation on the fallible
+    /// resource path. Bundled-only APIs never select a CFF face.
+    fn cff_glyph_path(font: &Font, gid: u16) -> Option<String> {
+        use franken_markdown::text::cff::Command;
+
+        let outline = font.cff_outline(gid).ok()?;
+        if !outline
+            .commands
+            .iter()
+            .any(|command| matches!(command, Command::Line(_) | Command::Curve(_, _, _)))
+        {
+            return None;
+        }
+        let k = DEF_EM_PT / f64::from(font.units_per_em);
+        let mut d = String::new();
+        for command in outline.commands {
+            match command {
+                Command::Move(point) | Command::Line(point) => {
+                    d.push(if matches!(command, Command::Move(_)) {
+                        'M'
+                    } else {
+                        'L'
+                    });
+                    push_q2(&mut d, point.x * k);
+                    d.push(' ');
+                    push_q2(&mut d, -point.y * k);
+                }
+                Command::Curve(first, second, end) => {
+                    d.push('C');
+                    for (index, point) in [first, second, end].into_iter().enumerate() {
+                        if index != 0 {
+                            d.push(' ');
+                        }
+                        push_q2(&mut d, point.x * k);
+                        d.push(' ');
+                        push_q2(&mut d, -point.y * k);
+                    }
+                }
+                Command::Close => d.push('Z'),
+            }
         }
         Some(d)
     }

@@ -246,3 +246,17 @@ test("discard restores silently changed logo selection even when cached choices 
   h.ui.discard(); assert.equal(h.el("header-image").value, "");
   h.ui.apply(); assert.deepEqual(h.book.project(), before);
 });
+
+
+test("complete-font publishing selection is applied persisted and reset without editing source", t => {
+  const h = setup(t);
+  const before = h.book.files.map(file => ({ path: file.path, source: file.source }));
+  h.set("fontEmbedding", "full");
+  assert.equal(h.book.options.fontEmbedding, undefined, "draft is not an applied export option");
+  h.el("apply").emit("click");
+  assert.equal(h.book.options.fontEmbedding, "full");
+  assert.equal(h.book.project().options.fontEmbedding, "full");
+  assert.deepEqual(h.book.files.map(file => ({ path: file.path, source: file.source })), before);
+  h.set("fontEmbedding", ""); h.el("apply").emit("click");
+  assert.equal(h.book.options.fontEmbedding, undefined);
+});

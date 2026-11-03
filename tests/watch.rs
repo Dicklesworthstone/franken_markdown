@@ -1,4 +1,5 @@
 //! Filesystem and CLI contract tests for `fmd watch` (j3e0.1).
+#![cfg(feature = "cli")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::io::{BufRead, BufReader, Read, Write};

@@ -37,3 +37,24 @@ Regenerate (does not overwrite this directory; copies from `/tmp`):
 FMD_DUMP_TEST_VF=1 cargo test -p fmd-font fmd_test_vf_fixture_round_trip -- --exact
 cp /tmp/FmdTestVF.ttf fmd-font/fonts/test-variable/FmdTestVF.ttf
 ```
+
+## Independent packed-delta fixture
+
+`FmdPackedDeltasVF.ttf` is a 1,660-byte original test font, released under the
+same OFL 1.1 license and copyright as `FmdTestVF.ttf`. It contains an empty
+`.notdef`, a triangle at `A`, and one `wght` variation. The variation mixes
+zero runs, signed byte runs, signed word runs, X/Y deltas, and a right-phantom
+advance adjustment. Unlike the in-crate synthetic builders, FontTools encodes
+its complete `glyf`/`gvar` tables independently. This catches an incorrect
+packed-delta interpretation even if a handwritten fixture repeats that error.
+
+The integration regression checks every triangle vertex and both horizontal
+metrics at weights 400, 650, and 900 against the FontTools instancer. Regenerate
+and verify with FontTools 4.61.1:
+
+```bash
+python fmd-font/fonts/test-variable/generate_packed_deltas.py
+```
+
+FontTools is only needed to regenerate the fixture; normal Rust tests read the
+committed font without Python or third-party font libraries.

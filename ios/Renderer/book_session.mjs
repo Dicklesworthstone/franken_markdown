@@ -1,0 +1,982 @@
+// Pure adapter logic. Engine loading is injected so lifecycle and validation
+// can be tested without replacing the production renderer or its WASM binary.
+import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
+
+const MAX_CHAPTERS = 4096;
+const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
+const MAX_ASSET_BYTES = 32 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 128 * 1024 * 1024;
+const SLOTS = new Set([
+  "body-regular",
+  "body-bold",
+  "body-italic",
+  "body-bold-italic",
+  "mono-regular",
+]);
+
+function record(value, name) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+  return value;
+}
+
+// Count without a lossy TextEncoder allocation: unpaired surrogates must never
+// turn into U+FFFD at the WASM boundary. Kept independent of the 4 MiB flow API.
+export function bookTextBytes(value, maximum = MAX_SOURCE_BYTES) {
+  if (typeof value !== "string") throw new TypeError("book text must be a string");
+  if (value.length > maximum) throw new RangeError("book text exceeds its UTF-8 budget");
+  let bytes = 0;
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = value.charCodeAt(++i);
+      if (!(next >= 0xdc00 && next <= 0xdfff))
+        throw new TypeError("book text contains malformed Unicode");
+      bytes += 4;
+    } else if (c >= 0xdc00 && c <= 0xdfff)
+      throw new TypeError("book text contains malformed Unicode");
+    else bytes += c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
+    if (bytes > maximum) throw new RangeError("book text exceeds its UTF-8 budget");
+  }
+  return bytes;
+}
+
+function optionalString(value, name) {
+  if (value == null) return undefined;
+  if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
+  bookTextBytes(value, 4 * 1024 * 1024);
+  return value;
+}
+
+function boolean(value, name) {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TypeError(`${name} must be a boolean`);
+  return value;
+}
+
+function assetBytes(value) {
+  let view;
+  if (value instanceof ArrayBuffer) {
+    view = new Uint8Array(value);
+  } else if (ArrayBuffer.isView(value)) {
+    view = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  } else {
+    throw new TypeError("asset bytes must be an ArrayBuffer or typed-array view");
+  }
+  if (view.byteLength === 0 || view.byteLength > MAX_ASSET_BYTES) {
+    throw new RangeError("asset bytes must contain 1 through 32 MiB");
+  }
+  if (Object.prototype.toString.call(view.buffer) === "[object SharedArrayBuffer]") {
+    throw new TypeError("copy shared asset bytes into an owned buffer first");
+  }
+  return view;
+}
+
+function imageAsset(value) {
+  const image = record(value, "image");
+  if (typeof image.destination !== "string" || !image.destination.trim()) {
+    throw new TypeError("image destination must be a nonempty book-relative key");
+  }
+  bookTextBytes(image.destination, 4096);
+  return { destination: image.destination.trim(), bytes: assetBytes(image.bytes) };
+}
+
+function fontAsset(value) {
+  const font = record(value, "font asset");
+  if (!SLOTS.has(font.slot)) throw new TypeError("unknown font asset slot");
+  if (
+    font.weight !== undefined &&
+    (!Number.isInteger(font.weight) || font.weight < 1 || font.weight > 1000)
+  ) {
+    throw new RangeError("font weight must be an integer in 1..=1000");
+  }
+  return { slot: font.slot, bytes: assetBytes(font.bytes), weight: font.weight };
+}
+
+// Match the additive FmdBook.setPdfOptions contract. These values are owned
+// primitives/plain records before any await; normalization is idempotent across
+// the client, worker and session layers. Defaults need no new WASM methods.
+const PDF_OPTION_FIELDS = [
+  "typography", "baseFontSize", "headingScale", "tableFontSize", "tocDepth",
+  "fitToPages", "codeLineNumbers", "metadataEpochSeconds", "running",
+];
+function boundedNumber(value, name, min, max, integer = false) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max
+      || (integer && !Number.isSafeInteger(value))) {
+    throw new RangeError(`${name} must be ${integer ? "an integer" : "finite"} in ${min}..=${max}`);
+  }
+  return value === 0 ? 0 : value;
+}
+function runningRecord(value, keys, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw new TypeError(`${label} must be a plain data object`);
+  }
+  const result = {};
+  for (const key of Reflect.ownKeys(value)) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (!keys.includes(key) || !field || !Object.hasOwn(field, "value")) {
+      throw new TypeError(`${label} has an unsupported field or accessor`);
+    }
+    result[key] = field.value;
+  }
+  return result;
+}
+function bookRunning(value) {
+  if (value === undefined || value === null) return undefined;
+  const running = runningRecord(value, ["header", "footer", "skipFirstPage"], "running");
+  const band = (value, label) => {
+    const data = value == null ? {} : runningRecord(value, ["left", "center", "right", "rule", "image"], label);
+    const result = {};
+    for (const slot of ["left", "center", "right"]) {
+      const text = data[slot];
+      if (text !== undefined) {
+        if (typeof text !== "string") throw new TypeError(`${label}.${slot} must be a string`);
+        bookTextBytes(text, 4096);
+        if (text.length) result[slot] = text;
+      }
+    }
+    if (boolean(data.rule, `${label}.rule`)) result.rule = true;
+    if (data.image !== undefined) {
+      const image = runningRecord(data.image, ["dest", "position", "heightPt"], `${label}.image`);
+      if (typeof image.dest !== "string" || !image.dest.trim())
+        throw new TypeError(`${label}.image.dest must be a nonempty image asset key`);
+      const dest = image.dest.trim();
+      bookTextBytes(dest, 4096);
+      if (image.position !== undefined && !["left", "right"].includes(image.position))
+        throw new TypeError(`${label}.image.position must be left or right`);
+      const heightPt = image.heightPt === undefined ? undefined
+        : boundedNumber(image.heightPt, `${label}.image.heightPt`, 1, 65535, true);
+      result.image = Object.freeze({ dest, ...(image.position === undefined ? {} : { position: image.position }),
+        ...(heightPt === undefined ? {} : { heightPt }) });
+    }
+    return Object.freeze(result);
+  };
+  const header = band(running.header, "running.header"), footer = band(running.footer, "running.footer");
+  const skipFirstPage = boolean(running.skipFirstPage, "running.skipFirstPage");
+  if (!Object.keys(header).length && !Object.keys(footer).length && !skipFirstPage) return undefined;
+  return Object.freeze({ header, footer, skipFirstPage });
+}
+function bookRenderOptions(options) {
+  const result = {};
+  // Read each host property once, including aliases; no later getter can
+  // substitute a different value after validation or asynchronous loading.
+  const typography = options.typography;
+  const optimal = options.optimalPagination;
+  const microtype = options.microtype;
+  const protrusion = options.microtypeProtrusion;
+  const tokens = [];
+  if (typography !== undefined) {
+    if (typeof typography !== "string") throw new TypeError("typography must be a comma-separated string");
+    bookTextBytes(typography, 256);
+    for (const token of typography.split(",").map(token => token.trim()).filter(Boolean)) {
+      if (!["homogeneous", "antiriver", "pareto", "optimal-pagination", "protrusion", "expansion"].includes(token)) {
+        throw new TypeError(`Unknown typography token: '${token}'`);
+      }
+      tokens.push(token);
+    }
+  }
+  if (boolean(optimal, "optimalPagination")) tokens.push("optimal-pagination");
+  if (microtype !== undefined) {
+    if (!["off", "protrusion", "expansion", "all"].includes(microtype)) {
+      throw new TypeError("microtype must be off, protrusion, expansion, or all");
+    }
+    // An explicit mode overrides microtype tokens, but not other layout flags.
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      if (tokens[i] === "protrusion" || tokens[i] === "expansion") tokens.splice(i, 1);
+    }
+    if (microtype !== "off") tokens.push(microtype === "all" ? "protrusion" : microtype);
+  }
+  if (boolean(protrusion, "microtypeProtrusion")) tokens.push("protrusion");
+  if (tokens.length) {
+    result.typography = tokens.join(",");
+    bookTextBytes(result.typography, 256);
+  }
+  for (const [key, min, max, integer] of [
+    ["baseFontSize", 6, 24, false], ["headingScale", 1.05, 2, false],
+    ["tableFontSize", 5, 24, false], ["tocDepth", 1, 6, true],
+    ["fitToPages", 1, 0xffffffff, true], ["metadataEpochSeconds", 0, Number.MAX_SAFE_INTEGER, true],
+  ]) {
+    const value = options[key];
+    if (value !== undefined) result[key] = boundedNumber(value, key, min, max, integer);
+  }
+  if (boolean(options.codeLineNumbers, "codeLineNumbers")) result.codeLineNumbers = true;
+  const running = bookRunning(options.running);
+  if (running !== undefined) result.running = running;
+  const format = options.htmlFontFormat;
+  if (format !== undefined) {
+    if (!["ttf", "woff1", "woff2"].includes(format)) throw new TypeError("htmlFontFormat must be ttf, woff1, or woff2");
+    result.htmlFontFormat = format;
+  }
+  return result;
+}
+function pdfOptionArgs(settings) {
+  if (!PDF_OPTION_FIELDS.some(key => settings[key] !== undefined)) return null;
+  const running = settings.running;
+  const slots = running ? [running.header, running.footer].flatMap(band =>
+    [band.left ?? "", band.center ?? "", band.right ?? ""]) : [];
+  const args = [settings.typography, settings.baseFontSize, settings.headingScale, settings.tableFontSize,
+    settings.tocDepth, settings.fitToPages, settings.codeLineNumbers ?? false, settings.metadataEpochSeconds,
+    slots, running?.header.rule ?? false, running?.footer.rule ?? false, running?.skipFirstPage ?? false];
+  if (pdfOptionMethod(settings) === "setPdfOptionsWithRunningImages") {
+    const images = [running.header.image, running.footer.image];
+    args.push(images.map(image => image?.dest ?? ""),
+      new Uint32Array(images.map(image => image?.position === "right" ? 1 : 0)),
+      new Uint32Array(images.map(image => image?.heightPt ?? 0)));
+  }
+  return args;
+}
+function pdfOptionMethod(settings) {
+  return settings.running?.header.image || settings.running?.footer.image
+    ? "setPdfOptionsWithRunningImages" : "setPdfOptions";
+}
+function requireBookOptions(target, settings) {
+  for (const [name, requested] of [
+    [pdfOptionMethod(settings), pdfOptionArgs(settings) !== null],
+    ["setHtmlFontFormat", settings.htmlFontFormat !== undefined],
+  ]) {
+    if (requested && typeof target?.[name] !== "function") {
+      throw Object.assign(new Error(
+        `this WASM build lacks FmdBook.${name}; rebuild the matching package for book rendering options`,
+      ), { code: "UNSUPPORTED_BOOK_OPTIONS" });
+    }
+  }
+}
+
+function normalizeOptions(value) {
+  const options = record(value, "options");
+  const renderOptions = bookRenderOptions(options);
+  const page = normalizePdfPage(options.page);
+  const font = options.font ?? "sans";
+  const darkMode = options.darkMode ?? "auto";
+  if (font !== "sans" && font !== "serif") throw new TypeError("font must be sans or serif");
+  if (!["auto", "disabled", "light", "system"].includes(darkMode)) {
+    throw new TypeError("darkMode must be auto or disabled (light/system aliases accepted)");
+  }
+  const fontScale = options.fontScale;
+  if (
+    fontScale !== undefined &&
+    (typeof fontScale !== "number" ||
+      !Number.isFinite(fontScale) ||
+      !Number.isFinite(Math.fround(fontScale)) ||
+      Math.fround(fontScale) <= 0)
+  ) {
+    throw new RangeError("fontScale must be a finite, positive f32-representable number");
+  }
+  const expandIncludes = options.expandIncludes;
+  const expansion = expandIncludes === undefined ? true : boolean(expandIncludes, "expandIncludes");
+  const includeSources = options.includeSources ?? [];
+  const images = options.images ?? [];
+  const fonts = options.fontAssets ?? [];
+  if (!Array.isArray(images) || images.length > MAX_CHAPTERS) {
+    throw new RangeError("images must be an array with at most 4096 assets");
+  }
+  if (!Array.isArray(fonts) || fonts.length > SLOTS.size) {
+    throw new RangeError("fontAssets must be an array with at most five slots");
+  }
+  const normalizedImages = images.map(imageAsset);
+  if (normalizedImages.reduce((sum, image) => sum + image.bytes.byteLength, 0) > MAX_IMAGE_BYTES) {
+    throw new RangeError("image bytes exceed the 128 MiB aggregate limit");
+  }
+  return {
+    title: optionalString(options.title, "title"),
+    author: optionalString(options.author, "author"),
+    lang: optionalString(options.lang, "lang"),
+    customCss: optionalString(options.customCss, "customCss"),
+    toc: boolean(options.toc, "toc"),
+    pageNumbers: boolean(options.pageNumbers, "pageNumbers"),
+    page,
+    font,
+    darkMode,
+    fontScale,
+    expandIncludes: expansion,
+    includeSources,
+    images: normalizedImages,
+    fontAssets: fonts.map(fontAsset),
+    ...renderOptions,
+  };
+}
+
+function normalizeFiles(files, minimum = 1, maxCount = MAX_CHAPTERS, maxBytes = MAX_SOURCE_BYTES) {
+  const count = Array.isArray(files) ? files.length : -1;
+  if (!Number.isInteger(count) || count < minimum || count > maxCount) {
+    throw new RangeError(
+      "book needs at least one chapter and at most 4096 chapter/include sources combined",
+    );
+  }
+  const paths = [],
+    sources = [];
+  let total = 0;
+  // Array admission must bound actual traversal, not trust a custom iterator
+  // or a length getter that changes after the count check.
+  for (let index = 0; index < count; index++) {
+    const file = files[index];
+    record(file, "book source");
+    // Capture getters once: the validated strings are the strings sent to Rust.
+    const path = file.path,
+      source = file.source;
+    if (typeof path !== "string" || typeof source !== "string") {
+      throw new TypeError("each book source needs string path and source fields");
+    }
+    for (const text of [path, source]) {
+      if (text.length > maxBytes - total) {
+        throw new RangeError("book source text and paths exceed 64 MiB combined");
+      }
+      total += bookTextBytes(text, maxBytes - total);
+    }
+    paths.push(path);
+    sources.push(source);
+  }
+  return { paths, sources, total };
+}
+
+/** Capture host inputs before any asynchronous initialization or transfer.
+ * Clone admitted assets only after validating the complete aggregate budget.
+ * Internal transport helper; never detaches or retains caller-owned buffers.
+ */
+export function prepareBookInput(files, options = {}) {
+  const normalized = normalizeFiles(files),
+    settings = normalizeOptions(options);
+  const resources = normalizeFiles(
+    settings.includeSources,
+    0,
+    MAX_CHAPTERS - normalized.paths.length,
+    MAX_SOURCE_BYTES - normalized.total,
+  );
+  if (!settings.expandIncludes && resources.paths.length) {
+    throw new TypeError(
+      "includeSources requires expandIncludes; remove resources or enable expansion",
+    );
+  }
+  settings.includeSources = resources.paths.map((path, i) => ({
+    path,
+    source: resources.sources[i],
+  }));
+  settings.images = settings.images.map((image) => ({ ...image, bytes: image.bytes.slice() }));
+  settings.fontAssets = settings.fontAssets.map((font) => ({ ...font, bytes: font.bytes.slice() }));
+  return {
+    files: normalized.paths.map((path, i) => ({ path, source: normalized.sources[i] })),
+    options: settings,
+  };
+}
+
+/** Navigation checks need source/expansion policy only. Do not even read
+ * image/font/CSS getters on this path, much less clone or transfer their bytes. */
+export function bookLinkOptions(options = {}) {
+  record(options, "options");
+  return { includeSources: options.includeSources, expandIncludes: options.expandIncludes };
+}
+
+function output(bytes, kind, sourceLength) {
+  if (!(bytes instanceof Uint8Array))
+    throw new TypeError("renderer did not return Uint8Array bytes");
+  const [format, mimeType, extension] = {
+    pdf: ["book-pdf", "application/pdf", "pdf"],
+    epub: ["book-epub", "application/epub+zip", "epub"],
+    site: ["book-site", "application/zip", "zip"],
+    chapterPreview: ["book-chapter-preview", "application/json", "json"],
+  }[kind];
+  return Object.freeze({
+    format,
+    mimeType,
+    extension,
+    sourceLength,
+    bytes,
+    blob() {
+      return new Blob([bytes], { type: mimeType });
+    },
+    filename(baseName = "book") {
+      return `${String(baseName)}.${extension}`;
+    },
+  });
+}
+
+// Export-local options deliberately cannot reset metadata, replace assets, or
+// silently accept misspelled geometry fields. Do not invoke host accessors.
+function exportPage(value, fallback) {
+  const invalid = () => Object.assign(
+    new TypeError("book PDF export options must be a plain data object containing only page"),
+    { code: "INVALID_OPTIONS" },
+  );
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw invalid();
+  let page;
+  for (const key of Reflect.ownKeys(value)) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (key !== "page" || !field || !Object.hasOwn(field, "value")) throw invalid();
+    page = field.value;
+  }
+  return page === undefined ? fallback : normalizePdfPage(page);
+}
+
+function updateError(code, message) {
+  return Object.assign(new Error(message), { code });
+}
+function isRevision(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+}
+function currentSourceRevision(raw) {
+  if (typeof raw.updateSources !== "function") {
+    throw updateError("UNSUPPORTED_BOOK_UPDATE",
+      "this WASM build lacks FmdBook.updateSources; rebuild the matching package for source editing");
+  }
+  const revision = raw.sourceRevision;
+  if (!isRevision(revision)) {
+    throw updateError("INVALID_BOOK_UPDATE_REPORT", "Book source revision is invalid.");
+  }
+  return revision;
+}
+function expectedSourceRevision(options, fallback) {
+  const invalid = () => updateError("INVALID_OPTIONS",
+    "Source update options must contain only an integer expectedRevision in 0..=4294967295.");
+  if (!options || typeof options !== "object" || Array.isArray(options)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(options))) throw invalid();
+  let expected = fallback;
+  for (const key of Reflect.ownKeys(options)) {
+    const field = Object.getOwnPropertyDescriptor(options, key);
+    if (key !== "expectedRevision" || !field || !Object.hasOwn(field, "value")) throw invalid();
+    if (field.value !== undefined) expected = field.value;
+  }
+  if (!isRevision(expected)) throw invalid();
+  return expected;
+}
+
+// This is a wire-contract check, not a second Markdown/include implementation.
+// Validate after native success against the actual post-update renderer state.
+function sourceUpdateReport(json, before, submittedCount, raw) {
+  const invalid = () => updateError("INVALID_BOOK_UPDATE_REPORT",
+    "The source update result is invalid or mismatched; the book session was disposed. Recreate it from your source capture.");
+  let report;
+  try {
+    bookTextBytes(json, 64 * 1024);
+    report = JSON.parse(json);
+  } catch { throw invalid(); }
+  const count = report?.changed_sources, reparsed = report?.reparsed_chapters;
+  if (!report || report.schema !== "fmd-book-source-update-v1"
+      || !isRevision(report.revision) || !Number.isInteger(count) || count < 0 || count > submittedCount
+      || report.revision !== before.revision + (count > 0 ? 1 : 0)
+      || report.chapter_count !== before.chapters || report.chapter_count !== raw.chapterCount
+      || !Number.isInteger(report.source_length) || report.source_length < 0
+      || report.source_length > MAX_SOURCE_BYTES || report.source_length !== raw.sourceLength
+      || report.revision !== raw.sourceRevision
+      || !Array.isArray(reparsed) || reparsed.length > before.chapters
+      || (count === 0 && (reparsed.length !== 0 || report.source_length !== before.bytes))) throw invalid();
+  let previous = -1;
+  for (const index of reparsed) {
+    if (!Number.isInteger(index) || index <= previous || index >= before.chapters) throw invalid();
+    previous = index;
+  }
+  return Object.freeze({
+    revision: report.revision,
+    sourceLength: report.source_length,
+    chapterCount: report.chapter_count,
+    changedSources: count,
+    reparsedChapters: Object.freeze(reparsed),
+  });
+}
+
+// Whole-collection replacement has a distinct wire contract: the chapter count
+// and include membership may change. Never infer rollback from a bad receipt
+// after the native transaction has returned success.
+function sourceSetOptions(options, fallback) {
+  const invalid = () => updateError("INVALID_OPTIONS",
+    "Source-set options must contain only includeSources and an integer expectedRevision in 0..=4294967295.");
+  if (!options || typeof options !== "object" || Array.isArray(options)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(options))) throw invalid();
+  let expected = fallback, resources = [];
+  for (const key of Reflect.ownKeys(options)) {
+    const field = Object.getOwnPropertyDescriptor(options, key);
+    if (!["includeSources", "expectedRevision"].includes(key)
+        || !field || !Object.hasOwn(field, "value")) throw invalid();
+    if (field.value !== undefined) {
+      if (key === "expectedRevision") expected = field.value;
+      else resources = field.value;
+    }
+  }
+  if (!isRevision(expected)) throw invalid();
+  return { expected, resources };
+}
+
+function sourceSetReport(json, before, submitted, raw) {
+  const invalid = () => updateError("INVALID_BOOK_SOURCE_SET_REPORT",
+    "The source-set result is invalid or mismatched; the book session was disposed. Recreate it from your source capture.");
+  let report;
+  try {
+    bookTextBytes(json, 4096);
+    report = JSON.parse(json);
+  } catch { throw invalid(); }
+  if (!report || report.schema !== "fmd-book-source-set-v1"
+      || typeof report.changed !== "boolean" || !isRevision(report.revision)
+      || report.revision !== before.revision + (report.changed ? 1 : 0)
+      || report.revision !== raw.sourceRevision
+      || report.chapter_count !== submitted.chapters || report.chapter_count !== raw.chapterCount
+      || report.resource_count !== submitted.resources
+      || report.source_length !== submitted.bytes || report.source_length !== raw.sourceLength
+      || report.reparsed_chapter_count !== (report.changed ? submitted.chapters : 0)
+      || (!report.changed && (submitted.chapters !== before.chapters || submitted.bytes !== before.bytes))) {
+    throw invalid();
+  }
+  return Object.freeze({
+    revision: report.revision,
+    sourceLength: report.source_length,
+    chapterCount: report.chapter_count,
+    resourceCount: report.resource_count,
+    changed: report.changed,
+    reparsedChapterCount: report.reparsed_chapter_count,
+  });
+}
+
+export function createBookBindings(loadBookClass) {
+  class BookSession {
+    #raw;
+    #page;
+    #updating = false;
+    constructor(raw, page) {
+      this.#raw = raw;
+      this.#page = page;
+    }
+    #live() {
+      if (this.#raw === null) throw new Error("book session has been disposed");
+      return this.#raw;
+    }
+    get chapterCount() {
+      return this.#live().chapterCount;
+    }
+    get sourceLength() {
+      return this.#live().sourceLength;
+    }
+    get sourceRevision() {
+      return currentSourceRevision(this.#live());
+    }
+    updateSources(files, options = {}) {
+      this.#live();
+      if (this.#updating) throw updateError("BOOK_BUSY", "A book source update is already being admitted.");
+      // Hold the admission slot before inspecting host getters or Proxy traps.
+      this.#updating = true;
+      try {
+        const raw = this.#live();
+        const before = { revision: currentSourceRevision(raw), chapters: raw.chapterCount, bytes: raw.sourceLength };
+        const expected = expectedSourceRevision(options, before.revision);
+        const stale = () => updateError("STALE_BOOK_REVISION", "Book source changed; refresh the capture before applying this update.");
+        if (expected !== before.revision) throw stale();
+        const normalized = normalizeFiles(files);
+        // Admission may run user code. Never call an old/freed handle after it.
+        const live = this.#live();
+        if (currentSourceRevision(live) !== expected) throw stale();
+        let json;
+        try {
+          json = live.updateSources(normalized.paths, normalized.sources, expected);
+        } catch (error) {
+          if (typeof error === "string") throw new Error(error.slice(0, 2048));
+          throw error;
+        }
+        try {
+          return sourceUpdateReport(json, before, normalized.paths.length, this.#live());
+        } catch (error) {
+          // Native success may already have changed source. Quarantine a bad
+          // report; never pretend that protocol validation rolled the edit back.
+          try { this.dispose(); } catch { /* The raw handle remains retired. */ }
+          if (error?.code === "INVALID_BOOK_UPDATE_REPORT") throw error;
+          throw updateError("INVALID_BOOK_UPDATE_REPORT",
+            "Cannot verify the source update; the book session was disposed. Recreate it from your source capture.");
+        }
+      } finally {
+        this.#updating = false;
+      }
+    }
+    replaceSources(files, options = {}) {
+      this.#live();
+      if (this.#updating) throw updateError("BOOK_BUSY", "A book source update is already being admitted.");
+      // Share admission with selective updates before any caller code can run.
+      this.#updating = true;
+      try {
+        const raw = this.#live();
+        if (typeof raw.replaceSources !== "function") {
+          throw updateError("UNSUPPORTED_BOOK_SOURCE_SET",
+            "this WASM build lacks FmdBook.replaceSources; rebuild the matching package for collection editing");
+        }
+        const before = { revision: currentSourceRevision(raw), chapters: raw.chapterCount, bytes: raw.sourceLength };
+        const { expected, resources: selected } = sourceSetOptions(options, before.revision);
+        const stale = () => updateError("STALE_BOOK_REVISION", "Book source changed; refresh the capture before replacing this collection.");
+        if (expected !== before.revision) throw stale();
+        const chapters = normalizeFiles(files);
+        const resources = normalizeFiles(selected, 0,
+          MAX_CHAPTERS - chapters.paths.length, MAX_SOURCE_BYTES - chapters.total);
+        const pathBytes = [...chapters.paths, ...resources.paths]
+          .reduce((total, path) => total + bookTextBytes(path), 0);
+        const submitted = { chapters: chapters.paths.length, resources: resources.paths.length,
+          bytes: chapters.total + resources.total - pathBytes };
+        const live = this.#live();
+        if (currentSourceRevision(live) !== expected) throw stale();
+        let json;
+        try {
+          json = live.replaceSources(chapters.paths, chapters.sources,
+            resources.paths, resources.sources, expected);
+        } catch (error) {
+          if (typeof error === "string") throw new Error(error.slice(0, 2048));
+          throw error;
+        }
+        try {
+          return sourceSetReport(json, before, submitted, this.#live());
+        } catch (error) {
+          try { this.dispose(); } catch { /* Keep the raw handle retired. */ }
+          if (error?.code === "INVALID_BOOK_SOURCE_SET_REPORT") throw error;
+          throw updateError("INVALID_BOOK_SOURCE_SET_REPORT",
+            "Cannot verify the source-set replacement; the book session was disposed. Recreate it from your source capture.");
+        }
+      } finally {
+        this.#updating = false;
+      }
+    }
+    setImage(destination, bytes) {
+      const raw = this.#live();
+      const asset = imageAsset({ destination, bytes });
+      raw.setImage(asset.destination, asset.bytes);
+      return this;
+    }
+    setFont(slot, bytes, weight) {
+      const raw = this.#live();
+      const asset = fontAsset({ slot, bytes, weight });
+      raw.setFont(asset.slot, asset.bytes);
+      if (asset.weight !== undefined) raw.setFontWeight(asset.slot, asset.weight);
+      return this;
+    }
+    renderPdf(options = {}) {
+      this.#live();
+      const page = exportPage(options, this.#page);
+      // A Proxy trap may dispose the session during admission. Never retain a
+      // pre-validation raw handle across caller-controlled object inspection.
+      const raw = this.#live();
+      if (page === undefined) return output(raw.renderPdf(), "pdf", raw.sourceLength);
+      if (typeof raw.renderPdfWithPage !== "function") {
+        throw Object.assign(new Error(
+          "this WASM build lacks FmdBook.renderPdfWithPage; rebuild the matching package for book PDF page geometry",
+        ), { code: "UNSUPPORTED_PDF_PAGE" });
+      }
+      let bytes;
+      try {
+        bytes = raw.renderPdfWithPage(pdfPageGeometry(page));
+      } catch (error) {
+        if (typeof error === "string") throw new Error(error.slice(0, 2048));
+        throw error;
+      }
+      return output(bytes, "pdf", raw.sourceLength);
+    }
+    renderEpub() {
+      const raw = this.#live();
+      return output(raw.renderEpub(), "epub", raw.sourceLength);
+    }
+    renderSite() {
+      const raw = this.#live();
+      return output(raw.renderSite(), "site", raw.sourceLength);
+    }
+    get supportsChapterPreview() {
+      return typeof this.#live().renderChapterPreview === "function";
+    }
+    renderChapterPreview(selected = 0) {
+      const raw = this.#live();
+      if (this.#updating) throw updateError("BOOK_BUSY", "A book source update is already being admitted.");
+      const count = raw.chapterCount;
+      const index = chapterPreviewIndex(selected, count);
+      if (typeof raw.renderChapterPreview !== "function") {
+        throw updateError("UNSUPPORTED_BOOK_CHAPTER_PREVIEW",
+          "this WASM build lacks FmdBook.renderChapterPreview; rebuild the matching package for on-demand chapter previews");
+      }
+      let bytes;
+      try {
+        bytes = raw.renderChapterPreview(index);
+      } catch (error) {
+        if (typeof error === "string") throw new Error(error.slice(0, 2048));
+        throw error;
+      }
+      // Validate the native reply against the requested chapter, not merely
+      // its declared schema. Rendering is read-only; failures do not edit source.
+      parseBookChapterPreview(bytes, index, count);
+      return output(bytes, "chapterPreview", raw.sourceLength);
+    }
+    validateLinks() {
+      const raw = this.#live();
+      if (typeof raw.validateLinks !== "function") {
+        throw new Error(
+          "this WASM build lacks FmdBook.validateLinks; rebuild the matching package for book link checks",
+        );
+      }
+      let json;
+      try {
+        json = raw.validateLinks();
+      } catch (error) {
+        if (typeof error === "string") throw new Error(error.slice(0, 2048));
+        throw error;
+      }
+      bookTextBytes(json, 4 * 1024 * 1024);
+      if (!json) throw new Error("book link checker returned an empty report");
+      const bytes = new TextEncoder().encode(json),
+        sourceLength = raw.sourceLength;
+      return Object.freeze({
+        format: "book-links",
+        mimeType: "application/json",
+        extension: "json",
+        bytes,
+        sourceLength,
+        blob: () => new Blob([bytes], { type: "application/json" }),
+        filename: (baseName = "book-links") => `${String(baseName)}.json`,
+      });
+    }
+    dispose() {
+      const raw = this.#raw;
+      this.#raw = null;
+      if (raw !== null) raw.free();
+    }
+  }
+
+  async function createBook(files, options = {}) {
+    const prepared = prepareBookInput(files, options);
+    const normalized = {
+      paths: prepared.files.map((file) => file.path),
+      sources: prepared.files.map((file) => file.source),
+    };
+    const settings = prepared.options;
+    const BookClass = await loadBookClass();
+    if (typeof BookClass !== "function") {
+      throw new Error(
+        "this WASM build lacks FmdBook; rebuild the browser package with the updated Rust source",
+      );
+    }
+    requireBookOptions(BookClass.prototype, settings);
+    // Editable books must retain expansion policy even before their first
+    // include is authored. Old render-only packages keep their original gate.
+    // Rust alone interprets directives; JavaScript never parses Markdown.
+    const expand =
+      settings.expandIncludes &&
+      (typeof BookClass.prototype?.updateSources === "function" ||
+        settings.includeSources.length > 0 ||
+        normalized.sources.some((source) => source.includes("{{#include")));
+    let raw;
+    try {
+      if (expand) {
+        if (typeof BookClass.fromSources !== "function") {
+          throw new Error(
+            "this WASM build lacks FmdBook.fromSources; rebuild the matching package for book includes",
+          );
+        }
+        raw = BookClass.fromSources(
+          normalized.paths,
+          normalized.sources,
+          settings.includeSources.map((file) => file.path),
+          settings.includeSources.map((file) => file.source),
+        );
+      } else {
+        raw = new BookClass(normalized.paths, normalized.sources);
+      }
+    } catch (error) {
+      // wasm-bindgen may throw plain Rust strings. Preserve a bounded reason
+      // across worker diagnostics instead of reducing missing/cyclic includes
+      // to an unhelpful generic rendering failure.
+      if (typeof error === "string") throw new Error(error.slice(0, 2048));
+      throw error;
+    }
+    try {
+      requireBookOptions(raw, settings);
+      const pdf = pdfOptionArgs(settings);
+      if (pdf !== null) raw[pdfOptionMethod(settings)](...pdf);
+      if (settings.htmlFontFormat !== undefined) raw.setHtmlFontFormat(settings.htmlFontFormat);
+      raw.setMetadata(settings.title, settings.author, settings.lang);
+      raw.setCustomCss(settings.customCss);
+      raw.setTheme(settings.font, settings.darkMode);
+      raw.setNavigation(settings.toc, settings.pageNumbers);
+      if (settings.fontScale !== undefined) raw.setFontScale(settings.fontScale);
+      for (const image of settings.images) raw.setImage(image.destination, image.bytes);
+      for (const font of settings.fontAssets) {
+        raw.setFont(font.slot, font.bytes);
+        if (font.weight !== undefined) raw.setFontWeight(font.slot, font.weight);
+      }
+      return new BookSession(raw, settings.page);
+    } catch (error) {
+      raw.free();
+      if (typeof error === "string") throw new Error(error.slice(0, 2048));
+      throw error;
+    }
+  }
+
+  async function once(files, options, method) {
+    const session = await createBook(files, options);
+    try {
+      return session[method]();
+    } finally {
+      session.dispose();
+    }
+  }
+
+  return Object.freeze({
+    createBook,
+    renderBookPdf: (files, options) => once(files, options, "renderPdf"),
+    renderBookEpub: (files, options) => once(files, options, "renderEpub"),
+    renderBookSite: (files, options) => once(files, options, "renderSite"),
+    renderBookChapterPreview: async (files, selected = 0, options = {}) => {
+      const index = chapterPreviewIndex(selected, MAX_CHAPTERS);
+      const session = await createBook(files, options);
+      try {
+        return session.renderChapterPreview(index);
+      } finally {
+        session.dispose();
+      }
+    },
+    checkBookLinks: async (files, options) =>
+      once(files, bookLinkOptions(options), "validateLinks"),
+  });
+}
+
+/** Decode a link report against canonical chapter paths from a captured host
+ * collection. This validates the wire contract, not Markdown. Summary totals
+ * are recomputed; no engine-supplied optimistic verdict reaches the reader. */
+export function parseBookLinkReport(bytes, expectedPaths) {
+  const invalid = () =>
+    Object.assign(new Error("The book link checker returned an invalid or mismatched report."), {
+      code: "INVALID_LINK_REPORT",
+    });
+  const maximum = 4 * 1024 * 1024;
+  if (
+    !(bytes instanceof Uint8Array) ||
+    Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]" ||
+    bytes.byteLength === 0 ||
+    bytes.byteLength > maximum ||
+    !Array.isArray(expectedPaths) ||
+    !expectedPaths.length ||
+    expectedPaths.length > MAX_CHAPTERS
+  )
+    throw invalid();
+  const integer = (value) => {
+    if (!Number.isSafeInteger(value) || value < 0 || value > 250000) throw invalid();
+    return value;
+  };
+  const text = (value, limit) => {
+    try {
+      bookTextBytes(value, limit);
+    } catch {
+      throw invalid();
+    }
+    return value;
+  };
+  const codes = new Set([
+    "missing_chapter",
+    "missing_anchor",
+    "ambiguous_anchor",
+    "invalid_fragment",
+    "invalid_local_destination",
+    "missing_footnote",
+  ]);
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw invalid();
+  }
+  if (
+    !value ||
+    value.schema !== "fmd-book-link-report-v1" ||
+    value.scope !== "expanded-html-navigation" ||
+    !Array.isArray(value.chapters) ||
+    value.chapters.length !== expectedPaths.length
+  )
+    throw invalid();
+  const seen = new Set(),
+    summary = {
+      chapters: expectedPaths.length,
+      checked: 0,
+      external: 0,
+      unchecked: 0,
+      findings: 0,
+    };
+  const chapters = Array.from(value.chapters, (chapter, index) => {
+    if (!chapter || typeof chapter !== "object") throw invalid();
+    const path = text(chapter.path, 4096);
+    if (!path || path !== expectedPaths[index] || seen.has(path)) throw invalid();
+    seen.add(path);
+    const checked = integer(chapter.checked),
+      external = integer(chapter.external),
+      unchecked = integer(chapter.unchecked);
+    if (
+      !Array.isArray(chapter.findings) ||
+      chapter.findings.length > checked ||
+      chapter.findings.length > 4096
+    )
+      throw invalid();
+    const findings = Array.from(chapter.findings, (finding) => {
+      if (!finding || !codes.has(finding.code)) throw invalid();
+      const destination = text(finding.destination, 8192),
+        message = text(finding.message, 1024);
+      if (!message) throw invalid();
+      return Object.freeze({ code: finding.code, destination, message });
+    });
+    for (const [key, count] of Object.entries({
+      checked,
+      external,
+      unchecked,
+      findings: findings.length,
+    })) {
+      summary[key] = integer(summary[key] + count);
+    }
+    if (summary.findings > 4096 || summary.checked + summary.external + summary.unchecked > 250000)
+      throw invalid();
+    return Object.freeze({ path, checked, external, unchecked, findings: Object.freeze(findings) });
+  });
+  return Object.freeze({
+    schema: value.schema,
+    scope: value.scope,
+    chapters: Object.freeze(chapters),
+    summary: Object.freeze(summary),
+  });
+}
+
+
+function chapterPreviewIndex(value, count) {
+  if (!Number.isInteger(value) || value < 0 || value >= count) {
+    throw updateError("INVALID_CHAPTER_INDEX", "Select an integer chapter index within this book's reading order.");
+  }
+  return value === 0 ? 0 : value;
+}
+
+/** Decode the native selected-chapter contract, not HTML or Markdown. The
+ * complete navigation map has no unselected HTML and supports 4096 chapters.
+ * HTML is preserved verbatim and remains untrusted: use the isolated preview
+ * frame, never this decoder alone, as the browser's content-security boundary.
+ */
+export function parseBookChapterPreview(bytes, expectedSelected, expectedCount) {
+  const invalid = () => updateError("INVALID_BOOK_PREVIEW", "The renderer returned an invalid or mismatched chapter preview.");
+  const limit = () => updateError("PREVIEW_LIMIT", "This chapter exceeds the preview budget; export the book instead.");
+  if (!(bytes instanceof Uint8Array)
+      || Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]"
+      || !bytes.byteLength) throw invalid();
+  if (bytes.byteLength > 64 * 1024 * 1024) throw limit();
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes));
+  } catch { throw invalid(); }
+  if (!value || value.schema !== "fmd-book-chapter-preview-v1"
+      || !Array.isArray(value.pages) || !value.pages.length) throw invalid();
+  if (value.pages.length > MAX_CHAPTERS) throw limit();
+  if (!Number.isInteger(value.selected) || value.selected < 0 || value.selected >= value.pages.length
+      || (expectedSelected !== undefined && value.selected !== expectedSelected)
+      || (expectedCount !== undefined && value.pages.length !== expectedCount)) throw invalid();
+  const text = (value, maximum) => {
+    try { bookTextBytes(value, maximum); }
+    catch (error) { throw error instanceof RangeError ? limit() : invalid(); }
+    return value;
+  };
+  const paths = new Set(), sources = new Set();
+  const pages = value.pages.map(page => {
+    if (!page || typeof page !== "object" || Array.isArray(page)) throw invalid();
+    const path = text(page.path, 255), source = text(page.source, 4096), title = text(page.title, 4096);
+    // Only Rust-attested flat site names can be reader navigation targets.
+    if (!path || /[\\/\x00-\x20\x7f<>:"|?*#%]/.test(path) || !path.endsWith(".html")
+        || path.startsWith(".") || ["index.html", "~fmd-search.html"].includes(path)
+        || !source || paths.has(path.toLowerCase()) || sources.has(source)) throw invalid();
+    paths.add(path.toLowerCase());
+    sources.add(source);
+    return Object.freeze({ path, source, title });
+  });
+  const html = text(value.html, 8 * 1024 * 1024);
+  return Object.freeze({ schema: "fmd-book-chapter-preview-v1", selected: value.selected,
+    pages: Object.freeze(pages), html });
+}

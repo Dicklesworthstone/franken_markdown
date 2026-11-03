@@ -6,6 +6,7 @@ mod footnotes;
 mod heading_rename;
 mod links;
 mod navigation;
+mod reference_rename;
 #[cfg(test)]
 mod tests;
 mod text;
@@ -309,6 +310,11 @@ impl Server {
                 return Ok(result);
             }
             if renaming {
+                if let Some(result) =
+                    reference_rename::request(method, params, uri, buffer, &self.documents)?
+                {
+                    return Ok(result);
+                }
                 return heading_rename::request(method, params, uri, buffer, &self.documents);
             }
         }

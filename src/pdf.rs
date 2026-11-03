@@ -4,9 +4,10 @@
 //! of the bundled IBM Plex / Computer Modern faces (see [`crate::fonts`] +
 //! [`crate::text::Font::subset`]). Text is laid out with the faces' real `hmtx`
 //! metrics, then written as a composite `Type0` font with `Identity-H` encoding
-//! (2-byte glyph ids) and a `CIDFontType2` descendant carrying the subset
-//! `FontFile2`. Each face also gets a `ToUnicode` CMap so the text stays
-//! selectable / copy-pasteable.
+//! (2-byte glyph ids). TrueType subsets use a `CIDFontType2` descendant and
+//! `FontFile2`; supported OpenType CFF subsets use `CIDFontType0` and
+//! `FontFile3` with subtype `OpenType`. Each face also gets a `ToUnicode`
+//! CMap so the text stays selectable / copy-pasteable.
 //!
 //! Knuth-Plass optimal line breaking (via [`crate::layout::break_paragraph`],
 //! with the original greedy wrapper kept as an emergency fallback) + automatic
@@ -31,8 +32,8 @@ use crate::layout::{
     cjk_break_prohibited, classify_script, default_interword_glue, is_breakable_whitespace,
     is_cjk_char,
 };
-use crate::text::{Font, Kerning, Ligatures};
-use crate::theme::{Theme, ThemeColors};
+use crate::text::{EmbeddingFormat, Font, Kerning, Ligatures};
+use crate::theme::Theme;
 use crate::toc::marker_depth as toc_marker_depth;
 use crate::{FontAssetSlot, FontAssets, PdfOptions, RenderError};
 use std::borrow::Cow;
@@ -42,14 +43,22 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 mod baseline_grid;
+mod data_uri;
+mod fenced_code;
+mod figure_fit;
 mod financial_tables;
+pub(crate) mod flow_diagram;
+mod gif;
 mod inline_code;
 mod inline_image;
 mod inline_math_fit;
 mod joint_pagination;
+mod jpeg_color;
 mod jpeg_orientation;
+mod list_geometry;
 #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
 mod native_compression;
+mod page_note_grid;
 mod pagination_report;
 pub use pagination_report::{
     PdfPageBreakReport, PdfPaginationFailure, PdfPaginationReport, PdfPaginationStrategy,
@@ -57,7 +66,9 @@ pub use pagination_report::{
 };
 mod math;
 mod navigation;
+mod quote_geometry;
 mod running;
+pub(crate) mod source_navigation;
 mod table_panels;
 mod text_composition;
 mod text_positioning;
@@ -114,6 +125,7 @@ fn subset_tail_slot_name(slot: u8) -> &'static str {
         F_MONO => "mono",
         F_BOLDITALIC => "bolditalic",
         F_SYMBOL => "symbol",
+        F_EMOJI => "emoji",
         F_CJK => "cjk",
         _ => "other",
     }
@@ -130,8 +142,8 @@ const PAGE_STREAM_COMPRESSION_MIN: usize = 4096;
 
 // Fenced-code panel + inline-code chip backgrounds.
 const CODE_PAD_X: f32 = 8.0; // text inset inside a fenced-code line
+#[cfg(test)]
 const CODE_FONT_SIZE: f32 = 9.5;
-const CODE_DIAGRAM_MIN_FONT_SIZE: f32 = 6.0;
 const CODE_HANGING_INDENT: f32 = 12.0; // continuation inset for wrapped code rows
 const CODE_LINE_NUMBER_GAP: f32 = 6.0;
 const PANEL_PAD_V: f32 = 5.0; // vertical breathing room above/below the code
@@ -141,6 +153,7 @@ const PANEL_DESCENT_FRAC: f32 = 0.30; // glyph bottom below baseline
 const CODE_BLOCK_GAP_AFTER: f32 = 10.0; // clear adjacent rounded-panel padding
 const CHIP_PAD_X: f32 = 2.0;
 const CHIP_RADIUS: f32 = 2.5;
+const QUOTE_BAR_WIDTH: f32 = 2.5;
 const QUOTE_BG_PAD_X: f32 = 6.0;
 const QUOTE_BG_PAD_V: f32 = 3.0;
 const TABLE_COL_GUTTER: f32 = 14.0;
@@ -167,7 +180,7 @@ const MAX_SVG_ACCESSIBLE_TEXT_CHARS: usize = 512;
 /// still fits (~91.5 MiB); 16-bit RGBA above ~12 MP is refused (→ alt text).
 const MAX_PDF_IMAGE_DECODED_BYTES: u64 = 96 * 1024 * 1024;
 
-// Font slots referenced in page Resources as /F1../F7.
+// Font slots referenced in page Resources as /F1../F7 and /F11.
 const F_BODY: u8 = 1;
 const F_BOLD: u8 = 2;
 const F_ITALIC: u8 = 3;
@@ -178,11 +191,12 @@ const F_BOLDITALIC: u8 = 5;
 /// but the fallback does, so common math/arrow symbols render as real glyphs
 /// instead of `.notdef` boxes.
 const F_SYMBOL: u8 = 6;
-/// The optional extra fallback face: the bundled emoji face in native builds
-/// (`emoji-face` feature). Layout routes a character here when neither its
-/// style slot nor the symbol face maps it (CJK script characters come here
-/// first when the face maps them).
-const F_CJK: u8 = 7;
+/// The bundled emoji fallback face in native builds (`emoji-face` feature).
+/// Its existing resource identity stays /F7 when CJK fallback is also used.
+const F_EMOJI: u8 = 7;
+/// The bundled Han/kana/punctuation fallback, independent of emoji. Slots
+/// 8–10 identify inline objects, so the next font resource is /F11.
+const F_CJK: u8 = 11;
 /// An inline `$…$` formula typeset by fmd-math (fm-djcw), not a font: the
 /// token's text is its TeX source, it measures as the formula's advance, and
 /// the writer fills its outlines instead of showing text. Never in [`SLOTS`],
@@ -228,13 +242,14 @@ fn inline_object_advance(slot: u8, text: &str, size: f32) -> f32 {
         inline_math_advance(text, size, slot == F_DISPLAY_MATH)
     }
 }
-const SLOTS: [u8; 7] = [
+const SLOTS: [u8; 8] = [
     F_BODY,
     F_BOLD,
     F_ITALIC,
     F_MONO,
     F_BOLDITALIC,
     F_SYMBOL,
+    F_EMOJI,
     F_CJK,
 ];
 const PDF_FONT_SLOT_COUNT: usize = SLOTS.len();
@@ -336,7 +351,7 @@ fn resolve_seg_link(links: &[LinkTarget], link: Option<u32>) -> Option<LinkTarge
 /// list wins: a deeper `layout_list` stamps its lines first, and the enclosing
 /// list only stamps still-unmarked lines, so `depth` is always the line's true
 /// nesting level.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct ListMark {
     /// Unique id of the enclosing list (its first line's out-vec index). Nesting
     /// depth is encoded by this mark's position in [`Line::list_path`].
@@ -442,7 +457,7 @@ struct PdfImageData {
 impl PdfImageData {
     fn orientation(&self) -> jpeg_orientation::Orientation {
         match self.filter {
-            PdfImageStreamFilter::Dct(orientation) => orientation,
+            PdfImageStreamFilter::Dct { orientation, .. } => orientation,
             _ => jpeg_orientation::Orientation::Normal,
         }
     }
@@ -1510,6 +1525,7 @@ enum SvgClipPathUnits {
 enum PdfImageColor {
     Gray,
     Rgb,
+    Cmyk,
 }
 
 impl PdfImageColor {
@@ -1517,6 +1533,7 @@ impl PdfImageColor {
         match self {
             Self::Gray => "/DeviceGray",
             Self::Rgb => "/DeviceRGB",
+            Self::Cmyk => "/DeviceCMYK",
         }
     }
 
@@ -1524,6 +1541,7 @@ impl PdfImageColor {
         match self {
             Self::Gray => 1,
             Self::Rgb => 3,
+            Self::Cmyk => 4,
         }
     }
 }
@@ -1539,7 +1557,10 @@ enum PdfImageStreamFilter {
     FlatePngPredictor,
     /// A raw baseline/extended/progressive JPEG stream (`/DCTDecode`); the PDF
     /// reader decodes the JPEG directly, so the bytes pass through untouched.
-    Dct(jpeg_orientation::Orientation),
+    Dct {
+        orientation: jpeg_orientation::Orientation,
+        cmyk: Option<jpeg_color::Encoding>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1668,10 +1689,10 @@ fn ascii_tables_for_parts(
             kern: std::ptr::from_ref(*kern).addr(),
             lig: std::ptr::from_ref(*lig).addr(),
         };
-        if let Ok(cache) = ASCII_TABLE_CACHE.lock() {
-            if let Some((_, tables)) = cache.iter().find(|&&(k, _)| k == key) {
-                return std::sync::Arc::clone(tables);
-            }
+        if let Ok(cache) = ASCII_TABLE_CACHE.lock()
+            && let Some((_, tables)) = cache.iter().find(|&&(k, _)| k == key)
+        {
+            return std::sync::Arc::clone(tables);
         }
         let tables = std::sync::Arc::new(build_ascii_tables(font, kern, lig));
         if let Ok(mut cache) = ASCII_TABLE_CACHE.lock() {
@@ -1757,9 +1778,6 @@ impl Face {
         })
     }
 
-    /// Load the bundled symbol fallback face. It has no caller-override slot
-    /// (the fallback repertoire is a renderer guarantee, not a theme choice),
-    /// so it is built straight from the registry's cached parse.
     /// The bundled emoji fallback face, when the `emoji-face` feature compiled
     /// it in (native builds); `None` in core and WASM builds.
     fn load_bundled_emoji() -> Result<Option<Self>> {
@@ -1770,6 +1788,26 @@ impl Face {
             RenderError::InvalidInput(format!(
                 "bundled emoji fallback font is not a supported TrueType font: {err}"
             ))
+        })?;
+        Ok(Some(Self {
+            font: Cow::Borrowed(font),
+            kern: Cow::Borrowed(&layout.kern),
+            lig: Cow::Borrowed(&layout.lig),
+            ascii: std::sync::OnceLock::new(),
+            positioned: RefCell::new(text_positioning::Cache::default()),
+        }))
+    }
+
+    /// Load the CJK fallback independently of emoji when `cjk-face` is
+    /// compiled in. Measurement and subsetting borrow the same cached source.
+    /// The error is the `RenderError::InvalidInput` message, kept by
+    /// [`Faces::cjk`] until [`Faces::cjk_load_error`] reports it.
+    fn load_bundled_cjk() -> std::result::Result<Option<Self>, String> {
+        let Some(loaded) = fonts::cjk_font() else {
+            return Ok(None);
+        };
+        let (font, layout) = loaded.map_err(|err| {
+            format!("bundled CJK fallback font is not a supported TrueType font: {err}")
         })?;
         Ok(Some(Self {
             font: Cow::Borrowed(font),
@@ -1885,9 +1923,12 @@ struct Faces {
     /// Bundled symbol fallback face; never caller-overridable, always loaded so
     /// coverage checks are total. Embedded in the PDF only when actually used.
     symbol: Face,
-    /// Optional extra fallback face (see [`F_CJK`]): the bundled emoji face in
-    /// native builds.
-    cjk: Option<Face>,
+    /// Optional bundled Han/kana/punctuation fallback, embedded only when used.
+    /// Parsed on first use by [`Faces::cjk`], which `fallback_slot` reaches only
+    /// for characters inside the face's static ranges.
+    cjk: std::cell::OnceCell<std::result::Result<Option<Face>, String>>,
+    /// Optional bundled emoji fallback in native builds; independent of CJK.
+    emoji: Option<Face>,
     /// Images placed inside running text, decoded once per render by
     /// [`layout`] (see [`inline_image::prepare`]).
     inline_images: inline_image::InlineImageTable,
@@ -1952,6 +1993,34 @@ impl PageGeom {
     fn right_x(self) -> f32 {
         self.width - self.right
     }
+
+    /// Keep a preceding heading and its underline with a fitted first row.
+    /// Otherwise a near-page-sized formula can force the soft pager to strand
+    /// the underline above that row, consuming space its fit did not reserve.
+    fn preceding_heading_height(self, lines: &[Line]) -> f32 {
+        lines
+            .iter()
+            .rev()
+            .take_while(|line| line.flow.kind == FlowKind::Heading)
+            .map(|line| {
+                natural_line_leading(line)
+                    + line.gap_after
+                    + self.grid.map_or(0.0, |grid| 2.0 * grid.spacing())
+            })
+            .sum()
+    }
+
+    /// An inline formula shares its row with ordinary text, labels and quote
+    /// padding. Keep their leading/descender allowance in addition to the
+    /// formula's ink, including grid rounding when that mode is enabled.
+    fn inline_math_height(self, reserved: f32) -> f32 {
+        (self.top_y()
+            - self.bottom
+            - reserved
+            - 2.0 * QUOTE_BG_PAD_V
+            - self.grid.map_or(0.0, |grid| 2.0 * grid.spacing()))
+        .max(1.0)
+    }
 }
 
 fn positive_finite(value: f32, fallback: f32) -> f32 {
@@ -2001,7 +2070,8 @@ impl Faces {
                 assets.effective_weight(FontAssetSlot::MonoRegular),
             )?,
             symbol: Face::load_bundled_symbol()?,
-            cjk: Face::load_bundled_emoji()?,
+            cjk: std::cell::OnceCell::new(),
+            emoji: Face::load_bundled_emoji()?,
             inline_images: Default::default(),
         })
     }
@@ -2013,31 +2083,54 @@ impl Faces {
             F_BOLDITALIC => &self.bolditalic,
             F_MONO => &self.mono,
             F_SYMBOL => &self.symbol,
-            F_CJK => self.cjk.as_ref().unwrap_or(&self.symbol),
+            F_EMOJI => self.emoji.as_ref().unwrap_or(&self.symbol),
+            F_CJK => self.cjk().unwrap_or(&self.symbol),
             _ => &self.body,
         }
     }
 
-    /// The slot that should carry `c` when the requested style slot renders it:
-    /// the style slot itself when its face maps the character, otherwise CJK
-    /// fallback (for Han/Kana/Hangul) or bundled symbol fallback face.
+    /// The bundled CJK fallback, parsed once on first use. `None` without
+    /// `cjk-face`, or when the bundled face failed to load (kept for
+    /// [`Faces::cjk_load_error`]).
+    fn cjk(&self) -> Option<&Face> {
+        self.cjk
+            .get_or_init(Face::load_bundled_cjk)
+            .as_ref()
+            .ok()?
+            .as_ref()
+    }
+
+    /// The load error of a render that needed the bundled CJK face, as the
+    /// eager load reported it. Renders that never asked for the face never
+    /// parse it, so they cannot meet this error.
+    fn cjk_load_error(&self) -> Result<()> {
+        match self.cjk.get() {
+            Some(Err(message)) => Err(RenderError::InvalidInput(message.clone())),
+            _ => Ok(()),
+        }
+    }
+
+    /// Resolve missing primary glyphs through the same deterministic faces
+    /// used for measurement, painting, and font subsetting. CJK scripts prefer
+    /// the CJK face; other symbols keep their existing symbol/emoji priority.
     fn fallback_slot(&self, slot: u8, c: char) -> u8 {
-        if slot == F_SYMBOL || slot == F_CJK || self.face(slot).glyph_index(c) != 0 {
-            slot
-        } else if let Some(ref extra) = self.cjk {
-            let in_extra = extra.glyph_index(c) != 0;
-            if in_extra && classify_script(c).wants_cjk_fallback() {
-                F_CJK
-            } else if self.symbol.glyph_index(c) != 0 {
-                F_SYMBOL
-            } else if in_extra {
-                // Last resort: emoji and anything else only the extra face maps.
-                F_CJK
-            } else {
-                slot
-            }
+        if matches!(slot, F_SYMBOL | F_EMOJI | F_CJK) || self.face(slot).glyph_index(c) != 0 {
+            return slot;
+        }
+        let in_cjk =
+            fonts::cjk_face_may_map(c) && self.cjk().is_some_and(|font| font.glyph_index(c) != 0);
+        if in_cjk && classify_script(c).wants_cjk_fallback() {
+            F_CJK
         } else if self.symbol.glyph_index(c) != 0 {
             F_SYMBOL
+        } else if self
+            .emoji
+            .as_ref()
+            .is_some_and(|font| font.glyph_index(c) != 0)
+        {
+            F_EMOJI
+        } else if in_cjk {
+            F_CJK
         } else {
             slot
         }
@@ -2129,12 +2222,7 @@ fn load_pdf_face_parts(
     Cow<'static, Ligatures>,
 )> {
     if let Some(font) = face.parsed {
-        if !font.has_glyf_outlines() {
-            return Err(RenderError::InvalidInput(format!(
-                "{} font bytes must contain TrueType glyf outlines for deterministic subsetting",
-                slot.as_str()
-            )));
-        }
+        crate::validate_render_font(slot, font)?;
         if let Some(layout) = face.layout {
             return Ok((
                 Cow::Borrowed(font),
@@ -2379,7 +2467,7 @@ pub fn render_with_emit(
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
 ) -> Result<Vec<u8>> {
-    render_inner(doc, opts, pdf_a, false, emit).map(|profile| profile.bytes)
+    render_inner(doc, opts, pdf_a, false, emit, false).map(|profile| profile.bytes)
 }
 
 /// Render a document to PDF bytes while collecting stage-level attribution.
@@ -2397,6 +2485,7 @@ pub fn render_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> 
         crate::PdfASettings::OFF,
         true,
         PdfEmitOptions::default(),
+        false,
     )
     .map(|rendered| PdfProfile {
         bytes: rendered.bytes,
@@ -2417,7 +2506,7 @@ pub fn render_reported(
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
 ) -> Result<PdfRenderReport> {
-    render_inner(doc, opts, pdf_a, false, emit).map(|rendered| PdfRenderReport {
+    render_inner(doc, opts, pdf_a, false, emit, false).map(|rendered| PdfRenderReport {
         bytes: rendered.bytes,
         pagination: rendered.pagination,
     })
@@ -2428,11 +2517,12 @@ pub fn render_reported(
 /// WASM-safe — the caller (e.g. the `fmd` CLI) decides how to surface it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderWarning {
-    /// An image whose destination had no matching `PdfImageAsset`; rendered as
-    /// alt text instead of being embedded.
+    /// An image whose destination had no matching `PdfImageAsset` or embedded
+    /// data; rendered as alt text instead of being embedded.
     UnresolvedImage(String),
-    /// A supplied image asset could not be decoded (e.g. an unsupported image
-    /// format); rendered as alt text instead of being embedded.
+    /// Supplied or embedded image bytes could not be decoded (e.g. an
+    /// unsupported image format); rendered as alt text instead of being
+    /// embedded. Data-URI destinations use a bounded, payload-free label.
     UnsupportedImage(String),
     /// `count` characters had no glyph in the embedded fonts and were rendered
     /// as `.notdef` boxes (and are not selectable). `sample` shows a few.
@@ -2450,6 +2540,13 @@ pub enum RenderWarning {
     MathOverflow {
         source: String,
         width_pt: u32,
+        measure_pt: u32,
+    },
+    /// An inline formula exceeded the available page-height envelope and
+    /// was scaled uniformly, preserving its complete source and visible paths.
+    MathHeightOverflow {
+        source: String,
+        height_pt: u32,
         measure_pt: u32,
     },
     /// A combining sequence could not use strict Latin mark positioning;
@@ -2477,6 +2574,7 @@ impl RenderWarning {
             Self::FontWeightIgnoredStatic { .. } => "font_weight_ignored_static",
             Self::MathFallback { .. } => "math_fallback",
             Self::MathOverflow { .. } => "math_overflow",
+            Self::MathHeightOverflow { .. } => "math_height_overflow",
             Self::TextShapingUnsupported { .. } => "text_shaping_unsupported",
             Self::TextShapingLimit { .. } => "text_shaping_limit",
             Self::PaginationFallback { reason, .. } => reason.diagnostic_code(),
@@ -2529,6 +2627,16 @@ impl RenderWarning {
                  {measure_pt} pt containing measure; scaled down to fit without splitting \
                  (use a display equation or a wider measure for larger mathematics)"
             ),
+            Self::MathHeightOverflow {
+                source,
+                height_pt,
+                measure_pt,
+            } => format!(
+                "inline formula {source:?} is naturally {height_pt} pt tall, more than its \
+                 {measure_pt} pt page-height allowance; scaled down to retain the complete \
+                 formula and adjoining text (use a display equation or a taller page for \
+                 larger mathematics)"
+            ),
         }
     }
 }
@@ -2553,18 +2661,19 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
         if trimmed.is_empty() {
             continue;
         }
-        match opts
-            .image_assets
-            .iter()
-            .find(|asset| asset.destination.trim() == trimmed)
-        {
-            None => warnings.push(RenderWarning::UnresolvedImage(dest)),
-            Some(asset) => match parse_pdf_image_asset(trimmed, &asset.bytes) {
-                Some(image) => collect_svg_image_text(&image, &mut image_text),
-                None => {
-                    warnings.push(RenderWarning::UnsupportedImage(dest));
-                }
-            },
+        match resolve_pdf_image(&opts.image_assets, trimmed) {
+            Some(image) => collect_svg_image_text(&image, &mut image_text),
+            None if data_uri::is_data_uri(trimmed)
+                || opts
+                    .image_assets
+                    .iter()
+                    .any(|asset| asset.destination.trim() == trimmed) =>
+            {
+                warnings.push(RenderWarning::UnsupportedImage(
+                    data_uri::diagnostic_destination(dest),
+                ));
+            }
+            None => warnings.push(RenderWarning::UnresolvedImage(dest.to_owned())),
         }
     }
 
@@ -2682,7 +2791,7 @@ fn collect_svg_document_text(svg: &PdfSvgImage, out: &mut Vec<(u8, String)>) {
     }
 }
 
-fn collect_image_dests(blocks: &[Block], out: &mut Vec<String>) {
+fn collect_image_dests<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
     for block in blocks {
         match block {
             Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
@@ -2724,10 +2833,10 @@ fn collect_image_dests(blocks: &[Block], out: &mut Vec<String>) {
     }
 }
 
-fn collect_image_dests_inlines(inlines: &[Inline], out: &mut Vec<String>) {
+fn collect_image_dests_inlines<'a>(inlines: &'a [Inline], out: &mut Vec<&'a str>) {
     for inline in inlines {
         match inline {
-            Inline::Image { dest, .. } => out.push(dest.clone()),
+            Inline::Image { dest, .. } => out.push(dest),
             Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
                 collect_image_dests_inlines(c, out);
             }
@@ -2921,6 +3030,7 @@ fn render_inner(
     pdf_a: crate::PdfASettings,
     profiled: bool,
     emit: PdfEmitOptions,
+    collect_navigation: bool,
 ) -> Result<RenderedPdf> {
     emit.compression.validate()?;
     baseline_grid::validate_options(opts)?;
@@ -2949,7 +3059,7 @@ fn render_inner(
     );
     let line_count = lines.len();
     let serialize_started = profiler.checkpoint();
-    let (bytes, page_breaks) = serialize(
+    let (bytes, page_breaks, outlines) = serialize(
         &lines,
         &effective_opts,
         &faces,
@@ -2959,6 +3069,7 @@ fn render_inner(
         emit,
         &mut profiler,
     )?;
+    faces.cjk_load_error()?;
     profiler.record_since(
         "serialize_total",
         line_count,
@@ -2966,8 +3077,14 @@ fn render_inner(
         "font subsetting, pagination, page streams, and PDF object writing",
         serialize_started,
     );
+    let navigation = if collect_navigation {
+        source_navigation::collect(doc, &outlines)
+    } else {
+        source_navigation::SourceNavigation::default()
+    };
     Ok(RenderedPdf {
         bytes,
+        navigation,
         stages: profiler.finish(),
         pagination: PdfPaginationReport {
             page_breaks,
@@ -2978,6 +3095,7 @@ fn render_inner(
 
 struct RenderedPdf {
     bytes: Vec<u8>,
+    navigation: source_navigation::SourceNavigation,
     stages: Vec<PdfStageSummary>,
     pagination: PdfPaginationReport,
 }
@@ -3476,6 +3594,7 @@ fn layout_with_pagination_report(
             next_bg: 0,
             next_flow: 0,
             list_stack: Vec::new(),
+            quote_geometry: Default::default(),
             hyphen_cache: RefCell::new(HashMap::new()),
             width_cache: RefCell::new(WidthCache::default()),
             simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
@@ -3497,6 +3616,7 @@ fn layout_with_pagination_report(
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         layout_pdf_notes(blocks, &mut out, &mut cx);
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
+        figure_fit::apply(&mut out, page, faces);
         let report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
         return (out, report);
     }
@@ -3542,6 +3662,7 @@ fn layout_with_pagination_report(
         next_bg: 0,
         next_flow: 0,
         list_stack: Vec::new(),
+        quote_geometry: Default::default(),
         hyphen_cache: RefCell::new(HashMap::new()),
         width_cache: RefCell::new(WidthCache::default()),
         simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
@@ -3571,6 +3692,7 @@ fn layout_with_pagination_report(
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         layout_pdf_notes(blocks, &mut out, &mut cx);
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
+        figure_fit::apply(&mut out, page, faces);
         final_report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
 
         // Run pagination to find the resulting page of each heading
@@ -3721,6 +3843,11 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
         cx.opts.theme.page.baseline_grid,
         cx.faces,
     );
+    if cx.opts.theme.page.baseline_grid.is_some() {
+        page_note_grid::finish(&mut notes, out, separator, cx);
+        finish_page_note_marks(out);
+        return;
+    }
     let separator_height = line_leading(&separator) + separator.gap_after;
     admit_page_notes(&mut notes, out, capacity, separator_height, false);
     if notes.iter().any(|note| !note.at_foot) {
@@ -3752,7 +3879,11 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
             out.append(&mut note.lines);
         }
     }
-    // A note mark reads as part of the text, not as a blue link.
+    finish_page_note_marks(out);
+}
+
+/// A note mark reads as part of the text, not as a blue link.
+fn finish_page_note_marks(out: &mut [Line]) {
     for seg in out.iter_mut().flat_map(|line| &mut line.segs) {
         if seg_page_note(seg).is_some() {
             seg.fill = Fill::Black;
@@ -4464,6 +4595,7 @@ struct LayoutCx<'a> {
     type_scale: crate::theme::TypeScale,
     faces: &'a Faces,
     page: PageGeom,
+    quote_geometry: quote_geometry::State,
     list_stack: Vec<ListFrame>,
     next_bg: u32,
     next_flow: u32,
@@ -4576,6 +4708,8 @@ fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut La
 }
 
 fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let indent = list_geometry::block_indent(block, indent, cx);
+    let indent = quote_geometry::block_indent(block, indent, cx);
     match block {
         Block::FootnoteDefinition { .. } => {}
         Block::Heading { level, inlines } => {
@@ -4614,7 +4748,9 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                 line.flow.heading_level = (*level).clamp(1, 6);
             }
             if let Some(first) = out.get_mut(before) {
-                first.heading_source = Some(Box::new(HeadingSource::from_inlines(inlines)));
+                let mut source = HeadingSource::from_inlines(inlines);
+                source.source_identity = Some(std::ptr::from_ref(block) as usize);
+                first.heading_source = Some(Box::new(source));
             }
             if ruled && out.len() > before {
                 text_positioning::stamp_lines(&mut out[before..], cx.faces);
@@ -4678,25 +4814,35 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             let mut any = false;
             let line_count = code.lines().count().max(1);
             let digits = line_count.to_string().len().max(1);
-            let code_area_width = (cx.page.content_w - indent - CODE_PAD_X).max(12.0);
-            let preserve_lines = preserve_code_block_lines(lang.as_deref(), code);
-            let default_code_size = cx.type_scale.code;
-            let code_size = if preserve_lines {
-                fitted_code_font_size(
-                    code,
-                    CodeFontFitSpec {
-                        code_area_width,
-                        line_numbers: cx.opts.code_line_numbers,
-                        digits,
-                        default_size: default_code_size,
-                        min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
-                        faces: cx.faces,
-                        width_cache: &cx.width_cache,
-                    },
-                )
+            // Indentation and padding consume real body space. If extreme
+            // nesting exhausts it, bring the panel back inside the page rather
+            // than inventing a minimum text width beyond the right margin.
+            let minimum_area = if cx.opts.code_line_numbers {
+                CODE_LINE_NUMBER_GAP + 1.0
             } else {
-                default_code_size
+                1.0
             };
+            let code_x = (cx.page.left + indent + CODE_PAD_X)
+                .min(cx.page.right_x() - minimum_area)
+                .max(cx.page.left);
+            let code_area_width = cx.page.right_x() - code_x;
+            let fit = CodeFontFitSpec {
+                lang: lang.as_deref(),
+                code_area_width,
+                line_numbers: cx.opts.code_line_numbers,
+                digits,
+                default_size: cx.type_scale.code,
+                faces: cx.faces,
+                width_cache: &cx.width_cache,
+            };
+            let preserved_size = preserve_code_block_lines(lang.as_deref(), code)
+                .then(|| fitted_code_font_size(code, fit))
+                .flatten();
+            // A row too wide even at the smallest nonzero emitted font size
+            // cannot retain its geometry on this page. Preserve all its source
+            // through ordinary wrapping at a readable size instead of clipping.
+            let preserve_lines = preserved_size.is_some();
+            let code_size = preserved_size.unwrap_or_else(|| fenced_code::wrapped_size(code, &fit));
 
             let number_col = if cx.opts.code_line_numbers {
                 code_line_number_column_width(digits, code_size, cx.faces, &cx.width_cache)
@@ -4705,7 +4851,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             };
             for (idx, raw) in code.lines().enumerate() {
                 any = true;
-                let x = cx.page.left + indent + CODE_PAD_X;
+                let x = code_x;
                 let rows = wrapped_code_rows(
                     raw,
                     CodeWrapSpec {
@@ -4714,7 +4860,8 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         digits,
                         line_numbers: cx.opts.code_line_numbers,
                         x0: x,
-                        max_text_width: (code_area_width - number_col).max(12.0),
+                        max_text_width: (code_area_width - number_col)
+                            .max(fenced_code::MIN_EMITTED_SIZE),
                         number_col,
                         size: code_size,
                         preserve_lines,
@@ -4750,7 +4897,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             }
             if !any {
                 // An empty fence still gets a one-line-tall panel.
-                let x = cx.page.left + indent + CODE_PAD_X;
+                let x = code_x;
                 let mut segs = Vec::new();
                 if cx.opts.code_line_numbers {
                     segs.push(code_line_number_seg(
@@ -4758,7 +4905,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                         digits,
                         x,
                         number_col,
-                        CODE_FONT_SIZE,
+                        code_size,
                         cx.faces,
                         &cx.width_cache,
                     ));
@@ -4776,7 +4923,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
                     expansion_permille: 0,
                 });
                 out.push(Line {
-                    size: CODE_FONT_SIZE,
+                    size: code_size,
                     gap_after: 1.5,
                     rule: false,
                     rule_x: 0.0,
@@ -4800,52 +4947,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
             mark_flow(out, start, group, FlowKind::Code);
             gap(out, CODE_BLOCK_GAP_AFTER);
         }
-        Block::BlockQuote(inner) => {
-            // Containers need document-wide identities: footnote bodies are
-            // laid out into separate vectors, and nested containers can open
-            // at the same line offset. Allocate before descending so identity
-            // order also preserves the nesting order of lists and quotes.
-            let quote_id = cx.alloc_flow() as usize;
-            if let Some((_tag, label, body)) = crate::ast::alert_body(inner) {
-                let start = out.len();
-                gap(out, 4.0);
-                let group = cx.alloc_flow();
-                let mut title_toks = Vec::new();
-                push_text_tokens(label, F_BOLD, false, None, &mut title_toks);
-                apply_symbol_fallback(&mut title_toks, cx.faces);
-                layout_inlines(
-                    title_toks,
-                    indent + 18.0,
-                    cx.type_scale.body,
-                    3.0,
-                    out,
-                    cx,
-                    FlowSpec {
-                        group,
-                        kind: FlowKind::Heading,
-                    },
-                );
-                layout_blocks(&body, indent + 18.0, out, cx);
-                let bar_x = cx.page.left + indent + 6.0;
-                if let Some(lines) = out.get_mut(start..) {
-                    for line in lines {
-                        line.quote_bars.push((quote_id, bar_x));
-                    }
-                }
-                gap(out, 3.0);
-            } else {
-                let start = out.len();
-                gap(out, 4.0);
-                layout_blocks(inner, indent + 18.0, out, cx);
-                let bar_x = cx.page.left + indent + 6.0; // sits in the reserved 18pt gutter
-                if let Some(lines) = out.get_mut(start..) {
-                    for line in lines {
-                        line.quote_bars.push((quote_id, bar_x));
-                    }
-                }
-                gap(out, 3.0);
-            }
-        }
+        Block::BlockQuote(inner) => quote_geometry::layout(block, inner, indent, out, cx),
         Block::List(list) => layout_list(list, indent, out, cx),
         Block::DefinitionList(items) => layout_definition_list(items, indent, out, cx),
         Block::Table(table) => {
@@ -4989,10 +5091,11 @@ fn layout_simple_text_paragraph(
     cx: &mut LayoutCx<'_>,
     group: u32,
 ) {
-    let left = cx.page.left + indent;
     let size = cx.type_scale.body;
+    let indent = list_geometry::contained_indent(indent, size, cx);
+    let left = cx.page.left + indent;
     let gap_after = 7.0;
-    let content_w = lu_from_points_f32((cx.page.content_w - indent).max(MIN_CONTENT_DIM));
+    let content_w = inline_paragraph_measure(&[], cx.page, indent);
     let flow = FlowSpec {
         group,
         kind: FlowKind::Paragraph,
@@ -5132,7 +5235,7 @@ fn push_figure_line(
     out: &mut Vec<Line>,
     cx: &mut LayoutCx<'_>,
 ) -> bool {
-    let max_w = (cx.page.content_w - indent).max(MIN_CONTENT_DIM);
+    let max_w = (cx.page.content_w - indent).max(1.0);
     let max_h = (cx.page.top_y() - cx.page.bottom).max(MIN_CONTENT_DIM);
     let (display_w, display_h) = image.display_dimensions();
     let natural_w = display_w as f32 * PDF_IMAGE_DPI_SCALE;
@@ -5214,16 +5317,41 @@ fn resolve_pdf_image(assets: &[crate::PdfImageAsset], dest: &str) -> Option<PdfI
     if key.is_empty() {
         return None;
     }
-    let asset = assets
-        .iter()
-        .find(|asset| asset.destination.trim() == key)?;
-    parse_pdf_image_asset(key, &asset.bytes)
+    if let Some(asset) = assets.iter().find(|asset| asset.destination.trim() == key) {
+        // An explicit first match always wins, including invalid bytes. A bad
+        // override must not quietly fall through to the source's data URI.
+        return parse_pdf_image_asset(key, &asset.bytes);
+    }
+    data_uri::resolve(key)
 }
 
 fn parse_pdf_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
     parse_png_image_asset(key, bytes)
         .or_else(|| parse_jpeg_image_asset(key, bytes))
+        .or_else(|| parse_gif_image_asset(key, bytes))
         .or_else(|| parse_svg_image_asset(key, bytes))
+}
+
+/// Read bounded GIF intrinsic dimensions for the SVG image backend. Animation
+/// bytes remain unchanged there; static PDF output decodes the first frame.
+#[doc(hidden)]
+#[must_use]
+pub fn gif_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    gif::dimensions(bytes)
+}
+
+fn parse_gif_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
+    let frame = gif::decode_first_frame(bytes)?;
+    Some(PdfImageData {
+        key: key.to_owned(),
+        width_px: frame.width,
+        height_px: frame.height,
+        vector: None,
+        color: PdfImageColor::Rgb,
+        data: crate::compress::zlib_compress(&frame.rgb),
+        filter: PdfImageStreamFilter::Flate,
+        smask: frame.alpha.as_deref().map(crate::compress::zlib_compress),
+    })
 }
 
 /// Frame header of a JPEG the PDF `/DCTDecode` filter can carry unchanged.
@@ -5231,20 +5359,23 @@ struct JpegHeader {
     width: u32,
     height: u32,
     color: PdfImageColor,
+    cmyk: Option<jpeg_color::Encoding>,
 }
 
 /// Walk the JPEG marker segments up to start-of-scan and validate that the
 /// stream is a PDF-embeddable Huffman baseline/extended/progressive JPEG
-/// (SOF0/SOF1/SOF2) with 8-bit precision and 1 (gray) or 3 (YCbCr) components.
-/// Anything else — lossless, arithmetic-coded, hierarchical, or 4-component
-/// Adobe CMYK/YCCK with its inverted-polarity ambiguity — fails closed so the
-/// image degrades to alt text instead of embedding bytes readers mis-render.
+/// (SOF0/SOF1/SOF2) with 8-bit precision and grayscale, RGB/YCbCr, or explicit
+/// Adobe CMYK/YCCK components. Four-channel images require unambiguous APP14
+/// metadata; missing or conflicting conventions retain the alt-text fallback.
+/// Lossless, arithmetic-coded and hierarchical frames remain unsupported.
 fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
     if !bytes.starts_with(&[0xFF, 0xD8]) {
         return None;
     }
     let mut pos = 2usize;
     let mut header: Option<JpegHeader> = None;
+    let mut metadata = jpeg_color::Metadata::default();
+    let mut cmyk_frame: Option<jpeg_color::Frame> = None;
     loop {
         // Marker alignment: skip fill bytes (0xFF padding before a marker).
         if *bytes.get(pos)? != 0xFF {
@@ -5261,7 +5392,16 @@ fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
             // EOI before any scan: no image data.
             0xD9 => return None,
             // SOS: entropy-coded data follows; the frame header must exist.
-            0xDA => return header,
+            0xDA => {
+                let mut header = header?;
+                if let Some(frame) = cmyk_frame {
+                    if !frame.scan_is_valid(bytes, pos) {
+                        return None;
+                    }
+                    header.cmyk = Some(metadata.encoding()?);
+                }
+                return Some(header);
+            }
             _ => {}
         }
         let len = usize::from(u16::from_be_bytes([*bytes.get(pos)?, *bytes.get(pos + 1)?]));
@@ -5273,6 +5413,7 @@ fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
         if seg_end > bytes.len() {
             return None;
         }
+        metadata.observe(marker, &bytes[seg_start..seg_end]);
         match marker {
             // Huffman baseline / extended sequential / progressive frames.
             0xC0..=0xC2 => {
@@ -5291,12 +5432,17 @@ fn parse_jpeg_header(bytes: &[u8]) -> Option<JpegHeader> {
                 let color = match ncomp {
                     1 => PdfImageColor::Gray,
                     3 => PdfImageColor::Rgb,
+                    4 => {
+                        cmyk_frame = Some(jpeg_color::Frame::parse(marker, seg)?);
+                        PdfImageColor::Cmyk
+                    }
                     _ => return None,
                 };
                 header = Some(JpegHeader {
                     width,
                     height,
                     color,
+                    cmyk: None,
                 });
             }
             // Any other SOF flavor (lossless, arithmetic, differential, JPEG-LS)
@@ -5335,7 +5481,10 @@ fn parse_jpeg_image_asset(key: &str, bytes: &[u8]) -> Option<PdfImageData> {
         vector: None,
         color: header.color,
         data: bytes.to_vec(),
-        filter: PdfImageStreamFilter::Dct(jpeg_orientation::Orientation::from_jpeg(bytes)),
+        filter: PdfImageStreamFilter::Dct {
+            orientation: jpeg_orientation::Orientation::from_jpeg(bytes),
+            cmyk: header.cmyk,
+        },
         smask: None,
     })
 }
@@ -6005,10 +6154,10 @@ fn svg_background_top_level_tokens(value: &str) -> Vec<&str> {
 
         let delimiter = depth == 0 && (ch == ',' || ch.is_ascii_whitespace());
         if delimiter {
-            if let Some(token_start) = start.take() {
-                if token_start < idx {
-                    tokens.push(value[token_start..idx].trim());
-                }
+            if let Some(token_start) = start.take()
+                && token_start < idx
+            {
+                tokens.push(value[token_start..idx].trim());
             }
             continue;
         }
@@ -6710,27 +6859,29 @@ fn parse_svg_root_accessible_texts(src: &str) -> (Option<String>, Option<String>
             continue;
         }
 
-        if depth == 1 && matches!(local, "title" | "desc") && !self_closing {
-            if let Some(end_open) = find_svg_matching_end_tag(src, pos, local) {
-                if let Some(text) =
-                    normalize_svg_accessible_text(src.get(pos..end_open).unwrap_or_default())
-                {
-                    if local == "title" && title.is_none() {
-                        title = Some(text);
-                    } else if local == "desc" && desc.is_none() {
-                        desc = Some(text);
-                    }
+        if depth == 1
+            && matches!(local, "title" | "desc")
+            && !self_closing
+            && let Some(end_open) = find_svg_matching_end_tag(src, pos, local)
+        {
+            if let Some(text) =
+                normalize_svg_accessible_text(src.get(pos..end_open).unwrap_or_default())
+            {
+                if local == "title" && title.is_none() {
+                    title = Some(text);
+                } else if local == "desc" && desc.is_none() {
+                    desc = Some(text);
                 }
-                if let Some(tag_end) = src.get(end_open..).and_then(|s| s.find('>')) {
-                    pos = end_open + tag_end + 1;
-                } else {
-                    break;
-                }
-                if title.is_some() && desc.is_some() {
-                    break;
-                }
-                continue;
             }
+            if let Some(tag_end) = src.get(end_open..).and_then(|s| s.find('>')) {
+                pos = end_open + tag_end + 1;
+            } else {
+                break;
+            }
+            if title.is_some() && desc.is_some() {
+                break;
+            }
+            continue;
         }
 
         if !self_closing {
@@ -7465,6 +7616,9 @@ fn parse_svg_embedded_image(
     } else if let Some(jpeg) = decode_svg_jpeg_data_uri(href) {
         let key = svg_inline_image_key("svg-inline-jpeg", &jpeg);
         parse_jpeg_image_asset(&key, &jpeg)?
+    } else if let Some(gif) = decode_svg_image_data_uri(href, "image/gif", false) {
+        let key = svg_inline_image_key("svg-inline-gif", &gif);
+        parse_gif_image_asset(&key, &gif)?
     } else {
         let svg = decode_svg_svg_data_uri(href)?;
         let key = svg_inline_svg_key(&svg);
@@ -10357,13 +10511,11 @@ fn parse_svg_markers(
             clip_paths,
             css_rules,
             filter_shadows,
-        ) {
-            if !markers
-                .iter()
-                .any(|existing: &SvgMarker| existing.id == marker.id)
-            {
-                markers.push(marker);
-            }
+        ) && !markers
+            .iter()
+            .any(|existing: &SvgMarker| existing.id == marker.id)
+        {
+            markers.push(marker);
         }
         if markers.len() >= 128 {
             break;
@@ -10608,13 +10760,12 @@ fn parse_svg_clip_paths(src: &str) -> Vec<SvgClipPath> {
             continue;
         };
         let body = src.get(pos..pos + end_rel).unwrap_or_default();
-        if let Some(clip_path) = parse_svg_clip_path_body(id, &attrs, body) {
-            if !clip_paths
+        if let Some(clip_path) = parse_svg_clip_path_body(id, &attrs, body)
+            && !clip_paths
                 .iter()
                 .any(|existing: &SvgClipPath| existing.id == clip_path.id)
-            {
-                clip_paths.push(clip_path);
-            }
+        {
+            clip_paths.push(clip_path);
         }
         if clip_paths.len() >= 128 {
             break;
@@ -10740,13 +10891,12 @@ fn parse_svg_masks(src: &str, css_vars: &[SvgCssVariable]) -> Vec<SvgClipPath> {
             continue;
         };
         let body = src.get(pos..pos + end_rel).unwrap_or_default();
-        if let Some(mask) = parse_svg_mask_body(id, &attrs, body, css_vars) {
-            if !masks
+        if let Some(mask) = parse_svg_mask_body(id, &attrs, body, css_vars)
+            && !masks
                 .iter()
                 .any(|existing: &SvgClipPath| existing.id == mask.id)
-            {
-                masks.push(mask);
-            }
+        {
+            masks.push(mask);
         }
         if masks.len() >= 128 {
             break;
@@ -15854,7 +16004,9 @@ fn skip_svg_transform_separators(value: &str, pos: &mut usize) {
 
 fn parse_svg_points(value: &str) -> Vec<(f32, f32)> {
     parse_svg_number_list(value)
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0], pair[1]))
         .collect()
 }
@@ -16511,7 +16663,7 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
                 if seen_plte
                     || seen_idat
                     || len == 0
-                    || len % 3 != 0
+                    || !len.is_multiple_of(3)
                     || len / 3 > 256
                     || matches!(color_type, 0 | 4)
                 {
@@ -16521,7 +16673,12 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<PngChunks> {
                 if color_type == 3 && entry_count > (1usize << bit_depth) {
                     return None;
                 }
-                palette = data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+                palette = data
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|c| [c[0], c[1], c[2]])
+                    .collect();
                 seen_plte = true;
             }
             b"tRNS" => {
@@ -16708,7 +16865,7 @@ fn decode_png_full(png: &PngChunks) -> Option<DecodedPng> {
     } else {
         None
     };
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         if out_gray {
             samples.push(px[0]);
         } else {
@@ -18302,12 +18459,12 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             let mut numeric_count = 0usize;
             let mut total_count = 0usize;
             for row in &row_toks {
-                if let Some(toks) = row.get(k) {
-                    if !toks.is_empty() {
-                        total_count += 1;
-                        if is_numeric_toks(toks) {
-                            numeric_count += 1;
-                        }
+                if let Some(toks) = row.get(k)
+                    && !toks.is_empty()
+                {
+                    total_count += 1;
+                    if is_numeric_toks(toks) {
+                        numeric_count += 1;
                     }
                 }
             }
@@ -18320,11 +18477,36 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         .collect();
 
     let link_targets = &spec.links.targets;
+    let heading_keep_height = page.preceding_heading_height(out);
     let row_lines = |cells: &[Vec<Tok>],
                      gap_after: f32,
                      kind: FlowKind,
                      shade: bool,
-                     source_row: Option<usize>| {
+                     source_row: Option<usize>,
+                     reserved_height: f32| {
+        // Fit once before wrapping so column measurement, line extents and
+        // painted paths all retain the same local formula geometry. A body's
+        // row allowance also reserves the header repeated above it on a new
+        // page. Consider all cells together: ascenders in one cell and deep
+        // subscripts in another share the same physical baseline.
+        let mut prepared = Cow::Borrowed(cells);
+        if cells.iter().flatten().any(|tok| is_inline_math(tok.slot)) {
+            let cells = prepared.to_mut();
+            for (column, tokens) in cells.iter_mut().enumerate() {
+                inline_math_fit::fit_tokens(
+                    tokens,
+                    size,
+                    colw.get(column).copied().unwrap_or(TABLE_MIN_COL_WIDTH),
+                );
+            }
+            inline_math_fit::fit_heights(
+                cells.iter_mut().flatten(),
+                size,
+                page.inline_math_height(reserved_height + heading_keep_height),
+                faces,
+            );
+        }
+        let cells = prepared.as_ref();
         let wrapped: Vec<Vec<CellWrapLine>> = (0..ncol)
             .map(|k| {
                 let cw = colw.get(k).copied().unwrap_or(TABLE_MIN_COL_WIDTH);
@@ -18506,14 +18688,31 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         image: None,
     };
 
+    let header_start = out.len();
+    // A repeated header must leave room for its separator and at least one
+    // ordinary body row. Larger body formulas then fit the remaining space.
+    let minimum_body = size * 1.32
+        + 3.0
+        + natural_line_leading(&rule(3.0))
+        + 3.0
+        + page.grid.map_or(0.0, |grid| 4.0 * grid.spacing());
     out.extend(row_lines(
         &head_toks,
         3.0,
         FlowKind::TableHeader,
         false,
         None,
+        minimum_body,
     ));
     out.push(rule(3.0));
+    let header_height: f32 = out[header_start..]
+        .iter()
+        .map(|line| {
+            natural_line_leading(line)
+                + line.gap_after
+                + page.grid.map_or(0.0, |grid| 2.0 * grid.spacing())
+        })
+        .sum();
     let nrows = row_toks.len();
     for (i, row) in row_toks.iter().enumerate() {
         // Zebra striping: tint every other body row (0-based even rows) for a
@@ -18524,6 +18723,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             FlowKind::TableRow,
             i % 2 == 0,
             Some(i),
+            header_height,
         ));
         if let Some(rows) = financial_rows
             && let Some(last) = out.last_mut()
@@ -18560,7 +18760,7 @@ fn list_marker_layouts(
         let text = match item.task {
             Some(true) => "[x]".to_string(),
             Some(false) => "[ ]".to_string(),
-            None if list.ordered => format!("{}.", list.start + i as u64),
+            None if list.ordered => format!("{}.", u128::from(list.start) + i as u128),
             None => "•".to_string(),
         };
         let width = text_width_cached(&text, size, F_BODY, faces, width_cache);
@@ -18574,9 +18774,12 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
     let size = cx.type_scale.body;
     let scale = size / 11.0;
     let (marker_layouts, marker_col) = list_marker_layouts(list, cx.faces, size, &cx.width_cache);
-    // Labels and the hanging indent follow the same body scale as item text.
-    let marker_left = cx.page.left + indent + 2.0 * scale;
-    let content_indent = indent + marker_col + 11.0 * scale;
+    let geometry = quote_geometry::list_geometry(list, indent, marker_col, size, cx);
+    // Preserve the exact ordinary gutter. A list with no usable hanging
+    // measure keeps its complete marker above the item at the same type size.
+    let marker_left =
+        cx.page.left + geometry.indent + if geometry.hanging { 2.0 * scale } else { 0.0 };
+    let content_indent = geometry.content_indent;
     let list_first_line = out.len();
     let list_id = cx.alloc_flow();
 
@@ -18590,7 +18793,12 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
 
     for (item, marker) in list.items.iter().zip(marker_layouts) {
         let marker_seg = Seg {
-            x: marker_left + (marker_col - marker.width).max(0.0),
+            x: marker_left
+                + if geometry.hanging {
+                    (marker_col - marker.width).max(0.0)
+                } else {
+                    0.0
+                },
             slot: F_BODY,
             text_hash: seg_text_hash(&marker.text),
             text: marker.text,
@@ -18601,37 +18809,76 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             width: marker.width,
             expansion_permille: 0,
         };
-        // Split the item's blocks: only the FIRST block, when it is a paragraph,
-        // shares the marker line; everything else — any further (loose)
-        // paragraphs, nested lists, code, blockquotes, tables — is laid out as a
-        // real child block at the item's content indent. This holds two
-        // invariants:
-        //   * non-paragraph children no longer silently vanish (they used to be
-        //     flattened to plain text or dropped entirely); and
-        //   * consecutive leading paragraphs no longer fuse — tokenizing them
-        //     back-to-back dropped the inter-paragraph break and the joining
-        //     space, giving "...para.Second para.".
-        let split = usize::from(matches!(item.blocks.first(), Some(Block::Paragraph(_))));
-        let (leading, rest) = item.blocks.split_at(split);
-
         let group = cx.alloc_flow();
         let item_start_line = out.len();
         if let Some(top) = cx.list_stack.last_mut() {
             top.item = group;
         }
-        let leading_toc = match leading {
-            [Block::Paragraph(inlines)] => toc_marker_depth(inlines),
-            _ => None,
-        };
-        if let Some(max_depth) = leading_toc {
-            layout_pdf_toc(max_depth.or(cx.opts.toc_depth), content_indent, out, cx);
-            if let Some(first) = out.get_mut(item_start_line) {
-                first.segs.insert(0, marker_seg);
+        if geometry.hanging {
+            // Split the item's blocks: only the FIRST block, when it is a paragraph,
+            // shares the marker line; everything else — any further (loose)
+            // paragraphs, nested lists, code, blockquotes, tables — is laid out as a
+            // real child block at the item's content indent. This holds two
+            // invariants:
+            //   * non-paragraph children no longer silently vanish (they used to be
+            //     flattened to plain text or dropped entirely); and
+            //   * consecutive leading paragraphs no longer fuse — tokenizing them
+            //     back-to-back dropped the inter-paragraph break and the joining
+            //     space, giving "...para.Second para.".
+            let split = usize::from(matches!(item.blocks.first(), Some(Block::Paragraph(_))));
+            let (leading, rest) = item.blocks.split_at(split);
+
+            let leading_toc = match leading {
+                [Block::Paragraph(inlines)] => toc_marker_depth(inlines),
+                _ => None,
+            };
+            if let Some(max_depth) = leading_toc {
+                layout_pdf_toc(max_depth.or(cx.opts.toc_depth), content_indent, out, cx);
+                if let Some(first) = out.get_mut(item_start_line) {
+                    first.segs.insert(0, marker_seg);
+                } else {
+                    // A depth filter can leave an empty TOC; keep the source list
+                    // marker just as for an ordinary empty item.
+                    layout_prefixed_inlines(
+                        Vec::new(),
+                        marker_seg,
+                        PrefixSpec {
+                            content_indent,
+                            size,
+                            gap_after: 2.0,
+                            flow: FlowSpec {
+                                group,
+                                kind: FlowKind::Paragraph,
+                            },
+                        },
+                        out,
+                        cx,
+                    );
+                }
+            } else if let [Block::Paragraph(inlines)] = leading
+                && layout_standalone_image(inlines, content_indent, out, cx)
+            {
+                // Keep the marker and leading figure on one indivisible row. The
+                // marker stays at the normal list size, aligned to the row's top;
+                // an image's height must never become the bullet's font size.
+                if let Some(line) = out.last_mut() {
+                    line.size = line.size.max(size);
+                    line.segs.push(marker_seg);
+                    if let Some(image) = &mut line.image {
+                        image.marker_size = Some(size);
+                    }
+                }
             } else {
-                // A depth filter can leave an empty TOC; keep the source list
-                // marker just as for an ordinary empty item.
+                let mut toks = Vec::new();
+                for b in leading {
+                    if let Block::Paragraph(inl) = b {
+                        tokenize(inl, false, false, false, None, &mut cx.links, &mut toks);
+                    }
+                }
+                apply_symbol_fallback(&mut toks, cx.faces);
+                // Even an empty leading run needs its bullet/number/task marker.
                 layout_prefixed_inlines(
-                    Vec::new(),
+                    toks,
                     marker_seg,
                     PrefixSpec {
                         content_indent,
@@ -18646,51 +18893,16 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
                     cx,
                 );
             }
-        } else if let [Block::Paragraph(inlines)] = leading
-            && layout_standalone_image(inlines, content_indent, out, cx)
-        {
-            // Keep the marker and leading figure on one indivisible row. The
-            // marker stays at the normal list size, aligned to the row's top;
-            // an image's height must never become the bullet's font size.
-            if let Some(line) = out.last_mut() {
-                line.size = line.size.max(size);
-                line.segs.push(marker_seg);
-                if let Some(image) = &mut line.image {
-                    image.marker_size = Some(size);
-                }
+
+            // Recurse into nested lists (deeper indent via `layout_block` ->
+            // `layout_list`) and render other child blocks at the content indent.
+            // Nested lists stamp their own lines first (deeper chain), so the loop
+            // below only fills in this item's still-unstamped lines.
+            for b in rest {
+                layout_block(b, content_indent, out, cx);
             }
         } else {
-            let mut toks = Vec::new();
-            for b in leading {
-                if let Block::Paragraph(inl) = b {
-                    tokenize(inl, false, false, false, None, &mut cx.links, &mut toks);
-                }
-            }
-            apply_symbol_fallback(&mut toks, cx.faces);
-            // Even an empty leading run needs its bullet/number/task marker.
-            layout_prefixed_inlines(
-                toks,
-                marker_seg,
-                PrefixSpec {
-                    content_indent,
-                    size,
-                    gap_after: 2.0,
-                    flow: FlowSpec {
-                        group,
-                        kind: FlowKind::Paragraph,
-                    },
-                },
-                out,
-                cx,
-            );
-        }
-
-        // Recurse into nested lists (deeper indent via `layout_block` ->
-        // `layout_list`) and render other child blocks at the content indent.
-        // Nested lists stamp their own lines first (deeper chain), so the loop
-        // below only fills in this item's still-unstamped lines.
-        for b in rest {
-            layout_block(b, content_indent, out, cx);
+            list_geometry::stacked_item(item, marker_seg, content_indent, group, out, cx);
         }
 
         // Stamp every line this item produced that a deeper list did not already
@@ -19075,13 +19287,11 @@ fn fallback_slot_runs(faces: &Faces, slot: u8, text: &str) -> Vec<(u8, String)> 
             if target == slot
                 && faces.face(slot).glyph_index(c) == 0
                 && faces.symbol.glyph_index(c) == 0
+                && let Some(fb) = subscript_phonetic_fallback(c)
+                && (faces.face(slot).glyph_index(fb) != 0 || faces.symbol.glyph_index(fb) != 0)
             {
-                if let Some(fb) = subscript_phonetic_fallback(c) {
-                    if faces.face(slot).glyph_index(fb) != 0 || faces.symbol.glyph_index(fb) != 0 {
-                        c = fb;
-                        target = faces.fallback_slot(slot, c);
-                    }
-                }
+                c = fb;
+                target = faces.fallback_slot(slot, c);
             }
             match runs.last_mut() {
                 Some((run_slot, buf)) if *run_slot == target => buf.push(c),
@@ -19318,12 +19528,12 @@ fn build_paragraph<'a>(
     built
 }
 
-/// Minimum word length (in chars) before synthetic (separator/emergency)
-/// break points are considered. Shorter words always fit some line.
+/// Minimum word length (in chars) before the ordinary synthetic separator/
+/// emergency policy is considered. Measured overflow is handled at any length.
 const FORCED_BREAK_MIN_WORD: usize = 12;
-/// Longest run allowed without ANY break opportunity. Runs beyond this get
-/// emergency break points so a single token (a bare URL, a long identifier)
-/// can never overflow the measure and run off the page.
+/// Ordinary maximum run between synthetic break opportunities. The measured
+/// fit pass adds closer opportunities for narrow measures, large type or wide
+/// glyphs; a character-count limit alone cannot prevent painted overflow.
 const FORCED_BREAK_CHUNK: usize = 14;
 /// Mild penalty for breaking after a URL/path/identifier separator; slightly
 /// worse than a dictionary hyphen (50) so prose breaks stay preferred.
@@ -19499,6 +19709,65 @@ fn fill_pdf_emergency_break_points(len: usize, points: Vec<PdfBreakPoint>) -> Ve
     filled
 }
 
+/// Refine only pieces that are wider than the real containing measure. The
+/// ordinary dictionary, separator and synthetic opportunities stay intact, so
+/// already-fitting text reaches Knuth-Plass with its historical item stream.
+/// New opportunities carry no visible hyphen and never divide a source cluster.
+fn fit_pdf_word_break_points(
+    word: &[Tok],
+    mut points: Vec<PdfBreakPoint>,
+    len: usize,
+    cx: PdfWordContext<'_>,
+) -> Vec<PdfBreakPoint> {
+    let Some(measure) = cx.image_measure else {
+        return points;
+    };
+    // Include the final interval in the same measured walk without adding an
+    // actual end-of-word penalty to the paragraph item stream.
+    points.push(PdfBreakPoint {
+        at: len,
+        penalty: 0,
+        hyphen: false,
+        cjk: false,
+    });
+    let mut fitted = Vec::with_capacity(points.len());
+    let mut splitter = PdfWordSplitter::new(word);
+    let mut start = 0;
+    for point in points {
+        let part = splitter.take_to(point.at);
+        if measure_word_cached(&part, cx.fs, cx.faces, cx.width_cache) > measure {
+            let bytes = part.iter().map(|tok| tok.text.len()).sum();
+            let source = pdf_word_plain_text(&part, bytes);
+            let mut clusters = PdfWordSplitter::new(&part);
+            let mut current: Vec<Tok> = Vec::new();
+            let mut cursor = 0;
+            for cluster in text_composition::source_clusters(&source) {
+                let end = cursor + cluster.chars().count();
+                let next = clusters.take_to(end);
+                let previous_len = current.len();
+                current.extend(next.iter().cloned());
+                if previous_len > 0
+                    && measure_word_cached(&current, cx.fs, cx.faces, cx.width_cache) > measure
+                {
+                    fitted.push(PdfBreakPoint {
+                        at: start + cursor,
+                        penalty: EMERGENCY_BREAK_PENALTY,
+                        hyphen: false,
+                        cjk: false,
+                    });
+                    current = next;
+                }
+                cursor = end;
+            }
+        }
+        start = point.at;
+        if point.at < len {
+            fitted.push(point);
+        }
+    }
+    fitted
+}
+
 fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordContext<'_>) {
     if word.is_empty() {
         return;
@@ -19566,10 +19835,17 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     let stats = pdf_word_stats(word);
     let needs_dictionary = cx.policy.hyphenate && !stats.cjk && stats.hyphenable;
     let needs_synthetic_breaks = stats.char_len >= FORCED_BREAK_MIN_WORD;
+    let needs_measured_breaks = cx.image_measure.is_some_and(|measure| {
+        // Long words already have bounded intervals. Do not shape one huge
+        // URL or identifier merely to decide whether to measure those pieces.
+        needs_synthetic_breaks
+            || stats.cjk
+            || measure_word_cached(word, cx.fs, cx.faces, cx.width_cache) > measure
+    });
     // A CJK run has to be examined at any length: five ideographs in a narrow
-    // table column still need somewhere to break, and the length-gated
-    // long-token machinery below would never look at them.
-    if !needs_dictionary && !needs_synthetic_breaks && !stats.cjk {
+    // table column still need somewhere to break. Ordinary short words can
+    // also exceed a small measure, particularly in headings or host fonts.
+    if !needs_dictionary && !needs_synthetic_breaks && !stats.cjk && !needs_measured_breaks {
         push_pdf_word_box(
             built,
             word,
@@ -19617,6 +19893,11 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
     } else {
         let chars = pdf_word_chars(word, stats.char_len);
         pdf_word_break_points(&chars, &dict_points)
+    };
+    let points = if needs_measured_breaks {
+        fit_pdf_word_break_points(word, points, stats.char_len, cx)
+    } else {
+        points
     };
     if points.is_empty() {
         push_pdf_word_box(
@@ -20018,18 +20299,18 @@ impl<'a> PdfWordSplitter<'a> {
     }
 }
 
-/// Inline code and objects use the available width after indentation, even
-/// below the historical minimum retained for ordinary prose.
+/// Every paragraph uses its actual remaining body width after indentation.
+/// A nominal minimum would let a nested quote or list paint beyond its margin.
 fn inline_paragraph_measure(toks: &[Tok], page: PageGeom, indent: f32) -> LayoutUnit {
+    // Retain the existing arithmetic for each path: changing subtraction order
+    // can shift a fractional measure across a fixed-point rounding boundary.
     let width = if toks
         .iter()
         .any(|tok| tok.literal || is_inline_object(tok.slot))
     {
-        // Literal code and inline objects must fit the real remaining body,
-        // even below the historical prose-only paragraph minimum.
         (page.right_x() - page.left - indent).max(1.0)
     } else {
-        (page.content_w - indent).max(MIN_CONTENT_DIM)
+        (page.content_w - indent).max(1.0)
     };
     lu_from_points_f32(width)
 }
@@ -20046,12 +20327,22 @@ fn layout_inlines(
     cx: &mut LayoutCx<'_>,
     flow: FlowSpec,
 ) {
+    let indent = list_geometry::contained_indent(indent, size, cx);
     let start = out.len();
     let left = cx.page.left + indent;
     let fs = font_size_of(size);
     let content_w = inline_paragraph_measure(&toks, cx.page, indent);
     inline_image::fit_tokens(&mut toks, size, content_w.to_points_f32());
     inline_math_fit::fit_tokens(&mut toks, size, content_w.to_points_f32());
+    if toks.iter().any(|tok| is_inline_math(tok.slot)) {
+        inline_math_fit::fit_heights(
+            &mut toks,
+            size,
+            cx.page
+                .inline_math_height(cx.page.preceding_heading_height(out)),
+            cx.faces,
+        );
+    }
     let mut policy = ParagraphPolicy::for_flow(flow.kind);
     // Microtypography is justified-paragraph-only (ragged flows get nothing,
     // mirroring the expansion-credit rule): the solver must never produce a
@@ -20107,8 +20398,10 @@ fn layout_inlines(
     let baseline_count = breaks.len();
     let variants = if cx.paragraph_candidates.enabled()
         && flow.kind == FlowKind::Paragraph
-        && cx.list_stack.is_empty()
-        && toks.iter().all(|tok| !is_inline_object(tok.slot))
+        // Object-bearing lines paint their boxes without glyph expansion.
+        // Negative box advances cannot stand in for unpainted contraction.
+        && (policy.expansion_permilli() == 0
+            || !toks.iter().any(|tok| is_inline_object(tok.slot)))
         && cx
             .paragraph_candidates
             .begin_measure(built.items.len(), baseline_count)
@@ -20303,6 +20596,15 @@ fn layout_prefixed_inlines(
     let content_w = inline_paragraph_measure(&toks, cx.page, spec.content_indent);
     inline_image::fit_tokens(&mut toks, spec.size, content_w.to_points_f32());
     inline_math_fit::fit_tokens(&mut toks, spec.size, content_w.to_points_f32());
+    if toks.iter().any(|tok| is_inline_math(tok.slot)) {
+        inline_math_fit::fit_heights(
+            &mut toks,
+            spec.size,
+            cx.page
+                .inline_math_height(cx.page.preceding_heading_height(out)),
+            cx.faces,
+        );
+    }
     let mut policy = ParagraphPolicy::for_flow(spec.flow.kind);
     policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
     policy.river_penalty = cx.opts.river_penalty;
@@ -20364,17 +20666,108 @@ fn layout_prefixed_inlines(
         return;
     }
 
-    let n = cx.line_breaks.len();
+    let breaks = std::mem::take(&mut cx.line_breaks);
+    let baseline_count = breaks.len();
+    let variants = if cx.paragraph_candidates.enabled()
+        && spec.flow.kind == FlowKind::Paragraph
+        // Object-bearing lines paint their boxes without glyph expansion.
+        // Negative box advances cannot stand in for unpainted contraction.
+        && (policy.expansion_permilli() == 0
+            || !toks.iter().any(|tok| is_inline_object(tok.slot)))
+        && cx
+            .paragraph_candidates
+            .begin_measure(built.items.len(), baseline_count)
+    {
+        let (variants, state_limit) = crate::layout::break_paragraph_candidates_reported(
+            &built.items,
+            content_w,
+            &mut cx.paragraph_scratch,
+        );
+        if state_limit {
+            cx.paragraph_candidates.candidate_state_limit();
+        }
+        Some(variants)
+    } else {
+        None
+    };
+    // The label is not a paragraph token and must never enter the line breaker.
+    // Both measured shapes paint it once, in the original hanging gutter.
+    let candidate_marker = variants.as_ref().map(|_| marker.clone());
+    let paint = ParagraphPaintSpec {
+        left,
+        size: spec.size,
+        gap_after: spec.gap_after,
+        content_w,
+        policy,
+        flow: spec.flow,
+    };
+    emit_broken_prefixed_paragraph(&built, &breaks, marker, paint, out, cx);
+    if let Some(variants) = variants.filter(|_| out.len() - start == baseline_count) {
+        let baseline_demerits = breaks.last().map_or(0, |line| line.demerits);
+        let mut alternatives = Vec::new();
+        for variant in variants.variants {
+            if variant.line_count < 4 || variant.line_count == baseline_count {
+                continue;
+            }
+            let Some(marker) = candidate_marker.as_ref() else {
+                continue;
+            };
+            let mut lines = Vec::with_capacity(variant.line_count);
+            emit_broken_prefixed_paragraph(
+                &built,
+                &variant.lines,
+                marker.clone(),
+                paint,
+                &mut lines,
+                cx,
+            );
+            if lines.len() != variant.line_count {
+                continue;
+            }
+            // Candidates do not pass through the containing layout_blocks
+            // stamp. Measure positioned marks before their leading/grid ink.
+            text_positioning::stamp_lines(&mut lines, cx.faces);
+            baseline_grid::apply(&mut lines, cx.opts.theme.page.baseline_grid, cx.faces);
+            alternatives.push(joint_pagination::Alternative {
+                lines,
+                extra_demerits: variant.demerits.saturating_sub(baseline_demerits),
+            });
+        }
+        cx.paragraph_candidates
+            .insert(spec.flow.group, baseline_count, alternatives);
+    }
+    cx.line_breaks = breaks;
+}
+
+/// Keep the historical list painter shared by the baseline and every measured
+/// alternative. Container identities and final spacing are installed later.
+fn emit_broken_prefixed_paragraph(
+    built: &BuiltParagraph,
+    breaks: &[LineBreak],
+    marker: Seg,
+    spec: ParagraphPaintSpec,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+) {
+    let ParagraphPaintSpec {
+        left,
+        size,
+        gap_after,
+        content_w,
+        policy,
+        flow,
+    } = spec;
+    let start = out.len();
+    let n = breaks.len();
     let mut marker = Some(marker);
-    for i in 0..n {
-        let lb = cx.line_breaks[i];
+    for (i, lb) in breaks.iter().enumerate() {
         // Justify to measure + the left hang the segment builder applies (see
         // `layout_inlines`), so a line opening with a quote/bracket/dash still
         // ends flush.
-        let hang = lu_from_points_f32(line_left_hang(&built, &lb, spec.size));
+        let hang = lu_from_points_f32(line_left_hang(built, lb, size));
         line_tokens_for_break_into(
-            &built,
-            &lb,
+            built,
+            lb,
             content_w + hang,
             policy.justify && i + 1 < n,
             policy.expansion_permilli(),
@@ -20384,7 +20777,7 @@ fn layout_prefixed_inlines(
         let mut segs = build_segs_adjusted(
             &cx.line_toks,
             left,
-            spec.size,
+            size,
             cx.faces,
             Some(&cx.width_cache),
             policy.microtype.max_expansion_per_mille,
@@ -20392,21 +20785,21 @@ fn layout_prefixed_inlines(
         );
         if policy.justify
             && i + 1 < n
-            && !chosen_forced_break(&built.items, &lb)
+            && !chosen_forced_break(&built.items, lb)
             && !cx.line_toks.iter().any(|tok| tok.tok.literal)
         {
             true_up_justified_line(
                 &mut segs,
                 left + content_w.to_points_f32(),
-                spec.size,
+                size,
                 cx.faces,
                 Some(&cx.width_cache),
             );
         }
         let first_physical = out.len();
         let line = Line {
-            size: spec.size,
-            gap_after: if i + 1 == n { spec.gap_after } else { 0.0 },
+            size,
+            gap_after: if i + 1 == n { gap_after } else { 0.0 },
             rule: false,
             rule_x: 0.0,
             quote_bars: Vec::new(),
@@ -20420,7 +20813,7 @@ fn layout_prefixed_inlines(
             heading_source: None,
             text_ink: (0.0, 0.0),
             grid: None,
-            hyphenated: chosen_hyphenated_break(&built.items, &lb, &cx.line_toks),
+            hyphenated: chosen_hyphenated_break(&built.items, lb, &cx.line_toks),
             segs,
             page_break_before: false,
             image: None,
@@ -20433,7 +20826,7 @@ fn layout_prefixed_inlines(
             first.segs.insert(0, marker);
         }
     }
-    mark_flow(out, start, spec.flow.group, spec.flow.kind);
+    mark_flow(out, start, flow.group, flow.kind);
 }
 
 /// The original greedy wrapper, kept as an emergency fallback (and as a
@@ -20453,6 +20846,14 @@ fn layout_inlines_greedy(
     let max = inline_paragraph_measure(&toks, page, indent).to_points_f32();
     inline_image::fit_tokens(&mut toks, size, max);
     inline_math_fit::fit_tokens(&mut toks, size, max);
+    if toks.iter().any(|tok| is_inline_math(tok.slot)) {
+        inline_math_fit::fit_heights(
+            &mut toks,
+            size,
+            page.inline_math_height(page.preceding_heading_height(out)),
+            faces,
+        );
+    }
     let mut lines: Vec<Vec<Tok>> = Vec::new();
     let mut cur: Vec<Tok> = Vec::new();
     let mut cur_w = 0.0_f32;
@@ -20598,10 +20999,8 @@ fn push_tok_group_line_toks(
     // A word box's glyph-expansion share belongs to the whole box, not to each
     // of its tokens: book it exactly once (on the last visible token) so the
     // segment builder, which accumulates word extras, counts it once.
-    if applies_to_words {
-        if let Some(last) = line[start..].iter_mut().rev().find(|t| !t.tok.space) {
-            last.extra_advance = extra;
-        }
+    if applies_to_words && let Some(last) = line[start..].iter_mut().rev().find(|t| !t.tok.space) {
+        last.extra_advance = extra;
     }
 }
 fn glue_adjustments_into(
@@ -21367,12 +21766,13 @@ struct CodeWrapSpec<'a> {
     width_cache: &'a RefCell<WidthCache>,
 }
 
+#[derive(Clone, Copy)]
 struct CodeFontFitSpec<'a> {
+    lang: Option<&'a str>,
     code_area_width: f32,
     line_numbers: bool,
     digits: usize,
     default_size: f32,
-    min_size: f32,
     faces: &'a Faces,
     width_cache: &'a RefCell<WidthCache>,
 }
@@ -21469,58 +21869,18 @@ const fn is_ascii_diagram_char(ch: char) -> bool {
     )
 }
 
-fn fitted_code_font_size(code: &str, spec: CodeFontFitSpec<'_>) -> f32 {
-    let longest = code
-        .lines()
-        .map(|line| {
-            if line.contains('\t') {
-                let expanded = expand_code_tabs(line);
-                code_text_width_cached(&expanded, spec.default_size, spec.faces, spec.width_cache)
-            } else {
-                code_text_width_cached(line, spec.default_size, spec.faces, spec.width_cache)
-            }
-        })
-        .fold(0.0f32, f32::max);
-    if longest <= 0.0 {
-        return spec.default_size;
-    }
-    let default_number_text_width = if spec.line_numbers {
-        text_width_cached(
-            &"9".repeat(spec.digits),
-            spec.default_size,
-            F_MONO,
-            spec.faces,
-            spec.width_cache,
-        )
-    } else {
-        0.0
-    };
-
-    let fits = |size: f32| {
-        let number_col = if spec.line_numbers {
-            default_number_text_width * (size / spec.default_size) + CODE_LINE_NUMBER_GAP
+fn fitted_code_font_size(code: &str, spec: CodeFontFitSpec<'_>) -> Option<f32> {
+    // Retain the shared width cache for the eventual segment construction.
+    // The final fit separately uses the writer's advances and font precision.
+    for line in code.lines() {
+        if line.contains('\t') {
+            let expanded = expand_code_tabs(line);
+            code_text_width_cached(&expanded, spec.default_size, spec.faces, spec.width_cache);
         } else {
-            0.0
-        };
-        let available = (spec.code_area_width - number_col).max(8.0);
-        longest * (size / spec.default_size) <= available
-    };
-
-    if fits(spec.default_size) {
-        return spec.default_size;
-    }
-
-    let mut low = spec.min_size.min(spec.default_size);
-    let mut high = spec.default_size;
-    for _ in 0..18 {
-        let mid = (low + high) * 0.5;
-        if fits(mid) {
-            low = mid;
-        } else {
-            high = mid;
+            code_text_width_cached(line, spec.default_size, spec.faces, spec.width_cache);
         }
     }
-    low
+    fenced_code::diagram_size(code, &spec)
 }
 
 fn wrapped_code_rows(
@@ -21555,12 +21915,14 @@ fn wrapped_code_rows(
         return vec![segs];
     }
 
-    let continuation_indent = CODE_HANGING_INDENT.min((spec.max_text_width * 0.35).max(0.0));
-    let continuation_width = (spec.max_text_width - continuation_indent).max(8.0);
     let frags = code_fragments(spec.lang, text, highlight_spans);
+    let continuation_indent =
+        fenced_code::continuation_indent(&frags, spec.max_text_width, spec.size, spec.faces);
+    let continuation_width =
+        (spec.max_text_width - continuation_indent).max(fenced_code::MIN_EMITTED_SIZE);
     let frag_lines = wrap_code_fragments(
         &frags,
-        spec.max_text_width.max(8.0),
+        spec.max_text_width.max(fenced_code::MIN_EMITTED_SIZE),
         continuation_width,
         spec.size,
         spec.faces,
@@ -21731,7 +22093,30 @@ fn wrap_code_fragments(
     if !current.is_empty() {
         lines.push(current);
     }
-    lines
+    // Scalar advances are a fast conservative estimate for ordinary mono
+    // fonts. A caller-provided face can have positive kerning, and font-size
+    // serialization can also widen a row. Repair only those actual overflows
+    // with complete measured source clusters, preserving the fast path.
+    let mut fitted = Vec::with_capacity(lines.len());
+    for line in lines {
+        let limit = if fitted.is_empty() {
+            first_width
+        } else {
+            continuation_width
+        };
+        if fenced_code::row_width(&line, size, faces) > limit {
+            fitted.extend(wrap_code_combining_fragments(
+                &line,
+                limit,
+                continuation_width,
+                size,
+                faces,
+            ));
+        } else {
+            fitted.push(line);
+        }
+    }
+    fitted
 }
 
 /// Combining code uses atomic source clusters and the same shaped run widths
@@ -21745,12 +22130,7 @@ fn wrap_code_combining_fragments(
     faces: &Faces,
 ) -> Vec<Vec<CodeFrag>> {
     let frags = coalesce_code_mark_clusters(frags.to_vec());
-    let measured = |text: &str| -> f32 {
-        split_code_slot_runs(text, faces)
-            .iter()
-            .map(|(slot, text)| faces.shaped_width_points(*slot, text, size))
-            .sum()
-    };
+    let measured = |text: &str| fenced_code::text_width(text, size, faces);
     let mut lines = Vec::new();
     let mut current: Vec<CodeFrag> = Vec::new();
     let mut width = 0.0;
@@ -21970,7 +22350,7 @@ fn fill_for_highlight(kind: HighlightTok) -> Fill {
 }
 
 /// PDF device-RGB colors resolved once per render from the shared theme tokens
-/// ([`ThemeColors`]), so the PDF and HTML surfaces stay visually coherent — the
+/// ([`crate::ThemeColors`]), so the PDF and HTML surfaces stay visually coherent — the
 /// "one theme model" doctrine. Each field mirrors the element-to-token mapping
 /// the HTML stylesheet uses, so changing a theme color moves both surfaces
 /// together. Code syntax-token colors are a separate code-theme palette and are
@@ -21979,6 +22359,14 @@ fn fill_for_highlight(kind: HighlightTok) -> Fill {
 struct Palette {
     /// Body text and plain/inline code glyphs (theme `fg`).
     fg: (f32, f32, f32),
+    /// Physical page fill, including margins; white remains implicit.
+    bg: (f32, f32, f32),
+    syntax_keyword: (f32, f32, f32),
+    syntax_type: (f32, f32, f32),
+    syntax_function: (f32, f32, f32),
+    syntax_string: (f32, f32, f32),
+    syntax_number: (f32, f32, f32),
+    syntax_comment: (f32, f32, f32),
     /// Hyperlink text and underline (theme `accent`).
     link: (f32, f32, f32),
     /// Fenced-code panel background (theme `code_bg`).
@@ -22000,9 +22388,20 @@ struct Palette {
 }
 
 impl Palette {
-    fn from_colors(colors: &ThemeColors) -> Self {
+    fn from_theme(theme: &Theme) -> Self {
+        // Static outputs have no ambient host appearance. Auto uses the base
+        // palette; an explicit document appearance selects its matching colors.
+        let colors = theme.effective_colors(false, false);
+        let syntax = theme.code_colors(colors);
         Self {
             fg: hex_rgb(&colors.fg),
+            bg: page_background_rgb(&colors.bg),
+            syntax_keyword: hex_rgb(syntax.keyword),
+            syntax_type: hex_rgb(syntax.type_name),
+            syntax_function: hex_rgb(syntax.function),
+            syntax_string: hex_rgb(syntax.string),
+            syntax_number: hex_rgb(syntax.number),
+            syntax_comment: hex_rgb(syntax.comment),
             link: hex_rgb(&colors.accent),
             code_panel_bg: hex_rgb(&colors.code_bg),
             code_chip_bg: hex_rgb(&colors.code_bg),
@@ -22042,18 +22441,32 @@ fn hex_rgb(hex: &str) -> (f32, f32, f32) {
     }
 }
 
+/// CSS backgrounds may use named colors, functions or alpha channels. The
+/// PDF color writer currently understands only opaque three/six-digit RGB.
+/// Preserve the previous implicit white page for other spellings instead of
+/// applying the foreground parser's black fallback behind ordinary dark text.
+fn page_background_rgb(color: &str) -> (f32, f32, f32) {
+    let color = color.trim();
+    let hex = color.strip_prefix('#').unwrap_or(color);
+    if matches!(hex.len(), 3 | 6) && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        hex_rgb(color)
+    } else {
+        (1.0, 1.0, 1.0)
+    }
+}
+
 fn fill_rgb(fill: Fill, palette: &Palette) -> (f32, f32, f32) {
     match fill {
         Fill::Black => palette.fg,
         Fill::Link => palette.link,
-        Fill::Muted => (0.431, 0.467, 0.506),
-        Fill::Syntax(HighlightTok::Keyword) => (0.812, 0.133, 0.180),
-        Fill::Syntax(HighlightTok::Type) => (0.584, 0.220, 0.000),
-        Fill::Syntax(HighlightTok::Func) => (0.400, 0.224, 0.729),
-        Fill::Syntax(HighlightTok::Str) => (0.039, 0.188, 0.412),
-        Fill::Syntax(HighlightTok::Number) => (0.020, 0.314, 0.682),
-        Fill::Syntax(HighlightTok::Comment) => (0.431, 0.467, 0.506),
-        Fill::Syntax(HighlightTok::Operator) => (0.020, 0.314, 0.682),
+        Fill::Muted => palette.syntax_comment,
+        Fill::Syntax(HighlightTok::Keyword) => palette.syntax_keyword,
+        Fill::Syntax(HighlightTok::Type) => palette.syntax_type,
+        Fill::Syntax(HighlightTok::Func) => palette.syntax_function,
+        Fill::Syntax(HighlightTok::Str) => palette.syntax_string,
+        Fill::Syntax(HighlightTok::Number) => palette.syntax_number,
+        Fill::Syntax(HighlightTok::Comment) => palette.syntax_comment,
+        Fill::Syntax(HighlightTok::Operator) => palette.syntax_number,
         Fill::Syntax(HighlightTok::Plain | HighlightTok::Punct) => palette.fg,
     }
 }
@@ -22080,10 +22493,10 @@ fn serialize(
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
-) -> Result<(Vec<u8>, PdfPageBreakReport)> {
+) -> Result<(Vec<u8>, PdfPageBreakReport, Vec<OutlineEntry>)> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
     // visually coherent (the one-theme-model doctrine). See `Palette`.
-    let palette = Palette::from_colors(&opts.theme.colors);
+    let palette = Palette::from_theme(&opts.theme);
 
     // One break plan for the chrome page count and the emitter, so both see
     // the same pages (and optimal pagination runs once).
@@ -22238,12 +22651,31 @@ fn serialize(
         seed.extend(keep.iter().map(|&c| source.glyph_index(c)));
         seed.extend(shaped_glyphs);
         let subset_started = profiler.checkpoint();
-        let (bytes, mut gid_lookup) = if tail {
+        let (bytes, mut gid_lookup, format) = if !source.has_glyf_outlines() {
+            // ISO 32000-1 9.7.4.2: a name-keyed CFF program embedded as
+            // OpenType under CIDFontType0 selects CharStrings directly by
+            // GID. Preserve the same dense subset IDs used by Identity-H,
+            // the width array, shaped text and ToUnicode; CIDToGIDMap is
+            // only valid for the TrueType descendant below.
+            let t0 = tail.then(subset_tail_now);
+            let subset = source
+                .try_subset_glyphs_with_lookup(&seed, &keep)
+                .map_err(|err| {
+                    RenderError::InvalidInput(format!(
+                        "{} CFF font could not be subset: {err}",
+                        subset_tail_slot_name(slot)
+                    ))
+                })?;
+            if let Some(t0) = t0 {
+                subset_tail_since(t0, &mut tail_subset_ns);
+            }
+            (subset.bytes, subset.glyph_map, subset.format)
+        } else if tail {
             let t0 = subset_tail_now();
             let r = source.subset_glyphs_with_lookup(&seed, &keep);
             subset_tail_since(t0, &mut tail_subset_ns);
             match r {
-                Some(v) => v,
+                Some((bytes, map)) => (bytes, map, EmbeddingFormat::TrueType),
                 None => {
                     return Err(RenderError::PdfGeneration(
                         "an embedded font could not be subset",
@@ -22252,7 +22684,7 @@ fn serialize(
             }
         } else {
             match source.subset_glyphs_with_lookup(&seed, &keep) {
-                Some(v) => v,
+                Some((bytes, map)) => (bytes, map, EmbeddingFormat::TrueType),
                 None => {
                     return Err(RenderError::PdfGeneration(
                         "an embedded font could not be subset",
@@ -22286,10 +22718,10 @@ fn serialize(
         // Re-key ligature ToUnicode entries by the new (subset) glyph id.
         let mut lig_uni: BTreeMap<u16, String> = BTreeMap::new();
         for (src, s) in lig_src_uni {
-            if let Some(&new) = gid_lookup.get(usize::from(src)) {
-                if new != crate::text::MISSING_GLYPH_REMAP {
-                    lig_uni.insert(new, s);
-                }
+            if let Some(&new) = gid_lookup.get(usize::from(src))
+                && new != crate::text::MISSING_GLYPH_REMAP
+            {
+                lig_uni.insert(new, s);
             }
         }
         // The subsetter's dense old->new table doubles as `map_lookup`
@@ -22341,12 +22773,13 @@ fn serialize(
             "font_subsetting",
             seed.len(),
             bytes.len(),
-            "subset one embedded TrueType face and parse the subset font",
+            "subset one embedded font face and parse the subset font",
             subset_started,
         );
         subsets.push(EmbeddedFace {
             slot,
             bytes,
+            format,
             font,
             kern: face.kern.as_ref(),
             map_lookup,
@@ -22413,6 +22846,22 @@ fn serialize(
         .map(|(idx, image)| (image.key.as_str(), idx))
         .collect();
 
+    // The archival path currently qualifies device colours only with sRGB.
+    // A used CMYK image needs a matching source profile; neither dropping the
+    // figure nor identifying this uncalibrated result as PDF/A is acceptable.
+    // Check final resources so unused mappings and skipped chrome do not fail.
+    if pdf_a.mode.is_a2b()
+        && images
+            .iter()
+            .any(|image| image.color == PdfImageColor::Cmyk)
+    {
+        return Err(crate::pdfa::pdfa_reject(
+            "pdf_a_cmyk_image",
+            "PDF/A-2b currently uses an sRGB output profile and cannot include CMYK JPEG images; \
+             convert the image to RGB before export or omit --pdf-a",
+        ));
+    }
+
     let serialized = serialize_pages(
         lines,
         faces,
@@ -22442,7 +22891,7 @@ fn serialize(
         serialized.precompressed,
         emit,
     )?;
-    Ok((bytes, report))
+    Ok((bytes, report, serialized.outlines))
 }
 
 struct RenderScratch {
@@ -23110,7 +23559,9 @@ fn generate_page_content(
     scratch: &mut RenderScratch,
 ) -> (PageContent, usize) {
     let capacity = estimate_page_content_capacity(placed);
-    let bg_capacity = capacity.background_bytes;
+    let bg_capacity = capacity
+        .background_bytes
+        .saturating_add(if palette.bg == (1.0, 1.0, 1.0) { 0 } else { 96 });
     let body_capacity = capacity.body_bytes;
     let annot_capacity = capacity.link_annotations;
     let mark_capacity = capacity.marks;
@@ -23119,6 +23570,18 @@ fn generate_page_content(
         .saturating_add(annot_capacity.saturating_mul(std::mem::size_of::<LinkAnnotation>()))
         .saturating_add(mark_capacity.saturating_mul(std::mem::size_of::<StructMark>()));
     let mut bg = String::with_capacity(bg_capacity);
+    // The default white page needs no paint. Every other theme must provide
+    // the background its foreground and code palette were designed against.
+    // Keep the fill in the existing artifact layer, before any document ink.
+    if palette.bg != (1.0, 1.0, 1.0) {
+        bg.push_str("/Artifact BMC\nq ");
+        append_rgb_fill_space_operator(&mut bg, palette.bg);
+        bg.push_str("0.00 0.00 ");
+        append_pdf_fixed2(&mut bg, page.width);
+        bg.push(' ');
+        append_pdf_fixed2(&mut bg, page.height);
+        bg.push_str(" re f Q\n");
+    }
     let mut shadings = Vec::new();
     let mut alpha_states = BTreeSet::new();
     let mut page_resources = SvgPageResources {
@@ -23134,13 +23597,13 @@ fn generate_page_content(
     } else {
         quote_extents(placed)
     };
-    for (bar_x, top_y, bot_y) in quote_acc.values() {
+    for extent in quote_acc.values() {
         append_page_background_rounded_rect_fill(
             &mut bg,
-            bar_x - QUOTE_BG_PAD_X,
-            bot_y - QUOTE_BG_PAD_V,
+            extent.bar_x - QUOTE_BG_PAD_X,
+            extent.bottom - QUOTE_BG_PAD_V,
             page.right_x(),
-            top_y + QUOTE_BG_PAD_V,
+            extent.top + QUOTE_BG_PAD_V,
             3.0,
             palette.quote_bg,
         );
@@ -23241,6 +23704,7 @@ fn generate_page_content(
             && let Some(meta) = heading_meta.get(&line.flow.group)
         {
             scratch.outlines.push(OutlineEntry {
+                source_identity: meta.source_identity,
                 id: meta.id.clone(),
                 title: meta.title.clone(),
                 level: meta.level,
@@ -23260,6 +23724,7 @@ fn generate_page_content(
             let id = format!("{}{}", crate::footnotes::PAGE_NOTE_PREFIX, note_destination);
             if !scratch.outlines.iter().any(|entry| entry.id == id) {
                 scratch.outlines.push(OutlineEntry {
+                    source_identity: None,
                     id,
                     title: String::new(),
                     level: 0,
@@ -24374,6 +24839,7 @@ struct Rect {
 }
 
 struct OutlineEntry {
+    source_identity: Option<usize>,
     id: String,
     title: String,
     /// Actual heading level, or zero for a non-bookmark note destination.
@@ -24383,6 +24849,7 @@ struct OutlineEntry {
 }
 
 struct HeadingMeta {
+    source_identity: Option<usize>,
     id: String,
     title: String,
     level: u8,
@@ -24393,6 +24860,9 @@ struct HeadingMeta {
 /// precedes this boundary; pre-preparation provenance is not stored here.
 #[derive(Clone)]
 struct HeadingSource {
+    /// Immutable AST identity used only for navigation lookup within this render.
+    /// Addresses never enter document bytes or persistent metadata.
+    source_identity: Option<usize>,
     slug: String,
     title: String,
 }
@@ -24403,6 +24873,7 @@ impl HeadingSource {
         push_inlines_to_plain_text(inlines, &mut title);
         let title = title.trim();
         Self {
+            source_identity: None,
             slug: crate::anchors::heading_slug(inlines),
             title: if title.is_empty() { "Section" } else { title }.to_string(),
         }
@@ -24467,6 +24938,7 @@ fn heading_metadata(lines: &[Line]) -> BTreeMap<u32, HeadingMeta> {
         out.insert(
             line.flow.group,
             HeadingMeta {
+                source_identity: source.source_identity,
                 id,
                 title: source.title.clone(),
                 level: line.flow.heading_level.clamp(1, 6),
@@ -24588,7 +25060,8 @@ fn pdf_font_slot_index(slot: u8) -> Option<usize> {
         F_MONO => Some(3),
         F_BOLDITALIC => Some(4),
         F_SYMBOL => Some(5),
-        F_CJK => Some(6),
+        F_EMOJI => Some(6),
+        F_CJK => Some(7),
         _ => None,
     }
 }
@@ -27321,29 +27794,29 @@ fn append_svg_painted_shape<F>(
         return;
     }
 
-    if let Some(shadings) = svg_fill_shadings(style, gradients, bbox) {
-        if pdf_shadings_fit(page_resources.shadings, &shadings) {
-            let names = shadings
-                .into_iter()
-                .filter_map(|shading| register_pdf_shading(page_resources.shadings, shading))
-                .collect::<Vec<_>>();
-            body.push_str("q ");
-            append_path(body);
-            match style.fill_rule {
-                SvgFillRule::NonZero => body.push_str("W n "),
-                SvgFillRule::EvenOdd => body.push_str("W* n "),
-            }
-            for name in names {
-                body.push_str(&format!("/{name} sh\n"));
-            }
-            body.push_str("Q\n");
-            if style.stroke.is_some() && svg_effective_stroke_opacity(style) > 0.001 {
-                append_svg_stroke_style(body, style);
-                append_path(body);
-                body.push_str("S\n");
-            }
-            return;
+    if let Some(shadings) = svg_fill_shadings(style, gradients, bbox)
+        && pdf_shadings_fit(page_resources.shadings, &shadings)
+    {
+        let names = shadings
+            .into_iter()
+            .filter_map(|shading| register_pdf_shading(page_resources.shadings, shading))
+            .collect::<Vec<_>>();
+        body.push_str("q ");
+        append_path(body);
+        match style.fill_rule {
+            SvgFillRule::NonZero => body.push_str("W n "),
+            SvgFillRule::EvenOdd => body.push_str("W* n "),
         }
+        for name in names {
+            body.push_str(&format!("/{name} sh\n"));
+        }
+        body.push_str("Q\n");
+        if style.stroke.is_some() && svg_effective_stroke_opacity(style) > 0.001 {
+            append_svg_stroke_style(body, style);
+            append_path(body);
+            body.push_str("S\n");
+        }
+        return;
     }
 
     append_svg_style(body, style);
@@ -28925,20 +29398,20 @@ fn draw_svg_text(
     if run.requires_actual_text {
         body.push_str("EMC\n");
     }
-    if !text.decoration.is_empty() && width > 0.001 {
-        if let Some((decoration_color, decoration_alpha)) = text
+    if !text.decoration.is_empty()
+        && width > 0.001
+        && let Some((decoration_color, decoration_alpha)) = text
             .fill
             .map(|color| (color, fill_alpha))
             .or_else(|| stroke.map(|color| (color, stroke_alpha)))
-        {
-            append_svg_text_alpha_state_if_changed(
-                body,
-                alpha_states,
-                &mut current_alpha,
-                (1000, decoration_alpha),
-            );
-            append_svg_text_decoration(body, text.decoration, matrix, width, decoration_color);
-        }
+    {
+        append_svg_text_alpha_state_if_changed(
+            body,
+            alpha_states,
+            &mut current_alpha,
+            (1000, decoration_alpha),
+        );
+        append_svg_text_decoration(body, text.decoration, matrix, width, decoration_color);
     }
     body.push_str("Q\n");
 }
@@ -28960,10 +29433,11 @@ fn svg_text_pdf_stroke_width(
         1.0
     };
     let width = stroke_width * scale.max(0.001);
-    if non_scaling_stroke && svg_transform_preserves_stroke_scale(transform) {
-        if let Some(viewport_scale) = svg_uniform_stroke_scale(image_transform) {
-            return (width / viewport_scale).clamp(0.01, 96.0);
-        }
+    if non_scaling_stroke
+        && svg_transform_preserves_stroke_scale(transform)
+        && let Some(viewport_scale) = svg_uniform_stroke_scale(image_transform)
+    {
+        return (width / viewport_scale).clamp(0.01, 96.0);
     }
     width.clamp(0.01, 96.0)
 }
@@ -30001,8 +30475,7 @@ fn paginate_lines_with<'a>(
 
 fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
-    let capacity =
-        (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+    let capacity = (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
     let mut used = 0.0f32;
 
     // Forced boundaries (book chapter breaks, j0o4): a line flagged
@@ -30037,6 +30510,9 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     for candidate in (start + 1)..=last_fit {
         let line = &lines[candidate - 1];
         candidate_used += line_leading(line) + line.gap_after;
+        if splits_heading_group(lines, candidate) {
+            continue;
+        }
         let score = break_score_for_used_height(lines, candidate, capacity, candidate_used);
         if score < best_score {
             best_score = score;
@@ -30045,6 +30521,24 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     }
 
     best.max(start + 1).min(lines.len())
+}
+
+/// A wrapped heading and its H1/H2 underline share one semantic group. Do not
+/// let the greedy page score choose an interior line merely because it has
+/// fewer preceding heading penalties than a complete short section. Explicit
+/// breaks still win before scoring. If every fitting boundary is internal to
+/// an oversized heading, `choose_page_break` retains `last_fit` for progress.
+fn splits_heading_group(lines: &[Line], candidate: usize) -> bool {
+    if candidate == 0 || candidate >= lines.len() {
+        return false;
+    }
+    let before = &lines[candidate - 1];
+    let after = &lines[candidate];
+    before.flow.group != 0
+        && before.flow.group == after.flow.group
+        && before.flow.kind == FlowKind::Heading
+        && after.flow.kind == FlowKind::Heading
+        && !after.page_break_before
 }
 
 /// Precomputed page-break plan from the Plass-style pagination DP (opt-in
@@ -30278,8 +30772,7 @@ fn legacy_optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
         if best[i] == inf {
             continue;
         }
-        let capacity =
-            (full_capacity - repeated_table_header_height(lines, i)).max(MIN_CONTENT_DIM);
+        let capacity = (full_capacity - repeated_table_header_height(lines, i, page)).max(0.0);
         let mut used = 0.0f32;
         // Walk the fit window exactly like the greedy loop: the first line
         // is unconditional; later lines require cumulative fit and no forced
@@ -30358,8 +30851,7 @@ fn choose_page_break_with_void_control(
     }
 
     let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
-    let capacity =
-        (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+    let capacity = (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
     let mut used = 0.0f32;
     for line in &lines[start..baseline_end] {
         used += line_leading(line) + line.gap_after;
@@ -30415,6 +30907,9 @@ fn choose_page_break_with_void_control(
             line.gap_after
         };
         candidate_used += line_leading(line) + gap;
+        if splits_heading_group(lines, candidate) {
+            continue;
+        }
         let score = break_score_for_used_height(lines, candidate, capacity, candidate_used);
         if score < best_score {
             best_score = score;
@@ -30448,13 +30943,26 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         penalty += 1_500_000.0;
     }
 
-    // Prevent orphan headings: if a heading occurred 1, 2, or 3 lines before this break
-    // candidate, penalize breaking so the page break happens before the heading.
-    if candidate >= 2 && lines[candidate - 2].flow.kind == FlowKind::Heading {
-        penalty += 1_200_000.0;
-    }
-    if candidate >= 3 && lines[candidate - 3].flow.kind == FlowKind::Heading {
-        penalty += 1_000_000.0;
+    // A whole figure is one layout row, even when it fills most of a page.
+    // Finishing that measured image satisfies its heading's keep; charging
+    // proximity penalties after it would favor a nearly empty preceding page.
+    // Other group boundaries retain their keeps: a definition term, list
+    // marker or decoration is not necessarily a complete following subject.
+    let completes_figure = before.flow.kind == FlowKind::Image
+        && before.image.is_some()
+        && before.flow.group != 0
+        && before.flow.group != after.flow.group
+        && before.flow.index < before.flow.count
+        && before.flow.index + 1 == before.flow.count;
+    if !completes_figure {
+        // Protect the first rows following a heading while its subject is
+        // incomplete. The direct after-heading keep above remains unchanged.
+        if candidate >= 2 && lines[candidate - 2].flow.kind == FlowKind::Heading {
+            penalty += 1_200_000.0;
+        }
+        if candidate >= 3 && lines[candidate - 3].flow.kind == FlowKind::Heading {
+            penalty += 1_000_000.0;
+        }
     }
 
     // Keep list items together with an immediately preceding heading: do not separate
@@ -30725,7 +31233,7 @@ fn render_tree_debug(markdown: &str, opts: &PdfOptions) -> String {
         return "FONT LOAD ERROR\n".to_string();
     };
     let (effective_opts, page) = effective_pdf_options(&doc, opts, &faces);
-    let palette = Palette::from_colors(&effective_opts.theme.colors);
+    let palette = Palette::from_theme(&effective_opts.theme);
     let lines = layout(&doc.blocks, &effective_opts, &faces, page);
     let pages = paginate_lines_for_options(&lines, page, &effective_opts);
     serialize_render_tree(&pages, page, &palette)
@@ -30926,6 +31434,38 @@ mod keep_with_next_tests {
     }
 
     #[test]
+    fn heading_proximity_still_protects_incomplete_subjects_and_decoration() {
+        for kind in [FlowKind::Paragraph, FlowKind::Code] {
+            let lines = [
+                line(FlowKind::Heading, 1, 0, 1),
+                line(FlowKind::Heading, 1, 0, 1),
+                line(kind, 2, 0, 4),
+                line(kind, 2, 1, 4),
+                line(kind, 2, 2, 4),
+                line(kind, 2, 3, 4),
+            ];
+            assert!(break_penalty(&lines, 3) >= 2_200_000.0, "{kind:?}");
+            assert!(break_penalty(&lines, 4) >= 1_000_000.0, "{kind:?}");
+        }
+
+        for kind in [
+            FlowKind::Paragraph,
+            FlowKind::Rule,
+            FlowKind::Other,
+            // An Image marker with no measured asset is not a whole figure.
+            FlowKind::Image,
+        ] {
+            let lines = [
+                line(FlowKind::Heading, 1, 0, 1),
+                line(FlowKind::Heading, 1, 0, 1),
+                line(kind, 2, 0, 1),
+                line(FlowKind::Paragraph, 3, 0, 1),
+            ];
+            assert_eq!(break_penalty(&lines, 3), 2_200_000.0, "{kind:?}");
+        }
+    }
+
+    #[test]
     fn page_break_scoring_prefers_the_fullest_unpenalized_fit() {
         let lines = [
             line(FlowKind::Paragraph, 1, 0, 1),
@@ -31104,7 +31644,7 @@ fn place_lines_shrunk<'a>(
     page: PageGeom,
     shrink_from: Option<usize>,
 ) -> Vec<Placed<'a>> {
-    let repeated = repeated_table_header_lines(lines, start);
+    let repeated = repeated_table_header_lines(lines, start, page);
     let mut placed = Vec::with_capacity(repeated.len() + end.saturating_sub(start));
     if page.grid.is_some() {
         baseline_grid::place(
@@ -31144,15 +31684,36 @@ fn place_lines_shrunk<'a>(
     placed
 }
 
-fn repeated_table_header_height(lines: &[Line], start: usize) -> f32 {
-    repeated_table_header_lines(lines, start)
+fn repeated_table_header_height(lines: &[Line], start: usize, page: PageGeom) -> f32 {
+    repeated_table_header_lines(lines, start, page)
         .iter()
         .copied()
         .map(|line| line_leading(line) + line.gap_after)
         .sum()
 }
 
-fn repeated_table_header_lines(lines: &[Line], start: usize) -> Vec<&Line> {
+/// A continuation header is decoration in addition to the original source
+/// lines. Repeat it only when the effective page can also hold its first body
+/// line. The original header remains untouched, even when it spans pages.
+///
+/// Planning and painting must use this same admission with the same geometry:
+/// page-note reservations and baseline-grid guards can make an otherwise
+/// fitting header too tall. Never manufacture a minimum body capacity after
+/// reserving a header; that would place real rows below the page boundary.
+fn repeated_table_header_lines(lines: &[Line], start: usize, page: PageGeom) -> Vec<&Line> {
+    let mut repeated = table_header_prefix(lines, start);
+    let height: f32 = repeated
+        .iter()
+        .map(|line| line_leading(line) + line.gap_after)
+        .sum();
+    let first_leading = lines.get(start).map_or(0.0, line_leading);
+    if height + first_leading > page.top_y() - page.bottom {
+        repeated.clear();
+    }
+    repeated
+}
+
+fn table_header_prefix(lines: &[Line], start: usize) -> Vec<&Line> {
     let Some(first) = lines.get(start) else {
         return Vec::new();
     };
@@ -31191,9 +31752,37 @@ struct Placed<'a> {
     y: f32,
 }
 
-fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, (f32, f32, f32)> {
-    let mut acc: BTreeMap<usize, (f32, f32, f32)> = BTreeMap::new();
+struct QuoteExtent {
+    bar_x: f32,
+    top: f32,
+    bottom: f32,
+    stroke: bool,
+}
+
+fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, QuoteExtent> {
+    let mut acc: BTreeMap<usize, QuoteExtent> = BTreeMap::new();
     for p in placed {
+        if p.line.quote_bars.is_empty() {
+            continue;
+        }
+        let mut foreground_left = p
+            .line
+            .segs
+            .iter()
+            .map(|seg| {
+                let inset = if p.line.bg != 0 {
+                    CODE_PAD_X
+                } else if seg.slot == F_MONO && !seg.text.trim().is_empty() {
+                    CHIP_PAD_X
+                } else {
+                    0.0
+                };
+                seg.x - inset
+            })
+            .fold(f32::INFINITY, f32::min);
+        if p.line.rule || p.line.shade || p.line.image.is_some() {
+            foreground_left = foreground_left.min(p.line.rule_x);
+        }
         for &(id, bar_x) in &p.line.quote_bars {
             let (top_y, bot_y) = if let Some(image) = &p.line.image {
                 let mut top = p.y + image.height_pt;
@@ -31210,9 +31799,21 @@ fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, (f32, f32, f32)> {
                     p.y - (p.line.size * 0.20).max(p.line.text_ink.1),
                 )
             };
+            // A wide but fitting glyph can consume the entire body measure.
+            // Keep its source, quote tag and shaded panel; only the decorative
+            // stroke yields when its lane cannot remain clear of foreground.
+            let stroke = foreground_left >= bar_x + QUOTE_BAR_WIDTH * 0.5 + 0.025;
             acc.entry(id)
-                .and_modify(|e| e.2 = bot_y)
-                .or_insert((bar_x, top_y, bot_y));
+                .and_modify(|extent| {
+                    extent.bottom = bot_y;
+                    extent.stroke &= stroke;
+                })
+                .or_insert(QuoteExtent {
+                    bar_x,
+                    top: top_y,
+                    bottom: bot_y,
+                    stroke,
+                });
         }
     }
     acc
@@ -31221,11 +31822,19 @@ fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, (f32, f32, f32)> {
 /// Stroke one subtle vertical bar per accumulated blockquote, then clear.
 fn flush_quote_bars(
     content: &mut String,
-    acc: &mut BTreeMap<usize, (f32, f32, f32)>,
+    acc: &mut BTreeMap<usize, QuoteExtent>,
     bar: (f32, f32, f32),
 ) {
-    for (x, top, bot) in acc.values() {
-        append_rgb_stroke_segment_operator(content, bar, 2.5, *x, *top, *x, *bot);
+    for extent in acc.values().filter(|extent| extent.stroke) {
+        append_rgb_stroke_segment_operator(
+            content,
+            bar,
+            QUOTE_BAR_WIDTH,
+            extent.bar_x,
+            extent.top,
+            extent.bar_x,
+            extent.bottom,
+        );
     }
     acc.clear();
 }
@@ -31381,6 +31990,7 @@ fn rounded_rect_fill(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, c: (f32, f32, f
 struct EmbeddedFace<'a> {
     slot: u8,
     bytes: Vec<u8>,
+    format: EmbeddingFormat,
     font: Font,
     /// GPOS pair kerning of the SOURCE face (the subset drops GPOS), keyed by
     /// original glyph ids — used to position glyphs in the content stream.
@@ -31663,14 +32273,17 @@ struct PdfCidFontObjectParts<'a> {
     psname: &'a str,
     descriptor_object_id: usize,
     widths: &'a str,
+    format: EmbeddingFormat,
 }
 
 struct PdfFontDescriptorObjectParts<'a> {
     object_id: usize,
     psname: &'a str,
     metrics: &'a FaceMetrics,
+    bbox: [i32; 4],
     italic_angle: i32,
     fontfile_object_id: usize,
+    format: EmbeddingFormat,
 }
 
 struct PdfParentTreeObjectParts<'a, F>
@@ -31775,14 +32388,20 @@ fn append_pdf_cid_font_object(
 ) {
     offsets[parts.object_id] = out.len();
     append_pdf_object_header(out, parts.object_id);
-    out.extend_from_slice(b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /");
+    out.extend_from_slice(match parts.format {
+        EmbeddingFormat::TrueType => b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /",
+        EmbeddingFormat::OpenTypeCff => b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /",
+    });
     out.extend_from_slice(parts.psname.as_bytes());
     out.extend_from_slice(
         b" /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
           /FontDescriptor ",
     );
     append_pdf_object_ref_bytes(out, parts.descriptor_object_id);
-    out.extend_from_slice(b" /CIDToGIDMap /Identity /DW 1000 /W [");
+    if parts.format == EmbeddingFormat::TrueType {
+        out.extend_from_slice(b" /CIDToGIDMap /Identity");
+    }
+    out.extend_from_slice(b" /DW 1000 /W [");
     out.extend_from_slice(parts.widths.as_bytes());
     out.extend_from_slice(b"] >>\nendobj\n");
 }
@@ -31796,10 +32415,13 @@ fn append_pdf_font_descriptor_object(
     append_pdf_object_header(out, parts.object_id);
     out.extend_from_slice(b"<< /Type /FontDescriptor /FontName /");
     out.extend_from_slice(parts.psname.as_bytes());
-    out.extend_from_slice(b" /Flags 4 /FontBBox [-200 ");
-    append_i32_bytes(out, parts.metrics.descent - 50);
-    out.extend_from_slice(b" 1100 ");
-    append_i32_bytes(out, parts.metrics.ascent + 50);
+    out.extend_from_slice(b" /Flags 4 /FontBBox [");
+    for (index, coordinate) in parts.bbox.into_iter().enumerate() {
+        if index != 0 {
+            out.push(b' ');
+        }
+        append_i32_bytes(out, coordinate);
+    }
     out.extend_from_slice(b"] /ItalicAngle ");
     append_i32_bytes(out, parts.italic_angle);
     out.extend_from_slice(b" /Ascent ");
@@ -31808,7 +32430,10 @@ fn append_pdf_font_descriptor_object(
     append_i32_bytes(out, parts.metrics.descent);
     out.extend_from_slice(b" /CapHeight ");
     append_i32_bytes(out, parts.metrics.cap_height);
-    out.extend_from_slice(b" /StemV 80 /FontFile2 ");
+    out.extend_from_slice(match parts.format {
+        EmbeddingFormat::TrueType => b" /StemV 80 /FontFile2 ",
+        EmbeddingFormat::OpenTypeCff => b" /StemV 80 /FontFile3 ",
+    });
     append_pdf_object_ref_bytes(out, parts.fontfile_object_id);
     out.extend_from_slice(b" >>\nendobj\n");
 }
@@ -31827,6 +32452,21 @@ fn append_pdf_fontfile2_stream_object(
     out.extend_from_slice(b" /Length1 ");
     append_decimal_usize(out, decoded_len);
     out.extend_from_slice(b" /Filter /FlateDecode >>\nstream\n");
+    out.extend_from_slice(compressed_font);
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+}
+
+fn append_pdf_opentype_stream_object(
+    out: &mut Vec<u8>,
+    offsets: &mut [usize],
+    object_id: usize,
+    compressed_font: &[u8],
+) {
+    offsets[object_id] = out.len();
+    append_pdf_object_header(out, object_id);
+    out.extend_from_slice(b"<< /Length ");
+    append_decimal_usize(out, compressed_font.len());
+    out.extend_from_slice(b" /Subtype /OpenType /Filter /FlateDecode >>\nstream\n");
     out.extend_from_slice(compressed_font);
     out.extend_from_slice(b"\nendstream\nendobj\n");
 }
@@ -32036,7 +32676,7 @@ fn append_pdf_num_bytes(out: &mut Vec<u8>, value: f32) {
     if frac < 10 {
         out.push(b'0');
         out.push(b'0' + frac as u8);
-    } else if frac % 10 == 0 {
+    } else if frac.is_multiple_of(10) {
         out.push(b'0' + (frac / 10) as u8);
     } else {
         let pair = frac * 2;
@@ -32235,7 +32875,7 @@ fn append_pdf_num(out: &mut String, value: f32) {
     if frac < 10 {
         out.push('0');
         append_decimal_u64_string(out, frac);
-    } else if frac % 10 == 0 {
+    } else if frac.is_multiple_of(10) {
         append_decimal_u64_string(out, frac / 10);
     } else {
         append_decimal_u64_string(out, frac);
@@ -32908,6 +33548,26 @@ fn build_pdf(
     for (k, face) in faces.iter().enumerate() {
         let psname = subset_psname(k, face.slot);
         let m = FaceMetrics::of(&face.font);
+        let bbox = match face.format {
+            // Retain the historical TrueType descriptor bytes. CFF subsets
+            // regenerate head bounds from their actual cubic ink; round the
+            // scaled limits outward so the descriptor cannot clip glyphs.
+            EmbeddingFormat::TrueType => [-200, m.descent - 50, 1100, m.ascent + 50],
+            EmbeddingFormat::OpenTypeCff => {
+                let bounds = face.font.font_bbox().ok_or(RenderError::PdfGeneration(
+                    "a CFF subset font has no bounding box",
+                ))?;
+                let upm = i32::from(face.font.units_per_em.max(1));
+                let floor = |value: i16| (i32::from(value) * 1000).div_euclid(upm);
+                let ceil = |value: i16| (i32::from(value) * 1000 + upm - 1).div_euclid(upm);
+                [
+                    floor(bounds[0]),
+                    floor(bounds[1]),
+                    ceil(bounds[2]),
+                    ceil(bounds[3]),
+                ]
+            }
+        };
         let widths = profiler.measure(
             "widths_array_generation",
             face.font.num_glyphs as usize,
@@ -32934,6 +33594,7 @@ fn build_pdf(
                 psname: &psname,
                 descriptor_object_id: desc_obj(k),
                 widths: &widths,
+                format: face.format,
             },
         );
         let italic_angle = if matches!(face.slot, F_ITALIC | F_BOLDITALIC) {
@@ -32948,12 +33609,14 @@ fn build_pdf(
                 object_id: desc_obj(k),
                 psname: &psname,
                 metrics: &m,
+                bbox,
                 italic_angle,
                 fontfile_object_id: file_obj(k),
+                format: face.format,
             },
         );
-        // FontFile2: FlateDecode-compressed subset font program. /Length1 is the
-        // UNCOMPRESSED program length per the PDF spec.
+        // Keep the native program format. TrueType FontFile2 uses /Length1
+        // for the uncompressed size; CFF-flavored OpenType uses FontFile3.
         let font_comp = profiler.measure(
             "font_stream_compression",
             face.bytes.len(),
@@ -32961,13 +33624,18 @@ fn build_pdf(
             || crate::compress::zlib_compress_with_scratch(&face.bytes, &mut font_scratch),
             |bytes| bytes.len(),
         );
-        append_pdf_fontfile2_stream_object(
-            &mut buf,
-            &mut offsets,
-            file_obj(k),
-            &font_comp,
-            face.bytes.len(),
-        );
+        match face.format {
+            EmbeddingFormat::TrueType => append_pdf_fontfile2_stream_object(
+                &mut buf,
+                &mut offsets,
+                file_obj(k),
+                &font_comp,
+                face.bytes.len(),
+            ),
+            EmbeddingFormat::OpenTypeCff => {
+                append_pdf_opentype_stream_object(&mut buf, &mut offsets, file_obj(k), &font_comp)
+            }
+        }
         // ToUnicode CMap (left uncompressed so it stays greppable + tiny).
         let cmap = profiler.measure(
             "tounicode_generation",
@@ -32986,7 +33654,7 @@ fn build_pdf(
         // unfiltered samples and needs no predictor.
         let filter_name = match image.filter {
             PdfImageStreamFilter::Flate | PdfImageStreamFilter::FlatePngPredictor => "/FlateDecode",
-            PdfImageStreamFilter::Dct(_) => "/DCTDecode",
+            PdfImageStreamFilter::Dct { .. } => "/DCTDecode",
         };
         append_pdf_object_header(&mut buf, image_obj(k));
         buf.extend_from_slice(b"<< /Type /XObject /Subtype /Image /Width ");
@@ -33003,6 +33671,13 @@ fn build_pdf(
             buf.extend_from_slice(b" /BitsPerComponent 8 /Columns ");
             append_decimal_usize(&mut buf, image.width_px as usize);
             buf.extend_from_slice(b" >>");
+        }
+        if let PdfImageStreamFilter::Dct {
+            cmyk: Some(encoding),
+            ..
+        } = image.filter
+        {
+            buf.extend_from_slice(encoding.pdf_parameters());
         }
         if let Some(smask_ref) = smask_for_image.get(k).copied().flatten() {
             buf.extend_from_slice(b" /SMask ");
@@ -33284,8 +33959,8 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 fn fnv1a64_update(hash: &mut u64, bytes: &[u8]) {
-    let mut chunks = bytes.chunks_exact(8);
-    for chunk in chunks.by_ref() {
+    let (chunks, rem) = bytes.as_chunks::<8>();
+    for chunk in chunks {
         fnv1a64_update_byte(hash, chunk[0]);
         fnv1a64_update_byte(hash, chunk[1]);
         fnv1a64_update_byte(hash, chunk[2]);
@@ -33295,7 +33970,7 @@ fn fnv1a64_update(hash: &mut u64, bytes: &[u8]) {
         fnv1a64_update_byte(hash, chunk[6]);
         fnv1a64_update_byte(hash, chunk[7]);
     }
-    for &byte in chunks.remainder() {
+    for &byte in rem {
         fnv1a64_update_byte(hash, byte);
     }
 }
@@ -34207,7 +34882,7 @@ mod pdf_writer_tests {
         token_visible_text, tokenize, visit_svg_path_segments, wrap_cell_styled,
     };
     use crate::ast::{Align, Inline, Table};
-    use crate::{PdfOptions, ThemeColors};
+    use crate::{PdfOptions, Theme};
     use std::borrow::Cow;
     use std::collections::BTreeSet;
 
@@ -34356,6 +35031,7 @@ mod pdf_writer_tests {
             faces,
             page,
             list_stack: Vec::new(),
+            quote_geometry: Default::default(),
             next_bg: 0,
             next_flow: 0,
             hyphen_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -38283,6 +38959,7 @@ mod pdf_writer_tests {
                 psname,
                 descriptor_object_id: 5,
                 widths,
+                format: super::EmbeddingFormat::TrueType,
             },
         );
         append_pdf_font_descriptor_object(
@@ -38292,8 +38969,10 @@ mod pdf_writer_tests {
                 object_id: 5,
                 psname,
                 metrics: &metrics,
+                bbox: [-200, metrics.descent - 50, 1100, metrics.ascent + 50],
                 italic_angle: -12,
                 fontfile_object_id: 6,
+                format: super::EmbeddingFormat::TrueType,
             },
         );
 
@@ -39200,7 +39879,7 @@ mod pdf_writer_tests {
             expansion_permille: 0,
         };
         let mut out = String::new();
-        let palette = Palette::from_colors(&ThemeColors::default());
+        let palette = Palette::from_theme(&Theme::default());
         append_task_checkbox_marker_operator(&mut out, &seg, 11.0, 100.0, true, &palette);
 
         assert!(
@@ -39918,7 +40597,7 @@ flowchart LR
         );
 
         let body_fill =
-            render_tree_fill_label(Fill::Black, &Palette::from_colors(&Theme::default().colors));
+            render_tree_fill_label(Fill::Black, &Palette::from_theme(&Theme::default()));
         let syntax_lines = tree
             .lines()
             .filter(|line| line.contains("Code "))
@@ -40724,12 +41403,11 @@ mod svg_text_path_tests {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod table_wrap_tests {
     use super::{
-        CODE_DIAGRAM_MIN_FONT_SIZE, CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_BODY, F_MONO,
-        Faces, Fill, LayoutCx, LinkIntern, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER,
-        TABLE_MIN_COL_WIDTH, TableColumnMetrics, allocate_table_column_widths, cell_tokens,
-        code_fragments, fitted_code_font_size, layout_list, list_marker_layouts,
-        preserve_code_block_lines, table_cell_measure, table_column_badness, text_width,
-        wrap_cell_styled, wrapped_code_rows,
+        CODE_FONT_SIZE, CodeFontFitSpec, CodeWrapSpec, F_BODY, F_MONO, Faces, Fill, LayoutCx,
+        LinkIntern, PageGeom, ParagraphLayoutScratch, TABLE_COL_GUTTER, TABLE_MIN_COL_WIDTH,
+        TableColumnMetrics, allocate_table_column_widths, cell_tokens, code_fragments,
+        fitted_code_font_size, layout_list, list_marker_layouts, preserve_code_block_lines,
+        table_cell_measure, table_column_badness, text_width, wrap_cell_styled, wrapped_code_rows,
     };
     use crate::PdfOptions;
     use crate::ast::{Inline, List, ListItem};
@@ -40965,15 +41643,16 @@ mod table_wrap_tests {
         let size = fitted_code_font_size(
             &code,
             CodeFontFitSpec {
+                lang: None,
                 code_area_width: 800.0,
                 line_numbers: false,
                 digits: 1,
                 default_size: CODE_FONT_SIZE,
-                min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
                 faces: &faces,
                 width_cache: &width_cache,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(size, CODE_FONT_SIZE);
 
         let entries_after_fit = width_cache.borrow().entry_count();
@@ -41070,6 +41749,7 @@ mod table_wrap_tests {
             next_bg: 0,
             next_flow: 0,
             list_stack: Vec::new(),
+            quote_geometry: Default::default(),
             hyphen_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             width_cache: width_cache(),
             simple_paragraph_cache: super::SimpleParagraphLayoutCache::default(),
@@ -41175,15 +41855,16 @@ mod table_wrap_tests {
         let size = fitted_code_font_size(
             diagram,
             CodeFontFitSpec {
+                lang: Some("text"),
                 code_area_width: 120.0,
                 line_numbers: false,
                 digits: 1,
                 default_size: CODE_FONT_SIZE,
-                min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
                 faces: &faces,
                 width_cache: &width_cache,
             },
-        );
+        )
+        .unwrap();
         assert!(
             size < CODE_FONT_SIZE,
             "diagram font should shrink to preserve geometry"
@@ -41242,15 +41923,16 @@ mod table_wrap_tests {
         let size = fitted_code_font_size(
             diagram,
             CodeFontFitSpec {
+                lang: Some("text"),
                 code_area_width,
                 line_numbers: true,
                 digits,
                 default_size: CODE_FONT_SIZE,
-                min_size: CODE_DIAGRAM_MIN_FONT_SIZE,
                 faces: &faces,
                 width_cache: &width_cache,
             },
-        );
+        )
+        .unwrap();
         let number_col = super::code_line_number_column_width(digits, size, &faces, &width_cache);
         let mut highlight_spans = Vec::new();
         let rows = wrapped_code_rows(
@@ -41503,7 +42185,7 @@ mod table_wrap_tests {
         let faces = Faces::load(&PdfOptions::default()).unwrap();
         let line = "+----------------------------+";
         let default_width = text_width(line, CODE_FONT_SIZE, F_MONO, &faces);
-        let shrunken_width = text_width(line, CODE_DIAGRAM_MIN_FONT_SIZE, F_MONO, &faces);
+        let shrunken_width = text_width(line, 6.0, F_MONO, &faces);
         assert!(default_width > shrunken_width);
     }
 }
@@ -43088,6 +43770,7 @@ mod coverage_gap_tests {
             next_bg: 0,
             next_flow: 0,
             list_stack: Vec::new(),
+            quote_geometry: Default::default(),
             hyphen_cache: RefCell::new(HashMap::new()),
             width_cache: RefCell::new(WidthCache::default()),
             simple_paragraph_cache: SimpleParagraphLayoutCache::default(),
@@ -43800,7 +44483,7 @@ mod plass_pagination_tests {
         let mut start = 0usize;
         for &end in ends {
             let capacity =
-                (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+                (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
             if end != lines.len() {
                 let mut used = 0.0f32;
                 for l in &lines[start..end] {
@@ -43853,7 +44536,7 @@ mod plass_pagination_tests {
                 );
             }
             let capacity =
-                (full_capacity - repeated_table_header_height(lines, start)).max(MIN_CONTENT_DIM);
+                (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
             if end - start > 1 {
                 let mut used = 0.0f32;
                 for l in &lines[start..end - 1] {
@@ -44069,7 +44752,7 @@ mod plass_pagination_tests {
                 "page {start}..{end} exceeds capacity including its two repeated header lines"
             );
             if repeated_header_lines != 0 {
-                let repeated = repeated_table_header_lines(&lines, start);
+                let repeated = repeated_table_header_lines(&lines, start, pg);
                 assert_eq!(repeated.len(), 2);
                 assert_eq!(repeated[0].flow.kind, FlowKind::TableHeader);
                 assert_eq!(repeated[1].flow.kind, FlowKind::TableRule);
@@ -44474,3 +45157,25 @@ mod table_alloc_optimality_tests {
 #[cfg(test)]
 #[path = "pdf/ragged_fit_tests.rs"]
 mod ragged_fit_tests;
+
+#[cfg(test)]
+mod cjk_lazy_face_tests {
+    use super::{F_BODY, F_CJK, Faces};
+    use crate::error::Result;
+
+    #[test]
+    fn bundled_cjk_face_is_parsed_only_for_in_range_characters() -> Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        for c in ['∑', '–', 'é', '\u{10ffff}'] {
+            let _ = faces.fallback_slot(F_BODY, c);
+        }
+        assert!(
+            faces.cjk.get().is_none(),
+            "a non-CJK character parsed the CJK face"
+        );
+        let slot = faces.fallback_slot(F_BODY, '中');
+        let face_compiled_in = cfg!(feature = "cjk-face");
+        assert_eq!(slot == F_CJK, face_compiled_in);
+        faces.cjk_load_error()
+    }
+}

@@ -96,9 +96,42 @@ test("page-bearing projects require v3 and malformed geometry rejects before rep
     assert.throws(() => book.replaceProject({ schemaVersion: 3, files: [], options: { page: geometry } }));
     assert.deepEqual(book.snapshot(), before); assert.equal(book.revision, revision);
   }
-  // Version 5 adds archival PDF settings; geometry remains valid in that schema.
-  assert.deepEqual(normalizeBookProject({ schemaVersion: 5, files: [], options: { page: page() } }).options.page, normalizePdfPage(page()));
-  assert.throws(() => normalizeBookProject({ schemaVersion: 6, files: [] }), { code: "INVALID_PROJECT" });
+  // Versions 5 (PDF/A) and 6 (baseline grids) retain the page geometry contract.
+  // Schema 6 was introduced in 6a6fea5 and is documented in BOOK.md; it is no
+  // longer an unknown-version negative. Unknown versions must still refuse.
+  for (const schemaVersion of [5, 6])
+    assert.deepEqual(normalizeBookProject({ schemaVersion, files: [], options: { page: page() } }).options.page, normalizePdfPage(page()));
+  assert.throws(() => normalizeBookProject({ schemaVersion: 7, files: [] }), { code: "INVALID_PROJECT" });
+});
+
+test("schema 6 preserves combined page geometry and baseline grids through source-project recovery", async () => {
+  const book = fixture();
+  book.setPage(page(), book.revision);
+  book.setPublication({ baselineGridPt: 13.125 }, book.revision);
+  const before = book.snapshot(), revision = book.revision, project = book.project();
+  assert.equal(project.schemaVersion, 6);
+  const serialized = serializeBookProject(project);
+  const restored = await readBookProject(new File([serialized], "grid.fmd.json"));
+  assert.equal(restored.schemaVersion, 6);
+  assert.equal(restored.options.baselineGridPt, 13.125);
+  assert.deepEqual(restored.options.page, normalizePdfPage(page()));
+  const target = fixture();
+  target.replaceProject(restored);
+  assert.deepEqual(target.files, book.files);
+  assert.deepEqual(target.options, book.options);
+  assert.deepEqual(target.images, []);
+  assert.deepEqual(target.fonts, []);
+  assert.equal(serializeBookProject(target.project()), serialized);
+  // Admitting the supported schema cannot permit older readers to discard a
+  // grid, or permit malformed geometry to overwrite the current source.
+  for (const schemaVersion of [1, 2, 3, 4, 5, 7]) {
+    assert.throws(() => book.replaceProject({ ...project, schemaVersion }), { code: "INVALID_PROJECT" });
+    assert.deepEqual(book.snapshot(), before);
+    assert.equal(book.revision, revision);
+  }
+  assert.throws(() => book.replaceProject({ ...project, options: { ...project.options, page: { margins: 500 } } }));
+  assert.deepEqual(book.snapshot(), before);
+  assert.equal(book.revision, revision);
 });
 
 test("stale, disposed and reentrant page transactions cannot overwrite newer state", () => {

@@ -156,3 +156,110 @@ fn interactive_html_parser_and_javascript_behavior() {
         );
     }
 }
+
+/// Generate real workspace manifests and execute their bundled image renderer
+/// through the production controller. The Node adapter performs actual Blob
+/// downloads and reopens source/manifest/preview for three edit/save generations.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn interactive_source_images_and_rejected_bindings_survive_edit_save_reopen() {
+    use franken_markdown::PdfImageAsset;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("SKIP native workspace image continuity proof: Node unavailable");
+        return;
+    }
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="6"><rect width="12" height="6" fill="red"/></svg>"#;
+    let encoded = html::base64_encode(svg);
+    let canonical = format!("data:image/svg+xml;base64,{encoded}");
+    let percent: String = svg.iter().map(|byte| format!("%{byte:02X}")).collect();
+    let escaped_base64: String = encoded.bytes().map(|byte| format!("%{byte:02X}")).collect();
+    let binding = |assets| HtmlOptions {
+        image_assets: assets,
+        ..HtmlOptions::default()
+    };
+    let cases = [
+        (
+            "percent SVG source",
+            format!("data:image/svg+xml,{percent}"),
+            HtmlOptions::default(),
+        ),
+        (
+            "charset base64 source",
+            format!("DATA:IMAGE/SVG+XML;CHARSET=UTF-8;BASE64,{encoded}"),
+            HtmlOptions::default(),
+        ),
+        (
+            "percent base64 source",
+            format!("data:image/svg+xml;base64,{escaped_base64}"),
+            HtmlOptions::default(),
+        ),
+        (
+            "invalid explicit override",
+            canonical.clone(),
+            binding(vec![PdfImageAsset::new(&canonical, Vec::new())]),
+        ),
+        (
+            "invalid first override with valid later duplicate",
+            canonical.clone(),
+            binding(vec![
+                PdfImageAsset::new(&canonical, b"not an image".as_slice()),
+                PdfImageAsset::new(&canonical, svg.as_slice()),
+            ]),
+        ),
+        (
+            "valid first override with invalid later duplicate",
+            canonical.clone(),
+            binding(vec![
+                PdfImageAsset::new(&canonical, svg.as_slice()),
+                PdfImageAsset::new(&canonical, Vec::new()),
+            ]),
+        ),
+        (
+            "explicit image replaces malformed payload",
+            "data:image/png;base64,invalid".to_owned(),
+            binding(vec![PdfImageAsset::new(
+                "data:image/png;base64,invalid",
+                svg.as_slice(),
+            )]),
+        ),
+        (
+            "non-image source with a valid image binding",
+            "data:text/html;base64,PHN2Zy8+".to_owned(),
+            binding(vec![PdfImageAsset::new(
+                "data:text/html;base64,PHN2Zy8+",
+                svg.as_slice(),
+            )]),
+        ),
+    ];
+    for (name, destination, opts) in cases {
+        let source = format!("# Portable document\n\n![Figure]({destination})\n");
+        let workspace = render_interactive_html(&parse_markdown(&source), &source, &opts);
+        let mut child = Command::new("node")
+            .args([
+                "tests/interactive_controller.test.mjs",
+                "--native-image-workspace",
+            ])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start native-generated workspace continuity check");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(workspace.as_bytes())
+            .unwrap();
+        let result = child.wait_with_output().unwrap();
+        assert!(
+            result.status.success(),
+            "{name}: {}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}

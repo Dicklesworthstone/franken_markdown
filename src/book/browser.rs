@@ -331,6 +331,19 @@ impl FmdBook {
         Ok(())
     }
 
+    /// Select compact subsets or complete fonts for HTML and EPUB exports.
+    /// PDF font subsetting and the source revision remain unchanged.
+    ///
+    /// # Errors
+    /// Invalid policies leave the last valid policy unchanged.
+    #[wasm_bindgen(js_name = setFontEmbedding)]
+    pub fn set_font_embedding(&mut self, policy: &str) -> Result<(), JsValue> {
+        let policy = crate::FontEmbedding::parse(policy)
+            .ok_or_else(|| JsValue::from_str("fontEmbedding must be subset or full"))?;
+        self.renderer.options_mut().font_embedding = policy;
+        Ok(())
+    }
+
     /// Add or replace one image keyed by its book-relative destination.
     /// For `guide/start.md` containing `figure.svg`, supply
     /// `guide/figure.svg`. Different chapters may use the same basename.
@@ -529,6 +542,37 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    #[test]
+    fn full_font_selection_changes_html_epub_and_preserves_pdf_and_source() {
+        let source = "# Typography\n\noffice AVATAR z\u{301}\u{307}.\n";
+        let mut book = FmdBook::new(vec!["one.md".into()], vec![source.into()]).unwrap();
+        book.set_font(
+            "body-regular",
+            include_bytes!("../../tests/fixtures/fonts/source-sans-3/SourceSans3-Regular.otf")
+                .to_vec(),
+        )
+        .unwrap();
+        let revision = book.source_revision();
+        let source_length = book.source_length();
+        let compact_site = book.render_site().unwrap();
+        let compact_epub = book.render_epub().unwrap();
+        let pdf = book.render_pdf().unwrap();
+        book.set_font_embedding("full").unwrap();
+        let full_site = book.render_site().unwrap();
+        let full_epub = book.render_epub().unwrap();
+        assert_ne!(full_site, compact_site);
+        assert_ne!(full_epub, compact_epub);
+        assert_eq!(book.render_pdf().unwrap(), pdf);
+        assert_eq!(book.source_revision(), revision);
+        assert_eq!(book.source_length(), source_length);
+        book.set_font_embedding("subset").unwrap();
+        assert_eq!(book.render_site().unwrap(), compact_site);
+        assert_eq!(book.render_epub().unwrap(), compact_epub);
+        book.set_font_embedding("full").unwrap();
+        assert_eq!(book.render_site().unwrap(), full_site);
+        assert_eq!(book.render_epub().unwrap(), full_epub);
+    }
 
     #[test]
     fn source_revisions_reject_lossy_javascript_numeric_narrowing() {

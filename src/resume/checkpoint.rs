@@ -304,13 +304,13 @@ impl LexerCheckpoint {
         if !is_supported(&self.lang) {
             return Err(CheckpointError::UnsupportedLanguage(self.lang.clone()));
         }
-        if let CommentState::Block { depth } = self.comment_state {
-            if depth > MAX_COMMENT_DEPTH {
-                return Err(CheckpointError::DepthLimitExceeded {
-                    depth,
-                    max: MAX_COMMENT_DEPTH,
-                });
-            }
+        if let CommentState::Block { depth } = self.comment_state
+            && depth > MAX_COMMENT_DEPTH
+        {
+            return Err(CheckpointError::DepthLimitExceeded {
+                depth,
+                max: MAX_COMMENT_DEPTH,
+            });
         }
         if self.interpolation_depth > MAX_INTERPOLATION_DEPTH {
             return Err(CheckpointError::DepthLimitExceeded {
@@ -318,10 +318,10 @@ impl LexerCheckpoint {
                 max: MAX_INTERPOLATION_DEPTH,
             });
         }
-        if let Err(error) = std::str::from_utf8(&self.unresolved_suffix) {
-            if self.is_eof || error.error_len().is_some() {
-                return Err(CheckpointError::InvalidUtf8);
-            }
+        if let Err(error) = std::str::from_utf8(&self.unresolved_suffix)
+            && (self.is_eof || error.error_len().is_some())
+        {
+            return Err(CheckpointError::InvalidUtf8);
         }
         if self.is_eof
             && (!self.unresolved_suffix.is_empty()

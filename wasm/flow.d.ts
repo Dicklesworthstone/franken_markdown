@@ -130,6 +130,14 @@ export interface FlowTextItem extends FlowItemBase {
   readonly colorRole: string;
   readonly fontSize: number;
   readonly fontRun: FlowFontRun | null;
+  /** Optional native RGBA label color in 0..1. Omission retains colorRole. */
+  readonly fill?: readonly [number, number, number, number];
+  /** Absolute logical baseline supplied by native mixed-line layout. Finite
+   * within bounds; absent/null retains the legacy font-derived baseline. */
+  readonly baselineY?: number | null;
+  /** Source-preserving inline formula fallback; nonempty, at most 160 Unicode
+   * scalar values. The text remains the exact source, not a fabricated glyph. */
+  readonly mathFallback?: string;
 }
 export interface FlowImageItem extends FlowItemBase {
   readonly kind: "image";
@@ -158,6 +166,39 @@ export interface FlowVectorItem extends FlowItemBase {
   readonly strokeWidth: number;
   readonly colorRole: string;
 }
+/** Absolute logical display coordinates (y increases downward). Filled
+ * contours must close; stroke-only paths may have nonempty open subpaths.
+ * Bounds include endpoints, control points and the conservative stroke halo. */
+export type FlowDisplayPathCommand =
+  | readonly ["M", number, number]
+  | readonly ["L", number, number]
+  | readonly ["Q", number, number, number, number]
+  | readonly ["C", number, number, number, number, number, number]
+  | readonly ["Z"];
+export interface FlowPathStroke {
+  readonly color: readonly [number, number, number, number];
+  /** Finite positive logical width, at most 1,000,000. */
+  readonly width: number;
+  /** At most 16 finite nonnegative lengths, each at most 1,000,000.
+   * A nonempty pattern must contain at least one positive length. */
+  readonly dash: readonly number[];
+  readonly dashOffset: number;
+  readonly cap: "butt" | "round" | "square";
+  readonly join: "miter" | "round" | "bevel";
+  /** Finite value from 1 through 1,000,000. */
+  readonly miterLimit: number;
+}
+export interface FlowPathItem extends FlowItemBase {
+  readonly kind: "path";
+  readonly colorRole: string;
+  /** Explicit RGBA in 0..1. With stroke, null means no fill; without stroke,
+   * null preserves legacy filling with the semantic palette role. */
+  readonly fill: readonly [number, number, number, number] | null;
+  /** Absent/null retains legacy closed, filled path behavior. */
+  readonly stroke?: FlowPathStroke | null;
+  /** At most 65,536 commands per item, 262,144 across a native display. */
+  readonly commands: readonly FlowDisplayPathCommand[];
+}
 export interface FlowClipItem extends FlowItemBase {
   readonly kind: "clip";
   readonly childCount: number;
@@ -167,6 +208,7 @@ export type FlowItem =
   | FlowImageItem
   | FlowAnchorItem
   | FlowVectorItem
+  | FlowPathItem
   | FlowClipItem;
 export interface FlowSnapshot extends FlowPage {
   readonly sourceLengthBytes: number;
@@ -205,6 +247,9 @@ export interface FlowReadingInlineRun {
   readonly endByte: number;
   readonly style: FlowReadingInlineStyle;
   readonly link: FlowReadingLink | null;
+  /** Exact TeX occupies this reading-text range. Absence/null means ordinary
+   * text; display selects the math engine's display style within this leaf. */
+  readonly math?: "inline" | "display" | null;
 }
 /** One parser-derived enclosing list item. IDs belong to this source snapshot,
  * not stable editor identities. The outermost ancestor comes first. */
@@ -225,6 +270,8 @@ export interface FlowReadingNode {
     | "heading"
     | "paragraph"
     | "code-block"
+    | "math"
+    | "diagram"
     | "list"
     | "list-item"
     | "table"
@@ -431,12 +478,16 @@ export interface FlowExportOptions {
   maxOutputBytes?: number;
 }
 export interface FlowHtmlExportOptions extends FlowExportOptions {
+  /** Retain complete OpenType fonts for browser shaping; default subset. */
+  fontEmbedding?: "subset" | "full";
   darkMode?: "auto" | "disabled";
   /** Native embedded font container; omitted keeps the WOFF1 default. */
   htmlFontFormat?: "woff1" | "woff2" | "ttf";
 }
 /** Reflowable native EPUB output, not a capture of editor geometry. */
 export interface FlowEpubExportOptions extends FlowExportOptions {
+  /** Retain complete supplied/bundled fonts for reader shaping; default subset. */
+  fontEmbedding?: "subset" | "full";
   darkMode?: "auto" | "disabled";
   /** Verbatim EPUB stylesheet, at most 4 MiB UTF-8. Empty explicitly disables defaults. */
   customCss?: string;

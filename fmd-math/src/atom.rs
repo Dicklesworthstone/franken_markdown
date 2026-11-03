@@ -326,19 +326,17 @@ fn classify(items: &[Node], between_ords: bool) -> Vec<Option<AtomClass>> {
         } else if matches!(
             current,
             AtomClass::Rel | AtomClass::Close | AtomClass::Punct
-        ) {
-            if let Some(p) = prev_atom {
-                if classes[p] == Some(AtomClass::Bin) {
-                    classes[p] = Some(AtomClass::Ord);
-                }
-            }
+        ) && let Some(p) = prev_atom
+            && classes[p] == Some(AtomClass::Bin)
+        {
+            classes[p] = Some(AtomClass::Ord);
         }
         prev_atom = Some(i);
     }
-    if let Some(p) = prev_atom.filter(|_| !between_ords) {
-        if classes[p] == Some(AtomClass::Bin) {
-            classes[p] = Some(AtomClass::Ord);
-        }
+    if let Some(p) = prev_atom.filter(|_| !between_ords)
+        && classes[p] == Some(AtomClass::Bin)
+    {
+        classes[p] = Some(AtomClass::Ord);
     }
     classes
 }

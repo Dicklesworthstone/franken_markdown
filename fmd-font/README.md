@@ -37,6 +37,15 @@ Existing Option-returning APIs retain their TrueType-only behavior and legacy
 malformed-composite tolerance. Successful TrueType subset bytes and maps are
 unchanged. Use the strict APIs when malformed input must be refused.
 
+Large BMP-only subsets retain their complete mappings: when the historical
+format-4 representation no longer fits, the writer compacts adjacent mappings
+and can use a Unicode format-12 map. Small-subset bytes stay unchanged.
+
+The optional `cjk-face` feature exposes `bundled::noto_sans_cjk_sc()`, a static
+Regular-weight Noto Sans SC subset for 28,215 mapped Han/kana/punctuation
+characters. It implies `bundled-faces`; it adds no runtime dependencies. See
+[the artifact's repertoire and provenance](fonts/noto-sans-cjk/README.md).
+
 ## CFF1 outlines
 
 `Font::cff_outline(gid)` returns move, line, cubic-curve, and close commands,

@@ -86,6 +86,21 @@ packages reject an enabled setting, while default requests keep existing ABIs.
 See [grid geometry and host admission](README.md#pdf-baseline-grids) for the
 body/figure/running-band policy and exact compatibility boundaries.
 
+The workbench exposes this setting under **Typography and publishing profile**.
+Enter the PDF body baseline spacing, clear any page-count target, then Apply.
+The applied grid travels with PDF proofs, exports, local-library saves,
+source-project downloads and portable backups. Source edits retain it; changing
+spacing invalidates prepared outputs. Projects with an enabled grid use source
+schema version 6, so older workbenches reject them until upgraded. Blank or `0`
+disables the grid and keeps the minimal schema needed by the remaining settings.
+
+The same panel exposes **Strict pagination**, which also enables optimal
+pagination. A PDF export fails with the native pagination diagnostic if that
+layout cannot be completed. A restored strict setting remains selected when
+other typography controls change; deselect it explicitly to return to the
+ordinary pagination policy. This setting is independent of PDF/A strict writer
+policy.
+
 ## Complete workflow
 
 Add `.md`/`.markdown` files, PNG/JPEG/SVG image files, or a folder. Folder import
@@ -114,9 +129,11 @@ library adds named saves, recent revision recovery, and opt-in autosave; see
 [LIBRARY.md](LIBRARY.md) for its conflict and retention rules. Keep a downloaded
 source project as a separate backup before leaving. `book.fmdbook.json` records
 ordered source paths/text, source roles, and settings. Chapter-only projects keep
-schema version 1; projects with include-only files use version 2 so older clients
-refuse them rather than silently publish snippets as chapters. The current
-workbench reads both versions. It is plain unencrypted JSON. Images, fonts,
+schema version 1; include-only files require version 2, PDF paper settings
+version 3, publishing profiles version 4, PDF/A emission settings version 5,
+and an enabled PDF baseline grid version 6. The current workbench reads all six
+versions and writes the lowest version that preserves the applied settings.
+It is plain unencrypted JSON. Images, fonts,
 worker state, handles, and access grants are deliberately excluded. Keep original
 image files separately. Reopening a project requires confirmation, clears all
 previous image grants, and refuses replacement if edits occur while reading or

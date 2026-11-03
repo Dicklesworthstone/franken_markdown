@@ -30,6 +30,7 @@ THIRD = png(5, 6, 'green')
 _jpeg = io.BytesIO()
 Image.new('RGB', (7, 8), 'orange').save(_jpeg, format='JPEG')
 JPEG = _jpeg.getvalue()
+GIF = base64.b64decode((ROOT / 'tests/fixtures/gif/animated-colors.base64').read_text())
 BINDINGS = r'''
 export default async ({module_or_path}) => { await WebAssembly.instantiate(module_or_path); };
 const enc = new TextEncoder();
@@ -44,7 +45,7 @@ export function renderHtmlConfiguredAdvanced(...a) {
   let offset = 0;
   const images = a[13].map((name, i) => {
     const bytes = a[14].subarray(offset, offset+a[15][i]); offset += a[15][i];
-    const mime = bytes[0] === 255 ? 'image/jpeg' : 'image/png';
+    const mime = bytes[0] === 255 ? 'image/jpeg' : bytes[0] === 71 ? 'image/gif' : 'image/png';
     return '<img alt="'+escape(name)+'" src="data:'+mime+';base64,'+btoa(String.fromCharCode(...bytes))+'">';
   }).join('');
   return result('<html><head></head><body>'+images+'<pre>'+escape(a[0])+'</pre></body></html>');
@@ -52,7 +53,7 @@ export function renderHtmlConfiguredAdvanced(...a) {
 export function renderPdfConfiguredMulti() { return result('%PDF-test-only', 'application/pdf'); }
 '''
 INSTRUMENT = r'''
-window.__imageTest = {workers:0, stopped:0, renders:0, violations:[], changes:0};
+window.__imageTest = {workers:0, stopped:0, renders:0, reads:0, violations:[], changes:0};
 document.addEventListener('securitypolicyviolation', e => __imageTest.violations.push(e.violatedDirective));
 window.addEventListener('fmd-native-images-changed', () => __imageTest.changes++);
 const OriginalWorker = Worker;
@@ -61,15 +62,19 @@ window.Worker = class extends OriginalWorker {
   postMessage(message, ...args) { if (message.type === 'render') __imageTest.renders++; return super.postMessage(message,...args); }
   terminate() { __imageTest.stopped++; return super.terminate(); }
 };
+const OriginalReader = FileReader;
+window.FileReader = class extends OriginalReader {
+  readAsArrayBuffer(file) { __imageTest.reads++; return super.readAsArrayBuffer(file); }
+};
 '''
 
 def data(value):
     return json.dumps(value, ensure_ascii=True).replace('<', '\\u003c')
 
 
-def fixture(legacy=False):
+def fixture(legacy=False, binding=True, markdown=SOURCE, images=None):
     payload = {'version':1, 'options':{'font':'serif','fontScale':1.25}, 'fonts':[],
-               'images':[{'destination':name,'bytes':base64.b64encode(FIRST).decode()}
+               'images':images if images is not None else [{'destination':name,'bytes':base64.b64encode(FIRST).decode()}
                          for name in ['a.png','unused.png','<img src=x onerror=alert(1)>']],
                'wasm':'AGFzbQEAAAA=', 'bindings':BINDINGS}
     policy = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src blob:; style-src 'unsafe-inline' data:; img-src data: blob:; font-src data:; frame-src 'self' about: blob:; object-src blob:; base-uri 'none'; form-action 'none'"
@@ -78,10 +83,11 @@ def fixture(legacy=False):
       + '<header class="fmd-app-header"><button id="btn-save-html">Save HTML</button><button id="btn-insert-image">Insert image</button><input id="fmd-image-picker" type="file" multiple hidden></header>' \
       + '<div id="fmd-app-body" class="view-split"><section id="editor-pane"><div class="fmd-pane-header"><span id="fmd-save-status"></span></div><textarea id="fmd-editor"></textarea></section>' \
       + '<main id="preview-pane"><div id="fmd-content"></div></main></div>' \
-      + '<script type="application/json" id="fmd-raw-source">'+data(SOURCE)+'</script>' \
+      + '<script type="application/json" id="fmd-raw-source">'+data(markdown)+'</script>' \
       + '<script type="application/json" id="fmd-native-runtime">'+data(payload)+'</script>' \
       + '<script>'+INSTRUMENT+RUNTIME+WORKER+'\nbootNativeWorkspace(createNativeWorkspaceRenderer,createWorkspacePreviewWorker);' \
       + ("delete window.__fmdNativeRuntime.beginImageChanges;" if legacy else '') \
+      + ("delete window.__fmdNativeRuntime.beginImageBindings;" if not binding else '') \
       + "document.querySelector('#fmd-editor').value=JSON.parse(document.querySelector('#fmd-raw-source').textContent);\n" \
       + CONTROLS+'</script></body></html>'
 
@@ -123,6 +129,16 @@ def settled(page):
 def replace(page, value=SECOND):
     selected_file(page, value)
     page.locator('#btn-replace-document-image').click()
+    settled(page)
+
+def attachment(page, destination, value=SECOND):
+    page.locator('#fmd-image-binding-destination').fill(destination)
+    page.locator('#fmd-image-binding-file').set_input_files({'name':'local.png','mimeType':'image/png','buffer':value})
+
+
+def attach(page, destination, value=SECOND):
+    attachment(page, destination, value)
+    page.locator('#btn-attach-document-image').click()
     settled(page)
 
 
@@ -167,6 +183,16 @@ with sync_playwright() as p:
     replace(page, JPEG)
     wait(page, "document.querySelector('#fmd-content iframe').contentDocument?.images[0]?.naturalWidth===7")
     check(base64.b64decode(json.loads(state(page)['saved'])['images'][0]['bytes'])==JPEG, 'local JPEG replacements use the same stable destination and real browser decoder')
+    check('image/gif' in page.locator('#fmd-image-replacement').get_attribute('accept'), 'replacement chooser admits GIF files')
+    replace(page, GIF)
+    wait(page, "document.querySelector('#fmd-content iframe').contentDocument?.images[0]?.naturalWidth===2")
+    gif_state = state(page)
+    gif_asset = json.loads(gif_state['saved'])['images'][0]
+    check(gif_asset['destination']=='a.png' and base64.b64decode(gif_asset['bytes'])==GIF,
+          'GIF replacement retains destination and complete animation despite PNG filename and MIME')
+    check(gif_state['source']==baseline['source'] and gif_state['raw']==baseline['raw'], 'GIF replacement does not rewrite source')
+    check(page.evaluate("document.querySelector('#fmd-content iframe').contentDocument.images[0].naturalHeight")==2,
+          'real browser decoder validates the replaced GIF canvas')
     replace(page, SECOND)
     count = page.evaluate('__imageTest.workers')
     stable = state(page)
@@ -174,6 +200,8 @@ with sync_playwright() as p:
     check(state(page)==stable and page.evaluate('__imageTest.workers')==count, 'invalid image bytes are rejected before native preflight')
     replace(page, SECOND[:-12])
     check(state(page)==stable and page.evaluate('__imageTest.workers')==count, 'truncated PNG containers cannot replace saved resources')
+    replace(page, GIF[:-1])
+    check(state(page)==stable and page.evaluate('__imageTest.workers')==count, 'truncated GIF containers cannot replace saved resources')
     oversized = bytearray(SECOND)
     oversized[16:20] = (16385).to_bytes(4, 'big')
     replace(page, bytes(oversized))
@@ -279,6 +307,77 @@ with sync_playwright() as p:
     page.locator('#btn-document-images').click()
     check(page.locator('#fmd-image-selection option').count()==1, 'inventory refreshes after the existing insertion workflow commits')
 
+    # Opened Markdown can bind its existing paths without replacing any source.
+    key = 'figures/日本語.png'
+    imported = '\ufeff![Diagram](' + key + ')\r\n\r\n![Again](' + key + ')\r'
+    attached = open_page(fixture(markdown=imported, images=[]))
+    attached.locator('#btn-document-images').click()
+    before_attach = state(attached)
+    check(attached.locator('#fmd-image-selection option').count()==0, 'attachment remains available with no embedded images')
+    attach(attached, ' ' + key + ' ', GIF)
+    bound = state(attached)
+    resources = json.loads(bound['saved'])['images']
+    check(resources == [{'destination':key,'bytes':base64.b64encode(GIF).decode()}], 'attachment stores the exact reviewed path and original GIF bytes')
+    check(bound['source']==before_attach['source'] and bound['raw']==before_attach['raw'], 'attachment preserves editor text and exact imported BOM/line-ending source')
+    check(json.loads(bound['saved'])['options']==json.loads(before_attach['saved'])['options'], 'attachment retains document settings')
+    wait(attached, "document.querySelector('#fmd-content iframe').contentDocument?.images[0]?.naturalWidth===2")
+    check(attached.evaluate("document.querySelector('#fmd-content iframe').contentDocument.images[0].naturalHeight")==2,
+          'attached image decodes after worker validation')
+    check(attached.locator('#fmd-image-selection').input_value()==key, 'new attachment becomes an ordinary managed image')
+    check(attached.locator('#fmd-image-binding-file').evaluate('node=>node.files.length')==0
+          and attached.locator('#fmd-image-binding-destination').input_value()=='', 'successful attachment retires file and destination selection')
+    check(attached.evaluate("()=>{const e=new Event('beforeunload',{cancelable:true});window.dispatchEvent(e);return e.defaultPrevented;}"),
+          'source-preserving attachment activates the resource leave-page warning')
+
+    for refused in [key, ' '+key+' ', 'x'*8193]:
+        before = state(attached)
+        reads = attached.evaluate('__imageTest.reads')
+        workers = attached.evaluate('__imageTest.workers')
+        attach(attached, refused)
+        check(state(attached)==before and attached.evaluate('__imageTest.reads')==reads
+              and attached.evaluate('__imageTest.workers')==workers, 'duplicate or over-budget destination is refused before reading: '+refused[:30])
+    before = state(attached)
+    attach(attached, 'bad.png', b'<svg/>')
+    check(state(attached)==before, 'invalid attachment bytes cannot mutate resources')
+
+    source(attached, 'IMAGE_FAIL')
+    before = state(attached)
+    attach(attached, 'failed.png')
+    check(state(attached)==before and 'native adapter rejected' in attached.locator('#fmd-images-status').inner_text(),
+          'failed attachment preflight preserves source and committed resource JSON')
+    source(attached, 'IMAGE_SLOW')
+    before = state(attached)
+    attachment(attached, 'cancelled.png')
+    attached.locator('#btn-attach-document-image').click()
+    wait(attached, '__fmdNativeRuntime.imagesPending')
+    attached.locator('#btn-cancel-image-change').click()
+    settled(attached)
+    check(state(attached)==before and not attached.evaluate('__fmdNativeRuntime.imagesPending'), 'attachment cancellation terminates pending validation without publication')
+    attachment(attached, 'access-retired.png')
+    attached.locator('#btn-attach-document-image').click()
+    wait(attached, '__fmdNativeRuntime.imagesPending')
+    attached.evaluate("()=>{const e=document.querySelector('#fmd-editor');e.readOnly=true;e.readOnly=false;}")
+    settled(attached)
+    check(state(attached)==before and not attached.evaluate('__fmdNativeRuntime.imagesPending'), 'read-only round trip revokes attachment ownership')
+    attachment(attached, 'composition.png')
+    attached.locator('#fmd-image-binding-destination').dispatch_event('compositionstart', {'bubbles': True})
+    check(attached.locator('#btn-attach-document-image').is_disabled(), 'destination composition pauses attachment')
+    check(not attached.locator('#fmd-image-binding-destination').is_disabled(), 'composition never disables its active destination text field')
+    attached.locator('#fmd-image-binding-destination').dispatch_event('compositionend', {'bubbles': True})
+    source(attached, imported)
+    attach(attached, 'fresh.png')
+    check(len(json.loads(state(attached)['saved'])['images'])==2, 'a fresh attachment succeeds after cancelled and refused operations')
+    attached.locator('#btn-close-document-images').click()
+    attached.locator('#btn-document-images').click()
+    check(attached.locator('#fmd-image-binding-destination').input_value()=='' and
+          attached.locator('#fmd-image-binding-file').evaluate('node=>node.files.length')==0, 'reopening the dialog never reuses attachment selections')
+
+    binding_legacy = open_page(fixture(binding=False))
+    binding_legacy.locator('#btn-document-images').click()
+    check(binding_legacy.locator('#btn-attach-document-image').count()==0, 'legacy runtime does not advertise unavailable binding support')
+    replace(binding_legacy)
+    check(base64.b64decode(json.loads(state(binding_legacy)['saved'])['images'][0]['bytes'])==SECOND, 'legacy replacement remains functional without attachment API')
+
     legacy = context.new_page()
     legacy.on('pageerror', lambda error: errors.append(str(error)))
     legacy.set_content(fixture(legacy=True), wait_until='domcontentloaded')
@@ -289,7 +388,7 @@ with sync_playwright() as p:
     check(not violations, 'no Content Security Policy violations')
     check(not network, 'no HTTP or HTTPS requests')
     report = {'checks':len(checks),'passed':checks,'page_errors':errors,'csp_violations':violations,'network_requests':network,
-              'scope':'Production image controls, resource runtime and worker transport; real Chromium FileReader/PNG decoding/Workers. Explicit shell and native ABI adapters; no compiled Rust/WASM rendering or full controller Save HTML validation.',
+              'scope':'Production image controls, resource runtime and worker transport; real Chromium FileReader/PNG/JPEG/GIF decoding/Workers. Explicit shell and native ABI adapters; no compiled Rust/WASM rendering or full controller Save HTML validation.',
               'artifacts':str(OUT)}
     (OUT/'report.json').write_text(json.dumps(report,indent=2))
     print(json.dumps(report,indent=2))

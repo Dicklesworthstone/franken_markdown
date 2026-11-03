@@ -24,6 +24,8 @@ const ROLES = new Set([
   "heading",
   "paragraph",
   "code-block",
+  "math",
+  "diagram",
   "list",
   "list-item",
   "table",
@@ -37,7 +39,7 @@ const ROLES = new Set([
 ]);
 const ROWS = new Set(["table-header-row", "table-row"]);
 const CELLS = new Set(["table-header-cell", "table-cell"]);
-const LEAVES = new Set(["heading", "paragraph", "code-block", "thematic-break", "image"]);
+const LEAVES = new Set(["heading", "paragraph", "code-block", "math", "diagram", "thematic-break", "image"]);
 const owned = new WeakSet(),
   sessions = new WeakMap();
 function record(value, keys) {
@@ -274,7 +276,7 @@ function* inlineMetadata(raw, budget, retained) {
   retained.runs += input.length;
   if (retained.runs > budget.maxInlineRuns)
     fail("READING_LIMIT", "reading inline-run limit exceeded");
-  if (input.length && (raw.children.length || ["image", "thematic-break", "code-block"].includes(raw.role)))
+  if (input.length && (raw.children.length || ["image", "thematic-break", "code-block", "math", "diagram"].includes(raw.role)))
     invalid("inline ranges require a semantic text leaf");
   // Capture bounded array membership before suspending. Primitive fields are
   // captured, validated and privately copied before their objects are released;
@@ -311,9 +313,11 @@ function* inlineMetadata(raw, budget, retained) {
   const inlineRuns = [];
   for (const run of runs) {
     if (!run) invalid("unordered or empty inline range");
-    const { startByte, endByte, style, link: linkInput } = run;
+    const { startByte, endByte, style, link: linkInput, math } = run;
     if (!integer(startByte) || !integer(endByte) || startByte < previousEnd || endByte <= startByte)
       invalid("unordered or empty inline range");
+    if (math !== undefined && math !== null && math !== "inline" && math !== "display")
+      invalid("invalid inline math style");
     previousEnd = endByte;
     const keys = ["bold", "italic", "code", "strikethrough"];
     if (!style || typeof style !== "object" || Array.isArray(style)
@@ -325,7 +329,8 @@ function* inlineMetadata(raw, budget, retained) {
     Object.freeze(copiedStyle);
     const copiedLink = yield* link(linkInput);
     const startUtf16 = yield* position(startByte), endUtf16 = yield* position(endByte);
-    inlineRuns.push(Object.freeze({ startByte, endByte, startUtf16, endUtf16, style: copiedStyle, link: copiedLink }));
+    inlineRuns.push(Object.freeze({ startByte, endByte, startUtf16, endUtf16, style: copiedStyle,
+      link: copiedLink, ...(math === undefined ? {} : { math }) }));
     yield 32;
   }
   const imageLink = imageInput === undefined ? null : yield* link(imageInput);

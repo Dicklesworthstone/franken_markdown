@@ -159,7 +159,9 @@ fn references(text: &str, key: &str) -> Vec<usize> {
     let fields: Vec<_> = list.split_whitespace().collect();
     assert_eq!(fields.len() % 3, 0);
     fields
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|reference| {
             assert_eq!(&reference[1..], &["0", "R"]);
             reference[0].parse().unwrap()
@@ -315,7 +317,9 @@ fn rotated_jpeg() -> PdfImageAsset {
         .collect();
     let mut bytes: Vec<u8> = hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();
     // Original20x1200 image, rotated90degrees: its displayed aspect is60:1.

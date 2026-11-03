@@ -1,7 +1,7 @@
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
 // can be tested without replacing the production renderer or its WASM binary.
 import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
-import { normalizeBaselineGridPt, normalizePdfPaginationError, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeBaselineGridPt, normalizeFontEmbedding, normalizePdfPaginationError, validateBaselineGridFit } from "./render_typography.mjs";
 
 const MAX_CHAPTERS = 4096;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
@@ -161,6 +161,10 @@ function bookRunning(value) {
 }
 function bookRenderOptions(options) {
   const result = {};
+  const embedding = options.fontEmbedding;
+  // Defaults stay absent, preserving captures and old-package compatibility.
+  if (embedding !== undefined && normalizeFontEmbedding(embedding) === "full")
+    result.fontEmbedding = "full";
   // Read each host property once, including aliases; no later getter can
   // substitute a different value after validation or asynchronous loading.
   const typography = options.typography;
@@ -240,6 +244,11 @@ function pdfOptionMethod(settings) {
     ? "setPdfOptionsWithRunningImages" : "setPdfOptions";
 }
 function requireBookOptions(target, settings) {
+  if (settings.fontEmbedding === "full" && typeof target?.setFontEmbedding !== "function") {
+    throw Object.assign(new Error(
+      "this WASM build lacks FmdBook.setFontEmbedding; rebuild the matching package for full book fonts",
+    ), { code: "UNSUPPORTED_BOOK_FONT_EMBEDDING" });
+  }
   for (const [name, requested] of [
     [pdfOptionMethod(settings), pdfOptionArgs(settings) !== null],
     ["setHtmlFontFormat", settings.htmlFontFormat !== undefined],
@@ -251,6 +260,20 @@ function requireBookOptions(target, settings) {
       ), { code: "UNSUPPORTED_BOOK_OPTIONS" });
     }
   }
+}
+
+/** Validate the actual font-bearing exporter receipt. An omitted expectation
+ * only validates shape; explicit subset requires omission for old defaults. */
+export function bookFontEmbeddingReceipt(result, expected) {
+  const embedding = result?.fontEmbedding;
+  if ((embedding !== undefined && embedding !== "full")
+      || (expected === "full" && embedding !== "full")
+      || (expected === "subset" && embedding !== undefined)) {
+    throw Object.assign(new Error(
+      "The book exporter did not acknowledge the captured font embedding policy; rebuild matching renderer and worker packages.",
+    ), { code: "UNSUPPORTED_BOOK_FONT_EMBEDDING" });
+  }
+  return embedding === "full" ? { fontEmbedding: "full" } : {};
 }
 
 // PDF/A is an emission policy, not a claim of independent conformance. Keep
@@ -563,9 +586,11 @@ export function createBookBindings(loadBookClass) {
   class BookSession {
     #raw;
     #pdfOptions;
+    #fontReceipt;
     #updating = false;
     constructor(raw, settings) {
       this.#raw = raw;
+      this.#fontReceipt = Object.freeze(settings.fontEmbedding === "full" ? { fontEmbedding: "full" } : {});
       this.#pdfOptions = Object.freeze({ page: settings.page,
         ...archivalOptions(settings.pdfA, settings.pdfAStrict) });
     }
@@ -720,11 +745,11 @@ export function createBookBindings(loadBookClass) {
     }
     renderEpub() {
       const raw = this.#live();
-      return output(raw.renderEpub(), "epub", raw.sourceLength);
+      return output(raw.renderEpub(), "epub", raw.sourceLength, this.#fontReceipt);
     }
     renderSite() {
       const raw = this.#live();
-      return output(raw.renderSite(), "site", raw.sourceLength);
+      return output(raw.renderSite(), "site", raw.sourceLength, this.#fontReceipt);
     }
     get supportsChapterPreview() {
       return typeof this.#live().renderChapterPreview === "function";
@@ -748,7 +773,7 @@ export function createBookBindings(loadBookClass) {
       // Validate the native reply against the requested chapter, not merely
       // its declared schema. Rendering is read-only; failures do not edit source.
       parseBookChapterPreview(bytes, index, count);
-      return output(bytes, "chapterPreview", raw.sourceLength);
+      return output(bytes, "chapterPreview", raw.sourceLength, this.#fontReceipt);
     }
     validateLinks() {
       const raw = this.#live();
@@ -839,6 +864,7 @@ export function createBookBindings(loadBookClass) {
       const pdf = pdfOptionArgs(settings);
       if (pdf !== null) raw[pdfOptionMethod(settings)](...pdf);
       if (settings.htmlFontFormat !== undefined) raw.setHtmlFontFormat(settings.htmlFontFormat);
+      if (settings.fontEmbedding === "full") raw.setFontEmbedding("full");
       raw.setMetadata(settings.title, settings.author, settings.lang);
       raw.setCustomCss(settings.customCss);
       raw.setTheme(settings.font, settings.darkMode);

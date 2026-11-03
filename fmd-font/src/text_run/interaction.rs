@@ -69,10 +69,10 @@ pub(super) fn caret_at_byte(
             return edge(run, previous, CaretAffinity::Trailing);
         }
     }
-    if let Some(following) = run.clusters.get(next) {
-        if following.byte_range.start == byte {
-            return edge(run, following, CaretAffinity::Leading);
-        }
+    if let Some(following) = run.clusters.get(next)
+        && following.byte_range.start == byte
+    {
+        return edge(run, following, CaretAffinity::Leading);
     }
     let previous = run.clusters.get(next.checked_sub(1)?)?;
     if previous.byte_range.end == byte {
@@ -193,11 +193,11 @@ pub(super) fn selection_rects(
     spans.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     let mut merged: Vec<(f32, f32)> = Vec::new();
     for (left, right) in spans {
-        if let Some(previous) = merged.last_mut() {
-            if left <= previous.1 {
-                previous.1 = previous.1.max(right);
-                continue;
-            }
+        if let Some(previous) = merged.last_mut()
+            && left <= previous.1
+        {
+            previous.1 = previous.1.max(right);
+            continue;
         }
         merged.push((left, right));
     }

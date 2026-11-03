@@ -82,10 +82,10 @@ pub fn render_svg_configured_resources(
 }
 
 fn geometry(scale: Option<f64>, width: Option<f64>) -> Result<f32, &'static str> {
-    if let Some(scale) = scale {
-        if !scale.is_finite() || !(scale as f32).is_finite() || (scale as f32) <= 0.0 {
-            return Err("SVG fontScale must be positive and representable as a finite f32");
-        }
+    if let Some(scale) = scale
+        && (!scale.is_finite() || !(scale as f32).is_finite() || (scale as f32) <= 0.0)
+    {
+        return Err("SVG fontScale must be positive and representable as a finite f32");
     }
     let width = width.unwrap_or(612.0);
     if !width.is_finite() || !(144.0..=14_400.0).contains(&width) {

@@ -1,0 +1,1098 @@
+// These two functions are also serialized into standalone documents. Keep them
+// self-contained: no imports, outer-scope helpers, or generated package URLs.
+export function createNativeWorkspaceRenderer(bindings, payload) {
+  const required = ['renderHtmlConfiguredAdvanced', 'renderPdfConfiguredMulti'];
+  for (const name of required) {
+    if (typeof bindings[name] !== 'function') {
+      throw new Error(`Native workspace requires matching WASM bindings: ${name} is missing`);
+    }
+  }
+  if (payload.version !== 1) throw new Error('Unsupported native workspace version');
+  // Optional publication bindings must not make older HTML/PDF workspaces
+  // unopenable. Require the resource-capable ABI: never drop embedded assets.
+  const publications = {
+    epub: 'renderEpubConfiguredAdvanced', svg: 'renderSvgConfiguredResources',
+  };
+  const exportFormats = Object.freeze(['html', 'pdf', ...Object.keys(publications)
+    .filter(format => typeof bindings[publications[format]] === 'function')]);
+  function publicationBinding(format) {
+    const render = bindings[publications[format]];
+    if (typeof render !== 'function') throw Object.assign(new Error(
+      format.toUpperCase() + ' publication requires matching resource-capable WASM bindings',
+    ), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    return render;
+  }
+  const analyses = {stats: 'documentStats', accessibility: 'accessibilityAudit'};
+  const analysisFormats = Object.freeze(Object.keys(analyses)
+    .filter(kind => typeof bindings[analyses[kind]] === 'function'));
+  function analyze(kind, markdown) {
+    if (!Object.hasOwn(analyses, kind) || !analysisFormats.includes(kind)) {
+      throw Object.assign(new Error('Document analysis requires matching native WASM bindings'),
+        {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    }
+    // The existing audit ABI uses engine-default PDF options. It is an authoring
+    // check, not a certification of the workspace's configured PDF or assets.
+    // Keep reports separate from render diagnostics and from saved document data.
+    const json = bindings[analyses[kind]](source(markdown));
+    if (typeof json !== 'string' || !json.length) throw new TypeError('Invalid native analysis report');
+    settingsText(json, 8 * 1024 * 1024, 'analysis report');
+    return json;
+  }
+  const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
+    'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry'];
+  function settingData(value) {
+    // Inspect descriptors before reading values: accessors, inherited options,
+    // symbols and unsupported switches must not enter a saved workspace.
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Settings must be a data object');
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== null && Object.getPrototypeOf(prototype) !== null) throw new TypeError('Settings must be a plain data object');
+    const result = {};
+    for (const key of Reflect.ownKeys(value)) {
+      const field = Object.getOwnPropertyDescriptor(value, key);
+      if (!settingKeys.includes(key) || !field || !Object.hasOwn(field, 'value')) {
+        throw new TypeError('Unsupported settings field or accessor');
+      }
+      result[key] = field.value;
+    }
+    return result;
+  }
+  function settingsText(value, limit, name) {
+    if (value === undefined) return;
+    if (typeof value !== 'string' || value.length > limit) throw new TypeError('Invalid ' + name);
+    let size = 0;
+    for (const character of value) {
+      const cp = character.codePointAt(0);
+      if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError('Invalid Unicode in ' + name);
+      size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+      if (size > limit) throw new RangeError(name + ' exceeds its UTF-8 byte limit');
+    }
+  }
+  function captureSettings(input) {
+    const value = settingData(input);
+    if (!['sans', 'serif'].includes(value.font)) throw new TypeError('font must be sans or serif');
+    if (!['auto', 'disabled'].includes(value.darkMode)) throw new TypeError('darkMode must be auto or disabled');
+    if (!Number.isFinite(value.fontScale) || value.fontScale < 0.5 || value.fontScale > 3) throw new RangeError('fontScale must be 0.5..3');
+    for (const key of ['pageNumbers', 'codeLineNumbers', 'toc']) {
+      if (typeof value[key] !== 'boolean') throw new TypeError(key + ' must be boolean');
+    }
+    settingsText(value.title, 65536, 'title'); settingsText(value.author, 65536, 'author'); settingsText(value.lang, 1024, 'lang');
+    if (value.metadataEpochSeconds !== undefined && (!Number.isSafeInteger(value.metadataEpochSeconds) || value.metadataEpochSeconds < 0)) {
+      throw new RangeError('metadataEpochSeconds must be a nonnegative safe integer');
+    }
+    if (value.tocDepth !== undefined && (!Number.isInteger(value.tocDepth) || value.tocDepth < 1 || value.tocDepth > 6)) {
+      throw new RangeError('tocDepth must be 1..6');
+    }
+    if (value.pageGeometry !== undefined) {
+      const input = value.pageGeometry;
+      // Copy data elements without invoking an iterator, getter or sparse-array
+      // prototype lookup. The saved ABI order is width,height,top,right,bottom,left.
+      if (!Array.isArray(input) || input.length !== 6 || Reflect.ownKeys(input).length !== 7) throw new RangeError('Invalid saved PDF page geometry');
+      const g = [];
+      for (let i = 0; i < 6; i++) {
+        const field = Object.getOwnPropertyDescriptor(input, String(i));
+        if (!field || !Object.hasOwn(field, 'value') || !Number.isFinite(field.value)) throw new RangeError('Invalid saved PDF page geometry');
+        g.push(field.value === 0 ? 0 : field.value);
+      }
+      // Reproduce Rust's left-associative f32 subtractions, not just a final cast.
+      const extent = (size, first, second) => Math.fround(Math.fround(Math.fround(size) - Math.fround(first)) - Math.fround(second));
+      if (g[0] < 144 || g[1] < 144 || g.some(value => value < 0 || value > 14400)
+          || g[0] - g[5] - g[3] < 72 || g[1] - g[2] - g[4] < 72
+          || extent(g[0], g[5], g[3]) < 72 || extent(g[1], g[2], g[4]) < 72) {
+        throw new RangeError('Invalid saved PDF page geometry');
+      }
+      if (typeof bindings.renderPdfConfiguredPage !== 'function') {
+        throw Object.assign(new Error('PDF paper and margins require matching page-capable WASM bindings'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+      }
+      value.pageGeometry = Object.freeze(g);
+    }
+    // Omitted optional fields remain omitted across JSON save/reopen cycles.
+    return Object.freeze(Object.fromEntries(settingKeys.filter(key => value[key] !== undefined).map(key => [key, value[key]])));
+  }
+  let options = captureSettings({font: 'sans', darkMode: 'auto', fontScale: 1,
+    pageNumbers: false, codeLineNumbers: false, toc: false, ...settingData(payload.options)});
+  let pageGeometry = options.pageGeometry ? new Float64Array(options.pageGeometry) : null;
+  const MiB = 1024 * 1024;
+  function textBytes(text) {
+    if (typeof text !== 'string' || text.length > 8192) throw new TypeError('Invalid image destination');
+    let count = 0;
+    for (const character of text) {
+      const cp = character.codePointAt(0);
+      if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError('Invalid image destination Unicode');
+      count += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+    }
+    if (count > 8192) throw new RangeError('Image destination exceeds 8 KiB');
+    return count;
+  }
+  function destination(value, seen) {
+    if (typeof value !== 'string') throw new TypeError('Invalid image destination');
+    const key = value.trim();
+    const size = textBytes(key);
+    if (!key || /[\u0000-\u001f\u007f-\u009f]/u.test(key) || seen.has(key)) {
+      throw new TypeError('Image destinations must be nonempty, control-free and unique');
+    }
+    seen.add(key);
+    return {key, size};
+  }
+  function encodedLength(text) {
+    if (typeof text !== 'string' || !text.length || text.length % 4 || text.length > Math.ceil(32 * MiB / 3) * 4) {
+      throw new RangeError('Invalid saved resource size');
+    }
+    const length = text.length / 4 * 3 - (text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0);
+    if (length > 32 * MiB) throw new RangeError('Saved resource exceeds 32 MiB');
+    return length;
+  }
+  function decode(text) {
+    const binary = atob(text);
+    if (binary.length !== encodedLength(text)) throw new TypeError('Invalid saved resource encoding');
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+  function encode(bytes) {
+    const chunks = [];
+    // Each chunk has a multiple of three bytes, so base64 concatenates exactly.
+    for (let start = 0; start < bytes.length; start += 24576) {
+      chunks.push(btoa(String.fromCharCode(...bytes.subarray(start, start + 24576))));
+    }
+    return chunks.join('');
+  }
+  const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
+  if (!Array.isArray(payload.images) || payload.images.length > 4096
+      || !Array.isArray(payload.fonts) || payload.fonts.length > slots.length) {
+    throw new RangeError('Workspace exceeds 4096 images or five font slots');
+  }
+  // Admit the saved resource totals before decoding or allocating packed ABI
+  // buffers. Imported resources are subject to the same lifetime budget.
+  const keys = new Set(), fontSlots = new Set();
+  let nameBytes = 0, imageBytes = 0, fontTotal = 0;
+  const encodedImages = payload.images.map(image => {
+    const {key, size} = destination(image.destination, keys);
+    nameBytes += size; imageBytes += encodedLength(image.bytes);
+    return Object.freeze({destination: key, bytes: image.bytes});
+  });
+  for (const font of payload.fonts) {
+    if (!slots.includes(font.slot) || fontSlots.has(font.slot)) throw new TypeError('Invalid or duplicate saved font slot');
+    if (font.weight !== undefined && (!Number.isInteger(font.weight) || font.weight < 1 || font.weight > 1000)) {
+      throw new RangeError('Font weight must be an integer from 1 through 1000');
+    }
+    fontSlots.add(font.slot); fontTotal += encodedLength(font.bytes);
+  }
+  if (nameBytes > 65536 || imageBytes + fontTotal > 128 * MiB) throw new RangeError('Workspace resource budget exceeded');
+  function pack(encoded, views, byteLength, names) {
+    const flat = new Uint8Array(byteLength), lengths = Uint32Array.from(views, view => view.length);
+    let offset = 0;
+    for (const bytes of views) { flat.set(bytes, offset); offset += bytes.length; }
+    return {encoded: Object.freeze(encoded), flat, lengths, names,
+      destinations: encoded.map(image => image.destination)};
+  }
+  let images = pack(encodedImages, encodedImages.map(image => decode(image.bytes)), imageBytes, nameBytes);
+  const fonts = slots.map(slot => payload.fonts.find(font => font.slot === slot));
+  let fontBytes = fonts.map(font => font ? decode(font.bytes) : new Uint8Array());
+  let weights = Uint32Array.from(fonts, font => font?.weight ?? 0);
+  let encodedFonts = Object.freeze(fonts.filter(Boolean).map(font => Object.freeze({
+    slot: font.slot, bytes: font.bytes, ...(font.weight === undefined ? {} : {weight: font.weight}),
+  })));
+  function describeFonts(encoded) {
+    return Object.freeze(slots.map(slot => {
+      const font = encoded.find(item => item.slot === slot);
+      return Object.freeze({slot, bytes: font ? encodedLength(font.bytes) : 0,
+        ...(font?.weight === undefined ? {} : {weight: font.weight})});
+    }));
+  }
+  let fontInfo = describeFonts(encodedFonts);
+  let generation = 0, publishing = false;
+  function publishChange(publish, apply) {
+    if (publishing) throw new Error('Workspace transaction publication is already in progress');
+    publishing = true;
+    try { if (publish) publish(); apply(); }
+    finally { publishing = false; }
+  }
+  function stageSettings(patch) {
+    const next = captureSettings({...options, ...settingData(patch)});
+    const geometry = next.pageGeometry ? new Float64Array(next.pageGeometry) : null;
+    const previous = options, previousGeometry = pageGeometry, revision = generation;
+    let committed = null, ended = false, stagedDiagnostics = null, previousDiagnostics = null;
+    const current = () => {
+      if (ended || committed !== null || revision !== generation) throw new Error('Stale settings transaction');
+    };
+    return Object.freeze({
+      settings: next,
+      html(markdown, display) {
+        current();
+        const before = diagnostics;
+        try {
+          const html = renderHtml(markdown, display, next);
+          stagedDiagnostics = diagnostics;
+          return html;
+        } finally { diagnostics = before; }
+      },
+      commit(publish) {
+        current();
+        publishChange(publish, () => {
+          payload.options = next; options = next; pageGeometry = geometry;
+          previousDiagnostics = diagnostics;
+          if (stagedDiagnostics !== null) diagnostics = stagedDiagnostics;
+          committed = ++generation;
+        });
+      },
+      rollback(publish) {
+        if (ended || committed === null || committed !== generation) throw new Error('Stale settings rollback');
+        publishChange(publish, () => {
+          payload.options = previous; options = previous; pageGeometry = previousGeometry;
+          diagnostics = previousDiagnostics; generation++; ended = true;
+        });
+      },
+    });
+  }
+  function stageImages(additions) {
+    if (!Array.isArray(additions) || !additions.length || additions.length > 8
+        || images.encoded.length + additions.length > 4096) {
+      throw new RangeError('Import supports 1..8 images within the 4096-image workspace limit');
+    }
+    const seen = new Set(images.destinations), admitted = [];
+    let batch = 0, names = images.names;
+    for (const image of additions) {
+      const {key, size} = destination(image.destination, seen);
+      names += size;
+      const value = image.bytes, isView = ArrayBuffer.isView(value);
+      const buffer = isView ? value.buffer : value;
+      // Intrinsic branding rejects shared memory and spoofed buffers. Respect
+      // DataView, typed-array and pooled Buffer offsets, including detachment.
+      const length = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(buffer);
+      const bytes = new Uint8Array(buffer, isView ? value.byteOffset : 0, isView ? value.byteLength : length);
+      if (!bytes.length || bytes.length > 8 * MiB) throw new RangeError('Each imported image must contain 1 byte through 8 MiB');
+      batch += bytes.length;
+      if (names > 65536 || batch > 16 * MiB || images.flat.length + batch + fontTotal > 128 * MiB) {
+        throw new RangeError('Imported images exceed the workspace resource budget');
+      }
+      admitted.push({destination: key, bytes});
+    }
+    const previous = images, revision = generation;
+    // All admission passed. Copy once into the next ABI buffer; encoding from
+    // its owned views prevents later caller mutations from changing saved data.
+    const flat = new Uint8Array(previous.flat.length + batch);
+    flat.set(previous.flat);
+    const lengths = new Uint32Array(previous.lengths.length + admitted.length);
+    lengths.set(previous.lengths);
+    let offset = previous.flat.length;
+    const encoded = previous.encoded.slice();
+    for (let i = 0; i < admitted.length; i++) {
+      const {destination, bytes} = admitted[i];
+      flat.set(bytes, offset); lengths[previous.lengths.length + i] = bytes.length;
+      encoded.push(Object.freeze({destination, bytes: encode(flat.subarray(offset, offset + bytes.length))}));
+      offset += bytes.length;
+    }
+    const next = {encoded: Object.freeze(encoded), flat, lengths, names,
+      destinations: encoded.map(image => image.destination)};
+    let committed = null, ended = false;
+    return Object.freeze({
+      images: next.encoded,
+      // The optional synchronous publisher writes inert JSON before the state
+      // switch. If persistence throws, neither the renderer nor source changes.
+      commit(publish) {
+        if (ended || committed !== null || revision !== generation) throw new Error('Stale image import transaction');
+        publishChange(publish, () => {
+          payload.images = next.encoded; images = next; committed = ++generation;
+        });
+      },
+      rollback(publish) {
+        if (ended || committed === null || committed !== generation) throw new Error('Stale image import rollback');
+        publishChange(publish, () => {
+          payload.images = previous.encoded; images = previous; generation++; ended = true;
+        });
+      },
+    });
+  }
+  // Replace or remove existing bindings without rewriting Markdown destinations.
+  // Keep insertion separate: a misspelled replacement must not add a new asset.
+  function stageImageChanges(patches, insertion = false) {
+    if (!Array.isArray(patches) || !patches.length || patches.length > 8
+        || Reflect.ownKeys(patches).length !== patches.length + 1) {
+      throw new TypeError('Provide one through eight image changes');
+    }
+    const seen = new Set(), changes = new Map(), existing = new Set(images.destinations);
+    if (insertion && images.encoded.length + patches.length > 4096) {
+      throw new RangeError('Image bindings exceed the 4096-image workspace limit');
+    }
+    let batch = 0;
+    for (let i = 0; i < patches.length; i++) {
+      const entry = Object.getOwnPropertyDescriptor(patches, String(i));
+      if (!entry || !Object.hasOwn(entry, 'value')) throw new TypeError('Image changes must be data objects');
+      const value = entry.value, fields = {};
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Image changes must be data objects');
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== null && Object.getPrototypeOf(prototype) !== null) throw new TypeError('Image changes must be plain data objects');
+      for (const key of Reflect.ownKeys(value)) {
+        const field = Object.getOwnPropertyDescriptor(value, key);
+        const allowed = insertion ? ['destination', 'bytes'] : ['destination', 'bytes', 'remove'];
+        if (!allowed.includes(key) || !field || !Object.hasOwn(field, 'value')) {
+          throw new TypeError('Unsupported image field or accessor');
+        }
+        fields[key] = field.value;
+      }
+      const {key} = destination(fields.destination, seen);
+      if (insertion ? existing.has(key) : !existing.has(key)) {
+        throw new TypeError(insertion
+          ? 'Image binding already exists; replace it explicitly in Document images'
+          : 'Image replacement or removal requires an existing destination');
+      }
+      if (Object.hasOwn(fields, 'remove')) {
+        if (fields.remove !== true || Object.hasOwn(fields, 'bytes')) throw new TypeError('Remove accepts only destination and remove: true');
+        changes.set(key, null); continue;
+      }
+      let buffer = fields.bytes, offset = 0, length;
+      if (ArrayBuffer.isView(buffer)) {
+        const value = buffer, typed = Object.getPrototypeOf(Uint8Array.prototype);
+        let getters = typed;
+        try { Object.getOwnPropertyDescriptor(typed, 'buffer').get.call(value); }
+        catch { getters = DataView.prototype; }
+        const read = name => Object.getOwnPropertyDescriptor(getters, name).get.call(value);
+        buffer = read('buffer'); offset = read('byteOffset'); length = read('byteLength');
+      }
+      const bufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(buffer);
+      const view = new Uint8Array(buffer, offset, length ?? bufferLength);
+      if (!view.length || view.length > 8 * MiB) throw new RangeError('Each image must contain 1 byte through 8 MiB');
+      batch += view.length;
+      if (batch > 16 * MiB) throw new RangeError('Image changes exceed the 16 MiB batch limit');
+      changes.set(key, view);
+    }
+    const previous = images, revision = generation, retained = [];
+    let oldOffset = 0, total = 0, names = 0;
+    for (let i = 0; i < previous.encoded.length; i++) {
+      const entry = previous.encoded[i], length = previous.lengths[i];
+      const view = changes.has(entry.destination) ? changes.get(entry.destination)
+        : previous.flat.subarray(oldOffset, oldOffset + length);
+      oldOffset += length;
+      if (view === null) continue;
+      total += view.length; names += textBytes(entry.destination);
+      retained.push({entry, view, replaced: changes.has(entry.destination)});
+    }
+    // Bindings append in caller-reviewed order. Existing keys cannot enter
+    // this branch, so no filename can silently retarget a committed resource.
+    if (insertion) {
+      for (const [destination, view] of changes) {
+        total += view.length; names += textBytes(destination);
+        retained.push({entry: {destination}, view, replaced: true});
+      }
+    }
+    if (names > 65536) throw new RangeError('Image destinations exceed the 64 KiB workspace limit');
+    // Budget the final set, not old + additions: replacing at the limit and
+    // removing resources must reclaim capacity for later image/font imports.
+    if (total + fontTotal > 128 * MiB) throw new RangeError('Workspace resource budget exceeded');
+    const flat = new Uint8Array(total), lengths = new Uint32Array(retained.length), encoded = [];
+    let offset = 0;
+    for (let i = 0; i < retained.length; i++) {
+      const {entry, view, replaced} = retained[i];
+      flat.set(view, offset); lengths[i] = view.length;
+      encoded.push(replaced ? Object.freeze({destination: entry.destination,
+        bytes: encode(flat.subarray(offset, offset + view.length))}) : entry);
+      offset += view.length;
+    }
+    const changed = encoded.length !== previous.encoded.length || encoded.some((entry, i) =>
+      entry.destination !== previous.encoded[i].destination || entry.bytes !== previous.encoded[i].bytes);
+    const next = changed ? {encoded: Object.freeze(encoded), flat, lengths, names,
+      destinations: encoded.map(entry => entry.destination)} : previous;
+    let committed = null, ended = false;
+    return Object.freeze({
+      images: next.encoded, changed,
+      commit(publish) {
+        if (ended || committed !== null || revision !== generation) throw new Error('Stale image change transaction');
+        if (!changed) { ended = true; return false; }
+        publishChange(publish, () => {
+          payload.images = next.encoded; images = next; committed = ++generation;
+        });
+        return true;
+      },
+      rollback(publish) {
+        if (ended || committed === null || committed !== generation) throw new Error('Stale image change rollback');
+        publishChange(publish, () => {
+          payload.images = previous.encoded; images = previous; generation++; ended = true;
+        });
+      },
+    });
+  }
+  function imageInventory() {
+    // A stable read-only identity for authoring state checks; no base64 copies or
+    // mutable byte buffers escape the resource store through this inventory.
+    return images.info ??= Object.freeze(images.encoded.map((entry, i) => Object.freeze({
+      destination: entry.destination, bytes: images.lengths[i],
+    })));
+  }
+  // Font replacement is a resource transaction, not a source or settings edit.
+  // Only the native render preflight interprets font tables. This admission path
+  // owns exact byte views and budgets them before copying or encoding anything.
+  function stageFonts(patches) {
+    if (!Array.isArray(patches) || !patches.length || patches.length > slots.length
+        || Reflect.ownKeys(patches).length !== patches.length + 1) {
+      throw new TypeError('Provide one through five font slot changes');
+    }
+    const admitted = new Map();
+    for (let i = 0; i < patches.length; i++) {
+      const item = Object.getOwnPropertyDescriptor(patches, String(i));
+      if (!item || !Object.hasOwn(item, 'value')) throw new TypeError('Font changes must be data objects');
+      const value = item.value, fields = {};
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Font changes must be data objects');
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== null && Object.getPrototypeOf(prototype) !== null) throw new TypeError('Font changes must be plain data objects');
+      for (const key of Reflect.ownKeys(value)) {
+        const field = Object.getOwnPropertyDescriptor(value, key);
+        if (!['slot', 'bytes', 'weight', 'clear'].includes(key) || !field || !Object.hasOwn(field, 'value')) {
+          throw new TypeError('Unsupported font field or accessor');
+        }
+        fields[key] = field.value;
+      }
+      const {slot, weight} = fields;
+      if (!slots.includes(slot) || admitted.has(slot)) throw new TypeError('Font slots must be recognized and unique');
+      if (Object.hasOwn(fields, 'clear')) {
+        if (fields.clear !== true || Object.hasOwn(fields, 'bytes') || Object.hasOwn(fields, 'weight')) {
+          throw new TypeError('Clearing a font accepts only slot and clear: true');
+        }
+        admitted.set(slot, null); continue;
+      }
+      if (weight !== undefined && (!Number.isInteger(weight) || weight < 1 || weight > 1000)) {
+        throw new RangeError('Font weight must be an integer from 1 through 1000');
+      }
+      if (!Object.hasOwn(fields, 'bytes')) {
+        const previous = encodedFonts.find(font => font.slot === slot);
+        if (!previous || !Object.hasOwn(fields, 'weight')) throw new TypeError('Supply font bytes or change the weight of an embedded slot');
+        admitted.set(slot, {previous, weight, view: fontBytes[slots.indexOf(slot)]});
+        continue;
+      }
+      const valueBytes = fields.bytes;
+      let buffer = valueBytes, offset = 0, length;
+      if (ArrayBuffer.isView(valueBytes)) {
+        // Read intrinsic view properties: shadowed getters cannot substitute a
+        // different buffer/range between admission and the owned copy.
+        const typed = Object.getPrototypeOf(Uint8Array.prototype);
+        let getters = typed;
+        try { Object.getOwnPropertyDescriptor(typed, 'buffer').get.call(valueBytes); }
+        catch { getters = DataView.prototype; }
+        const read = name => Object.getOwnPropertyDescriptor(getters, name).get.call(valueBytes);
+        buffer = read('buffer'); offset = read('byteOffset'); length = read('byteLength');
+      }
+      const bufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(buffer);
+      const view = new Uint8Array(buffer, offset, length ?? bufferLength);
+      if (!view.length || view.length > 32 * MiB) throw new RangeError('Each font must contain 1 byte through 32 MiB');
+      admitted.set(slot, {view, weight});
+    }
+    let total = 0;
+    for (let i = 0; i < slots.length; i++) {
+      const change = admitted.get(slots[i]);
+      total += admitted.has(slots[i]) ? (change?.view.length ?? 0) : fontBytes[i].length;
+    }
+    if (images.flat.length + total > 128 * MiB) throw new RangeError('Workspace resource budget exceeded');
+    const nextBytes = fontBytes.slice(), nextEncoded = [];
+    for (let i = 0; i < slots.length; i++) {
+      const slot = slots[i], change = admitted.get(slot);
+      const old = encodedFonts.find(font => font.slot === slot);
+      if (!admitted.has(slot)) { if (old) nextEncoded.push(old); continue; }
+      if (!change) { nextBytes[i] = new Uint8Array(); continue; }
+      if (!change.previous) nextBytes[i] = new Uint8Array(change.view);
+      nextEncoded.push(Object.freeze({slot, bytes: change.previous?.bytes ?? encode(nextBytes[i]),
+        ...(change.weight === undefined ? {} : {weight: change.weight})}));
+    }
+    const encoded = Object.freeze(nextEncoded), info = describeFonts(encoded);
+    const nextWeights = Uint32Array.from(slots, slot => encoded.find(font => font.slot === slot)?.weight ?? 0);
+    const changed = encoded.length !== encodedFonts.length || encoded.some((font, i) =>
+      font.slot !== encodedFonts[i].slot || font.bytes !== encodedFonts[i].bytes || font.weight !== encodedFonts[i].weight);
+    const previous = {encoded: encodedFonts, bytes: fontBytes, weights, total: fontTotal, info: fontInfo};
+    const revision = generation;
+    let committed = null, ended = false;
+    return Object.freeze({
+      fonts: encoded, slots: info, changed,
+      commit(publish) {
+        if (ended || committed !== null || revision !== generation) throw new Error('Stale font transaction');
+        publishChange(publish, () => {
+          payload.fonts = encoded; encodedFonts = encoded; fontBytes = nextBytes;
+          weights = nextWeights; fontTotal = total; fontInfo = info; committed = ++generation;
+        });
+      },
+      rollback(publish) {
+        if (ended || committed === null || committed !== generation) throw new Error('Stale font rollback');
+        publishChange(publish, () => {
+          payload.fonts = previous.encoded; encodedFonts = previous.encoded; fontBytes = previous.bytes;
+          weights = previous.weights; fontTotal = previous.total; fontInfo = previous.info;
+          generation++; ended = true;
+        });
+      },
+    });
+  }
+  const decoder = new TextDecoder('utf-8', {fatal: true});
+  let diagnostics = [];
+  function source(text) {
+    const maximum = 32 * 1024 * 1024;
+    if (typeof text !== 'string' || text.length > maximum) {
+      throw new RangeError('Workspace source exceeds 32 MiB');
+    }
+    // Never let a native ABI/TextEncoder silently replace malformed editor
+    // Unicode. Count before allocating and keep imported BOM/newlines exact.
+    let size = 0;
+    for (const character of text) {
+      const cp = character.codePointAt(0);
+      if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError('Workspace source contains an unpaired surrogate');
+      size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+      if (size > maximum) throw new RangeError('Workspace source exceeds 32 MiB');
+    }
+    return text;
+  }
+  function take(result, mime) {
+    try {
+      const raw = result.bytes;
+      if (result.mimeType?.split(';')[0] !== mime || !(raw instanceof Uint8Array)) {
+        throw new TypeError('Native renderer returned an invalid output envelope');
+      }
+      if (raw.length === 0 || raw.length > 256 * 1024 * 1024) {
+        throw new RangeError('Native renderer returned an invalid output size');
+      }
+      const bytes = raw.slice();
+      const json = result.diagnosticsJson();
+      const findings = json === '' ? [] : JSON.parse(json);
+      if (!Array.isArray(findings)) throw new TypeError('Native renderer returned invalid diagnostics');
+      diagnostics = findings;
+      return bytes;
+    } finally {
+      if (typeof result?.free === 'function') result.free();
+    }
+  }
+  function renderHtml(markdown, display = {}, settings = options) {
+    const scale = Math.min(3, Math.max(0.5, settings.fontScale * (display.scale ?? 1)));
+    const mode = display.theme === 'light' ? 'disabled'
+      : display.theme === 'dark' ? 'auto' : settings.darkMode;
+    const bytes = take(bindings.renderHtmlConfiguredAdvanced(
+      source(markdown), settings.font, mode, settings.title, undefined, false, scale,
+      ...fontBytes, weights, images.destinations, images.flat, images.lengths,
+      settings.lang, settings.toc, settings.tocDepth,
+    ), 'text/html');
+    let html = decoder.decode(bytes);
+    // Only generated styles are transformed; Markdown/code remains data.
+    // Native HTML supports auto/light; a manual dark view forces its dark
+    // media rules without changing the user's OS or leaking CSS into the UI.
+    if (display.theme === 'dark') html = html.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi,
+      (_, open, css, close) => open + css.replace(/@media\s*\(prefers-color-scheme:\s*dark\)/g, '@media all') + close);
+    // The first head item governs even resources appearing early in output.
+    // Documents are safe-parsed, and the preview additionally permits no
+    // scripts, forms, nested frames or external assets. Images/fonts must be
+    // embedded resources. A missing asset never silently reaches the network.
+    const head = /<head(?:\s[^>]*)?>/i;
+    if (!head.test(html)) throw new Error('Native HTML is missing its document head');
+    const policy = "default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline' data:; base-uri 'none'; form-action 'none'";
+    return html.replace(head, match => match + '<meta http-equiv="Content-Security-Policy" content="' + policy + '">');
+  }
+  return {
+    get diagnostics() { return diagnostics; },
+    get settings() { return options; },
+    get revision() { return generation; },
+    get exportFormats() { return exportFormats; },
+    get analysisFormats() { return analysisFormats; },
+    analyze,
+    stageSettings,
+    stageImages,
+    stageImageChanges(patches) { return stageImageChanges(patches); },
+    // New destinations only; the browser preflights the complete resulting set.
+    stageImageBindings(additions) { return stageImageChanges(additions, true); },
+    get imageAssets() { return imageInventory(); },
+    stageFonts,
+    get fontSlots() { return fontInfo; },
+    html(markdown, display) { return renderHtml(markdown, display); },
+    epub(markdown) {
+      const render = publicationBinding('epub');
+      return take(render(
+        source(markdown), options.font, options.darkMode, options.title, options.lang,
+        options.fontScale, undefined, options.toc, options.tocDepth,
+        images.destinations, images.flat, images.lengths, ...fontBytes, weights,
+      ), 'application/epub+zip');
+    },
+    svg(markdown) {
+      const render = publicationBinding('svg');
+      // SVG is a continuous poster, not a PDF paper layout. Use its native
+      // default width and document scale, never viewing zoom or PDF margins.
+      return take(render(
+        source(markdown), options.font, options.darkMode, options.fontScale, undefined,
+        images.destinations, images.flat, images.lengths, ...fontBytes, weights,
+      ), 'image/svg+xml');
+    },
+    pdf(markdown) {
+      const args = [
+        source(markdown), options.font, options.darkMode, options.title, options.author,
+        options.metadataEpochSeconds, false, options.codeLineNumbers,
+        images.destinations, images.flat, images.lengths, ...fontBytes, weights,
+        undefined, undefined, undefined, options.pageNumbers,
+        options.fontScale, options.lang, options.toc, options.tocDepth, undefined, false,
+      ];
+      const result = pageGeometry ? bindings.renderPdfConfiguredPage(...args, pageGeometry)
+        : bindings.renderPdfConfiguredMulti(...args);
+      const bytes = take(result, 'application/pdf');
+      if (String.fromCharCode(...bytes.subarray(0, 5)) !== '%PDF-') throw new Error('Native renderer returned invalid PDF bytes');
+      return bytes;
+    },
+  };
+}
+
+export function bootNativeWorkspace(factory, createPreview) {
+  const data = document.querySelector('body > script#fmd-native-runtime[type="application/json"]');
+  const payload = JSON.parse(data.textContent);
+  let renderer = null, failure = null, observer = null, frame = null;
+  let worker = null, previewRevision = 0, previewDiagnostics = null, suspended = false;
+  const background = typeof createPreview === 'function';
+  let pendingExport = null, pendingSettings = null;
+  const exportError = (code, message) => Object.assign(new Error(message), {code});
+  function cancelExport() {
+    const operation = pendingExport;
+    if (!operation) return;
+    pendingExport = null;
+    operation.cancelled = true;
+    operation.worker?.dispose();
+  }
+  function cancelSettings() {
+    const operation = pendingSettings;
+    if (!operation) return;
+    pendingSettings = null;
+    operation.cancelled = true;
+    operation.worker?.dispose();
+  }
+  function invalidatePreview() {
+    // Source, view, resource and lifecycle invalidation also retires a staged
+    // settings render. Cancelling never publishes the staged options.
+    cancelSettings();
+    previewRevision++;
+    worker?.invalidate();
+  }
+  function replacePreview(html, preview) {
+    const next = makeFrame(html);
+    preview.replaceChildren(next);
+    observer?.disconnect(); observer = null; frame = next;
+  }
+  function savedData(patch) {
+    const next = JSON.stringify({...payload, ...patch}).replace(/</g, '\\u003c')
+      .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+    if (next.length > 256 * 1024 * 1024 || new TextEncoder().encode(next).length > 256 * 1024 * 1024) {
+      throw new RangeError('Saved workspace resources exceed 256 MiB');
+    }
+    return next;
+  }
+  function makeFrame(html) {
+    // Render completely before replacing the old preview. Using a sandboxed
+    // document preserves native CSS, MathML/SVG, highlights and font faces
+    // without exposing the editor toolbar to document selectors or IDs.
+    const next = document.createElement('iframe');
+    next.title = 'Rust/WASM Markdown preview';
+    next.setAttribute('sandbox', 'allow-same-origin');
+    next.setAttribute('referrerpolicy', 'no-referrer');
+    next.style.cssText = 'display:block;width:100%;border:0;min-height:320px;height:320px;background:transparent';
+    next.addEventListener('load', () => {
+      if (frame !== next) return;
+      const doc = next.contentDocument;
+      if (!doc?.body) return;
+      const resize = () => {
+        if (frame !== next) return;
+        // Body geometry (not viewport scrollHeight) allows shrinking after
+        // reflow and avoids a ResizeObserver feedback loop.
+        const box = doc.body.getBoundingClientRect();
+        next.style.height = Math.ceil(Math.max(320, box.height + box.top * 2)) + 'px';
+      };
+      resize();
+      if (typeof ResizeObserver === 'function') {
+        observer?.disconnect();
+        observer = new ResizeObserver(resize); observer.observe(doc.body);
+      }
+      doc.fonts?.ready.then(resize).catch(() => {});
+    });
+    next.srcdoc = html;
+    return next;
+  }
+  function publishSettings(transaction, html, preview, findings, check = () => {}, operation = null) {
+    check();
+    const next = makeFrame(html);
+    const previousData = data.textContent, nextData = savedData({options: transaction.settings});
+    const previousChildren = Array.from(preview.childNodes);
+    transaction.commit(() => {
+      check(); // No asynchronous boundary separates this check and publication.
+      try {
+        data.textContent = nextData;
+        preview.replaceChildren(next);
+      } catch (error) {
+        data.textContent = previousData;
+        preview.replaceChildren(...previousChildren);
+        throw error;
+      }
+    });
+    if (operation && pendingSettings === operation) pendingSettings = null;
+    cancelExport(); invalidatePreview(); previewDiagnostics = findings;
+    observer?.disconnect(); observer = null; frame = next;
+    return renderer.settings;
+  }
+  // All explicit image authoring uses one preflight/publication/cancellation path.
+  function beginImageOperation(patches, insertion, markdown, preview, display, isCurrent) {
+    if (!renderer) throw failure ?? exportError('IMAGES_NOT_READY', 'Native renderer is loading');
+    if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Image changes require the matching worker runtime');
+    if (suspended) throw exportError('IMAGES_SUSPENDED', 'Image changes are suspended');
+    if (typeof isCurrent !== 'function' || !display || !Number.isFinite(display.scale)
+        || display.scale < 0.7 || display.scale > 2 || ![undefined, 'light', 'dark'].includes(display.theme)) {
+      throw exportError('IMAGES_OPTIONS', 'Invalid image preview options');
+    }
+    if (pendingSettings || pendingExport) throw exportError('IMAGES_BUSY', 'Finish or cancel the current document operation before changing images');
+    const transaction = insertion ? renderer.stageImageBindings(patches) : renderer.stageImageChanges(patches);
+    const revision = renderer.revision, options = renderer.settings;
+    const view = {scale: display.scale, theme: display.theme};
+    const operation = {images: true, worker: null, cancelled: false};
+    const current = () => !operation.cancelled && !suspended && pendingSettings === operation
+      && revision === renderer.revision && isCurrent();
+    const check = () => {
+      if (!current()) throw exportError('IMAGES_CANCELLED', 'Document or image selection changed; apply the current revision again');
+    };
+    pendingSettings = operation;
+    const promise = Promise.resolve().then(() => {
+      check();
+      if (!transaction.changed) return null;
+      const state = {options, images: transaction.images};
+      operation.worker = createPreview(factory, {...payload, ...state});
+      return operation.worker.render(markdown, view, state);
+    }).then(result => {
+      check();
+      if (result === null) return renderer.imageAssets;
+      const next = makeFrame(result.html), previousData = data.textContent;
+      const nextData = savedData({images: transaction.images});
+      const previousChildren = Array.from(preview.childNodes);
+      transaction.commit(() => {
+        check();
+        try {
+          data.textContent = nextData;
+          preview.replaceChildren(next);
+        } catch (error) {
+          data.textContent = previousData;
+          preview.replaceChildren(...previousChildren);
+          throw error;
+        }
+      });
+      pendingSettings = null;
+      cancelExport(); invalidatePreview(); previewDiagnostics = result.diagnostics;
+      observer?.disconnect(); observer = null; frame = next;
+      window.dispatchEvent(new Event('fmd-native-images-changed'));
+      return renderer.imageAssets;
+    }, error => { check(); throw error; }).finally(() => {
+      operation.worker?.dispose();
+      if (pendingSettings === operation) pendingSettings = null;
+    });
+    // A retired image dialog must never cancel a newer font/settings job.
+    return Object.freeze({promise, cancel() {
+      if (pendingSettings !== operation) return false;
+      cancelSettings(); return true;
+    }});
+
+  }
+  const engine = {
+    version: 1,
+    imageMode: background ? 'worker' : 'unavailable',
+    get imageAssets() { return renderer?.imageAssets ?? null; },
+    get imagesPending() { return Boolean(pendingSettings?.images); },
+    beginImageChanges(patches, markdown, preview, display = {scale: 1}, isCurrent = () => true) {
+      return beginImageOperation(patches, false, markdown, preview, display, isCurrent);
+    },
+    beginImageBindings(additions, markdown, preview, display = {scale: 1}, isCurrent = () => true) {
+      return beginImageOperation(additions, true, markdown, preview, display, isCurrent);
+    },
+    fontMode: background ? 'worker' : 'unavailable',
+    get fontSlots() { return renderer?.fontSlots ?? null; },
+    get fontsPending() { return Boolean(pendingSettings?.fonts); },
+    cancelFonts() { if (pendingSettings?.fonts) cancelSettings(); },
+    applyFontsAsync(patches, markdown, preview, display = {scale: 1}, isCurrent = () => true) {
+      if (!renderer) throw failure ?? exportError('FONTS_NOT_READY', 'Native renderer is loading');
+      if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Font changes require the matching worker runtime');
+      if (suspended) throw exportError('FONTS_SUSPENDED', 'Font changes are suspended');
+      if (typeof isCurrent !== 'function' || !display || !Number.isFinite(display.scale)
+          || display.scale < 0.7 || display.scale > 2 || ![undefined, 'light', 'dark'].includes(display.theme)) {
+        throw exportError('FONTS_OPTIONS', 'Invalid font preview options');
+      }
+      if (pendingSettings || pendingExport) throw exportError('FONTS_BUSY', 'Finish or cancel the current document operation before changing fonts');
+      const transaction = renderer.stageFonts(patches);
+      const options = renderer.settings, images = payload.images, fonts = payload.fonts;
+      const view = {scale: display.scale, theme: display.theme};
+      const operation = {fonts: true, worker: null, cancelled: false};
+      const current = () => !operation.cancelled && !suspended && pendingSettings === operation
+        && options === renderer.settings && images === payload.images && fonts === payload.fonts && isCurrent();
+      const check = () => {
+        if (!current()) throw exportError('FONTS_CANCELLED', 'Document or font selection changed; apply the current revision again');
+      };
+      pendingSettings = operation;
+      return Promise.resolve().then(() => {
+        check();
+        if (!transaction.changed) return null;
+        // The existing native ABI validates every supplied font before rendering.
+        // No font parser, shaping, subsetting or WASM call runs on the UI thread.
+        operation.worker = createPreview(factory, {...payload, options, images, fonts: transaction.fonts});
+        return operation.worker.render(markdown, view, {options, images});
+      }).then(result => {
+        check();
+        if (result === null) return renderer.fontSlots;
+        const next = makeFrame(result.html), previousData = data.textContent;
+        const nextData = savedData({fonts: transaction.fonts});
+        const previousChildren = Array.from(preview.childNodes);
+        transaction.commit(() => {
+          check();
+          try {
+            data.textContent = nextData;
+            preview.replaceChildren(next);
+          } catch (error) {
+            data.textContent = previousData;
+            preview.replaceChildren(...previousChildren);
+            throw error;
+          }
+        });
+        pendingSettings = null;
+        cancelExport(); invalidatePreview();
+        // The worker protocol caches fonts at initialization. Retire that cache
+        // before any later edit; the replacement worker captures committed fonts.
+        worker?.dispose(); worker = null;
+        previewDiagnostics = result.diagnostics;
+        observer?.disconnect(); observer = null; frame = next;
+        window.dispatchEvent(new Event('fmd-native-fonts-changed'));
+        return renderer.fontSlots;
+      }, error => { check(); throw error; }).finally(() => {
+        operation.worker?.dispose();
+        if (pendingSettings === operation) pendingSettings = null;
+      });
+    },
+    settingsMode: background ? 'worker' : 'synchronous',
+    get settingsPending() { return pendingSettings !== null; },
+    cancelSettings,
+    applySettingsAsync(patch, markdown, preview, display = {scale: 1}, isCurrent = () => true) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; retry settings after initialization.');
+      if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Background settings require the matching worker runtime');
+      if (suspended) throw exportError('SETTINGS_SUSPENDED', 'Document settings are suspended');
+      if (typeof isCurrent !== 'function' || !display || !Number.isFinite(display.scale)
+          || display.scale < 0.7 || display.scale > 2 || ![undefined, 'light', 'dark'].includes(display.theme)) {
+        throw exportError('SETTINGS_OPTIONS', 'Invalid settings preview options');
+      }
+      // Settings and explicit exports share one document-operation slot. Live
+      // previews are independent; there is no fourth WASM instance or job queue.
+      if (pendingSettings || pendingExport) throw exportError('SETTINGS_BUSY', 'Finish or cancel the current document operation before applying settings');
+      const transaction = renderer.stageSettings(patch);
+      const options = renderer.settings, images = payload.images;
+      const view = {scale: display.scale, theme: display.theme};
+      const operation = {worker: null, cancelled: false};
+      const current = () => !operation.cancelled && !suspended && pendingSettings === operation
+        && options === renderer.settings && images === payload.images && isCurrent();
+      const check = () => {
+        if (!current()) throw exportError('SETTINGS_CANCELLED', 'Document or settings draft changed; apply the current revision again');
+      };
+      pendingSettings = operation;
+      return Promise.resolve().then(() => {
+        check();
+        // Only validated immutable settings enter this disposable preflight.
+        // Never call transaction.html here: that would render on the UI thread.
+        const state = {options: transaction.settings, images};
+        operation.worker = createPreview(factory, {...payload, ...state});
+        return operation.worker.render(markdown, view, state);
+      }).then(result => {
+        check();
+        return publishSettings(transaction, result.html, preview, result.diagnostics, check, operation);
+      }, error => {
+        check();
+        throw error;
+      }).finally(() => {
+        operation.worker?.dispose();
+        if (pendingSettings === operation) pendingSettings = null;
+      });
+    },
+    previewMode: background ? 'worker' : 'synchronous',
+    exportMode: background ? 'worker' : 'synchronous',
+    get exportPending() { return pendingExport !== null; },
+    get exportFormats() { return renderer?.exportFormats ?? []; },
+    get analysisFormats() { return renderer?.analysisFormats ?? []; },
+    get analysisPending() { return Boolean(pendingExport?.kind); },
+    cancelAnalysis() { if (pendingExport?.kind) cancelExport(); },
+    analyzeDocument(kind, markdown, isCurrent = () => true) {
+      if (!renderer) throw failure ?? exportError('ANALYSIS_NOT_READY', 'Native renderer is loading');
+      if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Document analysis requires the matching worker runtime');
+      if (suspended) throw exportError('ANALYSIS_SUSPENDED', 'Document analysis is suspended');
+      if (!['stats', 'accessibility'].includes(kind) || typeof isCurrent !== 'function') {
+        throw exportError('ANALYSIS_OPTIONS', 'Choose document stats or accessibility analysis');
+      }
+      if (!renderer.analysisFormats?.includes(kind)) {
+        throw exportError('UNSUPPORTED_WASM_PACKAGE', 'This embedded engine does not support the requested document analysis');
+      }
+      if (pendingExport || pendingSettings) throw exportError('ANALYSIS_BUSY', 'Finish or cancel the current document operation first');
+      const options = renderer.settings, images = payload.images;
+      const operation = {kind, worker: null, cancelled: false};
+      const current = () => !operation.cancelled && !suspended && pendingExport === operation
+        && options === renderer.settings && images === payload.images && isCurrent();
+      const check = () => {
+        if (!current()) throw exportError('ANALYSIS_CANCELLED', 'Document analysis was cancelled or the document changed');
+      };
+      // Analyses occupy the same disposable slot as exports/settings. They do
+      // not create a fourth engine, queue work or stall the live preview worker.
+      pendingExport = operation;
+      return Promise.resolve().then(() => {
+        check();
+        operation.worker = createPreview(factory, {...payload, options, images});
+        if (typeof operation.worker?.analyzeDocument !== 'function') {
+          throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Rebuild the matching workspace analysis worker');
+        }
+        return operation.worker.analyzeDocument(kind, markdown, {options, images});
+      }).then(result => {
+        check();
+        return result;
+      }, error => { check(); throw error; }).finally(() => {
+        operation.worker?.dispose();
+        if (pendingExport === operation) pendingExport = null;
+      });
+    },
+    cancelExport,
+    beginExportDocument(format, markdown, isCurrent = () => true) {
+      const promise = engine.exportDocument(format, markdown, isCurrent);
+      // exportDocument admits and owns the shared slot synchronously. Capture
+      // that identity, not just a busy flag: an old proof's cancel button must
+      // never terminate a newer export or document analysis.
+      const operation = pendingExport;
+      return Object.freeze({
+        promise,
+        cancel() {
+          if (pendingExport !== operation) return false;
+          cancelExport();
+          return true;
+        },
+      });
+    },
+    exportDocument(format, markdown, isCurrent = () => true) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; retry export after initialization.');
+      if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Background exports require the matching worker runtime');
+      if (suspended) throw exportError('EXPORT_SUSPENDED', 'Document exports are suspended');
+      if (!['pdf', 'html', 'epub', 'svg'].includes(format) || typeof isCurrent !== 'function') {
+        throw exportError('EXPORT_OPTIONS', 'Choose PDF, HTML, EPUB or SVG export');
+      }
+      if (!['pdf', 'html'].includes(format) && !renderer.exportFormats?.includes(format)) {
+        throw exportError('UNSUPPORTED_WASM_PACKAGE', format.toUpperCase() + ' publication requires matching resource-capable WASM bindings');
+      }
+      if (pendingExport || pendingSettings) throw exportError('EXPORT_BUSY', 'A document export or settings preflight is already running');
+      const options = renderer.settings, images = payload.images;
+      const operation = {worker: null, cancelled: false};
+      const current = () => !operation.cancelled && !suspended && pendingExport === operation
+        && options === renderer.settings && images === payload.images && isCurrent();
+      pendingExport = operation;
+      return Promise.resolve().then(() => {
+        if (!current()) throw exportError('EXPORT_CANCELLED', 'Document changed before export started');
+        // A separate lazy worker means heavy PDF layout cannot starve previews.
+        // It is released after completion, not retained as a third WASM/resource
+        // copy while idle. Never use the main-thread renderer as a fallback.
+        operation.worker = createPreview(factory, {...payload, options, images});
+        if (typeof operation.worker?.exportDocument !== 'function') {
+          throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Rebuild matching bindings with background export support');
+        }
+        return operation.worker.exportDocument(format, markdown, {options, images});
+      }).then(result => {
+        if (!current()) throw exportError('EXPORT_CANCELLED', 'Document changed during export; export the current revision again');
+        // Export findings travel with this result, not the preview diagnostic
+        // slot. A late export must not overwrite a newer preview's findings.
+        return result;
+      }, error => {
+        if (!current()) throw exportError('EXPORT_CANCELLED', 'Document export was cancelled or superseded');
+        throw error;
+      }).finally(() => {
+        operation.worker?.dispose();
+        if (pendingExport === operation) pendingExport = null;
+      });
+    },
+    invalidatePreview,
+    restartPreview() {
+      if (suspended) throw new Error('Preview is suspended');
+      invalidatePreview();
+      worker?.dispose(); worker = null;
+    },
+    get diagnostics() { return previewDiagnostics ?? renderer?.diagnostics ?? []; },
+    get settings() { return renderer?.settings ?? null; },
+    get documentRevision() { return renderer?.revision ?? null; },
+    applySettings(patch, markdown, preview, display) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; retry settings after initialization.');
+      const transaction = renderer.stageSettings(patch);
+      // Legacy callers explicitly retain synchronous preflight. The rebuilt
+      // controller uses applySettingsAsync instead, with no implicit fallback.
+      return publishSettings(transaction, transaction.html(markdown, display), preview, null);
+    },
+    stageImages(additions) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; retry image insertion after initialization.');
+      const transaction = renderer.stageImages(additions);
+      const previous = data.textContent;
+      const next = savedData({images: transaction.images});
+      return Object.freeze({
+        commit() {
+          transaction.commit(() => { data.textContent = next; });
+          cancelExport(); invalidatePreview(); previewDiagnostics = null;
+        },
+        rollback() {
+          transaction.rollback(() => { data.textContent = previous; });
+          cancelExport(); invalidatePreview(); previewDiagnostics = null;
+        },
+      });
+    },
+    render(markdown, preview, display, isCurrent = () => true) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; source is safe. Retry after initialization.');
+      if (suspended) return false;
+      if (!background) {
+        replacePreview(renderer.html(markdown, display), preview);
+        previewDiagnostics = null;
+        return true;
+      }
+      // Only immutable committed snapshots enter the worker. Settings and image
+      // transactions update payload in place; do not reparse/copy its WASM or
+      // resources on each keystroke. The worker caches unchanged revisions.
+      if (!worker) worker = createPreview(factory, payload);
+      const revision = ++previewRevision, options = renderer.settings, images = payload.images;
+      const current = () => !suspended && revision === previewRevision
+        && options === renderer.settings && images === payload.images && isCurrent();
+      return worker.render(markdown, display, {options, images}).then(result => {
+        // Check editor state again *before* DOM publication, including edits
+        // made without an input event and a source replacement/undo round trip.
+        if (!current()) return false;
+        replacePreview(result.html, preview);
+        previewDiagnostics = result.diagnostics;
+        return true;
+      }, error => {
+        if (!current() || error?.code === 'PREVIEW_SUPERSEDED') return false;
+        // No automatic main-thread fallback or unbounded restart loop. Explicit
+        // Restart preview disposes the failed worker and captures current state.
+        throw error;
+      });
+    },
+    html(markdown) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; retry HTML publishing after initialization.');
+      // A publication is a new complete native document, not a snapshot of the
+      // editor or its iframe. Use committed document settings, never view zoom
+      // or a forced view theme, and retain the renderer's script-free CSP.
+      previewDiagnostics = null;
+      return renderer.html(markdown);
+    },
+    pdf(markdown) {
+      if (!renderer) throw failure ?? new Error('Native renderer is loading; retry PDF export after initialization.');
+      previewDiagnostics = null;
+      return renderer.pdf(markdown);
+    },
+  };
+  // Named DOM elements cannot impersonate the handoff to the app controller.
+  Object.defineProperty(window, '__fmdNativeRuntime', {value: engine});
+  let moduleUrl = null;
+  engine.ready = (async () => {
+    try {
+      const binary = atob(payload.wasm), bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      moduleUrl = URL.createObjectURL(new Blob([payload.bindings], {type: 'text/javascript'}));
+      const bindings = await import(moduleUrl);
+      if (typeof bindings.default !== 'function') throw new Error('Native workspace requires wasm-bindgen --target web bindings');
+      await bindings.default({module_or_path: bytes});
+      renderer = factory(bindings, payload);
+      window.dispatchEvent(new Event('fmd-native-ready'));
+      return true;
+    } catch (error) {
+      failure = new Error('Native runtime failed: ' + String(error?.message ?? error).slice(0, 2048));
+      window.dispatchEvent(new CustomEvent('fmd-native-error', {detail: failure.message}));
+      return false; // Failure is visible, never an unhandled rejection or fallback.
+    } finally {
+      if (moduleUrl) URL.revokeObjectURL(moduleUrl);
+    }
+  })();
+  window.addEventListener('pagehide', () => {
+    suspended = true; cancelExport(); invalidatePreview();
+    worker?.dispose(); worker = null;
+    observer?.disconnect(); observer = null; frame = null;
+  });
+  window.addEventListener('pageshow', () => { suspended = false; });
+}

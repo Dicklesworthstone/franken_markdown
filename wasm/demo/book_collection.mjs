@@ -116,7 +116,7 @@ function sourceTree(value) {
 // Deliberately excludes assets, include policy, CSS and metadata/page controls.
 export const BOOK_PUBLICATION_FIELDS = Object.freeze([
   "typography", "baseFontSize", "headingScale", "tableFontSize", "tocDepth",
-  "fitToPages", "codeLineNumbers", "metadataEpochSeconds", "running", "htmlFontFormat",
+  "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds", "running", "htmlFontFormat", "fontEmbedding",
   "pdfA", "pdfAStrict",
 ]);
 function settingRecord(value, keys) {
@@ -143,8 +143,8 @@ export function normalizeBookPublication(value = {}) {
   for (const band of [normalized.running?.header, normalized.running?.footer]) {
     if (band?.image) {
       bookPath(band.image.dest);
-      if (!/\.(png|jpe?g|svg)$/i.test(band.image.dest))
-        throw bookError("INVALID_IMAGE", "Running images must reference a book PNG, JPEG or SVG path.");
+      if (!/\.(png|jpe?g|gif|svg)$/i.test(band.image.dest))
+        throw bookError("INVALID_IMAGE", "Running images must reference a book PNG, JPEG, GIF or SVG path.");
     }
   }
   // The facade owns/freezes nested bands and images. Primitive defaults remain
@@ -185,7 +185,7 @@ export function normalizeBookProject(project) {
     !project ||
     typeof project !== "object" ||
     Array.isArray(project) ||
-    ![1, 2, 3, 4, 5].includes(project.schemaVersion) ||
+    ![1, 2, 3, 4, 5, 6].includes(project.schemaVersion) ||
     Object.keys(project).some((key) => !["schemaVersion", "files", "options"].includes(key))
   ) {
     throw bookError("INVALID_PROJECT", "Unsupported source-project schema.");
@@ -199,6 +199,11 @@ export function normalizeBookProject(project) {
   ) {
     throw bookError("INVALID_PROJECT", "Source roles require project schema version 2.");
   }
+  // The saved grid participates in pagination and must survive recovery. A
+  // distinct version prevents older workbenches from accepting a weaker profile.
+  if (project.schemaVersion < 6 && project.options &&
+      Object.hasOwn(project.options, "baselineGridPt"))
+    throw bookError("INVALID_PROJECT", "PDF baseline grids require source-project schema version 6.");
   // Archival intent must never be silently dropped by an older workbench.
   // Keep it behind a source-project version even when an input spells OFF.
   if (project.schemaVersion < 5 && project.options &&
@@ -241,8 +246,8 @@ function imageList(value) {
   return value.map((image) => {
     const destination = bookPath(image?.destination),
       bytes = image.bytes;
-    if (!/\.(png|jpe?g|svg)$/i.test(destination))
-      throw bookError("INVALID_IMAGE", "Choose PNG, JPEG or SVG images.");
+    if (!/\.(png|jpe?g|gif|svg)$/i.test(destination))
+      throw bookError("INVALID_IMAGE", "Choose PNG, JPEG, GIF or SVG images.");
     if (paths.has(destination))
       throw bookError(
         "DUPLICATE_PATH",
@@ -378,7 +383,7 @@ export function createBookCollection() {
       ...(role === "include" ? { role } : {}),
     }));
   const project = () => ({
-    schemaVersion: options.pdfA === "2b" ? 5
+    schemaVersion: options.baselineGridPt !== undefined ? 6 : options.pdfA === "2b" ? 5
       : BOOK_PUBLICATION_FIELDS.some(key => options[key] !== undefined) ? 4
       : options.page !== undefined ? 3 : files.some((file) => file.role === "include") ? 2 : 1,
     files: sources(),
@@ -804,7 +809,7 @@ export async function readBookFiles(selected, { folder = false, role = "chapter"
         ? "include"
         : /\.(md|markdown)$/i.test(path)
           ? "chapter"
-          : /\.(png|jpe?g|svg)$/i.test(path)
+          : /\.(png|jpe?g|gif|svg)$/i.test(path)
             ? "image"
             : null;
     if (!kind) {
@@ -996,8 +1001,8 @@ export async function readPortableBookProject(file, { signal } = {}) {
   const images = raw.images.map(asset => {
     portableRecord(asset, ["destination", "encoding", "data"]);
     const destination = bookPath(asset.destination);
-    if (!/\.(png|jpe?g|svg)$/i.test(destination))
-      throw bookError("INVALID_IMAGE", "Portable images must be PNG, JPEG or SVG.");
+    if (!/\.(png|jpe?g|gif|svg)$/i.test(destination))
+      throw bookError("INVALID_IMAGE", "Portable images must be PNG, JPEG, GIF or SVG.");
     if (destinations.has(destination)) throw bookError("DUPLICATE_PATH", "Duplicate portable image path.");
     destinations.add(destination);
     const size = portableAssetSize(asset, L.imageBytes);

@@ -157,7 +157,7 @@ fn decoded_length(source: &str) -> Result<usize, ToolError> {
     if input.len() > MAX_ASSET_BYTES.div_ceil(3) * 4 {
         return Err(limit());
     }
-    if input.is_empty() || input.len() % 4 != 0 {
+    if input.is_empty() || !input.len().is_multiple_of(4) {
         return Err(invalid(
             "Resource base64 must be nonempty canonical padded base64",
         ));
@@ -183,7 +183,7 @@ fn decode(source: &str) -> Result<Vec<u8>, ToolError> {
         b'/' => Some(63),
         _ => None,
     };
-    for (index, chunk) in input.chunks_exact(4).enumerate() {
+    for (index, chunk) in input.as_chunks::<4>().0.iter().enumerate() {
         let last = index + 1 == input.len() / 4;
         let a = value(chunk[0]).ok_or_else(bad)?;
         let b = value(chunk[1]).ok_or_else(bad)?;

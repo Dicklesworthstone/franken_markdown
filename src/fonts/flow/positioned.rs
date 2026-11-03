@@ -19,9 +19,19 @@ pub(super) fn is_mark(ch: char) -> bool {
 // space behavior. The strict shaper accepts Latin, not Greek/Cyrillic/symbols;
 // those still use the existing profile. A mark after a non-Latin base is thus
 // refused as an unattached mark rather than assigned to a different script.
-fn segment_kind(ch: char) -> u8 {
+fn segment_kind(text: &str, offset: usize, ch: char) -> u8 {
     if ch.is_whitespace() {
         0
+    } else if matches!(ch, '©' | '®')
+        && text
+            .get(offset + ch.len_utf8()..)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|next| matches!(next, '\u{fe0e}' | '\u{fe0f}'))
+    {
+        // These Latin-range symbols can own an emoji presentation selector.
+        // Keep that pair in the non-Latin segment when another word requires
+        // mark positioning; do not strand its selector in the following run.
+        2
     } else if matches!(ch as u32, 0x20..=0x024f | 0x0300..=0x036f) {
         1
     } else {
@@ -54,6 +64,7 @@ impl BundledFlowFonts {
             return Ok(run);
         }
         let mut output = OwnedTextRun {
+            vertical_metrics: None,
             context: TextRunContext {
                 font_id: self.faces[primary].id,
                 font_size: size,
@@ -70,11 +81,11 @@ impl BundledFlowFonts {
         let mut start = 0;
         let mut utf16_start = 0;
         let mut chars = text.char_indices().peekable();
-        while let Some((_, first)) = chars.next() {
-            let kind = segment_kind(first);
+        while let Some((offset, first)) = chars.next() {
+            let kind = segment_kind(text, offset, first);
             while chars
                 .peek()
-                .is_some_and(|(_, ch)| segment_kind(*ch) == kind)
+                .is_some_and(|(offset, ch)| segment_kind(text, *offset, *ch) == kind)
             {
                 chars.next();
             }

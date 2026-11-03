@@ -7,6 +7,11 @@ ligatures, source clusters, inline styles, and fallback font identities come
 from the existing display list. Both `./flow` and `./flow-worker` expose the
 same `glyphOutlines(fontId, glyphIds)` contract; the worker form is asynchronous.
 
+Display and inline mathematics arrive as actual filled vector contours from the
+shared `fmd_math` engine. Fractions, roots, large operators, matrices and explicit
+formula colors use that geometry directly. There is no browser math parser,
+font substitution, SVG image decoding or network dependency in this path.
+
 Rebuild the matching generated WASM package before using this API. An older
 binary without `glyphOutlinesJson` is rejected, not silently approximated.
 
@@ -53,14 +58,21 @@ advances and offsets, never an outline's nominal advance. Every actual glyph
 font ID is resolved independently, so a fallback face cannot be drawn with the
 primary face's metrics. No fonts are installed in the DOM.
 
-The current flow contract supplies line boxes but no explicit baseline. The
-Canvas backend therefore applies an explicit presentation policy: fragments
-sharing the same line top and height share a baseline derived from the largest
-actual-face ascent and descent, with remaining leading split above and below.
-Fragments across snapshot-page boundaries share that baseline. Changing the
-horizontal scroll offset does not change the baseline. Rasterization quality
-and pixel antialiasing remain browser/platform dependent; this is not a claim
-of identical pixels across all operating systems.
+Mixed text/math lines carry an explicit `baselineY` measured by native layout
+from the actual bundled font metrics and formula extents. Canvas uses that
+absolute logical coordinate, then applies each glyph's existing vertical offset.
+Tall fractions and radicals expand their line box; adjacent prose, formula paths,
+links and decorations retain the same native layout. A supplied baseline must
+be finite and lie within the line bounds, allowing only native f32 edge-rounding
+error. Invalid placement rejects the paint before publication.
+
+When `baselineY` is absent or null, Canvas preserves the existing presentation
+policy: fragments sharing the same line top and height share a baseline derived
+from the largest actual-face ascent and descent, with remaining leading split
+above and below. Fragments across snapshot-page boundaries share that baseline.
+Changing the horizontal scroll offset does not change either baseline policy.
+Rasterization quality and pixel antialiasing remain browser/platform dependent;
+this is not a claim of identical pixels across all operating systems.
 
 The target's backing store is the viewport only, not the entire document. The
 renderer reads 256-item pages under one captured source/layout token, retains
@@ -91,6 +103,40 @@ checkboxes, rules, and strikethrough decorations are drawn. Heading/link anchors
 are interaction data, not ink. Diagram primitives with only classification and
 bounds are refused rather than rendered as invented path geometry. The backend
 currently accepts the bundled simple-LTR profile, not RTL or vertical text.
+
+## Mathematics and filled paths
+
+Matching native producers emit `kind: "path"` items for display and inline math. Their
+`commands` are closed M/L/Q/C/Z contours in absolute logical display coordinates
+(downward-positive y), filled with nonzero winding. Endpoints and every Bézier
+control point must fit `bounds`, allowing only native f32 edge-rounding error.
+`fill: null` uses `colorRole` from the host palette; a four-channel RGBA tuple in
+0..1 supplies an explicit formula color and overrides that role. Paint order
+preserves overlapping glyphs, rules, drawn radicals and nested color changes.
+
+Each item contains at most 65,536 commands; the native display and browser's
+visible filled-path inventory are capped at 262,144. Filled paths also share the
+existing per-frame retention and execution budgets with text glyph outlines.
+They are copied and validated before a yield, then drawn cooperatively in the
+same private staging surface. They never enter the font cache or request a font,
+image, external resource or browser text measurement.
+
+Math needs the matching native/WASM producer and this Canvas consumer.
+The new primitive extends schema 1; older consumers reject it as unsupported.
+Older generated packages that still emit literal formula text do not gain
+typesetting merely by updating the JavaScript. Inline formulas are atomic line
+content, with real math-engine text/display styles and measured baselines; they
+may wrap between surrounding text and a formula, never through formula paths.
+Unsupported or bounded-out formulas retain their complete TeX through the native
+producer rather than disappearing. Inline fallback text items expose a nonempty
+`mathFallback` reason of at most 160 Unicode scalar values. The consumer validates
+that diagnostic before drawing; hosts can inspect it in the ordinary snapshot.
+
+The separate reading surface uses a `math` leaf for block formulas and `math`
+annotations on inline reading ranges. Both retain exact TeX, so formulas remain
+searchable and selectable, including a range across surrounding styled prose.
+A path's enclosing source span supports source navigation; it does not invent
+a glyph caret or TeX-to-symbol selection map. See `READER.md`.
 
 ## Atomic preparation and cancellation
 
@@ -124,8 +170,8 @@ chunks, including inside a single large cached outline. Empty outlines and
 vector/selection work also count. This is cooperative scheduling, not a hard
 millisecond deadline: native calls, JSON parsing, individual Canvas operations,
 and already-bounded wire validation/copying remain synchronous. In particular,
-outline validation and immutable copying stay in the same turn (at most 65,536
-commands per wire batch) so a provider cannot mutate admitted data during a
+outline and filled-path validation and immutable copying stay in the same turn
+(at most 65,536 commands per wire batch/item) so a provider cannot mutate admitted data during a
 suspended copy. Worker RPC cancellation is still never used for paint aborts.
 
 Only the private staging surface is drawn during these slices. Every resumed
@@ -183,6 +229,10 @@ These are structural/work limits, not exact browser/GPU allocation accounting.
 The Rust decoder also limits batch size to 256, decoded commands to 65,536 and
 JSON output to 16 MiB. Empty glyph batches return font metrics only.
 
+Filled display paths retain absolute document coordinates only for the current
+paint. Their 262,144-command aggregate ceiling is independent of the glyph LRU;
+both count toward `maxFrameCommands`, and both count toward `maxDrawCommands`.
+
 ## Tests
 
 `node --test wasm/flow_outlines.test.mjs` checks the native-wire boundary and a
@@ -203,6 +253,25 @@ claiming end-to-end generated-WASM proof; source checks are not a substitute.
 
 Types: `tsc --noEmit --strict --target ES2022 --module NodeNext
 --moduleResolution NodeNext wasm/flow_canvas_types_test.mts`.
+
+`node --test wasm/flow_canvas_math.test.mjs wasm/flow_reading_math.test.mjs`
+checks path grammar, control hulls, RGBA, shared budgets, immutable ownership,
+worker delta preservation, cancellation and literal formula semantics.
+`tests/flow_math_display.rs` can emit actual native snapshot/viewport/reading
+payloads when `FMD_FLOW_MATH_FIXTURE=/path/to/math.json` is explicitly supplied.
+Pass that file to `python wasm/tests/run_flow_math.py --fixture /path/to/math.json
+--chromium /path/to/chromium` for real Canvas and selectable DOM assertions.
+The browser gate consumes native geometry unchanged; it is native-wire/browser
+evidence, separate from a generated-WASM execution claim.
+
+To also execute real generated bindings, add `--generated-package /path/to/web-bindings`
+with matching `franken_markdown.js` and `franken_markdown_bg.wasm`. That optional
+mode initializes the public `createFlowSession` facade from supplied WASM bytes,
+compares real snapshot/viewport/reading output with the native fixture, and
+exercises source replacement, edits, reflow, visible fallback and stale paints.
+Formula-only paints must make no text-outline, font-byte, image or asset requests;
+all browser network requests remain blocked and reported. The report records
+the generated glue/WASM hashes separately from native-wire fixture evidence.
 
 ## Live editing example
 

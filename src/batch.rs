@@ -11,14 +11,15 @@
 //! rendered serially by one Asupersync task on a `workers`-thread runtime. This
 //! bounds concurrent renders (and therefore peak memory) to the worker budget
 //! without a shared queue, and a per-file `checkpoint` makes cancellation
-//! cooperative at file granularity. Receipts are assembled in deterministic
-//! input order regardless of completion order.
+//! cooperative at file granularity. CLI-authorized remote image preparation
+//! additionally observes cancellation while downloading. Receipts are assembled
+//! in deterministic input order regardless of completion order.
 #![cfg(feature = "batch")]
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use asupersync::prelude::*;
 use asupersync::runtime::RuntimeBuilder;
@@ -29,8 +30,8 @@ use crate::cli::protected_paths::{
 };
 use crate::file_write::{OutputFile, write_outputs_staged};
 use crate::{
-    Document, HtmlOptions, PdfImageAsset, PdfOptions, parse_markdown, render_html_document,
-    render_pdf_document,
+    Document, HtmlOptions, PdfASettings, PdfImageAsset, PdfOptions, parse_markdown,
+    render_html_document, render_pdf_document, render_pdf_document_pdfa,
 };
 
 /// Conservative default per-job peak RSS estimate (bytes) for the memory
@@ -188,9 +189,9 @@ pub struct BatchOptions {
     /// When true, per-file failures do not fail the whole run.
     pub continue_on_error: bool,
     /// Wall-clock deadline in seconds (`None` = no deadline). Best-effort: it is
-    /// checked only at per-file `checkpoint`s, and the render core never
-    /// checkpoints mid-file, so a single in-progress file runs to completion
-    /// before the deadline can skip the remaining files. When it fires, the
+    /// checked at per-file `checkpoint`s, and the render core never checkpoints
+    /// mid-file, so a single in-progress render runs to completion. CLI remote
+    /// image preparation also observes cancellation while fetching. When it fires, the
     /// not-yet-started files are skipped and the receipt is marked `cancelled`.
     /// This is the CLI-reachable cancellation path (the crate forbids `unsafe`,
     /// so no POSIX signal handler is installed).
@@ -201,8 +202,55 @@ pub struct BatchOptions {
     pub max_input_bytes: u64,
     /// Per auto-loaded local image asset limit in bytes. Applies to both HTML
     /// data-URI embedding and PDF image/SVG drawing, mirroring single-file
-    /// `--max-pdf-image-bytes` behavior for file-input renders.
+    /// `--max-pdf-image-bytes` behavior for file-input renders. The CLI also
+    /// applies this cap to its authorized remote image downloads.
     pub max_pdf_image_bytes: u64,
+}
+
+/// CLI-owned network authority and diagnostic collection. Public library
+/// entry points never construct this, so their existing offline behavior and
+/// `BatchOptions` struct literals remain unchanged.
+#[derive(Clone)]
+pub(crate) struct BatchShell {
+    remote_image_timeout_secs: Option<u64>,
+    svg_width_pt: Option<f32>,
+    warnings: Arc<Mutex<Vec<BatchWarning>>>,
+}
+
+pub(crate) struct BatchWarning {
+    pub input: PathBuf,
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl BatchShell {
+    pub(crate) fn new(remote_image_timeout_secs: Option<u64>, svg_width_pt: Option<f32>) -> Self {
+        Self {
+            remote_image_timeout_secs,
+            svg_width_pt,
+            warnings: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub(crate) fn take_warnings(&self) -> Vec<BatchWarning> {
+        let mut warnings = std::mem::take(
+            &mut *self
+                .warnings
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        // Match the CLI's final receipt sort. Stable sorting retains each
+        // document's source/render order independent of worker completion order.
+        warnings.sort_by(|left, right| left.input.cmp(&right.input));
+        warnings
+    }
+}
+
+struct BatchHost<'a> {
+    inputs: &'a [PathBuf],
+    document_defaults: &'a crate::config::RenderDefaults,
+    pdf_a: PdfASettings,
+    shell: Option<&'a BatchShell>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -715,6 +763,53 @@ fn append_auto_image_assets_for_input(
     Ok(())
 }
 
+/// Native CLI preparation, before any output is published. A fetch failure
+/// keeps the ordinary alt-text fallback; cancellation skips the whole job.
+fn append_remote_image_assets_for_input(
+    input: &Path,
+    doc: &Document,
+    assets: &mut Vec<PdfImageAsset>,
+    max_bytes: u64,
+    timeout_secs: u64,
+    cancelled: &AtomicBool,
+    warnings: &mut Vec<BatchWarning>,
+) -> bool {
+    use crate::cli::remote_images::{FetchError, fetch_remote_image_with_cancel, remote_image_url};
+
+    let lowered = crate::safe_html::lower(doc);
+    let mut destinations = Vec::new();
+    collect_image_destinations(&lowered.blocks, &mut destinations);
+    let mut attempted = std::collections::BTreeSet::new();
+    let cancel_now = || {
+        let stop = cancelled.load(Ordering::Relaxed)
+            || Cx::current().is_some_and(|context| context.checkpoint().is_err());
+        if stop {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        stop
+    };
+    for destination in destinations {
+        let Some(url) = remote_image_url(destination) else {
+            continue;
+        };
+        if assets.iter().any(|asset| asset.destination.trim() == url) || !attempted.insert(url) {
+            continue;
+        }
+        match fetch_remote_image_with_cancel(url, max_bytes, timeout_secs, &cancel_now) {
+            Ok(bytes) => assets.push(PdfImageAsset::new(url, bytes)),
+            Err(FetchError::Cancelled) => return false,
+            Err(FetchError::Failed(reason)) => warnings.push(BatchWarning {
+                input: input.to_path_buf(),
+                code: "remote_image_fetch_failed",
+                message: crate::cli::remote_images::warning_message(url, &reason),
+            }),
+        }
+    }
+    // Observe a deadline reached at the end of the final fetch before the
+    // synchronous renderer starts. Non-network jobs retain file granularity.
+    attempted.is_empty() || !cancel_now()
+}
+
 fn collect_image_destinations<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
     for block in blocks {
         match block {
@@ -837,7 +932,7 @@ fn has_supported_pdf_image_extension(path: &Path) -> bool {
         .is_some_and(|ext| {
             matches!(
                 ext.to_ascii_lowercase().as_str(),
-                "png" | "svg" | "jpg" | "jpeg"
+                "png" | "svg" | "jpg" | "jpeg" | "gif"
             )
         })
 }
@@ -940,9 +1035,11 @@ fn source_overwrite_errors(
 struct BatchRenderOptions {
     html: HtmlOptions,
     pdf: PdfOptions,
+    pdf_a: PdfASettings,
     document_defaults: crate::config::RenderDefaults,
     max_input_bytes: u64,
     max_pdf_image_bytes: u64,
+    shell: Option<BatchShell>,
 }
 
 impl BatchRenderOptions {
@@ -995,6 +1092,8 @@ fn render_one(
     format: OutputFormat,
     out_dir: Option<&Path>,
     options: &BatchRenderOptions,
+    cancelled: &AtomicBool,
+    warnings: &mut Vec<BatchWarning>,
 ) -> FileEntry {
     let mut input_paths = vec![input.to_path_buf()];
     let md = match read_expanded_input(input, options.max_input_bytes, &mut input_paths) {
@@ -1059,7 +1158,36 @@ fn render_one(
         ) {
             return failed(input, FileErrorKind::Input, e);
         }
-        match render_pdf_document(&doc, &pdf_opts) {
+        if let Some(shell) = &options.shell {
+            if let Some(timeout_secs) = shell.remote_image_timeout_secs
+                && !append_remote_image_assets_for_input(
+                    input,
+                    &doc,
+                    &mut pdf_opts.image_assets,
+                    options.max_pdf_image_bytes,
+                    timeout_secs,
+                    cancelled,
+                    warnings,
+                )
+            {
+                return FileEntry::skipped(input);
+            }
+            warnings.extend(
+                crate::render_warnings(&doc, &pdf_opts)
+                    .into_iter()
+                    .map(|warning| BatchWarning {
+                        input: input.to_path_buf(),
+                        code: warning.code(),
+                        message: warning.message(),
+                    }),
+            );
+        }
+        let pdf_result = if options.pdf_a.mode.is_a2b() {
+            render_pdf_document_pdfa(&doc, &pdf_opts, options.pdf_a)
+        } else {
+            render_pdf_document(&doc, &pdf_opts)
+        };
+        match pdf_result {
             Ok(bytes) => {
                 let path = output_path(input, out_dir, "pdf");
                 rendered.push(PendingOutput {
@@ -1117,21 +1245,49 @@ fn render_one(
         ) {
             return failed(input, FileErrorKind::Input, e);
         }
-        let svg_opts = crate::SvgOptions {
+        if let Some(timeout_secs) = options
+            .shell
+            .as_ref()
+            .and_then(|shell| shell.remote_image_timeout_secs)
+            && !append_remote_image_assets_for_input(
+                input,
+                &doc,
+                &mut images,
+                options.max_pdf_image_bytes,
+                timeout_secs,
+                cancelled,
+                warnings,
+            )
+        {
+            return FileEntry::skipped(input);
+        }
+        let mut svg_opts = crate::SvgOptions {
             theme: options.pdf.theme.clone(),
             ..crate::SvgOptions::default()
         };
+        if let Some(width) = options.shell.as_ref().and_then(|shell| shell.svg_width_pt) {
+            svg_opts.max_width_pt = width;
+        }
         match crate::svg::render_svg_with_resources(
             &doc,
             &svg_opts,
             &options.pdf.font_assets,
             &images,
         ) {
-            Ok((bytes, _, _)) => rendered.push(PendingOutput {
-                kind: "svg",
-                path: output_path(input, out_dir, "svg"),
-                bytes,
-            }),
+            Ok((bytes, _, svg_warnings)) => {
+                if options.shell.is_some() {
+                    warnings.extend(svg_warnings.into_iter().map(|warning| BatchWarning {
+                        input: input.to_path_buf(),
+                        code: warning.code,
+                        message: warning.message,
+                    }));
+                }
+                rendered.push(PendingOutput {
+                    kind: "svg",
+                    path: output_path(input, out_dir, "svg"),
+                    bytes,
+                });
+            }
             Err(e) => {
                 return failed(
                     input,
@@ -1248,6 +1404,25 @@ impl std::fmt::Display for BatchError {
     }
 }
 
+/// Errors for the additive archival entry points. Keeping these separate from
+/// [`BatchError`] preserves exhaustive matches used by existing batch hosts.
+#[derive(Debug)]
+pub enum BatchPdfAError {
+    /// The publication policy does not apply to the requested output format.
+    InvalidOptions(&'static str),
+    /// Native orchestration failed before a receipt could be returned.
+    Batch(BatchError),
+}
+
+impl std::fmt::Display for BatchPdfAError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidOptions(message) => write!(f, "{message}"),
+            Self::Batch(error) => write!(f, "{error}"),
+        }
+    }
+}
+
 /// Render every input under the worker `budget`, returning a deterministic
 /// receipt. `&Cx` first; the `Outcome` is preserved for the CLI boundary.
 pub async fn render_batch(
@@ -1261,10 +1436,49 @@ pub async fn render_batch(
         plan,
         opts,
         budget,
-        &[],
-        &crate::config::RenderDefaults::default(),
+        BatchHost {
+            inputs: &[],
+            document_defaults: &crate::config::RenderDefaults::default(),
+            pdf_a: PdfASettings::OFF,
+            shell: None,
+        },
     )
     .await
+}
+
+/// Render a batch with an explicit archival PDF policy. The existing
+/// [`BatchOptions`] struct and [`render_batch`] entry point retain their defaults.
+/// Strict failures are per-file render errors and never publish either sibling
+/// of a combined HTML/PDF output. Non-default settings require PDF output.
+pub async fn render_batch_pdfa(
+    cx: &Cx,
+    plan: BatchPlan,
+    opts: &BatchOptions,
+    budget: WorkerBudget,
+    pdf_a: PdfASettings,
+) -> Outcome<BatchReceipt, BatchPdfAError> {
+    if let Err(error) = validate_pdf_a_output(plan.format, pdf_a) {
+        return Outcome::Err(error);
+    }
+    match render_batch_with_protected_inputs(
+        cx,
+        plan,
+        opts,
+        budget,
+        BatchHost {
+            inputs: &[],
+            document_defaults: &crate::config::RenderDefaults::default(),
+            pdf_a,
+            shell: None,
+        },
+    )
+    .await
+    {
+        Outcome::Ok(receipt) => Outcome::Ok(receipt),
+        Outcome::Err(error) => Outcome::Err(BatchPdfAError::Batch(error)),
+        Outcome::Cancelled(cancelled) => Outcome::Cancelled(cancelled),
+        Outcome::Panicked(panic) => Outcome::Panicked(panic),
+    }
 }
 
 async fn render_batch_with_protected_inputs(
@@ -1272,8 +1486,7 @@ async fn render_batch_with_protected_inputs(
     plan: BatchPlan,
     opts: &BatchOptions,
     budget: WorkerBudget,
-    host_inputs: &[PathBuf],
-    document_defaults: &crate::config::RenderDefaults,
+    host: BatchHost<'_>,
 ) -> Outcome<BatchReceipt, BatchError> {
     // Cooperative cancellation/budget observation at the batch boundary.
     if cx.checkpoint().is_err() {
@@ -1330,7 +1543,7 @@ async fn render_batch_with_protected_inputs(
     let overwrite_errors = Arc::new(source_overwrite_errors(
         &plan,
         opts,
-        host_inputs,
+        host.inputs,
         cx,
         &cancelled,
     ));
@@ -1353,9 +1566,11 @@ async fn render_batch_with_protected_inputs(
         let options = BatchRenderOptions {
             html: opts.html.clone(),
             pdf: opts.pdf.clone(),
-            document_defaults: document_defaults.clone(),
+            pdf_a: host.pdf_a,
+            document_defaults: host.document_defaults.clone(),
             max_input_bytes: opts.max_input_bytes,
             max_pdf_image_bytes: opts.max_pdf_image_bytes,
+            shell: host.shell.cloned(),
         };
         let out_dir = plan.out_dir.clone();
         let format = plan.format;
@@ -1364,6 +1579,7 @@ async fn render_batch_with_protected_inputs(
             let mut stop = false;
             let mut i = w;
             while i < inputs.len() {
+                let mut warnings = Vec::new();
                 let cancel_now = stop
                     || cancelled.load(Ordering::Relaxed)
                     || Cx::current().is_some_and(|tcx| tcx.checkpoint().is_err());
@@ -1394,6 +1610,8 @@ async fn render_batch_with_protected_inputs(
                             format,
                             out_dir.as_deref(),
                             &options,
+                            &cancelled,
+                            &mut warnings,
                         )
                     }))
                     .unwrap_or_else(|_| {
@@ -1404,6 +1622,11 @@ async fn render_batch_with_protected_inputs(
                         )
                     })
                 };
+                if entry.status != FileStatus::Skipped
+                    && let Some(shell) = &options.shell
+                {
+                    shell.warnings.lock().unwrap_or_else(|error| error.into_inner()).extend(warnings);
+                }
                 entries.push((i, entry));
                 i += workers;
             }
@@ -1461,7 +1684,43 @@ pub fn run_batch_blocking(
         opts,
         &[],
         &crate::config::RenderDefaults::default(),
+        PdfASettings::OFF,
+        None,
     )
+}
+
+/// Native blocking entry point with the same archival policy as
+/// [`render_batch_pdfa`]. Existing callers can continue using
+/// [`run_batch_blocking`] without changing their options or output bytes.
+pub fn run_batch_blocking_pdfa(
+    plan: BatchPlan,
+    opts: &BatchOptions,
+    pdf_a: PdfASettings,
+) -> Result<BatchReceipt, BatchPdfAError> {
+    validate_pdf_a_output(plan.format, pdf_a)?;
+    run_batch_blocking_with_protected_inputs(
+        plan,
+        opts,
+        &[],
+        &crate::config::RenderDefaults::default(),
+        pdf_a,
+        None,
+    )
+    .map_err(BatchPdfAError::Batch)
+}
+
+fn validate_pdf_a_output(format: OutputFormat, pdf_a: PdfASettings) -> Result<(), BatchPdfAError> {
+    if pdf_a.strict && !pdf_a.mode.is_a2b() {
+        return Err(BatchPdfAError::InvalidOptions(
+            "strict archival PDF requires the PDF/A-2b profile",
+        ));
+    }
+    if pdf_a.mode.is_a2b() && !format.wants_pdf() {
+        return Err(BatchPdfAError::InvalidOptions(
+            "archival PDF settings require PDF or combined HTML/PDF output",
+        ));
+    }
+    Ok(())
 }
 
 /// Host-only resources (CSS, fonts, explicit images and configuration) arrive
@@ -1473,6 +1732,8 @@ pub(crate) fn run_batch_blocking_with_protected_inputs(
     opts: &BatchOptions,
     host_inputs: &[PathBuf],
     document_defaults: &crate::config::RenderDefaults,
+    pdf_a: PdfASettings,
+    shell: Option<&BatchShell>,
 ) -> Result<BatchReceipt, BatchError> {
     let c_avail = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -1502,8 +1763,12 @@ pub(crate) fn run_batch_blocking_with_protected_inputs(
                     plan,
                     opts,
                     budget,
-                    host_inputs,
-                    document_defaults,
+                    BatchHost {
+                        inputs: host_inputs,
+                        document_defaults,
+                        pdf_a,
+                        shell,
+                    },
                 )
                 .await
             }
@@ -2797,7 +3062,7 @@ mod tests {
     #[test]
     fn auto_pdf_image_path_accepts_only_safe_relative_supported_images() {
         let base = Path::new("/base");
-        // Accepted: relative png/svg destinations, with any query/fragment
+        // Accepted: relative PNG/SVG/GIF destinations, with any query/fragment
         // stripped and `./` segments tolerated.
         assert_eq!(
             auto_pdf_image_path("img.png", base),
@@ -2806,6 +3071,10 @@ mod tests {
         assert_eq!(
             auto_pdf_image_path("./sub/pic.svg?width=2#frag", base),
             Some(PathBuf::from("/base/sub/pic.svg"))
+        );
+        assert_eq!(
+            auto_pdf_image_path("photo.gif", base),
+            Some(base.join("photo.gif"))
         );
         // Rejected: empty (or fragment-only), protocol-relative, backslashed,
         // schemed, absolute, unsupported-extension, and parent-escaping
@@ -2820,7 +3089,7 @@ mod tests {
             None
         );
         assert_eq!(auto_pdf_image_path("/etc/img.png", base), None);
-        assert_eq!(auto_pdf_image_path("photo.gif", base), None);
+        assert_eq!(auto_pdf_image_path("photo.webp", base), None);
         assert_eq!(auto_pdf_image_path("../escape.png", base), None);
         // JPEGs are supported local assets (embedded via /DCTDecode).
         assert_eq!(
@@ -2845,13 +3114,15 @@ mod tests {
     }
 
     #[test]
-    fn supported_pdf_image_extensions_are_png_svg_jpeg_case_insensitive() {
+    fn supported_pdf_image_extensions_are_png_svg_jpeg_gif_case_insensitive() {
         assert!(has_supported_pdf_image_extension(Path::new("a.png")));
         assert!(has_supported_pdf_image_extension(Path::new("a.PNG")));
         assert!(has_supported_pdf_image_extension(Path::new("a.Svg")));
         assert!(has_supported_pdf_image_extension(Path::new("a.jpg")));
         assert!(has_supported_pdf_image_extension(Path::new("a.JPEG")));
-        assert!(!has_supported_pdf_image_extension(Path::new("a.gif")));
+        assert!(has_supported_pdf_image_extension(Path::new("a.gif")));
+        assert!(has_supported_pdf_image_extension(Path::new("a.GIF")));
+        assert!(!has_supported_pdf_image_extension(Path::new("a.bmp")));
         assert!(!has_supported_pdf_image_extension(Path::new("noext")));
     }
 

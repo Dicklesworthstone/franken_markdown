@@ -7,9 +7,9 @@
 # frozen to), and consumed by fmd itself for native `$…$` mathematics.
 [package]
 name = "fmd-math"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license-file = "LICENSE"
 description = "Clean-room TeX-mathematics layout engine: TeX-math grammar, the eight atom classes, the inter-atom spacing table, and TeX style propagation (franken_markdown's math subsystem)"
 repository = "https://github.com/Dicklesworthstone/franken_markdown"
@@ -23,7 +23,7 @@ path = "src/lib.rs"
 # First-party only, ever: the engine philosophy. fmd-font (this repo's own
 # zero-dependency font subsystem) supplies glyph metrics, kerning, and
 # outlines for layout.
-fmd-font = { path = "../fmd-font", version = "0.3.4" }
+fmd-font = { path = "../fmd-font", version = "0.4.0" }
 
 [features]
 # The bundled OFL faces (via fmd-font) as the default face set: a math

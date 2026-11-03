@@ -66,8 +66,9 @@ struct PreparedBook {
 /// supplied fonts; transient base64 copies are not publication content. Each
 /// intermediate chapter render is separately bounded to 256 MiB.
 /// The single-document image limits also apply to each chapter. Supplied
-/// fonts opt into publication-wide TrueType subsets, with the same font and
-/// repertoire limits as single-document EPUB export. Fonts are validated and
+/// fonts opt into publication-wide TrueType or supported name-keyed CFF1
+/// OpenType subsets, with the same font and repertoire limits as
+/// single-document EPUB export. Fonts are validated and
 /// instanced once per book, declared once, and linked from every chapter and
 /// the navigation document. Custom CSS stays verbatim and last in the cascade.
 /// XML 1.0-forbidden characters in emitted text or metadata are rejected

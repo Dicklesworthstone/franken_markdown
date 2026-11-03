@@ -274,8 +274,8 @@ impl Adler32 {
             let (head, rest) = slice.split_at(take);
             slice = rest;
 
-            let mut chunks16 = head.chunks_exact(16);
-            for c in &mut chunks16 {
+            let (chunks16, rem16) = head.as_chunks::<16>();
+            for c in chunks16 {
                 self.s1 += c[0] as u32;
                 self.s2 += self.s1;
                 self.s1 += c[1] as u32;
@@ -309,7 +309,7 @@ impl Adler32 {
                 self.s1 += c[15] as u32;
                 self.s2 += self.s1;
             }
-            for &b in chunks16.remainder() {
+            for &b in rem16 {
                 self.s1 += b as u32;
                 self.s2 += self.s1;
             }
@@ -763,8 +763,8 @@ fn adler32(data: &[u8]) -> u32 {
     // Process in bounded chunks (NMAX=5552) so the sums never overflow u32
     // before the modulo: worst-case s2 stays below 2^32.
     for chunk in data.chunks(ADLER_NMAX) {
-        let mut chunks16 = chunk.chunks_exact(16);
-        for c in &mut chunks16 {
+        let (chunks16, rem16) = chunk.as_chunks::<16>();
+        for c in chunks16 {
             s1 += c[0] as u32;
             s2 += s1;
             s1 += c[1] as u32;
@@ -798,7 +798,7 @@ fn adler32(data: &[u8]) -> u32 {
             s1 += c[15] as u32;
             s2 += s1;
         }
-        for &b in chunks16.remainder() {
+        for &b in rem16 {
             s1 += b as u32;
             s2 += s1;
         }

@@ -180,3 +180,33 @@ fn dump_triangle_vf_when_requested() {
         );
     }
 }
+
+#[test]
+fn fonttools_packed_deltas_move_outline_and_phantoms() {
+    // This original two-glyph font is encoded and independently instanced by
+    // FontTools, not by the fmd-font fixture builder. It contains zero, byte,
+    // and word delta runs on both axes, followed by advance-width phantoms.
+    let bytes = include_bytes!("../fonts/test-variable/FmdPackedDeltasVF.ttf");
+    let font = Font::parse(bytes.to_vec()).expect("FontTools packed-delta fixture");
+    let gid = font.glyph_index('A');
+    assert_ne!(gid, 0);
+    for (weight, expected, advance, lsb) in [
+        (400.0, [(0.0, 0.0), (100.0, 0.0), (50.0, 100.0)], 500, 0),
+        (650.0, [(10.0, 0.0), (95.0, 20.0), (200.0, 85.0)], 540, 10),
+        (900.0, [(20.0, 0.0), (90.0, 40.0), (350.0, 70.0)], 580, 20),
+    ] {
+        let instance = font.instance(weight).expect("static packed-delta instance");
+        assert!(instance.axes().is_empty());
+        let outline = instance.glyph_outline(gid).expect("instanced triangle");
+        assert_eq!(outline.contours.len(), 1);
+        let contour = &outline.contours[0];
+        assert_eq!(contour.segments.len(), 3);
+        let actual: Vec<_> = std::iter::once(contour.start)
+            .chain(contour.segments.iter().take(2).map(|segment| segment.to()))
+            .map(|point| (point.x, point.y))
+            .collect();
+        assert_eq!(actual, expected, "outline at weight {weight}");
+        assert_eq!(instance.advance_width(gid), advance, "advance at {weight}");
+        assert_eq!(instance.left_side_bearing(gid), lsb, "LSB at {weight}");
+    }
+}

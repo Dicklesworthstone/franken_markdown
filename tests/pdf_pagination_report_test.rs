@@ -84,7 +84,7 @@ fn painted_letters_by_page(pdf: &[u8]) -> Vec<String> {
             let array = line.split_once('[').expect("TJ glyph array").1;
             for tail in array.split('<').skip(1) {
                 let hex = tail.split('>').next().unwrap();
-                for glyph in hex.as_bytes().chunks_exact(4) {
+                for glyph in hex.as_bytes().as_chunks::<4>().0 {
                     let id = u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16).unwrap();
                     painted.push(*map.get(&id).expect("painted glyph must be selectable"));
                 }

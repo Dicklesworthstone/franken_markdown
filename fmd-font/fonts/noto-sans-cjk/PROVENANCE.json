@@ -1,0 +1,48 @@
+{
+  "font": "Noto Sans SC CJK fallback",
+  "license": "SIL Open Font License 1.1",
+  "source": {
+    "repository": "https://github.com/google/fonts",
+    "revision": "2894aab31764f10f29c421bdfd2340d3b382d384",
+    "path": "ofl/notosanssc/NotoSansSC[wght].ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/2894aab31764f10f29c421bdfd2340d3b382d384/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
+    "bytes": 17772300,
+    "sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+    "version": "2.004-H2",
+    "weight": 400
+  },
+  "artifact": {
+    "path": "NotoSansSC-CJK.ttf",
+    "bytes": 9867212,
+    "sha256": "f9c43414181d221c55ea1bf66ccd1fb345a8f0c895687abecf01f9a02a5dea72",
+    "gzip_bytes": 5967951,
+    "mapped_characters": 28215,
+    "glyphs": 28101,
+    "unmapped_selected_scalars": 441
+  },
+  "license_sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+  "generator": {
+    "path": "examples/gen_cjk_fallback_font.rs",
+    "sha256": "c92add696cce76d516fbdc746f95a801aee67b17567d8b5b141fa2df3b2aaf18",
+    "font_engine_sources_sha256": {
+      "fmd-font/src/lib.rs": "6b60166e6bf4e4558dd86979004f66f88251daac483beaf9fffd8f1a8a6898f0",
+      "fmd-font/src/gvar.rs": "8d06d82261e48ce1d18b9ec9086ef80fe2c8056895c68d4d88663e256a980162"
+    }
+  },
+  "independent_verification": {
+    "report": "fonttools-reference.json",
+    "script": "scripts/font-oracles/check-cjk-fallback.py",
+    "tool": "FontTools",
+    "version": "4.61.1",
+    "geometry_checks": 28215,
+    "max_coordinate_or_advance_error_units": 0.4998318654186278,
+    "allowed_error_units": 1.0,
+    "method": "Full source-oracle verification of the expanded glyph encoding, followed by exact independent equivalence of every glyph in the compact encoding",
+    "reference_artifact_sha256": "c3c5b027d8d286d2eb6b6fd305c66d255b1ce2df680837b0584e98909cfa3ab3",
+    "equivalence_report": "compact-equivalence.json",
+    "equivalence_script": "scripts/font-oracles/check-glyph-equivalence.py",
+    "equivalent_glyphs_checked": 28101,
+    "equivalent_points_checked": 3065603,
+    "compact_coordinate_difference_units": 0
+  }
+}

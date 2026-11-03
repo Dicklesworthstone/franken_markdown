@@ -4,8 +4,13 @@
 //! and standalone symbols, real GSUB ligatures and GPOS pair kerning. Latin
 //! combining sequences use the strict OpenType mark-positioning engine, retain
 //! exact source clusters, and require a face covering the whole sequence.
-//! Unsupported marks, bidi/joining scripts and emoji sequences still require
-//! a host shaper and are refused, never emitted unpositioned or missing.
+//! With `cjk-face`, mapped BMP Han, precomposed kana and horizontal CJK
+//! punctuation use the existing bundled Simplified Chinese fallback face.
+//! With `emoji-face`, mapped standalone emoji use the existing monochrome
+//! fallback. Standardized presentation sequences keep their complete source
+//! cluster and require an actual face for the requested presentation. ZWJ,
+//! modifiers, flags, keycaps and other unsupported sequences still require
+//! a host shaper and are refused, never emitted as misleading components.
 //! Tabs retain their logical byte and occupy four space advances. Code disables
 //! discretionary ligature/kerning substitutions but still positions marks.
 
@@ -16,10 +21,12 @@ use crate::flow_display::{
 };
 use crate::text::{
     Direction, Font, FontId, FontOrigin, OwnedTextRun, RunGlyph, TextCluster, TextRunContext,
+    TextRunMetrics,
 };
 use crate::theme::FontFamily;
 use std::ops::Range;
 
+mod emoji;
 mod positioned;
 
 const MAX_RUN_BYTES: usize = 64 * 1024;
@@ -59,7 +66,9 @@ struct Face {
 /// ```
 #[derive(Clone)]
 pub struct BundledFlowFonts {
-    faces: [Face; 6],
+    faces: Vec<Face>,
+    cjk_face: Option<usize>,
+    emoji_face: Option<usize>,
 }
 
 impl BundledFlowFonts {
@@ -77,29 +86,63 @@ impl BundledFlowFonts {
         };
         let mono_bytes = super::mono_bytes(FontStyle::Regular);
         let symbol_bytes = super::symbol_bytes();
+        let mut faces = vec![
+            body(FontStyle::Regular)?,
+            body(FontStyle::Bold)?,
+            body(FontStyle::Italic)?,
+            body(FontStyle::BoldItalic)?,
+            Face {
+                font: super::mono_font(FontStyle::Regular)
+                    .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
+                layout: super::mono_layout_tables(FontStyle::Regular)
+                    .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
+                bytes: mono_bytes,
+                id: FontId::from_font_data(mono_bytes),
+            },
+            Face {
+                font: super::symbol_font().map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
+                layout: super::symbol_layout_tables()
+                    .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
+                bytes: symbol_bytes,
+                id: FontId::from_font_data(symbol_bytes),
+            },
+        ];
+        let cjk_face = if let Some(parsed) = super::cjk_font() {
+            let (font, layout) = parsed.map_err(|e| FlowLayoutError::Shaping(e.to_string()))?;
+            let bytes = super::cjk_bytes().ok_or_else(|| {
+                FlowLayoutError::Shaping("bundled CJK font bytes are unavailable".to_owned())
+            })?;
+            let index = faces.len();
+            faces.push(Face {
+                font,
+                layout,
+                bytes,
+                id: FontId::from_font_data(bytes),
+            });
+            Some(index)
+        } else {
+            None
+        };
+        let emoji_face = if let Some(parsed) = super::emoji_font() {
+            let (font, layout) = parsed.map_err(|e| FlowLayoutError::Shaping(e.to_string()))?;
+            let bytes = super::emoji_bytes().ok_or_else(|| {
+                FlowLayoutError::Shaping("bundled emoji font bytes are unavailable".to_owned())
+            })?;
+            let index = faces.len();
+            faces.push(Face {
+                font,
+                layout,
+                bytes,
+                id: FontId::from_font_data(bytes),
+            });
+            Some(index)
+        } else {
+            None
+        };
         Ok(Self {
-            faces: [
-                body(FontStyle::Regular)?,
-                body(FontStyle::Bold)?,
-                body(FontStyle::Italic)?,
-                body(FontStyle::BoldItalic)?,
-                Face {
-                    font: super::mono_font(FontStyle::Regular)
-                        .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
-                    layout: super::mono_layout_tables(FontStyle::Regular)
-                        .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
-                    bytes: mono_bytes,
-                    id: FontId::from_font_data(mono_bytes),
-                },
-                Face {
-                    font: super::symbol_font()
-                        .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
-                    layout: super::symbol_layout_tables()
-                        .map_err(|e| FlowLayoutError::Shaping(e.to_string()))?,
-                    bytes: symbol_bytes,
-                    id: FontId::from_font_data(symbol_bytes),
-                },
-            ],
+            faces,
+            cjk_face,
+            emoji_face,
         })
     }
 
@@ -143,8 +186,13 @@ impl BundledFlowFonts {
         if text.len() > MAX_RUN_BYTES {
             return Err("bundled flow shaping byte budget exceeded".to_owned());
         }
+        if text.chars().take(MAX_RUN_SCALARS + 1).count() > MAX_RUN_SCALARS {
+            return Err("bundled flow shaping scalar budget exceeded".to_owned());
+        }
         if text.chars().any(positioned::is_mark) {
-            return self.shape_positioned(text, size, role, style);
+            let mut run = self.shape_positioned(text, size, role, style)?;
+            self.attach_vertical_metrics(&mut run)?;
+            return Ok(run);
         }
         let code = style.code || role == FlowTextRole::Code;
         let bold =
@@ -156,11 +204,10 @@ impl BundledFlowFonts {
         };
         let mut source = Vec::new();
         let mut utf16 = 0;
-        for (start, ch) in text.char_indices() {
-            if source.len() >= MAX_RUN_SCALARS {
-                return Err("bundled flow shaping scalar budget exceeded".to_owned());
-            }
-            if !simple_ltr_scalar(ch) {
+        let mut chars = text.char_indices().peekable();
+        while let Some((start, ch)) = chars.next() {
+            let emoji = self.emoji_glyph(ch);
+            if !simple_ltr_scalar(ch) && emoji.is_none() {
                 return Err(format!(
                     "bundled flow needs a host shaper for U+{:04X} at byte {start}",
                     ch as u32
@@ -168,21 +215,53 @@ impl BundledFlowFonts {
             }
             let tab = ch == '\t';
             let mapped = if tab { ' ' } else { ch };
-            let mut face = primary;
-            let mut glyph = self.faces[face].font.glyph_index(mapped);
-            if glyph == 0 {
-                face = SYMBOL;
-                glyph = self.faces[face].font.glyph_index(mapped);
+            // Existing body/mono, symbol and CJK identities retain their
+            // precedence. A new optional face cannot broaden another face's
+            // admission profile or silently take over ordinary typography.
+            let mut selected = self
+                .text_glyph(primary, mapped)
+                .or_else(|| {
+                    cjk_ltr_scalar(ch)
+                        .then(|| self.cjk_face.and_then(|index| self.glyph(index, mapped)))
+                        .flatten()
+                })
+                .or(emoji);
+            let mut end = start + ch.len_utf8();
+            let mut units = ch.len_utf16();
+            if let Some(&(offset, selector @ ('\u{fe0e}' | '\u{fe0f}'))) = chars.peek() {
+                // The curated face has scalar outlines, not cmap14 or GSUB
+                // sequence substitution. VS16 selects its actual monochrome
+                // emoji; VS15 needs a real text-face glyph instead. Only
+                // standardized emoji variation bases can consume a selector.
+                if emoji.is_none() || !emoji::variation_base(ch) {
+                    return Err(format!(
+                        "bundled flow needs a host shaper for presentation selector U+{:04X} at byte {offset}",
+                        selector as u32
+                    ));
+                }
+                selected = if selector == '\u{fe0f}' {
+                    emoji
+                } else {
+                    self.text_glyph(primary, ch)
+                };
+                if selected.is_none() {
+                    return Err(format!(
+                        "no bundled flow text presentation for U+{:04X} at byte {start}; supply a host shaper",
+                        ch as u32
+                    ));
+                }
+                chars.next();
+                end = offset + selector.len_utf8();
+                units += selector.len_utf16();
             }
-            if glyph == 0 || glyph >= self.faces[face].font.num_glyphs {
-                return Err(format!(
+            let (face, glyph) = selected.ok_or_else(|| {
+                format!(
                     "no bundled flow glyph for U+{:04X} at byte {start}; supply a host shaper",
                     ch as u32
-                ));
-            }
-            let units = ch.len_utf16();
+                )
+            })?;
             source.push(Scalar {
-                bytes: start..start + ch.len_utf8(),
+                bytes: start..end,
                 utf16: utf16..utf16 + units,
                 face,
                 glyph,
@@ -191,6 +270,7 @@ impl BundledFlowFonts {
             utf16 += units;
         }
         let mut run = OwnedTextRun {
+            vertical_metrics: None,
             context: TextRunContext {
                 font_id: self.faces[primary].id,
                 font_size: size,
@@ -241,10 +321,8 @@ impl BundledFlowFonts {
                     .filter(|&n| count > 0 && n <= end)
                     .ok_or_else(|| "invalid bundled ligature source coverage".to_owned())?;
                 let mut advance = f32::from(face.font.advance_width(gid));
-                if !code {
-                    if let Some(&(following, _)) = shaped.get(index + 1) {
-                        advance += face.layout.kern.pair(gid, following) as f32;
-                    }
+                if !code && let Some(&(following, _)) = shaped.get(index + 1) {
+                    advance += face.layout.kern.pair(gid, following) as f32;
                 }
                 push_glyph(
                     &mut run,
@@ -262,7 +340,61 @@ impl BundledFlowFonts {
             }
             cursor = end;
         }
+        self.attach_vertical_metrics(&mut run)?;
         Ok(run)
+    }
+
+    fn glyph(&self, face: usize, ch: char) -> Option<(usize, u16)> {
+        let font = self.faces[face].font;
+        let glyph = font.glyph_index(ch);
+        (glyph != 0 && glyph < font.num_glyphs).then_some((face, glyph))
+    }
+
+    fn text_glyph(&self, primary: usize, ch: char) -> Option<(usize, u16)> {
+        self.glyph(primary, ch).or_else(|| self.glyph(SYMBOL, ch))
+    }
+
+    fn emoji_glyph(&self, ch: char) -> Option<(usize, u16)> {
+        emoji::scalar(ch)
+            .then(|| self.emoji_face.and_then(|index| self.glyph(index, ch)))
+            .flatten()
+    }
+
+    /// Resolve vertical metrics from the actual immutable faces and glyphs,
+    /// including fallback faces and mark positioning. No em-ratio estimate is
+    /// used when the reader composes text with an equation on one baseline.
+    fn attach_vertical_metrics(&self, run: &mut OwnedTextRun) -> Result<(), String> {
+        let primary = self
+            .faces
+            .iter()
+            .find(|face| face.id == run.context.font_id)
+            .ok_or_else(|| "unknown bundled flow primary font".to_owned())?;
+        let size = run.context.font_size;
+        let scale = size / f32::from(primary.font.units_per_em);
+        let mut metrics = TextRunMetrics {
+            ascent: (f32::from(primary.font.ascent) * scale).max(0.0),
+            descent: (-f32::from(primary.font.descent) * scale).max(0.0),
+        };
+        for glyph in &run.glyphs {
+            let face = self
+                .faces
+                .iter()
+                .find(|face| face.id == glyph.font_id)
+                .ok_or_else(|| "unknown bundled flow glyph font".to_owned())?;
+            let scale = size / f32::from(face.font.units_per_em);
+            let bbox = face.font.glyph_bbox(glyph.glyph_id);
+            let top = bbox.map_or(face.font.ascent, |b| b[3].max(face.font.ascent));
+            let bottom = bbox.map_or(face.font.descent, |b| b[1].min(face.font.descent));
+            metrics.ascent = metrics.ascent.max(f32::from(top) * scale + glyph.y_offset);
+            metrics.descent = metrics
+                .descent
+                .max(-f32::from(bottom) * scale - glyph.y_offset);
+        }
+        if !metrics.is_valid() {
+            return Err("invalid bundled flow vertical metrics".to_owned());
+        }
+        run.vertical_metrics = Some(metrics);
+        Ok(())
     }
 }
 
@@ -330,7 +462,22 @@ fn simple_ltr_scalar(ch: char) -> bool {
         0x20..=0x024f | 0x0370..=0x0482 | 0x048a..=0x052f |
         0x1e00..=0x1eff | 0x2000..=0x200a | 0x2010..=0x2027 |
         0x2030..=0x205e | 0x20a0..=0x20cf | 0x2100..=0x23ff
-    )
+    ) || cjk_ltr_scalar(ch)
+}
+
+// This admission profile is deliberately narrower than the font's cmap.
+// Decomposed kana, tone marks, variation selectors, halfwidth voicing marks,
+// supplementary Han, Hangul and vertical forms still need a host shaper.
+// Unmapped characters inside these ranges are refused by the cmap lookup.
+fn cjk_ltr_scalar(ch: char) -> bool {
+    cfg!(feature = "cjk-face")
+        && matches!(ch as u32,
+            0x2e80..=0x2eff | 0x2f00..=0x2fdf |
+            0x3000..=0x3029 | 0x3030 | 0x3036..=0x303a |
+            0x303c..=0x3098 | 0x309b..=0x30ff |
+            0x31f0..=0x31ff | 0x3400..=0x4dbf | 0x4e00..=0x9fff |
+            0xf900..=0xfaff | 0xff01..=0xff60 | 0xffe0..=0xffe6
+        )
 }
 
 #[cfg(test)]
@@ -338,6 +485,63 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::display::DisplayItem;
+
+    #[test]
+    fn vertical_metrics_contain_actual_bundled_outlines_and_positioned_marks() {
+        use crate::text::outline::Segment;
+        for family in [FontFamily::Sans, FontFamily::Serif] {
+            let fonts = BundledFlowFonts::new(family).unwrap();
+            // These canonical sequences are covered by the documented bundled
+            // profile. Arbitrary stacked marks still require supported native
+            // OpenType lookups; metrics must not expand that shaping claim.
+            for source in ["Ag ∑", "n\u{0303} e\u{0301}", "A\u{0301}"] {
+                let run = fonts
+                    .shape(source, 23.0, FlowTextRole::Body, FlowInlineStyle::default())
+                    .unwrap();
+                let metrics = run.vertical_metrics.unwrap();
+                assert!(metrics.is_valid());
+                for glyph in &run.glyphs {
+                    let font =
+                        Font::parse(fonts.font_bytes(glyph.font_id).unwrap().to_vec()).unwrap();
+                    let scale = run.context.font_size / f32::from(font.units_per_em);
+                    let check = |y: f64| {
+                        let placed = y * f64::from(scale) + f64::from(glyph.y_offset);
+                        assert!(
+                            placed <= f64::from(metrics.ascent) + 0.001,
+                            "{source:?}: ascent"
+                        );
+                        assert!(
+                            -placed <= f64::from(metrics.descent) + 0.001,
+                            "{source:?}: descent"
+                        );
+                    };
+                    for contour in font.glyph_outline(glyph.glyph_id).unwrap().contours {
+                        check(contour.start.y);
+                        for segment in contour.segments {
+                            match segment {
+                                Segment::Line { to } => check(to.y),
+                                Segment::Quad { ctrl, to } => {
+                                    check(ctrl.y);
+                                    check(to.y);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(
+                fonts
+                    .shape(
+                        "A\u{0301}\u{0308}",
+                        23.0,
+                        FlowTextRole::Body,
+                        FlowInlineStyle::default()
+                    )
+                    .is_err(),
+                "unsupported stacked marks must not gain guessed placement"
+            );
+        }
+    }
 
     fn style(bold: bool, italic: bool, code: bool) -> FlowInlineStyle {
         FlowInlineStyle {
@@ -467,8 +671,7 @@ mod tests {
             "\u{0301}a",
             "אב",
             "العربية",
-            "東京",
-            "😀",
+            "👩\u{200d}💻",
             "a\u{200d}b",
             "x\u{202e}y",
         ] {
@@ -479,6 +682,13 @@ mod tests {
                 "{text:?}"
             );
         }
+        #[cfg(not(feature = "cjk-face"))]
+        assert!(
+            fonts
+                .shape("東京", 14.0, FlowTextRole::Body, FlowInlineStyle::default())
+                .is_err(),
+            "the lean profile must not acquire optional CJK coverage"
+        );
         for size in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             assert!(
                 fonts

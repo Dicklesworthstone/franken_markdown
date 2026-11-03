@@ -1,7 +1,7 @@
 //! Corpus glyph-coverage auditor (`fmd doctor fonts --corpus`).
 //!
-//! Classifies Markdown codepoints against every bundled face plus the Noto
-//! Sans Math fallback. JSON is hand-built (no serde) and key order is
+//! Classifies Markdown codepoints against every bundled face, including the
+//! enabled symbol, CJK, and emoji fallbacks. JSON is hand-built (no serde) and key order is
 //! deterministic. Directory walking matches batch: depth-bounded, no symlink
 //! follow, case-insensitive `.md`/`.markdown`, sorted paths.
 
@@ -232,7 +232,7 @@ struct ParsedFace {
 fn faces() -> &'static [ParsedFace] {
     static FACES: OnceLock<Vec<ParsedFace>> = OnceLock::new();
     FACES.get_or_init(|| {
-        ALL_FACES
+        let mut faces: Vec<_> = ALL_FACES
             .iter()
             .filter_map(|(name, bytes)| {
                 Font::parse(bytes.to_vec()).ok().map(|font| ParsedFace {
@@ -240,7 +240,17 @@ fn faces() -> &'static [ParsedFace] {
                     fallback: *name == FALLBACK_FACE,
                 })
             })
-            .collect()
+            .collect();
+        for font in [crate::fonts::load_cjk(), crate::fonts::load_emoji()]
+            .into_iter()
+            .flatten()
+        {
+            faces.push(ParsedFace {
+                font,
+                fallback: true,
+            });
+        }
+        faces
     })
 }
 
@@ -636,25 +646,40 @@ mod tests {
     }
 
     #[test]
-    fn han_is_uncovered_on_bundled_faces() {
+    fn han_uses_the_bundled_fallback() {
         let mut report = CoverageReport::new();
         report.ingest("你好", "cjk.md");
         let han = report.scripts.get(&Script::Han).expect("han");
+        assert_eq!(han.fallback_covered, 2);
+        assert_eq!(han.uncovered, 0);
+        assert!(!report.has_gaps());
+        assert!(
+            report
+                .to_json()
+                .contains("\"verdict\":\"fallback-covered\"")
+        );
+    }
+
+    #[test]
+    fn hangul_still_reports_uncovered_characters() {
+        let mut report = CoverageReport::new();
+        report.ingest("한글", "korean.md");
+        let hangul = report.scripts.get(&Script::Hangul).expect("hangul");
         assert_ok(
-            "han-uncovered",
-            "你好",
-            han.uncovered == 2 && han.covered == 0,
-            &format!("covered={} uncovered={}", han.covered, han.uncovered),
+            "hangul-uncovered",
+            "한글",
+            hangul.uncovered == 2 && hangul.covered == 0,
+            &format!("covered={} uncovered={}", hangul.covered, hangul.uncovered),
         );
         let json = report.to_json();
         assert_ok(
-            "han-json-gap",
+            "hangul-json-gap",
             "gaps",
-            json.contains("\"gaps\":true") && json.contains("\"script\":\"han\""),
+            json.contains("\"gaps\":true") && json.contains("\"script\":\"hangul\""),
             &json,
         );
         assert_ok(
-            "han-hint",
+            "hangul-hint",
             "CURATED_RANGES",
             report.hints().iter().any(|h| h.contains("CURATED_RANGES")),
             &report.hints().join(";"),

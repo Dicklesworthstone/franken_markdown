@@ -7,6 +7,16 @@ CLI: `fmd README.md --to pdf --pdf-a 2b --out README.pdf`. Add `--pdf-a-strict`
 to fail closed on `javascript:` / `file:` URI actions (named `pdf_a_*` errors).
 Library: `render_pdf_pdfa(..., PdfASettings::a2b())`.
 
+Native batch publication supports the same policy:
+`fmd batch docs/ --to both --out-dir archive --pdf-a 2b --pdf-a-strict`.
+Strict rejection preserves both previous outputs for the failed input; the
+batch receipt records a render error and other valid documents can complete.
+`--continue-on-error` retains those per-file errors while allowing a partially
+successful batch to exit successfully. Library callers can use
+`batch::render_batch_pdfa` or `batch::run_batch_blocking_pdfa` without changing
+existing `BatchOptions` literals. PDF/A flags require a PDF-producing target,
+and strict mode requires an enabled `2b` profile.
+
 ## Requirement vs current emission
 
 | PDF/A-2b requirement | Current default PDF | `--pdf-a 2b` / `PdfASettings::a2b()` |

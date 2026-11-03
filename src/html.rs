@@ -11,10 +11,11 @@ use crate::ast::{Align, Block, Document, Inline, List};
 use crate::fonts::{self, FontStyle};
 use crate::highlight::{Span, highlight_supported_into};
 use crate::text::Font;
-use crate::theme::{DarkModePolicy, Theme, ThemeColors};
+use crate::theme::{CodeColors, Theme, ThemeColors};
 use crate::toc::marker_depth as toc_marker_depth;
-use crate::{FontAssetSlot, FontAssets, HtmlOptions, instance_host_font};
+use crate::{FontAssetSlot, FontAssets, FontEmbedding, HtmlOptions, instance_host_font};
 
+mod data_images;
 mod financial_tables;
 
 /// Render a document to a complete HTML5 document string.
@@ -168,6 +169,55 @@ pub(crate) fn stylesheet(doc: &Document, opts: &HtmlOptions) -> String {
         .map_or_else(|| default_css(doc, opts), sanitize_custom_css)
 }
 
+/// The checked document API refuses a CFF program it cannot subset. Full
+/// embedding delegates complete glyph programs to the browser after the
+/// shared structural font admission. The longstanding infallible HTML helpers
+/// retain their full-font fallback.
+pub(crate) fn validate_cff_font_usage(doc: &Document, opts: &HtmlOptions) -> crate::Result<()> {
+    if opts.custom_css.is_some() || opts.font_embedding == FontEmbedding::Full {
+        return Ok(());
+    }
+    let mut usage = None;
+    for slot in FontAssetSlot::ALL {
+        let Some(bytes) = opts.font_assets.resolved_bytes(slot) else {
+            continue;
+        };
+        // CFF1 is static. Inspect the outline kind before any variable-font
+        // instancing so this extra preflight leaves TrueType work unchanged.
+        let font = Font::parse(bytes.to_vec()).map_err(|err| {
+            crate::RenderError::InvalidInput(format!(
+                "html_cff_font: {} font could not be parsed: {err}",
+                slot.as_str()
+            ))
+        })?;
+        if font.has_glyf_outlines() {
+            continue;
+        }
+        let usage = usage.get_or_insert_with(|| {
+            let profiled = crate::apply_profile(doc, opts.profile);
+            let mut usage = collect_font_usage(&profiled);
+            usage.add_stability_seed();
+            usage
+        });
+        let chars = match slot {
+            FontAssetSlot::BodyRegular => &usage.body_regular,
+            FontAssetSlot::BodyBold => &usage.body_bold,
+            FontAssetSlot::BodyItalic => &usage.body_italic,
+            FontAssetSlot::BodyBoldItalic => &usage.body_bold_italic,
+            FontAssetSlot::MonoRegular => &usage.mono,
+        };
+        if !chars.is_empty() {
+            font.try_subset(&chars.to_chars()).map_err(|err| {
+                crate::RenderError::InvalidInput(format!(
+                    "html_cff_font: {} font subsetting failed: {err}",
+                    slot.as_str()
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// An editor can introduce glyphs and styles absent from its initial source.
 /// Retain complete validated faces, using the same weight instancing and font
 /// container encoders as ordinary HTML instead of initial-document subsets.
@@ -224,6 +274,23 @@ pub(crate) fn editable_stylesheet(opts: &HtmlOptions) -> String {
             &mut woff2,
         );
     }
+    // Editors must accept CJK entered after their initial Latin-only source.
+    // Keep the complete optional face; snapshots below remain document-subset.
+    let has_cjk = if let Some(bytes) = fonts::cjk_bytes() {
+        push_font_payload(
+            &mut css,
+            "FMD CJK",
+            "normal",
+            "400",
+            bytes,
+            opts.html_font_format,
+            &mut woff,
+            &mut woff2,
+        );
+        true
+    } else {
+        false
+    };
     if let Some(custom) = &opts.custom_css {
         css.push_str(&sanitize_custom_css(custom));
         css
@@ -234,6 +301,7 @@ pub(crate) fn editable_stylesheet(opts: &HtmlOptions) -> String {
                 css,
                 has_body: true,
                 has_mono: true,
+                has_cjk,
             },
         )
     }
@@ -305,10 +373,10 @@ struct RenderState<'a> {
     /// Root blocks of this render call — the source of the lazy
     /// footnote-definition walk (see `ensure_footnote_defs`).
     root_blocks: &'a [Block],
-    /// GFM footnotes: definitions (source id -> content blocks), in document
-    /// order. Filled lazily at the first footnote reference; reference-free
-    /// documents — the common case — never pay the walk.
-    footnote_defs: Vec<(&'a str, &'a [Block])>,
+    /// GFM footnotes indexed by borrowed source id; the first definition wins.
+    /// Filled lazily at the first footnote reference; reference-free documents
+    /// never pay the walk. Numbering still follows first-reference order.
+    footnote_defs: BTreeMap<&'a str, &'a [Block]>,
     /// Whether the footnote-definition walk has run (`footnote_defs` valid).
     footnote_defs_scanned: bool,
     /// Footnote numbers by first-reference appearance (render-time assignment).
@@ -515,6 +583,22 @@ impl<'a> RenderState<'a> {
         self.math_cache_next = (self.math_cache_next + 1) % MATH_CACHE_MAX_ENTRIES;
     }
 
+    fn push_image_source(&mut self, url: &str, opts: &HtmlOptions, out: &mut String) -> bool {
+        let trimmed = url.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+        if data_images::is_data_uri(trimmed) {
+            // An embedded payload is admitted only in image context. Keep it
+            // out of the ordinary URL cache, which would retain a full copy.
+            return push_html_source_data_image(trimmed, opts, out);
+        }
+        let Some(src) = self.safe_url_cached(url, UrlContext::Image) else {
+            return false;
+        };
+        if opts.image_assets.is_empty() || !push_html_image_asset_data_uri(src, opts, out) {
+            push_escaped_url(src, out);
+        }
+        true
+    }
+
     fn safe_url_cached<'u>(&mut self, url: &'u str, context: UrlContext) -> Option<&'u str> {
         if let Some(entry) = self
             .url_cache
@@ -596,14 +680,16 @@ fn push_text_with_shortcodes(text: &str, out: &mut String) {
             })
             .count();
         let close = name_start + name_len;
-        if name_len > 0 && name_len <= 40 && bytes.get(close) == Some(&b':') {
-            if let Some(emoji) = crate::emoji_shortcodes::lookup(&text[name_start..close]) {
-                push_escaped_text(&text[written..open], out);
-                out.push_str(emoji);
-                written = close + 1;
-                i = close + 1;
-                continue;
-            }
+        if name_len > 0
+            && name_len <= 40
+            && bytes.get(close) == Some(&b':')
+            && let Some(emoji) = crate::emoji_shortcodes::lookup(&text[name_start..close])
+        {
+            push_escaped_text(&text[written..open], out);
+            out.push_str(emoji);
+            written = close + 1;
+            i = close + 1;
+            continue;
         }
         i = name_start;
     }
@@ -628,15 +714,7 @@ fn push_sanitized_html(
             }
             None => false,
         },
-        crate::safe_html::UrlKind::Image => match state.safe_url_cached(url, UrlContext::Image) {
-            Some(src) => {
-                if opts.image_assets.is_empty() || !push_html_image_asset_data_uri(src, opts, out) {
-                    push_escaped_url(src, out);
-                }
-                true
-            }
-            None => false,
-        },
+        crate::safe_html::UrlKind::Image => state.push_image_source(url, opts, out),
     });
     state.raw_html = sanitizer;
 }
@@ -680,13 +758,13 @@ fn render_block<'a, 'b>(
         }
         Block::CodeBlock { lang, code } => {
             let l_str = lang.as_deref().unwrap_or("");
-            if crate::diagrams::is_diagram_code(code, l_str) {
-                if let Some(svg) = crate::diagrams::render_diagram_svg(code, l_str) {
-                    out.push_str("<div class=\"fmd-diagram-wrapper\">\n");
-                    out.push_str(&svg);
-                    out.push_str("</div>\n");
-                    return;
-                }
+            if crate::diagrams::is_diagram_code(code, l_str)
+                && let Some(svg) = crate::diagrams::render_diagram_svg(code, l_str)
+            {
+                out.push_str("<div class=\"fmd-diagram-wrapper\">\n");
+                out.push_str(&svg);
+                out.push_str("</div>\n");
+                return;
             }
 
             out.push_str("<pre><code");
@@ -987,13 +1065,9 @@ fn render_inlines_body(
                 }
             }
             Inline::Image { dest, title, alt } => {
-                if let Some(src) = state.safe_url_cached(dest, UrlContext::Image) {
-                    out.push_str("<img src=\"");
-                    if opts.image_assets.is_empty()
-                        || !push_html_image_asset_data_uri(src, opts, out)
-                    {
-                        push_escaped_url(src, out);
-                    }
+                let start = out.len();
+                out.push_str("<img src=\"");
+                if state.push_image_source(dest, opts, out) {
                     out.push_str("\" alt=\"");
                     push_escaped_attr(alt, out);
                     out.push('"');
@@ -1004,6 +1078,7 @@ fn render_inlines_body(
                     }
                     out.push('>');
                 } else {
+                    out.truncate(start);
                     push_escaped_text(alt, out);
                 }
             }
@@ -1034,6 +1109,17 @@ fn render_inlines_body(
     }
 }
 
+/// Use the same image-only admission for rendering and saved workspace bindings.
+/// A rejected explicit data-image override must remain rejected after editing.
+pub(crate) fn push_html_source_data_image(
+    dest: &str,
+    opts: &HtmlOptions,
+    out: &mut String,
+) -> bool {
+    let dest = dest.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+    data_images::is_data_uri(dest) && data_images::push(dest, opts, out)
+}
+
 pub(crate) fn push_html_image_asset_data_uri(
     dest: &str,
     opts: &HtmlOptions,
@@ -1042,6 +1128,11 @@ pub(crate) fn push_html_image_asset_data_uri(
     let Some((mime, bytes)) = html_image_asset(dest, opts) else {
         return false;
     };
+    push_html_image_data_uri(mime, bytes, out);
+    true
+}
+
+fn push_html_image_data_uri(mime: &str, bytes: &[u8], out: &mut String) {
     let bytes = if mime == "image/svg+xml" {
         svg_without_remote_style_imports(bytes)
     } else {
@@ -1051,7 +1142,6 @@ pub(crate) fn push_html_image_asset_data_uri(
     out.push_str(mime);
     out.push_str(";base64,");
     push_base64_encoded(out, bytes.as_ref());
-    true
 }
 
 fn html_image_asset<'a>(dest: &str, opts: &'a HtmlOptions) -> Option<(&'static str, &'a [u8])> {
@@ -1075,6 +1165,9 @@ fn html_image_asset_mime(bytes: &[u8]) -> Option<&'static str> {
     }
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
     }
     if looks_like_svg(bytes) {
         return Some("image/svg+xml");
@@ -1564,17 +1657,20 @@ fn alert_body(inner: &[Block]) -> Option<(&'static str, &'static str, Vec<Block>
     crate::ast::alert_body(inner)
 }
 
-/// Collect GFM footnote definitions in document order (container-aware), for
-/// the trailing notes section. Run lazily by `ensure_footnote_defs` at the
-/// first footnote reference: references may precede their definitions, so
-/// whenever the walk runs it must still cover the whole tree.
-fn collect_footnote_defs(blocks: &[Block]) -> Vec<(&str, &[Block])> {
-    let mut defs = Vec::new();
-    fn walk<'a>(blocks: &'a [Block], defs: &mut Vec<(&'a str, &'a [Block])>) {
+/// Index GFM footnote definitions in document order (container-aware), keeping
+/// the first body for each id. Both references and emitted note bodies perform
+/// logarithmic lookups instead of repeatedly scanning every definition.
+/// Run lazily: references may precede definitions, so the first lookup indexes
+/// the whole tree, while reference-free documents never allocate the index.
+fn collect_footnote_defs(blocks: &[Block]) -> BTreeMap<&str, &[Block]> {
+    let mut defs = BTreeMap::new();
+    fn walk<'a>(blocks: &'a [Block], defs: &mut BTreeMap<&'a str, &'a [Block]>) {
         for block in blocks {
             match block {
                 Block::FootnoteDefinition { id, blocks: inner } => {
-                    defs.push((id.as_str(), inner.as_slice()));
+                    defs.entry(id.as_str()).or_insert(inner.as_slice());
+                    // Nested definitions remain discoverable even inside a
+                    // duplicate outer definition, matching the original walk.
                     walk(inner, defs);
                 }
                 Block::BlockQuote(inner) => walk(inner, defs),
@@ -1600,9 +1696,6 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
     // Definitions are outside the document body outline. A note heading must
     // not consume an automatic TOC when the body has no heading of its own.
     state.automatic_toc = false;
-    // The refs are 'a (borrowed from the document), so cloning the pair list
-    // is cheap and independent of the later &mut state borrows.
-    let defs = state.footnote_defs.clone();
     out.push_str("<section class=\"footnotes\">\n<ol>\n");
     // Walk by index so a reference discovered while rendering a note body
     // (GFM: notes can cite other notes) is appended and emitted too. Cloning
@@ -1613,7 +1706,8 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
         let id = state.footnote_order[idx].clone();
         let number = idx + 1;
         idx += 1;
-        let Some((_, blocks)) = defs.iter().find(|(def_id, _)| *def_id == id.as_str()) else {
+        // Copy only the document-owned slice before mutably rendering state.
+        let Some(blocks) = state.footnote_defs.get(id.as_str()).copied() else {
             continue;
         };
         out.push_str("<li id=\"");
@@ -1636,7 +1730,7 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
 /// anchor id. References without definitions stay literal text (GFM).
 fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) {
     state.ensure_footnote_defs();
-    let has_def = state.footnote_defs.iter().any(|(def_id, _)| *def_id == id);
+    let has_def = state.footnote_defs.contains_key(id);
     if !has_def {
         out.push_str("[^");
         out.push_str(&escape_text(id));
@@ -1924,29 +2018,42 @@ fn allowed_url_scheme(scheme: &str, context: UrlContext) -> bool {
 
 /// The default, dependency-free, gorgeous stylesheet.
 fn default_css(doc: &Document, opts: &HtmlOptions) -> String {
-    let embedded = embedded_font_css(doc, &opts.theme, &opts.font_assets, opts.html_font_format);
+    let embedded = embedded_font_css(
+        doc,
+        &opts.theme,
+        &opts.font_assets,
+        opts.html_font_format,
+        opts.font_embedding,
+    );
     default_css_with_fonts(opts, embedded)
 }
 
 fn default_css_with_fonts(opts: &HtmlOptions, embedded: EmbeddedFontCss) -> String {
     let theme = &opts.theme;
-    let body_font = if embedded.has_body {
-        format!("\"FMD Body\", {}", theme.body_font_stack())
+    let cjk_family = if embedded.has_cjk {
+        "\"FMD CJK\", "
     } else {
-        theme.body_font_stack().to_string()
+        ""
+    };
+    let body_font = if embedded.has_body {
+        format!("\"FMD Body\", {cjk_family}{}", theme.body_font_stack())
+    } else {
+        format!("{cjk_family}{}", theme.body_font_stack())
     };
     let mono_font = if embedded.has_mono {
-        format!("\"FMD Mono\", {}", theme.mono_font_stack())
+        format!("\"FMD Mono\", {cjk_family}{}", theme.mono_font_stack())
     } else {
-        theme.mono_font_stack().to_string()
+        format!("{cjk_family}{}", theme.mono_font_stack())
     };
-    let colors = &theme.colors;
+    let colors = theme.effective_colors(false, false);
     let spacing = &theme.spacing;
 
-    let emit_dark = matches!(theme.dark_mode, DarkModePolicy::Auto);
-    let token_dark = match theme.dark_mode {
-        DarkModePolicy::Auto => TOKEN_DARK_CSS,
-        DarkModePolicy::Disabled => "",
+    let emit_dark = theme.automatic_dark_mode();
+    let tokens = token_css(theme.code_colors(colors), false);
+    let token_dark = if emit_dark {
+        token_css(theme.code_colors(&theme.dark_colors), true)
+    } else {
+        String::new()
     };
 
     let color_vars_capacity = color_vars_capacity(colors);
@@ -1964,7 +2071,7 @@ fn default_css_with_fonts(opts: &HtmlOptions, embedded: EmbeddedFontCss) -> Stri
             + body_font.len()
             + mono_font.len()
             + BASE_CSS.len()
-            + TOKEN_CSS.len()
+            + tokens.len()
             + dark_capacity
             + token_dark.len()
             + 256,
@@ -1990,12 +2097,15 @@ fn default_css_with_fonts(opts: &HtmlOptions, embedded: EmbeddedFontCss) -> Stri
     css.push_str("; }\n");
     css.push_str(BASE_CSS);
     css.push('\n');
-    css.push_str(TOKEN_CSS);
+    css.push_str(&tokens);
+    if theme.appearance.is_high_contrast() {
+        css.push_str(".tok-kw { font-weight: bold; }\n");
+    }
     css.push('\n');
     if emit_dark {
         push_dark_mode_css(&mut css, &theme.dark_colors);
     }
-    css.push_str(token_dark);
+    css.push_str(&token_dark);
     css
 }
 
@@ -2163,7 +2273,7 @@ impl FontCharSet {
             let bytes = rest.as_bytes();
             let mut mask = 0u128;
             let mut words = 0usize;
-            for chunk in bytes.chunks_exact(8) {
+            for chunk in bytes.as_chunks::<8>().0 {
                 let mut buf = [0u8; 8];
                 buf.copy_from_slice(chunk);
                 let word = u64::from_le_bytes(buf);
@@ -2309,6 +2419,7 @@ struct EmbeddedFontCss {
     css: String,
     has_body: bool,
     has_mono: bool,
+    has_cjk: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -2326,6 +2437,7 @@ fn embedded_font_css(
     theme: &Theme,
     font_assets: &FontAssets,
     format: crate::HtmlFontFormat,
+    embedding: FontEmbedding,
 ) -> EmbeddedFontCss {
     let mut usage = collect_font_usage(doc);
     usage.add_stability_seed();
@@ -2348,6 +2460,7 @@ fn embedded_font_css(
         body_font_face(font_assets, theme.font, FontStyle::Regular),
         &usage.body_regular,
         format,
+        embedding,
         &mut woff_scratch,
         &mut woff2_scratch,
     );
@@ -2361,6 +2474,7 @@ fn embedded_font_css(
         body_font_face(font_assets, theme.font, FontStyle::Bold),
         &usage.body_bold,
         format,
+        embedding,
         &mut woff_scratch,
         &mut woff2_scratch,
     );
@@ -2374,6 +2488,7 @@ fn embedded_font_css(
         body_font_face(font_assets, theme.font, FontStyle::Italic),
         &usage.body_italic,
         format,
+        embedding,
         &mut woff_scratch,
         &mut woff2_scratch,
     );
@@ -2387,6 +2502,7 @@ fn embedded_font_css(
         body_font_face(font_assets, theme.font, FontStyle::BoldItalic),
         &usage.body_bold_italic,
         format,
+        embedding,
         &mut woff_scratch,
         &mut woff2_scratch,
     );
@@ -2400,15 +2516,64 @@ fn embedded_font_css(
         mono_font_face(font_assets, FontStyle::Regular),
         &usage.mono,
         format,
+        embedding,
         &mut woff_scratch,
         &mut woff2_scratch,
     );
     has_mono |= !usage.mono.is_empty();
 
+    // Use one shared fallback for CJK text in every semantic style. Its cmap
+    // contains only this document's covered characters in compact snapshots,
+    // and its family stays after the user's primary faces in the CSS stack.
+    // The static range gate decides first, so documents without CJK text never
+    // parse the ~9.9 MB face.
+    let mut has_cjk = false;
+    let used_sets = [
+        &usage.body_regular,
+        &usage.body_bold,
+        &usage.body_italic,
+        &usage.body_bold_italic,
+        &usage.mono,
+    ];
+    let wants_cjk = used_sets
+        .iter()
+        .any(|used| used.non_ascii.iter().any(|&ch| fonts::cjk_face_may_map(ch)));
+    if wants_cjk && let Some(Ok((font, _))) = fonts::cjk_font() {
+        let mut chars = FontCharSet::default();
+        for used in used_sets {
+            for &ch in &used.non_ascii {
+                if font.glyph_index(ch) != 0 {
+                    chars.insert(ch);
+                }
+            }
+        }
+        if !chars.is_empty() {
+            push_font_face(
+                &mut css,
+                "FMD CJK",
+                "normal",
+                "400",
+                HtmlFontFace {
+                    bytes: font.as_sfnt(),
+                    parsed: Some(font),
+                    slot: FontAssetSlot::BodyRegular,
+                    instance_weight: None,
+                },
+                &chars,
+                format,
+                embedding,
+                &mut woff_scratch,
+                &mut woff2_scratch,
+            );
+            has_cjk = true;
+        }
+    }
+
     EmbeddedFontCss {
         css,
         has_body,
         has_mono,
+        has_cjk,
     }
 }
 
@@ -2485,6 +2650,20 @@ impl FontUsage {
         slot.extend_text(text, &mut self.word_memo);
     }
 
+    fn add_html_text(&mut self, html: &str, style: InlineStyle) {
+        // Preserve source coverage, including literal image descriptions and
+        // attributes, while also keeping the characters that entity references
+        // actually paint. The sanitizer uses the same entity decoder as the
+        // renderer; declining URLs exposes decoded image alt text as prose.
+        self.add_body_text(html, style);
+        if html.contains('&') {
+            let mut rendered = String::new();
+            crate::safe_html::Sanitizer::default()
+                .feed(html, 0, &mut rendered, &mut |_, _, _| false);
+            self.add_body_text(&crate::safe_html::visible_text(&rendered), style);
+        }
+    }
+
     fn add_mono_text(&mut self, text: &str) {
         self.mono.extend_text(text, &mut self.word_memo);
     }
@@ -2557,7 +2736,7 @@ fn collect_blocks_font_usage(blocks: &[Block], usage: &mut FontUsage) {
                 }
             }
             Block::ThematicBreak => {}
-            Block::HtmlBlock(html) => usage.add_body_text(html, InlineStyle::default()),
+            Block::HtmlBlock(html) => usage.add_html_text(html, InlineStyle::default()),
         }
     }
 }
@@ -2582,7 +2761,7 @@ fn collect_inlines_font_usage(inlines: &[Inline], usage: &mut FontUsage, style: 
             }
             Inline::Image { alt, .. } => usage.add_body_text(alt, style),
             Inline::SoftBreak | Inline::HardBreak => usage.add_soft_break(style),
-            Inline::Html(html) => usage.add_body_text(html, style),
+            Inline::Html(html) => usage.add_html_text(html, style),
         }
     }
 }
@@ -2596,6 +2775,7 @@ fn push_font_face(
     font_face: HtmlFontFace<'_>,
     chars: &FontCharSet,
     format: crate::HtmlFontFormat,
+    embedding: FontEmbedding,
     woff_scratch: &mut crate::compress::ZlibCompressScratch,
     woff2_scratch: &mut crate::brotli::BrotliCompressScratch,
 ) {
@@ -2603,29 +2783,52 @@ fn push_font_face(
         return;
     }
 
-    let keep = chars.to_chars();
-    let subset = font_face
-        .parsed
-        .and_then(|font| font.subset(&keep))
-        .or_else(|| {
-            let parsed = if let Some(weight) = font_face.instance_weight {
-                instance_host_font(font_face.slot, font_face.bytes, weight).ok()
-            } else {
-                Font::parse(font_face.bytes.to_vec()).ok()
-            };
-            parsed.and_then(|font| font.subset(&keep).or_else(|| Some(font.as_sfnt().to_vec())))
-        })
-        .unwrap_or_else(|| font_face.bytes.to_vec());
+    let bytes = if embedding == FontEmbedding::Full {
+        // Preserve cmap and the complete layout program: the browser needs
+        // their original glyph identities for normalization, substitutions,
+        // kerning and mark positioning. Host weight pins still select the
+        // same static instance as the existing editable-document path.
+        if let Some(weight) = font_face.instance_weight {
+            instance_host_font(font_face.slot, font_face.bytes, weight)
+                .map_or_else(|_| font_face.bytes.to_vec(), |font| font.as_sfnt().to_vec())
+        } else {
+            font_face.bytes.to_vec()
+        }
+    } else {
+        let keep = chars.to_chars();
+        font_face
+            .parsed
+            .and_then(|font| subset_html_font(font, &keep))
+            .or_else(|| {
+                let parsed = if let Some(weight) = font_face.instance_weight {
+                    instance_host_font(font_face.slot, font_face.bytes, weight).ok()
+                } else {
+                    Font::parse(font_face.bytes.to_vec()).ok()
+                };
+                parsed.and_then(|font| {
+                    subset_html_font(&font, &keep).or_else(|| Some(font.as_sfnt().to_vec()))
+                })
+            })
+            .unwrap_or_else(|| font_face.bytes.to_vec())
+    };
     push_font_payload(
         css,
         family,
         style,
         weight,
-        &subset,
+        &bytes,
         format,
         woff_scratch,
         woff2_scratch,
     );
+}
+
+fn subset_html_font(font: &Font, keep: &[char]) -> Option<Vec<u8>> {
+    if font.has_glyf_outlines() {
+        font.subset(keep)
+    } else {
+        font.try_subset(keep).ok().map(|subset| subset.bytes)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2639,20 +2842,25 @@ fn push_font_payload(
     woff_scratch: &mut crate::compress::ZlibCompressScratch,
     woff2_scratch: &mut crate::brotli::BrotliCompressScratch,
 ) {
+    let (raw_mime, raw_hint) = if sfnt.starts_with(b"OTTO") {
+        ("font/otf", "opentype")
+    } else {
+        ("font/ttf", "truetype")
+    };
     let (payload, mime, format_hint) = match format {
         crate::HtmlFontFormat::Woff2 => {
             match crate::woff2::encode_woff2_with_scratch(sfnt, woff2_scratch) {
                 Ok(woff2) => (woff2, "font/woff2", "woff2"),
-                Err(_) => (sfnt.to_vec(), "font/ttf", "truetype"),
+                Err(_) => (sfnt.to_vec(), raw_mime, raw_hint),
             }
         }
         crate::HtmlFontFormat::Woff1 => {
             match crate::woff1::encode_woff1_with_scratch(sfnt, woff_scratch) {
                 Ok(woff) => (woff, "font/woff", "woff"),
-                Err(_) => (sfnt.to_vec(), "font/ttf", "truetype"),
+                Err(_) => (sfnt.to_vec(), raw_mime, raw_hint),
             }
         }
-        crate::HtmlFontFormat::Ttf => (sfnt.to_vec(), "font/ttf", "truetype"),
+        crate::HtmlFontFormat::Ttf => (sfnt.to_vec(), raw_mime, raw_hint),
     };
     let encoded_len = base64_encoded_len(payload.len());
     css.reserve(font_face_css_capacity(
@@ -2741,28 +2949,41 @@ fn push_base64_encoded(out: &mut String, bytes: &[u8]) {
 
 const HTML_FONT_SEED: &str = " \t\n0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,;:!?()[]{}<>/\\'\"+-_=*#%&@|`~^•–—“”‘’";
 
-const TOKEN_CSS: &str = r#"
-.tok-kw { color: #cf222e; }
-.tok-ty { color: #953800; }
-.tok-fn { color: #6639ba; }
-.tok-st { color: #0a3069; }
-.tok-nu { color: #0550ae; }
-.tok-cm { color: #6e7781; font-style: italic; }
-.tok-op { color: #0550ae; }
-.tok-pn { color: inherit; }
-"#;
-
-const TOKEN_DARK_CSS: &str = r#"
-@media (prefers-color-scheme: dark) {
-  .tok-kw { color: #ff7b72; }
-  .tok-ty { color: #ffa657; }
-  .tok-fn { color: #d2a8ff; }
-  .tok-st { color: #a5d6ff; }
-  .tok-nu { color: #79c0ff; }
-  .tok-cm { color: #8b949e; }
-  .tok-op { color: #79c0ff; }
+fn token_css(colors: CodeColors<'_>, dark_media: bool) -> String {
+    let mut css = String::with_capacity(400);
+    css.push('\n');
+    if dark_media {
+        css.push_str("@media (prefers-color-scheme: dark) {\n");
+    }
+    for (class, value) in [
+        ("kw", colors.keyword),
+        ("ty", colors.type_name),
+        ("fn", colors.function),
+        ("st", colors.string),
+        ("nu", colors.number),
+        ("cm", colors.comment),
+        ("op", colors.number),
+    ] {
+        if dark_media {
+            css.push_str("  ");
+        }
+        css.push_str(".tok-");
+        css.push_str(class);
+        css.push_str(" { color: ");
+        push_css_token(&mut css, value);
+        css.push(';');
+        if class == "cm" && !dark_media {
+            css.push_str(" font-style: italic;");
+        }
+        css.push_str(" }\n");
+    }
+    if dark_media {
+        css.push_str("}\n");
+    } else {
+        css.push_str(".tok-pn { color: inherit; }\n");
+    }
+    css
 }
-"#;
 
 const BASE_CSS: &str = r#"
 *, *::before, *::after { box-sizing: border-box; }
@@ -3868,6 +4089,9 @@ mod tests {
             html_image_asset_mime(b"\xff\xd8\xff\xe0"),
             Some("image/jpeg")
         );
+        for version in [b"GIF87a", b"GIF89a"] {
+            assert_eq!(html_image_asset_mime(version), Some("image/gif"));
+        }
         for svg in [
             "<svg xmlns='http://www.w3.org/2000/svg'/>",
             "\u{feff}  <?xml version='1.0'?>\n<!-- exported logo --><svg/>",
@@ -3882,6 +4106,8 @@ mod tests {
         }
         for unsupported in [
             "not an image",
+            "GIF88a",
+            "gif89a",
             "<html><body>not SVG</body></html>",
             "<?xml version='1.0'?><html><svg/></html>",
             "<?xml version='1.0'?><rect/>",

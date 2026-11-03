@@ -18,8 +18,8 @@
 //! * `OEBPS/style.css` — a deterministic stylesheet, optionally caller-supplied.
 //! * `OEBPS/assets/*` — supported embedded images, deduplicated in first-use
 //!   order within each chapter and declared in the package manifest.
-//! * `OEBPS/fonts/*` and `OEBPS/embedded-fonts.css` — shared TrueType subsets
-//!   when caller-supplied fonts opt the publication into font embedding.
+//! * `OEBPS/fonts/*` and `OEBPS/embedded-fonts.css` — shared TrueType or CFF1
+//!   OpenType subsets when caller-supplied fonts opt into font embedding.
 //!
 //! The chapter body comes from the crate's own HTML renderer: the document is
 //! rendered once with the stylesheet slot blanked (EPUB carries its own
@@ -96,8 +96,9 @@ const CONTAINER_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 /// it verbatim; a `.fmd` wrapper is retained for custom styles. The effective
 /// stylesheet contributes to the publication's deterministic identifier.
 ///
-/// Supplying any `opts.font_assets` face embeds publication-wide TrueType
-/// subsets. Missing faces use the shared bundled font registry. Custom CSS
+/// Supplying any `opts.font_assets` face embeds publication-wide TrueType or
+/// supported name-keyed CFF1 OpenType subsets. Missing faces use the shared
+/// bundled font registry. Custom CSS
 /// remains verbatim and can override the generated font-family rules. Font
 /// bytes and their CSS mapping contribute to the deterministic identifier;
 /// no supplied faces keeps the archive font-free and uses reader font families.

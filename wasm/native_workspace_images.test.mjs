@@ -158,6 +158,37 @@ test('lightweight preparation keeps exact data-URI Markdown; native preparation 
   assert.notEqual(added[0].destination,added[1].destination);assert.deepEqual(added[0].bytes,[...png]);
 });
 
+test('GIF authoring preserves original animation and interlaced bytes in native HTML, PDF and saved resources', async () => {
+  for (const name of ['animated-colors', 'interlaced-palette']) {
+    const bytes=Buffer.from(readFileSync(new URL('../tests/fixtures/gif/'+name+'.base64',import.meta.url),'utf8'),'base64');
+    const images=await read([file('claimed.png',bytes)]), s=setup();
+    const insertion=pure.fmdNativeImageImport(images,s.renderer);
+    assert.equal(images[0].mime,'image/gif');
+    assert.match(insertion.markdown,/!\[claimed\.png\]\(fmd-import\/[a-f0-9]{32}\.gif\)/);
+    insertion.transaction.commit();
+    const expected={destination:s.payload.images[1].destination,bytes:[...bytes]};
+    assert.deepEqual(s.assets('html')[1],expected);assert.deepEqual(s.assets('pdf')[1],expected);
+    assert.deepEqual(Buffer.from(s.payload.images[1].bytes,'base64'),bytes);
+    const reopened=setup(JSON.parse(JSON.stringify(s.payload)));
+    assert.deepEqual(reopened.assets('pdf')[1],expected);
+  }
+});
+
+test('admitted SVG imports keep vector bytes and .svg identities through native HTML, PDF and reopening', () => {
+  // XML admission and actual SVG decoding are covered by the Chromium gate;
+  // this test isolates the production resource transaction and ABI ownership.
+  const bytes = encoder.encode('\ufeff<svg xmlns="http://www.w3.org/2000/svg" width="160" height="80"><path d="M0 0L160 80" stroke="blue"/></svg>');
+  const s = setup(), insertion = pure.fmdNativeImageImport([{alt:'chart.png', mime:'image/svg+xml', bytes}], s.renderer);
+  assert.match(insertion.markdown, /!\[chart\.png\]\(fmd-import\/[a-f0-9]{32}\.svg\)/);
+  const original = [...bytes]; bytes.fill(0);
+  insertion.transaction.commit();
+  const expected = {destination:s.payload.images[1].destination, bytes:original};
+  assert.deepEqual(s.assets('html')[1], expected);
+  assert.deepEqual(s.assets('pdf')[1], expected);
+  assert.deepEqual([...Buffer.from(s.payload.images[1].bytes,'base64')], original);
+  assert.deepEqual(setup(JSON.parse(JSON.stringify(s.payload))).assets('pdf')[1], expected);
+});
+
 test('file bytes, size and alt are captured before asynchronous decoding and native publication', async () => {
   const bytes=Uint8Array.from(png);const f={name:'before.png',size:bytes.length,async arrayBuffer(){return bytes.buffer;}};
   const images=await pure.fmdReadImageImport([f],async()=>{bytes.fill(0);f.name='after';f.size=1;},()=>true);
@@ -176,7 +207,7 @@ test('read/verify errors and stale revisions return no usable import batch', asy
 
 function target() {
   const listeners=new Map();
-  return {value:'',disabled:false,addEventListener(type,fn){if(!listeners.has(type)) listeners.set(type,[]);listeners.get(type).push(fn);},
+  return {value:'',disabled:false,style:{},addEventListener(type,fn){if(!listeners.has(type)) listeners.set(type,[]);listeners.get(type).push(fn);},
     dispatchEvent(event){for(const fn of listeners.get(event.type)||[]) fn(event);},
     async fire(type, event={}){await Promise.all((listeners.get(type)||[]).map(fn=>fn({type,...event})));},click(){this.dispatchEvent({type:'click'});}};
 }
@@ -190,7 +221,8 @@ function dom({native=true, mode='command', decode=async()=>{}, initial='# Before
     ['body > #fmd-app-body > #editor-pane > textarea#fmd-editor',editor],
     ['body > .fmd-app-header #btn-insert-image',button],['body > .fmd-app-header #fmd-image-picker',picker],
     ['#editor-pane > .fmd-pane-header > #fmd-save-status',status],['body > #fmd-app-body',app]]);
-  const document={querySelector:selector=>nodes.get(selector),execCommand(_,__,text){
+  button.parentNode={insertBefore(node){nodes.set('body > .fmd-app-header #'+node.id,node);}};
+  const document={querySelector:selector=>nodes.get(selector),createElement:()=>target(),execCommand(_,__,text){
     if(mode==='fallback' || mode==='failure') throw Error('command unavailable');
     editor.setRangeText(mode==='partial'?'partial '+text:text,editor.selectionStart,editor.selectionEnd);
     editor.dispatchEvent({type:'input'});return true;
@@ -198,6 +230,14 @@ function dom({native=true, mode='command', decode=async()=>{}, initial='# Before
   if(native) Object.defineProperty(window,'__fmdNativeRuntime',{value:{version:1,
     render:(...a)=>s.renderer.html(...a),pdf:(...a)=>s.renderer.pdf(...a),stageImages:(...a)=>s.renderer.stageImages(...a)}});
   const context=vm.createContext({document,window,Uint8Array,ArrayBuffer,TextEncoder,btoa,crypto:webcrypto,Event,setTimeout,clearTimeout,
+    MutationObserver:class {observe(){}},
+    FileReader:class {
+      readyState=0;result=null;
+      readAsArrayBuffer(file){this.readyState=1;file.arrayBuffer().then(bytes=>{
+        if(this.readyState!==1)return;this.readyState=2;this.result=bytes;this.onload?.();
+      },()=>{if(this.readyState!==1)return;this.readyState=2;this.onerror?.();});}
+      abort(){this.readyState=2;this.onabort?.();}
+    },
     Image:class {naturalWidth=2;naturalHeight=1;async decode(){await decode();}removeAttribute(){}}});
   vm.runInContext(source,context);
   return {...s,editor,button,picker,status,window,context,

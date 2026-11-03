@@ -174,8 +174,12 @@ export class FlowReaderView {
       return el;
     };
     const text = function* (node, parent) {
+      // The admitted AST text owns hard breaks and repeated spaces. Native
+      // Selection/Copy must not collapse those characters around inline spans.
+      // Keep code's existing pre/code presentation policy unchanged.
+      if (node.role !== "code-block" && node.role !== "diagram") parent.style.whiteSpace = "pre-wrap";
       const segments = [];
-      const part = function* (start, end, destination, style = null) {
+      const part = function* (start, end, destination, style = null, math = null) {
         if (start === end && node.text.length) return;
         let holder = destination;
         for (const [flag, tag] of [
@@ -189,6 +193,13 @@ export class FlowReaderView {
             holder.append(el);
             holder = el;
           }
+        }
+        if (math !== null && math !== undefined) {
+          const el = make("span");
+          el.setAttribute("role", "math");
+          el.style.whiteSpace = "pre-wrap";
+          holder.append(el);
+          holder = el;
         }
         const expected = node.text.slice(start, end),
           leaf = doc.createTextNode(expected);
@@ -221,7 +232,7 @@ export class FlowReaderView {
         if (link) parent.append(link);
         for (; i < next; i++) {
           const run = node.inlineRuns[i];
-          yield* part(run.startUtf16, run.endUtf16, holder, run.style);
+          yield* part(run.startUtf16, run.endUtf16, holder, run.style, run.math);
         }
         end = linkEnd;
       }
@@ -240,6 +251,16 @@ export class FlowReaderView {
           break;
         case "code-block":
           el = make("pre");
+          break;
+        case "diagram":
+          el = make("section");
+          el.setAttribute("role", "region");
+          el.setAttribute("aria-label", "Diagram source");
+          break;
+        case "math":
+          el = make("div");
+          el.setAttribute("role", "math");
+          el.style.whiteSpace = "pre-wrap";
           break;
         case "blockquote":
           el = make("blockquote");
@@ -284,10 +305,20 @@ export class FlowReaderView {
       el.setAttribute("data-flow-node", String(node.index));
       elements.set(node.index, el);
       if (node.children.length) yield* append(node.children, el, node.role);
-      else if (node.role === "code-block") {
+      else if (node.role === "code-block" || node.role === "diagram") {
+        const pre = node.role === "diagram" ? make("pre") : el;
         const code = make("code");
         yield* text(node, code);
-        el.append(code);
+        // Keep the final empty line box: Chromium otherwise omits one terminal
+        // LF from native Selection/Copy, despite the exact text node and Range.
+        // The break carries no text and adds no character to whole-code Copy.
+        if (node.text.endsWith("\n")) {
+          const terminalLine = make("br");
+          terminalLine.setAttribute("aria-hidden", "true");
+          code.append(terminalLine);
+        }
+        pre.append(code);
+        if (pre !== el) el.append(pre);
       } else if (node.role === "image") {
         const caption = make("figcaption"),
           link = linkElement(node, node.imageLink, null, null);

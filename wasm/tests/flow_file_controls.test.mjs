@@ -3,6 +3,7 @@ import test from "node:test";
 import { createSourceControls, createSourceEditingControls } from "../demo/flow_document.mjs";
 import { createFileControls } from "../demo/flow_file_controls.mjs";
 import { deferred, MemoryFileHandle } from "./flow_file_fixtures.mjs";
+import { sourceAccessFixture } from "./flow_access_fixture.mjs";
 
 // Deliberate DOM double: native EventTarget, File, Blob and object URLs; no
 // browser focus, transient activation, beforeunload UI or OS acceptance claim.
@@ -85,7 +86,7 @@ class Document extends Element {
     return new Element(tag, this);
   }
 }
-function setup({ supported = true } = {}) {
+function setup({ supported = true, observeAccess = false } = {}) {
   const root = new Document(),
     window = new EventTarget(),
     urls = new Set();
@@ -99,6 +100,7 @@ function setup({ supported = true } = {}) {
     filename = add("source-filename", "input");
   source.value = "# Initial\n";
   filename.value = "draft.md";
+  const access = observeAccess ? sourceAccessFixture([source, filename]) : null;
   const open = add("open-markdown", "input"),
     prepare = add("prepare-markdown"),
     download = add("source-download", "a"),
@@ -172,6 +174,7 @@ function setup({ supported = true } = {}) {
     editing,
     urls,
     download,
+    access,
     get files() {
       return files;
     },
@@ -361,6 +364,81 @@ test("composition disables file commands and does not steal IME shortcuts", asyn
   await assert.rejects(h.files.save(), { code: "FILE_BUSY" });
   h.dispose();
 });
+
+test("source and filename composition keep file actions blocked until both finish", async (t) => {
+  const h = setup();
+  t.after(() => h.dispose());
+  await h.files.open();
+  h.source.dispatchEvent(new Event("compositionstart"));
+  h.filename.dispatchEvent(new Event("compositionstart"));
+  h.source.dispatchEvent(new Event("compositionend"));
+  assert.equal(h.el("file-save-as").disabled, true);
+  assert.equal(h.el("file-backup").disabled, true);
+  assert.equal(key(h.window).defaultPrevented, false);
+  await assert.rejects(h.files.save(), { code: "FILE_BUSY" });
+  h.filename.dispatchEvent(new Event("compositionend"));
+  assert.equal(h.el("file-save-as").disabled, false);
+  assert.equal(h.el("file-backup").disabled, false);
+});
+
+test("filename composition retires a pending Save as even if it ends without an input", async (t) => {
+  const h = setup(), held = deferred();
+  t.after(() => h.dispose());
+  h.window.showSaveFilePicker = () => held.promise;
+  const saving = h.files.saveAs();
+  h.filename.dispatchEvent(new Event("compositionstart"));
+  h.filename.dispatchEvent(new Event("compositionend"));
+  held.resolve(h.saved);
+  await assert.rejects(saving, { code: "STALE_SOURCE" });
+  assert.equal(h.saved.source, "");
+  assert.equal(h.saved.counts.create ?? 0, 0);
+  assert.equal(h.filename.value, "draft.md");
+  assert.equal(h.files.state.filename, null);
+});
+
+for (const field of ["source", "filename"]) {
+  for (const property of ["readOnly", "disabled"]) {
+    test(`${field} ${property} round trip during staged save aborts before close`, async (t) => {
+      const h = setup({ observeAccess: true });
+      t.after(() => h.dispose());
+      await h.files.open();
+      h.edit("# Unsaved 日本語\n");
+      h.picked.hooks.write = () => {
+        h[field][property] = true;
+        h[field][property] = false;
+        assert(h.access.pendingRecords > 0, "observer delivery has not occurred");
+      };
+      await assert.rejects(h.files.save(), { code: "STALE_SOURCE" });
+      assert.equal(h.picked.source, "# Disk\n");
+      assert.equal(h.picked.counts.close ?? 0, 0);
+      assert.equal(h.picked.counts.abort, 1);
+      assert.equal(h.source.value, "# Unsaved 日本語\n");
+      delete h.picked.hooks.write;
+      // Consume older access records before capturing a fresh, explicit save.
+      h[field][property] = true;
+      h[field][property] = false;
+      await h.files.save();
+      assert.equal(h.picked.source, "# Unsaved 日本語\n");
+      assert.equal(h.files.state.phase, "saved");
+    });
+  }
+  test(`${field} removal and reinsertion retire a staged write`, async (t) => {
+    const h = setup({ observeAccess: true });
+    t.after(() => h.dispose());
+    await h.files.open();
+    h.edit("# Keep editing\n");
+    h.picked.hooks.write = () => {
+      h.access.mount(h[field], false);
+      h.access.mount(h[field], true);
+    };
+    await assert.rejects(h.files.save(), { code: "STALE_SOURCE" });
+    assert.equal(h.picked.source, "# Disk\n");
+    assert.equal(h.picked.counts.close ?? 0, 0);
+    assert.equal(h.source.value, "# Keep editing\n");
+    h.dispose();
+    assert.equal(h.access.observerCount, 0);
+  });
+}
 
 test("draft restoration and ordinary import detach file ownership without losing source", async () => {
   const h = setup();

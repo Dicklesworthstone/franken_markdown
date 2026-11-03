@@ -42,6 +42,8 @@ if (!isMainThread) {
         if (source === "unsupported") throw Object.assign(new Error("fixture requires matching WASM"), {
           code: "UNSUPPORTED_WASM_PACKAGE",
         });
+        if (workerData.fontEmbeddingSupport === false && options.fontEmbedding === "full")
+          throw Object.assign(new Error("Full font embedding requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
         const bands = options.running && [options.running.header, options.running.footer];
         if (format === "pdf" && bands && (workerData.runningSupport === "none"
             || (workerData.runningSupport === "text-only" && bands.some(band => band?.image)))) {
@@ -805,6 +807,50 @@ if (!isMainThread) {
       await rejects(guarded.renderHtml("x", { baselineGridPt: 14 }), "INVALID_OPTIONS");
       assert.equal(starts, 0); assert.equal(guarded.pendingBytes, 0);
     } finally { guarded.dispose(); }
+  });
+
+
+  test("document workers retain full-font policy across queued HTML EPUB and publication", async t => {
+    const api = renderer(t);
+    const blocking = api.renderHtml("slow");
+    const options = { fontEmbedding: "full", fontAssets: [{ slot: "body-regular", bytes: Uint8Array.of(1, 2) }] };
+    const html = api.renderHtml("font", options), epub = api.renderEpub("font", options);
+    options.fontEmbedding = "subset"; options.fontAssets[0].bytes.fill(8);
+    await blocking;
+    for (const output of [await html, await epub]) {
+      const captured = JSON.parse(output.text()).options;
+      assert.equal(captured.fontEmbedding, "full"); assert.deepEqual(captured.fontAssets[0].bytes, [1, 2]);
+    }
+    const targets = [{ format: "html", options: { fontEmbedding: "full" } }, { format: "epub", options: { fontEmbedding: "full" } }];
+    const pending = api.publish("font", targets);
+    targets[0].options.fontEmbedding = "subset";
+    for (const output of (await pending).outputs)
+      assert.equal(JSON.parse(output.text()).options.fontEmbedding, "full");
+  });
+
+  test("font policy validates before worker startup and rejects unconsumed target options", async () => {
+    let starts = 0;
+    const api = createWorkerRenderer({ workerFactory() { starts++; assert.fail("worker started"); } });
+    try {
+      for (const format of ["html", "epub"]) {
+        for (const fontEmbedding of [null, "FULL", "guess", 1, true, {}])
+          await rejects(api.render(format, "font", { fontEmbedding }), "INVALID_OPTIONS");
+        await rejects(api.render(format, "font", { get fontEmbedding() { assert.fail("getter reached"); } }), "INVALID_OPTIONS");
+      }
+      for (const format of ["pdf", "svg", "interactive-html"])
+        await rejects(api.render(format, "font", { fontEmbedding: "full" }), "INVALID_OPTIONS");
+      assert.equal(starts, 0); assert.equal(api.pendingBytes, 0);
+    } finally { api.dispose(); }
+  });
+
+  test("document full-font requests preserve old-binding refusal without downgrade", async t => {
+    for (const format of ["html", "epub"]) {
+      const api = renderer(t, {}, { fontEmbeddingSupport: false });
+      const plain = await api.render(format, "font", { fontEmbedding: "subset" });
+      assert.equal(JSON.parse(plain.text()).options.fontEmbedding, "subset");
+      await rejects(api.render(format, "font", { fontEmbedding: "full" }), "UNSUPPORTED_WASM_PACKAGE");
+      assert.equal(api.disposed, true, "existing stale-package failure closes the worker");
+    }
   });
 
 }

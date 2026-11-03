@@ -1221,37 +1221,37 @@ pub fn construct_status(construct: &str) -> ConstructStatus {
     if let Some(name) = construct.strip_prefix('\\') {
         // Control symbols: a single non-letter character.
         let mut chars = name.chars();
-        if let (Some(c), None) = (chars.next(), chars.next()) {
-            if !c.is_ascii_alphabetic() {
-                if control_symbol_is_t2(c) {
-                    return ConstructStatus::UnsupportedT2;
-                }
-                // The supported control-symbol set: escapes, spacing,
-                // the line break, the `\|` delimiter, and the graduated
-                // text accents.
-                return if matches!(
-                    c,
-                    '\\' | ','
-                        | ':'
-                        | ';'
-                        | '!'
-                        | ' '
-                        | '{'
-                        | '}'
-                        | '%'
-                        | '$'
-                        | '&'
-                        | '#'
-                        | '_'
-                        | '|'
-                        | '\''
-                        | '"'
-                ) {
-                    ConstructStatus::Supported
-                } else {
-                    ConstructStatus::Unknown
-                };
+        if let (Some(c), None) = (chars.next(), chars.next())
+            && !c.is_ascii_alphabetic()
+        {
+            if control_symbol_is_t2(c) {
+                return ConstructStatus::UnsupportedT2;
             }
+            // The supported control-symbol set: escapes, spacing,
+            // the line break, the `\|` delimiter, and the graduated
+            // text accents.
+            return if matches!(
+                c,
+                '\\' | ','
+                    | ':'
+                    | ';'
+                    | '!'
+                    | ' '
+                    | '{'
+                    | '}'
+                    | '%'
+                    | '$'
+                    | '&'
+                    | '#'
+                    | '_'
+                    | '|'
+                    | '\''
+                    | '"'
+            ) {
+                ConstructStatus::Supported
+            } else {
+                ConstructStatus::Unknown
+            };
         }
         // The macro-definition commands are consumed by the token-level
         // expansion pass before the grammar ever runs.

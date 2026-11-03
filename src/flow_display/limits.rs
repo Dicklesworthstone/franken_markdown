@@ -7,6 +7,7 @@ use super::{
     SourceLine,
 };
 use crate::ast::{Block, Inline};
+use crate::parse::logical_lines_inclusive;
 use crate::span::SpannedDocument;
 use std::collections::VecDeque;
 
@@ -77,8 +78,7 @@ impl FlowDisplayLimits {
                 self.max_source_bytes,
             ));
         }
-        let count = source
-            .split_inclusive('\n')
+        let count = logical_lines_inclusive(source)
             .take(self.max_source_lines.saturating_add(1))
             .count();
         if count > self.max_source_lines {
@@ -130,7 +130,7 @@ impl ResumableFlowDisplay {
         let mut engine = Self::empty(batch_size, generation, limits);
         engine.source = source.to_owned();
         let mut offset = 0;
-        for segment in source.split_inclusive('\n') {
+        for segment in logical_lines_inclusive(source) {
             let end_offset = offset + segment.len();
             engine.lines.push_back(SourceLine {
                 start_offset: offset,
@@ -323,6 +323,7 @@ impl<'a> Projection<'a> {
             | DisplayBlock::Paragraph { text }
             | DisplayBlock::ListItem { text, .. }
             | DisplayBlock::Quote { text } => add(text.len())?,
+            DisplayBlock::MathBlock { source } => add(source.len())?,
             DisplayBlock::CodeBlock { language, source } => {
                 add(source.len())?;
                 add(language.as_ref().map_or(0, String::len))?;
@@ -395,8 +396,14 @@ mod tests {
             max_source_lines: 1,
             ..FlowDisplayLimits::default()
         };
-        assert!(ResumableFlowDisplay::try_with_limits("one\n", 1, 1, one_line).is_ok());
-        assert!(ResumableFlowDisplay::try_with_limits("one\n\n", 1, 1, one_line).is_err());
+        for ending in ["\n", "\r\n", "\r"] {
+            let single = format!("one{ending}");
+            let double = format!("one{ending}{ending}");
+            assert!(ResumableFlowDisplay::try_with_limits(&single, 1, 1, one_line).is_ok());
+            assert!(ResumableFlowDisplay::try_with_limits(&double, 1, 1, one_line).is_err());
+        }
+        assert!(ResumableFlowDisplay::try_with_limits("one\r\r\n", 1, 1, one_line).is_err());
+        assert!(ResumableFlowDisplay::try_with_limits("one\n\r", 1, 1, one_line).is_err());
         let empty = FlowDisplayLimits {
             max_source_bytes: 0,
             max_source_lines: 0,
@@ -409,16 +416,59 @@ mod tests {
     }
 
     #[test]
+    fn mixed_line_endings_preserve_admission_offsets_and_resumable_progress() {
+        let source = "é\r\n\rβ\nlast\r";
+        let limits = FlowDisplayLimits {
+            max_source_lines: 4,
+            ..FlowDisplayLimits::default()
+        };
+        let mut engine = ResumableFlowDisplay::try_with_limits(source, 1, 1, limits).unwrap();
+        assert_eq!(engine.source(), source);
+        assert_eq!(
+            engine
+                .lines
+                .iter()
+                .map(|line| (line.start_offset, line.end_offset))
+                .collect::<Vec<_>>(),
+            [(0, 4), (4, 5), (5, 8), (8, 13)]
+        );
+        for (index, (frontier, blocks)) in [(4, 1), (5, 0), (8, 0), (13, 1)].into_iter().enumerate()
+        {
+            let step = engine.step().unwrap().unwrap();
+            assert_eq!(step.blocks.len(), blocks);
+            assert_eq!(engine.current_line, index + 1);
+            assert_eq!(engine.source_frontier, frontier);
+        }
+        assert!(engine.is_finished());
+        assert_eq!(engine.source(), source);
+        assert_eq!(
+            engine.source_span_for_block(0).unwrap().slice(source),
+            Some("é")
+        );
+        assert_eq!(
+            engine.source_span_for_block(1).unwrap().slice(source),
+            Some("β\nlast")
+        );
+        let too_few = FlowDisplayLimits {
+            max_source_lines: 3,
+            ..limits
+        };
+        assert!(ResumableFlowDisplay::try_with_limits(source, 1, 1, too_few).is_err());
+    }
+
+    #[test]
     fn default_constructor_keeps_no_rejected_source_and_repeats_only_the_error() {
-        let source = "\n".repeat(FlowDisplayLimits::default().max_source_lines + 1);
-        let mut engine = ResumableFlowDisplay::new(&source, 1);
-        assert!(engine.source().is_empty());
-        assert!(engine.lines.is_empty());
-        let error = engine.step().unwrap_err();
-        assert_eq!(engine.step().unwrap_err(), error);
-        assert!(engine.prepared.is_none());
-        assert!(engine.blocks().is_empty());
-        assert_eq!(engine.source_frontier, 0);
+        for ending in ["\n", "\r\n", "\r"] {
+            let source = ending.repeat(FlowDisplayLimits::default().max_source_lines + 1);
+            let mut engine = ResumableFlowDisplay::new(&source, 1);
+            assert!(engine.source().is_empty());
+            assert!(engine.lines.is_empty());
+            let error = engine.step().unwrap_err();
+            assert_eq!(engine.step().unwrap_err(), error);
+            assert!(engine.prepared.is_none());
+            assert!(engine.blocks().is_empty());
+            assert_eq!(engine.source_frontier, 0);
+        }
     }
 
     #[test]

@@ -111,6 +111,46 @@ final class FrankenMarkdownAppearanceUITests: XCTestCase {
         XCTAssertTrue(app.buttons["New Document"].exists, app.debugDescription)
     }
 
+    func testLargeDocumentsOpenScrollAndEditWithoutLosingTheTail() throws {
+        for size in [750 * 1_024, 2 * 1_024 * 1_024] {
+            let app = XCUIApplication()
+            app.launchEnvironment["FMD_INITIAL_LANE"] = "Write"
+            app.launchEnvironment["FMD_UI_TEST_SOURCE_BYTES"] = String(size)
+            app.launch()
+
+            let editor = app.textViews["Markdown source editor"]
+            XCTAssertTrue(editor.waitForExistence(timeout: 15))
+            let loaded = NSPredicate { element, _ in
+                guard let value = (element as? XCUIElement)?.value as? String else { return false }
+                return value.hasSuffix("FMD_LARGE_DOCUMENT_END\n")
+            }
+            expectation(for: loaded, evaluatedWith: editor)
+            waitForExpectations(timeout: 30)
+            let original = try XCTUnwrap(editor.value as? String)
+            XCTAssertGreaterThanOrEqual(original.utf8.count, size)
+            XCTAssertTrue(original.hasPrefix("# Large Markdown document\n"))
+
+            // A layout/highlight stall prevents these real interactions from
+            // completing, even if the document was successfully read from disk.
+            editor.swipeUp()
+            editor.swipeDown()
+            let appearance = app.buttons["appearance-toggle"]
+            let previousAppearance = appearance.label
+            appearance.tap()
+            XCTAssertNotEqual(appearance.label, previousAppearance)
+
+            editor.tap()
+            editor.typeText(" LARGE_EDIT_SENTINEL ")
+            let edited = try XCTUnwrap(editor.value as? String)
+            XCTAssertTrue(edited.contains("LARGE_EDIT_SENTINEL"))
+            XCTAssertTrue(edited.contains("FMD_LARGE_DOCUMENT_END"))
+            XCTAssertTrue(edited.contains("Café 👩🏽‍💻"))
+            XCTAssertGreaterThan(edited.utf8.count, original.utf8.count)
+            keepScreenshot(of: app, named: "Large document \(size) bytes remains editable")
+            app.terminate()
+        }
+    }
+
     private func keepScreenshot(of app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

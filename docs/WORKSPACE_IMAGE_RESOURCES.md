@@ -5,13 +5,22 @@ The inventory lists embedded destinations and byte sizes, including resources
 that the current source does not use. It does not guess reference counts or
 parse Markdown a second time.
 
-Select a binding and choose a local static PNG or JPEG, then **Replace selected
+Select a binding and choose a local PNG, JPEG, GIF or SVG, then **Replace selected
 image**. The image bytes change at the existing destination; Markdown source,
 alt text, document settings and fonts do not change. Every reference to that
 binding can use the replacement. The file extension is not trusted: the existing
 image header checks and browser decoder validate the contents before native
 worker preflight. Files are limited to 8 MiB, 16,384 pixels per side and 24 million
 pixels. Reading and browser decoding share a ten-second deadline.
+
+SVG files retain their vector bytes at the same source destination. They use the
+same bounded, self-contained SVG admission as insertion and attachment: active
+content and external resources are rejected before browser decoding, with local
+reference expansion and aggregate embedded-raster budgets. See the
+[image authoring policy](INTERACTIVE_IMAGE_RESOURCES.md#importing-images-while-editing)
+for supported structure and limits. Neither replacement nor attachment rewrites
+or rasterizes vector content. HTML preserves GIF animation; native PDF uses its
+first frame.
 
 **Remove selected image** asks for confirmation. Removal reclaims embedded
 resource capacity but does not remove Markdown references. Remaining references
@@ -91,9 +100,13 @@ CHROMIUM=/usr/bin/chromium python wasm/native_workspace_image_changes_browser.py
 
 The browser harness requires Playwright and Pillow and writes to a fresh temporary
 directory. It runs the production image controls, bootstrap, resource store and
-worker transport with real Chromium FileReader, PNG/JPEG decoding and Workers.
+worker transport with real Chromium FileReader, image decoding and Workers.
 Its shell/native bindings are explicit adapters. Node tests exercise real resource
 transactions with scoped DOM/transport/ABI adapters for publication boundaries.
 These checks do not claim compiled Rust/WASM image-codec validation, a full release
 build or full-controller Save HTML validation. Browser reopen coverage reparses
 a DOM snapshot carrying the committed runtime data and transient dialog shell.
+`wasm/native_workspace_images_browser.py` additionally checks SVG insertion,
+attachment, replacement, full-controller Save HTML/reopening, exact-source
+downloads and PDF byte delivery, with the native ABI explicitly represented by
+adapters. Its PDF receipt is dispatch evidence, not native PDF conformance.

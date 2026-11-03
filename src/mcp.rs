@@ -276,14 +276,14 @@ fn parse_string_raw(chars: &[char], idx: &mut usize) -> Result<String, String> {
                                 && chars[*idx + 1] == 'u'
                             {
                                 let low_hex: String = chars[*idx + 2..*idx + 6].iter().collect();
-                                if let Ok(low_code) = u32::from_str_radix(&low_hex, 16) {
-                                    if (0xDC00..=0xDFFF).contains(&low_code) {
-                                        *idx += 6;
-                                        let scalar = 0x10000
-                                            + (((code - 0xD800) << 10) | (low_code - 0xDC00));
-                                        s.push(char::from_u32(scalar).unwrap_or('\u{FFFD}'));
-                                        continue;
-                                    }
+                                if let Ok(low_code) = u32::from_str_radix(&low_hex, 16)
+                                    && (0xDC00..=0xDFFF).contains(&low_code)
+                                {
+                                    *idx += 6;
+                                    let scalar =
+                                        0x10000 + (((code - 0xD800) << 10) | (low_code - 0xDC00));
+                                    s.push(char::from_u32(scalar).unwrap_or('\u{FFFD}'));
+                                    continue;
                                 }
                             }
                             s.push('\u{FFFD}');

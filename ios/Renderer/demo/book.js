@@ -1,0 +1,211 @@
+import { createBookWorker } from "../book-worker.js";
+import { createBookCollection, normalizeBookProject, readBookProject, serializeBookProject } from "./book_collection.mjs";
+import { createBookControls } from "./book_controls.mjs";
+import { createBookImageControls, createBookImagePanel } from "./book_image_controls.mjs";
+import { createBookFontControls, createBookFontPanel } from "./book_font_controls.mjs";
+import {
+  createBookInspectionControls,
+  createBookInspectionPanel,
+  createBookLinkControls,
+  createBookLinkPanel,
+} from "./book_inspection_controls.mjs";
+import { createBookLibraryControls } from "./book_library_controls.mjs";
+import { createBookPdfControls, createBookPdfPanel, createBookPublicationControls } from "./book_pdf_controls.mjs";
+import { createBookPreviewControls } from "./book_preview_controls.mjs";
+import { createBookSearchControls } from "./book_search_controls.mjs";
+import { createBookSourceHistoryControls } from "./book_source_history.mjs";
+
+import { createBookFileControls } from "./book_file_controls.mjs";
+
+const collection = createBookCollection();
+let library = null,
+  preview = null,
+  pdfProof = null,
+  publicationControls = null,
+  fontControls = null,
+  imageControls = null,
+  search = null,
+  sourceHistory = null,
+  projectFiles = null,
+  inspection = null,
+  links = null;
+let controls = createBookControls({
+  root: document,
+  worker: createBookWorker({ retainBook: true }),
+  collection,
+  confirm: (text) => window.confirm(text),
+  onProjectReplaced: () => { projectFiles?.detach(); library?.detach(); sourceHistory?.reset(); },
+});
+// Install file ownership before other components receive the source host, so
+// library/new-book recovery cannot retain an unrelated disk-write connection.
+try {
+  projectFiles = createBookFileControls({ root: document, controls, collection, window,
+    projectCodec: { normalizeBookProject, readBookProject, serializeBookProject },
+    onProjectOpened: () => { library?.detach(); sourceHistory?.reset(); },
+  });
+  controls = projectFiles.controls;
+} catch {
+  const status = document.querySelector("#book-file-status") ?? document.querySelector("#status");
+  if (status) status.textContent =
+    "Connected project files are unavailable. Source imports/downloads, local-library saves and portable backups remain available.";
+}
+// Source history owns no renderer and survives presentation/resource edits.
+try {
+  sourceHistory = createBookSourceHistoryControls({ root: document, controls, collection });
+} catch {
+  const status = document.querySelector("#book-history-status") ?? document.querySelector("#status");
+  if (status) status.textContent =
+    "Book-wide source history is unavailable. Source editing, replacement-specific undo, saves and publication remain available.";
+}
+// Data-only publishing authoring does not require a worker or generated WASM.
+try {
+  publicationControls = createBookPublicationControls({ root: document, controls, collection });
+} catch {
+  const status = document.querySelector("#book-publication-status");
+  if (status) status.textContent =
+    "Publishing-profile controls are unavailable. Applied settings, source editing and ordinary publication remain available.";
+}
+// Image-byte edits reuse the collection's source/resource ownership. They do
+// not start or cancel any of the publisher's independently owned workers.
+try {
+  createBookImagePanel(document);
+  imageControls = createBookImageControls({
+    root: document, controls, collection, confirm: (text) => window.confirm(text),
+  });
+} catch {
+  const status = document.querySelector("#book-image-status");
+  if (status) status.textContent =
+    "Image management is unavailable. Existing images, ordinary imports and publication remain available.";
+}
+try {
+  library = createBookLibraryControls({ root: document, controls, collection, window });
+} catch {
+  document.querySelector("#library-status").textContent =
+    "Local library is unavailable. Editing, publishing and source downloads remain available; download a source project to keep your work.";
+}
+let previewWorker = null;
+try {
+  previewWorker = createBookWorker({ maxOutputBytes: 64 * 1024 * 1024, retainPreview: true });
+  preview = createBookPreviewControls({
+    root: document,
+    controls,
+    collection,
+    window,
+    worker: previewWorker,
+  });
+} catch {
+  previewWorker?.dispose();
+  document.querySelector("#preview-status").textContent =
+    "Preview is unavailable. Editing, local saves and publication exports remain available.";
+}
+// Native PDF proofing has a dedicated client: cancelling it cannot retire
+// publication, HTML-site preview, inspection or link checking.
+let pdfWorker = null;
+try {
+  createBookPdfPanel(document);
+  pdfWorker = createBookWorker({ retainBook: true });
+  pdfProof = createBookPdfControls({ root: document, controls, collection, worker: pdfWorker });
+} catch {
+  pdfWorker?.dispose();
+  const status = document.querySelector("#book-pdf-status");
+  if (status) status.textContent =
+    "Book PDF proofing is unavailable. Ordinary PDF/EPUB/site exports and source editing remain available.";
+}
+// Font preflight owns its own client; it never cancels publication or proofs.
+let fontWorker = null;
+try {
+  createBookFontPanel(document);
+  fontWorker = createBookWorker();
+  fontControls = createBookFontControls({
+    root: document, controls, collection, worker: fontWorker,
+    confirm: (text) => window.confirm(text),
+  });
+} catch {
+  fontWorker?.dispose();
+  const status = document.querySelector("#book-font-status");
+  if (status) status.textContent =
+    "Font authoring is unavailable. Existing supplied fonts, source editing and publication remain available.";
+}
+try {
+  search = createBookSearchControls({
+    root: document,
+    controls,
+    collection,
+    confirm: (text) => window.confirm(text),
+  });
+} catch {
+  document.querySelector("#search-status").textContent =
+    "Source search is unavailable. Chapter editing, source downloads and publication remain available.";
+}
+try {
+  createBookInspectionPanel(document);
+  inspection = createBookInspectionControls({
+    root: document,
+    controls,
+    collection,
+    worker: createBookWorker({ maxOutputBytes: 2 * 1024 * 1024 }),
+  });
+} catch {
+  const status = document.querySelector("#inspection-status");
+  if (status)
+    status.textContent =
+      "Inspection is unavailable. Editing, local saves, preview and publication exports remain available.";
+}
+try {
+  createBookLinkPanel(document);
+  links = createBookLinkControls({
+    root: document,
+    controls,
+    collection,
+    worker: createBookWorker({ maxOutputBytes: 4 * 1024 * 1024 }),
+  });
+} catch {
+  const status = document.querySelector("#links-status");
+  if (status)
+    status.textContent =
+      "Expanded link checking is unavailable. Source inspection, editing, saves and publication exports remain available.";
+}
+window.addEventListener("pagehide", (event) => {
+  if (event.persisted) {
+    projectFiles?.suspend();
+    sourceHistory?.suspend();
+    publicationControls?.suspend();
+    imageControls?.suspend();
+    fontControls?.suspend();
+    pdfProof?.suspend();
+    links?.suspend();
+    inspection?.suspend();
+    search?.suspend();
+    preview?.suspend();
+    library?.suspend();
+    controls.suspend();
+  } else {
+    projectFiles?.dispose();
+    sourceHistory?.dispose();
+    publicationControls?.dispose();
+    imageControls?.dispose();
+    fontControls?.dispose();
+    pdfProof?.dispose();
+    links?.dispose();
+    inspection?.dispose();
+    search?.dispose();
+    preview?.dispose();
+    library?.dispose();
+    controls.dispose();
+  }
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) {
+    projectFiles?.resume();
+    sourceHistory?.resume();
+    publicationControls?.resume();
+    imageControls?.resume();
+    fontControls?.resume();
+    pdfProof?.resume();
+    library?.resume();
+    preview?.resume();
+    search?.resume();
+    inspection?.resume();
+    links?.resume();
+  }
+});

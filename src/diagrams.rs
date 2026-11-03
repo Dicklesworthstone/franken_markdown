@@ -1,10 +1,14 @@
 //! Zero-dependency pure-Rust diagram compiler.
 //!
-//! Compiles Mermaid flowcharts, sequence diagrams, and ASCII art diagrams
+//! Compiles Mermaid flowcharts, sequence diagrams, pie charts, and ASCII art diagrams
 //! into clean, standalone SVG vector graphics for HTML and PDF rendering.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
+
+mod flowchart;
+mod pie;
+mod sequence;
 
 /// Supported diagram types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,23 +25,19 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
     let trimmed_lang = lang.trim().to_ascii_lowercase();
     if matches!(
         trimmed_lang.as_str(),
-        "mermaid" | "flowchart" | "sequence" | "ditaa"
+        "mermaid" | "flowchart" | "sequence" | "pie" | "ditaa"
     ) {
         return true;
     }
     let trimmed = code.trim();
     let first_directive = trimmed
-        .lines()
+        .split(['\n', '\r'])
         .map(str::trim)
         .find(|line| !line.is_empty() && !line.starts_with("%%"))
         .unwrap_or("");
-    first_directive.starts_with("graph ")
-        || first_directive.starts_with("graph\n")
-        || first_directive == "graph"
-        || first_directive.starts_with("flowchart ")
-        || first_directive.starts_with("flowchart\n")
-        || first_directive == "flowchart"
-        || first_directive.starts_with("sequenceDiagram")
+    names_flowchart(first_directive)
+        || sequence::is_header(first_directive)
+        || pie::is_header(first_directive)
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
 }
 
@@ -48,36 +48,34 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
     let trimmed = code.trim();
     let lower_lang = lang.trim().to_ascii_lowercase();
     let first_directive = trimmed
-        .lines()
+        .split(['\n', '\r'])
         .map(str::trim)
         .find(|line| !line.is_empty() && !line.starts_with("%%"))
         .unwrap_or("");
 
-    if lower_lang == "sequence" || first_directive.starts_with("sequenceDiagram") {
-        render_sequence_diagram(trimmed)
+    if lower_lang == "sequence" || sequence::is_header(first_directive) {
+        sequence::render(trimmed)
     } else if lower_lang == "ditaa"
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
     {
         render_ascii_diagram(trimmed)
+    } else if lower_lang == "flowchart" {
+        render_flowchart(trimmed)
+    } else if lower_lang == "pie" || pie::is_header(first_directive) {
+        pie::render(trimmed)
     } else if lower_lang == "mermaid" && !names_flowchart(first_directive) {
-        // pie, classDiagram, gantt, stateDiagram, erDiagram and other Mermaid
+        // classDiagram, gantt, stateDiagram, erDiagram and other Mermaid
         // types this compiler does not draw stay readable source code instead
         // of being misread as flowchart nodes.
         None
-    } else if lower_lang == "flowchart"
-        || lower_lang == "mermaid"
-        || first_directive.starts_with("graph ")
-        || first_directive == "graph"
-        || first_directive.starts_with("flowchart ")
-        || first_directive == "flowchart"
-    {
+    } else if lower_lang == "mermaid" || names_flowchart(first_directive) {
         render_flowchart(trimmed)
     } else {
         None
     }
 }
 
-/// A Mermaid flowchart or sequence diagram as an SVG figure, with alt text,
+/// A Mermaid flowchart, sequence diagram or pie chart as an SVG figure, with alt text,
 /// for paged and poster outputs. ASCII box art returns `None`: those outputs
 /// keep it as a fitted monospace panel that preserves its row geometry.
 #[must_use]
@@ -86,7 +84,9 @@ pub fn figure_svg(code: &str, lang: &str) -> Option<(String, &'static str)> {
         return None;
     }
     let svg = render_diagram_svg(code, lang)?;
-    let alt = if svg.contains("fmd-sequence") {
+    let alt = if svg.contains("class=\"fmd-diagram fmd-pie\"") {
+        "Pie chart"
+    } else if svg.contains("fmd-sequence") {
         "Sequence diagram"
     } else if svg.contains("fmd-flowchart") {
         "Diagram"
@@ -99,7 +99,9 @@ pub fn figure_svg(code: &str, lang: &str) -> Option<(String, &'static str)> {
 /// A Mermaid flowchart header: `graph`/`flowchart`, optionally with a direction.
 fn names_flowchart(directive: &str) -> bool {
     matches!(
-        directive.split_whitespace().next(),
+        directive
+            .split(|c: char| c.is_whitespace() || c == ';')
+            .next(),
         Some("graph" | "flowchart")
     )
 }
@@ -272,50 +274,25 @@ struct FlowEdge {
     to: String,
     label: Option<String>,
     dashed: bool,
+    thick: bool,
+    arrow: bool,
 }
 
 fn render_flowchart(src: &str) -> Option<String> {
-    let mut dir = FlowDirection::TopToBottom;
-    let mut nodes: BTreeMap<String, FlowNode> = BTreeMap::new();
-    let mut node_order: Vec<String> = Vec::new();
-    let mut edges: Vec<FlowEdge> = Vec::new();
+    let flowchart::Graph {
+        dir,
+        mut nodes,
+        order: node_order,
+        edges,
+    } = flowchart::parse(src)?;
 
-    for line in src.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("%%") {
-            continue;
-        }
-
-        if line == "graph"
-            || line == "flowchart"
-            || line.starts_with("graph ")
-            || line.starts_with("flowchart ")
-        {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                dir = match parts[1].to_ascii_uppercase().as_str() {
-                    "LR" => FlowDirection::LeftToRight,
-                    "RL" => FlowDirection::RightToLeft,
-                    "BT" => FlowDirection::BottomToTop,
-                    _ => FlowDirection::TopToBottom,
-                };
-            }
-            continue;
-        }
-
-        // Parse edge line, e.g. "A[Start] -->|label| B{Choice}" or "A --> B"
-        parse_flowchart_line(line, &mut nodes, &mut node_order, &mut edges);
-    }
-
-    if nodes.is_empty() {
-        return None;
-    }
-
-    // Assign layers via topological sort / BFS
+    // Keep every dependency in an acyclic graph ahead of its destination.
     assign_flowchart_layers(&mut nodes, &node_order, &edges);
 
     // Compute geometry
-    let (total_width, total_height) = layout_flowchart_nodes(&mut nodes, &node_order, dir);
+    let (mut total_width, mut total_height) = layout_flowchart_nodes(&mut nodes, &node_order, dir);
+    let return_routes =
+        layout_flowchart_returns(&mut nodes, &edges, dir, &mut total_width, &mut total_height);
 
     // Generate SVG
     let mut svg = String::with_capacity(4096);
@@ -354,18 +331,35 @@ fn render_flowchart(src: &str) -> Option<String> {
     svg.push_str("</defs>\n");
 
     // Draw Edges
-    for edge in &edges {
+    for (edge, return_route) in edges.iter().zip(&return_routes) {
         if let (Some(from_node), Some(to_node)) = (nodes.get(&edge.from), nodes.get(&edge.to)) {
             let (x1, y1, x2, y2) = get_edge_endpoints(from_node, to_node, dir);
+            let edge_style = match (edge.arrow, edge.thick) {
+                (true, false) => "",
+                (false, false) => " style=\"marker-end:none\"",
+                (true, true) => " style=\"stroke-width:3\"",
+                (false, true) => " style=\"marker-end:none;stroke-width:3\"",
+            };
             let dash_attr = if edge.dashed {
                 " stroke-dasharray=\"4,4\""
             } else {
                 ""
             };
 
-            if (x1 - x2).abs() < 2.0 || (y1 - y2).abs() < 2.0 {
+            if let Some(route) = return_route {
+                let [a, b, c, d, e, f] = route.points;
                 svg.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-edge-path\"{dash_attr} />\n",
+                    "<path d=\"M {} {} L {} {} L {} {} L {} {} L {} {} L {} {}\" class=\"fmd-edge-path\"{dash_attr}{edge_style} />\n",
+                    SvgNum(a.0), SvgNum(a.1),
+                    SvgNum(b.0), SvgNum(b.1),
+                    SvgNum(c.0), SvgNum(c.1),
+                    SvgNum(d.0), SvgNum(d.1),
+                    SvgNum(e.0), SvgNum(e.1),
+                    SvgNum(f.0), SvgNum(f.1),
+                ));
+            } else if (x1 - x2).abs() < 2.0 || (y1 - y2).abs() < 2.0 {
+                svg.push_str(&format!(
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-edge-path\"{dash_attr}{edge_style} />\n",
                     SvgNum(x1),
                     SvgNum(y1),
                     SvgNum(x2),
@@ -383,7 +377,7 @@ fn render_flowchart(src: &str) -> Option<String> {
                     }
                 };
                 svg.push_str(&format!(
-                    "<path d=\"M {} {} C {} {}, {} {}, {} {}\" class=\"fmd-edge-path\"{dash_attr} />\n",
+                    "<path d=\"M {} {} C {} {}, {} {}, {} {}\" class=\"fmd-edge-path\"{dash_attr}{edge_style} />\n",
                     SvgNum(x1),
                     SvgNum(y1),
                     SvgNum(cx1),
@@ -397,9 +391,12 @@ fn render_flowchart(src: &str) -> Option<String> {
 
             // Edge label
             if let Some(lbl) = &edge.label {
-                let mid_x = (x1 + x2) / 2.0;
-                let mid_y = (y1 + y2) / 2.0;
-                let lbl_w = (lbl.len() as f32 * 7.0 + 8.0).max(24.0);
+                let (mid_x, mid_y) = return_route
+                    .as_ref()
+                    .map_or(((x1 + x2) / 2.0, (y1 + y2) / 2.0), |route| route.label);
+                let lbl_w = return_route
+                    .as_ref()
+                    .map_or_else(|| flowchart_label_width(lbl), |route| route.label_width);
                 svg.push_str(&format!(
                     "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"16\" class=\"fmd-edge-label-bg\" />\n",
                     SvgNum(mid_x - lbl_w / 2.0),
@@ -482,147 +479,6 @@ fn render_flowchart(src: &str) -> Option<String> {
     Some(svg)
 }
 
-fn parse_flowchart_line(
-    line: &str,
-    nodes: &mut BTreeMap<String, FlowNode>,
-    node_order: &mut Vec<String>,
-    edges: &mut Vec<FlowEdge>,
-) {
-    // Check if line contains an arrow delimiter: -->, ---, -.->, ==>, etc.
-    let arrow_patterns = ["-->|", "-->", "-.->|", "-.->", "==>|", "==>", "---|", "---"];
-
-    for pat in arrow_patterns {
-        if let Some(pos) = line.find(pat) {
-            let left_part = &line[..pos];
-            let right_part = &line[pos + pat.len()..];
-
-            let mut left_trimmed = left_part.trim();
-            let mut edge_label = None;
-            if let Some((node_part, lbl_part)) = left_trimmed.split_once("--") {
-                let lbl = lbl_part.trim();
-                if !lbl.is_empty() {
-                    edge_label = Some(lbl.to_string());
-                    left_trimmed = node_part.trim();
-                }
-            }
-
-            let (from_id, _) = parse_or_insert_node(left_trimmed, nodes, node_order);
-
-            let (right_edge_label, mut dest_str) = if pat.ends_with('|') {
-                if let Some(pipe_pos) = right_part.find('|') {
-                    (
-                        Some(right_part[..pipe_pos].trim().to_string()),
-                        right_part[pipe_pos + 1..].trim(),
-                    )
-                } else {
-                    (None, right_part.trim())
-                }
-            } else {
-                (None, right_part.trim())
-            };
-
-            if right_edge_label.is_some() {
-                edge_label = right_edge_label;
-            } else if edge_label.is_none() && dest_str.starts_with('|') {
-                if let Some(second_pipe) = dest_str[1..].find('|') {
-                    let pipe_pos = 1 + second_pipe;
-                    edge_label = Some(dest_str[1..pipe_pos].trim().to_string());
-                    dest_str = dest_str[pipe_pos + 1..].trim();
-                }
-            }
-
-            let (to_id, _) = parse_or_insert_node(dest_str, nodes, node_order);
-            let dashed = pat.contains("-.-");
-
-            edges.push(FlowEdge {
-                from: from_id,
-                to: to_id,
-                label: edge_label,
-                dashed,
-            });
-            return;
-        }
-    }
-
-    // Standalone node declaration: A[Label]
-    parse_or_insert_node(line, nodes, node_order);
-}
-
-fn parse_or_insert_node(
-    s: &str,
-    nodes: &mut BTreeMap<String, FlowNode>,
-    node_order: &mut Vec<String>,
-) -> (String, bool) {
-    let s = s.trim();
-    if s.is_empty() {
-        return (String::new(), false);
-    }
-
-    let mut id = s.to_string();
-    let mut label = s.to_string();
-    let mut shape = NodeShape::Rectangle;
-
-    if let Some(open_idx) = s.find(['[', '(', '{']) {
-        id = s[..open_idx].trim().to_string();
-        let rest = &s[open_idx..];
-        if rest.starts_with("([") && rest.ends_with("])") {
-            shape = NodeShape::Stadium;
-            label = rest[2..rest.len() - 2].to_string();
-        } else if rest.starts_with("((") && rest.ends_with("))") {
-            shape = NodeShape::Circle;
-            label = rest[2..rest.len() - 2].to_string();
-        } else if rest.starts_with('[') && rest.ends_with(']') {
-            shape = NodeShape::Rectangle;
-            label = rest[1..rest.len() - 1].to_string();
-        } else if rest.starts_with('(') && rest.ends_with(')') {
-            shape = NodeShape::Rounded;
-            label = rest[1..rest.len() - 1].to_string();
-        } else if rest.starts_with('{') && rest.ends_with('}') {
-            shape = NodeShape::Diamond;
-            label = rest[1..rest.len() - 1].to_string();
-        }
-    }
-
-    if label.starts_with('"') && label.ends_with('"') && label.len() >= 2 {
-        label = label[1..label.len() - 1].to_string();
-    }
-
-    let is_new = !nodes.contains_key(&id);
-    if is_new {
-        let width = (label.len() as f32 * 8.5 + 32.0).max(80.0);
-        let height = if shape == NodeShape::Diamond {
-            54.0
-        } else {
-            38.0
-        };
-        nodes.insert(
-            id.clone(),
-            FlowNode {
-                label,
-                shape,
-                layer: 0,
-                x: 0.0,
-                y: 0.0,
-                width,
-                height,
-            },
-        );
-        node_order.push(id.clone());
-    } else if let Some(node) = nodes.get_mut(&id) {
-        if node.label == id && label != id {
-            node.width = (label.len() as f32 * 8.5 + 32.0).max(80.0);
-            node.height = if shape == NodeShape::Diamond {
-                54.0
-            } else {
-                38.0
-            };
-            node.label = label;
-            node.shape = shape;
-        }
-    }
-    (id, is_new)
-}
-
 fn assign_flowchart_layers(
     nodes: &mut BTreeMap<String, FlowNode>,
     node_order: &[String],
@@ -648,36 +504,43 @@ fn assign_flowchart_layers(
     let mut queue = VecDeque::new();
     for id in node_order {
         if in_degrees.get(id).copied().unwrap_or(0) == 0 {
-            queue.push_back((id.clone(), 0usize));
+            queue.push_back(id.clone());
         }
     }
 
     let mut visited = BTreeSet::new();
-    while let Some((id, layer)) = queue.pop_front() {
-        if visited.contains(&id) {
-            continue;
-        }
+    while let Some(id) = queue.pop_front() {
         visited.insert(id.clone());
-
-        if let Some(node) = nodes.get_mut(&id) {
-            node.layer = layer;
-        }
-
+        let next_layer = nodes.get(&id).map_or(1, |node| node.layer + 1);
         if let Some(neighbors) = adj.get(&id) {
             for neighbor in neighbors {
-                queue.push_back((neighbor.clone(), layer + 1));
+                if let Some(node) = nodes.get_mut(neighbor) {
+                    node.layer = node.layer.max(next_layer);
+                }
+                if let Some(remaining) = in_degrees.get_mut(neighbor) {
+                    *remaining = remaining.saturating_sub(1);
+                    if *remaining == 0 {
+                        queue.push_back(neighbor.clone());
+                    }
+                }
             }
         }
     }
 
-    // For any unvisited nodes (cycles/disconnected)
-    let mut fallback_layer = 0;
+    // Cyclic components retain deterministic source-order placement after the
+    // resolved part of the graph; they must not reuse a completed DAG layer.
+    let mut fallback_layer = visited
+        .iter()
+        .filter_map(|id| nodes.get(id))
+        .map(|node| node.layer + 1)
+        .max()
+        .unwrap_or(0);
     for id in node_order {
-        if !visited.contains(id) {
-            if let Some(node) = nodes.get_mut(id) {
-                node.layer = fallback_layer;
-                fallback_layer += 1;
-            }
+        if !visited.contains(id)
+            && let Some(node) = nodes.get_mut(id)
+        {
+            node.layer = fallback_layer;
+            fallback_layer += 1;
         }
     }
 }
@@ -801,7 +664,16 @@ fn layout_flowchart_nodes(
         }
     }
 
-    (max_w.max(160.0), max_h.max(80.0))
+    let width = max_w.max(160.0);
+    let height = max_h.max(80.0);
+    for node in nodes.values_mut() {
+        match dir {
+            FlowDirection::RightToLeft => node.x = width - node.x - node.width,
+            FlowDirection::BottomToTop => node.y = height - node.y - node.height,
+            _ => {}
+        }
+    }
+    (width, height)
 }
 
 fn get_edge_endpoints(from: &FlowNode, to: &FlowNode, dir: FlowDirection) -> (f32, f32, f32, f32) {
@@ -833,321 +705,144 @@ fn get_edge_endpoints(from: &FlowNode, to: &FlowNode, dir: FlowDirection) -> (f3
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mermaid Sequence Diagram Compiler
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-struct SeqParticipant {
-    label: String,
-    x: f32,
+struct FlowReturnRoute {
+    points: [(f32, f32); 6],
+    label: (f32, f32),
+    label_width: f32,
 }
 
-#[derive(Debug, Clone)]
-enum SeqEvent {
-    Message {
-        from: String,
-        to: String,
-        text: String,
-        dashed: bool,
-    },
-    Note {
-        participants: Vec<String>,
-        text: String,
-    },
+fn flowchart_label_width(label: &str) -> f32 {
+    (label.len() as f32 * 7.0 + 8.0).max(24.0)
 }
 
-fn ensure_participant(
-    id: &str,
-    label: Option<&str>,
-    part_indices: &mut BTreeMap<String, usize>,
-    participants: &mut Vec<SeqParticipant>,
-) {
-    if let std::collections::btree_map::Entry::Vacant(e) = part_indices.entry(id.to_string()) {
-        e.insert(participants.len());
-        participants.push(SeqParticipant {
-            label: label.unwrap_or(id).to_string(),
-            x: 0.0,
-        });
+/// Leave the normal outgoing port, travel outside the entire graph, and
+/// approach the normal incoming port. Reversing an ordinary edge's endpoints
+/// would instead draw a self-loop or feedback connection through filled nodes.
+/// Only return edges allocate lanes; forward DAG geometry stays unchanged.
+fn layout_flowchart_returns(
+    nodes: &mut BTreeMap<String, FlowNode>,
+    edges: &[FlowEdge],
+    dir: FlowDirection,
+    width: &mut f32,
+    height: &mut f32,
+) -> Vec<Option<FlowReturnRoute>> {
+    let horizontal = matches!(dir, FlowDirection::LeftToRight | FlowDirection::RightToLeft);
+    let forward = matches!(dir, FlowDirection::TopToBottom | FlowDirection::LeftToRight);
+    let mut layers: BTreeMap<usize, (f32, f32)> = BTreeMap::new();
+    let mut outside: f32 = 0.0;
+    for node in nodes.values() {
+        let (start, end, cross_end) = if horizontal {
+            (node.x, node.x + node.width, node.y + node.height)
+        } else {
+            (node.y, node.y + node.height, node.x + node.width)
+        };
+        let layer = layers.entry(node.layer).or_insert((start, end));
+        layer.0 = layer.0.min(start);
+        layer.1 = layer.1.max(end);
+        outside = outside.max(cross_end);
     }
-}
 
-fn render_sequence_diagram(src: &str) -> Option<String> {
-    let mut participants: Vec<SeqParticipant> = Vec::new();
-    let mut part_indices: BTreeMap<String, usize> = BTreeMap::new();
-    let mut events: Vec<SeqEvent> = Vec::new();
-
-    for line in src.lines() {
-        let line = line.trim();
-        if line.is_empty()
-            || line.starts_with("%%")
-            || line.starts_with("sequenceDiagram")
-            || line.starts_with("autonumber")
-            || line.starts_with("activate ")
-            || line.starts_with("deactivate ")
-            || line.starts_with("title ")
-            || line.starts_with("accTitle:")
-            || line.starts_with("accDescr:")
-            || line.starts_with("loop ")
-            || line.starts_with("alt ")
-            || line.starts_with("else ")
-            || line.starts_with("opt ")
-            || line == "end"
-            || line.starts_with("rect ")
-        {
+    let mut next_lane = outside + 16.0;
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (0.0f32, 0.0f32, *width, *height);
+    let mut routes = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let (Some(from), Some(to)) = (nodes.get(&edge.from), nodes.get(&edge.to)) else {
+            routes.push(None);
+            continue;
+        };
+        if from.layer < to.layer {
+            routes.push(None);
             continue;
         }
 
-        if line.starts_with("participant ") || line.starts_with("actor ") {
-            let rest = line
-                .strip_prefix("participant ")
-                .or_else(|| line.strip_prefix("actor "))
-                .unwrap_or("")
-                .trim();
-            let (id, label) = if let Some((id_part, label_part)) = rest.split_once(" as ") {
-                (id_part.trim(), label_part.trim())
-            } else {
-                (rest, rest)
-            };
-            ensure_participant(id, Some(label), &mut part_indices, &mut participants);
-            continue;
+        let (x1, y1, x2, y2) = get_edge_endpoints(from, to, dir);
+        let from_layer = layers[&from.layer];
+        let to_layer = layers[&to.layer];
+        // The whole layer must be cleared before crossing sideways, including
+        // taller circles or wider labels beside a smaller source/target node.
+        let (depart, arrive) = if forward {
+            (from_layer.1 + 12.0, to_layer.0 - 12.0)
+        } else {
+            (from_layer.0 - 12.0, to_layer.1 + 12.0)
+        };
+        // Reserve an em per UTF-8 byte for return labels, including wide ASCII
+        // capitals. The legacy seven-pixel average can clip long W/M labels.
+        // This conservative reservation does not change forward-edge output.
+        let label_width = edge
+            .label
+            .as_deref()
+            .map_or(0.0, |label| (label.len() as f32 * 11.0 + 8.0).max(24.0));
+        let half_lane = if horizontal {
+            8.0
+        } else {
+            (label_width / 2.0).max(8.0)
+        };
+        let rail = next_lane + half_lane;
+        next_lane = rail + half_lane + 16.0;
+        let (points, label) = if horizontal {
+            (
+                [
+                    (x1, y1),
+                    (depart, y1),
+                    (depart, rail),
+                    (arrive, rail),
+                    (arrive, y2),
+                    (x2, y2),
+                ],
+                ((depart + arrive) / 2.0, rail),
+            )
+        } else {
+            (
+                [
+                    (x1, y1),
+                    (x1, depart),
+                    (rail, depart),
+                    (rail, arrive),
+                    (x2, arrive),
+                    (x2, y2),
+                ],
+                (rail, (depart + arrive) / 2.0),
+            )
+        };
+        for &(x, y) in &points {
+            min_x = min_x.min(x - 12.0);
+            min_y = min_y.min(y - 12.0);
+            max_x = max_x.max(x + 12.0);
+            max_y = max_y.max(y + 12.0);
         }
-
-        if let Some(note_body) = line.strip_prefix("Note ") {
-            // Note over A, B: Text
-            if let Some((target_part, text_part)) = note_body.split_once(':') {
-                let text = text_part.trim().to_string();
-                let targets = if let Some(over_part) = target_part.strip_prefix("over ") {
-                    over_part.split(',').map(|s| s.trim().to_string()).collect()
-                } else if let Some(left_part) = target_part.strip_prefix("left of ") {
-                    vec![left_part.trim().to_string()]
-                } else if let Some(right_part) = target_part.strip_prefix("right of ") {
-                    vec![right_part.trim().to_string()]
-                } else {
-                    vec![]
-                };
-                for t in &targets {
-                    ensure_participant(t, None, &mut part_indices, &mut participants);
-                }
-                events.push(SeqEvent::Note {
-                    participants: targets,
-                    text,
-                });
-            }
-            continue;
+        if edge.label.is_some() {
+            min_x = min_x.min(label.0 - label_width / 2.0 - 12.0);
+            min_y = min_y.min(label.1 - 8.0 - 12.0);
+            max_x = max_x.max(label.0 + label_width / 2.0 + 12.0);
+            max_y = max_y.max(label.1 + 8.0 + 12.0);
         }
+        routes.push(Some(FlowReturnRoute {
+            points,
+            label,
+            label_width,
+        }));
+    }
 
-        // Messages: A-->>B: text, A-->B: text, A->>B: text, A->B: text
-        let msg_delims = ["-->>", "-->", "->>", "->"];
-        for delim in msg_delims {
-            if let Some(delim_idx) = line.find(delim) {
-                let from = line[..delim_idx].trim().to_string();
-                let rest = &line[delim_idx + delim.len()..];
-                if let Some((to_part, text_part)) = rest.split_once(':') {
-                    let to = to_part.trim().to_string();
-                    let text = text_part.trim().to_string();
-
-                    for id in [&from, &to] {
-                        ensure_participant(id, None, &mut part_indices, &mut participants);
-                    }
-
-                    let dashed = delim.contains("--");
-                    events.push(SeqEvent::Message {
-                        from,
-                        to,
-                        text,
-                        dashed,
-                    });
-                    break;
-                }
-            }
+    // Long labels on horizontal return lanes can reach past either end of
+    // the original canvas. Translate the complete graph, keeping a zero-origin
+    // viewBox and every port aligned, rather than clipping or truncating text.
+    if min_x < 0.0 || min_y < 0.0 {
+        for node in nodes.values_mut() {
+            node.x -= min_x;
+            node.y -= min_y;
         }
-    }
-
-    if participants.is_empty() {
-        return None;
-    }
-
-    let margin = 28.0;
-    let part_w = 110.0;
-    let part_h = 36.0;
-    let part_gap = 60.0;
-    let event_gap = 42.0;
-
-    let mut curr_x = margin;
-    for part in &mut participants {
-        part.x = curr_x + part_w / 2.0;
-        curr_x += part_w + part_gap;
-    }
-
-    let total_width = curr_x - part_gap + margin;
-    let header_y = margin + part_h;
-    let total_events_h = events.len() as f32 * event_gap + 20.0;
-    let bottom_header_y = header_y + total_events_h;
-    let total_height = bottom_header_y + part_h + margin;
-
-    let mut svg = String::with_capacity(4096);
-    svg.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram fmd-sequence\">\n",
-        SvgInt(total_width),
-        SvgInt(total_height),
-        SvgInt(total_width),
-        SvgInt(total_height)
-    ));
-
-    svg.push_str("<defs>\n");
-    svg.push_str(r#"<marker id="fmd-seq-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-<path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="var(--fg-default, #1f2328)" />
-</marker>
-<style>
-.fmd-seq-lifeline { stroke: var(--border-default, #d0d7de); stroke-width: 1.5; stroke-dasharray: 4,4; }
-.fmd-seq-box { fill: var(--bg-canvas, #ffffff); stroke: var(--border-default, #d0d7de); stroke-width: 1.5; rx: 4px; }
-.fmd-seq-box-text { fill: var(--fg-default, #1f2328); font-size: 13px; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
-.fmd-seq-msg-line { stroke: var(--fg-default, #1f2328); stroke-width: 1.5; marker-end: url(#fmd-seq-arrow); }
-.fmd-seq-msg-text { fill: var(--fg-default, #1f2328); font-size: 12px; text-anchor: middle; dominant-baseline: auto; }
-.fmd-seq-note { fill: #fff8c5; stroke: #d4a72c; stroke-width: 1; rx: 3px; }
-.fmd-seq-note-text { fill: #574600; font-size: 11px; text-anchor: middle; dominant-baseline: central; }
-@media (prefers-color-scheme: dark) {
-  .fmd-seq-lifeline { stroke: #30363d; }
-  .fmd-seq-box { fill: #161b22; stroke: #30363d; }
-  .fmd-seq-box-text { fill: #e6edf3; }
-  .fmd-seq-msg-line { stroke: #e6edf3; }
-  .fmd-seq-msg-text { fill: #e6edf3; }
-  #fmd-seq-arrow path { fill: #e6edf3; }
-  .fmd-seq-note { fill: #2e2600; stroke: #9e7a00; }
-  .fmd-seq-note-text { fill: #e3b341; }
-}
-</style>
-"#);
-    svg.push_str("</defs>\n");
-
-    // Lifelines
-    for part in &participants {
-        svg.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-seq-lifeline\" />\n",
-            SvgNum(part.x),
-            SvgNum(header_y),
-            SvgNum(part.x),
-            SvgNum(bottom_header_y)
-        ));
-    }
-
-    // Events (Messages and Notes)
-    let mut curr_y = header_y + 28.0;
-    for event in &events {
-        match event {
-            SeqEvent::Message {
-                from,
-                to,
-                text,
-                dashed,
-            } => {
-                if let (Some(&from_idx), Some(&to_idx)) =
-                    (part_indices.get(from), part_indices.get(to))
-                {
-                    let x1 = participants[from_idx].x;
-                    let x2 = participants[to_idx].x;
-                    let dash_attr = if *dashed {
-                        " stroke-dasharray=\"4,4\""
-                    } else {
-                        ""
-                    };
-
-                    svg.push_str(&format!(
-                        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-seq-msg-line\"{dash_attr} />\n",
-                        SvgNum(x1),
-                        SvgNum(curr_y),
-                        SvgNum(x2),
-                        SvgNum(curr_y)
-                    ));
-
-                    let mid_x = (x1 + x2) / 2.0;
-                    svg.push_str(&format!(
-                        "<text x=\"{}\" y=\"{}\" class=\"fmd-seq-msg-text\">{}</text>\n",
-                        SvgNum(mid_x),
-                        SvgNum(curr_y - 6.0),
-                        escape_svg_text(text)
-                    ));
-                }
-                curr_y += event_gap;
+        for route in routes.iter_mut().flatten() {
+            for point in &mut route.points {
+                point.0 -= min_x;
+                point.1 -= min_y;
             }
-            SeqEvent::Note {
-                participants: targets,
-                text,
-            } => {
-                let (min_x, max_x) = if targets.is_empty() {
-                    (margin, margin + 120.0)
-                } else {
-                    let xs: Vec<f32> = targets
-                        .iter()
-                        .filter_map(|t| part_indices.get(t))
-                        .map(|&idx| participants[idx].x)
-                        .collect();
-                    let min = xs.iter().copied().fold(f32::INFINITY, f32::min);
-                    let max = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                    if (max - min).abs() < 1.0 {
-                        (min - 50.0, min + 50.0)
-                    } else {
-                        (min - 30.0, max + 30.0)
-                    }
-                };
-
-                let note_w = (max_x - min_x).max(80.0);
-                let note_h = 24.0;
-                svg.push_str(&format!(
-                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"fmd-seq-note\" />\n",
-                    SvgNum(min_x),
-                    SvgNum(curr_y - note_h / 2.0),
-                    SvgNum(note_w),
-                    SvgNum(note_h)
-                ));
-                svg.push_str(&format!(
-                    "<text x=\"{}\" y=\"{}\" class=\"fmd-seq-note-text\">{}</text>\n",
-                    SvgNum(min_x + note_w / 2.0),
-                    SvgNum(curr_y),
-                    escape_svg_text(text)
-                ));
-                curr_y += event_gap;
-            }
+            route.label.0 -= min_x;
+            route.label.1 -= min_y;
         }
     }
-
-    // Top & Bottom Participant Boxes
-    for part in &participants {
-        let bx = part.x - part_w / 2.0;
-        // Top
-        svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"fmd-seq-box\" />\n",
-            SvgNum(bx),
-            SvgNum(margin),
-            SvgNum(part_w),
-            SvgNum(part_h)
-        ));
-        svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" class=\"fmd-seq-box-text\">{}</text>\n",
-            SvgNum(part.x),
-            SvgNum(margin + part_h / 2.0),
-            escape_svg_text(&part.label)
-        ));
-
-        // Bottom
-        svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"fmd-seq-box\" />\n",
-            SvgNum(bx),
-            SvgNum(bottom_header_y),
-            SvgNum(part_w),
-            SvgNum(part_h)
-        ));
-        svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" class=\"fmd-seq-box-text\">{}</text>\n",
-            SvgNum(part.x),
-            SvgNum(bottom_header_y + part_h / 2.0),
-            escape_svg_text(&part.label)
-        ));
-    }
-
-    svg.push_str("</svg>\n");
-    Some(svg)
+    *width = max_x - min_x;
+    *height = max_y - min_y;
+    routes
 }
 
 // ---------------------------------------------------------------------------

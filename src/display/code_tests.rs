@@ -12,6 +12,7 @@ fn shape(
     _: FlowInlineStyle,
 ) -> Result<OwnedTextRun, String> {
     let mut run = OwnedTextRun {
+        vertical_metrics: None,
         context: TextRunContext {
             font_id: FontId::new(1),
             font_size: size,

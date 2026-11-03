@@ -1,10 +1,11 @@
 // Worker transport only. The entrypoint injects the real Rust/WASM book API.
-import { bookLinkOptions, prepareBookInput, parseBookChapterPreview } from "./book_session.mjs";
+import { bookFontEmbeddingReceipt, bookLinkOptions, prepareBookInput, parseBookChapterPreview } from "./book_session.mjs";
 import { createRetainedBook } from "./book_retained.mjs";
 export { createRetainedBook } from "./book_retained.mjs";
 
 const LIMIT = 128 * 1024 * 1024;
 const retainedFormats = new Set(["pdf", "epub", "site", "preview", "chapter-preview"]);
+const fontFormats = new Set(["epub", "site", "preview", "chapter-preview"]);
 const formats = Object.freeze({
   pdf: ["renderBookPdf", "application/pdf", "pdf"],
   epub: ["renderBookEpub", "application/epub+zip", "epub"],
@@ -271,9 +272,9 @@ export function createBookWorkerClient({
     return entry.worker;
   }
   function releaseIdle() { terminate(takeIdle()); }
-  function keepIdle(worker, format, inputRevision, sources, archive) {
+  function keepIdle(worker, format, inputRevision, sources, archive, fontEmbedding) {
     if (disposed || active || idle) { terminate(worker); return; }
-    const entry = { worker, format, inputRevision, sources, archive, timer: null, failed: null };
+    const entry = { worker, format, inputRevision, sources, archive, fontEmbedding, timer: null, failed: null };
     entry.failed = () => { if (idle === entry) releaseIdle(); };
     idle = entry;
     try {
@@ -327,6 +328,7 @@ export function createBookWorkerClient({
         inputRevision = null,
         sources = null,
         archive = null,
+        fontEmbedding,
         chapterCount = null;
       const onAbort = () =>
         finish(bookError("EXPORT_CANCELLED", "Book export cancelled; source is unchanged."));
@@ -346,7 +348,7 @@ export function createBookWorkerClient({
             /* Attempt every detach even when a host adapter fails. */
           }
         }
-        if (keep && detached && !disposed) keepIdle(worker, format, inputRevision, sources, archive);
+        if (keep && detached && !disposed) keepIdle(worker, format, inputRevision, sources, archive, fontEmbedding);
         else terminate(worker);
       }
       function finish(error, result, failed = error !== null) {
@@ -405,6 +407,12 @@ export function createBookWorkerClient({
               throw bookError("UNSUPPORTED_BOOK_PDFA", "The worker did not acknowledge the captured PDF/A emission policy; rebuild the matching package.");
           } else if (data.bookPdfA !== undefined || data.bookPdfAStrict !== undefined)
             throw bookError("WORKER_PROTOCOL_ERROR", "The worker replied with a different PDF/A emission policy.");
+          // Keep this acknowledgment even for a PDF-first capture: a later
+          // source delta may request HTML/EPUB without resending its options.
+          if (data.bookFontEmbedding !== fontEmbedding)
+            throw bookError("UNSUPPORTED_BOOK_FONT_EMBEDDING", "The worker did not acknowledge the captured font embedding policy; rebuild the matching package.");
+          const fontReceipt = bookFontEmbeddingReceipt(data,
+            fontFormats.has(format) && fontEmbedding === "full" ? "full" : "subset");
           checkedOutput(data.bytes, data.sourceLength,
             format === "links" ? Math.min(maxOutputBytes, 4 * 1024 * 1024) : maxOutputBytes);
           if (selected !== undefined) {
@@ -420,6 +428,7 @@ export function createBookWorkerClient({
               bytes,
               sourceLength: data.sourceLength,
               ...(format === "pdf" && archive ? archive : {}),
+              ...fontReceipt,
               ...(selected === undefined ? {} : { selectedChapter: selected, previewMode: data.previewMode }),
               ...(inputRevision === null ? {} : { retainedInputRevision: inputRevision }),
               mimeType,
@@ -464,6 +473,7 @@ export function createBookWorkerClient({
           if (selected !== undefined) chapterSelection(format, selected, sources.files.length);
           input = sourceSet ? { sourceSet } : { sourceUpdate };
           archive = idle.archive;
+          fontEmbedding = idle.fontEmbedding;
           worker = takeIdle();
           if (!worker)
             throw bookError("BOOK_CAPTURE_EXPIRED", "The retained endpoint could not be reclaimed; render the complete snapshot again.");
@@ -486,6 +496,7 @@ export function createBookWorkerClient({
           return;
         }
         if (!sourceOnly) archive = archivalPolicy(input.options);
+        if (!sourceOnly) fontEmbedding = input.options.fontEmbedding;
         if (!sourceOnly && retaining) sources = captureSources(input);
         if (selected !== undefined) {
           chapterCount = (sourceOnly ? sources.files : input.files).length;
@@ -642,10 +653,13 @@ export function installBookWorker(scope, engine) {
       }
       if (selected !== undefined) chapterSelection(data.format, selected, input.files.length);
       const archive = archivalPolicy(input.options);
+      const fontEmbedding = input.options.fontEmbedding;
       const args = [input.files, input.options];
       if (data.retainBook) args.push(data.format);
       if (selected !== undefined) args.push(selected);
       const result = await engine[method](...args);
+      const fontReceipt = bookFontEmbeddingReceipt(result,
+        fontFormats.has(data.format) && fontEmbedding === "full" ? "full" : "subset");
       checkedOutput(result.bytes, result.sourceLength,
         data.format === "links" ? Math.min(data.maxOutputBytes, 4 * 1024 * 1024) : data.maxOutputBytes);
       if (data.format === "pdf") {
@@ -660,6 +674,7 @@ export function installBookWorker(scope, engine) {
       if (archive) {
         envelope.bookPdfA = archive.pdfA; envelope.bookPdfAStrict = archive.pdfAStrict;
       }
+      if (fontEmbedding === "full") envelope.bookFontEmbedding = "full";
       if (selected !== undefined) {
         checkedChapterPreview(result, selected, input.files.length);
         envelope.selectedChapter = selected;
@@ -674,7 +689,7 @@ export function installBookWorker(scope, engine) {
         envelope.retainedInputRevision = data.id;
         if (sourceSet) envelope.sourceSetApplied = true;
       }
-      scope.postMessage({ ...envelope, bytes, sourceLength: result.sourceLength }, [bytes.buffer]);
+      scope.postMessage({ ...envelope, ...fontReceipt, bytes, sourceLength: result.sourceLength }, [bytes.buffer]);
     } catch (error) {
       const previousMode = owned ? capture?.mode : null;
       if (owned) {

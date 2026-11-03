@@ -7,7 +7,7 @@ mod data_uri;
 use super::SvgWarning;
 use std::collections::BTreeMap;
 
-pub(super) use data_uri::decode_data_uri;
+pub(crate) use data_uri::decode_data_uri;
 
 pub(super) const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SIDE: f64 = 16_384.0;
@@ -20,7 +20,7 @@ pub(super) fn failure(code: &'static str, message: &str) -> SvgWarning {
     }
 }
 
-pub(super) fn inspect(bytes: &[u8]) -> Result<(&'static str, f64, f64), SvgWarning> {
+pub(crate) fn inspect(bytes: &[u8]) -> Result<(&'static str, f64, f64), SvgWarning> {
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(failure(
             "svg_image_limit",
@@ -40,11 +40,15 @@ pub(super) fn inspect(bytes: &[u8]) -> Result<(&'static str, f64, f64), SvgWarni
         let (w, h) =
             franken_markdown::pdf::jpeg_display_dimensions(bytes, u32::from(w), u32::from(h));
         ("image/jpeg", f64::from(w), f64::from(h))
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        let (w, h) = franken_markdown::pdf::gif_dimensions(bytes)
+            .ok_or_else(|| failure("svg_image_invalid", "invalid or oversized GIF container"))?;
+        ("image/gif", f64::from(w), f64::from(h))
     } else {
         let source = std::str::from_utf8(bytes).map_err(|_| {
             failure(
                 "svg_image_unsupported",
-                "image is not PNG, JPEG, or UTF-8 SVG",
+                "image is not PNG, JPEG, GIF, or UTF-8 SVG",
             )
         })?;
         let (w, h) = svg_size(source).ok_or_else(|| {

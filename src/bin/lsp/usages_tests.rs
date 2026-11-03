@@ -192,6 +192,24 @@ fn reference_style_and_container_links_select_the_same_target() {
 }
 
 #[test]
+fn unicode_folded_reference_uses_share_the_parser_target_and_original_source_ranges() {
+    let source = "> 😀 [quoted][ﬃ]\r\n\r\n- [listed][ſ]\r\n\r\n![image][ﬃ]\r\n\r\n[FFI]: a.md#topic\r\n[S]: a.md#topic\r\n[ﬃ]: a.md#wrong\r\n";
+    let docs = documents(&[(A, "# Topic\n\n# Wrong"), (B, source)]);
+    let rows = search(&docs, B, "ﬃ", false);
+    assert_eq!(starts(&rows), [(B.into(), 0), (B.into(), 2)]);
+    assert_eq!(rows, search(&docs, B, "ſ", false));
+    assert_eq!(rows, search(&docs, A, "Topic", false));
+    assert!(search(&docs, A, "Wrong", false).is_empty());
+    let spans = Snapshot::parse(source).unwrap().spans;
+    for (row, span) in rows.iter().zip(&spans) {
+        assert_eq!(
+            row.get("range"),
+            Some(&range(&LineIndex::new(source), source, *span))
+        );
+    }
+}
+
+#[test]
 fn images_code_external_urls_and_unpublished_notes_do_not_become_usages() {
     let source = "# Topic\n\n`[code](#topic)`\n\n![image](#topic)\n\n```md\n[fenced](#topic)\n```\n\n[remote](https://example.com/#topic)\n\n[^unused]: [hidden](#topic)\n\n[real](#topic)";
     let docs = documents(&[(A, source)]);

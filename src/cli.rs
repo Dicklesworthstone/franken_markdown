@@ -13,7 +13,12 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind
 
 mod font_coverage;
 pub(crate) mod protected_paths;
+pub(crate) mod remote_images;
 pub(crate) mod source_origins;
+
+#[cfg(test)]
+use remote_images::{curl_remote_image_args, wget_remote_image_args};
+use remote_images::{fetch_remote_image, remote_image_url};
 
 use crate::ast::{Block, Document, Inline};
 use crate::config::{CONFIG_KEYS, FmdConfig, config_path};
@@ -154,11 +159,10 @@ struct BatchArgs {
     /// (bytes / 64 MiB-per-job), NOT by measuring real resident memory.
     #[arg(long)]
     mem_budget: Option<u64>,
-    /// Wall-clock deadline in seconds (best-effort). It is only checked at per-file
-    /// boundaries — the render core never checkpoints mid-file — so a single large
-    /// file runs to completion before the deadline can stop the remaining files.
-    /// When it fires, not-yet-started files are skipped and the receipt is marked
-    /// `cancelled`.
+    /// Wall-clock deadline in seconds (best-effort). Stops pending remote-image
+    /// downloads and skips remaining files. The render core never checkpoints
+    /// mid-file, so an already-rendering file runs to completion. A cancelled
+    /// image-preparation job preserves its previous outputs and is skipped.
     #[arg(long)]
     timeout: Option<u64>,
     /// Refuse any single input larger than this many bytes (default 64 MiB),
@@ -351,6 +355,10 @@ struct RenderStyleArgs {
     /// ~half the bytes), woff2 (clean-room Brotli, ~65% smaller), or ttf (raw subset bytes).
     #[arg(long, value_enum)]
     html_font_format: Option<HtmlFontFormatArg>,
+    /// HTML/EPUB font programs: subset (compact default) or full (preserve
+    /// ligatures, kerning and mark positioning with larger embedded fonts).
+    #[arg(long, value_enum)]
+    font_embedding: Option<FontEmbeddingArg>,
     /// Typographic scale factor or preset for uniform type sizing across HTML and PDF.
     ///
     /// Accepts named presets (`xs`, `sm`, `compact`, `md`, `normal`, `default`, `lg`, `xl`, `2xl`, `huge`),
@@ -423,6 +431,7 @@ struct RenderStyleArgs {
     #[arg(long)]
     pdf_line_numbers: bool,
     /// SVG poster width in points (144..=14400; default 612, US Letter).
+    /// Supported by both ordinary rendering and --to svg batch jobs.
     #[arg(long = "svg-width-pt", value_name = "POINTS")]
     svg_width_pt: Option<f32>,
     /// Render running page numbers in the bottom margin of PDF pages.
@@ -487,16 +496,17 @@ struct RenderStyleArgs {
     /// Provide or override an image asset as DEST=PATH for HTML, PDF, SVG and
     /// EPUB, including stdin/--text input and PDF running header/footer images.
     /// DEST is an exact source destination; it need not have a file extension.
-    /// File-based HTML/PDF/EPUB renders also auto-load relative local PNG/SVG/JPEG
-    /// image destinations, and PDF renders fetch remote http(s) destinations
+    /// File-based renders also auto-load relative local PNG/JPEG/GIF/SVG image
+    /// destinations. HTML/SVG/EPUB retain GIF animation; PDF uses its first frame.
+    /// PDF renders fetch remote http(s) destinations
     /// unless --no-remote-images is set; the render core itself never fetches
     /// or reads files.
     /// Repeat for multiple images.
     #[arg(long = "pdf-image", value_name = "DEST=PATH")]
     pdf_images: Vec<String>,
-    /// Host TrueType face for a renderer slot as SLOT=PATH. Repeatable.
+    /// Host TrueType or CFF1 OpenType face for a renderer slot as SLOT=PATH. Repeatable.
     /// SLOT is body-regular, body-bold, body-italic, body-bold-italic, or
-    /// mono-regular. Applies to HTML, PDF and EPUB for consistent typography.
+    /// mono-regular. Applies to HTML, PDF, SVG and EPUB for consistent typography.
     /// Variable `wght` faces instance at the slot's pinned weight (see
     /// `--pdf-font-weight`); static faces ignore the pin. When body-bold is
     /// omitted and body-regular is a variable face, bold instances from that
@@ -508,14 +518,15 @@ struct RenderStyleArgs {
     /// ignore the pin (stderr warning `font_weight_ignored_static`).
     #[arg(long = "pdf-font-weight", value_name = "WEIGHT|SLOT=WEIGHT")]
     pdf_font_weights: Vec<String>,
-    /// Maximum bytes accepted for each explicitly mapped or auto-loaded local
-    /// image file before rendering, regardless of output format.
+    /// Maximum bytes accepted for each mapped/local image and each remote PDF/SVG
+    /// image download. Applies to ordinary rendering and batch jobs.
     #[arg(long, default_value_t = DEFAULT_MAX_PDF_IMAGE_BYTES)]
     max_pdf_image_bytes: u64,
-    /// Do not fetch remote http(s) image destinations for PDF output. By
-    /// default the CLI downloads each hotlinked image (via the system `curl`
-    /// or `wget`) with a timeout and the `--max-pdf-image-bytes` size cap so
-    /// PDFs match the HTML preview; a failed or disabled fetch degrades to the
+    /// Do not fetch remote http(s) image destinations for PDF/SVG output. By
+    /// default render and batch download each hotlinked image (via system `curl`
+    /// or `wget`, without their personal config files) with a timeout and the
+    /// `--max-pdf-image-bytes` size cap so
+    /// exported documents retain their images; a failed or disabled fetch degrades to the
     /// image's alt text with a warning. The render core itself never touches
     /// the network.
     #[arg(long)]
@@ -529,7 +540,8 @@ struct RenderStyleArgs {
     /// `pdf_a_*` errors: `javascript:` / `file:` URI actions). Requires `--pdf-a 2b`.
     #[arg(long = "pdf-a-strict")]
     pdf_a_strict: bool,
-    /// Per-image timeout in seconds for remote PDF image fetches.
+    /// Per-image wall-clock timeout in seconds for remote PDF/SVG image fetches,
+    /// including batch jobs. Zero uses the minimum one-second timeout.
     #[arg(long, default_value_t = DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS)]
     remote_image_timeout_secs: u64,
 }
@@ -647,6 +659,21 @@ enum Target {
 enum FontArg {
     Sans,
     Serif,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum FontEmbeddingArg {
+    Subset,
+    Full,
+}
+
+impl From<FontEmbeddingArg> for crate::FontEmbedding {
+    fn from(value: FontEmbeddingArg) -> Self {
+        match value {
+            FontEmbeddingArg::Subset => Self::Subset,
+            FontEmbeddingArg::Full => Self::Full,
+        }
+    }
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -784,9 +811,30 @@ fn watch_to_render(args: &WatchArgs) -> RenderArgs {
     }
 }
 
+/// Capture preview HTML from the same parsed source, resolved options and
+/// resources as the export. A failed render or publication never releases a
+/// new preview, so editors retain their last successful document.
+fn render_watched_file(
+    args: &WatchArgs,
+    json: bool,
+    no_config: bool,
+) -> (ExitCode, Option<String>) {
+    let mut html = None;
+    let status = run_render_with_preview(
+        watch_to_render(args),
+        json,
+        no_config,
+        args.serve.then_some(&mut html),
+    );
+    (status, html)
+}
+
 fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = global_json || args.json;
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
+        return code;
+    }
+    if let Err(code) = parse_pdf_a_settings(&args.style, args.to, json) {
         return code;
     }
     if args.input.as_os_str() == "-" {
@@ -876,7 +924,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         interval
     };
     let mut watcher = PollWatcher::new(paths, debounce, SystemClock);
-    let rendered = run_render(watch_to_render(&args), json, no_config) == ExitCode::SUCCESS;
+    let (_, initial_html) = render_watched_file(&args, json, no_config);
     let preview = if args.serve {
         match start_watch_preview() {
             Ok(preview) => Some(preview),
@@ -892,8 +940,8 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     } else {
         None
     };
-    if rendered && let Some(preview) = preview.as_ref() {
-        refresh_watch_preview(preview, &args, no_config);
+    if let (Some(preview), Some(html)) = (preview.as_ref(), initial_html) {
+        refresh_watch_preview(preview, html);
     }
     report_watch_started(watcher.paths().len(), interval_ms, preview.as_ref(), json);
     if let Some(samples) = args.measure {
@@ -939,9 +987,9 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
                 events[0].path.display()
             );
         }
-        let rendered = run_render(watch_to_render(&args), json, no_config) == ExitCode::SUCCESS;
-        if rendered && let Some(preview) = preview.as_ref() {
-            refresh_watch_preview(preview, &args, no_config);
+        let (_, html) = render_watched_file(&args, json, no_config);
+        if let (Some(preview), Some(html)) = (preview.as_ref(), html) {
+            refresh_watch_preview(preview, html);
         }
     }
 }
@@ -984,12 +1032,12 @@ fn run_watch_directory(
             return fail_json(64, "usage_error", &error, json);
         }
     }
-    let mut first_rendered = None;
+    let mut first_html = None;
     for input in &md_files {
-        if let Some(per_file) = render_watched_directory_file(&args, input, json, no_config)
-            && first_rendered.is_none()
+        if let Some((_, html)) = render_watched_directory_file(&args, input, json, no_config)
+            && first_html.is_none()
         {
-            first_rendered = Some(per_file);
+            first_html = html;
         }
     }
     let preview = if args.serve {
@@ -1007,8 +1055,8 @@ fn run_watch_directory(
     } else {
         None
     };
-    if let (Some(preview), Some(per_file)) = (preview.as_ref(), first_rendered.as_ref()) {
-        refresh_watch_preview(preview, per_file, no_config);
+    if let (Some(preview), Some(html)) = (preview.as_ref(), first_html) {
+        refresh_watch_preview(preview, html);
     }
     report_watch_started(
         watcher.paths().len(),
@@ -1081,9 +1129,11 @@ fn run_watch_directory(
                 continue;
             }
             blocked.remove(&input);
-            if let Some(per_file) = render_watched_directory_file(&args, &input, json, no_config) {
-                if let Some(preview) = preview.as_ref() {
-                    refresh_watch_preview(preview, &per_file, no_config);
+            if let Some((per_file, html)) =
+                render_watched_directory_file(&args, &input, json, no_config)
+            {
+                if let (Some(preview), Some(html)) = (preview.as_ref(), html) {
+                    refresh_watch_preview(preview, html);
                 }
                 if json {
                     eprintln!(
@@ -1196,7 +1246,7 @@ fn render_watched_directory_file(
     input: &Path,
     json: bool,
     no_config: bool,
-) -> Option<WatchArgs> {
+) -> Option<(WatchArgs, Option<String>)> {
     let per_file = match watch_directory_args(args, input) {
         Ok(args) => args,
         Err(error) => {
@@ -1215,8 +1265,8 @@ fn render_watched_directory_file(
         );
         return None;
     }
-    (run_render(watch_to_render(&per_file), json, no_config) == ExitCode::SUCCESS)
-        .then_some(per_file)
+    let (status, html) = render_watched_file(&per_file, json, no_config);
+    (status == ExitCode::SUCCESS).then_some((per_file, html))
 }
 
 fn report_watch_started(
@@ -1278,11 +1328,20 @@ fn run_watch_measure(
             }
         };
         let t_render = Instant::now();
-        let _ = run_render(watch_to_render_quiet(args), false, no_config);
+        let mut html = None;
+        let status = run_render_with_preview(
+            watch_to_render_quiet(args),
+            false,
+            no_config,
+            preview.map(|_| &mut html),
+        );
+        if status != ExitCode::SUCCESS {
+            return status;
+        }
         let render_ms = t_render.elapsed().as_secs_f64() * 1000.0;
         let t_serve = Instant::now();
-        if let Some(preview) = preview {
-            refresh_watch_preview(preview, args, no_config);
+        if let (Some(preview), Some(html)) = (preview, html) {
+            refresh_watch_preview(preview, html);
         }
         let serve_ms = t_serve.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -1389,19 +1448,17 @@ fn start_watch_preview() -> std::io::Result<WatchPreview> {
     })
 }
 
-fn refresh_watch_preview(preview: &WatchPreview, args: &WatchArgs, no_config: bool) {
-    if let Ok(html) = watch_preview_html(args, no_config) {
-        {
-            let mut slot = preview.html.lock().unwrap_or_else(|e| e.into_inner());
-            *slot = html;
-        }
-        retain_watch_clients(&preview.clients, |stream| {
-            stream
-                .write_all(sse_reload_event().as_bytes())
-                .and_then(|()| stream.flush())
-                .is_ok()
-        });
+fn refresh_watch_preview(preview: &WatchPreview, html: String) {
+    {
+        let mut slot = preview.html.lock().unwrap_or_else(|e| e.into_inner());
+        *slot = html;
     }
+    retain_watch_clients(&preview.clients, |stream| {
+        stream
+            .write_all(sse_reload_event().as_bytes())
+            .and_then(|()| stream.flush())
+            .is_ok()
+    });
 }
 
 fn retain_watch_clients<T>(clients: &Mutex<Vec<T>>, mut keep: impl FnMut(&mut T) -> bool) {
@@ -1417,73 +1474,6 @@ fn retain_watch_clients<T>(clients: &Mutex<Vec<T>>, mut keep: impl FnMut(&mut T)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .append(&mut detached);
-}
-
-fn watch_preview_html(args: &WatchArgs, no_config: bool) -> Result<String, String> {
-    // For HTML exports, publish precisely the successful on-disk render. This
-    // carries includes, frontmatter, assets and every renderer option without
-    // parsing a second, possibly newer source snapshot during an atomic save.
-    if matches!(
-        args.to,
-        Target::Html | Target::Both | Target::InteractiveHtml
-    ) {
-        let path = if matches!(args.to, Target::Both) {
-            args.out.with_extension("html")
-        } else {
-            args.out.clone()
-        };
-        let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-        let bytes = read_limited(file, 256 * 1024 * 1024, "watch HTML output")
-            .map_err(|e| e.to_string())?;
-        return string_from_input_bytes(bytes).map_err(|e| e.to_string());
-    }
-    // PDF/SVG/EPUB watches still provide an HTML preview, using the same
-    // bounded source expansion, local images and metadata as ordinary HTML.
-    let input = args.input.to_string_lossy();
-    let src = read_input(Some(&input), None, DEFAULT_MAX_INPUT_BYTES).map_err(|e| e.to_string())?;
-    let src = expand_file_includes(&src, &input, DEFAULT_MAX_INPUT_BYTES)?;
-    let config = load_config(no_config).map_err(|e| e.to_string())?;
-    let mut theme = config.to_theme();
-    if let Some(font) = args.font {
-        theme = theme.with_font(font.into());
-    }
-    let custom_css = match args.css.as_deref().or(config.custom_css.as_deref()) {
-        Some(path) => Some(read_stylesheet(path).map_err(|e| e.to_string())?),
-        None => None,
-    };
-    let frontmatter = crate::parse::split_frontmatter(&src).0;
-    let doc = parse_markdown(&src);
-    let lowered_doc = crate::safe_html::lower(&doc);
-    let mut destinations = Vec::new();
-    collect_image_destinations(&lowered_doc.blocks, &mut destinations);
-    destinations.extend(running_image_destinations(&args.style));
-    let mut image_assets = read_pdf_image_assets(
-        &args.style.pdf_images,
-        args.style.max_pdf_image_bytes,
-        &destinations,
-    )
-    .map_err(|error| match error {
-        PdfImageError::Usage(message) | PdfImageError::Input(message) => message,
-    })?;
-    let base = args.input.parent().unwrap_or_else(|| Path::new("."));
-    append_auto_image_assets(
-        &doc,
-        base,
-        &mut image_assets,
-        args.style.max_pdf_image_bytes,
-        "HTML",
-    )?;
-    let opts = HtmlOptions {
-        theme,
-        title: frontmatter.as_ref().and_then(|fm| fm.title.clone()),
-        custom_css,
-        image_assets,
-        lang: frontmatter.as_ref().and_then(|fm| fm.lang.clone()),
-        toc: frontmatter.as_ref().and_then(|fm| fm.toc).unwrap_or(false),
-        toc_depth: frontmatter.as_ref().and_then(|fm| fm.toc_depth),
-        ..HtmlOptions::default()
-    };
-    render_html_document(&doc, &opts).map_err(|e| e.to_string())
 }
 
 fn preview_accept_loop(
@@ -1547,11 +1537,25 @@ fn read_http_head(stream: &mut TcpStream) -> Vec<u8> {
     buf
 }
 
-fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
+fn run_render(args: RenderArgs, global_json: bool, no_config: bool) -> ExitCode {
+    run_render_with_preview(args, global_json, no_config, None)
+}
+
+fn run_render_with_preview(
+    mut args: RenderArgs,
+    global_json: bool,
+    no_config: bool,
+    preview_html: Option<&mut Option<String>>,
+) -> ExitCode {
     let json = global_json || args.json;
+    let want_preview = preview_html.is_some();
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
         return code;
     }
+    let pdf_a = match parse_pdf_a_settings(&args.style, args.to, json) {
+        Ok(settings) => settings,
+        Err(code) => return code,
+    };
     if out_is_stdout(&args)
         && !matches!(
             args.to,
@@ -1791,7 +1795,7 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
         Err(PdfImageError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
         Err(PdfImageError::Input(e)) => return fail_json(66, "input_error", &e, json),
     };
-    let html_image_assets = if want_html || want_epub {
+    let mut html_image_assets = if want_html || want_epub {
         let mut assets = if want_pdf || want_svg {
             explicit_image_assets.clone()
         } else {
@@ -1841,6 +1845,12 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     } else {
         Vec::new()
     };
+    if want_preview && !want_html && (want_pdf || want_svg) {
+        // Reuse the bytes already admitted for the paged export, including
+        // explicit overrides and fetched assets. Reopening local files here
+        // could pair one document revision with a newer image revision.
+        html_image_assets.clone_from(&pdf_image_assets);
+    }
 
     // Includes and presentation resources are source material too. Perform
     // this check after their successful reads, before any renderer or writer
@@ -1868,7 +1878,7 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     // `--to both` run whose PDF render fails never leaves a stale HTML file on
     // disk (previously HTML was written, then a PDF failure returned exit 70
     // with the HTML already committed).
-    let html_bytes = if want_html {
+    let html_render = if want_html || want_preview {
         let opts = HtmlOptions {
             theme: theme.clone(),
             title: args
@@ -1889,17 +1899,30 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
                 .html_font_format
                 .map(HtmlFontFormat::from)
                 .unwrap_or_default(),
+            font_embedding: args
+                .style
+                .font_embedding
+                .map(crate::FontEmbedding::from)
+                .unwrap_or_default(),
         };
         let is_interactive = args.interactive_html || matches!(args.to, Target::InteractiveHtml);
         if is_interactive {
             let html = crate::interactive::render_interactive_html(&doc, &src, &opts);
-            Some(html.into_bytes())
+            Some(html)
         } else {
             match render_html_document(&doc, &opts) {
-                Ok(html) => Some(html.into_bytes()),
+                Ok(html) => Some(html),
                 Err(e) => return fail_render(e, json),
             }
         }
+    } else {
+        None
+    };
+
+    // Preview-only HTML is not an export or stdout payload. Keep it until
+    // every requested output has rendered and published successfully.
+    let html_bytes = if want_html {
+        html_render.as_deref().map(str::as_bytes)
     } else {
         None
     };
@@ -1947,7 +1970,7 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
                 .or(config.render.pdf_strict_pagination)
                 .unwrap_or(false),
         };
-        match render_pdf_with_pdfa(&doc, &opts, &args, json) {
+        match render_pdf_with_pdfa(&doc, &opts, pdf_a, json) {
             // Keep render errors typed with a distinct exit code (70 = render
             // failure/unavailable subsystem) as richer PDF validation lands.
             Ok(bytes) => Some((opts, bytes)),
@@ -1976,6 +1999,11 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
             toc: args.style.toc || frontmatter_toc.unwrap_or(false),
             toc_depth: args.style.toc_depth.or(frontmatter_toc_depth),
             html_font_format: HtmlFontFormat::default(),
+            font_embedding: args
+                .style
+                .font_embedding
+                .map(crate::FontEmbedding::from)
+                .unwrap_or_default(),
         };
         match crate::render_epub(&doc, &opts) {
             Ok(bytes) => Some(bytes),
@@ -2035,7 +2063,7 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
             bytes: bytes.as_slice(),
         });
     }
-    if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes.as_deref()) {
+    if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes) {
         file_outputs.push(crate::file_write::OutputFile { path, bytes });
     }
     if let (Some(path), Some((_, bytes))) = (pdf_path.as_deref(), pdf_render.as_ref()) {
@@ -2049,13 +2077,13 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
     }
     // SVG streams to stdout like HTML when no path derived (stdout case), or
     // rides the staged write when a file path exists.
-    if let (Some(path), Some(bytes)) = (svg_path.as_deref(), svg_render.as_ref()) {
-        if !is_stdout_path(path) {
-            file_outputs.push(crate::file_write::OutputFile {
-                path,
-                bytes: bytes.as_slice(),
-            });
-        }
+    if let (Some(path), Some(bytes)) = (svg_path.as_deref(), svg_render.as_ref())
+        && !is_stdout_path(path)
+    {
+        file_outputs.push(crate::file_write::OutputFile {
+            path,
+            bytes: bytes.as_slice(),
+        });
     }
     if let Err(err) = crate::file_write::write_outputs_staged(&file_outputs) {
         return fail_json(
@@ -2066,9 +2094,9 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
         );
     }
 
-    if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes.as_deref()) {
+    if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes) {
         report_write("html", path, bytes.len(), json);
-    } else if let Some(bytes) = html_bytes.as_deref() {
+    } else if let Some(bytes) = html_bytes {
         let mut stdout = std::io::stdout().lock();
         match stdout.write_all(bytes) {
             Ok(()) => {}
@@ -2126,6 +2154,9 @@ fn run_render(mut args: RenderArgs, global_json: bool, no_config: bool) -> ExitC
         report_font_pin_warnings(&font_assets, json);
     }
 
+    if let Some(preview_html) = preview_html {
+        *preview_html = html_render;
+    }
     ExitCode::SUCCESS
 }
 
@@ -2213,10 +2244,14 @@ fn check_external_links(
                 "{{\"url\":\"{esc}\",\"status\":{status},\"ok\":{ok},\"checked\":{checked}}}\n"
             ));
         }
-        if let Err(e) = std::fs::write(path, text) {
+        if let Err(e) = crate::file_write::write_outputs_staged(&[crate::file_write::OutputFile {
+            path,
+            bytes: text.as_bytes(),
+        }]) {
             eprintln!(
-                "fmd: warning: could not write link cache {}: {e}",
-                path.display()
+                "fmd: warning: could not write link cache {}: {}",
+                e.path.display(),
+                e.source
             );
         }
     }
@@ -2319,10 +2354,10 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
         Some((code, (200..300).contains(&code)))
     };
     for program in ["curl", "wget"] {
-        if let Some((status, ok)) = head(program) {
-            if ok || !(status == 405 || status == 501) {
-                return (status, ok);
-            }
+        if let Some((status, ok)) = head(program)
+            && (ok || !(status == 405 || status == 501))
+        {
+            return (status, ok);
         }
     }
     // GET fallback (range-limited so we never download bodies).
@@ -2419,6 +2454,29 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail_json(66, "input_error", &format!("reading input: {e}"), json),
     };
+    // Link checking may write a cache, but verification must preserve the
+    // document it just read. Admit the destination before rendering or making
+    // network requests, with the same alias-aware protection as publications.
+    // Without --links no cache is read or written; stdin has no file identity.
+    if args.links
+        && path_str != "-"
+        && let Some(cache) = args.links_cache.as_deref()
+    {
+        let mut protected = protected_paths::ProtectedInputs::default();
+        protected.insert(&args.input);
+        if let Some(source) = protected.source_for(cache) {
+            return fail_json(
+                64,
+                "usage_error",
+                &format!(
+                    "refusing to overwrite verify input {} with link cache {}; choose a different --links-cache path",
+                    source.display(),
+                    cache.display(),
+                ),
+                json,
+            );
+        }
+    }
     let doc = parse_markdown(&src);
     // Verification baseline: the default theme/options, deliberately
     // independent of config, so the same document verifies identically on
@@ -2486,6 +2544,10 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
         return code;
     }
+    let pdf_a = match parse_pdf_a_settings(&args.style, args.to, json) {
+        Ok(settings) => settings,
+        Err(code) => return code,
+    };
 
     // `--workers 0` would otherwise collapse into "unset" (automatic sizing);
     // reject it explicitly so the flag never silently means the opposite.
@@ -2606,20 +2668,13 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     // Shared render style (the same flags as `fmd render`). Per-file images
     // are still auto-loaded next to each input by the batch engine.
     let style = &args.style;
-    for (set, flag) in [
-        (style.pdf_a.is_some() || style.pdf_a_strict, "--pdf-a"),
-        (style.svg_width_pt.is_some(), "--svg-width-pt"),
-    ] {
-        if set {
-            return fail_json(
-                64,
-                "usage_error",
-                &format!(
-                    "{flag} is not supported by fmd batch; render those files with fmd render"
-                ),
-                json,
-            );
-        }
+    if style.svg_width_pt.is_some() && !matches!(args.to, Target::Svg) {
+        return fail_json(
+            64,
+            "usage_error",
+            "--svg-width-pt requires --to svg in fmd batch",
+            json,
+        );
     }
     let font_scale = match parse_font_scale_arg(style, json) {
         Ok(scale) => scale,
@@ -2665,6 +2720,10 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
         html_font_format: style
             .html_font_format
             .map(HtmlFontFormat::from)
+            .unwrap_or_default(),
+        font_embedding: style
+            .font_embedding
+            .map(crate::FontEmbedding::from)
             .unwrap_or_default(),
     };
     let pdf = PdfOptions {
@@ -2716,9 +2775,36 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
         max_pdf_image_bytes: args.style.max_pdf_image_bytes,
     };
 
-    match batch::run_batch_blocking_with_protected_inputs(plan, &opts, &input_paths, &config.render)
-    {
+    report_pdf_a(pdf_a, json);
+    let shell = batch::BatchShell::new(
+        (!args.style.no_remote_images).then_some(args.style.remote_image_timeout_secs),
+        args.style.svg_width_pt,
+    );
+    match batch::run_batch_blocking_with_protected_inputs(
+        plan,
+        &opts,
+        &input_paths,
+        &config.render,
+        pdf_a,
+        Some(&shell),
+    ) {
         Ok(mut receipt) => {
+            for warning in shell.take_warnings() {
+                if json {
+                    eprintln!(
+                        "{{\"ok\":true,\"event\":\"warning\",\"input\":\"{}\",\"warning\":\"{}\",\"detail\":\"{}\"}}",
+                        json_escape(&warning.input.to_string_lossy()),
+                        warning.code,
+                        json_escape(&warning.message),
+                    );
+                } else {
+                    eprintln!(
+                        "fmd: warning: {}: {}",
+                        warning.input.display(),
+                        warning.message
+                    );
+                }
+            }
             // Record any unexpandable paths as per-file failures. Strict mode
             // already returned above, so this only runs under --continue-on-error
             // (or when there were no expansion errors at all).
@@ -3175,14 +3261,6 @@ fn report_font_assets(assets: &FontAssets) {
     eprintln!("{{\"ok\":true,\"event\":\"font_assets\",\"phase\":\"load\",\"slots\":{slots}}}");
 }
 
-fn read_pdf_image_assets(
-    specs: &[String],
-    max_bytes: u64,
-    destination_hints: &[&str],
-) -> std::result::Result<Vec<PdfImageAsset>, PdfImageError> {
-    read_pdf_image_assets_recording(specs, max_bytes, destination_hints, &mut Vec::new())
-}
-
 fn read_pdf_image_assets_recording(
     specs: &[String],
     max_bytes: u64,
@@ -3229,6 +3307,7 @@ fn auto_pdf_image_base_dir(input: Option<&str>, text: Option<&str>) -> Option<Pa
     )
 }
 
+#[cfg(test)]
 fn append_auto_image_assets(
     doc: &Document,
     base_dir: &Path,
@@ -3423,26 +3502,9 @@ fn has_supported_pdf_image_extension(path: &Path) -> bool {
         .is_some_and(|ext| {
             matches!(
                 ext.to_ascii_lowercase().as_str(),
-                "png" | "svg" | "jpg" | "jpeg"
+                "png" | "svg" | "jpg" | "jpeg" | "gif"
             )
         })
-}
-
-/// The trimmed destination when it is a remote image URL the CLI may fetch.
-/// Only literal `http://` / `https://` destinations qualify; every other
-/// scheme (or scheme-less path) is left to the local-asset machinery.
-fn remote_image_url(destination: &str) -> Option<&str> {
-    let dest = destination.trim();
-    for prefix in ["https://", "http://"] {
-        if dest.len() > prefix.len()
-            && dest
-                .get(..prefix.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-        {
-            return Some(dest);
-        }
-    }
-    None
 }
 
 /// Fetch remote http(s) image destinations that no explicit `--pdf-image`
@@ -3477,156 +3539,8 @@ fn append_remote_image_assets(
     }
 }
 
-/// Download one remote image via the system `curl` (preferred) or `wget`,
-/// with a hard timeout, an HTTP(S)-only protocol allowlist, bounded
-/// redirects, and the caller's byte cap enforced while the body is read.
-fn fetch_remote_image(
-    url: &str,
-    max_bytes: u64,
-    timeout_secs: u64,
-) -> std::result::Result<Vec<u8>, String> {
-    let timeout = timeout_secs.max(1).to_string();
-    let user_agent = format!("fmd/{}", crate::VERSION);
-    let max_bytes_s = max_bytes.to_string();
-    let curl_args = [
-        "--silent",
-        "--show-error",
-        "--fail",
-        "--location",
-        "--max-redirs",
-        "5",
-        "--proto",
-        "=http,https",
-        "--proto-redir",
-        "=http,https",
-        "--max-time",
-        timeout.as_str(),
-        "--max-filesize",
-        max_bytes_s.as_str(),
-        "--user-agent",
-        user_agent.as_str(),
-        "--output",
-        "-",
-        "--",
-        url,
-    ];
-    match run_capped_fetch("curl", &curl_args, url, max_bytes) {
-        Ok(bytes) => return Ok(bytes),
-        Err(FetchSpawn::NotFound) => {}
-        Err(FetchSpawn::Failed(reason)) => return Err(reason),
-    }
-
-    let timeout_flag = format!("--timeout={timeout}");
-    let ua_flag = format!("--user-agent={user_agent}");
-    let wget_args = wget_remote_image_args(url, &timeout_flag, &ua_flag);
-    match run_capped_fetch("wget", &wget_args, url, max_bytes) {
-        Ok(bytes) => Ok(bytes),
-        Err(FetchSpawn::NotFound) => Err(
-            "neither curl nor wget is available; pass --pdf-image 'URL=PATH' or use \
-             --no-remote-images"
-                .to_string(),
-        ),
-        Err(FetchSpawn::Failed(reason)) => Err(reason),
-    }
-}
-
-enum FetchSpawn {
-    NotFound,
-    Failed(String),
-}
-
-/// GNU wget has no `--proto` jail. `--https-only` blocks `file://` (and
-/// `ftp://`) redirects when the requested URL is already HTTPS. HTTP URLs
-/// keep following redirects; the initial URL is still http(s)-only.
-fn wget_remote_image_args<'a>(
-    url: &'a str,
-    timeout_flag: &'a str,
-    user_agent_flag: &'a str,
-) -> Vec<&'a str> {
-    let mut args = vec![
-        "--quiet",
-        "--tries=1",
-        timeout_flag,
-        "--max-redirect=5",
-        user_agent_flag,
-        "--output-document=-",
-    ];
-    if url.len() >= 8 && url[..8].eq_ignore_ascii_case("https://") {
-        args.push("--https-only");
-    }
-    args.push("--");
-    args.push(url);
-    args
-}
-
-fn run_capped_fetch(
-    tool: &str,
-    args: &[&str],
-    url: &str,
-    max_bytes: u64,
-) -> std::result::Result<Vec<u8>, FetchSpawn> {
-    let mut child = match std::process::Command::new(tool)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(e) if e.kind() == IoErrorKind::NotFound => return Err(FetchSpawn::NotFound),
-        Err(e) => return Err(FetchSpawn::Failed(format!("running {tool}: {e}"))),
-    };
-    let stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(FetchSpawn::Failed(format!(
-                "{tool} produced no stdout pipe"
-            )));
-        }
-    };
-    let label = format!("remote image {url}");
-    let bytes = match read_limited_with_flag(stdout, max_bytes, &label, "--max-pdf-image-bytes") {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(FetchSpawn::Failed(e.to_string()));
-        }
-    };
-    let mut stderr = Vec::new();
-    if let Some(mut err) = child.stderr.take() {
-        let _ = err.read_to_end(&mut stderr);
-    }
-    let status = match child.wait() {
-        Ok(status) => status,
-        Err(e) => return Err(FetchSpawn::Failed(format!("waiting for {tool}: {e}"))),
-    };
-    if !status.success() {
-        let detail = String::from_utf8_lossy(&stderr)
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        return Err(FetchSpawn::Failed(if detail.is_empty() {
-            format!("{tool} exited with {status}")
-        } else {
-            format!("{tool}: {detail}")
-        }));
-    }
-    if bytes.is_empty() {
-        return Err(FetchSpawn::Failed(format!("{tool} returned an empty body")));
-    }
-    Ok(bytes)
-}
-
 fn report_remote_image_warning(url: &str, reason: &str, json: bool) {
-    let message = format!(
-        "fetching remote image '{url}': {reason}; rendered as alt text \
-         (map it with --pdf-image '{url}=PATH' or silence fetching with --no-remote-images)"
-    );
+    let message = remote_images::warning_message(url, reason);
     if json {
         eprintln!(
             "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"remote_image_fetch_failed\",\"detail\":\"{}\"}}",
@@ -3706,14 +3620,6 @@ fn source_date_epoch() -> std::result::Result<Option<u64>, String> {
     trimmed.parse::<u64>().map(Some).map_err(|_| {
         "SOURCE_DATE_EPOCH is too large; expected decimal seconds since the Unix epoch".to_string()
     })
-}
-
-fn expand_file_includes(
-    src: &str,
-    input_path: &str,
-    max_input_bytes: u64,
-) -> std::result::Result<String, String> {
-    crate::watch::expand_file_includes(src, Path::new(input_path), max_input_bytes).result
 }
 
 /// Compute the output path for a given extension, or `None` to mean stdout
@@ -3838,10 +3744,35 @@ fn fail_render(err: RenderError, json: bool) -> ExitCode {
 }
 
 fn parse_pdf_a_settings(
-    args: &RenderArgs,
+    style: &RenderStyleArgs,
+    target: Target,
     json: bool,
 ) -> std::result::Result<PdfASettings, ExitCode> {
-    if args.style.pdf_a_strict && args.style.pdf_a.is_none() {
+    if (style.pdf_a.is_some() || style.pdf_a_strict)
+        && !matches!(target, Target::Pdf | Target::Both)
+    {
+        return Err(fail_json(
+            64,
+            "usage_error",
+            "--pdf-a and --pdf-a-strict require --to pdf or --to both",
+            json,
+        ));
+    }
+    let mode = match style.pdf_a.as_deref() {
+        None => PdfAMode::Off,
+        Some(raw) => match PdfAMode::parse(raw) {
+            Some(mode) => mode,
+            None => {
+                return Err(fail_json(
+                    64,
+                    "usage_error",
+                    &format!("unknown --pdf-a {raw:?}; use 2b (PDF/A-2b) or off"),
+                    json,
+                ));
+            }
+        },
+    };
+    if style.pdf_a_strict && !mode.is_a2b() {
         return Err(fail_json(
             64,
             "usage_error",
@@ -3849,20 +3780,9 @@ fn parse_pdf_a_settings(
             json,
         ));
     }
-    let Some(raw) = args.style.pdf_a.as_deref() else {
-        return Ok(PdfASettings::OFF);
-    };
-    let Some(mode) = PdfAMode::parse(raw) else {
-        return Err(fail_json(
-            64,
-            "usage_error",
-            &format!("unknown --pdf-a {raw:?}; use 2b (PDF/A-2b) or off"),
-            json,
-        ));
-    };
     Ok(PdfASettings {
         mode,
-        strict: args.style.pdf_a_strict,
+        strict: style.pdf_a_strict,
     })
 }
 
@@ -3949,6 +3869,12 @@ fn apply_config_render_defaults(
             .html_font_format
             .as_deref()
             .and_then(|value| HtmlFontFormatArg::from_str(value, true).ok());
+    }
+    if style.font_embedding.is_none() {
+        style.font_embedding = defaults
+            .font_embedding
+            .as_deref()
+            .and_then(|value| FontEmbeddingArg::from_str(value, true).ok());
     }
     if style.microtype.is_none() {
         style.microtype = defaults
@@ -4067,10 +3993,19 @@ fn validate_running_image_target(
 fn render_pdf_with_pdfa(
     doc: &Document,
     opts: &PdfOptions,
-    args: &RenderArgs,
+    settings: PdfASettings,
     json: bool,
 ) -> std::result::Result<Vec<u8>, ExitCode> {
-    let settings = parse_pdf_a_settings(args, json)?;
+    report_pdf_a(settings, json);
+    let rendered = if settings.mode.is_a2b() {
+        render_pdf_document_pdfa(doc, opts, settings)
+    } else {
+        render_pdf_document(doc, opts)
+    };
+    rendered.map_err(|e| fail_render(e, json))
+}
+
+fn report_pdf_a(settings: PdfASettings, json: bool) {
     if json && settings.mode.is_a2b() {
         eprintln!(
             "{{\"ok\":true,\"event\":\"pdf_a\",\"profile\":\"{}\",\"strict\":{}}}",
@@ -4078,12 +4013,6 @@ fn render_pdf_with_pdfa(
             settings.strict
         );
     }
-    let rendered = if settings.mode.is_a2b() {
-        render_pdf_document_pdfa(doc, opts, settings)
-    } else {
-        render_pdf_document(doc, opts)
-    };
-    rendered.map_err(|e| fail_render(e, json))
 }
 
 /// Print non-fatal PDF render warnings (degraded content that would otherwise be
@@ -4245,6 +4174,31 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
         return emit_stdout(&diff.to_json());
     }
 
+    // A diff report is a publication, never an in-place edit of either
+    // revision. Match render/batch admission, including aliases and the
+    // active configuration that supplies this report's theme.
+    if let Some(output) = args.out.as_deref().filter(|path| !is_stdout_path(path)) {
+        let mut protected = protected_paths::ProtectedInputs::default();
+        for input in [&args.old_file, &args.new_file] {
+            if input.as_os_str() != "-" {
+                protected.insert(input);
+            }
+        }
+        if !no_config {
+            protected.insert(&config_path());
+        }
+        if let Some(source) = protected.source_for(output) {
+            return fail(
+                64,
+                &format!(
+                    "refusing to overwrite diff input {} with output {}; write to a different --out path",
+                    source.display(),
+                    output.display(),
+                ),
+            );
+        }
+    }
+
     let theme = if no_config {
         Theme::default()
     } else {
@@ -4259,14 +4213,17 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
         if out_path.as_os_str() == "-" {
             emit_stdout(&html_out)
         } else {
-            match std::fs::write(&out_path, &html_out) {
+            match crate::file_write::write_outputs_staged(&[crate::file_write::OutputFile {
+                path: &out_path,
+                bytes: html_out.as_bytes(),
+            }]) {
                 Ok(()) => {
                     eprintln!("fmd: wrote diff HTML -> {}", out_path.display());
                     ExitCode::SUCCESS
                 }
                 Err(e) => fail(
                     73,
-                    &format!("writing diff HTML to {}: {e}", out_path.display()),
+                    &format!("writing diff HTML to {}: {}", e.path.display(), e.source),
                 ),
             }
         }
@@ -4277,7 +4234,7 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
 
 fn print_capabilities() -> ExitCode {
     emit_stdout(&format!(
-        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --microtype expansion --out README.pdf\",\"fmd README.md --to pdf --typography-homogeneous --out README.pdf\",\"fmd README.md --to pdf --typography-antiriver --out README.pdf\",\"fmd README.md --to pdf --pdf-optimal-pagination --out README.pdf\",\"fmd README.md --to pdf --typography-pareto --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"diff\",\"examples\":[\"fmd diff v1.md v2.md\",\"fmd diff v1.md v2.md --out diff.html\",\"fmd diff v1.md v2.md --json\"]}},{{\"name\":\"stats\",\"examples\":[\"fmd stats README.md\",\"fmd stats README.md --json\",\"fmd stats --text '# Hello' --json\",\"fmd stats - < README.md\"]}},{{\"name\":\"book\",\"examples\":[\"fmd book ./docs --out-dir ./site\",\"fmd book ./docs --to pdf --out-dir ./dist\",\"fmd book ./docs --json\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\",\"fmd verify doc.md --a11y\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\",\"interactive-html\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"fit_to_pages\":\"available_binary_search_solver\",\"interactive_html\":\"available_self_hosting_single_file\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"html_font_format\":\"available_ttf_woff1_woff2_default_woff1\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_page_geometry\":\"available_named_and_custom_points\",\"pdf_baseline_grid\":\"available_optin_body_grid_points\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"pdf_running_content\":\"available_text_and_images_v1\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"microtype_pdf\":\"available_optin_protrusion_expansion\",\"optimal_pagination_pdf\":\"available_optin_plass_dp\",\"strict_pagination_pdf\":\"available_optin_exact_or_error\",\"epub_output\":\"available_epub3_one_chapter\",\"search_index\":\"available_fmd-search-index-v1\",\"svg_output\":\"available_vector_glyphs_as_paths\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_589_of_652_normalized\"}},\"pdf_running_content\":{{\"slots\":[\"header.left\",\"header.center\",\"header.right\",\"footer.left\",\"footer.center\",\"footer.right\"],\"tokens\":[\"page\",\"pages\",\"title\",\"author\",\"date\"],\"date_source\":\"SOURCE_DATE_EPOCH_or_metadata_epoch_seconds_never_clock\",\"page_numbers_sugar\":true,\"skip_first_page\":true,\"rules\":true,\"overflow\":\"ellipsis\",\"margin_overflow\":\"error\",\"images\":true,\"image_positions\":[\"left\",\"right\"],\"section_titles\":false,\"html_templates\":false}}}}",
+        "{{\"tool\":\"fmd\",\"version\":\"{}\",\"contract_version\":\"0.1.0\",\"commands\":[{{\"name\":\"render\",\"examples\":[\"fmd README.md\",\"fmd - < README.md\",\"fmd --text '# Hello' --out hello.html\",\"fmd --text '# Hello' --out - > hello.html\",\"fmd render README.md --to both --out README.html\",\"fmd README.md --to pdf --out README.pdf\",\"fmd README.md --to pdf --pdf-line-numbers --out README.pdf\",\"fmd README.md --to pdf --microtype expansion --out README.pdf\",\"fmd README.md --to pdf --typography-homogeneous --out README.pdf\",\"fmd README.md --to pdf --typography-antiriver --out README.pdf\",\"fmd README.md --to pdf --pdf-optimal-pagination --out README.pdf\",\"fmd README.md --to pdf --typography-pareto --out README.pdf\",\"fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\",\"fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\",\"fmd README.md --to pdf --pdf-a 2b --out README.pdf\",\"fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\",\"SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\",\"fmd --max-input-bytes 1048576 README.md --out README.html\"]}},{{\"name\":\"diff\",\"examples\":[\"fmd diff v1.md v2.md\",\"fmd diff v1.md v2.md --out diff.html\",\"fmd diff v1.md v2.md --json\"]}},{{\"name\":\"stats\",\"examples\":[\"fmd stats README.md\",\"fmd stats README.md --json\",\"fmd stats --text '# Hello' --json\",\"fmd stats - < README.md\"]}},{{\"name\":\"book\",\"examples\":[\"fmd book ./docs --out-dir ./site\",\"fmd book ./docs --to pdf --out-dir ./dist\",\"fmd book ./docs --json\"]}},{{\"name\":\"config\",\"examples\":[\"fmd config show --json\",\"fmd config set font serif --json\",\"fmd --no-config README.md --out README.html\"]}},{{\"name\":\"capabilities\",\"examples\":[\"fmd capabilities --json\"]}},{{\"name\":\"robot-docs guide\",\"examples\":[\"fmd robot-docs guide\"]}},{{\"name\":\"doctor\",\"examples\":[\"fmd doctor --json\",\"fmd doctor fonts --corpus ./docs --json\"]}},{{\"name\":\"verify\",\"examples\":[\"fmd verify doc.md --json\",\"fmd verify doc.md --a11y\"]}},{{\"name\":\"watch\",\"examples\":[\"fmd watch README.md --out README.html\",\"fmd watch README.md --out README.html --serve\",\"fmd watch README.md --out README.html --serve --measure 21\",\"fmd watch README.md --to pdf --out README.pdf --interval 300\"]}},{{\"name\":\"--robot-triage\",\"examples\":[\"fmd --robot-triage\"]}}],\"outputs\":[\"html\",\"pdf\",\"both\",\"epub\",\"svg\",\"interactive-html\"],\"theme_model\":{{\"status\":\"structured_v1\",\"default\":{}}},\"exit_codes\":{{\"0\":\"success\",\"64\":\"usage error\",\"66\":\"input error\",\"70\":\"render unavailable or failed\",\"73\":\"output file error\",\"74\":\"stdout/write error\"}},\"features\":{{\"html\":\"available\",\"pdf\":\"available_v0_embedded_subset_fonts\",\"fit_to_pages\":\"available_binary_search_solver\",\"interactive_html\":\"available_self_hosting_single_file\",\"gfm_plus\":\"available\",\"definition_lists\":\"available\",\"raw_text\":\"available\",\"stdin\":\"available\",\"html_stdout_dash\":\"available\",\"pdf_stdout_dash\":\"refused_usage_error\",\"pdf_default_output_path\":\"available_derived_from_input_stem\",\"custom_css\":\"available\",\"native_config\":\"available\",\"no_config\":\"available\",\"input_size_limit\":\"available\",\"html_image_assets\":\"available_local_png_svg_data_uri\",\"pdf_image_assets\":\"available_png_svg_v0\",\"font_sans_serif_toggle\":\"available\",\"html_font_format\":\"available_ttf_woff1_woff2_default_woff1\",\"font_embedding\":\"available_html_epub_subset_full_default_subset\",\"host_font_assets\":\"available\",\"variable_font_weight\":\"available\",\"pdf_a_2b\":\"available\",\"shared_theme_model\":\"structured_v1\",\"syntax_highlighting\":\"available\",\"pdf_page_geometry\":\"available_named_and_custom_points\",\"pdf_baseline_grid\":\"available_optin_body_grid_points\",\"pdf_code_line_numbers\":\"available\",\"pdf_metadata\":\"available\",\"pdf_running_content\":\"available_text_and_images_v1\",\"source_date_epoch_pdf\":\"available\",\"tagged_pdf\":\"available_hierarchical_accessible\",\"font_subsetting_pdf\":\"available\",\"embedded_subset_fonts_pdf\":\"available\",\"gpos_kerning_pdf\":\"available_focused\",\"gsub_ligatures_pdf\":\"available_focused\",\"knuth_plass_pdf\":\"available\",\"hyphenation_pdf\":\"available_discretionary_body_paragraphs\",\"pdf_justification\":\"available_body_paragraphs\",\"page_builder_pdf\":\"available_v0_keep_widow\",\"stream_compression_pdf\":\"available\",\"robot_triage\":\"available\",\"microtype_pdf\":\"available_optin_protrusion_expansion\",\"optimal_pagination_pdf\":\"available_optin_plass_dp\",\"strict_pagination_pdf\":\"available_optin_exact_or_error\",\"epub_output\":\"available_epub3_one_chapter\",\"search_index\":\"available_fmd-search-index-v1\",\"svg_output\":\"available_vector_glyphs_as_paths\",\"watch\":\"available_poll_hash_debounce_loopback_preview\",\"wasm_core\":\"no-default-features available\",\"wasm_browser_package\":\"available_published\",\"commonmark_spec\":\"0.31.2_ratcheted_min_589_of_652_normalized\"}},\"pdf_running_content\":{{\"slots\":[\"header.left\",\"header.center\",\"header.right\",\"footer.left\",\"footer.center\",\"footer.right\"],\"tokens\":[\"page\",\"pages\",\"title\",\"author\",\"date\"],\"date_source\":\"SOURCE_DATE_EPOCH_or_metadata_epoch_seconds_never_clock\",\"page_numbers_sugar\":true,\"skip_first_page\":true,\"rules\":true,\"overflow\":\"ellipsis\",\"margin_overflow\":\"error\",\"images\":true,\"image_positions\":[\"left\",\"right\"],\"section_titles\":false,\"html_templates\":false}}}}",
         env!("CARGO_PKG_VERSION"),
         Theme::default().to_config_json()
     ))
@@ -4292,7 +4249,7 @@ fn print_robot_triage() -> ExitCode {
 
 fn print_robot_docs() -> ExitCode {
     emit_stdout(
-        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --interactive-html --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --font-scale lg --out README.html\n  fmd README.md --to pdf --font-scale 125% --out README.pdf\n  fmd README.md --to pdf --fit-to-pages 1 --out README.pdf\n  fmd diff v1.md v2.md --out diff.html\n  fmd stats README.md --json\n  fmd README.md --toc --out README.html\n  fmd README.md --to pdf --toc --toc-depth 2 --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-header-right '{title}' --pdf-footer-center '{page} / {pages}' --pdf-footer-rule --out README.pdf\n  fmd README.md --to pdf --pdf-image brand=./logo.svg --pdf-header-image brand --pdf-header-image-height-pt 18 --pdf-footer-center '{page} / {pages}' --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to epub --out README.epub\n  fmd README.md --to svg --out README.svg\n  fmd README.md --to pdf --microtype protrusion --typography-homogeneous --pdf-optimal-pagination --out README.pdf\n  fmd batch docs/ --to both --toc --out-dir out/\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license\n  fmd doctor fonts --corpus ./docs --json\n                             # glyph coverage vs bundled faces + Noto math fallback.\n                             # stdout JSON: scripts/ranges/uncovered/hints.\n                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd diff <F1> <F2> --json  # semantic AST diff and change metrics\n  fmd stats [FILE] --json    # word counts, readability scores, outline, and health checks\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter|a4|a5|legal|tabloid|WIDTHxHEIGHT (points)\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  render defaults (flag > frontmatter > config): lang, toc, toc_depth, font_scale,\n    html_font_format=woff1|woff2|ttf, microtype=off|protrusion|expansion, pdf_page_numbers,\n    pdf_optimal_pagination, pdf_strict_pagination, typography_homogeneous|antiriver|pareto (true/false),\n    pdf_baseline_grid_pt=0 (disabled) or 1..=144 points\n  emoji_strategy=warning|noto_subset|drawn (recorded policy hook; resolves to 'warning'. Native fmd\n    builds bundle a curated monochrome Noto Emoji face, so ~360 common emoji render as real\n    glyphs in PDF/SVG; emoji outside it, and every emoji in core/WASM builds, still warn).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage/stats/diff.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override an image destination as DEST=PATH for HTML, PDF, SVG or EPUB, including stdin/--text input; repeat it for multiple images. DEST can be an extensionless key or URL. HTML identifies supported PNG/JPEG/SVG payloads from their bytes, embeds data URIs and preserves the original safe URL for unsupported bytes. Explicit assets override auto-loaded files in combined output; watch rebuilds when a mapped file changes. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, keep-with-next headings and widow/orphan control in the page builder (opt-in document-wide optimal pagination via --pdf-optimal-pagination), inline and display math, inline images, footnotes at the foot of the page with linked marks (docs/PDF_FOOTNOTES.md), syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, opt-in running header/footer text and decorative images (--pdf-header-left/center/right, --pdf-footer-left/center/right with {page} {pages} {title} {author} {date}; --pdf-header-image/--pdf-footer-image DEST select one PNG/JPEG/SVG from --pdf-image DEST=PATH even if absent from Markdown; image-position left|right defaults left, image-height-pt is an optional positive integer reduced to fit; --pdf-header-rule/--pdf-footer-rule; --pdf-running-skip-first; invalid images or bands that do not fit their margin fail with exit 70), table of contents generation with dot leaders and bookmark alignment (--toc / [[_TOC_]]), local PNG/SVG/JPEG image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and an ASCII/SVG/JPEG asset path. still planned: multi-column layout.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Use --font-scale <xs|sm|md|lg|xl|2xl|FLOAT|PERCENT> (alias --type-size) for uniform, anti-aliased typographic scaling across HTML and PDF.\n  Use --page-size <letter|a4|a5|legal|tabloid|WIDTHxHEIGHT> and --margin-top-pt/--margin-right-pt/--margin-bottom-pt/--margin-left-pt for PDF paper and independent margins in render, watch, batch and book. Custom dimensions retain orientation (792x612 is landscape Letter); one point is 1/72 inch. Paper dimensions must be 144..=14400 points; finite nonnegative margins must leave at least 72 points of content width and height. Flags override config independently; omitted sides keep configured values. Explicit geometry requires --to pdf or --to both. Set a persistent paper with fmd config set page_size a4.\n  Use --pdf-baseline-grid-pt <POINTS> for an opt-in body baseline grid in render, watch, batch and book PDF output. Spacing is 1..=144 points rounded to 0.001 point; 0 disables a configured grid. Figures and running margin bands keep their own placement. Grid and page fitting cannot be combined.\n  Use --pdf-strict-pagination in render, watch, batch or book to require exact page-boundary planning. This implies optimal pagination and refuses infeasible plans, planner budget exhaustion and invalid plans before writing output. Exit 70 carries a pagination_* code for render/book; watch preserves its last successful output and batch records the render failure. Exactness applies to measured lines and admitted paragraph variants. Use --pdf-strict-pagination=false to override a configured true value.\n  Use --fit-to-pages <N> (alias --target-pages) to automatically solve micro-typography and fit content to a page budget.\n  Use --interactive-html (alias --self-hosting) to render a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.\n  Host TrueType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n  0.4.1    4,162,426      4,300,000    1,854,075      1,900,000    table of contents + math + CJK fallbacks\n  current  ~7.6 MB        7,900,000    ~3.3 MB        3,400,000    books, EPUB, interactive workspace, typography knobs (gate prints exact numbers)\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
+        "fmd agent guide\n\nCanonical commands:\n  fmd README.md --out README.html\n  fmd README.md --interactive-html --out README.html\n  fmd README.md --to pdf --out README.pdf\n  fmd README.md --font-scale lg --out README.html\n  fmd README.md --to pdf --font-scale 125% --out README.pdf\n  fmd README.md --to pdf --fit-to-pages 1 --out README.pdf\n  fmd diff v1.md v2.md --out diff.html\n  fmd stats README.md --json\n  fmd README.md --toc --out README.html\n  fmd README.md --to pdf --toc --toc-depth 2 --out README.pdf\n  fmd README.md --to pdf --pdf-line-numbers --out README.pdf\n  fmd README.md --to pdf --pdf-header-right '{title}' --pdf-footer-center '{page} / {pages}' --pdf-footer-rule --out README.pdf\n  fmd README.md --to pdf --pdf-image brand=./logo.svg --pdf-header-image brand --pdf-header-image-height-pt 18 --pdf-footer-center '{page} / {pages}' --out README.pdf\n  fmd README.md --to pdf --pdf-image images/chart.png=./chart.png --out README.pdf\n  fmd README.md --to pdf --pdf-font body-regular=./Var.ttf --pdf-font-weight 650 --out README.pdf\n  fmd README.md --to pdf --pdf-a 2b --out README.pdf\n  fmd README.md --to epub --out README.epub\n  fmd README.md --to svg --out README.svg\n  fmd README.md --to pdf --microtype protrusion --typography-homogeneous --pdf-optimal-pagination --out README.pdf\n  fmd batch docs/ --to both --toc --out-dir out/\n  fmd README.md --to pdf --title 'Quarterly Memo' --author 'FMD' --out README.pdf\n  SOURCE_DATE_EPOCH=1700000000 fmd README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd - --out stdin.html < README.md\n  fmd --text '# Hello' --out hello.html\n  fmd --text '# Hello' --out - > hello.html\n  fmd render README.md --to both --out README.html\n  fmd --allow-html trusted.md --out trusted.html\n  fmd --pdf-line-numbers README.md --to pdf --out README.pdf\n  fmd --max-pdf-image-bytes 1048576 README.md --to pdf --out README.pdf\n  fmd --no-remote-images README.md --to pdf --out README.pdf\n  fmd --max-input-bytes 1048576 README.md --out README.html\n  fmd watch README.md --out README.html --serve\n  fmd watch README.md --out README.html --serve --measure 21\n\nDiscovery:\n  fmd capabilities --json   # commands, examples, feature flags, theme, conformance number\n  fmd doctor --json          # subsystem availability, dependency posture, license\n  fmd doctor fonts --corpus ./docs --json\n                             # glyph coverage vs bundled faces + Noto math fallback.\n                             # stdout JSON: scripts/ranges/uncovered/hints.\n                             # exit 0 covered, 1 gaps, 64 usage, 66 input.\n  fmd diff <F1> <F2> --json  # semantic AST diff and change metrics\n  fmd stats [FILE] --json    # word counts, readability scores, outline, and health checks\n  fmd robot-docs guide       # this file\n  fmd --robot-triage         # one-shot JSON envelope: quick-ref + health + next actions\n\nConfig (native, ~/.config/fmd/config by default; --no-config disables):\n  font=sans|serif\n  dark_mode=auto|disabled\n  custom_css=/path/to/stylesheet (or 'none')\n  page_size=letter|a4|a5|legal|tabloid|WIDTHxHEIGHT (points)\n  margin_top_pt, margin_right_pt, margin_bottom_pt, margin_left_pt = non-negative points\n  render defaults (flag > frontmatter > config): lang, toc, toc_depth, font_scale,\n    html_font_format=woff1|woff2|ttf, font_embedding=subset|full,\n    microtype=off|protrusion|expansion, pdf_page_numbers,\n    pdf_optimal_pagination, pdf_strict_pagination, typography_homogeneous|antiriver|pareto (true/false),\n    pdf_baseline_grid_pt=0 (disabled) or 1..=144 points\n  emoji_strategy=warning|noto_subset|drawn (recorded policy hook; resolves to 'warning'. Native fmd\n    builds bundle a curated monochrome Noto Emoji face, so ~360 common emoji render as real\n    glyphs in PDF/SVG; emoji outside it, and every emoji in core/WASM builds, still warn).\n\nRules for agents:\n  stdout is document data for HTML-to-stdout and JSON data for capabilities/doctor/config/robot-triage/stats/diff.\n  `--out -` writes HTML document data to stdout only; PDF and --to both require a real output path.\n  diagnostics and write confirmations go to stderr.\n  use --json on render when you need machine-readable status events on stderr.\n  --max-input-bytes caps file/stdin/--text ingress before parsing; oversized input exits 66 with no document data on stdout.\n  File-input HTML and PDF renders auto-load relative local PNG/SVG/JPEG/GIF image destinations from the Markdown file's directory; HTML embeds them as data URIs and PDF draws supported assets directly. PDF renders also fetch remote http(s) image destinations at render time via the system curl/wget (per-image --remote-image-timeout-secs, --max-pdf-image-bytes cap); disable with --no-remote-images — failures degrade to alt text with a warning. Use --pdf-image to provide or override an image destination as DEST=PATH for HTML, PDF, SVG or EPUB, including stdin/--text input; repeat it for multiple images. DEST can be an extensionless key or URL. HTML identifies supported PNG/JPEG/GIF/SVG payloads from their bytes, embeds data URIs and preserves the original safe URL for unsupported bytes. GIF animation is preserved in HTML/SVG/EPUB; PDF uses its first frame. Explicit assets override auto-loaded files in combined output; watch rebuilds when a mapped file changes. The core never fetches network images or reads files itself.\n  PDF output is available as a compact deterministic v0 with embedded per-document font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass paragraph layout, deterministic discretionary hyphenation and glue justification for body paragraphs, keep-with-next headings and widow/orphan control in the page builder (opt-in document-wide optimal pagination via --pdf-optimal-pagination), inline and display math, inline images, footnotes at the foot of the page with linked marks (docs/PDF_FOOTNOTES.md), syntax-highlighted wrapped code blocks, optional --pdf-line-numbers, opt-in running header/footer text and decorative images (--pdf-header-left/center/right, --pdf-footer-left/center/right with {page} {pages} {title} {author} {date}; --pdf-header-image/--pdf-footer-image DEST select one PNG/JPEG/GIF/SVG from --pdf-image DEST=PATH even if absent from Markdown; image-position left|right defaults left, image-height-pt is an optional positive integer reduced to fit; --pdf-header-rule/--pdf-footer-rule; --pdf-running-skip-first; invalid images or bands that do not fit their margin fail with exit 70), table of contents generation with dot leaders and bookmark alignment (--toc / [[_TOC_]]), local PNG/SVG/JPEG/GIF image assets via auto file-input loading, remote http(s) image fetching (opt-out --no-remote-images), or --pdf-image, PDF metadata via --title/--author/SOURCE_DATE_EPOCH, a hierarchical accessible tagged-PDF structure tree (Document root, per-cell tables with header column scope, nested lists, blockquotes, figures with alt/bbox, links referenced via /OBJR, decoration as /Artifact outside the logical tree), a Noto Sans Math symbol-fallback face for math/arrow glyphs, and a PNG/SVG/JPEG/GIF asset path. still planned: multi-column layout.\n  Use --css <file> for a full custom stylesheet replacement, --font serif for one render, config set font serif for a persistent native default, and --no-config for reproducible config-free runs.\n  Use --font-scale <xs|sm|md|lg|xl|2xl|FLOAT|PERCENT> (alias --type-size) for uniform, anti-aliased typographic scaling across HTML and PDF.\n  Use --page-size <letter|a4|a5|legal|tabloid|WIDTHxHEIGHT> and --margin-top-pt/--margin-right-pt/--margin-bottom-pt/--margin-left-pt for PDF paper and independent margins in render, watch, batch and book. Custom dimensions retain orientation (792x612 is landscape Letter); one point is 1/72 inch. Paper dimensions must be 144..=14400 points; finite nonnegative margins must leave at least 72 points of content width and height. Flags override config independently; omitted sides keep configured values. Explicit geometry requires --to pdf or --to both. Set a persistent paper with fmd config set page_size a4.\n  Use --pdf-baseline-grid-pt <POINTS> for an opt-in body baseline grid in render, watch, batch and book PDF output. Spacing is 1..=144 points rounded to 0.001 point; 0 disables a configured grid. Figures and running margin bands keep their own placement. Grid and page fitting cannot be combined.\n  Use --pdf-strict-pagination in render, watch, batch or book to require exact page-boundary planning. This implies optimal pagination and refuses infeasible plans, planner budget exhaustion and invalid plans before writing output. Exit 70 carries a pagination_* code for render/book; watch preserves its last successful output and batch records the render failure. Exactness applies to measured lines and admitted paragraph variants. Use --pdf-strict-pagination=false to override a configured true value.\n  Use --fit-to-pages <N> (alias --target-pages) to automatically solve micro-typography and fit content to a page budget.\n  Use --interactive-html (alias --self-hosting) to render a self-hosting single-file HTML workspace with live editor, preview, and client-side PDF export.\n  Use --font-embedding full to preserve complete HTML/EPUB font character maps and shaping tables; subset is the compact default. Also applies to book exports and persistent config.\n  Host TrueType/CFF1 OpenType faces: --pdf-font SLOT=PATH (repeatable; slots body-regular/body-bold/body-italic/body-bold-italic/mono-regular) and --pdf-font-weight WEIGHT or SLOT=WEIGHT (1..=1000). Variable wght faces instance at pin; static faces ignore it with warning font_weight_ignored_static. When body-bold is omitted and body-regular is variable, bold instances from that same file at 700. Flags apply to HTML and PDF.\n\nWarnings are non-fatal. Each surface to stderr (PDF) or a JSON envelope (--json).\n  missing_glyphs: {count, sample} — character(s) had no glyph in the bundled faces.\n  unresolved_image: image dest had no --pdf-image mapping; rendered as alt text.\n  unsupported_image: supplied asset could not be decoded; rendered as alt text.\n  pdf_size_budget: emitted PDF would have exceeded --max-pdf-image-bytes; aborted.\n  font_weight_ignored_static: a static face received --pdf-font-weight; ignored.\n\nVerify (yo83): 0 clean; 1 findings; 2 bad input; 66 usage error; 70 font load failure.\n  Default TTY output is a human caret report; pipes/--json force the JSON schema.\n\nWASM size budget (scripts/check-wasm-package.sh; bg.wasm after wasm-bindgen --target web):\n  tree     raw measured   raw budget   gzip measured  gzip budget  why\n  0.3.2    3,351,808      3,400,000    1,510,214      1,600,000    expanded vector-SVG/PDF\n  0.3.4    3,447,897      3,500,000    1,557,945      1,600,000    Noto math face + JPEG DCTDecode\n  0.3.5    4,019,715      4,200,000    1,798,217      1,850,000    fmd-math+hyphen langs+CJK+gvar+type knobs+page numbers (~+16 KiB Noto regen). Gate prints signed delta vs last ratchet.\n  0.4.1    4,162,426      4,300,000    1,854,075      1,900,000    table of contents + math + CJK fallbacks\n  current  ~7.6 MB        7,900,000    ~3.3 MB        3,400,000    books, EPUB, interactive workspace, typography knobs (gate prints exact numbers)\n\nExit codes: 0 ok; 64 usage; 66 input; 70 render failed (font load, etc.); 73 write error; 74 stdout write error.",
     )
 }
 
@@ -4520,12 +4477,32 @@ mod helper_tests {
     }
 
     #[test]
+    fn curl_image_fetch_disables_config_before_other_arguments() {
+        let args = curl_remote_image_args("https://cdn.example/x.png", "20", "1024", "fmd/test");
+        assert_eq!(
+            args.first().copied(),
+            Some("--disable"),
+            "curl only ignores config when --disable is its first argument"
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--proto", "=http,https"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--proto-redir", "=http,https"])
+        );
+        assert_eq!(args.last().copied(), Some("https://cdn.example/x.png"));
+    }
+
+    #[test]
     fn wget_https_urls_enable_https_only_to_block_file_redirects() {
         let args = wget_remote_image_args(
             "https://cdn.example/x.png",
             "--timeout=20",
             "--user-agent=fmd/test",
         );
+        assert!(args.contains(&"--no-config"));
         assert!(
             args.contains(&"--https-only"),
             "https fetches must refuse file:// redirects: {args:?}"
@@ -4540,6 +4517,7 @@ mod helper_tests {
             "--timeout=20",
             "--user-agent=fmd/test",
         );
+        assert!(args.contains(&"--no-config"));
         assert!(
             !args.contains(&"--https-only"),
             "http images must still fetch: {args:?}"
@@ -4586,7 +4564,10 @@ mod helper_tests {
             let Some(Command::Watch(mut args)) = cli.command else {
                 panic!("expected watch arguments");
             };
-            let html = watch_preview_html(&args, true).unwrap();
+            args.serve = true;
+            let (status, html) = render_watched_file(&args, false, true);
+            assert_eq!(status, ExitCode::SUCCESS);
+            let html = html.unwrap();
             assert!(
                 html.contains(&format!(
                     "src=\"data:image/svg+xml;base64,{}\"",
@@ -4594,12 +4575,55 @@ mod helper_tests {
                 )),
                 "{target} preview omitted its explicit asset"
             );
+            let previous = std::fs::read(&args.out).unwrap();
             args.style.max_pdf_image_bytes = 4;
+            let (status, html) = render_watched_file(&args, false, true);
+            assert_eq!(status, ExitCode::from(66));
             assert!(
-                watch_preview_html(&args, true)
-                    .unwrap_err()
-                    .contains("--max-pdf-image-bytes")
+                html.is_none(),
+                "failed asset admission cannot refresh a preview"
             );
+            assert_eq!(std::fs::read(&args.out).unwrap(), previous);
+        }
+    }
+
+    #[test]
+    fn watch_publication_keeps_the_exported_snapshot_after_inputs_change() {
+        let dir = fresh_dir("preview-snapshot");
+        let input = dir.join("report.md");
+        for target in ["html", "pdf", "svg", "epub"] {
+            let output = dir.join(format!("report.{target}"));
+            std::fs::write(&input, "# Captured document\n").unwrap();
+            let cli = Cli::try_parse_from([
+                "fmd",
+                "watch",
+                input.to_str().unwrap(),
+                "--to",
+                target,
+                "--out",
+                output.to_str().unwrap(),
+                "--serve",
+            ])
+            .unwrap();
+            let Some(Command::Watch(args)) = cli.command else {
+                panic!("expected watch arguments");
+            };
+            let (status, html) = render_watched_file(&args, false, true);
+            assert_eq!(status, ExitCode::SUCCESS);
+            let html = html.unwrap();
+            assert!(html.contains("Captured document"));
+            // Publication may run after an editor or another process changes
+            // the source/output. Neither file grants authority to replace the
+            // captured successful render in the live preview.
+            std::fs::write(&input, "# Newer unrendered document\n").unwrap();
+            std::fs::write(&output, "Externally replaced output\n").unwrap();
+            let preview = WatchPreview {
+                port: 0,
+                html: Arc::new(Mutex::new(String::new())),
+                clients: Arc::new(Mutex::new(Vec::new())),
+            };
+            refresh_watch_preview(&preview, html.clone());
+            assert_eq!(*preview.html.lock().unwrap(), html);
         }
     }
 
@@ -4649,6 +4673,10 @@ mod helper_tests {
             auto_pdf_image_path("photo.JPEG", base),
             Some(PathBuf::from("/base/photo.JPEG"))
         );
+        assert_eq!(
+            auto_pdf_image_path("animation.GIF", base),
+            Some(PathBuf::from("/base/animation.GIF"))
+        );
         // Query and fragment suffixes are stripped before resolution.
         assert_eq!(
             auto_pdf_image_path("img.png?x=1#f", base),
@@ -4667,7 +4695,7 @@ mod helper_tests {
             "https://e/x.png",    // URI scheme
             "mailto:someone.png", // URI scheme, no slash
             "/abs/x.png",         // absolute
-            "x.gif",              // unsupported extension
+            "x.bmp",              // unsupported extension
             "noext",              // no extension
             "../up.png",          // parent-dir escape
             "a/../up.png",        // embedded parent-dir escape

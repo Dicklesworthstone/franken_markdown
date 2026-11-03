@@ -395,16 +395,17 @@ fn reuse_assets(
             continue;
         };
         let ordinal = new_counts.entry(span).or_default();
-        if let Some(&(previous, result)) = reusable.get(&(span, *ordinal)) {
-            if previous.reference == asset.reference && previous.alt_text == asset.alt_text {
-                transfers.push((
-                    FlowAssetRemap {
-                        old_id: previous.id,
-                        new_id: asset.id,
-                    },
-                    result,
-                ));
-            }
+        if let Some(&(previous, result)) = reusable.get(&(span, *ordinal))
+            && previous.reference == asset.reference
+            && previous.alt_text == asset.alt_text
+        {
+            transfers.push((
+                FlowAssetRemap {
+                    old_id: previous.id,
+                    new_id: asset.id,
+                },
+                result,
+            ));
         }
         *ordinal += 1;
     }

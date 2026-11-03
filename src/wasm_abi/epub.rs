@@ -40,6 +40,7 @@ pub fn render_epub_configured_advanced(
     body_bold_italic: Vec<u8>,
     mono_regular: Vec<u8>,
     font_weights: Vec<u32>,
+    font_embedding: Option<String>,
 ) -> Result<FmdRenderResult, JsValue> {
     admit_assets(
         markdown.len(),
@@ -57,6 +58,14 @@ pub fn render_epub_configured_advanced(
     )
     .map_err(JsValue::from_str)?;
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
+    options.font_embedding = font_embedding
+        .as_deref()
+        .map(|value| {
+            crate::FontEmbedding::parse(value)
+                .ok_or_else(|| JsValue::from_str("fontEmbedding must be subset or full"))
+        })
+        .transpose()?
+        .unwrap_or_default();
     options.title = nonempty_verbatim(title);
     options.lang = empty_to_none(lang);
     options.font_scale = positive_f32(font_scale, "fontScale")?;

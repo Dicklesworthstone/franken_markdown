@@ -187,6 +187,31 @@ pub struct OwnedTextRun {
     pub glyphs: Vec<RunGlyph>,
     /// Total visual horizontal advance width of the run.
     pub total_advance: f32,
+    /// Truthful vertical extents in layout units, when supplied by the shaper.
+    /// Include every participating face and positioned glyph offset. `None`
+    /// means the host has not supplied metrics; consumers must not invent a
+    /// baseline when composing this run with other inline objects.
+    pub vertical_metrics: Option<TextRunMetrics>,
+}
+
+/// Nonnegative distances above and below a shaped run's baseline.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextRunMetrics {
+    pub ascent: f32,
+    pub descent: f32,
+}
+
+impl TextRunMetrics {
+    /// Reject nonfinite, negative, or empty vertical metric envelopes.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        self.ascent.is_finite()
+            && self.descent.is_finite()
+            && self.ascent >= 0.0
+            && self.descent >= 0.0
+            && (self.ascent + self.descent).is_finite()
+            && self.ascent + self.descent > 0.0
+    }
 }
 
 impl OwnedTextRun {

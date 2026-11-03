@@ -42,6 +42,7 @@ fn unselected_notes(
         next_bg: 0,
         next_flow: 0,
         list_stack: Vec::new(),
+        quote_geometry: Default::default(),
         hyphen_cache: RefCell::new(HashMap::new()),
         width_cache: RefCell::new(WidthCache::default()),
         simple_paragraph_cache: SimpleParagraphLayoutCache::default(),

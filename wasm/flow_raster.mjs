@@ -121,7 +121,11 @@ function jpeg(bytes, view) {
   let offset = 2,
     info = null,
     scan = false,
-    sawScan = false;
+    sawScan = false,
+    colourFrame = null,
+    adobe = null,
+    badAdobe = false;
+  const colourKnown = () => !badAdobe && (adobe === 0 || adobe === 2);
   while (offset < bytes.length) {
     if (scan) {
       while (offset < bytes.length && bytes[offset] !== 0xff) offset++;
@@ -132,17 +136,30 @@ function jpeg(bytes, view) {
     if (scan && (marker === 0 || (marker >= 0xd0 && marker <= 0xd7))) continue;
     scan = false;
     if (marker === 0xd9) {
-      if (!info || !sawScan || offset !== bytes.length) invalid();
+      if (!info || !sawScan || offset !== bytes.length || (colourFrame && !colourKnown())) invalid();
       return info;
     }
     if (offset + 2 > bytes.length) invalid();
     const length = view.getUint16(offset),
       end = offset + length;
     if (length < 2 || end > bytes.length) invalid();
+    // Match the publication core's explicit Adobe polarity contract. Do not
+    // guess how an unmarked four-channel frame should be interpreted. Identical
+    // duplicates are harmless; malformed/conflicting APP14 metadata is not.
+    if (marker === 0xee && length >= 7
+        && [65, 100, 111, 98, 101].every((v, i) => bytes[offset + 2 + i] === v)) {
+      if (length < 14) badAdobe = true;
+      else {
+        const transform = bytes[offset + 13];
+        if (adobe !== null && adobe !== transform) badAdobe = true;
+        adobe = transform;
+      }
+    }
     if (marker === 0xc0 || marker === 0xc2) {
       if (info || sawScan || length < 8 || bytes[offset + 2] !== 8) invalid();
       const components = bytes[offset + 7];
-      if (![1, 3].includes(components) || length !== 8 + 3 * components) invalid();
+      if (![1, 3, 4].includes(components) || length !== 8 + 3 * components) invalid();
+      if (components === 4) colourFrame = jpegColourFrame(bytes, offset, marker === 0xc2);
       info = {
         mime: "image/jpeg",
         height: view.getUint16(offset + 3),
@@ -150,6 +167,12 @@ function jpeg(bytes, view) {
       };
     } else if (marker === 0xda) {
       if (!info || length < 6 || length !== 6 + 2 * bytes[offset + 2]) invalid();
+      if (colourFrame) {
+        // Metadata must precede the first scan, as in the native passthrough.
+        // Walk every progressive scan; the browser still owns entropy decoding.
+        if (!colourKnown() || end + 2 >= bytes.length) invalid();
+        jpegColourScan(bytes, offset, colourFrame);
+      }
       scan = true;
       sawScan = true;
     } else if (
@@ -167,6 +190,34 @@ function jpeg(bytes, view) {
   invalid();
 }
 
+function jpegColourFrame(bytes, offset, progressive) {
+  const ids = [];
+  for (let i = 0; i < 4; i++) {
+    const at = offset + 8 + 3 * i;
+    const id = bytes[at], sampling = bytes[at + 1], table = bytes[at + 2];
+    if (ids.includes(id) || (sampling >> 4) < 1 || (sampling >> 4) > 4
+        || (sampling & 15) < 1 || (sampling & 15) > 4 || table > 3) invalid();
+    ids.push(id);
+  }
+  return { ids, progressive };
+}
+
+function jpegColourScan(bytes, offset, frame) {
+  const count = bytes[offset + 2], seen = new Set();
+  if (count < 1 || count > 4) invalid();
+  for (let i = 0; i < count; i++) {
+    const at = offset + 3 + 2 * i, id = bytes[at], tables = bytes[at + 1];
+    if (!frame.ids.includes(id) || seen.has(id) || (tables >> 4) > 3 || (tables & 15) > 3) invalid();
+    seen.add(id);
+  }
+  const tail = offset + 3 + 2 * count;
+  const start = bytes[tail], end = bytes[tail + 1], approximation = bytes[tail + 2];
+  if (frame.progressive) {
+    if (start > end || end > 63 || (approximation >> 4) > 13 || (approximation & 15) > 13
+        || (start === 0 && end !== 0) || (start !== 0 && count !== 1)) invalid();
+  } else if (start !== 0 || end !== 63 || approximation !== 0) invalid();
+}
+
 export async function decodeRaster(blob) {
   if (typeof globalThis.createImageBitmap !== "function") {
     throw assetFailure(
@@ -176,5 +227,11 @@ export async function decodeRaster(blob) {
   }
   // EXIF orientation may swap JPEG dimensions. The manager checks actual
   // dimensions before submitting them, including this allowed transposition.
-  return globalThis.createImageBitmap(blob);
+  try {
+    return await globalThis.createImageBitmap(blob);
+  } catch (cause) {
+    throw new FlowAssetError(
+      "INVALID_IMAGE", "the browser could not decode the admitted raster image", { cause },
+    );
+  }
 }

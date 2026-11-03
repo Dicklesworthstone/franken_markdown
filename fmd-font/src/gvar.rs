@@ -337,10 +337,10 @@ fn instance_composite(
     loop {
         let flags = be_u16(&out, p)?;
         let rec_len = component_record_len(flags);
-        if flags & ARGS_ARE_XY != 0 {
-            if let Some(&(x, y)) = pts.get(PHANTOMS + ci) {
-                write_component_xy(&mut out, p, flags, x, y)?;
-            }
+        if flags & ARGS_ARE_XY != 0
+            && let Some(&(x, y)) = pts.get(PHANTOMS + ci)
+        {
+            write_component_xy(&mut out, p, flags, x, y)?;
         }
         ci += 1;
         if flags & MORE_COMPONENTS == 0 {
@@ -821,27 +821,32 @@ fn unpack_delta_run(d: &[u8], cursor: &mut usize, end: usize, n: usize) -> Optio
         let ctrl = *d.get(*cursor)?;
         *cursor = cursor.checked_add(1)?;
         let run = usize::from(ctrl & 0x3F) + 1;
-        let zeros = ctrl & 0xC0 == 0;
-        let bytes = ctrl & 0x40 != 0 && ctrl & 0x80 == 0;
-        let words = ctrl & 0x80 != 0;
-        for _ in 0..run {
-            if out.len() >= n {
-                break;
-            }
-            if zeros {
-                out.push(0);
-            } else if bytes {
-                let b = *d.get(*cursor)? as i8;
-                *cursor = cursor.checked_add(1)?;
-                out.push(i16::from(b));
-            } else if words {
-                let v = be_i16(d, *cursor)?;
-                *cursor = cursor.checked_add(2)?;
-                out.push(v);
-            } else {
-                out.push(0);
-            }
+        if run > n - out.len() {
+            return None;
         }
+        // OpenType packed deltas: bit 7 is a zero run (no payload);
+        // otherwise bit 6 selects signed words instead of signed bytes.
+        // https://learn.microsoft.com/en-us/typography/opentype/spec/otvarcommonformats#packed-deltas
+        let zeros = ctrl & 0x80 != 0;
+        let words = ctrl & 0x40 != 0;
+        if zeros {
+            out.resize(out.len() + run, 0);
+            continue;
+        }
+        let stride = if words { 2 } else { 1 };
+        let run_end = cursor.checked_add(run.checked_mul(stride)?)?;
+        if run_end > end {
+            return None;
+        }
+        let payload = d.get(*cursor..run_end)?;
+        if words {
+            for pair in payload.as_chunks::<2>().0 {
+                out.push(i16::from_be_bytes([pair[0], pair[1]]));
+            }
+        } else {
+            out.extend(payload.iter().map(|&b| i16::from(b as i8)));
+        }
+        *cursor = run_end;
     }
     Some(out)
 }
@@ -880,10 +885,10 @@ fn iup_contour(delta: &mut [f32], touched: &[bool], orig: &[i32], start: usize, 
             .and_then(|&i| delta.get(i).copied())
             .unwrap_or(0.0);
         for i in start..=end {
-            if !touched.get(i).copied().unwrap_or(false) {
-                if let Some(slot) = delta.get_mut(i) {
-                    *slot = v;
-                }
+            if !touched.get(i).copied().unwrap_or(false)
+                && let Some(slot) = delta.get_mut(i)
+            {
+                *slot = v;
             }
         }
         return;
@@ -916,9 +921,16 @@ fn iup_contour(delta: &mut [f32], touched: &[bool], orig: &[i32], start: usize, 
 }
 
 /// Coordinate-space IUP between touched endpoints `a` and `b`.
+#[allow(clippy::float_cmp)] // Equal-coordinate references require exactly equal deltas.
 fn iup_delta(oa: i32, oi: i32, ob: i32, da: f32, db: f32) -> f32 {
+    if oa == ob {
+        // Coincident reference coordinates cannot define an interpolation
+        // interval. OpenType retains a shared delta, or infers zero when
+        // the two explicit deltas differ, regardless of the target position.
+        return if da == db { da } else { 0.0 };
+    }
     let (lo, hi) = if oa <= ob { (oa, ob) } else { (ob, oa) };
-    if oa != ob && oi >= lo && oi <= hi {
+    if oi >= lo && oi <= hi {
         da + (db - da) * ((oi - oa) as f32 / (ob - oa) as f32)
     } else if (oi - oa).unsigned_abs() <= (oi - ob).unsigned_abs() {
         da
@@ -965,31 +977,57 @@ fn encode_simple(g: &SimpleGlyph) -> Option<Vec<u8>> {
         } else {
             0
         };
-        if dx == 0 {
-            f |= X_SAME_OR_POS;
-        }
-        if dy == 0 {
-            f |= Y_SAME_OR_POS;
-        }
+        f |= simple_delta_flags(dx, X_SHORT, X_SAME_OR_POS);
+        f |= simple_delta_flags(dy, Y_SHORT, Y_SAME_OR_POS);
         flags.push(f);
         prev = (x, y);
     }
-    out.extend_from_slice(&flags);
-    for (i, &dx) in dxs.iter().enumerate() {
-        let f = flags.get(i).copied().unwrap_or(0);
-        if f & X_SAME_OR_POS != 0 && dx == 0 {
-            continue;
+    // The repeat count is the number of *additional* flags, so each run
+    // contains at most 256 points. Runs may cross contour boundaries.
+    let mut i = 0;
+    while let Some(&flag) = flags.get(i) {
+        let run = flags
+            .get(i..)?
+            .iter()
+            .take(256)
+            .take_while(|&&next| next == flag)
+            .count();
+        if run > 1 {
+            out.push(flag | REPEAT);
+            out.push(u8::try_from(run - 1).ok()?);
+        } else {
+            out.push(flag);
         }
-        out.extend_from_slice(&i16::try_from(dx).ok()?.to_be_bytes());
+        i += run;
     }
-    for (i, &dy) in dys.iter().enumerate() {
-        let f = flags.get(i).copied().unwrap_or(0);
-        if f & Y_SAME_OR_POS != 0 && dy == 0 {
-            continue;
-        }
-        out.extend_from_slice(&i16::try_from(dy).ok()?.to_be_bytes());
+    for delta in dxs.into_iter().chain(dys) {
+        write_simple_delta(&mut out, delta)?;
     }
     Some(out)
+}
+
+/// TrueType stores zero without a coordinate byte, magnitudes 1..=255 in
+/// one unsigned byte (the flag carries the sign), and larger deltas as i16.
+fn simple_delta_flags(delta: i32, short: u8, same_or_positive: u8) -> u8 {
+    if delta == 0 {
+        same_or_positive
+    } else if delta.unsigned_abs() <= u32::from(u8::MAX) {
+        short | if delta > 0 { same_or_positive } else { 0 }
+    } else {
+        0
+    }
+}
+
+fn write_simple_delta(out: &mut Vec<u8>, delta: i32) -> Option<()> {
+    if delta == 0 {
+        return Some(());
+    }
+    if let Ok(short) = u8::try_from(delta.unsigned_abs()) {
+        out.push(short);
+    } else {
+        out.extend_from_slice(&i16::try_from(delta).ok()?.to_be_bytes());
+    }
+    Some(())
 }
 
 fn bbox(points: &[(i32, i32)]) -> (i16, i16, i16, i16) {
@@ -1065,11 +1103,11 @@ fn rebuild_static(
             tables.push((tag, loca.clone()));
             continue;
         }
-        if &tag == b"hmtx" {
-            if let Some(metrics) = hmtx_metrics {
-                tables.push((tag, encode_hmtx(metrics)));
-                continue;
-            }
+        if &tag == b"hmtx"
+            && let Some(metrics) = hmtx_metrics
+        {
+            tables.push((tag, encode_hmtx(metrics)));
+            continue;
         }
         if &tag == b"hhea" {
             let (o, l) = find_table_full(src, b"hhea")?;
@@ -1123,7 +1161,7 @@ fn assemble_sfnt(tables: &[([u8; 4], Vec<u8>)]) -> Option<Vec<u8>> {
     let mut records: Vec<([u8; 4], u32, u32, u32)> = Vec::new();
     let mut head_offset = 0usize;
     for (tag, bytes) in tables {
-        while (dir_size + body.len()) % 4 != 0 {
+        while !(dir_size + body.len()).is_multiple_of(4) {
             body.push(0);
         }
         let table_offset = dir_size + body.len();
@@ -1188,9 +1226,9 @@ pub(crate) fn variable_triangle_fixture() -> Vec<u8> {
     push32(&mut loca, 0);
     push32(&mut loca, glyph.len() as u32);
     // Identical gvar to the gk3v.2 unit-test builder (private p0 +50 x at peak).
-    let mut payload = vec![1, 0, 0, 0x80];
+    let mut payload = vec![1, 0, 0, 0x40];
     payload.extend_from_slice(&50i16.to_be_bytes());
-    payload.push(0x00);
+    payload.push(0x80);
     let mut gvd = Vec::new();
     push16(&mut gvd, 1);
     push16(&mut gvd, 0);
@@ -1432,9 +1470,9 @@ mod tests {
     /// point-0 delta of +50 x.
     fn gvar_move_p0() -> Vec<u8> {
         // One private point (p0). IUP copies that delta across the contour.
-        let mut payload = vec![1, 0, 0, 0x80];
+        let mut payload = vec![1, 0, 0, 0x40];
         payload.extend_from_slice(&50i16.to_be_bytes());
-        payload.push(0x00); // y: one zero
+        payload.push(0x80); // y: one zero
 
         let mut gvd = Vec::new();
         push16(&mut gvd, 1);
@@ -1452,9 +1490,9 @@ mod tests {
         // Same +50 x on p0, but the packed point numbers are SHARED at the
         // front of the serialized stream and excluded from variationDataSize.
         let shared = vec![1, 0, 0];
-        let mut deltas = vec![0x80];
+        let mut deltas = vec![0x40];
         deltas.extend_from_slice(&50i16.to_be_bytes());
-        deltas.push(0x00);
+        deltas.push(0x80);
         let mut gvd = Vec::new();
         push16(&mut gvd, SHARED_POINT_NUMBERS | 1);
         push16(&mut gvd, 0); // dataOffset patched below
@@ -1518,6 +1556,55 @@ mod tests {
             if ok { "PASS" } else { "FAIL" }
         );
         assert!(ok, "{id}: {subject}");
+    }
+
+    #[test]
+    fn packed_deltas_match_opentype_reference_vector() {
+        // The mixed byte/zero/word example from the OpenType specification,
+        // independent of the fixture builders and this decoder.
+        let packed = [
+            0x03, 0x0A, 0x97, 0x00, 0xC6, 0x87, 0x41, 0x10, 0x22, 0xFB, 0x34,
+        ];
+        let expected = [10, -105, 0, -58, 0, 0, 0, 0, 0, 0, 0, 0, 4130, -1228];
+        let mut cursor = 0;
+        assert_eq!(
+            unpack_delta_run(&packed, &mut cursor, packed.len(), expected.len()),
+            Some(expected.to_vec())
+        );
+        assert_eq!(cursor, packed.len());
+    }
+
+    #[test]
+    fn packed_deltas_match_fonttools_signed_boundary_encoding() {
+        // FontTools 4.61.1 TupleVariation.compileDeltaValues_(expected).
+        // Includes signed-byte endpoints, the adjacent signed-word values,
+        // and separate zero runs: none are encoded by our own test helpers.
+        let expected = [0, 0, 1, -1, 127, -128, 128, -129, 0, 0, 4130, -1228];
+        let packed = [
+            0x81, 0x03, 0x01, 0xFF, 0x7F, 0x80, 0x41, 0x00, 0x80, 0xFF, 0x7F, 0x81, 0x41, 0x10,
+            0x22, 0xFB, 0x34,
+        ];
+        let mut cursor = 0;
+        assert_eq!(
+            unpack_delta_run(&packed, &mut cursor, packed.len(), expected.len()),
+            Some(expected.to_vec())
+        );
+        assert_eq!(cursor, packed.len());
+    }
+
+    #[test]
+    fn packed_deltas_reject_truncated_and_oversized_runs() {
+        // Bytes after the tuple's end belong to a different tuple, even when
+        // they are present in the surrounding font byte slice.
+        for (packed, end, count) in [
+            (vec![0x40, 0x01, 0x02], 2, 1),
+            (vec![0x00, 0x07], 1, 1),
+            (vec![0x81], 1, 1),
+            (vec![0x01, 0x07, 0x08], 3, 1),
+            (vec![0x41, 0x00, 0x01, 0x00, 0x02], 5, 1),
+        ] {
+            assert!(unpack_delta_run(&packed, &mut 0, end, count).is_none());
+        }
     }
 
     #[test]
@@ -1639,10 +1726,10 @@ mod tests {
         push32(&mut loca, u32::try_from(glyph.len()).unwrap());
         // Private points 0 and 2: count=2, ctrl run of 2 byte deltas 0 then 2.
         let mut payload = vec![2, 1, 0, 2];
-        payload.push(0x81); // two x words
+        payload.push(0x41); // two x words
         payload.extend_from_slice(&0i16.to_be_bytes());
         payload.extend_from_slice(&100i16.to_be_bytes());
-        payload.push(1); // two y zeros
+        payload.push(0x81); // two y zeros
         let mut gvd = Vec::new();
         push16(&mut gvd, 1);
         push16(&mut gvd, 0);
@@ -1679,6 +1766,56 @@ mod tests {
     }
 
     #[test]
+    fn iup_coincident_references_match_fonttools() {
+        // FontTools 4.61.1 iup_delta: default X coordinates (0, target, 0),
+        // deltas (10, None, 20) infer zero; (10, None, 10) infer ten. This
+        // applies on either side of, and exactly at, the shared coordinate.
+        for target in [-100, 0, 100] {
+            assert!(iup_delta(0, target, 0, 10.0, 20.0).abs() < f32::EPSILON);
+            assert!((iup_delta(0, target, 0, 10.0, 10.0) - 10.0).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn sparse_tuple_keeps_unreferenced_y_when_reference_coordinates_coincide() {
+        // Minimal contour reproducing Noto Sans SC U+3ABD: the Y references
+        // are both 371, with deltas 16 and 14. The omitted points must keep
+        // Y=598. Choosing either adjacent delta incorrectly moves them.
+        // Independently encoded with FontTools 4.61.1:
+        // compilePoints({0, 3}) + compileDeltaValues_([-37, 69])
+        //                     + compileDeltaValues_([16, 14]).
+        let packed = [0x02, 0x01, 0x00, 0x03, 0x01, 0xDB, 0x45, 0x01, 0x10, 0x0E];
+        for (scalar, expected) in [
+            (1.0, [(454, 387), (454, 598), (590, 598), (590, 385)]),
+            (
+                6390.0 / 16384.0, // Noto's avar-mapped Regular location.
+                [(477, 377), (477, 598), (548, 598), (548, 376)],
+            ),
+        ] {
+            let mut points = [(491, 371), (491, 598), (521, 598), (521, 371)];
+            let mut phantoms = [(0, 0); PHANTOMS];
+            let tuple = TupleWork {
+                scalar,
+                data_off: 0,
+                data_end: packed.len(),
+                private_points: true,
+                shared_points: false,
+            };
+            apply_tuples(
+                &packed,
+                &[tuple],
+                &mut points,
+                Some(&[3]),
+                8,
+                None,
+                Some(&mut phantoms),
+            );
+            assert_eq!(points, expected);
+            assert_eq!(phantoms, [(0, 0); PHANTOMS]);
+        }
+    }
+
+    #[test]
     fn instance_rewrites_hmtx_from_phantom_deltas() {
         // 3 outline points + 4 phantoms; private point 4 is the right phantom.
         // +100 x at peak must become advance 600 (default hmtx is 500).
@@ -1686,9 +1823,9 @@ mod tests {
         let mut loca = Vec::new();
         push32(&mut loca, 0);
         push32(&mut loca, u32::try_from(glyph.len()).unwrap());
-        let mut payload = vec![1, 0, 4, 0x80];
+        let mut payload = vec![1, 0, 4, 0x40];
         payload.extend_from_slice(&100i16.to_be_bytes());
-        payload.push(0x00);
+        payload.push(0x80);
         let mut gvd = Vec::new();
         push16(&mut gvd, 1);
         push16(&mut gvd, 0);
@@ -1732,6 +1869,68 @@ mod tests {
             "NaN/inf weight does not instance",
             font.instance(f32::NAN).is_none() && font.instance(f32::INFINITY).is_none(),
         );
+    }
+
+    #[test]
+    fn compact_simple_glyph_matches_truetype_short_vector_encoding() {
+        let glyph = encode_simple(&SimpleGlyph {
+            points: vec![(0, 0), (100, 0), (50, 100)],
+            on_curve: vec![true; 3],
+            contour_ends: vec![2],
+        })
+        .expect("compact triangle");
+        // Header + contour end + instruction length occupy 14 bytes.
+        // Zero/positive-X/negative-X-positive-Y flags, then X and Y bytes.
+        assert_eq!(&glyph[14..], &[0x31, 0x33, 0x27, 100, 50, 100]);
+        assert_eq!(glyph.len(), 20);
+    }
+
+    #[test]
+    fn compact_simple_glyph_round_trips_signed_byte_and_word_boundaries() {
+        let deltas = [0, 1, -1, 255, -255, 256, -256];
+        let mut point = (0, 0);
+        let mut points = Vec::new();
+        for (&dx, &dy) in deltas.iter().zip(deltas.iter().rev()) {
+            point.0 += dx;
+            point.1 += dy;
+            points.push(point);
+        }
+        // Exercise both signed-i16 endpoints as well as every short/word
+        // transition, without permitting an unrepresentable coordinate hop.
+        for points in [
+            points,
+            vec![(0, 0), (-32768, 32767), (-1, 0), (32766, -32768)],
+        ] {
+            let source = SimpleGlyph {
+                on_curve: (0..points.len()).map(|i| i % 2 == 0).collect(),
+                contour_ends: vec![u16::try_from(points.len() - 1).unwrap()],
+                points,
+            };
+            let encoded = encode_simple(&source).expect("boundary coordinates encode");
+            let decoded = decode_simple(&encoded, 1).expect("compact glyph decodes");
+            assert_eq!(decoded.points, source.points);
+            assert_eq!(decoded.on_curve, source.on_curve);
+            assert_eq!(decoded.contour_ends, source.contour_ends);
+        }
+    }
+
+    #[test]
+    fn compact_simple_glyph_splits_flag_runs_after_256_points() {
+        for count in [1, 2, 255, 256, 257, 512, 513] {
+            let source = SimpleGlyph {
+                points: vec![(0, 0); count],
+                on_curve: vec![true; count],
+                contour_ends: vec![u16::try_from(count - 1).unwrap()],
+            };
+            let encoded = encode_simple(&source).expect("repeated flags encode");
+            let decoded = decode_simple(&encoded, 1).expect("repeated flags decode");
+            assert_eq!(decoded.points, source.points);
+            assert_eq!(decoded.on_curve, source.on_curve);
+            if count == 513 {
+                assert_eq!(&encoded[14..], &[0x39, 0xFF, 0x39, 0xFF, 0x31]);
+                assert_eq!(encoded.len(), 19);
+            }
+        }
     }
 
     #[test]
@@ -1790,9 +1989,9 @@ mod tests {
                 b"gvar",
                 build_gvar_table_with_data_offset(
                     &{
-                        let mut payload = vec![1, 0, 0, 0x80];
+                        let mut payload = vec![1, 0, 0, 0x40];
                         payload.extend_from_slice(&50i16.to_be_bytes());
-                        payload.push(0x00);
+                        payload.push(0x80);
                         let mut gvd = Vec::new();
                         push16(&mut gvd, 1);
                         push16(&mut gvd, 0);
@@ -1882,9 +2081,9 @@ mod tests {
 
         // gvar for gid 1: 5 variation points (4 phantoms + 1 component).
         // Move the component origin +30 x at peak.
-        let mut payload = vec![1, 0, 4, 0x80];
+        let mut payload = vec![1, 0, 4, 0x40];
         payload.extend_from_slice(&30i16.to_be_bytes());
-        payload.push(0x00); // y zeros
+        payload.push(0x80); // y zeros
 
         let mut gvd0 = Vec::new(); // empty for gid 0
         push16(&mut gvd0, 0);
@@ -1973,9 +2172,9 @@ mod tests {
         push32(&mut loca, u32::try_from(comp_off).unwrap());
         push32(&mut loca, u32::try_from(glyf.len()).unwrap());
 
-        let mut payload = vec![1, 0, 4, 0x80];
+        let mut payload = vec![1, 0, 4, 0x40];
         payload.extend_from_slice(&50i16.to_be_bytes());
-        payload.push(0x00);
+        payload.push(0x80);
 
         let mut gvd0 = Vec::new();
         push16(&mut gvd0, 0);
@@ -2057,10 +2256,10 @@ mod tests {
 
         // 5 x-deltas (4 phantom zeros + component +30), 5 y-zeros. No packed points.
         let mut payload = Vec::new();
-        payload.push(3); // 4 zeros
-        payload.push(0x80); // 1 word
+        payload.push(0x83); // 4 zeros
+        payload.push(0x40); // 1 word
         payload.extend_from_slice(&30i16.to_be_bytes());
-        payload.push(4); // 5 y zeros
+        payload.push(0x84); // 5 y zeros
 
         let mut gvd0 = Vec::new();
         push16(&mut gvd0, 0);

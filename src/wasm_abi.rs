@@ -30,6 +30,9 @@ pub use pdf_page::{
 mod epub;
 pub use epub::render_epub_configured_advanced;
 
+#[cfg(test)]
+mod font_embedding_tests;
+
 mod svg;
 pub use svg::render_svg_configured_resources;
 
@@ -618,8 +621,17 @@ pub fn render_html_configured_advanced(
     toc: bool,
     toc_depth: Option<u32>,
     html_font_format: Option<String>,
+    font_embedding: Option<String>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
+    options.font_embedding = font_embedding
+        .as_deref()
+        .map(|value| {
+            crate::FontEmbedding::parse(value)
+                .ok_or_else(|| JsValue::from_str("fontEmbedding must be subset or full"))
+        })
+        .transpose()?
+        .unwrap_or_default();
     options.title = nonempty_verbatim(title);
     options.custom_css = nonempty_verbatim(custom_css);
     options.allow_raw_html = allow_raw_html;

@@ -68,7 +68,9 @@ fn children<'a>(elements: &'a [Node], node: &Node) -> Vec<&'a Node> {
     let tokens: Vec<_> = kids.split_whitespace().collect();
     assert_eq!(tokens.len() % 3, 0, "{kids}");
     tokens
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|reference| {
             assert_eq!(&reference[1..], ["0", "R"]);
             let child = node_by_id(elements, reference[0].parse().unwrap());
@@ -113,7 +115,9 @@ fn id_tree(pdf: &[u8]) -> Vec<(String, usize)> {
     let tokens: Vec<_> = names.split_whitespace().collect();
     assert_eq!(tokens.len() % 4, 0);
     tokens
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|entry| {
             assert_eq!(&entry[2..], ["0", "R"]);
             let name = entry[0]

@@ -181,10 +181,9 @@ impl<'a> Navigation<'a> {
                     | Block::HtmlBlock(_)
                     | Block::FootnoteDefinition { .. }
                     | Block::DefinitionList(_)
-            ) {
-                if let Some(range) = self.fold(block.span) {
-                    ranges.insert(range);
-                }
+            ) && let Some(range) = self.fold(block.span)
+            {
+                ranges.insert(range);
             }
         }
         Json::Array(
@@ -230,10 +229,9 @@ impl<'a> Navigation<'a> {
             if let Some(block) = next
                 .checked_sub(1)
                 .and_then(|i| self.document.blocks.get(i))
+                && block.span.contains(offset)
             {
-                if block.span.contains(offset) {
-                    spans.push(block.span);
-                }
+                spans.push(block.span);
             }
             spans.sort_by_key(|span| (std::cmp::Reverse(span.len()), span.start, span.end));
             spans.dedup();

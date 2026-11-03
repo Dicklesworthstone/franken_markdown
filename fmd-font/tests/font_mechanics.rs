@@ -47,6 +47,60 @@ fn every_bravura_glyph_matches_independent_fonttools() {
         );
     }
 }
+fn reference_bbox(columns: &[&str]) -> Option<[i16; 4]> {
+    if columns[4] == "none" {
+        None
+    } else {
+        Some(std::array::from_fn(|i| columns[4 + i].parse().unwrap()))
+    }
+}
+#[test]
+fn every_bravura_ink_box_matches_independent_fonttools() {
+    let f = Font::parse(CFF.to_vec()).unwrap();
+    for line in include_str!("../fonts/test-cff/fonttools-reference.txt").lines() {
+        let columns: Vec<_> = line.split_whitespace().collect();
+        let gid = columns[0].parse().unwrap();
+        let expected = reference_bbox(&columns);
+        assert_eq!(f.cff_glyph_bbox(gid).unwrap(), expected, "glyph {gid}");
+        assert_eq!(f.glyph_bbox(gid), expected, "glyph {gid}");
+    }
+    assert_eq!(
+        f.cff_glyph_bbox(f.num_glyphs).unwrap_err().kind,
+        SubsetErrorKind::InvalidGlyph
+    );
+}
+#[test]
+fn cff_subset_over_256_glyphs_preserves_ink_and_dense_glyph_ids() {
+    let f = Font::parse(CFF.to_vec()).unwrap();
+    let keep: Vec<_> = (120..720).collect();
+    let subset = f.try_subset_glyphs(&keep, &[]).unwrap();
+    let s = Font::parse(subset.bytes).unwrap();
+    assert_eq!(s.num_glyphs, 601);
+    assert_eq!(subset.format, EmbeddingFormat::OpenTypeCff);
+    let references: Vec<_> = include_str!("../fonts/test-cff/fonttools-reference.txt")
+        .lines()
+        .map(|line| reference_bbox(&line.split_whitespace().collect::<Vec<_>>()))
+        .collect();
+    let mut bounds: Option<[i16; 4]> = None;
+    for (index, old_gid) in std::iter::once(0).chain(keep).enumerate() {
+        let new_gid = subset.glyph_map[usize::from(old_gid)];
+        assert_eq!(usize::from(new_gid), index);
+        let expected = references[usize::from(old_gid)];
+        assert_eq!(s.cff_glyph_bbox(new_gid).unwrap(), expected);
+        if let Some([x0, y0, x1, y1]) = expected {
+            bounds = Some(match bounds {
+                None => [x0, y0, x1, y1],
+                Some([a, b, c, d]) => [a.min(x0), b.min(y0), c.max(x1), d.max(y1)],
+            });
+        }
+    }
+    assert_eq!(s.font_bbox(), bounds);
+    // A small subset must not inherit the original font's much larger box.
+    let tiny = f.try_subset_glyphs(&[120], &[]).unwrap();
+    let tiny = Font::parse(tiny.bytes).unwrap();
+    assert_eq!(tiny.font_bbox(), Some([0, -3, 359, 255]));
+    assert_ne!(tiny.font_bbox(), f.font_bbox());
+}
 #[test]
 fn sparse_cff_is_deterministic_and_explicitly_typed() {
     let f = Font::parse(CFF.to_vec()).unwrap();

@@ -270,7 +270,7 @@ impl<'a> Shaper<'a> {
             if !glyph.visible || glyph.id == 0 {
                 continue;
             }
-            if let Some(font) = self.poster.faces[glyph.slot].as_ref()
+            if let Some(font) = self.poster.face(glyph.slot)
                 && let Some(bounds) = font.glyph_bbox(glyph.id)
             {
                 let factor = size / f64::from(font.units_per_em.max(1));
@@ -296,8 +296,9 @@ impl<'a> Shaper<'a> {
             // Code deliberately retains its existing unligated, unkerned hmtx
             // measurement. Missing glyphs and whitespace cannot be swallowed
             // by a ligature and keep their original reporting/spacing policy.
-            let Some(face) = self.poster.faces[slot]
-                .as_ref()
+            let Some(face) = self
+                .poster
+                .face(slot)
                 .filter(|_| !style.mono && id != 0 && !ch.is_whitespace())
             else {
                 push_cluster(

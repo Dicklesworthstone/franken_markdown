@@ -225,6 +225,40 @@ pub(crate) fn cjk_font() -> Option<Result<(&'static Font, &'static OpenTypeLayou
     None
 }
 
+/// Unicode ranges of the bundled CJK fallback face. The face is a pure
+/// Unicode-range subset cut from exactly these ranges (`CJK_CURATED_RANGES` in
+/// `examples/gen_cjk_fallback_font.rs`), so a character outside them never maps
+/// in it. `cjk_face_cmap_stays_inside_the_static_gate` walks every scalar to
+/// keep this table a superset of the face's cmap.
+const CJK_FACE_RANGES: [(u32, u32); 9] = [
+    (0x3000, 0x303F),
+    (0x3040, 0x30FF),
+    (0x31F0, 0x31FF),
+    (0x3400, 0x4DBF),
+    (0x4E00, 0x9FFF),
+    (0xF900, 0xFAFF),
+    (0xFE10, 0xFE1F),
+    (0xFE30, 0xFE4F),
+    (0xFF00, 0xFFEF),
+];
+
+/// Whether the bundled CJK fallback face could map `ch`, decided from a static
+/// range table without parsing or touching the face. Always `false` without
+/// `cjk-face`. Renderers ask this before [`cjk_face`], so a document with no
+/// character in these ranges never parses (and copies) the ~9.9 MB face;
+/// `true` only means "look it up", the face's cmap still decides.
+// pub only because svg.rs is also compiled into tests/svg_test.rs.
+#[doc(hidden)]
+#[inline]
+#[must_use]
+pub fn cjk_face_may_map(ch: char) -> bool {
+    let scalar = u32::from(ch);
+    cfg!(feature = "cjk-face")
+        && CJK_FACE_RANGES
+            .iter()
+            .any(|&(lo, hi)| (lo..=hi).contains(&scalar))
+}
+
 /// The bundled emoji fallback face (curated monochrome Noto Emoji subset),
 /// when the `emoji-face` feature compiled it in.
 #[inline(always)]
@@ -346,6 +380,15 @@ pub fn load_cjk() -> Option<Font> {
     cjk_font()?.ok().map(|(font, _)| font.clone())
 }
 
+/// The bundled CJK fallback face, parsed once per process and borrowed, when
+/// `cjk-face` is enabled. Unlike [`load_cjk`] it never copies the ~9.9 MB face.
+// pub only because svg.rs is also compiled into tests/svg_test.rs.
+#[doc(hidden)]
+#[must_use]
+pub fn cjk_face() -> Option<&'static Font> {
+    cjk_font()?.ok().map(|(font, _)| font)
+}
+
 /// Owned copy of the bundled emoji fallback face, when compiled in.
 #[must_use]
 pub fn load_emoji() -> Option<Font> {
@@ -384,6 +427,43 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[cfg(feature = "cjk-face")]
+    #[test]
+    fn cjk_face_cmap_stays_inside_the_static_gate() -> Result<(), FontError> {
+        let loaded = super::cjk_font();
+        assert!(
+            loaded.is_some(),
+            "cjk-face is enabled but cjk_font() is None"
+        );
+        let Some(loaded) = loaded else {
+            return Ok(());
+        };
+        let (font, _) = loaded?;
+        let mut mapped = 0_u32;
+        for ch in (0..=0x10_FFFF_u32).filter_map(char::from_u32) {
+            if font.glyph_index(ch) != 0 {
+                mapped += 1;
+                assert!(
+                    super::cjk_face_may_map(ch),
+                    "U+{:04X} maps in the CJK face but is outside CJK_FACE_RANGES",
+                    u32::from(ch)
+                );
+            }
+        }
+        // PROVENANCE.json artifact.mapped_characters; proves the walk reached the face.
+        assert_eq!(mapped, 28_215);
+        assert!(!super::cjk_face_may_map('a') && !super::cjk_face_may_map('–'));
+        assert!(super::cjk_face_may_map('中') && super::cjk_face_may_map('あ'));
+        Ok(())
+    }
+
+    #[cfg(not(feature = "cjk-face"))]
+    #[test]
+    fn cjk_gate_is_closed_without_the_face() {
+        assert!(!super::cjk_face_may_map('中'));
+        assert!(super::cjk_font().is_none());
     }
 
     #[test]

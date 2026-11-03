@@ -162,7 +162,7 @@ impl Poster {
 
     pub(super) fn font_for_slot(&self, slot: usize) -> Option<&franken_markdown::text::Font> {
         if slot < SLOT_COUNT {
-            self.faces[slot].as_ref()
+            self.face(slot)
         } else {
             self.math_engine
                 .get()?

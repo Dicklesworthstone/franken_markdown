@@ -1800,14 +1800,14 @@ impl Face {
 
     /// Load the CJK fallback independently of emoji when `cjk-face` is
     /// compiled in. Measurement and subsetting borrow the same cached source.
-    fn load_bundled_cjk() -> Result<Option<Self>> {
+    /// The error is the `RenderError::InvalidInput` message, kept by
+    /// [`Faces::cjk`] until [`Faces::cjk_load_error`] reports it.
+    fn load_bundled_cjk() -> std::result::Result<Option<Self>, String> {
         let Some(loaded) = fonts::cjk_font() else {
             return Ok(None);
         };
         let (font, layout) = loaded.map_err(|err| {
-            RenderError::InvalidInput(format!(
-                "bundled CJK fallback font is not a supported TrueType font: {err}"
-            ))
+            format!("bundled CJK fallback font is not a supported TrueType font: {err}")
         })?;
         Ok(Some(Self {
             font: Cow::Borrowed(font),
@@ -1924,7 +1924,9 @@ struct Faces {
     /// coverage checks are total. Embedded in the PDF only when actually used.
     symbol: Face,
     /// Optional bundled Han/kana/punctuation fallback, embedded only when used.
-    cjk: Option<Face>,
+    /// Parsed on first use by [`Faces::cjk`], which `fallback_slot` reaches only
+    /// for characters inside the face's static ranges.
+    cjk: std::cell::OnceCell<std::result::Result<Option<Face>, String>>,
     /// Optional bundled emoji fallback in native builds; independent of CJK.
     emoji: Option<Face>,
     /// Images placed inside running text, decoded once per render by
@@ -2068,7 +2070,7 @@ impl Faces {
                 assets.effective_weight(FontAssetSlot::MonoRegular),
             )?,
             symbol: Face::load_bundled_symbol()?,
-            cjk: Face::load_bundled_cjk()?,
+            cjk: std::cell::OnceCell::new(),
             emoji: Face::load_bundled_emoji()?,
             inline_images: Default::default(),
         })
@@ -2082,8 +2084,29 @@ impl Faces {
             F_MONO => &self.mono,
             F_SYMBOL => &self.symbol,
             F_EMOJI => self.emoji.as_ref().unwrap_or(&self.symbol),
-            F_CJK => self.cjk.as_ref().unwrap_or(&self.symbol),
+            F_CJK => self.cjk().unwrap_or(&self.symbol),
             _ => &self.body,
+        }
+    }
+
+    /// The bundled CJK fallback, parsed once on first use. `None` without
+    /// `cjk-face`, or when the bundled face failed to load (kept for
+    /// [`Faces::cjk_load_error`]).
+    fn cjk(&self) -> Option<&Face> {
+        self.cjk
+            .get_or_init(Face::load_bundled_cjk)
+            .as_ref()
+            .ok()?
+            .as_ref()
+    }
+
+    /// The load error of a render that needed the bundled CJK face, as the
+    /// eager load reported it. Renders that never asked for the face never
+    /// parse it, so they cannot meet this error.
+    fn cjk_load_error(&self) -> Result<()> {
+        match self.cjk.get() {
+            Some(Err(message)) => Err(RenderError::InvalidInput(message.clone())),
+            _ => Ok(()),
         }
     }
 
@@ -2094,10 +2117,8 @@ impl Faces {
         if matches!(slot, F_SYMBOL | F_EMOJI | F_CJK) || self.face(slot).glyph_index(c) != 0 {
             return slot;
         }
-        let in_cjk = self
-            .cjk
-            .as_ref()
-            .is_some_and(|font| font.glyph_index(c) != 0);
+        let in_cjk =
+            fonts::cjk_face_may_map(c) && self.cjk().is_some_and(|font| font.glyph_index(c) != 0);
         if in_cjk && classify_script(c).wants_cjk_fallback() {
             F_CJK
         } else if self.symbol.glyph_index(c) != 0 {
@@ -3048,6 +3069,7 @@ fn render_inner(
         emit,
         &mut profiler,
     )?;
+    faces.cjk_load_error()?;
     profiler.record_since(
         "serialize_total",
         line_count,
@@ -45124,3 +45146,25 @@ mod table_alloc_optimality_tests {
 #[cfg(test)]
 #[path = "pdf/ragged_fit_tests.rs"]
 mod ragged_fit_tests;
+
+#[cfg(test)]
+mod cjk_lazy_face_tests {
+    use super::{F_BODY, F_CJK, Faces};
+    use crate::error::Result;
+
+    #[test]
+    fn bundled_cjk_face_is_parsed_only_for_in_range_characters() -> Result<()> {
+        let faces = Faces::load(&crate::PdfOptions::default())?;
+        for c in ['∑', '–', 'é', '\u{10ffff}'] {
+            let _ = faces.fallback_slot(F_BODY, c);
+        }
+        assert!(
+            faces.cjk.get().is_none(),
+            "a non-CJK character parsed the CJK face"
+        );
+        let slot = faces.fallback_slot(F_BODY, '中');
+        let face_compiled_in = cfg!(feature = "cjk-face");
+        assert_eq!(slot == F_CJK, face_compiled_in);
+        faces.cjk_load_error()
+    }
+}

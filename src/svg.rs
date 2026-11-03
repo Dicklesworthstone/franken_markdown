@@ -435,7 +435,12 @@ struct Poster {
     /// Body regular/bold/italic/bold-italic, mono, symbol fallback. `None`
     /// only if a bundled face failed to parse (the registry tests make that
     /// unreachable in practice); unresolvable glyphs count as missing.
+    /// `faces[SLOT_CJK]` stays `None`: read that slot through [`Poster::face`].
     faces: [Option<Font>; SLOT_COUNT],
+    /// The shared bundled CJK fallback, parsed on first use by
+    /// [`Poster::face`]. `resolve` reaches it only for characters inside the
+    /// face's static ranges, so posters without CJK text never parse it.
+    cjk: OnceCell<Option<&'static Font>>,
     math_engine: OnceCell<Option<franken_markdown::math::Engine>>,
     images: images::ImageStore,
     navigation: RefCell<links::Navigation>,
@@ -471,8 +476,9 @@ impl Poster {
                 fonts::load_mono(FontStyle::Regular).ok(),
                 fonts::load_symbol().ok(),
                 fonts::load_emoji(),
-                fonts::load_cjk(),
+                None,
             ],
+            cjk: OnceCell::new(),
             math_engine: OnceCell::new(),
             images: images::ImageStore::default(),
             navigation: RefCell::new(links::Navigation::default()),
@@ -581,7 +587,8 @@ impl Poster {
         };
         for fallback in fallbacks {
             if slot != fallback
-                && let Some(font) = &self.faces[fallback]
+                && (fallback != SLOT_CJK || fonts::cjk_face_may_map(ch))
+                && let Some(font) = self.face(fallback)
             {
                 let gid = font.glyph_index(ch);
                 if gid != 0 {
@@ -592,9 +599,17 @@ impl Poster {
         (slot, 0)
     }
 
+    /// The face in `slot`. The bundled CJK fallback is parsed once on first
+    /// use and borrowed (`&'static`), never copied per poster.
+    fn face(&self, slot: usize) -> Option<&Font> {
+        if slot == SLOT_CJK {
+            return *self.cjk.get_or_init(fonts::cjk_face);
+        }
+        self.faces[slot].as_ref()
+    }
+
     fn advance(&self, slot: usize, ch: char, size: f64) -> f64 {
-        self.faces[slot]
-            .as_ref()
+        self.face(slot)
             .map_or(0.0, |font| f64::from(font.advance_1000(ch)) * size / 1000.0)
     }
 

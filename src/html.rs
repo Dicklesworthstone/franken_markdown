@@ -2525,16 +2525,22 @@ fn embedded_font_css(
     // Use one shared fallback for CJK text in every semantic style. Its cmap
     // contains only this document's covered characters in compact snapshots,
     // and its family stays after the user's primary faces in the CSS stack.
+    // The static range gate decides first, so documents without CJK text never
+    // parse the ~9.9 MB face.
     let mut has_cjk = false;
-    if let Some(Ok((font, _))) = fonts::cjk_font() {
+    let used_sets = [
+        &usage.body_regular,
+        &usage.body_bold,
+        &usage.body_italic,
+        &usage.body_bold_italic,
+        &usage.mono,
+    ];
+    let wants_cjk = used_sets
+        .iter()
+        .any(|used| used.non_ascii.iter().any(|&ch| fonts::cjk_face_may_map(ch)));
+    if wants_cjk && let Some(Ok((font, _))) = fonts::cjk_font() {
         let mut chars = FontCharSet::default();
-        for used in [
-            &usage.body_regular,
-            &usage.body_bold,
-            &usage.body_italic,
-            &usage.body_bold_italic,
-            &usage.mono,
-        ] {
+        for used in used_sets {
             for &ch in &used.non_ascii {
                 if font.glyph_index(ch) != 0 {
                     chars.insert(ch);

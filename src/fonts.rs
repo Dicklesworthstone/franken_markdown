@@ -498,4 +498,30 @@ mod tests {
         assert_eq!(tables.lig.is_empty(), loaded.gsub_ligatures().is_empty());
         Ok(())
     }
+
+    #[test]
+    fn cached_symbol_font_shares_bundled_backing() -> Result<(), FontError> {
+        let cached = super::symbol_font()?;
+        let loaded = super::load_symbol()?;
+        let bytes = super::symbol_bytes();
+        assert_eq!(cached.as_sfnt().as_ptr(), bytes.as_ptr());
+        assert_eq!(loaded.as_sfnt().as_ptr(), bytes.as_ptr());
+        Ok(())
+    }
+
+    #[cfg(feature = "emoji-face")]
+    #[test]
+    fn cached_emoji_font_shares_bundled_backing() -> Result<(), FontError> {
+        let cached = super::emoji_font();
+        let loaded = super::load_emoji();
+        let bytes = super::emoji_bytes();
+        assert!(cached.is_some() && loaded.is_some() && bytes.is_some());
+        let (Some(cached), Some(loaded), Some(bytes)) = (cached, loaded, bytes) else {
+            return Ok(());
+        };
+        let (cached, _) = cached?;
+        assert_eq!(cached.as_sfnt().as_ptr(), bytes.as_ptr());
+        assert_eq!(loaded.as_sfnt().as_ptr(), bytes.as_ptr());
+        Ok(())
+    }
 }

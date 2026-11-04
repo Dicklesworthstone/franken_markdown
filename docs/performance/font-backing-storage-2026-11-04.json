@@ -1,0 +1,1403 @@
+{
+  "comparison": "Complete-font byte occurrences in unoptimized native CLI and lib-test executables, before and after canonical static backing. This is embedded executable storage evidence, not release-build, iOS-binary, RSS, peak-memory, or throughput evidence.",
+  "baseline_commit": "45c7bed2c510dafa5021768a4df373ea1f4692d8",
+  "profile": {
+    "optimization": 0,
+    "debug_info": 0,
+    "incremental": false,
+    "rustflags": "-Zthreads=1",
+    "features": "default"
+  },
+  "before": {
+    "fmd": {
+      "executable": "/workspace/scratch/25a23f3d2fb3/core-target/debug/fmd",
+      "file_bytes": 49271704,
+      "sha256": "9118f82f1b06ab9a0d1a73ee5d7391e56727c74fc99438cbdfde42a0eeff6676",
+      "assets": [
+        {
+          "name": "CM_REGULAR",
+          "path": "fmd-font/fonts/computer-modern/cmunrm.ttf",
+          "asset_bytes": 235656,
+          "sha256": "3deb3c529a46d391eaad2e2b896824013d4e1922419c91ab6cb75c40db97c3f2",
+          "copies": 5
+        },
+        {
+          "name": "CM_BOLD",
+          "path": "fmd-font/fonts/computer-modern/cmunbx.ttf",
+          "asset_bytes": 221904,
+          "sha256": "643afcc8fc9a526cd060f37459f050f03156f0a593779d87b8ad21f937757a31",
+          "copies": 5
+        },
+        {
+          "name": "CM_ITALIC",
+          "path": "fmd-font/fonts/computer-modern/cmunti.ttf",
+          "asset_bytes": 289276,
+          "sha256": "acd86b2806441b277361e1dfe2d64c26038ba727c6e69fbdfff6ddb8f6446478",
+          "copies": 5
+        },
+        {
+          "name": "CM_BOLD_ITALIC",
+          "path": "fmd-font/fonts/computer-modern/cmunbi.ttf",
+          "asset_bytes": 285096,
+          "sha256": "570dbbba9377d7d2fbdf544ae0dfd751614d90446a6229e7cf4b6a4cf97349ab",
+          "copies": 5
+        },
+        {
+          "name": "CM_TYPEWRITER",
+          "path": "fmd-font/fonts/computer-modern/cmuntt.ttf",
+          "asset_bytes": 214528,
+          "sha256": "75b653ab15c2a678a303a1293db1692cbe6c3dfdd5d90f5fce97690aa9991948",
+          "copies": 5
+        },
+        {
+          "name": "PLEX_REGULAR",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+          "asset_bytes": 200500,
+          "sha256": "975dcda37d80f038dcd143c22e33ca2d97a0cc5a929aace1c749153b0fe1afa5",
+          "copies": 5
+        },
+        {
+          "name": "PLEX_BOLD",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf",
+          "asset_bytes": 200872,
+          "sha256": "9e6c74a889a700d707613d24548fe4ffa6bc59559a0689d2cf9e133bdcdafb2f",
+          "copies": 4
+        },
+        {
+          "name": "PLEX_ITALIC",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf",
+          "asset_bytes": 207920,
+          "sha256": "a9c6ef9942c49e49d11e11a6dacc0b3a087978757e9b22a06b8ac22a6400fb15",
+          "copies": 4
+        },
+        {
+          "name": "PLEX_BOLD_ITALIC",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-BoldItalic.ttf",
+          "asset_bytes": 208588,
+          "sha256": "0e3142ba2ef31fe5c02f0c6c36424f251609cd6b73880076e21c2e81931ba2b9",
+          "copies": 4
+        },
+        {
+          "name": "NOTO_SANS_MATH_SYMBOLS",
+          "path": "fmd-font/fonts/noto-sans-math/NotoSansMathSymbols.ttf",
+          "asset_bytes": 72908,
+          "sha256": "634b9964bd8af7e88520e82efe0967cf8cc280720e04158e05246144571b9e4d",
+          "copies": 4
+        },
+        {
+          "name": "CM_MATH_ITALIC_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic10.ttf",
+          "asset_bytes": 29980,
+          "sha256": "1d14b3d8e91482ac12af4a9ed2970fd07e866b9629a654d5be0db4b1ffbf21cc",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic7.ttf",
+          "asset_bytes": 30492,
+          "sha256": "cf055194e32127200ef1fe9a280f3f3f33c54de4e4a880a5b960ae401a98942b",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic5.ttf",
+          "asset_bytes": 31064,
+          "sha256": "2a569e38c613bfa13cdb8cb853e7986135b14aacd7b0b51f9c5ca6c7769f291d",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols10.ttf",
+          "asset_bytes": 27212,
+          "sha256": "9d787e3c402c15201b040fa6e9806ddc96ad385163057ab3e19bdab899a061fa",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols7.ttf",
+          "asset_bytes": 27212,
+          "sha256": "e4fbf7054c0eccd29c3c2d733dce3ff666986dce4efd91defe96ef77c171b8a8",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols5.ttf",
+          "asset_bytes": 27392,
+          "sha256": "4b4b73fc0fc817461b478e09dd51d93224a260b07e49b2d22acd9e73eaf4777b",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_EXTENSION_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension10.ttf",
+          "asset_bytes": 17444,
+          "sha256": "5ee9fc49f0e69186626e8b1f7b5a87c6bea0a3afd19679492788b3364c0ac6b6",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman10.ttf",
+          "asset_bytes": 23036,
+          "sha256": "eb80e837b472e30d108066416d976a828d9ea2bec51fa4b3462ec5b40f29ce51",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman7.ttf",
+          "asset_bytes": 23040,
+          "sha256": "181834b6bb73bada8445e7d451259be6d77da3fc6cceb6afee4ad783a209fd8f",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman5.ttf",
+          "asset_bytes": 22148,
+          "sha256": "bb9312999f9ef570cc79ce599beba77281259214d224caf54d2d48a0b0a139bb",
+          "copies": 2
+        },
+        {
+          "name": "AMS_A_10",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols10.ttf",
+          "asset_bytes": 24096,
+          "sha256": "b610012b62528ce386a6cdea5d78298733290afdd249d1af1f3b2d10bfd974ae",
+          "copies": 2
+        },
+        {
+          "name": "AMS_A_7",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols7.ttf",
+          "asset_bytes": 25756,
+          "sha256": "f40d04b0d399f48e07960374ca4e1e0e147d3e8bbb637f64041ccf1fe6facc91",
+          "copies": 2
+        },
+        {
+          "name": "AMS_A_5",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols5.ttf",
+          "asset_bytes": 26240,
+          "sha256": "0d4d7c2e8c072557616be7d0a7068508c3fe8f4129c115e6ca6712920c3f41f8",
+          "copies": 2
+        },
+        {
+          "name": "AMS_B_10",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols10.ttf",
+          "asset_bytes": 33992,
+          "sha256": "ec44a7e4d79b4f72dbaaf2acc6390f6e5caf521ec0f9fec936287aab8e11e9ec",
+          "copies": 2
+        },
+        {
+          "name": "AMS_B_7",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols7.ttf",
+          "asset_bytes": 33960,
+          "sha256": "10911cfc25d1313a78dd5653b290bc33b007319a66738561bd9b301ca8149681",
+          "copies": 2
+        },
+        {
+          "name": "AMS_B_5",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols5.ttf",
+          "asset_bytes": 34056,
+          "sha256": "9531e289856ba296fce6a419808167f53f570abf7db83356c4f0165080123d16",
+          "copies": 2
+        },
+        {
+          "name": "EULER_FRAKTUR_10",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur10.ttf",
+          "asset_bytes": 19480,
+          "sha256": "eb89942b4128ecacfd47d0577a9604ace32da94b6abdddc07eb706b67556c859",
+          "copies": 2
+        },
+        {
+          "name": "EULER_FRAKTUR_7",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur7.ttf",
+          "asset_bytes": 19604,
+          "sha256": "87864c1a73275448d8e5828081896c1a6622c08d354312f3178b38b09a2e3fb4",
+          "copies": 2
+        },
+        {
+          "name": "EULER_FRAKTUR_5",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur5.ttf",
+          "asset_bytes": 19820,
+          "sha256": "45bc3569bbbce3d8113f14da9af0906b8db4403d0418ea75a896c517cba206bd",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic6.ttf",
+          "asset_bytes": 30848,
+          "sha256": "1721e810db64bc41429fe27f1c7a594261533fdd6dff54bdbb2501291fa75602",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic8.ttf",
+          "asset_bytes": 29904,
+          "sha256": "8f9a84dd107294b48742d20bdd2869d64f0c8e50d8d313e94a791e76a5dbf840",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic9.ttf",
+          "asset_bytes": 30532,
+          "sha256": "38de9f95c5d985831d257afe9bade20be36f6397f7d71f4e1693e3df7f4ad435",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_12",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic12.ttf",
+          "asset_bytes": 29608,
+          "sha256": "a6a1e7d51055549ae569d17d959ab8841ed3f830925b0781883f60246ba60d55",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols6.ttf",
+          "asset_bytes": 27260,
+          "sha256": "7f086a64696850b0fa598900f4defbac4338716399e76c8b49b6da063e243649",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols8.ttf",
+          "asset_bytes": 27276,
+          "sha256": "0de630dc4846f94ec207791d078cdb54673ff968cb8f3848b80d668e30a60105",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols9.ttf",
+          "asset_bytes": 27068,
+          "sha256": "1b7dbad1019d811e65c7b9ca4b51e6487e635e7ab6544d6f8f3114283933eabd",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman6.ttf",
+          "asset_bytes": 23340,
+          "sha256": "3e80fe4e0eae39508e363b49c20d4b9ce331bb30b066073b684ff57ce113a784",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman8.ttf",
+          "asset_bytes": 23084,
+          "sha256": "dc5979e115427ae789736eda92a520d8bf39bcc4cbcdf5aa73b30bb101ca22e6",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman9.ttf",
+          "asset_bytes": 22968,
+          "sha256": "2a534ebbb4399ee0e2eb444d00510272ae8dbc02c595c2b1035278094700f717",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_12",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman12.ttf",
+          "asset_bytes": 23012,
+          "sha256": "42babd03b7275e32a17e0b2b9ff506fbff4c1848a5fdddf13aab57227cb7c6d2",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_17",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman17.ttf",
+          "asset_bytes": 22552,
+          "sha256": "5f3780d8b2009cbc500fd88300db533280b57e0c56576635be76b0714910a303",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_EXTENSION_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension7.ttf",
+          "asset_bytes": 17644,
+          "sha256": "40cfb08dfe2ed7a5619c4b6d29ece3626f342450217eb5821d877a0f6823760c",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_EXTENSION_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension8.ttf",
+          "asset_bytes": 17508,
+          "sha256": "b086912896653f9268c893494ba8038ed87fc1095ecdf71a052839987febf757",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_EXTENSION_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension9.ttf",
+          "asset_bytes": 17544,
+          "sha256": "41f53ddb1ba4e8cfcb15efdc3a34f5d66b1ea0657eadd9c2795383cdff4cf5cf",
+          "copies": 2
+        },
+        {
+          "name": "NOTO_EMOJI_CURATED",
+          "path": "fmd-font/fonts/noto-emoji/NotoEmojiCurated.ttf",
+          "asset_bytes": 234392,
+          "sha256": "133564b3351704760d1794612a6529bea519eadfd12d7162ba50259f22626e4f",
+          "copies": 1
+        }
+      ],
+      "redundant_font_bytes": 8724876
+    },
+    "root_lib_tests": {
+      "executable": "/workspace/scratch/25a23f3d2fb3/core-target/debug/build/franken_markdown/99ebae9dc4a8af85/out/franken_markdown-99ebae9dc4a8af85",
+      "file_bytes": 69543032,
+      "sha256": "1fce0161eaf2cefc7043c7392bbd8f4c0ed97e3d47c6ed1bb3f60094190d1129",
+      "assets": [
+        {
+          "name": "CM_REGULAR",
+          "path": "fmd-font/fonts/computer-modern/cmunrm.ttf",
+          "asset_bytes": 235656,
+          "sha256": "3deb3c529a46d391eaad2e2b896824013d4e1922419c91ab6cb75c40db97c3f2",
+          "copies": 7
+        },
+        {
+          "name": "CM_BOLD",
+          "path": "fmd-font/fonts/computer-modern/cmunbx.ttf",
+          "asset_bytes": 221904,
+          "sha256": "643afcc8fc9a526cd060f37459f050f03156f0a593779d87b8ad21f937757a31",
+          "copies": 5
+        },
+        {
+          "name": "CM_ITALIC",
+          "path": "fmd-font/fonts/computer-modern/cmunti.ttf",
+          "asset_bytes": 289276,
+          "sha256": "acd86b2806441b277361e1dfe2d64c26038ba727c6e69fbdfff6ddb8f6446478",
+          "copies": 5
+        },
+        {
+          "name": "CM_BOLD_ITALIC",
+          "path": "fmd-font/fonts/computer-modern/cmunbi.ttf",
+          "asset_bytes": 285096,
+          "sha256": "570dbbba9377d7d2fbdf544ae0dfd751614d90446a6229e7cf4b6a4cf97349ab",
+          "copies": 5
+        },
+        {
+          "name": "CM_TYPEWRITER",
+          "path": "fmd-font/fonts/computer-modern/cmuntt.ttf",
+          "asset_bytes": 214528,
+          "sha256": "75b653ab15c2a678a303a1293db1692cbe6c3dfdd5d90f5fce97690aa9991948",
+          "copies": 5
+        },
+        {
+          "name": "PLEX_REGULAR",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+          "asset_bytes": 200500,
+          "sha256": "975dcda37d80f038dcd143c22e33ca2d97a0cc5a929aace1c749153b0fe1afa5",
+          "copies": 6
+        },
+        {
+          "name": "PLEX_BOLD",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf",
+          "asset_bytes": 200872,
+          "sha256": "9e6c74a889a700d707613d24548fe4ffa6bc59559a0689d2cf9e133bdcdafb2f",
+          "copies": 5
+        },
+        {
+          "name": "PLEX_ITALIC",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf",
+          "asset_bytes": 207920,
+          "sha256": "a9c6ef9942c49e49d11e11a6dacc0b3a087978757e9b22a06b8ac22a6400fb15",
+          "copies": 4
+        },
+        {
+          "name": "PLEX_BOLD_ITALIC",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-BoldItalic.ttf",
+          "asset_bytes": 208588,
+          "sha256": "0e3142ba2ef31fe5c02f0c6c36424f251609cd6b73880076e21c2e81931ba2b9",
+          "copies": 4
+        },
+        {
+          "name": "NOTO_SANS_MATH_SYMBOLS",
+          "path": "fmd-font/fonts/noto-sans-math/NotoSansMathSymbols.ttf",
+          "asset_bytes": 72908,
+          "sha256": "634b9964bd8af7e88520e82efe0967cf8cc280720e04158e05246144571b9e4d",
+          "copies": 5
+        },
+        {
+          "name": "CM_MATH_ITALIC_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic10.ttf",
+          "asset_bytes": 29980,
+          "sha256": "1d14b3d8e91482ac12af4a9ed2970fd07e866b9629a654d5be0db4b1ffbf21cc",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic7.ttf",
+          "asset_bytes": 30492,
+          "sha256": "cf055194e32127200ef1fe9a280f3f3f33c54de4e4a880a5b960ae401a98942b",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic5.ttf",
+          "asset_bytes": 31064,
+          "sha256": "2a569e38c613bfa13cdb8cb853e7986135b14aacd7b0b51f9c5ca6c7769f291d",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols10.ttf",
+          "asset_bytes": 27212,
+          "sha256": "9d787e3c402c15201b040fa6e9806ddc96ad385163057ab3e19bdab899a061fa",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols7.ttf",
+          "asset_bytes": 27212,
+          "sha256": "e4fbf7054c0eccd29c3c2d733dce3ff666986dce4efd91defe96ef77c171b8a8",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols5.ttf",
+          "asset_bytes": 27392,
+          "sha256": "4b4b73fc0fc817461b478e09dd51d93224a260b07e49b2d22acd9e73eaf4777b",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_EXTENSION_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension10.ttf",
+          "asset_bytes": 17444,
+          "sha256": "5ee9fc49f0e69186626e8b1f7b5a87c6bea0a3afd19679492788b3364c0ac6b6",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman10.ttf",
+          "asset_bytes": 23036,
+          "sha256": "eb80e837b472e30d108066416d976a828d9ea2bec51fa4b3462ec5b40f29ce51",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman7.ttf",
+          "asset_bytes": 23040,
+          "sha256": "181834b6bb73bada8445e7d451259be6d77da3fc6cceb6afee4ad783a209fd8f",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman5.ttf",
+          "asset_bytes": 22148,
+          "sha256": "bb9312999f9ef570cc79ce599beba77281259214d224caf54d2d48a0b0a139bb",
+          "copies": 2
+        },
+        {
+          "name": "AMS_A_10",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols10.ttf",
+          "asset_bytes": 24096,
+          "sha256": "b610012b62528ce386a6cdea5d78298733290afdd249d1af1f3b2d10bfd974ae",
+          "copies": 2
+        },
+        {
+          "name": "AMS_A_7",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols7.ttf",
+          "asset_bytes": 25756,
+          "sha256": "f40d04b0d399f48e07960374ca4e1e0e147d3e8bbb637f64041ccf1fe6facc91",
+          "copies": 2
+        },
+        {
+          "name": "AMS_A_5",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols5.ttf",
+          "asset_bytes": 26240,
+          "sha256": "0d4d7c2e8c072557616be7d0a7068508c3fe8f4129c115e6ca6712920c3f41f8",
+          "copies": 2
+        },
+        {
+          "name": "AMS_B_10",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols10.ttf",
+          "asset_bytes": 33992,
+          "sha256": "ec44a7e4d79b4f72dbaaf2acc6390f6e5caf521ec0f9fec936287aab8e11e9ec",
+          "copies": 2
+        },
+        {
+          "name": "AMS_B_7",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols7.ttf",
+          "asset_bytes": 33960,
+          "sha256": "10911cfc25d1313a78dd5653b290bc33b007319a66738561bd9b301ca8149681",
+          "copies": 2
+        },
+        {
+          "name": "AMS_B_5",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols5.ttf",
+          "asset_bytes": 34056,
+          "sha256": "9531e289856ba296fce6a419808167f53f570abf7db83356c4f0165080123d16",
+          "copies": 2
+        },
+        {
+          "name": "EULER_FRAKTUR_10",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur10.ttf",
+          "asset_bytes": 19480,
+          "sha256": "eb89942b4128ecacfd47d0577a9604ace32da94b6abdddc07eb706b67556c859",
+          "copies": 2
+        },
+        {
+          "name": "EULER_FRAKTUR_7",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur7.ttf",
+          "asset_bytes": 19604,
+          "sha256": "87864c1a73275448d8e5828081896c1a6622c08d354312f3178b38b09a2e3fb4",
+          "copies": 2
+        },
+        {
+          "name": "EULER_FRAKTUR_5",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur5.ttf",
+          "asset_bytes": 19820,
+          "sha256": "45bc3569bbbce3d8113f14da9af0906b8db4403d0418ea75a896c517cba206bd",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic6.ttf",
+          "asset_bytes": 30848,
+          "sha256": "1721e810db64bc41429fe27f1c7a594261533fdd6dff54bdbb2501291fa75602",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic8.ttf",
+          "asset_bytes": 29904,
+          "sha256": "8f9a84dd107294b48742d20bdd2869d64f0c8e50d8d313e94a791e76a5dbf840",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic9.ttf",
+          "asset_bytes": 30532,
+          "sha256": "38de9f95c5d985831d257afe9bade20be36f6397f7d71f4e1693e3df7f4ad435",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_ITALIC_12",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic12.ttf",
+          "asset_bytes": 29608,
+          "sha256": "a6a1e7d51055549ae569d17d959ab8841ed3f830925b0781883f60246ba60d55",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols6.ttf",
+          "asset_bytes": 27260,
+          "sha256": "7f086a64696850b0fa598900f4defbac4338716399e76c8b49b6da063e243649",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols8.ttf",
+          "asset_bytes": 27276,
+          "sha256": "0de630dc4846f94ec207791d078cdb54673ff968cb8f3848b80d668e30a60105",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols9.ttf",
+          "asset_bytes": 27068,
+          "sha256": "1b7dbad1019d811e65c7b9ca4b51e6487e635e7ab6544d6f8f3114283933eabd",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman6.ttf",
+          "asset_bytes": 23340,
+          "sha256": "3e80fe4e0eae39508e363b49c20d4b9ce331bb30b066073b684ff57ce113a784",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman8.ttf",
+          "asset_bytes": 23084,
+          "sha256": "dc5979e115427ae789736eda92a520d8bf39bcc4cbcdf5aa73b30bb101ca22e6",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman9.ttf",
+          "asset_bytes": 22968,
+          "sha256": "2a534ebbb4399ee0e2eb444d00510272ae8dbc02c595c2b1035278094700f717",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_12",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman12.ttf",
+          "asset_bytes": 23012,
+          "sha256": "42babd03b7275e32a17e0b2b9ff506fbff4c1848a5fdddf13aab57227cb7c6d2",
+          "copies": 2
+        },
+        {
+          "name": "CM_ROMAN_17",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman17.ttf",
+          "asset_bytes": 22552,
+          "sha256": "5f3780d8b2009cbc500fd88300db533280b57e0c56576635be76b0714910a303",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_EXTENSION_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension7.ttf",
+          "asset_bytes": 17644,
+          "sha256": "40cfb08dfe2ed7a5619c4b6d29ece3626f342450217eb5821d877a0f6823760c",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_EXTENSION_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension8.ttf",
+          "asset_bytes": 17508,
+          "sha256": "b086912896653f9268c893494ba8038ed87fc1095ecdf71a052839987febf757",
+          "copies": 2
+        },
+        {
+          "name": "CM_MATH_EXTENSION_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension9.ttf",
+          "asset_bytes": 17544,
+          "sha256": "41f53ddb1ba4e8cfcb15efdc3a34f5d66b1ea0657eadd9c2795383cdff4cf5cf",
+          "copies": 2
+        },
+        {
+          "name": "NOTO_EMOJI_CURATED",
+          "path": "fmd-font/fonts/noto-emoji/NotoEmojiCurated.ttf",
+          "asset_bytes": 234392,
+          "sha256": "133564b3351704760d1794612a6529bea519eadfd12d7162ba50259f22626e4f",
+          "copies": 2
+        }
+      ],
+      "redundant_font_bytes": 9904860
+    }
+  },
+  "rustc": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+  "before_source_sha256": {
+    "fmd-font/src/bundled.rs": "6fef89a837c2d4eed1558817e564ec36ee2b310eb05e5a0c000835576126e485",
+    "src/fonts.rs": "6781e2b0cd05229d8bd1748dbe4d21a2cf8b96c1208b05295d91e00083118cdc"
+  },
+  "failure_evidence": [
+    {
+      "test": "fonts::tests::cached_body_fonts_match_loaded_fonts",
+      "asset": "PLEX_REGULAR",
+      "cached_pointer": "0x563ef2b68a9c",
+      "bytes_pointer": "0x563ef26a1cdd",
+      "matching_file_offsets": [
+        "0x9c8a9c",
+        "0x501cdd"
+      ],
+      "common_load_bias": "0x563ef21a0000"
+    },
+    {
+      "test": "fonts::tests::cached_mono_font_matches_loaded_font",
+      "asset": "CM_TYPEWRITER",
+      "cached_pointer": "0x563ef2d2c470",
+      "bytes_pointer": "0x563ef266d6d1",
+      "matching_file_offsets": [
+        "0xb8c470",
+        "0x4cd6d1"
+      ],
+      "common_load_bias": "0x563ef21a0000"
+    }
+  ],
+  "isolated_incumbent_result": "Both original pointer assertions also failed when run alone with --test-threads=1 against the same compiled lib-test executable; 0 passed, 2 failed. No fixture or assertion changed.",
+  "after": {
+    "root_lib_tests": {
+      "executable": "/workspace/scratch/25a23f3d2fb3/core-target/debug/build/franken_markdown/99ebae9dc4a8af85/out/franken_markdown-99ebae9dc4a8af85",
+      "file_bytes": 60049576,
+      "sha256": "0a8eeb334263c00a097aa45e664291ddda7b69a6749a8f03b6612fdc8c441195",
+      "assets": [
+        {
+          "name": "CM_REGULAR",
+          "path": "fmd-font/fonts/computer-modern/cmunrm.ttf",
+          "asset_bytes": 235656,
+          "sha256": "3deb3c529a46d391eaad2e2b896824013d4e1922419c91ab6cb75c40db97c3f2",
+          "copies": 1
+        },
+        {
+          "name": "CM_BOLD",
+          "path": "fmd-font/fonts/computer-modern/cmunbx.ttf",
+          "asset_bytes": 221904,
+          "sha256": "643afcc8fc9a526cd060f37459f050f03156f0a593779d87b8ad21f937757a31",
+          "copies": 1
+        },
+        {
+          "name": "CM_ITALIC",
+          "path": "fmd-font/fonts/computer-modern/cmunti.ttf",
+          "asset_bytes": 289276,
+          "sha256": "acd86b2806441b277361e1dfe2d64c26038ba727c6e69fbdfff6ddb8f6446478",
+          "copies": 1
+        },
+        {
+          "name": "CM_BOLD_ITALIC",
+          "path": "fmd-font/fonts/computer-modern/cmunbi.ttf",
+          "asset_bytes": 285096,
+          "sha256": "570dbbba9377d7d2fbdf544ae0dfd751614d90446a6229e7cf4b6a4cf97349ab",
+          "copies": 1
+        },
+        {
+          "name": "CM_TYPEWRITER",
+          "path": "fmd-font/fonts/computer-modern/cmuntt.ttf",
+          "asset_bytes": 214528,
+          "sha256": "75b653ab15c2a678a303a1293db1692cbe6c3dfdd5d90f5fce97690aa9991948",
+          "copies": 1
+        },
+        {
+          "name": "PLEX_REGULAR",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+          "asset_bytes": 200500,
+          "sha256": "975dcda37d80f038dcd143c22e33ca2d97a0cc5a929aace1c749153b0fe1afa5",
+          "copies": 3
+        },
+        {
+          "name": "PLEX_BOLD",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf",
+          "asset_bytes": 200872,
+          "sha256": "9e6c74a889a700d707613d24548fe4ffa6bc59559a0689d2cf9e133bdcdafb2f",
+          "copies": 1
+        },
+        {
+          "name": "PLEX_ITALIC",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf",
+          "asset_bytes": 207920,
+          "sha256": "a9c6ef9942c49e49d11e11a6dacc0b3a087978757e9b22a06b8ac22a6400fb15",
+          "copies": 1
+        },
+        {
+          "name": "PLEX_BOLD_ITALIC",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-BoldItalic.ttf",
+          "asset_bytes": 208588,
+          "sha256": "0e3142ba2ef31fe5c02f0c6c36424f251609cd6b73880076e21c2e81931ba2b9",
+          "copies": 1
+        },
+        {
+          "name": "NOTO_SANS_MATH_SYMBOLS",
+          "path": "fmd-font/fonts/noto-sans-math/NotoSansMathSymbols.ttf",
+          "asset_bytes": 72908,
+          "sha256": "634b9964bd8af7e88520e82efe0967cf8cc280720e04158e05246144571b9e4d",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic10.ttf",
+          "asset_bytes": 29980,
+          "sha256": "1d14b3d8e91482ac12af4a9ed2970fd07e866b9629a654d5be0db4b1ffbf21cc",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic7.ttf",
+          "asset_bytes": 30492,
+          "sha256": "cf055194e32127200ef1fe9a280f3f3f33c54de4e4a880a5b960ae401a98942b",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic5.ttf",
+          "asset_bytes": 31064,
+          "sha256": "2a569e38c613bfa13cdb8cb853e7986135b14aacd7b0b51f9c5ca6c7769f291d",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols10.ttf",
+          "asset_bytes": 27212,
+          "sha256": "9d787e3c402c15201b040fa6e9806ddc96ad385163057ab3e19bdab899a061fa",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols7.ttf",
+          "asset_bytes": 27212,
+          "sha256": "e4fbf7054c0eccd29c3c2d733dce3ff666986dce4efd91defe96ef77c171b8a8",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols5.ttf",
+          "asset_bytes": 27392,
+          "sha256": "4b4b73fc0fc817461b478e09dd51d93224a260b07e49b2d22acd9e73eaf4777b",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_EXTENSION_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension10.ttf",
+          "asset_bytes": 17444,
+          "sha256": "5ee9fc49f0e69186626e8b1f7b5a87c6bea0a3afd19679492788b3364c0ac6b6",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman10.ttf",
+          "asset_bytes": 23036,
+          "sha256": "eb80e837b472e30d108066416d976a828d9ea2bec51fa4b3462ec5b40f29ce51",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman7.ttf",
+          "asset_bytes": 23040,
+          "sha256": "181834b6bb73bada8445e7d451259be6d77da3fc6cceb6afee4ad783a209fd8f",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman5.ttf",
+          "asset_bytes": 22148,
+          "sha256": "bb9312999f9ef570cc79ce599beba77281259214d224caf54d2d48a0b0a139bb",
+          "copies": 1
+        },
+        {
+          "name": "AMS_A_10",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols10.ttf",
+          "asset_bytes": 24096,
+          "sha256": "b610012b62528ce386a6cdea5d78298733290afdd249d1af1f3b2d10bfd974ae",
+          "copies": 1
+        },
+        {
+          "name": "AMS_A_7",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols7.ttf",
+          "asset_bytes": 25756,
+          "sha256": "f40d04b0d399f48e07960374ca4e1e0e147d3e8bbb637f64041ccf1fe6facc91",
+          "copies": 1
+        },
+        {
+          "name": "AMS_A_5",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols5.ttf",
+          "asset_bytes": 26240,
+          "sha256": "0d4d7c2e8c072557616be7d0a7068508c3fe8f4129c115e6ca6712920c3f41f8",
+          "copies": 1
+        },
+        {
+          "name": "AMS_B_10",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols10.ttf",
+          "asset_bytes": 33992,
+          "sha256": "ec44a7e4d79b4f72dbaaf2acc6390f6e5caf521ec0f9fec936287aab8e11e9ec",
+          "copies": 1
+        },
+        {
+          "name": "AMS_B_7",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols7.ttf",
+          "asset_bytes": 33960,
+          "sha256": "10911cfc25d1313a78dd5653b290bc33b007319a66738561bd9b301ca8149681",
+          "copies": 1
+        },
+        {
+          "name": "AMS_B_5",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols5.ttf",
+          "asset_bytes": 34056,
+          "sha256": "9531e289856ba296fce6a419808167f53f570abf7db83356c4f0165080123d16",
+          "copies": 1
+        },
+        {
+          "name": "EULER_FRAKTUR_10",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur10.ttf",
+          "asset_bytes": 19480,
+          "sha256": "eb89942b4128ecacfd47d0577a9604ace32da94b6abdddc07eb706b67556c859",
+          "copies": 1
+        },
+        {
+          "name": "EULER_FRAKTUR_7",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur7.ttf",
+          "asset_bytes": 19604,
+          "sha256": "87864c1a73275448d8e5828081896c1a6622c08d354312f3178b38b09a2e3fb4",
+          "copies": 1
+        },
+        {
+          "name": "EULER_FRAKTUR_5",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur5.ttf",
+          "asset_bytes": 19820,
+          "sha256": "45bc3569bbbce3d8113f14da9af0906b8db4403d0418ea75a896c517cba206bd",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic6.ttf",
+          "asset_bytes": 30848,
+          "sha256": "1721e810db64bc41429fe27f1c7a594261533fdd6dff54bdbb2501291fa75602",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic8.ttf",
+          "asset_bytes": 29904,
+          "sha256": "8f9a84dd107294b48742d20bdd2869d64f0c8e50d8d313e94a791e76a5dbf840",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic9.ttf",
+          "asset_bytes": 30532,
+          "sha256": "38de9f95c5d985831d257afe9bade20be36f6397f7d71f4e1693e3df7f4ad435",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_12",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic12.ttf",
+          "asset_bytes": 29608,
+          "sha256": "a6a1e7d51055549ae569d17d959ab8841ed3f830925b0781883f60246ba60d55",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols6.ttf",
+          "asset_bytes": 27260,
+          "sha256": "7f086a64696850b0fa598900f4defbac4338716399e76c8b49b6da063e243649",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols8.ttf",
+          "asset_bytes": 27276,
+          "sha256": "0de630dc4846f94ec207791d078cdb54673ff968cb8f3848b80d668e30a60105",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols9.ttf",
+          "asset_bytes": 27068,
+          "sha256": "1b7dbad1019d811e65c7b9ca4b51e6487e635e7ab6544d6f8f3114283933eabd",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman6.ttf",
+          "asset_bytes": 23340,
+          "sha256": "3e80fe4e0eae39508e363b49c20d4b9ce331bb30b066073b684ff57ce113a784",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman8.ttf",
+          "asset_bytes": 23084,
+          "sha256": "dc5979e115427ae789736eda92a520d8bf39bcc4cbcdf5aa73b30bb101ca22e6",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman9.ttf",
+          "asset_bytes": 22968,
+          "sha256": "2a534ebbb4399ee0e2eb444d00510272ae8dbc02c595c2b1035278094700f717",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_12",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman12.ttf",
+          "asset_bytes": 23012,
+          "sha256": "42babd03b7275e32a17e0b2b9ff506fbff4c1848a5fdddf13aab57227cb7c6d2",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_17",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman17.ttf",
+          "asset_bytes": 22552,
+          "sha256": "5f3780d8b2009cbc500fd88300db533280b57e0c56576635be76b0714910a303",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_EXTENSION_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension7.ttf",
+          "asset_bytes": 17644,
+          "sha256": "40cfb08dfe2ed7a5619c4b6d29ece3626f342450217eb5821d877a0f6823760c",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_EXTENSION_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension8.ttf",
+          "asset_bytes": 17508,
+          "sha256": "b086912896653f9268c893494ba8038ed87fc1095ecdf71a052839987febf757",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_EXTENSION_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension9.ttf",
+          "asset_bytes": 17544,
+          "sha256": "41f53ddb1ba4e8cfcb15efdc3a34f5d66b1ea0657eadd9c2795383cdff4cf5cf",
+          "copies": 1
+        },
+        {
+          "name": "NOTO_EMOJI_CURATED",
+          "path": "fmd-font/fonts/noto-emoji/NotoEmojiCurated.ttf",
+          "asset_bytes": 234392,
+          "sha256": "133564b3351704760d1794612a6529bea519eadfd12d7162ba50259f22626e4f",
+          "copies": 1
+        }
+      ],
+      "redundant_font_bytes": 401000
+    },
+    "fmd": {
+      "executable": "/workspace/scratch/25a23f3d2fb3/core-target/debug/fmd",
+      "file_bytes": 40552208,
+      "sha256": "d563e588e3c7705cf9f46b52fee6ce01bb638fecb064f5ccbd447d40530b33f2",
+      "assets": [
+        {
+          "name": "CM_REGULAR",
+          "path": "fmd-font/fonts/computer-modern/cmunrm.ttf",
+          "asset_bytes": 235656,
+          "sha256": "3deb3c529a46d391eaad2e2b896824013d4e1922419c91ab6cb75c40db97c3f2",
+          "copies": 1
+        },
+        {
+          "name": "CM_BOLD",
+          "path": "fmd-font/fonts/computer-modern/cmunbx.ttf",
+          "asset_bytes": 221904,
+          "sha256": "643afcc8fc9a526cd060f37459f050f03156f0a593779d87b8ad21f937757a31",
+          "copies": 1
+        },
+        {
+          "name": "CM_ITALIC",
+          "path": "fmd-font/fonts/computer-modern/cmunti.ttf",
+          "asset_bytes": 289276,
+          "sha256": "acd86b2806441b277361e1dfe2d64c26038ba727c6e69fbdfff6ddb8f6446478",
+          "copies": 1
+        },
+        {
+          "name": "CM_BOLD_ITALIC",
+          "path": "fmd-font/fonts/computer-modern/cmunbi.ttf",
+          "asset_bytes": 285096,
+          "sha256": "570dbbba9377d7d2fbdf544ae0dfd751614d90446a6229e7cf4b6a4cf97349ab",
+          "copies": 1
+        },
+        {
+          "name": "CM_TYPEWRITER",
+          "path": "fmd-font/fonts/computer-modern/cmuntt.ttf",
+          "asset_bytes": 214528,
+          "sha256": "75b653ab15c2a678a303a1293db1692cbe6c3dfdd5d90f5fce97690aa9991948",
+          "copies": 1
+        },
+        {
+          "name": "PLEX_REGULAR",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+          "asset_bytes": 200500,
+          "sha256": "975dcda37d80f038dcd143c22e33ca2d97a0cc5a929aace1c749153b0fe1afa5",
+          "copies": 1
+        },
+        {
+          "name": "PLEX_BOLD",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf",
+          "asset_bytes": 200872,
+          "sha256": "9e6c74a889a700d707613d24548fe4ffa6bc59559a0689d2cf9e133bdcdafb2f",
+          "copies": 1
+        },
+        {
+          "name": "PLEX_ITALIC",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf",
+          "asset_bytes": 207920,
+          "sha256": "a9c6ef9942c49e49d11e11a6dacc0b3a087978757e9b22a06b8ac22a6400fb15",
+          "copies": 1
+        },
+        {
+          "name": "PLEX_BOLD_ITALIC",
+          "path": "fmd-font/fonts/ibm-plex-sans/IBMPlexSans-BoldItalic.ttf",
+          "asset_bytes": 208588,
+          "sha256": "0e3142ba2ef31fe5c02f0c6c36424f251609cd6b73880076e21c2e81931ba2b9",
+          "copies": 1
+        },
+        {
+          "name": "NOTO_SANS_MATH_SYMBOLS",
+          "path": "fmd-font/fonts/noto-sans-math/NotoSansMathSymbols.ttf",
+          "asset_bytes": 72908,
+          "sha256": "634b9964bd8af7e88520e82efe0967cf8cc280720e04158e05246144571b9e4d",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic10.ttf",
+          "asset_bytes": 29980,
+          "sha256": "1d14b3d8e91482ac12af4a9ed2970fd07e866b9629a654d5be0db4b1ffbf21cc",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic7.ttf",
+          "asset_bytes": 30492,
+          "sha256": "cf055194e32127200ef1fe9a280f3f3f33c54de4e4a880a5b960ae401a98942b",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic5.ttf",
+          "asset_bytes": 31064,
+          "sha256": "2a569e38c613bfa13cdb8cb853e7986135b14aacd7b0b51f9c5ca6c7769f291d",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols10.ttf",
+          "asset_bytes": 27212,
+          "sha256": "9d787e3c402c15201b040fa6e9806ddc96ad385163057ab3e19bdab899a061fa",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols7.ttf",
+          "asset_bytes": 27212,
+          "sha256": "e4fbf7054c0eccd29c3c2d733dce3ff666986dce4efd91defe96ef77c171b8a8",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols5.ttf",
+          "asset_bytes": 27392,
+          "sha256": "4b4b73fc0fc817461b478e09dd51d93224a260b07e49b2d22acd9e73eaf4777b",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_EXTENSION_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension10.ttf",
+          "asset_bytes": 17444,
+          "sha256": "5ee9fc49f0e69186626e8b1f7b5a87c6bea0a3afd19679492788b3364c0ac6b6",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_10",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman10.ttf",
+          "asset_bytes": 23036,
+          "sha256": "eb80e837b472e30d108066416d976a828d9ea2bec51fa4b3462ec5b40f29ce51",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman7.ttf",
+          "asset_bytes": 23040,
+          "sha256": "181834b6bb73bada8445e7d451259be6d77da3fc6cceb6afee4ad783a209fd8f",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_5",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman5.ttf",
+          "asset_bytes": 22148,
+          "sha256": "bb9312999f9ef570cc79ce599beba77281259214d224caf54d2d48a0b0a139bb",
+          "copies": 1
+        },
+        {
+          "name": "AMS_A_10",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols10.ttf",
+          "asset_bytes": 24096,
+          "sha256": "b610012b62528ce386a6cdea5d78298733290afdd249d1af1f3b2d10bfd974ae",
+          "copies": 1
+        },
+        {
+          "name": "AMS_A_7",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols7.ttf",
+          "asset_bytes": 25756,
+          "sha256": "f40d04b0d399f48e07960374ca4e1e0e147d3e8bbb637f64041ccf1fe6facc91",
+          "copies": 1
+        },
+        {
+          "name": "AMS_A_5",
+          "path": "fmd-font/fonts/cm-math/FmdAmsASymbols5.ttf",
+          "asset_bytes": 26240,
+          "sha256": "0d4d7c2e8c072557616be7d0a7068508c3fe8f4129c115e6ca6712920c3f41f8",
+          "copies": 1
+        },
+        {
+          "name": "AMS_B_10",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols10.ttf",
+          "asset_bytes": 33992,
+          "sha256": "ec44a7e4d79b4f72dbaaf2acc6390f6e5caf521ec0f9fec936287aab8e11e9ec",
+          "copies": 1
+        },
+        {
+          "name": "AMS_B_7",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols7.ttf",
+          "asset_bytes": 33960,
+          "sha256": "10911cfc25d1313a78dd5653b290bc33b007319a66738561bd9b301ca8149681",
+          "copies": 1
+        },
+        {
+          "name": "AMS_B_5",
+          "path": "fmd-font/fonts/cm-math/FmdAmsBSymbols5.ttf",
+          "asset_bytes": 34056,
+          "sha256": "9531e289856ba296fce6a419808167f53f570abf7db83356c4f0165080123d16",
+          "copies": 1
+        },
+        {
+          "name": "EULER_FRAKTUR_10",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur10.ttf",
+          "asset_bytes": 19480,
+          "sha256": "eb89942b4128ecacfd47d0577a9604ace32da94b6abdddc07eb706b67556c859",
+          "copies": 1
+        },
+        {
+          "name": "EULER_FRAKTUR_7",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur7.ttf",
+          "asset_bytes": 19604,
+          "sha256": "87864c1a73275448d8e5828081896c1a6622c08d354312f3178b38b09a2e3fb4",
+          "copies": 1
+        },
+        {
+          "name": "EULER_FRAKTUR_5",
+          "path": "fmd-font/fonts/cm-math/FmdEulerFraktur5.ttf",
+          "asset_bytes": 19820,
+          "sha256": "45bc3569bbbce3d8113f14da9af0906b8db4403d0418ea75a896c517cba206bd",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic6.ttf",
+          "asset_bytes": 30848,
+          "sha256": "1721e810db64bc41429fe27f1c7a594261533fdd6dff54bdbb2501291fa75602",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic8.ttf",
+          "asset_bytes": 29904,
+          "sha256": "8f9a84dd107294b48742d20bdd2869d64f0c8e50d8d313e94a791e76a5dbf840",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic9.ttf",
+          "asset_bytes": 30532,
+          "sha256": "38de9f95c5d985831d257afe9bade20be36f6397f7d71f4e1693e3df7f4ad435",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_ITALIC_12",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathItalic12.ttf",
+          "asset_bytes": 29608,
+          "sha256": "a6a1e7d51055549ae569d17d959ab8841ed3f830925b0781883f60246ba60d55",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols6.ttf",
+          "asset_bytes": 27260,
+          "sha256": "7f086a64696850b0fa598900f4defbac4338716399e76c8b49b6da063e243649",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols8.ttf",
+          "asset_bytes": 27276,
+          "sha256": "0de630dc4846f94ec207791d078cdb54673ff968cb8f3848b80d668e30a60105",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_SYMBOLS_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathSymbols9.ttf",
+          "asset_bytes": 27068,
+          "sha256": "1b7dbad1019d811e65c7b9ca4b51e6487e635e7ab6544d6f8f3114283933eabd",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_6",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman6.ttf",
+          "asset_bytes": 23340,
+          "sha256": "3e80fe4e0eae39508e363b49c20d4b9ce331bb30b066073b684ff57ce113a784",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman8.ttf",
+          "asset_bytes": 23084,
+          "sha256": "dc5979e115427ae789736eda92a520d8bf39bcc4cbcdf5aa73b30bb101ca22e6",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman9.ttf",
+          "asset_bytes": 22968,
+          "sha256": "2a534ebbb4399ee0e2eb444d00510272ae8dbc02c595c2b1035278094700f717",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_12",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman12.ttf",
+          "asset_bytes": 23012,
+          "sha256": "42babd03b7275e32a17e0b2b9ff506fbff4c1848a5fdddf13aab57227cb7c6d2",
+          "copies": 1
+        },
+        {
+          "name": "CM_ROMAN_17",
+          "path": "fmd-font/fonts/cm-math/FmdCmRoman17.ttf",
+          "asset_bytes": 22552,
+          "sha256": "5f3780d8b2009cbc500fd88300db533280b57e0c56576635be76b0714910a303",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_EXTENSION_7",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension7.ttf",
+          "asset_bytes": 17644,
+          "sha256": "40cfb08dfe2ed7a5619c4b6d29ece3626f342450217eb5821d877a0f6823760c",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_EXTENSION_8",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension8.ttf",
+          "asset_bytes": 17508,
+          "sha256": "b086912896653f9268c893494ba8038ed87fc1095ecdf71a052839987febf757",
+          "copies": 1
+        },
+        {
+          "name": "CM_MATH_EXTENSION_9",
+          "path": "fmd-font/fonts/cm-math/FmdCmMathExtension9.ttf",
+          "asset_bytes": 17544,
+          "sha256": "41f53ddb1ba4e8cfcb15efdc3a34f5d66b1ea0657eadd9c2795383cdff4cf5cf",
+          "copies": 1
+        },
+        {
+          "name": "NOTO_EMOJI_CURATED",
+          "path": "fmd-font/fonts/noto-emoji/NotoEmojiCurated.ttf",
+          "asset_bytes": 234392,
+          "sha256": "133564b3351704760d1794612a6529bea519eadfd12d7162ba50259f22626e4f",
+          "copies": 1
+        }
+      ],
+      "redundant_font_bytes": 0
+    }
+  },
+  "after_source_sha256": {
+    "fmd-font/src/bundled.rs": "74feb477bfcb32f2b1d3fc862e63f6d93ee3d56345b96b7dbcd9085326ceb479",
+    "src/fonts.rs": "8a0b6d23baaaeb5320198441306768ced2cbeec45373b0fa91ec9d7432b6a324"
+  },
+  "reproduction": {
+    "scope": "Build the baseline commit and the candidate with the same pinned toolchain, features, and build environment. Absolute executable paths below identify the measured artifacts, not portable output locations.",
+    "environment": {
+      "CARGO_BUILD_JOBS": "1",
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "RUSTFLAGS": "-Zthreads=1"
+    },
+    "commands": [
+      "cargo build --offline -p franken_markdown --bin fmd",
+      "cargo test --offline -p franken_markdown --lib fonts::tests -- --test-threads=1"
+    ],
+    "artifact_selection": "Use target/debug/fmd (or the corresponding CARGO_TARGET_DIR) and the root lib-test executable printed by cargo test. The original cached-body/mono pointer tests fail in the baseline, but its built executable can still be scanned.",
+    "counting_method": "For each of the 45 asset paths listed in before.fmd.assets, read the complete TTF file and count non-overlapping exact occurrences in each executable with Python bytes.count. Verify its SHA-256 is unchanged, and sum max(copies - 1, 0) * asset_bytes. Record whole-executable file size and SHA-256 separately.",
+    "interpretation": "Compiler/linker settings and build layout can affect baseline constant-promotion counts; the recorded numbers describe these exact artifacts."
+  },
+  "remaining_test_fixture_copies": {
+    "asset": "PLEX_REGULAR",
+    "extra_copies": 2,
+    "extra_bytes": 401000,
+    "locations": [
+      "src/woff2.rs::tests include_bytes! fixture",
+      "src/brotli.rs::tests include_bytes! fixtures"
+    ],
+    "note": "These explicit test-only fixtures are outside the bundled registry and were intentionally left unchanged."
+  },
+  "validation": {
+    "baseline_cache_assertions": "Both original assertions failed in isolation with --test-threads=1.",
+    "candidate_bundled_tests": {
+      "passed": 5,
+      "failed": 0
+    },
+    "candidate_root_font_tests": {
+      "passed": 31,
+      "failed": 0,
+      "includes": "Five root font cache/CJK tests plus 26 existing EPUB embedded-font tests matched by fonts::tests."
+    },
+    "candidate_goldens": {
+      "passed": 2,
+      "failed": 0,
+      "regenerated": false
+    }
+  },
+  "summary": {
+    "fmd": {
+      "before_file_bytes": 49271704,
+      "after_file_bytes": 40552208,
+      "file_bytes_removed": 8719496,
+      "before_redundant_font_bytes": 8724876,
+      "after_redundant_font_bytes": 0,
+      "redundant_font_bytes_removed": 8724876
+    },
+    "root_lib_tests": {
+      "before_file_bytes": 69543032,
+      "after_file_bytes": 60049576,
+      "file_bytes_removed": 9493456,
+      "before_redundant_font_bytes": 9904860,
+      "after_redundant_font_bytes": 401000,
+      "redundant_font_bytes_removed": 9503860
+    }
+  }
+}

@@ -12,112 +12,124 @@
 //! symbol-fallback subset. All are SIL OFL; the license texts ship
 //! alongside the binaries under `fonts/` and must accompany redistribution.
 //!
-//! These constants are the raw TTF bytes — feed them to [`Font::parse`]
-//! (`Font::parse(CM_REGULAR.to_vec())`). The feature is default-off so
-//! lean builds that bring their own fonts pay none of the ~2 MB.
+//! These constants expose raw TTF bytes backed by one immutable static array
+//! per face. Use [`Font::parse_static`](crate::Font::parse_static) to borrow them
+//! without copying (`Font::parse_static(CM_REGULAR)`). The feature is default-off
+//! so lean builds that bring their own fonts pay none of the ~2 MB.
+
+// A `const` slice initialized directly by `include_bytes!` may acquire a
+// separate promoted allocation at each use, including in downstream crates.
+// Keep the public const API (and ALL_FACES const contexts), but make its value
+// point to one named static array whose address survives constant evaluation.
+macro_rules! static_bytes {
+    ($path:literal) => {{
+        static BYTES: [u8; include_bytes!($path).len()] = *include_bytes!($path);
+        &BYTES
+    }};
+}
 
 /// Computer Modern Unicode roman (`cmunrm.ttf`).
-pub const CM_REGULAR: &[u8] = include_bytes!("../fonts/computer-modern/cmunrm.ttf");
+pub const CM_REGULAR: &[u8] = static_bytes!("../fonts/computer-modern/cmunrm.ttf");
 /// Computer Modern Unicode bold (`cmunbx.ttf`).
-pub const CM_BOLD: &[u8] = include_bytes!("../fonts/computer-modern/cmunbx.ttf");
+pub const CM_BOLD: &[u8] = static_bytes!("../fonts/computer-modern/cmunbx.ttf");
 /// Computer Modern Unicode italic (`cmunti.ttf`).
-pub const CM_ITALIC: &[u8] = include_bytes!("../fonts/computer-modern/cmunti.ttf");
+pub const CM_ITALIC: &[u8] = static_bytes!("../fonts/computer-modern/cmunti.ttf");
 /// Computer Modern Unicode bold italic (`cmunbi.ttf`).
-pub const CM_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/computer-modern/cmunbi.ttf");
+pub const CM_BOLD_ITALIC: &[u8] = static_bytes!("../fonts/computer-modern/cmunbi.ttf");
 /// Computer Modern Typewriter (`cmuntt.ttf`) — the code face.
-pub const CM_TYPEWRITER: &[u8] = include_bytes!("../fonts/computer-modern/cmuntt.ttf");
+pub const CM_TYPEWRITER: &[u8] = static_bytes!("../fonts/computer-modern/cmuntt.ttf");
 
 /// IBM Plex Sans regular.
-pub const PLEX_REGULAR: &[u8] = include_bytes!("../fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
+pub const PLEX_REGULAR: &[u8] = static_bytes!("../fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
 /// IBM Plex Sans bold.
-pub const PLEX_BOLD: &[u8] = include_bytes!("../fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf");
+pub const PLEX_BOLD: &[u8] = static_bytes!("../fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf");
 /// IBM Plex Sans italic.
-pub const PLEX_ITALIC: &[u8] = include_bytes!("../fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf");
+pub const PLEX_ITALIC: &[u8] = static_bytes!("../fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf");
 /// IBM Plex Sans bold italic.
 pub const PLEX_BOLD_ITALIC: &[u8] =
-    include_bytes!("../fonts/ibm-plex-sans/IBMPlexSans-BoldItalic.ttf");
+    static_bytes!("../fonts/ibm-plex-sans/IBMPlexSans-BoldItalic.ttf");
 
 /// The curated Noto Sans Math symbol-fallback subset.
 pub const NOTO_SANS_MATH_SYMBOLS: &[u8] =
-    include_bytes!("../fonts/noto-sans-math/NotoSansMathSymbols.ttf");
+    static_bytes!("../fonts/noto-sans-math/NotoSansMathSymbols.ttf");
 
 /// CM math italic at 10 pt (TeX's cmmi10, converted and renamed).
-pub const CM_MATH_ITALIC_10: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic10.ttf");
+pub const CM_MATH_ITALIC_10: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathItalic10.ttf");
 /// CM math italic at 7 pt (cmmi7): first-order scripts.
-pub const CM_MATH_ITALIC_7: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic7.ttf");
+pub const CM_MATH_ITALIC_7: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathItalic7.ttf");
 /// CM math italic at 5 pt (cmmi5): second-order scripts.
-pub const CM_MATH_ITALIC_5: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic5.ttf");
+pub const CM_MATH_ITALIC_5: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathItalic5.ttf");
 /// CM math symbols at 10 pt (cmsy10).
-pub const CM_MATH_SYMBOLS_10: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathSymbols10.ttf");
+pub const CM_MATH_SYMBOLS_10: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathSymbols10.ttf");
 /// CM math symbols at 7 pt (cmsy7).
-pub const CM_MATH_SYMBOLS_7: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathSymbols7.ttf");
+pub const CM_MATH_SYMBOLS_7: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathSymbols7.ttf");
 /// CM math symbols at 5 pt (cmsy5).
-pub const CM_MATH_SYMBOLS_5: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathSymbols5.ttf");
+pub const CM_MATH_SYMBOLS_5: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathSymbols5.ttf");
 /// CM math extension (cmex10): big operators, delimiter sizes, extensible pieces.
-pub const CM_MATH_EXTENSION_10: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathExtension10.ttf");
+pub const CM_MATH_EXTENSION_10: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathExtension10.ttf");
 /// CM roman at 10 pt (cmr10): TeX's family 0 in math mode (digits,
 /// `+ = ( ) [ ]`, upright Greek, operator names) at display and text size.
-pub const CM_ROMAN_10: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman10.ttf");
+pub const CM_ROMAN_10: &[u8] = static_bytes!("../fonts/cm-math/FmdCmRoman10.ttf");
 /// CM roman at 7 pt (cmr7): upright script characters.
-pub const CM_ROMAN_7: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman7.ttf");
+pub const CM_ROMAN_7: &[u8] = static_bytes!("../fonts/cm-math/FmdCmRoman7.ttf");
 /// CM roman at 5 pt (cmr5): upright second-order script characters.
-pub const CM_ROMAN_5: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman5.ttf");
+pub const CM_ROMAN_5: &[u8] = static_bytes!("../fonts/cm-math/FmdCmRoman5.ttf");
 
 /// AMS-A symbols at 10 pt (msam10), converted and renamed under the OFL.
-pub const AMS_A_10: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsASymbols10.ttf");
+pub const AMS_A_10: &[u8] = static_bytes!("../fonts/cm-math/FmdAmsASymbols10.ttf");
 /// AMS-A symbols at 7 pt (msam7): first-order scripts.
-pub const AMS_A_7: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsASymbols7.ttf");
+pub const AMS_A_7: &[u8] = static_bytes!("../fonts/cm-math/FmdAmsASymbols7.ttf");
 /// AMS-A symbols at 5 pt (msam5): second-order scripts.
-pub const AMS_A_5: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsASymbols5.ttf");
+pub const AMS_A_5: &[u8] = static_bytes!("../fonts/cm-math/FmdAmsASymbols5.ttf");
 /// AMS-B symbols and blackboard capitals at 10 pt (msbm10).
-pub const AMS_B_10: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsBSymbols10.ttf");
+pub const AMS_B_10: &[u8] = static_bytes!("../fonts/cm-math/FmdAmsBSymbols10.ttf");
 /// AMS-B at 7 pt (msbm7).
-pub const AMS_B_7: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsBSymbols7.ttf");
+pub const AMS_B_7: &[u8] = static_bytes!("../fonts/cm-math/FmdAmsBSymbols7.ttf");
 /// AMS-B at 5 pt (msbm5).
-pub const AMS_B_5: &[u8] = include_bytes!("../fonts/cm-math/FmdAmsBSymbols5.ttf");
+pub const AMS_B_5: &[u8] = static_bytes!("../fonts/cm-math/FmdAmsBSymbols5.ttf");
 /// Euler Fraktur at 10 pt (eufm10), `\mathfrak`'s face, converted and renamed
 /// under the OFL.
-pub const EULER_FRAKTUR_10: &[u8] = include_bytes!("../fonts/cm-math/FmdEulerFraktur10.ttf");
+pub const EULER_FRAKTUR_10: &[u8] = static_bytes!("../fonts/cm-math/FmdEulerFraktur10.ttf");
 /// Euler Fraktur at 7 pt (eufm7): first-order scripts.
-pub const EULER_FRAKTUR_7: &[u8] = include_bytes!("../fonts/cm-math/FmdEulerFraktur7.ttf");
+pub const EULER_FRAKTUR_7: &[u8] = static_bytes!("../fonts/cm-math/FmdEulerFraktur7.ttf");
 /// Euler Fraktur at 5 pt (eufm5): second-order scripts.
-pub const EULER_FRAKTUR_5: &[u8] = include_bytes!("../fonts/cm-math/FmdEulerFraktur5.ttf");
+pub const EULER_FRAKTUR_5: &[u8] = static_bytes!("../fonts/cm-math/FmdEulerFraktur5.ttf");
 
 /// Computer Modern optical cuts selected by LaTeX size declarations.
-pub const CM_MATH_ITALIC_6: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic6.ttf");
+pub const CM_MATH_ITALIC_6: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathItalic6.ttf");
 /// Math italic at 8 pt.
-pub const CM_MATH_ITALIC_8: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic8.ttf");
+pub const CM_MATH_ITALIC_8: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathItalic8.ttf");
 /// Math italic at 9 pt.
-pub const CM_MATH_ITALIC_9: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic9.ttf");
+pub const CM_MATH_ITALIC_9: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathItalic9.ttf");
 /// Math italic at 12 pt, also scaled for larger declarations.
-pub const CM_MATH_ITALIC_12: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathItalic12.ttf");
+pub const CM_MATH_ITALIC_12: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathItalic12.ttf");
 /// Math symbols at 6 pt.
-pub const CM_MATH_SYMBOLS_6: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathSymbols6.ttf");
+pub const CM_MATH_SYMBOLS_6: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathSymbols6.ttf");
 /// Math symbols at 8 pt.
-pub const CM_MATH_SYMBOLS_8: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathSymbols8.ttf");
+pub const CM_MATH_SYMBOLS_8: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathSymbols8.ttf");
 /// Math symbols at 9 pt.
-pub const CM_MATH_SYMBOLS_9: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathSymbols9.ttf");
+pub const CM_MATH_SYMBOLS_9: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathSymbols9.ttf");
 /// Roman at 6 pt.
-pub const CM_ROMAN_6: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman6.ttf");
+pub const CM_ROMAN_6: &[u8] = static_bytes!("../fonts/cm-math/FmdCmRoman6.ttf");
 /// Roman at 8 pt.
-pub const CM_ROMAN_8: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman8.ttf");
+pub const CM_ROMAN_8: &[u8] = static_bytes!("../fonts/cm-math/FmdCmRoman8.ttf");
 /// Roman at 9 pt.
-pub const CM_ROMAN_9: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman9.ttf");
+pub const CM_ROMAN_9: &[u8] = static_bytes!("../fonts/cm-math/FmdCmRoman9.ttf");
 /// Roman at 12 pt, also scaled for 14.4 pt.
-pub const CM_ROMAN_12: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman12.ttf");
+pub const CM_ROMAN_12: &[u8] = static_bytes!("../fonts/cm-math/FmdCmRoman12.ttf");
 /// Roman at 17 pt, scaled for the largest declarations.
-pub const CM_ROMAN_17: &[u8] = include_bytes!("../fonts/cm-math/FmdCmRoman17.ttf");
+pub const CM_ROMAN_17: &[u8] = static_bytes!("../fonts/cm-math/FmdCmRoman17.ttf");
 /// Math extension at 7 pt, also scaled for smaller scripts.
-pub const CM_MATH_EXTENSION_7: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathExtension7.ttf");
+pub const CM_MATH_EXTENSION_7: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathExtension7.ttf");
 /// Math extension at 8 pt.
-pub const CM_MATH_EXTENSION_8: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathExtension8.ttf");
+pub const CM_MATH_EXTENSION_8: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathExtension8.ttf");
 /// Math extension at 9 pt.
-pub const CM_MATH_EXTENSION_9: &[u8] = include_bytes!("../fonts/cm-math/FmdCmMathExtension9.ttf");
+pub const CM_MATH_EXTENSION_9: &[u8] = static_bytes!("../fonts/cm-math/FmdCmMathExtension9.ttf");
 
 /// The curated monochrome Noto Emoji subset (emoji fallback face). Regenerated
 /// via `cargo run --example gen_emoji_fallback_font`.
 #[cfg(feature = "emoji-face")]
-pub const NOTO_EMOJI_CURATED: &[u8] = include_bytes!("../fonts/noto-emoji/NotoEmojiCurated.ttf");
+pub const NOTO_EMOJI_CURATED: &[u8] = static_bytes!("../fonts/noto-emoji/NotoEmojiCurated.ttf");
 
 /// Noto Sans SC at Regular weight, subset to mapped BMP Han, kana, and CJK
 /// punctuation/fullwidth forms. Optional because broad ideograph coverage is
@@ -188,6 +200,44 @@ pub const ALL_FACES: [(&str, &[u8]); 44] = [
 mod tests {
     use super::ALL_FACES;
     use crate::Font;
+
+    #[test]
+    fn constants_and_registry_share_canonical_storage() {
+        // These remain usable in downstream const contexts, including array
+        // lengths and copies of the public registry.
+        const PLEX_ALIAS: &[u8] = super::PLEX_REGULAR;
+        const PLEX_LEN: usize = super::PLEX_REGULAR.len();
+        const REGISTRY_ALIAS: [(&str, &[u8]); 44] = ALL_FACES;
+
+        assert_eq!(PLEX_ALIAS.len(), PLEX_LEN);
+        assert!(std::ptr::eq(PLEX_ALIAS, super::PLEX_REGULAR));
+        let (_, registered_plex) = REGISTRY_ALIAS
+            .iter()
+            .find(|(name, _)| *name == "plex-regular")
+            .expect("registry contains Plex Regular");
+        assert!(std::ptr::eq(PLEX_ALIAS, *registered_plex));
+
+        for ((name, bytes), (alias_name, alias)) in ALL_FACES.iter().zip(REGISTRY_ALIAS.iter()) {
+            assert_eq!(name, alias_name);
+            assert!(std::ptr::eq(*bytes, *alias), "{name}: duplicated backing");
+            let font = Font::parse_static(bytes).expect("bundled face parses");
+            let cloned = font.clone();
+            assert!(std::ptr::eq(font.as_sfnt(), *bytes), "{name}: parsed copy");
+            assert!(
+                std::ptr::eq(cloned.as_sfnt(), *bytes),
+                "{name}: cloned copy"
+            );
+        }
+    }
+
+    #[cfg(feature = "emoji-face")]
+    #[test]
+    fn emoji_constant_retains_its_static_backing() {
+        const EMOJI_ALIAS: &[u8] = super::NOTO_EMOJI_CURATED;
+        let font = Font::parse_static(super::NOTO_EMOJI_CURATED).expect("emoji face parses");
+        assert!(std::ptr::eq(font.as_sfnt(), EMOJI_ALIAS));
+        assert!(std::ptr::eq(font.clone().as_sfnt(), EMOJI_ALIAS));
+    }
 
     #[test]
     fn every_bundled_face_parses() {

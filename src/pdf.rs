@@ -23110,7 +23110,10 @@ impl PageGeom {
     /// This page with `reserve` points taken off the bottom of its body area.
     fn with_foot_reserve(self, reserve: f32) -> Self {
         Self {
-            bottom: (self.bottom + reserve).min(self.top_y() - MIN_CONTENT_DIM),
+            // The original page already met the minimum body dimension.
+            // Reapplying that floor after reserving notes invents body space
+            // inside the note region when only the citing line still fits.
+            bottom: (self.bottom + reserve).min(self.top_y()),
             ..self
         }
     }
@@ -30474,7 +30477,7 @@ fn paginate_lines_with<'a>(
 }
 
 fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
-    let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
+    let full_capacity = (page.top_y() - page.bottom).max(0.0);
     let capacity = (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
     let mut used = 0.0f32;
 
@@ -30850,7 +30853,7 @@ fn choose_page_break_with_void_control(
         return (baseline_end, None);
     }
 
-    let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
+    let full_capacity = (page.top_y() - page.bottom).max(0.0);
     let capacity = (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
     let mut used = 0.0f32;
     for line in &lines[start..baseline_end] {

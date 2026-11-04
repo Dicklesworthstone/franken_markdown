@@ -450,3 +450,74 @@ fn ordinary_page_note_pdf_bytes_remain_unchanged() {
         assert_eq!(digest, 0x8c3f241426c69767);
     }
 }
+
+#[test]
+fn crowded_footnotes_do_not_manufacture_room_for_following_body_lines() {
+    let notes = ["a", "b", "c"]
+        .map(|id| {
+            let label = id.to_uppercase();
+            let lines = (0..15)
+                .map(|index| format!("{label}{index:02} explanatory line."))
+                .collect::<Vec<_>>()
+                .join("  \n    ");
+            format!("[^{id}]: {lines}\n\n    {label}15 explanatory paragraph.")
+        })
+        .join("\n\n");
+    for following in ["AFTER body.", "AFTER body.\n\nNEXT body."] {
+        let markdown = format!("Claim.[^a][^b][^c]\n\n{following}\n\n{notes}\n");
+        for optimal_pagination in [false, true] {
+            let opts = PdfOptions {
+                optimal_pagination,
+                ..PdfOptions::default()
+            };
+            let report = report(&markdown, &opts);
+            assert_eq!(locate(&report, "Claim").0, 1);
+            assert_eq!(
+                locate(&report, "AFTER").0,
+                2,
+                "only the citing line fits above the reserved notes"
+            );
+            let text: String = report
+                .pages
+                .iter()
+                .flat_map(|page| &page.runs)
+                .map(|run| run.text.as_str())
+                .collect();
+            assert!(
+                !text.contains("Notes"),
+                "all three notes fit at the page foot"
+            );
+            assert_eq!(text.matches("AFTER").count(), 1);
+            assert_eq!(
+                text.matches("NEXT").count(),
+                usize::from(following.contains("NEXT"))
+            );
+            let (_, body_y, body_size) = locate(&report, "Claim");
+            for label in ['A', 'B', 'C'] {
+                for index in 0..16 {
+                    let marker = format!("{label}{index:02}");
+                    assert_eq!(text.matches(&marker).count(), 1, "retain {marker}");
+                    let (page, y, size) = locate(&report, &marker);
+                    assert_eq!(page, 1, "{marker} stays with its citation");
+                    assert!(y >= 72.0, "{marker} stays above the bottom margin");
+                    assert!(
+                        y + size < body_y - body_size * 0.3,
+                        "{marker} overlaps the body: note y={y}, body y={body_y}"
+                    );
+                }
+            }
+            let pdf = render_pdf(&markdown, &opts).unwrap();
+            assert_destinations_match_notes(&pdf, &report, &["A00", "B00", "C00"]);
+            assert_eq!(pdf, render_pdf(&markdown, &opts).unwrap());
+            assert_eq!(
+                pdf,
+                render_pdf_document_emitted(
+                    &parse_markdown(&markdown),
+                    &opts,
+                    PdfEmitOptions::monolithic(),
+                )
+                .unwrap()
+            );
+        }
+    }
+}

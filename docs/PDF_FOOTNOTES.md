@@ -12,7 +12,9 @@ link to its note.
 - A note sits on the page that carries its **first** body reference. The page
   builder chooses the body break against a page shortened by the notes its
   lines reference, re-measuring until the chosen lines' notes fit, so a body
-  line and its note are never split across pages.
+  line and its note are never split across pages. Reservations retain the
+  actual remaining body height, even below 40 points: if only the citing line
+  fits, later body text moves to the next page instead of overlapping notes.
 - A note prints in a trailing **Notes** section instead when it cannot sit at
   a page foot:
   - no body line references it (an unreferenced definition, or one referenced

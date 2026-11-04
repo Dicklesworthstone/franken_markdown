@@ -55,6 +55,26 @@ export async function createFlowSession(markdown, options = {}) {
         epub: publicationRenderers.renderEpub, svg: publicationRenderers.renderSvg,
       },
       prepared.font,
+      (expected, offset, limit) => {
+        if (typeof raw.assetInventoryJson !== "function") {
+          throw new FlowError(
+            "UNSUPPORTED_WASM_PACKAGE",
+            "Complete image export requires assetInventoryJson; rebuild the WASM package from matching source. Editing remains available.",
+          );
+        }
+        let json;
+        try {
+          json = raw.assetInventoryJson(expected.revision, expected.layoutRevision, offset, limit);
+        } catch (error) {
+          throw normalizeFlowError(error);
+        }
+        try {
+          if (typeof json !== "string") throw new Error("expected JSON text");
+          return JSON.parse(json);
+        } catch (error) {
+          throw new FlowError("INVALID_WASM_RESPONSE", "invalid native export image inventory JSON", { cause: error });
+        }
+      },
     );
   } catch (error) {
     if (raw) {

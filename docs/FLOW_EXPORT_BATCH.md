@@ -5,8 +5,9 @@ unique HTML/PDF/EPUB/SVG outputs from one revision-fenced document capture. This
 is additive; `exportDocument` keeps its existing contract.
 
 The synchronous coordinator validates every request before touching the session,
-owns source/options before its first await, scans and copies the retained image
-inventory once, then runs the requested native renderers in caller order under
+owns source/options before its first await, scans and copies the complete native
+image inventory once, including images in headings and table cells absent from
+the painted preview, then runs the requested native renderers in caller order under
 one physical export slot. PDF-only explicit images are merged into a derived PDF
 inventory and are never granted to the HTML, EPUB or SVG renderers.
 A source/layout change, disposal, invalid renderer reply or later renderer failure

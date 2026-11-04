@@ -73,9 +73,12 @@ const png = new Uint8Array(
     chunk("IEND", Buffer.alloc(0)),
   ]),
 );
+const publicationImages = ["local.png", "heading.png", "table.png"]
+  .map(destination => ({ destination, bytes: png }));
 let source =
   "# Export Guide\n\nCafé with **bold**, *italic* and [a link](#export-guide).\n\n" +
-  "| Name | Value |\n| --- | --- |\n| measured | original Markdown |\n\n" +
+  "## Heading image ![badge](heading.png)\n\n" +
+  "| Name | Value |\n| --- | --- |\n| measured | original Markdown |\n| chart | ![cell](table.png) |\n\n" +
   "| Item | Amount |\n| --- | ---. |\n| Revenue | 1,234.5 |\n| Costs | (234.50) |\n| | --- |\n| Total | **1,000.000** |\n| | === |\n\n" +
   "![local](local.png)\n\n![again](local.png)\n";
 const direct = await createFlowSession(source, { font: "serif", viewportWidth: 360 });
@@ -85,14 +88,16 @@ async function resolveImages() {
   for (const session of [direct, remote]) {
     // Collect the inventory before delivery changes it.
     const requests = (await session.pendingAssets({ limit: 2048 })).requests;
-    for (const request of requests)
-      await session.provideAsset({
-        requestId: request.id,
-        generation: request.generation,
-        width: 2,
-        height: 1,
-        bytes: png,
-      });
+    assert.equal(requests.length, 4, "all body, heading and table image occurrences need authorization");
+    assert.deepEqual([...new Set(requests.map(request => request.url))].sort(),
+      ["heading.png", "local.png", "table.png"]);
+    const provide = request => session.provideAsset({
+      requestId: request.id, generation: request.generation, width: 2, height: 1, bytes: png,
+    });
+    for (const request of requests.filter(request => request.url === "local.png")) await provide(request);
+    await assert.rejects(session.exportDocument("html", {}, session.token), missing,
+      "resolved painted images do not excuse missing heading/table payloads");
+    for (const request of requests.filter(request => request.url !== "local.png")) await provide(request);
   }
 }
 async function parity(label, advanced = false) {
@@ -114,16 +119,17 @@ async function parity(label, advanced = false) {
       ...options,
       font: "serif",
       allowRawHtml: false,
-      pdfImages: [{ destination: "local.png", bytes: png }],
+      pdfImages: publicationImages,
     });
     assert.deepEqual(a.bytes, oracle.bytes, `${label}: ${format} direct export/core parity`);
     assert.deepEqual(b.bytes, oracle.bytes, `${label}: ${format} worker export/core parity`);
     assert.deepEqual(b.diagnostics, oracle.diagnostics);
-    assert.equal(b.assetCount, 1);
+    assert.equal(b.assetCount, 3);
     assert.equal(b.sourceLengthBytes, new TextEncoder().encode(source).length);
     if (format === "html") {
       const html = new TextDecoder().decode(b.bytes);
-      assert(html.includes("data:image/png;base64,"));
+      assert.equal(html.match(/data:image\/png;base64,/g)?.length, 4,
+        "HTML embeds the heading, table and both body image occurrences");
       assert(html.includes('class="fmd-decimal"'), "financial decimal alignment survives export");
       assert(html.includes("border-bottom:1px solid currentColor;"));
       assert(html.includes("border-bottom:3px double currentColor;"));
@@ -142,7 +148,7 @@ async function stylesheetParity() {
       ...options,
       font: "serif",
       allowRawHtml: false,
-      pdfImages: [{ destination: "local.png", bytes: png }],
+      pdfImages: publicationImages,
     });
     assert.deepEqual(a.bytes, oracle.bytes, "custom CSS direct export/core parity");
     assert.deepEqual(b.bytes, oracle.bytes, "custom CSS worker export/core parity");

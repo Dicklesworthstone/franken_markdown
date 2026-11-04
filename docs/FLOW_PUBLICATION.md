@@ -22,12 +22,21 @@ can be injected through this export call.
 ## Source and resource ownership
 
 Export collects the original Markdown and resolved encoded image payloads under
-one source/layout token before awaiting the renderer. All snapshot pages are
-checked. Repeated destinations with identical bytes are deduplicated; conflicting
+one source/layout token before awaiting the renderer. The complete native asset
+inventory includes source images absent from painted display items, including
+images in headings and table cells. Every inventory page is checked against the
+same token, total and advancing cursor; duplicate request IDs are rejected.
+Repeated destinations with identical bytes are deduplicated; conflicting
 payloads fail. Pending images, dimensions-only assets and empty payloads refuse
 export instead of disappearing. Nothing is fetched. The existing limits remain:
 4 MiB source, 1,024 image occurrences, 8 MiB per payload, 32 MiB retained images,
 and 64 MiB maximum published output. These are not total heap limits.
+
+The public factory requires the additive native `assetInventoryJson` binding for
+export. An older generated package keeps its editing APIs, but export returns
+`UNSUPPORTED_WASM_PACKAGE` and matching-package rebuild guidance. The direct
+factory and worker-local factory use the same reader; no visible-snapshot fallback
+can silently omit resources in either path.
 
 Source or layout changes and disposal during an asynchronous export reject its
 publication. Concurrent direct exports share the existing `EXPORT_BUSY` gate.

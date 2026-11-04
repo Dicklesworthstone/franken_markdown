@@ -296,8 +296,9 @@ function byteView(value, max, code = "INVALID_WASM_RESPONSE") {
 function sameBytes(a, b) {
   return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
-function collectImages(session, expected) {
+function collectImages(session, expected, readInventory) {
   const images = new Map();
+  const requestIds = new Set();
   let offset = 0,
     total = null,
     occurrences = 0,
@@ -324,13 +325,17 @@ function collectImages(session, expected) {
     images.set(destination, { destination, bytes: new Uint8Array(bytes) });
   };
   do {
-    const page = session.snapshot({ offset, limit: 256, glyphs: false, token: expected });
+    fence(session, expected);
+    const page = readInventory
+      ? readInventory(expected, offset, 256)
+      : session.snapshot({ offset, limit: 256, glyphs: false, token: expected });
+    fence(session, expected);
     if (
       !page ||
       page.schemaVersion !== 1 ||
       page.revision !== expected.revision ||
       page.layoutRevision !== expected.layoutRevision ||
-      !Number.isInteger(page.total) ||
+      !Number.isSafeInteger(page.total) ||
       page.total < offset ||
       page.offset !== offset ||
       !Array.isArray(page.items) ||
@@ -338,19 +343,27 @@ function collectImages(session, expected) {
       (total !== null && page.total !== total)
     )
       fail("INVALID_WASM_RESPONSE", "inconsistent export image inventory");
-    if (page.total > DISPLAY_ITEMS)
-      fail("BUDGET_EXCEEDED", "export display inventory limit exceeded");
+    if (page.total > (readInventory ? IMAGE_COUNT : DISPLAY_ITEMS))
+      fail("BUDGET_EXCEEDED", "export image inventory limit exceeded");
     total = page.total;
     const end = offset + page.items.length;
     if (page.nextOffset !== (end < total ? end : null))
       fail("INVALID_WASM_RESPONSE", "export inventory did not advance");
     for (const item of page.items) {
-      if (!item || typeof item.kind !== "string")
-        fail("INVALID_WASM_RESPONSE", "invalid export display item");
+      if (!item || typeof item.kind !== "string" || (readInventory && item.kind !== "image"))
+        fail("INVALID_WASM_RESPONSE", "invalid export image inventory item");
       if (item.kind !== "image") continue;
-      const id = identity(item.requestId);
-      const destination = text(item.destination, "image destination", 8192).trim();
-      if (!destination) fail("INVALID_WASM_RESPONSE", "empty image destination");
+      let id, destination;
+      try {
+        if (typeof item.requestId !== "string") throw new Error("expected a string request ID");
+        id = identity(item.requestId);
+        destination = text(item.destination, "image destination", 8192).trim();
+      } catch {
+        fail("INVALID_WASM_RESPONSE", "invalid export image identity or destination");
+      }
+      if (!destination || typeof item.isResolved !== "boolean" || requestIds.has(id))
+        fail("INVALID_WASM_RESPONSE", "empty destination, invalid resolution state or duplicate image request ID");
+      requestIds.add(id);
       if (item.isResolved !== true)
         fail(
           "UNRESOLVED_EXPORT_ASSET",
@@ -491,11 +504,16 @@ export function validateFlowExportBatchResult(value, requests, expected) {
   return value;
 }
 
-export function withFlowExports(session, renderers, font = "sans") {
+// The public factory always supplies the complete native image inventory. The
+// snapshot fallback is retained for low-level custom adapters/test doubles;
+// those providers must themselves guarantee that their snapshots include every
+// source image. A visible display list alone cannot establish completeness.
+export function withFlowExports(session, renderers, font = "sans", readInventory) {
   if (
     !["sans", "serif"].includes(font) ||
     typeof renderers?.html !== "function" ||
-    typeof renderers?.pdf !== "function"
+    typeof renderers?.pdf !== "function" ||
+    (readInventory !== undefined && typeof readInventory !== "function")
   ) {
     fail("INVALID_OPTIONS", "fixed HTML/PDF renderers and a bundled font preset are required");
   }
@@ -531,7 +549,7 @@ export function withFlowExports(session, renderers, font = "sans") {
       const source = sourceText(session.source);
       const sourceLengthBytes = new TextEncoder().encode(source).length;
       const pdf = jobs.find((job) => job.format === "pdf");
-      const baseAssets = collectImages(session, expected);
+      const baseAssets = collectImages(session, expected, readInventory);
       const pdfAssets = pdf ? mergeExplicitImages(baseAssets, pdf.options.pdfImages) : baseAssets;
       fence(session, expected);
       const results = [];

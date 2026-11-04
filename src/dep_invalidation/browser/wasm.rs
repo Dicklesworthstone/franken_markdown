@@ -297,6 +297,19 @@ impl FmdFlowSession {
             .map_err(js_error)
     }
 
+    #[wasm_bindgen(js_name = assetInventoryJson)]
+    pub fn asset_inventory_json(
+        &self,
+        revision: &str,
+        layout_revision: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<String, JsValue> {
+        self.inner
+            .asset_inventory_json(id(revision)?, id(layout_revision)?, offset, limit)
+            .map_err(js_error)
+    }
+
     #[wasm_bindgen(js_name = pendingAssetsJson)]
     pub fn pending_assets_json(
         &self,

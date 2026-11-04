@@ -240,6 +240,7 @@ struct Context<'a> {
 
 enum Leaf<'a> {
     Text(Cow<'a, str>),
+    Html(&'a str),
     Math {
         source: &'a str,
         style: FlowMathStyle,
@@ -309,7 +310,8 @@ impl<'a> Iterator for Walker<'a> {
                 continue;
             }
             let leaf = match inline {
-                Inline::Text(text) | Inline::Html(text) => Leaf::Text(Cow::Borrowed(text)),
+                Inline::Text(text) => Leaf::Text(Cow::Borrowed(text)),
+                Inline::Html(text) => Leaf::Html(text),
                 Inline::Math(source) => Leaf::Math {
                     source,
                     style: FlowMathStyle::Text,
@@ -404,24 +406,93 @@ impl Builder {
     }
 }
 
+/// Preserve real raw-HTML image references without interpreting literal code
+/// or reparsing Markdown. The shared HTML tokenizer skips comments and quoted
+/// attribute contents. A raw img remains an asset even inside pre/code: HTML
+/// publication can retain that actual element when allow_html is enabled.
+fn images_in_inline_html(inlines: &[Inline]) -> impl Iterator<Item = (String, String)> + '_ {
+    Walker::new(inlines)
+        .filter_map(|(leaf, _, _)| match leaf {
+            Leaf::Html(raw) => Some(crate::safe_html::image_references(raw)),
+            _ => None,
+        })
+        .flatten()
+}
+
+/// Register one publication-only occurrence under the same count/byte limits
+/// as painted images. Admission precedes copying destination and alt strings.
+pub(super) fn record_publication_asset(
+    meta: &mut BlockMeta,
+    output: &Projection<'_>,
+    next_id: &mut u64,
+    destination: &str,
+    alt: &str,
+    remaining: &mut usize,
+) -> Result<(), FlowDisplayError> {
+    if meta.publication_assets.len() >= output.remaining_assets() {
+        return Err(FlowDisplayError::BudgetExceeded("asset requests".to_owned()));
+    }
+    let bytes = destination
+        .len()
+        .checked_add(alt.len())
+        .and_then(|bytes| remaining.checked_sub(bytes))
+        .ok_or_else(|| FlowDisplayError::BudgetExceeded("asset output bytes".to_owned()))?;
+    meta.publication_assets.push(UnresolvedAsset {
+        id: AssetRequestId(*next_id),
+        kind: "image",
+        reference: destination.to_owned(),
+        source_offset: meta.span.start,
+        generation: 0,
+        estimated_width: 320,
+        estimated_height: 240,
+        alt_text: alt.to_owned(),
+    });
+    *next_id += 1;
+    *remaining = bytes;
+    Ok(())
+}
+
 /// Headings/table cells retain their existing reading-text representation of
-/// images (alt text); paragraphs still emit image requests as separate blocks.
+/// images (alt text), while every occurrence remains discoverable for export.
+/// The returned remaining byte budget includes text, links and asset metadata,
+/// allowing subsequent cells in the same row to share one admission budget.
 pub(super) fn collect(
     inlines: &[Inline],
+    meta: &mut BlockMeta,
+    output: &Projection<'_>,
+    next_id: &mut u64,
     limit: usize,
-) -> Result<(String, Vec<FlowInlineRun>), FlowDisplayError> {
+) -> Result<(String, Vec<FlowInlineRun>, usize), FlowDisplayError> {
     let mut builder = Builder::default();
+    let mut remaining = limit;
     for (leaf, style, link) in Walker::new(inlines) {
         match leaf {
-            Leaf::Text(text) => builder.append(&text, style, link, None, limit)?,
+            Leaf::Text(text) => builder.append(&text, style, link, None, remaining)?,
+            Leaf::Html(raw) => builder.append(raw, style, link, None, remaining)?,
             Leaf::Math {
                 source,
                 style: math,
-            } => builder.append(source, style, link, Some(math), limit)?,
-            Leaf::Image { alt, .. } => builder.append(alt, style, link, None, limit)?,
+            } => builder.append(source, style, link, Some(math), remaining)?,
+            Leaf::Image { alt, dest } => {
+                record_publication_asset(meta, output, next_id, dest, alt, &mut remaining)?;
+                builder.append(alt, style, link, None, remaining)?;
+            }
         }
     }
-    Ok((builder.text, builder.runs))
+    remaining = remaining
+        .checked_sub(builder.bytes)
+        .ok_or_else(|| FlowDisplayError::BudgetExceeded("inline output bytes".to_owned()))?;
+    for (destination, alt) in images_in_inline_html(inlines) {
+        record_publication_asset(
+            meta,
+            output,
+            next_id,
+            &destination,
+            &alt,
+            &mut remaining,
+        )?;
+    }
+    Ok((builder.text, builder.runs, remaining))
 }
 
 pub(super) fn emit_inlines(
@@ -430,16 +501,28 @@ pub(super) fn emit_inlines(
     output: &mut Projection<'_>,
     next_id: &mut u64,
 ) -> Result<(), FlowDisplayError> {
+    let mut remaining = output.remaining_bytes();
+    for (destination, alt) in images_in_inline_html(inlines) {
+        record_publication_asset(
+            meta,
+            output,
+            next_id,
+            &destination,
+            &alt,
+            &mut remaining,
+        )?;
+    }
+    let mut publication_bytes = output.remaining_bytes() - remaining;
     let mut builder = Builder::default();
     for (leaf, style, link) in Walker::new(inlines) {
+        let text_limit = output.remaining_bytes().saturating_sub(publication_bytes);
         match leaf {
-            Leaf::Text(text) => {
-                builder.append(&text, style, link, None, output.remaining_bytes())?
-            }
+            Leaf::Text(text) => builder.append(&text, style, link, None, text_limit)?,
+            Leaf::Html(raw) => builder.append(raw, style, link, None, text_limit)?,
             Leaf::Math {
                 source,
                 style: math,
-            } => builder.append(source, style, link, Some(math), output.remaining_bytes())?,
+            } => builder.append(source, style, link, Some(math), text_limit)?,
             Leaf::Image { alt, dest } => {
                 builder.emit(meta, output)?;
                 let asset = UnresolvedAsset {
@@ -459,6 +542,10 @@ pub(super) fn emit_inlines(
                     block: DisplayBlock::UnresolvedAsset(asset),
                     meta: image_meta,
                 })?;
+                // Raw HTML occurrences belong to exactly one emitted block,
+                // even when a paragraph is split around several painted images.
+                meta.publication_assets.clear();
+                publication_bytes = 0;
             }
         }
     }
@@ -483,7 +570,11 @@ mod tests {
             Inline::DisplayMath("\\frac{1}{\n2}".to_owned()),
             Inline::Code("$literal$".to_owned()),
         ];
-        let (text, runs) = collect(&input, 4096).unwrap();
+        let limits = FlowDisplayLimits::default();
+        let output = Projection::new(&limits);
+        let mut meta = BlockMeta::default();
+        let mut next_id = 1;
+        let (text, runs, _) = collect(&input, &mut meta, &output, &mut next_id, 4096).unwrap();
         assert_eq!(text, "before ab\\frac{1}{\n2}$literal$");
         let formulas: Vec<_> = runs.iter().filter(|run| run.math.is_some()).collect();
         assert_eq!(formulas.len(), 3);

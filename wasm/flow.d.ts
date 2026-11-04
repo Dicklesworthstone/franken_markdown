@@ -416,7 +416,10 @@ export interface FlowSession {
   glyphOutlines(fontId: FlowIdentity, glyphIds: readonly number[] | Uint16Array): FlowGlyphOutlines;
   assetBytes(requestId: FlowIdentity, expectedRevision: FlowIdentity): Uint8Array | null;
   /** Shared document renderer, not Canvas capture. Requires encoded bytes for
-   * every image. Rejects if source/assets change while the export is awaited. */
+   * every source image, including images absent from visible display items.
+   * A matching native asset-inventory binding is required; older artifacts can
+   * still edit but reject exports with UNSUPPORTED_WASM_PACKAGE.
+   * Rejects if source/assets change while the export is awaited. */
   exportDocument<F extends FlowExportFormat>(
     format: F,
     options: FlowExportOptionsByFormat[F] | undefined,

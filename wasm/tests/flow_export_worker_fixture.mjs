@@ -35,8 +35,26 @@ const endpoint = {
 class NativeDouble {
   revision = "9007199254740993";
   layoutRevision = "9007199254740997";
+  inventoryReads = 0;
+  displayReads = 0;
   constructor(source) {
     this.source = source;
+    if (workerData?.legacyInventory) this.assetInventoryJson = undefined;
+  }
+  assetInventoryJson(revision, layout, offset, limit) {
+    this.fence(revision, layout);
+    this.inventoryReads++;
+    const items = [
+      ...(workerData?.image
+        ? [{ kind: "image", requestId: "1", destination: "local.png", isResolved: true }] : []),
+      ...(workerData?.publicationImages ?? []).map(asset => ({
+        kind: "image", requestId: asset.requestId, destination: asset.destination,
+        isResolved: asset.isResolved ?? true,
+      })),
+    ];
+    const end = Math.min(offset + limit, items.length);
+    return JSON.stringify({ schemaVersion: 1, revision, layoutRevision: layout, offset,
+      total: items.length, nextOffset: end < items.length ? end : null, items: items.slice(offset, end) });
   }
   fence(revision, layout = this.layoutRevision) {
     if (revision !== this.revision) throw new FlowError("STALE_REVISION", "native source changed");
@@ -51,6 +69,7 @@ class NativeDouble {
   }
   snapshotJson(revision, layout, offset, limit) {
     this.fence(revision, layout);
+    this.displayReads++;
     const items = workerData?.image
       ? [{ kind: "image", requestId: "1", destination: "local.png", isResolved: true }]
       : [];
@@ -65,8 +84,11 @@ class NativeDouble {
       items: items.slice(offset, end),
     });
   }
-  assetBytes() {
-    return new Uint8Array([1, 2, 3]);
+  assetBytes(id, revision) {
+    this.fence(revision);
+    if (id === "1" && workerData?.image) return new Uint8Array([1, 2, 3]);
+    const asset = workerData?.publicationImages?.find(item => item.requestId === id);
+    return asset?.bytes === undefined ? null : new Uint8Array(asset.bytes);
   }
   free() {}
 }
@@ -92,7 +114,8 @@ installFlowWorker(endpoint, async (source, options) => {
     }
     return {
       format,
-      mimeType: format === "html" ? "text/html; charset=utf-8" : format === "epub" ? "application/epub+zip" : "application/pdf",
+      mimeType: format === "html" ? "text/html; charset=utf-8" : format === "epub" ? "application/epub+zip"
+        : format === "svg" ? "image/svg+xml" : "application/pdf",
       diagnostics: [],
       bytes: new TextEncoder().encode(
         JSON.stringify({
@@ -109,13 +132,21 @@ installFlowWorker(endpoint, async (source, options) => {
           htmlFontFormat: settings.htmlFontFormat,
           fontEmbedding: settings.fontEmbedding,
           images: settings.pdfImages.map((image) => [image.destination, [...image.bytes]]),
+          ...(workerData?.reportInventory ? {
+            inventoryReads: raw.inventoryReads, displayReads: raw.displayReads,
+          } : {}),
         }),
       ),
     };
   };
   return withFlowExports(
     createFlowAdapter(raw, layout),
-    { html: renderer("html"), pdf: renderer("pdf"), epub: renderer("epub") },
+    { html: renderer("html"), pdf: renderer("pdf"), epub: renderer("epub"), svg: renderer("svg") },
     font,
+    (expected, offset, limit) => {
+      if (typeof raw.assetInventoryJson !== "function")
+        throw new FlowError("UNSUPPORTED_WASM_PACKAGE", "Complete image export requires assetInventoryJson; rebuild the matching WASM package.");
+      return JSON.parse(raw.assetInventoryJson(expected.revision, expected.layoutRevision, offset, limit));
+    },
   );
 });

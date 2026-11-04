@@ -138,13 +138,25 @@ is PDF-only and cannot bypass unresolved source-image checks.
 
 ## Image authority and completeness
 
-Every flow image must be resolved AND have encoded bytes retained in the native
-session by `provideAsset({ ..., bytes })`. A dimensions-only Canvas bitmap is not
+Every source image must be resolved AND have encoded bytes retained in the native
+session by `provideAsset({ ..., bytes })`. Export reads the complete native asset
+inventory, including images in headings and table cells that the editor may show
+only as text. Visible display snapshots are not used to prove that all source
+images were collected. A dimensions-only Canvas bitmap is not
 an exportable asset. Missing bytes fail with `UNRESOLVED_EXPORT_ASSET`; exports do
 not fetch, invent placeholders or silently omit that image. After a source edit
 or asset reload, authorize and supply the new generation before exporting again.
 The existing `reuseAssets` option remains an explicit host attestation, not an
 automatic export optimization.
+
+Complete collection requires the matching generated WASM package with
+`FmdFlowSession.assetInventoryJson`. Older artifacts continue to support editing,
+but document and batch exports return `UNSUPPORTED_WASM_PACKAGE` with rebuild
+guidance. They cannot silently fall back to scanning only painted images.
+Inventory pages carry both source and layout revisions; inconsistent or partial
+pages, duplicate request IDs and malformed image records reject before rendering.
+The worker uses this same private inventory reader inside its local session, so
+all formats and an entire export batch share the same completeness checks.
 
 Assets are addressed by exact Markdown destination in the shared renderer. Equal
 payloads for repeated destinations are deduplicated. Different payloads for the
@@ -165,8 +177,7 @@ queued cancellation removes the request, while in-flight cancellation terminates
 the owned worker and loses the session. Never assume rollback or automatic replay;
 retain authoritative Markdown in the host and restart explicitly when necessary.
 
-Limits are 4 MiB source (existing flow admission), 500,000 scanned display items,
-1,024 image occurrences, 8 MiB per image, 32 MiB total unique image payloads and
+Limits are 4 MiB source (existing flow admission), 1,024 image occurrences, 8 MiB per image, 32 MiB total unique image payloads and
 64 Ki UTF-16 destination units. Total image bytes inspected, including duplicate
 occurrences, are separately capped at 64 MiB to bound copy/comparison work. Result diagnostics are bounded to 1,024 entries
 and 64 Ki UTF-16 message units. Published output defaults to 64 MiB and may be
@@ -177,7 +188,7 @@ The output cap is checked after native rendering and before worker transfer.
 ## Verification
 
 ```sh
-node --test wasm/flow_export.test.mjs wasm/flow_export_worker.test.mjs
+node --test wasm/flow_asset_inventory.test.mjs wasm/flow_export.test.mjs wasm/flow_export_worker.test.mjs
 tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext wasm/flow_export_types_test.mts
 scripts/check-wasm-package.sh export
 ```

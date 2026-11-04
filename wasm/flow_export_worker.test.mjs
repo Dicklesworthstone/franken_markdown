@@ -301,3 +301,60 @@ test("real Flow worker preserves full-font HTML EPUB policy and rejects old pack
   for (const format of ["html", "epub"])
     await assert.rejects(old.exportDocument(format, { fontEmbedding: "full" }, old.token), code("UNSUPPORTED_WASM_PACKAGE"));
 });
+
+
+test("real workers export publication images absent from their visible snapshots in one batch", async t => {
+  const session = await setup(t, { image: true, reportInventory: true, publicationImages: [
+    { requestId: "2", destination: "heading.png", bytes: [4, 5] },
+    { requestId: "3", destination: "table.svg", bytes: [6] },
+  ] });
+  const visible = await session.snapshot();
+  assert.deepEqual(visible.items.map(item => item.destination), ["local.png"]);
+  const outputs = await session.exportDocuments([
+    { format: "html" }, { format: "pdf" }, { format: "epub" }, { format: "svg" },
+  ], session.token);
+  assert.deepEqual(outputs.map(output => output.format), ["html", "pdf", "epub", "svg"]);
+  for (const output of outputs) {
+    assert.equal(output.assetCount, 3);
+    assert.equal(output.assetBytes, 6);
+    assert.deepEqual(decode(output).images,
+      [["local.png", [1, 2, 3]], ["heading.png", [4, 5]], ["table.svg", [6]]]);
+    assert.equal(decode(output).inventoryReads, 1, "the batch owns one complete inventory");
+    assert.equal(decode(output).displayReads, 1, "export never scans the preview");
+  }
+  const repeated = await session.exportDocument("epub", {}, session.token);
+  assert.deepEqual(decode(repeated).images, decode(outputs[2]).images);
+  assert.equal(decode(repeated).inventoryReads, 2, "retained native bytes survive transfer");
+  assert.equal(session.pendingOperations, 0);
+  assert.equal(session.pendingBytes, 0);
+});
+
+for (const mode of ["pending", "dimensions", "empty", "conflicting"])
+  test("worker export refuses publication-only " + mode + " images", async t => {
+    const hidden = { requestId: "2", destination: mode === "conflicting" ? "local.png" : "heading.png" };
+    if (mode === "pending") hidden.isResolved = false;
+    if (mode === "empty") hidden.bytes = [];
+    if (mode === "conflicting") hidden.bytes = [99];
+    const session = await setup(t, { image: true, publicationImages: [hidden] });
+    const expected = mode === "conflicting" ? "AMBIGUOUS_EXPORT_ASSET" : "UNRESOLVED_EXPORT_ASSET";
+    await assert.rejects(session.exportDocument("pdf", {}, session.token), code(expected));
+    await assert.rejects(session.exportDocuments([{ format: "html" }, { format: "epub" }], session.token),
+      code(expected));
+    assert.equal(await session.getSource(), "# Source 😀");
+    assert.equal(session.pendingOperations, 0);
+    assert.equal(session.pendingBytes, 0);
+    assert.equal(session.disposed, false);
+  });
+
+test("legacy native inventory refusal crosses the worker boundary without disabling editing", async t => {
+  const session = await setup(t, { image: true, legacyInventory: true });
+  await assert.rejects(session.exportDocument("html", {}, session.token),
+    error => error.code === "UNSUPPORTED_WASM_PACKAGE" && /assetInventoryJson.*rebuild/.test(error.message));
+  await assert.rejects(session.exportDocuments([{ format: "pdf" }, { format: "epub" }], session.token),
+    code("UNSUPPORTED_WASM_PACKAGE"));
+  await session.replaceSource("# Still editable", { expectedRevision: session.revision });
+  assert.equal(await session.getSource(), "# Still editable");
+  assert.equal((await session.snapshot()).items.length, 1);
+  assert.equal(session.disposed, false);
+  assert.equal(session.pendingOperations, 0);
+});

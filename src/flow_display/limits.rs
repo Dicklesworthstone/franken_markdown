@@ -300,6 +300,10 @@ impl<'a> Projection<'a> {
         self.limits.max_output_bytes.saturating_sub(self.bytes)
     }
 
+    pub(super) fn remaining_assets(&self) -> usize {
+        self.limits.max_asset_requests.saturating_sub(self.assets)
+    }
+
     pub(super) fn push_back(&mut self, item: PreparedBlock) -> Result<(), FlowDisplayError> {
         let mut count = self.items.len();
         charge(
@@ -344,6 +348,16 @@ impl<'a> Projection<'a> {
                 add(asset.alt_text.len())?;
             }
             DisplayBlock::Rule => {}
+        }
+        for asset in &item.meta.publication_assets {
+            charge(
+                &mut assets,
+                1,
+                self.limits.max_asset_requests,
+                "asset requests",
+            )?;
+            add(asset.reference.len())?;
+            add(asset.alt_text.len())?;
         }
         let BlockMeta {
             heading_id, marker, ..

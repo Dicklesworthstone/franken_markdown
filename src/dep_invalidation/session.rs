@@ -8,7 +8,7 @@
 use super::{DependencyGraph, DocumentChangeSet};
 use crate::display::DisplayList;
 use crate::flow_display::{
-    AssetRequest, AssetRequestId, AssetResult, DisplayBlock, FlowDisplayError, FlowDisplayLimits,
+    AssetRequest, AssetRequestId, AssetResult, FlowDisplayError, FlowDisplayLimits,
     FlowInlineStyle, FlowLayoutError, FlowLayoutOptions, FlowTextRole, ResumableFlowDisplay,
 };
 use crate::span::SourceSpan;
@@ -372,13 +372,7 @@ fn reuse_assets(
         .collect();
     let mut old_counts = HashMap::<SourceSpan, usize>::new();
     let mut reusable = HashMap::new();
-    for (index, block) in old.blocks().iter().enumerate() {
-        let DisplayBlock::UnresolvedAsset(asset) = block else {
-            continue;
-        };
-        let Some(span) = old.source_span_for_block(index) else {
-            continue;
-        };
+    for (asset, span) in old.asset_occurrences() {
         let ordinal = old_counts.entry(span).or_default();
         if let (Some(&new_span), Some(&result)) = (spans.get(&span), accepted.get(&asset.id)) {
             reusable.insert((new_span, *ordinal), (asset, result));
@@ -387,13 +381,7 @@ fn reuse_assets(
     }
     let mut new_counts = HashMap::<SourceSpan, usize>::new();
     let mut transfers = Vec::new();
-    for (index, block) in new.blocks().iter().enumerate() {
-        let DisplayBlock::UnresolvedAsset(asset) = block else {
-            continue;
-        };
-        let Some(span) = new.source_span_for_block(index) else {
-            continue;
-        };
+    for (asset, span) in new.asset_occurrences() {
         let ordinal = new_counts.entry(span).or_default();
         if let Some(&(previous, result)) = reusable.get(&(span, *ordinal))
             && previous.reference == asset.reference

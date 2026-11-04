@@ -464,6 +464,35 @@ fn reading_node(
     w.write_str("]}")
 }
 
+pub(super) fn asset_inventory(
+    state: &BrowserFlowSession,
+    range: Range<usize>,
+    total: usize,
+) -> Result<String, BrowserFlowError> {
+    encode(|w| {
+        header(w, state)?;
+        pagination(w, &range, total)?;
+        w.write_str(",\"items\":[")?;
+        let engine = state.session.engine();
+        for (index, (asset, _)) in engine
+            .asset_occurrences()
+            .skip(range.start)
+            .take(range.len())
+            .enumerate()
+        {
+            if index != 0 {
+                w.write_char(',')?;
+            }
+            w.write_str("{\"kind\":\"image\",\"requestId\":")?;
+            w.identity(asset.id.0)?;
+            w.write_str(",\"destination\":")?;
+            w.string(&asset.reference)?;
+            write!(w, ",\"isResolved\":{}}}", engine.is_asset_resolved(asset.id))?;
+        }
+        w.write_str("]}")
+    })
+}
+
 pub(super) fn assets(
     state: &BrowserFlowSession,
     range: Range<usize>,

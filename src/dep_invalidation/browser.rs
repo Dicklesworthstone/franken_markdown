@@ -409,6 +409,22 @@ impl BrowserFlowSession {
         wire::reading(self, range)
     }
 
+    /// Every owned image occurrence, independently of preview drawing items.
+    /// Resolved occurrences remain present, including heading/table alt-text
+    /// and raw-HTML images. Both tokens fence the bytes used for publication.
+    pub fn asset_inventory_json(
+        &self,
+        revision: u64,
+        layout_revision: u64,
+        offset: usize,
+        limit: usize,
+    ) -> Result<String, BrowserFlowError> {
+        self.check_snapshot(revision, layout_revision)?;
+        let total = self.session.engine().asset_occurrences().count();
+        let range = page(offset, limit, total)?;
+        wire::asset_inventory(self, range, total)
+    }
+
     pub fn pending_assets_json(
         &self,
         revision: u64,

@@ -382,6 +382,35 @@ pub(crate) fn url_spans(html: &str) -> impl Iterator<Item = UrlSpan> + '_ {
     })
 }
 
+/// Image occurrences in actual raw markup. Reuse the renderer's tokenizer and
+/// image attributes so comments/declarations, escaped tags and tag-looking text
+/// inside quoted attributes cannot invent assets. This is deliberately the
+/// union needed by publication: allowed raw HTML can retain img elements inside
+/// code/pre even when safe lowering would flatten them into native code text.
+/// The iterator parses one token at a time, allowing callers to enforce their
+/// own occurrence limit before retaining another image.
+pub(crate) fn image_references(html: &str) -> impl Iterator<Item = (String, String)> + '_ {
+    let mut cursor = 0;
+    std::iter::from_fn(move || {
+        while let Some(relative) = html[cursor..].find('<') {
+            let start = cursor + relative;
+            let Some((piece, len)) = markup_at(&html[start..]) else {
+                cursor = start + 1;
+                continue;
+            };
+            cursor = start + len;
+            if let Piece::Tag(tag, _) = piece
+                && tag.name == "img"
+                && !tag.closing
+                && let Some(Inline::Image { dest, alt, .. }) = image_from_tag(&tag)
+            {
+                return Some((dest, alt));
+            }
+        }
+        None
+    })
+}
+
 /// Serialize one attribute value without exposing quotes or entity spellings
 /// to another round of parsing. Callers preserve every surrounding source byte.
 pub(crate) fn attribute_value(destination: &str) -> String {

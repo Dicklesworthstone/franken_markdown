@@ -228,6 +228,9 @@ struct BlockMeta {
     table_decimal_cells: Vec<bool>,
     table_source_row: Option<usize>,
     image_link: Option<std::sync::Arc<str>>,
+    // Images retained as alt text or literal HTML in the live preview still
+    // require occurrence-specific ownership before publishing the source.
+    publication_assets: Vec<UnresolvedAsset>,
 }
 
 #[derive(Debug)]
@@ -337,6 +340,26 @@ impl ResumableFlowDisplay {
         &self.blocks
     }
 
+    /// Every emitted image occurrence, including images whose preview contains
+    /// only alt text or literal HTML. Occurrences retain their identities after
+    /// resolution. The accompanying span is the enclosing source block, not an
+    /// invented exact position within a heading, table cell, or HTML fragment.
+    pub fn asset_occurrences(&self) -> impl Iterator<Item = (&UnresolvedAsset, SourceSpan)> {
+        self.blocks
+            .iter()
+            .zip(&self.metadata)
+            .flat_map(|(block, meta)| {
+                let painted = match block {
+                    DisplayBlock::UnresolvedAsset(asset) => Some(asset),
+                    _ => None,
+                };
+                meta.publication_assets
+                    .iter()
+                    .chain(painted)
+                    .map(move |asset| (asset, meta.span))
+            })
+    }
+
     #[must_use]
     pub const fn is_finished(&self) -> bool {
         self.finished
@@ -373,8 +396,12 @@ impl ResumableFlowDisplay {
         self.resolved_assets.clear();
         self.retained_asset_bytes = 0;
         self.pending_assets.clear();
-        for block in &mut self.blocks {
-            if let DisplayBlock::UnresolvedAsset(asset) = block {
+        for (block, meta) in self.blocks.iter_mut().zip(&mut self.metadata) {
+            let painted = match block {
+                DisplayBlock::UnresolvedAsset(asset) => Some(asset),
+                _ => None,
+            };
+            for asset in meta.publication_assets.iter_mut().chain(painted) {
                 asset.generation = generation;
                 self.pending_assets.push(AssetRequest::from(&*asset));
             }
@@ -450,7 +477,11 @@ impl ResumableFlowDisplay {
                 let Some(mut item) = prepared.pop_front() else {
                     break;
                 };
-                if let DisplayBlock::UnresolvedAsset(asset) = &mut item.block {
+                let painted = match &mut item.block {
+                    DisplayBlock::UnresolvedAsset(asset) => Some(asset),
+                    _ => None,
+                };
+                for asset in item.meta.publication_assets.iter_mut().chain(painted) {
                     // Preparation may precede a generation change. Never issue
                     // an old-generation request when its block finally appears.
                     asset.generation = self.generation;
@@ -964,8 +995,13 @@ fn prepare_document(
                     slugs.insert(id.clone(), 1);
                     slugs.insert(base, suffix);
                     meta.heading_id = Some(id);
-                    let (text, runs) =
-                        inline::collect(&notes.inlines(inlines), output.remaining_bytes())?;
+                    let (text, runs, _) = inline::collect(
+                        &notes.inlines(inlines),
+                        &mut meta,
+                        &output,
+                        &mut next_request_id,
+                        output.remaining_bytes(),
+                    )?;
                     meta.inline_runs = runs;
                     output.push_back(PreparedBlock {
                         block: DisplayBlock::Heading {
@@ -1094,12 +1130,14 @@ fn prepare_document(
                         }
                         let mut remaining = output.remaining_bytes();
                         for cell in row {
-                            let (text, runs) = inline::collect(&notes.inlines(cell), remaining)?;
-                            remaining = remaining.saturating_sub(text.len());
-                            for run in &runs {
-                                remaining = remaining
-                                    .saturating_sub(run.link.as_ref().map_or(0, |link| link.len()));
-                            }
+                            let (text, runs, rest) = inline::collect(
+                                &notes.inlines(cell),
+                                &mut row_meta,
+                                &output,
+                                &mut next_request_id,
+                                remaining,
+                            )?;
+                            remaining = rest;
                             cells.push(text);
                             row_meta.cell_runs.push(runs);
                         }
@@ -1125,6 +1163,22 @@ fn prepare_document(
                     meta,
                 })?,
                 Block::HtmlBlock(text) => {
+                    let mut remaining = output
+                        .remaining_bytes()
+                        .checked_sub(text.len())
+                        .ok_or_else(|| {
+                            FlowDisplayError::BudgetExceeded("HTML output bytes".to_owned())
+                        })?;
+                    for (destination, alt) in crate::safe_html::image_references(text) {
+                        inline::record_publication_asset(
+                            &mut meta,
+                            &output,
+                            &mut next_request_id,
+                            &destination,
+                            &alt,
+                            &mut remaining,
+                        )?;
+                    }
                     emit_text(text.clone(), &mut meta, &mut output)?;
                 }
                 // Definitions are rendered once, in numbered note order.
@@ -1183,6 +1237,7 @@ fn emit_text(
     meta.marker = None;
     meta.task = None;
     meta.inline_runs.clear();
+    meta.publication_assets.clear();
     Ok(())
 }
 

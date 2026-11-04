@@ -398,8 +398,215 @@ final class MarkdownDraftStoreTests: XCTestCase {
         XCTAssertEqual(try sourceFiles(store).count, 1)
     }
 
+    func testSettingsOnlySaveReusesOwnedSourceGeneration() async throws {
+        let store = makeStore()
+        let identity = UUID()
+        let documentIdentity = UUID()
+        let source = String(repeating: "A café 👩🏽‍💻 paragraph.\r\n", count: 80_000)
+        let original = makeDraft(source: source, documentIdentity: documentIdentity)
+        try await store.save(original, sourceIdentity: identity)
+        let firstURL = try storedSourceURL(store)
+        let firstAttributes = try FileManager.default.attributesOfItem(atPath: firstURL.path)
+        let changed = makeDraft(
+            source: source, documentIdentity: documentIdentity,
+            fontFamily: "sans", customCSS: "body { color: #456789; }"
+        )
+
+        try await store.save(changed, sourceIdentity: identity)
+
+        XCTAssertEqual(try storedSourceURL(store), firstURL)
+        let attributes = try FileManager.default.attributesOfItem(atPath: firstURL.path)
+        XCTAssertEqual(attributes[.modificationDate] as? Date, firstAttributes[.modificationDate] as? Date)
+        XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, firstAttributes[.systemFileNumber] as? NSNumber)
+        XCTAssertLessThan(try Data(contentsOf: store.fileURL).count, 4 * 1_024)
+        XCTAssertEqual(try sourceFiles(store).count, 1)
+        let loaded = await store.load()
+        XCTAssertEqual(loaded, changed)
+        XCTAssertTrue(loaded?.source.utf8.elementsEqual(source.utf8) ?? false)
+    }
+
+    func testNewIdentityPreservesCanonicallyEquivalentSourceBytes() async throws {
+        let store = makeStore()
+        let original = "# \u{00E9}e\u{0301}\n"
+        let edited = "# e\u{0301}\u{00E9}\n"
+        XCTAssertEqual(original, edited, "The fixture must compare equal as Swift Strings")
+        XCTAssertEqual(original.utf8.count, edited.utf8.count)
+        XCTAssertFalse(original.utf8.elementsEqual(edited.utf8))
+        try await store.save(makeDraft(source: original), sourceIdentity: UUID())
+        let firstURL = try storedSourceURL(store)
+
+        try await store.save(makeDraft(source: edited), sourceIdentity: UUID())
+
+        let nextURL = try storedSourceURL(store)
+        XCTAssertNotEqual(nextURL, firstURL)
+        XCTAssertEqual(try Data(contentsOf: nextURL), Data(edited.utf8))
+        let loaded = await store.load()
+        XCTAssertTrue(loaded?.source.utf8.elementsEqual(edited.utf8) ?? false)
+        XCTAssertFalse(loaded?.source.utf8.elementsEqual(original.utf8) ?? true)
+    }
+
+    func testMissingOrChangedOwnedGenerationFallsBackToStreaming() async throws {
+        for change in 0..<3 {
+            let store = makeStore()
+            let identity = UUID()
+            let draft = makeDraft(source: "# Original complete source.\n")
+            try await store.save(draft, sourceIdentity: identity)
+            let previous = try storedSourceURL(store)
+            let attributes = try FileManager.default.attributesOfItem(atPath: previous.path)
+            switch change {
+            case 0:
+                try FileManager.default.removeItem(at: previous)
+            case 1:
+                // An in-place, same-length modification must not be trusted.
+                let handle = try FileHandle(forWritingTo: previous)
+                try handle.seek(toOffset: UInt64(draft.source.utf8.count - 1))
+                try handle.write(contentsOf: Data([0x21]))
+                try handle.close()
+                try FileManager.default.setAttributes(
+                    [.modificationDate: Date(timeIntervalSince1970: 42)],
+                    ofItemAtPath: previous.path
+                )
+            default:
+                // An atomic replacement changes inode even when its length and
+                // modification date are made identical to the original file.
+                var bytes = Data(draft.source.utf8)
+                bytes[bytes.count - 1] = 0x21
+                try bytes.write(to: previous, options: .atomic)
+                let date = try XCTUnwrap(attributes[.modificationDate] as? Date)
+                try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: previous.path)
+            }
+
+            try await store.save(draft, sourceIdentity: identity)
+
+            let repaired = try storedSourceURL(store)
+            XCTAssertNotEqual(repaired, previous, "change \(change)")
+            XCTAssertEqual(try Data(contentsOf: repaired), Data(draft.source.utf8))
+            let loaded = await store.load()
+            XCTAssertEqual(loaded, draft)
+        }
+    }
+
+    func testAnotherStoreCannotMakeAnOldOwnedGenerationReusable() async throws {
+        let store = makeStore()
+        let identity = UUID()
+        let draft = makeDraft(source: "# First store")
+        try await store.save(draft, sourceIdentity: identity)
+        let oldURL = try storedSourceURL(store)
+        let other = MarkdownDraftStore(fileURL: store.fileURL)
+        try await other.save(makeDraft(source: "# Other store"), sourceIdentity: UUID())
+        let otherURL = try storedSourceURL(store)
+
+        try await store.save(draft, sourceIdentity: identity)
+
+        let current = try storedSourceURL(store)
+        XCTAssertNotEqual(current, oldURL)
+        XCTAssertNotEqual(current, otherURL)
+        XCTAssertEqual(try sourceFiles(store).count, 1)
+        let loaded = await store.load()
+        XCTAssertEqual(loaded, draft)
+    }
+
+    func testRelaunchCannotEstablishOwnershipFromPersistedIdentity() async throws {
+        let store = makeStore()
+        let identity = UUID()
+        let draft = makeDraft(source: "# Restarted draft")
+        try await store.save(draft, sourceIdentity: identity)
+        let initial = try storedSourceURL(store)
+        let restarted = MarkdownDraftStore(fileURL: store.fileURL)
+        let loaded = await restarted.load()
+        XCTAssertEqual(loaded, draft)
+
+        // Even an accidentally reused UUID cannot trust a disk-only record.
+        try await restarted.save(draft, sourceIdentity: identity)
+        let recreated = try storedSourceURL(restarted)
+        XCTAssertNotEqual(recreated, initial)
+        // The normal fresh model identity also requires a new generation.
+        try await restarted.save(draft, sourceIdentity: UUID())
+        XCTAssertNotEqual(try storedSourceURL(restarted), recreated)
+    }
+
+    func testLegacyOrChangedManifestCannotSeedSourceReuse() async throws {
+        let store = makeStore()
+        let identity = UUID()
+        let draft = makeDraft(source: "# Legacy")
+        try createParent(of: store.fileURL)
+        try JSONEncoder().encode(draft).write(to: store.fileURL, options: .atomic)
+        let legacy = await store.load()
+        XCTAssertEqual(legacy, draft)
+        try await store.save(draft, sourceIdentity: identity)
+        var previous = try storedSourceURL(store)
+
+        for field in ["sourceIdentity", "sourceSHA256"] {
+            var manifest = try readManifest(store)
+            if field == "sourceIdentity" {
+                // Earlier schema-2 snapshots have no source identity.
+                manifest.removeValue(forKey: field)
+            } else {
+                manifest[field] = Data(repeating: 0, count: 32).base64EncodedString()
+            }
+            try writeManifest(manifest, to: store)
+            try await store.save(draft, sourceIdentity: identity)
+            let current = try storedSourceURL(store)
+            XCTAssertNotEqual(current, previous)
+            let loaded = await store.load()
+            XCTAssertEqual(loaded, draft)
+            previous = current
+        }
+        // An omitted caller identity always disables reuse too.
+        try await store.save(draft)
+        XCTAssertNotEqual(try storedSourceURL(store), previous)
+    }
+
+    func testInterruptedMetadataOnlyPublicationKeepsOwnedSource() async throws {
+        for cancel in [false, true] {
+            let location = makeStore().fileURL
+            let directory = location.deletingLastPathComponent().appendingPathComponent(
+                location.lastPathComponent + ".sources", isDirectory: true
+            )
+            let store = MarkdownDraftStore(fileURL: location, beforePublishing: {
+                guard FileManager.default.fileExists(atPath: location.path) else { return }
+                let files = try FileManager.default.contentsOfDirectory(
+                    at: directory, includingPropertiesForKeys: nil
+                ).filter { $0.pathExtension == "utf8" }
+                // This is the reuse path only: no newly staged source exists.
+                guard files.count == 1 else { throw RecoveryTestError.unexpectedSourceRewrite }
+                if cancel {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                } else {
+                    throw CocoaError(.fileWriteOutOfSpace)
+                }
+            })
+            let identity = UUID()
+            let original = makeDraft(source: "# Last durable source")
+            try await store.save(original, sourceIdentity: identity)
+            let previous = try storedSourceURL(store)
+            let metadata = try Data(contentsOf: location)
+            let updated = makeDraft(source: original.source, fontFamily: "sans")
+            let worker = Task.detached {
+                try await store.save(updated, sourceIdentity: identity)
+            }
+            do {
+                try await worker.value
+                XCTFail("Interrupted metadata publication must fail")
+            } catch {
+                if cancel {
+                    XCTAssertTrue(error is CancellationError)
+                } else {
+                    XCTAssertEqual((error as? CocoaError)?.code, .fileWriteOutOfSpace)
+                }
+            }
+
+            XCTAssertEqual(try Data(contentsOf: location), metadata)
+            XCTAssertEqual(try storedSourceURL(store), previous)
+            XCTAssertEqual(try sourceFiles(store).count, 1)
+            let loaded = await store.load()
+            XCTAssertEqual(loaded, original)
+        }
+    }
+
     private enum RecoveryTestError: Error {
         case tornSnapshot
+        case unexpectedSourceRewrite
     }
 
     private func assertInvalidDraft(_ draft: MarkdownActiveDraft, store: MarkdownDraftStore) async {

@@ -75,6 +75,7 @@ actor MarkdownDraftStore {
 
     nonisolated let fileURL: URL
     private let beforePublishing: @Sendable () throws -> Void
+    private var ownedSource: OwnedSource?
 
     init(
         fileURL: URL? = nil,
@@ -101,12 +102,21 @@ actor MarkdownDraftStore {
         }
     }
 
-    func save(_ draft: MarkdownActiveDraft) async throws {
+    /// A source identity must change on every source assignment. Omitting it
+    /// disables reuse. It is never inferred from Swift's Unicode-aware equality.
+    func save(_ draft: MarkdownActiveDraft, sourceIdentity: UUID? = nil) async throws {
         let location = fileURL
         let checkpoint = beforePublishing
-        try await Self.diskAccess.perform {
-            try Self.writeSnapshot(draft, to: location, beforePublishing: checkpoint)
+        let previous = ownedSource
+        let written = try await Self.diskAccess.perform {
+            try Self.writeSnapshot(
+                draft, to: location, sourceIdentity: sourceIdentity,
+                reusing: previous, beforePublishing: checkpoint
+            )
         }
+        // This is only a reuse hint. If actor reentrancy leaves an older hint,
+        // the current manifest/signature checks reject it before the next save.
+        ownedSource = written
     }
 
     private struct Header: Decodable {
@@ -118,7 +128,29 @@ actor MarkdownDraftStore {
         let sourceFileName: String
         let sourceByteCount: Int
         let sourceSHA256: Data
+        // Optional for compatibility with earlier schema-2 manifests.
+        let sourceIdentity: UUID?
         let draft: MarkdownActiveDraft
+    }
+
+    /// Only successful writes by this store can establish reuse ownership.
+    /// Loading a manifest never creates this record, including after relaunch.
+    /// It retains a small signature and digest, never an older source String.
+    private struct OwnedSource: Sendable {
+        let identity: UUID
+        let fileName: String
+        let byteCount: Int
+        let digest: Data
+        let signature: SourceFileSignature
+    }
+
+    private struct SourceFileSignature: Equatable, Sendable {
+        let fileSystem: UInt64
+        let fileNumber: UInt64
+        let byteCount: Int
+        let creationDate: Date
+        let modificationDate: Date
+        let attributeModificationDate: Date
     }
 
     private static func readSnapshot(from fileURL: URL) throws -> MarkdownActiveDraft {
@@ -140,13 +172,7 @@ actor MarkdownDraftStore {
             throw StoreError.invalidDraft
         }
         let manifest = try decoder.decode(Manifest.self, from: data)
-        guard isSourceFileName(manifest.sourceFileName),
-              (0...maximumSourceBytes).contains(manifest.sourceByteCount),
-              manifest.sourceSHA256.count == 32,
-              manifest.draft.source.isEmpty,
-              isValid(manifest.draft) else {
-            throw StoreError.invalidDraft
-        }
+        guard isValid(manifest) else { throw StoreError.invalidDraft }
         let directory = sourceDirectory(for: fileURL)
         try checkSourceDirectory(directory)
         let sourceURL = directory.appendingPathComponent(manifest.sourceFileName, isDirectory: false)
@@ -177,14 +203,16 @@ actor MarkdownDraftStore {
     /// Stat is an early rejection, not the allocation bound: a file that grows
     /// during a read must still stop at the legacy metadata budget plus a probe.
     private static func readMetadata(from fileURL: URL) throws -> Data {
-        let values = try fileURL.resourceValues(
+        var freshURL = URL(fileURLWithPath: fileURL.path)
+        freshURL.removeAllCachedResourceValues()
+        let values = try freshURL.resourceValues(
             forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
         )
         guard values.isRegularFile == true, values.isSymbolicLink == false,
               let size = values.fileSize, size > 0, size <= maximumLegacyEncodedBytes else {
             throw StoreError.invalidDraft
         }
-        let handle = try FileHandle(forReadingFrom: fileURL)
+        let handle = try FileHandle(forReadingFrom: freshURL)
         defer { try? handle.close() }
         var data = Data()
         data.reserveCapacity(size)
@@ -204,12 +232,34 @@ actor MarkdownDraftStore {
     private static func writeSnapshot(
         _ draft: MarkdownActiveDraft,
         to fileURL: URL,
+        sourceIdentity: UUID?,
+        reusing previous: OwnedSource?,
         beforePublishing: @Sendable () throws -> Void
-    ) throws {
+    ) throws -> OwnedSource? {
         try Task.checkCancellation()
-        guard isValid(draft) else { throw StoreError.invalidDraft }
-        let manager = FileManager.default
+        guard hasValidSettings(draft) else { throw StoreError.invalidDraft }
         let directory = sourceDirectory(for: fileURL)
+        let reusable = reusableSource(
+            previous, identity: sourceIdentity, manifestURL: fileURL, directory: directory
+        )
+        try Task.checkCancellation()
+        if let reusable {
+            let manifest = Manifest(
+                storageSchema: storageSchema,
+                sourceFileName: reusable.fileName,
+                sourceByteCount: reusable.byteCount,
+                sourceSHA256: reusable.digest,
+                sourceIdentity: reusable.identity,
+                draft: draft.replacingSource("")
+            )
+            // Reusing a known source avoids even a UTF-8 count of a potentially
+            // bridged String. Identity, signature and length came from our write.
+            try publish(manifest, to: fileURL, beforePublishing: beforePublishing)
+            removeObsoleteSources(in: directory, keeping: reusable.fileName)
+            return reusable
+        }
+        guard draft.source.utf8.count <= maximumSourceBytes else { throw StoreError.invalidDraft }
+        let manager = FileManager.default
         try manager.createDirectory(
             at: directory,
             withIntermediateDirectories: true,
@@ -246,24 +296,101 @@ actor MarkdownDraftStore {
         try handle.synchronize()
         try handle.close()
 
+        let sourceSHA256 = Data(digest.finalize())
         let manifest = Manifest(
             storageSchema: storageSchema,
             sourceFileName: name,
             sourceByteCount: byteCount,
-            sourceSHA256: Data(digest.finalize()),
+            sourceSHA256: sourceSHA256,
+            sourceIdentity: sourceIdentity,
             draft: draft.replacingSource("")
         )
-        let data = try JSONEncoder().encode(manifest)
-        guard data.count <= maximumMetadataBytes else { throw StoreError.oversizedDraft }
-        // A narrow checkpoint also permits deterministic interrupted-commit
-        // tests after the complete source is on disk but still unreferenced.
-        try beforePublishing()
-        try Task.checkCancellation()
-        try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
+        let owned: OwnedSource?
+        if let sourceIdentity, let signature = sourceFileSignature(at: sourceURL),
+           signature.byteCount == byteCount {
+            owned = OwnedSource(
+                identity: sourceIdentity, fileName: name, byteCount: byteCount,
+                digest: sourceSHA256, signature: signature
+            )
+        } else {
+            // Missing filesystem signature support only disables the fast path.
+            owned = nil
+        }
+        try publish(manifest, to: fileURL, beforePublishing: beforePublishing)
         published = true
         // Never throw cancellation or cleanup failures after the commit: the
         // manifest already names a complete, synchronized recovery generation.
         removeObsoleteSources(in: directory, keeping: name)
+        return owned
+    }
+
+    private static func publish(
+        _ manifest: Manifest,
+        to fileURL: URL,
+        beforePublishing: @Sendable () throws -> Void
+    ) throws {
+        let data = try JSONEncoder().encode(manifest)
+        guard data.count <= maximumMetadataBytes else { throw StoreError.oversizedDraft }
+        // A narrow checkpoint permits deterministic interrupted publication
+        // tests for both new generations and metadata-only saves.
+        try beforePublishing()
+        try Task.checkCancellation()
+        try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
+    }
+
+    private static func reusableSource(
+        _ previous: OwnedSource?,
+        identity: UUID?,
+        manifestURL: URL,
+        directory: URL
+    ) -> OwnedSource? {
+        guard let previous, let identity, previous.identity == identity,
+              let data = try? readMetadata(from: manifestURL), data.count <= maximumMetadataBytes,
+              let current = try? JSONDecoder().decode(Manifest.self, from: data),
+              isValid(current),
+              current.sourceIdentity == identity,
+              current.sourceFileName == previous.fileName,
+              current.sourceByteCount == previous.byteCount,
+              current.sourceSHA256 == previous.digest,
+              (try? checkSourceDirectory(directory)) != nil else { return nil }
+        let sourceURL = directory.appendingPathComponent(previous.fileName, isDirectory: false)
+        guard sourceFileSignature(at: sourceURL) == previous.signature else { return nil }
+        return previous
+    }
+
+    /// Reuse is restricted to a private, immutable generation written by this
+    /// live store. Detect replacement, resizing, content writes and attribute
+    /// changes without rereading the body. Recovery loads still verify SHA-256;
+    /// this metadata signature is not a substitute for that integrity check.
+    private static func sourceFileSignature(at url: URL) -> SourceFileSignature? {
+        var freshURL = URL(fileURLWithPath: url.path)
+        freshURL.removeAllCachedResourceValues()
+        guard let values = try? freshURL.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .attributeModificationDateKey]
+        ), values.isRegularFile == true, values.isSymbolicLink == false,
+              let attributeDate = values.attributeModificationDate,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: freshURL.path),
+              attributes[.type] as? FileAttributeType == FileAttributeType.typeRegular,
+              let fileSystem = attributes[.systemNumber] as? NSNumber,
+              let fileNumber = attributes[.systemFileNumber] as? NSNumber,
+              let size = attributes[.size] as? NSNumber,
+              (0...maximumSourceBytes).contains(size.intValue),
+              let created = attributes[.creationDate] as? Date,
+              let modified = attributes[.modificationDate] as? Date else { return nil }
+        return SourceFileSignature(
+            fileSystem: fileSystem.uint64Value, fileNumber: fileNumber.uint64Value,
+            byteCount: size.intValue, creationDate: created, modificationDate: modified,
+            attributeModificationDate: attributeDate
+        )
+    }
+
+    private static func isValid(_ manifest: Manifest) -> Bool {
+        manifest.storageSchema == storageSchema &&
+            isSourceFileName(manifest.sourceFileName) &&
+            (0...maximumSourceBytes).contains(manifest.sourceByteCount) &&
+            manifest.sourceSHA256.count == 32 &&
+            manifest.draft.source.isEmpty &&
+            hasValidSettings(manifest.draft)
     }
 
     private static func sourceDirectory(for fileURL: URL) -> URL {
@@ -273,7 +400,9 @@ actor MarkdownDraftStore {
     }
 
     private static func checkSourceDirectory(_ directory: URL) throws {
-        let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        var freshURL = URL(fileURLWithPath: directory.path, isDirectory: true)
+        freshURL.removeAllCachedResourceValues()
+        let values = try freshURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isDirectory == true, values.isSymbolicLink == false else {
             throw StoreError.invalidDraft
         }
@@ -301,8 +430,11 @@ actor MarkdownDraftStore {
         _ draft: MarkdownActiveDraft,
         maximumSourceBytes: Int = maximumSourceBytes
     ) -> Bool {
+        draft.source.utf8.count <= maximumSourceBytes && hasValidSettings(draft)
+    }
+
+    private static func hasValidSettings(_ draft: MarkdownActiveDraft) -> Bool {
         draft.schema == MarkdownActiveDraft.currentSchema &&
-            draft.source.utf8.count <= maximumSourceBytes &&
             draft.title.utf8.count <= 1_024 &&
             draft.author.utf8.count <= 1_024 &&
             ["sans", "serif"].contains(draft.fontFamily) &&

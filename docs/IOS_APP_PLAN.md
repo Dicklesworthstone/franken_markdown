@@ -133,6 +133,18 @@ budget and migrates on the next successful save. Native regression tests cover
 large escaped Unicode, corruption, interrupted publication, cancellation, and
 concurrent store instances; they require an Apple XCTest run.
 
+Settings-only recovery saves reuse an immutable source generation written by
+that live store. Each source assignment has a fresh UUID; the store checks its
+own generation record, current manifest, and uncached file identity, size and
+modification signature before publishing only the new settings. It retains no
+previous source String. A missing/replaced/changed file, another store's newer
+manifest, a new source identity, or unavailable signature support falls back
+to a complete streamed write. Loads always verify the full source SHA-256.
+Native tests cover reuse, byte-distinct Unicode edits, missing/corrupt files,
+interrupted metadata publication and restart/cross-store ownership; they are
+not yet executed on Apple hardware. Dirty-state checks also compare exact
+UTF-8 bytes, with a shared-storage shortcut for unchanged native Strings.
+
 The native editor keeps the complete source in its text storage. Syntax
 decoration is limited to a visible window of at most 32,768 UTF-16 units and
 160 logical lines; scrolling and current-line painting request visible layout

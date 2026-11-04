@@ -119,7 +119,7 @@ revoked, including when a refresh transaction fails.
 
 ## Native Mermaid diagrams
 
-Every `wasm-flow` build renders supported flowcharts, sequence diagrams and pie
+Every `wasm-flow` build renders supported flowcharts, state diagrams, sequence diagrams and pie
 charts as native paths with measured bundled-font labels. Dashed and thick
 strokes, arrowheads, curves, node shapes and label colors survive the shared
 compiler. The complete measured scene fits the available lane and refits after

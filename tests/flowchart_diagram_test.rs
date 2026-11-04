@@ -529,3 +529,55 @@ fn long_return_labels_and_their_routes_remain_inside_the_actual_svg_canvas() {
         assert!(svg.contains(&format!(">{label}</text>")));
     }
 }
+
+#[test]
+fn forward_connections_skipping_layers_bypass_intervening_nodes() {
+    for direction in ["TD", "BT", "LR", "RL"] {
+        let source = format!(
+            "flowchart {direction}\nA[Start]-->B{{Inspect}}-->C((Done)); A-. Skip inspection .->C"
+        );
+        let svg = render_diagram_svg(&source, "mermaid").unwrap();
+        let routes: Vec<_> = svg
+            .lines()
+            .filter(|line| line.contains("class=\"fmd-edge-path\""))
+            .collect();
+        assert_eq!(routes.len(), 3);
+        assert_return_route_clear(&svg, routes[2]);
+        assert!(routes[2].contains("stroke-dasharray=\"4,4\""));
+        assert!(!routes[2].contains("marker-end:none"));
+        assert!(svg.contains(">Skip inspection</text>"));
+    }
+}
+
+#[test]
+fn forward_captions_fit_the_canvas_and_do_not_cover_their_endpoint_nodes() {
+    for direction in ["TD", "BT", "LR", "RL"] {
+        let label = "W".repeat(128);
+        let source = format!("flowchart {direction}\nA[Source]-->|{label}|B[Destination]");
+        let svg = render_diagram_svg(&source, "mermaid").unwrap();
+        let view: Vec<f32> = attribute(svg.lines().next().unwrap(), "viewBox")
+            .split_whitespace()
+            .map(|value| value.parse().unwrap())
+            .collect();
+        let caption = svg
+            .lines()
+            .find(|line| line.contains("class=\"fmd-edge-label-bg\""))
+            .unwrap();
+        let (left, top) = (number(caption, "x"), number(caption, "y"));
+        let (right, bottom) = (
+            left + number(caption, "width"),
+            top + number(caption, "height"),
+        );
+        assert!(left >= 0.0 && top >= 0.0 && right <= view[2] && bottom <= view[3]);
+        for node in node_bounds(&svg) {
+            assert!(
+                right <= node.left
+                    || left >= node.right
+                    || bottom <= node.top
+                    || top >= node.bottom,
+                "{direction}: caption covers endpoint {node:?}"
+            );
+        }
+        assert!(svg.contains(&format!(">{label}</text>")));
+    }
+}

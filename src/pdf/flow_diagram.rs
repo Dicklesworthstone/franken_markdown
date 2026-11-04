@@ -119,7 +119,7 @@ impl From<LineJoin> for crate::display::DisplayLineJoin {
     }
 }
 
-/// Compile a complete supported flowchart, sequence diagram or pie chart.
+/// Compile a complete supported flowchart, state machine, sequence diagram or pie chart.
 /// Source and geometry refusals are recoverable: the caller retains the
 /// original fenced block. No SVG, image decoder or ambient resource escapes.
 pub(crate) fn compile(source: &str, language: &str) -> Result<Scene, &'static str> {

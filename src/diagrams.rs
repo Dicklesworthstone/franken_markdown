@@ -1,6 +1,6 @@
 //! Zero-dependency pure-Rust diagram compiler.
 //!
-//! Compiles Mermaid flowcharts, sequence diagrams, pie charts, and ASCII art diagrams
+//! Compiles Mermaid flowcharts, state diagrams, sequence diagrams, pie charts, and ASCII art diagrams
 //! into clean, standalone SVG vector graphics for HTML and PDF rendering.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -9,6 +9,7 @@ use std::fmt;
 mod flowchart;
 mod pie;
 mod sequence;
+mod state;
 
 /// Supported diagram types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +26,7 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
     let trimmed_lang = lang.trim().to_ascii_lowercase();
     if matches!(
         trimmed_lang.as_str(),
-        "mermaid" | "flowchart" | "sequence" | "pie" | "ditaa"
+        "mermaid" | "flowchart" | "state" | "sequence" | "pie" | "ditaa"
     ) {
         return true;
     }
@@ -36,6 +37,7 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
         .find(|line| !line.is_empty() && !line.starts_with("%%"))
         .unwrap_or("");
     names_flowchart(first_directive)
+        || state::is_header(first_directive)
         || sequence::is_header(first_directive)
         || pie::is_header(first_directive)
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
@@ -53,7 +55,11 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         .find(|line| !line.is_empty() && !line.starts_with("%%"))
         .unwrap_or("");
 
-    if lower_lang == "sequence" || sequence::is_header(first_directive) {
+    if lower_lang == "state" {
+        // An explicit state fence owns its grammar, including the required
+        // header. Other diagram headers must not bypass that contract.
+        state::render(trimmed)
+    } else if lower_lang == "sequence" || sequence::is_header(first_directive) {
         sequence::render(trimmed)
     } else if lower_lang == "ditaa"
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
@@ -63,8 +69,10 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         render_flowchart(trimmed)
     } else if lower_lang == "pie" || pie::is_header(first_directive) {
         pie::render(trimmed)
+    } else if state::is_header(first_directive) {
+        state::render(trimmed)
     } else if lower_lang == "mermaid" && !names_flowchart(first_directive) {
-        // classDiagram, gantt, stateDiagram, erDiagram and other Mermaid
+        // classDiagram, gantt, erDiagram and other Mermaid
         // types this compiler does not draw stay readable source code instead
         // of being misread as flowchart nodes.
         None
@@ -75,7 +83,7 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
     }
 }
 
-/// A Mermaid flowchart, sequence diagram or pie chart as an SVG figure, with alt text,
+/// A supported Mermaid diagram as an SVG figure, with alt text,
 /// for paged and poster outputs. ASCII box art returns `None`: those outputs
 /// keep it as a fitted monospace panel that preserves its row geometry.
 #[must_use]
@@ -86,9 +94,11 @@ pub fn figure_svg(code: &str, lang: &str) -> Option<(String, &'static str)> {
     let svg = render_diagram_svg(code, lang)?;
     let alt = if svg.contains("class=\"fmd-diagram fmd-pie\"") {
         "Pie chart"
-    } else if svg.contains("fmd-sequence") {
+    } else if svg.contains("class=\"fmd-diagram fmd-sequence\"") {
         "Sequence diagram"
-    } else if svg.contains("fmd-flowchart") {
+    } else if svg.contains("class=\"fmd-diagram fmd-state\"") {
+        "State diagram"
+    } else if svg.contains("class=\"fmd-diagram fmd-flowchart\"") {
         "Diagram"
     } else {
         return None;
@@ -255,6 +265,10 @@ enum NodeShape {
     Stadium,
     Diamond,
     Circle,
+    StateStart,
+    StateEnd,
+    StateChoice,
+    StateBar,
 }
 
 #[derive(Debug, Clone)]
@@ -279,30 +293,39 @@ struct FlowEdge {
 }
 
 fn render_flowchart(src: &str) -> Option<String> {
+    Some(render_flow_graph(flowchart::parse(src)?, false))
+}
+
+fn render_flow_graph(graph: flowchart::Graph, state: bool) -> String {
     let flowchart::Graph {
         dir,
         mut nodes,
         order: node_order,
         edges,
-    } = flowchart::parse(src)?;
+    } = graph;
 
     // Keep every dependency in an acyclic graph ahead of its destination.
     assign_flowchart_layers(&mut nodes, &node_order, &edges);
 
     // Compute geometry
-    let (mut total_width, mut total_height) = layout_flowchart_nodes(&mut nodes, &node_order, dir);
+    let (mut total_width, mut total_height) =
+        layout_flowchart_nodes(&mut nodes, &node_order, &edges, dir);
     let return_routes =
         layout_flowchart_returns(&mut nodes, &edges, dir, &mut total_width, &mut total_height);
 
     // Generate SVG
     let mut svg = String::with_capacity(4096);
     svg.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram fmd-flowchart\">\n",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram {}\">\n",
         SvgInt(total_width),
         SvgInt(total_height),
         SvgInt(total_width),
-        SvgInt(total_height)
+        SvgInt(total_height),
+        if state { "fmd-state" } else { "fmd-flowchart" }
     ));
+    if state {
+        svg.push_str("<title>State diagram</title>\n");
+    }
 
     // Defs: Arrowhead markers and styles
     svg.push_str("<defs>\n");
@@ -328,6 +351,15 @@ fn render_flowchart(src: &str) -> Option<String> {
 }
 </style>
 "#);
+    if state {
+        svg.push_str(
+            "<style>\n.fmd-state-solid { fill: var(--fg-default, #1f2328); }\n\
+             .fmd-state-end { fill: var(--bg-canvas, #ffffff); stroke: var(--fg-default, #1f2328); stroke-width: 1.5; }\n\
+             @media (prefers-color-scheme: dark) {\n\
+             .fmd-state-solid { fill: #e6edf3; }\n\
+             .fmd-state-end { fill: #161b22; stroke: #e6edf3; }\n}\n</style>\n",
+        );
+    }
     svg.push_str("</defs>\n");
 
     // Draw Edges
@@ -438,7 +470,7 @@ fn render_flowchart(src: &str) -> Option<String> {
                         SvgNum(node.height)
                     ));
                 }
-                NodeShape::Diamond => {
+                NodeShape::Diamond | NodeShape::StateChoice => {
                     let pts = format!(
                         "{},{} {},{} {},{} {},{}",
                         SvgNum(cx),
@@ -464,19 +496,47 @@ fn render_flowchart(src: &str) -> Option<String> {
                         SvgNum(r)
                     ));
                 }
+                NodeShape::StateStart | NodeShape::StateEnd => {
+                    if node.shape == NodeShape::StateEnd {
+                        svg.push_str(&format!(
+                            "<circle cx=\"{}\" cy=\"{}\" r=\"10\" class=\"fmd-state-end\" />\n",
+                            SvgNum(cx),
+                            SvgNum(cy)
+                        ));
+                    }
+                    svg.push_str(&format!(
+                        "<circle cx=\"{}\" cy=\"{}\" r=\"7\" class=\"fmd-state-solid\" />\n",
+                        SvgNum(cx),
+                        SvgNum(cy)
+                    ));
+                }
+                NodeShape::StateBar => {
+                    svg.push_str(&format!(
+                        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"fmd-state-solid\" />\n",
+                        SvgNum(node.x), SvgNum(node.y), SvgNum(node.width), SvgNum(node.height)
+                    ));
+                }
             }
 
-            svg.push_str(&format!(
-                "<text x=\"{}\" y=\"{}\" class=\"fmd-node-text\">{}</text>\n",
-                SvgNum(cx),
-                SvgNum(cy),
-                escape_svg_text(&node.label)
-            ));
+            if !matches!(
+                node.shape,
+                NodeShape::StateStart
+                    | NodeShape::StateEnd
+                    | NodeShape::StateChoice
+                    | NodeShape::StateBar
+            ) {
+                svg.push_str(&format!(
+                    "<text x=\"{}\" y=\"{}\" class=\"fmd-node-text\">{}</text>\n",
+                    SvgNum(cx),
+                    SvgNum(cy),
+                    escape_svg_text(&node.label)
+                ));
+            }
         }
     }
 
     svg.push_str("</svg>\n");
-    Some(svg)
+    svg
 }
 
 fn assign_flowchart_layers(
@@ -548,6 +608,7 @@ fn assign_flowchart_layers(
 fn layout_flowchart_nodes(
     nodes: &mut BTreeMap<String, FlowNode>,
     node_order: &[String],
+    edges: &[FlowEdge],
     dir: FlowDirection,
 ) -> (f32, f32) {
     // Group nodes by layer respecting node_order
@@ -561,6 +622,20 @@ fn layout_flowchart_nodes(
     let margin = 24.0;
     let node_gap = 28.0;
     let layer_gap = 56.0;
+    // Adjacent horizontal transitions need enough room for their captions.
+    // Long transitions use outside lanes and do not inflate every intervening
+    // layer. Vertical captions fit in the normal band; their width contributes
+    // to the final canvas envelope.
+    let mut label_gaps = BTreeMap::<usize, f32>::new();
+    for edge in edges {
+        if let (Some(from), Some(to), Some(label)) =
+            (nodes.get(&edge.from), nodes.get(&edge.to), &edge.label)
+            && to.layer == from.layer + 1
+        {
+            let gap = label_gaps.entry(from.layer).or_insert(layer_gap);
+            *gap = gap.max(flowchart_label_width(label) + 24.0);
+        }
+    }
 
     let mut max_w: f32 = 0.0;
     let mut max_h: f32 = 0.0;
@@ -616,7 +691,7 @@ fn layout_flowchart_nodes(
         }
         FlowDirection::LeftToRight | FlowDirection::RightToLeft => {
             let mut curr_x = margin;
-            for node_ids in layers.values() {
+            for (layer, node_ids) in &layers {
                 let layer_max_w = node_ids
                     .iter()
                     .filter_map(|id| nodes.get(id))
@@ -640,7 +715,7 @@ fn layout_flowchart_nodes(
                         curr_y += node.height + node_gap;
                     }
                 }
-                curr_x += layer_max_w + layer_gap;
+                curr_x += layer_max_w + label_gaps.get(layer).copied().unwrap_or(layer_gap);
             }
             max_w = curr_x - layer_gap + margin;
 
@@ -712,13 +787,14 @@ struct FlowReturnRoute {
 }
 
 fn flowchart_label_width(label: &str) -> f32 {
-    (label.len() as f32 * 7.0 + 8.0).max(24.0)
+    (label.len() as f32 * 11.0 + 8.0).max(24.0)
 }
 
 /// Leave the normal outgoing port, travel outside the entire graph, and
 /// approach the normal incoming port. Reversing an ordinary edge's endpoints
 /// would instead draw a self-loop or feedback connection through filled nodes.
-/// Only return edges allocate lanes; forward DAG geometry stays unchanged.
+/// Connections that skip layers also need outside lanes: their direct path
+/// would otherwise cross unrelated nodes in the intervening layers.
 fn layout_flowchart_returns(
     nodes: &mut BTreeMap<String, FlowNode>,
     edges: &[FlowEdge],
@@ -742,20 +818,66 @@ fn layout_flowchart_returns(
         outside = outside.max(cross_end);
     }
 
+    // Distinct transitions must remain visible even when they share endpoints.
+    // Keep a direct adjacent connection only if its caption clears every node
+    // and every earlier direct caption. Conflicts receive separate outside
+    // lanes. Reserve all direct captions before placing any outside lane, so a
+    // wide label cannot reach into a lane allocated earlier in source order.
+    let mut pairs = BTreeSet::new();
+    let mut captions: Vec<[f32; 4]> = Vec::new();
+    let mut direct = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let (Some(from), Some(to)) = (nodes.get(&edge.from), nodes.get(&edge.to)) else {
+            direct.push(false);
+            continue;
+        };
+        let mut admitted =
+            to.layer == from.layer + 1 && pairs.insert((edge.from.as_str(), edge.to.as_str()));
+        if admitted && let Some(label) = &edge.label {
+            let (x1, y1, x2, y2) = get_edge_endpoints(from, to, dir);
+            let (x, y) = ((x1 + x2) / 2.0, (y1 + y2) / 2.0);
+            let half = flowchart_label_width(label) / 2.0;
+            let bounds = [x - half, y - 8.0, x + half, y + 8.0];
+            let overlaps = |other: [f32; 4]| {
+                bounds[0] < other[2] + 4.0
+                    && bounds[2] + 4.0 > other[0]
+                    && bounds[1] < other[3] + 4.0
+                    && bounds[3] + 4.0 > other[1]
+            };
+            admitted = !captions.iter().copied().any(overlaps)
+                && !nodes.values().any(|node| {
+                    overlaps([node.x, node.y, node.x + node.width, node.y + node.height])
+                });
+            if admitted {
+                outside = outside.max(if horizontal { bounds[3] } else { bounds[2] });
+                captions.push(bounds);
+            }
+        }
+        direct.push(admitted);
+    }
+
     let mut next_lane = outside + 16.0;
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (0.0f32, 0.0f32, *width, *height);
     let mut routes = Vec::with_capacity(edges.len());
-    for edge in edges {
+    for (edge, direct) in edges.iter().zip(direct) {
         let (Some(from), Some(to)) = (nodes.get(&edge.from), nodes.get(&edge.to)) else {
             routes.push(None);
             continue;
         };
-        if from.layer < to.layer {
+        let (x1, y1, x2, y2) = get_edge_endpoints(from, to, dir);
+        let label_width = edge.label.as_deref().map_or(0.0, flowchart_label_width);
+        if direct {
+            if edge.label.is_some() {
+                let (x, y) = ((x1 + x2) / 2.0, (y1 + y2) / 2.0);
+                min_x = min_x.min(x - label_width / 2.0 - 12.0);
+                min_y = min_y.min(y - 20.0);
+                max_x = max_x.max(x + label_width / 2.0 + 12.0);
+                max_y = max_y.max(y + 20.0);
+            }
             routes.push(None);
             continue;
         }
 
-        let (x1, y1, x2, y2) = get_edge_endpoints(from, to, dir);
         let from_layer = layers[&from.layer];
         let to_layer = layers[&to.layer];
         // The whole layer must be cleared before crossing sideways, including
@@ -765,13 +887,6 @@ fn layout_flowchart_returns(
         } else {
             (from_layer.0 - 12.0, to_layer.1 + 12.0)
         };
-        // Reserve an em per UTF-8 byte for return labels, including wide ASCII
-        // capitals. The legacy seven-pixel average can clip long W/M labels.
-        // This conservative reservation does not change forward-edge output.
-        let label_width = edge
-            .label
-            .as_deref()
-            .map_or(0.0, |label| (label.len() as f32 * 11.0 + 8.0).max(24.0));
         let half_lane = if horizontal {
             8.0
         } else {

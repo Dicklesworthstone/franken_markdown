@@ -2,7 +2,8 @@
 
 Mermaid fences use the same first-party SVG compiler in HTML, PDF, SVG posters,
 and EPUB. Rendering does not load Mermaid.js, execute scripts, or contact the
-network. Flowcharts (`graph`/`flowchart`), sequence diagrams (`sequenceDiagram`),
+network. Flowcharts (`graph`/`flowchart`), state diagrams
+(`stateDiagram`/`stateDiagram-v2`), sequence diagrams (`sequenceDiagram`),
 and pie charts are supported. Other diagram types retain their source as a
 highlighted code block.
 
@@ -38,12 +39,13 @@ Chains retain each intermediate node; `A & B --> C & D` creates all four
 connections. Acyclic joins are placed after every predecessor, and `RL`/`BT`
 reverse both node positions and edge direction.
 
-Self-loops (`A --> A`) and feedback connections to earlier nodes use separate
-return lanes outside the node area. Their arrows approach the destination from
+Self-loops (`A --> A`), feedback connections and connections that skip layers
+use separate lanes outside the node area. Their arrows approach the destination from
 its normal incoming side, and dotted, thick, open, and labeled links keep their
 meaning. Return labels have their own space, and the SVG canvas expands to keep
-the routes and labels visible in every direction. Forward-only graphs retain
-their existing geometry.
+the routes and labels visible in every direction. Horizontal layer spacing
+reserves caption widths. Parallel transitions and conflicting captions also
+receive separate lanes, so one transition's label cannot hide another.
 
 Admission is bounded to 64 KiB of source, 256 nodes, 1024 expanded edges,
 128 UTF-8 bytes per identifier, and 512 bytes per label. Malformed statements,
@@ -56,6 +58,54 @@ with an invented node.
 The supported grammar follows the [official Mermaid flowchart syntax](https://mermaid.js.org/syntax/flowchart.html).
 See [the flowchart example](../examples/flowcharts.md) for chains, grouped links,
 quoted labels, and reverse directions.
+
+## State diagrams
+
+````markdown
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    state "Waiting for input" as Idle
+    Idle --> Check: submit
+    state Check <<choice>>
+    Check --> Working: accepted
+    Check --> Idle: retry
+    Working --> [*]: complete
+```
+````
+
+Flat state machines accept the `stateDiagram` and `stateDiagram-v2` headers.
+The header is required, including in a fence explicitly named `state`.
+States can be introduced by transitions, declared by identifier, or given a
+description with `state "Description" as Identifier` or
+`Identifier: Description`. A description may follow the first use of its
+state; it replaces the implicit identifier label.
+
+Transitions use `-->` and an optional colon followed by their guard or event.
+`[*]` on the left creates an initial filled circle; on the right it creates
+a separate final double-circle marker. Named `<<choice>>` states draw diamonds,
+and `<<fork>>`/`<<join>>` states draw bars perpendicular to the direction of
+travel. A single `direction TD`, `TB`, `BT`, `LR`, or `RL` statement selects
+the layout. Self-transitions, feedback, parallel transitions and branches
+retain distinct connections and nonoverlapping captions.
+
+Newlines separate statements. `%%` introduces a trailing or standalone comment,
+while a quoted state description owns literal `%%` characters. Descriptions
+and transition labels are single-line plain text escaped for SVG. A colon or
+arrow within a transition label remains text. The same SVG scene reaches
+HTML, tagged PDF, SVG posters, single-document and book EPUB, and browser
+Flow's native vector paths and accessible source transcript.
+
+Admission is bounded to 64 KiB of source, 256 states including initial/final
+markers, 1024 transitions, 128 UTF-8 bytes per identifier, and 512 bytes per
+label. Composite states, notes, concurrent regions, repeated descriptions,
+labels on pseudostates, classes/styles, accessibility directives, configuration,
+and semicolon-separated statements are outside this subset. Unsupported or
+malformed input preserves the **entire source block** without a partial diagram.
+
+The supported grammar follows the
+[official Mermaid state syntax](https://mermaid.js.org/syntax/stateDiagram.html).
+See [the state-machine examples](../examples/state-diagrams.md).
 
 ## Sequence diagrams
 

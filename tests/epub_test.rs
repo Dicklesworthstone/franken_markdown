@@ -1081,3 +1081,28 @@ fn pie_charts_reach_single_and_book_epubs_as_valid_declared_svg() {
         assert!(opf.contains("properties=\"svg\""));
     }
 }
+
+#[test]
+fn state_diagrams_reach_single_and_book_epubs_as_valid_declared_svg() {
+    use franken_markdown::BookInput;
+    use franken_markdown::book::BookRenderer;
+    let source = "# Lifecycle\n\n```mermaid\nstateDiagram-v2\n[*] --> Idle\nIdle --> Active: Start & verify\nActive --> [*]: Finish\n```\n";
+    let doc = parse_markdown(source);
+    let single = epub::render_epub(&doc, &HtmlOptions::default()).unwrap();
+    let renderer = BookRenderer::new(&[BookInput {
+        path: "lifecycle.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for archive in [single, renderer.render_epub().unwrap()] {
+        let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+        assert_well_formed_xml(&chapter);
+        assert!(chapter.contains("class=\"fmd-diagram fmd-state\""));
+        assert!(chapter.contains("Start &amp; verify"));
+        assert!(chapter.contains(">Idle</text>"));
+        assert!(chapter.contains(">Active</text>"));
+        let opf = entry_text(&archive, "OEBPS/content.opf");
+        assert_well_formed_xml(&opf);
+        assert!(opf.contains("properties=\"svg\""));
+    }
+}

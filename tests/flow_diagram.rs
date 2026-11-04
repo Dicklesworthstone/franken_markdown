@@ -32,6 +32,13 @@ const PIE: &str = concat!(
     "pie showData title Costs\n",
     "\"Engineering\" : 42.25\n\"Operations\" : 31.50\n\"Support\" : 26.25\n",
 );
+const STATE: &str = concat!(
+    "stateDiagram-v2\n[*] --> Idle\n",
+    "state \"Waiting for input\" as Idle\n",
+    "Idle --> Choice: submit\nstate Choice <<choice>>\n",
+    "Choice --> Working: if n >= 0\nChoice --> Idle: retry\n",
+    "Working --> [*]: complete\n",
+);
 const UNSUPPORTED: &str = "classDiagram\nclass Example {\n  +load()\n}\nExample --> Other\n";
 const ASCII: &str = "+--------+\n| source |\n+--------+\n";
 
@@ -263,6 +270,34 @@ fn flowcharts_keep_real_shapes_arrowheads_dashes_thickness_and_literal_labels() 
                 && matches!(path.commands.last(), Some(DisplayPathCommand::Close)))
     );
     assert!(state.pending_assets().is_empty());
+}
+
+#[test]
+fn state_machines_keep_native_geometry_labels_and_accessible_source_at_each_width() {
+    for language in ["mermaid", "state"] {
+        let source = fence(language, STATE);
+        for width in [180.0, 400.0, 900.0] {
+            let state = session(&source, width);
+            assert_scene_bounds(state.display(), &source, STATE, width, FontFamily::Sans);
+            let visible = flattened(state.display());
+            for label in [
+                "Waiting for input",
+                "submit",
+                "if n >= 0",
+                "Working",
+                "retry",
+                "complete",
+            ] {
+                assert!(
+                    visible.contains(label),
+                    "missing state-machine label {label:?}"
+                );
+            }
+            assert!(!paths(state.display()).is_empty());
+            assert!(state.pending_assets().is_empty());
+            assert_eq!(diagram(state.display(), STATE).text, STATE);
+        }
+    }
 }
 
 #[test]

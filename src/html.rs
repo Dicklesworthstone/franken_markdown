@@ -17,6 +17,7 @@ use crate::{FontAssetSlot, FontAssets, FontEmbedding, HtmlOptions, instance_host
 
 mod data_images;
 mod financial_tables;
+mod stream;
 
 /// Render a document to a complete HTML5 document string.
 #[must_use]
@@ -36,61 +37,17 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     html
 }
 
-/// Render HTML to a caller-owned byte sink, releasing each top-level block
-/// after emission. The AST, stylesheet, cross-block state and largest block
-/// remain resident; the complete HTML document does not. The writer is not
-/// flushed and may contain a prefix if it fails.
+/// Render HTML to a caller-owned byte sink with bounded output buffering.
+/// Ordinary blocks stream even when one block is larger than the buffer;
+/// specialized renderers may still materialize an individual asset or cell.
+/// The writer is not flushed and may contain a prefix if it fails.
 pub(crate) fn render_to_writer<W: std::io::Write + ?Sized>(
     doc: &Document,
     opts: &HtmlOptions,
     writer: &mut W,
 ) -> std::io::Result<usize> {
     let profiled = crate::apply_profile(doc, opts.profile);
-    let doc = &*profiled;
-    let mut chunk = String::with_capacity(64 * 1024);
-    let mut state = start_document(doc, opts, &mut chunk, 0);
-    let mut written = write_chunk(writer, &mut chunk)?;
-    // Preserve one document state across chunks: raw HTML containers, heading
-    // collisions and footnote numbering may span top-level blocks.
-    for block in &doc.blocks {
-        render_block(block, &mut chunk, opts, &mut state);
-        written += write_chunk(writer, &mut chunk)?;
-    }
-    state.raw_html.close_to(0, &mut chunk);
-    written += write_chunk(writer, &mut chunk)?;
-    if !state.footnote_order.is_empty() {
-        state.automatic_toc = false;
-        let prefix = b"<section class=\"footnotes\">\n<ol>\n";
-        writer.write_all(prefix)?;
-        written += prefix.len();
-        let mut idx = 0;
-        while idx < state.footnote_order.len() {
-            push_footnote(&mut state, &mut chunk, opts, idx);
-            written += write_chunk(writer, &mut chunk)?;
-            idx += 1;
-        }
-        let suffix = b"</ol>\n</section>\n";
-        writer.write_all(suffix)?;
-        written += suffix.len();
-    }
-    let suffix = b"</main>\n</body>\n</html>\n";
-    writer.write_all(suffix)?;
-    Ok(written + suffix.len())
-}
-
-fn write_chunk<W: std::io::Write + ?Sized>(
-    writer: &mut W,
-    chunk: &mut String,
-) -> std::io::Result<usize> {
-    let len = chunk.len();
-    writer.write_all(chunk.as_bytes())?;
-    // Do not retain a rare giant block throughout the rest of the document.
-    if chunk.capacity() > 256 * 1024 {
-        *chunk = String::with_capacity(64 * 1024);
-    } else {
-        chunk.clear();
-    }
-    Ok(len)
+    stream::render(&profiled, opts, writer)
 }
 
 fn start_document<'a>(
@@ -495,8 +452,18 @@ struct MathCacheEntry {
 }
 
 const HIGHLIGHT_CACHE_MAX_ENTRIES: usize = 16;
+// Entry counts alone do not bound memory when a fence contains megabytes of
+// source. Keep useful small-block reuse without retaining enormous copies.
+const HIGHLIGHT_CACHE_MAX_CODE_BYTES: usize = 16 * 1024;
+const HIGHLIGHT_CACHE_MAX_LANG_BYTES: usize = 256;
+const HIGHLIGHT_CACHE_MAX_HTML_BYTES: usize = 64 * 1024;
+const HIGHLIGHT_SPANS_MAX_RETAINED_BYTES: usize = 256 * 1024;
 const MATH_CACHE_MAX_ENTRIES: usize = 16;
 const URL_CACHE_MAX_ENTRIES: usize = 32;
+
+fn cacheable_highlight_source(lang: &str, code: &str) -> bool {
+    code.len() <= HIGHLIGHT_CACHE_MAX_CODE_BYTES && lang.len() <= HIGHLIGHT_CACHE_MAX_LANG_BYTES
+}
 
 struct UrlCacheEntry {
     context: UrlContext,
@@ -581,13 +548,24 @@ impl<'a> RenderState<'a> {
             push_escaped_text(code, out);
             return;
         }
+        if !cacheable_highlight_source(lang, code) {
+            emit_highlighted_spans(code, out, &self.highlight_spans);
+            self.release_large_highlight_spans();
+            return;
+        }
         let mut rendered_html = String::with_capacity(code.len());
         emit_highlighted_spans(code, &mut rendered_html, &self.highlight_spans);
         out.push_str(&rendered_html);
         self.remember_highlight(lang, code, rendered_html);
+        self.release_large_highlight_spans();
     }
 
     fn remember_highlight(&mut self, lang: &str, code: &str, rendered_html: String) {
+        if !cacheable_highlight_source(lang, code)
+            || rendered_html.capacity() > HIGHLIGHT_CACHE_MAX_HTML_BYTES
+        {
+            return;
+        }
         let entry = HighlightCacheEntry {
             lang: lang.to_string(),
             code: code.to_string(),
@@ -600,6 +578,14 @@ impl<'a> RenderState<'a> {
 
         self.highlight_cache[self.highlight_cache_next] = entry;
         self.highlight_cache_next = (self.highlight_cache_next + 1) % HIGHLIGHT_CACHE_MAX_ENTRIES;
+    }
+
+    fn release_large_highlight_spans(&mut self) {
+        if self.highlight_spans.capacity()
+            > HIGHLIGHT_SPANS_MAX_RETAINED_BYTES / std::mem::size_of::<Span>()
+        {
+            self.highlight_spans = Vec::new();
+        }
     }
 
     /// Render MathML for one formula, memoized on (tex.trim(), display).
@@ -4374,5 +4360,49 @@ mod tests {
         ];
 
         assert_eq!(slug_inlines(&inlines), slug(&inlines_to_plain(&inlines)));
+    }
+}
+
+#[cfg(test)]
+mod highlight_budget_tests {
+    use super::*;
+
+    #[test]
+    fn huge_fences_do_not_retain_source_html_or_span_copies() {
+        let mut state = RenderState::default();
+        let code = "let value = call(42);\n".repeat(8192);
+        let mut actual = String::new();
+        state.highlight_code("rust", &code, &mut actual);
+        let mut expected = String::new();
+        emit_highlighted_spans(
+            &code,
+            &mut expected,
+            &crate::highlight::highlight("rust", &code),
+        );
+        assert_eq!(actual, expected);
+        assert!(state.highlight_cache.is_empty());
+        assert_eq!(state.highlight_spans.capacity(), 0);
+    }
+
+    #[test]
+    fn dense_small_fences_cannot_fill_the_cache_with_expanded_html() {
+        let mut state = RenderState::default();
+        // The source fits admission, but its individual punctuation tokens
+        // expand well beyond the per-entry HTML budget.
+        let code = "();".repeat(4096);
+        let mut actual = String::new();
+        state.highlight_code("rust", &code, &mut actual);
+        assert!(actual.len() > HIGHLIGHT_CACHE_MAX_HTML_BYTES);
+        assert!(state.highlight_cache.is_empty());
+        assert!(
+            state.highlight_spans.capacity()
+                <= HIGHLIGHT_SPANS_MAX_RETAINED_BYTES / std::mem::size_of::<Span>()
+        );
+        state.highlight_code("rust", "let small = 1;", &mut actual);
+        assert_eq!(
+            state.highlight_cache.len(),
+            1,
+            "small repeated fences still benefit from caching"
+        );
     }
 }

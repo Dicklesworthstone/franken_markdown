@@ -57,7 +57,7 @@ pub(super) fn render(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_cells(
+pub(super) fn render_cells(
     cells: &[Vec<Inline>],
     align: &[Align],
     rules: &[FootingRule],
@@ -152,7 +152,11 @@ fn render_decimal(
     out.push_str("</span></span>");
 }
 
-fn suffix_widths(table: &Table, rows: &[FinancialRow<'_>], opts: &HtmlOptions) -> Vec<Option<f32>> {
+pub(super) fn suffix_widths(
+    table: &Table,
+    rows: &[FinancialRow<'_>],
+    opts: &HtmlOptions,
+) -> Vec<Option<f32>> {
     let mut widths: Vec<_> = table
         .align
         .iter()

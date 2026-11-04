@@ -197,10 +197,99 @@ pub(crate) fn highlight_supported_into(lang: &str, code: &str, spans: &mut Vec<S
     true
 }
 
-fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
+/// Emit the local lexers' exact spans while retaining only the current span.
+/// Richer language modules still use their existing vector-backed lexers.
+pub(crate) fn highlight_streamed<E>(
+    lang: &str,
+    code: &str,
+    emit: impl FnMut(Span) -> Result<(), E>,
+) -> Option<Result<(), E>> {
+    let lexer = lexer(lang)?;
+    let mut spans = CallbackSpans {
+        emit,
+        pending: None,
+        error: None,
+    };
+    match lexer {
+        Lexer::Generic(rules) => lex_generic_into(code, &rules, &mut spans),
+        Lexer::Rust => lex_rust_into(code, &mut spans),
+        Lexer::Css => lex_css_into(code, &mut spans),
+        Lexer::Markdown => lex_markdown_into(code, &mut spans),
+        Lexer::Mermaid => lex_mermaid_into(code, &mut spans),
+        _ => return None,
+    }
+    Some(spans.finish())
+}
+
+trait SpanSink {
+    fn push(&mut self, span: Span);
+    fn last_mut(&mut self) -> Option<&mut Span>;
+    fn accepting(&self) -> bool {
+        true
+    }
+}
+
+impl SpanSink for Vec<Span> {
+    fn push(&mut self, span: Span) {
+        Vec::push(self, span);
+    }
+
+    fn last_mut(&mut self) -> Option<&mut Span> {
+        self.as_mut_slice().last_mut()
+    }
+}
+
+struct CallbackSpans<F, E> {
+    emit: F,
+    pending: Option<Span>,
+    error: Option<E>,
+}
+
+impl<F, E> SpanSink for CallbackSpans<F, E>
+where
+    F: FnMut(Span) -> Result<(), E>,
+{
+    fn push(&mut self, span: Span) {
+        if self.error.is_some() {
+            return;
+        }
+        if let Some(previous) = self.pending.take()
+            && let Err(error) = (self.emit)(previous)
+        {
+            self.error = Some(error);
+            return;
+        }
+        self.pending = Some(span);
+    }
+
+    fn last_mut(&mut self) -> Option<&mut Span> {
+        self.pending.as_mut()
+    }
+
+    fn accepting(&self) -> bool {
+        self.error.is_none()
+    }
+}
+
+impl<F, E> CallbackSpans<F, E>
+where
+    F: FnMut(Span) -> Result<(), E>,
+{
+    fn finish(mut self) -> Result<(), E> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if let Some(span) = self.pending {
+            (self.emit)(span)?;
+        }
+        Ok(())
+    }
+}
+
+fn lex_generic_into(code: &str, r: &Rules, spans: &mut impl SpanSink) {
     let len = code.len();
     let mut pos = 0;
-    while pos < len {
+    while pos < len && spans.accepting() {
         let rest = &code[pos..];
         let c = first_char_in_nonempty(rest);
         let clen = c.len_utf8();
@@ -409,12 +498,12 @@ fn lex_generic_into(code: &str, r: &Rules, spans: &mut Vec<Span>) {
     }
 }
 
-fn lex_rust_into(code: &str, spans: &mut Vec<Span>) {
+fn lex_rust_into(code: &str, spans: &mut impl SpanSink) {
     let len = code.len();
     let mut pos = 0;
     let bytes = code.as_bytes();
 
-    while pos < len {
+    while pos < len && spans.accepting() {
         let rest = &code[pos..];
         let c = first_char_in_nonempty(rest);
         let clen = c.len_utf8();
@@ -810,11 +899,11 @@ fn lex_rust_into(code: &str, spans: &mut Vec<Span>) {
     }
 }
 
-fn lex_css_into(code: &str, spans: &mut Vec<Span>) {
+fn lex_css_into(code: &str, spans: &mut impl SpanSink) {
     let len = code.len();
     let mut pos = 0usize;
 
-    while pos < len {
+    while pos < len && spans.accepting() {
         let rest = &code[pos..];
         let ch = first_char_in_nonempty(rest);
         let clen = ch.len_utf8();
@@ -873,13 +962,13 @@ fn lex_css_into(code: &str, spans: &mut Vec<Span>) {
     }
 }
 
-fn lex_markdown_into(code: &str, spans: &mut Vec<Span>) {
+fn lex_markdown_into(code: &str, spans: &mut impl SpanSink) {
     let len = code.len();
     let mut pos = 0usize;
     let mut line_start = true;
     let mut line_indent_columns = 0usize;
 
-    while pos < len {
+    while pos < len && spans.accepting() {
         let rest = &code[pos..];
 
         if rest.starts_with("<!--") {
@@ -961,11 +1050,11 @@ fn lex_markdown_into(code: &str, spans: &mut Vec<Span>) {
     }
 }
 
-fn lex_mermaid_into(code: &str, spans: &mut Vec<Span>) {
+fn lex_mermaid_into(code: &str, spans: &mut impl SpanSink) {
     let len = code.len();
     let mut pos = 0usize;
 
-    while pos < len {
+    while pos < len && spans.accepting() {
         let rest = &code[pos..];
         let ch = first_char_in_nonempty(rest);
         let clen = ch.len_utf8();
@@ -1016,7 +1105,7 @@ fn lex_mermaid_into(code: &str, spans: &mut Vec<Span>) {
     }
 }
 
-fn push_span(spans: &mut Vec<Span>, kind: Tok, start: usize, end: usize) {
+fn push_span(spans: &mut impl SpanSink, kind: Tok, start: usize, end: usize) {
     if start >= end {
         return;
     }
@@ -2768,5 +2857,84 @@ mod keyword_table_tests {
         assert_eq!(spans_range[1].kind, Tok::Punct); // "."
         assert_eq!(spans_range[2].kind, Tok::Punct); // "."
         assert_eq!(spans_range[3].kind, Tok::Number); // "10"
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod streamed_tests {
+    use super::*;
+
+    #[test]
+    fn streamed_lexers_preserve_exact_vector_span_boundaries() {
+        let samples = [
+            "",
+            "ordinary café 🦀 <>& += != 12.5\n",
+            "fn f<'a>(x: &'a str) -> u64 { let s = r###\"<&>\"###; b'x'; 'life: loop {} }\n",
+            "/* outer /* nested */ comment */ // line\n\"unterminated",
+            "#include <stdio.h>\n#define VALUE 0xff\ntrue false null yes off\n",
+            ".one:hover { --width: 2.5em; color: #aabbcc; } /* text */\n",
+            "# Heading\n**strong** [link](https://x.test) `code` <!-- html -->\n",
+            "graph TD\nA[\"<&>\"] --> B; %% comment\npie 'Pets' 42.5% x\n",
+            "[section]\nkey = \"value\"\n; comment\n<# block #> $true\n",
+        ];
+        for lang in [
+            "rust",
+            "RS",
+            "json",
+            "jsonc",
+            "toml",
+            "yaml",
+            "ini",
+            "c",
+            "powershell",
+            "css",
+            "markdown",
+            "mermaid",
+        ] {
+            for code in samples {
+                let expected = highlight(lang, code);
+                let mut actual = Vec::new();
+                highlight_streamed(lang, code, |span| {
+                    actual.push(span);
+                    Ok::<_, std::convert::Infallible>(())
+                })
+                .unwrap()
+                .unwrap();
+                assert_eq!(actual, expected, "{lang}: {code:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_lexer_stops_calling_a_failed_sink() {
+        for lang in ["rust", "json", "css", "markdown", "mermaid"] {
+            let mut calls = 0;
+            let result = highlight_streamed(
+                lang,
+                "let value = 42; /* comment */\n".repeat(8192).as_str(),
+                |_| {
+                    calls += 1;
+                    if calls == 3 {
+                        Err("sink failed")
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(result, Err("sink failed"), "{lang}");
+            assert_eq!(calls, 3, "{lang} continued after a sink failure");
+        }
+    }
+
+    #[test]
+    fn vector_only_or_unknown_languages_leave_the_sink_untouched() {
+        for lang in ["javascript", "python", "sql", "html", "unknown"] {
+            let result = highlight_streamed(lang, "text", |_| -> Result<(), ()> {
+                panic!("fallback must not emit a partial token stream");
+            });
+            assert!(result.is_none());
+        }
     }
 }

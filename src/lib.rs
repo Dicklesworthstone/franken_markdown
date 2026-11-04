@@ -1060,9 +1060,13 @@ pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String
 /// Render an already-parsed document directly to a byte writer.
 ///
 /// Output is byte-identical to [`render_html_document`], but its full HTML
-/// buffer is never retained. The AST, stylesheet and largest top-level block
-/// (or footnote) still determine working memory. Use a buffered writer for a
-/// file or socket. Returns the number of bytes written; does not flush the writer.
+/// buffer is never retained. Paragraphs, ordinary tables, code fences, lists
+/// and notes emit through a 64 KiB buffer, including a single enormous block.
+/// The AST, stylesheet and document-wide indexes remain resident. Specialized
+/// renderers can still buffer an individual diagram, formula, image, sanitized
+/// HTML run or financial cell; some language lexers retain a token vector.
+/// Use a buffered writer for a file or socket. Returns the number of bytes
+/// written; does not flush the writer.
 ///
 /// # Errors
 /// Performs the same font validation as [`render_html_document`] before

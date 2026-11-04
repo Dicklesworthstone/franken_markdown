@@ -198,3 +198,211 @@ fn many_blocks_are_delivered_incrementally() {
     );
     assert!(sink.writes >= doc.blocks.len());
 }
+
+/// Compare every delivered byte without retaining a second copy of the HTML.
+/// A writer call larger than the documented buffer is an immediate failure.
+struct BoundedParitySink<'a> {
+    remaining: &'a [u8],
+    writes: usize,
+}
+
+impl Write for BoundedParitySink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        assert!(
+            bytes.len() <= 64 * 1024,
+            "unbounded HTML write: {} bytes",
+            bytes.len()
+        );
+        assert_eq!(bytes, &self.remaining[..bytes.len()]);
+        self.remaining = &self.remaining[bytes.len()..];
+        self.writes += 1;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        panic!("the renderer must leave flushing to its caller");
+    }
+}
+
+fn assert_bounded_parity(doc: &Document, opts: &HtmlOptions) {
+    let expected = render_html_document(doc, opts).unwrap();
+    let mut sink = BoundedParitySink {
+        remaining: expected.as_bytes(),
+        writes: 0,
+    };
+    let count = render_html_document_to_writer(doc, opts, &mut sink).unwrap();
+    assert_eq!(count, expected.len());
+    assert!(sink.remaining.is_empty());
+    assert!(sink.writes >= expected.len().div_ceil(64 * 1024));
+}
+
+#[test]
+fn enormous_single_paragraph_streams_escapes_shortcodes_and_nested_inlines() {
+    let text = "café 👩‍🚀 <>& :rocket::unknown: :+1: :bad-name: ".repeat(32_768);
+    let doc = Document {
+        blocks: vec![Block::Paragraph(vec![
+            Inline::Html("<span>".into()),
+            Inline::Strong(vec![Inline::Text(text)]),
+            Inline::Html("</span>".into()),
+            Inline::Link {
+                dest: "https://example.com/?a=1&b=2".into(),
+                title: Some("\"quoted\" & title".into()),
+                content: vec![Inline::Code("🦀<&>".repeat(32_769))],
+            },
+        ])],
+    };
+    for allow_raw_html in [false, true] {
+        assert_bounded_parity(
+            &doc,
+            &HtmlOptions {
+                allow_raw_html,
+                ..options()
+            },
+        );
+    }
+}
+
+#[test]
+fn enormous_code_fences_stream_exact_token_boundaries_and_plain_text() {
+    for (lang, code) in [
+        (None, "<>& 🦀 :rocket: ".repeat(65_536)),
+        (Some("unknown\"<&"), "<>& café ".repeat(65_536)),
+        (
+            Some("rust"),
+            "fn café<'a>(x: &'a str) { let n = 1 < 2; println!(\"🦀&\"); }\n".repeat(8192),
+        ),
+        (
+            Some("rust"),
+            format!("let text = r###\"{}\"###;\n", "🦀<&>".repeat(65_536)),
+        ),
+        (
+            Some("json"),
+            "{\"name\":\"<& café\",\"enabled\":true,\"value\":42}\n".repeat(8192),
+        ),
+        (
+            Some("css"),
+            ".main:hover { color: #12a; margin: 1.5em; } /* <& */\n".repeat(8192),
+        ),
+        (
+            Some("markdown"),
+            "# Heading\n**bold** [link](https://example.com) & text\n".repeat(8192),
+        ),
+        // A richer lexer uses its existing token vector, but its HTML is streamed.
+        (
+            Some("javascript"),
+            "const value = {text: '<&>', count: 42}; // café\n".repeat(4096),
+        ),
+    ] {
+        let doc = Document {
+            blocks: vec![Block::CodeBlock {
+                lang: lang.map(str::to_string),
+                code,
+            }],
+        };
+        assert_bounded_parity(&doc, &options());
+    }
+}
+
+#[test]
+fn huge_tables_stream_rows_and_oversized_cells_with_financial_parity() {
+    use franken_markdown::{Align, Table};
+    let mut rows: Vec<_> = (0..8192)
+        .map(|index| {
+            vec![
+                vec![Inline::Text(format!("Row {index} <>& café :rocket:"))],
+                vec![Inline::Strong(vec![Inline::Text("1234.56".into())])],
+                vec![Inline::Text("extra unaligned cell".into())],
+            ]
+        })
+        .collect();
+    rows.push(vec![vec![Inline::Text(
+        "large cell <>& 🦀 ".repeat(32_768),
+    )]]);
+    rows.push(vec![
+        vec![Inline::Text("---".into())],
+        vec![Inline::Text("===".into())],
+    ]);
+    for second_align in [Align::Right, Align::Decimal] {
+        let doc = Document {
+            blocks: vec![Block::Table(Table {
+                align: vec![Align::Left, second_align],
+                head: vec![
+                    vec![Inline::Text("Name".into())],
+                    vec![Inline::Text("Value".into())],
+                ],
+                rows: rows.clone(),
+            })],
+        };
+        assert_bounded_parity(&doc, &options());
+    }
+}
+
+#[test]
+fn huge_alerts_lists_and_nested_footnotes_do_not_rebuffer_the_container() {
+    use franken_markdown::{List, ListItem};
+    let huge = "prose <>& café :rocket: ".repeat(32_768);
+    let doc = Document {
+        blocks: vec![
+            Block::BlockQuote(vec![
+                Block::Paragraph(vec![
+                    Inline::Text("[!NOTE]".into()),
+                    Inline::SoftBreak,
+                    Inline::Text(huge.clone()),
+                ]),
+                Block::HtmlBlock("<div>".into()),
+                Block::List(List {
+                    ordered: true,
+                    start: 17,
+                    tight: true,
+                    items: vec![ListItem {
+                        task: Some(true),
+                        blocks: vec![
+                            Block::Paragraph(vec![Inline::Text(huge.clone())]),
+                            Block::Paragraph(vec![Inline::FootnoteRef { id: "outer".into() }]),
+                        ],
+                    }],
+                }),
+                Block::HtmlBlock("</div>".into()),
+            ]),
+            Block::FootnoteDefinition {
+                id: "outer".into(),
+                blocks: vec![Block::Paragraph(vec![
+                    Inline::Text(huge),
+                    Inline::FootnoteRef { id: "inner".into() },
+                ])],
+            },
+            Block::FootnoteDefinition {
+                id: "inner".into(),
+                blocks: vec![Block::Paragraph(vec![Inline::Text("last note".into())])],
+            },
+        ],
+    };
+    assert_bounded_parity(&doc, &options());
+}
+
+#[test]
+fn failure_inside_a_huge_highlighted_token_stops_without_flushing() {
+    let doc = Document {
+        blocks: vec![Block::CodeBlock {
+            lang: Some("rust".into()),
+            code: format!(
+                "let s = \"{}\"; let unreachable = 42;",
+                "🦀 <>& ".repeat(65_536)
+            ),
+        }],
+    };
+    let expected = render_html_document(&doc, &options()).unwrap();
+    let limit = 2 * 64 * 1024 + 13;
+    let mut sink = ShortWriter {
+        bytes: Vec::new(),
+        remaining: Some(limit),
+        interrupted: false,
+        flushes: 0,
+    };
+    let error = render_html_document_to_writer(&doc, &options(), &mut sink).unwrap_err();
+    assert!(
+        matches!(error, RenderError::Io(ref error) if error.kind() == io::ErrorKind::BrokenPipe)
+    );
+    assert_eq!(sink.bytes, &expected.as_bytes()[..limit]);
+    assert_eq!(sink.flushes, 0);
+}

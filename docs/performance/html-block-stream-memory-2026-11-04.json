@@ -1,0 +1,264 @@
+{
+  "status": "partial observations recovered after execution environment loss",
+  "scope": "unoptimized native CLI: complete file read, Markdown parse and HTML rendering to stdout; not release-build, iOS, WASM, parser-only or live-heap measurements",
+  "evidence_limit": "The initial 30-process paired measurement completed with exit code 0, and its exact median summaries were printed to the conversation. The execution environment disappeared during a later optional fast-path experiment. Only these summaries and four raw rows survive in retrievable tool output. The other 26 raw rows, candidate executable SHA256, corpus SHA256 values and original source-hash table could not be recovered. Null values represent missing evidence, not recomputed values. Treat this as partial benchmark observations; rerun the reproducible corpus before using it as a release performance gate.",
+  "candidate_variant": "Pre-fastpath intra-block HTML writer. The later text_slow/empty-sanitizer-close experiment is excluded from the recovered source and these observations.",
+  "method": "Both live executables ran in one invocation, three fresh processes per mode and corpus, in before/after, after/before, before/after order. The parent consumed stdout in 64 KiB reads, counted bytes and incrementally hashed SHA256 without storing HTML. Linux wait4 ru_maxrss is per child in KiB. Wall time includes stdout transport and parent hashing.",
+  "baseline": {
+    "commit": "542341d",
+    "executable_bytes": 40552208,
+    "executable_sha256": "d563e588e3c7705cf9f46b52fee6ce01bb638fecb064f5ccbd447d40530b33f2"
+  },
+  "candidate": {
+    "executable_bytes": 40814040,
+    "executable_sha256": null,
+    "original_source_sha256": null,
+    "reconstructed_source_tree": "3e471a9842d4c02c14d36f8978395435804b453a",
+    "source_recovery_note": "Six Rust files were reconstructed from original source edit calls and guarded replacements against the unchanged remote baseline. Independent review found no token or semantic mismatch; three recovered Git blob prefixes match the original inspected diff hashes. Existing integration-test content is unchanged and the new tail matches the original +208-line stat. Full source SHA256 values from the original run are unavailable. No post-reconstruction build/format run was possible.",
+    "confirmed_recovered_git_blob_prefixes": {
+      "src/highlight.rs": "cacf14b4",
+      "src/html.rs": "7bf142d",
+      "src/html/financial_tables.rs": "6e24b28"
+    }
+  },
+  "toolchain": {
+    "pinned_channel": "nightly-2026-08-31",
+    "actual_verbose_version_output": null
+  },
+  "build_environment": {
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "RUSTFLAGS": "-Zthreads=1"
+  },
+  "command_template": [
+    "EXECUTABLE",
+    "--no-config",
+    "render",
+    "CORPUS.md",
+    "--to",
+    "html",
+    "--out",
+    "-",
+    "--css",
+    "probe.css"
+  ],
+  "custom_css": "body { color: #222; }\n",
+  "case_construction": "UTF-8 encode prefix, then repeat unit repetitions times, then append UTF-8 suffix. Corpus byte counts below are calculated from this retained recipe; their original hashes are unavailable.",
+  "cases": [
+    {
+      "name": "single-paragraph",
+      "unit_utf8": "plain <>& café :rocket: ",
+      "repetitions": 671088,
+      "prefix_utf8": "",
+      "suffix_utf8": "\n",
+      "bytes": 16777201,
+      "sha256": null
+    },
+    {
+      "name": "plain-code",
+      "unit_utf8": "plain <>& café :rocket:\n",
+      "repetitions": 671088,
+      "prefix_utf8": "```\n",
+      "suffix_utf8": "```\n",
+      "bytes": 16777208,
+      "sha256": null
+    },
+    {
+      "name": "rust-code",
+      "unit_utf8": "fn sample() { let n = 1 < 2; println!(\"café & 🦀\"); }\n",
+      "repetitions": 73584,
+      "prefix_utf8": "```rust\n",
+      "suffix_utf8": "```\n",
+      "bytes": 4194300,
+      "sha256": null
+    },
+    {
+      "name": "single-table",
+      "unit_utf8": "| row <>& café | **value** and :rocket: |\n",
+      "repetitions": 195083,
+      "prefix_utf8": "| Name | Value |\n| --- | ---: |\n",
+      "suffix_utf8": "\n",
+      "bytes": 8388602,
+      "sha256": null
+    },
+    {
+      "name": "many-paragraphs",
+      "unit_utf8": "plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: plain <>& café :rocket: \n\n",
+      "repetitions": 10459,
+      "prefix_utf8": "",
+      "suffix_utf8": "\n",
+      "bytes": 8388119,
+      "sha256": null
+    }
+  ],
+  "observed_output_parity": "The completed initial driver compared byte counts and SHA256 for all six runs in each case and exited successfully. Exact fixture byte comparisons also passed in the integration suite. Only the paragraph fingerprint is present in retained raw rows.",
+  "retained_raw_rows": [
+    {
+      "case": "single-paragraph",
+      "mode": "before",
+      "repetition": 1,
+      "peak_rss_kib": 106536,
+      "wall_seconds": 7.705854689000262,
+      "user_seconds": 7.270163,
+      "system_seconds": 0.41221399999999997,
+      "output_bytes": 20803988,
+      "output_sha256": "0fe552e6ef646beb31c2f7df91f492d91f58b63c060b3e48283fa360bb3f56b7"
+    },
+    {
+      "case": "single-paragraph",
+      "mode": "after",
+      "repetition": 1,
+      "peak_rss_kib": 106552,
+      "wall_seconds": 6.553826815998036,
+      "user_seconds": 6.481987,
+      "system_seconds": 0.069064,
+      "output_bytes": 20803988,
+      "output_sha256": "0fe552e6ef646beb31c2f7df91f492d91f58b63c060b3e48283fa360bb3f56b7"
+    },
+    {
+      "case": "single-paragraph",
+      "mode": "after",
+      "repetition": 2,
+      "peak_rss_kib": 106852,
+      "wall_seconds": 6.338303675998759,
+      "user_seconds": 6.278679,
+      "system_seconds": 0.058403,
+      "output_bytes": 20803988,
+      "output_sha256": "0fe552e6ef646beb31c2f7df91f492d91f58b63c060b3e48283fa360bb3f56b7"
+    },
+    {
+      "case": "single-paragraph",
+      "mode": "before",
+      "repetition": 2,
+      "peak_rss_kib": 106404,
+      "wall_seconds": 6.269285169997602,
+      "user_seconds": 6.18053,
+      "system_seconds": 0.07518799999999999,
+      "output_bytes": 20803988,
+      "output_sha256": "0fe552e6ef646beb31c2f7df91f492d91f58b63c060b3e48283fa360bb3f56b7"
+    }
+  ],
+  "median_summary": [
+    {
+      "case": "single-paragraph",
+      "before": {
+        "peak_rss_kib": 106404,
+        "wall_seconds": 6.288816101998236,
+        "user_seconds": 6.206858,
+        "system_seconds": 0.07518799999999999
+      },
+      "after": {
+        "peak_rss_kib": 106796,
+        "wall_seconds": 6.553826815998036,
+        "user_seconds": 6.481987,
+        "system_seconds": 0.064707
+      },
+      "peak_rss_change_percent": 0.36840720273674243,
+      "wall_time_change_percent": 4.214000055043665
+    },
+    {
+      "case": "plain-code",
+      "before": {
+        "peak_rss_kib": 83544,
+        "wall_seconds": 1.5172319900011644,
+        "user_seconds": 1.454011,
+        "system_seconds": 0.043718
+      },
+      "after": {
+        "peak_rss_kib": 54336,
+        "wall_seconds": 1.50268919500013,
+        "user_seconds": 1.470915,
+        "system_seconds": 0.032482
+      },
+      "peak_rss_change_percent": -34.96121804079287,
+      "wall_time_change_percent": -0.9585083294363694
+    },
+    {
+      "case": "rust-code",
+      "before": {
+        "peak_rss_kib": 154824,
+        "wall_seconds": 1.363098990997969,
+        "user_seconds": 1.248749,
+        "system_seconds": 0.088991
+      },
+      "after": {
+        "peak_rss_kib": 20324,
+        "wall_seconds": 1.4436098149999452,
+        "user_seconds": 1.400385,
+        "system_seconds": 0.034995
+      },
+      "peak_rss_change_percent": -86.87283625277735,
+      "wall_time_change_percent": 5.906454669373029
+    },
+    {
+      "case": "single-table",
+      "before": {
+        "peak_rss_kib": 149788,
+        "wall_seconds": 2.3716644140004064,
+        "user_seconds": 2.289677,
+        "system_seconds": 0.067517
+      },
+      "after": {
+        "peak_rss_kib": 127756,
+        "wall_seconds": 2.495563606997166,
+        "user_seconds": 2.403092,
+        "system_seconds": 0.07313399999999999
+      },
+      "peak_rss_change_percent": -14.7087884209683,
+      "wall_time_change_percent": 5.224145214869269
+    },
+    {
+      "case": "many-paragraphs",
+      "before": {
+        "peak_rss_kib": 30084,
+        "wall_seconds": 1.7955043639994983,
+        "user_seconds": 1.76793,
+        "system_seconds": 0.013287
+      },
+      "after": {
+        "peak_rss_kib": 30280,
+        "wall_seconds": 1.9425177849989268,
+        "user_seconds": 1.909434,
+        "system_seconds": 0.020558
+      },
+      "peak_rss_change_percent": 0.651509107831405,
+      "wall_time_change_percent": 8.187862081936403
+    }
+  ],
+  "validation_before_environment_loss": [
+    {
+      "command": "cargo test --offline --test html_streaming_test",
+      "passed": 11
+    },
+    {
+      "command": "cargo test --offline -p franken_markdown --lib html::",
+      "passed": 80
+    },
+    {
+      "command": "cargo test --offline -p franken_markdown --lib highlight::",
+      "passed": 25
+    },
+    {
+      "command": "cargo test --offline -p franken_markdown --test golden_output --test cli_contract",
+      "passed": 73,
+      "details": "71 CLI contract tests and 2 committed HTML/PDF golden tests, no regeneration"
+    },
+    {
+      "command": "cargo check --offline --all-targets",
+      "result": "passed"
+    },
+    {
+      "command": "scoped rustfmt --check and git diff --check",
+      "result": "passed before reconstruction"
+    }
+  ],
+  "uncompleted_gates_for_this_tranche": [
+    "strict all-target Clippy",
+    "full workspace test suite",
+    "lean WASM check",
+    "post-reconstruction build/format checks"
+  ],
+  "interpretation": "Code fences and the large table reduced measured process peak RSS. Single-paragraph and many-paragraph peaks were essentially unchanged: reducing writer allocations did not lower the process high-water mark in those cases. Four cases took 4.2% to 8.2% longer in this unoptimized run; plain code was about 1.0% faster. No release-throughput claim is made."
+}

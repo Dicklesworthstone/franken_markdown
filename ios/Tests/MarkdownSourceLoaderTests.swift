@@ -75,6 +75,22 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         }
     }
 
+    func testRawStreamingReadPreservesLeadingMarksAcrossEveryShortRead() throws {
+        for source in ["\u{FEFF}", "\u{FEFF}\u{FEFF}# Literal marks\r\nCafé 👩🏽‍💻\nInterior \u{FEFF}"] {
+            let bytes = Data(source.utf8)
+            for width in 1...17 {
+                let loaded = try readInChunks(bytes, width: width, stripInitialByteOrderMark: false)
+                XCTAssertTrue(loaded.source.utf8.elementsEqual(source.utf8), "width \(width)")
+                XCTAssertEqual(loaded.diskFingerprint.byteCount, bytes.count)
+                XCTAssertEqual(loaded.diskFingerprint.digest, Data(SHA256.hash(data: bytes)))
+                XCTAssertEqual(loaded.sourceDigest, loaded.diskFingerprint.digest)
+            }
+        }
+        for incomplete in [Data([0xEF]), Data([0xEF, 0xBB])] {
+            XCTAssertThrowsError(try readInChunks(incomplete, width: 1, stripInitialByteOrderMark: false))
+        }
+    }
+
     func testStreamingReadPreservesInteriorBOMAtAndAcrossIOChunkBoundaries() throws {
         let chunkBytes = MarkdownSourceLoader.ioChunkBytes
         for hasBOM in [false, true] {
@@ -223,10 +239,14 @@ final class MarkdownSourceLoaderTests: XCTestCase {
     private func readInChunks(
         _ bytes: Data,
         width: Int,
-        maximumBytes: Int = MarkdownSourceLoader.maximumBytes
+        maximumBytes: Int = MarkdownSourceLoader.maximumBytes,
+        stripInitialByteOrderMark: Bool = true
     ) throws -> MarkdownSourceLoader.LoadedSource {
         var offset = 0
-        return try MarkdownSourceLoader.readSource(maximumBytes: maximumBytes) { count in
+        return try MarkdownSourceLoader.readSource(
+            maximumBytes: maximumBytes,
+            stripInitialByteOrderMark: stripInitialByteOrderMark
+        ) { count in
             let end = min(bytes.count, offset + min(width, count))
             defer { offset = end }
             return bytes.subdata(in: offset..<end)
@@ -257,6 +277,29 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         XCTAssertTrue(saved.diskFingerprint.hasByteOrderMark)
         XCTAssertTrue(try Data(contentsOf: url).starts(with: Data([0xEF, 0xBB, 0xBF])))
         XCTAssertEqual(try MarkdownSourceLoader.decode(Data(contentsOf: url)), updated)
+    }
+
+    func testSavePreservesNewLiteralLeadingMarkWhenOriginalHadNoBOM() async throws {
+        let url = try temporarySourceURL(contents: Data("# Original\n".utf8))
+        let opened = try await MarkdownSourceLoader.open(from: url)
+        XCTAssertFalse(opened.diskFingerprint.hasByteOrderMark)
+        let source = "\u{FEFF}# Literal leading mark\r\nCafé 👩🏽‍💻\n"
+
+        let saved = try await MarkdownSourceLoader.save(source, replacing: opened)
+
+        XCTAssertTrue(saved.diskFingerprint.hasByteOrderMark)
+        XCTAssertEqual(try Data(contentsOf: url), Data([0xEF, 0xBB, 0xBF]) + Data(source.utf8))
+        XCTAssertEqual(saved.sourceDigest, Data(SHA256.hash(data: Data(source.utf8))))
+        let reopened = try await MarkdownSourceLoader.open(from: url)
+        XCTAssertTrue(reopened.source.utf8.elementsEqual(source.utf8))
+        XCTAssertEqual(reopened.diskFingerprint, saved.diskFingerprint)
+
+        // The new encoding marker is part of the saved file baseline, so a
+        // subsequent edit can use the returned document without a false conflict.
+        let nextSource = "# Without the literal mark\r\n"
+        let next = try await MarkdownSourceLoader.save(nextSource, replacing: saved)
+        XCTAssertTrue(next.diskFingerprint.hasByteOrderMark)
+        XCTAssertEqual(try Data(contentsOf: url), Data([0xEF, 0xBB, 0xBF]) + Data(nextSource.utf8))
     }
 
     func testSaveRefusesToOverwriteExternalChange() async throws {

@@ -110,10 +110,28 @@ to the source string. In-place save hashes the current file incrementally for
 conflict detection and writes a same-volume temporary replacement in chunks.
 Cancellation reaches detached I/O workers and is checked before replacement;
 file identity and external-change protection are preserved. The 64 MiB source
-import limit and separate 8 MiB recovery limit are unchanged. FileDocument's
-Save a Copy path still needs a complete FileWrapper payload. The new source I/O
-and native export writer XCTest cases require Apple execution before claiming
-native qualification or device memory measurements.
+import limit is unchanged. Save a Copy and Save New prepare an immutable,
+protected source file in 64 KiB writes off the main actor, then present the
+normal Files dialog through a file-based Transferable. The dialog no longer
+needs a document-sized Data or FileWrapper. Its snapshot remains owned until
+completion or cancellation; a late completion cannot adopt a different
+document or discard edits made while the dialog was open. The prepared file's
+digest and byte count are verified when adopting a newly saved document.
+The source I/O, source export, and native export writer XCTest cases require
+Apple execution before claiming native qualification or device memory measurements.
+
+Active-draft recovery now supports the same 64 MiB source budget without
+encoding the document body as JSON. A utility-priority actor streams raw UTF-8
+to an immutable protected source file, synchronizes it, then atomically
+publishes a small versioned manifest containing settings, byte count, and
+SHA-256. Recovery validates those bytes while decoding bounded chunks;
+literal leading U+FEFF characters remain source content. A failed or cancelled
+publication preserves the previous snapshot. Store instances serialize disk
+operations so cleanup cannot remove a generation another instance is reading
+or preparing. Legacy JSON recovery remains readable under its original 8 MiB
+budget and migrates on the next successful save. Native regression tests cover
+large escaped Unicode, corruption, interrupted publication, cancellation, and
+concurrent store instances; they require an Apple XCTest run.
 
 The native editor keeps the complete source in its text storage. Syntax
 decoration is limited to a visible window of at most 32,768 UTF-16 units and

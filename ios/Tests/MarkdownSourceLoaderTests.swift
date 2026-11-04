@@ -279,6 +279,29 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         XCTAssertEqual(try MarkdownSourceLoader.decode(Data(contentsOf: url)), updated)
     }
 
+    func testSavePreservesNewLiteralLeadingMarkWhenOriginalHadNoBOM() async throws {
+        let url = try temporarySourceURL(contents: Data("# Original\n".utf8))
+        let opened = try await MarkdownSourceLoader.open(from: url)
+        XCTAssertFalse(opened.diskFingerprint.hasByteOrderMark)
+        let source = "\u{FEFF}# Literal leading mark\r\nCafé 👩🏽‍💻\n"
+
+        let saved = try await MarkdownSourceLoader.save(source, replacing: opened)
+
+        XCTAssertTrue(saved.diskFingerprint.hasByteOrderMark)
+        XCTAssertEqual(try Data(contentsOf: url), Data([0xEF, 0xBB, 0xBF]) + Data(source.utf8))
+        XCTAssertEqual(saved.sourceDigest, Data(SHA256.hash(data: Data(source.utf8))))
+        let reopened = try await MarkdownSourceLoader.open(from: url)
+        XCTAssertTrue(reopened.source.utf8.elementsEqual(source.utf8))
+        XCTAssertEqual(reopened.diskFingerprint, saved.diskFingerprint)
+
+        // The new encoding marker is part of the saved file baseline, so a
+        // subsequent edit can use the returned document without a false conflict.
+        let nextSource = "# Without the literal mark\r\n"
+        let next = try await MarkdownSourceLoader.save(nextSource, replacing: saved)
+        XCTAssertTrue(next.diskFingerprint.hasByteOrderMark)
+        XCTAssertEqual(try Data(contentsOf: url), Data([0xEF, 0xBB, 0xBF]) + Data(nextSource.utf8))
+    }
+
     func testSaveRefusesToOverwriteExternalChange() async throws {
         let original = "# Original\n"
         let external = "# External edit\n"

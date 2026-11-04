@@ -25,6 +25,14 @@ private struct PendingSourceDocument {
     let request: UUID
 }
 
+private struct PreparedSourceExport {
+    let file: MarkdownSourceExport
+    let filename: String
+    let purpose: SourceExportPurpose
+    let request: UUID
+    let documentGeneration: UUID
+}
+
 struct ForgeView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage(LabAppearance.storageKey) private var appearance = LabAppearance.dark.rawValue
@@ -48,10 +56,9 @@ struct ForgeView: View {
     @State private var showSourceImporter = false
     @State private var sourceImportRequest: UUID?
     @State private var showSourceExporter = false
-    @State private var sourceFileToExport = MarkdownSourceFile(source: "")
-    @State private var sourceExportPurpose = SourceExportPurpose.saveCopy
-    @State private var sourceExportRequest: UUID?
-    @State private var sourceExportDocumentGeneration: UUID?
+    @State private var sourceExport: PreparedSourceExport?
+    @State private var pendingSourceExport: Task<Void, Never>?
+    @State private var sourceExportPreparationRequest: UUID?
     @State private var sourceImportError: String?
     @State private var documentError: String?
     @State private var exportError: String?
@@ -222,6 +229,7 @@ struct ForgeView: View {
             }
         }
         .onDisappear {
+            cancelSourceExportPreparation()
             pendingDocumentAutosave?.cancel()
             pendingDocumentAutosave = nil
             pendingSourceMetrics?.cancel()
@@ -255,12 +263,12 @@ struct ForgeView: View {
         )
         .fileExporter(
             isPresented: $showSourceExporter,
-            document: sourceFileToExport,
-            contentType: .frankenMarkdownSource,
-            defaultFilename: documentSession.suggestedFilename()
-        ) { result in
-            finishSourceExport(result)
-        }
+            item: sourceExport?.file,
+            contentTypes: [.frankenMarkdownSource],
+            defaultFilename: sourceExport?.filename,
+            onCompletion: finishSourceExport,
+            onCancellation: cancelSourceExport
+        )
         .alert("Couldn’t Open Document", isPresented: Binding(
             get: { sourceImportError != nil },
             set: { if !$0 { sourceImportError = nil } }
@@ -964,6 +972,7 @@ struct ForgeView: View {
     }
 
     private func clearDocumentPresentations() {
+        cancelSourceExportPreparation()
         pendingDocument = nil
         confirmationRequest = nil
         confirmingNewDocument = false
@@ -1213,34 +1222,88 @@ struct ForgeView: View {
     }
 
     private func beginSourceExport(_ purpose: SourceExportPurpose) {
+        // Retain the active file until its own completion/cancellation callback.
+        // A second request must never replace the item an open dialog is using.
+        guard sourceExport == nil, pendingSourceExport == nil else { return }
         editorFocused = false
         clearDocumentPresentations()
-        sourceExportRequest = documentSession.beginDocumentRequest()
-        sourceExportDocumentGeneration = documentSession.documentGeneration
-        sourceFileToExport = MarkdownSourceFile(source: renderer.source)
-        sourceExportPurpose = purpose
-        showSourceExporter = true
+        let request = documentSession.beginDocumentRequest()
+        let generation = documentSession.documentGeneration
+        let source = renderer.source
+        let filename = documentSession.suggestedFilename()
+        let hasBOM = documentSession.currentDocument?.diskFingerprint.hasByteOrderMark ?? false
+        sourceExportPreparationRequest = request
+        pendingSourceExport = Task { @MainActor in
+            do {
+                let file = try await MarkdownSourceExport.prepare(
+                    source: source, includingByteOrderMark: hasBOM
+                )
+                guard !Task.isCancelled,
+                      sourceExportPreparationRequest == request,
+                      documentSession.isCurrentDocumentRequest(request),
+                      documentSession.documentGeneration == generation else {
+                    if sourceExportPreparationRequest == request {
+                        pendingSourceExport = nil
+                        sourceExportPreparationRequest = nil
+                    }
+                    return
+                }
+                sourceExport = PreparedSourceExport(
+                    file: file, filename: filename, purpose: purpose,
+                    request: request, documentGeneration: generation
+                )
+                pendingSourceExport = nil
+                sourceExportPreparationRequest = nil
+                showSourceExporter = true
+            } catch {
+                guard sourceExportPreparationRequest == request else { return }
+                pendingSourceExport = nil
+                sourceExportPreparationRequest = nil
+                guard !(error is CancellationError),
+                      documentSession.isCurrentDocumentRequest(request),
+                      documentSession.documentGeneration == generation else { return }
+                documentError = error.localizedDescription
+            }
+        }
+    }
+
+    private func cancelSourceExportPreparation() {
+        pendingSourceExport?.cancel()
+        pendingSourceExport = nil
+        sourceExportPreparationRequest = nil
+    }
+
+    private func cancelSourceExport() {
+        showSourceExporter = false
+        sourceExport = nil
     }
 
     private func finishSourceExport(_ result: Result<URL, Error>) {
-        guard let request = sourceExportRequest,
-              let generation = sourceExportDocumentGeneration,
-              documentSession.isCurrentDocumentRequest(request),
+        guard let completed = sourceExport else { return }
+        // Release this dialog's temporary file even if another document was
+        // opened while it was presented. The returned destination is separate.
+        sourceExport = nil
+        showSourceExporter = false
+        let request = completed.request
+        let generation = completed.documentGeneration
+        guard documentSession.isCurrentDocumentRequest(request),
               generation == documentSession.documentGeneration else { return }
         switch result {
         case .success(let url):
-            guard sourceExportPurpose == .saveNewDocument else { return }
-            let expectedSource = sourceFileToExport.source
-            // The exporter writes its captured snapshot. Later typing stays
-            // in the editor instead of being replaced by that older snapshot.
-            guard renderer.source == expectedSource else { return }
+            guard completed.purpose == .saveNewDocument else { return }
+            let expectedDigest = completed.file.sourceDigest
+            let expectedBytes = completed.file.byteCount
             Task {
                 do {
-                    guard let document = try await documentSession.open(from: url, request: request),
-                          renderer.source == expectedSource else { return }
-                    guard document.source == expectedSource else {
+                    guard documentSession.documentGeneration == generation,
+                          let document = try await documentSession.open(from: url, request: request) else { return }
+                    guard document.sourceDigest == expectedDigest,
+                          document.diskFingerprint.byteCount == expectedBytes else {
                         throw MarkdownSourceLoader.DocumentError.savedCopyMismatch
                     }
+                    // Only adopt if the live text still equals the exported
+                    // snapshot. Later typing stays in the current editor.
+                    guard renderer.source.utf8.elementsEqual(document.source.utf8) else { return }
                     adopt(document)
                 } catch {
                     guard documentSession.isCurrentDocumentRequest(request),

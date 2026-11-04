@@ -730,8 +730,11 @@ enum MarkdownSourceLoader {
         expected: MarkdownSourceFingerprint,
         source: String
     ) throws -> LoadedSource {
-        let byteCount = source.utf8.count + (expected.hasByteOrderMark ? utf8ByteOrderMark.count : 0)
-        guard byteCount <= maximumBytes else {
+        // A newly typed leading U+FEFF is content. Give it a separate encoding
+        // marker so reopening removes only that marker, just as Save a Copy does.
+        let hasByteOrderMark = expected.hasByteOrderMark || source.unicodeScalars.first?.value == 0xFEFF
+        let prefixBytes = hasByteOrderMark ? utf8ByteOrderMark.count : 0
+        guard source.utf8.count <= maximumBytes - prefixBytes else {
             throw ImportError.tooLarge(maximumBytes: maximumBytes)
         }
         let coordinator = NSFileCoordinator()
@@ -747,7 +750,7 @@ enum MarkdownSourceLoader {
                 guard current.byteCount == expected.byteCount, current.digest == expected.digest else {
                     throw DocumentError.changedOnDisk
                 }
-                return try writeAtomically(source, to: coordinatedURL, includingByteOrderMark: expected.hasByteOrderMark)
+                return try writeAtomically(source, to: coordinatedURL, includingByteOrderMark: hasByteOrderMark)
             }
         }
         if let coordinationError { throw coordinationError }

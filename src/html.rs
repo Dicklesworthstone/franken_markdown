@@ -23,6 +23,82 @@ mod financial_tables;
 pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     let profiled = crate::apply_profile(doc, opts.profile);
     let doc = &*profiled;
+    let mut html = String::new();
+    let mut state = start_document(
+        doc,
+        opts,
+        &mut html,
+        initial_body_capacity(doc.blocks.len()),
+    );
+    render_blocks(&doc.blocks, &mut html, opts, &mut state);
+    push_footnotes_section(&mut state, &mut html, opts);
+    html.push_str("</main>\n</body>\n</html>\n");
+    html
+}
+
+/// Render HTML to a caller-owned byte sink, releasing each top-level block
+/// after emission. The AST, stylesheet, cross-block state and largest block
+/// remain resident; the complete HTML document does not. The writer is not
+/// flushed and may contain a prefix if it fails.
+pub(crate) fn render_to_writer<W: std::io::Write + ?Sized>(
+    doc: &Document,
+    opts: &HtmlOptions,
+    writer: &mut W,
+) -> std::io::Result<usize> {
+    let profiled = crate::apply_profile(doc, opts.profile);
+    let doc = &*profiled;
+    let mut chunk = String::with_capacity(64 * 1024);
+    let mut state = start_document(doc, opts, &mut chunk, 0);
+    let mut written = write_chunk(writer, &mut chunk)?;
+    // Preserve one document state across chunks: raw HTML containers, heading
+    // collisions and footnote numbering may span top-level blocks.
+    for block in &doc.blocks {
+        render_block(block, &mut chunk, opts, &mut state);
+        written += write_chunk(writer, &mut chunk)?;
+    }
+    state.raw_html.close_to(0, &mut chunk);
+    written += write_chunk(writer, &mut chunk)?;
+    if !state.footnote_order.is_empty() {
+        state.automatic_toc = false;
+        let prefix = b"<section class=\"footnotes\">\n<ol>\n";
+        writer.write_all(prefix)?;
+        written += prefix.len();
+        let mut idx = 0;
+        while idx < state.footnote_order.len() {
+            push_footnote(&mut state, &mut chunk, opts, idx);
+            written += write_chunk(writer, &mut chunk)?;
+            idx += 1;
+        }
+        let suffix = b"</ol>\n</section>\n";
+        writer.write_all(suffix)?;
+        written += suffix.len();
+    }
+    let suffix = b"</main>\n</body>\n</html>\n";
+    writer.write_all(suffix)?;
+    Ok(written + suffix.len())
+}
+
+fn write_chunk<W: std::io::Write + ?Sized>(
+    writer: &mut W,
+    chunk: &mut String,
+) -> std::io::Result<usize> {
+    let len = chunk.len();
+    writer.write_all(chunk.as_bytes())?;
+    // Do not retain a rare giant block throughout the rest of the document.
+    if chunk.capacity() > 256 * 1024 {
+        *chunk = String::with_capacity(64 * 1024);
+    } else {
+        chunk.clear();
+    }
+    Ok(len)
+}
+
+fn start_document<'a>(
+    doc: &'a Document,
+    opts: &HtmlOptions,
+    html: &mut String,
+    body_capacity: usize,
+) -> RenderState<'a> {
     let title = opts
         .title
         .clone()
@@ -34,12 +110,10 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
         .map_or_else(|| default_css(doc, opts), sanitize_custom_css);
 
     let escaped_title = escape_text(&title);
-    let mut html = String::with_capacity(
-        186 + escaped_title.len() + css.len() + initial_body_capacity(doc.blocks.len()),
-    );
+    html.reserve(escaped_title.len() + css.len() + body_capacity);
     let lang = opts.lang.as_deref().unwrap_or("en");
     html.push_str("<!DOCTYPE html>\n<html lang=\"");
-    push_escaped_attr(lang, &mut html);
+    push_escaped_attr(lang, html);
     html.push_str("\">\n<head>\n<meta charset=\"utf-8\">\n");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
     html.push_str("<title>");
@@ -49,7 +123,7 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
     html.push_str("</style>\n</head>\n<body>\n<main class=\"fmd\">\n");
     let markers = crate::toc::markers(&doc.blocks);
     let needs_toc = opts.toc || markers.any();
-    let mut state = RenderState {
+    RenderState {
         root_blocks: &doc.blocks,
         automatic_toc: opts.toc && !markers.body,
         toc_entries: if needs_toc {
@@ -58,11 +132,7 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
             Vec::new()
         },
         ..RenderState::default()
-    };
-    render_blocks(&doc.blocks, &mut html, opts, &mut state);
-    push_footnotes_section(&mut state, &mut html, opts);
-    html.push_str("</main>\n</body>\n</html>\n");
-    html
+    }
 }
 
 /// Render a fragment of blocks without the HTML document shell or style tag.
@@ -1703,26 +1773,30 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
     // no matching `<li>`.
     let mut idx = 0usize;
     while idx < state.footnote_order.len() {
-        let id = state.footnote_order[idx].clone();
-        let number = idx + 1;
+        push_footnote(state, out, opts, idx);
         idx += 1;
-        // Copy only the document-owned slice before mutably rendering state.
-        let Some(blocks) = state.footnote_defs.get(id.as_str()).copied() else {
-            continue;
-        };
-        out.push_str("<li id=\"");
-        push_escaped_attr(state.id_prefix, out);
-        out.push_str("fn-");
-        push_escaped_attr(&id, out);
-        out.push_str("\">");
-        render_blocks(blocks, out, opts, state);
-        out.push_str(" <a class=\"footnote-backref\" href=\"#");
-        push_escaped_attr(state.id_prefix, out);
-        out.push_str("fnref-");
-        push_u64(out, number as u64);
-        out.push_str("\">\u{21a9}</a>\n</li>\n");
     }
     out.push_str("</ol>\n</section>\n");
+}
+
+fn push_footnote(state: &mut RenderState<'_>, out: &mut String, opts: &HtmlOptions, idx: usize) {
+    let id = state.footnote_order[idx].clone();
+    let number = idx + 1;
+    // Copy only the document-owned slice before mutably rendering state.
+    let Some(blocks) = state.footnote_defs.get(id.as_str()).copied() else {
+        return;
+    };
+    out.push_str("<li id=\"");
+    push_escaped_attr(state.id_prefix, out);
+    out.push_str("fn-");
+    push_escaped_attr(&id, out);
+    out.push_str("\">");
+    render_blocks(blocks, out, opts, state);
+    out.push_str(" <a class=\"footnote-backref\" href=\"#");
+    push_escaped_attr(state.id_prefix, out);
+    out.push_str("fnref-");
+    push_u64(out, number as u64);
+    out.push_str("\">\u{21a9}</a>\n</li>\n");
 }
 
 /// Render one footnote reference: superscript number linked to the notes

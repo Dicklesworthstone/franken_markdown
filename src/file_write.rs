@@ -48,6 +48,60 @@ pub(crate) fn write_outputs_staged(outputs: &[OutputFile<'_>]) -> Result<(), Out
     commit_staged(staged)
 }
 
+/// Stage a generated output alongside already-rendered outputs without
+/// retaining its complete payload. No destination is published until every
+/// producer has succeeded; rollback uses the same commit path as byte slices.
+pub(crate) fn write_outputs_staged_with<F>(
+    outputs: &[OutputFile<'_>],
+    path: &Path,
+    write: F,
+) -> Result<usize, OutputWriteError>
+where
+    F: FnOnce(&mut dyn Write) -> io::Result<usize>,
+{
+    let mut targets: Vec<_> = outputs
+        .iter()
+        .map(|output| OutputFile {
+            path: output.path,
+            bytes: &[],
+        })
+        .collect();
+    targets.push(OutputFile { path, bytes: &[] });
+    preflight_outputs(&targets)?;
+    let mut staged = Vec::with_capacity(targets.len());
+    for output in outputs {
+        match stage_output(output) {
+            Ok(temp_path) => staged.push(StagedOutput {
+                temp_path,
+                final_path: output.path.to_path_buf(),
+            }),
+            Err(source) => {
+                cleanup_staged(&staged);
+                return Err(OutputWriteError {
+                    path: output.path.to_path_buf(),
+                    source,
+                });
+            }
+        }
+    }
+    let (temp_path, byte_count) = match stage_output_with(path, write) {
+        Ok(result) => result,
+        Err(source) => {
+            cleanup_staged(&staged);
+            return Err(OutputWriteError {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    staged.push(StagedOutput {
+        temp_path,
+        final_path: path.to_path_buf(),
+    });
+    commit_staged(staged)?;
+    Ok(byte_count)
+}
+
 /// True iff two paths name the same existing on-disk file.
 #[cfg(feature = "batch")]
 pub(crate) fn same_existing_file(a: &Path, b: &Path) -> bool {
@@ -208,19 +262,37 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
 }
 
 fn stage_output(output: &OutputFile<'_>) -> io::Result<PathBuf> {
+    stage_output_with(output.path, |file| {
+        file.write_all(output.bytes)?;
+        Ok(())
+    })
+    .map(|(path, ())| path)
+}
+
+fn stage_output_with<T>(
+    path: &Path,
+    write: impl FnOnce(&mut dyn Write) -> io::Result<T>,
+) -> io::Result<(PathBuf, T)> {
     for _ in 0..128 {
-        let temp_path = temp_path_for(output.path, "tmp")?;
+        let temp_path = temp_path_for(path, "tmp")?;
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temp_path)
         {
-            Ok(mut file) => {
-                if let Err(err) = file.write_all(output.bytes).and_then(|()| file.flush()) {
-                    let _ = std::fs::remove_file(&temp_path);
-                    return Err(err);
-                }
-                return Ok(temp_path);
+            Ok(file) => {
+                let mut writer = io::BufWriter::with_capacity(64 * 1024, file);
+                let result = write(&mut writer).and_then(|result| writer.flush().map(|()| result));
+                // Close the file before cleanup, including on platforms that
+                // do not permit unlinking an open staging file.
+                drop(writer);
+                return match result {
+                    Ok(result) => Ok((temp_path, result)),
+                    Err(err) => {
+                        let _ = std::fs::remove_file(&temp_path);
+                        Err(err)
+                    }
+                };
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
@@ -363,6 +435,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn streamed_output_commits_with_sidecars_and_reports_its_size() {
+        let dir = fresh_dir("stream-success");
+        let html = dir.join("doc.html");
+        let sidecar = dir.join("doc.json");
+        std::fs::write(&html, "old html").unwrap();
+        std::fs::write(&sidecar, "old sidecar").unwrap();
+        let count = write_outputs_staged_with(
+            &[OutputFile {
+                path: &sidecar,
+                bytes: b"new sidecar",
+            }],
+            &html,
+            |writer| {
+                for _ in 0..100 {
+                    writer.write_all(b"new html\n")?;
+                }
+                Ok(900)
+            },
+        )
+        .unwrap();
+        assert_eq!(count, 900);
+        assert_eq!(
+            std::fs::read_to_string(&html).unwrap(),
+            "new html\n".repeat(100)
+        );
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "new sidecar");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn streamed_producer_failure_preserves_all_destinations() {
+        let dir = fresh_dir("stream-fail");
+        let html = dir.join("doc.html");
+        let sidecar = dir.join("doc.json");
+        std::fs::write(&html, "old html").unwrap();
+        std::fs::write(&sidecar, "old sidecar").unwrap();
+        let error = write_outputs_staged_with(
+            &[OutputFile {
+                path: &sidecar,
+                bytes: b"new sidecar",
+            }],
+            &html,
+            |writer| {
+                writer.write_all(b"partial html")?;
+                Err(io::Error::other("producer failed"))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.path, html);
+        assert_eq!(error.source.to_string(), "producer failed");
+        assert_eq!(std::fs::read_to_string(&html).unwrap(), "old html");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "old sidecar");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn streamed_duplicate_destination_fails_before_producing_bytes() {
+        let dir = fresh_dir("stream-duplicate");
+        let html = dir.join("doc.html");
+        std::fs::write(&html, "old html").unwrap();
+        let mut called = false;
+        let error = write_outputs_staged_with(
+            &[OutputFile {
+                path: &html,
+                bytes: b"sidecar",
+            }],
+            &html,
+            |_| {
+                called = true;
+                Ok(0)
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.source.kind(), io::ErrorKind::InvalidInput);
+        assert!(!called);
+        assert_eq!(std::fs::read_to_string(&html).unwrap(), "old html");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

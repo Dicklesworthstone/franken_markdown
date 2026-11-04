@@ -1878,6 +1878,7 @@ fn run_render_with_preview(
     // `--to both` run whose PDF render fails never leaves a stale HTML file on
     // disk (previously HTML was written, then a PDF failure returned exit 70
     // with the HTML already committed).
+    let mut streamed_html_options = None;
     let html_render = if want_html || want_preview {
         let opts = HtmlOptions {
             theme: theme.clone(),
@@ -1909,6 +1910,16 @@ fn run_render_with_preview(
         if is_interactive {
             let html = crate::interactive::render_interactive_html(&doc, &src, &opts);
             Some(html)
+        } else if !want_preview {
+            if let Err(error) = opts
+                .font_assets
+                .validate()
+                .and_then(|()| crate::html::validate_cff_font_usage(&doc, &opts))
+            {
+                return fail_render(error, json);
+            }
+            streamed_html_options = Some(opts);
+            None
         } else {
             match render_html_document(&doc, &opts) {
                 Ok(html) => Some(html),
@@ -2085,13 +2096,42 @@ fn run_render_with_preview(
             bytes: bytes.as_slice(),
         });
     }
-    if let Err(err) = crate::file_write::write_outputs_staged(&file_outputs) {
-        return fail_json(
-            73,
-            "output_error",
-            &format!("writing {}: {}", err.path.display(), err.source),
-            json,
-        );
+    let staged_result =
+        if let (Some(path), Some(opts)) = (html_path.as_deref(), streamed_html_options.as_ref()) {
+            crate::file_write::write_outputs_staged_with(&file_outputs, path, |writer| {
+                crate::html::render_to_writer(&doc, opts, writer)
+            })
+            .map(Some)
+        } else {
+            crate::file_write::write_outputs_staged(&file_outputs).map(|()| None)
+        };
+    let streamed_html_bytes = match staged_result {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return fail_json(
+                73,
+                "output_error",
+                &format!("writing {}: {}", err.path.display(), err.source),
+                json,
+            );
+        }
+    };
+    if let (Some(path), Some(bytes)) = (html_path.as_deref(), streamed_html_bytes) {
+        report_write("html", path, bytes, json);
+    } else if let Some(opts) = streamed_html_options.as_ref() {
+        let mut stdout = std::io::BufWriter::with_capacity(64 * 1024, std::io::stdout().lock());
+        match crate::html::render_to_writer(&doc, opts, &mut stdout).and_then(|_| stdout.flush()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == IoErrorKind::BrokenPipe => {}
+            Err(error) => {
+                return fail_json(
+                    74,
+                    "output_error",
+                    &format!("writing stdout: {error}"),
+                    json,
+                );
+            }
+        }
     }
 
     if let (Some(path), Some(bytes)) = (html_path.as_deref(), html_bytes) {

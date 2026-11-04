@@ -1,0 +1,102 @@
+{
+  "comparison": "Current full-buffer API versus writer API in the same unoptimized native build. Not original-commit versus candidate speed, and not a streaming-parser or constant-memory claim.",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.39",
+  "rustc": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+  "base_commit": "45bb3262105a5342f06b685ae7e86c68d9c9f042",
+  "source_sha256": {
+    "src/html.rs": "99352bdbcba825b5e8f29dbe2d746def4aef8861407a0c9bb265851801704dba",
+    "src/lib.rs": "b43eb7574501cb3dc9fd692174305845521242d5420e5d0bb4de09450d2cefdf",
+    "src/file_write.rs": "bc4a8313da610e18fed74a0d8f7c8f4e55f9678b64ba07f5e6a1506377ea6da5",
+    "src/cli.rs": "f2c0e290b847851974b8dcbcf0e127d70c7b2a41e6425ff44dd72fbc82b589e5",
+    "examples/fmd_html_stream_memory.rs": "6706f6af089a6f9f70ebd87c4054c15d00f8efff5f81ca0bc2974f1598285c1a",
+    "tests/html_streaming_test.rs": "7f79edf6b71b7c677fb71bf719dceb12b5e007acad530a87e9791bc184c7e835"
+  },
+  "profile": {
+    "optimization": 0,
+    "debug_info": 0,
+    "incremental": false,
+    "rustflags": "-Zthreads=1",
+    "features": "default"
+  },
+  "corpus": {
+    "paragraph": "Ordinary Markdown paragraph with caf\u00e9 and symbols & < >. ",
+    "repetitions_per_paragraph": 12,
+    "paragraph_separator": "\n\n",
+    "paragraphs": 48072,
+    "input_sha256": "b7b9e7eab3b5d10debd04e666804702b49a5f6b3d32465ad24e3fc91ca208f18"
+  },
+  "rows": [
+    {
+      "run": 0,
+      "mode": "string",
+      "input_bytes": 33554256,
+      "output_bytes": 39563508,
+      "blocks": 48072,
+      "fnv1a64": "8864ba30dca2e0a1",
+      "render_us": 940496,
+      "rss_before_kib": 77612,
+      "peak_before_kib": 78792,
+      "peak_after_kib": 116408
+    },
+    {
+      "run": 0,
+      "mode": "stream",
+      "input_bytes": 33554256,
+      "output_bytes": 39563508,
+      "blocks": 48072,
+      "fnv1a64": "8864ba30dca2e0a1",
+      "render_us": 913531,
+      "rss_before_kib": 78192,
+      "peak_before_kib": 79556,
+      "peak_after_kib": 79556
+    },
+    {
+      "run": 1,
+      "mode": "string",
+      "input_bytes": 33554256,
+      "output_bytes": 39563508,
+      "blocks": 48072,
+      "fnv1a64": "8864ba30dca2e0a1",
+      "render_us": 802038,
+      "rss_before_kib": 78284,
+      "peak_before_kib": 79396,
+      "peak_after_kib": 116872
+    },
+    {
+      "run": 1,
+      "mode": "stream",
+      "input_bytes": 33554256,
+      "output_bytes": 39563508,
+      "blocks": 48072,
+      "fnv1a64": "8864ba30dca2e0a1",
+      "render_us": 800620,
+      "rss_before_kib": 78152,
+      "peak_before_kib": 79476,
+      "peak_after_kib": 79476
+    },
+    {
+      "run": 2,
+      "mode": "string",
+      "input_bytes": 33554256,
+      "output_bytes": 39563508,
+      "blocks": 48072,
+      "fnv1a64": "8864ba30dca2e0a1",
+      "render_us": 864353,
+      "rss_before_kib": 78132,
+      "peak_before_kib": 79640,
+      "peak_after_kib": 116576
+    },
+    {
+      "run": 2,
+      "mode": "stream",
+      "input_bytes": 33554256,
+      "output_bytes": 39563508,
+      "blocks": 48072,
+      "fnv1a64": "8864ba30dca2e0a1",
+      "render_us": 786743,
+      "rss_before_kib": 77676,
+      "peak_before_kib": 79012,
+      "peak_after_kib": 79012
+    }
+  ]
+}

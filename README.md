@@ -808,7 +808,12 @@ fn build(src: &str) -> Result<(String, Vec<u8>), RenderError> {
 ```
 
 Convenience wrappers `render_html(src, &opts)` and `render_pdf(src, &opts)` parse
-and render in one call. For editor and tooling integrations,
+and render in one call. For large HTML output,
+`render_html_document_to_writer` emits directly to a caller-owned writer with
+the same bytes and document-wide state, avoiding a complete output String.
+Ordinary CLI HTML uses this path automatically. See [HTML streaming and its
+memory bounds](docs/HTML_STREAMING.md) for the API, rollback behavior and measurements.
+For editor and tooling integrations,
 `parse_markdown_spanned` returns a spanned document with recoverable
 diagnostics. Hosts can supply their own fonts as bytes through
 `FontAssets`/`FontAssetSlot` (`body-regular`, `body-bold`, `body-italic`,

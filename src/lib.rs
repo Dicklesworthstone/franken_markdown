@@ -1057,6 +1057,27 @@ pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String
     Ok(html::render(doc, opts))
 }
 
+/// Render an already-parsed document directly to a byte writer.
+///
+/// Output is byte-identical to [`render_html_document`], but its full HTML
+/// buffer is never retained. The AST, stylesheet and largest top-level block
+/// (or footnote) still determine working memory. Use a buffered writer for a
+/// file or socket. Returns the number of bytes written; does not flush the writer.
+///
+/// # Errors
+/// Performs the same font validation as [`render_html_document`] before
+/// writing. Writer failures return [`RenderError::Io`]; the sink can contain
+/// a partial document, so publish file output only after a successful render.
+pub fn render_html_document_to_writer<W: std::io::Write + ?Sized>(
+    doc: &Document,
+    opts: &HtmlOptions,
+    writer: &mut W,
+) -> Result<usize> {
+    opts.font_assets.validate()?;
+    html::validate_cff_font_usage(doc, opts)?;
+    Ok(html::render_to_writer(doc, opts, writer)?)
+}
+
 /// Render an already-parsed document to optimized PDF bytes.
 ///
 /// # Errors

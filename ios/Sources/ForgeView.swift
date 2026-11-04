@@ -54,6 +54,7 @@ struct ForgeView: View {
     @State private var sourceExportDocumentGeneration: UUID?
     @State private var sourceImportError: String?
     @State private var documentError: String?
+    @State private var exportError: String?
     @State private var pendingDocument: PendingSourceDocument?
     @State private var confirmationRequest: UUID?
     @State private var confirmingNewDocument = false
@@ -267,6 +268,14 @@ struct ForgeView: View {
             Button("OK", role: .cancel) { sourceImportError = nil }
         } message: {
             Text(sourceImportError ?? "The selected document could not be opened.")
+        }
+        .alert("Couldn’t Export Document", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: {
+            Text(exportError ?? "The document could not be exported.")
         }
         .alert("Couldn’t Save Document", isPresented: Binding(
             get: { documentError != nil },
@@ -911,28 +920,17 @@ struct ForgeView: View {
         }
     }
 
-    private func exportFilename(ext: String) -> String {
-        let trimmed = renderer.documentTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            return "Document.\(ext)"
-        }
-        let safe = trimmed.components(separatedBy: CharacterSet(charactersIn: "/:\\?%*|\"<>")).joined(separator: "-")
-        return "\(safe).\(ext)"
-    }
-
     private func triggerPdfExport() {
         guard !isExporting else { return }
         isExporting = true
         Task {
             do {
-                let (data, _, _) = try await renderer.exportPdf()
-                let tempDir = FileManager.default.temporaryDirectory
-                let fileUrl = tempDir.appendingPathComponent(exportFilename(ext: "pdf"))
-                try data.write(to: fileUrl)
-                exportItemUrl = fileUrl
+                let artifact = try await renderer.exportPdf()
+                exportItemUrl = artifact.fileURL
                 showShareSheet = true
                 isExporting = false
             } catch {
+                if !(error is CancellationError) { exportError = error.localizedDescription }
                 isExporting = false
             }
         }
@@ -943,14 +941,12 @@ struct ForgeView: View {
         isExporting = true
         Task {
             do {
-                let (html, _, _) = try await renderer.exportHtml()
-                let tempDir = FileManager.default.temporaryDirectory
-                let fileUrl = tempDir.appendingPathComponent(exportFilename(ext: "html"))
-                try html.write(to: fileUrl, atomically: true, encoding: .utf8)
-                exportItemUrl = fileUrl
+                let artifact = try await renderer.exportHtml()
+                exportItemUrl = artifact.fileURL
                 showShareSheet = true
                 isExporting = false
             } catch {
+                if !(error is CancellationError) { exportError = error.localizedDescription }
                 isExporting = false
             }
         }

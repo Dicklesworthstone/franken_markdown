@@ -52,16 +52,68 @@ The native request envelope includes a monotonically increasing request ID. Resu
 
 ### 3.3 Binary transfer
 
-HTML preview remains inside the render process and does not cross the Swift bridge. Export bytes use a bounded chunk protocol:
+HTML preview remains inside the render process and does not cross the Swift
+bridge. Every exported format (HTML, PDF, SVG, EPUB, interactive HTML, search
+JSON, book site and book PDF) uses the same bounded pull protocol:
 
-- `begin`: request ID, MIME type, filename, byte length, SHA-256 supplied by JavaScript when available;
-- `chunk`: zero-based index and base64 payload of at most 64 KiB raw data;
-- `end`: chunk count and measured transfer time; and
-- `cancel`: release the JavaScript buffer for an obsolete request.
+- An export command stages the renderer's existing byte buffer and returns only
+  a manifest: request ID, MIME type, extension, byte length, diagnostic count,
+  and a 64 KiB chunk size. At most one export may be staged.
+- Swift requests each numbered chunk only after the previous chunk has been
+  validated and written. Each reply contains at most 64 KiB of raw bytes as
+  base64 plus a CRC-32/ISO-HDLC checksum. This checksum detects accidental
+  corruption; it is not authentication.
+- Swift checks request identity, ordering, exact encoded/decoded lengths and
+  checksums before writing through an actor to a protected temporary file.
+  It rejects an invalid manifest or an export above 512 MiB before creating
+  that file. No complete export Data, String or base64 copy is assembled in
+  the native process.
+- The finish command checks the total byte and chunk counts. Only then does
+  Swift close and rename the partial file and hand its URL to the share sheet.
+  Each export has a unique directory so a later export cannot overwrite an
+  earlier share operation's file.
+- Cancellation, a transfer failure or WebKit termination invalidates ownership,
+  releases staged bytes and removes that operation's partial file. All formats
+  share the three-minute native timeout. Late replies cannot publish a file
+  for a cancelled request.
 
-Swift assembles chunks in order with a maximum document/export budget, writes to an application-temporary URL, validates byte length, and publishes the file only after completion. This avoids a single giant property-list message and gives export a real, measurable progress fraction.
+Preview requests wait while an export is active, and an export waits for an
+already-running preview to finish. This avoids overlapping their render
+allocations while retaining the newest pending preview revision.
+
+This bounds **transport and native file-writing memory**, not the renderer's
+entire memory use. The bundled WASM ABI still produces a complete output byte
+buffer; parsing, layout, preview DOM, and the source snapshot remain separate
+allocations. Node tests exercise the real bundled renderer and bridge protocol,
+including byte-preserving chunk boundaries and cancellation. Native writer
+XCTests and device peak-memory/scrolling measurements require an Apple runtime.
+
+The transport-only comparison in
+[`performance/ios-export-transfer-2026-11-04.json`](performance/ios-export-transfer-2026-11-04.json)
+alternated the original `a51ac80a` bridge and the changed bridge in three fresh
+Node processes each, with the same deterministic 32 MiB output. Every delivered
+byte matched SHA-256 `36345fa1157bb6bb1743bde33ca8ed80ad3a413408c25bd939c5a429a1618a45`.
+Median peak process RSS was 268,384 KiB before and 100,560 KiB after (62.5% lower).
+The largest raw base64 input fell from 32 MiB to 64 KiB. Median transfer wall time
+was 477 ms before and 578 ms after; the checksum and per-chunk protocol add work.
+Slicing-by-8 CRC32 limits that overhead with fixed 8 KiB tables. These numbers
+measure the JavaScript bridge and a Node decode/hash recipient, not WebKit IPC,
+Swift disk writes, native RSS, Rust rendering, or an end-to-end speedup.
+Reproduce with `node scripts/profile-ios-export-transfer.mjs a51ac80a9c4c1016a25ea9f80fe6011124eace71`.
 
 ### 3.4 Large-document responsiveness
+
+Native source import uses 64 KiB reads with strict incremental UTF-8 decoding,
+including partial scalars, BOMs and short file-provider reads. The document
+retains SHA-256 fingerprints rather than a complete original byte buffer next
+to the source string. In-place save hashes the current file incrementally for
+conflict detection and writes a same-volume temporary replacement in chunks.
+Cancellation reaches detached I/O workers and is checked before replacement;
+file identity and external-change protection are preserved. The 64 MiB source
+import limit and separate 8 MiB recovery limit are unchanged. FileDocument's
+Save a Copy path still needs a complete FileWrapper payload. The new source I/O
+and native export writer XCTest cases require Apple execution before claiming
+native qualification or device memory measurements.
 
 The native editor keeps the complete source in its text storage. Syntax
 decoration is limited to a visible window of at most 32,768 UTF-16 units and

@@ -1217,56 +1217,30 @@ struct DocumentLabView: View {
     }
 
     private func shareArtifact(_ format: DocumentArtifactFormat) async {
-        await performArtifactExport(defaultExtension: format == .interactiveHTML ? "html" : format == .searchIndex ? "json" : format.rawValue) {
-            try await renderer.exportArtifact(format)
-        }
+        await performArtifactExport { try await renderer.exportArtifact(format) }
     }
 
     private func shareBook(_ format: BookArtifactFormat) async {
-        await performArtifactExport(defaultExtension: format == .pdf ? "pdf" : "zip") {
-            try await renderer.exportBook(files: bookFiles, format: format)
-        }
+        await performArtifactExport { try await renderer.exportBook(files: bookFiles, format: format) }
     }
 
     private func shareLegacyPDF() async {
-        guard !isWorking else { return }
-        isWorking = true
-        defer { isWorking = false }
-        do {
-            let (data, _, _) = try await renderer.exportPdf()
-            try share(data: data, extension: "pdf")
-        } catch { errorMessage = error.localizedDescription }
+        await performArtifactExport { try await renderer.exportPdf() }
     }
 
     private func shareLegacyHTML() async {
-        guard !isWorking else { return }
-        isWorking = true
-        defer { isWorking = false }
-        do {
-            let (html, _, _) = try await renderer.exportHtml()
-            try share(data: Data(html.utf8), extension: "html")
-        } catch { errorMessage = error.localizedDescription }
+        await performArtifactExport { try await renderer.exportHtml() }
     }
 
-    private func performArtifactExport(defaultExtension: String, operation: () async throws -> RenderedArtifact) async {
+    private func performArtifactExport(operation: () async throws -> RenderedArtifact) async {
         guard !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
         do {
             let artifact = try await operation()
-            guard let data = artifact.data else { throw ImportError.invalidArtifact }
-            try share(data: data, extension: artifact.extension.isEmpty ? defaultExtension : artifact.extension)
+            exportURL = artifact.fileURL
+            showShare = true
         } catch { errorMessage = error.localizedDescription }
-    }
-
-    private func share(data: Data, extension ext: String) throws {
-        let rawName = renderer.documentTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        let baseName = rawName.isEmpty ? "FrankenMarkdown-Document" : rawName
-        let safeName = baseName.components(separatedBy: CharacterSet(charactersIn: "/:\\?%*|\"<>")).joined(separator: "-")
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(safeName).\(ext)")
-        try data.write(to: url, options: .atomic)
-        exportURL = url
-        showShare = true
     }
 
     private func importBaseline(_ result: Result<[URL], Error>) {

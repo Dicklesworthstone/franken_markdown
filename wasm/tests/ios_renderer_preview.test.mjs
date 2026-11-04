@@ -46,6 +46,28 @@ async function harness(renderer, initializationError) {
   return {window, preview, installs, messages};
 }
 
+function collectExport(h, json) {
+  const result = JSON.parse(json);
+  assert.equal(result.chunkSize, 65_536);
+  assert.equal(Object.hasOwn(result, "base64"), false);
+  assert.equal(Object.hasOwn(result, "htmlText"), false);
+  const chunks = [];
+  for (let index = 0; index < Math.ceil(result.byteLength / result.chunkSize); index++) {
+    const chunk = JSON.parse(h.window.frankenReadExportChunk({requestID: result.requestID, index}));
+    assert.equal(chunk.requestID, result.requestID);
+    assert.equal(chunk.index, index);
+    const bytes = Buffer.from(chunk.base64, "base64");
+    assert.equal(bytes.length, chunk.byteLength);
+    assert.ok(bytes.length <= result.chunkSize);
+    chunks.push(bytes);
+  }
+  const bytes = Buffer.concat(chunks);
+  assert.equal(bytes.length, result.byteLength);
+  assert.equal(h.window.frankenFinishExport({requestID: result.requestID,
+    byteLength: result.byteLength, chunkCount: chunks.length}), true);
+  return {...result, bytes};
+}
+
 function results(h) { return h.messages.filter(message => message.type === "result"); }
 function failures(h) { return h.messages.filter(message => message.type === "failure"); }
 
@@ -150,15 +172,14 @@ test("full HTML and binary exports remain independent from staged preview public
     renderPdf: async source => { sources.push(source); return {bytes: pdfBytes, diagnostics: []}; },
   });
   await h.window.frankenRender({requestID: 1, markdown});
-  await h.window.frankenExportHtml({requestID: 2, markdown});
-  await h.window.frankenExportPdf({requestID: 3, markdown});
+  const htmlResult = collectExport(h, await h.window.frankenExportHtml({requestID: 2, markdown}));
+  const pdfResult = collectExport(h, await h.window.frankenExportPdf({requestID: 3, markdown}));
   assert.deepEqual(sources, [markdown, markdown, markdown]);
-  const htmlResult = h.messages.find(message => message.type === "exportHtmlResult");
-  const pdfResult = h.messages.find(message => message.type === "exportPdfResult");
-  assert.equal(htmlResult.htmlText, html);
+  assert.equal(htmlResult.bytes.toString(), html);
   assert.equal(htmlResult.byteLength, encoder.encode(html).byteLength);
-  assert.deepEqual(Buffer.from(pdfResult.base64, "base64"), Buffer.from(pdfBytes));
+  assert.deepEqual(pdfResult.bytes, Buffer.from(pdfBytes));
   assert.equal(pdfResult.byteLength, pdfBytes.length);
+  assert.deepEqual(h.messages.map(message => message.type), ["ready"]);
   assert.equal(h.installs.length, 0);
   assert.equal(h.window.frankenCommitPreview(1), true);
 });
@@ -195,9 +216,10 @@ test("book exports keep complete chapters and separate PDF metadata from safe si
       captures.push({kind: "site", chapters, received}); return artifact;
     },
   });
-  await h.window.frankenBook({format: "pdf", files, options});
-  await h.window.frankenBook({format: "site", files, options});
-  await h.window.frankenBook({format: "site", files, options: {pageNumbers: false, allowRawHtml: false}});
+  collectExport(h, await h.window.frankenBook({requestID: 1, format: "pdf", files, options}));
+  collectExport(h, await h.window.frankenBook({requestID: 2, format: "site", files, options}));
+  collectExport(h, await h.window.frankenBook({requestID: 3, format: "site", files,
+    options: {pageNumbers: false, allowRawHtml: false}}));
   assert.equal(captures[0].received.author, "Ada Lovelace");
   assert.equal(captures[0].received.pageNumbers, false);
   assert.equal(captures[0].received.allowRawHtml, true);

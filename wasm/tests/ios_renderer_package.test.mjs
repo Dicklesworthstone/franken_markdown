@@ -85,8 +85,22 @@ if (isMainThread) {
     const result = JSON.parse(json);
     assert.equal(result.extension, extension);
     assert.equal(typeof result.mimeType, "string");
-    assert.ok(Array.isArray(result.diagnostics));
-    const bytes = Buffer.from(result.base64, "base64");
+    assert.ok(Number.isSafeInteger(result.diagnosticCount));
+    assert.equal(result.chunkSize, 65_536);
+    assert.equal(Object.hasOwn(result, "base64"), false);
+    const chunks = [];
+    for (let index = 0; index < Math.ceil(result.byteLength / result.chunkSize); index++) {
+      const chunk = JSON.parse(window.frankenReadExportChunk({requestID: result.requestID, index}));
+      assert.equal(chunk.requestID, result.requestID);
+      assert.equal(chunk.index, index);
+      const bytes = Buffer.from(chunk.base64, "base64");
+      assert.equal(bytes.length, chunk.byteLength);
+      assert.ok(bytes.length <= result.chunkSize);
+      chunks.push(bytes);
+    }
+    const bytes = Buffer.concat(chunks);
+    assert.equal(window.frankenFinishExport({requestID: result.requestID,
+      byteLength: result.byteLength, chunkCount: chunks.length}), true);
     assert.equal(bytes.length, result.byteLength);
     assert.ok(bytes.length > 0);
     if (signature) assert.deepEqual([...bytes.subarray(0, signature.length)], signature);
@@ -99,31 +113,24 @@ if (isMainThread) {
       assert.equal(window.frankenCommitPreview(1), true);
       assert.match(preview.srcdoc, /^<!doctype html>/i);
       assert.match(preview.srcdoc, /NATIVE_END_MARKER/);
-      assert.equal(await window.frankenExportHtml({requestID: 2, markdown: source, options}), true);
-      const result = messages.find(value => value.type === "exportHtmlResult" && value.requestID === 2);
-      assert.ok(result);
-      assert.equal(Buffer.byteLength(result.htmlText), result.byteLength);
-      assert.match(result.htmlText, /NATIVE_END_MARKER/);
+      const bytes = decodeArtifact(await window.frankenExportHtml({requestID: 2, markdown: source, options}), "html");
+      assert.match(bytes.toString(), /NATIVE_END_MARKER/);
     }],
     ["PDF", async () => {
-      assert.equal(await window.frankenExportPdf({requestID: 3, markdown: source,
-        options: {...options, pageNumbers: true, codeLineNumbers: true, microtype: "disabled"}}), true);
-      const result = messages.find(value => value.type === "exportPdfResult" && value.requestID === 3);
-      assert.ok(result);
-      const bytes = Buffer.from(result.base64, "base64");
-      assert.equal(bytes.length, result.byteLength);
-      assert.equal(bytes.subarray(0, 5).toString(), "%PDF-");
+      decodeArtifact(await window.frankenExportPdf({requestID: 3, markdown: source,
+        options: {...options, pageNumbers: true, codeLineNumbers: true, microtype: "disabled"}}),
+        "pdf", [...Buffer.from("%PDF-")]);
     }],
     ["SVG", async () => {
-      const bytes = decodeArtifact(await window.frankenExportArtifact({format: "svg", markdown: source, options}), "svg");
+      const bytes = decodeArtifact(await window.frankenExportArtifact({requestID: 4, format: "svg", markdown: source, options}), "svg");
       assert.match(bytes.toString(), /<svg\b/);
       assert.match(bytes.toString(), /<(?:path|text|use)\b/);
     }],
     ["EPUB", async () => {
-      decodeArtifact(await window.frankenExportArtifact({format: "epub", markdown: source, options}), "epub", [80, 75, 3, 4]);
+      decodeArtifact(await window.frankenExportArtifact({requestID: 5, format: "epub", markdown: source, options}), "epub", [80, 75, 3, 4]);
     }],
     ["interactive HTML", async () => {
-      const bytes = decodeArtifact(await window.frankenExportArtifact({format: "interactive-html", markdown: source, options}), "html");
+      const bytes = decodeArtifact(await window.frankenExportArtifact({requestID: 6, format: "interactive-html", markdown: source, options}), "html");
       assert.match(bytes.toString(), /<!doctype html>/i);
     }],
     ["statistics", async () => {
@@ -151,7 +158,7 @@ if (isMainThread) {
         for (const key of ["kind", "anchor", "text"]) assert.equal(typeof entry[key], "string", key);
         if (entry.level !== undefined) assert.equal(typeof entry.level, "number");
       }
-      const bytes = decodeArtifact(await window.frankenExportArtifact({format: "search-index", markdown: source}), "json");
+      const bytes = decodeArtifact(await window.frankenExportArtifact({requestID: 7, format: "search-index", markdown: source}), "json");
       assert.deepEqual(JSON.parse(bytes.toString()), search);
     }],
     ["semantic-diff HTML", async () => { assert.match((await compare()).html, /<!doctype html>/i); }],
@@ -164,11 +171,11 @@ if (isMainThread) {
     ["book site", async () => {
       // Native shared settings include PDF metadata and document raw-HTML trust.
       // The bridge must adapt them to the strict, safe-only site API.
-      decodeArtifact(await window.frankenBook({format: "site", files,
+      decodeArtifact(await window.frankenBook({requestID: 8, format: "site", files,
         options: {...options, pageNumbers: false, allowRawHtml: true}}), "zip", [80, 75, 3, 4]);
     }],
     ["book PDF", async () => {
-      decodeArtifact(await window.frankenBook({format: "pdf", files,
+      decodeArtifact(await window.frankenBook({requestID: 9, format: "pdf", files,
         options: {...options, pageNumbers: true}}), "pdf", [...Buffer.from("%PDF-")]);
     }],
   ];

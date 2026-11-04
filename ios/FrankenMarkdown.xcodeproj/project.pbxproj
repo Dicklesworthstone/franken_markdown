@@ -31,6 +31,8 @@
 		A3C483A39D62E4D7FE27EF15 /* MarkdownInlineLinkRanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12CCED477204AD7908924ED5 /* MarkdownInlineLinkRanges.swift */; };
 		E1A1044271A3D76D7B8F572E /* MarkdownInlineCodeRangesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AC59E063419F8E99A8DEA75 /* MarkdownInlineCodeRangesTests.swift */; };
 		E6FAACDDE00E2843C03C572E /* MarkdownInlineLinkRangesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBF6FB7408FBAA705AD424D3 /* MarkdownInlineLinkRangesTests.swift */; };
+		04C4C191EF42463CB3874A01 /* MarkdownExportWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04C4C191EF42463CB3874A02 /* MarkdownExportWriter.swift */; };
+		04C4C191EF42463CB3874A03 /* MarkdownExportWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04C4C191EF42463CB3874A04 /* MarkdownExportWriterTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -79,6 +81,8 @@
 		12CCED477204AD7908924ED5 /* MarkdownInlineLinkRanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownInlineLinkRanges.swift; sourceTree = "<group>"; };
 		2AC59E063419F8E99A8DEA75 /* MarkdownInlineCodeRangesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownInlineCodeRangesTests.swift; sourceTree = "<group>"; };
 		EBF6FB7408FBAA705AD424D3 /* MarkdownInlineLinkRangesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownInlineLinkRangesTests.swift; sourceTree = "<group>"; };
+		04C4C191EF42463CB3874A02 /* MarkdownExportWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownExportWriter.swift; sourceTree = "<group>"; };
+		04C4C191EF42463CB3874A04 /* MarkdownExportWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownExportWriterTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -91,6 +95,7 @@
 				3B3D6BCAB10E429BA9176D87 /* MarkdownEditorLineIndexTests.swift */,
 				1E9849A35025835BE702F941 /* MarkdownDraftStoreTests.swift */,
 				5EDC64D4804AB6683E52CDA6 /* MarkdownSourceLoaderTests.swift */,
+				04C4C191EF42463CB3874A04 /* MarkdownExportWriterTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -110,6 +115,7 @@
 				6131BEA50DECB58BD103AC5A /* MarkdownCodeEditor.swift */,
 				5F902899E70FF5E039467AB4 /* MarkdownDraftStore.swift */,
 				EA75FE52F3AAB9FF5146E4FF /* MarkdownSourceLoader.swift */,
+				04C4C191EF42463CB3874A02 /* MarkdownExportWriter.swift */,
 				EAC15DAA437FF69F839FB2CB /* PrivacyInfo.xcprivacy */,
 				B9867A57FB86816F535584A0 /* RendererHost.swift */,
 				9FF0FC9185DD69073DCEFA93 /* Theme.swift */,
@@ -283,6 +289,7 @@
 				124DDA908F80177BD84761A9 /* MarkdownEditorLineIndexTests.swift in Sources */,
 				63971C49396147EBF41B32FD /* MarkdownDraftStoreTests.swift in Sources */,
 				07E2F669D4601F7D3C8FE142 /* MarkdownSourceLoaderTests.swift in Sources */,
+				04C4C191EF42463CB3874A03 /* MarkdownExportWriterTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -301,6 +308,7 @@
 				6264F508E1C65CE9E5E53C27 /* MarkdownCodeEditor.swift in Sources */,
 				C5D68BC001626E1526239D6C /* MarkdownDraftStore.swift in Sources */,
 				94C6BBC2098B3065B15E7C29 /* MarkdownSourceLoader.swift in Sources */,
+				04C4C191EF42463CB3874A01 /* MarkdownExportWriter.swift in Sources */,
 				102F96E313D2B0318A7B3C84 /* RendererHost.swift in Sources */,
 				0BE81F4DB798081463B42E73 /* Theme.swift in Sources */,
 			);

@@ -71,50 +71,120 @@
         return true;
       };
 
-      window.frankenExportPdf = async (command) => {
-        const requestID = Number(command.requestID);
+      // Pull one bounded chunk only after Swift has validated and written the
+      // preceding chunk. Retain the renderer's bytes, never a whole-output
+      // binary/base64 string or a second UTF-8 HTML conversion.
+      const exportChunkSize = 65_536;
+      const exportByteLimit = 512 * 1024 * 1024;
+      let latestExportRequest = 0;
+      let activeExport = null;
+      // Eight 256-entry tables let CRC32 consume a word pair per iteration.
+      // The fixed 8 KiB table never scales with the document or chunk count.
+      const crcTables = Array.from({length: 8}, () => new Uint32Array(256));
+      for (let value = 0; value < 256; value++) {
+        let crc = value;
+        for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+        crcTables[0][value] = crc >>> 0;
+      }
+      for (let slice = 1; slice < 8; slice++) {
+        for (let value = 0; value < 256; value++) {
+          const crc = crcTables[slice - 1][value];
+          crcTables[slice][value] = (crc >>> 8) ^ crcTables[0][crc & 255];
+        }
+      }
+      const checksum = bytes => {
+        const [t0, t1, t2, t3, t4, t5, t6, t7] = crcTables;
+        const length = bytes.byteLength;
+        let crc = 0xffffffff;
+        let index = 0;
+        for (; index + 8 <= length; index += 8) {
+          crc ^= bytes[index] | (bytes[index + 1] << 8) |
+            (bytes[index + 2] << 16) | (bytes[index + 3] << 24);
+          crc = t7[crc & 255] ^ t6[(crc >>> 8) & 255] ^
+            t5[(crc >>> 16) & 255] ^ t4[crc >>> 24] ^
+            t3[bytes[index + 4]] ^ t2[bytes[index + 5]] ^
+            t1[bytes[index + 6]] ^ t0[bytes[index + 7]];
+        }
+        for (; index < length; index++) crc = (crc >>> 8) ^ t0[(crc ^ bytes[index]) & 255];
+        return ((crc ^ 0xffffffff) >>> 0).toString(16).padStart(8, '0');
+      };
+      const validRequest = value => Number.isSafeInteger(value) && value > 0;
+      const requireExport = requestID => {
+        if (!validRequest(requestID) || activeExport?.requestID !== requestID || !activeExport.bytes) {
+          throw new Error('The export transfer is no longer available.');
+        }
+        return activeExport;
+      };
+      const stageExport = async (command, render) => {
+        const requestID = command.requestID;
+        if (!validRequest(requestID) || requestID <= latestExportRequest) {
+          throw new Error('Export request identifiers must increase.');
+        }
+        if (activeExport) throw new Error('Another export is still in progress.');
+        latestExportRequest = requestID;
+        const transfer = {requestID, bytes: null, nextIndex: 0};
+        activeExport = transfer;
         try {
-          const output = await renderer.renderPdf(String(command.markdown), command.options || {});
-          let binary = '';
-          const bytes = output.bytes;
-          const len = bytes.byteLength;
-          const chunkSize = 0x8000;
-          for (let i = 0; i < len; i += chunkSize) {
-            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+          const output = await render();
+          if (activeExport !== transfer) throw new Error('The export was cancelled.');
+          if (!ArrayBuffer.isView(output.bytes) || output.bytes.BYTES_PER_ELEMENT !== 1) {
+            throw new Error('The renderer returned invalid export bytes.');
           }
-          const base64 = btoa(binary);
-          bridge.postMessage({
-            type: 'exportPdfResult',
-            requestID,
-            base64,
-            byteLength: len,
-            diagnosticCount: output.diagnostics.length
+          if (output.bytes.byteLength > exportByteLimit) {
+            throw new Error('The export exceeds the 512 MiB transfer limit.');
+          }
+          // Keep the existing typed-array view (including its byteOffset).
+          // No allocation proportional to output length is made by transport.
+          transfer.bytes = output.bytes;
+          return JSON.stringify({
+            requestID, byteLength: output.bytes.byteLength,
+            extension: output.extension, mimeType: output.mimeType,
+            diagnosticCount: output.diagnostics.length, chunkSize: exportChunkSize
           });
-          return true;
         } catch (error) {
-          bridge.postMessage({type: 'exportFailure', requestID, message: String(error)});
-          return false;
+          if (activeExport === transfer) activeExport = null;
+          throw error;
         }
       };
-
-      window.frankenExportHtml = async (command) => {
-        const requestID = Number(command.requestID);
-        try {
-          const output = await renderer.renderHtml(String(command.markdown), command.options || {});
-          const htmlText = output.text();
-          bridge.postMessage({
-            type: 'exportHtmlResult',
-            requestID,
-            htmlText,
-            byteLength: new TextEncoder().encode(htmlText).byteLength,
-            diagnosticCount: output.diagnostics.length
-          });
-          return true;
-        } catch (error) {
-          bridge.postMessage({type: 'exportFailure', requestID, message: String(error)});
-          return false;
+      window.frankenReadExportChunk = command => {
+        const transfer = requireExport(command.requestID);
+        const index = command.index;
+        if (!Number.isSafeInteger(index) || index < 0 || index !== transfer.nextIndex) {
+          throw new Error('Export chunks must be read once in sequence.');
         }
+        const start = index * exportChunkSize;
+        if (start >= transfer.bytes.byteLength) throw new Error('The export has no remaining chunks.');
+        const bytes = transfer.bytes.subarray(start, start + exportChunkSize);
+        let binary = '';
+        for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + 0x8000));
+        }
+        const result = JSON.stringify({
+          requestID: transfer.requestID, index,
+          base64: btoa(binary), byteLength: bytes.byteLength, checksum: checksum(bytes)
+        });
+        transfer.nextIndex++;
+        return result;
       };
+      window.frankenFinishExport = command => {
+        const transfer = requireExport(command.requestID);
+        const expectedChunks = Math.ceil(transfer.bytes.byteLength / exportChunkSize);
+        if (command.byteLength !== transfer.bytes.byteLength || command.chunkCount !== expectedChunks ||
+            transfer.nextIndex !== expectedChunks) {
+          throw new Error('The export transfer is incomplete.');
+        }
+        activeExport = null;
+        return true;
+      };
+      window.frankenCancelExport = requestID => {
+        if (!validRequest(requestID) || activeExport?.requestID !== requestID) return false;
+        activeExport = null;
+        return true;
+      };
+      window.frankenExportPdf = command => stageExport(command, () =>
+        renderer.renderPdf(String(command.markdown), command.options || {}));
+      window.frankenExportHtml = command => stageExport(command, () =>
+        renderer.renderHtml(String(command.markdown), command.options || {}));
 
       window.frankenAnalyze = async (command) => {
         const markdown = String(command.markdown);
@@ -126,36 +196,23 @@
         return JSON.stringify({stats, audit, search});
       };
 
-      window.frankenExportArtifact = async (command) => {
+      window.frankenExportArtifact = command => stageExport(command, async () => {
         const markdown = String(command.markdown);
         const options = command.options || {};
-        let output;
         switch (String(command.format)) {
-          case 'svg': output = await renderer.renderSvg(markdown, options); break;
-          case 'epub': output = await renderer.renderEpub(markdown, options); break;
-          case 'interactive-html': output = await renderer.renderInteractiveHtml(markdown, options); break;
+          case 'svg': return await renderer.renderSvg(markdown, options);
+          case 'epub': return await renderer.renderEpub(markdown, options);
+          case 'interactive-html': return await renderer.renderInteractiveHtml(markdown, options);
           case 'search-index': {
             const json = JSON.stringify(await renderer.searchIndex(markdown), null, 2);
-            return JSON.stringify({
-              base64: btoa(unescape(encodeURIComponent(json))),
-              byteLength: new TextEncoder().encode(json).byteLength,
+            return {
+              bytes: new TextEncoder().encode(json),
               extension: 'json', mimeType: 'application/json', diagnostics: []
-            });
+            };
           }
           default: throw new Error(`Unsupported artifact format: ${command.format}`);
         }
-        const bytes = output.bytes;
-        let binary = '';
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.byteLength; i += chunkSize) {
-          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-        }
-        return JSON.stringify({
-          base64: btoa(binary), byteLength: bytes.byteLength,
-          extension: output.extension, mimeType: output.mimeType,
-          diagnostics: output.diagnostics
-        });
-      };
+      });
 
       window.frankenDiff = async (command) => {
         const output = await renderer.renderSemanticDiff(
@@ -167,7 +224,7 @@
         return JSON.stringify({html: output.text(), metrics});
       };
 
-      window.frankenBook = async (command) => {
+      window.frankenBook = command => stageExport(command, async () => {
         const files = Array.isArray(command.files) ? command.files : [];
         const options = {...(command.options || {})};
         if (command.format !== 'pdf') {
@@ -177,21 +234,10 @@
           delete options.pageNumbers;
           options.allowRawHtml = false;
         }
-        const output = command.format === 'pdf'
+        return command.format === 'pdf'
           ? await renderer.renderBookPdf(files, options)
           : await renderer.renderBookSite(files, options);
-        const bytes = output.bytes;
-        let binary = '';
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.byteLength; i += chunkSize) {
-          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-        }
-        return JSON.stringify({
-          base64: btoa(binary), byteLength: bytes.byteLength,
-          extension: output.extension, mimeType: output.mimeType,
-          diagnostics: output.diagnostics
-        });
-      };
+      });
 
       bridge.postMessage({type: 'ready'});
     } catch (error) {

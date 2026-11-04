@@ -169,19 +169,6 @@ enum BookArtifactFormat: String {
     case pdf
 }
 
-struct RenderedArtifact: Decodable {
-    let base64: String
-    let byteLength: Int
-    let `extension`: String
-    let mimeType: String
-
-    enum CodingKeys: String, CodingKey {
-        case base64, byteLength, `extension`, mimeType
-    }
-
-    var data: Data? { Data(base64Encoded: base64) }
-}
-
 @MainActor
 final class MarkdownRendererModel: NSObject, ObservableObject {
     @Published var source = MarkdownRendererModel.sample {
@@ -241,7 +228,6 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private var requestID = 0
     private var phaseGeneration = 0
     private var activeRenderPhaseGeneration: Int?
-    private var activeExportPhaseGeneration: Int?
     private var scheduledRender: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var previewRevision = 0
@@ -254,10 +240,11 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private var scheduledDraftSave: Task<Void, Never>?
     private let draftStore = MarkdownDraftStore()
 
-    private var pdfContinuations: [Int: CheckedContinuation<(Data, Int, Int), Error>] = [:]
-    private var htmlContinuations: [Int: CheckedContinuation<(String, Int, Int), Error>] = [:]
-    private var pdfTimeouts: [Int: Task<Void, Never>] = [:]
-    private var htmlTimeouts: [Int: Task<Void, Never>] = [:]
+    private var activeExportRequestID: Int?
+    private var activeExportPhaseGeneration: Int?
+    private var exportContinuation: CheckedContinuation<RenderedArtifact, Error>?
+    private var exportTask: Task<Void, Never>?
+    private var exportTimeoutTask: Task<Void, Never>?
     private static let exportTimeout = Duration.seconds(180)
 
     /// The Rust/WASM ABI intentionally supports only adaptive dark CSS or a
@@ -299,15 +286,9 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         scheduledRender?.cancel()
         previewTask?.cancel()
         scheduledDraftSave?.cancel()
-        pdfTimeouts.values.forEach { $0.cancel() }
-        htmlTimeouts.values.forEach { $0.cancel() }
-        let error = NSError(
-            domain: "FrankenMarkdown.Renderer",
-            code: 8,
-            userInfo: [NSLocalizedDescriptionKey: "The document view closed before export finished."]
-        )
-        pdfContinuations.values.forEach { $0.resume(throwing: error) }
-        htmlContinuations.values.forEach { $0.resume(throwing: error) }
+        exportTask?.cancel()
+        exportTimeoutTask?.cancel()
+        exportContinuation?.resume(throwing: CancellationError())
     }
 
     var headings: [DocumentHeading] {
@@ -498,7 +479,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     /// it runs, edits/settings only replace the pending model revision rather
     /// than queueing another expensive parse and full-size IPC message.
     private func startPendingPreview() {
-        guard bridgeIsReady, previewIsPending, previewInFlightRequestID == nil else { return }
+        guard bridgeIsReady, !bridgeNeedsReload, previewIsPending, previewInFlightRequestID == nil,
+              activeExportRequestID == nil, exportTask == nil else { return }
         previewIsPending = false
         requestID += 1
         let req = requestID
@@ -558,131 +540,149 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         }
     }
 
-    func exportPdf() async throws -> (Data, Int, Int) {
+    func exportPdf() async throws -> RenderedArtifact {
+        try await exportFile(
+            function: "return await window.frankenExportPdf(command)",
+            command: ["markdown": source, "options": pdfOptions()],
+            status: "Forging PDF..."
+        )
+    }
+
+    func exportHtml() async throws -> RenderedArtifact {
+        try await exportFile(
+            function: "return await window.frankenExportHtml(command)",
+            command: ["markdown": source, "options": sharedOptions],
+            status: "Forging HTML..."
+        )
+    }
+
+    /// All formats share one bounded, pull-based transfer. The next chunk is
+    /// requested only after the writer actor has validated and written this one.
+    private func exportFile(
+        function: String,
+        command: [String: Any],
+        status: String
+    ) async throws -> RenderedArtifact {
+        try await waitForBridgeReady()
+        try Task.checkCancellation()
+        guard exportTask == nil else {
+            throw NSError(domain: "FrankenMarkdown.Renderer", code: 12,
+                          userInfo: [NSLocalizedDescriptionKey: "Another export is still finishing."])
+        }
         requestID += 1
         let req = requestID
-        let options = pdfOptions()
-        let command: [String: Any] = [
-            "requestID": req,
-            "markdown": source,
-            "options": options
-        ]
-        try Task.checkCancellation()
-        let phaseOwner = beginPhase(.exporting("Forging PDF..."))
-        activeExportPhaseGeneration = phaseOwner
+        let title = documentTitle
+        var payload = command
+        payload["requestID"] = req
+        let owner = beginPhase(.exporting(status))
+        activeExportRequestID = req
+        activeExportPhaseGeneration = owner
         return try await withTaskCancellationHandler {
-            try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
-                self.pdfContinuations[req] = continuation
-                self.pdfTimeouts[req] = self.makeExportTimeout(requestID: req, kind: "PDF")
-                Task { [weak self, weak webView] in
+                exportContinuation = continuation
+                exportTimeoutTask = Task { [weak self] in
+                    do { try await Task.sleep(for: Self.exportTimeout) } catch { return }
+                    guard let self, self.activeExportRequestID == req else { return }
+                    self.bridgeNeedsReload = true
+                    self.bridgeIsReady = false
+                    self.failExport(req, error: NSError(
+                        domain: "FrankenMarkdown.Renderer", code: 9,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "The export did not finish within three minutes. Tap Render to restart the local renderer and try again."]
+                    ))
+                }
+                exportTask = Task { [weak self] in
                     guard let self else { return }
-                    guard let webView else {
-                        self.failPdfExport(req, error: Self.bridgeUnavailableError())
-                        return
+                    var writer: MarkdownExportWriter?
+                    defer {
+                        self.exportTask = nil
+                        self.settlePhase(owner)
+                        self.startPendingPreview()
                     }
                     do {
-                        _ = try await webView.callAsyncJavaScript(
-                            "return await window.frankenExportPdf(command)",
-                            arguments: ["command": command],
-                            in: nil,
-                            contentWorld: .page
+                        // Avoid overlapping a full preview render with an
+                        // export buffer. Edits keep only the newest pending revision.
+                        await self.previewTask?.value
+                        try self.checkExportOwner(req)
+                        let manifest: MarkdownExportManifest = try await self.callBridgeJSON(
+                            function: function, arguments: ["command": payload], maximumBytes: 1_024
                         )
+                        try self.checkExportOwner(req)
+                        let sink = try MarkdownExportWriter(manifest: manifest, requestID: req, title: title)
+                        writer = sink
+                        let chunkCount = (manifest.byteLength + manifest.chunkSize - 1) / manifest.chunkSize
+                        for index in 0..<chunkCount {
+                            try self.checkExportOwner(req)
+                            let chunk: MarkdownExportChunk = try await self.callBridgeJSON(
+                                function: "return window.frankenReadExportChunk(command)",
+                                arguments: ["command": ["requestID": req, "index": index]],
+                                maximumBytes: 96 * 1_024
+                            )
+                            try self.checkExportOwner(req)
+                            try await sink.append(chunk)
+                        }
+                        try self.checkExportOwner(req)
+                        let acknowledged = try await self.webView.callAsyncJavaScript(
+                            "return window.frankenFinishExport(command)",
+                            arguments: ["command": ["requestID": req,
+                                "chunkCount": chunkCount, "byteLength": manifest.byteLength]],
+                            in: nil, contentWorld: .page
+                        )
+                        guard acknowledged as? Bool == true else {
+                            throw MarkdownExportWriter.TransferError.incomplete
+                        }
+                        try self.checkExportOwner(req)
+                        let artifact = try await sink.finish()
+                        try self.checkExportOwner(req)
+                        self.exportTimeoutTask?.cancel()
+                        self.exportTimeoutTask = nil
+                        self.activeExportRequestID = nil
+                        self.activeExportPhaseGeneration = nil
+                        let completion = self.exportContinuation
+                        self.exportContinuation = nil
+                        completion?.resume(returning: artifact)
                     } catch {
-                        self.failPdfExport(req, error: error)
+                        await writer?.abort()
+                        self.failExport(req, error: error)
+                        // request identity prevents a late cleanup from releasing
+                        // another operation's output after cancellation/recovery.
+                        _ = try? await self.webView.callAsyncJavaScript(
+                            "return window.frankenCancelExport(requestID)",
+                            arguments: ["requestID": req], in: nil, contentWorld: .page
+                        )
                     }
                 }
             }
         } onCancel: { [weak self] in
-            Task { @MainActor in
-                self?.failPdfExport(req, error: CancellationError())
-            }
+            Task { @MainActor in self?.failExport(req, error: CancellationError()) }
         }
     }
 
-    func exportHtml() async throws -> (String, Int, Int) {
-        requestID += 1
-        let req = requestID
-        let options = sharedOptions
-        let command: [String: Any] = [
-            "requestID": req,
-            "markdown": source,
-            "options": options
-        ]
+    private func checkExportOwner(_ requestID: Int) throws {
         try Task.checkCancellation()
-        let phaseOwner = beginPhase(.exporting("Forging HTML..."))
-        activeExportPhaseGeneration = phaseOwner
-        return try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            return try await withCheckedThrowingContinuation { continuation in
-                self.htmlContinuations[req] = continuation
-                self.htmlTimeouts[req] = self.makeExportTimeout(requestID: req, kind: "HTML")
-                Task { [weak self, weak webView] in
-                    guard let self else { return }
-                    guard let webView else {
-                        self.failHtmlExport(req, error: Self.bridgeUnavailableError())
-                        return
-                    }
-                    do {
-                        _ = try await webView.callAsyncJavaScript(
-                            "return await window.frankenExportHtml(command)",
-                            arguments: ["command": command],
-                            in: nil,
-                            contentWorld: .page
-                        )
-                    } catch {
-                        self.failHtmlExport(req, error: error)
-                    }
-                }
-            }
-        } onCancel: { [weak self] in
-            Task { @MainActor in
-                self?.failHtmlExport(req, error: CancellationError())
-            }
+        guard activeExportRequestID == requestID, bridgeIsReady else {
+            throw Self.bridgeUnavailableError()
         }
     }
 
-    private func makeExportTimeout(requestID: Int, kind: String) -> Task<Void, Never> {
-        Task { [weak self] in
-            do {
-                try await Task.sleep(for: Self.exportTimeout)
-            } catch {
-                return
-            }
-            guard let self else { return }
-            let error = NSError(
-                domain: "FrankenMarkdown.Renderer",
-                code: 9,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "The \(kind) export did not answer within three minutes. Your source is unchanged; restart the local renderer and try again."
-                ]
+    private func failExport(_ requestID: Int, error: Error) {
+        guard activeExportRequestID == requestID else { return }
+        activeExportRequestID = nil
+        exportTimeoutTask?.cancel()
+        exportTimeoutTask = nil
+        exportTask?.cancel()
+        if let owner = activeExportPhaseGeneration { settlePhase(owner) }
+        activeExportPhaseGeneration = nil
+        let completion = exportContinuation
+        exportContinuation = nil
+        completion?.resume(throwing: error)
+        // This request can still be inside synchronous WASM. Cancel its staged
+        // result as soon as WebKit can receive the command; do not enqueue bytes.
+        Task { [weak webView] in
+            _ = try? await webView?.callAsyncJavaScript(
+                "return window.frankenCancelExport(requestID)",
+                arguments: ["requestID": requestID], in: nil, contentWorld: .page
             )
-            if kind == "PDF" {
-                self.failPdfExport(requestID, error: error)
-            } else {
-                self.failHtmlExport(requestID, error: error)
-            }
-        }
-    }
-
-    private func failPdfExport(_ requestID: Int, error: Error) {
-        pdfTimeouts.removeValue(forKey: requestID)?.cancel()
-        pdfContinuations.removeValue(forKey: requestID)?.resume(throwing: error)
-        settleExportPhase()
-    }
-
-    private func failHtmlExport(_ requestID: Int, error: Error) {
-        htmlTimeouts.removeValue(forKey: requestID)?.cancel()
-        htmlContinuations.removeValue(forKey: requestID)?.resume(throwing: error)
-        settleExportPhase()
-    }
-
-    private func settleExportPhase() {
-        if pdfContinuations.isEmpty, htmlContinuations.isEmpty {
-            guard let owner = activeExportPhaseGeneration else { return }
-            activeExportPhaseGeneration = nil
-            settlePhase(owner)
         }
     }
 
@@ -712,17 +712,10 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     }
 
     func exportArtifact(_ format: DocumentArtifactFormat) async throws -> RenderedArtifact {
-        try await waitForBridgeReady()
-        let phaseOwner = beginPhase(.exporting("Forging \(format.title)..."))
-        defer { settlePhase(phaseOwner) }
-        let command: [String: Any] = [
-            "format": format.rawValue,
-            "markdown": source,
-            "options": sharedOptions
-        ]
-        return try await callBridgeJSON(
+        try await exportFile(
             function: "return await window.frankenExportArtifact(command)",
-            arguments: ["command": command]
+            command: ["format": format.rawValue, "markdown": source, "options": sharedOptions],
+            status: "Forging \(format.title)..."
         )
     }
 
@@ -745,28 +738,20 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         files: [BookSourceFile],
         format: BookArtifactFormat
     ) async throws -> RenderedArtifact {
-        try await waitForBridgeReady()
-        let phaseOwner = beginPhase(
-            .exporting(format == .pdf ? "Binding PDF book..." : "Building book site...")
-        )
-        defer { settlePhase(phaseOwner) }
         let filePayload = files.map { ["path": $0.path, "source": $0.source] }
         var options = sharedOptions
         options["pageNumbers"] = pageNumbers
-        let command: [String: Any] = [
-            "format": format.rawValue,
-            "files": filePayload,
-            "options": options
-        ]
-        return try await callBridgeJSON(
+        return try await exportFile(
             function: "return await window.frankenBook(command)",
-            arguments: ["command": command]
+            command: ["format": format.rawValue, "files": filePayload, "options": options],
+            status: format == .pdf ? "Binding PDF book..." : "Building book site..."
         )
     }
 
     private func callBridgeJSON<T: Decodable>(
         function: String,
-        arguments: [String: Any]
+        arguments: [String: Any],
+        maximumBytes: Int? = nil
     ) async throws -> T {
         let raw = try await webView.callAsyncJavaScript(
             function,
@@ -774,7 +759,9 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             in: nil,
             contentWorld: .page
         )
-        guard let json = raw as? String, let data = json.data(using: .utf8) else {
+        guard let json = raw as? String,
+              maximumBytes.map({ json.utf8.count <= $0 }) ?? true,
+              let data = json.data(using: .utf8) else {
             throw NSError(
                 domain: "FrankenMarkdown",
                 code: 7,
@@ -789,6 +776,12 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     /// advanced operation behind the same readiness boundary as the preview.
     private func waitForBridgeReady() async throws {
         for _ in 0..<200 {
+            try Task.checkCancellation()
+            if bridgeNeedsReload {
+                throw NSError(domain: "FrankenMarkdown.Renderer", code: 11,
+                              userInfo: [NSLocalizedDescriptionKey:
+                                "The local renderer needs to restart. Tap Render, then try again."])
+            }
             switch phase {
             case .loading:
                 try await Task.sleep(for: .milliseconds(50))
@@ -799,7 +792,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
                     userInfo: [NSLocalizedDescriptionKey: message]
                 )
             default:
-                return
+                if bridgeIsReady { return }
+                try await Task.sleep(for: .milliseconds(50))
             }
         }
         throw NSError(
@@ -1293,38 +1287,6 @@ extension MarkdownRendererModel: WKScriptMessageHandler {
                 self.outputBytes = payload["outputBytes"] as? Int ?? 0
                 self.diagnosticCount = payload["diagnosticCount"] as? Int ?? 0
                 self.settlePhase(owner)
-            case "exportPdfResult":
-                guard let req = payload["requestID"] as? Int,
-                      let cont = self.pdfContinuations.removeValue(forKey: req) else { return }
-                self.pdfTimeouts.removeValue(forKey: req)?.cancel()
-                if let b64 = payload["base64"] as? String,
-                   let data = Data(base64Encoded: b64) {
-                    let count = payload["byteLength"] as? Int ?? data.count
-                    let diag = payload["diagnosticCount"] as? Int ?? 0
-                    cont.resume(returning: (data, count, diag))
-                } else {
-                    cont.resume(throwing: NSError(domain: "FrankenMarkdown", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to decode exported PDF"]))
-                }
-                self.settleExportPhase()
-            case "exportHtmlResult":
-                guard let req = payload["requestID"] as? Int,
-                      let cont = self.htmlContinuations.removeValue(forKey: req) else { return }
-                self.htmlTimeouts.removeValue(forKey: req)?.cancel()
-                if let html = payload["htmlText"] as? String {
-                    let count = payload["byteLength"] as? Int ?? html.utf8.count
-                    let diag = payload["diagnosticCount"] as? Int ?? 0
-                    cont.resume(returning: (html, count, diag))
-                } else {
-                    cont.resume(throwing: NSError(domain: "FrankenMarkdown", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to read exported HTML"]))
-                }
-                self.settleExportPhase()
-            case "exportFailure":
-                if let req = payload["requestID"] as? Int {
-                    let msg = payload["message"] as? String ?? "Export failed"
-                    let err = NSError(domain: "FrankenMarkdown", code: 3, userInfo: [NSLocalizedDescriptionKey: msg])
-                    self.failPdfExport(req, error: err)
-                    self.failHtmlExport(req, error: err)
-                }
             case "failure":
                 let message = payload["message"] as? String ?? "Renderer failed"
                 guard let req = payload["requestID"] as? Int else {
@@ -1364,8 +1326,7 @@ extension MarkdownRendererModel: WKNavigationDelegate {
             userInfo: [NSLocalizedDescriptionKey:
                 "The preview process stopped. Your Markdown is safe. Tap Render to restart the local renderer."]
         )
-        for request in Array(pdfContinuations.keys) { failPdfExport(request, error: error) }
-        for request in Array(htmlContinuations.keys) { failHtmlExport(request, error: error) }
+        if let request = activeExportRequestID { failExport(request, error: error) }
         beginPhase(.failed(error.localizedDescription))
     }
 

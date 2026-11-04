@@ -1,0 +1,76 @@
+{
+  "baselineRef": "a51ac80a9c4c1016a25ea9f80fe6011124eace71",
+  "candidateBridgeSha256": "22c7e922a0f5a3de61399c1236c6d4eea2b3b52c2cd4fe83efe3b10c5791f542",
+  "scenario": "Actual old/current iOS JS bridge export transport; generated renderer bytes and native decode/hash simulated in Node. No WebKit/iOS device, Swift file I/O or Rust render measurement.",
+  "node": "v24.22.1",
+  "platform": "linux",
+  "arch": "x64",
+  "rows": [
+    {
+      "run": 0,
+      "which": "incumbent",
+      "inputBytes": 33554432,
+      "outputBytes": 33554432,
+      "sha256": "36345fa1157bb6bb1743bde33ca8ed80ad3a413408c25bd939c5a429a1618a45",
+      "elapsedMS": 4603.753833000001,
+      "cpuMS": 1796.944,
+      "peakRssKiB": 268368,
+      "maxEncodedRawBytes": 33554432
+    },
+    {
+      "run": 0,
+      "which": "candidate",
+      "inputBytes": 33554432,
+      "outputBytes": 33554432,
+      "sha256": "36345fa1157bb6bb1743bde33ca8ed80ad3a413408c25bd939c5a429a1618a45",
+      "elapsedMS": 578.417497,
+      "cpuMS": 579.208,
+      "peakRssKiB": 100240,
+      "maxEncodedRawBytes": 65536
+    },
+    {
+      "run": 1,
+      "which": "incumbent",
+      "inputBytes": 33554432,
+      "outputBytes": 33554432,
+      "sha256": "36345fa1157bb6bb1743bde33ca8ed80ad3a413408c25bd939c5a429a1618a45",
+      "elapsedMS": 446.546011,
+      "cpuMS": 458.814,
+      "peakRssKiB": 268384,
+      "maxEncodedRawBytes": 33554432
+    },
+    {
+      "run": 1,
+      "which": "candidate",
+      "inputBytes": 33554432,
+      "outputBytes": 33554432,
+      "sha256": "36345fa1157bb6bb1743bde33ca8ed80ad3a413408c25bd939c5a429a1618a45",
+      "elapsedMS": 553.7984200000001,
+      "cpuMS": 556.771,
+      "peakRssKiB": 100560,
+      "maxEncodedRawBytes": 65536
+    },
+    {
+      "run": 2,
+      "which": "incumbent",
+      "inputBytes": 33554432,
+      "outputBytes": 33554432,
+      "sha256": "36345fa1157bb6bb1743bde33ca8ed80ad3a413408c25bd939c5a429a1618a45",
+      "elapsedMS": 476.65668500000004,
+      "cpuMS": 492.695,
+      "peakRssKiB": 268644,
+      "maxEncodedRawBytes": 33554432
+    },
+    {
+      "run": 2,
+      "which": "candidate",
+      "inputBytes": 33554432,
+      "outputBytes": 33554432,
+      "sha256": "36345fa1157bb6bb1743bde33ca8ed80ad3a413408c25bd939c5a429a1618a45",
+      "elapsedMS": 599.2651510000001,
+      "cpuMS": 617.866,
+      "peakRssKiB": 101456,
+      "maxEncodedRawBytes": 65536
+    }
+  ]
+}

@@ -35,6 +35,8 @@
 		04C4C191EF42463CB3874A03 /* MarkdownExportWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04C4C191EF42463CB3874A04 /* MarkdownExportWriterTests.swift */; };
 		A7E6A3E010444F75B4CD5011 /* MarkdownSourceExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E6A3E010444F75B4CD5012 /* MarkdownSourceExport.swift */; };
 		A7E6A3E010444F75B4CD5013 /* MarkdownSourceExportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E6A3E010444F75B4CD5014 /* MarkdownSourceExportTests.swift */; };
+		B748C2D0C5594DA79EF21001 /* MarkdownSourceUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = B748C2D0C5594DA79EF21002 /* MarkdownSourceUpload.swift */; };
+		B748C2D0C5594DA79EF21003 /* MarkdownSourceUploadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B748C2D0C5594DA79EF21004 /* MarkdownSourceUploadTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -87,6 +89,8 @@
 		04C4C191EF42463CB3874A04 /* MarkdownExportWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownExportWriterTests.swift; sourceTree = "<group>"; };
 		A7E6A3E010444F75B4CD5012 /* MarkdownSourceExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceExport.swift; sourceTree = "<group>"; };
 		A7E6A3E010444F75B4CD5014 /* MarkdownSourceExportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceExportTests.swift; sourceTree = "<group>"; };
+		B748C2D0C5594DA79EF21002 /* MarkdownSourceUpload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceUpload.swift; sourceTree = "<group>"; };
+		B748C2D0C5594DA79EF21004 /* MarkdownSourceUploadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceUploadTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -101,6 +105,7 @@
 				5EDC64D4804AB6683E52CDA6 /* MarkdownSourceLoaderTests.swift */,
 				04C4C191EF42463CB3874A04 /* MarkdownExportWriterTests.swift */,
 				A7E6A3E010444F75B4CD5014 /* MarkdownSourceExportTests.swift */,
+				B748C2D0C5594DA79EF21004 /* MarkdownSourceUploadTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -122,6 +127,7 @@
 				EA75FE52F3AAB9FF5146E4FF /* MarkdownSourceLoader.swift */,
 				04C4C191EF42463CB3874A02 /* MarkdownExportWriter.swift */,
 				A7E6A3E010444F75B4CD5012 /* MarkdownSourceExport.swift */,
+				B748C2D0C5594DA79EF21002 /* MarkdownSourceUpload.swift */,
 				EAC15DAA437FF69F839FB2CB /* PrivacyInfo.xcprivacy */,
 				B9867A57FB86816F535584A0 /* RendererHost.swift */,
 				9FF0FC9185DD69073DCEFA93 /* Theme.swift */,
@@ -297,6 +303,7 @@
 				07E2F669D4601F7D3C8FE142 /* MarkdownSourceLoaderTests.swift in Sources */,
 				04C4C191EF42463CB3874A03 /* MarkdownExportWriterTests.swift in Sources */,
 				A7E6A3E010444F75B4CD5013 /* MarkdownSourceExportTests.swift in Sources */,
+				B748C2D0C5594DA79EF21003 /* MarkdownSourceUploadTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -317,6 +324,7 @@
 				94C6BBC2098B3065B15E7C29 /* MarkdownSourceLoader.swift in Sources */,
 				04C4C191EF42463CB3874A01 /* MarkdownExportWriter.swift in Sources */,
 				A7E6A3E010444F75B4CD5011 /* MarkdownSourceExport.swift in Sources */,
+				B748C2D0C5594DA79EF21001 /* MarkdownSourceUpload.swift in Sources */,
 				102F96E313D2B0318A7B3C84 /* RendererHost.swift in Sources */,
 				0BE81F4DB798081463B42E73 /* Theme.swift in Sources */,
 			);

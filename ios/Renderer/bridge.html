@@ -36,7 +36,7 @@
         stagedPreview = null;
         const started = performance.now();
         try {
-          const output = await renderer.renderHtml(String(command.markdown), command.options || {});
+          const output = await renderer.renderHtml(markdownSource(command), command.options || {});
           if (requestID !== latestRequest) return false;
           stagedPreview = {
             requestID, html: output.text(),
@@ -109,6 +109,98 @@
         return ((crc ^ 0xffffffff) >>> 0).toString(16).padStart(8, '0');
       };
       const validRequest = value => Number.isSafeInteger(value) && value > 0;
+
+      // Native uploads UTF-8 in one acknowledged chunk at a time. The released
+      // renderer still needs a complete String, but neither IPC nor base64
+      // conversion holds another whole-document payload. Keep only the latest
+      // completed source so changing options or exporting can reuse its handle.
+      const sourceByteLimit = 64 * 1024 * 1024;
+      let latestSourceID = 0;
+      let sourceUpload = null;
+      let residentSource = null;
+      const requireSourceUpload = sourceID => {
+        if (!validRequest(sourceID) || sourceUpload?.sourceID !== sourceID) {
+          throw new Error('The source upload is no longer available.');
+        }
+        return sourceUpload;
+      };
+      const markdownSource = command => {
+        if (!Object.hasOwn(command, 'sourceID')) return String(command.markdown);
+        if (!validRequest(command.sourceID) || residentSource?.sourceID !== command.sourceID) {
+          throw new Error('The source handle is no longer available.');
+        }
+        return residentSource.markdown;
+      };
+      window.frankenBeginSource = command => {
+        const {sourceID, byteLength, chunkSize} = command;
+        if (!validRequest(sourceID) || sourceID <= latestSourceID) {
+          throw new Error('Source identifiers must increase.');
+        }
+        if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > sourceByteLimit ||
+            chunkSize !== exportChunkSize) {
+          throw new Error('The source upload exceeds the 64 MiB limit or has an invalid manifest.');
+        }
+        if (sourceUpload) throw new Error('Another source upload is still in progress.');
+        latestSourceID = sourceID;
+        // Native serializes operations that use this cache. Drop the previous
+        // source before accumulating its replacement, not after the final join.
+        residentSource = null;
+        sourceUpload = {
+          sourceID, byteLength, receivedBytes: 0, nextIndex: 0, parts: [],
+          decoder: new TextDecoder('utf-8', {fatal: true, ignoreBOM: true})
+        };
+        return JSON.stringify({sourceID, byteLength, chunkSize});
+      };
+      window.frankenAppendSourceChunk = command => {
+        const transfer = requireSourceUpload(command.sourceID);
+        const expectedBytes = Math.min(exportChunkSize, transfer.byteLength - transfer.receivedBytes);
+        if (!Number.isSafeInteger(command.index) || command.index !== transfer.nextIndex ||
+            expectedBytes <= 0 || command.byteLength !== expectedBytes ||
+            typeof command.base64 !== 'string' ||
+            command.base64.length !== Math.ceil(expectedBytes / 3) * 4 ||
+            typeof command.checksum !== 'string' || !/^[0-9a-f]{8}$/.test(command.checksum)) {
+          throw new Error('The source chunk has an invalid order or size.');
+        }
+        const binary = atob(command.base64);
+        if (binary.length !== expectedBytes) throw new Error('The source chunk has an invalid size.');
+        const bytes = new Uint8Array(expectedBytes);
+        for (let index = 0; index < expectedBytes; index++) bytes[index] = binary.charCodeAt(index);
+        if (checksum(bytes) !== command.checksum) throw new Error('The source chunk failed its integrity check.');
+        try {
+          const text = transfer.decoder.decode(bytes, {stream: true});
+          if (text) transfer.parts.push(text);
+        } catch (error) {
+          sourceUpload = null;
+          throw new Error('The source upload is not valid UTF-8.');
+        }
+        transfer.receivedBytes += expectedBytes;
+        transfer.nextIndex++;
+        return JSON.stringify({sourceID: transfer.sourceID, index: command.index,
+          receivedBytes: transfer.receivedBytes});
+      };
+      window.frankenFinishSource = command => {
+        const transfer = requireSourceUpload(command.sourceID);
+        if (command.byteLength !== transfer.byteLength || command.chunkCount !== transfer.nextIndex ||
+            transfer.receivedBytes !== transfer.byteLength) {
+          throw new Error('The source upload is incomplete.');
+        }
+        try {
+          const tail = transfer.decoder.decode();
+          if (tail) transfer.parts.push(tail);
+          residentSource = {sourceID: transfer.sourceID, markdown: transfer.parts.join('')};
+          return JSON.stringify({sourceID: transfer.sourceID, byteLength: transfer.byteLength,
+            chunkCount: transfer.nextIndex});
+        } finally {
+          sourceUpload = null;
+        }
+      };
+      window.frankenCancelSource = sourceID => {
+        if (!validRequest(sourceID)) return false;
+        let released = false;
+        if (sourceUpload?.sourceID === sourceID) { sourceUpload = null; released = true; }
+        if (residentSource?.sourceID === sourceID) { residentSource = null; released = true; }
+        return released;
+      };
       const requireExport = requestID => {
         if (!validRequest(requestID) || activeExport?.requestID !== requestID || !activeExport.bytes) {
           throw new Error('The export transfer is no longer available.');
@@ -182,12 +274,12 @@
         return true;
       };
       window.frankenExportPdf = command => stageExport(command, () =>
-        renderer.renderPdf(String(command.markdown), command.options || {}));
+        renderer.renderPdf(markdownSource(command), command.options || {}));
       window.frankenExportHtml = command => stageExport(command, () =>
-        renderer.renderHtml(String(command.markdown), command.options || {}));
+        renderer.renderHtml(markdownSource(command), command.options || {}));
 
       window.frankenAnalyze = async (command) => {
-        const markdown = String(command.markdown);
+        const markdown = markdownSource(command);
         const [stats, audit, search] = await Promise.all([
           renderer.documentStats(markdown),
           renderer.accessibilityAudit(markdown),
@@ -197,7 +289,7 @@
       };
 
       window.frankenExportArtifact = command => stageExport(command, async () => {
-        const markdown = String(command.markdown);
+        const markdown = markdownSource(command);
         const options = command.options || {};
         switch (String(command.format)) {
           case 'svg': return await renderer.renderSvg(markdown, options);

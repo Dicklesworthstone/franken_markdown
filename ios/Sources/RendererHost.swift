@@ -172,7 +172,10 @@ enum BookArtifactFormat: String {
 @MainActor
 final class MarkdownRendererModel: NSObject, ObservableObject {
     @Published var source = MarkdownRendererModel.sample {
-        didSet { if source != oldValue { invalidatePreview(sourceChanged: true) } }
+        // Swift String equality treats canonically equivalent Unicode as
+        // equal, even when its UTF-8 bytes differ. Every assignment owns a new
+        // source revision; this also avoids scanning a huge document here.
+        didSet { invalidatePreview(sourceChanged: true) }
     }
     @Published var documentIdentity: UUID?
     @Published var fontFamily = "sans" {
@@ -237,6 +240,24 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private var previewIsPending = false
     private var bridgeIsReady = false
     private var bridgeNeedsReload = false
+    private struct SourceSnapshot: Sendable {
+        let source: String
+        let revision: Int
+    }
+
+    private enum SourceOwner: Sendable {
+        case preview(requestID: Int, sourceRevision: Int)
+        case export(requestID: Int)
+        case auxiliary(requestID: Int)
+    }
+
+    @Published private(set) var sourceRevision = 0
+    private var nextSourceID = 0
+    private var residentSource: (sourceID: Int, revision: Int)?
+    private var activeSourceUploadID: Int?
+    private var sourceUploadTimeoutTask: Task<Void, Never>?
+    private var activeAuxiliaryRequestID: Int?
+    private var auxiliaryTimeoutTask: Task<Void, Never>?
     private var scheduledDraftSave: Task<Void, Never>?
     private let draftStore = MarkdownDraftStore()
 
@@ -288,6 +309,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         scheduledDraftSave?.cancel()
         exportTask?.cancel()
         exportTimeoutTask?.cancel()
+        sourceUploadTimeoutTask?.cancel()
+        auxiliaryTimeoutTask?.cancel()
         exportContinuation?.resume(throwing: CancellationError())
     }
 
@@ -344,7 +367,13 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private func invalidatePreview(sourceChanged: Bool = false) {
         previewRevision &+= 1
         previewIsPending = false
-        if sourceChanged { analysisIsStale = true }
+        if sourceChanged {
+            sourceRevision &+= 1
+            analysisIsStale = true
+            // Cancels chunk preparation between ACKs. Synchronous WASM, if
+            // already running, is still discarded when its result arrives.
+            previewTask?.cancel()
+        }
     }
 
     func scheduleRender() {
@@ -361,18 +390,22 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     func scheduleDraftSave() {
         scheduledDraftSave?.cancel()
         draftStatus = "Saving locally…"
+        let draftSourceRevision = sourceRevision
         let draft = activeDraft()
         scheduledDraftSave = Task(priority: .utility) { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(450))
-                guard !Task.isCancelled, let self, self.matchesCurrentDraft(draft) else { return }
+                guard !Task.isCancelled, let self,
+                      self.matchesCurrentDraft(draft, sourceRevision: draftSourceRevision) else { return }
                 try await self.draftStore.save(draft)
-                guard !Task.isCancelled, self.matchesCurrentDraft(draft) else { return }
+                guard !Task.isCancelled,
+                      self.matchesCurrentDraft(draft, sourceRevision: draftSourceRevision) else { return }
                 self.draftStatus = "Saved locally"
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled, let self, self.matchesCurrentDraft(draft) else { return }
+                guard !Task.isCancelled, let self,
+                      self.matchesCurrentDraft(draft, sourceRevision: draftSourceRevision) else { return }
                 self.draftStatus = "Local draft not saved"
             }
         }
@@ -442,8 +475,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         }
     }
 
-    private func matchesCurrentDraft(_ draft: MarkdownActiveDraft) -> Bool {
-        draft.source == source &&
+    private func matchesCurrentDraft(_ draft: MarkdownActiveDraft, sourceRevision expectedRevision: Int) -> Bool {
+        expectedRevision == sourceRevision &&
             draft.documentIdentity == documentIdentity &&
             draft.title == documentTitle &&
             draft.author == documentAuthor &&
@@ -463,6 +496,170 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             (draft.customCSS ?? "") == customCSS
     }
 
+    private func sourceSnapshot() -> SourceSnapshot {
+        SourceSnapshot(source: source, revision: sourceRevision)
+    }
+
+    private func checkSourceOwner(_ owner: SourceOwner) throws {
+        try Task.checkCancellation()
+        guard bridgeIsReady, !bridgeNeedsReload else { throw Self.bridgeUnavailableError() }
+        switch owner {
+        case let .preview(request, revision):
+            guard previewInFlightRequestID == request, sourceRevision == revision else {
+                throw CancellationError()
+            }
+        case let .export(request):
+            guard activeExportRequestID == request else { throw CancellationError() }
+        case let .auxiliary(request):
+            guard activeAuxiliaryRequestID == request else { throw CancellationError() }
+        }
+    }
+
+    private func checkSourceUploadOwner(_ sourceID: Int, owner: SourceOwner) throws {
+        try checkSourceOwner(owner)
+        guard activeSourceUploadID == sourceID else { throw CancellationError() }
+    }
+
+    private func checkPreviewOwner(_ request: Int, revision: Int) throws {
+        try Task.checkCancellation()
+        guard bridgeIsReady, !bridgeNeedsReload else { throw Self.bridgeUnavailableError() }
+        guard previewInFlightRequestID == request, previewRevision == revision else {
+            throw CancellationError()
+        }
+    }
+
+    /// Preview, export and inspection serialize their use of the one-document
+    /// cache. A handle is reused only for the exact native source revision.
+    /// Options are deliberately separate: changing them needs no source IPC.
+    private func prepareSource(_ snapshot: SourceSnapshot, owner: SourceOwner) async throws -> Int {
+        try checkSourceOwner(owner)
+        if let residentSource, residentSource.revision == snapshot.revision {
+            return residentSource.sourceID
+        }
+        guard activeSourceUploadID == nil else { throw Self.rendererBusyError() }
+        nextSourceID += 1
+        let sourceID = nextSourceID
+        let upload = MarkdownSourceUpload(source: snapshot.source, sourceID: sourceID)
+        let manifest = try await upload.manifest()
+        try checkSourceOwner(owner)
+        guard activeSourceUploadID == nil else { throw Self.rendererBusyError() }
+        activeSourceUploadID = sourceID
+        residentSource = nil
+        sourceUploadTimeoutTask = Task { [weak self] in
+            do { try await Task.sleep(for: Self.exportTimeout) } catch { return }
+            guard let self, self.activeSourceUploadID == sourceID else { return }
+            self.invalidateBridge(
+                "The source transfer did not finish within three minutes. Tap Render to restart the local renderer."
+            )
+        }
+        defer {
+            if activeSourceUploadID == sourceID {
+                activeSourceUploadID = nil
+                sourceUploadTimeoutTask?.cancel()
+                sourceUploadTimeoutTask = nil
+            }
+        }
+        do {
+            let acknowledged: MarkdownSourceUploadManifest = try await callBridgeJSON(
+                function: "return window.frankenBeginSource(command)",
+                arguments: ["command": manifest.arguments], maximumBytes: 1_024
+            )
+            try checkSourceUploadOwner(sourceID, owner: owner)
+            guard acknowledged == manifest else { throw MarkdownSourceUpload.TransferError.invalidAcknowledgement }
+            while let chunk = try await upload.nextChunk() {
+                try checkSourceUploadOwner(sourceID, owner: owner)
+                let acknowledged: MarkdownSourceUploadAcknowledgement = try await callBridgeJSON(
+                    function: "return window.frankenAppendSourceChunk(command)",
+                    arguments: ["command": chunk.arguments], maximumBytes: 1_024
+                )
+                try checkSourceUploadOwner(sourceID, owner: owner)
+                guard acknowledged.sourceID == sourceID, acknowledged.index == chunk.index,
+                      acknowledged.receivedBytes == chunk.receivedBytes else {
+                    throw MarkdownSourceUpload.TransferError.invalidAcknowledgement
+                }
+            }
+            let receipt = try await upload.finish()
+            try checkSourceUploadOwner(sourceID, owner: owner)
+            let acknowledged: MarkdownSourceUploadReceipt = try await callBridgeJSON(
+                function: "return window.frankenFinishSource(command)",
+                arguments: ["command": receipt.arguments], maximumBytes: 1_024
+            )
+            try checkSourceUploadOwner(sourceID, owner: owner)
+            guard acknowledged == receipt else { throw MarkdownSourceUpload.TransferError.invalidAcknowledgement }
+            residentSource = (sourceID, snapshot.revision)
+            return sourceID
+        } catch {
+            await upload.abort()
+            // Late cleanup cannot cancel a replacement upload or cached source.
+            _ = try? await webView.callAsyncJavaScript(
+                "return window.frankenCancelSource(sourceID)",
+                arguments: ["sourceID": sourceID], in: nil, contentWorld: .page
+            )
+            throw error
+        }
+    }
+
+    private static func rendererBusyError() -> NSError {
+        NSError(domain: "FrankenMarkdown.Renderer", code: 12,
+                userInfo: [NSLocalizedDescriptionKey: "The renderer is still finishing another operation."])
+    }
+
+    private func beginAuxiliaryOperation(_ status: String) async throws -> (request: Int, phase: Int) {
+        try await waitForBridgeReady()
+        try Task.checkCancellation()
+        guard exportTask == nil, activeExportRequestID == nil,
+              activeAuxiliaryRequestID == nil else { throw Self.rendererBusyError() }
+        requestID += 1
+        let request = requestID
+        activeAuxiliaryRequestID = request
+        auxiliaryTimeoutTask = Task { [weak self] in
+            do { try await Task.sleep(for: Self.exportTimeout) } catch { return }
+            guard let self, self.activeAuxiliaryRequestID == request else { return }
+            self.invalidateBridge(
+                "The document operation did not finish within three minutes. Tap Render to restart the local renderer."
+            )
+        }
+        return (request, beginPhase(.exporting(status)))
+    }
+
+    private func finishAuxiliaryOperation(_ request: Int, phase owner: Int) {
+        if activeAuxiliaryRequestID == request {
+            activeAuxiliaryRequestID = nil
+            auxiliaryTimeoutTask?.cancel()
+            auxiliaryTimeoutTask = nil
+        }
+        settlePhase(owner)
+        startPendingPreview()
+    }
+
+    /// Handles are scoped to this WebKit process. Recovery never reuses a
+    /// source ID from the terminated/timed-out page, even if the text is equal.
+    private func invalidateBridge(_ message: String) {
+        bridgeIsReady = false
+        bridgeNeedsReload = true
+        residentSource = nil
+        activeSourceUploadID = nil
+        sourceUploadTimeoutTask?.cancel()
+        sourceUploadTimeoutTask = nil
+        activeAuxiliaryRequestID = nil
+        auxiliaryTimeoutTask?.cancel()
+        auxiliaryTimeoutTask = nil
+        previewRevision &+= 1
+        previewIsPending = false
+        previewInFlightRequestID = nil
+        latestPreviewRequestID = nil
+        scheduledRender?.cancel()
+        scheduledRender = nil
+        previewTask?.cancel()
+        previewTask = nil
+        let error = NSError(
+            domain: "FrankenMarkdown.Renderer", code: 11,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+        if let request = activeExportRequestID { failExport(request, error: error) }
+        beginPhase(.failed(message))
+    }
+
     func renderNow() {
         scheduledRender?.cancel()
         scheduledRender = nil
@@ -470,6 +667,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         if bridgeNeedsReload {
             bridgeNeedsReload = false
             bridgeIsReady = false
+            residentSource = nil
             beginPhase(.loading)
             webView.load(URLRequest(url: URL(string: "frankenmd://bundle/bridge.html")!))
             return
@@ -477,21 +675,18 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         startPendingPreview()
     }
 
-    /// There is at most one full Markdown payload in flight to WebKit. While
-    /// it runs, edits/settings only replace the pending model revision rather
-    /// than queueing another expensive parse and full-size IPC message.
+    /// Keep one active preview and only the newest pending revision. Source
+    /// crosses WebKit in acknowledged chunks, or reuses the cached revision.
     private func startPendingPreview() {
         guard bridgeIsReady, !bridgeNeedsReload, previewIsPending, previewInFlightRequestID == nil,
-              activeExportRequestID == nil, exportTask == nil else { return }
+              activeExportRequestID == nil, exportTask == nil,
+              activeAuxiliaryRequestID == nil else { return }
         previewIsPending = false
         requestID += 1
         let req = requestID
         let revision = previewRevision
-        let command: [String: Any] = [
-            "requestID": req,
-            "markdown": source,
-            "options": sharedOptions
-        ]
+        let snapshot = sourceSnapshot()
+        let options = sharedOptions
         let phaseOwner = beginPhase(.rendering)
         activeRenderPhaseGeneration = phaseOwner
         previewInFlightRequestID = req
@@ -511,33 +706,35 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
                 return
             }
             do {
+                let sourceID = try await self.prepareSource(
+                    snapshot, owner: .preview(requestID: req, sourceRevision: snapshot.revision)
+                )
+                try self.checkPreviewOwner(req, revision: revision)
+                let command: [String: Any] = ["requestID": req, "sourceID": sourceID, "options": options]
                 let prepared = try await webView.callAsyncJavaScript(
                     "return await window.frankenRender(command)",
                     arguments: ["command": command],
-                    in: nil,
-                    contentWorld: .page
+                    in: nil, contentWorld: .page
                 )
-                guard !Task.isCancelled, self.previewInFlightRequestID == req else { return }
-                guard self.previewRevision == revision else {
-                    _ = try? await webView.callAsyncJavaScript(
-                        "return window.frankenDiscardPreview(requestID)",
-                        arguments: ["requestID": req], in: nil, contentWorld: .page
-                    )
-                    self.settlePhase(phaseOwner)
-                    return
-                }
+                try self.checkPreviewOwner(req, revision: revision)
                 guard prepared as? Bool == true else { return }
-                // The bridge keeps the HTML in its own process. Publication is
-                // acknowledged only after the native document owner is checked
-                // across the asynchronous Rust/WASM call above.
+                // HTML stays in WebKit; Swift acknowledges only the current
+                // source/settings owner after the asynchronous core call.
                 _ = try await webView.callAsyncJavaScript(
                     "return window.frankenCommitPreview(requestID)",
                     arguments: ["requestID": req], in: nil, contentWorld: .page
                 )
             } catch {
-                guard self.previewInFlightRequestID == req,
-                      self.previewRevision == revision else { return }
-                self.settlePhase(phaseOwner, to: .failed(error.localizedDescription))
+                _ = try? await webView.callAsyncJavaScript(
+                    "return window.frankenDiscardPreview(requestID)",
+                    arguments: ["requestID": req], in: nil, contentWorld: .page
+                )
+                guard self.previewInFlightRequestID == req else { return }
+                if Task.isCancelled || self.previewRevision != revision {
+                    self.settlePhase(phaseOwner)
+                } else {
+                    self.settlePhase(phaseOwner, to: .failed(error.localizedDescription))
+                }
             }
         }
     }
@@ -545,7 +742,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     func exportPdf() async throws -> RenderedArtifact {
         try await exportFile(
             function: "return await window.frankenExportPdf(command)",
-            command: ["markdown": source, "options": pdfOptions()],
+            command: ["options": pdfOptions()],
+            sourceSnapshot: sourceSnapshot(),
             status: "Forging PDF..."
         )
     }
@@ -553,7 +751,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     func exportHtml() async throws -> RenderedArtifact {
         try await exportFile(
             function: "return await window.frankenExportHtml(command)",
-            command: ["markdown": source, "options": sharedOptions],
+            command: ["options": sharedOptions],
+            sourceSnapshot: sourceSnapshot(),
             status: "Forging HTML..."
         )
     }
@@ -563,17 +762,17 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private func exportFile(
         function: String,
         command: [String: Any],
+        sourceSnapshot: SourceSnapshot? = nil,
         status: String
     ) async throws -> RenderedArtifact {
+        let title = documentTitle
         try await waitForBridgeReady()
         try Task.checkCancellation()
-        guard exportTask == nil else {
-            throw NSError(domain: "FrankenMarkdown.Renderer", code: 12,
-                          userInfo: [NSLocalizedDescriptionKey: "Another export is still finishing."])
+        guard exportTask == nil, activeAuxiliaryRequestID == nil else {
+            throw Self.rendererBusyError()
         }
         requestID += 1
         let req = requestID
-        let title = documentTitle
         var payload = command
         payload["requestID"] = req
         let owner = beginPhase(.exporting(status))
@@ -585,13 +784,9 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
                 exportTimeoutTask = Task { [weak self] in
                     do { try await Task.sleep(for: Self.exportTimeout) } catch { return }
                     guard let self, self.activeExportRequestID == req else { return }
-                    self.bridgeNeedsReload = true
-                    self.bridgeIsReady = false
-                    self.failExport(req, error: NSError(
-                        domain: "FrankenMarkdown.Renderer", code: 9,
-                        userInfo: [NSLocalizedDescriptionKey:
-                            "The export did not finish within three minutes. Tap Render to restart the local renderer and try again."]
-                    ))
+                    self.invalidateBridge(
+                        "The export did not finish within three minutes. Tap Render to restart the local renderer and try again."
+                    )
                 }
                 exportTask = Task { [weak self] in
                     guard let self else { return }
@@ -605,6 +800,12 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
                         // Avoid overlapping a full preview render with an
                         // export buffer. Edits keep only the newest pending revision.
                         await self.previewTask?.value
+                        try self.checkExportOwner(req)
+                        if let sourceSnapshot {
+                            payload["sourceID"] = try await self.prepareSource(
+                                sourceSnapshot, owner: .export(requestID: req)
+                            )
+                        }
                         try self.checkExportOwner(req)
                         let manifest: MarkdownExportManifest = try await self.callBridgeJSON(
                             function: function, arguments: ["command": payload], maximumBytes: 1_024
@@ -662,7 +863,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
 
     private func checkExportOwner(_ requestID: Int) throws {
         try Task.checkCancellation()
-        guard activeExportRequestID == requestID, bridgeIsReady else {
+        guard activeExportRequestID == requestID, bridgeIsReady, !bridgeNeedsReload else {
             throw Self.bridgeUnavailableError()
         }
     }
@@ -697,16 +898,18 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     }
 
     func analyzeDocument() async throws -> DocumentAnalysis {
-        try await waitForBridgeReady()
-        let analyzedSource = source
-        let phaseOwner = beginPhase(.exporting("Inspecting structure..."))
-        defer { settlePhase(phaseOwner) }
-        let command: [String: Any] = ["markdown": analyzedSource]
+        let snapshot = sourceSnapshot()
+        let operation = try await beginAuxiliaryOperation("Inspecting structure...")
+        defer { finishAuxiliaryOperation(operation.request, phase: operation.phase) }
+        await previewTask?.value
+        let sourceID = try await prepareSource(snapshot, owner: .auxiliary(requestID: operation.request))
+        try checkSourceOwner(.auxiliary(requestID: operation.request))
         let result: DocumentAnalysis = try await callBridgeJSON(
             function: "return await window.frankenAnalyze(command)",
-            arguments: ["command": command]
+            arguments: ["command": ["sourceID": sourceID]]
         )
-        if source == analyzedSource {
+        try checkSourceOwner(.auxiliary(requestID: operation.request))
+        if sourceRevision == snapshot.revision {
             analysis = result
             analysisIsStale = false
         }
@@ -716,30 +919,39 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     func exportArtifact(_ format: DocumentArtifactFormat) async throws -> RenderedArtifact {
         try await exportFile(
             function: "return await window.frankenExportArtifact(command)",
-            command: ["format": format.rawValue, "markdown": source, "options": sharedOptions],
+            command: ["format": format.rawValue, "options": sharedOptions],
+            sourceSnapshot: sourceSnapshot(),
             status: "Forging \(format.title)..."
         )
     }
 
     func semanticDiff(from baseline: String) async throws -> SemanticDiffPreview {
-        try await waitForBridgeReady()
-        let phaseOwner = beginPhase(.exporting("Aligning semantic structure..."))
-        defer { settlePhase(phaseOwner) }
+        let current = source
+        let operation = try await beginAuxiliaryOperation("Aligning semantic structure...")
+        defer { finishAuxiliaryOperation(operation.request, phase: operation.phase) }
+        await previewTask?.value
+        try checkSourceOwner(.auxiliary(requestID: operation.request))
+        // Two-document diff retains its existing inline API. It cannot borrow
+        // the single-document cache for two different snapshots.
         let command: [String: Any] = [
             "oldMarkdown": baseline,
-            "newMarkdown": source,
+            "newMarkdown": current,
             "options": ["oldName": "Before", "newName": "Current"]
         ]
-        return try await callBridgeJSON(
+        let result: SemanticDiffPreview = try await callBridgeJSON(
             function: "return await window.frankenDiff(command)",
             arguments: ["command": command]
         )
+        try checkSourceOwner(.auxiliary(requestID: operation.request))
+        return result
     }
 
     func exportBook(
         files: [BookSourceFile],
         format: BookArtifactFormat
     ) async throws -> RenderedArtifact {
+        // Book collections keep their existing inline API; the single-source
+        // cache is reserved for document preview, analysis and ordinary export.
         let filePayload = files.map { ["path": $0.path, "source": $0.source] }
         var options = sharedOptions
         options["pageNumbers"] = pageNumbers
@@ -1292,9 +1504,7 @@ extension MarkdownRendererModel: WKScriptMessageHandler {
             case "failure":
                 let message = payload["message"] as? String ?? "Renderer failed"
                 guard let req = payload["requestID"] as? Int else {
-                    self.bridgeIsReady = false
-                    self.bridgeNeedsReload = true
-                    self.beginPhase(.failed(message))
+                    self.invalidateBridge(message)
                     return
                 }
                 guard req == self.latestPreviewRequestID,
@@ -1310,26 +1520,10 @@ extension MarkdownRendererModel: WKScriptMessageHandler {
 
 extension MarkdownRendererModel: WKNavigationDelegate {
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        // iOS may reclaim the renderer under memory pressure. Do not leave a
-        // permanent spinner or automatically retry the same expensive document
-        // in an unbounded crash loop. Source/recovery stay owned by Swift.
-        bridgeIsReady = false
-        bridgeNeedsReload = true
-        previewRevision &+= 1
-        previewIsPending = false
-        previewInFlightRequestID = nil
-        latestPreviewRequestID = nil
-        scheduledRender?.cancel()
-        scheduledRender = nil
-        previewTask?.cancel()
-        previewTask = nil
-        let error = NSError(
-            domain: "FrankenMarkdown.Renderer", code: 11,
-            userInfo: [NSLocalizedDescriptionKey:
-                "The preview process stopped. Your Markdown is safe. Tap Render to restart the local renderer."]
+        // Keep the source editable and wait for an explicit Render retry.
+        invalidateBridge(
+            "The preview process stopped. Your Markdown is safe. Tap Render to restart the local renderer."
         )
-        if let request = activeExportRequestID { failExport(request, error: error) }
-        beginPhase(.failed(error.localizedDescription))
     }
 
     func webView(

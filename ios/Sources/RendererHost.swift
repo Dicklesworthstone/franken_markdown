@@ -252,6 +252,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     }
 
     @Published private(set) var sourceRevision = 0
+    private var recoverySourceIdentity = UUID()
     private var nextSourceID = 0
     private var residentSource: (sourceID: Int, revision: Int)?
     private var activeSourceUploadID: Int?
@@ -368,6 +369,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         previewRevision &+= 1
         previewIsPending = false
         if sourceChanged {
+            recoverySourceIdentity = UUID()
             sourceRevision &+= 1
             analysisIsStale = true
             // Cancels chunk preparation between ACKs. Synchronous WASM, if
@@ -391,13 +393,14 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         scheduledDraftSave?.cancel()
         draftStatus = "Saving locally…"
         let draftSourceRevision = sourceRevision
+        let draftSourceIdentity = recoverySourceIdentity
         let draft = activeDraft()
         scheduledDraftSave = Task(priority: .utility) { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(450))
                 guard !Task.isCancelled, let self,
                       self.matchesCurrentDraft(draft, sourceRevision: draftSourceRevision) else { return }
-                try await self.draftStore.save(draft)
+                try await self.draftStore.save(draft, sourceIdentity: draftSourceIdentity)
                 guard !Task.isCancelled,
                       self.matchesCurrentDraft(draft, sourceRevision: draftSourceRevision) else { return }
                 self.draftStatus = "Saved locally"
@@ -438,10 +441,11 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
 
     private func restoreDraftIfUnedited() {
         let store = draftStore
+        let expectedSourceIdentity = recoverySourceIdentity
         Task(priority: .utility) { [weak self] in
             let draft = await store.load()
             guard let self else { return }
-            guard self.source == Self.sample, self.documentTitle.isEmpty else {
+            guard self.recoverySourceIdentity == expectedSourceIdentity, self.documentTitle.isEmpty else {
                 self.draftStatus = "Active draft changed"
                 self.draftRecoveryIsComplete = true
                 return

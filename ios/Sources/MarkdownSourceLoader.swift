@@ -131,7 +131,18 @@ final class MarkdownDocumentSession: ObservableObject {
     var hasCurrentDocument: Bool { currentDocument != nil }
 
     func isDirty(source: String) -> Bool {
-        source != (currentDocument?.source ?? untitledBaseline)
+        // Canonically equivalent Unicode can still change the file's bytes.
+        // Preserve the constant-time path when unchanged native strings share
+        // their UTF-8 storage. Borrowing these buffers neither copies nor reads
+        // through an unsafe pointer.
+        let baseline = currentDocument?.source ?? untitledBaseline
+        let sharesStorage = source.utf8.withContiguousStorageIfAvailable { sourceBytes in
+            baseline.utf8.withContiguousStorageIfAvailable { baselineBytes in
+                sourceBytes.count == baselineBytes.count &&
+                    sourceBytes.baseAddress == baselineBytes.baseAddress
+            } ?? false
+        } ?? false
+        return !sharesStorage && !source.utf8.elementsEqual(baseline.utf8)
     }
 
     /// An explicit picker, New, or file-open request supersedes automatic launch

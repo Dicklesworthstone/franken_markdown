@@ -359,6 +359,27 @@ final class MarkdownSourceLoaderTests: XCTestCase {
     }
 
     @MainActor
+    func testDirtyStateAndSavePreserveCanonicallyEquivalentByteEdits() async throws {
+        let original = "# \u{00E9}e\u{0301}\n"
+        let edited = "# e\u{0301}\u{00E9}\n"
+        XCTAssertEqual(original, edited, "The fixture must be canonically equivalent")
+        XCTAssertEqual(original.utf8.count, edited.utf8.count)
+        XCTAssertFalse(original.utf8.elementsEqual(edited.utf8))
+        let session = MarkdownDocumentSession(initialSource: original, defaults: try makeDefaults())
+        XCTAssertTrue(session.isDirty(source: edited), "Untitled drafts also preserve exact bytes")
+        let url = try temporarySourceURL(contents: Data(original.utf8))
+        session.adopt(try await MarkdownSourceLoader.open(from: url))
+        XCTAssertFalse(session.isDirty(source: original))
+        XCTAssertTrue(session.isDirty(source: edited))
+
+        try await session.save(source: edited)
+
+        XCTAssertEqual(try Data(contentsOf: url), Data(edited.utf8))
+        XCTAssertFalse(session.isDirty(source: edited))
+        XCTAssertTrue(session.isDirty(source: original))
+    }
+
+    @MainActor
     func testSessionTracksDirtyStateAndPersistsBoundedRecents() async throws {
         let suiteName = "MarkdownSourceLoaderTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

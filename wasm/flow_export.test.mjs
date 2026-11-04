@@ -129,7 +129,7 @@ test("rejects unknown/coerced settings, unsafe HTML/font/asset injection, and in
     ["pdf", { title: "a".repeat(4097) }],
     ["html", { author: "ignored" }],
     ["pdf", { allowRawHtml: true }],
-    ["html", { customCss: "@import url(https://example.test)" }],
+    ["pdf", { customCss: "p { color: red; }" }],
     ["html", { pdfImages: [] }],
     ["html", { fontAssets: [] }],
     ["pdf", { font: "sans" }],
@@ -187,6 +187,50 @@ test("PDF typography is deeply owned and HTML font selection reaches the existin
   const nullPrototype = Object.assign(Object.create(null), { homogeneous: false });
   const normalized = normalizeFlowExport("pdf", { typography: nullPrototype, optimalPagination: false }, f.session.token);
   assert.deepEqual(normalized[1].typography, { homogeneous: false });
+  assert.deepEqual(normalizeFlowExport(...structuredClone(normalized)), normalized);
+});
+
+test("HTML stylesheets retain exact text and empty overrides across asynchronous rendering", async () => {
+  const f = fixture();
+  for (const customCss of ["", " \n.fmd::before { content: 'Café 😀'; }\n "]) {
+    const hold = gate(), options = { customCss };
+    f.setGate(hold);
+    const pending = f.api.exportDocument("html", options, f.session.token);
+    options.customCss = ".fmd { display: none; }";
+    hold.resolve();
+    await pending;
+    assert.equal(f.calls.at(-1).options.customCss, customCss);
+    assert.equal(f.calls.at(-1).options.allowRawHtml, false);
+  }
+  f.setGate(null);
+  await f.api.exportDocument("html", {}, f.session.token);
+  assert.equal(Object.hasOwn(f.calls.at(-1).options, "customCss"), false);
+});
+
+test("HTML CSS is bounded Unicode data and rejects unsupported formats before reading source", async () => {
+  const f = fixture();
+  for (const customCss of [null, 1, false, {}, [], new String("p{}"), "a".repeat(4 * 1024 * 1024 + 1)]) {
+    await assert.rejects(f.api.exportDocument("html", { customCss }, f.session.token), code("INVALID_OPTIONS"));
+  }
+  for (const customCss of ["\ud800", "\udc00"]) {
+    await assert.rejects(f.api.exportDocument("html", { customCss }, f.session.token), code("INVALID_UNICODE"));
+  }
+  await assert.rejects(f.api.exportDocument("html", {
+    customCss: "é".repeat(2 * 1024 * 1024 + 1),
+  }, f.session.token), code("BUDGET_EXCEEDED"));
+  let reads = 0;
+  const options = Object.defineProperty({}, "customCss", { get() { reads++; return "p{}"; } });
+  await assert.rejects(f.api.exportDocument("html", options, f.session.token), code("INVALID_OPTIONS"));
+  for (const format of ["pdf", "svg"]) {
+    await assert.rejects(f.api.exportDocument(format, { customCss: "" }, f.session.token), code("INVALID_OPTIONS"));
+  }
+  assert.equal(reads, 0);
+  assert.equal(f.session.reads.length, 0);
+  assert.equal(f.calls.length, 0);
+  const css = "é".repeat(2 * 1024 * 1024);
+  const normalized = normalizeFlowExport("html", { customCss: css }, f.session.token);
+  assert.equal(normalized[1].customCss, css);
+  assert(Object.isFrozen(normalized[1]));
   assert.deepEqual(normalizeFlowExport(...structuredClone(normalized)), normalized);
 });
 

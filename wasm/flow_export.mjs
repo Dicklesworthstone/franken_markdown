@@ -127,8 +127,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
     fail("INVALID_OPTIONS", "export options must be an object");
   const allowed = format === "svg" ? ["maxWidthPt", "maxOutputBytes"] : [
     ...COMMON,
-    ...(format === "pdf" ? PDF : ["darkMode", "fontEmbedding"]),
-    ...(format === "epub" ? ["customCss"] : []),
+    ...(format === "pdf" ? PDF : ["darkMode", "fontEmbedding", "customCss"]),
     ...(format === "html" ? ["htmlFontFormat"] : []),
   ];
   options = runningRecord(options, allowed, `${format} export options`);
@@ -176,8 +175,9 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
     const darkMode = options.darkMode ?? "auto";
     if (darkMode !== "auto" && darkMode !== "disabled") fail("INVALID_OPTIONS", "invalid darkMode");
     result.darkMode = darkMode;
-    if (format === "epub" && options.customCss !== undefined) {
-      // EPUB stores this stylesheet verbatim; an empty override is meaningful.
+    if (options.customCss !== undefined) {
+      // Both document renderers replace their default stylesheet with this
+      // captured text. An explicit empty override is distinct from omission.
       result.customCss = text(options.customCss, "customCss", FLOW_SOURCE_LIMIT);
     }
   } else {

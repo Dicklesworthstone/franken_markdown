@@ -486,7 +486,7 @@ pub fn render_html_configured(
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
     options.title = nonempty_verbatim(title);
-    options.custom_css = nonempty_verbatim(custom_css);
+    options.custom_css = custom_css;
     options.allow_raw_html = allow_raw_html;
     wasm::render_html(markdown, &options)
         .map(render_result)
@@ -518,7 +518,7 @@ pub fn render_html_configured_with_fonts(
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
     options.title = nonempty_verbatim(title);
-    options.custom_css = nonempty_verbatim(custom_css);
+    options.custom_css = custom_css;
     options.allow_raw_html = allow_raw_html;
     apply_font_assets(
         &mut options,
@@ -562,7 +562,7 @@ pub fn render_html_configured_multi(
 ) -> std::result::Result<FmdRenderResult, JsValue> {
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
     options.title = nonempty_verbatim(title);
-    options.custom_css = nonempty_verbatim(custom_css);
+    options.custom_css = custom_css;
     options.allow_raw_html = allow_raw_html;
     for (destination, bytes) in
         split_nonempty_image_assets(&image_destinations, &image_bytes_flat, &image_bytes_lengths)
@@ -633,7 +633,7 @@ pub fn render_html_configured_advanced(
         .transpose()?
         .unwrap_or_default();
     options.title = nonempty_verbatim(title);
-    options.custom_css = nonempty_verbatim(custom_css);
+    options.custom_css = custom_css;
     options.allow_raw_html = allow_raw_html;
     options.font_scale = positive_f32(font_scale, "fontScale")?;
     options.lang = empty_to_none(lang);
@@ -1088,11 +1088,12 @@ fn empty_to_none(value: Option<String>) -> Option<String> {
 }
 
 /// Map an absent or empty JS string to `None`, but preserve any non-empty value
-/// VERBATIM — including surrounding whitespace. Titles, authors, and custom CSS
+/// VERBATIM — including surrounding whitespace. Titles and authors
 /// must reach the renderer byte-for-byte identical to the native CLI, which
 /// passes them through untouched; trimming (as `empty_to_none` does for
 /// enum-like values) would break native↔WASM output parity for padded metadata
-/// such as `"  Draft  "`.
+/// such as `"  Draft  "`. Ordinary HTML stylesheet replacements bypass this
+/// helper: `Some("")` explicitly disables their default stylesheet.
 fn nonempty_verbatim(value: Option<String>) -> Option<String> {
     value.filter(|s| !s.is_empty())
 }

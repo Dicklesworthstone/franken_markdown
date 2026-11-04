@@ -50,13 +50,23 @@ shared document renderer's paragraph, page, table and typography implementation.
 The session's `sans`/`serif` preset is retained; viewport width and Canvas pixel
 sizes are not converted into invented PDF page geometry. PDF metadata defaults
 to epoch zero for repeatable bytes; supply a nonnegative safe integer timestamp
-to use another date. Raw HTML is always escaped on this entry point. Custom CSS,
-font injection, ambient URL loading and arbitrary renderer settings are not
+to use another date. Raw HTML is always escaped on this entry point. Font
+injection, ambient image loading and arbitrary renderer settings are not
 accepted. Use the separately documented general render API for other policies.
 
 Both formats accept title, language, TOC/depth and a lowered `maxOutputBytes`.
 HTML also accepts dark mode and `htmlFontFormat: "woff1" | "woff2" | "ttf"`
-for embedded font subsets; omission keeps WOFF1. PDF accepts author, page/line
+for embedded font subsets; omission keeps WOFF1. HTML and EPUB accept a
+replacement `customCss` string of at most 4 MiB of valid UTF-8. The text is
+captured before asynchronous rendering or worker queueing, preserving whitespace;
+an explicit empty string disables the default stylesheet. Omission keeps the
+default styling. This applies to single exports and multi-format publications.
+PDF and SVG reject stylesheet overrides. Worker queue byte limits include CSS.
+The HTML renderer protects the enclosing style element, but CSS otherwise
+remains host-supplied content: use self-contained styles for offline documents.
+The render core never fetches stylesheet URLs.
+
+PDF accepts author, page/line
 numbers, body/table sizes, heading scale, a page target and
 `microtype: "disabled" | "protrusion" | "expansion"`. Expansion enables glyph
 expansion without protrusion; protrusion keeps the conservative combined mode.
@@ -80,6 +90,7 @@ const pdf = await session.exportDocument("pdf", {
 }, session.token);
 const html = await session.exportDocument("html", {
   htmlFontFormat: "woff2",
+  customCss: ".fmd { max-width: 60rem; margin: auto; line-height: 1.7; }",
 }, session.token);
 ```
 

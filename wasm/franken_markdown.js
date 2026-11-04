@@ -84,7 +84,7 @@ export async function renderHtml(markdown, options = {}) {
     stringOption(options.font),
     darkModeOption(options.darkMode),
     verbatimOption(options.title),
-    verbatimOption(options.customCss),
+    stylesheetOption(options.customCss),
     Boolean(options.allowRawHtml),
     fontScale,
     fontBytesForSlot(fontAssets, "body-regular"),
@@ -1157,7 +1157,7 @@ function stringOption(value) {
 
 // Preserve a caller value VERBATIM (including surrounding whitespace), mapping
 // only null/undefined/"" to `undefined`. Mirrors the Rust ABI's
-// `nonempty_verbatim` so title/author/customCss reach the renderer byte-for-byte
+// `nonempty_verbatim` so title/author reach the renderer byte-for-byte
 // identical to the native CLI (native never trims them). `stringOption` (which
 // trims) is kept only for the enum-like `font` value.
 function verbatimOption(value) {
@@ -1166,6 +1166,12 @@ function verbatimOption(value) {
   }
   const text = String(value);
   return text === "" ? undefined : text;
+}
+
+// Ordinary HTML uses an explicit empty stylesheet to disable default styling.
+// Do not apply metadata's empty-as-unset convention to this replacement value.
+function stylesheetOption(value) {
+  return value === undefined || value === null ? undefined : String(value);
 }
 
 function darkModeOption(value) {

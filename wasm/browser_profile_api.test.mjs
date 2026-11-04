@@ -84,6 +84,23 @@ test("render-only bindings load and keep all four single-document formats workin
   assert.deepEqual((await f.api.capabilities()).outputs, ["html", "pdf"]);
 });
 
+test("HTML stylesheet overrides preserve empty text through the public facade before initialization", async () => {
+  for (const customCss of [undefined, null, "", " \n.fmd::before { content: 'Café 😀'; }\n "]) {
+    const hold = gate(), f = await fixture({}, hold.promise);
+    const options = { customCss, title: "" };
+    const pending = f.api.renderHtml("# Styled", options);
+    options.customCss = ".fmd { display: none; }";
+    assert.equal(f.calls.length, 0);
+    hold.resolve();
+    await pending;
+    assert.equal(f.calls[0].args[4], customCss ?? undefined);
+    assert.equal(f.calls[0].args[3], undefined, "empty metadata keeps its existing default semantics");
+    assert.equal(f.calls[0].args[5], false);
+    assert.equal(f.inits, 1);
+    assert.equal(f.frees, 1);
+  }
+});
+
 for (const [method, feature] of [["renderBookPdf", "wasm-book"], ["renderBookSite", "wasm-book"],
   ["renderInteractiveHtml", "wasm-workspace"]]) {
   test(`${method} refuses missing features before input access or WASM initialization`, async () => {

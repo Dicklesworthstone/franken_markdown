@@ -483,6 +483,8 @@ export interface FlowHtmlExportOptions extends FlowExportOptions {
   darkMode?: "auto" | "disabled";
   /** Native embedded font container; omitted keeps the WOFF1 default. */
   htmlFontFormat?: "woff1" | "woff2" | "ttf";
+  /** Replacement stylesheet, at most 4 MiB UTF-8. Empty explicitly disables defaults. */
+  customCss?: string;
 }
 /** Reflowable native EPUB output, not a capture of editor geometry. */
 export interface FlowEpubExportOptions extends FlowExportOptions {

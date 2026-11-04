@@ -52,6 +52,7 @@ export interface FmdRenderOptions {
   font?: FmdFont;
   darkMode?: FmdDarkMode;
   title?: string;
+  /** Ordinary HTML/EPUB replacement stylesheet. Empty explicitly disables defaults. */
   customCss?: string;
   allowRawHtml?: boolean;
   author?: string;

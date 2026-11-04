@@ -11,7 +11,8 @@ import type {
 
 declare const direct: FlowSession;
 declare const worker: WorkerFlowSession;
-const html: FlowHtmlExportOptions = { title: "Document", toc: true, darkMode: "disabled", htmlFontFormat: "woff2" };
+const html: FlowHtmlExportOptions = { title: "Document", toc: true, darkMode: "disabled", htmlFontFormat: "woff2",
+  customCss: " .fmd { line-height: 1.7; } " };
 const pdf: FlowPdfExportOptions = {
   author: "Host",
   pageNumbers: true,
@@ -35,6 +36,13 @@ const d: Promise<readonly FlowExportResult[]> = worker.exportDocuments(batch, wo
   timeoutMs: 10_000,
 });
 void [a, b, c, d];
+worker.exportDocument("html", { customCss: "" }, worker.token);
+// @ts-expect-error Stylesheet replacements do not apply to PDF.
+worker.exportDocument("pdf", { customCss: "" }, worker.token);
+// @ts-expect-error SVG uses its native geometry, not an HTML stylesheet.
+direct.exportDocument("svg", { customCss: "p{}" }, direct.token);
+// @ts-expect-error CSS must be text rather than a coercible value.
+direct.exportDocument("html", { customCss: 42 }, direct.token);
 // @ts-expect-error PDF-only options cannot be attached to an HTML batch request
 worker.exportDocuments([{ format: "html", options: { pageNumbers: true } }], worker.token);
 // @ts-expect-error supported formats are explicit

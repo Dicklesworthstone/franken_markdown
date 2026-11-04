@@ -48,7 +48,7 @@ test("EPUB options use the shared worker normalizer without acquiring PDF-only d
     { customCss: "é".repeat(2 * 1024 * 1024 + 1) }, { tocDepth: 7 }]) {
     assert.throws(() => normalizeFlowExport("epub", options, token()), FlowError);
   }
-  assert.throws(() => normalizeFlowExport("html", { customCss: "" }, token()), code("INVALID_OPTIONS"));
+  assert.throws(() => normalizeFlowExport("pdf", { customCss: "" }, token()), code("INVALID_OPTIONS"));
 });
 
 test("EPUB captures all image pages, deduplicates equal payloads and owns output", async () => {

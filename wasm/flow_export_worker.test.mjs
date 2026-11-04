@@ -61,6 +61,42 @@ test("real worker awaits exports, transfers owned document bytes and retains nat
   assert.equal(session.pendingBytes, 0);
 });
 
+test("Flow workers capture HTML stylesheets before queueing and retain empty overrides", async t => {
+  const session = await setup(t, { delayMs: 20, typographySupport: false });
+  const first = session.exportDocument("pdf", {}, session.token), before = session.pendingBytes;
+  const customCss = " \n.fmd::before { content: 'Café 😀'; }\n ".repeat(64);
+  const options = { customCss }, queued = session.exportDocument("html", options, session.token);
+  queued.catch(() => {});
+  assert.ok(session.pendingBytes >= before + 2 * customCss.length,
+    "CSS text participates in queue admission");
+  options.customCss = ".fmd { display: none; }";
+  await first;
+  assert.equal(decode(await queued).customCss, customCss);
+  const empty = decode(await session.exportDocument("html", { customCss: "" }, session.token));
+  assert.equal(empty.customCss, "");
+  const omitted = decode(await session.exportDocument("html", {}, session.token));
+  assert.equal(Object.hasOwn(omitted, "customCss"), false);
+  assert.equal(await session.getSource(), "# Source 😀");
+  assert.equal(session.pendingBytes, 0);
+  assert.equal(session.pendingOperations, 0);
+  assert.equal(session.disposed, false);
+});
+
+test("HTML stylesheets respect worker byte limits and reject accessors without reading them", async t => {
+  const session = await setup(t, {}, { maxPendingBytes: 1024 });
+  await assert.rejects(session.exportDocument("html",
+    { customCss: "x".repeat(600) }, session.token), code("WORKER_QUEUE_FULL"));
+  let reads = 0;
+  const options = Object.defineProperty({}, "customCss",
+    { get() { reads++; return "p{}"; } });
+  await assert.rejects(session.exportDocument("html", options, session.token), code("INVALID_OPTIONS"));
+  assert.equal(reads, 0);
+  assert.equal(session.pendingBytes, 0);
+  assert.equal(session.pendingOperations, 0);
+  assert.equal(decode(await session.exportDocument("html", { customCss: "" }, session.token)).customCss, "");
+  assert.equal(session.disposed, false);
+});
+
 test("worker PDF logos retain owned image and settings snapshots while queued", async (t) => {
   const session = await setup(t, { image: true, delayMs: 30 });
   const first = session.exportDocument("pdf", {}, session.token);

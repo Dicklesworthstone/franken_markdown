@@ -133,6 +133,26 @@ async function parity(label, advanced = false) {
     );
   }
 }
+async function stylesheetParity() {
+  for (const customCss of ["", " \n.fmd { color: #123456; line-height: 1.7; }\n "]) {
+    const options = { customCss };
+    const a = await direct.exportDocument("html", options, direct.token);
+    const b = await remote.exportDocument("html", options, remote.token);
+    const oracle = await renderHtml(source, {
+      ...options,
+      font: "serif",
+      allowRawHtml: false,
+      pdfImages: [{ destination: "local.png", bytes: png }],
+    });
+    assert.deepEqual(a.bytes, oracle.bytes, "custom CSS direct export/core parity");
+    assert.deepEqual(b.bytes, oracle.bytes, "custom CSS worker export/core parity");
+    const html = new TextDecoder().decode(b.bytes);
+    assert(html.includes(`<style>\n${customCss}</style>`),
+      "explicit CSS replaces the default stylesheet, including empty text");
+    assert(html.includes("data:image/png;base64,"), "stylesheet selection retains authorized images");
+  }
+  console.log("flow-export: replacement and empty HTML stylesheets native-core/direct/worker parity: PASS");
+}
 try {
   remote = await createWorkerFlowSession(
     source,
@@ -145,6 +165,7 @@ try {
   await resolveImages();
   await parity("initial");
   await parity("advanced typography and font packaging", true);
+  await stylesheetParity();
   await assert.rejects(
     remote.exportDocument("pdf", {}, old),
     (error) => error.code === "STALE_LAYOUT",

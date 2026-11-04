@@ -85,6 +85,25 @@ async function workerSession(t, data = {}, runtime = {}) {
 }
 const decode = result => JSON.parse(new TextDecoder().decode(result.bytes));
 
+test("publication captures separate HTML and EPUB stylesheets before an earlier renderer yields", async () => {
+  const f = directFixture(), hold = gate();
+  f.hold(hold);
+  const requests = [
+    { format: "pdf" },
+    { format: "html", options: { customCss: " \n.fmd { color: navy; }\n " } },
+    { format: "epub", options: { customCss: "" } },
+  ];
+  const pending = f.api.exportDocuments(requests, f.session.token);
+  requests[1].options.customCss = "changed";
+  requests[2].options.customCss = "changed";
+  hold.resolve();
+  await pending;
+  assert.equal(Object.hasOwn(f.calls[0].options, "customCss"), false);
+  assert.equal(f.calls[1].options.customCss, " \n.fmd { color: navy; }\n ");
+  assert.equal(f.calls[2].options.customCss, "");
+  assert(f.calls.every(call => call.options.allowRawHtml === false));
+});
+
 test("batch admission snapshots plain data, requires unique formats and validates before rendering", async () => {
   const f = directFixture();
   const payload = new Uint8Array([9, 4, 5, 8]);
@@ -196,13 +215,16 @@ test("worker batch snapshots every request before enqueue and rejects invalid ba
   const session = await workerSession(t, { image: true, delayMs: 20 });
   const source = new Uint8Array([9, 4, 5, 8]);
   const requests = [
-    { format: "html", options: { title: "before" } },
+    { format: "html", options: { title: "before", customCss: "" } },
     { format: "pdf", options: { title: "before", pdfImages: [{ destination: "logo.png", bytes: source.subarray(1, 3) }] } },
   ];
   const pending = session.exportDocuments(requests, session.token);
   source.fill(7); requests[0].options.title = "after"; requests[1].options.pdfImages[0].destination = "changed";
+  requests[0].options.customCss = "changed";
   const results = await pending;
   assert.deepEqual(results.map(decode).map(value => value.title), ["before", "before"]);
+  assert.equal(decode(results[0]).customCss, "");
+  assert.equal(Object.hasOwn(decode(results[1]), "customCss"), false);
   assert.deepEqual(decode(results[1]).images, [["local.png", [1, 2, 3]], ["logo.png", [4, 5]]]);
   assert.equal(session.pendingBytes, 0);
   await assert.rejects(session.exportDocuments([

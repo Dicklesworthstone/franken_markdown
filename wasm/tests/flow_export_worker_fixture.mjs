@@ -99,6 +99,7 @@ installFlowWorker(endpoint, async (source, options) => {
           markdown,
           font: settings.font,
           title: settings.title,
+          customCss: settings.customCss,
           epoch: settings.metadataEpochSeconds,
           running: settings.running,
           typography: settings.typography,

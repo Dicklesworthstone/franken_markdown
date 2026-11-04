@@ -12,9 +12,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::wasm_abi::{
-    capabilities, render_html, render_html_configured, render_html_configured_multi,
-    render_html_configured_with_fonts, render_pdf, render_pdf_configured,
-    render_pdf_configured_multi, render_pdf_configured_with_assets,
+    capabilities, render_html, render_html_configured, render_html_configured_advanced,
+    render_html_configured_multi, render_html_configured_with_fonts, render_pdf,
+    render_pdf_configured, render_pdf_configured_multi, render_pdf_configured_with_assets,
     render_pdf_configured_with_image,
 };
 use franken_markdown::{FontFamily, fonts, fonts::FontStyle};
@@ -124,6 +124,98 @@ fn configured_title_reaches_output_verbatim_without_trimming() {
         html.contains("<title>  Draft Title  </title>"),
         "padded title must be preserved verbatim, not trimmed"
     );
+}
+
+#[test]
+fn configured_html_stylesheets_preserve_empty_overrides_and_native_bytes() {
+    use franken_markdown::wasm::{self, WasmRenderOptions};
+
+    let source = "# Styled\n\nText **bold**.\n\n<script>source()</script>";
+    for css in [
+        None,
+        Some(""),
+        Some(" \n.fmd::before { content: 'Café 😀'; }\n "),
+        Some("p::after{content:'</style><script>css()</script>'}"),
+    ] {
+        let options = WasmRenderOptions {
+            custom_css: css.map(str::to_owned),
+            ..WasmRenderOptions::default()
+        };
+        let expected = wasm::render_html(source, &options).expect("core HTML");
+        let html = expected.html().expect("UTF-8 HTML");
+        if css == Some("") {
+            assert!(html.contains("<style>\n</style>"));
+        } else if css.is_none() {
+            assert!(!html.contains("<style>\n</style>"));
+        }
+        assert!(!html.contains("</style><script>"));
+        assert!(!html.contains("<script>source()</script>"));
+
+        let outputs = [
+            render_html_configured(source, None, None, None, options.custom_css.clone(), false),
+            render_html_configured_with_fonts(
+                source,
+                None,
+                None,
+                None,
+                options.custom_css.clone(),
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            render_html_configured_multi(
+                source,
+                None,
+                None,
+                None,
+                options.custom_css.clone(),
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+            render_html_configured_advanced(
+                source,
+                None,
+                None,
+                None,
+                options.custom_css,
+                false,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                false,
+                None,
+                None,
+                None,
+            ),
+        ];
+        for (index, output) in outputs.into_iter().enumerate() {
+            assert_eq!(
+                output.expect("configured HTML").bytes(),
+                expected.bytes,
+                "HTML ABI variant {index}, stylesheet {css:?}",
+            );
+        }
+    }
 }
 
 #[test]

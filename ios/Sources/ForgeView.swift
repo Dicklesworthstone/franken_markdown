@@ -152,7 +152,8 @@ struct ForgeView: View {
 
     private var forgeRenderObservers: some View {
         forgeLayout
-        .onChange(of: renderer.source) { _, source in
+        .onChange(of: renderer.sourceRevision) { _, _ in
+            let source = renderer.source
             scheduleSourceMetrics(source)
             renderer.scheduleRender()
             renderer.scheduleDraftSave()
@@ -1103,22 +1104,22 @@ struct ForgeView: View {
         guard !attemptedDocumentRestoration else { return }
         attemptedDocumentRestoration = true
         Task {
-            let sourceAtStart = renderer.source
+            let revisionAtStart = renderer.sourceRevision
             let identityAtStart = renderer.documentIdentity
             // Recovery is allowed to restore a known draft. A user who has
             // already started typing owns the current buffer instead.
-            guard renderer.draftWasRecovered || !documentSession.isDirty(source: sourceAtStart) else { return }
+            guard renderer.draftWasRecovered || !documentSession.isDirty(source: renderer.source) else { return }
             do {
                 let recoveredSource = renderer.draftWasRecovered ? renderer.source : nil
                 let restoration = try await documentSession.restoreActiveDocument(
                     recoveredSource: recoveredSource,
                     recoveredDocumentIdentity: identityAtStart,
                     isCurrentSource: {
-                        renderer.source == sourceAtStart
+                        renderer.sourceRevision == revisionAtStart
                             && renderer.documentIdentity == identityAtStart
                     }
                 )
-                guard renderer.source == sourceAtStart,
+                guard renderer.sourceRevision == revisionAtStart,
                       renderer.documentIdentity == identityAtStart else { return }
                 switch restoration {
                 case .none:
@@ -1141,7 +1142,7 @@ struct ForgeView: View {
                     showingRestorationConflict = true
                 }
             } catch {
-                guard renderer.source == sourceAtStart,
+                guard renderer.sourceRevision == revisionAtStart,
                       renderer.documentIdentity == identityAtStart else { return }
                 sourceImportError = "Your recovered draft is still available, but "
                     + "\(documentSession.displayName) could not be reopened: "
@@ -1198,6 +1199,7 @@ struct ForgeView: View {
               documentSession.isDirty(source: source) else { return }
 
         let generation = documentSession.documentGeneration
+        let sourceRevision = renderer.sourceRevision
         pendingDocumentAutosave = Task { @MainActor in
             do {
                 try await Task.sleep(nanoseconds: 1_200_000_000)
@@ -1207,7 +1209,7 @@ struct ForgeView: View {
                       documentSession.hasCurrentDocument,
                       documentSession.attention == nil,
                       documentSession.isDirty(source: source),
-                      renderer.source == source else { return }
+                      renderer.sourceRevision == sourceRevision else { return }
                 try await documentSession.save(source: source)
                 guard documentSession.documentGeneration == generation else { return }
                 pendingDocumentAutosave = nil
@@ -1331,12 +1333,12 @@ struct ForgeView: View {
     private func reloadCurrentDocument() {
         guard let url = documentSession.currentDocument?.url else { return }
         let request = documentSession.beginDocumentRequest()
-        let sourceAtStart = renderer.source
+        let revisionAtStart = renderer.sourceRevision
         clearDocumentPresentations()
         Task {
             do {
                 guard let document = try await documentSession.open(from: url, request: request) else { return }
-                if renderer.source == sourceAtStart {
+                if renderer.sourceRevision == revisionAtStart {
                     adopt(document)
                 } else {
                     requestAdoption(of: document, request: request)

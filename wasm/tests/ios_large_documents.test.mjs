@@ -3,9 +3,12 @@ import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import test from "node:test";
+import vm from "node:vm";
+import { uploadSource } from "./support/ios_source_upload.mjs";
 
 // Exercise the actual bundle embedded in the Apple app, including its generated
-// WASM glue. This is core/output fidelity proof, not UIKit/WebKit responsiveness
+// WASM glue and bounded source-upload bridge. This is core/output fidelity
+// proof, not UIKit/WebKit responsiveness
 // or qualification of a newly built renderer from the current Rust sources.
 const packageRoot = new URL("../../ios/Renderer/", import.meta.url);
 const finalSentinel = "FINAL_LARGE_DOCUMENT_SENTINEL_café_漢字_🙂";
@@ -52,16 +55,35 @@ async function renderInWorker(minimumBytes) {
 }
 
 if (!isMainThread) {
-  const { createRenderer } = await import(new URL("franken_markdown.js", packageRoot));
+  const engine = await import(new URL("franken_markdown.js", packageRoot));
   const wasm = await readFile(new URL("pkg/franken_markdown_bg.wasm", packageRoot));
-  const renderer = await createRenderer(wasm);
+  const bridge = await readFile(new URL("bridge.html", packageRoot), "utf8");
+  const script = bridge.match(/<script type="module">([\s\S]*?)<\/script>/)[1]
+    .replace("import { createRenderer } from './franken_markdown.js';", "const {createRenderer} = __engine;");
+  const messages = [];
+  const preview = {srcdoc: ""};
+  const window = {webkit: {messageHandlers: {frankenBridge: {
+    postMessage(message) { messages.push(message); },
+  }}}};
+  await vm.runInNewContext(`(async () => {${script}\n})()`, {
+    window, document: {querySelector: () => preview}, performance, TextEncoder, TextDecoder, atob,
+    btoa: value => Buffer.from(value, "binary").toString("base64"), unescape,
+    __engine: engine,
+    fetch: async () => ({arrayBuffer: async () =>
+      wasm.buffer.slice(wasm.byteOffset, wasm.byteOffset + wasm.byteLength)}),
+  });
+  assert.equal(messages[0]?.type, "ready", messages[0]?.message);
   const { markdown, sectionCount } = largeDocument(workerData.minimumBytes);
   const start = performance.now();
-  const output = await renderer.renderHtml(markdown);
+  const sourceID = uploadSource(window, markdown).sourceID;
+  const uploadMS = performance.now() - start;
+  assert.equal(await window.frankenRender({requestID: 1, sourceID}), true);
+  assert.equal(window.frankenCommitPreview(1), true);
+  const result = messages.find(message => message.type === "result");
   parentPort.postMessage({
-    html: output.text(), outputBytes: output.bytes.byteLength,
+    html: preview.srcdoc, outputBytes: result.outputBytes,
     sourceBytes: Buffer.byteLength(markdown), sectionCount,
-    elapsedMS: performance.now() - start,
+    elapsedMS: result.elapsedMS, uploadMS,
   });
   parentPort.close();
 } else {
@@ -81,7 +103,7 @@ if (!isMainThread) {
       assert.equal([...result.html.matchAll(/&lt;script&gt;not executable&lt;\/script&gt;/g)].length, result.sectionCount,
         "fenced code must remain literal and safely escaped throughout the document");
       assert.ok(!result.html.includes("<script>not executable</script>"));
-      t.diagnostic(`Actual bundled WASM on this Node host: ${result.sourceBytes} source bytes, ${result.outputBytes} HTML bytes, ${result.sectionCount} complete sections, ${result.elapsedMS.toFixed(1)} ms core render; not a device/UI benchmark.`);
+      t.diagnostic(`Actual bundled WASM on this Node host: ${result.sourceBytes} source bytes, ${result.outputBytes} HTML bytes, ${result.sectionCount} complete sections, ${result.uploadMS.toFixed(1)} ms test source upload, ${result.elapsedMS.toFixed(1)} ms bridge render; not a device/UI benchmark.`);
     });
   }
 }

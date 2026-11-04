@@ -164,6 +164,34 @@ UI-test fixture opens 750 KiB and 2 MiB files through the real source loader
 before scrolling and editing. Those UIKit/UI tests require an Apple runtime;
 Node results do not establish iPhone rendering or scrolling performance.
 
+Single-document source transfer into WebKit is now bounded too. A native actor
+prepares one 64 KiB UTF-8/base64 chunk at a time, and sends the next only after
+an exact source-ID/index/byte-count acknowledgment. The bridge validates CRC32
+and strict incremental UTF-8, including scalars split between chunks and
+literal BOM content. A completed source handle is reused by preview, ordinary
+HTML/PDF/artifact exports, and analysis; settings-only changes send no source
+again. Every source assignment advances an integer revision, so native
+ownership checks and SwiftUI change observation avoid full-document equality
+scans and distinguish canonically equivalent Unicode with different bytes.
+Cancellation, process resets, and three-minute deadlines invalidate handles.
+Preview, export, and analysis serialize their use of the one-source cache.
+Book and semantic-diff inputs retain their existing inline APIs.
+
+The source-transport comparison in
+[`performance/ios-source-transfer-2026-11-04.json`](performance/ios-source-transfer-2026-11-04.json)
+alternates the `542341d` and changed bridges in three fresh Node process pairs.
+For a 32 MiB source, initial preview, two option previews, HTML/PDF exports and
+analysis, all eight renderer inputs match SHA-256. Median peak Node RSS falls
+from 354,572 to 234,600 KiB (33.8%), and total scenario time from 1,510 to 827 ms.
+Source bytes sent fall from 192 to 32 MiB; the largest serialized message falls
+from 36,559,375 to 87,463 bytes. Cold first-preview time rises from 268 to 503 ms;
+the subsequent operations fall from 1,236 to 324 ms. This measures actual bridge
+code with simulated native preparation/JSON IPC and tiny mock outputs, not
+Swift, WebKit, Rust rendering, or device responsiveness. The released WASM API
+still requires a complete source String, and joining decoded chunks briefly
+holds both chunks and the joined String. Reproduce with
+`node scripts/profile-ios-source-transfer.mjs 542341d`.
+
 The tracked native renderer now bundles the complete published v0.6.0 package,
 including its JavaScript module dependencies. RendererManifest.json records
 the release archive URL, its verified SHA-256, and the installed runtime hashes.

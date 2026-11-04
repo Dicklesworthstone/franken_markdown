@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { Worker, isMainThread, parentPort } from "node:worker_threads";
 import vm from "node:vm";
 import test from "node:test";
+import { uploadSource } from "./support/ios_source_upload.mjs";
 
 // Run the actual Apple-bundled wrapper/glue/WASM through the actual bridge.
 // Only WebKit's DOM/IPC endpoints are doubles: these are API/format/schema
@@ -56,7 +57,7 @@ if (isMainThread) {
     postMessage(message) { messages.push(message); },
   }}}};
   await vm.runInNewContext(`(async () => {${script}\n})()`, {
-    window, document: {querySelector: () => preview}, performance, TextEncoder,
+    window, document: {querySelector: () => preview}, performance, TextEncoder, TextDecoder, atob,
     btoa: value => Buffer.from(value, "binary").toString("base64"), unescape,
     __engine: engine,
     fetch: async path => {
@@ -69,12 +70,13 @@ if (isMainThread) {
   const source = "# Native API compatibility\n\nHello **friend**.\n\n"
     + "#### Skipped heading level\n\n![](missing.png)\n\n"
     + "[click here](https://example.test)\n\nNATIVE_END_MARKER.\n";
+  const sourceID = uploadSource(window, source).sourceID;
   const options = {font: "sans", darkMode: "auto", allowRawHtml: false, fontScale: 1,
     lang: "en", toc: false, tocDepth: 3, title: "Native smoke", author: "Ada Lovelace"};
   const files = [{path: "01-first.md", source: "# First\n\nNative first chapter."},
     {path: "02-last.md", source: "# Last\n\nNative last chapter."}];
   let analysis, diff;
-  const analyze = () => analysis ??= window.frankenAnalyze({markdown: source}).then(JSON.parse);
+  const analyze = () => analysis ??= window.frankenAnalyze({sourceID}).then(JSON.parse);
   const compare = () => diff ??= window.frankenDiff({oldMarkdown: "# Before\n\nOld.",
     newMarkdown: source, options: {oldName: "Before", newName: "Current"}}).then(JSON.parse);
   const findings = values => {
@@ -108,29 +110,29 @@ if (isMainThread) {
   };
   const checks = [
     ["HTML", async () => {
-      assert.equal(await window.frankenRender({requestID: 1, markdown: source, options}), true);
+      assert.equal(await window.frankenRender({requestID: 1, sourceID, options}), true);
       assert.equal(preview.srcdoc, "");
       assert.equal(window.frankenCommitPreview(1), true);
       assert.match(preview.srcdoc, /^<!doctype html>/i);
       assert.match(preview.srcdoc, /NATIVE_END_MARKER/);
-      const bytes = decodeArtifact(await window.frankenExportHtml({requestID: 2, markdown: source, options}), "html");
+      const bytes = decodeArtifact(await window.frankenExportHtml({requestID: 2, sourceID, options}), "html");
       assert.match(bytes.toString(), /NATIVE_END_MARKER/);
     }],
     ["PDF", async () => {
-      decodeArtifact(await window.frankenExportPdf({requestID: 3, markdown: source,
+      decodeArtifact(await window.frankenExportPdf({requestID: 3, sourceID,
         options: {...options, pageNumbers: true, codeLineNumbers: true, microtype: "disabled"}}),
         "pdf", [...Buffer.from("%PDF-")]);
     }],
     ["SVG", async () => {
-      const bytes = decodeArtifact(await window.frankenExportArtifact({requestID: 4, format: "svg", markdown: source, options}), "svg");
+      const bytes = decodeArtifact(await window.frankenExportArtifact({requestID: 4, format: "svg", sourceID, options}), "svg");
       assert.match(bytes.toString(), /<svg\b/);
       assert.match(bytes.toString(), /<(?:path|text|use)\b/);
     }],
     ["EPUB", async () => {
-      decodeArtifact(await window.frankenExportArtifact({requestID: 5, format: "epub", markdown: source, options}), "epub", [80, 75, 3, 4]);
+      decodeArtifact(await window.frankenExportArtifact({requestID: 5, format: "epub", sourceID, options}), "epub", [80, 75, 3, 4]);
     }],
     ["interactive HTML", async () => {
-      const bytes = decodeArtifact(await window.frankenExportArtifact({requestID: 6, format: "interactive-html", markdown: source, options}), "html");
+      const bytes = decodeArtifact(await window.frankenExportArtifact({requestID: 6, format: "interactive-html", sourceID, options}), "html");
       assert.match(bytes.toString(), /<!doctype html>/i);
     }],
     ["statistics", async () => {
@@ -158,7 +160,7 @@ if (isMainThread) {
         for (const key of ["kind", "anchor", "text"]) assert.equal(typeof entry[key], "string", key);
         if (entry.level !== undefined) assert.equal(typeof entry.level, "number");
       }
-      const bytes = decodeArtifact(await window.frankenExportArtifact({requestID: 7, format: "search-index", markdown: source}), "json");
+      const bytes = decodeArtifact(await window.frankenExportArtifact({requestID: 7, format: "search-index", sourceID}), "json");
       assert.deepEqual(JSON.parse(bytes.toString()), search);
     }],
     ["semantic-diff HTML", async () => { assert.match((await compare()).html, /<!doctype html>/i); }],

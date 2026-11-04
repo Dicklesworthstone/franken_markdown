@@ -1108,13 +1108,16 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
 }
 
 /// The implemented slice of the pifont `\ding` table (fm-j5t.4). The
-/// G0-4 corpus uses only code 51 — the checkmark, whose glyph resolves
+/// G0-4 corpus used code 51 — the checkmark, whose glyph resolves
 /// through the symbol faces as U+2713 (the `\checkmark` codepoint, which
-/// those faces carry). Any other code fails precisely, by name.
+/// those faces carry). Code 55 is the ballot cross, sharing FrankenManim's
+/// reviewed drawn `Exmark` construction (fm-j4tni). Every other code still
+/// fails precisely, by name.
 #[inline(always)]
 pub(crate) fn ding_char(code: u32) -> Option<char> {
     match code {
         51 => Some('✓'),
+        55 => Some('✗'),
         _ => None,
     }
 }

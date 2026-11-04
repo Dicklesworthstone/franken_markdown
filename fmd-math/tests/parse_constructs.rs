@@ -1018,8 +1018,8 @@ fn ding_parses_the_corpus_code() {
 #[test]
 fn ding_refusals_are_precise() {
     // An unimplemented pifont code: named, in full, span at the command.
-    let err = parse(r"\ding{55}").unwrap_err();
-    assert_eq!(err.unsupported_construct(), Some(r"\ding{55}"));
+    let err = parse(r"\ding{52}").unwrap_err();
+    assert_eq!(err.unsupported_construct(), Some(r"\ding{52}"));
     assert_eq!(err.span(), fmd_math::Span::new(0, 9));
 
     // A non-numeric argument is malformed, not unsupported.
@@ -1036,6 +1036,28 @@ fn ding_refusals_are_precise() {
     assert!(matches!(&err, MathError::Malformed { .. }), "{err}");
     let err = parse(r"\ding").unwrap_err();
     assert!(matches!(&err, MathError::Malformed { .. }), "{err}");
+}
+
+#[test]
+fn ding_cross_keeps_its_command_span_in_math_and_text() {
+    let items = parse_items(r"\ding{55}");
+    assert!(matches!(&items[0].kind, NodeKind::Symbol { ch: '✗', .. }));
+    assert_eq!(items[0].span, fmd_math::Span::new(0, 9));
+    let root = parse_text(r"\ding{55}").unwrap();
+    let NodeKind::List(items) = root.kind else {
+        panic!("list")
+    };
+    let NodeKind::MathIsland { body, .. } = &items[0].kind else {
+        panic!("math island")
+    };
+    assert!(matches!(&body[0].kind, NodeKind::Symbol { ch: '✗', .. }));
+    assert_eq!(body[0].span, fmd_math::Span::new(0, 9));
+    for code in [0, 50, 52, 54, 56, 255, u32::MAX] {
+        let source = format!(r"\ding{{{code}}}");
+        let error = parse(&source).unwrap_err();
+        assert_eq!(error.unsupported_construct(), Some(source.as_str()));
+        assert_eq!(error.span(), fmd_math::Span::new(0, source.len()));
+    }
 }
 
 #[test]

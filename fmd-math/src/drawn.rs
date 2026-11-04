@@ -569,11 +569,13 @@ pub(crate) struct DrawnSym {
 
 /// The drawn construction for a symbol character no bundled face maps
 /// (fm-j5t.4): the wasysym astronomy/biology glyphs `\female` (♀,
-/// U+2640), `\male`/`\mars` (♂, U+2642), and `\earth` (♁, U+2641).
-/// The G0-3 probe found all three unmapped in every bundled face, so —
+/// U+2640), `\male`/`\mars` (♂, U+2642), `\earth` (♁, U+2641), and
+/// the pifont ballot cross (✗, U+2717).
+/// The G0-3 probe found the three wasysym symbols unmapped in every bundled face, so —
 /// per the Checkmark/Exmark drawn-mark precedent — they are **drawn** in
 /// the same unit box, strokes calibrated to the CM-authored weights
-/// (`0.055 em`, the brace stroke). This is a miss-only fallback in the
+/// (`0.055 em`, the brace stroke). The cross reuses BN-08's filled outline.
+/// This is a miss-only fallback in the
 /// caller: the moment a bundled face gains the exact codepoint, the
 /// authored glyph wins and this construction stops firing. `None` for
 /// anything else — those keep the precise `UnmappedChar` refusal.
@@ -582,7 +584,35 @@ pub(crate) fn symbol(ch: char, em: f64) -> Option<DrawnSym> {
         '\u{2640}' => Some(female(em)),
         '\u{2642}' => Some(male(em)),
         '\u{2641}' => Some(earth(em)),
+        '\u{2717}' => Some(ballot_cross(em)),
         _ => None,
+    }
+}
+
+/// Pifont's pzdr character 55: exact TFM fixed-point box dimensions,
+/// independently checked with the ruled Reference preamble at 9/10/12 pt.
+/// The ink uses BN-08's existing drawn Exmark, not a multiplication glyph.
+/// Like the standalone native mark, its ink is 0.558 by 0.7098 em;
+/// center it in the advance and place its bottom at the declared depth.
+fn ballot_cross(em: f64) -> DrawnSym {
+    let width = f64::from(598_737) / 1_048_576.0 * em;
+    let height = f64::from(692_060) / 1_048_576.0 * em;
+    let depth = f64::from(71_303) / 1_048_576.0 * em;
+    let at = |(x, y): (f64, f64)| {
+        (
+            width / 2.0 + x * 0.558 * em,
+            (y + 0.5) * 0.7098 * em - depth,
+        )
+    };
+    let outline = crate::paths::BALLOT_CROSS_OUTLINE;
+    let start = at(outline[0]);
+    let mut segments: Vec<PathSeg> = outline[1..].iter().copied().map(|p| line(at(p))).collect();
+    segments.push(line(start));
+    DrawnSym {
+        width,
+        height,
+        depth,
+        contours: vec![contour(start, segments)],
     }
 }
 

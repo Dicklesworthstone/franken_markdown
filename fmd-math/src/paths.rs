@@ -18,6 +18,26 @@ use crate::layout::Engine;
 use crate::mbox::{Layout, PathContour, PathSeg, Placed};
 use crate::node::Span;
 
+/// The reviewed native ballot-cross outline, centered in a unit square.
+///
+/// Shared with FrankenManim's standalone `Exmark` (Behavior Note BN-08),
+/// so the inline pifont cross and the native mark have one shape definition.
+/// The last point joins back to the first; all corners are on-curve.
+pub const BALLOT_CROSS_OUTLINE: [(f64, f64); 12] = [
+    (-0.5 + 0.12, -0.5),
+    (0.0, -0.12 * 0.7),
+    (0.5 - 0.12, -0.5),
+    (0.5, -0.5 + 0.12),
+    (0.12 * 0.7, 0.0),
+    (0.5, 0.5 - 0.12),
+    (0.5 - 0.12, 0.5),
+    (0.0, 0.12 * 0.7),
+    (-0.5 + 0.12, 0.5),
+    (-0.5, 0.5 - 0.12),
+    (-0.12 * 0.7, 0.0),
+    (-0.5, -0.5 + 0.12),
+];
+
 /// Resolve every primitive of a layout into closed quadratic contours, in
 /// ems, y-up, baseline at 0.
 ///

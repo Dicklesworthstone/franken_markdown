@@ -70,6 +70,7 @@ export async function renderHtml(markdown, options = {}) {
     ...asset, bytes: new Uint8Array(asset.bytes),
   }));
   const fontScale = fontScaleOption(options.fontScale ?? options.typeSize);
+  const toc = options.toc;
   const destinations = pdfImages.map((image) => image.destination);
   const lengths = new Uint32Array(pdfImages.map((image) => image.bytes.length));
   const totalBytes = pdfImages.reduce((sum, image) => sum + image.bytes.length, 0);
@@ -97,7 +98,7 @@ export async function renderHtml(markdown, options = {}) {
     flatBytes,
     lengths,
     stringOption(options.lang),
-    Boolean(options.toc),
+    Boolean(toc),
     integerOption(options.tocDepth, "tocDepth"),
     ...(fontEmbedding === "full" ? [htmlFontFormat, fontEmbedding]
       : htmlFontFormat === undefined ? [] : [htmlFontFormat]),
@@ -105,6 +106,7 @@ export async function renderHtml(markdown, options = {}) {
   // Own source, scalar settings and exact asset ranges before initialization
   // yields, including its already-resolved warm path, as PDF/SVG/EPUB do.
   await init();
+  applySourceMetadata(args, { title: 3, lang: 16, toc: 17, tocDepth: 18 }, toc === undefined);
   return normalizeResult(renderHtmlConfiguredAdvanced(...args));
 }
 
@@ -169,6 +171,7 @@ export async function renderPdf(markdown, options = {}) {
     offset += image.bytes.length;
   }
 
+  const toc = options.toc;
   const args = [
     source ?? String(markdown),
     stringOption(options.font),
@@ -193,7 +196,7 @@ export async function renderPdf(markdown, options = {}) {
     Boolean(options.pageNumbers),
     fontScale,
     stringOption(options.lang),
-    Boolean(options.toc),
+    Boolean(toc),
     integerOption(options.tocDepth, "tocDepth"),
     fitToPages,
     options.microtype === "protrusion" || options.microtypeProtrusion === true,
@@ -204,6 +207,7 @@ export async function renderPdf(markdown, options = {}) {
   // Source, primitive settings, image bytes and font bytes now belong to this
   // request. Asynchronous initialization cannot retarget its page or contents.
   await init();
+  applySourceMetadata(args, { title: 3, author: 4, lang: 22, toc: 23, tocDepth: 24 }, toc === undefined);
   try {
     if (archival.pdfA) {
       const result = normalizeResult(render(...args, geometry, running?.slots ?? [],
@@ -506,10 +510,11 @@ export async function renderEpub(markdown, options = {}) {
   // await. Later host edits cannot silently change the publication being built.
   const prepared = epubArguments(markdown, options, fontEmbedding);
   await init();
+  applySourceMetadata(prepared.args, { title: 3, lang: 4, toc: 7, tocDepth: 8 }, prepared.inheritToc);
   if (typeof wasmBindings.renderEpubConfiguredAdvanced === "function") {
     return normalizeResult(wasmBindings.renderEpubConfiguredAdvanced(...prepared.args));
   }
-  if (prepared.requiresAdvanced) {
+  if (prepared.requiresAdvanced || prepared.args[7] || prepared.args[8] !== undefined) {
     const error = new Error("EPUB assets, CSS and navigation require a WASM package rebuilt from matching source");
     error.code = "UNSUPPORTED_WASM_PACKAGE";
     throw error;
@@ -521,7 +526,7 @@ export async function renderEpub(markdown, options = {}) {
 function epubArguments(markdown, options, fontEmbedding) {
   const {
     font, darkMode, title, lang, fontScale, typeSize, customCss,
-    toc = false, tocDepth, pdfImages, fontAssets,
+    toc, tocDepth, pdfImages, fontAssets,
   } = options;
   const source = String(markdown);
   const base = [source, stringOption(font), darkModeOption(darkMode),
@@ -529,7 +534,7 @@ function epubArguments(markdown, options, fontEmbedding) {
   const css = customCss == null ? undefined : String(customCss);
   epubTextBytes(source, 32 * 1024 * 1024, "source");
   epubTextBytes(css ?? "", 4 * 1024 * 1024, "stylesheet");
-  if (typeof toc !== "boolean") throw new TypeError("toc must be a boolean");
+  if (toc !== undefined && typeof toc !== "boolean") throw new TypeError("toc must be a boolean");
   const depth = integerOption(tocDepth, "tocDepth");
   if (depth !== undefined && depth > 6) throw new RangeError("tocDepth must be 1..6");
   // Count before the shared normalizers allocate arrays or inspect entries.
@@ -566,8 +571,9 @@ function epubArguments(markdown, options, fontEmbedding) {
   }
   const ownedFonts = fonts.map((asset) => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
   return {
-    requiresAdvanced: fontEmbedding === "full" || images.length > 0 || fonts.length > 0 || css !== undefined || toc || depth !== undefined,
-    args: [...base, css, toc, depth, images.map((image) => image.destination), flat, lengths,
+    requiresAdvanced: fontEmbedding === "full" || images.length > 0 || fonts.length > 0 || css !== undefined || Boolean(toc) || depth !== undefined,
+    inheritToc: toc === undefined,
+    args: [...base, css, Boolean(toc), depth, images.map((image) => image.destination), flat, lengths,
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
       fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
       fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts),
@@ -1144,6 +1150,30 @@ function parseJson(json, label) {
     return JSON.parse(json);
   } catch (error) {
     throw new Error(`Invalid ${label} returned by franken_markdown wasm core: ${error.message}`);
+  }
+}
+
+// Parse with the same Rust grammar as native rendering, then fill only the
+// option slots whose captured request left them unset. Existing ABI booleans
+// describe resolved settings, so TOC omission is captured separately from false.
+// A legacy generated package keeps its previous behavior until rebuilt; it
+// must not reject ordinary Markdown merely because it starts with a rule.
+function applySourceMetadata(args, slots, inheritToc) {
+  const parse = wasmBindings.sourceMetadata;
+  if (typeof parse !== "function") return;
+  const missing = Object.entries(slots).filter(([key, index]) =>
+    key === "toc" ? inheritToc : args[index] === undefined);
+  if (!missing.length) return;
+  const metadata = parseJson(parse(args[0]), "source metadata JSON");
+  const invalid = () => new Error("Invalid source metadata returned by franken_markdown wasm core");
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw invalid();
+  for (const [key, index] of missing) {
+    const value = metadata[key];
+    if (value === undefined) continue;
+    if (key === "toc" ? typeof value !== "boolean"
+      : key === "tocDepth" ? !Number.isInteger(value) || value < 1 || value > 6
+      : typeof value !== "string") throw invalid();
+    args[index] = value;
   }
 }
 

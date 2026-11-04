@@ -51,10 +51,12 @@ export interface FmdFontAsset {
 export interface FmdRenderOptions {
   font?: FmdFont;
   darkMode?: FmdDarkMode;
+  /** HTML/PDF/EPUB title; omitted metadata inherits source frontmatter with matching WASM bindings. */
   title?: string;
   /** Ordinary HTML/EPUB replacement stylesheet. Empty explicitly disables defaults. */
   customCss?: string;
   allowRawHtml?: boolean;
+  /** PDF author; omitted values inherit source frontmatter with matching WASM bindings. */
   author?: string;
   /** Finite non-negative integer seconds, <= Number.MAX_SAFE_INTEGER. */
   metadataEpochSeconds?: number;
@@ -71,11 +73,11 @@ export interface FmdRenderOptions {
   headingScale?: number;
   /** Nominal table cell size override in points; clamped to [5, base]. */
   tableFontSize?: number;
-  /** BCP-47 language tag used for HTML metadata and language-aware hyphenation. */
+  /** BCP-47 language tag used for metadata and hyphenation. HTML/PDF/EPUB inherit frontmatter when omitted. */
   lang?: "en" | "de" | "fr" | "es" | "nl" | string;
-  /** Generate a document table of contents. */
+  /** HTML/PDF/EPUB document TOC. Omitted inherits frontmatter; explicit false overrides it. */
   toc?: boolean;
-  /** Maximum generated TOC heading depth (1...6). */
+  /** HTML/PDF/EPUB TOC heading depth (1...6); omitted inherits frontmatter toc_depth. */
   tocDepth?: number;
   /** Adaptive PDF page-count target. */
   fitToPages?: number;

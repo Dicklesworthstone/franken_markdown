@@ -12,6 +12,9 @@ use crate::{
     render_html_document, render_pdf_document, render_warnings,
 };
 
+mod source_metadata;
+pub use source_metadata::{WasmSourceMetadata, source_metadata};
+
 /// Output kind requested by a browser/WASM caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WasmOutputFormat {

@@ -99,6 +99,15 @@ pub fn capabilities() -> String {
     wasm::capabilities_json()
 }
 
+/// Source-owned defaults for the ergonomic browser facade. Existing render
+/// bindings still accept resolved options, so explicit `toc: false` is never
+/// mistaken for an omitted host setting.
+#[wasm_bindgen(js_name = sourceMetadata)]
+#[must_use]
+pub fn source_metadata(markdown: &str) -> String {
+    wasm::source_metadata(markdown).to_json()
+}
+
 /// Compute the engine's document intelligence, readability, outline, and
 /// structural-lint report without rendering a second time in the host.
 #[wasm_bindgen(js_name = documentStats)]

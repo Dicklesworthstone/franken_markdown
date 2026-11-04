@@ -219,6 +219,23 @@ caller buffers do not retarget that render. This applies after initialization
 has already completed too. Submit another call to render later changes.
 PDF, SVG and EPUB already use the same request-ownership model.
 
+With generated bindings built from matching source, `renderHtml`, `renderPdf`
+(including PDF/A) and `renderEpub` inherit omitted `title`, `lang`, `toc` and
+`tocDepth` settings from leading document frontmatter; PDF also inherits
+`author`. Explicit options take precedence, including `toc: false`. The source
+key is `toc_depth`. The same Rust parser used by the CLI handles `key=value`,
+YAML-style scalars, block scalars, BOMs and CR/CRLF source. Source bytes and
+diagnostic offsets stay intact. Ordinary rules and malformed frontmatter keep
+their previous rendering behavior. Document workers and Flow exports use this
+facade and retain the same defaults when their options omit these fields.
+
+The additive generated `sourceMetadata` export supplies those defaults; older
+generated artifacts without it retain their previous behavior until rebuilt.
+Existing browser string conventions remain: empty title/author options mean
+unset and language strings are trimmed. The dependency-free Rust
+`wasm::source_metadata` helper exposes typed optional defaults for hosts to
+merge; existing Rust render APIs continue to take already-resolved options.
+
 `documentStats`, `searchIndex`, `accessibilityAudit`, `semanticDiff` and
 `renderSemanticDiff` also capture source strings before initialization yields;
 diff helpers retain the submitted old/new labels. The wrapper tests exercise

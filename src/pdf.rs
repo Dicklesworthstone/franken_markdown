@@ -33393,7 +33393,19 @@ fn build_pdf(
         format!(" /Outlines {outline_root_obj} 0 R /PageMode /UseOutlines")
     };
     let structure_root_ref = if tagged {
-        format!(" /MarkInfo << /Marked true >> /StructTreeRoot {struct_root_obj} 0 R /Lang (en-US)")
+        // Assistive readers need the selected document language, including
+        // regional tags whose hyphenation may use a base-language fallback.
+        // Retain the historical default when the host supplies no language.
+        let lang = opts
+            .lang
+            .as_deref()
+            .map(str::trim)
+            .filter(|lang| !lang.is_empty())
+            .unwrap_or("en-US");
+        format!(
+            " /MarkInfo << /Marked true >> /StructTreeRoot {struct_root_obj} 0 R /Lang {}",
+            pdf_text_string(lang)
+        )
     } else {
         String::new()
     };

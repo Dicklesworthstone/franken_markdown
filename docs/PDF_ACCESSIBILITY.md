@@ -5,14 +5,20 @@ Scope: tagged-PDF structure semantics emitted by the clean-room PDF writer
 (`src/pdf.rs`). Beads: `qw1.9`, `6lcj`, `j36e`.
 
 `franken_markdown` writes a tagged PDF (`/MarkInfo << /Marked true >>`,
-`/StructTreeRoot`, `/Lang (en-US)`, `/Tabs /S`) so the output is usable by
+`/StructTreeRoot`, `/Lang`, `/Tabs /S`) so the output is usable by
 screen readers and other assistive technology, not merely visually plausible.
 This ledger records exactly which structure semantics are supported, how they
 are produced, the known limitations of the line-based writer, and the explicit
 non-goals. It depends on **no third-party PDF parser** in production; the
 guarantees below are pinned by byte-level structural tests in
-`tests/pdf_test.rs`, `tests/pdf_accessibility_pages_test.rs`, and
-`tests/pdf_table_accessibility_test.rs`.
+`tests/pdf_test.rs`, `tests/pdf_accessibility_pages_test.rs`,
+`tests/pdf_table_accessibility_test.rs`, and `tests/pdf_language_test.rs`.
+
+The catalog language follows `PdfOptions.lang`, including regional tags such
+as `fr-CA`. An absent or blank language retains the default `en-US`; supplied
+values use the writer's PDF string encoding. This applies to ordinary and
+PDF/A output and lets assistive readers select the document's language even
+when the hyphenator uses a fallback pattern set.
 
 ## Supported semantics
 

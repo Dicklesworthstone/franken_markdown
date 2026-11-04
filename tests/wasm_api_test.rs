@@ -549,3 +549,193 @@ fn wasm_cff_host_fonts_match_native_html_and_pdf_for_every_slot() {
     .unwrap();
     assert_eq!(output.bytes, native);
 }
+
+const SOURCE_METADATA_DOCUMENT: &str = "---\ntitle: Metadata title\nauthor: Source author\nlang: de\ntoc: true\ntoc_depth: 2\n---\n# Heading\n\n## Child\n\n### Deep heading\n\nDocument body.\n";
+
+#[test]
+fn wasm_source_metadata_uses_native_frontmatter_with_bom_and_all_line_endings() {
+    use franken_markdown::wasm::{WasmSourceMetadata, source_metadata};
+    let expected = WasmSourceMetadata {
+        title: Some("Metadata title".into()),
+        author: Some("Source author".into()),
+        lang: Some("de".into()),
+        toc: Some(true),
+        toc_depth: Some(2),
+    };
+    for newline in ["\n", "\r\n", "\r"] {
+        for bom in ["", "\u{feff}"] {
+            let source = format!("{bom}{}", SOURCE_METADATA_DOCUMENT.replace('\n', newline));
+            assert_eq!(source_metadata(&source), expected);
+        }
+    }
+    assert_eq!(
+        source_metadata(SOURCE_METADATA_DOCUMENT).to_json(),
+        "{\"title\":\"Metadata title\",\"author\":\"Source author\",\"lang\":\"de\",\"toc\":true,\"tocDepth\":2}"
+    );
+}
+
+#[test]
+fn wasm_source_metadata_keeps_native_scalar_grammar_and_explicit_false() {
+    use franken_markdown::wasm::source_metadata;
+    let source = "---\ntitle: >-\n  A \"quoted\" guide:\n  café = yes\nauthor: |+\n  First\n  Second\nlang=fr\ntoc=off\ntoc_depth=6\nunknown: ignored\n---\n# Body";
+    let metadata = source_metadata(source);
+    assert_eq!(
+        metadata.title.as_deref(),
+        Some("A \"quoted\" guide: café = yes")
+    );
+    assert_eq!(metadata.author.as_deref(), Some("First\nSecond\n"));
+    assert_eq!(metadata.lang.as_deref(), Some("fr"));
+    assert_eq!(metadata.toc, Some(false));
+    assert_eq!(metadata.toc_depth, Some(6));
+    assert_eq!(
+        metadata.to_json(),
+        "{\"title\":\"A \\\"quoted\\\" guide: café = yes\",\"author\":\"First\\nSecond\\n\",\"lang\":\"fr\",\"toc\":false,\"tocDepth\":6}"
+    );
+    let quoted = source_metadata("---\ntitle: '  Draft  '\nauthor: \"\"\n---\n# Body");
+    assert_eq!(quoted.title.as_deref(), Some("  Draft  "));
+    assert_eq!(quoted.author.as_deref(), Some(""));
+}
+
+#[test]
+fn wasm_source_metadata_does_not_invent_settings_from_rules_or_invalid_frontmatter() {
+    use franken_markdown::wasm::{WasmSourceMetadata, source_metadata};
+    for source in [
+        "# Ordinary document",
+        "---\n\nAn ordinary paragraph.",
+        "---\ntitle: Not closed\n",
+        "---\ntitle: Incomplete\nordinary prose\n---\n# Body",
+        "# Body\n\n---\ntitle: Too late\n---",
+        "---\n# Only a comment\n---\n# Body",
+        "---\nunknown: not an option\ntoc: perhaps\ntoc_depth: 7\n---\n# Body",
+    ] {
+        assert_eq!(
+            source_metadata(source),
+            WasmSourceMetadata::default(),
+            "{source:?}"
+        );
+        assert_eq!(source_metadata(source).to_json(), "{}", "{source:?}");
+    }
+}
+
+#[test]
+fn wasm_source_metadata_json_preserves_text_instead_of_replacing_controls() {
+    use franken_markdown::wasm::WasmSourceMetadata;
+    let metadata = WasmSourceMetadata {
+        title: Some("\"\\\0\u{0001}\u{001f}\u{007f} café 😀\n\r\t".into()),
+        ..WasmSourceMetadata::default()
+    };
+    assert_eq!(
+        metadata.to_json(),
+        "{\"title\":\"\\\"\\\\\\u0000\\u0001\\u001f\u{007f} café 😀\\n\\r\\t\"}"
+    );
+}
+
+#[cfg(feature = "wasm-bindgen")]
+#[test]
+fn wasm_source_metadata_abi_exposes_real_parser_defaults() {
+    assert_eq!(
+        franken_markdown::wasm_abi::source_metadata(SOURCE_METADATA_DOCUMENT),
+        "{\"title\":\"Metadata title\",\"author\":\"Source author\",\"lang\":\"de\",\"toc\":true,\"tocDepth\":2}"
+    );
+    assert_eq!(
+        franken_markdown::wasm_abi::source_metadata("---\n\nAn ordinary paragraph."),
+        "{}"
+    );
+}
+
+#[test]
+fn wasm_source_metadata_drives_real_html_pdf_and_publication_options() {
+    use franken_markdown::wasm::source_metadata;
+    use franken_markdown::{HtmlOptions, PdfASettings, PdfOptions};
+
+    let metadata = source_metadata(SOURCE_METADATA_DOCUMENT);
+    let options = WasmRenderOptions {
+        title: metadata.title,
+        author: metadata.author,
+        lang: metadata.lang,
+        toc: metadata.toc.unwrap_or(false),
+        toc_depth: metadata.toc_depth,
+        custom_css: Some(String::new()),
+        ..WasmRenderOptions::default()
+    };
+    // These are the independently specified settings the native CLI resolves
+    // from this fixture. The source remains whole, preserving byte offsets.
+    let native_html = HtmlOptions {
+        title: Some("Metadata title".into()),
+        lang: Some("de".into()),
+        toc: true,
+        toc_depth: Some(2),
+        custom_css: Some(String::new()),
+        ..HtmlOptions::default()
+    };
+    let native_pdf = PdfOptions {
+        title: Some("Metadata title".into()),
+        author: Some("Source author".into()),
+        lang: Some("de".into()),
+        toc: true,
+        toc_depth: Some(2),
+        ..PdfOptions::default()
+    };
+    let html = render_html(SOURCE_METADATA_DOCUMENT, &options).unwrap();
+    assert_eq!(html.source_len, SOURCE_METADATA_DOCUMENT.len());
+    let text = html.html().unwrap();
+    assert!(text.contains("<title>Metadata title</title>"));
+    assert!(text.contains("<html lang=\"de\">"));
+    let toc = text
+        .split_once("<nav class=\"toc\">")
+        .unwrap()
+        .1
+        .split_once("</nav>")
+        .unwrap()
+        .0;
+    assert!(toc.contains("href=\"#child\""));
+    assert!(!toc.contains("href=\"#deep-heading\""));
+    assert!(!text.contains("toc_depth:"));
+    assert_eq!(
+        html.bytes,
+        franken_markdown::render_html(SOURCE_METADATA_DOCUMENT, &native_html)
+            .unwrap()
+            .into_bytes()
+    );
+
+    let pdf = render_pdf(SOURCE_METADATA_DOCUMENT, &options).unwrap();
+    assert_eq!(pdf.source_len, SOURCE_METADATA_DOCUMENT.len());
+    let text = String::from_utf8_lossy(&pdf.bytes);
+    assert!(text.contains("/Title (Metadata title)"));
+    assert!(text.contains("/Author (Source author)"));
+    assert!(text.contains("/Lang (de)"));
+    assert_eq!(
+        pdf.bytes,
+        franken_markdown::render_pdf(SOURCE_METADATA_DOCUMENT, &native_pdf).unwrap()
+    );
+
+    let doc = franken_markdown::parse_markdown(SOURCE_METADATA_DOCUMENT);
+    let resolved_html = HtmlOptions {
+        title: options.title.clone(),
+        lang: options.lang.clone(),
+        toc: options.toc,
+        toc_depth: options.toc_depth,
+        custom_css: Some(String::new()),
+        ..HtmlOptions::default()
+    };
+    assert_eq!(
+        franken_markdown::render_epub(&doc, &resolved_html).unwrap(),
+        franken_markdown::render_epub(&doc, &native_html).unwrap()
+    );
+    let resolved_pdf = PdfOptions {
+        title: options.title,
+        author: options.author,
+        lang: options.lang,
+        toc: options.toc,
+        toc_depth: options.toc_depth,
+        ..PdfOptions::default()
+    };
+    let archival =
+        franken_markdown::render_pdf_document_pdfa(&doc, &resolved_pdf, PdfASettings::a2b())
+            .unwrap();
+    assert_eq!(
+        archival,
+        franken_markdown::render_pdf_document_pdfa(&doc, &native_pdf, PdfASettings::a2b()).unwrap()
+    );
+    assert!(String::from_utf8_lossy(&archival).contains("/Metadata "));
+}

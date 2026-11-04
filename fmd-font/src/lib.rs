@@ -23,6 +23,8 @@
 //! phantom-point-correct metrics.
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
+
 #[cfg(feature = "bundled-faces")]
 pub mod bundled;
 pub mod cff;
@@ -101,10 +103,14 @@ struct Cmap4Cache {
     sorted_by_end: bool,
 }
 
-/// A parsed font, owning its backing bytes.
+/// A parsed font with owned or borrowed static backing bytes.
+///
+/// [`Self::parse`] takes ownership of a byte vector; cloning that font also
+/// clones its bytes. [`Self::parse_static`] borrows immutable bytes for the
+/// lifetime of the program; clones share those bytes without copying them.
 #[derive(Debug, Clone)]
 pub struct Font {
-    data: Vec<u8>,
+    data: Cow<'static, [u8]>,
     /// Font design units per em (the coordinate scale; advances are in these).
     pub units_per_em: u16,
     /// Number of glyphs in the font.
@@ -586,13 +592,33 @@ fn normalize_user(user: f32, axis: &VariationAxis) -> f32 {
 }
 
 impl Font {
-    /// Parse a font from its raw bytes (e.g. an `include_bytes!` blob).
+    /// Parse a font, taking ownership of its raw bytes without copying them.
+    ///
+    /// Use [`Self::parse_static`] for an `include_bytes!` blob or another
+    /// immutable byte slice that lives for the lifetime of the program.
     ///
     /// # Errors
     /// Returns a [`FontError`] for a non-sfnt file, a missing required table, a
     /// truncated file, or the absence of a usable Unicode `cmap`.
     pub fn parse(data: Vec<u8>) -> Result<Self, FontError> {
-        let d = data.as_slice();
+        Self::parse_backing(Cow::Owned(data))
+    }
+
+    /// Parse a font without copying its immutable static backing bytes.
+    ///
+    /// The parser still owns its derived metrics and lookup tables. Cloning
+    /// this font copies those tables but continues to borrow the same bytes.
+    /// Subsetting and variable-font instancing produce independent owned
+    /// output; they never modify the borrowed source.
+    ///
+    /// # Errors
+    /// Returns the same [`FontError`] values as [`Self::parse`].
+    pub fn parse_static(data: &'static [u8]) -> Result<Self, FontError> {
+        Self::parse_backing(Cow::Borrowed(data))
+    }
+
+    fn parse_backing(data: Cow<'static, [u8]>) -> Result<Self, FontError> {
+        let d = data.as_ref();
         let magic = be_u32(d, 0).ok_or(FontError::Truncated)?;
         // 0x00010000 = TrueType outlines; "true"; "OTTO" = CFF/OpenType.
         if magic != 0x0001_0000 && magic != 0x7472_7565 && magic != 0x4F54_544F {

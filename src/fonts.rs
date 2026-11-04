@@ -332,7 +332,7 @@ fn cached_font(
     cache: &'static OnceLock<Result<Font, FontError>>,
     bytes: &'static [u8],
 ) -> Result<&'static Font, FontError> {
-    match cache.get_or_init(|| Font::parse(bytes.to_vec())) {
+    match cache.get_or_init(|| Font::parse_static(bytes)) {
         Ok(font) => Ok(font),
         Err(err) => Err(err.clone()),
     }
@@ -349,7 +349,9 @@ fn cached_layout_tables(
     })
 }
 
-/// Parse a bundled proportional body font.
+/// An owned parsed value for a bundled proportional body font.
+///
+/// The immutable backing bytes are shared with the bundled face, not copied.
 ///
 /// # Errors
 /// Returns [`FontError`] only if a bundled font is malformed — which the registry
@@ -358,7 +360,7 @@ pub fn load_body(family: FontFamily, style: FontStyle) -> Result<Font, FontError
     body_font(family, style).cloned()
 }
 
-/// Parse the bundled monospace font.
+/// An owned parsed value for the bundled monospace font, sharing its bytes.
 ///
 /// # Errors
 /// See [`load_body`].
@@ -366,7 +368,8 @@ pub fn load_mono(style: FontStyle) -> Result<Font, FontError> {
     mono_font(style).cloned()
 }
 
-/// Parse the bundled symbol fallback font (curated Noto Sans Math subset).
+/// An owned parsed value for the bundled symbol fallback font (curated Noto
+/// Sans Math subset), sharing its bytes.
 ///
 /// # Errors
 /// See [`load_body`].
@@ -374,14 +377,16 @@ pub fn load_symbol() -> Result<Font, FontError> {
     symbol_font().cloned()
 }
 
-/// Owned copy of the bundled CJK fallback face, when `cjk-face` is enabled.
+/// An owned parsed value for the bundled CJK fallback face, when `cjk-face` is
+/// enabled. Its immutable backing bytes are shared with the bundled face.
 #[must_use]
 pub fn load_cjk() -> Option<Font> {
     cjk_font()?.ok().map(|(font, _)| font.clone())
 }
 
 /// The bundled CJK fallback face, parsed once per process and borrowed, when
-/// `cjk-face` is enabled. Unlike [`load_cjk`] it never copies the ~9.9 MB face.
+/// `cjk-face` is enabled. Like [`load_cjk`] it borrows the ~9.9 MB of font bytes;
+/// it also reuses the parsed metrics and lookup tables without cloning them.
 // pub only because svg.rs is also compiled into tests/svg_test.rs.
 #[doc(hidden)]
 #[must_use]
@@ -389,7 +394,8 @@ pub fn cjk_face() -> Option<&'static Font> {
     cjk_font()?.ok().map(|(font, _)| font)
 }
 
-/// Owned copy of the bundled emoji fallback face, when compiled in.
+/// An owned parsed value for the bundled emoji fallback face, when compiled in,
+/// sharing its immutable backing bytes.
 #[must_use]
 pub fn load_emoji() -> Option<Font> {
     emoji_font()?.ok().map(|(font, _)| font.clone())
@@ -415,6 +421,9 @@ mod tests {
             ] {
                 let cached = body_font(family, style)?;
                 let loaded = load_body(family, style)?;
+                let bytes = body_bytes(family, style);
+                assert_eq!(cached.as_sfnt().as_ptr(), bytes.as_ptr());
+                assert_eq!(loaded.as_sfnt().as_ptr(), bytes.as_ptr());
                 assert_eq!(cached.units_per_em, loaded.units_per_em);
                 assert_eq!(cached.num_glyphs, loaded.num_glyphs);
                 assert_eq!(cached.ascent, loaded.ascent);
@@ -441,6 +450,14 @@ mod tests {
             return Ok(());
         };
         let (font, _) = loaded?;
+        assert_eq!(
+            font.as_sfnt().as_ptr(),
+            fmd_font::bundled::noto_sans_cjk_sc().as_ptr()
+        );
+        let cloned = super::load_cjk();
+        assert!(
+            cloned.is_some_and(|cloned| { cloned.as_sfnt().as_ptr() == font.as_sfnt().as_ptr() })
+        );
         let mut mapped = 0_u32;
         for ch in (0..=0x10_FFFF_u32).filter_map(char::from_u32) {
             if font.glyph_index(ch) != 0 {
@@ -470,6 +487,9 @@ mod tests {
     fn cached_mono_font_matches_loaded_font() -> Result<(), FontError> {
         let cached = mono_font(FontStyle::Regular)?;
         let loaded = load_mono(FontStyle::Regular)?;
+        let bytes = super::mono_bytes(FontStyle::Regular);
+        assert_eq!(cached.as_sfnt().as_ptr(), bytes.as_ptr());
+        assert_eq!(loaded.as_sfnt().as_ptr(), bytes.as_ptr());
         assert_eq!(cached.units_per_em, loaded.units_per_em);
         assert_eq!(cached.num_glyphs, loaded.num_glyphs);
         assert_eq!(cached.subset(&['A', 'b']), loaded.subset(&['A', 'b']));

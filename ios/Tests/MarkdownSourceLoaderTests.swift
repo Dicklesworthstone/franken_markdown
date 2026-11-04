@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import FrankenMarkdown
@@ -37,6 +38,201 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         }
     }
 
+    func testStreamingReadPreservesEveryUTF8AndBOMBoundaryAcrossShortReads() throws {
+        let source = "# Café 👩🏽‍💻\r\n漢字 e\u{301}\nValid \u{FFFD} scalar.\n\0Tail"
+        for hasBOM in [false, true] {
+            let bytes = (hasBOM ? Data([0xEF, 0xBB, 0xBF]) : Data()) + Data(source.utf8)
+            for width in 1...17 {
+                let loaded = try readInChunks(bytes, width: width)
+                XCTAssertEqual(Data(loaded.source.utf8), Data(source.utf8), "width \(width), BOM \(hasBOM)")
+                XCTAssertEqual(loaded.diskFingerprint.byteCount, bytes.count)
+                XCTAssertEqual(loaded.diskFingerprint.digest, Data(SHA256.hash(data: bytes)))
+                XCTAssertEqual(loaded.diskFingerprint.hasByteOrderMark, hasBOM)
+                XCTAssertEqual(loaded.sourceDigest, Data(SHA256.hash(data: Data(source.utf8))))
+            }
+        }
+    }
+
+    func testStreamingReadPreservesEmptyAndBOMOnlyFiles() throws {
+        for bytes in [Data(), Data([0xEF, 0xBB, 0xBF])] {
+            let loaded = try readInChunks(bytes, width: 1)
+            XCTAssertEqual(loaded.source, "")
+            XCTAssertEqual(loaded.diskFingerprint.byteCount, bytes.count)
+            XCTAssertEqual(loaded.diskFingerprint.hasByteOrderMark, !bytes.isEmpty)
+            XCTAssertEqual(loaded.sourceDigest, Data(SHA256.hash(data: Data())))
+        }
+    }
+
+    func testDecodeRemovesOnlyTheOriginalBOMAndPreservesLeadingSourceBOM() throws {
+        let source = "\u{FEFF}Second mark is content.\nInterior \u{FEFF} mark."
+        let bytes = Data([0xEF, 0xBB, 0xBF]) + Data(source.utf8)
+        let decoded = try MarkdownSourceLoader.decode(bytes)
+        XCTAssertEqual(Data(decoded.utf8), Data(source.utf8))
+        for width in 1...9 {
+            let loaded = try readInChunks(bytes, width: width)
+            XCTAssertEqual(Data(loaded.source.utf8), Data(source.utf8))
+            XCTAssertEqual(loaded.sourceDigest, Data(SHA256.hash(data: Data(source.utf8))))
+        }
+    }
+
+    func testStreamingReadPreservesInteriorBOMAtAndAcrossIOChunkBoundaries() throws {
+        let chunkBytes = MarkdownSourceLoader.ioChunkBytes
+        for hasBOM in [false, true] {
+            for offset in (chunkBytes - 2)...(chunkBytes + 1) {
+                let prefixCount = offset - (hasBOM ? 3 : 0)
+                let source = String(repeating: "a", count: prefixCount)
+                    + "\u{FEFF}Middle\u{FEFF}Tail"
+                let bytes = (hasBOM ? Data([0xEF, 0xBB, 0xBF]) : Data()) + Data(source.utf8)
+                let loaded = try readInChunks(bytes, width: chunkBytes)
+                XCTAssertEqual(Data(loaded.source.utf8), Data(source.utf8), "offset \(offset), BOM \(hasBOM)")
+                XCTAssertEqual(loaded.sourceDigest, Data(SHA256.hash(data: Data(source.utf8))))
+            }
+        }
+    }
+
+    func testStreamingReadRejectsMalformedOrIncompleteScalarsAtEveryBoundary() {
+        let invalid: [[UInt8]] = [
+            [0x80], [0xC0, 0xAF], [0xC3, 0x28], [0xC3], [0xEF, 0xBB],
+            [0xE0, 0x80, 0x80], [0xED, 0xA0, 0x80], [0xF0, 0x9F, 0x98],
+            [0xF4, 0x90, 0x80, 0x80], [0xF5, 0x80, 0x80, 0x80]
+        ]
+        for bytes in invalid {
+            for width in 1...4 {
+                XCTAssertThrowsError(try readInChunks(Data(bytes), width: width)) { error in
+                    XCTAssertEqual(error as? MarkdownSourceLoader.ImportError, .notUTF8)
+                }
+            }
+        }
+    }
+
+    func testStreamingReadChecksActualLengthAndProbesPastExactLimit() throws {
+        let bytes = Data("abcdefgh".utf8)
+        XCTAssertEqual(try readInChunks(bytes, width: 3, maximumBytes: 8).source, "abcdefgh")
+        XCTAssertThrowsError(try readInChunks(bytes, width: 3, maximumBytes: 7)) { error in
+            XCTAssertEqual(error as? MarkdownSourceLoader.ImportError, .tooLarge(maximumBytes: 7))
+        }
+        let bomOnly = Data([0xEF, 0xBB, 0xBF])
+        XCTAssertThrowsError(try readInChunks(bomOnly, width: 1, maximumBytes: 2)) { error in
+            XCTAssertEqual(error as? MarkdownSourceLoader.ImportError, .tooLarge(maximumBytes: 2))
+        }
+    }
+
+    func testMultiMegabyteStreamingReadBoundsEachReadAndRetainsTail() throws {
+        let source = String(repeating: "A café 漢字 👩🏽‍💻 paragraph.\r\n", count: 100_000) + "FINAL-TAIL"
+        let bytes = Data(source.utf8)
+        var offset = 0
+        var largestRequest = 0
+        var reads = 0
+        let loaded = try MarkdownSourceLoader.readSource(capacityHint: bytes.count) { count in
+            largestRequest = max(largestRequest, count)
+            reads += 1
+            let end = min(offset + count, bytes.count)
+            defer { offset = end }
+            return bytes.subdata(in: offset..<end)
+        }
+        XCTAssertEqual(Data(loaded.source.utf8), bytes)
+        XCTAssertEqual(loaded.diskFingerprint.digest, Data(SHA256.hash(data: bytes)))
+        XCTAssertEqual(loaded.sourceDigest, try MarkdownSourceLoader.sourceDigest(source))
+        XCTAssertLessThanOrEqual(largestRequest, MarkdownSourceLoader.ioChunkBytes)
+        XCTAssertGreaterThan(reads, 2)
+    }
+
+    func testStreamingReadPropagatesProviderFailureWithoutReturningAPartialDocument() {
+        var reads = 0
+        XCTAssertThrowsError(try MarkdownSourceLoader.readSource { _ in
+            reads += 1
+            if reads == 1 { return Data("partial".utf8) }
+            throw CocoaError(.fileReadUnknown)
+        }) { error in
+            XCTAssertEqual((error as? CocoaError)?.code, .fileReadUnknown)
+        }
+    }
+
+    func testStreamingSaveWritesCompleteLargeSourceAndRejectsSameSizeExternalTailEdit() async throws {
+        let source = String(repeating: "source café 漢字 🪄\n", count: 60_000) + "ORIGINAL"
+        let updated = String(repeating: "updated café 漢字 🪄\n", count: 65_000) + "TAIL"
+        let url = try temporarySourceURL(contents: try MarkdownSourceLoader.encode(source, includingByteOrderMark: true))
+        let opened = try await MarkdownSourceLoader.open(from: url)
+        let saved = try await MarkdownSourceLoader.save(updated, replacing: opened)
+        let expectedBytes = try MarkdownSourceLoader.encode(updated, includingByteOrderMark: true)
+        XCTAssertEqual(try Data(contentsOf: url), expectedBytes)
+        XCTAssertEqual(saved.diskFingerprint.byteCount, expectedBytes.count)
+        XCTAssertEqual(saved.diskFingerprint.digest, Data(SHA256.hash(data: expectedBytes)))
+        XCTAssertEqual(saved.sourceDigest, Data(SHA256.hash(data: Data(updated.utf8))))
+
+        var external = expectedBytes
+        external[external.count - 1] ^= 1
+        try external.write(to: url, options: .atomic)
+        do {
+            _ = try await MarkdownSourceLoader.save("local edit", replacing: saved)
+            XCTFail("A same-size edit at the end of a large file must remain a conflict")
+        } catch {
+            XCTAssertEqual(error as? MarkdownSourceLoader.DocumentError, .changedOnDisk)
+        }
+        XCTAssertEqual(try Data(contentsOf: url), external)
+    }
+
+    func testStreamingReadStopsAtTheNextBoundaryAfterTaskCancellation() async {
+        let worker = Task.detached { () -> Bool in
+            var reads = 0
+            do {
+                _ = try MarkdownSourceLoader.readSource { _ in
+                    reads += 1
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return Data("partial".utf8)
+                }
+                return false
+            } catch is CancellationError {
+                return reads == 1
+            } catch {
+                return false
+            }
+        }
+        let stoppedAfterOneRead = await worker.value
+        XCTAssertTrue(stoppedAfterOneRead)
+    }
+
+    func testAlreadyCancelledOpenAndSaveDoNotAccessOrReplaceFiles() async throws {
+        let source = "Original source."
+        let url = try temporarySourceURL(contents: Data(source.utf8))
+        let document = try await MarkdownSourceLoader.open(from: url)
+        let nonexistent = url.appendingPathExtension("does-not-exist")
+        let openWorker = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await MarkdownSourceLoader.open(from: nonexistent)
+        }
+        do {
+            _ = try await openWorker.value
+            XCTFail("A cancelled open must not continue reading")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "Cancellation must precede filesystem access: \(error)")
+        }
+        let saveWorker = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await MarkdownSourceLoader.save("Unexpected replacement", replacing: document)
+        }
+        do {
+            _ = try await saveWorker.value
+            XCTFail("A cancelled save must not replace the file")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(try Data(contentsOf: url), Data(source.utf8))
+    }
+
+    private func readInChunks(
+        _ bytes: Data,
+        width: Int,
+        maximumBytes: Int = MarkdownSourceLoader.maximumBytes
+    ) throws -> MarkdownSourceLoader.LoadedSource {
+        var offset = 0
+        return try MarkdownSourceLoader.readSource(maximumBytes: maximumBytes) { count in
+            let end = min(bytes.count, offset + min(width, count))
+            defer { offset = end }
+            return bytes.subdata(in: offset..<end)
+        }
+    }
+
     func testOpenAndSaveRoundTripPreservesIdentityAndByteOrderMark() async throws {
         let original = "# Original\n\nStored in Files."
         let updated = "# Updated\n\nStill stored in Files."
@@ -55,7 +251,11 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         )
         XCTAssertEqual(saved.url, url)
         XCTAssertEqual(saved.source, updated)
-        XCTAssertTrue(saved.diskData.starts(with: Data([0xEF, 0xBB, 0xBF])))
+        let resolved = try MarkdownSourceLoader.resolveBookmark(saved.bookmarkData)
+        let reopened = try await MarkdownSourceLoader.open(from: resolved)
+        XCTAssertEqual(Data(reopened.source.utf8), Data(updated.utf8))
+        XCTAssertTrue(saved.diskFingerprint.hasByteOrderMark)
+        XCTAssertTrue(try Data(contentsOf: url).starts(with: Data([0xEF, 0xBB, 0xBF])))
         XCTAssertEqual(try MarkdownSourceLoader.decode(Data(contentsOf: url)), updated)
     }
 

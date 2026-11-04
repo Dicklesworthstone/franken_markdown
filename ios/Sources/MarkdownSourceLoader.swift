@@ -36,9 +36,18 @@ struct MarkdownSourceDocument: Equatable, Sendable {
     let bookmarkData: Data
     let source: String
     let suggestedTitle: String
-    let diskData: Data
+    let diskFingerprint: MarkdownSourceFingerprint
+    let sourceDigest: Data
 
     var displayName: String { url.lastPathComponent }
+}
+
+/// Conflict detection needs only the original bytes' identity, not another
+/// complete copy of a large document beside the editable String.
+struct MarkdownSourceFingerprint: Equatable, Sendable {
+    let byteCount: Int
+    let digest: Data
+    let hasByteOrderMark: Bool
 }
 
 struct MarkdownRecentDocument: Codable, Equatable, Identifiable, Sendable {
@@ -223,16 +232,26 @@ final class MarkdownDocumentSession: ObservableObject {
                 return .unassociatedDraft(restored)
             }
 
-            let recoveredSourceDigest = Self.digest(Data(recoveredSource.utf8))
+            try Task.checkCancellation()
+            let digestWorker = Task.detached(priority: .utility) {
+                try MarkdownSourceLoader.sourceDigest(recoveredSource)
+            }
+            let recoveredSourceDigest = try await withTaskCancellationHandler {
+                try await digestWorker.value
+            } onCancel: {
+                digestWorker.cancel()
+            }
+            guard request == requestGeneration, isCurrentSource() else { return .none }
             if recoveredSourceDigest == reference.baselineSourceDigest {
                 return .fileVersion(restored)
             }
-            if Self.digest(document.diskData) == reference.baselineDiskDigest {
+            if document.diskFingerprint.digest == reference.baselineDiskDigest {
                 return .recoveredEdits(restored)
             }
             return .conflict(restored)
         } catch {
             guard request == requestGeneration, isCurrentSource() else { return .none }
+            if error is CancellationError { return .none }
             attention = .unavailable
             restorationDisplayName = reference.displayName
             throw error
@@ -339,8 +358,8 @@ final class MarkdownDocumentSession: ObservableObject {
             documentIdentity: documentIdentity,
             bookmarkData: document.bookmarkData,
             displayName: document.displayName,
-            baselineSourceDigest: Self.digest(Data(document.source.utf8)),
-            baselineDiskDigest: Self.digest(document.diskData)
+            baselineSourceDigest: document.sourceDigest,
+            baselineDiskDigest: document.diskFingerprint.digest
         )
         activeDocumentReference = reference
         if let encoded = try? JSONEncoder().encode(reference) {
@@ -370,10 +389,6 @@ final class MarkdownDocumentSession: ObservableObject {
         return try? JSONDecoder().decode(MarkdownActiveDocumentReference.self, from: data)
     }
 
-    private static func digest(_ data: Data) -> Data {
-        Data(SHA256.hash(data: data))
-    }
-
     private static func isUnavailableFileError(_ error: Error) -> Bool {
         let cocoaError = error as NSError
         guard cocoaError.domain == NSCocoaErrorDomain else { return false }
@@ -388,6 +403,7 @@ final class MarkdownDocumentSession: ObservableObject {
 
 enum MarkdownSourceLoader {
     static let maximumBytes = 64 * 1_024 * 1_024
+    static let ioChunkBytes = 64 * 1_024
     private static let utf8ByteOrderMark = Data([0xEF, 0xBB, 0xBF])
 
     enum ImportError: LocalizedError, Equatable {
@@ -436,41 +452,63 @@ enum MarkdownSourceLoader {
     static func load(from url: URL) throws -> MarkdownSourceDocument {
         guard url.isFileURL else { throw ImportError.notAFileURL }
         return try withSecurityScopedAccess(to: url) {
-            let data = try coordinatedRead(from: url)
-            return try makeDocument(url: url, data: data)
+            let loaded = try coordinatedRead(from: url)
+            return MarkdownSourceDocument(
+                url: url,
+                bookmarkData: try bookmark(for: url),
+                source: loaded.source,
+                suggestedTitle: suggestedTitle(for: url),
+                diskFingerprint: loaded.diskFingerprint,
+                sourceDigest: loaded.sourceDigest
+            )
         }
     }
 
     static func open(from url: URL) async throws -> MarkdownSourceDocument {
-        try await Task.detached(priority: .userInitiated) {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .userInitiated) {
             try load(from: url)
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     static func save(
         _ source: String,
         replacing document: MarkdownSourceDocument
     ) async throws -> MarkdownSourceDocument {
-        try await Task.detached(priority: .userInitiated) {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .userInitiated) {
             try withSecurityScopedAccess(to: document.url) {
-                let data = try encode(
-                    source,
-                    includingByteOrderMark: document.diskData.starts(with: utf8ByteOrderMark)
-                )
-                try coordinatedReplace(
+                // Resolve bookmark metadata before committing the replacement:
+                // a metadata failure must not make a successful write look lost.
+                let bookmarkData = try bookmark(for: document.url)
+                let written = try coordinatedReplace(
                     at: document.url,
-                    expectedData: document.diskData,
-                    replacementData: data
+                    expected: document.diskFingerprint,
+                    source: source
                 )
                 return MarkdownSourceDocument(
                     url: document.url,
-                    bookmarkData: try bookmark(for: document.url),
+                    // Replacement may change the file identity. Refresh the
+                    // bookmark, but never report a committed write as lost if
+                    // its provider cannot immediately supply fresh metadata.
+                    bookmarkData: (try? bookmark(for: document.url)) ?? bookmarkData,
                     source: source,
                     suggestedTitle: suggestedTitle(for: document.url),
-                    diskData: data
+                    diskFingerprint: written.diskFingerprint,
+                    sourceDigest: written.sourceDigest
                 )
             }
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     static func resolveBookmark(_ data: Data) throws -> URL {
@@ -497,31 +535,145 @@ enum MarkdownSourceLoader {
         guard data.count <= maximumBytes else {
             throw ImportError.tooLarge(maximumBytes: maximumBytes)
         }
-        var bytes = data
-        if bytes.starts(with: utf8ByteOrderMark) { bytes.removeFirst(utf8ByteOrderMark.count) }
-        guard let source = String(data: bytes, encoding: .utf8) else {
-            throw ImportError.notUTF8
-        }
-        return source
+        let bytes = data.starts(with: utf8ByteOrderMark)
+            ? data.dropFirst(utf8ByteOrderMark.count) : data[...]
+        return try decodeUTF8(bytes)
     }
 
     static func encode(_ source: String, includingByteOrderMark: Bool = false) throws -> Data {
-        var data = Data(source.utf8)
-        if includingByteOrderMark { data.insert(contentsOf: utf8ByteOrderMark, at: 0) }
-        guard data.count <= maximumBytes else {
+        let byteCount = source.utf8.count + (includingByteOrderMark ? utf8ByteOrderMark.count : 0)
+        guard byteCount <= maximumBytes else {
             throw ImportError.tooLarge(maximumBytes: maximumBytes)
         }
+        var data = Data()
+        data.reserveCapacity(byteCount)
+        if includingByteOrderMark { data.append(utf8ByteOrderMark) }
+        data.append(contentsOf: source.utf8)
         return data
     }
 
-    private static func makeDocument(url: URL, data: Data) throws -> MarkdownSourceDocument {
-        MarkdownSourceDocument(
-            url: url,
-            bookmarkData: try bookmark(for: url),
-            source: try decode(data),
-            suggestedTitle: suggestedTitle(for: url),
-            diskData: data
+    /// Hash UTF-8 without allocating a complete encoded copy on the main actor.
+    static func sourceDigest(_ source: String) throws -> Data {
+        try Task.checkCancellation()
+        var digest = SHA256()
+        try forEachUTF8Chunk(source) { chunk in
+            try Task.checkCancellation()
+            digest.update(data: chunk)
+        }
+        return Data(digest.finalize())
+    }
+
+    private static func forEachUTF8Chunk(
+        _ source: String,
+        consume: (Data) throws -> Void
+    ) rethrows {
+        let bytes = source.utf8
+        var start = bytes.startIndex
+        while start != bytes.endIndex {
+            let end = bytes.index(start, offsetBy: ioChunkBytes, limitedBy: bytes.endIndex) ?? bytes.endIndex
+            try consume(Data(bytes[start..<end]))
+            start = end
+        }
+    }
+
+    struct LoadedSource: Sendable {
+        let source: String
+        let diskFingerprint: MarkdownSourceFingerprint
+        let sourceDigest: Data
+    }
+
+    /// A strict incremental UTF-8 decoder. At most three bytes cross a read
+    /// boundary, including when the provider returns short reads. The source
+    /// String is the only document-sized allocation retained by the result.
+    static func readSource(
+        maximumBytes: Int = maximumBytes,
+        capacityHint: Int = 0,
+        read: (Int) throws -> Data
+    ) throws -> LoadedSource {
+        try Task.checkCancellation()
+        guard maximumBytes >= 0 else {
+            throw ImportError.tooLarge(maximumBytes: maximumBytes)
+        }
+        var source = ""
+        source.reserveCapacity(min(maximumBytes, max(0, capacityHint)))
+        var pending = Data()
+        var atStart = true
+        var hasByteOrderMark = false
+        var diskDigest = SHA256()
+        var textDigest = SHA256()
+        let byteCount = try readChunks(maximumBytes: maximumBytes, read: read) { chunk in
+            diskDigest.update(data: chunk)
+            pending.append(chunk)
+            if atStart {
+                if pending.count < utf8ByteOrderMark.count,
+                   utf8ByteOrderMark.starts(with: pending) { return }
+                hasByteOrderMark = pending.starts(with: utf8ByteOrderMark)
+                if hasByteOrderMark { pending.removeFirst(utf8ByteOrderMark.count) }
+                atStart = false
+            }
+            guard !pending.isEmpty else { return }
+            var lastLead = pending.index(before: pending.endIndex)
+            while lastLead > pending.startIndex, pending[lastLead] & 0xC0 == 0x80 {
+                lastLead = pending.index(before: lastLead)
+            }
+            let lead = pending[lastLead]
+            let expectedLength: Int
+            switch lead {
+            case 0xC2...0xDF: expectedLength = 2
+            case 0xE0...0xEF: expectedLength = 3
+            case 0xF0...0xF4: expectedLength = 4
+            default: expectedLength = 1
+            }
+            let end = pending.distance(from: lastLead, to: pending.endIndex) < expectedLength
+                ? lastLead : pending.endIndex
+            let complete = pending[..<end]
+            source.append(try decodeUTF8(complete))
+            textDigest.update(data: complete)
+            pending = Data(pending[end...])
+        }
+        // A partial scalar or partial BOM is invalid at EOF. A complete BOM
+        // was consumed above, even when it arrived one byte at a time.
+        guard pending.isEmpty else { throw ImportError.notUTF8 }
+        return LoadedSource(
+            source: source,
+            diskFingerprint: MarkdownSourceFingerprint(
+                byteCount: byteCount,
+                digest: Data(diskDigest.finalize()),
+                hasByteOrderMark: hasByteOrderMark
+            ),
+            sourceDigest: Data(textDigest.finalize())
         )
+    }
+
+    private static func decodeUTF8(_ bytes: Data) throws -> String {
+        // Foundation's external-representation decoder may interpret a BOM
+        // at each chunk boundary. The native decoder preserves all scalars;
+        // byte equality rejects any replacement it made for malformed UTF-8.
+        // String(validating:as:) is unavailable on the Swift 5.10/iOS 17 floor.
+        let decoded = String(decoding: bytes, as: UTF8.self)
+        guard decoded.utf8.elementsEqual(bytes) else { throw ImportError.notUTF8 }
+        return decoded
+    }
+
+    /// Continue after short reads and probe one byte past the limit. Reading
+    /// once with a large count is not an EOF guarantee for document providers.
+    private static func readChunks(
+        maximumBytes: Int = maximumBytes,
+        read: (Int) throws -> Data,
+        consume: (Data) throws -> Void
+    ) throws -> Int {
+        var byteCount = 0
+        while true {
+            try Task.checkCancellation()
+            let remaining = maximumBytes - byteCount
+            let chunk = try read(remaining == 0 ? 1 : min(ioChunkBytes, remaining))
+            guard !chunk.isEmpty else { return byteCount }
+            guard chunk.count <= maximumBytes - byteCount else {
+                throw ImportError.tooLarge(maximumBytes: maximumBytes)
+            }
+            byteCount += chunk.count
+            try consume(chunk)
+        }
     }
 
     private static func suggestedTitle(for url: URL) -> String {
@@ -542,12 +694,19 @@ enum MarkdownSourceLoader {
         )
     }
 
-    private static func coordinatedRead(from url: URL) throws -> Data {
+    private static func coordinatedRead(from url: URL) throws -> LoadedSource {
         let coordinator = NSFileCoordinator()
         var coordinationError: NSError?
-        var result: Result<Data, Error>?
+        var result: Result<LoadedSource, Error>?
         coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
-            result = Result { try boundedRead(from: coordinatedURL) }
+            result = Result {
+                let size = try checkReadableFile(at: coordinatedURL)
+                let handle = try FileHandle(forReadingFrom: coordinatedURL)
+                defer { try? handle.close() }
+                return try readSource(capacityHint: size) { count in
+                    try handle.read(upToCount: count) ?? Data()
+                }
+            }
         }
         if let coordinationError { throw coordinationError }
         guard let result else { throw DocumentError.coordinatedRead }
@@ -556,37 +715,101 @@ enum MarkdownSourceLoader {
 
     private static func coordinatedReplace(
         at url: URL,
-        expectedData: Data,
-        replacementData: Data
-    ) throws {
+        expected: MarkdownSourceFingerprint,
+        source: String
+    ) throws -> LoadedSource {
+        let byteCount = source.utf8.count + (expected.hasByteOrderMark ? utf8ByteOrderMark.count : 0)
+        guard byteCount <= maximumBytes else {
+            throw ImportError.tooLarge(maximumBytes: maximumBytes)
+        }
         let coordinator = NSFileCoordinator()
         var coordinationError: NSError?
-        var result: Result<Void, Error>?
+        var result: Result<LoadedSource, Error>?
         coordinator.coordinate(
             writingItemAt: url,
             options: .forReplacing,
             error: &coordinationError
         ) { coordinatedURL in
             result = Result {
-                let currentData = try boundedRead(from: coordinatedURL)
-                guard currentData == expectedData else { throw DocumentError.changedOnDisk }
-                try replacementData.write(to: coordinatedURL, options: .atomic)
+                let current = try fingerprint(at: coordinatedURL)
+                guard current.byteCount == expected.byteCount, current.digest == expected.digest else {
+                    throw DocumentError.changedOnDisk
+                }
+                return try writeAtomically(source, to: coordinatedURL, includingByteOrderMark: expected.hasByteOrderMark)
             }
         }
         if let coordinationError { throw coordinationError }
         guard let result else { throw DocumentError.coordinatedWrite }
-        try result.get()
+        return try result.get()
     }
 
-    private static func boundedRead(from url: URL) throws -> Data {
+    private static func fingerprint(at url: URL) throws -> (byteCount: Int, digest: Data) {
+        _ = try checkReadableFile(at: url)
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var digest = SHA256()
+        let byteCount = try readChunks(read: { count in
+            try handle.read(upToCount: count) ?? Data()
+        }) { digest.update(data: $0) }
+        return (byteCount: byteCount, digest: Data(digest.finalize()))
+    }
+
+    private static func writeAtomically(
+        _ source: String,
+        to url: URL,
+        includingByteOrderMark: Bool
+    ) throws -> LoadedSource {
+        let manager = FileManager.default
+        let directory = try manager.url(
+            for: .itemReplacementDirectory,
+            in: .userDomainMask,
+            appropriateFor: url,
+            create: true
+        )
+        defer { try? manager.removeItem(at: directory) }
+        let replacement = directory.appendingPathComponent("source.md", isDirectory: false)
+        guard manager.createFile(atPath: replacement.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let handle = try FileHandle(forWritingTo: replacement)
+        defer { try? handle.close() }
+        var diskDigest = SHA256()
+        var textDigest = SHA256()
+        var byteCount = 0
+        if includingByteOrderMark {
+            try handle.write(contentsOf: utf8ByteOrderMark)
+            diskDigest.update(data: utf8ByteOrderMark)
+            byteCount += utf8ByteOrderMark.count
+        }
+        try forEachUTF8Chunk(source) { chunk in
+            try Task.checkCancellation()
+            try handle.write(contentsOf: chunk)
+            diskDigest.update(data: chunk)
+            textDigest.update(data: chunk)
+            byteCount += chunk.count
+        }
+        try handle.synchronize()
+        try handle.close()
+        try Task.checkCancellation()
+        _ = try manager.replaceItemAt(url, withItemAt: replacement)
+        return LoadedSource(
+            source: source,
+            diskFingerprint: MarkdownSourceFingerprint(
+                byteCount: byteCount,
+                digest: Data(diskDigest.finalize()),
+                hasByteOrderMark: includingByteOrderMark
+            ),
+            sourceDigest: Data(textDigest.finalize())
+        )
+    }
+
+    private static func checkReadableFile(at url: URL) throws -> Int {
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
         guard values.isRegularFile != false else { throw ImportError.notAFileURL }
         if let size = values.fileSize, size > maximumBytes {
             throw ImportError.tooLarge(maximumBytes: maximumBytes)
         }
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        return try handle.read(upToCount: maximumBytes + 1) ?? Data()
+        return values.fileSize ?? 0
     }
 
     private static func withSecurityScopedAccess<T>(to url: URL, body: () throws -> T) throws -> T {

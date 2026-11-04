@@ -75,6 +75,22 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         }
     }
 
+    func testRawStreamingReadPreservesLeadingMarksAcrossEveryShortRead() throws {
+        for source in ["\u{FEFF}", "\u{FEFF}\u{FEFF}# Literal marks\r\nCafé 👩🏽‍💻\nInterior \u{FEFF}"] {
+            let bytes = Data(source.utf8)
+            for width in 1...17 {
+                let loaded = try readInChunks(bytes, width: width, stripInitialByteOrderMark: false)
+                XCTAssertTrue(loaded.source.utf8.elementsEqual(source.utf8), "width \(width)")
+                XCTAssertEqual(loaded.diskFingerprint.byteCount, bytes.count)
+                XCTAssertEqual(loaded.diskFingerprint.digest, Data(SHA256.hash(data: bytes)))
+                XCTAssertEqual(loaded.sourceDigest, loaded.diskFingerprint.digest)
+            }
+        }
+        for incomplete in [Data([0xEF]), Data([0xEF, 0xBB])] {
+            XCTAssertThrowsError(try readInChunks(incomplete, width: 1, stripInitialByteOrderMark: false))
+        }
+    }
+
     func testStreamingReadPreservesInteriorBOMAtAndAcrossIOChunkBoundaries() throws {
         let chunkBytes = MarkdownSourceLoader.ioChunkBytes
         for hasBOM in [false, true] {
@@ -223,10 +239,14 @@ final class MarkdownSourceLoaderTests: XCTestCase {
     private func readInChunks(
         _ bytes: Data,
         width: Int,
-        maximumBytes: Int = MarkdownSourceLoader.maximumBytes
+        maximumBytes: Int = MarkdownSourceLoader.maximumBytes,
+        stripInitialByteOrderMark: Bool = true
     ) throws -> MarkdownSourceLoader.LoadedSource {
         var offset = 0
-        return try MarkdownSourceLoader.readSource(maximumBytes: maximumBytes) { count in
+        return try MarkdownSourceLoader.readSource(
+            maximumBytes: maximumBytes,
+            stripInitialByteOrderMark: stripInitialByteOrderMark
+        ) { count in
             let end = min(bytes.count, offset + min(width, count))
             defer { offset = end }
             return bytes.subdata(in: offset..<end)

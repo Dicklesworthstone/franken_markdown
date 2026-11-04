@@ -362,16 +362,18 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         scheduledDraftSave?.cancel()
         draftStatus = "Saving locally…"
         let draft = activeDraft()
-        scheduledDraftSave = Task { [weak self] in
+        scheduledDraftSave = Task(priority: .utility) { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(450))
                 guard !Task.isCancelled, let self, self.matchesCurrentDraft(draft) else { return }
-                try self.draftStore.save(draft)
+                try await self.draftStore.save(draft)
+                guard !Task.isCancelled, self.matchesCurrentDraft(draft) else { return }
                 self.draftStatus = "Saved locally"
             } catch is CancellationError {
                 return
             } catch {
-                self?.draftStatus = "Local draft not saved"
+                guard !Task.isCancelled, let self, self.matchesCurrentDraft(draft) else { return }
+                self.draftStatus = "Local draft not saved"
             }
         }
     }
@@ -403,8 +405,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
 
     private func restoreDraftIfUnedited() {
         let store = draftStore
-        Task { [weak self] in
-            let draft = await Task.detached(priority: .utility) { store.load() }.value
+        Task(priority: .utility) { [weak self] in
+            let draft = await store.load()
             guard let self else { return }
             guard self.source == Self.sample, self.documentTitle.isEmpty else {
                 self.draftStatus = "Active draft changed"

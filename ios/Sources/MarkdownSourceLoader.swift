@@ -563,7 +563,7 @@ enum MarkdownSourceLoader {
         return Data(digest.finalize())
     }
 
-    private static func forEachUTF8Chunk(
+    static func forEachUTF8Chunk(
         _ source: String,
         consume: (Data) throws -> Void
     ) rethrows {
@@ -585,9 +585,12 @@ enum MarkdownSourceLoader {
     /// A strict incremental UTF-8 decoder. At most three bytes cross a read
     /// boundary, including when the provider returns short reads. The source
     /// String is the only document-sized allocation retained by the result.
+    /// Recovery files contain raw source text: their first U+FEFF, if any, is
+    /// content and must be retained by disabling initial BOM stripping.
     static func readSource(
         maximumBytes: Int = maximumBytes,
         capacityHint: Int = 0,
+        stripInitialByteOrderMark: Bool = true,
         read: (Int) throws -> Data
     ) throws -> LoadedSource {
         try Task.checkCancellation()
@@ -608,7 +611,9 @@ enum MarkdownSourceLoader {
                 if pending.count < utf8ByteOrderMark.count,
                    utf8ByteOrderMark.starts(with: pending) { return }
                 hasByteOrderMark = pending.starts(with: utf8ByteOrderMark)
-                if hasByteOrderMark { pending.removeFirst(utf8ByteOrderMark.count) }
+                if hasByteOrderMark && stripInitialByteOrderMark {
+                    pending.removeFirst(utf8ByteOrderMark.count)
+                }
                 atStart = false
             }
             guard !pending.isEmpty else { return }
@@ -628,20 +633,27 @@ enum MarkdownSourceLoader {
                 ? lastLead : pending.endIndex
             let complete = pending[..<end]
             source.append(try decodeUTF8(complete))
-            textDigest.update(data: complete)
+            if hasByteOrderMark && stripInitialByteOrderMark {
+                textDigest.update(data: complete)
+            }
             pending = Data(pending[end...])
         }
         // A partial scalar or partial BOM is invalid at EOF. A complete BOM
-        // was consumed above, even when it arrived one byte at a time.
+        // was consumed or decoded above, even when it arrived one byte at a time.
         guard pending.isEmpty else { throw ImportError.notUTF8 }
+        // Disk and source bytes are identical unless an initial mark was
+        // removed. Raw recovery reads need only one full-document SHA pass.
+        let diskSHA256 = Data(diskDigest.finalize())
+        let sourceSHA256 = hasByteOrderMark && stripInitialByteOrderMark
+            ? Data(textDigest.finalize()) : diskSHA256
         return LoadedSource(
             source: source,
             diskFingerprint: MarkdownSourceFingerprint(
                 byteCount: byteCount,
-                digest: Data(diskDigest.finalize()),
+                digest: diskSHA256,
                 hasByteOrderMark: hasByteOrderMark
             ),
-            sourceDigest: Data(textDigest.finalize())
+            sourceDigest: sourceSHA256
         )
     }
 

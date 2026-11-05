@@ -3861,14 +3861,12 @@ fn split_list_items_with_first_marker_tracked<'a>(
                     i = j;
                     break;
                 }
-                // A blank line followed by a new DIRECT block of THIS item (a
-                // second paragraph at the item's content column) makes the list
-                // loose (CommonMark: an item holding two blank-separated blocks).
-                // Require the post-blank line to sit at EXACTLY the content column
-                // and to not be a list marker: deeper-indented content belongs to
-                // a nested sub-list (whose own blank loosens it via recursion), a
-                // marker continues a sub-list, and a dedent is a trailing blank —
-                // none of those loosen THIS list.
+                // A blank followed by another direct block makes this list
+                // loose. Extra indentation alone does not imply a nested list:
+                // one to three extra columns still allow paragraphs, fences,
+                // or quotes, and four or more can start indented code.
+                // Once a nested list has been observed, keep its deeper blank
+                // separators owned by that list rather than loosening this one.
                 if j < lines.len() {
                     let next_indent = leading_spaces(lines[j]);
                     // The item only grows during collection. Check each stored
@@ -3881,7 +3879,7 @@ fn split_list_items_with_first_marker_tracked<'a>(
                         nested_marker_checked_lines = item_lines.len();
                     }
                     if next_indent == m.content_indent
-                        || (!has_open_nested_list && next_indent >= m.content_indent + 4)
+                        || (!has_open_nested_list && next_indent >= m.content_indent)
                     {
                         tight = false;
                     }

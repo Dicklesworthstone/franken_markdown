@@ -430,7 +430,9 @@ pub(super) fn record_publication_asset(
     remaining: &mut usize,
 ) -> Result<(), FlowDisplayError> {
     if meta.publication_assets.len() >= output.remaining_assets() {
-        return Err(FlowDisplayError::BudgetExceeded("asset requests".to_owned()));
+        return Err(FlowDisplayError::BudgetExceeded(
+            "asset requests".to_owned(),
+        ));
     }
     let bytes = destination
         .len()
@@ -483,14 +485,7 @@ pub(super) fn collect(
         .checked_sub(builder.bytes)
         .ok_or_else(|| FlowDisplayError::BudgetExceeded("inline output bytes".to_owned()))?;
     for (destination, alt) in images_in_inline_html(inlines) {
-        record_publication_asset(
-            meta,
-            output,
-            next_id,
-            &destination,
-            &alt,
-            &mut remaining,
-        )?;
+        record_publication_asset(meta, output, next_id, &destination, &alt, &mut remaining)?;
     }
     Ok((builder.text, builder.runs, remaining))
 }
@@ -503,14 +498,7 @@ pub(super) fn emit_inlines(
 ) -> Result<(), FlowDisplayError> {
     let mut remaining = output.remaining_bytes();
     for (destination, alt) in images_in_inline_html(inlines) {
-        record_publication_asset(
-            meta,
-            output,
-            next_id,
-            &destination,
-            &alt,
-            &mut remaining,
-        )?;
+        record_publication_asset(meta, output, next_id, &destination, &alt, &mut remaining)?;
     }
     let mut publication_bytes = output.remaining_bytes() - remaining;
     let mut builder = Builder::default();

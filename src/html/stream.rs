@@ -429,7 +429,9 @@ fn table<W: Write + ?Sized>(
     opts: &HtmlOptions,
     state: &mut RenderState<'_>,
 ) -> io::Result<()> {
-    out.text("<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n")?;
+    out.text(
+        "<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n",
+    )?;
     if let Some(rows) = crate::table_format::financial_rows(table) {
         let widths = financial_tables::suffix_widths(table, &rows, opts);
         out.text("<table class=\"fmd-financial-table\">\n<thead>\n<tr>")?;

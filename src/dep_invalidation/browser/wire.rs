@@ -487,7 +487,11 @@ pub(super) fn asset_inventory(
             w.identity(asset.id.0)?;
             w.write_str(",\"destination\":")?;
             w.string(&asset.reference)?;
-            write!(w, ",\"isResolved\":{}}}", engine.is_asset_resolved(asset.id))?;
+            write!(
+                w,
+                ",\"isResolved\":{}}}",
+                engine.is_asset_resolved(asset.id)
+            )?;
         }
         w.write_str("]}")
     })

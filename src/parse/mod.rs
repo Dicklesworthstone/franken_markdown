@@ -3841,8 +3841,6 @@ fn split_list_items_with_first_marker_tracked<'a>(
         };
         let item_origin = lines[i];
         let mut item_lines: Vec<std::borrow::Cow<'a, str>> = vec![m.rest.clone()];
-        let mut nested_marker_checked_lines = 0;
-        let mut has_open_nested_list = false;
         let mut tail = ContainerTail::default();
         tail.observe(split_task_marker(m.rest.as_ref()).1);
         i += 1;
@@ -3894,19 +3892,13 @@ fn split_list_items_with_first_marker_tracked<'a>(
                 // loose. Extra indentation alone does not imply a nested list:
                 // one to three extra columns still allow paragraphs, fences,
                 // or quotes, and four or more can start indented code.
-                // Once a nested list has been observed, keep its deeper blank
-                // separators owned by that list rather than loosening this one.
+                // A live direct nested list owns its deeper blank separators.
+                // Earlier literal list markers or already-closed lists do not,
+                // and a list inside a quote cannot own a gap outside that quote.
                 if j < lines.len() {
                     let next_indent = leading_spaces(lines[j]);
-                    // The item only grows during collection. Check each stored
-                    // line at most once instead of rescanning its entire history
-                    // at every paragraph boundary in a long list item.
-                    if !has_open_nested_list {
-                        has_open_nested_list = item_lines[nested_marker_checked_lines..]
-                            .iter()
-                            .any(|line| list_marker(line.as_ref()).is_some());
-                        nested_marker_checked_lines = item_lines.len();
-                    }
+                    let has_open_nested_list =
+                        matches!(tail.containers.first(), Some(TailContainer::List { .. }));
                     if next_indent == m.content_indent
                         || (!has_open_nested_list && next_indent >= m.content_indent)
                     {

@@ -77,7 +77,13 @@ export function createPreviewController({
   }));
   const publish = (update) => {
     state = Object.freeze({ ...state, ...update });
-    onState(state);
+    // Status observers do not own renderer progress or teardown. A host UI
+    // failure must not strand a busy controller, misclassify a painted frame
+    // as a native error, or prevent restart/disposal from settling waiters.
+    try {
+      const observed = onState(state);
+      observed?.catch?.(() => {});
+    } catch { /* The authoritative state is already published. */ }
   };
   const settle = () => {
     // Preserve whenIdle's transcript-settled contract without making the paint

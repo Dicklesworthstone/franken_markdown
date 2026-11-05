@@ -124,7 +124,10 @@ function fixture(options = {}) {
     createSession,
     painter,
     ...options,
-    onState: (state) => f.events.push(state),
+    onState(state) {
+      f.events.push(state);
+      return options.onState?.(state);
+    },
   });
   return f;
 }
@@ -535,4 +538,44 @@ test("font rebuild retains the authorized asset factory and one physical loading
   assert.equal(loaded.length, 2);
   assert.equal(loaded[1], f.sessions[1]);
   assert.equal(c.state.status, "ready");
+});
+
+for (const phase of ["busy", "ready", "error", "idle", "disposed"]) {
+  test(`host observer failures at ${phase} cannot stop preview progression or cleanup`, async () => {
+    const f = fixture({ onState(state) {
+      if (state.status === phase) throw new Error("host status panel failed");
+    } }), c = f.controller;
+    c.update(input("first"));
+    await c.whenIdle();
+    assert.equal(c.state.status, "ready");
+    assert.equal(c.state.reading, "first");
+    c.update(input("unsupported"));
+    await c.whenIdle();
+    assert.equal(c.state.status, "error");
+    assert.equal(c.state.error.code, "LAYOUT_ERROR");
+    c.update(input("recovered"));
+    await c.whenIdle();
+    assert.equal(c.state.reading, "recovered");
+    c.restart();
+    await c.whenIdle();
+    assert.equal(c.state.status, "ready");
+    assert.equal(c.state.reading, "recovered");
+    c.dispose();
+    assert.equal((await c.whenIdle()).status, "disposed");
+    assert.equal(f.disposedPaint, true);
+    assert(f.sessions.every(session => session.disposed));
+  });
+}
+
+test("rejected asynchronous host observers are consumed without becoming preview failures", async () => {
+  const f = fixture({ onState: async () => { throw new Error("async status panel failed"); } });
+  const c = f.controller;
+  c.update(input("first"));
+  assert.equal((await c.whenIdle()).status, "ready");
+  c.update(input("second"));
+  await c.whenIdle();
+  assert.equal(c.state.reading, "second");
+  c.dispose();
+  await next();
+  assert(f.sessions.every(session => session.disposed));
 });

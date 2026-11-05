@@ -310,12 +310,21 @@ test("new document resets publishing metadata and draft fields but retains appli
   f.set("font", "serif");
   f.set("title", "Old title");
   f.set("lang", "de");
+  f.set("pageSize", "a4");
+  f.set("marginLeftPt", 36);
+  f.set("baselineGridPt", 12);
+  f.set("optimalPagination", "true");
   f.submit();
   f.set("author", "Pending old author");
   f.sourceEditor.dispatchEvent(new Event("fmd-document-replaced"));
   assert.equal(f.controls.settings.preview.font, "serif");
   assert.equal(f.controls.settings.pdf.title, undefined);
   assert.equal(f.controls.settings.html.lang, undefined);
+  assert.equal(f.controls.settings.pdf.page, undefined);
+  assert.equal(f.controls.settings.pdf.baselineGridPt, undefined);
+  assert.equal(f.controls.settings.pdf.optimalPagination, undefined);
+  for (const key of ["pageSize", "marginLeftPt", "baselineGridPt", "optimalPagination"])
+    assert.equal(f.el(`render-${key}`).value, "");
   assert.equal(f.el("render-author").value, "");
   assert.equal(f.controls.dirty, false);
   assert.equal(f.inputEvents, 0);
@@ -391,6 +400,16 @@ test("applied settings pass through real export and adapter validation without c
     lang: "nl",
     baseFontSize: 13,
     toc: true,
+    pageSize: "a4",
+    pageOrientation: "landscape",
+    marginLeftPt: 36,
+    baselineGridPt: 12,
+    strictPagination: true,
+    optimalPagination: true,
+    typographyHomogeneous: true,
+    typographyAntiriver: false,
+    typographyPareto: true,
+    microtype: "expansion",
   });
   const session = withFlowExports(
     adapter,
@@ -411,8 +430,120 @@ test("applied settings pass through real export and adapter validation without c
   assert.equal(calls[0].options.author, undefined);
   assert.equal(calls[1].options.author, "Author");
   assert.equal(calls[1].options.baseFontSize, 13);
+  assert.equal(calls[0].options.page, undefined);
+  assert.equal(calls[0].options.typography, undefined);
+  assert.deepEqual(calls[1].options.page, {
+    size: { widthPt: 297 * 72 / 25.4, heightPt: 210 * 72 / 25.4 },
+    margins: { topPt: 72, rightPt: 72, bottomPt: 72, leftPt: 36 },
+  });
+  assert.equal(calls[1].options.baselineGridPt, 12);
+  assert.equal(calls[1].options.strictPagination, true);
+  assert.equal(calls[1].options.optimalPagination, true);
+  assert.equal(calls[1].options.microtype, "expansion");
+  assert.deepEqual(calls[1].options.typography, { homogeneous: true, antiriver: false, pareto: true });
   assert.equal(session.source, source);
   session.dispose();
+});
+
+test("paper and independent margins configure PDF without changing the flowing preview or HTML", () => {
+  const original = normalizeRenderSettings();
+  const settings = normalizeRenderSettings({
+    pageSize: "a4", pageOrientation: "landscape", marginTopPt: 36,
+    marginRightPt: 24.25, marginBottomPt: 48, marginLeftPt: 0,
+  });
+  assert.deepEqual(settings.preview, original.preview);
+  assert.deepEqual(settings.html, original.html);
+  assert.deepEqual(settings.pdf.page, {
+    size: { widthPt: 297 * 72 / 25.4, heightPt: 210 * 72 / 25.4 },
+    margins: { topPt: 36, rightPt: 24.25, bottomPt: 48, leftPt: 0 },
+  });
+  for (const value of [settings.pdf.page, settings.pdf.page.size, settings.pdf.page.margins])
+    assert.equal(Object.isFrozen(value), true);
+  assert.deepEqual(normalizeRenderSettings(settings.values), settings);
+});
+
+test("custom paper preserves dimensions and orientation while optional margins use the shared defaults", () => {
+  const preserved = normalizeRenderSettings({ pageSize: "custom", pageWidthPt: 720.125, pageHeightPt: 504.25 });
+  assert.deepEqual(preserved.pdf.page.size, { widthPt: 720.125, heightPt: 504.25 });
+  const portrait = normalizeRenderSettings({ ...preserved.values, pageOrientation: "portrait", marginLeftPt: 20 });
+  assert.deepEqual(portrait.pdf.page.size, { widthPt: 504.25, heightPt: 720.125 });
+  assert.deepEqual(portrait.pdf.page.margins, { topPt: 72, rightPt: 72, bottomPt: 72, leftPt: 20 });
+  const marginOnly = normalizeRenderSettings({ marginTopPt: 0 });
+  assert.deepEqual(marginOnly.pdf.page.size, { widthPt: 612, heightPt: 792 });
+  assert.equal(marginOnly.pdf.page.margins.topPt, 0);
+});
+
+for (const [name, settings] of [
+  ["incomplete custom dimensions", { pageSize: "custom", pageWidthPt: 600 }],
+  ["dimensions with named paper", { pageSize: "a4", pageWidthPt: 600, pageHeightPt: 900 }],
+  ["dimensions without custom paper", { pageWidthPt: 600 }],
+  ["unknown paper", { pageSize: "a3" }],
+  ["invalid orientation", { pageOrientation: "sideways" }],
+  ["non-numeric margin", { marginLeftPt: "36" }],
+  ["infinite margin", { marginBottomPt: Infinity }],
+  ["negative margin", { marginTopPt: -1 }],
+  ["horizontal content too small", { pageSize: "letter", marginLeftPt: 300, marginRightPt: 241 }],
+  ["vertical content too small", { pageSize: "a5", marginTopPt: 500 }],
+  ["undersized custom paper", { pageSize: "custom", pageWidthPt: 143, pageHeightPt: 600 }],
+  ["oversized custom paper", { pageSize: "custom", pageWidthPt: 14401, pageHeightPt: 600 }],
+]) {
+  test(`page setup rejects ${name} before export`, () => {
+    assert.throws(() => normalizeRenderSettings(settings));
+  });
+}
+
+test("typography controls preserve defaults, explicit off, expansion and fixed-grid validation", () => {
+  const settings = normalizeRenderSettings({
+    baselineGridPt: 14.125, optimalPagination: true, strictPagination: true,
+    typographyHomogeneous: true, typographyAntiriver: true, typographyPareto: false,
+    microtype: "expansion",
+  });
+  assert.equal(settings.pdf.baselineGridPt, 14.125);
+  assert.equal(settings.pdf.optimalPagination, true);
+  assert.equal(settings.pdf.strictPagination, true);
+  assert.equal(settings.pdf.microtype, "expansion");
+  assert.deepEqual(settings.pdf.typography, { homogeneous: true, antiriver: true, pareto: false });
+  assert.deepEqual(settings.html, normalizeRenderSettings().html);
+  assert.throws(() => normalizeRenderSettings({ ...settings.values, fitToPages: 2 }), /baseline grids/);
+  assert.throws(() => normalizeRenderSettings({ baselineGridPt: 0.5 }));
+  assert.throws(() => normalizeRenderSettings({ strictPagination: "true" }));
+  assert.throws(() => normalizeRenderSettings({ typographyPareto: 1 }));
+  const disabled = normalizeRenderSettings({ baselineGridPt: 0, fitToPages: 2, strictPagination: false });
+  assert.equal(disabled.pdf.baselineGridPt, 0);
+  assert.equal(disabled.pdf.strictPagination, false);
+});
+
+test("page controls apply atomically, retain invalid drafts and reset without changing source", (t) => {
+  const f = fixture();
+  t.after(() => f.controls.dispose());
+  f.set("pageSize", "a5");
+  f.set("pageOrientation", "landscape");
+  f.set("marginTopPt", 36);
+  f.set("baselineGridPt", 12);
+  f.set("strictPagination", "true");
+  f.set("typographyAntiriver", "true");
+  f.submit();
+  assert.equal(f.applied.length, 1);
+  assert.equal(f.applied[0].change.previewChanged, false);
+  assert.equal(f.controls.exportOptions("pdf").page.margins.topPt, 36);
+  assert.equal(f.controls.exportOptions("pdf").strictPagination, true);
+  const applied = f.controls.settings;
+  f.set("fitToPages", 2);
+  f.submit();
+  assert.equal(f.controls.settings, applied);
+  assert.equal(f.el("render-fitToPages").value, "2");
+  assert.equal(f.applied.length, 1);
+  assert.throws(() => f.controls.exportOptions("pdf"), /Apply or discard/);
+  f.el("render-settings-discard").click();
+  assert.equal(f.el("render-fitToPages").value, "");
+  assert.equal(f.el("render-pageSize").value, "a5");
+  f.el("render-settings-reset").click();
+  for (const key of ["pageSize", "pageOrientation", "marginTopPt", "baselineGridPt", "strictPagination", "typographyAntiriver"])
+    assert.equal(f.el(`render-${key}`).value, "");
+  assert.equal(f.controls.exportOptions("pdf").page, undefined);
+  assert.equal(f.controls.exportOptions("pdf").typography, undefined);
+  assert.equal(f.sourceEditor.value, "# Original Markdown");
+  assert.equal(f.inputEvents, 0);
 });
 
 test("settings runtime and guide are included in both package assemblers", async () => {

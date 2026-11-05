@@ -20,6 +20,20 @@ const DEFAULTS = Object.freeze({
   headingScale: null,
   tableFontSize: null,
   fitToPages: null,
+  pageSize: null,
+  pageOrientation: null,
+  pageWidthPt: null,
+  pageHeightPt: null,
+  marginTopPt: null,
+  marginRightPt: null,
+  marginBottomPt: null,
+  marginLeftPt: null,
+  baselineGridPt: null,
+  optimalPagination: null,
+  strictPagination: null,
+  typographyHomogeneous: null,
+  typographyAntiriver: null,
+  typographyPareto: null,
   microtype: null,
   darkMode: "auto",
 });
@@ -40,8 +54,23 @@ const pdfOnly = [
   "headingScale",
   "tableFontSize",
   "fitToPages",
+  "baselineGridPt",
+  "optimalPagination",
+  "strictPagination",
   "microtype",
 ];
+const PAGE_SIDES = Object.freeze({
+  marginTopPt: "topPt",
+  marginRightPt: "rightPt",
+  marginBottomPt: "bottomPt",
+  marginLeftPt: "leftPt",
+});
+const TYPOGRAPHY_FIELDS = Object.freeze({
+  typographyHomogeneous: "homogeneous",
+  typographyAntiriver: "antiriver",
+  typographyPareto: "pareto",
+});
+const optionalSelects = ["microtype", "pageSize", "pageOrientation"];
 const equal = (a, b) => Object.keys(DEFAULTS).every((key) => a.values[key] === b.values[key]);
 const previewEqual = (a, b) =>
   Object.keys(a.preview).every((key) => a.preview[key] === b.preview[key]);
@@ -85,16 +114,44 @@ export function normalizeRenderSettings(input = {}) {
       fail(`${key} must be text; use empty text for the renderer default.`);
   // Null is the explicit "renderer default" for optional switches/numbers. Do
   // not replace an omitted engine default with a guessed application default.
-  for (const key of ["toc", "pageNumbers", "codeLineNumbers"]) {
+  for (const key of [
+    "toc", "pageNumbers", "codeLineNumbers", "optimalPagination", "strictPagination",
+    ...Object.keys(TYPOGRAPHY_FIELDS),
+  ]) {
     if (values[key] !== null && typeof values[key] !== "boolean")
       fail(`${key} must be boolean or null.`);
   }
-  for (const key of ["tocDepth", "baseFontSize", "headingScale", "tableFontSize", "fitToPages"]) {
+  for (const key of [
+    "tocDepth", "baseFontSize", "headingScale", "tableFontSize", "fitToPages",
+    "baselineGridPt", "pageWidthPt", "pageHeightPt", ...Object.keys(PAGE_SIDES),
+  ]) {
     if (values[key] !== null && typeof values[key] !== "number")
       fail(`${key} must be numeric or null.`);
   }
-  if (![null, "disabled", "protrusion"].includes(values.microtype)) fail("Invalid microtype.");
+  if (![null, "disabled", "protrusion", "expansion"].includes(values.microtype)) fail("Invalid microtype.");
   if (!["auto", "disabled"].includes(values.darkMode)) fail("Invalid darkMode.");
+  if (![null, "letter", "a4", "a5", "legal", "tabloid", "custom"].includes(values.pageSize))
+    fail("Choose a supported PDF paper size.");
+  if (![null, "portrait", "landscape"].includes(values.pageOrientation))
+    fail("Choose portrait, landscape or the default PDF orientation.");
+  // Keep the editable fields primitive for document reset and remount. The
+  // export normalizer below owns geometry and validates the native f32 bounds.
+  const page = {};
+  if (values.pageSize === "custom") {
+    if (values.pageWidthPt === null || values.pageHeightPt === null)
+      fail("Custom PDF paper requires both width and height in points.");
+    page.size = { widthPt: values.pageWidthPt, heightPt: values.pageHeightPt };
+  } else {
+    if (values.pageWidthPt !== null || values.pageHeightPt !== null)
+      fail("Choose Custom PDF paper to use width and height, or clear those fields.");
+    if (values.pageSize !== null) page.size = values.pageSize;
+  }
+  if (values.pageOrientation !== null) page.orientation = values.pageOrientation;
+  const margins = Object.fromEntries(Object.entries(PAGE_SIDES)
+    .filter(([key]) => values[key] !== null).map(([key, side]) => [side, values[key]]));
+  if (Object.keys(margins).length) page.margins = margins;
+  const typography = Object.fromEntries(Object.entries(TYPOGRAPHY_FIELDS)
+    .filter(([key]) => values[key] !== null).map(([key, mode]) => [mode, values[key]]));
   const selected = (keys) =>
     Object.fromEntries(
       keys
@@ -110,7 +167,11 @@ export function normalizeRenderSettings(input = {}) {
   );
   const [, pdf] = normalizeFlowExport(
     "pdf",
-    { ...selected([...common, ...pdfOnly]), metadataEpochSeconds: 0 },
+    {
+      ...selected([...common, ...pdfOnly]), metadataEpochSeconds: 0,
+      ...(Object.keys(page).length ? { page } : {}),
+      ...(Object.keys(typography).length ? { typography } : {}),
+    },
     validationToken,
   );
   return Object.freeze({ values: Object.freeze(values), preview, html, pdf });
@@ -145,14 +206,34 @@ const FIELDS = [
   ["headingScale", "PDF heading scale (optional)", "number", 1.05, 2],
   ["tableFontSize", "PDF table size in points (optional)", "number", 5, 24],
   ["fitToPages", "PDF target page count (optional, not guaranteed)", "number", 1, 1000, true],
+  ["pageSize", "PDF paper size", "select", [
+    ["", "Renderer default"], ["letter", "Letter"], ["a4", "A4"], ["a5", "A5"],
+    ["legal", "Legal"], ["tabloid", "Tabloid"], ["custom", "Custom dimensions"],
+  ]],
+  ["pageOrientation", "PDF orientation", "select", [
+    ["", "Default / preserve custom dimensions"], ["portrait", "Portrait"], ["landscape", "Landscape"],
+  ]],
+  ["pageWidthPt", "Custom paper width (points, 72 per inch)", "number", 144, 14400],
+  ["pageHeightPt", "Custom paper height (points, 72 per inch)", "number", 144, 14400],
+  ["marginTopPt", "PDF top margin (points, default 72)", "number", 0, 14400],
+  ["marginRightPt", "PDF right margin (points, default 72)", "number", 0, 14400],
+  ["marginBottomPt", "PDF bottom margin (points, default 72)", "number", 0, 14400],
+  ["marginLeftPt", "PDF left margin (points, default 72)", "number", 0, 14400],
+  ["baselineGridPt", "PDF baseline grid (points, 0 disables; 1–144 enables)", "number", 0, 144],
+  ["optimalPagination", "PDF optimal pagination", "boolean", booleanChoices],
+  ["strictPagination", "Require exact PDF pagination (refuse fallback)", "boolean", booleanChoices],
+  ["typographyHomogeneous", "PDF homogeneous paragraph spacing", "boolean", booleanChoices],
+  ["typographyAntiriver", "PDF reduce spacing rivers", "boolean", booleanChoices],
+  ["typographyPareto", "PDF paragraph alternatives", "boolean", booleanChoices],
   [
     "microtype",
-    "PDF optical margin alignment",
+    "PDF microtypography",
     "select",
     [
       ["", "Renderer default"],
       ["disabled", "Disabled"],
       ["protrusion", "Protrusion"],
+      ["expansion", "Expansion"],
     ],
   ],
   [
@@ -197,9 +278,13 @@ function mount(root) {
             ? "Shared export options"
             : key === "author"
               ? "PDF publishing"
-              : key === "darkMode"
-                ? "HTML publishing"
-                : null;
+              : key === "pageSize"
+                ? "PDF paper and margins"
+                : key === "baselineGridPt"
+                  ? "PDF pagination and typography"
+                  : key === "darkMode"
+                    ? "HTML publishing"
+                    : null;
       if (groupTitle) {
         group = make("fieldset");
         group.append(make("legend", groupTitle));
@@ -252,7 +337,7 @@ function mount(root) {
       presets,
       make(
         "p",
-        "Presets change only the preview draft fields, including the shared font. Click Apply to use them. Blank optional fields preserve renderer defaults; a target page count is a fit request, not a guarantee.",
+        "Presets change only the preview draft fields, including the shared font. Click Apply to use them. Blank optional fields preserve renderer defaults. Paper dimensions and margins use points (72 per inch); margins must leave at least 72 points of content on each axis. A target page count is a fit request, not a guarantee, and cannot be combined with a fixed baseline grid.",
       ),
     );
     const actions = make("p");
@@ -337,7 +422,7 @@ export function createRenderSettingsControls({
       } else if (type === "boolean") {
         if (!["", "true", "false"].includes(text)) fail(`Invalid ${key}.`);
         values[key] = text === "" ? null : text === "true";
-      } else values[key] = key === "microtype" && text === "" ? null : text;
+      } else values[key] = optionalSelects.includes(key) && text === "" ? null : text;
     }
     return normalizeRenderSettings(values);
   }

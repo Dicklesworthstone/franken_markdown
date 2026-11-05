@@ -50,10 +50,35 @@ renderer default instead of guessing an application default.
 
 PDF additionally exposes author, page numbers, code line numbers, body size
 (6–24 pt), heading scale (1.05–2), table size (5–24 pt), target page count (1–1000),
-and optical margin alignment (disabled or protrusion). The page count is a fit
-request, not a guarantee that arbitrary content can fit. The engine's diagnostics
-remain visible in export status. PDF timestamps remain explicitly deterministic
-at epoch zero; the panel does not substitute the current wall clock.
+and microtypography (disabled, protrusion or expansion). The page count is a fit
+request, not a guarantee that arbitrary content can fit. Expansion enables glyph
+expansion without protrusion; protrusion retains the native combined mode.
+PDF timestamps remain explicitly deterministic at epoch zero.
+
+Paper controls select Letter, A4, A5, Legal, Tabloid, or custom width and height,
+with an optional portrait/landscape orientation. Custom dimensions are used only
+when **Custom dimensions** is selected; incomplete or conflicting fields are
+rejected before export. Dimensions and independent top/right/bottom/left margins
+use PDF points (72 points per inch). Blank page controls preserve the renderer
+default. Once any paper or margin control is selected, omitted size uses Letter
+and omitted margins use 72 points. The shared page validator enforces dimensions
+from 144 through 14,400 points and at least 72 points of content on each axis,
+including the native float-precision boundary. Explicit zero margins are valid.
+
+The PDF baseline grid accepts 1–144 points, or zero to disable it. A fixed grid
+cannot be combined with a target page count because fitting changes type sizes
+and margins. The panel also exposes the existing homogeneous spacing,
+river-reduction and paragraph-alternative refinements, optimal pagination, and
+strict pagination. These are optional engine settings, not promises that every
+document has a feasible exact layout. Strict pagination refuses planner fallback
+with the engine's typed failure; default rendering retains graceful fallback.
+The engine's diagnostics remain visible in export status. Blank switches preserve
+defaults and explicit Off is retained. Older renderer packages that lack a
+requested capability reject it with a rebuild explanation.
+
+All paper and typography settings are applied atomically. Invalid margins,
+custom dimensions or grid/fit combinations retain the previous applied settings
+and every editable field, so the draft can be corrected or discarded.
 
 HTML appearance follows the reader's light/dark preference by default, with a
 light-only alternative. PDF-only settings are not sent to HTML. The font used by

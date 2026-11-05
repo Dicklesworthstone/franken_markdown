@@ -2165,19 +2165,23 @@ fn character_accents_attach_scripts_before_packing_the_accent() {
 
 #[test]
 fn primes_are_cmsy_prime_characters() {
-    // Plain TeX's \prime is cmsy's prime: 0.275 em wide and 0.559 em high in
-    // text style, cmsy7's 0.329 x 0.559 (x 0.7) as a superscript. `'` is
-    // `^{\prime}`, so `x''` superscripts two of them.
+    // Exact independently transcribed system TFM fix_words /2^20, not
+    // the rounded AFM ink frame the former fixture asserted. Fresh TeX
+    // boxes confirm these metrics (fm-7ojgl); retain the strict EPS.
+    // `'` is `^{\prime}`, so `x''` superscripts two of them.
+    const TEXT_ADVANCE: f64 = 0.274_999_618_530_273_44;
+    const SCRIPT_ADVANCE: f64 = 0.329_365_730_285_644_53;
+    const PRIME_HEIGHT: f64 = 0.555_557_250_976_562_5;
     let e = engine();
     let text = e.typeset(r"\prime", Style::Display).unwrap();
-    assert!((text.width - 0.275).abs() < EPS, "{text:?}");
-    assert!((text.height - 0.559).abs() < EPS && text.depth.abs() < EPS);
-    let script_prime = 0.7 * 0.329;
+    assert!((text.width - TEXT_ADVANCE).abs() < EPS, "{text:?}");
+    assert!((text.height - PRIME_HEIGHT).abs() < EPS && text.depth.abs() < EPS);
+    let script_prime = 0.7 * SCRIPT_ADVANCE;
     for (src, n) in [("{}'", 1.0), ("{}''", 2.0)] {
         let l = e.typeset(src, Style::Display).unwrap();
         let w = n * script_prime + CM.script_space;
         assert!((l.width - w).abs() < EPS, "{src}: {} vs {w}", l.width);
-        let h = CM.sup1 + 0.7 * 0.559;
+        let h = CM.sup1 + 0.7 * PRIME_HEIGHT;
         assert!((l.height - h).abs() < EPS, "{src}: {} vs {h}", l.height);
     }
     let quote = e.typeset("f'(x)", Style::Display).unwrap();
@@ -2185,6 +2189,43 @@ fn primes_are_cmsy_prime_characters() {
     assert_eq!(quote.glyphs.len(), explicit.glyphs.len());
     for (a, b) in quote.glyphs.iter().zip(&explicit.glyphs) {
         assert!((a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS && a.size == b.size);
+    }
+}
+
+#[test]
+fn prime_boxes_match_independent_tex_across_styles_and_sizes() {
+    // Real ruled-Reference TeX boxes at10pt (fm-7ojgl), including valid
+    // size declarations in text mode around a math island. The raw
+    // 21-case probe also retains three invalid in-math declarations.
+    let e = engine();
+    for (source, expected) in [
+        (r"\prime", [0.274_998, 0.555_557, 0.0]),
+        (r"\scriptstyle\prime", [0.230_556, 0.388_890, 0.0]),
+        (r"\scriptscriptstyle\prime", [0.220_488, 0.277_779, 0.0]),
+        ("{}'", [0.280_556, 0.801_782, 0.0]),
+        ("{}''", [0.511_111, 0.801_782, 0.0]),
+        ("x'", [0.852_083, 0.801_782, 0.0]),
+        ("f'", [0.877_782, 0.801_782, 0.194_444]),
+        ("x''", [1.082_639, 0.801_782, 0.0]),
+        ("x'''", [1.313_194, 0.801_782, 0.0]),
+        (r"f^{\prime}", [0.877_782, 0.801_782, 0.194_444]),
+        (r"{\hat{x}}'", [0.852_083, 0.801_782, 0.0]),
+        (r"{\bar{f}}'", [0.877_782, 0.831_667, 0.194_444]),
+        (r"x^{y'}", [1.322_690, 0.992_450, 0.0]),
+        (r"\scriptstyle x'", [0.723_961, 0.579_558, 0.0]),
+        (r"\scriptscriptstyle x'", [0.666_324, 0.479_555, 0.0]),
+        (r"\text{\tiny $\prime$}", [0.220_488, 0.277_779, 0.0]),
+        (r"\text{\small $\prime$}", [0.251_389, 0.500_002, 0.0]),
+        (r"\text{\Large $\prime$}", [0.395_999, 0.800_002, 0.0]),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs {expected:?}"
+            );
+        }
     }
 }
 

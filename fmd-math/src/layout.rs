@@ -2556,8 +2556,15 @@ impl Engine {
         let upm = f64::from(font.units_per_em.max(1));
         let bbox = font.glyph_bbox(gid).unwrap_or([0, 0, 0, 0]);
         let [gl, _, gr, gt] = bbox.map(|v| f64::from(v) / upm);
-        let (advance, [tl, _, tr, tt]) = tex_prime_metrics(ctx.style.style);
         let size = ctx.size();
+        let symbols = tex_small_font(2, 10.0 * size);
+        let metrics = symbols.char(0x30).ok_or(unmapped)?;
+        let ink_style = match symbols.name {
+            "cmsy5" => Style::ScriptScript,
+            "cmsy7" => Style::Script,
+            _ => Style::Text,
+        };
+        let [tl, _, tr, tt] = tex_prime_ink(ink_style);
         let glyph_size = if gr > gl {
             size * (tr - tl) / (gr - gl)
         } else {
@@ -2565,9 +2572,11 @@ impl Engine {
         };
         Ok(MBox {
             kind: BoxKind::Horizontal,
-            width: advance * size,
-            height: tt * size,
-            depth: 0.0,
+            // TFM boxes and the authored ink bounds are distinct: cmsy's
+            // prime ink extends above its 0.555557 em TFM height.
+            width: metrics.width * size,
+            height: metrics.height * size,
+            depth: metrics.depth * size,
             children: vec![Positioned {
                 dx: (tl + tr) / 2.0 * size - (gl + gr) / 2.0 * glyph_size,
                 dy: tt * size - gt * glyph_size,
@@ -4735,15 +4744,14 @@ fn tex_accent_box(math_italic: bool, code: u8, points: f64) -> (f64, f64) {
         .map_or((0.5, 0.694_445), |c| (c.width + c.italic, c.height))
 }
 
-/// cmsy's prime character from its AFM metrics, in ems of that size's
-/// design: cmsy10 in the display and text styles, cmsy7 in script and
-/// cmsy5 in scriptscript, the sizes TeX sets. The advance, then the ink's
-/// left, bottom, right and top; the top is also the character's height.
-const fn tex_prime_metrics(style: Style) -> (f64, [f64; 4]) {
+/// Authored prime ink calibration, separate from its exact TFM box.
+/// The caller selects the optical cut actually used, including declared
+/// sizes that differ from the nominal math style.
+const fn tex_prime_ink(style: Style) -> [f64; 4] {
     match style {
-        Style::Display | Style::Text => (0.275, [0.029, 0.045, 0.262, 0.559]),
-        Style::Script => (0.329, [0.048, 0.041, 0.299, 0.559]),
-        Style::ScriptScript => (0.440, [0.093, 0.038, 0.370, 0.559]),
+        Style::Display | Style::Text => [0.029, 0.045, 0.262, 0.559],
+        Style::Script => [0.048, 0.041, 0.299, 0.559],
+        Style::ScriptScript => [0.093, 0.038, 0.370, 0.559],
     }
 }
 

@@ -269,6 +269,8 @@ struct Node {
 struct Search {
     options: HeightPaginationOptions,
     capacity: usize,
+    /// Charged once on a page that has any bottom reservation.
+    reservation_prefix: usize,
     nodes: Vec<Node>,
     transitions: usize,
 }
@@ -291,7 +293,16 @@ impl Search {
         state
             .body_used
             .checked_add(state.reserved)
+            .and_then(|used| used.checked_add(self.reservation_prefix_for(state.reserved)))
             .ok_or(HeightPaginationError::CostOverflow)
+    }
+
+    fn reservation_prefix_for(&self, reserved: usize) -> usize {
+        if reserved == 0 {
+            0
+        } else {
+            self.reservation_prefix
+        }
     }
 
     fn charge(&mut self) -> Result<(), HeightPaginationError> {
@@ -402,10 +413,14 @@ impl Search {
             reservation = reservation
                 .checked_add(reservations[end])
                 .ok_or(HeightPaginationError::CostOverflow)?;
+            let total_reserved = state
+                .reserved
+                .checked_add(reservation)
+                .ok_or(HeightPaginationError::CostOverflow)?;
             let occupied = content_start
                 .checked_add(height)
-                .and_then(|n| n.checked_add(state.reserved))
-                .and_then(|n| n.checked_add(reservation))
+                .and_then(|n| n.checked_add(total_reserved))
+                .and_then(|n| n.checked_add(self.reservation_prefix_for(total_reserved)))
                 .ok_or(HeightPaginationError::CostOverflow)?;
             if occupied > self.capacity {
                 break;
@@ -646,11 +661,31 @@ pub fn plan_blocks(
     policies: &[BlockPolicy],
     options: HeightPaginationOptions,
 ) -> Result<HeightPaginationPlan, HeightPaginationError> {
+    plan_blocks_with_reservation_prefix(blocks, policies, options, LayoutUnit::ZERO)
+}
+
+/// PDF page notes share one separator regardless of how many body lines cite
+/// them. Keep that fixed page cost distinct from the bodies contributed by
+/// individual fragments. The prefix is charged only when at least one positive
+/// reservation occupies the page; fragment reservation reports remain body-only.
+/// No extra search-state dimension is needed because `reserved > 0` records
+/// whether this page already owns its prefix.
+pub(crate) fn plan_blocks_with_reservation_prefix(
+    blocks: &[BlockCandidates],
+    policies: &[BlockPolicy],
+    options: HeightPaginationOptions,
+    reservation_prefix: LayoutUnit,
+) -> Result<HeightPaginationPlan, HeightPaginationError> {
     let (capacity, initial_used) = validate(blocks, policies, options)?;
+    let reservation_prefix = nonnegative_mpt(
+        reservation_prefix,
+        "reservation prefix height must be nonnegative",
+    )?;
     let policy_at = |index| policies.get(index).copied().unwrap_or_default();
     let mut search = Search {
         options,
         capacity,
+        reservation_prefix,
         nodes: Vec::new(),
         transitions: 0,
     };
@@ -971,6 +1006,80 @@ mod tests {
     }
 
     #[test]
+    fn page_reservation_prefix_is_shared_without_shifting_body_offsets() {
+        let blocks = [
+            block_with_reservations(0, &[20], &[10]),
+            block_with_reservations(0, &[20], &[10]),
+        ];
+        let opts = HeightPaginationOptions {
+            max_pages: Some(1),
+            penalize_last_page: true,
+            ..options(70)
+        };
+        let plan = plan_blocks_with_reservation_prefix(&blocks, &[], opts, u(10)).unwrap();
+        assert_eq!(plan.page_count, 1);
+        assert_eq!(plan.total_demerits, 100, "the shared prefix fills the page");
+        assert_eq!(plan.fragments[0].page_offset, u(0));
+        assert_eq!(plan.fragments[1].page_offset, u(20));
+        assert_eq!(plan.fragments[0].reservation_height, u(10));
+        assert_eq!(plan.fragments[1].reservation_height, u(10));
+
+        let too_small = HeightPaginationOptions {
+            page_capacity: u(69),
+            ..opts
+        };
+        assert!(matches!(
+            plan_blocks_with_reservation_prefix(&blocks, &[], too_small, u(10)),
+            Err(HeightPaginationError::NoFeasibleLayout { .. })
+        ));
+    }
+
+    #[test]
+    fn page_reservation_prefix_resets_at_each_page_and_skips_unreserved_pages() {
+        let blocks = [
+            block_with_reservations(0, &[50], &[20]),
+            block_with_reservations(0, &[50], &[20]),
+            block(&[(0, &[80])]),
+        ];
+        let opts = HeightPaginationOptions {
+            penalize_last_page: true,
+            ..options(80)
+        };
+        let plan = plan_blocks_with_reservation_prefix(&blocks, &[], opts, u(10)).unwrap();
+        assert_eq!(plan.page_count, 3);
+        assert_eq!(
+            plan.total_demerits, 300,
+            "every page fills its own capacity"
+        );
+        assert_eq!(
+            plan.fragments
+                .iter()
+                .map(|f| f.page_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2],
+        );
+        assert!(
+            plan.fragments
+                .iter()
+                .all(|f| f.page_offset == LayoutUnit::ZERO)
+        );
+        assert!(matches!(
+            plan_blocks_with_reservation_prefix(&blocks, &[], options(79), u(10)),
+            Err(HeightPaginationError::NoFeasibleLayout { block_index: 0 })
+        ));
+        let plain = [block(&[(0, &[80])])];
+        assert_eq!(
+            plan_blocks_with_reservation_prefix(&plain, &[], opts, u(100)).unwrap(),
+            plan_blocks(&plain, &[], opts).unwrap(),
+            "an unused reservation prefix consumes no space or search states",
+        );
+        assert!(matches!(
+            plan_blocks_with_reservation_prefix(&plain, &[], opts, u(-1)),
+            Err(HeightPaginationError::InvalidOptions(_))
+        ));
+    }
+
+    #[test]
     fn per_boundary_policy_forbids_and_prices_splits() {
         let hard = [block_with_splits(0, &[40, 40], vec![None])];
         assert!(matches!(
@@ -1130,12 +1239,14 @@ mod tests {
         input: &[BlockCandidates],
         policies: &[BlockPolicy],
         opts: HeightPaginationOptions,
+        reservation_prefix: usize,
     ) -> Option<(i128, usize)> {
         #[allow(clippy::too_many_arguments)]
         fn visit(
             input: &[BlockCandidates],
             policies: &[BlockPolicy],
             opts: HeightPaginationOptions,
+            reservation_prefix: usize,
             block_index: usize,
             variant: Option<usize>,
             start: usize,
@@ -1146,7 +1257,7 @@ mod tests {
             best: &mut Option<(i128, usize)>,
         ) {
             let capacity = opts.page_capacity.milli_points() as usize;
-            let occupied = body_used + reserved;
+            let occupied = body_used + reserved + if reserved > 0 { reservation_prefix } else { 0 };
             if block_index == input.len() {
                 let page_count = pages + usize::from(occupied > 0);
                 if opts.max_pages.is_some_and(|limit| page_count > limit) {
@@ -1187,6 +1298,7 @@ mod tests {
                             input,
                             policies,
                             opts,
+                            reservation_prefix,
                             block_index,
                             Some(variant_index),
                             0,
@@ -1202,6 +1314,7 @@ mod tests {
                             input,
                             policies,
                             opts,
+                            reservation_prefix,
                             block_index,
                             Some(variant_index),
                             0,
@@ -1226,7 +1339,7 @@ mod tests {
                 0
             };
             let content_start = body_used + prefix;
-            if content_start + reserved > capacity {
+            if occupied + prefix > capacity {
                 return;
             }
 
@@ -1238,7 +1351,15 @@ mod tests {
                     reservation_height +=
                         variant.fragment_reservations[end].milli_points() as usize;
                 }
-                let occupied_after = content_start + body_height + reserved + reservation_height;
+                let occupied_after = content_start
+                    + body_height
+                    + reserved
+                    + reservation_height
+                    + if reserved + reservation_height > 0 {
+                        reservation_prefix
+                    } else {
+                        0
+                    };
                 if occupied_after > capacity {
                     break;
                 }
@@ -1284,13 +1405,14 @@ mod tests {
                         input,
                         policies,
                         opts,
+                        reservation_prefix,
                         block_index,
                         Some(variant_index),
                         end + 1,
                         0,
                         0,
                         pages + 1,
-                        cost + penalty + page_cost(opts, next_body + next_reserved, false),
+                        cost + penalty + page_cost(opts, occupied_after, false),
                         best,
                     );
                 } else {
@@ -1298,6 +1420,7 @@ mod tests {
                         input,
                         policies,
                         opts,
+                        reservation_prefix,
                         block_index + 1,
                         None,
                         0,
@@ -1316,6 +1439,7 @@ mod tests {
             input,
             policies,
             opts,
+            reservation_prefix,
             0,
             None,
             0,
@@ -1362,16 +1486,23 @@ mod tests {
                             initial_used: u(1),
                             ..options(capacity)
                         };
-                        let expected = oracle(&input, &[], opts);
-                        let actual = plan_blocks(&input, &[], opts);
-                        match (expected, actual) {
-                            (Some(rank), Ok(plan)) => {
-                                assert_eq!((plan.total_demerits, plan.page_count), rank);
+                        for reservation_prefix in 0..=2 {
+                            let expected = oracle(&input, &[], opts, reservation_prefix as usize);
+                            let actual = plan_blocks_with_reservation_prefix(
+                                &input,
+                                &[],
+                                opts,
+                                u(reservation_prefix),
+                            );
+                            match (expected, actual) {
+                                (Some(rank), Ok(plan)) => {
+                                    assert_eq!((plan.total_demerits, plan.page_count), rank);
+                                }
+                                (None, Err(HeightPaginationError::NoFeasibleLayout { .. })) => {}
+                                other => panic!(
+                                    "height oracle mismatch cap={capacity} a={a} b={b} limit={limit} reservation_prefix={reservation_prefix}: {other:?}"
+                                ),
                             }
-                            (None, Err(HeightPaginationError::NoFeasibleLayout { .. })) => {}
-                            other => panic!(
-                                "height oracle mismatch cap={capacity} a={a} b={b} limit={limit}: {other:?}"
-                            ),
                         }
                     }
                 }

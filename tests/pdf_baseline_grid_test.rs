@@ -1074,6 +1074,99 @@ fn tiny_list_figures_reserve_visible_marker_ink_at_the_lower_body_edge() {
 }
 
 #[test]
+fn separate_note_citations_fit_a_strict_two_line_paragraph_without_a_grid() {
+    let source = "ALPHA[^a]  \nBETA[^b]\n\n[^a]: FIRSTNOTE\n\n[^b]: SECONDNOTE";
+    let mut opts = options(16.0);
+    opts.theme.page.baseline_grid = None;
+    opts.optimal_pagination = true;
+    opts.strict_pagination = true;
+    opts.theme.page.size.height_pt = 148.0;
+    opts.theme.page.margins = PageMargins {
+        top_pt: 36.0,
+        right_pt: 36.0,
+        bottom_pt: 36.0,
+        left_pt: 36.0,
+    };
+    // Two body lines, their paragraph gap, both notes and one separator fit
+    // in 76pt. Charging a separator per citing line makes the paragraph look
+    // overfull, and strict two-line minima cannot permit a one-line split.
+    let rendered = franken_markdown::render_pdf_reported(source, &opts).unwrap();
+    assert!(rendered.pagination.page_breaks.is_exact());
+    let pages = painted_pages(&rendered.bytes);
+    assert_eq!(pages.len(), 1);
+    check_separate_rows(&pages).unwrap();
+    let text = body_text(&pages);
+    for token in ["ALPHA", "BETA", "FIRSTNOTE", "SECONDNOTE"] {
+        assert_eq!(text.matches(token).count(), 1, "{token}");
+    }
+    assert!(
+        !text.contains("Notes"),
+        "the notes must stay at the page foot"
+    );
+    for token in ["FIRSTNOTE", "SECONDNOTE"] {
+        let run = pages[0]
+            .runs
+            .iter()
+            .find(|run| run.text.contains(token))
+            .unwrap();
+        assert_eq!(run.size, 9.35);
+    }
+}
+
+#[test]
+fn separate_citing_lines_share_one_separator_on_a_tight_grid_page() {
+    let source = "ALPHA[^a]  \nBETA  \nGAMMA  \nDELTA[^b]\n\n[^a]: FIRSTNOTE\n\n[^b]: SECONDNOTE";
+    for pitch in [16.0, 16.001] {
+        for strict in [false, true] {
+            let mut opts = options(pitch);
+            opts.optimal_pagination = true;
+            opts.strict_pagination = strict;
+            opts.theme.page.size.height_pt = 48.0 + 12.0 * pitch;
+            opts.theme.page.margins = PageMargins {
+                top_pt: 24.0,
+                right_pt: 24.0,
+                bottom_pt: 24.0,
+                left_pt: 24.0,
+            };
+            // The grid has room for the four body rows, paragraph spacing,
+            // both note bodies and one separator. A separator per citing
+            // line invents two extra grid rows and needlessly adds a page.
+            let rendered = franken_markdown::render_pdf_reported(source, &opts).unwrap();
+            assert!(rendered.pagination.page_breaks.is_exact());
+            let pages = painted_pages(&rendered.bytes);
+            assert_eq!(pages.len(), 1, "pitch={pitch}, strict={strict}");
+            check_grid(&pages, &opts, f64::from(pitch)).unwrap();
+            check_separate_rows(&pages).unwrap();
+            let text = body_text(&pages);
+            for token in ["ALPHA", "BETA", "GAMMA", "DELTA", "FIRSTNOTE", "SECONDNOTE"] {
+                assert_eq!(text.matches(token).count(), 1, "{token}");
+            }
+            assert!(
+                !text.contains("Notes"),
+                "both notes must remain page-foot notes"
+            );
+            for token in ["FIRSTNOTE", "SECONDNOTE"] {
+                let run = pages[0]
+                    .runs
+                    .iter()
+                    .find(|run| run.text.contains(token))
+                    .unwrap();
+                assert_eq!(run.size, 9.35);
+            }
+            assert_eq!(
+                rendered.bytes,
+                render_pdf_document_emitted(
+                    &parse_markdown(source),
+                    &opts,
+                    PdfEmitOptions::monolithic()
+                )
+                .unwrap(),
+            );
+        }
+    }
+}
+
+#[test]
 fn long_fractional_page_note_keeps_the_original_page_phase() {
     let mut opts = options(13.337);
     opts.theme.page.size.height_pt = 14_400.0;

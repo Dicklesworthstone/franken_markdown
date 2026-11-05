@@ -12,7 +12,8 @@
 
 use super::*;
 use crate::pagination::height::{
-    BlockCandidates, BlockPolicy, BlockVariant, HeightPaginationOptions, plan_blocks,
+    BlockCandidates, BlockPolicy, BlockVariant, HeightPaginationOptions,
+    plan_blocks_with_reservation_prefix,
 };
 
 /// The counted KP search already has a state-cell bound. Bound its input here
@@ -409,8 +410,8 @@ fn note_references(lines: &[Line]) -> impl Iterator<Item = u32> + '_ {
 
 /// Re-anchor first-cited note bodies to the physical lines of one measured
 /// alternative. Notes first cited in another block do not reserve space again.
-/// Preserve the production reserve's summation order and separator-per-citing-
-/// line policy: regrouping citations can change separator cost, not note text.
+/// Preserve the production reserve's summation order. Separator space belongs
+/// to the page and is charged once by the planner, independently of line wraps.
 fn shape_note_reservations(
     lines: &[Line],
     notes: &PageNotes,
@@ -430,7 +431,6 @@ fn shape_note_reservations(
         .map(|(_, range)| (lines[range.start].flow.note, range.clone()))
         .collect();
     let height = |line: &Line| line_leading(line) + line.gap_after;
-    let separator = height(&lines[notes.separator]);
     let mut reservations = vec![0.0; shape.len()];
     for (index, line) in shape.iter().enumerate() {
         let first_here: Vec<_> = line
@@ -441,17 +441,13 @@ fn shape_note_reservations(
             .collect();
         if !first_here.is_empty() {
             reservations[index] = if lines[notes.separator].grid.is_some() {
-                baseline_grid::height(
-                    std::iter::once(&lines[notes.separator])
-                        .chain(first_here.iter().flat_map(|range| &lines[range.clone()])),
-                )
+                baseline_grid::height(first_here.iter().flat_map(|range| &lines[range.clone()]))
             } else {
-                separator
-                    + first_here
-                        .iter()
-                        .flat_map(|range| &lines[range.clone()])
-                        .map(height)
-                        .sum::<f32>()
+                first_here
+                    .iter()
+                    .flat_map(|range| &lines[range.clone()])
+                    .map(height)
+                    .sum::<f32>()
             };
         }
     }
@@ -591,8 +587,11 @@ fn select_reported(
     if !any_alternatives {
         return Ok(None);
     }
-    let plan =
-        plan_blocks(&blocks, &policies, options(page)).map_err(PdfPaginationFailure::Planner)?;
+    let prefix = notes
+        .as_ref()
+        .map_or(LayoutUnit::ZERO, |notes| notes.separator_reserve(lines));
+    let plan = plan_blocks_with_reservation_prefix(&blocks, &policies, options(page), prefix)
+        .map_err(PdfPaginationFailure::Planner)?;
     report.status = PdfParagraphVariantStatus::Planned;
     if plan.variants.iter().all(|&variant| variant == 0) {
         return Ok(None);
@@ -649,9 +648,12 @@ fn select_reported(
         let selected_notes = PageNotes::scan(&selected).ok_or(
             PdfPaginationFailure::InvalidPlan("joint selection lost the note region"),
         )?;
-        exact_height_page_breaks_reserving(&selected[..selected_notes.body_end], page, |line| {
-            selected_notes.line_reserve(&selected, line)
-        })?
+        exact_height_page_breaks_reserving(
+            &selected[..selected_notes.body_end],
+            page,
+            selected_notes.separator_reserve(&selected),
+            |line| selected_notes.line_reserve(&selected, line),
+        )?
     } else {
         exact_height_page_breaks(&selected, page)?
     };

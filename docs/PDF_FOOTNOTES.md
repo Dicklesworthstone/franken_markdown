@@ -44,11 +44,12 @@ moves to a page foot or to the trailing Notes section.
 ## Limits
 
 - Under `--pdf-optimal-pagination` the exact page planner reserves each
-  note's space with the line citing it, charging the separator once per citing
-  line, so planned pages never under-reserve but can leave a little extra room
-  when one page carries several notes. If the exact planner cannot plan a
-  document, it paginates greedily (the legacy fallback planner does not model
-  note space).
+  note's body with its first citing line and one shared separator per page
+  containing notes. Several citing lines on the same page do not reserve extra
+  separators. If the exact planner cannot plan a document, it reports that
+  outcome and paginates greedily (the legacy fallback planner does not model
+  note space). With `--pdf-strict-pagination`, it returns an error instead of
+  falling back.
 - Notes placed at a page foot are indivisible. Notes that exceed the available
   space print as endnotes, where ordinary block pagination can span pages.
   Their complete text, block structure, numbering, and link destinations are

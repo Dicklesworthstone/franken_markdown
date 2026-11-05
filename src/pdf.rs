@@ -23062,8 +23062,17 @@ impl PageNotes {
         &self.first_refs[from..to]
     }
 
-    /// Foot space body line `line` introduces: its first-cited notes plus the
-    /// separator (charged per citing line, so planning never under-reserves).
+    /// The one separator shared by every note at a physical page foot.
+    fn separator_reserve(&self, lines: &[Line]) -> LayoutUnit {
+        let separator = &lines[self.separator];
+        separator.grid.map_or_else(
+            || lu_from_points_f32(line_leading(separator) + separator.gap_after),
+            baseline_grid::LineGrid::height,
+        )
+    }
+
+    /// Footnote bodies introduced by this line's first citations. The exact
+    /// planner charges their shared separator once per occupied note region.
     fn line_reserve(&self, lines: &[Line], line: usize) -> f32 {
         let notes = self.notes_in(line, line + 1);
         if notes.is_empty() {
@@ -23071,17 +23080,15 @@ impl PageNotes {
         }
         if lines[self.separator].grid.is_some() {
             return baseline_grid::height(
-                std::iter::once(&lines[self.separator])
-                    .chain(notes.iter().flat_map(|(_, range)| &lines[range.clone()])),
+                notes.iter().flat_map(|(_, range)| &lines[range.clone()]),
             );
         }
         let height = |line: &Line| line_leading(line) + line.gap_after;
-        height(&lines[self.separator])
-            + notes
-                .iter()
-                .flat_map(|(_, range)| &lines[range.clone()])
-                .map(height)
-                .sum::<f32>()
+        notes
+            .iter()
+            .flat_map(|(_, range)| &lines[range.clone()])
+            .map(height)
+            .sum::<f32>()
     }
 
     /// Height the foot of a page holding body lines `[start, end)` needs.
@@ -30386,9 +30393,12 @@ fn page_break_plan_and_report(
     let notes = PageNotes::scan(lines);
     let exact = match &notes {
         None => exact_height_page_breaks(lines, page),
-        Some(notes) => exact_height_page_breaks_reserving(&lines[..notes.body_end], page, |line| {
-            notes.line_reserve(lines, line)
-        }),
+        Some(notes) => exact_height_page_breaks_reserving(
+            &lines[..notes.body_end],
+            page,
+            notes.separator_reserve(lines),
+            |line| notes.line_reserve(lines, line),
+        ),
     };
     match exact {
         Ok(plan) => (
@@ -30667,7 +30677,7 @@ fn exact_height_page_breaks(
     lines: &[Line],
     page: PageGeom,
 ) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
-    exact_height_page_breaks_reserving(lines, page, |_| 0.0)
+    exact_height_page_breaks_reserving(lines, page, LayoutUnit::ZERO, |_| 0.0)
 }
 
 /// [`exact_height_page_breaks`] with `reserve(line)` points of page-foot
@@ -30675,9 +30685,12 @@ fn exact_height_page_breaks(
 fn exact_height_page_breaks_reserving(
     lines: &[Line],
     page: PageGeom,
+    reservation_prefix: LayoutUnit,
     reserve: impl Fn(usize) -> f32,
 ) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
-    use crate::pagination::height::{BlockCandidates, BlockPolicy, plan_blocks};
+    use crate::pagination::height::{
+        BlockCandidates, BlockPolicy, plan_blocks_with_reservation_prefix,
+    };
 
     if lines.is_empty() {
         return Ok(PageBreakPlan { ends: Vec::new() });
@@ -30707,8 +30720,13 @@ fn exact_height_page_breaks_reserving(
         start = end;
     }
 
-    let plan = plan_blocks(&blocks, &policies, joint_pagination::options(page))
-        .map_err(PdfPaginationFailure::Planner)?;
+    let plan = plan_blocks_with_reservation_prefix(
+        &blocks,
+        &policies,
+        joint_pagination::options(page),
+        reservation_prefix,
+    )
+    .map_err(PdfPaginationFailure::Planner)?;
 
     let mut ends = Vec::with_capacity(plan.page_count);
     for (index, fragment) in plan.fragments.iter().enumerate() {

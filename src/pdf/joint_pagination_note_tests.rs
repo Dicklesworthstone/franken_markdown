@@ -75,9 +75,12 @@ fn prepared_layout(source: &str) -> Vec<Line> {
 
 fn note_plan(lines: &[Line], page: PageGeom) -> PageBreakPlan {
     let notes = PageNotes::scan(lines).expect("prepared page-note region");
-    exact_height_page_breaks_reserving(&lines[..notes.body_end], page, |line| {
-        notes.line_reserve(lines, line)
-    })
+    exact_height_page_breaks_reserving(
+        &lines[..notes.body_end],
+        page,
+        notes.separator_reserve(lines),
+        |line| notes.line_reserve(lines, line),
+    )
     .expect("a legal footnote-reserving plan")
 }
 
@@ -186,7 +189,6 @@ fn moving_citations_reanchors_note_bodies_and_charges_each_body_once() {
     let notes = PageNotes::scan(&lines).unwrap();
     let shape = citation_positions(&lines, &[&[], &[1], &[], &[2, 1]]);
     let reserves = shape_note_reservations(&lines, &notes, 0, notes.body_end, &shape).unwrap();
-    let separator = line_leading(&lines[notes.separator]) + lines[notes.separator].gap_after;
     let note_height = |number| {
         lines[notes.body_end..]
             .iter()
@@ -194,15 +196,7 @@ fn moving_citations_reanchors_note_bodies_and_charges_each_body_once() {
             .map(|line| line_leading(line) + line.gap_after)
             .sum::<f32>()
     };
-    assert_eq!(
-        reserves,
-        [
-            0.0,
-            separator + note_height(1),
-            0.0,
-            separator + note_height(2)
-        ]
-    );
+    assert_eq!(reserves, [0.0, note_height(1), 0.0, note_height(2)]);
     // This is the same scan the emitter performs after selected shapes are
     // installed. It must agree even though all original line indices moved.
     let mut replaced = shape.clone();
@@ -217,14 +211,14 @@ fn moving_citations_reanchors_note_bodies_and_charges_each_body_once() {
 }
 
 #[test]
-fn multiple_first_citations_on_one_line_share_one_separator() {
+fn multiple_first_citations_share_one_page_separator() {
     let lines =
         prepared_layout("One[^one].  \nTwo[^two].\n\n[^one]: First note.\n\n[^two]: Second note.");
     let notes = PageNotes::scan(&lines).unwrap();
     let shape = citation_positions(&lines, &[&[], &[1, 2], &[], &[]]);
     let reserves = shape_note_reservations(&lines, &notes, 0, notes.body_end, &shape).unwrap();
     assert_eq!(
-        reserves[1].to_bits(),
+        (reserves[1] + notes.separator_reserve(&lines).to_points_f32()).to_bits(),
         notes.reserve(&lines, 0, notes.body_end).to_bits()
     );
     assert_eq!(reserves.iter().filter(|&&height| height > 0.0).count(), 1);
@@ -241,7 +235,7 @@ fn references_already_charged_in_an_earlier_block_are_not_reserved_again() {
     let reserves = shape_note_reservations(&lines, &notes, start, notes.body_end, &shape).unwrap();
     assert_eq!(reserves[0], 0.0);
     assert_eq!(
-        reserves[2].to_bits(),
+        (reserves[2] + notes.separator_reserve(&lines).to_points_f32()).to_bits(),
         notes.reserve(&lines, start, notes.body_end).to_bits()
     );
 }
@@ -459,5 +453,53 @@ fn a_block_with_only_repeated_citations_has_no_new_reservation() {
         shape_note_reservations(&lines, &notes, start, notes.body_end, &shape)
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn one_page_note_separator_does_not_become_a_strict_infeasibility() {
+    let source = "A[^a]  \nB[^b]\n\n[^a]: First note.\n\n[^b]: Second note.";
+    let doc = crate::parse_markdown(source);
+    let prepared = crate::footnotes::for_pdf_paged(&doc);
+    let mut opts = options_for_notes();
+    opts.strict_pagination = true;
+    let faces = Faces::load(&opts).unwrap();
+    let (lines, _) = unselected_notes(&prepared, &opts, &faces, PageGeom::from_theme(&opts.theme));
+    let notes = PageNotes::scan(&lines).unwrap();
+    let body_height: f32 = lines[..notes.body_end]
+        .iter()
+        .map(|line| line_leading(line) + line.gap_after)
+        .sum();
+    let actual_foot = notes.reserve(&lines, 0, notes.body_end);
+    let separator = line_leading(&lines[notes.separator]) + lines[notes.separator].gap_after;
+    // The complete two-line paragraph and both notes physically fit, with
+    // clearance smaller than a second, nonexistent separator. Neither a
+    // paragraph split nor weaker pagination is needed to place this page.
+    opts.theme.page.size.height_pt = 72.0 + body_height + actual_foot + separator * 0.5;
+    // Negative control reproduces the former per-citing-line accounting with
+    // the unchanged zero-prefix solver. This fixture really distinguishes the
+    // false infeasibility from a physically overfull two-line paragraph.
+    let old_accounting = exact_height_page_breaks_reserving(
+        &lines[..notes.body_end],
+        PageGeom::from_theme(&opts.theme),
+        LayoutUnit::ZERO,
+        |line| {
+            let body = notes.line_reserve(&lines, line);
+            if body > 0.0 { body + separator } else { 0.0 }
+        },
+    );
+    assert!(matches!(
+        old_accounting,
+        Err(PdfPaginationFailure::Planner(
+            crate::pagination::height::HeightPaginationError::NoFeasibleLayout { .. }
+        )),
+    ));
+    let result = crate::render_pdf_reported(source, &opts).unwrap();
+    assert!(result.pagination.page_breaks.is_exact());
+    assert_eq!(
+        String::from_utf8_lossy(&result.bytes)
+            .matches("/Type /Page ")
+            .count(),
+        1
     );
 }

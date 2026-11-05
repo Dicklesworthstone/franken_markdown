@@ -80,7 +80,11 @@ uses the actual paragraph policy, including list-specific behavior.
 
 Prepared numbered page notes participate with
 their unchanged measured bodies reserved at each alternative's first citation;
-a candidate cannot lose or reorder citations. Legacy unprepared footnote
+a candidate cannot lose or reorder citations. All first citations assigned to a
+physical page share one separator reservation, matching the emitted page foot.
+The separator is charged again only on another page with notes, so citing several
+different notes on different lines does not invent additional separator space or
+make a physically fitting strict layout infeasible. Legacy unprepared footnote
 definitions retain baseline shapes. The same applies when gradual-demerit, river, or Pareto line
 breaking is enabled: their additional predecessor state is not represented by
 the adjacent-line-count candidate search. These cases continue to use the

@@ -164,25 +164,35 @@ fn tracked_destinations(source: &str, html: bool) -> Vec<SourceDestination> {
     spans
 }
 
-/// Source envelopes for fenced code owned by lists, quotes, or footnotes.
-/// Transclusion uses these to keep container examples literal without guessing
-/// a second container grammar. Reuse the block metadata walk: no inline AST,
-/// HTML rendering, or ordinary destination tokens are produced in this mode.
-/// Top-level include/fence recognition remains the expansion engine's contract.
-pub(crate) fn container_fence_ranges(
+/// Source envelopes for container fences and accepted inline code spans.
+/// Transclusion uses the normal block and inline parsers to keep documentation
+/// examples literal. Inline parsing is needed only when backticks are present;
+/// tilde-only fences retain the metadata-only walk. No rendering or ordinary
+/// destination tokens are needed. Top-level include/fence recognition remains
+/// the expansion engine's contract.
+pub(crate) fn transclusion_code_ranges(
     source: &str,
     skip_line: impl Fn(&str) -> bool,
+    directive_line: impl Fn(&str) -> bool,
 ) -> Vec<Range<usize>> {
     if !source.contains(['`', '~']) {
         return Vec::new();
     }
     let mut tracker = DestinationTracker::new(source);
     tracker.container_fences = Some(Vec::new());
+    tracker.inline_code = source.contains('`').then(Vec::new);
     let body = document_body(source);
     // Named snippets remove anchor-marker lines before expansion. Omit those
     // same borrowed slices here, retaining their neighbors' original addresses.
     let mut originals = split_logical_lines(body);
     originals.retain(|line| !skip_line(line));
+    if tracker.inline_code.is_some() {
+        tracker.directive_lines = originals
+            .iter()
+            .filter(|line| directive_line(line))
+            .filter_map(|line| tracker.text_range(line.trim_start()))
+            .collect();
+    }
     let tab_storage: Option<Vec<String>> = body.contains('\t').then(|| {
         originals
             .iter()
@@ -199,15 +209,35 @@ pub(crate) fn container_fence_ranges(
     } else {
         originals
     };
-    collect_link_reference_metadata_into_tracked(
-        &lines,
-        None,
-        &mut ReferenceMap::new(),
-        Some(&mut tracker),
-    );
+    let (lines, refs, _, consumed) = collect_link_references_tracked(lines, Some(&mut tracker));
+    let mut profiler = ParseProfiler::disabled();
+    profiler.destinations = Some(tracker);
+    if source.contains('`') {
+        // Use the same paragraph/container boundaries and speculative-work
+        // limits as ordinary parsing. A backtick in a different paragraph,
+        // title, HTML node, or selected source cannot open this code span.
+        let _blocks =
+            parse_blocks_with_reference_boundaries(&lines, &consumed, &refs, &mut profiler);
+    }
+    let Some(tracker) = profiler.destinations else {
+        return Vec::new();
+    };
     let mut ranges = tracker.container_fences.unwrap_or_default();
-    ranges.sort_unstable_by_key(|range| range.start);
-    ranges
+    ranges.extend(tracker.inline_code.unwrap_or_default());
+    ranges.sort_unstable_by_key(|range| (range.start, range.end));
+    // Container envelopes can overlap inline-code envelopes at their source
+    // boundaries. Keep a disjoint union for expansion's one-way line cursor.
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
 }
 
 #[derive(Clone)]
@@ -308,8 +338,10 @@ pub(super) struct DestinationTracker {
     spans: Vec<SourceDestination>,
     labels: Option<Vec<ReferenceLabelSpan>>,
     html: bool,
-    /// Present only for the metadata-only transclusion fence query.
+    /// Present only for the transclusion code query.
     container_fences: Option<Vec<Range<usize>>>,
+    inline_code: Option<Vec<Range<usize>>>,
+    directive_lines: Vec<Range<usize>>,
 }
 
 impl DestinationTracker {
@@ -324,6 +356,8 @@ impl DestinationTracker {
             labels: None,
             html: false,
             container_fences: None,
+            inline_code: None,
+            directive_lines: Vec::new(),
         }
     }
 
@@ -348,6 +382,56 @@ impl DestinationTracker {
         if let (Some(first), Some(last), Some(ranges)) = (first, last, &mut self.container_fences) {
             ranges.push(first.start..last.end);
         }
+    }
+
+    /// The accepted code token may cross normalized newlines and stripped
+    /// container prefixes. Its first/last delimiters retain exact byte origins;
+    /// their envelope classifies source lines without inventing a contiguous
+    /// rendered-text mapping across those removed characters.
+    pub(super) fn inline_code(&mut self, chars: &[char], token: Range<usize>) {
+        if self.inline_code.is_none() || token.is_empty() {
+            return;
+        }
+        let first = self.char_range(chars, token.start..token.start + 1);
+        let last = self.char_range(chars, token.end - 1..token.end);
+        if let (Some(first), Some(last), Some(ranges)) = (first, last, &mut self.inline_code)
+            && first.start < last.end
+        {
+            ranges.push(first.start..last.end);
+        }
+    }
+
+    /// Active include targets are host paths, not Markdown code openers. The
+    /// expander supplies their candidate lines using its own directive grammar.
+    /// A closer inside such a line still closes code started earlier. If that
+    /// code owns the directive's prefix, the line is literal and later backticks
+    /// on it retain ordinary Markdown meaning instead of being masked.
+    pub(super) fn inline_code_opener_allowed(&self, chars: &[char], start: usize) -> bool {
+        let Some(code) = &self.inline_code else {
+            return true;
+        };
+        if self.directive_lines.is_empty() {
+            return true;
+        }
+        let Some(opener) = self.char_range(chars, start..start + 1) else {
+            return true;
+        };
+        let line_index = self
+            .directive_lines
+            .partition_point(|line| line.end <= opener.start);
+        let Some(line) = self
+            .directive_lines
+            .get(line_index)
+            .filter(|line| line.contains(&opener.start))
+        else {
+            return true;
+        };
+        // Accepted tokens append in source order. Speculative parses roll back
+        // before rescanning, so ownership lookup stays logarithmic even when a
+        // path contains many paired backticks.
+        let code_index = code.partition_point(|span| span.end <= line.start);
+        code.get(code_index)
+            .is_some_and(|span| span.contains(&line.start))
     }
 
     pub(super) fn checkpoint(&self) -> usize {
@@ -504,6 +588,9 @@ impl DestinationTracker {
     }
 
     pub(super) fn record(&mut self, chars: &[char], token: Range<usize>, dest: &str) {
+        if self.container_fences.is_some() {
+            return;
+        }
         self.record_token(chars, token, dest, DestinationSyntax::Markdown);
     }
 
@@ -756,20 +843,24 @@ impl ParseProfiler {
         }
     }
 
-    pub(super) fn destination_mark(&self) -> (usize, usize) {
-        self.destinations.as_ref().map_or((0, 0), |tracker| {
+    pub(super) fn destination_mark(&self) -> (usize, usize, usize) {
+        self.destinations.as_ref().map_or((0, 0, 0), |tracker| {
             (
                 tracker.spans.len(),
                 tracker.labels.as_ref().map_or(0, Vec::len),
+                tracker.inline_code.as_ref().map_or(0, Vec::len),
             )
         })
     }
 
-    pub(super) fn destination_rollback(&mut self, mark: (usize, usize)) {
+    pub(super) fn destination_rollback(&mut self, mark: (usize, usize, usize)) {
         if let Some(tracker) = &mut self.destinations {
             tracker.spans.truncate(mark.0);
             if let Some(labels) = &mut tracker.labels {
                 labels.truncate(mark.1);
+            }
+            if let Some(ranges) = &mut tracker.inline_code {
+                ranges.truncate(mark.2);
             }
         }
     }
@@ -777,7 +868,7 @@ impl ParseProfiler {
     /// Image alt text flattens its inline nodes, so their URLs are not emitted
     /// destinations. Accepted reference labels still determine that text and
     /// need coordinated source edits when their definitions are renamed.
-    pub(super) fn destination_tokens_rollback(&mut self, mark: (usize, usize)) {
+    pub(super) fn destination_tokens_rollback(&mut self, mark: (usize, usize, usize)) {
         if let Some(tracker) = &mut self.destinations {
             tracker.spans.truncate(mark.0);
         }

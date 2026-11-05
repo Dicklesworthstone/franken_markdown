@@ -27,7 +27,7 @@ pub use frontmatter::{Frontmatter, split_frontmatter};
 mod destinations;
 mod reference_labels;
 pub use destinations::DestinationSpan;
-pub(crate) use destinations::container_fence_ranges;
+pub(crate) use destinations::transclusion_code_ranges;
 #[cfg(feature = "cli")]
 pub(crate) use destinations::{DestinationSyntax, resource_destination_spans};
 pub use reference_labels::{ReferenceLabelForm, ReferenceLabelSpan};
@@ -4667,8 +4667,16 @@ fn parse_inlines_chars_with_refs_profiled(
                 let Some(n) = run_len(bytes, i, '`', &mut profiler.inline_work) else {
                     break;
                 };
-                if let Some(end) = find_code_close(bytes, i + n, '`', n, &mut profiler.inline_work)
+                if profiler
+                    .destinations
+                    .as_ref()
+                    .is_none_or(|tracker| tracker.inline_code_opener_allowed(bytes, i))
+                    && let Some(end) =
+                        find_code_close(bytes, i + n, '`', n, &mut profiler.inline_work)
                 {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.inline_code(bytes, i..end + n);
+                    }
                     flush(&mut buf, &mut els);
                     let code = normalize_code_span(&bytes[i + n..end]);
                     let code = if profiler.table_cell_code_escapes && code.contains("\\|") {

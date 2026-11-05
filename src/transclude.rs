@@ -4,9 +4,10 @@
 //! The pure render core never touches the filesystem. A host resolver owns
 //! path sandboxing and bounded file reads. Expansion uses one output buffer,
 //! checks its budget before every append, and bounds depth and resolver calls.
-//! Fenced and indented code remains literal, including fences inside Markdown
-//! containers. Documentation examples cannot trigger include resolution merely
-//! by containing a directive, or hide a real include after their closing fence.
+//! Fenced, indented and inline code remains literal, including multiline code
+//! spans and fences inside Markdown containers. Documentation examples cannot
+//! trigger include resolution merely by containing a directive, or hide a real
+//! include after their closing delimiter.
 //!
 //! Select one line (`file.md:3`), an inclusive range (`file.md:3:8`), an
 //! open-ended range (`file.md:3:` or `file.md::8`), or a named snippet
@@ -33,6 +34,22 @@ pub const DEFAULT_MAX_EXPANDED_BYTES: usize = 64 * 1024 * 1024;
 #[must_use]
 pub fn has_includes(src: &str) -> bool {
     src.contains(INCLUDE_PREFIX)
+}
+
+/// Recognize the expander's standalone directive prefix. Keeping this shared
+/// with the parser's source query prevents literal backticks in an active path
+/// from opening Markdown code and hiding a later include or code example.
+fn include_directive_rest(trimmed: &str) -> Option<&str> {
+    let rest = trimmed.strip_prefix(INCLUDE_PREFIX)?;
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|ch| !ch.is_whitespace() && ch != '}')
+    {
+        None
+    } else {
+        Some(rest)
+    }
 }
 
 /// Content and canonical origin key, missing file, or a host policy refusal.
@@ -334,15 +351,18 @@ impl Expansion<'_> {
         }
         // The normal parser owns container boundaries, including lazy list
         // continuation, tabs, and unclosed fences ending with their container.
-        // Only include-bearing input needs this metadata pass; it builds no AST.
-        let container_fences = if has_includes(src) {
-            crate::parse::container_fence_ranges(src, |line| {
-                strip_anchors && anchor_marker(line).is_some()
-            })
+        // The same inline parser recognizes multiline code spans. Only this
+        // selected source participates: included text cannot supply a closer.
+        let literal_code = if has_includes(src) {
+            crate::parse::transclusion_code_ranges(
+                src,
+                |line| strip_anchors && anchor_marker(line).is_some(),
+                |line| !indented_code(line) && include_directive_rest(line.trim()).is_some(),
+            )
         } else {
             Vec::new()
         };
-        let mut container_fence_index = 0;
+        let mut literal_code_index = 0;
         let mut line_offset = source_offset;
         let mut fence: Option<(u8, usize)> = None;
         for line in src.split_inclusive('\n') {
@@ -363,15 +383,17 @@ impl Expansion<'_> {
                 self.append(line, source_id, original_start, false)?;
                 continue;
             }
-            while container_fences
-                .get(container_fence_index)
-                .is_some_and(|range| range.end <= original_start - source_offset)
+            let content_start =
+                original_start - source_offset + line.len() - line.trim_start().len();
+            while literal_code
+                .get(literal_code_index)
+                .is_some_and(|range| range.end <= content_start)
             {
-                container_fence_index += 1;
+                literal_code_index += 1;
             }
-            if container_fences
-                .get(container_fence_index)
-                .is_some_and(|range| range.start < line_offset - source_offset)
+            if literal_code
+                .get(literal_code_index)
+                .is_some_and(|range| range.contains(&content_start))
             {
                 self.append(line, source_id, original_start, false)?;
                 continue;
@@ -388,19 +410,10 @@ impl Expansion<'_> {
                 continue;
             }
             let trimmed = line.trim();
-            let Some(rest) = trimmed.strip_prefix(INCLUDE_PREFIX) else {
+            let Some(rest) = include_directive_rest(trimmed) else {
                 self.append(line, source_id, original_start, false)?;
                 continue;
             };
-            // A longer directive name is ordinary text, not an include.
-            if rest
-                .chars()
-                .next()
-                .is_some_and(|ch| !ch.is_whitespace() && ch != '}')
-            {
-                self.append(line, source_id, original_start, false)?;
-                continue;
-            }
             let target = rest.strip_suffix("}}").map(str::trim).filter(|p| !p.is_empty())
                 .ok_or_else(|| RenderError::InvalidInput(format!(
                     "include_missing: malformed or empty include directive in {origin}: {trimmed}"

@@ -4698,16 +4698,33 @@ fn layout_blocks(blocks: &[Block], indent: f32, out: &mut Vec<Line>, cx: &mut La
         let before = out.len();
         layout_block(block, indent, out, cx);
         text_positioning::stamp_lines(&mut out[before..], cx.faces);
-        // A PageBreak marker targets the first line of the FOLLOWING block
-        // (the chapter start), so the boundary lands before the new chapter.
-        if cx.pending_page_break && out.len() > before {
-            out[before].page_break_before = true;
-            cx.pending_page_break = false;
+    }
+}
+
+/// A break arriving before a container belongs to its first visible line,
+/// including an alert label or list marker. Descendants cannot consume it
+/// after an earlier part of the same container has already been laid out.
+/// Conversely, a break left pending by the container's final child belongs to
+/// later content, not to the beginning of the container we just finished.
+fn apply_incoming_page_break(incoming: bool, start: usize, out: &mut [Line], pending: &mut bool) {
+    if incoming {
+        if let Some(first) = out.get_mut(start) {
+            first.page_break_before = true;
+        } else {
+            // Empty blocks do not consume a zero-content page boundary.
+            *pending = true;
         }
     }
 }
 
 fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let incoming = std::mem::take(&mut cx.pending_page_break);
+    let start = out.len();
+    layout_block_content(block, indent, out, cx);
+    apply_incoming_page_break(incoming, start, out, &mut cx.pending_page_break);
+}
+
+fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
     let indent = list_geometry::block_indent(block, indent, cx);
     let indent = quote_geometry::block_indent(block, indent, cx);
     match block {
@@ -18811,6 +18828,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
         };
         let group = cx.alloc_flow();
         let item_start_line = out.len();
+        let incoming_break = std::mem::take(&mut cx.pending_page_break);
         if let Some(top) = cx.list_stack.last_mut() {
             top.item = group;
         }
@@ -18923,6 +18941,12 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
                 line.list_path = chain.clone();
             }
         }
+        apply_incoming_page_break(
+            incoming_break,
+            item_start_line,
+            out,
+            &mut cx.pending_page_break,
+        );
     }
 
     cx.list_stack.pop();

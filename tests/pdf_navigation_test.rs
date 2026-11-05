@@ -1099,3 +1099,216 @@ fn books_without_local_links_preserve_ordinary_document_bytes_and_note_policy() 
         );
     }
 }
+
+#[test]
+fn book_chapter_break_precedes_the_whole_leading_list_or_alert() {
+    for (source, labels) in [
+        (
+            "- CHAPTERTWO\n\n  > QUOTEDBODY\n",
+            ["CHAPTERTWO", "QUOTEDBODY"],
+        ),
+        ("> [!NOTE]\n> CHAPTERTWO\n", ["Note", "CHAPTERTWO"]),
+    ] {
+        let book = BookRenderer::new(&[
+            BookInput {
+                path: "one.md".into(),
+                source: "CHAPTERONE\n".into(),
+            },
+            BookInput {
+                path: "two.md".into(),
+                source: source.into(),
+            },
+        ])
+        .unwrap();
+        let document = franken_markdown::book::book_pdf_document(book.book());
+        for (optimal_pagination, strict_pagination) in [(false, false), (true, false), (true, true)]
+        {
+            let options = PdfOptions {
+                optimal_pagination,
+                strict_pagination,
+                page_numbers: false,
+                ..PdfOptions::default()
+            };
+            let pdf = render_pdf_document(&document, &options).unwrap();
+            let objects = Objects::new(&pdf);
+            let pages = objects.pages();
+            assert_eq!(pages.len(), 2);
+            let runs = painted_runs(&objects);
+            assert_eq!(run_containing(&runs, "CHAPTERONE").page, pages[0]);
+            for label in labels {
+                assert_eq!(
+                    run_containing(&runs, label).page,
+                    pages[1],
+                    "the complete chapter opening must follow its boundary: {label}, optimal={optimal_pagination}, strict={strict_pagination}"
+                );
+            }
+            assert_eq!(
+                pdf,
+                book.render_pdf_with_options(&options, PdfASettings::OFF)
+                    .unwrap(),
+            );
+            assert_eq!(
+                pdf,
+                render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic())
+                    .unwrap(),
+            );
+        }
+    }
+}
+
+fn assert_forced_page_map(
+    document: &franken_markdown::Document,
+    expected: &[&[&str]],
+    narrow: bool,
+) {
+    for (optimal_pagination, strict_pagination) in [(false, false), (true, false), (true, true)] {
+        let mut options = PdfOptions {
+            optimal_pagination,
+            strict_pagination,
+            page_numbers: false,
+            ..PdfOptions::default()
+        };
+        if narrow {
+            options.theme.page.size.width_pt = 144.0;
+            options.theme.page.margins.left_pt = 36.0;
+            options.theme.page.margins.right_pt = 36.0;
+        }
+        let pdf = render_pdf_document(document, &options).unwrap();
+        let objects = Objects::new(&pdf);
+        let pages = objects.pages();
+        assert_eq!(pages.len(), expected.len());
+        let runs = painted_runs(&objects);
+        let mut previous = None;
+        for (page, labels) in expected.iter().enumerate() {
+            for label in *labels {
+                let matching: Vec<_> = runs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, run)| run.text.contains(*label))
+                    .collect();
+                assert_eq!(matching.len(), 1, "{label} must occur exactly once");
+                let (position, run) = matching[0];
+                assert_eq!(
+                    run.page, pages[page],
+                    "{label}: optimal={optimal_pagination}, strict={strict_pagination}, narrow={narrow}"
+                );
+                if let Some(previous) = previous {
+                    assert!(position > previous, "{label} must retain source order");
+                }
+                previous = Some(position);
+            }
+        }
+        if narrow {
+            for (index, page) in pages.iter().enumerate() {
+                let marker: String = runs
+                    .iter()
+                    .filter(|run| run.page == *page)
+                    .filter(|run| run.text.chars().all(|ch| ch.is_ascii_digit() || ch == '.'))
+                    .map(|run| run.text.as_str())
+                    .collect();
+                assert_eq!(marker, format!("{}.", u128::from(u64::MAX) + index as u128));
+            }
+        }
+        assert_eq!(
+            pdf,
+            render_pdf_document_emitted(document, &options, PdfEmitOptions::monolithic()).unwrap(),
+        );
+    }
+}
+
+#[test]
+fn inner_and_trailing_quote_breaks_keep_their_forward_source_boundary() {
+    let mut middle = parse_markdown("BEFORE\n\n> QUOTEONE\n>\n> QUOTETWO\n\nAFTER\n");
+    let Block::BlockQuote(inner) = &mut middle.blocks[1] else {
+        panic!("fixture must contain a quote");
+    };
+    inner.insert(1, Block::PageBreak);
+    assert_forced_page_map(
+        &middle,
+        &[&["BEFORE", "QUOTEONE"], &["QUOTETWO", "AFTER"]],
+        false,
+    );
+
+    let mut trailing = parse_markdown("BEFORE\n\n> QUOTED\n\nAFTER\n");
+    let Block::BlockQuote(inner) = &mut trailing.blocks[1] else {
+        panic!("fixture must contain a quote");
+    };
+    inner.push(Block::PageBreak);
+    assert_forced_page_map(&trailing, &[&["BEFORE", "QUOTED"], &["AFTER"]], false);
+    // An incoming chapter boundary and an outgoing child boundary are
+    // separate events. Finishing the outer quote must retain both.
+    trailing.blocks.insert(1, Block::PageBreak);
+    assert_forced_page_map(&trailing, &[&["BEFORE"], &["QUOTED"], &["AFTER"]], false);
+}
+
+#[test]
+fn list_item_breaks_reach_the_next_body_or_item_in_both_marker_geometries() {
+    let mut within = parse_markdown("BEFORE\n\n- LISTONE\n\n  LISTTWO\n\n  > QUOTED\n\nAFTER\n");
+    let Block::List(list) = &mut within.blocks[1] else {
+        panic!("fixture must contain a list");
+    };
+    list.items[0].blocks.insert(1, Block::PageBreak);
+    let expected: &[&[&str]] = &[&["BEFORE", "LISTONE"], &["LISTTWO", "QUOTED", "AFTER"]];
+    assert_forced_page_map(&within, expected, false);
+
+    let mut between = parse_markdown("BEFORE\n\n- LISTONE\n\n- LISTTWO\n\n  > QUOTED\n\nAFTER\n");
+    let Block::List(list) = &mut between.blocks[1] else {
+        panic!("fixture must contain a list");
+    };
+    list.items[0].blocks.push(Block::PageBreak);
+    assert_forced_page_map(&between, expected, false);
+
+    // A long ordered marker cannot leave a hanging text measure on a narrow
+    // page. Its separate marker rows must travel with the next item's body.
+    let Block::List(list) = &mut between.blocks[1] else {
+        unreachable!();
+    };
+    list.ordered = true;
+    list.start = u64::MAX;
+    assert_forced_page_map(&between, expected, true);
+
+    let nested = franken_markdown::Document {
+        blocks: vec![
+            within.blocks[0].clone(),
+            Block::BlockQuote(vec![within.blocks[1].clone()]),
+            within.blocks[2].clone(),
+        ],
+    };
+    assert_forced_page_map(&nested, expected, false);
+}
+
+#[test]
+fn empty_containers_and_repeated_forced_breaks_do_not_create_blank_pages() {
+    let paragraphs = parse_markdown("FIRST\n\nSECOND\n").blocks;
+    let empty = Block::BlockQuote(Vec::new());
+    let document = franken_markdown::Document {
+        blocks: vec![
+            Block::PageBreak,
+            Block::BlockQuote(vec![Block::PageBreak]),
+            empty.clone(),
+            paragraphs[0].clone(),
+            Block::PageBreak,
+            empty.clone(),
+            Block::List(franken_markdown::List {
+                ordered: false,
+                start: 1,
+                tight: true,
+                items: Vec::new(),
+            }),
+            Block::PageBreak,
+            paragraphs[1].clone(),
+            Block::BlockQuote(vec![Block::PageBreak]),
+            Block::PageBreak,
+        ],
+    };
+    assert_forced_page_map(&document, &[&["FIRST"], &["SECOND"]], false);
+
+    let only_boundaries = franken_markdown::Document {
+        blocks: vec![Block::PageBreak, empty, Block::PageBreak],
+    };
+    let options = PdfOptions::default();
+    assert_eq!(
+        render_pdf_document(&only_boundaries, &options).unwrap(),
+        render_pdf_document(&franken_markdown::Document::default(), &options).unwrap(),
+    );
+}

@@ -6295,11 +6295,20 @@ fn scan_inline_html_end(chars: &[char], i: usize) -> Result<usize, usize> {
         return Err(i);
     }
     let n = chars.len();
-    // 1. Comment: <!-- ... -->
+    // 1. Comment: the short <!--> and <!---> forms, or <!-- ... -->.
     if chars.get(i + 1) == Some(&'!')
         && chars.get(i + 2) == Some(&'-')
         && chars.get(i + 3) == Some(&'-')
     {
+        // These complete comments must stop before any following Markdown.
+        // Searching only for a later '-->' would give that text (and any
+        // links inside it) to the comment instead of the inline parser.
+        if chars.get(i + 4) == Some(&'>') {
+            return Ok(i + 5);
+        }
+        if chars.get(i + 4) == Some(&'-') && chars.get(i + 5) == Some(&'>') {
+            return Ok(i + 6);
+        }
         let mut j = i + 4;
         while j + 2 < n {
             if chars[j] == '-' && chars[j + 1] == '-' && chars[j + 2] == '>' {
@@ -6375,9 +6384,8 @@ fn scan_inline_html_end(chars: &[char], i: usize) -> Result<usize, usize> {
         let had_ws = j > ws_start;
         if j < n && chars[j] == '/' {
             j += 1;
-            while j < n && is_html_whitespace(chars[j]) {
-                j += 1;
-            }
+            // Whitespace may precede '/>', but cannot split the token. An
+            // invalid tag remains Markdown, including apparent attributes.
             if j < n && chars[j] == '>' {
                 return Ok(j + 1);
             }

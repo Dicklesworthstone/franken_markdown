@@ -173,6 +173,7 @@ enum Piece<'a> {
 /// not start well-formed markup is ordinary text.
 fn pieces(html: &str) -> Vec<Piece<'_>> {
     let bytes = html.as_bytes();
+    let last_pi_end = html.rfind("?>");
     let mut out = Vec::new();
     let mut text_start = 0usize;
     let mut i = 0usize;
@@ -181,7 +182,8 @@ fn pieces(html: &str) -> Vec<Piece<'_>> {
             i += 1;
             continue;
         }
-        let Some((piece, len)) = markup_at(&html[i..]) else {
+        let Some((piece, len)) = markup_at(&html[i..], last_pi_end.is_some_and(|end| end >= i + 2))
+        else {
             i += 1;
             continue;
         };
@@ -198,14 +200,29 @@ fn pieces(html: &str) -> Vec<Piece<'_>> {
     out
 }
 
-fn markup_at(s: &str) -> Option<(Piece<'_>, usize)> {
+fn markup_at(s: &str, has_pi_end: bool) -> Option<(Piece<'_>, usize)> {
     if let Some(rest) = s.strip_prefix("<!--") {
+        // Match the Markdown scanner's complete short comments. Searching for
+        // a later '-->' would hide live text and resource tags after them.
+        if rest.starts_with('>') {
+            return Some((Piece::Ignorable, 5));
+        }
+        if rest.starts_with("->") {
+            return Some((Piece::Ignorable, 6));
+        }
         let end = rest.find("-->")?;
         return Some((Piece::Ignorable, 4 + end + 3));
     }
     if let Some(rest) = s.strip_prefix("<![CDATA[") {
         let end = rest.find("]]>")?;
         return Some((Piece::Ignorable, 9 + end + 3));
+    }
+    // A complete processing instruction owns everything through '?>', even
+    // tag-looking text after an earlier '>'. Callers cache the final terminator
+    // so repeated incomplete instructions do not rescan the remaining suffix.
+    if has_pi_end && let Some(rest) = s.strip_prefix("<?") {
+        let end = rest.find("?>")?;
+        return Some((Piece::Ignorable, 2 + end + 2));
     }
     if s.starts_with("<!") || s.starts_with("<?") {
         let end = s.find('>')?;
@@ -352,10 +369,14 @@ impl UrlSpan {
 
 pub(crate) fn url_spans(html: &str) -> impl Iterator<Item = UrlSpan> + '_ {
     let mut cursor = 0;
+    let last_pi_end = html.rfind("?>");
     std::iter::from_fn(move || {
         while let Some(relative) = html[cursor..].find('<') {
             let start = cursor + relative;
-            let Some((piece, len)) = markup_at(&html[start..]) else {
+            let Some((piece, len)) = markup_at(
+                &html[start..],
+                last_pi_end.is_some_and(|end| end >= start + 2),
+            ) else {
                 cursor = start + 1;
                 continue;
             };
@@ -391,10 +412,14 @@ pub(crate) fn url_spans(html: &str) -> impl Iterator<Item = UrlSpan> + '_ {
 /// own occurrence limit before retaining another image.
 pub(crate) fn image_references(html: &str) -> impl Iterator<Item = (String, String)> + '_ {
     let mut cursor = 0;
+    let last_pi_end = html.rfind("?>");
     std::iter::from_fn(move || {
         while let Some(relative) = html[cursor..].find('<') {
             let start = cursor + relative;
-            let Some((piece, len)) = markup_at(&html[start..]) else {
+            let Some((piece, len)) = markup_at(
+                &html[start..],
+                last_pi_end.is_some_and(|end| end >= start + 2),
+            ) else {
                 cursor = start + 1;
                 continue;
             };
@@ -1785,6 +1810,199 @@ mod tests {
                 Block::Paragraph(vec![text("c")]),
             ]
         );
+    }
+
+    #[test]
+    fn short_comments_end_before_live_markdown_and_trailing_close_text() {
+        for comment in ["<!-->", "<!--->"] {
+            let source = format!("before {comment} *visible* [next](next.md) --> after");
+            assert_eq!(
+                lowered(&source),
+                vec![Block::Paragraph(vec![
+                    text("before  "),
+                    Inline::Emphasis(vec![text("visible")]),
+                    text(" "),
+                    Inline::Link {
+                        dest: "next.md".into(),
+                        title: None,
+                        content: vec![text("next")],
+                    },
+                    text(" --> after"),
+                ])],
+                "{comment}"
+            );
+            assert_eq!(
+                sanitized(&source),
+                "<p>before  <em>visible</em> <a href=\"next.md\">next</a> --&gt; after</p>",
+                "{comment}"
+            );
+        }
+    }
+
+    #[test]
+    fn short_comments_preserve_resource_roles_and_original_utf8_ranges() {
+        for comment in ["<!-->", "<!--->"] {
+            let raw = format!(
+                "é{comment}<a href='docs/café.md?x=1&amp;y=2'>next</a>\
+                 <img src='images/図.svg' alt='Logo'> --> \
+                 <!-- <img src='hidden.svg'><a href='hidden.md'> -->\
+                 <img src='malformed.svg' / >"
+            );
+            let spans: Vec<_> = url_spans(&raw).collect();
+            assert_eq!(spans.len(), 2, "{comment}");
+            assert_eq!(spans[0].kind, UrlKind::Link);
+            assert_eq!(spans[0].destination, "docs/café.md?x=1&y=2");
+            assert_eq!(&raw[spans[0].range.clone()], "'docs/café.md?x=1&amp;y=2'");
+            assert_eq!(spans[1].kind, UrlKind::Image);
+            assert_eq!(spans[1].destination, "images/図.svg");
+            assert_eq!(&raw[spans[1].range.clone()], "'images/図.svg'");
+            assert_eq!(
+                image_references(&raw).collect::<Vec<_>>(),
+                [("images/図.svg".into(), "Logo".into())],
+                "{comment}"
+            );
+            let rewritten = rewrite_urls(&raw, |destination, _| {
+                Ok::<_, ()>(Some(format!("chapter/{destination}")))
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                rewritten,
+                raw.replace(
+                    "'docs/café.md?x=1&amp;y=2'",
+                    "\"chapter/docs/café.md?x=1&amp;y=2\""
+                )
+                .replace("'images/図.svg'", "\"chapter/images/図.svg\""),
+                "{comment}"
+            );
+            assert_eq!(visible_text(&raw), "énext --> <img src='malformed.svg' / >");
+        }
+    }
+
+    #[test]
+    fn processing_instructions_keep_internal_tags_and_urls_opaque() {
+        let source = "before <?pi hidden > <img src='hidden.svg' alt='hidden'> ?> after";
+        assert_eq!(
+            lowered(source),
+            [Block::Paragraph(vec![text("before  after")])]
+        );
+        assert_eq!(sanitized(source), "<p>before  after</p>");
+
+        let raw = "é<?pi hidden > <a href='hidden.md'>hidden</a><img src='hidden.svg'> ?>\
+                   <a href='docs/café.md?x=1&amp;y=2'>next</a>\
+                   <img src='images/図.svg' alt='Logo'>";
+        let spans: Vec<_> = url_spans(raw).collect();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].kind, UrlKind::Link);
+        assert_eq!(spans[0].destination, "docs/café.md?x=1&y=2");
+        assert_eq!(&raw[spans[0].range.clone()], "'docs/café.md?x=1&amp;y=2'");
+        assert_eq!(spans[1].kind, UrlKind::Image);
+        assert_eq!(spans[1].destination, "images/図.svg");
+        assert_eq!(&raw[spans[1].range.clone()], "'images/図.svg'");
+        assert_eq!(
+            image_references(raw).collect::<Vec<_>>(),
+            [("images/図.svg".into(), "Logo".into())]
+        );
+        let mut seen = Vec::new();
+        let rewritten = rewrite_urls(raw, |destination, kind| {
+            seen.push((destination.to_owned(), kind));
+            Ok::<_, ()>(Some(format!("chapter/{destination}")))
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            seen,
+            [
+                ("docs/café.md?x=1&y=2".into(), UrlKind::Link),
+                ("images/図.svg".into(), UrlKind::Image)
+            ]
+        );
+        assert_eq!(
+            rewritten,
+            raw.replace(
+                "'docs/café.md?x=1&amp;y=2'",
+                "\"chapter/docs/café.md?x=1&amp;y=2\""
+            )
+            .replace("'images/図.svg'", "\"chapter/images/図.svg\"")
+        );
+        assert_eq!(visible_text(raw), "énext");
+    }
+
+    #[test]
+    fn declarations_and_incomplete_instructions_keep_existing_boundaries() {
+        for prefix in ["<!A hidden >", "<?pi hidden >", "<?>"] {
+            let raw = format!("é{prefix}visible<img src='live.svg' alt='Logo'>");
+            assert_eq!(visible_text(&raw), "évisible", "{prefix}");
+            let spans: Vec<_> = url_spans(&raw).collect();
+            assert_eq!(spans.len(), 1, "{prefix}");
+            assert_eq!(spans[0].kind, UrlKind::Image);
+            assert_eq!(&raw[spans[0].range.clone()], "'live.svg'");
+            assert_eq!(
+                image_references(&raw).collect::<Vec<_>>(),
+                [("live.svg".into(), "Logo".into())],
+                "{prefix}"
+            );
+        }
+
+        // Many unmatched openers exercise all three tokenizer walks without
+        // changing their longstanding first-'>' fallback behavior.
+        let raw = format!(
+            "{}<img src='tail.svg' alt='Tail'>",
+            "<?incomplete>visible ".repeat(4096)
+        );
+        assert_eq!(visible_text(&raw), "visible ".repeat(4096));
+        let spans: Vec<_> = url_spans(&raw).collect();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].destination, "tail.svg");
+        assert_eq!(&raw[spans[0].range.clone()], "'tail.svg'");
+        assert_eq!(
+            image_references(&raw).collect::<Vec<_>>(),
+            [("tail.svg".into(), "Tail".into())]
+        );
+    }
+
+    #[test]
+    fn ignorable_markup_keeps_native_pdf_and_svg_content_in_direct_ast_inputs() {
+        // Direct AST consumers do not run the Markdown scanner. Verify both
+        // node forms reach the renderers' shared safe lowering unchanged.
+        let expected = Document {
+            blocks: vec![Block::Paragraph(vec![
+                text("before "),
+                Inline::Strong(vec![text("visible")]),
+                text(" --> after"),
+            ])],
+        };
+        let pdf_options = crate::PdfOptions::default();
+        let expected_pdf = crate::render_pdf_document(&expected, &pdf_options).unwrap();
+        let svg_options = crate::svg::SvgOptions::default();
+        let expected_svg = crate::svg::render_svg_with_report(&expected, &svg_options);
+        assert!(expected_svg.1.glyphs_drawn > 0);
+        for comment in ["<!-->", "<!--->", "<?pi hidden > <img src='hidden.svg'> ?>"] {
+            for block in [
+                Block::HtmlBlock(format!("<p>before {comment}<b>visible</b> --> after</p>")),
+                Block::Paragraph(vec![
+                    text("before "),
+                    Inline::Html(comment.into()),
+                    Inline::Strong(vec![text("visible")]),
+                    text(" --> after"),
+                ]),
+            ] {
+                let document = Document {
+                    blocks: vec![block],
+                };
+                assert_eq!(lower(&document).as_ref(), &expected, "{comment}");
+                assert_eq!(
+                    crate::render_pdf_document(&document, &pdf_options).unwrap(),
+                    expected_pdf,
+                    "{comment}"
+                );
+                assert_eq!(
+                    crate::svg::render_svg_with_report(&document, &svg_options),
+                    expected_svg,
+                    "{comment}"
+                );
+            }
+        }
     }
 
     #[test]

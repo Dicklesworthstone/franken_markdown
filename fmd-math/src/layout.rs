@@ -2334,6 +2334,20 @@ impl Engine {
                 char_glyph: None,
             },
         };
+        // Rule 12 moves a character accent's scripts onto its nucleus
+        // before packing the accent (tex.web §§738–742). In particular,
+        // rule 18 must see the character, not the taller accent box, and
+        // a subscript suppresses the character's italic correction as
+        // usual. Keep the accent's existing position over the character.
+        if let Some(nucleus) = base.and_then(character_accent_nucleus) {
+            if self.lay_node(nucleus, ctx)?.char_glyph.is_some() {
+                let mut scripted = self.scripts(Some(nucleus), sub, sup, primes, ctx)?;
+                scripted.boxx.height = scripted.boxx.height.max(base_laid.boxx.height);
+                scripted.boxx.depth = scripted.boxx.depth.max(base_laid.boxx.depth);
+                scripted.boxx.children[0].node = MNode::Box(base_laid.boxx);
+                return Ok(scripted);
+            }
+        }
         let base_is_char = base_laid.char_glyph.is_some() || base.is_none();
         let delta = base_laid.italic;
         // Rule 18a: baseline drops from the base's extremes (zero for
@@ -4625,6 +4639,38 @@ fn text_face(ctx: LayCtx) -> FaceId {
         Some(MathFont::Typewriter) => FACE_TYPEWRITER,
         Some(MathFont::SansSerif) => FACE_SANS,
         _ => FACE_REGULAR,
+    }
+}
+
+/// A primitive accent survives singleton groups (tex.web §1186), and
+/// rule 12 transfers its scripts only when its nucleus is a character.
+/// Constructed over/under accents and compound nuclei keep rule 18.
+fn character_accent_nucleus(mut node: &Node) -> Option<&Node> {
+    while let NodeKind::List(items) = &node.kind {
+        let [only] = items.as_slice() else {
+            return None;
+        };
+        node = only;
+    }
+    match &node.kind {
+        NodeKind::Accent {
+            accent:
+                AccentKind::Hat
+                | AccentKind::Check
+                | AccentKind::Tilde
+                | AccentKind::Acute
+                | AccentKind::Grave
+                | AccentKind::Dot
+                | AccentKind::Ddot
+                | AccentKind::Breve
+                | AccentKind::Bar
+                | AccentKind::Vec
+                | AccentKind::Ring
+                | AccentKind::WideHat
+                | AccentKind::WideTilde,
+            base,
+        } => Some(base),
+        _ => None,
     }
 }
 

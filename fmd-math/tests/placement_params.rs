@@ -2117,6 +2117,53 @@ fn accents_take_tex_accent_geometry() {
 }
 
 #[test]
+fn character_accents_attach_scripts_before_packing_the_accent() {
+    // Independent 10 pt TeX boxes with the ruled Reference preamble
+    // (fm-sup-accented-nucleus-r12-a529). Rule 12 transfers the scripts
+    // to the character; the accent's full height must not raise them.
+    let e = engine();
+    for (source, expected) in [
+        (r"{\bar{\phi}}^{y}", [1.076_509, 0.831_667, 0.194_444]),
+        (r"{\hat{x}}^{2}", [1.020_140, 0.864_003, 0.0]),
+        (r"{\bar{A}}_{1}^{2}", [1.198_615, 0.864_003, 0.247_217]),
+        (r"\bar{\phi}^{y}", [1.076_509, 0.831_667, 0.194_444]),
+        (r"\hat{x}^{2}", [1.020_140, 0.864_003, 0.0]),
+        (r"\bar{A}_{1}^{2}", [1.198_615, 0.864_003, 0.247_217]),
+        (r"\phi^{y}", [1.076_509, 0.714_280, 0.194_444]),
+        (r"{\phi}^{y}", [1.076_509, 0.714_280, 0.194_444]),
+        (r"{\bar{f}}_1", [0.938_199, 0.831_667, 0.194_444]),
+        (r"{\bar{f}}^2", [1.045_839, 0.864_003, 0.194_444]),
+        (r"{\bar{f}}_1^2", [1.045_839, 0.864_003, 0.247_217]),
+        (r"{\hat{f}}_1", [0.938_199, 0.958_334, 0.194_444]),
+        (r"{\hat{xy}}^2", [1.546_300, 0.898_335, 0.194_444]),
+        (r"{\bar{xy}}_1^2", [1.546_300, 0.864_003, 0.247_217]),
+        (r"{\overline{x}}^2", [1.020_140, 0.864_003, 0.0]),
+        (r"{{\hat{x}}}^2", [1.020_140, 0.864_003, 0.0]),
+        (r"\scriptstyle{\hat{x}}^2", [0.843_756, 0.624_000, 0.0]),
+        (
+            r"\scriptscriptstyle{\hat{x}}^2",
+            [0.786_119, 0.523_997, 0.0],
+        ),
+        (r"{\bar{\frac{a}{b}}}^2", [1.217_201, 1.448_175, 0.685_951]),
+        (r"{\vec{A}}_1^2", [1.198_615, 0.967_221, 0.247_217]),
+        (r"{\dot{\phi}}^y", [1.076_509, 0.931_749, 0.194_444]),
+        (r"{\widehat{x}}^2", [1.020_140, 0.864_003, 0.0]),
+        (r"{\widetilde{x}}^2", [1.020_140, 0.864_003, 0.0]),
+        (r"x_{{\hat{x}}^2}", [1.465_283, 0.430_554, 0.177_777]),
+        (r"x^{{\bar{A}}_1^2}", [1.613_202, 1.036_893, 0.0]),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn primes_are_cmsy_prime_characters() {
     // Plain TeX's \prime is cmsy's prime: 0.275 em wide and 0.559 em high in
     // text style, cmsy7's 0.329 x 0.559 (x 0.7) as a superscript. `'` is

@@ -497,6 +497,24 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    fn footnote_number(&mut self, id: &str) -> Option<(usize, bool)> {
+        self.ensure_footnote_defs();
+        if !self.footnote_defs.contains_key(id) {
+            return None;
+        }
+        let next_number = self.footnote_numbers.len() + 1;
+        let number = *self
+            .footnote_numbers
+            .entry(id.to_string())
+            .or_insert(next_number);
+        let first = number == next_number;
+        if first {
+            // Number-order record drives both trailing notes and their anchors.
+            self.footnote_order.push(id.to_string());
+        }
+        Some((number, first))
+    }
+
     fn push_heading_id_from_inlines(&mut self, inlines: &[Inline], out: &mut String) {
         out.push_str(self.id_prefix);
         let mut base = slug_inlines(inlines);
@@ -1621,36 +1639,131 @@ fn collect_toc_entries(blocks: &[Block]) -> Vec<TocEntry> {
     // construction, no mirror to drift.
     let mut state = RenderState::default();
     let mut entries = Vec::new();
-    fn walk(blocks: &[Block], state: &mut RenderState<'_>, entries: &mut Vec<TocEntry>) {
-        for block in blocks {
-            match block {
-                Block::Heading { level, inlines } => {
-                    let mut plain = String::new();
-                    push_inlines_to_plain(inlines, &mut plain);
-                    let mut id = String::new();
-                    state.push_heading_id_from_inlines(inlines, &mut id);
-                    entries.push(TocEntry {
-                        level: *level,
-                        text: plain,
-                        id,
-                    });
+    walk_anchor_blocks(blocks, false, &mut |block| {
+        if let Block::Heading { level, inlines } = block {
+            let mut plain = String::new();
+            push_inlines_to_plain(inlines, &mut plain);
+            let mut id = String::new();
+            state.push_heading_id_from_inlines(inlines, &mut id);
+            entries.push(TocEntry {
+                level: *level,
+                text: plain,
+                id,
+            });
+        }
+    });
+    entries
+}
+
+/// Source-order heading slots, including omitted note definitions. IDs come
+/// from the renderer's allocator in actual body/first-reference note order.
+/// Export transformations can therefore retain identity without matching text
+/// or accidentally treating a colliding footnote anchor as a heading.
+pub(crate) struct HeadingIdentifiers {
+    pub(crate) headings: Vec<Option<String>>,
+    pub(crate) other_anchors: BTreeSet<String>,
+}
+
+pub(crate) fn heading_identifiers(doc: &Document) -> HeadingIdentifiers {
+    let mut ordinals = HashMap::new();
+    walk_anchor_blocks(&doc.blocks, true, &mut |block| {
+        if matches!(block, Block::Heading { .. }) {
+            let ordinal = ordinals.len();
+            // Pointers identify nodes in this immutable tree only. They never
+            // enter serialized data or determine allocation/emission order.
+            ordinals.insert(std::ptr::from_ref(block), ordinal);
+        }
+    });
+    let mut headings = vec![None; ordinals.len()];
+    let mut state = RenderState {
+        root_blocks: &doc.blocks,
+        ..RenderState::default()
+    };
+    collect_emitted_heading_ids(&doc.blocks, &ordinals, &mut headings, &mut state);
+    let mut cursor = 0;
+    while let Some(id) = state.footnote_order.get(cursor) {
+        let blocks = state.footnote_defs.get(id.as_str()).copied();
+        cursor += 1;
+        if let Some(blocks) = blocks {
+            collect_emitted_heading_ids(blocks, &ordinals, &mut headings, &mut state);
+        }
+    }
+    let mut other_anchors = BTreeSet::new();
+    for (id, number) in state.footnote_numbers {
+        other_anchors.insert(format!("fn-{id}"));
+        other_anchors.insert(format!("fnref-{number}"));
+    }
+    HeadingIdentifiers {
+        headings,
+        other_anchors,
+    }
+}
+
+fn walk_anchor_blocks<'a>(
+    blocks: &'a [Block],
+    definitions: bool,
+    visit: &mut impl FnMut(&'a Block),
+) {
+    for block in blocks {
+        visit(block);
+        match block {
+            Block::BlockQuote(inner) => walk_anchor_blocks(inner, definitions, visit),
+            Block::List(list) => {
+                for item in &list.items {
+                    walk_anchor_blocks(&item.blocks, definitions, visit);
                 }
-                Block::BlockQuote(inner) => walk(inner, state, entries),
-                Block::List(list) => {
-                    for item in &list.items {
-                        walk(&item.blocks, state, entries);
-                    }
+            }
+            Block::FootnoteDefinition { blocks, .. } if definitions => {
+                walk_anchor_blocks(blocks, definitions, visit);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_emitted_heading_ids<'a>(
+    blocks: &'a [Block],
+    ordinals: &HashMap<*const Block, usize>,
+    headings: &mut [Option<String>],
+    state: &mut RenderState<'a>,
+) {
+    fn references(inlines: &[Inline], state: &mut RenderState<'_>) {
+        for inline in inlines {
+            match inline {
+                Inline::FootnoteRef { id } => {
+                    let _ = state.footnote_number(id);
                 }
-                // Footnote definitions are skipped in the body walk and rendered
-                // later from a live suffix map. Walking them here would consume
-                // heading ids the body headings never receive.
-                Block::FootnoteDefinition { .. } => {}
+                Inline::Emphasis(inner)
+                | Inline::Strong(inner)
+                | Inline::Strikethrough(inner)
+                | Inline::Link { content: inner, .. } => references(inner, state),
                 _ => {}
             }
         }
     }
-    walk(blocks, &mut state, &mut entries);
-    entries
+    walk_anchor_blocks(blocks, false, &mut |block| match block {
+        Block::Heading { inlines, .. } => {
+            let mut id = String::new();
+            state.push_heading_id_from_inlines(inlines, &mut id);
+            // Every visited heading was indexed by the all-definition walk.
+            headings[ordinals[&std::ptr::from_ref(block)]] = Some(id);
+            references(inlines, state);
+        }
+        Block::Paragraph(inlines) => references(inlines, state),
+        Block::Table(table) => {
+            for cell in table.head.iter().chain(table.rows.iter().flatten()) {
+                references(cell, state);
+            }
+        }
+        Block::DefinitionList(items) => {
+            for item in items {
+                for inlines in item.terms.iter().chain(&item.definitions) {
+                    references(inlines, state);
+                }
+            }
+        }
+        _ => {}
+    });
 }
 
 /// Nested-list TOC emission from pre-computed entries.
@@ -1789,24 +1902,12 @@ fn push_footnote(state: &mut RenderState<'_>, out: &mut String, opts: &HtmlOptio
 /// section entry. The first reference to a footnote carries the backref
 /// anchor id. References without definitions stay literal text (GFM).
 fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) {
-    state.ensure_footnote_defs();
-    let has_def = state.footnote_defs.contains_key(id);
-    if !has_def {
+    let Some((number, first)) = state.footnote_number(id) else {
         out.push_str("[^");
         out.push_str(&escape_text(id));
         out.push(']');
         return;
-    }
-    let next_number = state.footnote_numbers.len() + 1;
-    let number = *state
-        .footnote_numbers
-        .entry(id.to_string())
-        .or_insert(next_number);
-    let first = number == next_number;
-    if first {
-        // Number-order record drives the trailing notes section.
-        state.footnote_order.push(id.to_string());
-    }
+    };
     out.push_str("<sup class=\"footnote-ref\"");
     if first {
         out.push_str(" id=\"");

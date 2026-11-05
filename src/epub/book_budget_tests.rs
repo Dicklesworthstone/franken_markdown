@@ -57,6 +57,34 @@ fn exact_output_budget_applies_to_font_free_publications() -> TestResult {
 }
 
 #[test]
+fn heading_link_maps_share_a_scratch_budget_without_charging_publication_bytes() -> TestResult {
+    let source = "<h1>Same</h1>\n\n# Same\n\n[Target](#same)\n";
+    let book = build_book(&[
+        BookInput {
+            path: "one.md".into(),
+            source: source.into(),
+        },
+        BookInput {
+            path: "two.md".into(),
+            source: source.into(),
+        },
+    ])?;
+    // Each real remapping retains "same" + "same-2": ten UTF-8 bytes.
+    // Nineteen admits each chapter separately but must reject their aggregate.
+    assert_eq!(prepare_heading_links(&book, 20)?.len(), 2);
+    assert!(prepare_heading_links(&book, 19).is_err());
+
+    let opts = HtmlOptions::default();
+    let prepared = prepare_book(&book, &opts)?;
+    let exact = emitted_size(&prepared);
+    let repeated = prepare_book_with_budget(&book, &opts, exact)?;
+    assert_eq!(repeated.chapters[0].xhtml, prepared.chapters[0].xhtml);
+    assert_eq!(repeated.chapters[1].xhtml, prepared.chapters[1].xhtml);
+    assert!(prepare_book_with_budget(&book, &opts, exact - 1).is_err());
+    Ok(())
+}
+
+#[test]
 fn fonts_and_their_inserted_stylesheet_links_count_in_the_same_budget() -> TestResult {
     let book = book()?;
     let opts = HtmlOptions {

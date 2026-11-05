@@ -57,6 +57,8 @@ mod archive_tests;
 mod book;
 #[path = "epub/fonts.rs"]
 mod embedded_fonts;
+#[path = "epub/heading_links.rs"]
+mod heading_links;
 #[path = "epub/resources.rs"]
 mod resources;
 #[path = "epub/theme.rs"]
@@ -132,7 +134,15 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     // Raw HTML is lowered to native nodes (only tags outside the safe subset
     // remain, escaped) so chapter XHTML stays well-formed and valid. Navigation
     // must use these same nodes: a raw HTML heading consumes an emitted ID too.
-    let lowered = franken_markdown::safe_html::lower(doc);
+    let (mut lowered, origins) = crate::safe_html::lower_with_heading_origins(doc);
+    let links = heading_links::HeadingLinks::from_lowered(doc, &lowered, origins.as_deref())?;
+    if !links.is_empty() {
+        crate::safe_html::visit_destinations(&mut lowered.to_mut().blocks, &mut |dest, kind| {
+            if kind == crate::safe_html::UrlKind::Link {
+                links.rewrite_local(dest);
+            }
+        });
+    }
     let page = franken_markdown::html::render(&lowered, &html_opts);
     let mut nav = nav_xhtml(&title, &lang, &lowered);
     drop(lowered);

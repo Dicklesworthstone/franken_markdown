@@ -872,6 +872,292 @@ fn epub_raw_html_heading_navigation_matches_actual_ids_in_documents_and_books() 
 }
 
 #[test]
+fn epub_authored_heading_links_keep_their_source_targets_after_html_lowering() {
+    use franken_markdown::{BookInput, build_book};
+
+    let source = "<h1>Same</h1>\n\n# Same\n\n[Markdown target](#same)\n";
+    let document = parse_markdown(source);
+    let options = HtmlOptions::default();
+    let single = epub::render_epub(&document, &options).unwrap();
+    let chapter = entry_text(&single, "OEBPS/chapter-1.xhtml");
+    assert!(chapter.contains("<h1 id=\"same\">Same</h1>"));
+    assert!(chapter.contains("<h1 id=\"same-2\">Same</h1>"));
+    assert!(
+        chapter.contains("href=\"#same-2\">Markdown target</a>"),
+        "the authored link must still address the original Markdown heading: {chapter}"
+    );
+
+    let book = build_book(&[
+        BookInput {
+            path: "start.md".into(),
+            source: "# Start\n\n[Next](guide/target.md#same)\n".into(),
+        },
+        BookInput {
+            path: "guide/target.md".into(),
+            source: source.into(),
+        },
+    ])
+    .unwrap();
+    let archive = epub::render_book_epub(&book, &options).unwrap();
+    let start = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+    let target = entry_text(&archive, "OEBPS/chapter-2.xhtml");
+    assert!(
+        start.contains("href=\"chapter-2.xhtml#same-2\">Next</a>"),
+        "cross-chapter navigation must retain the same source heading: {start}"
+    );
+    assert!(target.contains("href=\"#same-2\">Markdown target</a>"));
+}
+
+#[test]
+fn epub_heading_links_preserve_unicode_collision_targets_and_sanitized_ids() {
+    use franken_markdown::{BookInput, build_book};
+
+    let source = r##"<h1 id="author-id">Café</h1>
+
+## Café
+
+## Café-2
+
+<blockquote><h3>中文</h3></blockquote>
+
+> ## 中文
+
+- ## Café
+
+[First](#caf%C3%A9) [Suffix](#café-2) [Listed](#café-3)
+[Quoted](#%E4%B8%AD%E6%96%87) [Query](?edition=2&mode=read#caf%C3%A9)
+<a href="#caf&#233;">HTML link</a>
+
+[Stripped ID](#author-id) [Unknown](#absent) [Wrong case](#Café)
+[Double encoding](#%2563af%C3%A9) [Invalid encoding](#bad%GG)
+[External](https://example.invalid/#caf%C3%A9)
+[Network](//example.invalid/#caf%C3%A9) [Unknown file](missing.md#café)
+"##;
+    let document = parse_markdown(source);
+    let options = HtmlOptions::default();
+    let book = build_book(&[BookInput {
+        path: "chapter.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for archive in [
+        epub::render_epub(&document, &options).unwrap(),
+        epub::render_book_epub(&book, &options).unwrap(),
+    ] {
+        let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+        let nav = entry_text(&archive, "OEBPS/nav.xhtml");
+        // Authored hrefs use the existing HTML URL serializer: UTF-8 bytes
+        // are percent-encoded, valid escapes survive, and a stray '%' is %25.
+        for (href, label) in [
+            ("#caf%C3%A9-2", "First"),
+            ("#caf%C3%A9-2-2", "Suffix"),
+            ("#caf%C3%A9-3", "Listed"),
+            ("#%E4%B8%AD%E6%96%87-2", "Quoted"),
+            ("?edition=2&amp;mode=read#caf%C3%A9-2", "Query"),
+            ("#caf%C3%A9-2", "HTML link"),
+            ("#author-id", "Stripped ID"),
+            ("#absent", "Unknown"),
+            ("#Caf%C3%A9", "Wrong case"),
+            ("#%2563af%C3%A9", "Double encoding"),
+            ("#bad%25GG", "Invalid encoding"),
+            ("https://example.invalid/#caf%C3%A9", "External"),
+            ("//example.invalid/#caf%C3%A9", "Network"),
+            ("missing.md#caf%C3%A9", "Unknown file"),
+        ] {
+            assert!(
+                chapter.contains(&format!("href=\"{href}\">{label}</a>")),
+                "wrong destination for {label}: {chapter}"
+            );
+        }
+        assert!(!chapter.contains("id=\"author-id\""));
+        for id in ["café", "café-2", "café-2-2", "café-3", "中文", "中文-2"] {
+            assert!(chapter.contains(&format!("id=\"{id}\"")));
+            assert!(nav.contains(&format!("href=\"chapter-1.xhtml#{id}\"")));
+        }
+        assert_well_formed_xml(&chapter);
+        assert_well_formed_xml(&nav);
+    }
+}
+
+#[test]
+fn epub_heading_links_follow_inline_html_flattening_without_a_second_remap() {
+    use franken_markdown::{BookInput, build_book};
+
+    let source = "# Version <sup>2</sup>\n\n# Version\n\n[Squared](#version-2) [Plain](#version)\n";
+    let document = parse_markdown(source);
+    let options = HtmlOptions::default();
+    let book = build_book(&[BookInput {
+        path: "version.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for archive in [
+        epub::render_epub(&document, &options).unwrap(),
+        epub::render_book_epub(&book, &options).unwrap(),
+    ] {
+        let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+        assert!(chapter.contains("<h1 id=\"version\">Version ²</h1>"));
+        assert!(chapter.contains("<h1 id=\"version-2\">Version</h1>"));
+        assert!(
+            chapter.contains("href=\"#version\">Squared</a>"),
+            "{chapter}"
+        );
+        assert!(
+            chapter.contains("href=\"#version-2\">Plain</a>"),
+            "{chapter}"
+        );
+        assert_well_formed_xml(&chapter);
+    }
+}
+
+#[test]
+fn epub_heading_links_follow_note_emission_order_and_ignore_unused_definitions() {
+    use franken_markdown::{BookInput, build_book};
+
+    let source = r##"<h1>Repeat</h1>
+
+## Repeat
+
+| Citation |
+| --- |
+| Second[^second] |
+
+Term
+: First[^first]
+
+[Body](#repeat) [Second](#repeat-2) [First](#repeat-3) [Nested](#repeat-4)
+[Unused](#unused)
+
+[^first]: ## Repeat
+
+    First note cites the nested note[^nested].
+
+[^second]: ## Repeat
+
+    Second note comes first in the emitted notes.
+
+[^nested]: ## Repeat
+
+    Nested note cites the first[^first].
+
+[^unused]: ## Unused
+
+    This note must not acquire a published heading.
+
+[^second]: ## Repeat
+
+    This duplicate must not consume a heading ID.
+"##;
+    let document = parse_markdown(source);
+    let options = HtmlOptions::default();
+    let book = build_book(&[BookInput {
+        path: "notes.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for archive in [
+        epub::render_epub(&document, &options).unwrap(),
+        epub::render_book_epub(&book, &options).unwrap(),
+    ] {
+        let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+        for (href, label) in [
+            ("#repeat-2", "Body"),
+            ("#repeat-3", "Second"),
+            ("#repeat-4", "First"),
+            ("#repeat-5", "Nested"),
+            ("#unused", "Unused"),
+        ] {
+            assert!(
+                chapter.contains(&format!("href=\"{href}\">{label}</a>")),
+                "{chapter}"
+            );
+        }
+        for (note, heading) in [
+            ("second", "repeat-3"),
+            ("first", "repeat-4"),
+            ("nested", "repeat-5"),
+        ] {
+            assert!(
+                chapter.contains(&format!(
+                    "<li id=\"fn-{note}\"><h2 id=\"{heading}\">Repeat</h2>"
+                )),
+                "note provenance drifted: {chapter}"
+            );
+        }
+        assert!(!chapter.contains("id=\"unused\""));
+        assert!(!chapter.contains("This duplicate must not consume"));
+        assert_well_formed_xml(&chapter);
+    }
+}
+
+#[test]
+fn epub_heading_links_do_not_resolve_ambiguous_footnote_anchors() {
+    let source = "<h1>fn-note</h1>\n\n# fn-note\n\n<h1>fnref-1</h1>\n\n# fnref-1\n\nReference[^note].\n\n[^note]: Note body.\n\n[Ambiguous note](#fn-note) [Ambiguous backreference](#fnref-1)\n";
+    let archive = epub::render_epub(&parse_markdown(source), &HtmlOptions::default()).unwrap();
+    let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+    assert!(chapter.contains("<h1 id=\"fn-note-2\">fn-note</h1>"));
+    assert!(chapter.contains("<h1 id=\"fnref-1-2\">fnref-1</h1>"));
+    assert!(chapter.contains("href=\"#fn-note\">Ambiguous note</a>"));
+    assert!(chapter.contains("href=\"#fnref-1\">Ambiguous backreference</a>"));
+    assert_well_formed_xml(&chapter);
+}
+
+#[test]
+fn epub_book_heading_link_maps_keep_chapter_scope_queries_and_image_resources() {
+    use franken_markdown::{BookInput, PdfImageAsset, build_book};
+
+    let book = build_book(&[
+        BookInput {
+            path: "start.md".into(),
+            source: "# Café\n\n[Forward](guide/target%20name.md?edition=2#caf%C3%A9)\n\n<a href='guide/target%20name.md#caf&#233;-2'>Suffix</a>\n\n[Self](#caf%C3%A9) [Missing](guide/missing.md#café)\n".into(),
+        },
+        BookInput {
+            path: "guide/target name.md".into(),
+            source: "<h1>Café</h1>\n\n## Café\n\n## Café-2\n\n[Self](#caf%C3%A9) [Back](../start.md#caf%C3%A9)\n\n![same fragment](#café)\n\n![relative resource](figure.svg#café)\n".into(),
+        },
+    ])
+    .unwrap();
+    let first = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"5\"><rect width=\"10\" height=\"5\" fill=\"blue\"/></svg>";
+    let second = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"5\"><rect width=\"10\" height=\"5\" fill=\"green\"/></svg>";
+    let options = HtmlOptions {
+        image_assets: vec![
+            PdfImageAsset::new("#café", first.to_vec()),
+            PdfImageAsset::new("guide/figure.svg#café", second.to_vec()),
+        ],
+        ..HtmlOptions::default()
+    };
+    let archive = epub::render_book_epub(&book, &options).unwrap();
+    let start = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+    let target = entry_text(&archive, "OEBPS/chapter-2.xhtml");
+    for (href, label) in [
+        ("chapter-2.xhtml?edition=2#caf%C3%A9-2", "Forward"),
+        ("chapter-2.xhtml#caf%C3%A9-2-2", "Suffix"),
+        ("#caf%C3%A9", "Self"),
+        ("guide/missing.md#caf%C3%A9", "Missing"),
+    ] {
+        assert!(
+            start.contains(&format!("href=\"{href}\">{label}</a>")),
+            "{start}"
+        );
+    }
+    assert!(target.contains("href=\"#caf%C3%A9-2\">Self</a>"));
+    assert!(target.contains("href=\"chapter-1.xhtml#caf%C3%A9\">Back</a>"));
+    assert!(target.contains("src=\"assets/chapter-2-image-1.svg\""));
+    assert!(target.contains("src=\"assets/chapter-2-image-2.svg\""));
+    assert_eq!(
+        entry_text(&archive, "OEBPS/assets/chapter-2-image-1.svg").as_bytes(),
+        first
+    );
+    assert_eq!(
+        entry_text(&archive, "OEBPS/assets/chapter-2-image-2.svg").as_bytes(),
+        second
+    );
+    assert_well_formed_xml(&start);
+    assert_well_formed_xml(&target);
+    assert_eq!(archive, epub::render_book_epub(&book, &options).unwrap());
+}
+
+#[test]
 fn epub_render_is_byte_deterministic() {
     let a = fixture_epub(&HtmlOptions::default());
     let b = fixture_epub(&HtmlOptions::default());

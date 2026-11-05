@@ -7,7 +7,8 @@ use franken_markdown::{Book, HtmlOptions, PdfImageAsset, RenderError, Result};
 use super::{
     Block, CONTAINER_XML, DCTERMS_MODIFIED, MIMETYPE, NavHeading, ZipWriter, chapter_xhtml,
     collect_headings, embedded_fonts, escape_xml_attr, escape_xml_text, extract_main_body, fnv1a64,
-    html_fragment_to_xhtml, push_nav_headings, resources, theme, validate_xml_characters,
+    heading_links::HeadingLinks, html_fragment_to_xhtml, push_nav_headings, resources, theme,
+    validate_xml_characters,
 };
 
 #[path = "book_images.rs"]
@@ -129,6 +130,12 @@ fn prepare_book_with_budget(
         paths.push(path);
     }
 
+    // Forward links need every target's source-to-export heading map. Retain
+    // only changed IDs, lowering one chapter at a time rather than keeping a
+    // second AST for the entire book. The publication pass below still owns
+    // each chapter's ordinary resource rewriting and bounded render.
+    let heading_links = prepare_heading_links(book, MAX_BOOK_BYTES)?;
+
     let title = opts.title.as_deref().unwrap_or("Book");
     let lang = opts.lang.as_deref().unwrap_or("en");
     let css = theme::stylesheet(opts);
@@ -151,7 +158,14 @@ fn prepare_book_with_budget(
     html_opts.allow_raw_html = false;
     for (index, source) in book.chapters.iter().enumerate() {
         let mut doc = source.doc.clone();
-        rewrite_blocks(&mut doc.blocks, &paths[index], &known, &opts.image_assets);
+        rewrite_blocks(
+            &mut doc.blocks,
+            index,
+            &paths[index],
+            &known,
+            &heading_links,
+            &opts.image_assets,
+        );
         let chapter_lang = source
             .frontmatter
             .as_ref()
@@ -283,6 +297,25 @@ fn chapter_file(index: usize) -> String {
     format!("chapter-{}.xhtml", index + 1)
 }
 
+fn prepare_heading_links(book: &Book, byte_limit: usize) -> Result<Vec<HeadingLinks>> {
+    let mut maps = Vec::with_capacity(book.chapters.len());
+    let mut bytes = 0usize;
+    for chapter in &book.chapters {
+        let links = HeadingLinks::for_document(&chapter.doc)?;
+        bytes = links
+            .byte_len()
+            .and_then(|size| bytes.checked_add(size))
+            .filter(|&size| size <= byte_limit)
+            .ok_or_else(|| {
+                invalid(&format!(
+                    "heading link maps exceed the {byte_limit}-byte scratch limit"
+                ))
+            })?;
+        maps.push(links);
+    }
+    Ok(maps)
+}
+
 fn has_scheme(value: &str) -> bool {
     let Some((scheme, _)) = value.split_once(':') else {
         return false;
@@ -356,17 +389,25 @@ fn destination(source: &str, dest: &str) -> Option<(String, String)> {
 
 fn rewrite_blocks(
     blocks: &mut [Block],
+    source_index: usize,
     source: &str,
     known: &BTreeMap<String, usize>,
+    heading_links: &[HeadingLinks],
     assets: &[PdfImageAsset],
 ) {
     franken_markdown::safe_html::visit_destinations(blocks, &mut |dest, kind| {
+        if kind == franken_markdown::safe_html::UrlKind::Link && dest.trim().starts_with(['#', '?'])
+        {
+            heading_links[source_index].rewrite_local(dest);
+            return;
+        }
         let Some((target, suffix)) = destination(source, dest) else {
             return;
         };
         match kind {
             franken_markdown::safe_html::UrlKind::Link => {
                 if let Some(&index) = known.get(&target) {
+                    let suffix = heading_links[index].rewrite(&suffix).unwrap_or(suffix);
                     *dest = format!("{}{suffix}", chapter_file(index));
                 }
             }

@@ -42,8 +42,51 @@ pub fn lower(doc: &Document) -> Cow<'_, Document> {
         return Cow::Borrowed(doc);
     }
     Cow::Owned(Document {
-        blocks: lower_blocks(&doc.blocks),
+        blocks: lower_blocks(&doc.blocks, &mut None),
     })
+}
+
+/// The same lowering pass, with provenance for publication-owned heading IDs.
+/// Each lowered heading records its original native-heading ordinal, in an
+/// all-container source walk including note definitions. Headings introduced
+/// by raw HTML have no source ordinal. The borrowed fast path needs no map.
+/// This sidecar never changes the visible AST or parses an HTML node twice.
+pub(crate) fn lower_with_heading_origins(
+    doc: &Document,
+) -> (Cow<'_, Document>, Option<Vec<Option<usize>>>) {
+    if !blocks_have_html(&doc.blocks) {
+        return (Cow::Borrowed(doc), None);
+    }
+    let mut origins = Some(HeadingOrigins::default());
+    let lowered = Document {
+        blocks: lower_blocks(&doc.blocks, &mut origins),
+    };
+    (Cow::Owned(lowered), origins.map(|origins| origins.lowered))
+}
+
+#[derive(Default)]
+struct HeadingOrigins {
+    next_source: usize,
+    lowered: Vec<Option<usize>>,
+}
+
+impl HeadingOrigins {
+    fn inserted(&mut self, blocks: &[Block]) {
+        for block in blocks {
+            match block {
+                Block::Heading { .. } => self.lowered.push(None),
+                Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
+                    self.inserted(inner);
+                }
+                Block::List(list) => {
+                    for item in &list.items {
+                        self.inserted(&item.blocks);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn blocks_have_html(blocks: &[Block]) -> bool {
@@ -82,25 +125,37 @@ fn inlines_have_html(inlines: &[Inline]) -> bool {
     })
 }
 
-fn lower_blocks(blocks: &[Block]) -> Vec<Block> {
+fn lower_blocks(blocks: &[Block], origins: &mut Option<HeadingOrigins>) -> Vec<Block> {
     let mut out = Vec::with_capacity(blocks.len());
     for block in blocks {
         match block {
-            Block::HtmlBlock(html) => out.extend(lower_html_block(html)),
+            Block::HtmlBlock(html) => {
+                let lowered = lower_html_block(html);
+                if let Some(origins) = origins {
+                    origins.inserted(&lowered);
+                }
+                out.extend(lowered);
+            }
             Block::Paragraph(inlines) => {
                 let lowered = lower_inlines(inlines);
                 if has_visible_content(&lowered) {
                     out.push(Block::Paragraph(trim_inlines(lowered)));
                 }
             }
-            Block::Heading { level, inlines } => out.push(Block::Heading {
-                level: *level,
-                inlines: trim_inlines(lower_inlines(inlines)),
-            }),
-            Block::BlockQuote(inner) => out.push(Block::BlockQuote(lower_blocks(inner))),
+            Block::Heading { level, inlines } => {
+                if let Some(origins) = origins {
+                    origins.lowered.push(Some(origins.next_source));
+                    origins.next_source += 1;
+                }
+                out.push(Block::Heading {
+                    level: *level,
+                    inlines: trim_inlines(lower_inlines(inlines)),
+                });
+            }
+            Block::BlockQuote(inner) => out.push(Block::BlockQuote(lower_blocks(inner, origins))),
             Block::FootnoteDefinition { id, blocks } => out.push(Block::FootnoteDefinition {
                 id: id.clone(),
-                blocks: lower_blocks(blocks),
+                blocks: lower_blocks(blocks, origins),
             }),
             Block::List(list) => out.push(Block::List(List {
                 ordered: list.ordered,
@@ -111,7 +166,7 @@ fn lower_blocks(blocks: &[Block]) -> Vec<Block> {
                     .iter()
                     .map(|item| ListItem {
                         task: item.task,
-                        blocks: lower_blocks(&item.blocks),
+                        blocks: lower_blocks(&item.blocks, origins),
                     })
                     .collect(),
             })),

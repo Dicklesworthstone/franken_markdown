@@ -3796,7 +3796,8 @@ impl Engine {
             kind: BoxKind::Horizontal,
             width,
             height: inner.height,
-            depth: -rule_y + 2.0 * theta,
+            // TeX's make_under leaves one theta below the rule (tex.web §735).
+            depth: -rule_y + theta,
             // TeX's emission order: the base, then the rule under it.
             children: vec![
                 Positioned {

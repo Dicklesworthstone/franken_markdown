@@ -2164,6 +2164,108 @@ fn character_accents_attach_scripts_before_packing_the_accent() {
 }
 
 #[test]
+fn underlines_match_independent_tex_boxes() {
+    // Fresh ruled-Reference TeX at10pt (fm-underline-depth-r12-gj19).
+    // All31 predeclared cases stay here, including plain/overline controls,
+    // text islands, deep nuclei, nested boxes and all four math styles.
+    // TeX's make_under adds5theta below the nucleus, not6theta.
+    let e = engine();
+    for (source, expected) in [
+        (r"\underline{B}", [0.808_680, 0.683_331, 0.199_990]),
+        (r"\underline{y}", [0.526_160, 0.430_554, 0.394_434]),
+        (r"\underline{\Delta}", [0.833_336, 0.683_331, 0.199_990]),
+        (r"\underline{\phi}", [0.595_834, 0.694_444, 0.394_434]),
+        (r"\underline{xy}", [1.097_687, 0.430_554, 0.394_434]),
+        (
+            r"\underline{\frac{B}{y}}",
+            [1.048_680, 1.359_839, 1.080_385],
+        ),
+        (r"\underline{\sqrt{y}}", [1.359_496, 0.751_869, 0.488_116]),
+        (
+            r"\underline{\underline{B}}",
+            [0.808_680, 0.683_331, 0.399_979],
+        ),
+        (
+            r"\underline{\underline{y}}",
+            [0.526_160, 0.430_554, 0.594_423],
+        ),
+        (
+            r"\overline{\underline{B}}",
+            [0.808_680, 0.883_320, 0.199_990],
+        ),
+        (
+            r"\underline{\overline{B}}",
+            [0.808_680, 0.883_320, 0.199_990],
+        ),
+        (r"\underline{B}_1^2", [1.257_294, 0.887_222, 0.249_988]),
+        (r"\underline{y}_1^2", [0.974_773, 0.864_003, 0.444_432]),
+        (
+            r"\frac{\underline{B}}{\underline{y}}",
+            [1.048_680, 1.359_839, 1.080_385],
+        ),
+        (r"\sqrt{\underline{y}}", [1.526_161, 0.751_881, 0.488_127]),
+        (
+            r"\sum_{\underline{y}}^{\underline{B}}",
+            [1.444_447, 1.909_442, 1.556_107],
+        ),
+        (r"\text{\underline{B}}", [0.708_160, 0.688_720, 0.199_990]),
+        (r"\text{\underline{y}}", [0.527_649, 0.430_450, 0.394_386]),
+        (r"\underline{\text{By}}", [1.235_810, 0.688_720, 0.394_386]),
+        ("B", [0.808_680, 0.683_331, 0.0]),
+        ("y", [0.526_160, 0.430_554, 0.194_444]),
+        (r"\overline{B}", [0.808_680, 0.883_320, 0.0]),
+        (r"\overline{y}", [0.526_160, 0.630_544, 0.194_444]),
+        // The existing layout golden was separately measured before its
+        // depth-only expectation was adjudicated; its ink is unchanged.
+        (
+            r"\overline{AB} + \underline{x}",
+            [3.352_423, 0.883_320, 0.199_990],
+        ),
+        (
+            r"\scriptstyle\underline{B}",
+            [0.638_300, 0.478_334, 0.169_990],
+        ),
+        (
+            r"\scriptstyle\underline{y}",
+            [0.430_675, 0.301_389, 0.306_100],
+        ),
+        (
+            r"\scriptscriptstyle\underline{B}",
+            [0.541_846, 0.341_667, 0.121_422],
+        ),
+        (
+            r"\scriptscriptstyle\underline{y}",
+            [0.383_220, 0.215_277, 0.218_643],
+        ),
+        (
+            r"\textstyle\underline{B}",
+            [0.808_680, 0.683_331, 0.199_990],
+        ),
+        (
+            r"\textstyle\underline{y}",
+            [0.526_160, 0.430_554, 0.394_434],
+        ),
+        (
+            r"\displaystyle\underline{B}",
+            [0.808_680, 0.683_331, 0.199_990],
+        ),
+        (
+            r"\displaystyle\underline{y}",
+            [0.526_160, 0.430_554, 0.394_434],
+        ),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn primes_are_cmsy_prime_characters() {
     // Exact independently transcribed system TFM fix_words /2^20, not
     // the rounded AFM ink frame the former fixture asserted. Fresh TeX

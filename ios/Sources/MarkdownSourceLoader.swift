@@ -106,6 +106,17 @@ final class MarkdownDocumentSession: ObservableObject {
     private var explicitDocumentRequested = false
     private(set) var documentGeneration = UUID()
 
+    private struct SaveRequest: Sendable {
+        let id: UUID
+        let documentGeneration: UUID
+        let documentIdentity: UUID
+        let source: String
+        let completion: CheckedContinuation<Void, Error>
+    }
+
+    private var activeSave: (request: SaveRequest, task: Task<Void, Never>)?
+    private var queuedSave: SaveRequest?
+
     init(
         initialSource: String,
         defaults: UserDefaults = .standard,
@@ -145,6 +156,12 @@ final class MarkdownDocumentSession: ObservableObject {
         return !sharesStorage && !source.utf8.elementsEqual(baseline.utf8)
     }
 
+    func needsAutosave(source: String) -> Bool {
+        // Undo may return the editor to today's baseline while an older write
+        // is about to change it. Keep that latest intent until I/O has settled.
+        hasCurrentDocument && attention == nil && (isSaving || isDirty(source: source))
+    }
+
     /// An explicit picker, New, or file-open request supersedes automatic launch
     /// restoration and any older read. The underlying coordinated I/O can finish
     /// safely, but its result must no longer replace the active document.
@@ -167,7 +184,13 @@ final class MarkdownDocumentSession: ObservableObject {
     private func beginDocumentTransition() {
         cancelPendingDocumentRequests()
         documentGeneration = UUID()
+        let previous = activeSave
+        let queued = queuedSave
+        activeSave = nil
+        queuedSave = nil
         isSaving = false
+        previous?.task.cancel()
+        queued?.completion.resume(throwing: CancellationError())
     }
 
     func beginUntitled(source: String) {
@@ -302,41 +325,127 @@ final class MarkdownDocumentSession: ObservableObject {
     }
 
     func save(source: String) async throws {
-        guard let currentDocument else { throw MarkdownSourceLoader.DocumentError.noCurrentDocument }
+        try Task.checkCancellation()
+        guard currentDocument != nil else { throw MarkdownSourceLoader.DocumentError.noCurrentDocument }
         if attention == .changedOnDisk {
             throw MarkdownSourceLoader.DocumentError.changedOnDisk
         }
         if attention == .recoveryConflict {
             throw MarkdownSourceLoader.DocumentError.recoveryConflict
         }
-        guard !isSaving else { return }
+
+        let id = UUID()
         let generation = documentGeneration
         let identity = currentDocumentIdentity ?? UUID()
-        isSaving = true
-        defer {
-            if generation == documentGeneration { isSaving = false }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+                guard !Task.isCancelled, generation == documentGeneration,
+                      let currentDocument else {
+                    completion.resume(throwing: CancellationError())
+                    return
+                }
+                let request = SaveRequest(
+                    id: id,
+                    documentGeneration: generation,
+                    documentIdentity: identity,
+                    source: source,
+                    completion: completion
+                )
+                if activeSave != nil {
+                    // Retain only the latest intent while coordinated I/O is
+                    // suspended. Returning success here would lose autosave's
+                    // last edit when the provider takes longer than its debounce.
+                    let superseded = queuedSave
+                    queuedSave = request
+                    superseded?.completion.resume(throwing: CancellationError())
+                } else {
+                    startSave(request, replacing: currentDocument)
+                }
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor in self?.cancelSave(id) }
         }
-        do {
-            let saved = try await saveDocument(source, currentDocument)
-            // Saving the previous file may finish after New/Open. Its disk
-            // write still belongs to that file; its session state does not.
-            guard generation == documentGeneration else { return }
-            self.currentDocument = saved
+    }
+
+    private func startSave(_ request: SaveRequest, replacing document: MarkdownSourceDocument) {
+        // Each write has its own Task. An older autosave caller can be cancelled
+        // by typing without carrying that cancellation into the queued write.
+        let task = Task { @MainActor [self] in
+            let result: Result<MarkdownSourceDocument, Error>
+            do {
+                try Task.checkCancellation()
+                result = .success(try await saveDocument(request.source, document))
+            } catch {
+                result = .failure(error)
+            }
+            finishSave(request, result: result)
+        }
+        activeSave = (request, task)
+        isSaving = true
+    }
+
+    private func cancelSave(_ id: UUID) {
+        if queuedSave?.id == id {
+            let queued = queuedSave
+            queuedSave = nil
+            queued?.completion.resume(throwing: CancellationError())
+        } else if activeSave?.request.id == id {
+            // Keep physical ownership until the provider finishes. It may have
+            // already committed despite cancellation; that fingerprint matters.
+            activeSave?.task.cancel()
+        }
+    }
+
+    private func finishSave(
+        _ request: SaveRequest,
+        result: Result<MarkdownSourceDocument, Error>
+    ) {
+        defer {
+            request.completion.resume(with: result.map { _ in () })
+        }
+        // A retired writer still settles its caller, but cannot adopt its file,
+        // drain another document's queue, or clear a newer save's busy state.
+        guard activeSave?.request.id == request.id,
+              request.documentGeneration == documentGeneration else { return }
+        activeSave = nil
+        let queued = queuedSave
+        queuedSave = nil
+
+        switch result {
+        case .success(let saved):
+            // Do not discard successful disk state just because the caller was
+            // cancelled after the atomic replacement's final cancellation check.
+            currentDocument = saved
             attention = nil
             recordActive(
                 saved,
-                documentIdentity: identity
+                documentIdentity: request.documentIdentity
             )
             recordRecent(saved)
-        } catch {
-            if generation == documentGeneration {
-                if error as? MarkdownSourceLoader.DocumentError == .changedOnDisk {
-                    attention = .changedOnDisk
-                } else if Self.isUnavailableFileError(error) {
-                    attention = .unavailable
-                }
+        case .failure(let error):
+            if error as? MarkdownSourceLoader.DocumentError == .changedOnDisk {
+                attention = .changedOnDisk
+            } else if Self.isUnavailableFileError(error) {
+                attention = .unavailable
             }
-            throw error
+            // A real write failure belongs to the newest waiting save as well.
+            // Stop rather than automatically retrying over a changed file.
+            if !(error is CancellationError) {
+                isSaving = false
+                queued?.completion.resume(throwing: error)
+                return
+            }
+        }
+
+        if let queued,
+           queued.documentGeneration == documentGeneration,
+           let currentDocument {
+            // Use the just-committed baseline, including its refreshed bookmark,
+            // BOM policy and byte fingerprint, never the baseline from enqueue.
+            startSave(queued, replacing: currentDocument)
+        } else {
+            isSaving = false
+            queued?.completion.resume(throwing: CancellationError())
         }
     }
 
@@ -409,6 +518,55 @@ final class MarkdownDocumentSession: ObservableObject {
             CocoaError.Code.fileReadNoPermission.rawValue,
             CocoaError.Code.fileWriteNoPermission.rawValue
         ].contains(cocoaError.code)
+    }
+}
+
+/// Owns the debounce and its admitted save until that exact request finishes.
+/// Cancellation is cooperative: an older file provider may still complete, so
+/// its finalizer and errors must never retire a newer autosave task.
+@MainActor
+final class MarkdownDocumentAutosave: ObservableObject {
+    private var request: UUID?
+    private var pending: Task<Void, Never>?
+
+    var isPending: Bool { pending != nil }
+
+    deinit { pending?.cancel() }
+
+    func cancel() {
+        request = nil
+        let previous = pending
+        pending = nil
+        previous?.cancel()
+    }
+
+    @discardableResult
+    func schedule(
+        operation: @escaping @MainActor () async throws -> Void,
+        onFailure: @escaping @MainActor (Error) -> Void
+    ) -> Task<Void, Never> {
+        cancel()
+        let id = UUID()
+        request = id
+        let task = Task { @MainActor [weak self] in
+            defer {
+                if self?.request == id {
+                    self?.request = nil
+                    self?.pending = nil
+                }
+            }
+            do {
+                try Task.checkCancellation()
+                try await operation()
+            } catch is CancellationError {
+                // A newer edit, explicit save, or scene suspension superseded it.
+            } catch {
+                guard !Task.isCancelled, self?.request == id else { return }
+                onFailure(error)
+            }
+        }
+        pending = task
+        return task
     }
 }
 

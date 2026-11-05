@@ -244,7 +244,23 @@ Document autosave uses `FileDocument` and normal conflict handling. Untitled wor
 
 The current single-window shell now provides both crash-safe active-draft recovery and real source-file ownership. It keeps security-scoped current-file identity, preserves an explicit UTF-8 byte-order mark, saves in place through coordinated atomic replacement, refuses to overwrite an external edit, offers Save a Copy, and persists at most six filename/bookmark recents without document contents. It stores bounded, versioned recovery source plus safe presentation settings in Application Support using atomic writes and complete file protection, excludes the recovery cache from backup, and refuses malformed or oversized state. Raw-HTML trust is intentionally never restored across launches or document adoption.
 
-Full `DocumentGroup` browser ownership, automatic current-document restoration, document autosave, and multiwindow support remain open. The source-complete document-session tranche is tracked by Bead `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-3ady`; Xcode, Simulator, and executable DSR evidence must be added only after the storage guard admits those lanes.
+Automatic current-file restoration and debounced in-place autosave are implemented
+in the custom document session. While a provider is saving, one latest pending
+source replaces intermediate save intents; it is written only after the active
+operation settles, against the last committed fingerprint. This includes an undo
+back to the original text while an older write is still in flight. A committed
+write advances its baseline even if cancellation arrived too late to stop it.
+Conflicts stop the queue, cancelled queued requests do not write, and New/Open
+retire the previous document's pending saves. Autosave task ownership also keeps
+an older completion or error from clearing a newer request.
+
+Full `DocumentGroup` browser ownership and independent multiwindow recovery remain
+open. The autosave/ownership regression tests use controlled continuations and
+real coordinated source writes, but still require an Apple XCTest run; they do
+not establish device or Catalyst qualification. The earlier document-session
+tranche is tracked by Bead `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-3ady`;
+Xcode, Simulator, and executable DSR evidence must be added only after the
+storage guard admits those lanes.
 
 ## 5. Information architecture
 

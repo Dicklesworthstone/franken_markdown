@@ -714,6 +714,371 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         XCTAssertFalse(session.isSaving)
     }
 
+    @MainActor
+    func testSlowSaveCoalescesLatestSourceAndUsesCommittedFingerprint() async throws {
+        let original = "# Original\r\nCafé\r\n"
+        let firstSource = "\u{FEFF}# First edit\r\n"
+        let latestSource = "\u{FEFF}# Latest 👩🏽‍💻\r\ne\u{301}\r\n"
+        let bom = Data([0xEF, 0xBB, 0xBF])
+        let url = try temporarySourceURL(contents: bom + Data(original.utf8))
+        let writes = SuspendedMarkdownSaves()
+        defer { Task { await writes.releaseAll() } }
+        let session = MarkdownDocumentSession(
+            initialSource: original,
+            defaults: try makeDefaults(),
+            saveDocument: { try await writes.save($0, replacing: $1) }
+        )
+        session.adopt(try await MarkdownSourceLoader.open(from: url))
+        let identity = session.currentDocumentIdentity
+        let first = await MarkdownSaveCall.start(session, source: firstSource)
+        _ = await writes.waitForRequest(0)
+        // An explicit Save can queue behind slow autosave I/O, then a later
+        // debounced edit supersedes that pending snapshot with the latest text.
+        let supersededManual = await MarkdownSaveCall.start(session, source: "# Intermediate manual save\n")
+        let latest = await MarkdownSaveCall.start(session, source: latestSource)
+        guard await assertCancelled(supersededManual), assertPending(latest) else { return }
+        let countBeforeCompletion = await writes.requestCount
+        XCTAssertEqual(countBeforeCompletion, 1, "No second physical write may overlap this document's first save")
+
+        await writes.release(0)
+        let secondWrite = await writes.waitForRequest(1)
+        try await first.value()
+        XCTAssertTrue(session.isSaving, "The first completion must not clear the queued save's busy state")
+        XCTAssertEqual(Data(secondWrite.source.utf8), Data(latestSource.utf8))
+        XCTAssertEqual(Data(secondWrite.baseline.source.utf8), Data(firstSource.utf8))
+        XCTAssertEqual(secondWrite.baseline.diskFingerprint.digest, Data(SHA256.hash(data: bom + Data(firstSource.utf8))))
+        XCTAssertTrue(secondWrite.baseline.diskFingerprint.hasByteOrderMark)
+        await writes.release(1)
+        try await latest.value()
+
+        XCTAssertEqual(try Data(contentsOf: url), bom + Data(latestSource.utf8))
+        XCTAssertFalse(session.isDirty(source: latestSource))
+        XCTAssertEqual(session.currentDocumentIdentity, identity)
+        XCTAssertFalse(session.isSaving)
+        XCTAssertNil(session.attention)
+        let allWrites = await writes.requests
+        XCTAssertEqual(allWrites.count, 2, "The superseded intermediate source must never be written")
+    }
+
+    @MainActor
+    func testCancelledWriterThatAlreadyCommitsAdvancesBaselineBeforeQueuedSave() async throws {
+        let original = "# Original\n"
+        let firstSource = "# Committed despite cancellation\n"
+        let latestSource = "# Newest edit\n"
+        let url = try temporarySourceURL(contents: Data(original.utf8))
+        let writes = SuspendedMarkdownSaves()
+        defer { Task { await writes.releaseAll() } }
+        let session = MarkdownDocumentSession(
+            initialSource: original, defaults: try makeDefaults(),
+            saveDocument: { try await writes.save($0, replacing: $1) }
+        )
+        session.adopt(try await MarkdownSourceLoader.open(from: url))
+        let first = await MarkdownSaveCall.start(session, source: firstSource)
+        _ = await writes.waitForRequest(0)
+        first.cancel()
+        await writes.waitUntilCancelled(0)
+        let latest = await MarkdownSaveCall.start(session, source: latestSource)
+        guard assertPending(latest) else { return }
+
+        // The fixture models a provider beyond its final cancellation check:
+        // it commits real bytes even after its save Task is cancelled.
+        await writes.release(0)
+        let nextWrite = await writes.waitForRequest(1)
+        try await first.value()
+        XCTAssertEqual(nextWrite.baseline.diskFingerprint.digest, Data(SHA256.hash(data: Data(firstSource.utf8))))
+        XCTAssertEqual(session.currentDocument?.source, firstSource)
+        XCTAssertTrue(session.isSaving)
+        await writes.release(1)
+        try await latest.value()
+
+        let cancellations = await writes.cancellationAtCommit
+        XCTAssertEqual(cancellations[0], true)
+        XCTAssertEqual(cancellations[1], false, "The queued save must have a fresh, uncancelled Task context")
+        XCTAssertEqual(try Data(contentsOf: url), Data(latestSource.utf8))
+        XCTAssertFalse(session.isDirty(source: latestSource))
+        XCTAssertNil(session.attention)
+    }
+
+    @MainActor
+    func testCancelledWriterBeforeCommitStillRunsLatestQueuedSave() async throws {
+        let original = "# Original\n"
+        let latestSource = "# Latest\n"
+        let url = try temporarySourceURL(contents: Data(original.utf8))
+        let writes = SuspendedMarkdownSaves()
+        defer { Task { await writes.releaseAll() } }
+        let session = MarkdownDocumentSession(
+            initialSource: original, defaults: try makeDefaults(),
+            saveDocument: { try await writes.save($0, replacing: $1) }
+        )
+        session.adopt(try await MarkdownSourceLoader.open(from: url))
+        let first = await MarkdownSaveCall.start(session, source: "# Cancelled edit\n")
+        _ = await writes.waitForRequest(0)
+        let latest = await MarkdownSaveCall.start(session, source: latestSource)
+        guard assertPending(latest) else { return }
+        first.cancel()
+        await writes.waitUntilCancelled(0)
+        await writes.fail(0, with: CancellationError())
+        guard await assertCancelled(first) else { return }
+        let nextWrite = await writes.waitForRequest(1)
+        XCTAssertEqual(nextWrite.baseline.source, original)
+        await writes.release(1)
+        try await latest.value()
+        XCTAssertEqual(try Data(contentsOf: url), Data(latestSource.utf8))
+        XCTAssertFalse(session.isSaving)
+    }
+
+    @MainActor
+    func testUndoToOriginalSourceStillAutosavesAfterOlderWriteCommits() async throws {
+        let original = "# Original\r\n"
+        let url = try temporarySourceURL(contents: Data(original.utf8))
+        let writes = SuspendedMarkdownSaves()
+        defer { Task { await writes.releaseAll() } }
+        let session = MarkdownDocumentSession(
+            initialSource: original, defaults: try makeDefaults(),
+            saveDocument: { try await writes.save($0, replacing: $1) }
+        )
+        session.adopt(try await MarkdownSourceLoader.open(from: url))
+        XCTAssertFalse(session.needsAutosave(source: original))
+        let first = await MarkdownSaveCall.start(session, source: "# Edit that the user undoes\r\n")
+        _ = await writes.waitForRequest(0)
+        XCTAssertFalse(session.isDirty(source: original))
+        XCTAssertTrue(session.needsAutosave(source: original), "The active write can still change the baseline after Undo")
+        let undone = await MarkdownSaveCall.start(session, source: original)
+        guard assertPending(undone) else { return }
+        await writes.release(0)
+        let nextWrite = await writes.waitForRequest(1)
+        try await first.value()
+        XCTAssertEqual(nextWrite.source, original)
+        await writes.release(1)
+        try await undone.value()
+        XCTAssertEqual(try Data(contentsOf: url), Data(original.utf8))
+        XCTAssertFalse(session.needsAutosave(source: original))
+    }
+
+    @MainActor
+    func testCancelledQueuedSaveNeverWritesAndFreshSaveRemainsAvailable() async throws {
+        let original = "# Original\n"
+        let url = try temporarySourceURL(contents: Data(original.utf8))
+        let writes = SuspendedMarkdownSaves()
+        defer { Task { await writes.releaseAll() } }
+        let session = MarkdownDocumentSession(
+            initialSource: original, defaults: try makeDefaults(),
+            saveDocument: { try await writes.save($0, replacing: $1) }
+        )
+        session.adopt(try await MarkdownSourceLoader.open(from: url))
+        let first = await MarkdownSaveCall.start(session, source: "# First\n")
+        _ = await writes.waitForRequest(0)
+        let queued = await MarkdownSaveCall.start(session, source: "# Cancelled queued edit\n")
+        queued.cancel()
+        guard await assertCancelled(queued) else { return }
+        await writes.release(0)
+        try await first.value()
+        XCTAssertFalse(session.isSaving)
+        let count = await writes.requestCount
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(try Data(contentsOf: url), Data("# First\n".utf8))
+
+        let fresh = await MarkdownSaveCall.start(session, source: "# Fresh\n")
+        _ = await writes.waitForRequest(1)
+        await writes.release(1)
+        try await fresh.value()
+        XCTAssertEqual(try Data(contentsOf: url), Data("# Fresh\n".utf8))
+    }
+
+    @MainActor
+    func testQueuedSaveStopsAtExternalConflictAndCanRetryAfterExplicitReopen() async throws {
+        let original = "# Original\n"
+        let external = "# Changed outside the app\n"
+        let latestSource = "# Latest local edit\n"
+        let url = try temporarySourceURL(contents: Data(original.utf8))
+        let writes = SuspendedMarkdownSaves()
+        defer { Task { await writes.releaseAll() } }
+        let session = MarkdownDocumentSession(
+            initialSource: original, defaults: try makeDefaults(),
+            saveDocument: { try await writes.save($0, replacing: $1) }
+        )
+        session.adopt(try await MarkdownSourceLoader.open(from: url))
+        let first = await MarkdownSaveCall.start(session, source: "# First local edit\n")
+        _ = await writes.waitForRequest(0)
+        let latest = await MarkdownSaveCall.start(session, source: latestSource)
+        guard assertPending(latest) else { return }
+        try Data(external.utf8).write(to: url, options: .atomic)
+        await writes.release(0)
+        guard await assertSaveFailure(first, equals: .changedOnDisk),
+              await assertSaveFailure(latest, equals: .changedOnDisk) else { return }
+        XCTAssertEqual(try Data(contentsOf: url), Data(external.utf8))
+        XCTAssertEqual(session.attention, .changedOnDisk)
+        XCTAssertTrue(session.isDirty(source: latestSource))
+        XCTAssertFalse(session.isSaving)
+        let count = await writes.requestCount
+        XCTAssertEqual(count, 1, "A conflict must not trigger an automatic queued retry")
+
+        session.adopt(try await MarkdownSourceLoader.open(from: url))
+        let retry = await MarkdownSaveCall.start(session, source: latestSource)
+        _ = await writes.waitForRequest(1)
+        await writes.release(1)
+        try await retry.value()
+        XCTAssertEqual(try Data(contentsOf: url), Data(latestSource.utf8))
+        XCTAssertNil(session.attention)
+    }
+
+    @MainActor
+    func testOpeningAnotherDocumentRetiresQueuedSourceAndKeepsNewSaveOwnership() async throws {
+        let firstDocument = try await testDocument("# First\n", name: "first.md")
+        let secondDocument = try await testDocument("# Second\n", name: "second.md")
+        let writes = SuspendedMarkdownSaves()
+        defer { Task { await writes.releaseAll() } }
+        let session = MarkdownDocumentSession(
+            initialSource: "# Untitled\n", defaults: try makeDefaults(),
+            saveDocument: { try await writes.save($0, replacing: $1) }
+        )
+        session.adopt(firstDocument)
+        let first = await MarkdownSaveCall.start(session, source: "# First committed\n")
+        _ = await writes.waitForRequest(0)
+        let oldQueued = await MarkdownSaveCall.start(session, source: "# Old queued edit\n")
+        guard assertPending(oldQueued) else { return }
+        session.adopt(secondDocument)
+        let secondIdentity = session.currentDocumentIdentity
+        guard await assertCancelled(oldQueued) else { return }
+        let second = await MarkdownSaveCall.start(session, source: "# Second committed\n")
+        _ = await writes.waitForRequest(1)
+
+        await writes.release(0)
+        try await first.value()
+        XCTAssertEqual(session.currentDocument, secondDocument)
+        XCTAssertEqual(session.currentDocumentIdentity, secondIdentity)
+        XCTAssertTrue(session.isSaving)
+        XCTAssertEqual(session.recentDocuments.first?.displayName, "second.md")
+        await writes.release(1)
+        try await second.value()
+
+        XCTAssertEqual(try Data(contentsOf: firstDocument.url), Data("# First committed\n".utf8))
+        XCTAssertEqual(try Data(contentsOf: secondDocument.url), Data("# Second committed\n".utf8))
+        let allWrites = await writes.requests
+        XCTAssertEqual(allWrites.map(\.source), ["# First committed\n", "# Second committed\n"])
+        XCTAssertFalse(session.isSaving)
+    }
+
+    @MainActor
+    func testNewUntitledDocumentCannotReceivePreviousDocumentsQueuedSave() async throws {
+        let document = try await testDocument("# Original\n")
+        let writes = SuspendedMarkdownSaves()
+        defer { Task { await writes.releaseAll() } }
+        let session = MarkdownDocumentSession(
+            initialSource: "# Untitled\n", defaults: try makeDefaults(),
+            saveDocument: { try await writes.save($0, replacing: $1) }
+        )
+        session.adopt(document)
+        let first = await MarkdownSaveCall.start(session, source: "# Previous write\n")
+        _ = await writes.waitForRequest(0)
+        let queued = await MarkdownSaveCall.start(session, source: "# Previous queued edit\n")
+        guard assertPending(queued) else { return }
+        session.beginUntitled(source: "# New document\n")
+        guard await assertCancelled(queued) else { return }
+        await writes.release(0)
+        try await first.value()
+        XCTAssertFalse(session.hasCurrentDocument)
+        XCTAssertNil(session.currentDocumentIdentity)
+        XCTAssertFalse(session.isDirty(source: "# New document\n"))
+        XCTAssertFalse(session.isSaving)
+        let count = await writes.requestCount
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(try Data(contentsOf: document.url), Data("# Previous write\n".utf8))
+    }
+
+    @MainActor
+    func testOlderAutosaveFinalizerCannotClearOrCancelNewerTask() async throws {
+        let autosave = MarkdownDocumentAutosave()
+        let gates = SuspendedMarkdownIO()
+        let firstDocument = try await testDocument("# First\n", name: "first.md")
+        let secondDocument = try await testDocument("# Second\n", name: "second.md")
+        var failures = 0
+        var secondWasCancelled = false
+        let first = autosave.schedule {
+            _ = try await gates.read(firstDocument.url)
+        } onFailure: { _ in failures += 1 }
+        await gates.waitUntilRequested(firstDocument.url)
+        let second = autosave.schedule {
+            _ = try await gates.read(secondDocument.url)
+            secondWasCancelled = Task.isCancelled
+        } onFailure: { _ in failures += 1 }
+        await gates.waitUntilRequested(secondDocument.url)
+        await gates.complete(firstDocument.url, with: .success(firstDocument))
+        await first.value
+
+        XCTAssertTrue(autosave.isPending, "Old completion cannot lose the handle needed to cancel a newer save")
+        autosave.cancel()
+        XCTAssertFalse(autosave.isPending)
+        await gates.complete(secondDocument.url, with: .success(secondDocument))
+        await second.value
+        XCTAssertTrue(secondWasCancelled)
+        XCTAssertEqual(failures, 0)
+    }
+
+    @MainActor
+    func testOlderAutosaveFailureCannotReplaceNewerErrorOrRetireItsTask() async throws {
+        let autosave = MarkdownDocumentAutosave()
+        let gates = SuspendedMarkdownIO()
+        let firstDocument = try await testDocument("# First\n", name: "first.md")
+        let secondDocument = try await testDocument("# Second\n", name: "second.md")
+        var failures: [MarkdownSourceLoader.DocumentError?] = []
+        let first = autosave.schedule {
+            _ = try await gates.read(firstDocument.url)
+        } onFailure: { failures.append($0 as? MarkdownSourceLoader.DocumentError) }
+        await gates.waitUntilRequested(firstDocument.url)
+        let second = autosave.schedule {
+            _ = try await gates.read(secondDocument.url)
+        } onFailure: { failures.append($0 as? MarkdownSourceLoader.DocumentError) }
+        await gates.waitUntilRequested(secondDocument.url)
+        await gates.complete(firstDocument.url, with: .failure(MarkdownSourceLoader.DocumentError.changedOnDisk))
+        await first.value
+        XCTAssertTrue(autosave.isPending)
+        XCTAssertTrue(failures.isEmpty)
+        await gates.complete(secondDocument.url, with: .failure(MarkdownSourceLoader.DocumentError.coordinatedWrite))
+        await second.value
+        XCTAssertEqual(failures, [.coordinatedWrite])
+        XCTAssertFalse(autosave.isPending)
+    }
+
+    @MainActor
+    private func assertPending(
+        _ call: MarkdownSaveCall, file: StaticString = #filePath, line: UInt = #line
+    ) -> Bool {
+        XCTAssertFalse(call.isFinished, "A queued save cannot report success before writing its source", file: file, line: line)
+        return !call.isFinished
+    }
+
+    @MainActor
+    private func assertCancelled(
+        _ call: MarkdownSaveCall, file: StaticString = #filePath, line: UInt = #line
+    ) async -> Bool {
+        do {
+            try await call.value()
+            XCTFail("A cancelled or superseded save must not report success", file: file, line: line)
+        } catch is CancellationError {
+            return true
+        } catch {
+            XCTFail("Expected cancellation, received \(error)", file: file, line: line)
+        }
+        return false
+    }
+
+    @MainActor
+    private func assertSaveFailure(
+        _ call: MarkdownSaveCall,
+        equals expected: MarkdownSourceLoader.DocumentError,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async -> Bool {
+        do {
+            try await call.value()
+            XCTFail("The queued caller must receive the save failure", file: file, line: line)
+        } catch {
+            XCTAssertEqual(error as? MarkdownSourceLoader.DocumentError, expected, file: file, line: line)
+            return error as? MarkdownSourceLoader.DocumentError == expected
+        }
+        return false
+    }
+
     private func testDocument(_ source: String, name: String = "notes.md") async throws -> MarkdownSourceDocument {
         let url = try temporarySourceURL(contents: Data(source.utf8), name: name)
         return try await MarkdownSourceLoader.open(from: url)
@@ -730,6 +1095,94 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         let url = directory.appendingPathComponent(name, isDirectory: false)
         try contents.write(to: url, options: .atomic)
         return url
+    }
+}
+
+/// The main-actor entry prefix reserves the save before yielding to its caller.
+/// Tests can inspect completion without sleeps, timeouts, or provider-speed assumptions.
+@MainActor
+private final class MarkdownSaveCall {
+    private var task: Task<Void, Error>!
+    private(set) var isFinished = false
+
+    static func start(_ session: MarkdownDocumentSession, source: String) async -> MarkdownSaveCall {
+        let call = MarkdownSaveCall()
+        await withCheckedContinuation { entered in
+            call.task = Task { @MainActor in
+                defer { call.isFinished = true }
+                entered.resume()
+                try await session.save(source: source)
+            }
+        }
+        return call
+    }
+
+    func cancel() { task.cancel() }
+    func value() async throws { try await task.value }
+}
+
+/// Gate actual coordinated writes and record the baseline each write received.
+/// A released write runs in an independent task to model the legitimate case
+/// where a provider has passed its last cancellation check and still commits.
+private actor SuspendedMarkdownSaves {
+    struct Request: Sendable {
+        let source: String
+        let baseline: MarkdownSourceDocument
+    }
+
+    private(set) var requests: [Request] = []
+    private(set) var cancellationAtCommit: [Int: Bool] = [:]
+    private var gates: [Int: CheckedContinuation<Void, Error>] = [:]
+    private var observers: [Int: CheckedContinuation<Request, Never>] = [:]
+    private var cancelled: Set<Int> = []
+    private var cancellationObservers: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var unblocked = false
+    var requestCount: Int { requests.count }
+
+    func save(_ source: String, replacing document: MarkdownSourceDocument) async throws -> MarkdownSourceDocument {
+        let index = requests.count
+        let request = Request(source: source, baseline: document)
+        requests.append(request)
+        if !unblocked {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    gates[index] = continuation
+                    observers.removeValue(forKey: index)?.resume(returning: request)
+                }
+            } onCancel: {
+                Task { await self.didCancel(index) }
+            }
+        }
+        cancellationAtCommit[index] = Task.isCancelled
+        let writer = Task.detached {
+            try await MarkdownSourceLoader.save(source, replacing: document)
+        }
+        return try await writer.value
+    }
+
+    func waitForRequest(_ index: Int) async -> Request {
+        if index < requests.count { return requests[index] }
+        return await withCheckedContinuation { observers[index] = $0 }
+    }
+
+    func release(_ index: Int) { gates.removeValue(forKey: index)?.resume() }
+    func fail(_ index: Int, with error: Error) { gates.removeValue(forKey: index)?.resume(throwing: error) }
+
+    private func didCancel(_ index: Int) {
+        cancelled.insert(index)
+        cancellationObservers.removeValue(forKey: index)?.resume()
+    }
+
+    func waitUntilCancelled(_ index: Int) async {
+        if cancelled.contains(index) { return }
+        await withCheckedContinuation { cancellationObservers[index] = $0 }
+    }
+
+    func releaseAll() {
+        unblocked = true
+        let remaining = Array(gates.values)
+        gates.removeAll()
+        for continuation in remaining { continuation.resume() }
     }
 }
 

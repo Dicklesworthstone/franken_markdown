@@ -68,7 +68,7 @@ struct ForgeView: View {
     @State private var confirmingRevert = false
     @State private var attemptedDocumentRestoration = false
     @State private var showingRestorationConflict = false
-    @State private var pendingDocumentAutosave: Task<Void, Never>?
+    @StateObject private var documentAutosaveTask = MarkdownDocumentAutosave()
     @State private var sourceMetrics = MarkdownSourceMetrics.empty
     @State private var sourceMetricsAreCurrent = false
     @State private var sourceMetricsGeneration = UUID()
@@ -225,14 +225,12 @@ struct ForgeView: View {
             if enabled {
                 scheduleDocumentAutosave(renderer.source)
             } else {
-                pendingDocumentAutosave?.cancel()
-                pendingDocumentAutosave = nil
+                documentAutosaveTask.cancel()
             }
         }
         .onDisappear {
             cancelSourceExportPreparation()
-            pendingDocumentAutosave?.cancel()
-            pendingDocumentAutosave = nil
+            documentAutosaveTask.cancel()
             pendingSourceMetrics?.cancel()
             pendingSourceMetrics = nil
             sourceMetricsGeneration = UUID()
@@ -1171,8 +1169,7 @@ struct ForgeView: View {
 
     private func saveCurrentSource() {
         editorFocused = false
-        pendingDocumentAutosave?.cancel()
-        pendingDocumentAutosave = nil
+        documentAutosaveTask.cancel()
         guard documentSession.hasCurrentDocument else {
             beginSourceExport(.saveNewDocument)
             return
@@ -1183,6 +1180,8 @@ struct ForgeView: View {
             do {
                 guard documentSession.documentGeneration == generation else { return }
                 try await documentSession.save(source: source)
+            } catch is CancellationError {
+                // A newer save intent or document selection superseded this one.
             } catch {
                 guard documentSession.documentGeneration == generation else { return }
                 documentError = error.localizedDescription
@@ -1191,35 +1190,23 @@ struct ForgeView: View {
     }
 
     private func scheduleDocumentAutosave(_ source: String) {
-        pendingDocumentAutosave?.cancel()
-        pendingDocumentAutosave = nil
+        documentAutosaveTask.cancel()
         guard documentAutosave,
-              documentSession.hasCurrentDocument,
-              documentSession.attention == nil,
-              documentSession.isDirty(source: source) else { return }
+              documentSession.needsAutosave(source: source) else { return }
 
         let generation = documentSession.documentGeneration
         let sourceRevision = renderer.sourceRevision
-        pendingDocumentAutosave = Task { @MainActor in
-            do {
-                try await Task.sleep(nanoseconds: 1_200_000_000)
-                try Task.checkCancellation()
-                guard documentAutosave,
-                      documentSession.documentGeneration == generation,
-                      documentSession.hasCurrentDocument,
-                      documentSession.attention == nil,
-                      documentSession.isDirty(source: source),
-                      renderer.sourceRevision == sourceRevision else { return }
-                try await documentSession.save(source: source)
-                guard documentSession.documentGeneration == generation else { return }
-                pendingDocumentAutosave = nil
-            } catch is CancellationError {
-                // A newer edit or an explicit save superseded this debounce.
-            } catch {
-                guard documentSession.documentGeneration == generation else { return }
-                pendingDocumentAutosave = nil
-                documentError = error.localizedDescription
-            }
+        documentAutosaveTask.schedule {
+            try await Task.sleep(nanoseconds: 1_200_000_000)
+            try Task.checkCancellation()
+            guard documentAutosave,
+                  documentSession.documentGeneration == generation,
+                  documentSession.needsAutosave(source: source),
+                  renderer.sourceRevision == sourceRevision else { return }
+            try await documentSession.save(source: source)
+        } onFailure: { error in
+            guard documentSession.documentGeneration == generation else { return }
+            documentError = error.localizedDescription
         }
     }
 

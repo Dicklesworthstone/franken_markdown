@@ -173,7 +173,7 @@ enum Piece<'a> {
 /// not start well-formed markup is ordinary text.
 fn pieces(html: &str) -> Vec<Piece<'_>> {
     let bytes = html.as_bytes();
-    let last_pi_end = html.rfind("?>");
+    let mut scanner = MarkupScanner::new(html);
     let mut out = Vec::new();
     let mut text_start = 0usize;
     let mut i = 0usize;
@@ -182,8 +182,7 @@ fn pieces(html: &str) -> Vec<Piece<'_>> {
             i += 1;
             continue;
         }
-        let Some((piece, len)) = markup_at(&html[i..], last_pi_end.is_some_and(|end| end >= i + 2))
-        else {
+        let Some((piece, len)) = scanner.markup_at(i) else {
             i += 1;
             continue;
         };
@@ -200,36 +199,109 @@ fn pieces(html: &str) -> Vec<Piece<'_>> {
     out
 }
 
-fn markup_at(s: &str, has_pi_end: bool) -> Option<(Piece<'_>, usize)> {
-    if let Some(rest) = s.strip_prefix("<!--") {
-        // Match the Markdown scanner's complete short comments. Searching for
-        // a later '-->' would hide live text and resource tags after them.
-        if rest.starts_with('>') {
-            return Some((Piece::Ignorable, 5));
+#[derive(Clone, Copy)]
+enum MarkupEnd {
+    Declaration,
+    Comment,
+    Cdata,
+    Instruction,
+}
+
+impl MarkupEnd {
+    fn token(self) -> &'static str {
+        match self {
+            Self::Declaration => ">",
+            Self::Comment => "-->",
+            Self::Cdata => "]]>",
+            Self::Instruction => "?>",
         }
-        if rest.starts_with("->") {
-            return Some((Piece::Ignorable, 6));
+    }
+}
+
+/// Shared bounds for ignorable-markup searches. Each terminator is located
+/// only when its first opener is encountered, so ordinary tags/text pay no
+/// eager suffix scans. Missing or already-passed terminators reject subsequent
+/// openers immediately. Successful forward searches consume their whole token.
+/// Generic tag/attribute parsing retains its existing grammar and behavior.
+struct MarkupScanner<'a> {
+    html: &'a str,
+    // Outer None: unsearched; Some(None): no such terminator in this fragment.
+    last_ends: [Option<Option<usize>>; 4],
+}
+
+impl<'a> MarkupScanner<'a> {
+    fn new(html: &'a str) -> Self {
+        Self {
+            html,
+            last_ends: [None; 4],
         }
-        let end = rest.find("-->")?;
-        return Some((Piece::Ignorable, 4 + end + 3));
     }
-    if let Some(rest) = s.strip_prefix("<![CDATA[") {
-        let end = rest.find("]]>")?;
-        return Some((Piece::Ignorable, 9 + end + 3));
+
+    fn find_end(&mut self, kind: MarkupEnd, start: usize) -> Option<usize> {
+        let token = kind.token();
+        let last = match self.last_ends[kind as usize] {
+            Some(last) => last,
+            None => {
+                #[cfg(test)]
+                record_markup_search(self.html.len());
+                let last = self.html.rfind(token);
+                self.last_ends[kind as usize] = Some(last);
+                last
+            }
+        };
+        if !last.is_some_and(|end| end >= start) {
+            return None;
+        }
+        let suffix = &self.html[start..];
+        let relative = suffix.find(token);
+        #[cfg(test)]
+        record_markup_search(relative.map_or(suffix.len(), |end| end + token.len()));
+        relative.map(|end| start + end)
     }
-    // A complete processing instruction owns everything through '?>', even
-    // tag-looking text after an earlier '>'. Callers cache the final terminator
-    // so repeated incomplete instructions do not rescan the remaining suffix.
-    if has_pi_end && let Some(rest) = s.strip_prefix("<?") {
-        let end = rest.find("?>")?;
-        return Some((Piece::Ignorable, 2 + end + 2));
+
+    fn markup_at(&mut self, start: usize) -> Option<(Piece<'a>, usize)> {
+        let s = &self.html[start..];
+        if let Some(rest) = s.strip_prefix("<!--") {
+            // Short comments end before any following Markdown/resources.
+            if rest.starts_with('>') {
+                return Some((Piece::Ignorable, 5));
+            }
+            if rest.starts_with("->") {
+                return Some((Piece::Ignorable, 6));
+            }
+            let end = self.find_end(MarkupEnd::Comment, start + 4)?;
+            return Some((Piece::Ignorable, end + 3 - start));
+        }
+        if s.starts_with("<![CDATA[") {
+            let end = self.find_end(MarkupEnd::Cdata, start + 9)?;
+            return Some((Piece::Ignorable, end + 3 - start));
+        }
+        // Complete instructions own everything through '?>', even after an
+        // earlier '>'. Incomplete ones keep the existing first-'>' fallback.
+        if s.starts_with("<?")
+            && let Some(end) = self.find_end(MarkupEnd::Instruction, start + 2)
+        {
+            return Some((Piece::Ignorable, end + 2 - start));
+        }
+        if s.starts_with("<!") || s.starts_with("<?") {
+            let end = self.find_end(MarkupEnd::Declaration, start)?;
+            return Some((Piece::Ignorable, end + 1 - start));
+        }
+        let (tag, len) = parse_tag(s)?;
+        Some((Piece::Tag(tag, &s[..len]), len))
     }
-    if s.starts_with("<!") || s.starts_with("<?") {
-        let end = s.find('>')?;
-        return Some((Piece::Ignorable, end + 1));
-    }
-    let (tag, len) = parse_tag(s)?;
-    Some((Piece::Tag(tag, &s[..len]), len))
+}
+
+#[cfg(test)]
+std::thread_local! {
+    // A deterministic upper bound: whole-fragment reverse searches plus the
+    // prefix through each forward match (or the entire suffix on a miss).
+    static MARKUP_SEARCH_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_markup_search(bytes: usize) {
+    MARKUP_SEARCH_BYTES.with(|work| work.set(work.get().saturating_add(bytes)));
 }
 
 fn parse_tag(s: &str) -> Option<(Tag, usize)> {
@@ -369,14 +441,11 @@ impl UrlSpan {
 
 pub(crate) fn url_spans(html: &str) -> impl Iterator<Item = UrlSpan> + '_ {
     let mut cursor = 0;
-    let last_pi_end = html.rfind("?>");
+    let mut scanner = MarkupScanner::new(html);
     std::iter::from_fn(move || {
         while let Some(relative) = html[cursor..].find('<') {
             let start = cursor + relative;
-            let Some((piece, len)) = markup_at(
-                &html[start..],
-                last_pi_end.is_some_and(|end| end >= start + 2),
-            ) else {
+            let Some((piece, len)) = scanner.markup_at(start) else {
                 cursor = start + 1;
                 continue;
             };
@@ -412,14 +481,11 @@ pub(crate) fn url_spans(html: &str) -> impl Iterator<Item = UrlSpan> + '_ {
 /// own occurrence limit before retaining another image.
 pub(crate) fn image_references(html: &str) -> impl Iterator<Item = (String, String)> + '_ {
     let mut cursor = 0;
-    let last_pi_end = html.rfind("?>");
+    let mut scanner = MarkupScanner::new(html);
     std::iter::from_fn(move || {
         while let Some(relative) = html[cursor..].find('<') {
             let start = cursor + relative;
-            let Some((piece, len)) = markup_at(
-                &html[start..],
-                last_pi_end.is_some_and(|end| end >= start + 2),
-            ) else {
+            let Some((piece, len)) = scanner.markup_at(start) else {
                 cursor = start + 1;
                 continue;
             };
@@ -1717,6 +1783,174 @@ mod tests {
 
     fn text(value: &str) -> Inline {
         Inline::Text(value.to_string())
+    }
+
+    fn within_markup_search_budget<T>(raw: &str, factor: usize, run: impl FnOnce() -> T) -> T {
+        MARKUP_SEARCH_BYTES.with(|work| work.set(0));
+        let result = run();
+        let work = MARKUP_SEARCH_BYTES.with(std::cell::Cell::get);
+        assert!(
+            work <= factor * raw.len(),
+            "terminator searches examined {work} bytes for {} source bytes (budget factor {factor})",
+            raw.len()
+        );
+        result
+    }
+
+    #[test]
+    fn missing_markup_terminators_have_linear_search_work_in_every_consumer() {
+        for opener in ["<?", "<!", "<!--", "<![CDATA[", "<?<!--<![CDATA["] {
+            for count in [1, 32, 4096] {
+                let raw = opener.repeat(count);
+                assert_eq!(
+                    within_markup_search_budget(&raw, 4, || visible_text(&raw)),
+                    raw
+                );
+                assert!(
+                    within_markup_search_budget(&raw, 4, || url_spans(&raw).collect::<Vec<_>>())
+                        .is_empty()
+                );
+                assert!(
+                    within_markup_search_budget(&raw, 4, || {
+                        image_references(&raw).collect::<Vec<_>>()
+                    })
+                    .is_empty()
+                );
+
+                let doc = Document {
+                    blocks: vec![Block::HtmlBlock(raw.clone())],
+                };
+                assert_eq!(
+                    within_markup_search_budget(&raw, 4, || lower(&doc)).blocks,
+                    [Block::Paragraph(vec![text(&raw)])]
+                );
+                let mut sanitized = String::new();
+                within_markup_search_budget(&raw, 4, || {
+                    Sanitizer::default().feed(&raw, 0, &mut sanitized, &mut |_, _, _| {
+                        panic!("unclosed markup has no URL")
+                    });
+                });
+                let mut escaped = String::new();
+                push_escaped_text(&raw, &mut escaped);
+                assert_eq!(sanitized, escaped);
+            }
+        }
+    }
+
+    #[test]
+    fn exhausted_markup_terminators_do_not_rescan_later_openers() {
+        for (complete, opener) in [
+            ("<?done?>", "<?"),
+            ("<!A>", "<!"),
+            ("<!--done-->", "<!--"),
+            ("<![CDATA[done]]>", "<![CDATA["),
+        ] {
+            let tail = opener.repeat(4096);
+            let raw = format!("{complete}{tail}");
+            assert_eq!(
+                within_markup_search_budget(&raw, 5, || visible_text(&raw)),
+                tail
+            );
+            assert!(
+                within_markup_search_budget(&raw, 5, || url_spans(&raw).collect::<Vec<_>>())
+                    .is_empty()
+            );
+            assert!(
+                within_markup_search_budget(&raw, 5, || {
+                    image_references(&raw).collect::<Vec<_>>()
+                })
+                .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_markup_searches_preserve_live_resources_and_original_utf8_spans() {
+        let live = "<a href='docs/café.md?x=1&amp;y=2'>next</a>\
+                    <img src='images/図.svg' alt='Logo'>";
+        // Unclosed comments/CDATA remain literal; complete ones still stop at
+        // their first terminator even though the cache records the last one.
+        for (open, end) in [("<!--", "-->"), ("<![CDATA[", "]]>")] {
+            for closed in [false, true] {
+                let prefix = open.repeat(4096);
+                let (raw, visible) = if closed {
+                    (
+                        format!(
+                            "é{prefix}<img src='hidden.svg'>{end}{live}\
+                             {open}<a href='hidden.md'>hidden</a>{end}"
+                        ),
+                        "énext".to_owned(),
+                    )
+                } else {
+                    (format!("é{prefix}{live}"), format!("é{prefix}next"))
+                };
+                assert_eq!(
+                    within_markup_search_budget(&raw, 5, || visible_text(&raw)),
+                    visible
+                );
+                let spans =
+                    within_markup_search_budget(&raw, 5, || url_spans(&raw).collect::<Vec<_>>());
+                assert_eq!(spans.len(), 2);
+                for (span, original, destination, kind) in [
+                    (
+                        &spans[0],
+                        "'docs/café.md?x=1&amp;y=2'",
+                        "docs/café.md?x=1&y=2",
+                        UrlKind::Link,
+                    ),
+                    (
+                        &spans[1],
+                        "'images/図.svg'",
+                        "images/図.svg",
+                        UrlKind::Image,
+                    ),
+                ] {
+                    let start = raw.find(original).unwrap();
+                    assert_eq!(span.range, start..start + original.len());
+                    assert_eq!(&raw[span.range.clone()], original);
+                    assert_eq!(span.destination, destination);
+                    assert_eq!(span.kind, kind);
+                }
+                assert_eq!(
+                    within_markup_search_budget(&raw, 5, || {
+                        image_references(&raw).collect::<Vec<_>>()
+                    }),
+                    [("images/図.svg".into(), "Logo".into())]
+                );
+                let rewritten = within_markup_search_budget(&raw, 5, || {
+                    rewrite_urls(&raw, |destination, _| {
+                        Ok::<_, ()>(Some(format!("chapter/{destination}")))
+                    })
+                })
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    rewritten,
+                    raw.replace(
+                        "'docs/café.md?x=1&amp;y=2'",
+                        "\"chapter/docs/café.md?x=1&amp;y=2\""
+                    )
+                    .replace("'images/図.svg'", "\"chapter/images/図.svg\"")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_tags_and_short_comments_need_no_terminator_searches() {
+        let raw = "é<!--><!---><b>visible</b><img src='live.svg' alt='Logo'>".repeat(4096);
+        assert_eq!(
+            within_markup_search_budget(&raw, 0, || visible_text(&raw)),
+            "évisible".repeat(4096)
+        );
+        assert_eq!(
+            within_markup_search_budget(&raw, 0, || url_spans(&raw).count()),
+            4096
+        );
+        assert_eq!(
+            within_markup_search_budget(&raw, 0, || image_references(&raw).count()),
+            4096
+        );
     }
 
     #[test]

@@ -2867,21 +2867,13 @@ fn split_blockquote_lines_tracked<'a>(
             }
             stripped
         } else if tail.can_continue_lazily(line) {
-            // Removing the container indentation must not promote a lazy line
-            // into a setext heading or a list marker inside the collected body.
-            let trimmed = trim_start_space_tab(line);
-            if setext_underline(trimmed).is_some()
-                || (list_marker(trimmed).is_some()
-                    && (leading_spaces(line) >= 4 || list_marker(line).is_none()))
+            let lazy = tail.lazy_line(line);
+            if let std::borrow::Cow::Owned(copied) = &lazy
+                && let Some(tracker) = &mut tracker
             {
-                let copied = format!("\\{trimmed}");
-                if let Some(tracker) = &mut tracker {
-                    tracker.map_suffix(&copied, trimmed);
-                }
-                std::borrow::Cow::Owned(copied)
-            } else {
-                std::borrow::Cow::Borrowed(trimmed)
+                tracker.map_suffix(copied, line);
             }
+            lazy
         } else {
             break;
         };
@@ -3593,6 +3585,43 @@ impl ContainerTail {
             && !scanned_paragraph_interrupt(BlockStartScan::new(line, trim_space_tab(line)))
     }
 
+    /// Keep an already-admitted lazy line in its paragraph when the collected
+    /// container body is parsed. Four-column indentation prevents fences,
+    /// headings, quotes and HTML from interrupting that paragraph; trimming it
+    /// would change ownership. Escaping those markers instead would corrupt
+    /// genuine inline code spans and inline HTML. Admitted setext-like lazy
+    /// lines need the same protection even when originally unindented.
+    fn lazy_line<'a>(&self, line: &'a str) -> std::borrow::Cow<'a, str> {
+        let trimmed = trim_start_space_tab(line);
+        let indent = leading_spaces(line);
+        if indent < 4 {
+            let promoted_marker = setext_underline(trimmed).is_some()
+                || (list_marker(trimmed).is_some() && list_marker(line).is_none());
+            if !promoted_marker {
+                return std::borrow::Cow::Borrowed(trimmed);
+            }
+        }
+        // Nested lists will strip their content columns again. Leave four
+        // columns at the paragraph after all those strips. Container depth is
+        // capped, and each list's content indent is at most 17 columns, so the
+        // extra prefix is bounded independently of the document's line count.
+        let minimum = 4 + self
+            .containers
+            .iter()
+            .map(|container| match container {
+                TailContainer::List { content_indent, .. } => *content_indent,
+                TailContainer::Quote => 0,
+            })
+            .sum::<usize>();
+        if indent >= minimum {
+            return std::borrow::Cow::Borrowed(line);
+        }
+        let mut padded = String::with_capacity(minimum - indent + line.len());
+        padded.extend(std::iter::repeat_n(' ', minimum - indent));
+        padded.push_str(line);
+        std::borrow::Cow::Owned(padded)
+    }
+
     fn is_literal(&self) -> bool {
         matches!(
             self.leaf,
@@ -3951,21 +3980,14 @@ fn split_list_items_with_first_marker_tracked<'a>(
                 if !tail.can_continue_lazily(lines[i]) {
                     break;
                 }
-                let lazy = trim_start_space_tab(lines[i]);
-                if setext_underline(lazy).is_some()
-                    || (list_marker(lazy).is_some()
-                        && (leading_spaces(lines[i]) >= 4 || list_marker(lines[i]).is_none()))
+                let lazy = tail.lazy_line(lines[i]);
+                if let std::borrow::Cow::Owned(copied) = &lazy
+                    && let Some(tracker) = &mut tracker
                 {
-                    let copied = format!("\\{lazy}");
-                    if let Some(tracker) = &mut tracker {
-                        tracker.map_suffix(&copied, lazy);
-                    }
-                    tail.observe(&copied);
-                    item_lines.push(std::borrow::Cow::Owned(copied));
-                } else {
-                    tail.observe(lazy);
-                    item_lines.push(std::borrow::Cow::Borrowed(lazy));
+                    tracker.map_suffix(copied, lines[i]);
                 }
+                tail.observe(lazy.as_ref());
+                item_lines.push(lazy);
             }
             i += 1;
         }

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Native book exports preserve referenced image paths even when loading fails,
+  including oversized files, missing assets and rejected symlinks. Publication
+  also checks directory-entry and Unix hard-link identities, protects missing
+  manifest/configuration inputs, and refuses every conflicting output before
+  creating directories or replacing any files.
+
 ## [0.7.0] - 2026-11-03
 
 A feature release (331 commits since 0.6.0: 322 feature and fix commits, then

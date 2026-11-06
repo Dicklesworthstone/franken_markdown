@@ -332,8 +332,8 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         .toc_depth
         .or_else(|| frontmatter.and_then(|fm| fm.toc_depth))
         .or(config.render.toc_depth);
-    if !no_config && let Ok(path) = crate::config::config_path().canonicalize() {
-        loaded.protected_paths.insert(path);
+    if !no_config {
+        loaded.protected_paths.insert(crate::config::config_path());
     }
     let css = args
         .css
@@ -511,12 +511,12 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     }
     // No destination is touched until discovery, parsing and every render
     // have succeeded. The shared writer stages all files before replacement.
+    let mut protected = crate::cli::protected_paths::ProtectedInputs::default();
+    for path in &loaded.protected_paths {
+        protected.insert(path);
+    }
     for (path, _) in &rendered {
-        if path
-            .canonicalize()
-            .ok()
-            .is_some_and(|p| loaded.protected_paths.contains(&p))
-        {
+        if protected.source_for(path).is_some() {
             return Err(error(
                 73,
                 "output_error",

@@ -1,4 +1,4 @@
-//! Native output admission shared by batch and directory watch.
+//! Native output admission shared by render, book, batch and directory watch.
 //! Tracks existing file identities and missing paths without opening contents.
 
 use std::path::{Path, PathBuf};
@@ -87,6 +87,30 @@ fn protected_path_identity(path: &Path) -> Option<PathBuf> {
     }
 }
 
+/// The directory entry itself also belongs to the input. A staged write
+/// replaces this entry, even when its symlink target cannot be resolved.
+/// Resolve the parent without following the leaf; retain an absolute lexical
+/// fallback when a cyclic parent exhausts the existing bounded resolver.
+fn protected_entry_identity(path: &Path) -> Option<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let identity = match (absolute.parent(), absolute.file_name()) {
+        (Some(parent), Some(name)) => protected_path_identity(parent).map_or_else(
+            || normalize_lexical_path(&absolute),
+            |parent| parent.join(name),
+        ),
+        _ => normalize_lexical_path(&absolute),
+    };
+    Some(if output_keys_are_case_folded() {
+        PathBuf::from(identity.to_string_lossy().to_lowercase())
+    } else {
+        identity
+    })
+}
+
 #[derive(Default)]
 pub(crate) struct ProtectedInputs {
     identities: std::collections::BTreeMap<PathBuf, PathBuf>,
@@ -96,7 +120,13 @@ pub(crate) struct ProtectedInputs {
 
 impl ProtectedInputs {
     pub(crate) fn insert(&mut self, path: &Path) {
-        if let Some(identity) = protected_path_identity(path) {
+        for identity in [
+            protected_entry_identity(path),
+            protected_path_identity(path),
+        ]
+        .into_iter()
+        .flatten()
+        {
             self.identities
                 .entry(identity)
                 .or_insert_with(|| path.to_path_buf());
@@ -122,8 +152,13 @@ impl ProtectedInputs {
                 return Some(source);
             }
         }
-        protected_path_identity(output)
-            .and_then(|path| self.identities.get(&path))
-            .map(PathBuf::as_path)
+        [
+            protected_entry_identity(output),
+            protected_path_identity(output),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|path| self.identities.get(&path))
+        .map(PathBuf::as_path)
     }
 }

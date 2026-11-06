@@ -55,7 +55,9 @@ pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedB
     }
     let mut warnings = Vec::new();
     let discovered = discover(&root, &mut warnings)?;
-    let mut protected_paths = BTreeSet::new();
+    // The manifest remains a consulted input even before it exists. Publishing
+    // an EPUB/PDF at this path must not change the next invocation's inputs.
+    let mut protected_paths = BTreeSet::from([root.join("book.toml")]);
     let manifest = match fs::symlink_metadata(root.join("book.toml")) {
         Ok(_) => {
             let (path, bytes) = read_regular(&root, "book.toml", MAX_MANIFEST_BYTES)?;
@@ -176,6 +178,10 @@ pub(super) fn load_images(loaded: &mut LoadedBook, max_image_bytes: u64) -> Resu
         if request_count > 4096 {
             return Err("book exceeds 4096 distinct image references".to_string());
         }
+        // Protect the requested identity before attempting the bounded read.
+        // Missing, oversized and symlink-rejected images still belong to the
+        // source document; a warning must not authorize replacing that path.
+        protected_paths.insert(root.join(&relative));
         match read_regular(root, &relative, max_image_bytes.min(32 * 1024 * 1024)) {
             Ok((path, bytes)) => {
                 protected_paths.insert(path);

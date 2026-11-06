@@ -76,6 +76,24 @@ chapter references them. Input trees must remain under the caller's control
 while the portable filesystem checks run; they are not race-free containment
 against a hostile concurrent writer.
 
+## Publication input protection
+
+Book outputs cannot replace chapters, include sources, fonts, stylesheets or
+referenced local images. An image remains protected when it is missing,
+oversized, unsupported or refused by the symlink policy. Protection uses the
+decoded file path without its URL query or fragment and includes directory
+aliases, dangling or cyclic symlink entries, and existing hard-link identities
+on Unix. The existing image-loading policy still determines whether an image
+can be read; reserving its path does not authorize loading its bytes.
+
+The consulted `book.toml` and active configuration paths are also reserved when
+absent. `--no-config` leaves the unused configuration path unreserved. If any
+HTML, PDF or EPUB destination conflicts with an input, the command returns
+`output_error` (exit 73) before creating output directories or replacing any
+publication files. Choose a different `--out` or `--out-dir` destination.
+Unrelated destinations still succeed with the existing `image_unavailable`
+warnings for images that could not load.
+
 ## Commands
 
 ```sh

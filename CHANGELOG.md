@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also checks directory-entry and Unix hard-link identities, protects missing
   manifest/configuration inputs, and refuses every conflicting output before
   creating directories or replacing any files.
+- Formatted link labels and image alternate text retain their authored trailing
+  spaces, matching plain labels. Emphasis, code, entities and reference syntax
+  no longer erase word separation inside labels; paragraph-end trimming and
+  editable destination spans retain their existing behavior.
 
 ## [0.7.0] - 2026-11-03
 

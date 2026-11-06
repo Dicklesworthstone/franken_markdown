@@ -4941,11 +4941,14 @@ fn parse_inlines_chars_with_refs_profiled(
         }
         return Vec::new();
     }
-    // Trim only trailing source spaces, preserving decoded character references
-    // at paragraph ends and inside nested link content.
-    let trailing_spaces = bytes.iter().rev().take_while(|&&ch| ch == ' ').count();
-    for _ in 0..trailing_spaces {
-        buf.pop();
+    // Only the enclosing prose run ends at a paragraph boundary. A link or
+    // image label ends at `]`, so its trailing spaces remain display content.
+    // Count source spaces here so decoded character references stay literal.
+    if context == InlineContext::Prose {
+        let trailing_spaces = bytes.iter().rev().take_while(|&&ch| ch == ' ').count();
+        for _ in 0..trailing_spaces {
+            buf.pop();
+        }
     }
     flush(&mut buf, &mut els);
     let resolver_allocations = if has_emphasis_delimiters {

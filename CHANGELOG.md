@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Native render and watch exports preserve every admitted local image source,
+  including missing files, dangling symlink entries and targets, and originals
+  hidden by explicit overrides. All intended outputs, including combined-export
+  sidecars, are checked before publication.
 - Definition lists and footnotes preserve physical line breaks while parsing
   inline syntax. Authored hard breaks, code-span spaces, HTML attributes and
   TeX comments retain their meaning; malformed multiline destinations no longer

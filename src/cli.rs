@@ -1782,6 +1782,16 @@ fn run_render_with_preview(
     let mut explicit_image_destinations = image_destinations.clone();
     explicit_image_destinations.extend(running_image_destinations(&args.style));
     let base_image_dir = auto_pdf_image_base_dir(args.input.as_deref(), args.text.as_deref());
+    // Every admitted local image path remains source material, even when it
+    // is missing, a dangling alias, or superseded by explicitly supplied bytes.
+    // Publishing there would change what the next render reads from the source.
+    if let Some(base_dir) = base_image_dir.as_deref() {
+        input_paths.extend(
+            image_destinations
+                .iter()
+                .filter_map(|destination| auto_pdf_image_path(destination.trim(), base_dir)),
+        );
+    }
     // Read the explicitly supplied bytes once, regardless of output format.
     // In combined output both renderers must see the same override, even if
     // the source also names a different automatically discoverable local file.
@@ -1852,12 +1862,15 @@ fn run_render_with_preview(
         html_image_assets.clone_from(&pdf_image_assets);
     }
 
-    // Includes and presentation resources are source material too. Perform
-    // this check after their successful reads, before any renderer or writer
-    // can replace them; aliases use the same inode/canonical-path comparison
-    // as the top-level Markdown guard.
+    // Includes and presentation resources are source material too. Protect
+    // existing files, missing paths, and both entries and targets of aliases
+    // before any renderer or writer can replace them.
+    let mut protected = protected_paths::ProtectedInputs::default();
     for input in &input_paths {
-        if let Some(output) = file_targets.iter().find(|output| same_file(input, output)) {
+        protected.insert(input);
+    }
+    for output in &file_targets {
+        if let Some(input) = protected.source_for(output) {
             return fail_json(
                 64,
                 "usage_error",

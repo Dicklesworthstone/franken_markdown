@@ -2164,6 +2164,171 @@ fn character_accents_attach_scripts_before_packing_the_accent() {
 }
 
 #[test]
+fn wide_hats_match_independent_tex_boxes() {
+    // Ruled Reference preamble at 10pt, independently captured before
+    // evaluating this candidate (fm-widehat-height-r12-v3jj). The last
+    // thirteen cases exercise amsfonts' TEXT-style, two-text-em branch,
+    // including all three optical sizes and its strict boundary. The
+    // supported \hspace boundary inputs were independently measured to
+    // have the same TeX boxes as the original, unsupported \kern inputs;
+    // those original inputs retain their precise-error checks below.
+    let e = engine();
+    for (source, expected) in [
+        (r"\widehat{P}", [0.780_904, 0.975_000, 0.0]),
+        (r"\widehat{8}", [0.500_002, 0.936_113, 0.0]),
+        (r"\widehat{x}", [0.571_527, 0.722_223, 0.0]),
+        (r"\widehat{y}", [0.526_160, 0.722_223, 0.194_444]),
+        (r"\widehat{f}", [0.597_226, 0.986_113, 0.194_444]),
+        (r"\widehat{M}", [1.079_166, 1.002_777, 0.0]),
+        (r"\widehat{xy}", [1.097_687, 0.750_000, 0.194_444]),
+        (r"\widehat{AB}", [1.558_682, 1.002_777, 0.0]),
+        (r"\widehat{xyz}", [1.606_717, 0.750_000, 0.194_444]),
+        (r"\widehat{ABC}", [2.344_931, 1.045_372, 0.0]),
+        (r"\widehat{wxyz}", [2.349_542, 0.825_005, 0.194_444]),
+        (r"\widehat{ABCD}", [3.200_626, 1.045_372, 0.0]),
+        (r"\widehat{}", [0.0, 0.722_223, 0.0]),
+        (r"\widehat{\frac{a}{b}}", [0.768_588, 1.398_730, 0.685_951]),
+        (r"\widehat{\widehat{x}}", [0.571_527, 1.013_892, 0.0]),
+        (r"\scriptstyle\widehat{P}", [0.616_771, 0.682_500, 0.0]),
+        (r"\scriptstyle\widehat{8}", [0.398_613, 0.655_276, 0.0]),
+        (
+            r"\scriptstyle\widehat{xy}",
+            [0.884_148, 0.525_000, 0.136_110],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{P}",
+            [0.524_484, 0.487_500, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{8}",
+            [0.340_283, 0.468_054, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{xy}",
+            [0.779_056, 0.375_000, 0.097_221],
+        ),
+        (r"\widehat{\text{P}}", [0.680_390, 0.980_390, 0.0]),
+        (r"\widehat{{P}}", [0.780_904, 0.975_000, 0.0]),
+        (r"\widehat{P}^2", [1.229_517, 0.975_000, 0.0]),
+        (r"\widehat{y}_1", [0.938_895, 0.722_223, 0.194_444]),
+        (r"\scriptstyle\widehat{ABC}", [1.862_290, 0.731_573, 0.0]),
+        (r"\scriptstyle\widehat{ABCD}", [2.537_666, 0.731_573, 0.0]),
+        (
+            r"\scriptscriptstyle\widehat{ABC}",
+            [1.591_930, 0.524_794, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{ABCD}",
+            [2.164_229, 0.524_794, 0.0],
+        ),
+        (r"\widehat{\hspace{1.9999em}}", [1.999_405, 0.750_000, 0.0]),
+        (r"\widehat{\hspace{2em}}", [1.999_512, 0.750_000, 0.0]),
+        (r"\widehat{\hspace{2.0001em}}", [1.999_617, 0.825_005, 0.0]),
+        (
+            r"\scriptstyle\widehat{\hspace{1.9999em}}",
+            [1.999_405, 0.525_000, 0.0],
+        ),
+        (
+            r"\scriptstyle\widehat{\hspace{2em}}",
+            [1.999_512, 0.525_000, 0.0],
+        ),
+        (
+            r"\scriptstyle\widehat{\hspace{2.0001em}}",
+            [1.999_617, 0.577_310, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{\hspace{1.9999em}}",
+            [1.999_405, 0.375_000, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{\hspace{2em}}",
+            [1.999_512, 0.375_000, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{\hspace{2.0001em}}",
+            [1.999_617, 0.414_603, 0.0],
+        ),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs independent TeX {expected:?}"
+            );
+        }
+    }
+    for source in [
+        r"\widehat{\kern1.9999em}",
+        r"\widehat{\kern2em}",
+        r"\widehat{\kern2.0001em}",
+        r"\scriptstyle\widehat{\kern1.9999em}",
+        r"\scriptstyle\widehat{\kern2em}",
+        r"\scriptstyle\widehat{\kern2.0001em}",
+        r"\scriptscriptstyle\widehat{\kern1.9999em}",
+        r"\scriptscriptstyle\widehat{\kern2em}",
+        r"\scriptscriptstyle\widehat{\kern2.0001em}",
+    ] {
+        assert!(
+            matches!(
+                e.typeset(source, Style::Display),
+                Err(fmd_math::MathError::UnsupportedCommand { name, .. }) if name == r"\kern"
+            ),
+            "{source}: unsupported primitive must retain its precise error"
+        );
+    }
+}
+
+#[test]
+fn nested_wide_hats_reuse_text_style_measurements() {
+    let e = engine();
+    let mut source = String::from("x");
+    for _ in 0..24 {
+        source = format!("\\widehat{{{source}}}");
+    }
+    let layout = e.typeset(&source, Style::Display).unwrap();
+    assert_eq!(layout.paths.len(), 24);
+    assert_eq!(layout.glyphs.len(), 1);
+    // Published CMEX10 TFM heights and x-height, not the implementation's
+    // measured result. First hat replaces x's height; each later one
+    // adds the accent height minus the font's x-height overlap.
+    let expected_height =
+        0.722_223_281_860_351_6 + 23.0 * (0.722_223_281_860_351_6 - 0.430_555_343_627_929_7);
+    assert!((layout.height - expected_height).abs() < 1e-4);
+}
+
+#[test]
+fn wide_hat_measurements_preserve_distinct_macro_nuclei() {
+    let e = engine();
+    let mut macros = fmd_math::MacroSet::new();
+    macros
+        .define("hats", 0, r"\widehat{P}+\widehat{ABCD}")
+        .unwrap();
+    // Expanded tokens share their macro call's source span. They must
+    // still measure like the same expressions written out independently.
+    for style in [
+        Style::Display,
+        Style::Text,
+        Style::Script,
+        Style::ScriptScript,
+    ] {
+        let from_macro = e
+            .typeset_with_macros(r"\widehat{\hats}", style, &macros)
+            .unwrap();
+        let expanded = e
+            .typeset(r"\widehat{\widehat{P}+\widehat{ABCD}}", style)
+            .unwrap();
+        assert_eq!(
+            [from_macro.width, from_macro.height, from_macro.depth],
+            [expanded.width, expanded.height, expanded.depth],
+            "{style:?}"
+        );
+        assert_eq!(from_macro.glyphs.len(), expanded.glyphs.len());
+        assert_eq!(from_macro.paths.len(), expanded.paths.len());
+    }
+}
+
+#[test]
 fn underlines_match_independent_tex_boxes() {
     // Fresh ruled-Reference TeX at10pt (fm-underline-depth-r12-gj19).
     // All31 predeclared cases stay here, including plain/overline controls,

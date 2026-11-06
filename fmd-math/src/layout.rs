@@ -29,6 +29,8 @@
 //! row stacking (`\jot`-opened for `align`), `\vcenter` axis centering,
 //! and the rule-19 delimiter wrap for the delimited matrices.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
 
 use crate::atom::{AtomClass, classify_list, spacing_in_style};
@@ -210,6 +212,7 @@ impl Engine {
             NodeKind::List(items) => items.as_slice(),
             _ => std::slice::from_ref(root),
         };
+        let wide_accent_widths = RefCell::new(HashMap::new());
         let ctx = LayCtx {
             style: ctx,
             alphabet: None,
@@ -221,6 +224,7 @@ impl Engine {
             in_display: align_rows,
             color: None,
             line_width,
+            wide_accent_widths: &wide_accent_widths,
         };
         let rows = items
             .iter()
@@ -287,7 +291,7 @@ impl Engine {
 
 /// The full layout context threaded through the recursion.
 #[derive(Clone, Copy)]
-struct LayCtx {
+struct LayCtx<'a> {
     style: StyleCtx,
     alphabet: Option<MathFont>,
     /// Laying text (islands, `\text` bodies): letters stay upright.
@@ -316,6 +320,32 @@ struct LayCtx {
     /// The TexText paragraphs' line width, ems (`\linewidth`): the
     /// mainland and the alignment environments break lines wider than it.
     line_width: Option<f64>,
+    /// Per-call text-style measurements used by amsfonts' wide accents.
+    /// Memoizing them prevents nested accents from relaying out their
+    /// complete nuclei exponentially. No cache survives this input tree.
+    wide_accent_widths: &'a WideAccentWidths,
+}
+
+type WideAccentWidths = RefCell<HashMap<WideAccentWidthKey, Vec<WideAccentWidth>>>;
+
+struct WideAccentWidth {
+    node: Node,
+    width: f64,
+}
+
+/// Geometry-affecting context of a text-style measurement. The stored
+/// node is also compared on a hit: macro expansions can share spans.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct WideAccentWidthKey {
+    span: Span,
+    alphabet: Option<u8>,
+    text_mode: bool,
+    text_kerns: bool,
+    decl_size: u64,
+    line_stretch: u64,
+    align_rows: bool,
+    in_display: bool,
+    line_width: Option<u64>,
 }
 
 /// A paragraph's line: its width, ems, and alignment
@@ -326,7 +356,7 @@ struct Paragraph {
     align: LineAlign,
 }
 
-impl LayCtx {
+impl LayCtx<'_> {
     fn size(&self) -> f64 {
         crate::metrics::math_size(self.style.style, self.decl_size)
     }
@@ -496,7 +526,7 @@ impl Engine {
     /// the declarations and the recursion; the glue arithmetic, the text
     /// runs and the assembly pass are methods of their own (see
     /// [`Self::lay_node`]).
-    fn line(&self, items: &[Node], outer: LayCtx) -> Result<(MBox, LayCtx), MathError> {
+    fn line<'a>(&self, items: &[Node], outer: LayCtx<'a>) -> Result<(MBox, LayCtx<'a>), MathError> {
         let classes = classify_list(items);
         let mut ctx = outer;
         let mut laid_items: Vec<LineItem> = Vec::new();
@@ -3214,13 +3244,13 @@ impl Engine {
 
     /// How an environment lays out: its cells' context, the grid rules, and
     /// the delimiters around the grid.
-    fn environment_plan(
+    fn environment_plan<'a>(
         &self,
         name: &str,
         spec: Option<&str>,
-        ctx: LayCtx,
+        ctx: LayCtx<'a>,
         span: Span,
-    ) -> Result<EnvPlan, MathError> {
+    ) -> Result<EnvPlan<'a>, MathError> {
         // These grids are mathematics even when their enclosing document
         // is TexText. A surrounding text face must not leak into cells.
         let ctx = LayCtx {
@@ -3758,18 +3788,47 @@ impl Engine {
             AccentKind::WideHat | AccentKind::WideTilde => theta,
             _ => 2.0 * theta,
         };
-        let band_dy = inner.height + gap;
-        let (height, depth) = (inner.height + gap + band.height, inner.depth);
+        let height = if kind == AccentKind::WideHat {
+            let text_width = self.wide_accent_text_width(base, ctx)?;
+            let text_em = self.interword_font(ctx).param(6) * ctx.text_size();
+            let (accent_height, x_height) =
+                wide_hat_metrics(inner.width, text_width > 2.0 * text_em, ctx).ok_or(
+                    MathError::UnmappedChar {
+                        ch: '\u{0302}',
+                        span,
+                    },
+                )?;
+            inner
+                .height
+                .max(inner.height + accent_height - inner.height.min(x_height))
+        } else {
+            inner.height + gap + band.height
+        };
+        let band_dy = if kind == AccentKind::WideHat {
+            height - band.height
+        } else {
+            inner.height + gap
+        };
+        let depth = inner.depth;
         let inner_width = inner.width;
         Ok(Laid {
             boxx: MBox {
                 kind: BoxKind::Horizontal,
-                width: inner_width.max(width),
+                // An accent has zero advance, even over an empty nucleus.
+                width: if kind == AccentKind::WideHat {
+                    inner_width
+                } else {
+                    inner_width.max(width)
+                },
                 height,
                 depth,
                 children: vec![
                     Positioned {
-                        dx: 0.0,
+                        dx: if kind == AccentKind::WideHat {
+                            (inner_width - width) / 2.0
+                        } else {
+                            0.0
+                        },
                         dy: band_dy,
                         node: MNode::Path {
                             contours: band.contours,
@@ -3786,6 +3845,43 @@ impl Engine {
             italic: 0.0,
             char_glyph: None,
         })
+    }
+
+    fn wide_accent_text_width(&self, base: &Node, ctx: LayCtx) -> Result<f64, MathError> {
+        let key = WideAccentWidthKey {
+            span: base.span,
+            alphabet: ctx.alphabet.map(|font| font as u8),
+            text_mode: ctx.text_mode,
+            text_kerns: ctx.text_kerns,
+            decl_size: ctx.decl_size.to_bits(),
+            line_stretch: ctx.line_stretch.to_bits(),
+            align_rows: ctx.align_rows,
+            in_display: ctx.in_display,
+            line_width: ctx.line_width.map(f64::to_bits),
+        };
+        let cached = ctx
+            .wide_accent_widths
+            .borrow()
+            .get(&key)
+            .and_then(|values| values.iter().find(|entry| &entry.node == base))
+            .map(|entry| entry.width);
+        if let Some(width) = cached {
+            return Ok(width);
+        }
+        // Drop the cache borrow before recursively measuring another accent.
+        let width = self
+            .clean_box(base, ctx.map(|_| StyleCtx::new(Style::Text)))?
+            .boxx
+            .width;
+        ctx.wide_accent_widths
+            .borrow_mut()
+            .entry(key)
+            .or_default()
+            .push(WideAccentWidth {
+                node: base.clone(),
+                width,
+            });
+        Ok(width)
     }
 
     fn underline_box(&self, inner: MBox, ctx: LayCtx, span: Span) -> MBox {
@@ -4735,6 +4831,39 @@ fn tex_small_font(family: u8, points: f64) -> &'static crate::tfm::TfmFont {
     }
 }
 
+/// TeX's wide-hat successor chain, including amsfonts' branch to MSBM
+/// above two text-style ems. Drawing remains ADR-0005's calibrated band;
+/// its top follows make_math_accent's height and x-height overlap.
+fn wide_hat_metrics(width: f64, use_ams: bool, ctx: LayCtx) -> Option<(f64, f64)> {
+    let size = ctx.size();
+    let points = 10.0 * size;
+    let (font, accent) = if use_ams {
+        let font = match points {
+            p if p < 6.0 => &crate::tfm::MSBM5,
+            p if p < 8.0 => &crate::tfm::MSBM7,
+            _ => &crate::tfm::MSBM10,
+        };
+        let mut accent = font.char(0x5B)?;
+        let larger = font.char(0x5C)?;
+        if larger.width * size <= width {
+            accent = larger;
+        }
+        (font, accent)
+    } else {
+        let font = crate::metrics::size_fonts(points).1;
+        let mut accent = font.char(0x62)?;
+        for code in [0x63, 0x64] {
+            let larger = font.char(code)?;
+            if larger.width * size > width {
+                break;
+            }
+            accent = larger;
+        }
+        (font, accent)
+    };
+    Some((accent.height * size, font.param(5) * size))
+}
+
 /// The accent's TFM box at the actual point size: TeX's char_box,
 /// whose width is the character's width plus
 /// its italic correction (tex.web §709, 0.5 + 0.1538 em for cmmi10's
@@ -4803,12 +4932,12 @@ struct Grid {
 }
 
 /// An environment's layout plan ([`Engine::environment`]).
-struct EnvPlan {
+struct EnvPlan<'a> {
     /// The environment's own context (a display sets amsmath's
     /// `\if@display`); its delimiters are sized in it.
-    ctx: LayCtx,
+    ctx: LayCtx<'a>,
     /// The cells' context.
-    cells: LayCtx,
+    cells: LayCtx<'a>,
     /// The grid rules.
     grid: Grid,
     /// The delimiters around the grid, if any (`None` inside is TeX's
@@ -5064,11 +5193,11 @@ fn space_factor_through(nodes: &[Node], factor: u16) -> u16 {
 /// A laid paragraph line, broken when a [`Paragraph`] is given and the
 /// line is wider than it; each resulting line keeps `ctx`, the context its
 /// material ended in.
-fn paragraph_lines(
+fn paragraph_lines<'a>(
     line: MBox,
-    ctx: LayCtx,
+    ctx: LayCtx<'a>,
     paragraph: Option<Paragraph>,
-    out: &mut Vec<(MBox, LayCtx)>,
+    out: &mut Vec<(MBox, LayCtx<'a>)>,
 ) {
     match paragraph {
         Some(paragraph) if line.width > paragraph.width => {

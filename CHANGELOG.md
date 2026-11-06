@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Batch exports discover image ownership across all inputs before workers run,
+  including missing paths and originals hidden by explicit overrides. Every
+  publication checks source identities, so one job cannot create another job's
+  missing image or replace a source through a symlink or file alias.
 - Native render and watch exports preserve every admitted local image source,
   including missing files, dangling symlink entries and targets, and originals
   hidden by explicit overrides. All intended outputs, including combined-export

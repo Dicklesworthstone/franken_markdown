@@ -681,21 +681,14 @@ fn read_expanded_input(
     expansion.result
 }
 
-/// Resolve the exact local files that the renderer can auto-load. The batch
-/// preflight and per-file loader share this selection so an image owned by any
-/// job is protected before another worker can replace it.
-fn auto_image_inputs(
-    input: &Path,
-    doc: &Document,
-    assets: &[PdfImageAsset],
-) -> Vec<(String, PathBuf)> {
+/// Select local image source paths before resolving readable assets. Missing
+/// paths and originals hidden by explicit overrides still belong to the source:
+/// publishing there would make later renders depend on worker order.
+fn auto_image_inputs(input: &Path, doc: &Document) -> Vec<(String, PathBuf)> {
     let base_dir = input
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let Ok(canonical_base_dir) = std::fs::canonicalize(base_dir) else {
-        return Vec::new();
-    };
     let mut destinations = Vec::new();
     let lowered_doc = crate::safe_html::lower(doc);
     collect_image_destinations(&lowered_doc.blocks, &mut destinations);
@@ -703,23 +696,13 @@ fn auto_image_inputs(
     let mut inputs = Vec::new();
     for destination in destinations {
         let destination = destination.trim();
-        if destination.is_empty()
-            || assets
-                .iter()
-                .any(|asset| asset.destination.trim() == destination)
-            || !seen.insert(destination)
-        {
+        if destination.is_empty() || !seen.insert(destination) {
             continue;
         }
         let Some(path) = auto_pdf_image_path(destination, base_dir) else {
             continue;
         };
-        let Ok(canonical_path) = std::fs::canonicalize(&path) else {
-            continue;
-        };
-        if canonical_path.starts_with(&canonical_base_dir) && canonical_path.is_file() {
-            inputs.push((destination.to_string(), canonical_path));
-        }
+        inputs.push((destination.to_string(), path));
     }
     inputs
 }
@@ -732,7 +715,28 @@ fn append_auto_image_assets_for_input(
     max_bytes: u64,
     input_paths: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
-    for (destination, path) in auto_image_inputs(input, doc, assets) {
+    let image_inputs = auto_image_inputs(input, doc);
+    input_paths.extend(image_inputs.iter().map(|(_, path)| path.clone()));
+    let base_dir = input
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let Ok(canonical_base_dir) = std::fs::canonicalize(base_dir) else {
+        return Ok(());
+    };
+    for (destination, path) in image_inputs {
+        if assets
+            .iter()
+            .any(|asset| asset.destination.trim() == destination)
+        {
+            continue;
+        }
+        let Ok(path) = std::fs::canonicalize(&path) else {
+            continue;
+        };
+        if !path.starts_with(&canonical_base_dir) || !path.is_file() {
+            continue;
+        }
         let meta = std::fs::metadata(&path)
             .map_err(|e| format!("reading auto {output_kind} image {}: {e}", path.display()))?;
         let label = format!(
@@ -964,10 +968,9 @@ fn source_overwrite_errors(
                 .collect()
         })
         .collect();
-    // A fresh output tree cannot overwrite an existing image. Skip the extra
-    // AST/image scan in that case, but always inspect includes: publishing a
-    // currently missing include would make another job depend on worker order.
-    let inspect_images = outputs.iter().flatten().any(|(_, path)| path.exists());
+    // Inspect all source dependencies, including absent images and includes.
+    // Creating a missing input would make another job depend on worker order
+    // just as replacing an existing resource would.
     let mut readable = vec![false; plan.inputs.len()];
     let mut protected = ProtectedInputs::default();
     for path in plan.inputs.iter().chain(host_inputs) {
@@ -985,18 +988,8 @@ fn source_overwrite_errors(
         let mut include_paths = Vec::new();
         let resources = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let md = read_expanded_input(input, opts.max_input_bytes, &mut include_paths).ok()?;
-            if !inspect_images {
-                return Some(Vec::new());
-            }
             let doc = parse_markdown(&md);
-            let mut paths = Vec::new();
-            if plan.format.wants_html() || matches!(plan.format, OutputFormat::Epub) {
-                paths.extend(auto_image_inputs(input, &doc, &opts.html.image_assets));
-            }
-            if plan.format.wants_pdf() || matches!(plan.format, OutputFormat::Svg) {
-                paths.extend(auto_image_inputs(input, &doc, &opts.pdf.image_assets));
-            }
-            Some(paths)
+            Some(auto_image_inputs(input, &doc))
         }));
         for path in include_paths {
             protected.insert(&path);
@@ -1298,6 +1291,10 @@ fn render_one(
         }
     }
 
+    let mut protected = ProtectedInputs::default();
+    for source in &input_paths {
+        protected.insert(source);
+    }
     for item in &rendered {
         if item.path.is_dir() {
             return failed(
@@ -1306,10 +1303,7 @@ fn render_one(
                 format!("write {} failed: destination is a directory", item.kind),
             );
         }
-        if let Some(source) = input_paths
-            .iter()
-            .find(|source| crate::file_write::same_existing_file(source, &item.path))
-        {
+        if let Some(source) = protected.source_for(&item.path) {
             return failed(
                 input,
                 FileErrorKind::Output,

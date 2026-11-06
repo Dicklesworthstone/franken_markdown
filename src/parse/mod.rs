@@ -19,6 +19,7 @@ use crate::span::{ParseDiagnostic, SourceSpan, Spanned, SpannedDocument};
 pub(crate) mod entities;
 mod frontmatter;
 mod html_blocks;
+mod normalized;
 mod unicode_casefold;
 mod unicode_punct;
 
@@ -353,14 +354,16 @@ fn parse_stage_elapsed_ns(_started: Option<ParseStageStart>) -> u128 {
 #[must_use]
 pub fn parse_document(src: &str) -> Document {
     let mut profiler = ParseProfiler::disabled();
-    parse_document_inner(src, &mut profiler)
+    let source = normalized::NormalizedSource::new(src);
+    parse_document_inner(source.as_str(), &mut profiler)
 }
 
 /// Parse a full Markdown document and collect parser stage attribution.
 #[must_use]
 pub fn parse_document_profiled(src: &str) -> ParseProfile {
     let mut profiler = ParseProfiler::enabled();
-    let document = parse_document_inner(src, &mut profiler);
+    let source = normalized::NormalizedSource::new(src);
+    let document = parse_document_inner(source.as_str(), &mut profiler);
     ParseProfile {
         document,
         stages: profiler.finish(),
@@ -525,14 +528,20 @@ fn logical_line_capacity_hint(byte_len: usize) -> usize {
 /// span-free.
 #[must_use]
 pub fn parse_document_spanned(src: &str) -> SpannedDocument {
-    parse_document_spanned_inner(src, &mut ParseProfiler::disabled())
+    let source = normalized::NormalizedSource::new(src);
+    source.restore_spanned(parse_document_spanned_inner(
+        source.as_str(),
+        &mut ParseProfiler::disabled(),
+    ))
 }
 
 /// Parse a spanned document and collect parser stage attribution.
 #[must_use]
 pub fn parse_document_spanned_profiled(src: &str) -> SpannedParseProfile {
     let mut profiler = ParseProfiler::enabled();
-    let document = parse_document_spanned_inner(src, &mut profiler);
+    let source = normalized::NormalizedSource::new(src);
+    let document =
+        source.restore_spanned(parse_document_spanned_inner(source.as_str(), &mut profiler));
     SpannedParseProfile {
         document,
         stages: profiler.finish(),
@@ -633,44 +642,29 @@ fn span_for_lines(lines: &[SourceSpan], start: usize, end: usize) -> SourceSpan 
 }
 
 fn collect_parse_diagnostics(src: &str, lines: &[SourceLine<'_>]) -> Vec<ParseDiagnostic> {
-    let mut diagnostics = Vec::new();
-    let mut i = 0usize;
-
-    while i < lines.len() {
-        let line = lines[i];
-        if looks_like_reference_definition(line.text)
-            && parse_reference_definition(line.text).is_none()
-        {
-            diagnostics.push(ParseDiagnostic::warning(
-                SourceSpan::new(line.start, line.end),
-                "malformed link reference definition rendered as text",
-            ));
+    // Reference collection already owns block boundaries, complete multiline
+    // definitions, literal HTML/math/code, and recursively stripped containers.
+    // Reuse that walk instead of diagnosing isolated physical lines with a
+    // different grammar. Its origin maps retain exact source bytes even when
+    // a list/quote prefix or tab expansion required an owned string.
+    let mut tracker = destinations::DestinationTracker::for_diagnostics(src);
+    let expanded: Vec<_> = lines
+        .iter()
+        .map(|line| expand_leading_tabs(line.text))
+        .collect();
+    for (line, expanded) in lines.iter().zip(&expanded) {
+        if let std::borrow::Cow::Owned(copied) = expanded {
+            tracker.map_suffix(copied, line.text);
         }
-
-        if let Some((fence_ch, fence_len, _info)) = open_fence(line.text) {
-            let mut end = i + 1;
-            let mut closed = false;
-            while end < lines.len() {
-                if is_close_fence(lines[end].text, fence_ch, fence_len) {
-                    closed = true;
-                    break;
-                }
-                end += 1;
-            }
-            if !closed {
-                diagnostics.push(ParseDiagnostic::warning(
-                    SourceSpan::new(line.start, src.len()),
-                    "unclosed fenced code block reaches end of document",
-                ));
-                break;
-            }
-            i = end;
-        }
-
-        i += 1;
     }
-
-    diagnostics
+    let lines: Vec<_> = expanded.iter().map(|line| line.as_ref()).collect();
+    collect_link_reference_metadata_into_tracked(
+        &lines,
+        None,
+        &mut ReferenceMap::new(),
+        Some(&mut tracker),
+    );
+    tracker.finish_diagnostics()
 }
 
 fn looks_like_reference_definition(line: &str) -> bool {
@@ -842,14 +836,8 @@ fn footnote_body_lines<'a>(lines: &[&'a str], content: &'a str) -> (Vec<&'a str>
 /// bodies keep their physical lines so fences, tables, lists, and paragraph
 /// boundaries reach the block parser intact.
 fn footnote_body_is_plain_paragraph(lines: &[&str]) -> bool {
-    table_extent(lines).is_none()
-        && lines[..lines.len().saturating_sub(1)].iter().all(|line| {
-            // Joining physical lines with spaces would erase explicit hard
-            // breaks. Escaped backslashes and entity-produced whitespace are
-            // content; use the inline parser's source-delimiter rule here.
-            !line.ends_with("  ")
-                && line.bytes().rev().take_while(|&byte| byte == b'\\').count() % 2 == 0
-        })
+    !inline_lines_need_physical_breaks(lines)
+        && table_extent(lines).is_none()
         && lines.iter().all(|line| {
             let trimmed = trim_start_space_tab(line);
             !trimmed.contains("]:")
@@ -859,6 +847,19 @@ fn footnote_body_is_plain_paragraph(lines: &[&str]) -> bool {
                 && setext_underline(trimmed).is_none()
                 && line_is_paragraph_text_with_scan(trimmed, scan_markdown_line(trimmed))
         })
+}
+
+/// Joining ordinary prose lines preserves the legacy container presentation,
+/// including extra indentation in plain notes. Inline syntax must instead see
+/// its real line boundaries: a newline can reject a destination, end a TeX
+/// comment, belong to literal code/HTML, or become a hard/soft break. Decide
+/// before trimming any source spaces or constructing a joined string.
+fn inline_lines_need_physical_breaks(lines: &[&str]) -> bool {
+    lines.len() > 1
+        && (lines.iter().any(|line| inline_text_needs_full_parse(line))
+            || lines[..lines.len() - 1]
+                .iter()
+                .any(|line| line.ends_with("  ")))
 }
 
 /// GFM footnote ids: non-empty, no whitespace, no brackets.
@@ -965,6 +966,11 @@ fn collect_link_reference_metadata_at_depth(
             i += 1;
             while i < lines.len() && !is_close_fence(lines[i], fence_ch, fence_len) {
                 i += 1;
+            }
+            if i == lines.len()
+                && let Some(tracker) = &mut tracker
+            {
+                tracker.unclosed_fence(&lines[start..i], depth);
             }
             i += 1; // step past the closing fence (or past end if unclosed)
             if depth > 0
@@ -1115,6 +1121,16 @@ fn collect_link_reference_metadata_at_depth(
                 continue;
             }
 
+            if !in_paragraph
+                && looks_like_reference_definition(line)
+                && let Some(tracker) = &mut tracker
+                // After reference parsing rejects it, the same source may be
+                // a valid definition-list term. Share that parser's boundary
+                // scan rather than diagnosing syntax another block owns.
+                && definition_list_term_line_count(&lines[i..]).is_none()
+            {
+                tracker.malformed_reference(line);
+            }
             kept_reference_candidate = true;
         }
 
@@ -3162,6 +3178,22 @@ fn strip_definition_marker(line: &str) -> &str {
     }
 }
 
+/// Count term lines only when the next line actually starts a definition.
+/// The block parser and malformed-reference diagnostics must agree on this
+/// ownership without constructing a second inline AST during diagnostics.
+fn definition_list_term_line_count(lines: &[&str]) -> Option<usize> {
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = trim_space_tab(line);
+        if trimmed.is_empty() || scanned_paragraph_interrupt(BlockStartScan::new(line, trimmed)) {
+            return None;
+        }
+        if is_definition_marker(line) {
+            return (index > 0).then_some(index);
+        }
+    }
+    None
+}
+
 fn parse_definition_list_profiled(
     lines: &[&str],
     refs: &ReferenceMap,
@@ -3175,47 +3207,24 @@ fn parse_definition_list_profiled(
     let mut i = 0;
 
     while i < lines.len() {
-        let mut term_lines = Vec::new();
         let item_start = i;
-        while i < lines.len() {
-            let line = lines[i];
-            let trimmed = trim_space_tab(line);
-            if trimmed.is_empty() {
-                break;
-            }
-            let scan = BlockStartScan::new(line, trimmed);
-            if scanned_paragraph_interrupt(scan) {
-                break;
-            }
-            if is_definition_marker(line) {
-                break;
-            }
-            term_lines.push(trimmed);
-            i += 1;
-        }
-
-        if term_lines.is_empty() || i >= lines.len() || !is_definition_marker(lines[i]) {
+        let Some(term_count) = definition_list_term_line_count(&lines[i..]) else {
             if items.is_empty() {
                 return None;
             }
-            i = item_start;
             break;
-        }
-
-        let terms: Vec<Vec<crate::ast::Inline>> = term_lines
-            .into_iter()
-            .map(|t| parse_inlines_with_refs_profiled(t, refs, profiler))
+        };
+        let terms: Vec<Vec<crate::ast::Inline>> = lines[i..i + term_count]
+            .iter()
+            .map(|line| parse_inlines_with_refs_profiled(trim_space_tab(line), refs, profiler))
             .collect();
+        i += term_count;
 
         let mut definitions: Vec<Vec<crate::ast::Inline>> = Vec::new();
         while i < lines.len() && is_definition_marker(lines[i]) {
             let first_def = strip_definition_marker(lines[i]);
             let checkpoint = profiler.destination_checkpoint();
-            let mut parts = profiler
-                .destinations
-                .is_some()
-                .then(|| vec![(0, first_def)]);
-            let mut def_text = first_def.to_string();
+            let mut definition_lines = vec![first_def];
             i += 1;
             while i < lines.len() {
                 let line = lines[i];
@@ -3233,19 +3242,37 @@ fn parse_definition_list_profiled(
                 if i + 1 < lines.len() && is_definition_marker(lines[i + 1]) {
                     break;
                 }
-                if !def_text.is_empty() {
-                    def_text.push(' ');
-                }
-                if let Some(parts) = &mut parts {
-                    parts.push((def_text.len(), trimmed));
-                }
-                def_text.push_str(trimmed);
+                definition_lines.push(line);
                 i += 1;
             }
-            if let Some(parts) = parts {
-                profiler.destination_parts(&def_text, &parts);
-            }
-            definitions.push(parse_inlines_with_refs_profiled(&def_text, refs, profiler));
+            let inlines = if inline_lines_need_physical_breaks(&definition_lines) {
+                // An empty ':' introduces the following content; it is not a
+                // leading line break in that content. Keep every subsequent
+                // physical line until the ordinary inline parser owns it.
+                let start = usize::from(trim_space_tab(first_def).is_empty());
+                parse_lines_as_inlines(&definition_lines[start..], refs, profiler).0
+            } else {
+                let mut parts = profiler
+                    .destinations
+                    .is_some()
+                    .then(|| vec![(0, first_def)]);
+                let mut def_text = first_def.to_string();
+                for line in &definition_lines[1..] {
+                    let trimmed = trim_space_tab(line);
+                    if !def_text.is_empty() {
+                        def_text.push(' ');
+                    }
+                    if let Some(parts) = &mut parts {
+                        parts.push((def_text.len(), trimmed));
+                    }
+                    def_text.push_str(trimmed);
+                }
+                if let Some(parts) = parts {
+                    profiler.destination_parts(&def_text, &parts);
+                }
+                parse_inlines_with_refs_profiled(&def_text, refs, profiler)
+            };
+            definitions.push(inlines);
             profiler.destination_restore(checkpoint);
         }
 
@@ -3264,21 +3291,7 @@ fn parse_definition_list_profiled(
             while next_k < lines.len() && trim_space_tab(lines[next_k]).is_empty() {
                 next_k += 1;
             }
-            let mut term_cand = next_k;
-            while term_cand < lines.len()
-                && !trim_space_tab(lines[term_cand]).is_empty()
-                && !is_definition_marker(lines[term_cand])
-            {
-                let scan = BlockStartScan::new(lines[term_cand], trim_space_tab(lines[term_cand]));
-                if scanned_paragraph_interrupt(scan) {
-                    break;
-                }
-                term_cand += 1;
-            }
-            if term_cand > next_k
-                && term_cand < lines.len()
-                && is_definition_marker(lines[term_cand])
-            {
+            if definition_list_term_line_count(&lines[next_k..]).is_some() {
                 i = next_k;
             } else {
                 break;
@@ -4301,7 +4314,8 @@ fn parse_table_cell_profiled(
 /// Parse a run of text (which may contain `\n`) into inline elements.
 #[must_use]
 pub fn parse_inlines(text: &str) -> Vec<Inline> {
-    parse_inlines_with_refs(text, &ReferenceMap::new())
+    let source = normalized::NormalizedSource::new(text);
+    parse_inlines_with_refs(source.as_str(), &ReferenceMap::new())
 }
 
 fn parse_inlines_with_refs(text: &str, refs: &ReferenceMap) -> Vec<Inline> {

@@ -20,6 +20,7 @@ pub struct WasmSourceMetadata {
 /// Uses the native parser's `key=value`, YAML-style scalar and block-scalar
 /// grammar, including BOM and CR/CRLF handling. Absent or malformed frontmatter
 /// returns empty defaults. Unknown keys do not become render settings.
+/// Literal NUL in metadata becomes U+FFFD, as in the parsed document body.
 #[must_use]
 pub fn source_metadata(markdown: &str) -> WasmSourceMetadata {
     let Some(metadata) = crate::parse::split_frontmatter(markdown).0 else {

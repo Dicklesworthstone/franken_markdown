@@ -73,7 +73,7 @@ impl DestinationSpan {
                     }
                 }
                 ch => {
-                    decoded.push(ch);
+                    decoded.push(if ch == '\0' { '\u{fffd}' } else { ch });
                     index += 1;
                     ch == '#'
                 }
@@ -108,6 +108,8 @@ pub(crate) fn reference_label_spans(source: &str) -> Vec<ReferenceLabelSpan> {
     if !source.contains('[') {
         return Vec::new();
     }
+    let normalized = normalized::NormalizedSource::new(source);
+    let source = normalized.as_str();
     let mut profiler = ParseProfiler::disabled();
     let mut tracker = DestinationTracker::new(source);
     tracker.labels = Some(Vec::new());
@@ -125,6 +127,16 @@ pub(crate) fn reference_label_spans(source: &str) -> Vec<ReferenceLabelSpan> {
     // Metadata walks can revisit the same accepted definition. Unknown ranges
     // remain represented: even one is enough to prevent an incomplete edit.
     labels.dedup();
+    for label in &mut labels {
+        label.label = label
+            .label
+            .take()
+            .map(|range| normalized.original_range(range));
+        label.replacement = label
+            .replacement
+            .take()
+            .map(|range| normalized.original_range(range));
+    }
     labels
 }
 
@@ -151,6 +163,8 @@ pub(crate) fn resource_destination_spans(source: &str) -> Vec<SourceDestination>
 }
 
 fn tracked_destinations(source: &str, html: bool) -> Vec<SourceDestination> {
+    let normalized = normalized::NormalizedSource::new(source);
+    let source = normalized.as_str();
     let mut profiler = ParseProfiler::disabled();
     let mut tracker = DestinationTracker::new(source);
     tracker.html = html;
@@ -161,6 +175,9 @@ fn tracked_destinations(source: &str, html: bool) -> Vec<SourceDestination> {
         .map_or_else(Vec::new, |tracker| tracker.spans);
     spans.sort_by_key(|span| (span.token.range.start, span.token.range.end));
     spans.dedup_by(|right, left| right.token.range == left.token.range);
+    for span in &mut spans {
+        span.token.range = normalized.original_range(span.token.range.clone());
+    }
     spans
 }
 
@@ -178,6 +195,8 @@ pub(crate) fn transclusion_code_ranges(
     if !source.contains(['`', '~']) {
         return Vec::new();
     }
+    let normalized = normalized::NormalizedSource::new(source);
+    let source = normalized.as_str();
     let mut tracker = DestinationTracker::new(source);
     tracker.container_fences = Some(Vec::new());
     tracker.inline_code = source.contains('`').then(Vec::new);
@@ -238,6 +257,9 @@ pub(crate) fn transclusion_code_ranges(
         }
     }
     merged
+        .into_iter()
+        .map(|range| normalized.original_range(range))
+        .collect()
 }
 
 #[derive(Clone)]
@@ -327,6 +349,13 @@ impl CharMap {
     }
 }
 
+struct DiagnosticState {
+    // Includes physical terminators, so a nested unclosed fence can stop at
+    // its container's last source line without consuming following prose.
+    line_ends: Vec<usize>,
+    findings: Vec<ParseDiagnostic>,
+}
+
 pub(super) struct DestinationTracker {
     source_address: usize,
     source_len: usize,
@@ -342,6 +371,7 @@ pub(super) struct DestinationTracker {
     container_fences: Option<Vec<Range<usize>>>,
     inline_code: Option<Vec<Range<usize>>>,
     directive_lines: Vec<Range<usize>>,
+    diagnostics: Option<DiagnosticState>,
 }
 
 impl DestinationTracker {
@@ -358,6 +388,80 @@ impl DestinationTracker {
             container_fences: None,
             inline_code: None,
             directive_lines: Vec::new(),
+            diagnostics: None,
+        }
+    }
+
+    /// A source-coordinate-only walk. It does not parse inline content or
+    /// retain editable destination/label inventories.
+    pub(super) fn for_diagnostics(source: &str) -> Self {
+        let mut tracker = Self::new(source);
+        let mut end = 0;
+        let line_ends = logical_lines_inclusive(source)
+            .map(|line| {
+                end += line.len();
+                end
+            })
+            .collect();
+        tracker.diagnostics = Some(DiagnosticState {
+            line_ends,
+            findings: Vec::new(),
+        });
+        tracker
+    }
+
+    pub(super) fn finish_diagnostics(self) -> Vec<ParseDiagnostic> {
+        self.diagnostics
+            .map_or_else(Vec::new, |state| state.findings)
+    }
+
+    pub(super) fn malformed_reference(&mut self, line: &str) {
+        if self.diagnostics.is_none() {
+            return;
+        }
+        // A tab-expanded prefix is synthesized; the definition's actual
+        // spelling remains one contiguous, literal suffix of the source line.
+        let range = self
+            .text_range(line)
+            .or_else(|| self.text_range(trim_start_space_tab(line)));
+        if let (Some(range), Some(state)) = (range, &mut self.diagnostics) {
+            state.findings.push(ParseDiagnostic::warning(
+                SourceSpan::new(range.start, range.end),
+                "malformed link reference definition rendered as text",
+            ));
+        }
+    }
+
+    pub(super) fn unclosed_fence(&mut self, lines: &[&str], depth: usize) {
+        if self.diagnostics.is_none() {
+            return;
+        }
+        let first = lines.first().and_then(|line| {
+            self.text_range(line)
+                .or_else(|| self.text_range(trim_start_space_tab(line)))
+        });
+        let last = lines.iter().rev().find_map(|line| {
+            let text = line.trim_end();
+            let width = text.chars().next_back()?.len_utf8();
+            self.text_range(&text[text.len() - width..])
+        });
+        if let (Some(first), Some(last), Some(state)) = (first, last, &mut self.diagnostics) {
+            let (end, message) = if depth == 0 {
+                (
+                    self.source_len,
+                    "unclosed fenced code block reaches end of document",
+                )
+            } else {
+                let line = state.line_ends.partition_point(|&end| end < last.end);
+                (
+                    state.line_ends.get(line).copied().unwrap_or(last.end),
+                    "unclosed fenced code block reaches end of container",
+                )
+            };
+            state.findings.push(ParseDiagnostic::warning(
+                SourceSpan::new(first.start, end),
+                message,
+            ));
         }
     }
 
@@ -738,7 +842,7 @@ impl DestinationTracker {
 
     /// Invoked only after the real paragraph-aware collector accepts a def.
     pub(super) fn reference(&mut self, lines: &[&str], key: &str, dest: &str) {
-        if self.container_fences.is_some() {
+        if self.container_fences.is_some() || self.diagnostics.is_some() {
             return;
         }
         let joined = lines.join("\n");

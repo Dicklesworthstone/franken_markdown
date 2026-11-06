@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Definition lists and footnotes preserve physical line breaks while parsing
+  inline syntax. Authored hard breaks, code-span spaces, HTML attributes and
+  TeX comments retain their meaning; malformed multiline destinations no longer
+  become active links or images after whitespace folding.
+- Parser diagnostics follow the same block and reference boundaries as parsing.
+  Valid multiline references, footnotes and literal HTML/math/code no longer
+  produce false warnings, and unclosed fences inside lists and quotations report
+  their actual container boundary with original source coordinates.
+- Literal NUL characters in Markdown become U+FFFD before parsing, including
+  reference identities, destinations, literal blocks and frontmatter metadata.
+  HTML and EPUB export receive normalized text while block spans, diagnostics,
+  destination fragments, reference-rename locations and include ownership retain
+  original byte offsets.
 - Native book exports preserve referenced image paths even when loading fails,
   including oversized files, missing assets and rejected symlinks. Publication
   also checks directory-entry and Unix hard-link identities, protects missing

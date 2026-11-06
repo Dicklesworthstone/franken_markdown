@@ -34,6 +34,8 @@ pub struct Frontmatter {
 /// frontmatter and the remaining source (starting on the line after the
 /// closing fence). When no valid frontmatter block exists, returns
 /// `(None, src)` with the input untouched.
+/// Textual metadata replaces literal NUL with U+FFFD, matching Markdown source
+/// admission. The remaining source is always an unchanged borrowed suffix.
 #[must_use]
 pub fn split_frontmatter(src: &str) -> (Option<Frontmatter>, &str) {
     let body = src.strip_prefix('\u{feff}').unwrap_or(src);
@@ -73,11 +75,24 @@ pub fn split_frontmatter(src: &str) -> (Option<Frontmatter>, &str) {
     let Some(end) = closed_at else {
         return (None, src);
     };
-    let fm = parse_frontmatter_lines(&body_lines);
-    if fm.is_none() {
+    let Some(mut fm) = parse_frontmatter_lines(&body_lines) else {
         return (None, src);
+    };
+    // Metadata is also read independently by native and browser shells, before
+    // the Markdown parser normalizes its own source. Normalize only these
+    // owned values; changing the borrowed tail would invalidate source offsets.
+    for value in fm
+        .title
+        .iter_mut()
+        .chain(fm.author.iter_mut())
+        .chain(fm.lang.iter_mut())
+        .chain(fm.unknown_keys.iter_mut())
+    {
+        if value.contains('\0') {
+            *value = value.replace('\0', "\u{fffd}");
+        }
     }
-    (fm, &body[end..])
+    (Some(fm), &body[end..])
 }
 
 /// The FIRST separator belongs to the key; later `=` or `:` characters are

@@ -1,4 +1,4 @@
-//! Actual destinations for immutable source headings, including note bodies.
+//! Actual destinations for immutable source headings and prepared page notes.
 //!
 //! Source identity survives line wrapping, repeated layout passes and note
 //! placement. It is used for lookup only: pointer values never enter output,
@@ -33,6 +33,10 @@ pub(crate) struct SourceNavigation {
     /// Depth-first heading ordinals in the supplied prepared document, including
     /// note bodies. Empty/unpainted headings have no emitted destination.
     pub headings: BTreeMap<usize, Destination>,
+    /// Prepared note IDs emitted at the page foot or in the endnote fallback.
+    /// These entries are not bookmarks and must not match a heading with the
+    /// same spelling as the renderer's internal note namespace.
+    pub notes: BTreeMap<String, Destination>,
 }
 
 pub(crate) fn render(
@@ -75,6 +79,12 @@ pub(super) fn collect(doc: &Document, outlines: &[OutlineEntry]) -> SourceNaviga
         };
         if let Some(ordinal) = outline.source_identity.and_then(|id| identities.get(&id)) {
             navigation.headings.insert(*ordinal, destination);
+        }
+        if outline.level == 0
+            && outline.source_identity.is_none()
+            && outline.id.starts_with(crate::footnotes::PAGE_NOTE_PREFIX)
+        {
+            navigation.notes.insert(outline.id.clone(), destination);
         }
     }
     navigation

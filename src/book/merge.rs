@@ -87,7 +87,7 @@ fn namespace_inlines(inlines: &mut [Inline], chapter: usize) {
     }
 }
 
-fn scoped_id(chapter: usize, id: &str) -> String {
+pub(super) fn scoped_id(chapter: usize, id: &str) -> String {
     format!("fmd-book-{chapter}-{id}")
 }
 

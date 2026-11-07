@@ -199,8 +199,11 @@ pub fn book_pdf_document_with_assets(book: &Book, assets: &[PdfImageAsset]) -> R
 }
 
 /// Render a PDF book with chapter-local citations, images, and navigation.
-/// Known chapter links and fragment-only links bind to actual PDF outline
-/// destinations, including duplicate/wrapped headings and moved note bodies.
+/// Known chapter links and fragment-only links bind to actual PDF heading or
+/// referenced-footnote destinations, including notes moved to an endnote
+/// fallback. Source footnote anchors use the HTML spelling `#fn-label`; labels
+/// remain scoped to their chapter. Missing or ambiguous note anchors never
+/// capture another chapter's citation or an identically named heading.
 /// A bare link to a chapter without a leading heading adds its chapter title
 /// as the landing heading. Missing local anchors remain inert; external URLs
 /// and all caller-provided typography/metadata options are preserved.

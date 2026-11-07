@@ -1,5 +1,5 @@
 //! Chapter-scoped PDF navigation. Source anchors use the existing heading-ID
-//! implementation, while destinations come from the actual emitted outlines.
+//! and footnote inventory, while destinations come from the emitted outlines.
 //! Neither title matching nor a prediction of line wrapping/page positions is
 //! used to bind links. Footnotes may move without losing their source scope.
 
@@ -159,6 +159,15 @@ fn render_plan_with(
     }
     let (bytes, navigation) =
         crate::pdf::source_navigation::render(&prepared, options, settings, emit)?;
+    let note_ids = if plan
+        .targets
+        .values()
+        .any(|target| matches!(target, Some(Target::Footnote(_))))
+    {
+        crate::footnotes::page_note_ids(&profiled)
+    } else {
+        BTreeMap::new()
+    };
     let emitted: BTreeMap<_, _> = navigation
         .headings
         .iter()
@@ -174,10 +183,15 @@ fn render_plan_with(
         .targets
         .iter()
         .map(|(uri, source)| {
-            (
-                uri.clone(),
-                source.and_then(|source| emitted.get(&source).copied()),
-            )
+            let destination = match source {
+                Some(Target::Heading(ordinal)) => emitted.get(ordinal).copied(),
+                Some(Target::Footnote(id)) => note_ids
+                    .get(id)
+                    .and_then(|prepared| navigation.notes.get(prepared))
+                    .copied(),
+                None => None,
+            };
+            (uri.clone(), destination)
         })
         .collect();
     wire::bind(bytes, &targets)
@@ -185,14 +199,21 @@ fn render_plan_with(
 
 struct Plan {
     document: Document,
-    /// Temporary URI -> source heading ordinal; None means unresolved.
-    targets: BTreeMap<String, Option<usize>>,
+    /// Temporary URI -> immutable source target; None means unresolved.
+    targets: BTreeMap<String, Option<Target>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Target {
+    Heading(usize),
+    /// Original definition ID after chapter isolation, before note numbering.
+    Footnote(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum LocalTarget {
     Start(usize),
-    Heading(usize, String),
+    Fragment(usize, String),
     Unresolved,
 }
 
@@ -215,7 +236,7 @@ fn local_target(
     Some(match fragment {
         None | Some("") => LocalTarget::Start(chapter),
         Some(fragment) => match decode_fragment(fragment) {
-            Some(fragment) => LocalTarget::Heading(chapter, fragment),
+            Some(fragment) => LocalTarget::Fragment(chapter, fragment),
             None => LocalTarget::Unresolved,
         },
     })
@@ -353,6 +374,7 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
     let original_ranges = chapter_ranges(book, &document)?;
     let (mut document, ranges) = normalize_chapters(document, &original_ranges)?;
     let mut starts = BTreeSet::new();
+    let mut note_chapters = BTreeSet::new();
     let mut reserved = BTreeSet::new();
     let mut candidates = 0usize;
     for (index, range) in ranges.iter().enumerate() {
@@ -360,8 +382,17 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
             reserve_nonce(dest.as_bytes(), &mut reserved);
             if let Some(target) = local_target(index, &sources[index], dest, &known) {
                 candidates += 1;
-                if let LocalTarget::Start(chapter) = target {
-                    starts.insert(chapter);
+                match target {
+                    LocalTarget::Start(chapter) => {
+                        starts.insert(chapter);
+                    }
+                    LocalTarget::Fragment(chapter, fragment) if fragment.starts_with("fn-") => {
+                        // Inventory only chapters addressed through the HTML
+                        // note-ID namespace. The inventory, not the prefix,
+                        // decides whether an unambiguous note actually exists.
+                        note_chapters.insert(chapter);
+                    }
+                    _ => {}
                 }
             }
         });
@@ -470,7 +501,23 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
             let normalized = positions
                 .get(ordinal)
                 .ok_or_else(|| invalid("normalized heading ordinal is invalid"))?;
-            map.insert(entry.anchor, base + shift + *normalized);
+            map.insert(entry.anchor, Target::Heading(base + shift + *normalized));
+        }
+        if note_chapters.contains(&index) {
+            for anchor in crate::book::validation::footnote_anchors(&chapter.doc) {
+                if anchor.occurrences != 1 {
+                    // A heading may already own this spelling. HTML regards
+                    // the shared ID as ambiguous, so neither target may win.
+                    map.remove(&anchor.id);
+                    continue;
+                }
+                let id = if book.chapters.len() > 1 {
+                    crate::book::merge::scoped_id(index + 1, &anchor.title)
+                } else {
+                    anchor.title
+                };
+                map.insert(anchor.id, Target::Footnote(id));
+            }
         }
         aliases.push(map);
         let chapter_blocks = &document.blocks[assembled_ranges[index].clone()];
@@ -492,18 +539,22 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
             .ok_or_else(|| invalid("heading count overflow"))?;
     }
 
-    let mut tokens: BTreeMap<Option<usize>, String> = BTreeMap::new();
+    let mut tokens: BTreeMap<Option<Target>, String> = BTreeMap::new();
     for (index, range) in assembled_ranges.into_iter().enumerate() {
         walk_links(&mut document.blocks[range], &mut |dest| {
             let Some(target) = local_target(index, &sources[index], dest, &known) else {
                 return;
             };
             let target = match target {
-                LocalTarget::Start(chapter) => landings.get(chapter).copied().flatten(),
-                LocalTarget::Heading(chapter, fragment) => aliases
+                LocalTarget::Start(chapter) => landings
+                    .get(chapter)
+                    .copied()
+                    .flatten()
+                    .map(Target::Heading),
+                LocalTarget::Fragment(chapter, fragment) => aliases
                     .get(chapter)
                     .and_then(|map| map.get(&fragment))
-                    .copied(),
+                    .cloned(),
                 LocalTarget::Unresolved => None,
             };
             if let Some(token) = tokens.get(&target) {
@@ -619,7 +670,11 @@ mod tests {
         let mut out = Vec::new();
         walk_links(&mut plan.document.blocks, &mut |dest| {
             if let Some(target) = plan.targets.get(dest) {
-                out.push(*target);
+                out.push(match target {
+                    Some(Target::Heading(ordinal)) => Some(*ordinal),
+                    Some(Target::Footnote(_)) => panic!("expected a heading target"),
+                    None => None,
+                });
             }
         });
         out
@@ -816,7 +871,7 @@ mod tests {
         let book = book(&[
             (
                 "one.md",
-                "# Same\n\nClaim[^n]. [Next](two.md#same)\n\n[^n]: ## Detail\n\n    Note [Back](#same).\n",
+                "# Same\n\nClaim[^n]. [Next](two.md#same) [Note body](#fn-n)\n\n[^n]: ## Detail\n\n    Note [Back](#same).\n",
             ),
             ("two.md", "# Same\n\n[Note heading](one.md#detail)\n"),
         ]);
@@ -884,11 +939,11 @@ mod tests {
                 "../space%20name.md?edition=2#%61lpha",
                 &known
             ),
-            Some(LocalTarget::Heading(1, "alpha".into()))
+            Some(LocalTarget::Fragment(1, "alpha".into()))
         );
         assert_eq!(
             local_target(0, "guide/start.md", "?edition=2#alpha", &known),
-            Some(LocalTarget::Heading(0, "alpha".into()))
+            Some(LocalTarget::Fragment(0, "alpha".into()))
         );
         for url in ["#bad%", "#bad%GG", "#bad%00", "#%FF"] {
             assert_eq!(

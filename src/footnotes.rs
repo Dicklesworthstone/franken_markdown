@@ -38,6 +38,37 @@ pub(crate) fn for_pdf_paged(doc: &Document) -> Cow<'_, Document> {
     prepare(doc, true)
 }
 
+/// Original definition ID to the ID carried by its prepared page note. Book
+/// navigation resolves source anchors through this map, then uses the note's
+/// actual emitted destination; first-use order and endnote fallback are never
+/// inferred from definition order or estimated page positions.
+///
+/// Use the same HTML lowering, definition collection and numbering as
+/// [`for_pdf_paged`]. Already prepared notes retain their existing IDs.
+pub(crate) fn page_note_ids(doc: &Document) -> BTreeMap<String, String> {
+    let lowered = crate::safe_html::lower(doc);
+    let mut notes = Notes::default();
+    notes.collect(&lowered.blocks);
+    if notes.is_paged() {
+        return notes
+            .indices
+            .keys()
+            .map(|id| ((*id).to_string(), (*id).to_string()))
+            .collect();
+    }
+    let numbering = number_notes(&lowered, &notes);
+    notes
+        .indices
+        .into_iter()
+        .map(|(id, index)| {
+            (
+                id.to_string(),
+                format!("{PAGE_NOTE_PREFIX}{}", numbering.numbers[index]),
+            )
+        })
+        .collect()
+}
+
 fn prepare(doc: &Document, paged: bool) -> Cow<'_, Document> {
     // Paged output cannot pass markup through: lower the safe HTML subset to
     // native nodes first (idempotent, borrowed when there is no raw HTML).
@@ -55,13 +86,7 @@ fn endnotes_for_pdf(doc: &Document, paged: bool) -> Cow<'_, Document> {
     }
     // Already prepared for page notes: nothing references the labeled
     // definitions any more, and preparing again would renumber them.
-    if paged
-        && !notes.has_reference
-        && notes
-            .indices
-            .keys()
-            .all(|id| id.starts_with(PAGE_NOTE_PREFIX))
-    {
+    if paged && notes.is_paged() {
         return Cow::Borrowed(doc);
     }
 
@@ -199,6 +224,14 @@ struct Notes<'a> {
 }
 
 impl<'a> Notes<'a> {
+    fn is_paged(&self) -> bool {
+        !self.has_reference
+            && self
+                .indices
+                .keys()
+                .all(|id| id.starts_with(PAGE_NOTE_PREFIX))
+    }
+
     fn collect(&mut self, blocks: &'a [Block]) {
         for block in blocks {
             match block {

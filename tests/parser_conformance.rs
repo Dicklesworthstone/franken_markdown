@@ -340,7 +340,14 @@ fn nested_unordered_lists_render_as_nested_lists() {
 
 #[test]
 fn nested_ordered_lists_preserve_start_numbers() {
-    let out = html("1. parent\n   3. child");
+    // CommonMark 0.31.2 §5.2 (official examples 304/305): only a start
+    // number of 1 can interrupt a paragraph. A nested list follows that same
+    // rule, so the non-1 start needs a real boundary after the parent prose.
+    let continuation = html("1. parent\n   3. child");
+    assert!(continuation.contains("<li>parent\n3. child</li>"));
+    assert!(!continuation.contains("<ol start=\"3\">"));
+
+    let out = html("1. parent\n\n   3. child");
 
     assert!(out.contains("<ol start=\"3\">\n<li>child</li>"));
 }

@@ -8,9 +8,13 @@ use franken_markdown::{HtmlOptions, Inline, parse_markdown};
 fn code_spans_strip_outside_spaces_around_tabs_and_unicode_whitespace() {
     for content in ["\t", "\u{a0}", "\u{2003}", "\u{2028}", "\t\u{a0}"] {
         let source = format!("` {content} `");
-        assert_eq!(parse_inlines(&source), vec![Inline::Code(content.to_owned())]);
+        assert_eq!(
+            parse_inlines(&source),
+            vec![Inline::Code(content.to_owned())]
+        );
         let document = parse_markdown(&source);
-        let html = franken_markdown::html::render_fragment(&document.blocks, &HtmlOptions::default());
+        let html =
+            franken_markdown::html::render_fragment(&document.blocks, &HtmlOptions::default());
         assert_eq!(html, format!("<p><code>{content}</code></p>\n"));
     }
 }

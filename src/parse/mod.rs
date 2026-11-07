@@ -3668,13 +3668,6 @@ impl ContainerTail {
         std::borrow::Cow::Owned(padded)
     }
 
-    fn is_literal(&self) -> bool {
-        matches!(
-            self.leaf,
-            TailLeaf::Fence { .. } | TailLeaf::IndentedCode | TailLeaf::Html(_) | TailLeaf::Math
-        )
-    }
-
     fn retains_literal_blank(&self) -> bool {
         matches!(
             self.leaf,
@@ -3980,26 +3973,10 @@ fn split_list_items_with_first_marker_tracked<'a>(
 
             if leading_spaces(lines[i]) >= m.content_indent {
                 let stripped = strip_n(lines[i], m.content_indent);
-                // A non-1-start ordered marker cannot interrupt a paragraph, so
-                // after prose it would be lazily absorbed; a blank line forces it
-                // into its own sub-list. But when the previous content line is
-                // itself a list item, this marker is just the natural 2nd/3rd/...
-                // item of an ordered sub-list (start 2, 3, ...) and must stay in
-                // one tight list — do not split it.
-                let prev_is_list_item = item_lines
-                    .last()
-                    .is_some_and(|prev| list_marker(prev.as_ref()).is_some());
-                if !tail.is_literal()
-                    && !prev_is_list_item
-                    && list_marker(stripped)
-                        .is_some_and(|marker| marker.ordered && marker.start != 1)
-                    && item_lines
-                        .last()
-                        .is_some_and(|prev| !is_blank_line(prev.as_ref()))
-                {
-                    tail.observe("");
-                    item_lines.push(std::borrow::Cow::Borrowed(""));
-                }
+                // Preserve the source's real paragraph boundaries. A non-1
+                // ordered marker cannot interrupt prose, even inside an item;
+                // a subsequent item in an existing nested list also must not
+                // acquire a blank merely because the prior item spans lines.
                 tail.observe(stripped);
                 item_lines.push(std::borrow::Cow::Borrowed(stripped));
             } else if item_lines
@@ -4485,9 +4462,7 @@ fn parse_inlines_chars_nested(
     context: InlineContext,
     profiler: &mut ParseProfiler,
 ) -> Vec<Inline> {
-    if !profiler.inline_work.exhausted
-        && profiler.inline_work.depth >= MAX_INLINE_PARSE_RECURSION
-    {
+    if !profiler.inline_work.exhausted && profiler.inline_work.depth >= MAX_INLINE_PARSE_RECURSION {
         profiler.inline_work.exhaust(InlineLimit::Depth);
     }
     if profiler.inline_work.exhausted || !profiler.inline_work.charge(chars.len()) {
@@ -8526,7 +8501,11 @@ mod inline_helper_branch_tests {
         );
 
         cache.total_key_bytes = INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES - 1;
-        cache.insert("another-sixteen", &[Inline::Text("ignored".to_string())], None);
+        cache.insert(
+            "another-sixteen",
+            &[Inline::Text("ignored".to_string())],
+            None,
+        );
         assert_eq!(cache.entries.len(), 1);
 
         let mut full = InlineParseCache::default();
@@ -8535,7 +8514,11 @@ mod inline_helper_branch_tests {
             full.insert(&key, &[Inline::Text(key.clone())], None);
         }
         assert_eq!(full.entries.len(), INLINE_PARSE_CACHE_MAX_ENTRIES);
-        full.insert("cache-key-overflow", &[Inline::Text("ignored".to_string())], None);
+        full.insert(
+            "cache-key-overflow",
+            &[Inline::Text("ignored".to_string())],
+            None,
+        );
         assert_eq!(full.entries.len(), INLINE_PARSE_CACHE_MAX_ENTRIES);
     }
 
